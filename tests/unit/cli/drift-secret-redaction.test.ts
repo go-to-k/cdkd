@@ -3571,3 +3571,252 @@ describe('cdkd drift --revert refuses an unresolved intrinsic OBJECT baseline (i
     expect(errored).not.toContain('(a NoEcho custom-resource value)');
   });
 });
+
+// -------------------------------------------------------- #2899 / #2939 --
+//
+// Two small `drift.ts` fixes that share this harness because each is only
+// observable through the command: the private `resolveStateSecretExpressions`
+// walk (#2899) and the rules constant the `--accept` / `--revert` writers
+// select by destination (#2939). The third fix of the same PR, #2897's
+// `deepEqualUnordered` guard, is pinned in `drift-masked-leaf-preserve.test.ts`
+// through `collectNarrowedTopLevelKeys`; its `--accept` post-write observation
+// has NO case here because the drift normalisers flatten a non-plain readback
+// value (a `Date`) to `{}` before the check runs (measured; go-to-k/cdkd#3121).
+describe('cdkd drift — the state-baseline walk and the destination-selected rules constant', () => {
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    mockGetState.mockReset();
+    mockListStacks.mockReset();
+    mockVerifyBucketExists.mockReset().mockResolvedValue(undefined);
+    mockSaveState.mockReset().mockResolvedValue('"etag-2"');
+    mockAcquireLock.mockReset().mockResolvedValue(true);
+    mockReleaseLock.mockReset().mockResolvedValue(undefined);
+    mockRegistryGetProvider.mockReset();
+    mockRegistryShouldSkip.mockReset().mockReturnValue(false);
+    mockSecretsManagerSend.mockClear();
+    mockSecretsManagerSend.mockImplementation(async (command: { input?: { SecretId?: string } }) =>
+      command?.input?.SecretId === 'cdkd-other-secret'
+        ? { SecretString: JSON.stringify({ password: OTHER_PLAINTEXT }) }
+        : { SecretString: JSON.stringify({ password: SECRET_PLAINTEXT }) }
+    );
+    mockSsmSend.mockClear();
+    mockSsmSend.mockImplementation(async (command: { input?: { Name?: string } }) =>
+      command?.input?.Name === '/cdkd/test/public'
+        ? { Parameter: { Value: PUBLIC_SSM_VALUE, Type: 'String' } }
+        : { Parameter: { Value: SECURE_PLAINTEXT, Type: 'SecureString' } }
+    );
+    errorSpy.mockReset();
+    warnSpy.mockReset();
+    infoSpy.mockReset();
+    debugSpy.mockReset();
+    resetAccountInfoCache();
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('__exit__');
+    }) as never);
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+  });
+
+  // --- #2899 -----------------------------------------------------------------
+  //
+  // `resolveStateSecretExpressions` rebuilt every object node onto a `{}`
+  // literal. Its input is the `JSON.parse`d state baseline, the one producer
+  // of an OWN `__proto__` key, and assigning that key onto a literal SETS the
+  // node's prototype and DROPS the key. Two consequences chain, both pinned
+  // below through `--revert`: the member vanishes from the payload
+  // `provider.update` ships, and the polluted node fails `hasPlainPrototype`,
+  // so the token preserve walk returns it BY IDENTITY and never reaches the
+  // whole-token leaf inside it. The baseline must carry a reference for the
+  // walk to rebuild at all (a reference-free bag returns by identity), so the
+  // fixture keeps the secret reference beside the exotic key.
+  //
+  // The key sits one level DOWN (`Environment.__proto__`) beside a drifting
+  // sibling, because a TOP-LEVEL `__proto__` cannot drift today: the
+  // comparison chain's own normalisers (`drift-normalize.ts`) rebuild both
+  // sides onto `{}` literals and drop it symmetrically — the same class one
+  // module over, filed separately, out of this file's scope.
+
+  /** The observed baseline as `JSON.parse` yields it: `Environment.__proto__` is an OWN key. */
+  function protoKeyedBaseline(): Record<string, unknown> {
+    return JSON.parse(
+      '{"FunctionName":"fn","Environment":{"__proto__":{"polluted":"base"},' +
+        `"Variables":{"SECRET_PASSWORD":${JSON.stringify(SECRET_EXPR)},"PLAIN":"ok",` +
+        `"URL":${JSON.stringify(UNSUPPORTED_EXPR)}}}}`
+    ) as Record<string, unknown>;
+  }
+
+  it('#2899: --revert ships the own __proto__ member of a rebuilt node, on an ordinary prototype', async () => {
+    const baseline = protoKeyedBaseline();
+    // The fixture's own guard: the input really carries the key as an OWN key.
+    expect(Object.hasOwn(baseline['Environment'] as object, '__proto__')).toBe(true);
+    const update = vi.fn().mockResolvedValue({ physicalId: 'fn' });
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Consumer: lambdaResource(baseline) }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        FunctionName: 'fn',
+        Environment: {
+          Variables: {
+            SECRET_PASSWORD: SECRET_PLAINTEXT,
+            PLAIN: 'edited-in-the-console',
+            URL: LIVE_AT_UNSUPPORTED,
+          },
+        },
+      }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    const sent = update.mock.calls[0]![3] as Record<string, unknown>;
+    const env = sent['Environment'] as Record<string, unknown>;
+    // Consequence 1: the member is an OWN key of the node the payload carries,
+    // round-tripped by `JSON.stringify`, and NOT the node's prototype.
+    expect(Object.hasOwn(env, '__proto__')).toBe(true);
+    expect(env['__proto__']).toEqual({ polluted: 'base' });
+    expect((env as { polluted?: unknown }).polluted).toBeUndefined();
+    expect(JSON.stringify(sent)).toContain('"__proto__":{"polluted":"base"}');
+    // Consequence 2: the node is PLAIN again, so the token preserve walk
+    // descends it and the unresolvable token takes the live value instead of
+    // shipping the literal (pre-fix the polluted node came back by identity).
+    const vars = env['Variables'] as Record<string, unknown>;
+    expect(vars['URL']).toBe(LIVE_AT_UNSUPPORTED);
+    // Control that the walk really rebuilt this bag: the secret leaf beside
+    // the exotic key arrives RESOLVED and the sibling drift is reverted.
+    expect(vars['SECRET_PASSWORD']).toBe(SECRET_PLAINTEXT);
+    expect(vars['PLAIN']).toBe('ok');
+  });
+
+  // --- #2939 -----------------------------------------------------------------
+  //
+  // `--accept` re-redacts the bag it persists and passed the NON-failing
+  // `STATE_SOURCED_READBACK_RULES` unconditionally, though the same site had
+  // already computed the destination two lines away: on the `hasObserved` arm
+  // the bag IS a drift baseline (`observedProperties`), where an uncertifiable
+  // position must be masked rather than left holding a stored plaintext; on
+  // the `properties` arm a mask is a regression and the readback constant
+  // stays. One case per arm, each wanting the non-default direction.
+
+  it('#2939: on the observedProperties arm, a stored plaintext at an UNPAIRABLE position is MASKED', async () => {
+    // A pre-#2852 record: `observedProperties` holds last week's (rotated-away)
+    // plaintext at a position the walk cannot pair — the source spells a
+    // scalar reference where the baseline holds a CONTAINER — so the value map
+    // (today's secret) cannot name it and only the fail-closed refusal can.
+    // Accepting an UNRELATED key re-persists the whole bag.
+    const STALE = 'cdkd-stale-rotated-away-pw-2939';
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Consumer: lambdaResource({
+          FunctionName: 'fn',
+          Environment: { Variables: { SECRET_PASSWORD: { Nested: STALE }, PLAIN: 'ok' } },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        FunctionName: 'fn',
+        Environment: { Variables: { SECRET_PASSWORD: { Nested: STALE }, PLAIN: 'edited' } },
+      }),
+    });
+
+    await runDrift(['TestStack', '--accept', '--yes']);
+
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const saved = mockSaveState.mock.calls[0]![2];
+    expect(JSON.stringify(saved)).not.toContain(STALE);
+    const observed = saved.resources['Consumer']!.observedProperties as {
+      Environment: { Variables: Record<string, unknown> };
+    };
+    expect(observed.Environment.Variables['SECRET_PASSWORD']).toEqual({ Nested: SECRET_MASK });
+    // The unrelated accept still happened — the mask is not a veto.
+    expect(observed.Environment.Variables['PLAIN']).toBe('edited');
+    // `properties` is untouched: the destination was the observed baseline.
+    expect(JSON.stringify(saved.resources['Consumer']!.properties)).not.toContain(SECRET_MASK);
+  });
+
+  it('#2939: on the properties arm (no observed baseline), an uncertifiable position is NOT masked', async () => {
+    // The half the issue keeps: a record with NO `observedProperties` writes
+    // its accepted bag into `properties`, where a mask blocks `cdkd export` and
+    // the rollback replay over a template value that was never unknown. A
+    // PUBLIC ssm reference in `properties` (the `cdkd import` warn path) whose
+    // live value came back as a container is an accepted, non-secret change
+    // that lands at a position the walk cannot pair — the fail-closed constant
+    // would mask it, the readback constant keeps it.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Consumer: {
+          physicalId: 'fn',
+          resourceType: LAMBDA_TYPE,
+          properties: {
+            FunctionName: 'fn',
+            Environment: { Variables: { CFG: PUBLIC_SSM_EXPR, PLAIN: 'ok' } },
+          },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        FunctionName: 'fn',
+        Environment: { Variables: { CFG: { Nested: 'live-cfg-2939' }, PLAIN: 'ok' } },
+      }),
+    });
+
+    await runDrift(['TestStack', '--accept', '--yes']);
+
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const saved = mockSaveState.mock.calls[0]![2];
+    const record = saved.resources['Consumer']!;
+    expect(record.observedProperties).toBeUndefined();
+    const props = record.properties as { Environment: { Variables: Record<string, unknown> } };
+    expect(props.Environment.Variables['CFG']).toEqual({ Nested: 'live-cfg-2939' });
+    expect(JSON.stringify(saved)).not.toContain(SECRET_MASK);
+    const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).not.toContain('was NOT recorded');
+  });
+
+  it('#2939 sibling: the --revert narrowing write masks an UNPAIRABLE echo on the observed arm', async () => {
+    // The `--revert` narrowing write (#1644) is the other `drift.ts` writer
+    // that passed the non-failing constant. A VALUE from its delta is persisted
+    // only into `observedProperties` (the `properties` arm takes drops alone),
+    // so wherever a redacted value lands it lands in a drift baseline. Here the
+    // provider echoes the secret position back as a CONTAINER holding a value
+    // the map cannot name (a rotated-away plaintext); the source spells a
+    // scalar reference there, so the position cannot be paired — the readback
+    // constant persisted the echo in the clear, the baseline constant masks it.
+    const ROTATED_UNKNOWN = 'cdkd-rotated-unknown-echo-2939';
+    const update = vi.fn().mockResolvedValue({
+      physicalId: 'fn',
+      effectiveProperties: {
+        FunctionName: 'fn',
+        Environment: { Variables: { SECRET_PASSWORD: { Nested: ROTATED_UNKNOWN }, PLAIN: 'ok' } },
+      },
+    });
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Consumer: lambdaResource() }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv({ SECRET_PASSWORD: 'tampered-in-the-console' }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const saved = mockSaveState.mock.calls[0]![2];
+    expect(JSON.stringify(saved)).not.toContain(ROTATED_UNKNOWN);
+    const observed = saved.resources['Consumer']!.observedProperties as {
+      Environment: { Variables: Record<string, unknown> };
+    };
+    // The narrowing WAS recorded (the container shape landed) — masked inside.
+    expect(observed.Environment.Variables['SECRET_PASSWORD']).toEqual({ Nested: SECRET_MASK });
+    expect(observed.Environment.Variables['PLAIN']).toBe('ok');
+    // `properties` is untouched: a value never lands on that arm.
+    expect(saved.resources['Consumer']!.properties).toEqual(lambdaResource().properties);
+  });
+});

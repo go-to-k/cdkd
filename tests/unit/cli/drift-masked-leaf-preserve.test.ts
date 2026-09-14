@@ -1,9 +1,13 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
   buildRevertNewProperties,
+  collectNarrowedTopLevelKeys,
   collectUnresolvedIntrinsicObjectPaths,
+  findRevertUnbaselinedAwsKeys,
+  getAtPath,
   preserveLiveValuesAtMaskedLeaves,
   preserveLiveValuesAtUnresolvedTokens,
+  setAtPath,
 } from '../../../src/cli/commands/drift.js';
 import {
   SECRET_MASK,
@@ -1337,5 +1341,426 @@ describe('collectUnresolvedIntrinsicObjectPaths (#2855)', () => {
         KEYS('A', 'B')
       )
     ).toEqual(['A.Deep', 'B']);
+  });
+});
+
+// ------------------------------------------------------------- #2920 --
+//
+// The token walk copied the LIVE value into a whole-token leaf without a type
+// test. The baseline types that position as a STRING (the token is one), so a
+// live object / array / number / null copied there ships a wrong-shape value
+// to the wire (the #2855 class through the preservation arm). Every route
+// reaches the copy line — a keyed pairing, a corroborated frame and the forced
+// 1-vs-1 singleton — so each is pinned; the residual is the pass's own: the
+// token is KEPT.
+describe('preserveLiveValuesAtUnresolvedTokens copies only a STRING live value (#2920)', () => {
+  it('a live OBJECT at a whole-token leaf keeps the token', () => {
+    const out = preserveLiveValuesAtUnresolvedTokens({ Url: TOK_A }, { Url: { Nested: 'v' } });
+    expect(out['Url']).toBe(TOK_A);
+  });
+
+  it('a live ARRAY at a whole-token leaf keeps the token', () => {
+    const out = preserveLiveValuesAtUnresolvedTokens({ Url: TOK_A }, { Url: ['v'] });
+    expect(out['Url']).toBe(TOK_A);
+  });
+
+  it('a live NUMBER and a live NULL at a whole-token leaf keep the token', () => {
+    const out = preserveLiveValuesAtUnresolvedTokens(
+      { N: TOK_A, Z: TOK_B },
+      { N: 42, Z: null }
+    );
+    expect(out['N']).toBe(TOK_A);
+    expect(out['Z']).toBe(TOK_B);
+  });
+
+  it('POSITIVE CONTROL: a live STRING is still copied', () => {
+    const out = preserveLiveValuesAtUnresolvedTokens({ Url: TOK_A }, { Url: 'live-url' });
+    expect(out['Url']).toBe('live-url');
+  });
+
+  it('the forced 1-vs-1 singleton route keeps the token over a live container', () => {
+    // The route PR 2912 widened: a 1-vs-1 array pairs uncorroborated, so the
+    // copy line is reached with no identity and no frame evidence at all.
+    const out = preserveLiveValuesAtUnresolvedTokens({ L: [TOK_A] }, { L: [{ Nested: 'v' }] });
+    expect(out['L']).toEqual([TOK_A]);
+  });
+
+  it('the KEYED route keeps the token over a live container, and still copies a string sibling', () => {
+    const out = preserveLiveValuesAtUnresolvedTokens(
+      {
+        Env: [
+          { Name: 'OBJ', Value: TOK_A },
+          { Name: 'STR', Value: TOK_B },
+        ],
+      },
+      {
+        Env: [
+          { Name: 'STR', Value: 'str-live' },
+          { Name: 'OBJ', Value: { Nested: 'v' } },
+        ],
+      }
+    );
+    const env = out['Env'] as Array<Record<string, unknown>>;
+    expect(env[0]!['Value']).toBe(TOK_A);
+    expect(env[1]!['Value']).toBe('str-live');
+  });
+
+  it('the corroborated-FRAME route keeps the token over a live container', () => {
+    const out = preserveLiveValuesAtUnresolvedTokens(
+      { L: ['anchor', TOK_A] },
+      { L: ['anchor', { Nested: 'v' }] }
+    );
+    expect(out['L']).toEqual(['anchor', TOK_A]);
+  });
+});
+
+// ------------------------------------------------------------- #2919 --
+//
+// `pairedLiveItems` refused a WILDCARD identity value keyed on the CALLER's
+// `wildcardLeaf`, so the MASK walk (wildcard = the mask alone) still paired an
+// identity that is a whole `{{resolve:...}}` TOKEN by string equality: a live
+// element literally named by the token text (cdkd's own literal echo) paired
+// and donated its live leaves into the masked slots — an uncorroborated guess.
+// The identity refusal is now `isTokenOrMaskLeaf` for BOTH callers.
+describe('pairedLiveItems refuses a whole-TOKEN identity in the MASK walk too (#2919)', () => {
+  it('a token-named send element does not pair with the live element echoing the token text', () => {
+    const secrets: RecordedSecretValues = new Map();
+    const corr = {
+      Env: [
+        { Name: TOK_A, Value: SECRET_MASK },
+        { Name: 'b', Value: 'y' },
+      ],
+    };
+
+    const { properties, unpreservablePaths } = preserveLiveValuesAtMaskedLeaves(
+      corr,
+      {
+        Env: [
+          { Name: TOK_A, Value: 'live-secret-2919' },
+          { Name: 'b', Value: 'y' },
+        ],
+      },
+      secrets,
+      corr
+    );
+
+    // THE assertion: the masked slot was NOT donated the echo's live leaf.
+    expect(unpreservablePaths).toEqual(['Env[0].Value']);
+    const env = properties['Env'] as Array<Record<string, unknown>>;
+    expect(env[0]!['Value']).toBe(SECRET_MASK);
+    expect(JSON.stringify(properties)).not.toContain('live-secret-2919');
+    expect(secrets.size).toBe(0);
+  });
+
+  it('POSITIVE CONTROL: a LITERAL identity beside it still pairs and preserves', () => {
+    // Same list, the masked element keyed by an ordinary literal: the
+    // widening must not have turned the identity arm into a blanket refusal.
+    const secrets: RecordedSecretValues = new Map();
+    const corr = {
+      Env: [
+        { Name: 'a', Value: SECRET_MASK },
+        { Name: TOK_A, Value: 'lit' },
+      ],
+    };
+
+    const { properties, unpreservablePaths } = preserveLiveValuesAtMaskedLeaves(
+      corr,
+      {
+        Env: [
+          { Name: TOK_A, Value: 'lit' },
+          { Name: 'a', Value: 'live-a-2919' },
+        ],
+      },
+      secrets,
+      corr
+    );
+
+    expect(unpreservablePaths).toEqual([]);
+    const env = properties['Env'] as Array<Record<string, unknown>>;
+    expect(env[0]!['Value']).toBe('live-a-2919');
+  });
+});
+
+// ------------------------------------------------------------- #2897 --
+//
+// `deepEqualUnordered` reported any two `Date`s (or other zero-own-key
+// non-plain objects) EQUAL — `a === b` fails, both are objects, key counts
+// `0 === 0` — so `collectNarrowedTopLevelKeys` HID a narrowing whose value
+// changed across the update and `observedProperties` stayed stale there. A
+// non-plain value on either side now compares UNEQUAL unless identical.
+describe('deepEqualUnordered treats a non-plain object as UNEQUAL unless identical (#2897)', () => {
+  it('two DIFFERENT Dates at one key are a narrowing, not a match', () => {
+    const delta = collectNarrowedTopLevelKeys(
+      { When: new Date('2020-01-01T00:00:00Z'), Keep: 'k' },
+      { When: new Date('2021-06-15T00:00:00Z'), Keep: 'k' }
+    );
+    expect(Object.keys(delta)).toEqual(['When']);
+    expect((delta['When'] as Date).toISOString()).toBe('2021-06-15T00:00:00.000Z');
+  });
+
+  it('a Date against a `{}` is a narrowing too — the zero-own-key coincidence', () => {
+    const delta = collectNarrowedTopLevelKeys({ When: new Date(0) }, { When: {} });
+    expect(Object.keys(delta)).toEqual(['When']);
+    expect(delta['When']).toEqual({});
+  });
+
+  it('a Uint8Array against another with the same bytes is a narrowing (a value cdkd cannot compare)', () => {
+    const delta = collectNarrowedTopLevelKeys(
+      { Blob: new Uint8Array([1, 2]) },
+      { Blob: new Uint8Array([1, 2]) }
+    );
+    expect(Object.keys(delta)).toEqual(['Blob']);
+  });
+
+  it('POSITIVE CONTROL: the SAME Date object on both sides is still equal', () => {
+    const when = new Date('2020-01-01T00:00:00Z');
+    expect(collectNarrowedTopLevelKeys({ When: when }, { When: when })).toEqual({});
+  });
+
+  it('POSITIVE CONTROL: plain objects still compare key-order-independently', () => {
+    expect(
+      collectNarrowedTopLevelKeys({ Cfg: { A: 1, B: [1, 2] } }, { Cfg: { B: [1, 2], A: 1 } })
+    ).toEqual({});
+  });
+
+  // `hasPlainPrototype` counts a NULL prototype as plain (PR #3124 review): the
+  // preserve walks rebuild `sent` onto `Object.create(null)` (#2899), so every
+  // revert compares a null-proto nested bag against the provider's plain echo.
+  // Were `proto === null` dropped from the predicate, this case would report a
+  // narrowing for an identical bag and every revert would over-narrow.
+  it('POSITIVE CONTROL: a null-prototype nested bag equals its plain twin — no narrowing', () => {
+    const nested = Object.create(null) as Record<string, unknown>;
+    nested['A'] = 1;
+    nested['B'] = [1, 2];
+    expect(Object.getPrototypeOf(nested)).toBeNull();
+    expect(collectNarrowedTopLevelKeys({ Cfg: nested }, { Cfg: { B: [1, 2], A: 1 } })).toEqual({});
+  });
+});
+
+// ------------------------------------------------------------- #2899 --
+//
+// `buildRevertNewProperties` overlaid each drifted top-level key by ASSIGNMENT
+// onto a plain spread of the AWS bag, so a drift at a key literally named
+// `__proto__` (an own key `JSON.parse` yields from state.json, enumerated by
+// the comparator like any other) set the payload's PROTOTYPE and dropped the
+// reverted member. Same class as the rebuild target the issue names; the
+// CLI-level pin for that walk is in `drift-secret-redaction.test.ts`.
+describe('buildRevertNewProperties defines a top-level __proto__ overlay as an OWN key (#2899 class)', () => {
+  it('the drifted __proto__ member lands in the payload, not on its prototype', () => {
+    // AWS LACKS the key (the drift is its absence): a plain spread of the AWS
+    // bag then owns no `__proto__`, so an ASSIGNMENT of the overlay would set
+    // the prototype. (When AWS also carries the key the spread already owns
+    // it and assignment merely updates it — that shape cannot discriminate.)
+    const desired = JSON.parse('{"__proto__": {"polluted": "base"}, "A": "a"}') as Record<
+      string,
+      unknown
+    >;
+    const aws = { A: 'a' };
+
+    const result = buildRevertNewProperties([{ path: '__proto__' }] as never, desired, aws);
+
+    expect(Object.hasOwn(result, '__proto__')).toBe(true);
+    expect(result['__proto__']).toEqual({ polluted: 'base' });
+    expect((result as { polluted?: unknown }).polluted).toBeUndefined();
+    expect(Object.getPrototypeOf(result)).toBe(Object.prototype);
+    // Round-trips as an own key (an object LITERAL spelling `__proto__` would
+    // set the prototype, so the expectation is stated over the JSON text).
+    expect(JSON.stringify(result)).toContain('"__proto__":{"polluted":"base"}');
+  });
+
+  it('...and on the preserveUntemplated arm too', () => {
+    const desired = JSON.parse('{"__proto__": {"polluted": "base"}}') as Record<string, unknown>;
+    const aws = { Other: 1 };
+
+    const result = buildRevertNewProperties([{ path: '__proto__' }] as never, desired, aws, {
+      preserveUntemplated: true,
+    });
+
+    expect(Object.hasOwn(result, '__proto__')).toBe(true);
+    expect(result['__proto__']).toEqual({ polluted: 'base' });
+    expect((result as { polluted?: unknown }).polluted).toBeUndefined();
+    expect(Object.getPrototypeOf(result)).toBe(Object.prototype);
+    expect(result['Other']).toBe(1);
+  });
+});
+
+// The other three sweep sites of the same class, pinned on the helpers
+// directly: a `__proto__` path cannot reach them through the command today
+// (the comparison chain's normalisers drop the key on both sides — #3121).
+describe('the --accept path helpers and the narrowing delta treat __proto__ as an OWN key (#2899 class)', () => {
+  it('setAtPath defines a top-level __proto__ as an own key on a JSON-parsed bag', () => {
+    const bag = JSON.parse('{"A":"a"}') as Record<string, unknown>;
+
+    setAtPath(bag, '__proto__', { polluted: 'accepted' });
+
+    expect(Object.hasOwn(bag, '__proto__')).toBe(true);
+    expect(Object.getPrototypeOf(bag)).toBe(Object.prototype);
+    expect((bag as { polluted?: unknown }).polluted).toBeUndefined();
+    expect(JSON.stringify(bag)).toContain('"__proto__":{"polluted":"accepted"}');
+  });
+
+  it('setAtPath creates a null-prototype intermediate for a nested __proto__ segment', () => {
+    const bag = JSON.parse('{}') as Record<string, unknown>;
+
+    setAtPath(bag, '__proto__.Inner', 'v');
+
+    expect(Object.hasOwn(bag, '__proto__')).toBe(true);
+    expect(Object.getPrototypeOf(bag)).toBe(Object.prototype);
+    expect(JSON.stringify(bag)).toBe('{"__proto__":{"Inner":"v"}}');
+  });
+
+  it('setAtPath with undefined still yields a key JSON drops (the write-only-credential delete)', () => {
+    const bag = JSON.parse('{"Keep":1,"Gone":2}') as Record<string, unknown>;
+    setAtPath(bag, 'Gone', undefined);
+    expect(JSON.stringify(bag)).toBe('{"Keep":1}');
+  });
+
+  it('getAtPath answers undefined for a __proto__ segment the bag does not OWN', () => {
+    // A bare read on a plain object answers `Object.prototype` here.
+    expect(getAtPath({ A: 'a' }, '__proto__')).toBeUndefined();
+    expect(getAtPath({ A: { B: 'b' } }, 'A.__proto__')).toBeUndefined();
+  });
+
+  it('getAtPath reads an OWN __proto__ key like any other', () => {
+    const bag = JSON.parse('{"__proto__":{"polluted":"base"},"A":{"B":"b"}}') as Record<
+      string,
+      unknown
+    >;
+    expect(getAtPath(bag, '__proto__')).toEqual({ polluted: 'base' });
+    expect(getAtPath(bag, 'A.B')).toBe('b');
+  });
+
+  it('collectNarrowedTopLevelKeys keeps a __proto__ narrowing as an own key of the delta', () => {
+    const sent = JSON.parse('{"__proto__":{"v":"sent"},"K":"k"}') as Record<string, unknown>;
+    const effective = JSON.parse('{"__proto__":{"v":"effective"},"K":"k"}') as Record<
+      string,
+      unknown
+    >;
+
+    const delta = collectNarrowedTopLevelKeys(sent, effective);
+
+    expect(Object.keys(delta)).toEqual(['__proto__']);
+    expect(delta['__proto__']).toEqual({ v: 'effective' });
+    expect((delta as { v?: unknown }).v).toBeUndefined();
+  });
+});
+
+// PR 3124 review rounds: the membership tests and reads across the revert
+// helpers, own-key everywhere. `in` and `obj[k]` read the prototype chain, so
+// a key named `constructor` / `toString` (a legal property name — a Lambda
+// env var, a tag key) or a `__proto__` a plain bag does NOT own answers
+// through `Object.prototype`. Two of the `buildRevertNewProperties` cases pin
+// arms the first commit already had own-key (their discriminator is the
+// inherited read, not the round-1 delta).
+describe('own-key membership and reads across the revert helpers (PR 3124 review)', () => {
+  it('mergeUntemplatedValue keeps an AWS key named `constructor` in the payload', () => {
+    // Pre-fix: `'constructor' in {A:'1'}` is true, the recursion merged the
+    // live value against `Object` (a function) and JSON dropped the member.
+    const result = buildRevertNewProperties(
+      [{ path: 'Env.A' }] as never,
+      { Env: { A: '1' } },
+      { Env: { A: '2', constructor: 'ctor-live', toString: 'ts-live' } },
+      { preserveUntemplated: true }
+    );
+
+    const env = result['Env'] as Record<string, unknown>;
+    expect(env['A']).toBe('1');
+    expect(env['constructor']).toBe('ctor-live');
+    expect(env['toString']).toBe('ts-live');
+    expect(JSON.parse(JSON.stringify(env))).toEqual({
+      A: '1',
+      constructor: 'ctor-live',
+      toString: 'ts-live',
+    });
+  });
+
+  it('mergeUntemplatedValue keeps a BASELINE key named `constructor` that AWS lacks', () => {
+    // The second loop's membership test: `'constructor' in {A:'2'}` is true,
+    // so the baseline's own member read as "AWS has it" and was not merged.
+    const result = buildRevertNewProperties(
+      [{ path: 'Env.A' }] as never,
+      { Env: { A: '1', constructor: 'ctor-base' } },
+      { Env: { A: '2' } },
+      { preserveUntemplated: true }
+    );
+
+    const env = result['Env'] as Record<string, unknown>;
+    expect(env['constructor']).toBe('ctor-base');
+    expect(JSON.parse(JSON.stringify(env))).toEqual({ A: '1', constructor: 'ctor-base' });
+  });
+
+  it('...and the plan (findRevertUnbaselinedAwsKeys) names that key, mirroring the merge', () => {
+    const named = findRevertUnbaselinedAwsKeys(
+      [{ path: 'Env.A' }] as never,
+      { Env: { A: '1' } },
+      { Env: { A: '2', constructor: 'ctor-live' } }
+    );
+    expect(named).toContain('Env.constructor');
+  });
+
+  it('buildRevertNewProperties does not fabricate a __proto__ overlay the desired side does not OWN', () => {
+    // The defensive arm: the drift names a key the baseline lacks, so the AWS
+    // value survives. With `in`, `'__proto__' in {A:'a'}` is true and an
+    // empty `{}` prototype read would have been overlaid.
+    const result = buildRevertNewProperties(
+      [{ path: '__proto__' }] as never,
+      { A: 'a' },
+      JSON.parse('{"A":"a"}') as Record<string, unknown>
+    );
+    expect(Object.hasOwn(result, '__proto__')).toBe(false);
+    expect(JSON.stringify(result)).toBe('{"A":"a"}');
+  });
+
+  it('buildRevertNewProperties reads the AWS side own-key only on the untemplated arm', () => {
+    // AWS lacks `__proto__`: a bare read answered `Object.prototype`, whose
+    // OWN `constructor` then shadowed the baseline's member in the merge.
+    const desired = JSON.parse('{"__proto__":{"constructor":"c"}}') as Record<string, unknown>;
+
+    const result = buildRevertNewProperties([{ path: '__proto__' }] as never, desired, {}, {
+      preserveUntemplated: true,
+    });
+
+    expect((result['__proto__'] as Record<string, unknown>)['constructor']).toBe('c');
+  });
+
+  it('findRevertUnbaselinedAwsKeys skips a top-level __proto__ the desired side does not OWN', () => {
+    // The plan's twin of the defensive merge arm: with `in`, the reporter
+    // walked AWS's `{X: 1}` against `Object.prototype` and named `__proto__.X`
+    // while the merge leaves that AWS value untouched — a plan/merge
+    // disagreement.
+    const named = findRevertUnbaselinedAwsKeys(
+      [{ path: '__proto__' }] as never,
+      { A: 'a' },
+      JSON.parse('{"A":"a","__proto__":{"X":1}}') as Record<string, unknown>
+    );
+    expect(named).toEqual([]);
+  });
+
+  it('collectNarrowedTopLevelKeys records a __proto__ the echo does not OWN as a DROP', () => {
+    // `sent` owns the key (the null-prototype rebuild); the provider's plain
+    // echo lacks it. `'__proto__' in effective` is true through the chain, so
+    // the delta recorded `Object.prototype` as the effective value.
+    const sent = JSON.parse('{"__proto__":{"v":"sent"},"Other":1}') as Record<string, unknown>;
+
+    const delta = collectNarrowedTopLevelKeys(sent, { Other: 1 });
+
+    expect(Object.keys(delta)).toEqual(['__proto__']);
+    expect(delta['__proto__']).toBeUndefined();
+  });
+
+  it('the mask walk does not copy an inherited read at a __proto__ position', () => {
+    // `live` lacks the key; a bare `liveObject['__proto__']` read answered
+    // `Object.prototype` and the MASK arm copied it (serialising as `{}`).
+    const secrets: RecordedSecretValues = new Map();
+    const send = JSON.parse('{"__proto__":"***","Keep":"k"}') as Record<string, unknown>;
+
+    const { properties, unpreservablePaths } = preserveLiveValuesAtMaskedLeaves(
+      send,
+      { Keep: 'k' },
+      secrets
+    );
+
+    expect(unpreservablePaths).toEqual(['__proto__']);
+    expect(properties['__proto__']).toBe(SECRET_MASK);
   });
 });

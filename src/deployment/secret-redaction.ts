@@ -2377,8 +2377,8 @@ function buildNeedleRegex(values: Iterable<string>): RegExp | undefined {
  *   observed walk, own-record source           the record itself    STATE_SOURCED_BASELINE_RULES *        TAKE SOURCE
  *   `cdkd state refresh-observed`              the record itself    STATE_SOURCED_BASELINE_RULES          TAKE SOURCE
  *   `cdkd import` observed capture             the record itself    STATE_SOURCED_BASELINE_RULES          TAKE SOURCE
- *   `cdkd drift --accept` new baseline         the record itself    STATE_SOURCED_READBACK_RULES          TAKE SOURCE
- *   `cdkd drift --revert` narrowed delta       revert baseline      STATE_SOURCED_READBACK_RULES          TAKE SOURCE
+ *   `cdkd drift --accept` new baseline         the record itself    BASELINE / READBACK by destination *** TAKE SOURCE
+ *   `cdkd drift --revert` narrowed delta       revert baseline      BASELINE / READBACK by destination *** TAKE SOURCE
  *   deploy journal `previousState`             the record itself    STATE_SOURCED_READBACK_RULES (passed) TAKE SOURCE
  *   rollback replay trailing record scrub      the record itself    STATE_SOURCED_READBACK_RULES **       TAKE SOURCE
  *   rollback replay `properties`               journaled record     STATE_DERIVED_RULES                   TAKE SOURCE
@@ -2428,6 +2428,13 @@ function buildNeedleRegex(values: Iterable<string>): RegExp | undefined {
  * reader who is not already exposed. The second test is what stops a
  * FAILURE-PATH `redactStateForPersist` save — a resource whose resolve threw
  * before recording anything — from taking `*` over a bag it did not produce.
+ *
+ * `***` is the same destination question answered by the CALLER: the two
+ * `cdkd drift` writers read the record's own `observedProperties` and pass
+ * {@link STATE_SOURCED_BASELINE_RULES} when the bag lands there,
+ * {@link STATE_SOURCED_READBACK_RULES} when it lands in `properties` (issue
+ * [#2939](https://github.com/go-to-k/cdkd/issues/2939); the selector's
+ * rationale sits on the BASELINE constant's doc below).
  *
  * WHICH ROW A CALL TAKES IS PER-CALL, not per-site, and two of the labels above
  * are therefore the COMMON case rather than the only one — a distinction a
@@ -2605,7 +2612,13 @@ export const STATE_SOURCED_READBACK_RULES: PathSourceRules = {
  * `observedProperties`, where a mask is a REGRESSION rather than a refusal
  * (`cdkd export` blocks such a record and the rollback replay refuses the
  * operation). A caller declares this constant when it knows its bag becomes a
- * drift baseline and nothing else.
+ * drift baseline and nothing else — and since issue
+ * [#2939](https://github.com/go-to-k/cdkd/issues/2939) the two `cdkd drift`
+ * writers make that call per record: `--accept`'s new baseline and
+ * `--revert`'s narrowed delta take THIS constant when the record carries
+ * `observedProperties` (the bag lands there) and
+ * {@link STATE_SOURCED_READBACK_RULES} otherwise (the bag lands in
+ * `properties`), the *** rows of the write-site table above.
  */
 export const STATE_SOURCED_BASELINE_RULES: PathSourceRules = {
   descendArrays: false,
