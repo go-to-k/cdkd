@@ -1417,13 +1417,13 @@ export class S3StateBackend {
     // dereference, which is issue go-to-k/cdkd#3018's class, and each is one
     // guard away precisely because the boundary let the record through.
     // Normalising one here would be worse than either, though NOT for the
-    // reason it is tempting to give: the deploy path already reads a `null`
-    // entry exactly as it reads an absent one (its `previousState` lookup is
-    // a truthiness test), so dropping the entry changes nothing THERE. What it
-    // changes is every consumer that enumerates KEYS — the destroy count,
-    // `state orphan`'s `id in resources`, the diff — for which a `null` entry
-    // keeps the logical id visible (nameable to a command, even though
-    // `state orphan` still refuses the entry at its own dereference today —
+    // reason it is tempting to give: the deploy path's `previousState` lookup
+    // already reads a `null` entry exactly as it reads an absent one (a
+    // truthiness test), so dropping the entry changes nothing at that lookup.
+    // What it changes is a consumer that enumerates KEYS — the destroy count,
+    // `state orphan`'s `id in resources` — for which a `null` entry keeps the
+    // logical id visible (nameable to a command, even though `state orphan`,
+    // like the diff, still refuses the entry at its own dereference today —
     // go-to-k/cdkd#3018 again) while a dropped one erases it from the record
     // silently. Inner shapes are tolerated where they are dereferenced instead.
     if (root === null || typeof root !== 'object' || Array.isArray(root)) {
