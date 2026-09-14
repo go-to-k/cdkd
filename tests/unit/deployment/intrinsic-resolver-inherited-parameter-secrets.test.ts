@@ -132,6 +132,9 @@ describe('IntrinsicFunctionResolver — inherited nested-stack parameter secrets
   /** The parent bag exactly as a parent pass produces it: collapsed, plus the table. */
   function collidingParentBag(): RecordedSecretValues {
     const parent: RecordedSecretValues = new Map([[PAIR_SHARED, PAIR_EXPR_B]]);
+    // Both tokens resolved to the plaintext in the parent's pass (refusal 5, #3090).
+    recordResolvedPair(parent, PAIR_EXPR_A, PAIR_SHARED);
+    recordResolvedPair(parent, PAIR_EXPR_B, PAIR_SHARED);
     recordNestedStackParameterExpressions(
       parent,
       'AWS::CloudFormation::Stack',

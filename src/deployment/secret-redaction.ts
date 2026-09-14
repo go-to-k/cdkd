@@ -1420,6 +1420,13 @@ const UNFRAMED_SPELLING: unique symbol = Symbol('cdkd.nested-parameter.unframed-
  * and the same generation the bag was resolved from one statement earlier. That
  * is the identical pairing `redactRollbackRecord` already makes for the record
  * it positions, so the two replay walks now agree about what their source is.
+ * Since issue #3090 the `trustAnyExpression` half of that claim no longer
+ * changes what THIS recorder writes for a reference the pass resolved:
+ * refusal 5 asks the pair table under both rule sets, and a resolved unpinned
+ * `ssm` reference has a pair (only its pin is withheld), so either ruleset
+ * positions it through the span arm's empty frame. What the constants still
+ * decide here is `sourceIsSameGeneration`, which a token-shaped plaintext
+ * reaches (fenced by the replay call sites' own file).
  *
  * "No public expressions" carries the carve-out {@link PathSourceRules} states
  * and this note must not restate without it: `cdkd import` warns and persists
@@ -1430,8 +1437,8 @@ const UNFRAMED_SPELLING: unique symbol = Symbol('cdkd.nested-parameter.unframed-
  * either way. See the replay call sites for why gating on
  * {@link isKnownSecretExpression} is the wrong way to close it.
  *
- * FOUR REFUSALS, each degrading to today's behaviour (the child leaf falls to
- * the plaintext-keyed value scan):
+ * FIVE REFUSALS, each degrading to today's behaviour (the child leaf falls to
+ * the plaintext-keyed value scan); the fifth is stated at its line:
  *
  * 1. REFUSAL — the resolved parameter value is not a WHOLE recorded plaintext.
  *    A parameter the parent built with an `Fn::Sub` merely EMBEDS the secret,
@@ -1577,9 +1584,9 @@ const UNFRAMED_SPELLING: unique symbol = Symbol('cdkd.nested-parameter.unframed-
  * the value, which the entry provides -- or the child's OWN resolution of
  * the same plaintext, in which case the association answers with the leaf's
  * own frame, the right reference for it. So a FRAMED association whose value
- * (iii) refused is inert or correct, never wrong -- a claim about this
- * route's pair gate, not about the whole-token walk above, whose refusal 4
- * cannot see a public token (issue #3090). The association's expression is
+ * (iii) refused is inert or correct, never wrong -- a claim both walks now
+ * earn the same way, the whole-token walk through refusal 5 (issue #3090).
+ * The association's expression is
  * the FRAME, not a token -- the one writer into that table that stores a
  * non-token, said so on {@link storeAssociation}; its readers return it to be
  * persisted, which is exactly what the entry would have written.
@@ -1742,6 +1749,19 @@ export function recordNestedStackParameterExpressions(
     // surviving association to do.
     const seenResolvingTo = plaintextIndexOf(secrets).get(expression);
     if (seenResolvingTo !== undefined && seenResolvingTo !== resolvedValue) continue;
+    // Refusal 5 -- THIS pass resolved this expression to this value (issue
+    // #3090). Refusals 1 and 4 read the map, which a PUBLIC token is never a
+    // value of: under STATE_DERIVED_RULES the position pass certifies a raw
+    // public `ssm` token a `cdkd import` record kept (the carve-out above)
+    // with no pair, and when its plaintext COINCIDES with a secret the bag
+    // holds, refusal 1 passes on the secret's key and refusal 4 finds
+    // nothing to disagree with -- so the child's `{Ref}` leaf persisted the
+    // public reference. The pair table names only what the resolver resolved
+    // as a secret, uncollapsed: a losing sibling still passes (its pair is
+    // recorded beside the survivor's), so does an unpinned `ssm` token (a
+    // pass-local pair), and the sub-floor walk below asks the same question
+    // of its frames. Refuses to the value scan, i.e. today's answer.
+    if (resolvedPlaintextOf(secrets, expression) !== resolvedValue) continue;
     if (table === undefined) {
       table = new Map();
       nestedStackParameterExpressions.set(secrets, table);

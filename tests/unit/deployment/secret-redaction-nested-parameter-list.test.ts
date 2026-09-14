@@ -4,6 +4,7 @@ import {
   recordSecretExpression,
   redactSecretsForState,
   recordNestedStackParameterExpressions,
+  recordResolvedPair,
   inheritNestedStackParameterAssociations,
   inheritedParameterExpression,
   STATE_DERIVED_RULES,
@@ -69,7 +70,12 @@ const PARENT_RESOLVED = {
 
 /** The parent's per-resource bag as a resolution pass actually leaves it. */
 function collapsedParentBag(): RecordedSecretValues {
-  return new Map([[SHARED, EXPR_B]]);
+  // Collapsed map, uncollapsed pair table -- both tokens resolved to
+  // `SHARED` in the parent's pass, which refusal 5 (issue #3090) reads.
+  const parent: RecordedSecretValues = new Map([[SHARED, EXPR_B]]);
+  recordResolvedPair(parent, EXPR_A, SHARED);
+  recordResolvedPair(parent, EXPR_B, SHARED);
+  return parent;
 }
 
 /**
@@ -416,6 +422,13 @@ describe('#2327 persist/diff parity', () => {
       ['a-different-plaintext-2327', EXPR_A],
       ['third-plaintext-2327', EXPR_A],
     ]);
+    // The pair table as the resolver leaves it: every resolution recorded, so
+    // `EXPR_A` is CONFLICTING there too and refusal 5 (#3090) refuses the same
+    // parameter refusal 4 does -- belt and braces, measured to agree.
+    recordResolvedPair(parent, EXPR_B, SHARED);
+    recordResolvedPair(parent, EXPR_A, 'a-different-plaintext-2327');
+    recordResolvedPair(parent, EXPR_A, 'third-plaintext-2327');
+    recordResolvedPair(parent, EXPR_A, SHARED);
     recordNestedStackParameterExpressions(
       parent,
       'AWS::CloudFormation::Stack',
@@ -514,6 +527,11 @@ describe('#2327 persist/diff parity', () => {
       [SHARED, EXPR_B],
       ['a-different-plaintext-2327', EXPR_B],
     ]);
+    // The pair table beside it (refusal 5, #3090): `EXPR_B` CONFLICTING,
+    // `EXPR_A` cleanly on `SHARED`.
+    recordResolvedPair(parent, EXPR_B, SHARED);
+    recordResolvedPair(parent, EXPR_B, 'a-different-plaintext-2327');
+    recordResolvedPair(parent, EXPR_A, SHARED);
     recordNestedStackParameterExpressions(
       parent,
       'AWS::CloudFormation::Stack',
@@ -591,6 +609,8 @@ describe('#2327 persist/diff parity', () => {
       ['', EXPR_A],
       [SHARED, EXPR_B],
     ]);
+    recordResolvedPair(parent, EXPR_A, '');
+    recordResolvedPair(parent, EXPR_B, SHARED);
     recordNestedStackParameterExpressions(
       parent,
       'AWS::CloudFormation::Stack',
