@@ -1565,9 +1565,9 @@ const UNFRAMED_SPELLING: unique symbol = Symbol('cdkd.nested-parameter.unframed-
  * child leaf holding the value would take that one -- the loser's `{Ref}`
  * persisting the survivor's frame, which is the wrong reference the three
  * consumers below re-resolve after the sibling rotates. So beside the entry,
- * every leaf passing (i), (ii), (iv) and (v) -- the survivor's and the
- * loser's alike, and whether or not (iii) let its entry through -- is
- * recorded BY NAME into {@link nestedStackParameterExpressions}, the table
+ * every leaf passing (i), (ii), the pair gate between (ii) and (iv), (iv)
+ * and (v) -- the survivor's and the loser's alike, and whether or not (iii)
+ * let its entry through -- is recorded BY NAME into {@link nestedStackParameterExpressions}, the table
  * the whole-token walk above fills, as `name -> (its own frame, the value)`.
  * The child inherits it ({@link inheritNestedStackParameterAssociations})
  * and reads it through {@link certifiedExpressionForLeaf} at all three
