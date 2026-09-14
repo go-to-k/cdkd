@@ -24,7 +24,11 @@ import { CdkdError, PartialFailureError, withErrorHandling } from '../../utils/e
 import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { displaySafe, truncateCodePoints } from '../../utils/display-safe.js';
-import { UNRENDERABLE, buildForceUnlockCommand } from '../../state/lock-contention-message.js';
+import {
+  UNRENDERABLE,
+  buildForceUnlockCommand,
+  formatLockExpiry,
+} from '../../state/lock-contention-message.js';
 import {
   buildLockContentionMessage,
   type LockRecoveryContext,
@@ -772,17 +776,6 @@ function formatAttributeValue(value: unknown): string {
 }
 
 /**
- * Render a duration in milliseconds as `1m23s` / `45s`.
- */
-function formatDuration(ms: number): string {
-  const seconds = Math.floor(ms / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = seconds % 60;
-  return `${minutes}m${remainingSeconds}s`;
-}
-
-/**
  * Render a whole `Dependencies` row from a list that is an unchecked cast.
  *
  * It owns the `(none)` case as well as the values, so that no caller touches
@@ -846,34 +839,19 @@ function formatLastModified(value: unknown): string {
  * falls back to `Object.prototype.toString` (go-to-k/cdkd#2947).
  *
  * `expiresAt` is declared a number and is not guaranteed to be one, but it
- * reaches the row only through subtraction and `formatDuration`, so no character
- * the record carries can survive into the output either. One that is not a
- * finite number — absent, `{}`, `"soon"`, or the `NaN` that `getLockRecord`
- * substitutes for a coercion that throws (go-to-k/cdkd#2947) — is reported as
- * an UNKNOWN deadline rather than pushed through the arithmetic, which printed
- * `expired NaNmNaNs ago` (issue #3083). The wording is the one
- * `lock-contention-message.ts`'s `formatRemaining` already uses for the same
- * input, so the two lock renderers agree. What the expiry CHECK does with such
- * a value (`isLockExpired` treats it as expired) is a separate decision that
- * this row does not restate.
+ * reaches the row only through `formatLockExpiry`, which tests the raw value
+ * with `Number.isFinite` and renders a fixed phrase or a duration, so no
+ * character the record carries can survive into the output either. A
+ * non-finite value — absent, `{}`, `"soon"`, or the `NaN` that `getLockRecord`
+ * substitutes for a coercion that throws (go-to-k/cdkd#2947) — reads as an
+ * unknown deadline rather than `expired NaNmNaNs ago` (issue #3083); the
+ * helper is shared with the contention refusal and `LockManager` (issue
+ * #3085) so the row cannot drift from them.
  */
 function formatLockSummary(lockInfo: LockInfo | null): string {
   if (!lockInfo) return 'unlocked';
   const opStr = lockInfo.operation ? ` (operation: ${lockInfo.operation})` : '';
-  return `locked by ${lockInfo.owner}${opStr}, ${formatExpiry(lockInfo.expiresAt)}`;
-}
-
-/**
- * `expires in 1m23s` / `expired 45s ago` for a finite deadline, `expires at an
- * unknown time` for anything else. The non-finite arm exists because
- * `expiresAt` is an unchecked cast (see `formatLockSummary`).
- */
-function formatExpiry(expiresAt: number): string {
-  if (!Number.isFinite(expiresAt)) return 'expires at an unknown time';
-  const expiresInMs = expiresAt - Date.now();
-  return expiresInMs > 0
-    ? `expires in ${formatDuration(expiresInMs)}`
-    : `expired ${formatDuration(-expiresInMs)} ago`;
+  return `locked by ${lockInfo.owner}${opStr}, ${formatLockExpiry(lockInfo.expiresAt)}`;
 }
 
 /**
