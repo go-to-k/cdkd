@@ -33,7 +33,7 @@ tell you anything the title has not already said.
 | What you see | What to do |
 | --- | --- |
 | No pull request | Usually nothing — most days are this. But it also looks like this when the job FAILED or never fired: see [When there is nothing to read](#when-there-is-nothing-to-read). |
-| A pull request with a plain title, no label | Nothing needs a decision. Read the diff, squash merge. |
+| A pull request with a plain title, no label | Nothing needs a decision. Read the diff and the changelog fragment it carries, then squash merge. |
 | `— N decisions needed` in the title, `needs-decision` label, assigned to you | N things need your call. They are labelled **D1**–**DN** in the body. |
 | A pull request saying the nested-key check failed unreadably | Read that job's log; the other sections still hold. |
 | A comment on an open pull request | New drift was added to it. Same classes. |
@@ -64,7 +64,15 @@ Daily, on `bot/cfn-schema-refresh/<YYYY-MM-DD>`:
    branch, no pull request, no comment.
 5. Otherwise regenerates the derived artifacts, then either opens a pull
    request or adds a commit and a diagnosis comment to the open one.
-6. Marks the pull request with how many decisions are left, or clears the
+6. Commits a changelog fragment under `changelog.d/entries/` when the cycle
+   added a writable property, because that changes what the shipped binary
+   does. The text is DERIVED — which type gained which property, that it is
+   now a silent drop routed through Cloud Control, whether the type pins
+   `provisionedBy: 'cc-api'` one way, and whether the snapshot marks it
+   create-only — and nothing that needs a reading of WHY is in it. Edit it if
+   the delta deserves more; the job never overwrites a fragment that already
+   exists on the branch, so your edit survives every later cycle.
+7. Marks the pull request with how many decisions are left, or clears the
    marking when there are none. This is the step that also runs on a
    no-drift day, so a decision you have settled stops being advertised.
 

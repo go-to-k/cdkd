@@ -38,7 +38,8 @@
  *   node scripts/diagnose-schema-refresh.mjs \
  *     [--nested-key-log <file>] [--nested-key-rc <status>] \
  *     [--failed-checks <a,b>] [--skipped-log <file>] [--fixtures-dir <dir>] \
- *     [--decision-count-out <file>] [--auto-tolerated <file>] > body.md
+ *     [--decision-count-out <file>] [--auto-tolerated <file>] \
+ *     [--changelog-out <file>] > body.md
  *
  * And, as separate modes taking no other flag:
  *
@@ -76,6 +77,15 @@
  * and `--nested-key-log` from its own argv, so a workflow passing one of them
  * to the report and not to the count would mark a PR as needing nothing over a
  * report listing several.
+ *
+ * `--changelog-out` names a file to write this cycle's changelog fragment
+ * into, on the same invocation and for the same reason: the fragment is a
+ * reading of the fixture deltas THIS run computed, and a second run after the
+ * publish step would compare the fixtures against their own committed copies
+ * and render nothing. The file is written EMPTY when AWS added no writable
+ * property, so the publishing step can tell "no behaviour delta this cycle"
+ * from "the diagnosis died before writing one". The PR number is left as
+ * `__PR_NUMBER__` for that step to substitute — it does not exist yet here.
  *
  * `--umbrella-checklist` and `--umbrella-subissues` are SEPARATE MODES, taking
  * no other flag. Both read the coverage module and nothing else, through one
@@ -236,9 +246,18 @@ const PROVIDERS_DIR = join(REPO_ROOT, 'src/provisioning/providers');
  * `properties`, `readOnlyProperties`, `createOnlyProperties` and
  * `primaryIdentifier` all hold bare strings. Parsing makes the answer exact.
  *
+ * `createOnlyAdded` is the subset of `writableAdded` the REFRESHED schema
+ * marks create-only. It exists for the changelog fragment, which states
+ * whether the addition changes `createOnlyDrops` — a create-only silent drop
+ * is kept in the record by the narrowing, and saying so wrongly is a claim
+ * about replacement behaviour. The capture is top-level-only by construction
+ * (`scripts/refresh-cfn-schemas.mjs` drops every path containing a slash), so
+ * an EMPTY list means "not create-only at the top level", never "not
+ * create-only anywhere".
+ *
  * @param {string} committedJson
  * @param {string} refreshedJson
- * @returns {{removed: string[], added: string[], writableAdded: string[]}}
+ * @returns {{removed: string[], added: string[], writableAdded: string[], createOnlyAdded: string[]}}
  */
 export function comparePropertySets(committedJson, refreshedJson) {
   const before = JSON.parse(committedJson);
@@ -248,15 +267,20 @@ export function comparePropertySets(committedJson, refreshedJson) {
   const afterReadOnly = new Set(
     Array.isArray(after.readOnlyProperties) ? after.readOnlyProperties : []
   );
+  const afterCreateOnly = new Set(
+    Array.isArray(after.createOnlyProperties) ? after.createOnlyProperties : []
+  );
   const removed = beforeProps.filter((/** @type {string} */ p) => !afterProps.includes(p));
   const added = afterProps.filter((/** @type {string} */ p) => !beforeProps.includes(p));
+  // Read-only additions can never become a silent drop — the coverage
+  // generator skips them — so they are separated out rather than reported as
+  // work.
+  const writableAdded = added.filter((/** @type {string} */ p) => !afterReadOnly.has(p));
   return {
     removed,
     added,
-    // Read-only additions can never become a silent drop — the coverage
-    // generator skips them — so they are separated out rather than reported as
-    // work.
-    writableAdded: added.filter((/** @type {string} */ p) => !afterReadOnly.has(p)),
+    writableAdded,
+    createOnlyAdded: writableAdded.filter((/** @type {string} */ p) => afterCreateOnly.has(p)),
   };
 }
 
@@ -2364,7 +2388,11 @@ export function collectFixtureDeltas({
       });
     }
     if (delta.writableAdded.length > 0) {
-      writableAdded.push({ resourceType, properties: delta.writableAdded });
+      writableAdded.push({
+        resourceType,
+        properties: delta.writableAdded,
+        createOnly: delta.createOnlyAdded,
+      });
     }
   }
 
@@ -2428,6 +2456,7 @@ export const KNOWN_FLAGS = [
   '--umbrella-checklist',
   '--umbrella-subissues',
   '--decision-count-out',
+  '--changelog-out',
   '--write-auto-tolerated',
   '--auto-tolerated',
   // Test seam; see its use below.
@@ -2583,6 +2612,153 @@ export function parseSilentDropByType(generatedSource) {
     groups.push({ type, properties });
   }
   return groups;
+}
+
+/** Written into the fragment where the PR number is not known yet; see {@link renderChangelogFragment}. */
+export const PR_NUMBER_PLACEHOLDER = '__PR_NUMBER__';
+
+/**
+ * The per-entry cap `tests/unit/scripts/changelog-entry-size.test.ts` enforces
+ * over `changelog.d/entries/*.md`. Duplicated as a number rather than imported
+ * because this file runs under plain `node` with nothing installed; the fence
+ * is what enforces it, and a drift between the two only ever costs the
+ * collapsed rendering below, never a red fragment.
+ */
+export const CHANGELOG_ENTRY_LIMIT = 2000;
+
+/**
+ * The resource types `STICKY_CC_MIGRATION_EXEMPT` lets return to their SDK
+ * provider, read out of `provider-registry.ts` as TEXT.
+ *
+ * Only the changelog fragment reads this, and only to decide whether to state
+ * that the auto-route pins `provisionedBy: 'cc-api'` ONE-WAY. That sentence is
+ * false for an exempt type, so a parser that silently returned an empty set
+ * would put a false claim in every future entry. It therefore REFUSES a source
+ * it cannot read rather than reporting "nothing is exempt" — the same posture
+ * as {@link parseSilentDropByType}, and for the same reason: the caller cannot
+ * tell an empty answer from a broken one.
+ *
+ * @param {string} registrySource
+ * @returns {Set<string>}
+ */
+export function parseStickyCcMigrationExempt(registrySource) {
+  // Bounded at the column-0 `]);` that closes the literal, so a later `new
+  // Map` in the file cannot extend the slice. The KEYS are matched as the
+  // first element of each two-element entry — not as "every AWS:: string in
+  // the slice", which would also collect one quoted inside an entry's prose
+  // fields and silently exempt a type nobody exempted.
+  const table = /STICKY_CC_MIGRATION_EXEMPT[^=]*=\s*new Map(?:<[^>]*>)?\(\s*\[([\s\S]*?)\n\]\s*\)/.exec(
+    registrySource
+  );
+  if (!table) {
+    throw new Error(
+      'could not read STICKY_CC_MIGRATION_EXEMPT out of provider-registry.ts — refusing to render a ' +
+        'changelog fragment, because an unread table reads as "no type is exempt" and that is the ' +
+        'polarity that ships a FALSE one-way-pin claim.'
+    );
+  }
+  const types = [...table[1].matchAll(/\n\s*\[\s*\n\s*'(AWS::[\w:]+)'\s*,/g)].map((m) => m[1]);
+  if (types.length === 0) {
+    throw new Error(
+      'STICKY_CC_MIGRATION_EXEMPT parsed to zero types — the table has entries in every shipped ' +
+        'revision, so zero means the shape changed, not that the exemption was emptied.'
+    );
+  }
+  return new Set(types);
+}
+
+/**
+ * The changelog fragment a refresh cycle writes, or `null` when AWS added no
+ * writable property and the cycle therefore ships no behaviour delta.
+ *
+ * **Every sentence here is derived, never judged.** The job renders this
+ * unattended, so the fragment states only what the fixture diff and two
+ * lookups settle: which type gained which property, that it is now a silent
+ * drop routed through Cloud Control, whether the type is exempt from the
+ * one-way `provisionedBy: 'cc-api'` pin, and whether the committed snapshot
+ * marks it create-only. Anything needing a reading of WHY — how the property
+ * interacts with a provider, which populations a claim holds over — belongs in
+ * a maintainer's edit on top, not in a template: measured on PR
+ * go-to-k/cdkd#3167, a hand-written fragment for exactly this delta needed
+ * three review rounds to stop asserting things the code contradicted, and each
+ * correction was a judgement call.
+ *
+ * The PR number is not known when the diagnosis runs — the pull request is
+ * created from the same job a step later — so the reference is left as
+ * {@link PR_NUMBER_PLACEHOLDER} for the publishing step to substitute. It is a
+ * placeholder rather than an omission so that a fragment which somehow reached
+ * `main` unsubstituted is GREPPABLE, instead of quietly carrying no provenance.
+ *
+ * @param {{writableAdded: readonly AddedEntry[], exemptTypes: ReadonlySet<string>}} input
+ * @returns {string | null}
+ */
+export function renderChangelogFragment({ writableAdded, exemptTypes }) {
+  if (writableAdded.length === 0) return null;
+
+  const count = writableAdded.reduce((n, e) => n + e.properties.length, 0);
+  const pairs = writableAdded.map(
+    (e) => `${renderName(e.resourceType)}: ${e.properties.map(renderName).join(', ')}`
+  );
+  const pinned = writableAdded.filter((e) => !exemptTypes.has(e.resourceType));
+  const createOnly = writableAdded.flatMap((e) =>
+    (e.createOnly ?? []).map((p) => `${renderName(e.resourceType)}.${renderName(p)}`)
+  );
+
+  const sentences = [
+    `- **AWS published ${count} writable propert${count === 1 ? 'y' : 'ies'} the refreshed schema ` +
+      `fixtures now carry, so each is a known silent drop routed to Cloud Control instead of an ` +
+      `unrecognized property dropped with a warn (PR [#${PR_NUMBER_PLACEHOLDER}]` +
+      `(https://github.com/go-to-k/cdkd/pull/${PR_NUMBER_PLACEHOLDER}))** -- ` +
+      `${pairs.join('; ')}. Changed: \`tests/fixtures/cfn-schemas/\`, ` +
+      `\`src/provisioning/property-coverage.generated.ts\` (regenerated).`,
+    `No SDK provider writes any of them yet (\`not yet implemented by cdkd\`), so pre-flight ` +
+      `classifies each as a silent drop and the issue ` +
+      `[#614](https://github.com/go-to-k/cdkd/issues/614) auto-route sends a resource whose template ` +
+      `carries one through Cloud Control, which forwards the full property map. Until this refresh ` +
+      `the same key post-dated the committed snapshot, so a resource on the SDK route with no other ` +
+      `actionable drop and no \`provisionedBy: 'cc-api'\` record warned and dropped it.`,
+  ];
+
+  const pinnedNames = pinned.map((e) => renderName(e.resourceType));
+  if (pinned.length > 0) {
+    sentences.push(
+      `${pinnedNames.join(' / ')} ${pinned.length === 1 ? 'is' : 'are'} ` +
+        `not in \`STICKY_CC_MIGRATION_EXEMPT\`, so an existing SDK-provisioned resource of ` +
+        `${pinned.length === 1 ? 'that type' : 'those types'} whose template gains one moves to Cloud ` +
+        `Control and pins \`provisionedBy: 'cc-api'\` ONE-WAY.`
+    );
+  }
+
+  sentences.push(
+    createOnly.length === 0
+      ? `The snapshot marks none of them create-only, so \`createOnlyDrops\` and the record narrowing ` +
+          `are unchanged; the capture is top-level-only, so it says nothing about a nested create-only path.`
+      : `The snapshot marks ${createOnly.join(', ')} create-only, so ${createOnly.length === 1 ? 'it joins' : 'they join'} ` +
+          `\`createOnlyDrops\` and the record narrowing keeps ${createOnly.length === 1 ? 'it' : 'them'} in the ` +
+          `record; the capture is top-level-only, so it says nothing about a nested create-only path.`
+  );
+
+  const rendered = `${sentences.join(' ')}\n`;
+  if (rendered.trimEnd().length <= CHANGELOG_ENTRY_LIMIT) return rendered;
+  // A cycle adding many properties would otherwise render a fragment the size
+  // fence REJECTS, which reds CI on a PR whose whole point is to be merged
+  // unattended. The per-type list is the only unbounded part, so that is what
+  // collapses; every claim below it is preserved, because they are the ones a
+  // reader acts on. The fixture diff in the same PR still names each property.
+  sentences[0] = sentences[0].replace(
+    ` -- ${pairs.join('; ')}.`,
+    ` -- ${count} across ${writableAdded.length} resource type${writableAdded.length === 1 ? '' : 's'}, listed in this PR's fixture diff.`
+  );
+  // Both unbounded lists collapse, not just the first: the pin sentence names
+  // one type per entry too, so collapsing the property list alone still left a
+  // fragment over the cap on a wide cycle (measured on a 40-type case).
+  if (pinned.length > 0) {
+    sentences[2] = sentences[2].replace(
+      `${pinnedNames.join(' / ')} ${pinned.length === 1 ? 'is' : 'are'}`,
+      `${pinned.length} of them ${pinned.length === 1 ? 'is' : 'are'}`
+    );
+  }
+  return `${sentences.join(' ')}\n`;
 }
 
 /**
@@ -3305,6 +3481,40 @@ function main() {
         `diagnose-schema-refresh: could not write the decision count to ${countOut} ` +
           `(${err instanceof Error ? err.message : String(err)}). The marking step will refuse ` +
           'to re-mark from a missing count.\n'
+      );
+    }
+  }
+
+  // Same invocation, same reason as the count: the fragment is a reading of
+  // THIS diagnosis's fixture deltas, and a second run after Publish would
+  // compare the fixtures against themselves and render nothing. Forgiving on
+  // failure for the same reason too — a fragment that fails to write must not
+  // cost the PR, which is how the human finds out at all. The publishing step
+  // refuses to commit a fragment it cannot substitute the PR number into, so a
+  // missing one degrades to "no changelog entry", never to a wrong one.
+  const changelogOut = rawArg('--changelog-out');
+  if (changelogOut === null || changelogOut === '') {
+    throw new Error(
+      '--changelog-out was given with no value — there is no file to write the fragment to.'
+    );
+  }
+  if (changelogOut !== undefined) {
+    try {
+      const fragment = renderChangelogFragment({
+        writableAdded,
+        exemptTypes: parseStickyCcMigrationExempt(
+          readFileSync('src/provisioning/provider-registry.ts', 'utf-8')
+        ),
+      });
+      // An empty file, not a missing one: the publishing step distinguishes
+      // "this cycle ships no behaviour delta" from "the diagnosis died before
+      // it got here", and only the first may pass silently.
+      writeFileSync(changelogOut, fragment ?? '');
+    } catch (err) {
+      process.stderr.write(
+        `diagnose-schema-refresh: could not write the changelog fragment to ${changelogOut} ` +
+          `(${err instanceof Error ? err.message : String(err)}). The refresh PR will carry no ` +
+          'changelog entry; write one by hand before merging if it adds a writable property.\n'
       );
     }
   }

@@ -131,6 +131,12 @@ const SETTLE_STEP = 'Settle the removals that carry no judgement';
 /** The branch namespace the job creates AND the one its skip-guard looks for. */
 const BRANCH_PREFIX = 'bot/cfn-schema-refresh/';
 
+/** The step that commits this cycle's changelog fragment. */
+const CHANGELOG_STEP = "Record the refresh's changelog fragment";
+
+/** Where the diagnosis writes the fragment and the step above reads it. */
+const FRAGMENT_PATH = '/tmp/changelog-fragment.md';
+
 describe('cfn-schema-refresh workflow (issue #2718)', () => {
   it('is not vacuous — the file exists and has real content', () => {
     expect(workflow.length).toBeGreaterThan(2000);
@@ -176,6 +182,83 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
         expect(byName(name).if).toContain("steps.drift.outputs.drifted == 'true'");
         expect(byName(name).if, `${name} runs unconditionally`).not.toBeUndefined();
       }
+    });
+
+    /**
+     * The changelog fragment (the go-to-k/cdkd#3167 gap: a refresh that adds a
+     * writable property changes what the shipped binary does, and the job wrote
+     * no entry for it).
+     *
+     * Two orderings are what make it work, and both are silently breakable: the
+     * fragment must be RENDERED by the diagnosis, which is the last point at
+     * which the fixtures still differ from their committed copies, and it must
+     * be COMMITTED after Publish, which is where the PR number first exists.
+     * Swap either and the step still runs, still exits 0, and writes nothing —
+     * on a cadence nobody watches.
+     */
+    it('renders the fragment in the diagnosis, before Publish commits the fixtures', () => {
+      expect(shellOf('Diagnose what needs a decision')).toContain(`--changelog-out ${FRAGMENT_PATH}`);
+      const stepNames = parsed.jobs.refresh.steps.map((s: { name?: string }) => s.name);
+      expect(stepNames.indexOf('Diagnose what needs a decision')).toBeLessThan(
+        stepNames.indexOf('Publish the refresh')
+      );
+      expect(stepNames.indexOf('Publish the refresh')).toBeLessThan(
+        stepNames.indexOf(CHANGELOG_STEP)
+      );
+    });
+
+    it('commits the fragment only when this cycle published a PR', () => {
+      // `steps.publish.outputs.pr_number` is empty on the closed-PR bail-out
+      // and when nothing published. Falling back to the guard's `OPEN_PR` the
+      // way the marking step does would commit onto a branch Publish just
+      // refused to touch.
+      expect(byName(CHANGELOG_STEP).if).toBe("steps.publish.outputs.pr_number != ''");
+    });
+
+    it('tells a cycle with no behaviour delta apart from a diagnosis that died', () => {
+      const shell = shellOf(CHANGELOG_STEP);
+      // MISSING file: loud. The diagnosis never got to the write, so nobody
+      // knows whether this refresh ships a delta.
+      expect(guardArm(shell, `! -f ${FRAGMENT_PATH}`)).toMatch(/::warning::/);
+      // EMPTY file: silent, and correct — AWS added no writable property.
+      const empty = guardArm(shell, `! -s ${FRAGMENT_PATH}`);
+      expect(empty).toContain('exit 0');
+      expect(empty).not.toContain('::warning::');
+    });
+
+    it('refuses to commit a fragment whose PR reference never resolved', () => {
+      // The placeholder is the provenance. A fragment reaching `main` with it
+      // unsubstituted would cite a PR that does not exist, so the substitution
+      // failing must red rather than ship.
+      const shell = shellOf(CHANGELOG_STEP);
+      expect(guardArm(shell, "! grep -q '__PR_NUMBER__'")).toMatch(/::error::[\s\S]*exit 1/);
+      expect(shell).toContain('sed "s/__PR_NUMBER__/${PR_NUMBER}/g"');
+    });
+
+    it('never overwrites a fragment already on the branch', () => {
+      // The job's standing promise is that it rewrites only DERIVED files. A
+      // fragment is prose a maintainer may have edited, so the write is
+      // create-only; a later cycle gets a different date and its own file.
+      const shell = shellOf(CHANGELOG_STEP);
+      const arm = guardArm(shell, 'if [ -e "${entry}" ]');
+      expect(arm).toContain('exit 0');
+      expect(arm).not.toContain('rm ');
+      expect(shell).toContain('changelog.d/entries/${cycle}-${PR_NUMBER}-cfn-schema-refresh.md');
+    });
+
+    it('does not fail the job when the fragment push loses a race', () => {
+      // Publish already landed the drift and opened or updated the PR. Failing
+      // here would ALSO skip the marking step below, on a PR that exists —
+      // trading the signal a human reads for a changelog line.
+      const shell = shellOf(CHANGELOG_STEP);
+      const at = shell.indexOf('if ! git push');
+      expect(at, 'the fragment push is no longer guarded').toBeGreaterThan(-1);
+      const arm = shell.slice(at, at + shell.slice(at).search(/\n\s*fi\b/));
+      expect(arm).toMatch(/::warning::/);
+      expect(arm).not.toMatch(/exit 1/);
+      // No `${{ }}` in a shell body — the rule the switch and publish steps
+      // state, and the reason the branch is read from the checkout.
+      expect(shell).not.toContain('${{');
     });
 
     it('switches onto the open PR branch only when one is open', () => {

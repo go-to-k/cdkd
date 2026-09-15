@@ -40,7 +40,13 @@ export declare const NESTED_KEY_FAILURE_RE: RegExp;
 export declare function comparePropertySets(
   committedJson: string,
   refreshedJson: string
-): { removed: string[]; added: string[]; writableAdded: string[] };
+): {
+  removed: string[];
+  added: string[];
+  writableAdded: string[];
+  /** The subset of `writableAdded` the REFRESHED schema marks create-only. */
+  createOnlyAdded: string[];
+};
 export declare function parseNestedKeyDivergences(
   checkOutput: string,
   exitCode?: number
@@ -84,6 +90,13 @@ export interface RemovedEntry {
 export interface AddedEntry {
   resourceType: string;
   properties: string[];
+  /**
+   * The subset of `properties` the refreshed schema marks create-only, read by
+   * the changelog fragment alone. Absent on a hand-built entry; an empty list
+   * means "not create-only at the TOP level", which is all the fixture capture
+   * can answer.
+   */
+  createOnly?: string[];
 }
 export interface DiagnosisInput {
   removed: RemovedEntry[];
@@ -387,3 +400,26 @@ export declare function writeAutoTolerated(
   written: Array<{ resourceType: string; property: string; rationale: string }>;
   escalated: Array<{ resourceType: string; property: string; reason: string }>;
 };
+
+/** Stands in for the PR number inside a fragment rendered before the PR exists. */
+export declare const PR_NUMBER_PLACEHOLDER: string;
+
+/** The per-entry character cap `changelog-entry-size.test.ts` enforces. */
+export declare const CHANGELOG_ENTRY_LIMIT: number;
+
+/**
+ * The resource types exempt from the sticky-CC rule, read out of
+ * `provider-registry.ts` as text. Throws rather than returning an empty set:
+ * an unread table would make the fragment claim a ONE-WAY pin for a type that
+ * does return to its SDK provider.
+ */
+export declare function parseStickyCcMigrationExempt(registrySource: string): Set<string>;
+
+/**
+ * This cycle's changelog fragment, or `null` when AWS added no writable
+ * property and the refresh therefore ships no behaviour delta.
+ */
+export declare function renderChangelogFragment(input: {
+  writableAdded: readonly AddedEntry[];
+  exemptTypes: ReadonlySet<string>;
+}): string | null;

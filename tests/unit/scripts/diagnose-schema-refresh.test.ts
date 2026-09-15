@@ -65,6 +65,10 @@ import {
   renderUmbrellaDocument,
   CHECK_GUIDANCE,
   KNOWN_FLAGS,
+  parseStickyCcMigrationExempt,
+  renderChangelogFragment,
+  PR_NUMBER_PLACEHOLDER,
+  CHANGELOG_ENTRY_LIMIT,
   classifyGitShowFailure,
   assertFixtureFloor,
   collectFixtureDeltas,
@@ -89,12 +93,13 @@ import {
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
-const fixture = (properties: string[], readOnly: string[] = []) =>
+const fixture = (properties: string[], readOnly: string[] = [], createOnly: string[] = []) =>
   JSON.stringify({
     resourceType: 'AWS::Test::Type',
     generatedAt: '2026-01-01',
     properties,
     readOnlyProperties: readOnly,
+    createOnlyProperties: createOnly,
   });
 
 describe('comparePropertySets', () => {
@@ -112,7 +117,34 @@ describe('comparePropertySets', () => {
 
   it('reports nothing for an unchanged type', () => {
     const delta = comparePropertySets(fixture(['A']), fixture(['A']));
-    expect(delta).toEqual({ removed: [], added: [], writableAdded: [] });
+    expect(delta).toEqual({ removed: [], added: [], writableAdded: [], createOnlyAdded: [] });
+  });
+
+  it('marks which writable additions the refreshed schema calls create-only', () => {
+    // The changelog fragment states whether `createOnlyDrops` changes, and a
+    // create-only silent drop is the one the record narrowing must KEEP. Read
+    // from the REFRESHED side: a property AWS newly marks create-only is
+    // create-only for the deploy this refresh enables, whatever the committed
+    // copy said.
+    const delta = comparePropertySets(
+      fixture(['Keep']),
+      fixture(['Keep', 'Immutable', 'Mutable'], [], ['Immutable'])
+    );
+    expect(delta.writableAdded).toEqual(['Immutable', 'Mutable']);
+    expect(delta.createOnlyAdded).toEqual(['Immutable']);
+  });
+
+  it('does not report a create-only addition that is read-only', () => {
+    // A read-only property is never sent, so it can never be a silent drop --
+    // and a `createOnlyAdded` entry that is not in `writableAdded` would put a
+    // property in the fragment's create-only sentence that the entry never
+    // introduces as a drop.
+    const delta = comparePropertySets(
+      fixture(['Keep']),
+      fixture(['Keep', 'Computed'], ['Computed'], ['Computed'])
+    );
+    expect(delta.writableAdded).toEqual([]);
+    expect(delta.createOnlyAdded).toEqual([]);
   });
 });
 
@@ -1922,11 +1954,12 @@ describe('collectFixtureDeltas', () => {
   // The first draft of this helper used an object map and `/properties/X`
   // paths, and every case reported an empty delta — a fixture that does not
   // encode what its consumer reads proves nothing about the consumer.
-  const fixture = (props: string[], readOnly: string[] = []) =>
+  const fixture = (props: string[], readOnly: string[] = [], createOnly: string[] = []) =>
     JSON.stringify({
       resourceType: 'AWS::Glue::Connection',
       properties: props,
       readOnlyProperties: readOnly,
+      createOnlyProperties: createOnly,
     });
 
   it('COUNTS a fixture whose comparison threw, rather than skipping it', () => {
@@ -2110,9 +2143,28 @@ describe('collectFixtureDeltas', () => {
       currentOf: () => fixture(['Settable', 'ComputedArn'], ['ComputedArn']),
     });
     expect(out.writableAdded).toEqual([
-      { resourceType: 'AWS::Glue::Connection', properties: ['Settable'] },
+      { resourceType: 'AWS::Glue::Connection', properties: ['Settable'], createOnly: [] },
     ]);
     expect(out.readOnlyAddedCount).toBe(1);
+  });
+
+  it('carries each type’s create-only additions through to the fragment renderer', () => {
+    // `createOnly` is the ONLY consumer-visible field added for the changelog
+    // fragment, and it travels per TYPE -- a union across types would make the
+    // fragment attribute one type's create-only property to another.
+    const out = collectFixtureDeltas({
+      ...base,
+      files: ['glue.json'],
+      committedOf: () => fixture([]),
+      currentOf: () => fixture(['Immutable', 'Mutable'], [], ['Immutable']),
+    });
+    expect(out.writableAdded).toEqual([
+      {
+        resourceType: 'AWS::Glue::Connection',
+        properties: ['Immutable', 'Mutable'],
+        createOnly: ['Immutable'],
+      },
+    ]);
   });
 });
 
@@ -2768,6 +2820,175 @@ describe('the finished-campaign sentinel', () => {
     expect(out.stdout).toMatch(/^- \[ \] `AWS::/m);
     expect(out.stdout).not.toContain(UMBRELLA_EMPTY_SENTINEL);
   }, 60_000);
+});
+
+describe('parseStickyCcMigrationExempt', () => {
+  // Anchored on the REAL registry, like the other parsers in this suite: a
+  // synthetic source would encode the same shape assumption the regex makes,
+  // and the shape is exactly what can drift out from under it.
+  const registrySource = readFileSync(
+    join(REPO_ROOT, 'src', 'provisioning', 'provider-registry.ts'),
+    'utf-8'
+  );
+
+  it('reads the exempt types out of the shipped registry', () => {
+    const exempt = parseStickyCcMigrationExempt(registrySource);
+    expect(exempt.has('AWS::Scheduler::Schedule')).toBe(true);
+    expect(exempt.has('AWS::SNS::Topic')).toBe(true);
+    // The complement is what the fragment's one-way-pin sentence is keyed on,
+    // so a parse that swept in every quoted type would be as wrong as an empty
+    // one and would read as success.
+    expect(exempt.has('AWS::DynamoDB::Table')).toBe(false);
+    expect(exempt.has('AWS::S3::Bucket')).toBe(false);
+  });
+
+  it('refuses a source it cannot read rather than reporting nothing exempt', () => {
+    // The dangerous polarity: an empty answer makes the fragment assert the
+    // ONE-WAY pin for a type that can in fact return to its SDK provider.
+    expect(() => parseStickyCcMigrationExempt('export const SOMETHING_ELSE = 1;\n')).toThrow(
+      /could not read STICKY_CC_MIGRATION_EXEMPT/
+    );
+  });
+
+  it('refuses a table that parses to zero types', () => {
+    expect(() =>
+      parseStickyCcMigrationExempt(
+        'const STICKY_CC_MIGRATION_EXEMPT: Map<string, X> = new Map<string, X>([\n  // nothing\n]);\n'
+      )
+    ).toThrow(/parsed to zero types/);
+  });
+});
+
+describe('renderChangelogFragment', () => {
+  const exemptTypes = new Set(['AWS::Scheduler::Schedule']);
+
+  it('renders nothing when AWS added no writable property', () => {
+    // A cycle that only removes, renames or adds read-only properties ships no
+    // behaviour delta, and an entry for it would be a changelog line about
+    // nothing.
+    expect(renderChangelogFragment({ writableAdded: [], exemptTypes })).toBeNull();
+  });
+
+  it('names each type and property, and leaves the PR number to be substituted', () => {
+    const fragment = renderChangelogFragment({
+      writableAdded: [
+        { resourceType: 'AWS::DynamoDB::Table', properties: ['VectorIndexes'], createOnly: [] },
+      ],
+      exemptTypes,
+    })!;
+    expect(fragment.startsWith('- **')).toBe(true);
+    expect(fragment).toContain('`AWS::DynamoDB::Table`: `VectorIndexes`');
+    expect(fragment).toContain(`[#${PR_NUMBER_PLACEHOLDER}]`);
+    // ONE bullet, no dated heading: both are refusals in `readEntries`, and a
+    // fragment the job writes unattended is never read before it lands.
+    expect(fragment.split('\n').filter((l) => l.startsWith('- '))).toHaveLength(1);
+    expect(fragment.toLowerCase()).not.toContain('recently implemented');
+  });
+
+  it('states the ONE-WAY pin only for a type that is not sticky-exempt', () => {
+    const pinned = renderChangelogFragment({
+      writableAdded: [{ resourceType: 'AWS::DynamoDB::Table', properties: ['P'], createOnly: [] }],
+      exemptTypes,
+    })!;
+    expect(pinned).toContain('ONE-WAY');
+    expect(pinned).toContain('`AWS::DynamoDB::Table`');
+
+    const exempt = renderChangelogFragment({
+      writableAdded: [
+        { resourceType: 'AWS::Scheduler::Schedule', properties: ['P'], createOnly: [] },
+      ],
+      exemptTypes,
+    })!;
+    // The claim is FALSE for an exempt type -- it returns to its SDK provider
+    // -- so its absence is the point, not a formatting preference.
+    expect(exempt).not.toContain('ONE-WAY');
+  });
+
+  it('splits a mixed batch so only the non-exempt types carry the pin sentence', () => {
+    const fragment = renderChangelogFragment({
+      writableAdded: [
+        { resourceType: 'AWS::Scheduler::Schedule', properties: ['A'], createOnly: [] },
+        { resourceType: 'AWS::DynamoDB::Table', properties: ['B'], createOnly: [] },
+      ],
+      exemptTypes,
+    })!;
+    const pinSentence = fragment.slice(fragment.indexOf('not in `STICKY_CC_MIGRATION_EXEMPT`') - 60);
+    expect(pinSentence).toContain('`AWS::DynamoDB::Table`');
+    expect(pinSentence).not.toContain('`AWS::Scheduler::Schedule`');
+    // Both types still reach the property list -- the exemption scopes ONE
+    // sentence, not the entry.
+    expect(fragment).toContain('`AWS::Scheduler::Schedule`: `A`');
+  });
+
+  it('says the narrowing is unchanged only when nothing added is create-only', () => {
+    const plain = renderChangelogFragment({
+      writableAdded: [{ resourceType: 'AWS::DynamoDB::Table', properties: ['P'], createOnly: [] }],
+      exemptTypes,
+    })!;
+    expect(plain).toContain('`createOnlyDrops` and the record narrowing\nare unchanged'.replace('\n', ' '));
+
+    const createOnly = renderChangelogFragment({
+      writableAdded: [
+        { resourceType: 'AWS::DynamoDB::Table', properties: ['P'], createOnly: ['P'] },
+      ],
+      exemptTypes,
+    })!;
+    expect(createOnly).toContain('create-only');
+    expect(createOnly).toContain('`createOnlyDrops`');
+    expect(createOnly).not.toContain('marks none of them create-only');
+  });
+
+  it('never claims the capture settles nested create-only paths', () => {
+    // `scripts/refresh-cfn-schemas.mjs` drops every path containing a slash, so
+    // an empty create-only list is silence about nested paths, not evidence.
+    for (const createOnly of [[], ['P']]) {
+      const fragment = renderChangelogFragment({
+        writableAdded: [{ resourceType: 'AWS::DynamoDB::Table', properties: ['P'], createOnly }],
+        exemptTypes,
+      })!;
+      expect(fragment).toContain('top-level-only');
+      expect(fragment).toContain('nested create-only path');
+    }
+  });
+
+  it('collapses the per-type list rather than rendering a fragment the size fence rejects', () => {
+    // The only unbounded part is the list, and a red size check on a PR meant
+    // to merge unattended is a worse outcome than a summarised one.
+    const writableAdded = Array.from({ length: 40 }, (_, i) => ({
+      resourceType: `AWS::Service${i}::LongishResourceTypeName`,
+      properties: [`SomeReasonablyLongPropertyName${i}`, `AnotherLongPropertyName${i}`],
+      createOnly: [],
+    }));
+    const fragment = renderChangelogFragment({ writableAdded, exemptTypes })!;
+    expect(fragment.trimEnd().length).toBeLessThanOrEqual(CHANGELOG_ENTRY_LIMIT);
+    expect(fragment).toContain('80 across 40 resource types');
+    expect(fragment).not.toContain('`AWS::Service0::LongishResourceTypeName`: ');
+    // The claims a reader ACTS on survive the collapse.
+    expect(fragment).toContain('ONE-WAY');
+    expect(fragment).toContain('top-level-only');
+  });
+
+  it('renders a fragment the assembler accepts, over the real registry', () => {
+    // End to end against the shipped exemption table: the entry the job would
+    // have written for the go-to-k/cdkd#3167 delta.
+    const fragment = renderChangelogFragment({
+      writableAdded: [
+        { resourceType: 'AWS::DynamoDB::Table', properties: ['VectorIndexes'], createOnly: [] },
+        {
+          resourceType: 'AWS::DynamoDB::GlobalTable',
+          properties: ['VectorIndexes'],
+          createOnly: [],
+        },
+      ],
+      exemptTypes: parseStickyCcMigrationExempt(
+        readFileSync(join(REPO_ROOT, 'src', 'provisioning', 'provider-registry.ts'), 'utf-8')
+      ),
+    })!;
+    expect(fragment.trimEnd().length).toBeLessThanOrEqual(CHANGELOG_ENTRY_LIMIT);
+    expect(fragment).toContain('ONE-WAY');
+    expect(fragment).toContain('`AWS::DynamoDB::GlobalTable`: `VectorIndexes`');
+    expect(fragment).toMatch(/^- \*\*AWS published 2 writable properties/);
+  });
 });
 
 describe('renderUmbrellaDocument', () => {
