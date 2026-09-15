@@ -202,10 +202,11 @@ Where it applies, and what it does not promise:
 
 | Question | Answer |
 | --- | --- |
-| Where else? | `cdkd state orphan`'s confirmation prompt and its `✓ Removed state for stack:` line, [`cdkd state refresh-observed`](#cdkd-state-refresh-observed)'s prompt, and the candidate list `cdkd rollback` prints when several stacks have a journal |
+| Where else? | [`cdkd state orphan`](#cdkd-state-orphan)'s prompt and its removal line, [`cdkd state refresh-observed`](#cdkd-state-refresh-observed)'s prompt, and `cdkd rollback`'s candidate list |
 | Does a real row change? | No. Real stack names and region codes are plain identifiers, so a `while read -r ref` consumer sees the bytes it always did |
 | Is a quoted value shell-safe? | No. The quotes are a boundary for a reader, not shell quoting — a shell still expands `$(...)` and backticks inside them |
 | Can a long name still mislead? | Yes, if your terminal wraps it: a wrapped line can read like a genuine row with the quotes off-screen. Widen the terminal, or use `--json` |
+| Can anything else still mislead? | Yes. A name ending in a comma is left unquoted, and the prompts above list references separated by `, ` — so one such name reads as two entries. `cdkd state orphan` prints no count to check it against |
 
 `--json` output is not sanitized. JSON escapes only C0 control characters,
 `"`, `\` and unpaired surrogates, so other invisible or line-breaking

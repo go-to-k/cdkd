@@ -40,6 +40,21 @@
  * -- widening this helper would alter every caller that merely wants a
  * terminal-safe string.
  */
+
+/**
+ * Stand-in for a value with nothing renderable left after sanitization. Named
+ * rather than inlined so two messages cannot disagree about what
+ * "unrenderable" looks like.
+ *
+ * Homed HERE, in the leaf, since issue #3064: it used to live in
+ * `src/state/lock-contention-message.ts`, which meant `src/utils/` and
+ * `src/types/` could not use it without inverting the layering -- so
+ * `formatError` dropped a clause instead, and a `src/types/` parser rendered
+ * an unrenderable field as EMPTY, which reads as absent. That file re-exports
+ * it, so its existing importers are unchanged.
+ */
+export const UNRENDERABLE = '<unrenderable>';
+
 /**
  * The RAW text a value would render as, before any sanitization.
  *
@@ -74,7 +89,7 @@ function toDisplayText(value: unknown): string {
     try {
       return Object.prototype.toString.call(value);
     } catch {
-      return UNRENDERABLE_SOURCE;
+      return UNRENDERABLE;
     }
   }
 }
@@ -89,14 +104,6 @@ function sanitizeAsciiOnly(text: string): string {
   // which have a known charset.
   return text.replace(/[^ -~]/g, ' ').trim();
 }
-
-/**
- * What an un-stringifiable value renders as before sanitization. A literal
- * distinct from `UNRENDERABLE` would let the two drift; reusing it means a
- * value that cannot be stringified renders exactly like one sanitization
- * emptied, which is the same statement to a reader.
- */
-const UNRENDERABLE_SOURCE = '<unrenderable>';
 
 export function displaySafe(value: unknown, opts?: { asciiOnly?: boolean }): string {
   // ABSENT means nothing to display, not the WORD. `String(undefined)` is
@@ -143,20 +150,6 @@ export function truncateCodePoints(
   if (codePoints.length <= maxCodePoints) return { text, truncated: false };
   return { text: codePoints.slice(0, maxCodePoints).join(''), truncated: true };
 }
-
-/**
- * Stand-in for a value with nothing renderable left after sanitization. Named
- * rather than inlined so two messages cannot disagree about what
- * "unrenderable" looks like.
- *
- * Homed HERE, in the leaf, since issue #3064: it used to live in
- * `src/state/lock-contention-message.ts`, which meant `src/utils/` and
- * `src/types/` could not use it without inverting the layering -- so
- * `formatError` dropped a clause instead, and a `src/types/` parser rendered
- * an unrenderable field as EMPTY, which reads as absent. That file re-exports
- * it, so its existing importers are unchanged.
- */
-export const UNRENDERABLE = '<unrenderable>';
 
 /**
  * The DEFAULT longest an identifier this module renders can legitimately be.
@@ -233,8 +226,9 @@ export const STACK_REF_MAX_CODE_POINTS = 128 + 4 * (1 + IDENT_MAX_CODE_POINTS);
  * Two callers join rendered values with `', '`, and the separator is split
  * across the value and the formatter -- a name ending in a bare `,` is followed
  * by the formatter's own ` (region)`, so `ProdStack,` renders
- * `ProdStack, (us-east-1)` and a two-target prompt reads as THREE entries
- * against a printed count of two. Removing `,` would close that, and was tried:
+ * `ProdStack, (us-east-1)` and a two-target list reads as THREE entries. Only
+ * `state refresh-observed` prints a count beside its list; `state orphan`
+ * prints none, which is the worse of the two. Removing `,` would close that, and was tried:
  * it regresses a LEGITIMATE value class, because an IAM role name allows
  * `[\w+=,.@-]`, so `arn:aws:iam::…:role/cdkd-deploy+role,x=y` is a real role
  * ARN this module renders and `display-safe.test.ts` pins as an identity shape.
@@ -311,10 +305,18 @@ export function displayIdent(value: unknown, opts?: { maxCodePoints?: number }):
   if (raw === '') return UNRENDERABLE;
   const clean = sanitizeAsciiOnly(raw);
   if (!clean) return UNRENDERABLE;
-  // Floor the caller's cap at 1. `truncateCodePoints` slices, so a negative
-  // value would cut from the END and report a nonsense withheld count -- a
-  // display helper must not be able to produce that, even though no caller
-  // passes one today and the parameter exists only to WIDEN the default.
+  // Floor the caller's cap at 1, and fall back to the default for a non-finite
+  // one. Stated precisely, because the first revision of this comment guessed:
+  // `truncateCodePoints` slices, so a cap at or below `-length` yields the
+  // EMPTY string and the value collapses to `""` (the withheld count stays
+  // accurate throughout -- that part was never wrong). `Math.floor` matters
+  // only for `0 < cap < 1`, where an unfloored `slice(0, 0.5)` is also empty.
+  //
+  // `Infinity` deliberately takes the DEFAULT rather than meaning "no cap": a
+  // caller asking for no cap gets 255 and a cut, which is the opposite of the
+  // intent -- recorded rather than silently reinterpreted, since no caller
+  // passes one and guessing which way they meant it is how a display helper
+  // acquires a second contract.
   const requested = opts?.maxCodePoints ?? IDENT_MAX_CODE_POINTS;
   const cap = Number.isFinite(requested)
     ? Math.max(1, Math.floor(requested))

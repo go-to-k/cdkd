@@ -230,7 +230,9 @@ interface ResourceDetail {
  * A BARE `,` is NOT closed, and an earlier revision of this comment was wrong
  * to call it harmless: the formatter supplies the space that completes the
  * separator, so `ProdStack,` renders `ProdStack, (us-east-1)` and a two-target
- * prompt reads as THREE entries against a printed count of two. Removing `,`
+ * list reads as THREE entries. Only `state refresh-observed` prints a count
+ * beside its list; `state orphan`'s banner prints none, so there nothing on
+ * screen contradicts the forged entry -- the worse of the two. Removing `,`
  * from `PLAIN_IDENT` would close it and was tried; it regresses a legitimate
  * IAM role ARN, whose role-name segment allows `[\w+=,.@-]`. Recorded on
  * go-to-k/cdkd#3179 rather than traded for that.

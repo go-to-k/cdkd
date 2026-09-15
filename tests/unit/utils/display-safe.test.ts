@@ -351,29 +351,37 @@ describe('displayIdent cannot be switched off by a hostile toString (issue #3164
     expect(n).toBe(1);
   });
 
-  it('does not let a throwing toString escape', () => {
+  // `.not.toThrow()` ALONE is a silent pass: mutating the inner catch to
+  // `return ''` keeps every one of these green, and `''` reads as ABSENT --
+  // which this module's header records as the issue #3064 bug it exists to
+  // stop. So each case pins the VALUE, not just the absence of a throw.
+  it('renders a throwing toString through the fallback, quoted', () => {
     const boom = {
       toString: () => {
         throw new Error('boom');
       },
     };
-    expect(() => displayIdent(boom)).not.toThrow();
+    // `String()` threw, so `Object.prototype.toString` supplied the text --
+    // and because sanitization was not the identity on the ORIGINAL value, the
+    // result is quoted rather than bare.
+    expect(displayIdent(boom)).toBe('"[object Object]"');
   });
 
-  it('does not let a throwing Symbol.toStringTag escape either', () => {
-    // The FALLBACK path: `String()` throws, so `Object.prototype.toString` runs
-    // -- and it reads `Symbol.toStringTag`, which can throw in turn.
+  it('renders a throwing Symbol.toStringTag as the sentinel, not as absent', () => {
+    // BOTH paths throw: `String()` first, then the `Object.prototype.toString`
+    // fallback, which reads `Symbol.toStringTag`.
     const doubleBoom = {
       toString: null,
       get [Symbol.toStringTag]() {
         throw new Error('boom from the tag');
       },
     };
-    expect(() => displayIdent(doubleBoom)).not.toThrow();
-    expect(() => displaySafe(doubleBoom)).not.toThrow();
+    expect(displayIdent(doubleBoom)).toBe(`"${UNRENDERABLE}"`);
+    expect(displaySafe(doubleBoom)).toBe(UNRENDERABLE);
+    expect(displaySafe(doubleBoom)).not.toBe('');
   });
 
-  it('does not let a throwing Proxy trap escape', () => {
+  it('renders a throwing Proxy trap as the sentinel, not as absent', () => {
     const hostile = new Proxy(
       {},
       {
@@ -382,6 +390,8 @@ describe('displayIdent cannot be switched off by a hostile toString (issue #3164
         },
       }
     );
-    expect(() => displayIdent(hostile)).not.toThrow();
+    expect(displayIdent(hostile)).toBe(`"${UNRENDERABLE}"`);
+    expect(displaySafe(hostile)).toBe(UNRENDERABLE);
+    expect(displaySafe(hostile)).not.toBe('');
   });
 });

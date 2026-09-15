@@ -151,6 +151,10 @@ function snapshotNote(
  * one calls `displaySafe()` directly and takes the DENYLIST -- the same class
  * `formatError` picks for a `cause`, and for the same reason. `grep displaySafe(`
  * answers how many; a count written here was wrong on its first revision.
+ *
+ * Scope is answered by grepping BOTH `safe(` and `safeStack(` -- the latter is
+ * not matched by the former, and a sentence naming only one understates the
+ * population by twelve.
  */
 function safe(value: unknown): string {
   return displayIdent(value);
@@ -172,8 +176,8 @@ function safe(value: unknown): string {
  *
  * It is a NAMED helper rather than a `maxCodePoints` argument repeated per
  * site, because a per-site spelling of exactly this rule is what issue #3164
- * exists to stop: the first cut of that fix widened ONE of this file's eleven
- * stack-name renders and left ten cut. Every value that is NOT a stack name --
+ * exists to stop: the first cut of that fix widened ONE of this file's twelve
+ * stack-name renders and left eleven cut. Every value that is NOT a stack name --
  * a region (at most 25 characters), a logical id, a resource type, a change
  * type -- keeps `safe()` and its tighter default.
  */

@@ -1762,6 +1762,20 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
     expect(safeRefs).toHaveLength(EXPECTED_SAFE_REFERENCES);
   });
 
+  it('the comment stripper does not remove code', () => {
+    // Companion to the fence above, ported with it: both totals are exact, so
+    // a stripper that ate a line carrying a reference would UNDER-count and
+    // read as "no change". Pinned on inputs whose answer is known by eye,
+    // including the shape that makes a naive `//` rule wrong -- a `://` inside
+    // a URL string.
+    const strip = (x: string): string =>
+      x.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+
+    expect(strip('a(); // safeStack\nb();')).toBe('a(); \nb();');
+    expect(strip('/* safeStack */ keep();')).toBe(' keep();');
+    expect(strip("const u = 'https://x/y'; safe(r);")).toBe("const u = 'https://x/y'; safe(r);");
+  });
+
   it('SOURCE SHAPE: no plan-label arm interpolates a journal field bare', () => {
     // The per-arm wiring fence. `safe()` itself is pinned above, but each of
     // the ~20 label arms wires it separately, and a hostile fixture reaches
