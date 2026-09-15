@@ -220,14 +220,16 @@ describe('displayIdent quotes whenever sanitization was NOT the identity (issue 
   // non-printable-ASCII character to a space and then TRIMS, so padding is gone
   // before the plain-identifier test runs and a padded value tested as plain.
   // Each of these rendered byte-identically to the bare `ProdStack` before the
-  // fix, which is a same-line spoof from a one-character input.
+  // fix, which is a same-line spoof from a one-character input. Every row is
+  // therefore PADDING: an INNER control character sanitizes to `Prod Stack`,
+  // which the allowlist already quoted, so it belongs to no spoof this rule
+  // closes and is covered by the identity test below instead.
   const PADDED: Array<[string, string]> = [
     ['trailing space', 'ProdStack '],
     ['leading space', ' ProdStack'],
     ['tab', '\tProdStack'],
     ['NUL', 'ProdStack\u0000'],
     ['ESC', '\u001bProdStack'],
-    ['inner NUL', 'Prod\u0000Stack'],
     ['zero-width joiner', 'ProdStack\u200b'],
   ];
 
@@ -287,7 +289,15 @@ describe('displayIdent maxCodePoints option (issue #3164)', () => {
     );
   });
 
-  it('floors a fractional cap instead of slicing at one', () => {
+  it('floors a fractional cap', () => {
+    // `3.9` is NOT the discriminating input: `slice(0, 3.9)` already truncates,
+    // so it passes with or without the `Math.floor`. A cap between 0 and 1 is
+    // what separates them -- floored it becomes 0 and the `Math.max(1, …)`
+    // lifts it to 1, while an unfloored `slice(0, 0.5)` yields the empty
+    // string and the render collapses to `""`.
+    expect(displayIdent('ABCDEFGH', { maxCodePoints: 0.5 })).toBe(
+      'A [cut: 7 more characters withheld]'
+    );
     expect(displayIdent('ABCDEFGH', { maxCodePoints: 3.9 })).toBe(
       'ABC [cut: 5 more characters withheld]'
     );
@@ -303,10 +313,75 @@ describe('displayIdent maxCodePoints option (issue #3164)', () => {
   });
 
   it('QUOTES and CUTS together -- the only rule-2 x rule-3 combination', () => {
-    const spoof = `${'X (us-east-1) '.repeat(30)}`;
-    const out = displayIdent(spoof, { maxCodePoints: 20 });
-    expect(out.startsWith('"')).toBe(true);
-    expect(out).toContain('" [cut: ');
-    expect(out).toContain('more characters withheld]');
+    // EXACT text, not `startsWith('"')` + `toContain('" [cut: ')`: those hold
+    // for `JSON.stringify(clean)` too, which quotes the WHOLE value and drops
+    // rule 2's payload bound on the quoted path entirely while still reporting
+    // a withheld count. Pinning the rendered string is what distinguishes
+    // "cut, then quoted" from "quoted, and a count printed beside it".
+    const spoof = 'X (us-east-1) '.repeat(30);
+    expect(spoof).toHaveLength(420);
+    // 419, not 420: the withheld count is measured against the SANITIZED text,
+    // whose trailing space the trim removed.
+    expect(displayIdent(spoof, { maxCodePoints: 20 })).toBe(
+      '"X (us-east-1) X (us-" [cut: 399 more characters withheld]'
+    );
+  });
+
+  it('bounds the QUOTED payload, not just the unquoted one', () => {
+    // The property behind the exact string above, stated so a future change
+    // cannot satisfy the literal by coincidence: whatever the rendering, the
+    // characters taken from the VALUE are capped.
+    const out = displayIdent('Y (z) '.repeat(200), { maxCodePoints: 12 });
+    const inner = out.slice(0, out.indexOf('" [cut:') + 1);
+    expect(JSON.parse(inner)).toHaveLength(12);
+  });
+});
+
+describe('displayIdent cannot be switched off by a hostile toString (issue #3164)', () => {
+  it('reads the value ONCE, so a value that changes between reads cannot go bare', () => {
+    // Two evaluations would sanitize the PADDED first reading and compare it
+    // against the UNPADDED second one, making `altered` false and re-opening
+    // the padding spoof on the very control that closes it.
+    let n = 0;
+    const flipFlop = {
+      toString: () => (n++ === 0 ? 'ProdStack ' : 'ProdStack'),
+    };
+    const out = displayIdent(flipFlop);
+    expect(out).not.toBe('ProdStack');
+    expect(n).toBe(1);
+  });
+
+  it('does not let a throwing toString escape', () => {
+    const boom = {
+      toString: () => {
+        throw new Error('boom');
+      },
+    };
+    expect(() => displayIdent(boom)).not.toThrow();
+  });
+
+  it('does not let a throwing Symbol.toStringTag escape either', () => {
+    // The FALLBACK path: `String()` throws, so `Object.prototype.toString` runs
+    // -- and it reads `Symbol.toStringTag`, which can throw in turn.
+    const doubleBoom = {
+      toString: null,
+      get [Symbol.toStringTag]() {
+        throw new Error('boom from the tag');
+      },
+    };
+    expect(() => displayIdent(doubleBoom)).not.toThrow();
+    expect(() => displaySafe(doubleBoom)).not.toThrow();
+  });
+
+  it('does not let a throwing Proxy trap escape', () => {
+    const hostile = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error('trap');
+        },
+      }
+    );
+    expect(() => displayIdent(hostile)).not.toThrow();
   });
 });

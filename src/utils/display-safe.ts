@@ -49,16 +49,8 @@
  * for every non-string: the comparison must be against the STRINGIFIED form,
  * which is what `displaySafe` actually sanitizes.
  *
- * ABSENT means nothing to display, not the WORD. `String(undefined)` is
- * `'undefined'` — a truthy string — so a caller keying its
- * "is there anything here?" decision on the result was silently answered
- * "yes" for a lock.json with no `owner`, printing `held by undefined` while
- * certifying that the holder was live. The callers that key a decision on
- * emptiness — the lock summary, and every refusal that falls back to
- * `UNRENDERABLE` — would each need this same rule, so it lives here rather
- * than at each of them. Not all of them do: `ConsoleLogger` concatenates the
- * result and `sameLockIdentity` only compares two of them, and neither is
- * harmed by it.
+ * ABSENT means nothing to display, not the WORD -- `displaySafe`'s own comment
+ * below carries why, and this is the function that implements it.
  *
  * `String(value)` is NOT total: an object whose `toString` is not callable —
  * `{"toString": null}`, reachable through `JSON.parse` of a hand-edited record
@@ -74,9 +66,37 @@ function toDisplayText(value: unknown): string {
   try {
     return String(value);
   } catch {
-    return Object.prototype.toString.call(value);
+    // The fallback can throw TOO -- a throwing `Symbol.toStringTag` getter, or
+    // a Proxy whose `get` trap throws -- and an escaping exception from a
+    // DISPLAY helper takes the whole render with it, which is the failure mode
+    // the first fallback was added to prevent. A second `catch` ends the
+    // regress: there is no third expression to evaluate.
+    try {
+      return Object.prototype.toString.call(value);
+    } catch {
+      return UNRENDERABLE_SOURCE;
+    }
   }
 }
+
+/**
+ * The ONE sanitizing step, shared so `displaySafe` and `displayIdent` cannot
+ * drift: `displayIdent` must sanitize the SAME text it compares against, and it
+ * can only do that by holding the raw text itself (see its rule 3).
+ */
+function sanitizeAsciiOnly(text: string): string {
+  // Printable ASCII only. Correct for a stack name or an AWS region, both of
+  // which have a known charset.
+  return text.replace(/[^ -~]/g, ' ').trim();
+}
+
+/**
+ * What an un-stringifiable value renders as before sanitization. A literal
+ * distinct from `UNRENDERABLE` would let the two drift; reusing it means a
+ * value that cannot be stringified renders exactly like one sanitization
+ * emptied, which is the same statement to a reader.
+ */
+const UNRENDERABLE_SOURCE = '<unrenderable>';
 
 export function displaySafe(value: unknown, opts?: { asciiOnly?: boolean }): string {
   // ABSENT means nothing to display, not the WORD. `String(undefined)` is
@@ -91,16 +111,14 @@ export function displaySafe(value: unknown, opts?: { asciiOnly?: boolean }): str
   // harmed by it.
   const text = toDisplayText(value);
   if (text === '') return '';
-  const stripped = opts?.asciiOnly
-    ? // Printable ASCII only. Correct for a stack name or an AWS region, both
-      // of which have a known charset.
-      text.replace(/[^ -~]/g, ' ')
-    : text.replace(
-        // eslint-disable-next-line no-control-regex
-        /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g,
-        ' '
-      );
-  return stripped.trim();
+  if (opts?.asciiOnly) return sanitizeAsciiOnly(text);
+  return text
+    .replace(
+      // eslint-disable-next-line no-control-regex
+      /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g,
+      ' '
+    )
+    .trim();
 }
 
 /**
@@ -281,7 +299,17 @@ const PLAIN_IDENT = /^[A-Za-z0-9:_@./+=,~-]+$/;
  * carries spaces and non-ASCII; it takes `displaySafe()` directly).
  */
 export function displayIdent(value: unknown, opts?: { maxCodePoints?: number }): string {
-  const clean = displaySafe(value, { asciiOnly: true });
+  // Evaluate the input ONCE. Two calls would read `value.toString()` twice, and
+  // a non-deterministic one then re-opens the very spoof rule 3 exists to
+  // close: `{ toString: () => n++ === 0 ? 'ProdStack ' : 'ProdStack' }` renders
+  // the PADDED text and compares it against the UNPADDED second reading, so
+  // `altered` is false and the value goes out bare. Unreachable from today's
+  // callers, which pass S3-key strings and `JSON.parse` output -- but a control
+  // that a hostile `toString` can switch off is not a control, and this
+  // function IS the control.
+  const raw = toDisplayText(value);
+  if (raw === '') return UNRENDERABLE;
+  const clean = sanitizeAsciiOnly(raw);
   if (!clean) return UNRENDERABLE;
   // Floor the caller's cap at 1. `truncateCodePoints` slices, so a negative
   // value would cut from the END and report a nonsense withheld count -- a
@@ -292,12 +320,12 @@ export function displayIdent(value: unknown, opts?: { maxCodePoints?: number }):
     ? Math.max(1, Math.floor(requested))
     : IDENT_MAX_CODE_POINTS;
   const { text, truncated } = truncateCodePoints(clean, cap);
-  // Rule 3. `altered` is the half the allowlist cannot supply: `displaySafe`
+  // Rule 3. `altered` is the half the allowlist cannot supply: sanitization
   // trims, so padding is gone from `clean` and `PLAIN_IDENT` would pass a value
-  // that did NOT arrive plain. Compared against the STRINGIFIED input, not the
-  // caller's `unknown`, so a non-string is judged on what actually gets
-  // rendered rather than failing the comparison for being a different type.
-  const altered = clean !== toDisplayText(value);
+  // that did NOT arrive plain. Compared against `raw` -- the SAME text that was
+  // sanitized, read once above -- so neither a non-string nor a
+  // non-deterministic `toString` can make the two operands disagree.
+  const altered = clean !== raw;
   const shown = !altered && PLAIN_IDENT.test(text) ? text : JSON.stringify(text);
   // `clean` is ASCII here, so `.length` counts characters.
   return truncated

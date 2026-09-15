@@ -132,6 +132,22 @@ function installSetup(backend: Partial<FakeBackend>): FakeBackend {
 
 const baseOpts = { statePrefix: 'cdkd', verbose: false, force: true };
 
+/**
+ * `safeStack` renders in `src/cli/commands/rollback.ts`: every place a cdkd
+ * state-record STACK NAME reaches a message. A LITERAL, not a number derived
+ * from the file it guards -- a population computed from the subject cannot
+ * notice the subject shrinking.
+ */
+const EXPECTED_STACK_NAME_RENDERS = 12;
+
+/**
+ * Bare `safe` references in the same file -- 1 declaration plus every render of
+ * a region, logical id, resource type or change type, none of which needs the
+ * wider stack-name cap. Exact, so a stack name ADDED through the weak helper
+ * moves a number instead of slipping past a pattern.
+ */
+const EXPECTED_SAFE_REFERENCES = 59;
+
 /** A journal + state pair with ONE replayable CREATE, enough to reach the prompt. */
 function installOneCreateSegment(): FakeBackend {
   const createOp = {
@@ -1697,23 +1713,53 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
     expect(message).toContain('[cut: 1 more characters withheld]');
   });
 
-  it('every stack-name render in this file takes the wider cap, not just the candidate list', async () => {
-    // The population half: the first cut of issue #3164 widened ONE of this
-    // file's stack-name renders and left ten at the 255 default -- including
-    // three `re-run 'cdkd rollback <stack>'` COPY-PASTE hints. Reading the
-    // source closes the rest at once; a `safe(stackName)` anywhere here is a
-    // stack name rendered at the identifier default.
+  it('every stack-name render in this file takes the wider cap, not just the candidate list', () => {
+    // PORTED from `state-ref-display-boundary.test.ts`'s fence, after the first
+    // version here was measured green under SIX evasions: a new
+    // `safe(ref.stackName)` site, `const aliasSafe = safe`, `{ s: safe }.s(...)`,
+    // `safe(String(stackName))`, and two existing sites reverted through a
+    // template literal. That version was a two-spelling blacklist plus a `>= 10`
+    // floor against 11 real sites -- it could not see a rename, and ten of the
+    // twelve sites have no other behavioural coverage, so it was their only
+    // guard.
+    //
+    // The working shape counts BARE references against an EXACT total. An alias
+    // or an object property is still a reference and still counts, so every
+    // evasion above moves the number instead of slipping past a pattern.
     const src = readFileSync(
       new URL('../../../../src/cli/commands/rollback.ts', import.meta.url),
       'utf8'
     );
     const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
 
+    // Prove the scan SAW its input first: a stripper that ate the code as well
+    // as the comments would satisfy an equality of two zeroes.
+    expect(code.length).toBeGreaterThan(20_000);
     expect(code).toContain('function safeStack');
-    // The fence sees its input: the wrapped form must be present in numbers.
-    expect((code.match(/\bsafeStack\(/g) ?? []).length).toBeGreaterThanOrEqual(10);
-    expect(code.match(/\bsafe\(stackName\)/g) ?? []).toEqual([]);
-    expect(code.match(/\bsafe\(c\.stackName\)/g) ?? []).toEqual([]);
+    expect(code).toContain('function safe');
+
+    const safeStackRefs = code.match(/\bsafeStack\b/g) ?? [];
+    const safeStackDecls = code.match(/\bfunction\s+safeStack\b/g) ?? [];
+    expect(safeStackDecls).toHaveLength(1);
+
+    // 1 declaration + 12 stack-name renders. The twelfth is the corrupted-state
+    // key path, which joined its segments BEFORE sanitizing and so rendered the
+    // whole `prefix/stack/region` under the identifier default.
+    expect(safeStackRefs).toHaveLength(safeStackDecls.length + EXPECTED_STACK_NAME_RENDERS);
+
+    // The `safeStack` total alone catches a render MOVED off the wide cap; it
+    // cannot see one ADDED through the weak helper, because that leaves the
+    // count untouched -- measured, and it is the first of the six evasions that
+    // defeated this fence's previous version. So `safe` carries an exact total
+    // too. It is deliberately NOT a spelling blacklist: an alias, an object
+    // property and a `safe(String(x))` wrapper are all still references and all
+    // still counted.
+    //
+    // Adding a legitimate `safe(...)` render means updating this number, which
+    // is the forcing function -- the reviewer has to say which helper the new
+    // value belongs in.
+    const safeRefs = code.match(/\bsafe\b/g) ?? [];
+    expect(safeRefs).toHaveLength(EXPECTED_SAFE_REFERENCES);
   });
 
   it('SOURCE SHAPE: no plan-label arm interpolates a journal field bare', () => {

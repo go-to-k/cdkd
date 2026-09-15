@@ -412,7 +412,13 @@ export async function rollbackCommand(
       if (!stateData) {
         throw new Error(
           `Rollback journal exists for '${safeStack(stackName)}' (${safe(region)}) but its state.json is missing ` +
-            `(keys: ${safe(`${setup.prefix}/${stackName}/${region}`)}/state.json and .../rollback-journal.json). ` +
+            // Rendered SEGMENT BY SEGMENT, not as one pre-joined string: this
+            // key is the operator's only route to the record the sentence says
+            // is corrupted, and joining first put the whole path under the
+            // 255-code-point identifier default -- cutting it mid-path for
+            // exactly the deep nested-stack names this file widens the cap for.
+            `(keys: ${safe(setup.prefix)}/${safeStack(stackName)}/${safe(region)}/state.json ` +
+            `and .../rollback-journal.json). ` +
             `State appears corrupted — inspect the bucket manually.`
         );
       }
