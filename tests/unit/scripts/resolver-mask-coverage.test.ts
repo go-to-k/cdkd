@@ -85,7 +85,7 @@ describe('check-resolver-mask-coverage', () => {
       // pinned as literals — widening one is then a diff a reviewer sees.
       expect(BANDS).toEqual({
         statements: { min: 131, max: 165 },
-        maskedExprs: { min: 155, max: 200 },
+        maskedExprs: { min: 161, max: 200 },
         markers: { min: 98, max: 140 },
       });
       // ...and the counts are pinned EXACTLY, from a separate measurement
@@ -99,15 +99,19 @@ describe('check-resolver-mask-coverage', () => {
       // distribution-id shape refusal the same way: 135 / 160 / 108; issue
       // #3097's security-group `VpcId` live arm added the `sg-<hex>` shape
       // refusal the same way — its two `refuseUnservedAttribute` calls share
-      // the existing throw site: 136 / 161 / 109). This subsumes the band
+      // the existing throw site: 136 / 161 / 109; issue #3150 masked the
+      // nested-stack refusal's declared-output list, the producer-region line,
+      // three `Fn::ImportValue` producer-region interpolations and the
+      // ambiguous-region refusal's producer-region list, retiring the six notes
+      // that described them as unmasked: 136 / 167 / 103). This subsumes the band
       // check on the real tree and is meant
       // to: a change to this file's throw/log population is a decision, and the
       // three numbers moving in a diff is how it gets read. The band still earns
       // its place — it is what the SHIPPED binary enforces in CI, where this
       // suite's assertions do not run.
       expect(result.statements).toBe(136);
-      expect(result.maskedExprs).toBe(161);
-      expect(result.markers).toBe(109);
+      expect(result.maskedExprs).toBe(167);
+      expect(result.markers).toBe(103);
     });
 
     it('a subject with no statements is not silently green', () => {

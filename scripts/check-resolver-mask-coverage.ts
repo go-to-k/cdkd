@@ -389,9 +389,11 @@ export const BANDS = {
   // 100 -> 135 / 160 / 108). A floor left behind goes inert on the block-comment
   // injection above: the `resolveFindInMap` cut swallows seven statements, and
   // 135 - 7 = 128 sat EXACTLY on the old floor, so the band no longer fired
-  // (measured by `resolver-mask-coverage.test.ts`'s instrument case).
+  // (measured by `resolver-mask-coverage.test.ts`'s instrument case). Issue
+  // #3150 added six masks (161 -> 167) and moved the masks floor by the same
+  // delta: the same cut left 157 masked expressions, above the old floor of 155.
   statements: { min: 131, max: 165 },
-  maskedExprs: { min: 155, max: 200 },
+  maskedExprs: { min: 161, max: 200 },
   markers: { min: 98, max: 140 },
 } as const;
 

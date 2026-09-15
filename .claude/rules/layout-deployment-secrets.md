@@ -61,10 +61,10 @@ Index of every area: [code-layout.md](code-layout.md).
     `scrubResourceRecord(record, secrets)` (redacts one `ResourceState`'s
     `properties` / `attributes` / `observedProperties`, shared by the deploy
     save choke point and `cdkd scrub`), and `maskSecretsInText(text, secrets)`
-    (secret value → `***` for log / error output). The resolver's own log
-    lines go through its private `maskSecretsForLog(text, context)`, which
-    masks against `context.inheritedSecrets` FIRST and then
-    `context.recordedSecretValues` (issue #1903 round 2: on a nested-stack
+    (secret value → `***` for log / error output). Resolver log lines use
+    `maskSecretsForLog`: log twin (#3150, `***` if a needle hits the raw
+    text too), else masks `context.inheritedSecrets` FIRST, then
+    `context.recordedSecretValues` (#1903 round 2: on a nested-stack
     child the parent-decrypted parameter plaintext is in the inherited bag
     only, until a `{Ref: <Param>}` resolution copies it across). The sites
     issue #2728 added to it: the `Resolving dynamic reference:` debug echoes of the

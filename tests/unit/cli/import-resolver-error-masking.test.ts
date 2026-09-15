@@ -390,7 +390,8 @@ describe('cdkd import masks the resolver error text it logs (issue #2803)', () =
     // else, so it reaches `maskSecretsInText`'s WHOLE-VALUE arm — the only arm
     // `buildNeedleRegex`'s `MIN_NEEDLE_LENGTH` (4) filter does not gate.
     // Masking the assembled MESSAGE, which is what the boundary does, closes
-    // neither this nor its superstring twin below.
+    // neither this nor its superstring twin below (which issue #3150 closes by
+    // position, not by the needle).
     await runWalk({ Password: SHORT_WHOLE_SEGMENT_PROPERTY });
 
     const text = warnedText();
@@ -399,22 +400,21 @@ describe('cdkd import masks the resolver error text it logs (issue #2803)', () =
     expect(text, 'masked, not dropped').toContain('***');
   });
 
-  it('RESIDUAL, pinned rather than only described: a sub-floor plaintext INSIDE a longer segment still prints', async () => {
-    // The bound issue #2827 stops at, and its counter-example verbatim: one
-    // literal character beside the placeholder makes the raw value `key-ab3`,
-    // a SUPERSTRING of the recorded `ab3`. A superstring is not a whole-value
-    // match, so the mask falls to the substring arm and the floor drops the
-    // needle — at the throw and at every boundary alike. Asserted so the day
-    // `MIN_NEEDLE_LENGTH` changes, or a masker gains a sub-floor substring
-    // arm, this reds and the enumeration gets revisited.
+  it('CLOSED by issue #3150: a sub-floor plaintext INSIDE a longer segment is masked', async () => {
+    // This case used to pin the bound issue #2827 stopped at: one literal
+    // character beside the placeholder makes the raw JSON key `key-ab3`, a
+    // SUPERSTRING of the recorded `ab3`, which the needle mask's substring arm
+    // drops below `MIN_NEEDLE_LENGTH`. Issue #3150 closes it by POSITION, not by
+    // the needle: `resolveSub` hands the dynamic-reference loop the token's log
+    // twin, and the JSON key parsed out of the token prints the twin's run over
+    // the same `:`-separated pieces (`key-***`). The needle floor itself is
+    // unchanged.
     await runWalk({ Password: SHORT_SUPERSTRING_PROPERTY });
 
     const text = warnedText();
     expect(text, 'the failure is reported').toContain('Failed to resolve intrinsics');
-    expect(
-      text,
-      'a sub-floor plaintext inside a longer segment is NOT masked — the documented residual'
-    ).toContain(SHORT_PASSWORD);
+    expect(text, 'the sub-floor plaintext no longer prints').not.toContain(SHORT_PASSWORD);
+    expect(text, 'masked at its position, not dropped').toContain("key 'key-***' not found");
   });
 
   it("import.ts's OWN mask still discriminates: an AWS error the resolver never built is masked here", async () => {
