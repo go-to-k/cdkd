@@ -1642,11 +1642,30 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
       // the annotations below are documentation, not assertions, and the table
       // is a field inventory rather than a claim that every walk is repaired.
       //
-      // Two more things it cannot see, stated because the previous revision of
-      // this comment overclaimed in both directions: a walk that never spells
-      // `owner.field` (destructured, aliased, bracket-accessed, two-level
-      // owner) — that direction is the oracle's, and the two are complementary
-      // — and a walk in any file but this one, since it reads `STATE_TS` alone.
+      // What it cannot see, DERIVED BY GREP over this file rather than by
+      // listing the spellings that came to mind. The previous revision was
+      // reasoned, and a review round then found `Object.values` — which this
+      // pattern had simply omitted from its alternation while the walk DID
+      // spell `owner.field`, so it was a hole rather than a residual. Each
+      // class below carries what the search returned against `state.ts`:
+      //
+      //   two-level owner   `Object.X(a.b.field)`      0 today
+      //   bracket access    `Object.X(a['field'])`     0 today
+      //   destructured      `const { field } = ...`    0 today
+      //   for...in          `for (const k in bag)`     0 today
+      //   spread            `{ ...a.field }`           0 today
+      //   bare identifier   `Object.X(ident)`          2 TODAY
+      //
+      // The last is not hypothetical and is the one to know about:
+      // `resourceCountOrNull(resources)` and `stateResourcesCommand`'s
+      // `Object.entries(resources)` both walk a local bound from `state.resources`
+      // one line earlier, so the field name never appears at the walk. Both are
+      // over the REPAIRED bag, so neither is a defect — but a third such local,
+      // bound to an unrepaired container, would be invisible here. Closing that
+      // needs alias tracking, which is a different instrument again; the
+      // BEHAVIOURAL oracle covers it for any container a case plants.
+      //
+      // And a walk in any file but this one: the scan reads `STATE_TS` alone.
       //
       // The `resources` row is the reason the annotation column is worth
       // keeping: its two walks are NOT both repaired.
@@ -1657,9 +1676,10 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
         ['properties', 1, 'renderStateBlock; repaired by repairRecordForTextRender'],
         [
           'resources',
-          2,
-          'renderStateBlock, repaired by repairMalformedResourcesForReadOnly — and ' +
-            'refreshObservedForStack, which is NOT: `cdkd state refresh-observed` is a ' +
+          3,
+          'renderStateBlock, repaired by repairMalformedResourcesForReadOnly; ' +
+            'repairRenderedContainers` own Object.values, guarded by isReadableBag; and ' +
+            'refreshObservedForStack, which is NEITHER: `cdkd state refresh-observed` is a ' +
             'WRITER, outside this PR`s read-only scope, folded onto go-to-k/cdkd#3018',
         ],
       ];
@@ -1667,7 +1687,7 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
       const source = readFileSync(STATE_TS, 'utf-8');
       const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
 
-      const WALK = /Object\.(?:entries|keys)\(\s*[A-Za-z_$][\w$]*\.([A-Za-z_$][\w$]*)/g;
+      const WALK = /Object\.(?:entries|keys|values)\(\s*[A-Za-z_$][\w$]*\.([A-Za-z_$][\w$]*)/g;
       const found: Record<string, number> = {};
       for (const m of code.matchAll(WALK)) found[m[1]!] = (found[m[1]!] ?? 0) + 1;
 
@@ -1687,6 +1707,13 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
       ]);
       expect([
         ...'Object.entries(resource.observedProperties ?? {})'.matchAll(WALK),
+      ].map((m) => m[1])).toEqual(['observedProperties']);
+      // `values` is pinned beside `entries` because omitting it from the
+      // alternation was a live HOLE, not a residual: a review probe added
+      // `Object.values(resource.observedProperties ?? {})` — which DOES spell
+      // `owner.field` — and both suites stayed green.
+      expect([
+        ...'Object.values(resource.observedProperties ?? {})'.matchAll(WALK),
       ].map((m) => m[1])).toEqual(['observedProperties']);
       expect([...'Object.entries(buildBag())'.matchAll(WALK)]).toHaveLength(0);
 

@@ -344,7 +344,7 @@ so on stderr, rather than describing resources that are not there.
 | `cdkd state resources --json` | `[]`, plus the warning |
 | `cdkd state show`, `--show-nested` included | `Resources (0):` with no resource blocks, plus one warning per record read that way |
 | `cdkd state show --json` | the stored value, unchanged and unwarned |
-| `cdkd state show --show-nested --json` | the stored value, unchanged, but still warned per record — a node whose bag could not be read comes back with an empty `children` list, which is what a genuine leaf looks like |
+| `cdkd state show --show-nested --json` | the stored value, unchanged, but still warned per record |
 | `cdkd state list --long` | `Resources: unknown (...)` for that row, as described under [`cdkd state list`](#cdkd-state-list) |
 
 `cdkd state show --json` is the mode to reach for here: it is the one view that
@@ -368,6 +368,11 @@ remove the record instead.
 An absent or `null` bag is reported the same way and renders exactly as an
 empty one does. `cdkd state list --long` differs on those two: it counts them
 as `0` with no reason attached.
+
+`--show-nested --json` is the one JSON mode that still warns, because there the
+damage is invisible in the payload's shape: a node whose bag could not be read
+comes back with an empty `children` list, which is exactly what a genuine leaf
+looks like, so a tool walking the tree reads a cut subtree as a complete one.
 
 ### When a value container is not an object
 

@@ -176,17 +176,30 @@ export type RenderedStateContainer = 'outputs' | 'skippedOutputs' | 'attributes'
  * The warning a view emits when it emptied one or more {@link
  * RenderedStateContainer}s it could not walk (go-to-k/cdkd#3187).
  *
- * Deliberately NOT {@link malformedResourcesWarning}'s text. That one tells the
- * reader not to run `cdkd deploy` / `cdkd destroy`, because BOTH read the
- * `resources` map and an unreadable one is indistinguishable from an empty
- * stack. None of the containers here is read by either command's resource walk,
- * so repeating that advice would make a display defect look like a
- * deploy-blocking one. What stays the same is the remedy: `--json` is the mode
- * that shows the stored value.
+ * Deliberately NOT {@link malformedResourcesWarning}'s text, and the reason is
+ * narrower than it looks. That one tells the reader not to run `cdkd deploy` /
+ * `cdkd destroy` because an unreadable `resources` MAP is indistinguishable
+ * from an empty stack: deploy would re-CREATE everything and destroy would
+ * delete nothing. No container named here can produce that specific confusion —
+ * the resource SET is still readable — so borrowing that sentence would attach
+ * a re-create-the-world warning to a record whose resource list is intact.
+ *
+ * It is NOT that these containers are display-only. `properties` is read by the
+ * deploy change calculation (`src/analyzer/diff-calculator.ts`), which imports
+ * nothing from this module, and a non-object there compares unequal to any
+ * desired object and yields a spurious property-change set — filed as
+ * go-to-k/cdkd#3191. An earlier revision of this comment asserted the
+ * display-only premise, which would have read as licence to drop a guard on
+ * that path (review of go-to-k/cdkd#3190).
+ *
+ * What stays the same is the remedy: `--json` is the mode that shows the
+ * stored value.
  *
  * ONE warning per record however many containers it names — a stack whose 500
  * resources all carry a hand-edited `properties` gets one line, not 500. The
- * caller sorts the names, so the text is stable across records.
+ * caller FILTERS a fixed order (`RENDERED_CONTAINER_ORDER`), so the text is
+ * stable across records. Not `.sort()` — that order is deliberately not
+ * alphabetical, and its own JSDoc says so.
  *
  * Both identifiers are sanitized and then shell-quoted, and the command is
  * emitted LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s own note

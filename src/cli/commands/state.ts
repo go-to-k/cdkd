@@ -1459,14 +1459,24 @@ const RESOURCES_RENDERED_CONTAINERS: ReadonlySet<RenderedStateContainer> = new S
  *
  * **Absent is NOT malformed here, and that is a different call from the one
  * {@link hasReadableResources} makes.** `undefined` and `null` both mean "no
- * such container" for all four: `skippedOutputs` is absent on every pre-#2740
- * record, `attributes` is optional on `ResourceState`, and the `?? {}` at each
- * walk has always rendered the nullish case as empty. Neither can fabricate a
- * row, so warning about them would be a false positive on records cdkd itself
- * writes. An unreadable `resources` bag is judged the other way because
+ * such container" for all four, and the `?? {}` at each walk has always
+ * rendered the nullish case as empty, so none of them can fabricate a row.
+ * An unreadable `resources` bag is judged the other way because
  * `Object.entries(null)` THROWS and takes the whole render with it.
  *
- * Callers must have repaired the `resources` bag first; both do, one line up.
+ * The stronger half of the reason covers TWO of the four, not all of them, and
+ * saying so is the point: `skippedOutputs?` and `attributes?` are OPTIONAL in
+ * `src/types/state.ts`, so cdkd itself writes records without them and warning
+ * would be a false positive on healthy state. `outputs` and `properties` are
+ * REQUIRED there, so a nullish one IS a malformed record and this exemption
+ * rests on the weaker reason alone — it cannot invent a row, and it renders
+ * identically to the empty bag the reader would otherwise see. Warning on a
+ * nullish REQUIRED container would be defensible; it is not done because the
+ * harm this guard exists for is fabrication (review of go-to-k/cdkd#3190).
+ *
+ * Callers must have repaired the `resources` bag first; both do — one line up
+ * in `repairRecordForTextRender`, and ~30 lines up in `stateResourcesCommand`,
+ * where the mode gate sits between them.
  * The bag test below is that ORDER made local rather than a fallback: an
  * unreadable bag is emptied by the repair, so the record renders zero resources
  * and owns no per-resource container to repair. It reads
@@ -1678,7 +1688,8 @@ function renderStateBlock(
     );
   }
 
-  // The `?? {}` here — and at the three container walks below — covers the
+  // The `?? {}` here — and at the four other container walks, two above in
+  // the `skippedOutputs` helpers and two below in the resource loop — covers the
   // ABSENT case alone (`undefined` / `null`), which is what it has always done.
   // A non-object `outputs` is NOT guarded here: it is emptied at the render
   // entry by `repairRenderedContainers`, because a guard repeated at four
