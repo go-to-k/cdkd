@@ -70,17 +70,21 @@ Daily, on `bot/cfn-schema-refresh/<YYYY-MM-DD>`:
    now a silent drop routed through Cloud Control, whether the type pins
    `provisionedBy: 'cc-api'` one way, and whether the snapshot marks it
    create-only — and nothing that needs a reading of WHY is in it. Edit it if
-   the delta deserves more; the job never overwrites a fragment already on the
-   branch for this pull request, so your edit survives every later cycle, a
-   rename included.
+   the delta deserves more; the job never overwrites a fragment it already
+   wrote for this cycle, a rename included, and a later cycle writes its own
+   file rather than touching yours. EDIT it rather than deleting it — a
+   deletion is the one thing a same-day re-dispatch would undo.
 
-   **This step never fails the job, which is the opposite of the push rule
-   below, deliberately.** By the time it runs the drift is committed and the
-   pull request exists, so the only thing a failure can still cost is the
-   marking step behind it — and trading the signal a human reads for a
-   changelog line is the wrong way round. A fragment the diagnosis never
-   rendered, or a push that lost a race, leaves a `::warning::` in the run and
-   no entry: write one by hand before merging. **A cycle that only REMOVES
+   **A missing fragment or a lost push never fails the job, which is the
+   opposite of the push rule below, deliberately.** By the time this step runs
+   the drift is committed and the pull request exists, so the only thing such
+   a failure can still cost is the marking step behind it — and trading the
+   signal a human reads for a changelog line is the wrong way round. Either
+   case leaves a `::warning::` in the run and no entry: write one by hand
+   before merging. The one arm that IS loud is an unsubstituted `__PR_NUMBER__`
+   or `__CYCLE__` placeholder, which means the renderer is broken rather than
+   a race being lost, and would otherwise commit an entry citing no pull
+   request. **A cycle that only REMOVES
    properties writes no fragment at all** and still ships a behaviour delta —
    that gap is [#3175](https://github.com/go-to-k/cdkd/issues/3175).
 7. Marks the pull request with how many decisions are left, or clears the

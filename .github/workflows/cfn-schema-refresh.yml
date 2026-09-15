@@ -633,6 +633,21 @@ jobs:
           # an unmatched glob leaves `ls` with no arguments: it lists the
           # directory, exits 0, and the guard would read TRUE forever with no
           # warning.
+          #
+          # Two shapes still escape, both deliberately. A rename that changes
+          # the DATE segment (legal under `ENTRY_NAME`) lets a same-day
+          # re-dispatch write a second copy — caught LOUDLY by the changelog
+          # uniqueness fence, on a pull request nobody has merged. A fragment
+          # the maintainer DELETED comes back on a same-day re-dispatch; the
+          # runbook asks for an edit rather than a deletion for that reason.
+          # Catching either needs a content probe over the entries, which would
+          # suppress the common legitimate cases instead — trading a loud, rare
+          # failure for a silent one.
+          # Substituted BEFORE the guard so the comparison below has something
+          # to compare against, and so one `sed` serves both paths.
+          sed -e "s/__PR_NUMBER__/${PR_NUMBER}/g" -e "s/__CYCLE__/${cycle}/g" \
+            /tmp/changelog-fragment.md > /tmp/fragment-final.md
+
           existing=""
           for f in changelog.d/entries/"${cycle}"-"${PR_NUMBER}"-*.md; do
             if [ -e "${f}" ]; then
@@ -641,11 +656,20 @@ jobs:
             fi
           done
           if [ -n "${existing}" ]; then
+            # Create-only still, but not SILENT when the skip costs something.
+            # An ordinary same-day re-dispatch never reaches here — the
+            # fixtures are already committed, so the diagnosis renders nothing
+            # and the empty-file arm above exits first. Reaching here with a
+            # DIFFERENT rendering means this run found drift the existing
+            # fragment does not describe, which is exactly the case where
+            # skipping is wrong: say so rather than dropping it.
+            if ! cmp -s "${existing}" /tmp/fragment-final.md; then
+              echo "::warning::${existing} already exists for this cycle and differs from what this run rendered — new drift is NOT recorded in it; fold it in by hand before merging"
+            fi
             exit 0
           fi
 
-          sed -e "s/__PR_NUMBER__/${PR_NUMBER}/g" -e "s/__CYCLE__/${cycle}/g" \
-            /tmp/changelog-fragment.md > "${entry}"
+          cp /tmp/fragment-final.md "${entry}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "${entry}"

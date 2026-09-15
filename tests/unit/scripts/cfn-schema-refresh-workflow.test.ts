@@ -312,9 +312,19 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       // `ls` would read TRUE forever under `shopt -s nullglob` (no arguments,
       // lists the directory, exits 0); the `for` probe cannot.
       expect(shell).not.toContain('ls changelog.d/entries');
-      const arm = guardArm(shell, 'if [ -n "${existing}" ]');
+      // Sliced to the arm's OWN `exit 0`, not through `guardArm`: the block now
+      // nests a `cmp` guard, so slicing to the first `fi` would stop inside it
+      // and read that one's contents as this arm's.
+      const at = shell.indexOf('if [ -n "${existing}" ]');
+      expect(at, 'the create-only guard is gone').toBeGreaterThan(-1);
+      const arm = shell.slice(at, shell.indexOf('exit 0', at) + 6);
       expect(arm).toContain('exit 0');
       expect(arm).not.toContain('rm ');
+      // Create-only, but NOT silent when the skip costs something: a rendering
+      // that differs from the fragment already there means this run found drift
+      // that fragment does not describe.
+      expect(arm).toContain('cmp -s "${existing}" /tmp/fragment-final.md');
+      expect(arm).toMatch(/::warning::[^\n]*differs from what this run rendered/);
       expect(shell).toContain('changelog.d/entries/${cycle}-${PR_NUMBER}-cfn-schema-refresh.md');
     });
 
