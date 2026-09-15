@@ -179,15 +179,22 @@ the fourth writer of the key space, and it has to agree ROW BY ROW: an
 alias the preview publishes and the deploy refuses (or the reverse) is a
 phantom change on every run and `cdkd diff --fail` red forever. Two rows
 are worth naming because they read as inconsistent otherwise. A LITERAL
-`Export.Name` spelled as a `{{resolve:...}}` token is PUBLISHED by both —
-the deploy never substitutes a string name, so the key holds the
-expression, which is what state stores anyway. And a LITERAL name in a
+`Export.Name` spelled as a `{{resolve:...}}` token is PUBLISHED by both in a
+stack that resolves no secret — the deploy never substitutes a string name,
+so the key holds the expression, which is what state stores anyway. (In a
+stack that DOES resolve one, such a name takes the second row's branch
+instead; the two rows overlap there, and the second one decides.) And a
+LITERAL name in a
 stack that resolves a secret makes `cdkd diff` omit its Outputs section
-entirely for that run: the deploy refuses such a name only when it CONTAINS
-the resolved plaintext, which the preview never resolves, so it declines to
-guess rather than print a row whose key may hold that plaintext. The
-omission is reported as the usual could-not-resolve notice, and the alias
-key is recorded so that notice does not fire on the alias alone.
+entirely for that run — but only while state does NOT already hold the
+alias key. The deploy refuses such a name only when it CONTAINS the
+resolved plaintext, which the preview never resolves, so with no stored
+verdict it declines to guess rather than print a row whose key may hold
+that plaintext; the omission is reported as the usual could-not-resolve
+notice, and the alias key is recorded so that notice does not fire on the
+alias alone. State HOLDING the key is the verdict: a previous deploy
+already evaluated the same literal name and published, so the preview
+publishes that key with today's value and the section renders.
 
 **A state KEY that already holds plaintext cannot be scrubbed.** State
 written by a pre-fix binary can carry `state.outputs["pre-<secret>"]`, and

@@ -453,7 +453,7 @@ break a consumer — was hidden the same way.
 The module is a deliberate SECOND implementation rather than shared code: the
 deploy-side block lives in `deploy-engine.ts`, which is in the `integ-broad`
 and `integ-destroy` merge-gate scopes. `tests/unit/analyzer/outputs-diff.test.ts`
-pays for that trade with an anti-drift fence asserting the three mirrored
+pays for that trade with an anti-drift fence asserting the mirrored
 deploy-side semantics still hold.
 
 #### `intrinsic-function-resolver.ts`

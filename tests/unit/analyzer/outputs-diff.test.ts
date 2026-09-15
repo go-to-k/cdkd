@@ -9,7 +9,7 @@
  * The fix deliberately does NOT share code with `DeployEngine.resolveOutputs`
  * (that file is in the `integ-broad` / `integ-destroy` gate scopes and was held
  * by a parallel lane). The last describe block is the anti-drift fence that
- * trade requires: it watches the three deploy-side semantics this module
+ * trade requires: it watches the deploy-side semantics this module
  * mirrors, so an edit to either side that breaks parity fails here rather than
  * silently reintroducing a preview/apply divergence.
  */
@@ -1015,7 +1015,7 @@ describe('failedOutputKeys / failuresMirrorDeploy (issue #3101)', () => {
 describe('anti-drift fence vs DeployEngine.resolveOutputs (issue #1921)', () => {
   // This module is a deliberate SECOND implementation of the deploy engine's
   // outputs resolution — see the file header for why sharing was rejected. The
-  // cost of that trade is drift, so these assertions watch the three deploy-side
+  // cost of that trade is drift, so these assertions watch the deploy-side
   // behaviors the diff twin mirrors. If one fails, the deploy side moved: port
   // the change into `src/analyzer/outputs-diff.ts` (and its tests above) rather
   // than relaxing the assertion.
