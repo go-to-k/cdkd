@@ -2882,9 +2882,12 @@ export function renderChangelogFragment({
     // a mechanism nothing measured — the class this whole template exists to
     // avoid — and writing the routed one would be worse still.
     sentences.push(
+      // The two behaviours are NAMED rather than referred to: this sentence is
+      // the only routing text in the fragment exactly when it stands alone, so
+      // "either behaviour" would point at nothing.
       `cdkd could not read the routing declaration for ${unknownNames.join(' / ')}, so this entry ` +
-        `does not state how a template carrying one deploys; check the type's provider before ` +
-        `relying on either behaviour.`
+        `does not state how a template carrying one deploys; check each type's provider before ` +
+        `relying on it either auto-routing to Cloud Control or being refused at pre-flight.`
     );
   }
 
@@ -3711,12 +3714,16 @@ function main() {
         // scan without ever being reported unreadable — and it would then take
         // the routed story by default, which is how the refusal case reopens
         // through a different door.
-        unknownRoutingTypes: new Set([
-          ...optOuts.unreadable,
-          ...writableAdded
-            .map((e) => e.resourceType)
-            .filter((t) => !providerFiles.has(t) && !nonProvisionable.has(t)),
-        ]),
+        // NON_PROVISIONABLE is excluded from BOTH arms: `getProviderFor`
+        // refuses such a type on that disjunct alone, without consulting the
+        // provider source, so its routing IS established even when the source
+        // is unreadable or its registration never mapped.
+        unknownRoutingTypes: new Set(
+          [
+            ...optOuts.unreadable,
+            ...writableAdded.map((e) => e.resourceType).filter((t) => !providerFiles.has(t)),
+          ].filter((t) => !nonProvisionable.has(t))
+        ),
         // What each provider already DECLARES. A declared property never
         // becomes a `silentDrop` (`gen-property-coverage.ts` skips it), so
         // every sentence the fragment writes would be false for one.

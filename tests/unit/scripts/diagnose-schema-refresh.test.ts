@@ -2735,6 +2735,69 @@ describe('--changelog-out, through the shipped binary', () => {
   it('is a known flag, so the unknown-flag guard does not refuse the workflow', () => {
     expect(KNOWN_FLAGS).toContain('--changelog-out');
   });
+
+  it('wires the routing buckets so a real addition takes the ROUTED story', () => {
+    // `main()`'s bucket construction is invisible on both channels otherwise:
+    // `!providerFiles.has(t)` selects nothing today (134 fixtures, 134
+    // registrations), so inverting that filter would put EVERY type in the
+    // unknown bucket and ship "cdkd could not read the routing declaration" in
+    // every future fragment -- green suite, and nobody reads the fragment
+    // before it lands. This drives the real `main()` over a real delta.
+    //
+    // REALPATH for the same reason the tolerance arms use it: git resolves
+    // macOS's `/var` tmpdir to `/private/var`, and a mismatch makes every
+    // fixture read as "outside repository", which is a VACUOUS pass.
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'cdkd-route-wiring-')));
+    try {
+      mkdirSync(join(root, 'scripts'), { recursive: true });
+      mkdirSync(join(root, 'fx'), { recursive: true });
+      for (const name of readdirSync(join(REPO_ROOT, 'scripts'))) {
+        const from = join(REPO_ROOT, 'scripts', name);
+        if (statSync(from).isFile()) cpSync(from, join(root, 'scripts', name));
+      }
+      symlinkSync(join(REPO_ROOT, 'node_modules'), join(root, 'node_modules'));
+      symlinkSync(join(REPO_ROOT, 'src'), join(root, 'src'));
+      cpSync(join(REPO_ROOT, 'tests/fixtures/cfn-schemas'), join(root, 'fx'), { recursive: true });
+      execFileSync('git', ['init', '-q', root]);
+      execFileSync('git', ['-C', root, 'add', '-A'], { stdio: 'ignore' });
+      execFileSync(
+        'git',
+        ['-C', root, '-c', 'user.email=t@e', '-c', 'user.name=t', 'commit', '-qm', 'seed'],
+        { stdio: 'ignore' }
+      );
+
+      // AWS publishing a writable property on a type that HAS a provider and
+      // is neither NON_PROVISIONABLE nor a CC-fallback opt-out: the ordinary
+      // cycle, and the one whose story must be the routed one.
+      const target = join(root, 'fx', 'AWS-DynamoDB-Table.json');
+      const fixture = JSON.parse(readFileSync(target, 'utf8'));
+      fixture.properties = [...fixture.properties, 'ZzProbeProperty'];
+      writeFileSync(target, `${JSON.stringify(fixture, null, 2)}\n`);
+
+      const out = join(root, 'fragment.md');
+      const res = spawnSync(
+        'node',
+        [join(root, 'scripts/diagnose-schema-refresh.mjs'), '--fixtures-dir', join(root, 'fx'), '--changelog-out', out],
+        { encoding: 'utf8', cwd: root }
+      );
+      expect(res.error, 'the relocated diagnosis failed to spawn').toBeUndefined();
+      expect(res.status, `exited ${res.status}: ${res.stderr}`).toBe(0);
+
+      const fragment = readFileSync(out, 'utf8');
+      expect(fragment, `no fragment was rendered: ${res.stderr}`).toContain('ZzProbeProperty');
+      expect(fragment).toContain('`AWS::DynamoDB::Table`');
+      // The ROUTED story, and neither of the other two: the type is mapped,
+      // readable, declines nothing and is not NON_PROVISIONABLE.
+      expect(fragment).toContain('auto-route');
+      expect(fragment).toContain('ONE-WAY');
+      expect(fragment, 'the unknown bucket swallowed a type whose routing IS known').not.toContain(
+        'could not read the routing declaration'
+      );
+      expect(fragment).not.toContain('REFUSED at pre-flight');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 180_000);
 });
 
 describe('--umbrella-checklist returns before the refresh-report setup', () => {
@@ -3045,6 +3108,12 @@ describe('renderChangelogFragment', () => {
     // fragment the job writes unattended is never read before it lands.
     expect(fragment.split('\n').filter((l) => l.startsWith('- '))).toHaveLength(1);
     expect(fragment.toLowerCase()).not.toContain('recently implemented');
+    // The ordinary cycle names no unknown type. Without this, dropping the
+    // unknown sentence's own guard ships `...for , so this entry does not
+    // state...` on EVERY fragment with the suite green.
+    expect(fragment).not.toContain('could not read the routing declaration');
+    // The pronoun follows the ROUTED population: one routed property is "it".
+    expect(fragment).toContain('no SDK provider writes it yet');
   });
 
   it('states the ONE-WAY pin only for a type that is not sticky-exempt', () => {
@@ -3152,6 +3221,11 @@ describe('renderChangelogFragment', () => {
     const monday = keyOf(render(['First']), '2026-09-15');
     const tuesday = keyOf(render(['Second']), '2026-09-16');
     expect(monday).not.toBe(tuesday);
+    // The fence MASKS backtick code spans before finding the closing `**`,
+    // and this re-implementation does not -- they agree only while the
+    // headline carries no backtick. Pinned so a future headline that adds one
+    // cannot make the two disagree silently.
+    expect(monday, 'the headline gained a code span; the key computed here is no longer the fence’s').not.toContain('`');
     // And the difference IS the date, not an accident of the property list.
     expect(monday.replace('2026-09-15', 'X')).toBe(tuesday.replace('2026-09-16', 'X'));
   });
@@ -3172,6 +3246,46 @@ describe('renderChangelogFragment', () => {
     expect(fragment).not.toContain('auto-route');
     expect(fragment).not.toContain('REFUSED at pre-flight');
     expect(fragment).not.toContain('ONE-WAY');
+  });
+
+  it('keeps an unknown type out of the routed list while still counting it', () => {
+    // The mixed cycle. The headline counts every property; the routed sentence
+    // must name only the type whose routing was established, or the fragment
+    // claims the auto-route for one it cannot answer for.
+    const fragment = renderChangelogFragment({
+      writableAdded: [
+        { resourceType: 'AWS::Mystery::Thing', properties: ['P'], createOnly: [] },
+        { resourceType: 'AWS::DynamoDB::Table', properties: ['Q'], createOnly: [] },
+      ],
+      exemptTypes,
+      unknownRoutingTypes: new Set(['AWS::Mystery::Thing']),
+    })!;
+    expect(fragment).toMatch(/^- \*\*AWS published 2 writable properties/);
+    expect(fragment).toContain('`AWS::Mystery::Thing`: `P`');
+    const routedEnd = fragment.indexOf('no SDK provider writes');
+    const routed = fragment.slice(fragment.lastIndexOf('On `', routedEnd), routedEnd);
+    expect(routed).toContain('`AWS::DynamoDB::Table`');
+    expect(routed).not.toContain('`AWS::Mystery::Thing`');
+    const pinEnd = fragment.indexOf('not in `STICKY_CC_MIGRATION_EXEMPT`');
+    expect(fragment.slice(fragment.lastIndexOf('. ', pinEnd) + 2, pinEnd)).not.toContain(
+      '`AWS::Mystery::Thing`'
+    );
+  });
+
+  it('collapses a wide UNKNOWN list like the others', () => {
+    const writableAdded = Array.from({ length: 40 }, (_, i) => ({
+      resourceType: `AWS::Service${i}::LongishResourceTypeName`,
+      properties: [`SomeReasonablyLongPropertyName${i}`],
+      createOnly: [],
+    }));
+    const fragment = renderChangelogFragment({
+      writableAdded,
+      exemptTypes,
+      unknownRoutingTypes: new Set(writableAdded.map((e) => e.resourceType)),
+    })!;
+    expect(fragment.trimEnd().length).toBeLessThanOrEqual(CHANGELOG_ENTRY_LIMIT);
+    expect(fragment).toContain('40 of those types');
+    expect(fragment).not.toContain('`AWS::Service0::LongishResourceTypeName`: ');
   });
 
   it('renders a cycle whose every type is unroutable', () => {
@@ -3207,6 +3321,9 @@ describe('renderChangelogFragment', () => {
     const refusal = fragment.slice(fragment.indexOf('cannot take that route') - 40);
     expect(refusal).toContain('`AWS::FSx::FileSystem`');
     expect(refusal).toContain('REFUSED at pre-flight');
+    // ONE routed property alongside a refused type is still "it": the pronoun
+    // reads this sentence's own population, not the headline's count.
+    expect(fragment).toContain('no SDK provider writes it yet');
     // The routed story and the ONE-WAY pin belong to the OTHER type only --
     // both are false for a type that never reaches Cloud Control. Bounded to
     // the sentence's own TYPE LIST: a slice by character count runs back into
