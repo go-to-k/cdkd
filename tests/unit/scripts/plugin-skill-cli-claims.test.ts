@@ -3,7 +3,13 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { buildProgram } from '../../../src/cli/program.js';
-import { collectCommandSpecs } from '../../../scripts/check-integ-cli-flags.ts';
+import {
+  acceptedFlagsFor,
+  collectCommandSpecs,
+  joinContinuedLines,
+  splitShellCommands,
+  stripTrailingComment,
+} from '../../../scripts/check-integ-cli-flags.js';
 
 /**
  * `plugins/cdkd-skills/skills/cdkd/SKILL.md` is the DISTRIBUTED plugin surface:
@@ -36,71 +42,96 @@ const PLUGIN_SKILL = join(repoRoot, 'plugins', 'cdkd-skills', 'skills', 'cdkd', 
 
 const specs = collectCommandSpecs(buildProgram());
 
-/**
- * Flags the page names that are NOT cdkd's own, with the reason each is
- * exempt. Listed rather than pattern-matched so a new foreign flag has to be
- * justified here instead of slipping through a regex.
- */
-const NOT_CDKD_FLAGS = new Map<string, string>([
-  // `cdk` (upstream) is named on the page for contrast with `cdkd`.
-  ['--profile', 'upstream `cdk` / AWS CLI flag, named for contrast'],
-]);
 
 /**
- * Every `cdkd <command...> --flag` occurrence the page advertises, read from
- * CODE ONLY — fenced blocks and inline spans.
+ * Every `cdkd <command...>` invocation the page advertises, with its flags.
  *
- * Scoping to code is load-bearing, not tidiness: the first cut scanned whole
- * lines and pulled `version` and `does` out of ordinary prose ("cdkd does not
- * ...", "cdkd version"), which the command check then reported as missing
- * commands. A checker whose own extractor invents findings is worse than none
- * — the next reader learns to ignore it.
+ * Four extractor bugs were found by PROBING this rather than by reading it,
+ * and each is named where it was fixed, because all four produce a checker
+ * that looks right:
+ *
+ * 1. Scanning whole lines pulled `version` and `does` out of ordinary prose
+ *    and reported them as missing COMMANDS. A checker that invents findings
+ *    teaches the next reader to ignore it. → code only.
+ * 2. `\bcdkd` matched inside the package NAME in
+ *    `npm view @go-to-k/cdkd version`. → `(?<![\w@/-])`.
+ * 3. Only `(command, flag)` PAIRS were pushed, so a FLAGLESS invocation was
+ *    never recorded and the command case was vacuous — `cdkd nosuchcmd
+ *    <stack>` passed. → a flagless invocation is recorded too.
+ * 4. A two-word claim fell back to the PARENT when the pair was unknown, so
+ *    `cdkd state nosuchsub` resolved to `state`, which exists. That silently
+ *    covered every subcommand on the page — `local invoke`, `state
+ *    refresh-observed`, `events prune` — i.e. exactly the renamed-in-src case
+ *    this test promises to catch. → {@link resolveCommand}.
+ *
+ * Line handling is delegated to `check-integ-cli-flags.ts` rather than
+ * re-spelled: `joinContinuedLines` (a `\`-continued command),
+ * `stripTrailingComment` (a trailing `# ... --flag` read as a claim) and
+ * `splitShellCommands` (`cdkd A && cdkd B --flag`, where a whole-line tail
+ * attributed the flag to A and dropped B). A second spelling of any of them is
+ * how the two would come to disagree.
  */
-function advertisedFlags(
-  text: string
-): Array<{ command: string; flag: string | undefined; line: number }> {
-  const out: Array<{ command: string; flag: string | undefined; line: number }> = [];
-  const lines = text.split('\n');
+function resolveCommand(words: string[]): string {
+  const first = words[0] as string;
+  if (words.length < 2) return first;
+  const pair = words.join(' ');
+  if (specs.has(pair)) return pair;
+  // Unknown pair: report it AS the pair when the parent really takes
+  // subcommands and the second word is a real word rather than a `<placeholder>`
+  // or an operand. Falling back to the parent here is bug 4.
+  const parent = specs.get(first);
+  const looksLikeSubcommand = /^[a-z][a-z-]*$/.test(words[1] as string);
+  if (parent && parent.children.size > 0 && looksLikeSubcommand) return pair;
+  return first;
+}
+
+interface Claim {
+  command: string;
+  flag: string | undefined;
+  line: number;
+  /** Which arm saw it — fenced block, or an inline `code` span. */
+  arm: 'fence' | 'inline';
+}
+
+function advertisedFlags(text: string): Claim[] {
+  const out: Claim[] = [];
   let inFence = false;
+  let fenceMarker = '';
 
-  lines.forEach((line, i) => {
-    if (/^\s*```/.test(line)) {
-      inFence = !inFence;
-      return;
+  for (const { text: raw, line } of joinContinuedLines(text)) {
+    // Both fence spellings, with or without a language tag or indentation. A
+    // fence closes only on its OWN marker, so a ``` inside a ~~~ block does
+    // not end it.
+    const fence = /^\s*(```+|~~~+)/.exec(raw);
+    if (fence) {
+      const marker = (fence[1] as string).slice(0, 3);
+      if (!inFence) {
+        inFence = true;
+        fenceMarker = marker;
+      } else if (marker === fenceMarker) {
+        inFence = false;
+      }
+      continue;
     }
-    // Inside a fence the whole line is code; outside, only inline spans are.
-    const codeChunks = inFence
-      ? [line]
-      : [...line.matchAll(/`([^`]+)`/g)].map((m) => m[1] as string);
 
-    for (const chunk of codeChunks) {
-      // `(?<![\w@/-])` so the package NAME does not match: `npm view
-      // @go-to-k/cdkd version engines` contains the literal `cdkd version`,
-      // and the first cut reported `version` as a missing cdkd command. A
-      // checker that invents findings teaches the next reader to ignore it.
-      const invocation = /(?<![\w@/-])cdkd\s+([a-z][a-z-]*(?:\s+[a-z][a-z-]*)?)\b([^\n]*)/g;
-      let m: RegExpExecArray | null;
-      while ((m = invocation.exec(chunk)) !== null) {
-        const words = (m[1] as string).split(/\s+/);
-        const tail = m[2] as string;
-        // Resolve the deepest path the tree knows: `state orphan` is two
-        // words, `deploy` is one.
-        const two = words.join(' ');
-        const command = specs.has(two) ? two : (words[0] as string);
-        // The command is recorded even with NO flags. The first cut pushed
-        // only (command, flag) pairs, so a flagless invocation of a
-        // nonexistent command was invisible and the command case was vacuous
-        // — probed: `cdkd nosuchcmd <stack>` passed.
-        const flags = [...tail.matchAll(/(?:^|[\s`'"(])(--[a-z][a-z0-9-]*)/g)].map(
-          (f) => f[1] as string
-        );
-        if (flags.length === 0) {
-          out.push({ command, flag: undefined, line: i + 1 });
+    const chunks = inFence ? [raw] : [...raw.matchAll(/`([^`]+)`/g)].map((m) => m[1] as string);
+
+    for (const chunk of chunks) {
+      for (const segment of splitShellCommands(stripTrailingComment(chunk))) {
+        const invocation = /(?<![\w@/-])cdkd\s+([a-z][a-z-]*(?:\s+[a-z][a-z-]*)?)\b([^\n]*)/g;
+        let m: RegExpExecArray | null;
+        while ((m = invocation.exec(segment)) !== null) {
+          const command = resolveCommand((m[1] as string).split(/\s+/));
+          const flags = [...(m[2] as string).matchAll(/(?:^|[\s`'"(])(--[a-z][a-z0-9-]*)/g)].map(
+            (f) => f[1] as string
+          );
+          const arm = inFence ? 'fence' : 'inline';
+          if (flags.length === 0) out.push({ command, flag: undefined, line, arm });
+          for (const flag of flags) out.push({ command, flag, line, arm });
         }
-        for (const flag of flags) out.push({ command, flag, line: i + 1 });
       }
     }
-  });
+  }
   return out;
 }
 
@@ -125,6 +156,20 @@ describe('the distributed plugin skill advertises only flags the CLI has', () =>
         'documents several, so the extractor is seeing a fraction of its input.'
     ).toBeGreaterThanOrEqual(3);
 
+    // PER ARM, not per total. Measured: the fenced arm alone yields 18 flags
+    // and 16 commands, clearing both totals by itself — so the INLINE arm,
+    // which carries the widest command coverage on this page, could stop
+    // matching entirely and every aggregate floor would still pass.
+    for (const arm of ['fence', 'inline'] as const) {
+      const fromArm = claims.filter((c) => c.arm === arm);
+      expect(
+        fromArm.length,
+        `the ${arm} arm parsed nothing out of the plugin skill. Each arm reads a different ` +
+          'shape (fenced blocks vs inline `code` spans) and an aggregate floor is satisfied by ' +
+          'the other one alone, so a dead arm is invisible without this.'
+      ).toBeGreaterThanOrEqual(3);
+    }
+
     // And the tree itself must be non-trivial, or every lookup below would
     // resolve against an empty map and the flag check would be vacuous.
     expect(specs.size, 'buildProgram() produced no command specs').toBeGreaterThanOrEqual(10);
@@ -133,12 +178,12 @@ describe('the distributed plugin skill advertises only flags the CLI has', () =>
   it('every advertised flag exists on the command it is advertised for', () => {
     const unknown = claims.filter(({ command, flag }) => {
       if (flag === undefined) return false; // a flagless invocation: the command case judges it
-      if (NOT_CDKD_FLAGS.has(flag)) return false;
-      const spec = specs.get(command);
-      if (!spec) return false; // command coverage is the next case's job
-      // A flag counts when the command OR the root declares it, matching
-      // Commander's own lookup for program-level options.
-      return !spec.longFlags.has(flag) && !specs.get('')?.longFlags.has(flag);
+      if (!specs.has(command)) return false; // command coverage is the next case's job
+      // `acceptedFlagsFor` walks EVERY ancestor, not just own + root. That
+      // distinction is not hypothetical: the module added it because own+root
+      // "produced false positives on all five `events prune` call sites" --
+      // `--state-bucket` is declared on the `events` parent.
+      return !acceptedFlagsFor(command, specs).has(flag);
     });
 
     expect(
