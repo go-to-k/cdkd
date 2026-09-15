@@ -386,8 +386,8 @@ Dispatch this single reviewer (run via Agent tool in the main session):
 
 **If final tier is `3-axis`**, emit the same block three times in ONE
 parallel message, for `.claude/agents/pr-spec-reviewer.md` (add
-`- Design doc: <path>` — ask the user; spec review is meaningless without
-one, and if none exists, downgrade to 1-reviewer instead),
+`- Design doc: <path>`, or the issue numbers the PR declares when there is
+none — never downgrade the tier for want of a doc),
 `.claude/agents/pr-code-reviewer.md`, and
 `.claude/agents/pr-test-reviewer.md`.
 
