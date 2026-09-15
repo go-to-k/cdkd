@@ -5,6 +5,21 @@ import { Construct } from 'constructs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 
+/**
+ * Every Lambda here declares the HOST's architecture (issue #2287; the rule
+ * and its fence are in `.claude/rules/testing.md`). A `lambda.Function`
+ * with no `architecture` is `X86_64`, so on an arm64 host its container
+ * runs under CPU emulation, where the Go RIE inside the base image faults
+ * on roughly one run in three -- measured twice on 2026-09-14 under
+ * go-to-k/cdkd#3133's runs, readable only once that PR's `capture`
+ * diagnostic printed the stderr. The asset is portable bytecode and the
+ * base image is multi-arch, so the host-derived form is native on both.
+ * The inline-rejection `CfnFunction` never starts a container, but carries
+ * the same declaration so the fence has one rule.
+ */
+const HOST_ARCHITECTURE =
+  process.arch === 'arm64' ? lambda.Architecture.ARM_64 : lambda.Architecture.X86_64;
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
@@ -39,6 +54,7 @@ export class LocalInvokeJavaStack extends cdk.Stack {
       runtime: lambda.Runtime.JAVA_17,
       handler: 'Handler::handleRequest',
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambda')),
+      architecture: HOST_ARCHITECTURE,
       environment: {
         GREETING: 'hello',
       },
@@ -57,6 +73,7 @@ export class LocalInvokeJavaStack extends cdk.Stack {
       runtime: 'java17',
       handler: 'Handler::handleRequest',
       role: inlineRole.roleArn,
+      architectures: [HOST_ARCHITECTURE.name],
       // The body is intentionally a no-op — cdkd local invoke must
       // reject this BEFORE attempting any container work.
       code: {

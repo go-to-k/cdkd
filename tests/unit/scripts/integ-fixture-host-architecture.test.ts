@@ -12,7 +12,7 @@
  *                                    11 (Segmentation fault) - core dumped`
  *   local-invoke     RC=1 DUR=35s   same fault at step 6/6
  *
- * The two fixtures below therefore declare the HOST's architecture, which is
+ * The fixtures below therefore declare the HOST's architecture, which is
  * native on an Apple Silicon dev host and on an x86_64 CI runner alike.
  *
  * This test exists because the failure mode is SILENT AND ENVIRONMENT-
@@ -33,9 +33,10 @@ const REPO_ROOT = resolve(import.meta.dirname, '../../..');
  *
  * Deriving this from a directory scan would do two harmful things at once: it
  * would go blind to a fixture being dropped from the set, and it would widen
- * the fence to fixtures nobody has run on an arm64 host. 16 further `local-*`
- * fixtures still declare no architecture (go-to-k/cdkd#2287); they join this
- * list one at a time, after a green arm64 run each.
+ * the fence to fixtures nobody has run on an arm64 host. 11 further
+ * Lambda-bearing `local-*` fixtures still declare no architecture
+ * (go-to-k/cdkd#2287, measured 2026-09-14); they join this list one at a time,
+ * after a green arm64 run each.
  */
 /**
  * ...and note what widening this list COSTS, because the constraint is real and
@@ -55,15 +56,34 @@ const FIXTURE_STACKS = [
   // Joined with issue #3106: its handler spawns a process, which under
   // emulation hung the invoke on roughly one run in three on an arm64 host.
   'tests/integration/local-invoke-layers/lib/local-invoke-layers-stack.ts',
+  // Joined under issue #2287 after the RIE faulted under emulation on one run
+  // each during go-to-k/cdkd#3133's runs (2026-09-14) -- the first time the
+  // fault was READABLE, since that PR's `capture` helper prints the stderr.
+  // Each carries a `CfnFunction` for its inline-rejection arm, which is why
+  // that spelling joined the accepted set below.
+  'tests/integration/local-invoke-dotnet/lib/local-invoke-dotnet-stack.ts',
+  'tests/integration/local-invoke-java/lib/local-invoke-java-stack.ts',
 ];
 
-/** The one Lambda constructor spelling both fixtures are required to use. */
+/** The L2 spelling every listed fixture's handlers use; the first row of `ACCEPTED_CTORS`. */
 const CANONICAL_CTOR = 'new lambda.Function(';
+
+/**
+ * The accepted spellings and what each must declare. `CfnFunction` takes the
+ * L1 shape -- `Architectures: [string]` -- so its pin is the L2 enum's `.name`
+ * (`arm64` / `x86_64`), read through the same `HOST_ARCHITECTURE` constant;
+ * a hardcoded `['arm64']` or `['x86_64']` fails for the same reason a
+ * hardcoded L2 enum does.
+ */
+const ACCEPTED_CTORS: ReadonlyArray<readonly [ctor: string, required: string]> = [
+  [CANONICAL_CTOR, 'architecture: HOST_ARCHITECTURE'],
+  ['new lambda.CfnFunction(', 'architectures: [HOST_ARCHITECTURE.name]'],
+];
 
 /**
  * Every `new <Something>Function(` constructor call, in any spelling.
  *
- * `lambdaFunctionCalls` below keys off the single canonical spelling, so on its
+ * `lambdaFunctionCalls` below keys off one accepted spelling at a time, so on its
  * own it would report a clean pass for a handler added as `NodejsFunction` /
  * `lambda.DockerImageFunction` / a named-import `new Function(` / even
  * `new lambda.Function (` with a space -- i.e. it would be blind to exactly the
@@ -71,8 +91,8 @@ const CANONICAL_CTOR = 'new lambda.Function(';
  * hypothetical across the wider fixture set: `local-*` currently contains four
  * spellings (`lambda.Function`, `lambda.CfnFunction`, `lambda.DockerImageFunction`,
  * `cloudfront.Function`), and the last is not a Lambda at all. Matching the
- * broad shape and then REQUIRING every hit to be canonical turns an
- * unrecognized spelling into a loud failure instead of a silent pass.
+ * broad shape and then REQUIRING every hit to be an accepted spelling turns an
+ * unrecognized one into a loud failure instead of a silent pass.
  *
  * The namespace part is `*`, not `?`, and that quantifier is load-bearing. With
  * `?` the pattern allowed exactly ONE segment, so
@@ -87,7 +107,7 @@ const CANONICAL_CTOR = 'new lambda.Function(';
 const ANY_FUNCTION_CTOR = /new\s+(?:[A-Za-z_$][\w$]*\s*\.\s*)*[\w$]*Function\s*\(/g;
 
 /**
- * The exact derivation both fixtures must carry, whitespace-normalized.
+ * The exact derivation every listed fixture must carry, whitespace-normalized.
  *
  * Hardcoding either architecture merely moves the emulation to the other host:
  * `ARM_64` makes an amd64 CI runner emulate, and `X86_64` is the default that
@@ -104,15 +124,15 @@ const HOST_ARCH_DERIVATION =
  * single-line and the wrapped `new lambda.Function(\n  this,\n  'Id',\n  {...}\n)`
  * spellings are covered (`local-start-api` uses both).
  */
-function lambdaFunctionCalls(source: string): string[] {
+function lambdaFunctionCalls(source: string, ctor: string): string[] {
   const calls: string[] = [];
   let from = 0;
   for (;;) {
-    const start = source.indexOf(CANONICAL_CTOR, from);
+    const start = source.indexOf(ctor, from);
     if (start === -1) break;
     let depth = 0;
-    let end = start + CANONICAL_CTOR.length - 1;
-    for (let i = start + CANONICAL_CTOR.length - 1; i < source.length; i++) {
+    let end = start + ctor.length - 1;
+    for (let i = start + ctor.length - 1; i < source.length; i++) {
       const ch = source[i];
       if (ch === '(') depth++;
       else if (ch === ')') {
@@ -146,56 +166,59 @@ describe('integ fixture Lambdas run at the host architecture (go-to-k/cdk-local#
         ).toContain(HOST_ARCH_DERIVATION);
       });
 
-      it('defines its Lambdas only via the canonical `new lambda.Function(` spelling', () => {
+      it('defines its Lambdas only via the accepted spellings (`new lambda.Function(` / `new lambda.CfnFunction(`)', () => {
         // Guards the assumption the next test depends on. Without it, a handler
         // added as `NodejsFunction` / `DockerImageFunction` / `new Function(`
         // would not be found at all, and "every construct declares the
         // architecture" would be VACUOUSLY true of it.
         const source = read();
         const found = [...source.matchAll(ANY_FUNCTION_CTOR)].map((m) => m[0]);
-        const nonCanonical = found.filter((spelling) => spelling !== CANONICAL_CTOR);
+        const accepted = new Set(ACCEPTED_CTORS.map(([ctor]) => ctor));
+        const unknown = found.filter((spelling) => !accepted.has(spelling));
         expect(
-          nonCanonical,
+          unknown,
           `${relPath}: found Lambda constructor spelling(s) this fence does not ` +
-            `understand. Either use \`${CANONICAL_CTOR}\`, or teach ` +
-            `lambdaFunctionCalls() the new spelling -- otherwise the architecture ` +
-            `check silently skips those constructs.`
+            `understand. Either use one of ${[...accepted].join(' / ')}, or teach ` +
+            `ACCEPTED_CTORS the new spelling and what it must declare -- otherwise ` +
+            `the architecture check silently skips those constructs.`
         ).toEqual([]);
         expect(found.length, `${relPath} should declare at least one Lambda`).toBeGreaterThan(0);
       });
 
-      it('declares architecture: HOST_ARCHITECTURE on every lambda.Function', () => {
+      it('declares the host architecture on every accepted constructor', () => {
         const source = read();
-        const calls = lambdaFunctionCalls(source);
         const found = [...source.matchAll(ANY_FUNCTION_CTOR)].map((m) => m[0]);
-        // The count check is GUARDED on the spelling being canonical. A
-        // non-canonical spelling makes the counts disagree BY CONSTRUCTION --
-        // the paren matcher only walks `new lambda.Function(` -- so running it
+        const accepted = new Set(ACCEPTED_CTORS.map(([ctor]) => ctor));
+        let total = 0;
+        const missing: string[] = [];
+        for (const [ctor, required] of ACCEPTED_CTORS) {
+          const calls = lambdaFunctionCalls(source, ctor);
+          total += calls.length;
+          // Name the offender by its construct id, so the failure points at the
+          // function to fix rather than at a count.
+          for (const call of calls) {
+            if (call.includes(required)) continue;
+            const id = /\(\s*this,\s*['"]([^'"]+)['"]/.exec(call)?.[1] ?? call.slice(0, 80);
+            missing.push(`${id} (${ctor.slice(4, -1)} needs \`${required}\`)`);
+          }
+        }
+        // The count check is GUARDED on every spelling being accepted. An
+        // unknown spelling makes the counts disagree BY CONSTRUCTION -- the
+        // paren matcher only walks the accepted constructors -- so running it
         // anyway produced a second failure blaming the paren matcher for what
         // the test above has already reported correctly, sending the reader
         // after a mis-delimitation that never happened.
-        if (found.every((spelling) => spelling === CANONICAL_CTOR)) {
-          expect(
-            calls.length,
-            `${relPath}: paren matcher and regex disagree on the Lambda count`
-          ).toBe(found.length);
-        }
-        expect(calls.length, `${relPath} should declare at least one Lambda`).toBeGreaterThan(0);
-
-        const missing = calls
-          .filter((call) => !call.includes('architecture: HOST_ARCHITECTURE'))
-          // Name the offender by its construct id, so the failure points at the
-          // function to fix rather than at a count.
-          .map(
-            (call) =>
-              /new lambda\.Function\(\s*this,\s*'([^']+)'/.exec(call)?.[1] ?? call.slice(0, 80)
+        if (found.every((spelling) => accepted.has(spelling))) {
+          expect(total, `${relPath}: paren matcher and regex disagree on the Lambda count`).toBe(
+            found.length
           );
+        }
+        expect(total, `${relPath} should declare at least one Lambda`).toBeGreaterThan(0);
         expect(
           missing,
-          `${relPath}: these lambda.Function constructs are missing ` +
-            `\`architecture: HOST_ARCHITECTURE\`, which reintroduces the amd64-emulation ` +
-            `segfault on arm64 hosts for them (go-to-k/cdk-local#560). Note this passes ` +
-            `on CI, where amd64 IS the default.`
+          `${relPath}: these constructs do not declare the host architecture, which ` +
+            `reintroduces the amd64-emulation fault on arm64 hosts for them ` +
+            `(go-to-k/cdk-local#560). Note this passes on CI, where amd64 IS the default.`
         ).toEqual([]);
       });
     });
@@ -204,7 +227,7 @@ describe('integ fixture Lambdas run at the host architecture (go-to-k/cdk-local#
   it('pins the fixture count, so a fixture silently leaving the list is loud', () => {
     // The list is literals precisely so it can shrink by accident; this is what
     // makes that accident fail. Raise it as fixtures from go-to-k/cdkd#2287 join.
-    expect(FIXTURE_STACKS.length).toBe(3);
+    expect(FIXTURE_STACKS.length).toBe(5);
     expect(new Set(FIXTURE_STACKS).size).toBe(FIXTURE_STACKS.length);
   });
 });
