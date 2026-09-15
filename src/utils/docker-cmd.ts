@@ -1662,6 +1662,15 @@ export function describeDockerFailure(error: unknown, args: readonly string[]): 
  * reads one of these; none of them carries argv or stream text.
  */
 const CLASSIFICATION_FIELDS = [
+  // `exitCode` FIRST because it is the one field the real failure carries:
+  // these four sites reject through `spawnStreaming`, whose `SpawnError` sets
+  // `stderr` / `stdout` / `exitCode` and nothing else. The list was written
+  // from the `execFile` shape and omitted it, so on the dominant failure --
+  // docker exiting non-zero -- the cause carried a name and a message and no
+  // classification at all, defeating the whole point of threading one
+  // (go-to-k/cdkd#2075). `stderr` / `stdout` stay OFF: the composer has
+  // already read and REDACTED them into the message.
+  'exitCode',
   'code',
   'errno',
   'signal',

