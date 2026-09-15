@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::DynamoDB::GlobalTable",
-  "generatedAt": "2026-09-09",
+  "generatedAt": "2026-09-15",
   "properties": [
     "Arn",
     "AttributeDefinitions",
@@ -20,6 +20,7 @@
     "TableId",
     "TableName",
     "TimeToLiveSpecification",
+    "VectorIndexes",
     "WarmThroughput",
     "WriteOnDemandThroughputSettings",
     "WriteProvisionedThroughputSettings"
@@ -46,6 +47,18 @@
     "WarmThroughput": [
       "ReadUnitsPerSecond",
       "WriteUnitsPerSecond"
+    ],
+    "VectorIndexes": [
+      "AttributeName",
+      "Dimensions",
+      "DistanceFunction",
+      "IndexName",
+      "NonKeyAttributes",
+      "Projection",
+      "ProjectionType",
+      "SearchSchema",
+      "SearchSchemaElementType",
+      "VectorAttribute"
     ],
     "Replicas": [
       "ApproximateCreationDateTimePrecision",
@@ -169,6 +182,19 @@
     "WarmThroughput": [
       "ReadUnitsPerSecond",
       "WriteUnitsPerSecond"
+    ],
+    "VectorIndexes": [
+      "Dimensions",
+      "DistanceFunction",
+      "IndexName",
+      "Projection",
+      "Projection.NonKeyAttributes",
+      "Projection.ProjectionType",
+      "SearchSchema",
+      "SearchSchema.AttributeName",
+      "SearchSchema.SearchSchemaElementType",
+      "VectorAttribute",
+      "VectorAttribute.AttributeName"
     ],
     "Replicas": [
       "ContributorInsightsSpecification",
@@ -309,6 +335,7 @@
       "SSESpecification": "object",
       "StreamSpecification": "object",
       "WarmThroughput": "object",
+      "VectorIndexes": "array",
       "Replicas": "array",
       "WriteProvisionedThroughputSettings": "object",
       "GlobalTableSourceArn": "scalar",
@@ -326,10 +353,17 @@
       "ReadOnDemandThroughputSettings": "object",
       "TimeToLiveSpecification": "object"
     },
+    "SearchSchemaElement": {
+      "AttributeName": "scalar",
+      "SearchSchemaElementType": "scalar"
+    },
     "LocalSecondaryIndex": {
       "IndexName": "scalar",
       "Projection": "object",
       "KeySchema": "array"
+    },
+    "VectorAttribute": {
+      "AttributeName": "scalar"
     },
     "ReplicaSpecification": {
       "SSESpecification": "object",
@@ -377,6 +411,14 @@
     },
     "WriteProvisionedThroughputSettings": {
       "WriteCapacityAutoScalingSettings": "object"
+    },
+    "VectorIndex": {
+      "IndexName": "scalar",
+      "VectorAttribute": "object",
+      "Projection": "object",
+      "Dimensions": "scalar",
+      "SearchSchema": "array",
+      "DistanceFunction": "scalar"
     },
     "WriteOnDemandThroughputSettings": {
       "MaxWriteRequestUnits": "scalar"
@@ -452,10 +494,17 @@
     "#top": [
       "Replicas"
     ],
+    "SearchSchemaElement": [
+      "AttributeName",
+      "SearchSchemaElementType"
+    ],
     "LocalSecondaryIndex": [
       "IndexName",
       "KeySchema",
       "Projection"
+    ],
+    "VectorAttribute": [
+      "AttributeName"
     ],
     "ReplicaSpecification": [
       "Region"
@@ -471,6 +520,13 @@
       "IndexName",
       "KeySchema",
       "Projection"
+    ],
+    "VectorIndex": [
+      "Dimensions",
+      "DistanceFunction",
+      "IndexName",
+      "Projection",
+      "VectorAttribute"
     ],
     "SSESpecification": [
       "SSEEnabled"

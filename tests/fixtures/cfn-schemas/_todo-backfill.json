@@ -83,7 +83,11 @@
       "MultiRegionConsistency",
       "ReadOnDemandThroughputSettings",
       "ReadProvisionedThroughputSettings",
+      "VectorIndexes",
       "WarmThroughput"
+    ],
+    "AWS::DynamoDB::Table": [
+      "VectorIndexes"
     ],
     "AWS::EC2::Instance": [
       "AdditionalInfo",

@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::DynamoDB::Table",
-  "generatedAt": "2026-09-09",
+  "generatedAt": "2026-09-15",
   "properties": [
     "Arn",
     "AttributeDefinitions",
@@ -23,6 +23,7 @@
     "TableName",
     "Tags",
     "TimeToLiveSpecification",
+    "VectorIndexes",
     "WarmThroughput"
   ],
   "readOnlyProperties": [
@@ -85,6 +86,18 @@
     "WarmThroughput": [
       "ReadUnitsPerSecond",
       "WriteUnitsPerSecond"
+    ],
+    "VectorIndexes": [
+      "AttributeName",
+      "Dimensions",
+      "DistanceFunction",
+      "IndexName",
+      "NonKeyAttributes",
+      "Projection",
+      "ProjectionType",
+      "SearchSchema",
+      "SearchSchemaElementType",
+      "VectorAttribute"
     ],
     "AttributeDefinitions": [
       "AttributeName",
@@ -186,6 +199,19 @@
       "ReadUnitsPerSecond",
       "WriteUnitsPerSecond"
     ],
+    "VectorIndexes": [
+      "Dimensions",
+      "DistanceFunction",
+      "IndexName",
+      "Projection",
+      "Projection.NonKeyAttributes",
+      "Projection.ProjectionType",
+      "SearchSchema",
+      "SearchSchema.AttributeName",
+      "SearchSchema.SearchSchemaElementType",
+      "VectorAttribute",
+      "VectorAttribute.AttributeName"
+    ],
     "AttributeDefinitions": [
       "AttributeName",
       "AttributeType"
@@ -247,6 +273,7 @@
       "PointInTimeRecoverySpecification": "object",
       "ProvisionedThroughput": "object",
       "WarmThroughput": "object",
+      "VectorIndexes": "array",
       "TableName": "scalar",
       "AttributeDefinitions": "array",
       "GlobalSecondaryIndexes": "array",
@@ -261,14 +288,61 @@
       "Tags": "array",
       "TimeToLiveSpecification": "object"
     },
-    "OnDemandThroughput": {
-      "MaxReadRequestUnits": "scalar",
-      "MaxWriteRequestUnits": "scalar"
+    "SearchSchemaElement": {
+      "AttributeName": "scalar",
+      "SearchSchemaElementType": "scalar"
     },
     "LocalSecondaryIndex": {
       "IndexName": "scalar",
       "Projection": "object",
       "KeySchema": "array"
+    },
+    "VectorAttribute": {
+      "AttributeName": "scalar"
+    },
+    "InputFormatOptions": {
+      "Csv": "object"
+    },
+    "AttributeDefinition": {
+      "AttributeType": "scalar",
+      "AttributeName": "scalar"
+    },
+    "Projection": {
+      "NonKeyAttributes": "array",
+      "ProjectionType": "scalar"
+    },
+    "PointInTimeRecoverySpecification": {
+      "PointInTimeRecoveryEnabled": "scalar",
+      "RecoveryPeriodInDays": "scalar"
+    },
+    "ProvisionedThroughput": {
+      "WriteCapacityUnits": "scalar",
+      "ReadCapacityUnits": "scalar"
+    },
+    "GlobalSecondaryIndex": {
+      "IndexName": "scalar",
+      "OnDemandThroughput": "object",
+      "ContributorInsightsSpecification": "object",
+      "Projection": "object",
+      "ProvisionedThroughput": "object",
+      "KeySchema": "array",
+      "WarmThroughput": "object"
+    },
+    "VectorIndex": {
+      "IndexName": "scalar",
+      "VectorAttribute": "object",
+      "Projection": "object",
+      "Dimensions": "scalar",
+      "SearchSchema": "array",
+      "DistanceFunction": "scalar"
+    },
+    "DeprecatedHashKeyElement": {
+      "AttributeType": "scalar",
+      "AttributeName": "scalar"
+    },
+    "OnDemandThroughput": {
+      "MaxReadRequestUnits": "scalar",
+      "MaxWriteRequestUnits": "scalar"
     },
     "SSESpecification": {
       "SSEEnabled": "scalar",
@@ -278,9 +352,6 @@
     "KinesisStreamSpecification": {
       "ApproximateCreationDateTimePrecision": "scalar",
       "StreamArn": "scalar"
-    },
-    "InputFormatOptions": {
-      "Csv": "object"
     },
     "StreamSpecification": {
       "StreamViewType": "scalar",
@@ -301,34 +372,9 @@
       "InputFormatOptions": "object",
       "InputCompressionType": "scalar"
     },
-    "AttributeDefinition": {
-      "AttributeType": "scalar",
-      "AttributeName": "scalar"
-    },
-    "Projection": {
-      "NonKeyAttributes": "array",
-      "ProjectionType": "scalar"
-    },
-    "PointInTimeRecoverySpecification": {
-      "PointInTimeRecoveryEnabled": "scalar",
-      "RecoveryPeriodInDays": "scalar"
-    },
-    "ProvisionedThroughput": {
-      "WriteCapacityUnits": "scalar",
-      "ReadCapacityUnits": "scalar"
-    },
     "WarmThroughput": {
       "ReadUnitsPerSecond": "scalar",
       "WriteUnitsPerSecond": "scalar"
-    },
-    "GlobalSecondaryIndex": {
-      "IndexName": "scalar",
-      "OnDemandThroughput": "object",
-      "ContributorInsightsSpecification": "object",
-      "Projection": "object",
-      "ProvisionedThroughput": "object",
-      "KeySchema": "array",
-      "WarmThroughput": "object"
     },
     "S3BucketSource": {
       "S3Bucket": "scalar",
@@ -349,10 +395,6 @@
       "Value": "scalar",
       "Key": "scalar"
     },
-    "DeprecatedHashKeyElement": {
-      "AttributeType": "scalar",
-      "AttributeName": "scalar"
-    },
     "TimeToLiveSpecification": {
       "Enabled": "scalar",
       "AttributeName": "scalar"
@@ -362,10 +404,41 @@
     "#top": [
       "KeySchema"
     ],
+    "SearchSchemaElement": [
+      "AttributeName",
+      "SearchSchemaElementType"
+    ],
     "LocalSecondaryIndex": [
       "IndexName",
       "KeySchema",
       "Projection"
+    ],
+    "VectorAttribute": [
+      "AttributeName"
+    ],
+    "AttributeDefinition": [
+      "AttributeName",
+      "AttributeType"
+    ],
+    "ProvisionedThroughput": [
+      "ReadCapacityUnits",
+      "WriteCapacityUnits"
+    ],
+    "GlobalSecondaryIndex": [
+      "IndexName",
+      "KeySchema",
+      "Projection"
+    ],
+    "VectorIndex": [
+      "Dimensions",
+      "DistanceFunction",
+      "IndexName",
+      "Projection",
+      "VectorAttribute"
+    ],
+    "DeprecatedHashKeyElement": [
+      "AttributeName",
+      "AttributeType"
     ],
     "SSESpecification": [
       "SSEEnabled"
@@ -383,19 +456,6 @@
       "InputFormat",
       "S3BucketSource"
     ],
-    "AttributeDefinition": [
-      "AttributeName",
-      "AttributeType"
-    ],
-    "ProvisionedThroughput": [
-      "ReadCapacityUnits",
-      "WriteCapacityUnits"
-    ],
-    "GlobalSecondaryIndex": [
-      "IndexName",
-      "KeySchema",
-      "Projection"
-    ],
     "S3BucketSource": [
       "S3Bucket"
     ],
@@ -412,10 +472,6 @@
     "Tag": [
       "Key",
       "Value"
-    ],
-    "DeprecatedHashKeyElement": [
-      "AttributeName",
-      "AttributeType"
     ],
     "TimeToLiveSpecification": [
       "Enabled"
