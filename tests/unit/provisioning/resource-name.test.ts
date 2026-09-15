@@ -1,9 +1,13 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
+  applyDefaultNameForFallback,
+  explicitNamePropertyFor,
+  fallbackNamePropertyFor,
   generateResourceName,
   generateResourceNameWithFallback,
   getCurrentSkipPrefix,
   setCurrentStackName,
+  withoutGeneratedFallbackName,
   withSkipPrefix,
   withStackName,
 } from '../../../src/provisioning/resource-name.js';
@@ -224,6 +228,154 @@ describe('resource-name', () => {
 
       expect(a).toBe('StackA-MyRole');
       expect(b).toBe('StackB-MyRole');
+    });
+  });
+
+  // Issue #3174: a Cloud Control create of `AWS::Lambda::CapacityProvider`
+  // without `CapacityProviderName` fails with `Resource Handler Internal
+  // Failure`, although the schema does not require the name.
+  describe('applyDefaultNameForFallback — AWS::Lambda::CapacityProvider (#3174)', () => {
+    const TYPE = 'AWS::Lambda::CapacityProvider';
+    // The name alternative of the schema's `CapacityProviderName` pattern.
+    const SCHEMA_NAME = /^[a-zA-Z0-9-_]+$/;
+
+    it('fills CapacityProviderName from the stack name and logical id when absent', () => {
+      const props = { VpcConfig: { SubnetIds: ['subnet-1'] } };
+      const result = withStackName('MyStack', () =>
+        applyDefaultNameForFallback('Provider2281708E', TYPE, props)
+      );
+      expect(result).toEqual({
+        VpcConfig: { SubnetIds: ['subnet-1'] },
+        CapacityProviderName: 'MyStack-Provider2281708E',
+      });
+      // Not mutated: the caller's resolved bag is reused by the diff.
+      expect(props).not.toHaveProperty('CapacityProviderName');
+    });
+
+    it('keeps a user-supplied name untouched', () => {
+      const props = { CapacityProviderName: 'my-provider' };
+      const result = withStackName('MyStack', () =>
+        applyDefaultNameForFallback('Provider2281708E', TYPE, props)
+      );
+      expect(result).toBe(props);
+    });
+
+    // The two sides of the schema's 140-character cap: a name AT the cap is
+    // kept verbatim, one character over it is cut to exactly the cap.
+    it('keeps a name of exactly 140 characters verbatim', () => {
+      const stack = 'A'.repeat(70);
+      const logicalId = 'B'.repeat(69);
+      expect(`${stack}-${logicalId}`).toHaveLength(140);
+      const result = withStackName(stack, () => applyDefaultNameForFallback(logicalId, TYPE, {}));
+      expect(result['CapacityProviderName']).toBe(`${stack}-${logicalId}`);
+    });
+
+    it('cuts a 141-character name to exactly 140, ending in the hash', () => {
+      const stack = 'A'.repeat(70);
+      const logicalId = 'B'.repeat(70);
+      const full = `${stack}-${logicalId}`;
+      expect(full).toHaveLength(141);
+      const result = withStackName(stack, () => applyDefaultNameForFallback(logicalId, TYPE, {}));
+      const name = result['CapacityProviderName'] as string;
+      expect(name).toHaveLength(140);
+      // 131 kept characters, a separator, 8 hex characters of hash.
+      expect(name.startsWith(full.slice(0, 131))).toBe(true);
+      expect(name).toMatch(/-[0-9a-f]{8}$/);
+    });
+
+    it('sanitizes a nested child stack name into the schema pattern at 140 characters', () => {
+      // A nested child deploys under `<parent>~<logicalId>`, and `~` is outside
+      // both the default allowed set and the schema pattern: unsanitized, the
+      // name fails the pattern; sanitized, it reads `Parent-...`.
+      const stack = `Parent~${'S'.repeat(120)}`;
+      const logicalId = `Provider${'L'.repeat(100)}`;
+      expect(`${stack}-${logicalId}`.length).toBeGreaterThan(140);
+      const result = withStackName(stack, () => applyDefaultNameForFallback(logicalId, TYPE, {}));
+      const name = result['CapacityProviderName'] as string;
+      expect(name.startsWith(`Parent-${'S'.repeat(120)}-Pro`)).toBe(true);
+      expect(name).toHaveLength(140);
+      expect(name).toMatch(SCHEMA_NAME);
+      expect(name).toMatch(/-[0-9a-f]{8}$/);
+    });
+
+    it('is the name property the orphan-adoption allow-list reads', () => {
+      expect(explicitNamePropertyFor(TYPE)).toBe('CapacityProviderName');
+    });
+  });
+
+  describe('fallbackNamePropertyFor (#3174)', () => {
+    it.each([
+      ['AWS::Lambda::CapacityProvider', 'CapacityProviderName'],
+      // Two whose name is UPDATABLE: the update path's drop must cover them
+      // too, or a generated name renames an imported resource.
+      ['AWS::Cognito::UserPool', 'UserPoolName'],
+      ['AWS::IAM::Policy', 'PolicyName'],
+      ['AWS::S3::Bucket', 'BucketName'],
+    ])('%s answers %s, the property applyDefaultNameForFallback fills', (type, property) => {
+      expect(fallbackNamePropertyFor(type)).toBe(property);
+      const filled = withStackName('MyStack', () => applyDefaultNameForFallback('Res', type, {}));
+      expect(Object.keys(filled)).toEqual([property]);
+    });
+
+    it('answers undefined for a type with no rule, including one only the adoption table names', () => {
+      expect(fallbackNamePropertyFor('AWS::EFS::FileSystem')).toBeUndefined();
+      // `ADOPTION_ONLY_NAME_PROPERTIES` names it, and nothing generates it.
+      expect(explicitNamePropertyFor('AWS::Scheduler::Schedule')).toBe('Name');
+      expect(fallbackNamePropertyFor('AWS::Scheduler::Schedule')).toBeUndefined();
+    });
+  });
+
+  describe('withoutGeneratedFallbackName (#3174)', () => {
+    const TYPE = 'AWS::Lambda::CapacityProvider';
+
+    it('takes a generated name back out, keeps every other key, and mutates neither input', () => {
+      const resolved = { VpcConfig: { SubnetIds: ['subnet-1'] } };
+      const prepared = { ...resolved, CapacityProviderName: 'MyStack-Provider' };
+      const result = withoutGeneratedFallbackName(TYPE, resolved, prepared);
+      expect(result).toEqual(resolved);
+      expect(result).not.toHaveProperty('CapacityProviderName');
+      expect(prepared).toHaveProperty('CapacityProviderName', 'MyStack-Provider');
+      expect(resolved).not.toHaveProperty('CapacityProviderName');
+    });
+
+    it('does the same for another table member whose name is updatable', () => {
+      const result = withoutGeneratedFallbackName(
+        'AWS::Cognito::UserPool',
+        { MfaConfiguration: 'OFF' },
+        { MfaConfiguration: 'OFF', UserPoolName: 'MyStack-Pool' }
+      );
+      expect(result).toEqual({ MfaConfiguration: 'OFF' });
+    });
+
+    it('gives an empty template name back, since the fill generates over it too', () => {
+      const resolved = { CapacityProviderName: '' };
+      const prepared = withStackName('MyStack', () =>
+        applyDefaultNameForFallback('Provider', TYPE, resolved)
+      );
+      // Premise: the fill really did generate over the empty string.
+      expect(prepared['CapacityProviderName']).toBe('MyStack-Provider');
+      expect(withoutGeneratedFallbackName(TYPE, resolved, prepared)).toEqual({
+        CapacityProviderName: '',
+      });
+    });
+
+    it('returns prepared by identity when the template supplies the name', () => {
+      const resolved = { CapacityProviderName: 'my-provider' };
+      const prepared = { ...resolved };
+      expect(withoutGeneratedFallbackName(TYPE, resolved, prepared)).toBe(prepared);
+    });
+
+    it('returns prepared by identity when it carries no name to take out', () => {
+      // A provider's `preparePropertiesForFallback` hook may build a bag
+      // without the property: nothing was generated.
+      const prepared = { VpcConfig: {} };
+      expect(withoutGeneratedFallbackName(TYPE, {}, prepared)).toBe(prepared);
+    });
+
+    it('returns prepared by identity for a type with no rule, whatever keys it holds', () => {
+      // `undefined` is the key an unguarded lookup of a missing rule indexes.
+      const prepared = { undefined: 'kept', Name: 'kept' };
+      expect(withoutGeneratedFallbackName('AWS::EFS::FileSystem', {}, prepared)).toBe(prepared);
     });
   });
 });

@@ -1103,6 +1103,49 @@ describe('Cognito SMS-role trust propagation (#2901)', () => {
   });
 });
 
+describe('Lambda CapacityProvider operator-role propagation (#3174)', () => {
+  // The message the Cloud Control create of the #3174 fixture failed with,
+  // verbatim as `CloudControlProvider` surfaced it to the engine's retry loop.
+  const ANCHOR = "The operator role is invalid or doesn't have sufficient permissions";
+  const WRAPPED =
+    'CREATE failed for Provider2281708E: ' +
+    `${ANCHOR}. Verify the role and permissions and try again. ` +
+    '(Service: Lambda, Status Code: 400, Request ID: 6978e8e1-8aac-41fa-8a03-6400c7a96a28) ' +
+    '(SDK Attempt Count: 1)';
+
+  // An exact set, not a boolean, for the reason the #2901 block states: it
+  // proves THIS entry carries the classification, so deleting it goes red
+  // with an empty array instead of falling through to a neighbour.
+  it('is matched by exactly the operator-role pattern', () => {
+    const matching = IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS.filter((p) => WRAPPED.includes(p));
+    expect(matching).toEqual([ANCHOR]);
+  });
+
+  it('is classified as IAM propagation and as retryable', () => {
+    expect(isIamPropagationError(WRAPPED)).toBe(true);
+    expect(isRetryableTransientError(new Error(WRAPPED), WRAPPED)).toBe(true);
+  });
+
+  // The invariant rather than a list of neighbours: across EVERY message
+  // pattern, not only the propagation subset, this entry is the only one the
+  // rejection reaches. A loosened neighbour, or a new entry that also matches,
+  // shows up here as a second element.
+  it('is matched by no other retryable message pattern', () => {
+    const matching = RETRYABLE_ERROR_MESSAGE_PATTERNS.filter((p) => WRAPPED.includes(p));
+    expect(matching).toEqual([ANCHOR]);
+  });
+
+  // A different 400 from the same handler, measured on 2026-09-15, stays
+  // terminal: the anchor names the role, not the capacity provider.
+  it('does not retry the same handler rejecting an unsupported Availability Zone', () => {
+    const azRejection =
+      "CREATE failed for Provider2281708E: One or more subnets in Availability Zone(s) us-east-1e aren't supported. " +
+      'Select subnets from supported Availability Zones. (Service: Lambda, Status Code: 400)';
+    expect(isIamPropagationError(azRejection)).toBe(false);
+    expect(isRetryableTransientError(new Error(azRejection), azRejection)).toBe(false);
+  });
+});
+
 describe('RETRYABLE_ERROR_MESSAGE_PATTERNS composition', () => {
   it('is the union of the IAM-propagation subset and the rest, with no duplicates', () => {
     const all = RETRYABLE_ERROR_MESSAGE_PATTERNS;

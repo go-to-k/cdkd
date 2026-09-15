@@ -349,11 +349,15 @@ export function generateResourceNameWithFallback(
 }
 
 /**
- * Default name generation rules for CC API fallback.
+ * Default name generation rules for a Cloud Control CREATE.
  *
  * When an SDK provider falls back to CC API, the resource may need a
- * default name that the SDK provider would have generated. This map
- * defines the name property and generation options for each resource type.
+ * default name that the SDK provider would have generated. A type with NO
+ * SDK provider can need one too, when its Cloud Control create handler fails
+ * without a name its schema leaves optional (`AWS::Lambda::CapacityProvider`,
+ * issue #3174). This map defines the name property and generation options for
+ * each resource type. The name is filled on a create only; the update path
+ * takes it back out (`withoutGeneratedFallbackName`).
  *
  * Format: resourceType → { nameProperty, options, postProcess? }
  */
@@ -369,6 +373,14 @@ const FALLBACK_NAME_RULES: Record<
   'AWS::SNS::Topic': { nameProperty: 'TopicName', options: { maxLength: 256 } },
   'AWS::Lambda::Function': { nameProperty: 'FunctionName', options: { maxLength: 64 } },
   'AWS::Lambda::LayerVersion': { nameProperty: 'LayerName', options: { maxLength: 64 } },
+  // No SDK provider — Cloud Control only. The schema does not require the
+  // name, yet a create without one fails with `Resource Handler Internal
+  // Failure` (issue #3174). Schema: maxLength 140, `[a-zA-Z0-9-_]+`; the
+  // default `allowedPattern` emits a subset of that.
+  'AWS::Lambda::CapacityProvider': {
+    nameProperty: 'CapacityProviderName',
+    options: { maxLength: 140 },
+  },
   'AWS::IAM::Role': { nameProperty: 'RoleName', options: { maxLength: 64 } },
   'AWS::IAM::Policy': { nameProperty: 'PolicyName', options: { maxLength: 64 } },
   'AWS::IAM::ManagedPolicy': {
@@ -497,6 +509,56 @@ export function applyDefaultNameForFallback(
 }
 
 /**
+ * The name property {@link applyDefaultNameForFallback} fills for
+ * `resourceType`, or `undefined` when it fills none.
+ *
+ * Read by the deploy engine's Cloud Control UPDATE path, which must NOT send
+ * the generated name (issue #3174). The name only matters to a CREATE: an
+ * update is a JSON Patch against the recorded bag, which holds the template's
+ * resolved properties and so never carries a generated name. Injecting one
+ * there makes every update patch `add` the name — harmless while the live name
+ * equals the generated one. For a resource imported under any other name it is
+ * a real change: refused where the name is create-only (as it is for
+ * `AWS::Lambda::CapacityProvider`), and a RENAME where the type accepts the
+ * update (`AWS::Cognito::UserPool`'s `UserPoolName`, for one).
+ */
+export function fallbackNamePropertyFor(resourceType: string): string | undefined {
+  return FALLBACK_NAME_RULES[resourceType]?.nameProperty;
+}
+
+/**
+ * `prepared` with the name {@link applyDefaultNameForFallback} GENERATED into
+ * it taken back out — the bag the deploy engine hands a Cloud Control UPDATE
+ * (issue #3174; why an update must not carry it is on
+ * {@link fallbackNamePropertyFor}).
+ *
+ * The name counts as generated exactly when the fill would have produced it:
+ * the type has a rule, `resolvedProps` leaves the property falsy (the fill's
+ * own test, so an empty string is generated over too), and `prepared` carries
+ * it. The property then goes back to what `resolvedProps` holds: deleted when
+ * the template has no such key, the template's own falsy value when it does,
+ * so the update's desired side agrees with the template on this key.
+ * Otherwise `prepared` is returned by identity. Neither input is mutated.
+ */
+export function withoutGeneratedFallbackName(
+  resourceType: string,
+  resolvedProps: Record<string, unknown>,
+  prepared: Record<string, unknown>
+): Record<string, unknown> {
+  const nameProperty = fallbackNamePropertyFor(resourceType);
+  if (nameProperty === undefined || resolvedProps[nameProperty] || !(nameProperty in prepared)) {
+    return prepared;
+  }
+  const restored = { ...prepared };
+  if (nameProperty in resolvedProps) {
+    restored[nameProperty] = resolvedProps[nameProperty];
+  } else {
+    delete restored[nameProperty];
+  }
+  return restored;
+}
+
+/**
  * The template property that supplies an explicit physical name for
  * `resourceType`, or `undefined` when cdkd knows of none (issue #2934).
  *
@@ -532,11 +594,12 @@ export function explicitNamePropertyFor(resourceType: string): string | undefine
  * {@link FALLBACK_NAME_RULES} (issue #2934).
  *
  * A separate table on purpose: `FALLBACK_NAME_RULES` decides what cdkd GENERATES
- * when an SDK provider falls back to Cloud Control, so adding an entry there
- * changes the name a resource is created under — a replacement for anyone
- * already deployed. This table answers a strictly narrower question, "does the
- * template hand this resource a name", and adding to it can only make the
- * adoption guard MORE conservative.
+ * for a Cloud Control create, so adding an entry there changes the name every
+ * later create of that type uses; an existing resource keeps its name, because
+ * the update path does not send a generated one (issue #3174). This table
+ * answers a strictly narrower question, "does the template hand this resource
+ * a name", and generates nothing. An entry here still ADMITS its type to
+ * adoption exactly as one there does, so it needs the same three-test check.
  *
  * Found by review: the SDK providers for the entries below generate a name
  * themselves. What that costs changed with the inversion described above, so
