@@ -38,7 +38,7 @@ Read every changed file end-to-end. For each, ask:
 ## What NOT to check
 
 - Whether tests pass (CI handles that).
-- Whether the change matches its spec — a design doc, or the bodies of the issues it says it closes — WHEN the spec axis is dispatched (3-axis). At `1-reviewer` you are the only reviewer running, so deferring there defers to nobody: check it yourself.
+- Whether the change matches its spec — a design doc, or the bodies of the issues it says it closes — WHEN the spec axis is dispatched. **Your dispatch does not tell you the tier, so assume it is NOT dispatched and check it yourself unless your inputs say `Tier: 3-axis`.** Over-checking at 3-axis costs a duplicated paragraph; under-checking is a spec axis nobody ran. (Do not reason from "am I the only reviewer" — the security add-on dispatches at any tier, and it defers spec unconditionally, so both of you can defer to nobody.)
 - Documentation prose.
 
 ## Report format
