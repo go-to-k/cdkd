@@ -84,7 +84,7 @@ HOOK="${GATE_HOOK:-.claude/hooks/main-tree-edit-gate.sh}"
 #     only path the kill exists for at all. `bounded_bash 1 'sleep 77 & sleep
 #     78 & wait'` left BOTH of them running, under both engines.
 #
-# This suite runs 207 real commands, so a stray process per row is precisely the
+# This suite runs 227 real commands, so a stray process per row is precisely the
 # failure mode it must not have.
 bounded_bash() { # <seconds> <command>
   local secs="$1" cmd="$2" pid watchdog
@@ -245,6 +245,33 @@ probe "$MAIN" "$MAIN" "x=\$(
 echo POISON > $PROT" "[multiline] a comment holding ) inside \$( )"
 probe "$MAIN" "$MAIN" "( echo a\\)b ; cd /tmp) ; echo POISON > $PROT" \
   "[escape] a backslash-escaped ) inside a subshell"
+# ARM F -- A `cd` THAT FAILS (go-to-k/cdkd#2684). Bash stays put, so the write
+# lands on the protected file; the walk used to advance its base anyway. The
+# row is a LEAD `cd`, which no dimension above varies (the TAILS axis puts the
+# `cd` AFTER the write, where it decides nothing). Both polarities per vehicle:
+#   - `cd /nonexistent ; <write>` from the main checkout  -> written, must block
+#   - `rm -rf X ; cd X ; <write>`                          -> the same, X named
+#     by a REMOVER, which the mention test must not read as a creator
+#   - `mkdir -p X/… && cd X && <write>`                    -> X is absent when
+#     the hook runs and present when the `cd` runs; nothing protected is
+#     written, so a refusal here is the FALSE BLOCK the fix must not introduce.
+#     The row removes X afterwards so the hook -- which runs AFTER bash in
+#     `probe` -- still sees it missing, or the row would prove nothing.
+#   - `cd /nonexistent ; <write>` from the WORKTREE       -> lands in the
+#     worktree, must not block
+for wv in "${WRITES[@]}"; do
+  # shellcheck disable=SC2059
+  w=$(printf "$wv" "$PROT")
+  probe "$MAIN" "$MAIN" "cd /nonexistent 2>/dev/null ; $w" "[failed-cd] cd /nonexistent ; $w"
+  probe "$MAIN" "$MAIN" "rm -rf $FIX/gone ; cd $FIX/gone ; $w" "[failed-cd] rm -rf X ; cd X ; $w"
+  probe "$MAIN" "$MAIN" "mkdir -p $FIX/fresh/docs/_generated && cd $FIX/fresh && $w ; cd / ; rm -rf $FIX/fresh" \
+    "[created-cd] mkdir -p X/... && cd X && $w"
+  # Sandbox cwd = the worktree too: the row's claim is that the write lands in
+  # the WORKTREE's copy, so bash must run there. With `$MAIN` as the sandbox
+  # cwd the protected file is written and the row reads as a fail-open of the
+  # gate when it is a mis-set fixture (measured, three rows, first draft).
+  probe "$WT" "$WT" "cd /nonexistent 2>/dev/null ; $w" "[wt,failed-cd] cd /nonexistent ; $w"
+done
 # ARM E -- LATENCY ONLY: shapes whose cost is superlinear in ONE segment.
 probe "$MAIN" "$MAIN" "$(printf 'A=1 %.0s' $(seq 1 8000))echo POISON > $PROT" "[latency] 8000 assignment prefixes" latency
 probe "$MAIN" "$MAIN" "echo $(printf '(%.0s' $(seq 1 24000)) ; echo POISON > $PROT" "[latency] 24000 open parens" latency
@@ -258,9 +285,9 @@ report() { # <count> <max> <what> <list>
     printf 'ok   %s: %s (tolerated %s)\n' "$3" "$1" "$2"
   fi
 }
-# AT THE OBSERVED COUNTS, no slack. This hook does carry inherited divergences
-# (a `cd` into a nonexistent directory is honoured though bash stays put --
-# go-to-k/cdkd#2684), but no shape in this grid reaches one, so tolerating a
+# AT THE OBSERVED COUNTS, no slack. The one inherited divergence this file
+# used to name here (a `cd` into a nonexistent directory honoured though bash
+# stays put) is CLOSED by go-to-k/cdkd#2684 and ARM F now reaches it, so a
 # nonzero count would tolerate a NEW one.
 report "$open"  "${ORACLE_FAIL_OPEN_MAX:-0}"   "FAIL-OPEN (bash wrote the protected file, gate allowed it)" "$open_list"
 report "$block" "${ORACLE_FALSE_BLOCK_MAX:-0}" "false-block (nothing written, gate refused)" "$block_list"
@@ -269,8 +296,8 @@ report "$slow"  "${ORACLE_SLOW_MAX:-0}"        "over the 5s latency budget (10s 
 # which the first spelling of this floor did not: at 200 against 204 actual, the
 # whole multi-line arm plus the latency arm could be deleted and the run stayed
 # green. A floor with slack is how a corpus quietly stops covering a dimension.
-if [ "$n" -lt 207 ]; then
-  fail=$((fail + 1)); printf 'not ok corpus floor: %s inputs, expected at least 207\n' "$n"
+if [ "$n" -lt 227 ]; then
+  fail=$((fail + 1)); printf 'not ok corpus floor: %s inputs, expected at least 227\n' "$n"
 else
   printf 'ok   corpus: %s executed commands across 5 dimensions\n' "$n"
 fi

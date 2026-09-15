@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFile
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { marked } from 'marked';
 
 /**
  * The `/work-issues` LAUNCH-MODE machinery, which decides whether a run creates
@@ -50,6 +51,29 @@ function skillDocs(): string[] {
 
 function read(rel: string): string {
   return readFileSync(join(skillDir, rel), 'utf8');
+}
+
+/**
+ * The reader every PROSE pin goes through: runs of whitespace -- newlines
+ * included -- collapse to one space, and the text is case-folded.
+ *
+ * WHY. The skill's files are hard-wrapped at ~78 columns, and the wrap is
+ * EDITORIAL: it moves whenever anything above a sentence changes length. A pin
+ * anchored to a single line is therefore one reflow away from going quiet, and
+ * two did (go-to-k/cdkd#2458): the negative pins on section 5's withdrawn
+ * branch condition greped a capital `I` against a lowercase quote, and one
+ * carried a `[^.\n]{0,60}` gap that cannot cross a line break -- so a
+ * re-introduction landing wrapped, which the file's own wrapping decides, was
+ * invisible. Measured: exact-capital 0, exact-lower 0, whitespace-flexible and
+ * case-insensitive 1 -- against a HISTORICAL quote the file legitimately held
+ * at the time.
+ *
+ * STRUCTURAL pins (the fenced-block equality checks, the fence scanner) keep
+ * reading the raw file: a fence is a line construct and collapsing newlines
+ * would erase it.
+ */
+function proseOf(markdown: string): string {
+  return markdown.replace(/\s+/g, ' ').toLowerCase();
 }
 
 /**
@@ -469,30 +493,80 @@ describe('work-issues launch-mode probe', () => {
     });
   });
 
-  it('section 5 branches in place UNCONDITIONALLY, with the old condition gone', () => {
-    // Contract point (c): the lane never commits onto LAUNCH_BRANCH. Prose-only
-    // until now. The condition this replaced is pinned NEGATIVELY because its
-    // survival is the actual regression -- an agent reading "if the branch here
-    // is detached, or its PR has already merged" branches only sometimes, and
-    // the other times commits onto the outer tool's branch.
-    const implement = read(join('references', 'implement.md'));
+  /**
+   * Contract point (c), as a function of the TEXT so the planted-mutation cases
+   * below can run it against a doctored copy: the lane never commits onto
+   * LAUNCH_BRANCH. The condition this replaced is pinned NEGATIVELY because its
+   * survival is the actual regression -- an agent reading "if the branch here
+   * is detached, or its PR has already merged" branches only sometimes, and
+   * the other times commits onto the outer tool's branch.
+   *
+   * Every pin reads through `proseOf`, so the exact sentence, the same sentence
+   * WRAPPED across a line break, and a rewording are all one shape to it. The
+   * design question go-to-k/cdkd#2458 raised -- how the file's own HISTORICAL
+   * quote of the condition stays legal while a prescriptive re-introduction is
+   * flagged -- is moot: `implement.md` no longer quotes it (zero occurrences of
+   * `detached` or `already merged`), so the pins are unconditional and a quote
+   * returning is treated as the regression it would read as.
+   */
+  const assertSection5Unconditional = (implement: string): void => {
+    const prose = proseOf(implement);
     expect(
-      implement,
+      prose,
       `references/implement.md has reverted to branching CONDITIONALLY. The condition was ` +
         `withdrawn in go-to-k/cdkd#2417: gh pr merge --delete-branch deletes the remote of ` +
         `whatever branch the PR was opened from, so a lane that commits onto LAUNCH_BRANCH ` +
-        `deletes the outer tool's branch on its way out.`
-    ).not.toMatch(/If the branch here is detached, or its PR has already merged/);
+        `deletes the outer tool's branch on its way out.`,
+    ).not.toMatch(/if the branch here is detached, or its pr has already merged/);
     // The same condition RE-WORDED is the likelier regression than the exact
     // sentence returning; measured, "this only matters when the branch here is
-    // detached or when its PR has already merged" passed the pin above.
+    // detached or when its PR has already merged" passed the exact pin above.
+    // The gap is `[^.]` rather than `[^.\n]`: newlines are already spaces here.
     expect(
-      implement,
+      prose,
       `references/implement.md re-introduces the withdrawn condition in different words. ` +
         `Branching in place is UNCONDITIONAL: a lane that branches only sometimes commits ` +
-        `onto the outer tool's branch the rest of the time.`
-    ).not.toMatch(/(only |just )?(matters|applies|needed|necessary)[^.\n]{0,60}(detached|already merged)/i);
-    expect(implement).toMatch(/git fetch origin && git switch -c <branch> origin\/main/);
+        `onto the outer tool's branch the rest of the time.`,
+    ).not.toMatch(/(only |just )?(matters|applies|needed|necessary)[^.]{0,60}(detached|already merged)/);
+    expect(prose).toMatch(/git fetch origin && git switch -c <branch> origin\/main/);
+  };
+
+  it('section 5 branches in place UNCONDITIONALLY, with the old condition gone', () => {
+    assertSection5Unconditional(read(join('references', 'implement.md')));
+  });
+
+  describe('the section 5 pins discriminate every shape a re-introduction can take', () => {
+    // PLANTED MUTATIONS, so the fix above is probed rather than asserted. Each
+    // appends one re-introduction to the REAL file's text and requires the pin
+    // to fail; the third shape is the one the old `[^.\n]` gap could never see.
+    const implement = read(join('references', 'implement.md'));
+    const plant = (text: string): string => `${implement}\n\n${text}\n`;
+    const shapes: Array<[string, string]> = [
+      [
+        'the exact sentence, unwrapped',
+        'If the branch here is detached, or its PR has already merged, take a fresh branch.',
+      ],
+      [
+        'the exact sentence, wrapped at the file\'s own column',
+        'Take a fresh branch here. If the branch here is detached, or its PR has\nalready merged, the lane must not commit onto it.',
+      ],
+      [
+        'a rewording, wrapped',
+        'This only matters when the branch\nhere is detached or when its PR has already merged.',
+      ],
+    ];
+    for (const [label, text] of shapes) {
+      it(`fails on ${label}`, () => {
+        expect(() => assertSection5Unconditional(plant(text))).toThrow();
+      });
+    }
+    it('the mutation itself is what fails, not the fixture', () => {
+      // The control the three cases above need: the same appender with an
+      // innocuous paragraph must pass, or the reds above prove nothing.
+      expect(() =>
+        assertSection5Unconditional(plant('An unrelated paragraph appended for the control.')),
+      ).not.toThrow();
+    });
   });
 
   it('the restore is ordered LAST, and both files that own the ordering say so', () => {
@@ -897,43 +971,55 @@ describe('work-issues section 2 worktree probe', () => {
   /** First token is a git call. Narrow, and used only to exclude prose from the floor. */
   const GIT_LINE = /^\s*\$?\s*git\b/;
 
-  const commandUnits = (doc: string): string[] => {
-    const text = read(doc);
+  const FENCE_MARKER = /^\s*(?:`{3,}|~{3,})/;
+  const commandUnitsOf = (text: string): string[] => {
     const { fenced } = scanFences(text);
-    const picked: Array<{ i: number; line: string }> = [];
-    text.split('\n').forEach((line, i) => {
-      if (fenced[i] || CONTAINS_GIT.test(line)) picked.push({ i, line });
-    });
-    // Join `\` continuations, but only across ADJACENT source lines: `picked`
-    // is filtered, so an index-blind join fuses a `\`-terminated line with the
-    // next PICKED line anywhere later and fabricates a command that never
-    // existed. (Outside a fence the continuation line usually carries no `git`
-    // and so is never picked -- the join is effective inside fences, which is
-    // where the skill's wrapped commands live.)
+    // A `\` continuation joins the NEXT SOURCE LINE, whatever that line holds.
+    // The join used to run over the PICKED lines only, so it was effective
+    // inside a fence (every line is picked there) and inert in prose, where the
+    // continuation line carries no `git` token and was never picked: `git show \`
+    // + `  --stat HEAD` written as two prose lines escaped the ban while the
+    // same text inside a fence was caught (go-to-k/cdkd#2683 item 1). Reading
+    // the continuation off the raw line closes that; the join still never
+    // crosses a fence marker, which is a line construct and not a command.
     const units: string[] = [];
-    let previousIndex = -2;
-    for (const { i, line } of picked) {
-      const prev = units[units.length - 1];
-      if (prev !== undefined && i === previousIndex + 1 && /\\\s*$/.test(prev)) {
+    let joining = false;
+    text.split('\n').forEach((line, i) => {
+      if (joining && !FENCE_MARKER.test(line)) {
+        const prev = units[units.length - 1]!;
         units[units.length - 1] = `${prev.replace(/\\\s*$/, ' ')}${line.trim()}`;
-      } else {
-        units.push(line);
+        joining = /\\\s*$/.test(line);
+        return;
       }
-      previousIndex = i;
-    }
+      joining = false;
+      if (fenced[i] || CONTAINS_GIT.test(line)) {
+        units.push(line);
+        joining = /\\\s*$/.test(line);
+      }
+    });
     return units;
   };
+  const commandUnits = (doc: string): string[] => commandUnitsOf(read(doc));
 
   /**
-   * `git … show … --stat`-family, either flag order. `show\s+` is what excludes
-   * `--show-current`: a `-` follows the word, so `\s+` cannot match. Measured,
-   * because an earlier revision credited the `(?<![-\w])` lookbehind for that
-   * and the lookbehind is INERT here -- it only blocks a `show` glued to a
-   * preceding word or dash (`--show `, `reshow `). Kept as belt-and-braces, and
-   * described as that rather than as the thing doing the work.
+   * `git … show … --stat`-family, either flag order, plus its SEMANTIC SIBLINGS:
+   * `--raw`, `--summary` / `--compact-summary`, and `git log` limited to ONE
+   * commit (`-1`, `-n 1`, `--max-count=1`) with any of those flags -- each reads
+   * a single commit exactly as wrongly (go-to-k/cdkd#2683 item 3). `show\s+` is
+   * what excludes `--show-current`: a `-` follows the word, so `\s+` cannot
+   * match. Measured, because an earlier revision credited the `(?<![-\w])`
+   * lookbehind for that and the lookbehind is INERT here -- it only blocks a
+   * `show` glued to a preceding word or dash (`--show `, `reshow `). Kept as
+   * belt-and-braces, and described as that rather than as the thing doing the
+   * work.
    */
-  const SINGLE_COMMIT =
-    /\bgit\b.*(?<![-\w])show\s+.*--(?:[a-z-]*stat\b|name-only\b|name-status\b)/;
+  const ONE_COMMIT_FLAGS = String.raw`--(?:[a-z-]*stat\b|name-only\b|name-status\b|raw\b|[a-z-]*summary\b)`;
+  // The `log` arm takes its two conditions as lookaheads so the flag order is
+  // free (`log -1 --stat` and `log --stat -1` are the same read).
+  const SINGLE_COMMIT = new RegExp(
+    String.raw`\bgit\b.*(?:(?<![-\w])show\s+.*${ONE_COMMIT_FLAGS}` +
+      String.raw`|(?<![-\w])log\s+(?=.*(?:-1\b|-n\s*1\b|--max-count[= ]1\b))(?=.*${ONE_COMMIT_FLAGS}))`,
+  );
 
   /**
    * A peer-worktree probe addresses `<MAIN_CHECKOUT>`. That qualifier is what
@@ -987,23 +1073,126 @@ describe('work-issues section 2 worktree probe', () => {
     ).toEqual([]);
   });
 
-  it('still explains WHY the range is load-bearing, in prose', () => {
-    // The FLOOR, and the half that has broken twice. Prose means: outside every
-    // fence, not a command, not a comment, not an indented code block, and not
-    // inside an HTML comment -- a `<!-- … -->` carrier satisfied this while
-    // rendering invisible.
-    const text = read(TRIAGE).replace(/<!--[\s\S]*?-->/g, '');
-    const { fenced } = scanFences(text);
-    const prose = text
+  /**
+   * What a READER sees: the doc RENDERED, code blocks removed, every tag
+   * stripped. The floor used to read the source and exclude carriers one at a
+   * time -- fences, `#` lines, indented code, then HTML comments -- and each
+   * round found the next carrier that satisfies a source scan while rendering
+   * invisible: a fence INFO STRING, text after a closing fence, an HTML
+   * attribute, an image alt, a link-reference title (go-to-k/cdkd#2683 item
+   * 2). Rendering answers the question the floor is asking, so the carrier
+   * list is gone: `marked` drops an info string past its first word, keeps a
+   * mis-closed fence inside its block, and puts attributes, alts and reference
+   * titles into tags or nowhere -- none survives a tag strip. The same tool
+   * `rule-file-payload.test.ts` uses for "is this pointer VISIBLE".
+   *
+   * Raw HTML comments pass through `marked` verbatim, so they are stripped
+   * after rendering; `<pre>` is stripped whole because a code block is a
+   * command, not an explanation, whether fenced or indented. Inline `<code>`
+   * is KEPT -- a backticked `show --stat HEAD` inside a sentence is exactly
+   * the prose the floor exists to protect.
+   */
+  const visibleProse = (markdown: string): string[] =>
+    (marked.parse(markdown, { async: false }) as string)
+      .replace(/<pre[\s\S]*?<\/pre>/g, '')
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/<\/(?:p|li|h[1-6]|td|th|blockquote)>/g, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&amp;/g, '&')
       .split('\n')
-      .filter(
-        (line, i) =>
-          !fenced[i] && !GIT_LINE.test(line) && !/^\s*#/.test(line) && !/^ {4,}\S/.test(line),
-      )
-      .join('\n');
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+
+  const proseFloorHolds = (markdown: string): boolean =>
+    visibleProse(markdown)
+      // Not a command: a paragraph that IS a bare git call explains nothing.
+      .filter((line) => !GIT_LINE.test(line))
+      .some((line) => line.includes('show --stat HEAD'));
+
+  it('still explains WHY the range is load-bearing, in prose', () => {
+    // The FLOOR, and the half that has broken twice.
     expect(
-      prose,
+      proseFloorHolds(read(TRIAGE)),
       'the paragraph naming what `show --stat HEAD` got wrong is the reason the range exists',
-    ).toContain('show --stat HEAD');
+    ).toBe(true);
+  });
+
+  describe('the floor reads RENDERED text, so an invisible carrier cannot satisfy it', () => {
+    // Each case plants ONE carrier into a doc whose real explanation has been
+    // removed, and requires the floor to stay unsatisfied. The control is the
+    // real doc, which must satisfy it -- without that the five reds could be a
+    // floor that never holds.
+    const stripped = read(TRIAGE).replace(/show --stat HEAD/g, 'the single-commit read');
+    it('the real doc satisfies the floor and the stripped copy does not', () => {
+      expect(proseFloorHolds(read(TRIAGE))).toBe(true);
+      expect(proseFloorHolds(stripped)).toBe(false);
+    });
+    const carriers: Array<[string, string]> = [
+      ['a fence info string', '```text show --stat HEAD\necho hi\n```'],
+      ['text after a closing fence', '```bash\necho hi\n``` show --stat HEAD'],
+      ['an HTML attribute', '<div title="show --stat HEAD">visible</div>'],
+      ['an image alt', '![show --stat HEAD](x.png)'],
+      ['a link-reference title', '[ref]: https://example.invalid "show --stat HEAD"'],
+      ['an HTML comment', '<!-- show --stat HEAD -->'],
+      ['a fenced code block', '```bash\n# show --stat HEAD was wrong\n```'],
+      ['an indented code block', '\n\n    show --stat HEAD was wrong\n'],
+    ];
+    for (const [label, text] of carriers) {
+      it(`is not satisfied by ${label}`, () => {
+        expect(proseFloorHolds(`${stripped}\n\n${text}\n`)).toBe(false);
+      });
+    }
+    it('is satisfied by a visible sentence, wrapped, in the stripped copy', () => {
+      expect(
+        proseFloorHolds(`${stripped}\n\nThe old probe ran \`show --stat\nHEAD\`, which reads one commit.\n`),
+      ).toBe(true);
+    });
+  });
+
+  describe('the ban sees a prose continuation and every semantic sibling', () => {
+    // Planted mutations for go-to-k/cdkd#2683 items 1 and 3, run against the
+    // same extraction the ban uses. Each shape is a single unit that must be
+    // reported; the control is a `\` continuation that is NOT a single-commit
+    // read, which must survive the join without being reported.
+    const banned = (text: string): string[] =>
+      commandUnitsOf(text).filter((u) => SINGLE_COMMIT.test(u));
+    const shapes: Array<[string, string]> = [
+      ['a prose continuation (`\\` then the flags on the next line)', 'Run git show \\\n  --stat HEAD to see it.'],
+      ['`git log -1 --stat`', 'and git log -1 --stat is the same read'],
+      ['`git log --stat -1`, flags first', 'and git log --stat -1 is the same read'],
+      ['`git log -n 1 --stat`', 'and git log -n 1 --stat is the same read'],
+      ['`git log --max-count=1 --name-only`', 'and git log --max-count=1 --name-only is the same read'],
+      ['`git show --raw`', 'or git show --raw HEAD'],
+      ['`git show --summary`', 'or git show --summary HEAD'],
+      ['`git show --compact-summary`', 'or git show --compact-summary HEAD'],
+    ];
+    for (const [label, text] of shapes) {
+      it(`reports ${label}`, () => {
+        expect(banned(text)).toHaveLength(1);
+      });
+    }
+    it('joins a prose continuation without fabricating a command from a later line', () => {
+      // The control for item 1: a continuation that is not a single-commit read
+      // must join (one unit, not two) and must not be reported; and a `\` that
+      // ends the LAST picked line must not swallow a fence marker.
+      expect(commandUnitsOf('git fetch \\\n  origin\nplain prose').map((u) => u.replace(/\s+/g, ' '))).toEqual([
+        'git fetch origin',
+      ]);
+      expect(banned('git fetch \\\n  origin')).toEqual([]);
+      expect(commandUnitsOf('git fetch \\\n```\nnot joined\n```')).toEqual([
+        'git fetch \\',
+        'not joined',
+      ]);
+    });
+    it('does not report the ranged probe or `git log` over a range', () => {
+      expect(banned('git diff --name-only origin/main...HEAD')).toEqual([]);
+      expect(banned('git log --stat origin/main...HEAD')).toEqual([]);
+      expect(banned('git log -10 --stat')).toEqual([]);
+      expect(banned('git branch --show-current')).toEqual([]);
+    });
   });
 });
