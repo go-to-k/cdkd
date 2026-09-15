@@ -381,7 +381,7 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // moves. `verify.md` section 8-g calls this deleting the number rather
     // than re-measuring it, and this record is the worked example.
     //
-    // Cap headroom, in rank order: verify.md 0 B (AT the cap), implement.md
+    // Cap headroom, in size order: verify.md 0 B (AT the cap), implement.md
     // 3 B, triage.md 6 B. All three open with a compression pass, not an
     // addition.
     //
