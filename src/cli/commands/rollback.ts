@@ -37,7 +37,7 @@ import {
   type StackOrphanRecord,
 } from '../../types/state.js';
 import type { StackStateRef } from '../../state/s3-state-backend.js';
-import { displayIdent, displaySafe } from '../../utils/display-safe.js';
+import { displayIdent, displaySafe, STACK_REF_MAX_CODE_POINTS } from '../../utils/display-safe.js';
 import { refuseMalformedState } from '../../state/malformed-resources-bag.js';
 
 interface RollbackOptions {
@@ -297,7 +297,21 @@ export async function rollbackCommand(
         return;
       }
       if (scoped.length > 1) {
-        const list = scoped.map((c) => `  - ${safe(c.stackName)} (${safe(c.region)})`).join('\n');
+        // The stack half takes the WIDER cap, for the reason
+        // `formatStackRefSafe` in `state.ts` documents (issue #3164): a cdkd
+        // state-record name is not a CloudFormation stack name -- nested-stack
+        // children accrete a `~<logicalId>` segment per level -- so
+        // `displayIdent`'s 255 default would CUT a legitimate deep child here.
+        // These rows are what the user picks a `cdkd rollback <stack>` argument
+        // from, so a cut one is worse than a long one. The region half keeps
+        // the default; an AWS region code is at most 25 characters.
+        const list = scoped
+          .map(
+            (c) =>
+              `  - ${displayIdent(c.stackName, { maxCodePoints: STACK_REF_MAX_CODE_POINTS })}` +
+              ` (${safe(c.region)})`
+          )
+          .join('\n');
         throw new Error(
           `Multiple stacks have a rollback journal. Pick one:\n${list}\n` +
             `Re-run 'cdkd rollback <stack>' (add --stack-region if the same name spans regions).`

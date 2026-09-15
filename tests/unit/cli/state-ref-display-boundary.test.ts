@@ -319,23 +319,49 @@ describe('every state-list / prompt reference renders its own boundary (issue #3
     expect(new Set(SITES.map((s) => s.name)).size).toBe(EXPECTED_SITE_COUNT);
   });
 
-  it('and the SOURCE has no caller the table does not cover', () => {
+  it('and state.ts names formatStackRefSafe in CODE exactly 1 + 6 times', () => {
     const source = readFileSync(STATE_TS, 'utf-8');
 
-    // Count CALLS, not mentions: the declaration is `function
-    // formatStackRefSafe(`, and the doc comments above it name the helper in
-    // prose several times. A call is the identifier followed by `(` or, at the
-    // two `.map(formatStackRefSafe)` sites, by `)`.
-    const calls = source.match(/\bformatStackRefSafe\s*[()]/g) ?? [];
-    const declarations = source.match(/\bfunction\s+formatStackRefSafe\s*\(/g) ?? [];
+    // Strip comments FIRST, then count every remaining mention of the name.
+    //
+    // Counting `formatStackRefSafe\s*[()]` was the first attempt and it is
+    // defeatable in the direction that matters: `const render =
+    // formatStackRefSafe;` followed by `render(ref)` adds a rendering site and
+    // matches neither the call shape nor the declaration, so the fence stayed
+    // green (measured). It also reddened on a pure PROSE edit, because the doc
+    // comments name the helper repeatedly. Counting BARE references over
+    // comment-stripped source fixes both: an alias, an `?.()` call and a plain
+    // call all count, and no amount of comment rewriting moves the number.
+    const code = source
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+    const references = code.match(/\bformatStackRefSafe\b/g) ?? [];
+    const declarations = code.match(/\bfunction\s+formatStackRefSafe\b/g) ?? [];
 
-    // Prove the scan SAW its input before trusting its verdict: a regex that
-    // silently stopped matching would report zero callers, which is green
-    // against a `<=` and meaningless.
-    expect(source.length).toBeGreaterThan(10_000);
+    // Prove the scan SAW its input before trusting its verdict. Both floors are
+    // about the STRIPPER, which is the part that can silently eat everything:
+    // if it removed the code as well as the comments, `code` would be short and
+    // the declaration would be gone, and the equality below would still be
+    // satisfiable by 0 === 0 + 0 had it been written as a subtraction.
+    expect(code.length).toBeGreaterThan(50_000);
     expect(declarations).toHaveLength(1);
+    expect(code).toContain('function formatStackRefSafe');
 
-    expect(calls.length - declarations.length).toBe(EXPECTED_SITE_COUNT);
+    expect(references).toHaveLength(declarations.length + EXPECTED_SITE_COUNT);
+  });
+
+  it('the comment stripper does not remove code', () => {
+    // Guarding the guard: the fence above is only as good as its stripper, and
+    // a stripper that ate a line containing a call would UNDER-count and read
+    // as "no new caller". Pin it on inputs whose answer is known by eye,
+    // including the shape that makes a naive `//` rule wrong -- a `://` inside
+    // a URL string.
+    const strip = (s: string): string =>
+      s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+
+    expect(strip('a(); // formatStackRefSafe\nb();')).toBe('a(); \nb();');
+    expect(strip('/* formatStackRefSafe */ keep();')).toBe(' keep();');
+    expect(strip("const u = 'https://x/y'; call();")).toBe("const u = 'https://x/y'; call();");
   });
 
   describe('a legitimate row is byte-identical', () => {
@@ -443,23 +469,46 @@ describe('every state-list / prompt reference renders its own boundary (issue #3
     expect(nameless).toBe(`${UNRENDERABLE} (us-east-1)`);
   });
 
-  it('quotes an entry so a planted name cannot forge a second entry in a joined prompt list', async () => {
-    // The two prompt sites `join(', ')`. Every case above renders ONE ref, so
-    // the join itself never runs there; this is the case that exercises it.
-    mockListStacks.mockResolvedValue([
-      { stackName: 'Real', region: 'us-east-1' },
-      { stackName: 'Planted, Victim (us-east-1)', region: 'us-west-2' },
-    ]);
+  // BOTH prompt sites `join(', ')`, and every case above renders ONE ref, so
+  // the join never runs there. Covering only one of the two left the other
+  // free: mutating `state orphan`'s separator alone was measured green while
+  // the `refresh-observed` case was red. They are separate `join` expressions,
+  // so they need separate cases.
+  const PLANTED_ENTRY: Ref = { stackName: 'Planted, Victim (us-east-1)', region: 'us-west-2' };
+
+  it('refresh-observed: a planted name cannot forge a second entry in the joined list', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'Real', region: 'us-east-1' }, PLANTED_ENTRY]);
     readlineQuestion.mockResolvedValue('n');
     await runState(['refresh-observed', '--all']);
 
     const prompt = readlineQuestion.mock.calls.at(-1)?.[0] ?? '';
     const list = /^Refresh observedProperties for 2 stack\(s\) \((.*)\)\?/.exec(prompt)?.[1] ?? '';
 
-    // Split the way a reader (or a consumer) would. Unquoted, the planted name
-    // contributes TWO entries and the operator agrees to a set they did not
-    // read; quoted, the `, ` inside it is visibly inside the boundary.
+    // Unquoted, the planted name contributes TWO entries and the operator
+    // agrees to a set they did not read; quoted, the `, ` inside it is visibly
+    // inside the boundary.
     expect(list).toBe('Real (us-east-1), "Planted, Victim (us-east-1)" (us-west-2)');
-    expect(list.split(', ')).not.toHaveLength(2);
+  });
+
+  it('state orphan: a planted name cannot forge a second entry in the [...] list', async () => {
+    // The higher-blast-radius twin -- this list names the records the operator
+    // is agreeing to REMOVE. Both targets must belong to ONE stack name for a
+    // single prompt to list two of them, which is the multi-region shape.
+    mockListStacks.mockResolvedValue([
+      { stackName: PLANTED_ENTRY.stackName, region: 'us-east-1' },
+      { stackName: PLANTED_ENTRY.stackName, region: 'us-west-2' },
+    ]);
+    mockIsLocked.mockResolvedValue(false);
+    readlineQuestion.mockResolvedValue('n');
+
+    const out = await runState(['orphan', PLANTED_ENTRY.stackName]);
+
+    const banner = /removes cdkd's state record for \[(.*)\] only\./.exec(out)?.[1] ?? '';
+    expect(banner).toBe(
+      '"Planted, Victim (us-east-1)" (us-east-1), "Planted, Victim (us-east-1)" (us-west-2)'
+    );
+    // The prompt renders the SAME string, so a forged entry would land in
+    // whichever of the two the operator is reading.
+    expect(readlineQuestion.mock.calls.at(-1)?.[0] ?? '').toContain(banner);
   });
 });

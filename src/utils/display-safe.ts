@@ -135,21 +135,38 @@ export const IDENT_MAX_CODE_POINTS = 255;
  *
  * `NestedStackProvider.deriveChildStackName` mints a child record's name as
  * `${parentStackName}~${nestedLogicalId}` and applies that RECURSIVELY, one `~`
- * segment per nesting level. CloudFormation allows five levels of nesting, so
- * the longest legitimate name is a 128-character root plus four
- * `~` + 255-character-logical-id segments:
+ * segment per nesting level, so the length grows with nesting depth:
  *
  *     128 + 4 * (1 + 255) = 1152
  *
- * The bound is not theoretical padding. CDK's generated nested-stack logical
- * ids run ~60 characters (`XNestedStackXNestedStackResource<hash>`), so even a
- * 20-character root passes 255 at the fourth level -- and a name cut there
- * would print `[cut: N more characters withheld]` in the middle of a row that
- * `cdkd state list | while read -r ref` consumes, which is a worse outcome than
- * a long line. Every value under this cap renders byte-identically, which is
- * the property the boundary rendering is only safe BECAUSE of.
+ * -- a 128-character CloudFormation root name plus four `~` + 255-character
+ * logical-id segments, reading CloudFormation's five-level nesting quota as
+ * root + 4.
  *
- * A planted value is still bounded: 1152 is a cap, not its absence.
+ * Why it needs to be past 255 at all: CDK's generated nested-stack logical ids
+ * run ~60 characters (`XNestedStackXNestedStackResource<hash>`), so even a
+ * 20-character root passes 255 at the fourth level -- and a name cut there
+ * prints `[cut: N more characters withheld]` in the middle of a row that
+ * `cdkd state list | while read -r ref` consumes. Every LEGITIMATE value under
+ * this cap renders byte-identically (a spoofing value still gains quotes --
+ * that is rule 3's whole job), and byte-identity on legitimate rows is what
+ * makes the boundary rendering safe to adopt at all.
+ *
+ * TWO THINGS THIS IS NOT, both stated because the first revision of this
+ * comment claimed them:
+ *
+ * 1. It is not an ENFORCED bound. cdkd never calls CloudFormation, and nothing
+ *    in `src/` validates stack-name length or nesting depth, so a six-level app
+ *    deploys happily and its record IS cut -- the same defect, moved deeper.
+ *    Reading the nesting quota as five levels BELOW the root instead would put
+ *    the figure at 1408. Treat 1152 as CDK practice with a margin, not a proof.
+ * 2. It does not keep the genuine trailing annotation on screen. At 255 that
+ *    was arguable; at 1152 the `(region)` is many wrapped lines away, and a
+ *    terminal WRAPPING a long quoted name can put a visual line that reads
+ *    exactly like a genuine row on screen with both quotes scrolled out of
+ *    view -- reachable well under either cap, so the raise does not create the
+ *    class, but the cap does not close it either. Tracked on
+ *    go-to-k/cdkd#3179. What the cap still does is bound the PAYLOAD.
  */
 export const STACK_REF_MAX_CODE_POINTS = 128 + 4 * (1 + IDENT_MAX_CODE_POINTS);
 
@@ -178,12 +195,14 @@ const PLAIN_IDENT = /^[A-Za-z0-9:_@./+=,~-]+$/;
  *    with nothing renderable left -- the same allowlist + fallback every
  *    caller used to spell for itself.
  * 2. A value longer than `opts.maxCodePoints` (default `IDENT_MAX_CODE_POINTS`)
- *    is CUT there and the count of withheld characters appended. Unbounded, a
- *    planted id pushed the line's genuine trailing `(type)` off a narrow
- *    terminal. A caller whose identifier has a LONGER legitimate grammar passes
- *    its own cap -- `STACK_REF_MAX_CODE_POINTS` is the one such caller today --
- *    because a cut that fires on a LEGITIMATE value breaks the byte-identity
- *    that makes rule 3 safe to adopt at all.
+ *    is CUT there and the count of withheld characters appended, bounding the
+ *    PAYLOAD a planted id can put on the line. It does not bound what a
+ *    terminal then WRAPS: a long quoted value can still wrap so that a visual
+ *    line reads like a genuine row with the quotes off-screen, at either cap.
+ *    A caller whose identifier has a LONGER legitimate grammar passes its own
+ *    cap -- `STACK_REF_MAX_CODE_POINTS` is the one such caller today -- because
+ *    a cut that fires on a LEGITIMATE value breaks the byte-identity that makes
+ *    rule 3 safe to adopt at all.
  * 3. A value that is NOT a `PLAIN_IDENT` -- one carrying a space, a bracket, a
  *    quote -- is rendered as a JSON string literal, so its BOUNDARY is
  *    visible. The allowlist alone cannot stop an all-ASCII
@@ -207,10 +226,15 @@ const PLAIN_IDENT = /^[A-Za-z0-9:_@./+=,~-]+$/;
 export function displayIdent(value: unknown, opts?: { maxCodePoints?: number }): string {
   const clean = displaySafe(value, { asciiOnly: true });
   if (!clean) return UNRENDERABLE;
-  const { text, truncated } = truncateCodePoints(
-    clean,
-    opts?.maxCodePoints ?? IDENT_MAX_CODE_POINTS
-  );
+  // Floor the caller's cap at 1. `truncateCodePoints` slices, so a negative
+  // value would cut from the END and report a nonsense withheld count -- a
+  // display helper must not be able to produce that, even though no caller
+  // passes one today and the parameter exists only to WIDEN the default.
+  const requested = opts?.maxCodePoints ?? IDENT_MAX_CODE_POINTS;
+  const cap = Number.isFinite(requested)
+    ? Math.max(1, Math.floor(requested))
+    : IDENT_MAX_CODE_POINTS;
+  const { text, truncated } = truncateCodePoints(clean, cap);
   const shown = PLAIN_IDENT.test(text) ? text : JSON.stringify(text);
   // `clean` is ASCII here, so `.length` counts characters.
   return truncated

@@ -304,20 +304,23 @@ function formatStackRefSafe(ref: StackStateRef): string {
  * cdkd's own ` (region)` annotation right beside the value and the allowlist
  * cannot stop a value from carrying that annotation itself (issue #3164).
  * Widening this helper is tracked as go-to-k/cdkd#3179 rather than done here,
- * for two reasons that are per-SITE rather than uniform, so read that issue's
+ * for reasons that are per-SITE rather than uniform, so read that issue's
  * table rather than generalising from this paragraph: most of these sites are
  * REFUSALS, where the surrounding `'...'` is at least SOME boundary -- but not
  * all of them are, and `  Region: ${safe(...)}` in the `--long` view below has
- * no surrounding anything -- and two of them (`Run 'cdkd deploy <stack>'`) are
+ * no surrounding anything -- while `Run 'cdkd deploy <stack>'` sites are
  * COMMAND HINTS, where quoting is not this repo's answer at all:
  * `buildForceUnlockCommand` SUPPRESSES the whole command instead.
  *
- * `grep safe(` does NOT enumerate the class. Several sites spell
- * `displaySafe(..., { asciiOnly: true })` inline rather than calling this
- * helper -- `warnOnLiveForeignLock` renders its own `stack (region)` that way,
- * inside the same `state orphan` output -- and `describeStateKey`
- * (`state-file-keys.ts`) renders the same shape from raw key segments with no
- * sanitisation at all. go-to-k/cdkd#3179 enumerates them; a grep does not.
+ * `grep safe(` does NOT enumerate the class, in BOTH directions. Some sites
+ * spell `displaySafe(..., { asciiOnly: true })` inline rather than calling this
+ * helper (`warnOnLiveForeignLock` renders its own `stack (region)` that way,
+ * inside the same `state orphan` output); others sanitise NOTHING
+ * (`stateRefreshObservedCommand` interpolates raw `listStacks` values into its
+ * refusals, including a third `cdkd deploy` hint, and `stateDestroyCommand`
+ * writes raw names into its `--all` confirmation list); and `describeStateKey`
+ * (`state-file-keys.ts`) renders the same shape from raw key segments.
+ * go-to-k/cdkd#3179 enumerates them all; a grep of this helper does not.
  */
 function safe(value: string | undefined): string {
   return displaySafe(value, { asciiOnly: true }) || UNRENDERABLE;
@@ -337,7 +340,7 @@ export function resolveSingleRegion(
   // Sanitized for the same reason `formatStackRefSafe` above is, on the same
   // values in the same file -- but through the bare allowlist rather than that
   // helper's `displayIdent`. That is a scope judgement recorded on issue #3164
-  // and tracked as go-to-k/cdkd#3179, not an oversight: these five sites are
+  // and tracked as go-to-k/cdkd#3179, not an oversight: the sites below are
   // REFUSALS, not the listing a `while read` loop consumes. None of THEM is a
   // command hint (the two that are live at `stateResourcesCommand` /
   // `stateShowCommand` below); what they do share with those is that a
