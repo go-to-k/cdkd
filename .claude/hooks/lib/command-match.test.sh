@@ -264,6 +264,8 @@ r2_case "C1: a <<X after a closed \$( ) inside double quotes is still quoted" 0 
 # runs (security round 14, all three shells; P01 / P03 below). A
 # backtick-framed opener is therefore the sticky bail and its prose body is
 # read as commands -- origin/main parity, a false refusal, never a miss.
+# What decides it is the end-of-line check (`lho-ol-check`): an opener with
+# a backtick frame still open is not recorded as a latch.
 check "B1: a quoted heredoc inside a backtick substitution inside double quotes is read as commands (parity)" 0 "$MERGE" \
   "$(printf '%s\n' 'x="`cat <<'"'"'EOF'"'"'' 'gh pr merge 1 was refused' 'EOF' '`"')"
 check "P03: a backtick mention on a body line closes the backtick substitution, and the line after it runs" 0 "$MERGE" \
@@ -342,11 +344,12 @@ r3_case "d05: two QUOTED openers, verb after both terminators is still a segment
 # Which shell reads the next line as the new substitution and which as the
 # heredoc body is VERSION-DEPENDENT (bash 3.2 and zsh run the commit, bash 5
 # reads a body; the backtick twin runs it in all three), so the scan bails
-# the moment the opener frame closes -- a `)` at or below the recorded depth,
-# or the backtick that held the opener closing -- rather than modelling it.
+# the moment the opener frame closes -- a `)` at or below the recorded depth
+# -- rather than modelling it; a backtick-framed opener is never latched at
+# all (round 14), so the backtick half of this rule is gone.
 r3_case "c1: opener frame closes, a new \$( opens -- \$( form" 0 "$COMMIT" \
   'y=$(cat <<'"'"'EOF'"'"') ; z=$(' 'git commit -m y' 'EOF' ')'
-r3_case "c1b: opener frame closes, a new \$( opens -- backtick form (since round 14 a backtick-framed opener bails outright)" 0 "$COMMIT" \
+r3_case "c1b: opener frame closes, a new \$( opens -- backtick form (the word <<'EOF'\` is unreadable, so this pins that bail)" 0 "$COMMIT" \
   'y=`cat <<'"'"'EOF'"'"'` ; z=$(' 'git commit -m y' 'EOF' ')'
 r3_case "c1c: a NESTED opener frame closes while the outer stays open" 0 "$COMMIT" \
   'x=$(echo $(cat <<'"'"'X'"'"')' 'git commit -m y' 'X' ')'
@@ -558,6 +561,23 @@ check "E3: an ODD run is a real continuation, the verb is an argument (control)"
   "$(printf '%s\n' 'echo \\\' 'gh pr merge 1')"
 r3_case "E4: the same on a closing body line inside \$( )" 0 "$MERGE" \
   'x=$(cat <<'"'"'E'"'"'' 'body' 'E);echo \\' 'gh pr merge 1' 'E' ')'
+# Round 15 (security): the frame-close bail returned without scanning the
+# rest of the line and without the sticky flag, so a backtick opened AFTER
+# the `)` was missing from the carried state; the next line then latched an
+# opener that sat inside that backtick, and the body line closing the
+# backtick -- which all three shells run -- was dropped. The three early
+# returns (frame close, unterminated `$((`, unterminated `${`) are sticky now.
+r3_case "X19b: opener frame closes and a backtick opens after it -- the next line's opener is inside the backtick" 0 "$MERGE" \
+  'x=$(cat <<'"'"'E'"'"') ; echo `' 'E' 'cat <<'"'"'F'"'"'' '`; gh pr merge 1 --squash' 'F'
+r3_case "X19c: the nested-frame twin" 0 "$MERGE" \
+  'x=$(echo $(cat <<'"'"'E'"'"') `' 'E' 'cat <<'"'"'F'"'"'' '`; gh pr merge 1' 'F'
+# Round 15 (test review): the `#` class lost its opening-backtick member in
+# round 14, and that is fenceable in the refusing direction: with the member
+# back, `x=\`#\`` reads the `#` as a comment, the closing backtick is never
+# seen, and the real quoted heredoc after it is not latched -- its prose is
+# refused as commands.
+check "H1: a # right after an opening backtick is not a comment once the backtick closes on the same line" 1 "$MERGE" \
+  "$(printf '%s\n' 'y=$(x=`#` ; cat <<'"'"'X'"'"'' 'gh pr merge 1 was refused' 'X' ')')"
 
 # --- The UNQUOTED delimiter is DELIBERATELY not latched (round 2) ------------
 # Two review rounds of go-to-k/cdkd#3040 each measured shapes bash executes
