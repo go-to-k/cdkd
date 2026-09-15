@@ -1256,11 +1256,20 @@ Four further rules round out the default:
   few attributes are read from AWS at resolution time when the state record
   does not hold them: an EC2 instance's `PrivateIp` / `PublicIp` /
   `PrivateDnsName` / `PublicDnsName` / `AvailabilityZone`, a VPC's
-  `DefaultSecurityGroup`, a CloudFront distribution's `DomainName`. When
+  `DefaultSecurityGroup`, a CloudFront distribution's `DomainName`, a
+  security group's `VpcId` (recorded at create from `DescribeSecurityGroups`,
+  so a group declared without `VpcId` resolves to the default VPC's id as
+  CloudFormation answers, and re-read when the record lacks it — or holds
+  `''`, which an older cdkd wrote for such a group; that record keeps `''`
+  until the group's next update, only the resolution changes — so on such a
+  record `cdkd diff` issues one `DescribeSecurityGroups` and shows a one-time
+  `'' → vpc-…` Output delta, which `--fail` exits 1 on once and the next
+  deploy's Outputs persist heals; if the read is refused, the Output lands in
+  the failed keys and the Outputs section is suppressed with a warning). When
   the read finds the value not yet assigned (an instance still `pending`
   under `--no-wait`) or the read fails, cdkd refuses to resolve the reference
-  rather than substituting the instance / VPC / distribution ID, which can
-  never be the right value there; the message names the resource, the
+  rather than substituting the instance / VPC / distribution / group ID,
+  which can never be the right value there; the message names the resource, the
   attribute, what was observed (the instance state, or the error class —
   `--verbose` shows the AWS text) and the remedy. Nothing is cached, so the
   next deploy re-reads. An RDS `DBProxy` / `DBProxyEndpoint` `VpcId` the

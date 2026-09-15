@@ -3702,6 +3702,228 @@ describe('IntrinsicFunctionResolver - AWS::EC2::VPC DefaultSecurityGroup (live D
   });
 });
 
+describe('IntrinsicFunctionResolver - AWS::EC2::SecurityGroup VpcId (live DescribeSecurityGroups, #3097)', () => {
+  let resolver: IntrinsicFunctionResolver;
+
+  beforeEach(() => {
+    resolver = new IntrinsicFunctionResolver();
+    resetAccountInfoCache();
+    mockEc2Send.mockReset();
+    debugSpy.mockReset();
+  });
+
+  const SG_ID = 'sg-0123456789abcdef0';
+  const makeContext = (
+    attributes: Record<string, unknown>,
+    physicalId: string = SG_ID
+  ): ResolverContext => ({
+    template: { Resources: { Sg: { Type: 'AWS::EC2::SecurityGroup', Properties: {} } } },
+    resources: {
+      Sg: {
+        physicalId,
+        resourceType: 'AWS::EC2::SecurityGroup',
+        properties: {},
+        attributes,
+        dependencies: [],
+      },
+    },
+  });
+  const getAtt = { 'Fn::GetAtt': ['Sg', 'VpcId'] };
+
+  it('serves a recorded VpcId from state without any describe', async () => {
+    mockEc2Send.mockRejectedValue(new Error('must not be called'));
+    expect(
+      await resolver.resolve(getAtt, makeContext({ GroupId: SG_ID, VpcId: 'vpc-0recorded' }))
+    ).toBe('vpc-0recorded');
+    expect(mockEc2Send).not.toHaveBeenCalled();
+  });
+
+  it('re-reads the VPC live when the record OMITS the key -- by GroupIds, never a filter -- and caches it per deploy', async () => {
+    mockEc2Send.mockResolvedValue({ SecurityGroups: [{ GroupId: SG_ID, VpcId: 'vpc-0live' }] });
+    const context = () => makeContext({ GroupId: SG_ID });
+    // Pre-#3097 this arm answered `undefined` (`// Would need API call`).
+    expect(await resolver.resolve(getAtt, context())).toBe('vpc-0live');
+    expect(await resolver.resolve(getAtt, context())).toBe('vpc-0live');
+    expect(mockEc2Send).toHaveBeenCalledTimes(1);
+    const cmd = mockEc2Send.mock.calls[0]![0] as {
+      constructor: { name: string };
+      input: Record<string, unknown>;
+    };
+    expect(cmd.constructor.name).toBe('DescribeSecurityGroupsCommand');
+    expect(cmd.input).toEqual({ GroupIds: [SG_ID] });
+  });
+
+  it('keys the cache by the PHYSICAL id, not the logical id: same logical id in two stacks describes twice, two logical ids over one group describe once', async () => {
+    // The cache is process-wide (nothing in `src/` calls `resetAccountInfoCache`),
+    // so `deploy --all` / a nested stack can put two records named `Sg` in one
+    // process. A cache keyed by logical id would hand the second stack the
+    // first stack's VPC with no describe (review of PR go-to-k/cdkd#3139;
+    // measured: a logical-id-keyed mutant passed every other case here).
+    const OTHER_SG_ID = 'sg-0fedcba9876543210';
+    mockEc2Send.mockImplementation(async (cmd: { input: { GroupIds: string[] } }) => ({
+      SecurityGroups: [{ GroupId: cmd.input.GroupIds[0], VpcId: `vpc-for-${cmd.input.GroupIds[0]}` }],
+    }));
+    // Same logical id `Sg`, different groups: two describes, two answers.
+    expect(await resolver.resolve(getAtt, makeContext({ GroupId: SG_ID }, SG_ID))).toBe(
+      `vpc-for-${SG_ID}`
+    );
+    expect(await resolver.resolve(getAtt, makeContext({ GroupId: OTHER_SG_ID }, OTHER_SG_ID))).toBe(
+      `vpc-for-${OTHER_SG_ID}`
+    );
+    expect(mockEc2Send).toHaveBeenCalledTimes(2);
+    // A different logical id over the FIRST group: served from the cache.
+    const otherLogical: ResolverContext = {
+      template: { Resources: { OtherSg: { Type: 'AWS::EC2::SecurityGroup', Properties: {} } } },
+      resources: {
+        OtherSg: {
+          physicalId: SG_ID,
+          resourceType: 'AWS::EC2::SecurityGroup',
+          properties: {},
+          attributes: { GroupId: SG_ID },
+          dependencies: [],
+        },
+      },
+    };
+    expect(await resolver.resolve({ 'Fn::GetAtt': ['OtherSg', 'VpcId'] }, otherLogical)).toBe(
+      `vpc-for-${SG_ID}`
+    );
+    expect(mockEc2Send).toHaveBeenCalledTimes(2);
+  });
+
+  it("reads a LEGACY stored '' as absent -- the pre-#3097 record of a group declared without VpcId -- and serves the live id, cached", async () => {
+    // A record written by a pre-#3097 binary copied the template's absent
+    // `VpcId` as `''`, and a no-change deploy never rewrites it (the provider
+    // records only on update). Served from state that `''` would shadow the
+    // live arm forever -- the population the issue was filed for.
+    mockEc2Send.mockResolvedValue({ SecurityGroups: [{ GroupId: SG_ID, VpcId: 'vpc-0live' }] });
+    // ONE context instance for both resolutions AND the assertion: a factory
+    // would hand the assertion a fresh literal and a mutant that WRITES the
+    // live id back into the record would stay green (delta review of PR
+    // go-to-k/cdkd#3139).
+    const ctx = makeContext({ GroupId: SG_ID, VpcId: '' });
+    expect(await resolver.resolve(getAtt, ctx)).toBe('vpc-0live');
+    expect(await resolver.resolve(getAtt, ctx)).toBe('vpc-0live');
+    expect(mockEc2Send).toHaveBeenCalledTimes(1);
+    // The carve-out reads the value as absent; it does not rewrite the record.
+    expect(ctx.resources['Sg']!.attributes!['VpcId']).toBe('');
+  });
+
+  it("does NOT widen the '' carve-out: an EC2 Instance's known-empty PublicIp is still served from state (the #3077 control)", async () => {
+    // #3077 records a settled instance's missing public address as the KNOWN
+    // empty `''` (CloudFormation's answer); a general "'' means absent" rule
+    // would send it back to DescribeInstances on every resolution.
+    mockEc2Send.mockRejectedValue(new Error('must not be called'));
+    const context: ResolverContext = {
+      template: { Resources: { Box: { Type: 'AWS::EC2::Instance', Properties: {} } } },
+      resources: {
+        Box: {
+          physicalId: 'i-0123456789abcdef0',
+          resourceType: 'AWS::EC2::Instance',
+          properties: {},
+          attributes: { PublicIp: '', PrivateIp: '10.0.0.5' },
+          dependencies: [],
+        },
+      },
+    };
+    expect(await resolver.resolve({ 'Fn::GetAtt': ['Box', 'PublicIp'] }, context)).toBe('');
+    expect(mockEc2Send).not.toHaveBeenCalled();
+  });
+
+  it('renders the live id inside Fn::Join -- never the literal "undefined" the old arm produced', async () => {
+    // `resolveJoin` runs `String(part)` over every part, so the pre-#3097
+    // `return undefined` landed as `'undefined'` in the joined string: the
+    // reason #3077 left the provider's `?? ''` in place.
+    mockEc2Send.mockResolvedValue({ SecurityGroups: [{ GroupId: SG_ID, VpcId: 'vpc-0live' }] });
+    const joined = await resolver.resolve(
+      { 'Fn::Join': ['/', ['vpc', getAtt]] },
+      makeContext({ GroupId: SG_ID })
+    );
+    expect(joined).toBe('vpc/vpc-0live');
+    expect(joined).not.toContain('undefined');
+  });
+
+  it('GroupId is unchanged: the physical id, with no describe', async () => {
+    mockEc2Send.mockRejectedValue(new Error('must not be called'));
+    expect(
+      await resolver.resolve({ 'Fn::GetAtt': ['Sg', 'GroupId'] }, makeContext({}))
+    ).toBe(SG_ID);
+    expect(mockEc2Send).not.toHaveBeenCalled();
+  });
+
+  it('resetAccountInfoCache clears the cached VpcId, so the next resolution re-reads', async () => {
+    mockEc2Send.mockResolvedValue({ SecurityGroups: [{ GroupId: SG_ID, VpcId: 'vpc-0live' }] });
+    const context = () => makeContext({ GroupId: SG_ID });
+    await resolver.resolve(getAtt, context());
+    expect(mockEc2Send).toHaveBeenCalledTimes(1);
+    resetAccountInfoCache();
+    await resolver.resolve(getAtt, context());
+    expect(mockEc2Send).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses (never the group id, nothing cached, retryable) when the live read reports no VpcId', async () => {
+    mockEc2Send.mockResolvedValue({ SecurityGroups: [] });
+    const context = () => makeContext({ GroupId: SG_ID });
+    const refusal = await resolver.resolve(getAtt, context()).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(refusal).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect((refusal as Error).message).toContain('Cannot resolve Fn::GetAtt [Sg, VpcId]');
+    expect((refusal as Error).message).toContain('reports no VpcId for the group');
+    expect((refusal as Error).message).toContain(SG_ID);
+    expect(isMarkedNonRetryable(refusal as Error)).toBe(false);
+    // Nothing cached: the second resolution describes again.
+    await expect(resolver.resolve(getAtt, context())).rejects.toBeInstanceOf(
+      IntrinsicResolutionRefusalError
+    );
+    expect(mockEc2Send).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses when the live read fails, naming the error class and status only, with the AWS text at debug', async () => {
+    mockEc2Send.mockRejectedValue(
+      Object.assign(new Error('arn:aws:sts::123456789012:assumed-role/x/y is not authorized'), {
+        name: 'UnauthorizedOperation',
+        $metadata: { httpStatusCode: 403 },
+      })
+    );
+    const context = () => makeContext({ GroupId: SG_ID });
+    const refusal = await resolver.resolve(getAtt, context()).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(refusal).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect((refusal as Error).message).toContain(
+      'DescribeSecurityGroups failed (UnauthorizedOperation, HTTP 403)'
+    );
+    expect((refusal as Error).message).toContain('ec2:DescribeSecurityGroups permission');
+    expect((refusal as Error).message).not.toContain('assumed-role');
+    expect(isMarkedNonRetryable(refusal as Error)).toBe(false);
+    expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining('assumed-role/x/y'));
+    // Nothing cached after a failure either.
+    await expect(resolver.resolve(getAtt, context())).rejects.toBeInstanceOf(
+      IntrinsicResolutionRefusalError
+    );
+    expect(mockEc2Send).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['sg-*', 'sg-', 'my-group', 'constructor', '__proto__', 'hasOwnProperty'])(
+    'refuses (marked, no read) a physical id that is not an sg-<hex>: %s',
+    async (physicalId) => {
+      mockEc2Send.mockRejectedValue(new Error('must not be called'));
+      const refusal = await resolver.resolve(getAtt, makeContext({}, physicalId)).then(
+        () => undefined,
+        (e: unknown) => e
+      );
+      expect(refusal).toBeInstanceOf(IntrinsicResolutionRefusalError);
+      expect((refusal as Error).message).toContain('is not a security group id (sg-<hex>)');
+      expect((refusal as Error).message).toContain('Cannot resolve Fn::GetAtt [Sg, VpcId]');
+      // Record-decided: no retry rewrites the state record.
+      expect(isMarkedNonRetryable(refusal as Error)).toBe(true);
+      expect(mockEc2Send).not.toHaveBeenCalled();
+    }
+  );
+});
+
 describe('IntrinsicFunctionResolver - AWS::CloudFront::Distribution DomainName (live GetDistribution, #3096)', () => {
   let resolver: IntrinsicFunctionResolver;
 

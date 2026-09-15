@@ -96,15 +96,18 @@ describe('check-resolver-mask-coverage', () => {
       // throw (6 masks, 8 notes): 132 / 155 / 100 -> 133 / 158 / 106; its review
       // round added the VPC `vpc-id` filter-shape refusal, one mask and one
       // note: 134 / 159 / 107; its delta round added the CloudFront
-      // distribution-id shape refusal the same way: 135 / 160 / 108). This subsumes the band check on the real
-      // tree and is meant
+      // distribution-id shape refusal the same way: 135 / 160 / 108; issue
+      // #3097's security-group `VpcId` live arm added the `sg-<hex>` shape
+      // refusal the same way — its two `refuseUnservedAttribute` calls share
+      // the existing throw site: 136 / 161 / 109). This subsumes the band
+      // check on the real tree and is meant
       // to: a change to this file's throw/log population is a decision, and the
       // three numbers moving in a diff is how it gets read. The band still earns
       // its place — it is what the SHIPPED binary enforces in CI, where this
       // suite's assertions do not run.
-      expect(result.statements).toBe(135);
-      expect(result.maskedExprs).toBe(160);
-      expect(result.markers).toBe(108);
+      expect(result.statements).toBe(136);
+      expect(result.maskedExprs).toBe(161);
+      expect(result.markers).toBe(109);
     });
 
     it('a subject with no statements is not silently green', () => {

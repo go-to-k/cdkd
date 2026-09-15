@@ -354,6 +354,65 @@ describe('rewriteResourceReferences', () => {
     expect(result.state.resources['Other']?.properties).toEqual({ Arn: 'arn:aws:s3:::b-cached' });
   });
 
+  it("--force does NOT substitute a legacy '' security-group VpcId after a failed live read (#3097)", async () => {
+    // A pre-#3097 record for a group declared without `VpcId` holds `''`,
+    // which passes a bare `=== undefined` test; spliced into the referring
+    // resource it would become its VpcId. The fallback reads it through the
+    // resolver's `isImpossibleEmptyStoredAttribute`, so the reference stays
+    // unresolvable instead.
+    const getAttribute = vi.fn(async () => {
+      throw new Error('throttled');
+    });
+    const state = baseState({
+      Sg: {
+        physicalId: 'sg-0123456789abcdef0',
+        resourceType: 'AWS::EC2::SecurityGroup',
+        properties: {},
+        attributes: { GroupId: 'sg-0123456789abcdef0', VpcId: '' },
+      },
+      Other: {
+        physicalId: 'o',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Value: { 'Fn::GetAtt': ['Sg', 'VpcId'] } },
+      },
+    });
+
+    const result = await rewriteResourceReferences(state, ['Sg'], fakeRegistry(getAttribute), {
+      force: true,
+    });
+
+    expect(result.unresolvable.map((u) => u.reason).join(' ')).toContain(
+      "state.attributes cache also has no value for 'VpcId'"
+    );
+    expect(result.state.resources['Other']?.properties).toEqual({
+      Value: { 'Fn::GetAtt': ['Sg', 'VpcId'] },
+    });
+    // The control: the same record's `GroupId` is a real value and IS substituted.
+    const control = baseState({
+      Sg: {
+        physicalId: 'sg-0123456789abcdef0',
+        resourceType: 'AWS::EC2::SecurityGroup',
+        properties: {},
+        attributes: { GroupId: 'sg-0123456789abcdef0', VpcId: '' },
+      },
+      Other: {
+        physicalId: 'o',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Value: { 'Fn::GetAtt': ['Sg', 'GroupId'] } },
+      },
+    });
+    const controlResult = await rewriteResourceReferences(
+      control,
+      ['Sg'],
+      fakeRegistry(getAttribute),
+      { force: true }
+    );
+    expect(controlResult.unresolvable).toEqual([]);
+    expect(controlResult.state.resources['Other']?.properties).toEqual({
+      Value: 'sg-0123456789abcdef0',
+    });
+  });
+
   it('--force WARNS when the cached attribute is an unresolved dynamic reference (#2055)', async () => {
     // The SECOND reader of `state.attributes`. Since issue #2055 a nested
     // stack's `Outputs.<Key>` attribute legitimately holds its unresolved

@@ -142,5 +142,28 @@ export class Ec2InstanceStack extends cdk.Stack {
       value: publicInstance.ref,
       description: 'NetworkInterfaces-shaped EC2 Instance ID (issue #1281)',
     });
+
+    // Issue #3097: a RAW L1 security group declared with NO `vpcId`. AWS puts
+    // it in the account's default VPC, so the template has no VpcId for the
+    // provider to copy -- the shape whose `Fn::GetAtt [.., VpcId]` used to
+    // resolve to '' (the record) or the literal 'undefined' (the resolver
+    // arm). The provider now reads the group's VpcId back from
+    // `DescribeSecurityGroups` at create, and verify.sh asserts the Output
+    // equals the default VPC's id (read live via `is-default`, never
+    // hardcoded). The L2 `ec2.SecurityGroup` cannot express this: it requires
+    // a `vpc`. The explicit GroupName is what verify.sh's teardown sweeps by,
+    // so a run killed between create and state write cannot leave a
+    // same-named group that fails the next run with InvalidGroup.Duplicate.
+    // Nothing references this group, so the stack's own destroy deletes it;
+    // the default VPC itself is never touched.
+    const defaultVpcSg = new ec2.CfnSecurityGroup(this, 'DefaultVpcSg', {
+      groupDescription: 'cdkd ec2-instance integ (issue #3097): declared without VpcId',
+      groupName: 'CdkdEc2InstanceIntegDefaultVpcSg',
+    });
+
+    new cdk.CfnOutput(this, 'DefaultVpcSgVpcId', {
+      value: defaultVpcSg.attrVpcId,
+      description: 'VpcId of a security group declared without one (issue #3097)',
+    });
   }
 }

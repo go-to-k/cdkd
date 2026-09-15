@@ -178,8 +178,9 @@ const UNSUBSTITUTED_SUB_PLACEHOLDER = /\$\{[^}]*\}/;
  *
  * 1. `undefined` — the SAME signal the deploy side keys on. `resolve` returns it
  *    WITHOUT throwing for a constructible-but-unknown attribute
- *    (`AWS::DynamoDB::Table.StreamArn`, `AWS::IAM::Policy.PolicyId`,
- *    `AWS::EC2::SecurityGroup.VpcId`, ...). `JSON.stringify` drops an
+ *    (`AWS::DynamoDB::Table.StreamArn`, `AWS::IAM::Policy.PolicyId`, ...;
+ *    `AWS::EC2::SecurityGroup.VpcId` left this list in #3097 — it now reads
+ *    the group live and REFUSES, which the catch below records). `JSON.stringify` drops an
  *    `undefined`-valued key, so state can never hold one and such an output
  *    would otherwise report a PERMANENT phantom `ADD` printing `new: undefined`.
  * 2. A symbol — `Ref: AWS::NoValue` resolves to a sentinel symbol, which

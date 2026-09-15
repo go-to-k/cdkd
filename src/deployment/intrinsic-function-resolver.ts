@@ -1388,20 +1388,22 @@ const cachedEc2InstanceAttributes: Record<string, string> = Object.create(null) 
 >;
 
 /**
- * The two sibling caches of {@link cachedEc2InstanceAttributes} (issue
- * #3096), each holding a value the resolver read LIVE because the state
- * record omitted it — `definedAttributes` drops a member the provider could
- * not read back (issue #3077), so the `Fn::GetAtt` falls out of the flat
- * lookup and into `constructAttribute`'s per-type arm. Keyed by physical id
- * (AWS-minted, unique across accounts and regions, and the value — a default
- * security group id, a distribution hostname — never changes); like the
- * instance cache, a refusal caches nothing. Same process lifetime, cleared
- * together with it by {@link resetAccountInfoCache}. The RDS `DBProxy` / `DBProxyEndpoint`
- * `VpcId` arms have no cache because they have no live read: `AwsClients`
- * exposes no RDS client and this file imports none, so those two arms refuse
- * outright (see `refuseUnservedAttribute`'s callers).
+ * The three sibling caches of {@link cachedEc2InstanceAttributes} (issues
+ * #3096 / #3097), each holding a value the resolver read LIVE because the
+ * state record omitted it — `definedAttributes` drops a member the provider
+ * could not read back (issue #3077), so the `Fn::GetAtt` falls out of the
+ * flat lookup and into `constructAttribute`'s per-type arm. Keyed by physical
+ * id: the read is region-pinned (`clientsForRegion(this.explicitRegion)`),
+ * so the key names one resource in that region, and the value — a default
+ * security group id, a distribution hostname, a security group's VPC —
+ * never changes; like the instance cache, a refusal caches nothing. Same
+ * process lifetime, cleared together with it by {@link resetAccountInfoCache}.
+ * The RDS `DBProxy` / `DBProxyEndpoint` `VpcId` arms have no cache because
+ * they have no live read: `AwsClients` exposes no RDS client and this file
+ * imports none, so those two arms refuse outright (see
+ * `refuseUnservedAttribute`'s callers).
  *
- * All three are NULL-PROTOTYPE objects (#3096 delta review, measured): the
+ * All four are NULL-PROTOTYPE objects (#3096 delta review, measured): the
  * key is a state-record physical id, and on a plain `{}` a record holding
  * `constructor` / `__proto__` / `hasOwnProperty` read a FUNCTION out of
  * `Object.prototype` as the cached value — served with zero AWS calls, ahead
@@ -1413,6 +1415,10 @@ const cachedVpcDefaultSecurityGroups: Record<string, string> = Object.create(nul
   string
 >;
 const cachedCloudFrontDomainNames: Record<string, string> = Object.create(null) as Record<
+  string,
+  string
+>;
+const cachedSecurityGroupVpcIds: Record<string, string> = Object.create(null) as Record<
   string,
   string
 >;
@@ -2035,6 +2041,36 @@ async function resolveAccountIdentity(): Promise<CachedAccountIdentity> {
 }
 
 /**
+ * Is a STORED `''` for this attribute a value the resource can never have —
+ * so the flat lookup must read it as ABSENT and let the live arm run?
+ *
+ * Exactly one attribute qualifies today (issue #3097 review): an
+ * `AWS::EC2::SecurityGroup`'s `VpcId`. Every security group lives in a VPC
+ * (EC2-Classic retired 2022-08-15), so `''` can only be the pre-#3097
+ * provider's copy of a template that declared no `VpcId` — and that record is
+ * rewritten only by an `update()`, which a no-change deploy never issues, so
+ * without this carve-out the stored `''` shadows the live arm for the life of
+ * the record. The record itself stays `''` until the next update; only the
+ * RESOLUTION changes.
+ *
+ * Deliberately NOT a general "`''` means absent" rule: #3077 records a settled
+ * EC2 instance's missing public address as the KNOWN empty `''`
+ * (CloudFormation's own answer), and that one must keep being served from
+ * state rather than sent back to `DescribeInstances` on every resolution.
+ * A new entry here needs the same argument — that `''` is IMPOSSIBLE for the
+ * attribute, not merely unlikely.
+ */
+export function isImpossibleEmptyStoredAttribute(
+  resourceType: string,
+  attributeName: string,
+  storedValue: unknown
+): boolean {
+  return (
+    storedValue === '' && resourceType === 'AWS::EC2::SecurityGroup' && attributeName === 'VpcId'
+  );
+}
+
+/**
  * Reset cached account info (useful for testing)
  */
 export function resetAccountInfoCache(): void {
@@ -2072,7 +2108,8 @@ export function resetAccountInfoCache(): void {
   // module-level store cleared from here was the first shape, and is what let
   // one stack's expression be certified onto another stack's leaf.
   // Also reset the live-read attribute caches (EC2 instance, VPC default
-  // security group, CloudFront domain name — issue #3096).
+  // security group, CloudFront domain name — issue #3096; security group VPC
+  // — issue #3097).
   for (const key of Object.keys(cachedEc2InstanceAttributes)) {
     delete cachedEc2InstanceAttributes[key];
   }
@@ -2081,6 +2118,9 @@ export function resetAccountInfoCache(): void {
   }
   for (const key of Object.keys(cachedCloudFrontDomainNames)) {
     delete cachedCloudFrontDomainNames[key];
+  }
+  for (const key of Object.keys(cachedSecurityGroupVpcIds)) {
+    delete cachedSecurityGroupVpcIds[key];
   }
 }
 
@@ -4170,9 +4210,20 @@ export class IntrinsicFunctionResolver {
       // from `JSON.parse` of state.json, so `Fn::GetAtt: [R, "constructor"]` read
       // the `Object` function, passed the `!== undefined` test below, and was
       // returned as the attribute VALUE into a live property.
-      const flatValue = Object.hasOwn(resource.attributes, attributeName)
+      const storedValue = Object.hasOwn(resource.attributes, attributeName)
         ? resource.attributes[attributeName]
         : undefined;
+      // A pre-#3097 record for a security group declared without `VpcId`
+      // holds `''` (the template's absent property, copied), and nothing
+      // rewrites it on a no-change deploy; served here it would shadow the
+      // live arm forever. Read it as ABSENT for this ONE attribute only.
+      const flatValue = isImpossibleEmptyStoredAttribute(
+        resource.resourceType,
+        attributeName,
+        storedValue
+      )
+        ? undefined
+        : storedValue;
       if (flatValue !== undefined) {
         this.rejectPlaceholderArnAttribute(resource, attributeName, flatValue, logicalId, context);
         // Earlier cdkd versions stored Route 53 HostedZone NameServers as a
@@ -5502,8 +5553,73 @@ export class IntrinsicFunctionResolver {
       switch (attributeName) {
         case 'GroupId':
           return physicalId; // Physical ID is already the group ID (sg-xxx)
-        case 'VpcId':
-          return undefined; // Would need API call
+        case 'VpcId': {
+          // Reached only when the record OMITS the key: `resolveGetAtt`'s flat
+          // lookup serves any present value first. `EC2Provider` records
+          // `VpcId` from a post-create / post-update `DescribeSecurityGroups`
+          // and omits the key when that read failed (issue #3097), so this arm
+          // re-reads the same thing the provider could not. It used to answer
+          // `undefined` (`// Would need API call`), which `Fn::Join` /
+          // `Fn::Sub` render as the literal `'undefined'` — so a group declared
+          // without `VpcId` (a hand-written L1 landing in the default VPC)
+          // resolved to `''` from the record or `'undefined'` from here, where
+          // CloudFormation answers the default VPC's id. A `sg-...` can never
+          // satisfy a `vpc-...` slot, so a read that fails or finds nothing
+          // REFUSES instead; unmarked, because the read can succeed on a retry.
+          // The id is sent as a `GroupIds` member, not a filter, so `*` / `?`
+          // carry no wildcard meaning there — the shape guard exists because
+          // the id keys the cache below, and EC2 rejects a malformed id with
+          // `InvalidGroupId.Malformed` anyway (#3125 pattern). Refused BEFORE
+          // the cache read AND the describe, and marked: the verdict is read
+          // off the persisted record, which no retry rewrites, and the message
+          // interpolates the logical id (#1838).
+          if (!/^sg-[0-9a-f]+$/.test(physicalId)) {
+            // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
+            throw markNonRetryable(
+              new IntrinsicResolutionRefusalError(
+                `Cannot resolve Fn::GetAtt [${logicalId}, VpcId] for AWS::EC2::SecurityGroup: the ` +
+                  `state record's physical id "${displaySafe(this.maskThenStripThenMask(physicalId, context)).slice(0, 64)}" ` +
+                  `is not a security group id (sg-<hex>), so cdkd will not look it up. Repair the ` +
+                  `record (cdkd import, or re-create the security group) and deploy again.`
+              )
+            );
+          }
+          const cachedVpcId = cachedSecurityGroupVpcIds[physicalId];
+          if (cachedVpcId !== undefined) return cachedVpcId;
+          let vpcId: string | undefined;
+          try {
+            const ec2 = this.clientsForRegion(this.explicitRegion).ec2;
+            const resp = await ec2.send(
+              new DescribeSecurityGroupsCommand({ GroupIds: [physicalId] })
+            );
+            vpcId = resp.SecurityGroups?.[0]?.VpcId;
+          } catch (err) {
+            this.refuseUnservedAttribute({
+              logicalId,
+              attributeName,
+              resourceType,
+              physicalId,
+              context,
+              observed: this.describeFailureObserved('DescribeSecurityGroups', err, context),
+              remedy:
+                'Fix the read (the ec2:DescribeSecurityGroups permission, or the region) and deploy again.',
+            });
+          }
+          if (vpcId) {
+            cachedSecurityGroupVpcIds[physicalId] = vpcId;
+            return vpcId;
+          }
+          this.refuseUnservedAttribute({
+            logicalId,
+            attributeName,
+            resourceType,
+            physicalId,
+            context,
+            observed: 'DescribeSecurityGroups reports no VpcId for the group',
+            remedy:
+              'Check the security group in the console, or reference the attribute from a later deploy.',
+          });
+        }
         default:
           return this.guardedPhysicalIdFallback(
             logicalId,
@@ -5837,9 +5953,12 @@ export class IntrinsicFunctionResolver {
    * belongs, a `vpc-...` in a security-group slot, a distribution id where a
    * hostname belongs, a proxy name in a `VpcId` position. Loud only where AWS
    * rejects the shape; an Output, an export or a free-text property carried it
-   * silently. The physical id can never be the value for these attributes,
-   * so the honest answer is a refusal naming the resource, the attribute, what
-   * was observed and the remedy.
+   * silently. The security group `VpcId` arm (issue #3097) joined with the
+   * opposite pre-fix defect — it answered `undefined`, which `Fn::Join`
+   * renders `'undefined'` — and takes the same refusal. The physical id can
+   * never be the value for these attributes, so the honest answer is a
+   * refusal naming the resource, the attribute, what was observed and the
+   * remedy.
    *
    * DELIBERATELY NOT `markNonRetryable`, unlike every other refusal in this
    * file but the fabricated-account guard: the verdict is TIME-DEPENDENT. A
@@ -5855,7 +5974,7 @@ export class IntrinsicFunctionResolver {
    * interpolated hole happens to carry a pattern — the `logicalId` (the #1838
    * hazard: `DependencyViolation` and two other bare words), or the error
    * CLASS name `describeFailureObserved` puts in `observed`, which none of
-   * these three reads raises — and then re-describes and can heal.
+   * these four reads raises — and then re-describes and can heal.
    * Measured, not designed: the fabricated-account guard sits in exactly the
    * same place. Threading a sanitized SDK error as `cause` so a throttled
    * describe classifies as transient was considered and left out — a

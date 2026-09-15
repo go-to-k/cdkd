@@ -244,26 +244,28 @@ describe('IntrinsicResolutionRefusalError throw sites are non-retryable (#1874 r
     // than by a line number, which every edit above it would shift: the #1730
     // fabricated-account guard (behavioural fence: the test above) and the
     // #3096 live-read refusal `refuseUnservedAttribute` raises for the EC2
-    // Instance / VPC `DefaultSecurityGroup` / CloudFront `DomainName` arms
-    // (behavioural fences: `intrinsic-functions.test.ts`, which asserts
-    // `isMarkedNonRetryable` false on each arm). ONE construction site serves
-    // all three arms, which is why it is one census entry; the #3096 DBProxy
-    // `VpcId` refusal beside them has no live read and is MARKED, so it lands
-    // in `marked` above.
+    // Instance / VPC `DefaultSecurityGroup` / CloudFront `DomainName` arms and
+    // (#3097) the SecurityGroup `VpcId` arm (behavioural fences:
+    // `intrinsic-functions.test.ts`, which asserts `isMarkedNonRetryable`
+    // false on each arm). ONE construction site serves all four arms, which
+    // is why it is one census entry; the #3096 DBProxy `VpcId` refusal beside
+    // them has no live read and is MARKED, so it lands in `marked` above, as
+    // do the three id-shape guards in front of the cache reads.
     expect(unmarked).toHaveLength(2);
     const windows = unmarked.map((line) => lines.slice(line - 1, line + 6).join('\n'));
     expect(windows.some((w) => w.includes('STS did not report'))).toBe(true);
     expect(windows.some((w) => w.includes('so cdkd refuses to substitute it'))).toBe(true);
   });
 
-  it('the three live-read caches are null-prototype objects, so a prototype-keyed physical id can never read a function out of them (#3096)', () => {
+  it('the four live-read caches are null-prototype objects, so a prototype-keyed physical id can never read a function out of them (#3096 / #3097)', () => {
     // Defence in depth behind the shape guards (`vpc-<hex>`, upper-case
-    // alphanumerics), which refuse `constructor` / `__proto__` before any cache
-    // read; the EC2 cache key carries a `#`, so no physical id can spell a
-    // prototype key there at all. No behavioural case can therefore reach a
-    // plain `{}` today — which is exactly why this is pinned at the SOURCE:
-    // a guard moved back below its cache read would re-open the read the
-    // delta review measured, and the cache must not be the thing that fails.
+    // alphanumerics, `sg-<hex>`), which refuse `constructor` / `__proto__`
+    // before any cache read; the EC2 cache key carries a `#`, so no physical
+    // id can spell a prototype key there at all. No behavioural case can
+    // therefore reach a plain `{}` today — which is exactly why this is
+    // pinned at the SOURCE: a guard moved back below its cache read would
+    // re-open the read the delta review measured, and the cache must not be
+    // the thing that fails.
     const source = readFileSync(
       new URL('../../../src/deployment/intrinsic-function-resolver.ts', import.meta.url),
       'utf8'
@@ -272,6 +274,7 @@ describe('IntrinsicResolutionRefusalError throw sites are non-retryable (#1874 r
       'cachedEc2InstanceAttributes',
       'cachedVpcDefaultSecurityGroups',
       'cachedCloudFrontDomainNames',
+      'cachedSecurityGroupVpcIds',
     ]) {
       const decl = new RegExp(
         `const ${cache}: Record<string, string> = Object\\.create\\(null\\) as Record<\\s*string,\\s*string\\s*>;`
