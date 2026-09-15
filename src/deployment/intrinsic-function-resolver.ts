@@ -835,15 +835,19 @@ interface LogTwin {
 
 /**
  * Masked log twins registered this pass, per pass bag (issue #3100;
- * `rememberLogTwin` / `logTwinOfProduct`). Log-only: nothing that resolves or
- * persists a value reads it.
+ * `rememberLogTwin` / `logTwinOfProduct`). Nothing that RESOLVES a value reads
+ * it. One persistence decision does: `resolveBase64` registers its encoding
+ * mask-only when the input's position mask fires (issue #3119), which a nested
+ * child also reaches through the inherited-bag lookup (issue #3114).
  *
  * MODULE scope, not instance scope: a region-pinned sibling resolver
  * (`resolverForProducerRegion`) resolves on behalf of the consumer with the
  * consumer's bag, so an instance-local registry left the sibling's twin where
  * the consumer's `Fn::Join` / `Fn::Sub` never looked. The key is still the
- * pass's own bag object, so scope does not widen: another pass holds another
- * bag and cannot reach these entries, and they die with the bag.
+ * pass's own bag object, so scope does not widen to unrelated passes: a pass
+ * reaches only the entries under its own bag and under the bag it was handed
+ * as `inheritedSecrets` (a nested-stack child reading its parent's, issue
+ * #3114), and the entries die with the bag.
  */
 const LOG_TWINS_BY_PASS = new WeakMap<RecordedSecretValues, Map<string, string>>();
 
@@ -3016,6 +3020,15 @@ export class IntrinsicFunctionResolver {
       inheritedSecrets && inheritedSecrets.size > 0
         ? maskSecretsInText(text, inheritedSecrets)
         : text;
+    // The context a user-provided value's leaves are masked against (issue
+    // #3114): the inherited bag is the only one this method has, and it is also
+    // the bag the parent registered its log twins under, so a value the parent
+    // built around a short secret prints with the parent's mask.
+    const inheritedLogContext: ResolverContext = {
+      template,
+      resources: {},
+      ...(inheritedSecrets && { inheritedSecrets }),
+    };
     // `Object.create(null)` (issue #2802). Every key here is a template
     // PARAMETER NAME, and the three writes below are plain assignments, so on a
     // plain object `parameters['__proto__'] = v` went to the inherited setter
@@ -3064,7 +3077,10 @@ export class IntrinsicFunctionResolver {
           // not-in-class(name): a template-DECLARED identifier (a Parameters / Conditions key), which CloudFormation requires to be a literal.
           this.logger.debug(
             `Parameter ${name}: using user-provided value ${maskInherited(
-              stringifyParameterForLog(paramDef, userValue)
+              stringifyParameterForLog(
+                paramDef,
+                this.maskValueLeaves(userValue, inheritedLogContext)
+              )
             )}`
           );
           continue;
@@ -3246,11 +3262,13 @@ export class IntrinsicFunctionResolver {
     // runs.
     //
     // NOT A UNIVERSAL OVER THE FILE, and the qualifier is load-bearing: two
-    // drafts of this note claimed one and a reviewer's grep refuted each. The
-    // four `Fn::GetAtt` lines mask AFTER `stringifyAttributeForLog`, which
-    // JSON-encodes an OBJECT-valued attribute — so a leaf holding `"` or `\`
-    // escapes past the literal needle there — and `stringifyParameterForLog`
-    // is a third encoder this note does not reach. The checkable statement is
+    // drafts of this note claimed one and a reviewer's grep refuted each. Since
+    // issue #3114 the four `Fn::GetAtt` value lines, `Resolved Ref to
+    // parameter` and the user-provided parameter line ARE among those call
+    // sites, leaf-masked before `stringifyAttributeForLog` /
+    // `stringifyParameterForLog` encodes them; the SSM-resolved and `Default`
+    // parameter lines still pass the raw value to `stringifyParameterForLog`
+    // and mask only its output. The checkable statement is
     // "`maskValueLeaves`'s call sites", not "every encoding"; the file-wide
     // question is answered by `scripts/check-resolver-mask-coverage.ts`, which
     // requires every interpolating site to be masked or annotated.
@@ -3895,7 +3913,7 @@ export class IntrinsicFunctionResolver {
       // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
       this.logger.debug(
         `Resolved Ref to parameter: ${logicalId} -> ${this.maskSecretsForLog(
-          stringifyParameterForLog(paramDef, value),
+          stringifyParameterForLog(paramDef, this.maskValueLeaves(value, context)),
           context
         )}`
       );
@@ -4239,7 +4257,7 @@ export class IntrinsicFunctionResolver {
           const nameServers = flatValue === '' ? [] : flatValue.split(',');
           // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
           this.logger.debug(
-            `Normalized legacy Fn::GetAtt attribute: ${logicalId}.${this.maskSecretsForLog(attributeName, context)} -> ${this.maskSecretsForLog(stringifyAttributeForLog(attributeName, nameServers), context)}`
+            `Normalized legacy Fn::GetAtt attribute: ${logicalId}.${this.maskSecretsForLog(attributeName, context)} -> ${this.maskSecretsForLog(stringifyAttributeForLog(attributeName, this.maskValueLeaves(nameServers, context)), context)}`
           );
           // Issue #2274 review: this branch ALSO serves a value out of the
           // PERSISTED `attributes` bag, so it takes the note like the two
@@ -4249,7 +4267,7 @@ export class IntrinsicFunctionResolver {
         }
         // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
         this.logger.debug(
-          `Resolved Fn::GetAtt from attributes: ${logicalId}.${this.maskSecretsForLog(attributeName, context)} -> ${this.maskSecretsForLog(stringifyAttributeForLog(attributeName, flatValue), context)}`
+          `Resolved Fn::GetAtt from attributes: ${logicalId}.${this.maskSecretsForLog(attributeName, context)} -> ${this.maskSecretsForLog(stringifyAttributeForLog(attributeName, this.maskValueLeaves(flatValue, context)), context)}`
         );
         // A nested-stack child's outputs are read out of the child's PERSISTED
         // state by `NestedStackProvider`, which since PR #1899 holds a
@@ -4339,7 +4357,7 @@ export class IntrinsicFunctionResolver {
         if (cursor !== undefined) {
           // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
           this.logger.debug(
-            `Resolved Fn::GetAtt from nested attributes: ${logicalId}.${this.maskSecretsForLog(attributeName, context)} -> ${this.maskSecretsForLog(stringifyAttributeForLog(attributeName, cursor), context)}`
+            `Resolved Fn::GetAtt from nested attributes: ${logicalId}.${this.maskSecretsForLog(attributeName, context)} -> ${this.maskSecretsForLog(stringifyAttributeForLog(attributeName, this.maskValueLeaves(cursor, context)), context)}`
           );
           // NO nested-stack re-resolution arm here, unlike the flat-key lookup
           // above, and that is a REACHABILITY claim rather than a decision:
@@ -4417,7 +4435,7 @@ export class IntrinsicFunctionResolver {
     const value = await this.constructGuardedAttribute(resource, attributeName, context, logicalId);
     // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
     this.logger.debug(
-      `Resolved Fn::GetAtt: ${logicalId}.${this.maskSecretsForLog(attributeName, context)} -> ${this.maskSecretsForLog(stringifyAttributeForLog(attributeName, value), context)}`
+      `Resolved Fn::GetAtt: ${logicalId}.${this.maskSecretsForLog(attributeName, context)} -> ${this.maskSecretsForLog(stringifyAttributeForLog(attributeName, this.maskValueLeaves(value, context)), context)}`
     );
     return value;
   }
@@ -6191,8 +6209,20 @@ export class IntrinsicFunctionResolver {
           v
         ): Promise<LogTwin & { readonly product: boolean; readonly raw?: { value: unknown } }> => {
           if (typeof v === 'string') {
+            // An element of a list an intrinsic returned can still spell a
+            // reference after that intrinsic resolved it (a resolved value that
+            // is itself reference text). Its second resolution starts from the
+            // twin the first one registered, so the first stage's mask is kept
+            // (issue #3114). A literal element's seed differs from its text only
+            // when a product of this pass equals that text, or when the text is
+            // itself a recorded secret (a token-shaped plaintext, issue #1917),
+            // so for a literal the seed can only mask more.
             const part = v.includes('{{resolve:')
-              ? await this.resolveDynamicReferencesWithLogTwin(v, v, context)
+              ? await this.resolveDynamicReferencesWithLogTwin(
+                  v,
+                  this.logTwinOfProduct({ result: v, twin: v }, context).twin,
+                  context
+                )
               : { result: v, twin: v };
             return { ...part, product: !literalList };
           }
@@ -8665,6 +8695,13 @@ export class IntrinsicFunctionResolver {
     // that secret's text, and registering its encoding is the same direction
     // the needle arm takes.
     //
+    // THIS DECISION PERSISTS, and since issue #3114 it crosses the nested-stack
+    // boundary: the position mask also reads the twins the PARENT registered
+    // (`registeredLogTwin`), so in a CHILD this guard records the encoding into
+    // the child's own bag and `***` lands in the child's `state.json` (a
+    // rollback replay of that resource then refuses the masked baseline). The
+    // log line below is not the only thing a change here affects.
+    //
     // MASK-ONLY, not an expression pair. The whole point of an expression is
     // that a reader can re-resolve it, and re-resolving `{{resolve:...}}` here
     // would yield the PLAINTEXT rather than its base64 — a value AWS would
@@ -9010,15 +9047,12 @@ export class IntrinsicFunctionResolver {
     pieces: string[],
     context: ResolverContext
   ): string[] {
-    const bag = this.logTwinBag(context);
     // A source that IS a recorded or inherited secret is masked whole even
     // with no registered twin — a `Ref` to a parameter holding one is never
     // registered, since no substitution in this pass wrote it.
     const sourceTwin = this.isRecordedSecretForLog(value, context)
       ? SECRET_MASK
-      : bag
-        ? LOG_TWINS_BY_PASS.get(bag)?.get(value)
-        : undefined;
+      : this.registeredLogTwin(value, context);
     if (sourceTwin === undefined) return pieces;
     const twinPieces = sourceTwin.split(delimiter);
     // A delimiter that occurs in the mask itself splits `***` into pieces that
@@ -9089,6 +9123,53 @@ export class IntrinsicFunctionResolver {
   }
 
   /**
+   * The masked twin registered for `value`, looked up under the pass's OWN bag
+   * and under the INHERITED one (issue
+   * [#3114](https://github.com/go-to-k/cdkd/issues/3114)). A nested-stack
+   * child receives, as `inheritedSecrets`, the very object its parent resolved
+   * the `AWS::CloudFormation::Stack` resource with: the deploy engine binds the
+   * resource context's `recordedSecretValues` as the resource's secrets, and
+   * `NestedStackProvider` hands that binding to the child. So a parameter value
+   * the parent built around a short secret (`port:q7` -> `port:***`) is
+   * registered under the child's inherited bag, while the child registers its
+   * own writes under its own bag. Two DIFFERENT registered twins mask the
+   * whole string, the rule `rememberLogTwin` applies within one bag. Lookups
+   * only: `rememberLogTwin` still registers under `logTwinBag`, the context's
+   * own `recordedSecretValues` whenever it carries one (every context
+   * `buildResolverContext` returns does; the log-only context
+   * `resolveParameters` builds carries none, and nothing on that path
+   * registers), so such a child never writes into its parent's registry. A
+   * context with ONLY an inherited bag registers into that bag, as it did
+   * before this lookup existed.
+   *
+   * ONE LEVEL ONLY. The bag a child hands its own nested stack is the child's
+   * OWN resource bag, so no twin registered ABOVE the child is reachable from a
+   * grandchild. Where the middle stack passes the value THROUGH
+   * (`{ Ref: Param }` straight into the grandchild's `Parameters`) nothing ever
+   * registers a twin in that bag, so the grandchild prints the value whether or
+   * not the bag holds pairs. Where the middle RE-WRAPS it (an `Fn::Join` around
+   * the `Ref`) the middle registers its own twin, and the hand-off still drops
+   * a bag holding no pairs (it passes `inheritedSecrets` only when `size` is
+   * nonzero). Both are issue #3156.
+   *
+   * The registry is keyed by VALUE, and `splitLogTwins`' unaligned arm
+   * registers every piece, public ones included. So a child `Fn::Base64` over a
+   * string exactly equal to such a piece of its parent's persists `***` for a
+   * non-secret property, the over-masking hazard issue #3119 already accepts
+   * within one pass, now reachable across the parent / child boundary.
+   */
+  private registeredLogTwin(value: string, context?: ResolverContext): string | undefined {
+    const own = context?.recordedSecretValues
+      ? LOG_TWINS_BY_PASS.get(context.recordedSecretValues)?.get(value)
+      : undefined;
+    const inherited = context?.inheritedSecrets
+      ? LOG_TWINS_BY_PASS.get(context.inheritedSecrets)?.get(value)
+      : undefined;
+    if (own === undefined) return inherited;
+    return inherited === undefined || inherited === own ? own : SECRET_MASK;
+  }
+
+  /**
    * The log twin of a RESOLUTION PRODUCT — an intrinsic part, variable or
    * placeholder — for issue #3100. Masked whole when its value is a recorded
    * secret. Otherwise a part that carries no mask of its own takes the masked
@@ -9115,8 +9196,7 @@ export class IntrinsicFunctionResolver {
     if (this.isRecordedSecretForLog(part.result, context)) {
       return { result: part.result, twin: SECRET_MASK };
     }
-    const bag = this.logTwinBag(context);
-    const registered = bag ? LOG_TWINS_BY_PASS.get(bag)?.get(part.result) : undefined;
+    const registered = this.registeredLogTwin(part.result, context);
     if (registered === undefined || registered === part.twin) return part;
     return { result: part.result, twin: part.twin === part.result ? registered : SECRET_MASK };
   }
@@ -9128,7 +9208,8 @@ export class IntrinsicFunctionResolver {
    * two DIFFERENT masked twins for one string register `***` for the whole
    * string, since their spans cannot be merged. Scoped to the pass's bag
    * through a `WeakMap`, like the cross-stack associations, so it dies with
-   * the bag and another pass's strings cannot be reached.
+   * the bag. An unrelated pass cannot reach these strings; a nested child
+   * whose `inheritedSecrets` is this bag reads them (`registeredLogTwin`).
    */
   private rememberLogTwin(context: ResolverContext, result: string, twin: string): void {
     if (twin === result) return;

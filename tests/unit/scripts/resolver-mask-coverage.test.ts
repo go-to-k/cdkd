@@ -341,10 +341,24 @@ describe('check-resolver-mask-coverage', () => {
       // (whose two sites are the last of the six).
       ['physicalId at the first strip-and-mask refusal site (DBProxy VpcId)', '${displaySafe(this.maskThenStripThenMask(physicalId, context))}', '${physicalId}'],
       ['attributeName', '${this.maskSecretsForLog(attributeName, context)}', '${attributeName}'],
-      ['maskValueLeaves under a JSON encoding', 'this.maskValueLeaves(value, context)', 'value'],
+      // The full encoder call, not the bare mask: since issue #3114 the `Ref` to
+      // a parameter and the `Fn::GetAtt` lines also pass `maskValueLeaves(value,
+      // context)` into an encoder under an outer `maskSecretsForLog`, and the
+      // first of them precedes this site, where stripping leaves a masked line.
+      [
+        'maskValueLeaves under a JSON encoding',
+        'stringifyValue(this.maskValueLeaves(value, context))',
+        'stringifyValue(value)',
+      ],
     ])('reports a finding when the mask is stripped from %s', (_label, pattern, replacement) => {
       const base = realSource();
       expect(base, 'the premise: the mask is present to strip').toContain(pattern);
+      // The re-anchored row names ONE site: `String.replace` mutates the first
+      // occurrence, so a second one would silently re-target it. The other rows
+      // mutate the first of several occurrences on purpose, as their comments say.
+      if (pattern === 'stringifyValue(this.maskValueLeaves(value, context))') {
+        expect(base.split(pattern).length, 'the premise: the pattern names ONE site').toBe(2);
+      }
       const before = scan(base).findings.length;
       const after = scan(base.replace(pattern, replacement)).findings.length;
       expect(before, 'the real tree is clean').toBe(0);

@@ -65,6 +65,13 @@
 #           leaf persisted the OTHER token's frame. Each child `{Ref}` now
 #           binds to its own frame; the run asserts BOTH leaves rather than
 #           guessing which token lost the slot.
+#   #3114 - the child's DEBUG LINES over a frame the carry refuses.
+#           `SubFloorPinSsm` is an `Fn::Join` around an `ssm` SecureString
+#           token with a 2-character value (`port:m8`), consumed only by a
+#           child CONDITION. The child's inherited bag holds no whole-value
+#           entry for it and the middle is below the needle floor, so its
+#           parameter, `Ref` and `Fn::Join` lines printed `port:m8` until the
+#           child looked up the log twin the parent registered for the value.
 #
 # THREE deploys, and the third is not decoration. Phases 1-2b only ever reach
 # `NestedStackProvider.create` and a no-op, so the deploy engine's UPDATE call
@@ -277,6 +284,23 @@ if [ "${PIN_JOIN_VALUE}" = "${PIN_VALUE}" ]; then
   echo "FAIL: PIN_JOIN_VALUE must differ from PIN_VALUE, or the literal arm's entry redacts the join leaf and this arm is vacuous" >&2
   exit 1
 fi
+# The #3114 frame: an out-of-band SecureString with a 2-character value, which
+# the parent spells as an `Fn::Join` around its `ssm` token (the stack's
+# `pinSsmReference`). The parent's carry refuses that frame, so the child masks
+# it only through the log twin the parent registered. Its OWN value, for the
+# reason `PIN_JOIN_VALUE` gives: an equal framed value would be masked by
+# another arm's whole-value entry and this arm would pass with no twin at all.
+PIN_SSM_PARAM_NAME="cdkd-nested-pinssm-${ACCOUNT_ID}"
+PIN_SSM_VALUE="m8"
+PIN_SSM_FRAMED_VALUE="port:${PIN_SSM_VALUE}"
+if [ -z "${PIN_SSM_VALUE}" ] || [ "${#PIN_SSM_VALUE}" -ge 4 ]; then
+  echo "FAIL: PIN_SSM_VALUE must be 1-3 characters, or the needle mask covers it and this arm tests nothing" >&2
+  exit 1
+fi
+if [ "${PIN_SSM_VALUE}" = "${PIN_VALUE}" ] || [ "${PIN_SSM_VALUE}" = "${PIN_JOIN_VALUE}" ]; then
+  echo "FAIL: PIN_SSM_VALUE must differ from PIN_VALUE and PIN_JOIN_VALUE, or another arm's whole-value entry masks it and this arm is vacuous" >&2
+  exit 1
+fi
 # The #2291 ROUND-2 arm's EMBEDDING leaf, over the LOSING parameter. Its
 # persisted form must splice HANDOFF_EXPR_A -- not the survivor -- into the
 # connection string, or the desired side (which answers per parameter) never
@@ -336,7 +360,7 @@ esac
 # The pre-existing three are inner-only -- `UNRELATED_LITERAL` legitimately
 # CONTAINS `SECRET_STAGE_VALUE`, which the #2087 assertion above requires, so
 # they must never be compared against each other.
-CDKD_2270_LITERALS="CHILD_PLAIN_OUTPUT_VALUE SHARED_PW_VALUE HANDOFF_PW_VALUE LIST_PW_VALUE LIST_PUBLIC_VALUE PIN_FRAMED_VALUE PIN_JOIN_FRAMED_VALUE"
+CDKD_2270_LITERALS="CHILD_PLAIN_OUTPUT_VALUE SHARED_PW_VALUE HANDOFF_PW_VALUE LIST_PW_VALUE LIST_PUBLIC_VALUE PIN_FRAMED_VALUE PIN_JOIN_FRAMED_VALUE PIN_SSM_FRAMED_VALUE"
 CDKD_ALL_LITERALS="SECRET_STAGE_VALUE SECURE_PW_VALUE UNRELATED_LITERAL ${CDKD_2270_LITERALS}"
 for mine_name in ${CDKD_2270_LITERALS}; do
   mine="${!mine_name}"
@@ -382,7 +406,7 @@ diag_output() {
   # The BARE 2-character pin is in this regex on purpose, unlike in the FAIL
   # scans: here a false match only withholds diagnostics (the safe direction),
   # while there it would fail a green run on ordinary text.
-  if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${LIST_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_JOIN_VALUE}" <<<"${text}"; then
+  if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${LIST_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_JOIN_VALUE}|${PIN_SSM_FRAMED_VALUE}|${PIN_SSM_VALUE}" <<<"${text}"; then
     echo "      output: <WITHHELD - it carries a resolved secret, which is itself the bug>" >&2
     return 0
   fi
@@ -448,6 +472,13 @@ assert_child_state_carries_no_plaintext() { # $1 = label, $2 = child state json
     echo "FAIL: ${label}: the child's state.json carries the Fn::Join-framed sub-floor plaintext" >&2
     exit 1
   fi
+  # The #3114 frame is consumed only by a condition, so nothing in the child's
+  # record should ever hold it; a leaf that did would carry it in the clear,
+  # since the parent's carry refuses this frame.
+  if grep -qF "${PIN_SSM_FRAMED_VALUE}" <<<"${scan}"; then
+    echo "FAIL: ${label}: the child's state.json carries the ssm-framed sub-floor plaintext" >&2
+    exit 1
+  fi
   echo "    OK: ${label}: no resolved plaintext anywhere else in the child's state.json"
 }
 
@@ -483,7 +514,7 @@ scan_verbose_output() { # scan_verbose_output <label> <text>
   # resolver now masks a sub-floor secret on that line by position (issue
   # #3100), so the exception is gone (issue #3113) and the line itself is
   # asserted masked below.
-  if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}" <<<"${text}"; then
+  if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_SSM_FRAMED_VALUE}" <<<"${text}"; then
     echo "FAIL: ${label}: --verbose printed a resolved secret plaintext" >&2
     exit 1
   fi
@@ -499,7 +530,22 @@ scan_verbose_output() { # scan_verbose_output <label> <text>
     echo "FAIL: ${label}: no 'Resolved Fn::Join: port:***' line -- the framed pin's Join was not logged masked (issue #3100)" >&2
     exit 1
   fi
-  echo "    OK: ${label}: the parameter debug lines are present, the framed pin's Join line is masked, and no line carries a plaintext"
+  # THE #3114 ARM. The CHILD's three lines over the ssm-framed parameter, each
+  # asserted whole and masked BY POSITION: `port:***`, not `***`. A whole-value
+  # entry in the inherited bag would mask the parameter whole instead, so these
+  # exact texts also prove the carry refused the frame and the parent's log twin
+  # is what masked it. Presence, so the negative scan above cannot pass because
+  # the child stopped logging the parameter.
+  local line
+  for line in 'Parameter SubFloorPinSsm: using user-provided value port:***' \
+              'Resolved Ref to parameter: SubFloorPinSsm -> port:***' \
+              'Resolved Fn::Join: x-port:***'; do
+    if ! grep -qF "${line}" <<<"${text}"; then
+      echo "FAIL: ${label}: no '${line}' line -- the child did not log the ssm-framed parameter masked by the parent's twin (issue #3114)" >&2
+      exit 1
+    fi
+  done
+  echo "    OK: ${label}: the parameter debug lines are present, the framed pin's Join line and the child's ssm-framed lines are masked, and no line carries a plaintext"
 }
 
 # ONE cleanup handler. A second `trap ... EXIT` would silently REPLACE this one
@@ -523,7 +569,8 @@ cleanup() {
     for p in "${CHILD_STAGE_PARAM}" "${CHILD_SECURE_PARAM}" "${CHILD_UNRELATED_PARAM}" \
              "${CHILD_HANDOFF_PARAM}" "${CHILD_HANDOFF_SUB_PARAM}" "${CHILD_PIN_PARAM}" \
              "${CHILD_PIN_TWIN_PARAM}" "${CHILD_PIN_JOIN_PARAM}" "${PARENT_CONSUMER_PARAM}" \
-             "${PARENT_SUB_PARAM}" "${PARENT_SUBPAIR_PARAM}" "${SECURE_PARAM_NAME}"; do
+             "${PARENT_SUB_PARAM}" "${PARENT_SUBPAIR_PARAM}" "${SECURE_PARAM_NAME}" \
+             "${PIN_SSM_PARAM_NAME}"; do
       aws ssm delete-parameter --name "${p}" --region "${REGION}" >/dev/null 2>&1
     done
     # The #2327 arm's rule. No targets, so a plain delete suffices; `--force` is
@@ -588,6 +635,14 @@ aws ssm put-parameter --name "${SECURE_PARAM_NAME}" --type SecureString \
 SECURE_TYPE=$(aws ssm get-parameter --name "${SECURE_PARAM_NAME}" --region "${REGION}" \
   --query 'Parameter.Type' --output text)
 assert_eq "the out-of-band parameter is a SecureString" "${SECURE_TYPE}" "SecureString"
+# The #3114 arm's SecureString. A plain `String` would record no secret at all,
+# so the child's lines would print it for the right reason and this arm could
+# not tell a masked line from a public one.
+aws ssm put-parameter --name "${PIN_SSM_PARAM_NAME}" --type SecureString \
+  --value "${PIN_SSM_VALUE}" --overwrite --region "${REGION}" >/dev/null
+PIN_SSM_TYPE=$(aws ssm get-parameter --name "${PIN_SSM_PARAM_NAME}" --region "${REGION}" \
+  --query 'Parameter.Type' --output text)
+assert_eq "the #3114 arm's out-of-band parameter is a SecureString" "${PIN_SSM_TYPE}" "SecureString"
 
 # --- Phase 1: deploy --------------------------------------------------------
 # `--verbose` ON PURPOSE, and captured. The CHILD engine is the only place in
@@ -1072,7 +1127,37 @@ assert_eq "child PinJoinParam's observedProperties readback holds the FRAMED exp
   "$(jq_state "${CHILD_STATE}" '.resources.PinJoinParam.observedProperties.Value // "<no readback>"')" \
   "${PIN_JOIN_FRAMED_EXPR}"
 
-if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${LIST_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}" <<<"${PARENT_STATE}"; then
+# --- #3114: the ssm-framed parameter, consumed by a child condition ----------
+# The debug-line half of this arm ran inside `scan_verbose_output` right after
+# the phase 1 deploy. These are its PREMISES, stated here because they read the
+# synthesized template and the parent's record, neither of which exists then.
+echo "==> #3114: premises of the ssm-framed parameter arm"
+# The frame must be one the carry REFUSES, or the child would mask the value
+# through a whole-value entry and the twin lookup would go unexercised: an
+# OBJECT source, an empty delimiter and three parts -- a literal opening
+# `port:{{resolve:ssm:` with no other brace, the account `Ref`, and the bare
+# closing `}}`. A `secretsmanager` token here, or a literal CDK folded into a
+# string, fails it.
+assert_eq "premise: the synthesized SubFloorPinSsm is ONE ssm token in a literal frame, the account Ref inside it" \
+  "$(jq -r '.Resources.Child.Properties.Parameters.SubFloorPinSsm | type == "object" and (.["Fn::Join"] | (length == 2) and (.[0] == "") and (.[1] | length == 3) and (.[1][0] | type == "string" and startswith("port:{{resolve:ssm:") and (ltrimstr("port:{{") | contains("{") or contains("}") | not)) and (.[1][1] == {"Ref": "AWS::AccountId"}) and (.[1][2] == "}}"))' "${SYNTH_TEMPLATE}")" "true"
+# The child must never persist the value: its only consumer is a condition.
+# `assert_child_state_carries_no_plaintext` scans the record for it; this pins
+# that the condition is the consumer, so that scan cannot pass because the
+# parameter stopped reaching the child at all.
+CHILD_TEMPLATE_FILE="$(jq -r '.Resources.Child.Metadata["aws:asset:path"] // empty' "${SYNTH_TEMPLATE}")"
+if [ -z "${CHILD_TEMPLATE_FILE}" ] || [ ! -f "cdk.out/${CHILD_TEMPLATE_FILE}" ]; then
+  echo "FAIL: premise: the child's nested template was not found in cdk.out (got '${CHILD_TEMPLATE_FILE}')" >&2
+  exit 1
+fi
+assert_eq "premise: the child consumes SubFloorPinSsm through its PinSsmNeverMatches condition only" \
+  "$(jq -r '(.Conditions.PinSsmNeverMatches["Fn::Equals"][0]["Fn::Join"][1] == ["x-", {"Ref": "SubFloorPinSsm"}]) and ([.. | objects | select(.Ref? == "SubFloorPinSsm")] | length == 1) and ([.. | strings | select(contains("SubFloorPinSsm"))] | length == 1)' "cdk.out/${CHILD_TEMPLATE_FILE}")" "true"
+# The parent's own record of the row, positioned by the frame arm like
+# `SubFloorPinJoin`'s: what the parent's plaintext scan below also watches.
+assert_eq "the parent's nested-stack row keeps SubFloorPinSsm as its FRAMED expression" \
+  "$(jq_state "${PARENT_STATE}" '.resources.Child.properties.Parameters.SubFloorPinSsm')" \
+  "port:{{resolve:ssm:${PIN_SSM_PARAM_NAME}}}"
+
+if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${LIST_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_SSM_FRAMED_VALUE}" <<<"${PARENT_STATE}"; then
   echo "FAIL: the parent's state.json carries a resolved secret plaintext" >&2
   exit 1
 fi
@@ -1094,7 +1179,7 @@ if [ "${DIFF_RC}" -ne 0 ]; then
   exit 1
 fi
 echo "    OK: cdkd diff --recursive --fail exited 0"
-if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}" <<<"${DIFF_OUT}"; then
+if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_SSM_FRAMED_VALUE}" <<<"${DIFF_OUT}"; then
   echo "FAIL: the diff output printed a resolved secret plaintext" >&2
   exit 1
 fi
@@ -1271,7 +1356,7 @@ if [ "${PIN_JOIN_STATE3}" = "${PIN_JOIN_FRAMED_VALUE}" ]; then
   exit 1
 fi
 assert_eq "PinJoinParam is STILL the framed expression after the UPDATE" "${PIN_JOIN_STATE3}" "${PIN_JOIN_FRAMED_EXPR}"
-if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}" <<<"${PARENT_STATE3}"; then
+if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_SSM_FRAMED_VALUE}" <<<"${PARENT_STATE3}"; then
   echo "FAIL: the parent's state.json carries a resolved secret plaintext after the update" >&2
   exit 1
 fi
@@ -1329,6 +1414,10 @@ if gone_probe aws ssm get-parameter --name "${SECURE_PARAM_NAME}" --region "${RE
   echo "FAIL: destroy deleted the out-of-band SecureString parameter '${SECURE_PARAM_NAME}'" >&2
   exit 1
 fi
+if gone_probe aws ssm get-parameter --name "${PIN_SSM_PARAM_NAME}" --region "${REGION}"; then
+  echo "FAIL: destroy deleted the out-of-band SecureString parameter '${PIN_SSM_PARAM_NAME}'" >&2
+  exit 1
+fi
 if gone_probe aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" --region "${REGION}"; then
   echo "FAIL: destroy deleted the out-of-band secret '${SECRET_NAME}'" >&2
   exit 1
@@ -1342,16 +1431,19 @@ SECRET_DELETED_DATE=$(aws secretsmanager describe-secret --secret-id "${SECRET_N
   --region "${REGION}" --query 'DeletedDate' --output text)
 assert_eq "the out-of-band secret is not SCHEDULED for deletion either" \
   "${SECRET_DELETED_DATE}" "None"
-echo "    OK: destroy left both unmanaged out-of-band resources intact"
+echo "    OK: destroy left all three unmanaged out-of-band resources intact"
 
 aws ssm delete-parameter --name "${SECURE_PARAM_NAME}" --region "${REGION}" >/dev/null
 assert_gone_eventually 60 "out-of-band SecureString parameter '${SECURE_PARAM_NAME}' still exists after its explicit delete" \
   aws ssm get-parameter --name "${SECURE_PARAM_NAME}" --region "${REGION}"
+aws ssm delete-parameter --name "${PIN_SSM_PARAM_NAME}" --region "${REGION}" >/dev/null
+assert_gone_eventually 60 "out-of-band SecureString parameter '${PIN_SSM_PARAM_NAME}' still exists after its explicit delete" \
+  aws ssm get-parameter --name "${PIN_SSM_PARAM_NAME}" --region "${REGION}"
 aws secretsmanager delete-secret --secret-id "${SECRET_NAME}" \
   --force-delete-without-recovery --region "${REGION}" >/dev/null
 assert_gone_eventually 60 "out-of-band secret '${SECRET_NAME}' still exists after its force-delete" \
   aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" --region "${REGION}"
-echo "    OK: both out-of-band resources removed"
+echo "    OK: all three out-of-band resources removed"
 
 assert_gone "parent state file s3://${STATE_BUCKET}/${PARENT_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${PARENT_KEY}"
@@ -1373,4 +1465,4 @@ s3_assert_versions_swept "${STATE_BUCKET}" "${PARENT_PREFIX}" "nested-stack-secr
 s3_assert_versions_swept "${STATE_BUCKET}" "${CHILD_PREFIX}" "nested-stack-secret child state teardown"
 
 echo ""
-echo "[verify] PASS - nested-stack secret flow redacted in both directions, scoped per resource, redacted on the CREATE and the UPDATE arm, never printed at --verbose (the framed pin's Fn::Join debug line asserted masked), no change on re-deploy, clean destroy with zero surviving state versions"
+echo "[verify] PASS - nested-stack secret flow redacted in both directions, scoped per resource, redacted on the CREATE and the UPDATE arm, never printed at --verbose (the framed pin's Fn::Join debug line and the child's ssm-framed parameter lines asserted masked), no change on re-deploy, clean destroy with zero surviving state versions"

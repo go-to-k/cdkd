@@ -64,6 +64,16 @@ vi.mock('../../../src/deployment/retry.js', async (importOriginal) => {
   };
 });
 
+/**
+ * Every `recordedSecretValues` object a resolver call resolved the resource's
+ * `{ Ref: <Param> }` leaf with -- the desired-properties resolution, not any
+ * other call the engine makes. The provider must see one of THESE, not a copy
+ * (issue #3114): the resolver keys what it registers for a pass, the log twins
+ * among it, by that object's identity, and a nested child reaches the parent's
+ * registrations only through the object it receives as `inheritedSecrets`.
+ */
+const resolverBags = vi.hoisted(() => new Set<unknown>());
+
 const SECRET_PLAINTEXT = 'nested-inherited-plaintext-1903';
 const SECRET_EXPR = '{{resolve:secretsmanager:prod/child/db:SecretString:password::}}';
 const PARAM = 'referencetoParentDbPassword';
@@ -102,6 +112,7 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', async () => {
         const name = obj['Ref'];
         const params = (ctx.parameters ?? {}) as Record<string, unknown>;
         if (!(name in params)) return obj;
+        if (name === PARAM && ctx.recordedSecretValues) resolverBags.add(ctx.recordedSecretValues);
         const resolved = params[name];
         recordInherited(resolved, ctx);
         return resolved;
@@ -162,15 +173,27 @@ describe('DeployEngine binds the nested-stack secrets scope at every provider ca
   let mockDiffCalculator: Record<string, ReturnType<typeof vi.fn>>;
   let mockProviderRegistry: Record<string, ReturnType<typeof vi.fn>>;
 
+  /** The live bags themselves, in call order across both provider methods. */
+  let seenLive: unknown[];
+
   function capture(into: Array<Record<string, string> | undefined>): void {
     const bag = getCurrentResourceSecrets();
     into.push(bag ? Object.fromEntries(bag) : undefined);
+    seenLive.push(bag);
+  }
+
+  /** Every bound bag is an object that resolved the `{ Ref: <Param> }` leaf, never a copy. */
+  function expectBoundBagsAreResolverBags(): void {
+    expect(seenLive.length).toBeGreaterThan(0);
+    for (const bag of seenLive) expect(resolverBags.has(bag)).toBe(true);
   }
 
   beforeEach(() => {
     vi.clearAllMocks();
+    resolverBags.clear();
     seenCreate = [];
     seenUpdate = [];
+    seenLive = [];
     mockProvider = {
       create: vi.fn(async () => {
         capture(seenCreate);
@@ -300,6 +323,7 @@ describe('DeployEngine binds the nested-stack secrets scope at every provider ca
     await engine().deploy(STACK, template);
     expect(mockProvider.create).toHaveBeenCalledOnce();
     expect(seenCreate).toEqual([EXPECTED_BAG]);
+    expectBoundBagsAreResolverBags();
   });
 
   it('site 2 — ordinary UPDATE (the #1903 arm: a nested stack that ALREADY exists)', async () => {
@@ -307,6 +331,7 @@ describe('DeployEngine binds the nested-stack secrets scope at every provider ca
     await engine().deploy(STACK, template);
     expect(mockProvider.update).toHaveBeenCalledOnce();
     expect(seenUpdate).toEqual([EXPECTED_BAG]);
+    expectBoundBagsAreResolverBags();
   });
 
   it('site 3 — property-driven replacement, create-then-destroy', async () => {
@@ -318,6 +343,7 @@ describe('DeployEngine binds the nested-stack secrets scope at every provider ca
     expect(mockProvider.create).toHaveBeenCalledOnce();
     expect(mockProvider.delete).toHaveBeenCalled();
     expect(seenCreate).toEqual([EXPECTED_BAG]);
+    expectBoundBagsAreResolverBags();
   });
 
   it('site 4 — the --replace delete-first fallback after a create-first name collision', async () => {
@@ -339,6 +365,7 @@ describe('DeployEngine binds the nested-stack secrets scope at every provider ca
     // so a fix that wrapped the retry loop instead of the call would leave one
     // of them unbound and only a per-attempt assertion could see it.
     expect(seenCreate).toEqual([EXPECTED_BAG, EXPECTED_BAG]);
+    expectBoundBagsAreResolverBags();
   });
 
   it('site 5 — --recreate-via-cc-api destroy-then-create', async () => {
@@ -356,6 +383,7 @@ describe('DeployEngine binds the nested-stack secrets scope at every provider ca
     expect(mockProvider.delete).toHaveBeenCalled();
     expect(mockProvider.create).toHaveBeenCalledOnce();
     expect(seenCreate).toEqual([EXPECTED_BAG]);
+    expectBoundBagsAreResolverBags();
   });
 
   it('site 6 — the UPDATE-not-supported fallback (DELETE -> CREATE)', async () => {
@@ -376,6 +404,7 @@ describe('DeployEngine binds the nested-stack secrets scope at every provider ca
     expect(mockProvider.delete).toHaveBeenCalled();
     expect(mockProvider.create).toHaveBeenCalledOnce();
     expect(seenCreate).toEqual([EXPECTED_BAG]);
+    expectBoundBagsAreResolverBags();
   });
 
   it('scope control — a top-level engine binds an EMPTY bag, never undefined', async () => {
@@ -396,5 +425,6 @@ describe('DeployEngine binds the nested-stack secrets scope at every provider ca
     );
     await topLevel.deploy(STACK, template);
     expect(seenCreate).toEqual([{}]);
+    expectBoundBagsAreResolverBags();
   });
 });
