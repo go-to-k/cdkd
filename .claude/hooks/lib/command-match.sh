@@ -657,9 +657,16 @@ gate_segments_raw() {
     # ends a WORD, so `$(true)#"` glues the `#` and the `"` opens a quote the
     # scan must see (G1 / G2, security round 16, all three shells ran the
     # line closing it). The per-depth stack records which kind each frame is
-    # and `gp` the position of the last word-ending `)`. A backtick is not in
-    # the comment class: a closing one ends a word too (H2), and inside a
-    # frame nothing is read at all. Third, an
+    # and `gp` the position of the last character consumed as WORD GLUE: the
+    # `)` closing a `$( )`, the second `)` of `$(( ))`, and the character an
+    # unquoted backslash escaped -- `\)#"` and `\ #"` are one word too, and
+    # testing the raw previous character read them as comments (code review
+    # round 17, both bashes ran the closing line; W1 / W5). The `$(( ))` end
+    # is found by a paren walk, not the first `))`: `$((2*(1+1)))` has three
+    # closers and the first-`))` landing left one to pop the enclosing frame
+    # (A7 / A8, same round). A backtick is not in the comment class: a
+    # closing one ends a word too (H2), and inside a frame nothing is read
+    # at all. Third, an
     # UNQUOTED opener ANYWHERE on the line
     # is a bail too, not merely "not latched": in `cat <<A <<\047B\047` bash
     # reads the A body FIRST and expands it, so recording only the quoted B
@@ -682,7 +689,7 @@ gate_segments_raw() {
     # are locals, so an earlier opener whose body run() already dropped is
     # never re-found (the round-1 joined-scan fail-open, S2).
     function lho_reset() { lho_iq = ""; lho_depth = 0; lho_bt = 0; lho_btq = ""; lho_bail = 0; split("", lho_OQ); split("", lho_OK) }
-    function last_heredoc_opener(text,   j, n, c, d, rest, out, of, k, gp, s) {
+    function last_heredoc_opener(text,   j, n, c, d, rest, out, of, k, gp, s, m, e) {
       if (lho_bail) return ""
       out = ""; of = 0; gp = 0
       n = length(text)
@@ -693,13 +700,18 @@ gate_segments_raw() {
         if (lho_iq == "A") { if (c == "\\") { j++; continue }
                              if (c == "\047") lho_iq = ""; continue }
         if (lho_iq == "\047") { if (c == lho_iq) lho_iq = ""; continue }
-        if (c == "\\") { j++; continue }
+        if (c == "\\") { j++; gp = j; continue }
         if (c == "$") { d = substr(text, j + 1, 1)
                         if (d == "$") { j++; continue }
                         if (d == "\047" && lho_iq == "") { lho_iq = "A"; j++; continue }
                         if (d == "(" && substr(text, j + 2, 1) == "(") {
-                          k = index(substr(text, j + 3), "))"); if (k == 0) { lho_bail = 1; return "" }
-                          gp = j + 3 + k; j = gp; continue }
+                          m = 0; k = j + 3
+                          while (k <= n) { e = substr(text, k, 1)
+                            if (e == "(") m++
+                            else if (e == ")") { if (m == 0) break; m-- }
+                            k++ }
+                          if (k > n || substr(text, k + 1, 1) != ")") { lho_bail = 1; return "" }
+                          gp = k + 1; j = gp; continue }
                         if (d == "(") { lho_depth++; lho_OQ[lho_depth] = lho_iq; lho_OK[lho_depth] = 1; lho_iq = ""; j++; continue }
                         if (d == "{") { k = index(substr(text, j + 2), "}"); if (k == 0) { lho_bail = 1; return "" }
                           s = substr(text, j + 2, k - 1); if (s ~ /["\047`\\]/) { lho_bail = 1; return "" }
@@ -710,7 +722,7 @@ gate_segments_raw() {
         if (c == "\"" || c == "\047") { lho_iq = c; continue }
         if (c == "(") { lho_depth++; lho_OQ[lho_depth] = ""; lho_OK[lho_depth] = 0; continue }
         if (c == ")") { if (lho_depth > 0) { if (out != "" && lho_depth <= of) { lho_bail = 1; return "" }; if (lho_OK[lho_depth]) gp = j; lho_iq = lho_OQ[lho_depth]; lho_depth-- }; continue }
-        if (c == "#" && (j == 1 || substr(text, j - 1, 1) ~ /[ \t;&|(]/ || (substr(text, j - 1, 1) == ")" && gp != j - 1))) break
+        if (c == "#" && (j == 1 || (gp != j - 1 && substr(text, j - 1, 1) ~ /[ \t;&|()]/))) break
         if (c == "<" && substr(text, j + 1, 1) == "<") {
           if (substr(text, j + 2, 1) == "<") { j += 2; continue }
           rest = substr(text, j)
@@ -733,7 +745,11 @@ gate_segments_raw() {
       # shells); and bash defers a body that a later `$(` owns (round 2, 1g).
       # Not sticky: the next line is read as commands, and a later heredoc in
       # the substitution is real. An opener INSIDE a backtick frame never
-      # reaches this line -- the frame is skipped above.
+      # reaches this line -- the frame is skipped above. The quote state the
+      # frame close restores (`lho_iq = lho_btq`) has no discriminating case:
+      # every shape tried lands in the refusing direction through the
+      # unbalanced-quote return or the segmenter\047s own quote tracking
+      # (test review round 17) -- unfenced, and safe.
       if (out != "" && lho_depth + lho_bt > of) return ""
       return out
     }

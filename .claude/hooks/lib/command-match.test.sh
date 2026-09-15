@@ -573,11 +573,11 @@ r3_case "X19b: opener frame closes and a backtick opens after it -- the next lin
   'x=$(cat <<'"'"'E'"'"') ; echo `' 'E' 'cat <<'"'"'F'"'"'' '`; gh pr merge 1 --squash' 'F'
 r3_case "X19c: the nested-frame twin" 0 "$MERGE" \
   'x=$(echo $(cat <<'"'"'E'"'"') `' 'E' 'cat <<'"'"'F'"'"'' '`; gh pr merge 1' 'F'
-# Round 15 (test review): the `#` class lost its opening-backtick member in
-# round 14, and that is fenceable in the refusing direction: with the member
-# back, `x=\`#\`` reads the `#` as a comment, the closing backtick is never
-# seen, and the real quoted heredoc after it is not latched -- its prose is
-# refused as commands.
+# Round 15 (test review), re-pointed in round 16: `x=\`#\`` is a backtick
+# frame holding a `#`, and the real quoted heredoc after the frame closes is
+# data. Since round 16 nothing inside a frame is read, so what this pins is
+# the frame CLOSING on the same line (`lho-bt-skip-off` never closes one and
+# reds it); the `#` class member it once fenced is H2's job now.
 check "H1: a # right after an opening backtick is not a comment once the backtick closes on the same line" 1 "$MERGE" \
   "$(printf '%s\n' 'y=$(x=`#` ; cat <<'"'"'X'"'"'' 'gh pr merge 1 was refused' 'X' ')')"
 # Round 16 (spec, code and test review, one finding): round 15 dropped the
@@ -588,7 +588,7 @@ check "H1: a # right after an opening backtick is not a comment once the backtic
 # heredoc has no body: "delimited by end-of-file"). The scan now skips a
 # backtick frame wholesale -- textually, the way bash delimits it -- so an
 # opener inside one is never seen. Mutant `lho-bt-fallthrough` reads the
-# frame's text again and reds X20a / X20b / X20c / Q1.
+# frame's text again and reds X20a / X20b / X20c; Q1 below is `lho-bt-quoted`.
 r3_case "X20a: a backtick closing after the opener on the same line -- the opener is inside it" 0 "$MERGE" \
   'x=$(echo `cat <<'"'"'E'"'"' ` ; true' 'gh pr merge 1' 'E' ')'
 r3_case "X20b: the assignment twin" 0 "$MERGE" \
@@ -634,6 +634,13 @@ r3_case "K1: \${a:-\"} -- a quote inside the brace span keeps the line open" 0 "
   'x=$(echo ${a:-"}' 'cat <<'"'"'E'"'"'' '"} ; gh pr merge 1' 'E' ')'
 r3_case "K2: the backslash twin" 0 "$MERGE" \
   'x=$(echo ${a:-\}' 'cat <<'"'"'E'"'"'' '} ; gh pr merge 1' 'E' ')'
+# One case per class member (test review round 17: deleting the apostrophe or
+# the backtick from the class left the suite green while both spellings run
+# -- the apostrophe in all three shells, the backtick in both bashes).
+r3_case "K3: the single-quote twin" 0 "$MERGE" \
+  'x=$(echo ${a:-'"'"'}' 'cat <<'"'"'E'"'"'' "'} ; gh pr merge 1" 'E' ')'
+r3_case "K4: the backtick twin" 0 "$MERGE" \
+  'x=$(echo ${a:-`}' 'cat <<'"'"'E'"'"'' '`} ; gh pr merge 1' 'E' ')'
 r3_case "K-ctl: a plain \${a} before a real quoted heredoc -- its body is data (control)" 1 "$MERGE" \
   'x=$(echo ${a} ; cat <<'"'"'E'"'"'' 'gh pr merge 1 was refused' 'E' ')'
 # Round 16 (code and test review): the round-15 sticky flag on an
@@ -646,6 +653,40 @@ r3_case "K-ctl: a plain \${a} before a real quoted heredoc -- its body is data (
 # substitution in all three shells, so nothing runs either way.
 r3_case "AR1: an arithmetic span left open at the line end is a sticky bail -- the heredoc after its close is read as commands (parity)" 0 "$MERGE" \
   'x=$(echo $((1 +' '2)); cat <<'"'"'X'"'"'' 'gh pr merge 1 was refused' 'X' ')'
+# Round 17 (code review): the `#` test read the RAW previous character, but
+# an unquoted backslash had already consumed it as a literal -- `\)#"`,
+# `\ #"`, `\;#"`, `\(#"` are one word, the `"` is real, and both bashes ran
+# the line closing it (W5's `\ #"` on bash 5.3 and zsh; 3.2 rejects it).
+# `gp` now records the escaped character too (W1 / W5 / W6 / W7; W-ctl).
+# Mutant `lho-bs-glue`.
+r3_case "W1: an escaped ) before # is word glue, not a bare-frame close" 0 "$MERGE" \
+  'x=$(echo \)#"' 'cat <<'"'"'E'"'"'' '" ; gh pr merge 1' 'E' ')'
+r3_case "W5: an escaped space before # is word glue" 0 "$MERGE" \
+  'x=$(echo a\ #"' 'cat <<'"'"'E'"'"'' '" ; gh pr merge 1' 'E' ')'
+r3_case "W6: an escaped ; before # is word glue" 0 "$MERGE" \
+  'x=$(echo a\;#"' 'cat <<'"'"'E'"'"'' '" ; gh pr merge 1' 'E' ')'
+r3_case "W7: an escaped ( before # is word glue" 0 "$MERGE" \
+  'x=$(echo \(#"' 'cat <<'"'"'E'"'"'' '" ; gh pr merge 1' 'E' ')'
+r3_case "W-ctl: an escaped ) then a SPACE before # -- a comment, the heredoc after it is real (control)" 1 "$MERGE" \
+  'x=$(echo \) #"' 'cat <<'"'"'E'"'"'' '" ; gh pr merge 1 was refused' 'E' ')'
+# Round 17 (code review): the `$(( ))` end was the FIRST `))`, one closer
+# short of `$((2*(1+1)))`; the leftover `)` popped the enclosing frame, and
+# when that frame was a bare `( )` the `#` after it read as a comment. The
+# end is a paren walk now. Mutant `lho-arith-first-close` (A7 reds; A8 stays
+# green under it because the leftover `)` pops the outer `$(`, whose kind
+# still glues -- kept as the direct spelling's own pin).
+r3_case "A7: \$((2*(1+1)))# inside a bare subshell -- the third ) is the arithmetic close, the # is glued" 0 "$MERGE" \
+  'x=$( ( $((2*(1+1)))#"' 'cat <<'"'"'E'"'"'' '" ; gh pr merge 1' 'E' ') )'
+r3_case "A8: \$((2*(1+1)))# directly inside \$( )" 0 "$MERGE" \
+  'x=$(echo $((2*(1+1)))#"' 'cat <<'"'"'E'"'"'' '" ; gh pr merge 1' 'E' ')'
+r3_case "A-ctl: \$((2*(1+1))) then a real quoted heredoc -- its body is data (control)" 1 "$MERGE" \
+  'x=$(echo $((2*(1+1))) ; cat <<'"'"'E'"'"'' 'gh pr merge 1 was refused' 'E' ')'
+# Round 17 (test review): the backslash skip inside a backtick frame had no
+# case -- with it gone, `\`` inside the frame closed it and the `<<'E'` after
+# the real close was latched over the line all three shells run. Mutant
+# `lho-bt-escape-off`.
+r3_case "BS1: an escaped backtick inside a backtick frame does not close it" 0 "$MERGE" \
+  'x=$(echo `a \`b\` ; cat <<'"'"'E'"'"'' '` ; gh pr merge 1' 'E' ')'
 
 # --- The UNQUOTED delimiter is DELIBERATELY not latched (round 2) ------------
 # Two review rounds of go-to-k/cdkd#3040 each measured shapes bash executes

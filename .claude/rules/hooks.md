@@ -899,14 +899,13 @@ substitution is a segment opener too, so a verb inside one arms the gates.
   the joined `$(` text — the join re-finds an opener whose heredoc already
   closed, and a later bare delimiter swallows the commands in between; the scan is QUOTE-AWARE
   with a per-depth STACK — `$(` and a bare `(` push the quote state and the
-  matching `)` restores it, a backtick frame is skipped TEXTUALLY to the next backtick (bash reads no quote inside one), `${…}` / `$((…))` / a `#` comment (after a space, or a `)` closing a bare `( )` — `$(x)#` glues) are
+  matching `)` restores it, a backtick frame is skipped TEXTUALLY to the next unescaped backtick (bash reads no quote inside one), `${…}` / `$((…))` / a `#` comment (after an unescaped space, or a `)` closing a bare `( )` — `$(x)#` and `\)#` glue) are
   skipped whole — and it BAILS to "no opener" on any line it cannot read to
-  the end: an unbalanced quote, a new `$(` opened after the delimiter, or — sticky to the close — the
+  the end: an unbalanced quote, a new `$(` or backtick still open after the delimiter, or — sticky to the close — the
   opener's OWN frame closing on that line (`y=$(cat <<'EOF') ; z=$(` — shells
-  disagree there), an unterminated `$((` / `${`, or a quote in `${…}`; so a `'<<X'` mention plus a bare `X` later is prose; and the
+  disagree there), an unterminated `$((` / `${`, or a quote, backtick or backslash in `${…}`; so a `'<<X'` mention plus a bare `X` later is prose; and the
   latch is **QUOTED-DELIMITER ONLY** — the delimiter being the whole WORD
-  after quote removal (`<<'EOF'x` is `EOFx`, `<<\EOF` is quoted, `<<"E\xF"`
-  keeps its backslash), in this arm and the
+  after quote removal (`<<'EOF'x` is `EOFx`, `<<\EOF` is quoted), in this arm and the
   top-level one, which latches an unquoted word only when a whole identifier
   (`origin/main` latched an identifier PREFIX — a decoy) — and an unquoted or unreadable opener ANYWHERE in the substitution is a
   bail, sticky to its close: `cat <<A <<'B'` expands the A body first, so recording only B
@@ -915,9 +914,8 @@ substitution is a segment opener too, so a verb inside one arms the gates.
   and carrying a `)` ends the latch (bash 5 and 3.2 close the `$( )` there);
   bash 3.2 alone also closes on ANY `)` in a body — not modelled. A
   `<<EOF` body is expanded by bash — `$(git commit)` on a body line runs —
-  and two review rounds each measured a shape (a multi-line `$(` spanning
-  body lines, a literal `<<Y` on a fallen-through line) that a body-line
-  fall-through still dropped, so under an unquoted delimiter the body is
+  and two review rounds each measured a body-line shape a fall-through
+  still dropped, so under an unquoted delimiter the body is
   read as commands, exactly as origin/main read it: a false REFUSAL of prose,
   never a miss. The top-level `tag` keeps its pre-existing drop-everything
   policy: a `$(git commit)` inside an unquoted-delimiter heredoc at TOP
