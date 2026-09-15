@@ -1105,7 +1105,9 @@ describe('Cognito SMS-role trust propagation (#2901)', () => {
 
 describe('Lambda CapacityProvider operator-role propagation (#3174)', () => {
   // The message the Cloud Control create of the #3174 fixture failed with,
-  // verbatim as `CloudControlProvider` surfaced it to the engine's retry loop.
+  // copied from that run's log (request id kept). Its shape is the
+  // CREATE-failure text `CloudControlProvider` builds, which is what the
+  // engine's retry loop classifies.
   const ANCHOR = "The operator role is invalid or doesn't have sufficient permissions";
   const WRAPPED =
     'CREATE failed for Provider2281708E: ' +

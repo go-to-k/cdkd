@@ -1231,6 +1231,7 @@
         "import-auto-mode",
         "import-nested-stack",
         "import-secret-observed",
+        "lambda-capacity-provider-default-name",
         "lambda-url-authtype-replay",
         "local-invoke",
         "local-invoke-agentcore-from-state",

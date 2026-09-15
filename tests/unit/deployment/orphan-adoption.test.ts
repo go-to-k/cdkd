@@ -430,6 +430,7 @@ describe('planOrphanAdoption (#2934)', () => {
     const { promise } = run({
       records: [
         record({
+          logicalId: 'KeptProvider',
           state: {
             physicalId: 'MyStack-Provider',
             resourceType: 'AWS::Lambda::CapacityProvider',
@@ -439,7 +440,7 @@ describe('planOrphanAdoption (#2934)', () => {
         }),
       ],
       template: {
-        Resources: { KeptRole: { Type: 'AWS::Lambda::CapacityProvider', Properties: {} } },
+        Resources: { KeptProvider: { Type: 'AWS::Lambda::CapacityProvider', Properties: {} } },
       } as unknown as CloudFormationTemplate,
       importImpl: vi.fn(async () => ({
         physicalId: 'MyStack-Provider',
@@ -452,8 +453,8 @@ describe('planOrphanAdoption (#2934)', () => {
     // COLLIDES rather than minting a second provider (the name is the primary
     // identifier), so re-adopting is what breaks the deploy loop. Removing the
     // `FALLBACK_NAME_RULES` entry reds this case through the allow-list gate.
-    expect(Object.keys(plan.adopted)).toEqual(['KeptRole']);
-    expect(plan.adopted['KeptRole']?.physicalId).toBe('MyStack-Provider');
+    expect(Object.keys(plan.adopted)).toEqual(['KeptProvider']);
+    expect(plan.adopted['KeptProvider']?.physicalId).toBe('MyStack-Provider');
     expect(plan.remaining).toEqual([]);
     expect(plan.refusals).toEqual([]);
   });

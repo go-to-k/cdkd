@@ -596,7 +596,8 @@ export function explicitNamePropertyFor(resourceType: string): string | undefine
  * A separate table on purpose: `FALLBACK_NAME_RULES` decides what cdkd GENERATES
  * for a Cloud Control create, so adding an entry there changes the name every
  * later create of that type uses; an existing resource keeps its name, because
- * the update path does not send a generated one (issue #3174). This table
+ * the Cloud Control update path does not send a generated one (issue #3174),
+ * and an SDK provider's update never had one to send. This table
  * answers a strictly narrower question, "does the template hand this resource
  * a name", and generates nothing. An entry here still ADMITS its type to
  * adoption exactly as one there does, so it needs the same three-test check.

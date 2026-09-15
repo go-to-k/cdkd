@@ -18,7 +18,10 @@
 #      providers under their generated `<stack>-<logicalId>` names on the Cloud
 #      Control route, AWS reports them `Active`, the function's
 #      CapacityProviderConfig points at the first, and the ProviderArn output
-#      agrees.
+#      agrees. The deploy runs with `--verbose` so the log shows whether the
+#      create was retried on the operator-role propagation rejection
+#      (`IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS`); the count is reported, not
+#      asserted, since a role that propagates in time needs no retry.
 #   2. `cdkd diff` reports no changes (the generated name must not read as a
 #      create-only change on the next run).
 #   2b. Re-point SpareProvider's state record at a provider created OUT OF BAND
@@ -95,6 +98,7 @@ SPARE_GENERATED="${STACK}-SpareProvider8B33A338"
 SPARE_REWIRED="${STACK}-rewired-spare"
 FUNCTION_NAME="${STACK}-Handler886CB40B"
 DIFF_LOG="${TMPDIR:-/tmp}/cdkd-3174-diff.$$.log"
+DEPLOY_LOG="${TMPDIR:-/tmp}/cdkd-3174-deploy.$$.log"
 
 # Best-effort, retried delete of one capacity provider by name. A provider
 # refuses deletion while a function version still runs on it or its instances
@@ -120,16 +124,20 @@ cleanup() {
   CLEANED_UP=1
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
-  rm -f "${DIFF_LOG}"
+  rm -f "${DIFF_LOG}" "${DEPLOY_LOG}"
+  # The spare providers first, BEFORE `state destroy`: the out-of-band one is in
+  # no state record until phase 2b rewrites it, and the generated one leaves
+  # state at that point, so either can still reference the operator role,
+  # security group and subnets `state destroy` is about to delete.
+  delete_provider "${SPARE_REWIRED}"
+  delete_provider "${SPARE_GENERATED}"
   if [ -f "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
-  # The function first: deleting it deletes every version, which frees the
-  # provider it runs on.
+  # The function before its provider: deleting it deletes every version, which
+  # frees the provider it runs on.
   aws lambda delete-function --function-name "${FUNCTION_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   delete_provider "${PROVIDER_NAME}"
-  delete_provider "${SPARE_GENERATED}"
-  delete_provider "${SPARE_REWIRED}"
   case "${STACK}" in
     CdkdLmi?*)
       for lg in $(aws logs describe-log-groups --region "${REGION}" \
@@ -182,7 +190,21 @@ assert_clean_diff() { # $1 = phase label; runs under the caller's CDKD_TEST_UPDA
 
 # --- Phase 1: deploy with no CapacityProviderName ------------------------
 echo "==> Phase 1: deploy (two capacity providers without a name + an attached function)"
-env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+# `--verbose` only for this deploy, and only to count retries below; nothing in
+# this script greps the deploy's own rows. `pipefail` keeps the deploy's rc.
+env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --verbose 2>&1 | tee "${DEPLOY_LOG}"
+
+# Was the create retried on the operator-role propagation rejection? Reported,
+# not asserted: a role that has propagated needs no retry. The count is only
+# meaningful when the log really holds debug output, so a capture that lost it
+# (a format change, a dropped `--verbose`) fails here instead of reading as
+# "no retry". Verbose lines are `<ISO timestamp> <LEVEL> <message>`.
+DEPLOY_PLAIN="$(sed 's/\x1b\[[0-9;]*m//g' "${DEPLOY_LOG}")"
+DEBUG_LINES="$(grep -ciE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z +debug ' <<< "${DEPLOY_PLAIN}" || true)"
+[ "${DEBUG_LINES}" -gt 0 ] ||
+  { echo "FAIL: phase 1 deploy log holds no debug lines -- the retry count below would be vacuous" >&2; exit 1; }
+OPERATOR_ROLE_RETRIES="$(grep -cE 'Retrying .*operator role is invalid' <<< "${DEPLOY_PLAIN}" || true)"
+echo "    operator-role propagation retries during phase 1: ${OPERATOR_ROLE_RETRIES} (debug lines captured: ${DEBUG_LINES})"
 
 STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
 STATE_PROVIDER_ID="$(read_state "s['resources']['Provider2281708E']['physicalId']")"
@@ -258,10 +280,12 @@ STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION
 REWRITTEN_JSON="$(printf '%s' "${STATE_JSON}" | SPARE_REWIRED="${SPARE_REWIRED}" SPARE_REWIRED_ARN="${SPARE_REWIRED_ARN}" python3 -c '
 import json, os, sys
 s = json.load(sys.stdin)
+# The premise the update-path fix rests on: no recorded provider bag names
+# anything, for either provider phase 3 updates.
+for logical_id in ("Provider2281708E", "SpareProvider8B33A338"):
+    if "CapacityProviderName" in s["resources"][logical_id].get("properties", {}):
+        sys.exit(f"FAIL: premise: the recorded {logical_id} bag already carries CapacityProviderName")
 r = s["resources"]["SpareProvider8B33A338"]
-# The premise the update-path fix rests on: the recorded bag names nothing.
-if "CapacityProviderName" in r.get("properties", {}):
-    sys.exit("FAIL: premise: the recorded SpareProvider8B33A338 bag already carries CapacityProviderName")
 r["physicalId"] = os.environ["SPARE_REWIRED"]
 r.setdefault("attributes", {})["Arn"] = os.environ["SPARE_REWIRED_ARN"]
 observed = r.get("observedProperties")
@@ -271,8 +295,9 @@ print(json.dumps(s))
 ')"
 printf '%s' "${REWRITTEN_JSON}" | aws s3 cp - "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" >/dev/null
 STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
-[ "$(read_state "s['resources']['SpareProvider8B33A338']['physicalId']")" = "${SPARE_REWIRED}" ] ||
-  { echo "FAIL: state rewrite did not land: SpareProvider8B33A338 is not ${SPARE_REWIRED}" >&2; exit 1; }
+REWIRED_RECORD_ID="$(read_state "s['resources']['SpareProvider8B33A338']['physicalId']")"
+[ "${REWIRED_RECORD_ID}" = "${SPARE_REWIRED}" ] ||
+  { echo "FAIL: state rewrite did not land: SpareProvider8B33A338 is '${REWIRED_RECORD_ID}', not ${SPARE_REWIRED}" >&2; exit 1; }
 
 # The generated spare is now in no state record; remove it so only the
 # rewired provider remains under this logical id.
@@ -288,9 +313,13 @@ done
 [ -n "${SPARE_GENERATED_GONE}" ] ||
   { echo "FAIL: generated spare ${SPARE_GENERATED} still exists 5 min after its delete" >&2; exit 1; }
 
-# The update below must ADD the tags, so neither may be present yet.
-[ "$(provider_tag "${PROVIDER_ARN}")" = "None" ] && [ "$(provider_tag "${SPARE_REWIRED_ARN}")" = "None" ] ||
-  { echo "FAIL: premise: tag cdkd-integ-phase already present before the update phase" >&2; exit 1; }
+# The update below must ADD the tags, so neither may be present yet. Captured
+# first: a failing `list-tags` inside `[ ... ]` would not stop the script and
+# would print the wrong cause.
+PROVIDER_TAG_BEFORE="$(provider_tag "${PROVIDER_ARN}")"
+REWIRED_TAG_BEFORE="$(provider_tag "${SPARE_REWIRED_ARN}")"
+[ "${PROVIDER_TAG_BEFORE}" = "None" ] && [ "${REWIRED_TAG_BEFORE}" = "None" ] ||
+  { echo "FAIL: premise: tag cdkd-integ-phase already present before the update phase (provider='${PROVIDER_TAG_BEFORE}' rewired='${REWIRED_TAG_BEFORE}')" >&2; exit 1; }
 echo "    SpareProvider8B33A338 now records ${SPARE_REWIRED}; the generated spare is gone"
 
 # --- Phase 3: in-place UPDATE through Cloud Control -------------------------
@@ -308,9 +337,10 @@ for pair in "${PROVIDER_NAME} ${PROVIDER_ARN}" "${SPARE_REWIRED} ${SPARE_REWIRED
     { echo "FAIL: ${name} ARN changed across the update ('${arn}' -> '${arn_after}')" >&2; exit 1; }
 done
 STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
-[ "$(read_state "s['resources']['Provider2281708E']['physicalId']")" = "${PROVIDER_NAME}" ] &&
-  [ "$(read_state "s['resources']['SpareProvider8B33A338']['physicalId']")" = "${SPARE_REWIRED}" ] ||
-  { echo "FAIL: a provider's state physical id changed across the update" >&2; exit 1; }
+PROVIDER_ID_AFTER="$(read_state "s['resources']['Provider2281708E']['physicalId']")"
+SPARE_ID_AFTER="$(read_state "s['resources']['SpareProvider8B33A338']['physicalId']")"
+[ "${PROVIDER_ID_AFTER}" = "${PROVIDER_NAME}" ] && [ "${SPARE_ID_AFTER}" = "${SPARE_REWIRED}" ] ||
+  { echo "FAIL: a provider's state physical id changed across the update (provider='${PROVIDER_ID_AFTER}' spare='${SPARE_ID_AFTER}')" >&2; exit 1; }
 echo "    tags reached AWS; both providers updated in place, ${SPARE_REWIRED} under its own name"
 
 CDKD_TEST_UPDATE=true assert_clean_diff "after the update"
