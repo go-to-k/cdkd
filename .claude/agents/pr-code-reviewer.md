@@ -38,7 +38,7 @@ Read every changed file end-to-end. For each, ask:
 ## What NOT to check
 
 - Whether tests pass (CI handles that).
-- Whether decisions match the design doc (separate spec-compliance reviewer).
+- Whether the change matches its spec — a design doc, or the bodies of the issues it says it closes (separate spec-compliance reviewer).
 - Documentation prose.
 
 ## Report format

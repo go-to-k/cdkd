@@ -90,7 +90,7 @@ command, a template, or a query.
 
 ## What NOT to check
 
-- Whether tests pass (CI) or match the design doc (spec reviewer).
+- Whether tests pass (CI), or whether the change matches its spec — a design doc, or the bodies of the issues it says it closes (spec reviewer).
 - General code quality unrelated to security (code reviewer) — but if a code
   smell IS the security defect, flag it.
 - Documentation prose.
