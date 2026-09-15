@@ -81,7 +81,9 @@ Daily, on `bot/cfn-schema-refresh/<YYYY-MM-DD>`:
    a failure can still cost is the marking step behind it — and trading the
    signal a human reads for a changelog line is the wrong way round. Either
    case leaves a `::warning::` in the run and no entry: write one by hand
-   before merging. The one arm that IS loud is an unsubstituted `__PR_NUMBER__`
+   before merging. A third warning says a fragment for this cycle already
+   exists and differs from what the run rendered — a second batch of drift
+   arrived the same day, and the existing entry does not describe it. The one arm that IS loud is an unsubstituted `__PR_NUMBER__`
    or `__CYCLE__` placeholder, which means the renderer is broken rather than
    a race being lost, and would otherwise commit an entry citing no pull
    request. **A cycle that only REMOVES
