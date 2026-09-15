@@ -192,8 +192,8 @@ Index of every area: [code-layout.md](code-layout.md).
     no deploy marked; and a NONLITERAL intrinsic frame.
   - **`positionByIntrinsicSkeleton`** (issue #1916) positions `Fn::Join` /
     `Fn::Sub` source leaves — the DOMINANT CDK shape
-    (`secret.secretValueFromJson(...)` renders the ARN as a `Ref`, so every
-    L2-reached secret is a join): literal parts escaped, non-literal parts
+    (`secret.secretValueFromJson(...)` renders the ARN as a `Ref`, so most
+    L2-reached secrets are joins): literal parts escaped, non-literal parts
     wildcarded (`[^}]*`, cannot cross a token terminator), matched against the
     recorded secret expressions. Persists a match only when THREE conditions
     hold: the bag leaf's WHOLE value is a recorded secret plaintext, EXACTLY
