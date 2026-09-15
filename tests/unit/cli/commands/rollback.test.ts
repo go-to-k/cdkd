@@ -1651,6 +1651,34 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
     expect(message).toContain('("eu- west-1")');
   });
 
+  it('the CANDIDATE LIST does not cut a legitimate deep nested-stack name', async () => {
+    // Issue #3164's cap, at this list rather than at `cdkd state list`. A cdkd
+    // state-record name is NOT a CloudFormation stack name: a nested-stack
+    // child's is `${parent}~${logicalId}`, applied once per nesting level, so a
+    // legitimate deep child runs past `displayIdent`'s 255 default. These rows
+    // are what the user copies a `cdkd rollback <stack>` argument OUT of, so a
+    // cut one hands them an argument that resolves to nothing -- which is worse
+    // than a long row, and is a byte change on a LEGITIMATE value either way.
+    //
+    // The expected value is built from its own literals (`128`, `255`, `4`)
+    // rather than from the constant the subject reads, so a mutation of that
+    // constant cannot move both sides together.
+    const deepest = `${'R'.repeat(128)}${`~${'L'.repeat(255)}`.repeat(4)}`;
+    expect(deepest).toHaveLength(1152);
+
+    installSetup({
+      listRawKeys: vi.fn().mockResolvedValue([
+        `cdkd/${deepest}/us-east-1/rollback-journal.json`,
+        `cdkd/Other/us-east-1/rollback-journal.json`,
+      ]),
+    });
+    const caught = await rollbackCommand(undefined, { ...baseOpts }).catch((e: unknown) => e);
+    const message = (caught as Error).message;
+
+    expect(message).toContain(`  - ${deepest} (us-east-1)`);
+    expect(message).not.toContain('[cut:');
+  });
+
   it('SOURCE SHAPE: no plan-label arm interpolates a journal field bare', () => {
     // The per-arm wiring fence. `safe()` itself is pinned above, but each of
     // the ~20 label arms wires it separately, and a hostile fixture reaches
