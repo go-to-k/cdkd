@@ -588,12 +588,12 @@ amd64 CI, fails only on arm64 dev machines), so CI can never catch it by
 running the fixture — the fence is a source-shape test:
 `tests/unit/scripts/integ-fixture-host-architecture.test.ts`. Its
 `FIXTURE_STACKS` list is literals on purpose (cannot silently widen to fixtures
-nobody has run on arm64), and it REFUSES a spelling it does not know
-(`lambda.Function`; `lambda.CfnFunction` pins
-`architectures: [HOST_ARCHITECTURE.name]`). Five covered; 13 remain in #2287 —
-they join one at a time, each after a green arm64 run (`provided.*` fixtures
-pin the arch to a prebuilt BINARY and `DockerImageFunction` takes it from the
-built image, so neither is mechanical).
+nobody has run on arm64); it accepts `lambda.Function` (`architecture:
+HOST_ARCHITECTURE`) and `lambda.CfnFunction` (`architectures:
+[HOST_ARCHITECTURE.name]`), refusing the rest. Five covered, 11
+Lambda-bearing `local-*` remain (#2287), each joining after its own green
+arm64 run (`provided.*` pins the prebuilt BINARY's arch, `DockerImageFunction`
+the built image's — neither is mechanical).
 
 ### A `PendingDeletion` KMS key is NOT an orphan
 

@@ -12,7 +12,7 @@
  *                                    11 (Segmentation fault) - core dumped`
  *   local-invoke     RC=1 DUR=35s   same fault at step 6/6
  *
- * The two fixtures below therefore declare the HOST's architecture, which is
+ * The fixtures below therefore declare the HOST's architecture, which is
  * native on an Apple Silicon dev host and on an x86_64 CI runner alike.
  *
  * This test exists because the failure mode is SILENT AND ENVIRONMENT-
@@ -33,9 +33,10 @@ const REPO_ROOT = resolve(import.meta.dirname, '../../..');
  *
  * Deriving this from a directory scan would do two harmful things at once: it
  * would go blind to a fixture being dropped from the set, and it would widen
- * the fence to fixtures nobody has run on an arm64 host. 16 further `local-*`
- * fixtures still declare no architecture (go-to-k/cdkd#2287); they join this
- * list one at a time, after a green arm64 run each.
+ * the fence to fixtures nobody has run on an arm64 host. 11 further
+ * Lambda-bearing `local-*` fixtures still declare no architecture
+ * (go-to-k/cdkd#2287, measured 2026-09-14); they join this list one at a time,
+ * after a green arm64 run each.
  */
 /**
  * ...and note what widening this list COSTS, because the constraint is real and
@@ -64,7 +65,7 @@ const FIXTURE_STACKS = [
   'tests/integration/local-invoke-java/lib/local-invoke-java-stack.ts',
 ];
 
-/** The one Lambda constructor spelling both fixtures are required to use. */
+/** The L2 spelling every listed fixture's handlers use; the first row of `ACCEPTED_CTORS`. */
 const CANONICAL_CTOR = 'new lambda.Function(';
 
 /**
@@ -82,7 +83,7 @@ const ACCEPTED_CTORS: ReadonlyArray<readonly [ctor: string, required: string]> =
 /**
  * Every `new <Something>Function(` constructor call, in any spelling.
  *
- * `lambdaFunctionCalls` below keys off the single canonical spelling, so on its
+ * `lambdaFunctionCalls` below keys off one accepted spelling at a time, so on its
  * own it would report a clean pass for a handler added as `NodejsFunction` /
  * `lambda.DockerImageFunction` / a named-import `new Function(` / even
  * `new lambda.Function (` with a space -- i.e. it would be blind to exactly the
@@ -90,8 +91,8 @@ const ACCEPTED_CTORS: ReadonlyArray<readonly [ctor: string, required: string]> =
  * hypothetical across the wider fixture set: `local-*` currently contains four
  * spellings (`lambda.Function`, `lambda.CfnFunction`, `lambda.DockerImageFunction`,
  * `cloudfront.Function`), and the last is not a Lambda at all. Matching the
- * broad shape and then REQUIRING every hit to be canonical turns an
- * unrecognized spelling into a loud failure instead of a silent pass.
+ * broad shape and then REQUIRING every hit to be an accepted spelling turns an
+ * unrecognized one into a loud failure instead of a silent pass.
  *
  * The namespace part is `*`, not `?`, and that quantifier is load-bearing. With
  * `?` the pattern allowed exactly ONE segment, so
@@ -106,7 +107,7 @@ const ACCEPTED_CTORS: ReadonlyArray<readonly [ctor: string, required: string]> =
 const ANY_FUNCTION_CTOR = /new\s+(?:[A-Za-z_$][\w$]*\s*\.\s*)*[\w$]*Function\s*\(/g;
 
 /**
- * The exact derivation both fixtures must carry, whitespace-normalized.
+ * The exact derivation every listed fixture must carry, whitespace-normalized.
  *
  * Hardcoding either architecture merely moves the emulation to the other host:
  * `ARM_64` makes an amd64 CI runner emulate, and `X86_64` is the default that
@@ -123,7 +124,7 @@ const HOST_ARCH_DERIVATION =
  * single-line and the wrapped `new lambda.Function(\n  this,\n  'Id',\n  {...}\n)`
  * spellings are covered (`local-start-api` uses both).
  */
-function lambdaFunctionCalls(source: string, ctor: string = CANONICAL_CTOR): string[] {
+function lambdaFunctionCalls(source: string, ctor: string): string[] {
   const calls: string[] = [];
   let from = 0;
   for (;;) {
@@ -197,7 +198,7 @@ describe('integ fixture Lambdas run at the host architecture (go-to-k/cdk-local#
           // function to fix rather than at a count.
           for (const call of calls) {
             if (call.includes(required)) continue;
-            const id = /\(\s*this,\s*'([^']+)'/.exec(call)?.[1] ?? call.slice(0, 80);
+            const id = /\(\s*this,\s*['"]([^'"]+)['"]/.exec(call)?.[1] ?? call.slice(0, 80);
             missing.push(`${id} (${ctor.slice(4, -1)} needs \`${required}\`)`);
           }
         }
