@@ -134,7 +134,10 @@ Unit tests passing is necessary but NOT sufficient:
   maintainer-only — never name one it flagged.
 - **Non-deletion source change** → still live-test the fixed path end-to-end
   (deploy → the redeploy that reproduced the bug → destroy), fresh fixture or
-  `/run-integ` against an existing one.
+  `/run-integ` against an existing one. **A lane forbidden real-AWS RUNS still
+  WRITES the arm; the parent runs it** (go-to-k/cdkd#3103's lane filed the
+  `--no-wait` arm as `next`; the parent wrote it and reddened its mutant within
+  the hour, 2026-09-14).
 - **Any diff with no `src/**` change** (docs, toolchain, CI, hooks, skills,
   tests, config) → exempt from the deploy/destroy tiers above, never from
   `/verify-pr` step 9 and never from the `verify-pr` gate itself. This is the
@@ -445,9 +448,7 @@ that shape means change the METHOD, not add a round — §5's "three spellings i
 three rounds". Review the FIXTURE as part of that diff, not as scaffolding
 around it — go-to-k/cdkd#2565's merge blocker was there (§8-d).
 
-**A reviewer's scratch COPY of a worktree is not detached from git** — a linked
-worktree's `.git` is a FILE pointing into the main repo, and `cp -R` carries
-the pointer, so a read-only reviewer's `git add -A` inside its copy staged
-three deletions in the LIVE tree (2026-08-29). `.claude/agents/pr-*-reviewer.md`
-carries the two lines every read-only brief needs. If damage happens anyway,
-the repair is `git restore --staged` (the INDEX only), the one carve-out.
+**A reviewer's scratch COPY of a worktree is not detached from git** —
+`.claude/agents/pr-*-reviewer.md` carries why and the two brief lines; the
+repair for a copy's `git add -A` landing in the LIVE tree (2026-08-29) is
+`git restore --staged`, INDEX only.

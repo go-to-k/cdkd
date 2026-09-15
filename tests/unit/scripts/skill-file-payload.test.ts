@@ -335,9 +335,15 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // gave 10-0 its (b)-counting bullet). Neither leader moved; the floor was
     // re-derived upward beside MIN_REFERENCE_CORPUS_BYTES (a non-leader
     // addition is charged there in full).
-    corpusBytes: 187_940,
-    largest: { file: 'implement.md', bytes: 29_992 },
-    runnerUp: { file: 'verify.md', bytes: 29_989 },
+    // The go-to-k/cdkd#3077 run's retro (2026-09-15): verify.md 8-c gained the
+    // "a lane forbidden real-AWS RUNS still WRITES the arm" sentence, paid for
+    // in the same file by compressing 8-i's scratch-copy paragraph to a pointer
+    // at the agents file that already carries it (29,989 -> 30,000, exactly at
+    // the cap), and gotchas.md gained the 429-resume bullet (7,966 -> 8,327).
+    // The two leaders SWAPPED: verify.md is now largest, implement.md runner-up.
+    corpusBytes: 188_312,
+    largest: { file: 'verify.md', bytes: 30_000 },
+    runnerUp: { file: 'implement.md', bytes: 29_992 },
   },
 };
 
@@ -788,7 +794,12 @@ const MIN_REFERENCE_FILES = 6;
 // (largest-side) and 157,951 (runner-up side, binding); 158_300 clears the
 // binding one by 349 B, inside the 347-383 B band the derivations above
 // carried.
-const MIN_REFERENCE_CORPUS_BYTES = 158_300;
+// RE-DERIVED UPWARD 158_300 -> 158_670 by the go-to-k/cdkd#3077 retro (+372 B,
+// corpus 187,940 -> 188,312: gotchas.md +361, verify.md +11). Inputs at this
+// date: largest 30,000 (verify.md), runner-up 29,992 (implement.md), so the
+// thresholds are 158,312 (largest-side) and 158,320 (runner-up side,
+// binding); 158_670 clears the binding one by 350 B, inside the band.
+const MIN_REFERENCE_CORPUS_BYTES = 158_670;
 
 function skillNames(): string[] {
   return readdirSync(skillsDir, { withFileTypes: true })

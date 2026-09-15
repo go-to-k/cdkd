@@ -111,3 +111,8 @@
   line and was over-applied anyway (the go-to-k/cdkd#2522 decision,
   2026-09-05). Everything else (which integ, how many reviewers, how deep
   to verify) you decide yourself and report as a decision.
+- **A lane killed by the account rate limit (HTTP 429 mid-turn) keeps its
+  context — `SendMessage` it, never re-dispatch.** Read the TREE before the
+  message: it may have committed, pushed and opened the PR already (three
+  kills across go-to-k/cdkd#3103 / go-to-k/cdkd#3139 on 2026-09-14; one had
+  the PR open with `verify-pr` bound to a superseded sha).
