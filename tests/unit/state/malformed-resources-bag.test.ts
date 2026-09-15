@@ -202,6 +202,41 @@ describe('the user-facing text', () => {
     expect(hasReadableResources(state(null))).toBe(false);
     expect(hasReadableResources(state({}))).toBe(true);
   });
+
+  it('every scrubStack return AFTER the repair carries the finding', () => {
+    // The first cut of this signal patched the SAME early-return arm twice and
+    // missed the main success path, so a stack whose bag was repaired AND
+    // whose outputs held a secret returned without the flag and the finding
+    // was lost.
+    //
+    // Counted on a REQUIRED field rather than by brace-matching the returns: a
+    // `[\s\S]*?` span ran past an arm's closing brace and swallowed the next
+    // one, which made this fence red for the wrong reason while looking right.
+    // `unverifiableReads` appears exactly once per ScrubStackResult literal.
+    const src = readFileSync(join(repoRoot, 'src/cli/commands/scrub.ts'), 'utf8');
+    const repairAt = src.indexOf('repairMalformedResourcesForReadOnly(state)');
+    expect(repairAt, 'scrub no longer repairs under --dry-run').toBeGreaterThan(-1);
+    const endAt = src.indexOf('THE MASKING BOUNDARY', repairAt);
+    expect(endAt, "scrubStack's masking-boundary catch moved; this fence's end anchor is gone").
+      toBeGreaterThan(repairAt);
+
+    const body = src.slice(repairAt, endAt);
+    const results = body.split('unverifiableReads:').length - 1;
+    const flagged = body.split('malformedResources ? { malformedResources }').length - 1;
+
+    expect(
+      results,
+      'found fewer than two ScrubStackResult literals after the repair; this fence is ' +
+        'asserting nothing'
+    ).toBeGreaterThanOrEqual(2);
+    expect(
+      flagged,
+      `${results} ScrubStackResult literal(s) are returned after the repair but only ${flagged} ` +
+        `carry \`malformedResources\`. A stack whose resources bag was repaired can return ` +
+        `through an unflagged one, and the finding is then lost — \`--dry-run --fail\` reports ` +
+        `a clean run over a record it never read (go-to-k/cdkd#3018).`
+    ).toBe(results);
+  });
 });
 
 /**
