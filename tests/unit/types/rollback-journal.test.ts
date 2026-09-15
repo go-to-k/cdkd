@@ -204,3 +204,157 @@ describe('parseRollbackJournal refuses to forge a line (issue #3064)', () => {
     }
   });
 });
+
+/**
+ * Issue [#3140](https://github.com/go-to-k/cdkd/issues/3140): the executor
+ * keys every lookup on `op.logicalId`, and the parser used to validate no
+ * per-op field. A planted non-string id either coerced at each lookup (`123`
+ * found the record named `'123'`) or threw a raw `TypeError` at the first one
+ * (`{"toString": null}`, the issue #2947 shape). Refused here, once.
+ *
+ * The refusal names the INDEX and the TYPE, never the value: the last case
+ * pins that a hostile value never reaches the message at all, which is a
+ * stronger property than "sanitized".
+ */
+describe('parseRollbackJournal refuses a malformed operation (issue #3140)', () => {
+  const op = { logicalId: 'B', changeType: 'CREATE', resourceType: 'AWS::S3::Bucket', physicalId: 'p' };
+  const journalWith = (ops: unknown[], failed?: unknown[]): string =>
+    JSON.stringify({
+      journalVersion: 1,
+      stackName: 'S',
+      region: 'us-east-1',
+      segments: [
+        {
+          timestamp: 1,
+          reason: 'no-rollback-failure',
+          initialDeploy: false,
+          operations: ops,
+          ...(failed && { failedOperations: failed }),
+        },
+      ],
+    });
+  const messageOf = (body: string): string => {
+    try {
+      parseRollbackJournal(body, 'S');
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+    return '';
+  };
+
+  it('accepts every legitimate operation shape, physicalId present or absent', () => {
+    // The shapes cdkd's own writers emit: a CREATE with and without a
+    // physical id, an UPDATE carrying `previousState` / `provisionedBy` /
+    // `oldResourceRetained`, and a failed op with `attemptedProperties`.
+    const { physicalId: _omit, ...withoutPhysical } = op;
+    const update = {
+      ...op,
+      changeType: 'UPDATE',
+      provisionedBy: 'sdk',
+      oldResourceRetained: false,
+      previousState: {
+        physicalId: 'p-old',
+        resourceType: 'AWS::S3::Bucket',
+        properties: { a: 1 },
+        attributes: {},
+        dependencies: [],
+      },
+    };
+    const failed = { ...op, changeType: 'UPDATE', attemptedProperties: {} };
+    const parsed = parseRollbackJournal(journalWith([op, withoutPhysical, update], [failed]), 'S');
+    expect(parsed.segments[0]!.operations).toHaveLength(3);
+    expect(parsed.segments[0]!.failedOperations).toHaveLength(1);
+  });
+
+  it('names the way out in every refusal', () => {
+    for (const body of [journalWith([7]), journalWith([{ ...op, logicalId: 1 }]), journalWith('x' as never)]) {
+      expect(messageOf(body)).toContain(
+        "Remove the stack's rollback-journal.json (next to its state.json) to discard it."
+      );
+    }
+  });
+
+  it.each([
+    ['a number', 123, 'number'],
+    ['null', null, 'null'],
+    ['an object whose toString is not callable', { toString: null }, 'object'],
+    ['an array', ['B'], 'array'],
+    ['an empty string', '', 'string'],
+  ])('refuses a logicalId that is %s, naming the index and the type', (_label, id, kind) => {
+    const message = messageOf(journalWith([op, { ...op, logicalId: id }]));
+    expect(message).toContain('segments[0].operations[1].logicalId must be a non-empty string');
+    expect(message).toContain(`(got ${kind})`);
+  });
+
+  it('refuses a MISSING logicalId, saying undefined', () => {
+    const { logicalId: _omit, ...noId } = op;
+    expect(messageOf(journalWith([noId]))).toContain(
+      'segments[0].operations[0].logicalId must be a non-empty string (got undefined)'
+    );
+  });
+
+  it('refuses a non-string resourceType, changeType, and a present non-string physicalId', () => {
+    expect(messageOf(journalWith([{ ...op, resourceType: 7 }]))).toContain(
+      'operations[0].resourceType must be a string (got number)'
+    );
+    expect(messageOf(journalWith([{ ...op, changeType: ['CREATE'] }]))).toContain(
+      'operations[0].changeType must be a string (got array)'
+    );
+    expect(messageOf(journalWith([{ ...op, physicalId: null }]))).toContain(
+      'operations[0].physicalId must be a string when present (got null)'
+    );
+  });
+
+  it('checks failedOperations with the same rule, at their own index', () => {
+    expect(messageOf(journalWith([op], [op, { ...op, logicalId: 5 }]))).toContain(
+      'segments[0].failedOperations[1].logicalId must be a non-empty string (got number)'
+    );
+    expect(messageOf(journalWith([op], 'nope' as unknown as unknown[]))).toContain(
+      'segments[0].failedOperations must be an array when present (got string).'
+    );
+  });
+
+  it('refuses an operation that is not an object, naming its type', () => {
+    // Without this arm a `null` op would throw a raw TypeError at the first
+    // property read, and a `7` would be refused under the wrong field.
+    expect(messageOf(journalWith([op, null]))).toContain(
+      'segments[0].operations[1] must be an object (got null).'
+    );
+    expect(messageOf(journalWith([7]))).toContain(
+      'segments[0].operations[0] must be an object (got number).'
+    );
+    expect(messageOf(journalWith([['B']]))).toContain(
+      'segments[0].operations[0] must be an object (got array).'
+    );
+  });
+
+  it('refuses a segment that is not an object and an operations that is not an array', () => {
+    const seg = (segments: unknown): string =>
+      JSON.stringify({ journalVersion: 1, stackName: 'S', region: 'us-east-1', segments });
+    expect(messageOf(seg([7]))).toContain('segments[0] must be an object (got number).');
+    expect(messageOf(seg([{ timestamp: 1, reason: 'interrupted', initialDeploy: false }]))).toContain(
+      'segments[0].operations must be an array (got undefined).'
+    );
+    expect(messageOf(seg([{ timestamp: 1, operations: { length: 1 } }]))).toContain(
+      'segments[0].operations must be an array (got object).'
+    );
+  });
+
+  it('never carries the planted value into the message', () => {
+    // Not "sanitized": ABSENT. A logicalId that is a number carrying a forged
+    // line in its string form (an object with a hostile `toString` cannot even
+    // be stringified) -- the message names the index and `number`, nothing
+    // else, so there is no rendering step to get wrong.
+    const message = messageOf(journalWith([{ ...op, logicalId: 424242 }]));
+    expect(message).not.toContain('424242');
+    expect(message).toMatch(/\(got number\)\. Remove the stack's rollback-journal\.json/);
+  });
+
+  it('is refused BEFORE the executor could key a lookup on it -- the same body a round-5 review planted', () => {
+    // `{"toString": null}` used to escape as `TypeError: Cannot convert object
+    // to primitive value` from the first `stateResources[op.logicalId]`, after
+    // the lock was taken. The parser now refuses it with its own wording.
+    const body = journalWith([{ ...op, logicalId: { toString: null } }]);
+    expect(() => parseRollbackJournal(body, 'S')).toThrow(/is malformed: segments\[0\]\.operations\[0\]\.logicalId/);
+  });
+});
