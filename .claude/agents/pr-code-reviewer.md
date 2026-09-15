@@ -38,7 +38,9 @@ Read every changed file end-to-end. For each, ask:
 ## What NOT to check
 
 - Whether tests pass (CI handles that).
-- Whether the change matches its spec — a design doc, or the bodies of the issues it says it closes — WHEN the spec axis is dispatched. **Your dispatch does not tell you the tier, so assume it is NOT dispatched and check it yourself unless your inputs say `Tier: 3-axis`.** Over-checking at 3-axis costs a duplicated paragraph; under-checking is a spec axis nobody ran. (Do not reason from "am I the only reviewer" — the security add-on dispatches at any tier, and it defers spec unconditionally, so both of you can defer to nobody.)
+- Whether the change matches its spec, IN DEPTH — that is `pr-spec-reviewer.md`'s axis. But you cannot tell whether it was dispatched: nothing in your inputs names the tier, and "am I the only reviewer" does not answer it either (the security add-on runs at every tier and defers spec unconditionally, so you can both defer to nobody). So do a SECONDARY pass and label it that way.
+
+  Secondary means: read `Closes #N` / `Refs #N` off the PR body first — **`Refs` is an issue the PR explicitly disclaims closing, so demanding full satisfaction from it manufactures blockers** — and raise a spec finding only where the code plainly contradicts a `Closes` issue's stated acceptance. Do NOT rule on whether a `Closes` is "earned"; that is the spec axis's bar and it has calibration you do not. Mark any such finding `spec (secondary)`, and say it defers to `pr-spec-reviewer` if that axis ran — the parent has no precedence rule, so an unlabelled low-fidelity finding can block a marker the real spec axis cleared.
 - Documentation prose.
 
 ## Report format

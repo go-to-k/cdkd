@@ -90,7 +90,7 @@ command, a template, or a query.
 
 ## What NOT to check
 
-- Whether tests pass (CI), or whether the change matches its spec — a design doc, or the bodies of the issues it says it closes (spec reviewer).
+- Whether tests pass (CI), or whether the change matches its spec in depth — a design doc, or the bodies of the issues it says it closes (spec reviewer). One exception, because you are dispatched at EVERY tier including `inline`, where no other reviewer is: if the PR declares `Closes #N` and its stated acceptance touches a security surface, read that issue and say whether the code does what it claims. Label it `spec (secondary)` and defer to `pr-spec-reviewer` if that axis ran.
 - General code quality unrelated to security (code reviewer) — but if a code
   smell IS the security defect, flag it.
 - Documentation prose.
