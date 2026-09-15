@@ -1625,6 +1625,118 @@ export function describeDockerFailure(error: unknown, args: readonly string[]): 
 }
 
 /**
+ * A `cause` that is safe to CHAIN onto a wrapper error, for a caller that
+ * wants the retry classifiers to see the failure as an object rather than as
+ * an interpolated string (issue go-to-k/cdkd#2075).
+ *
+ * Attaching the raw `execFile` error reopens the channel go-to-k/cdkd#2440
+ * closed. The mandate above applies to every docker failure text this module
+ * hands out, "including one whose argv carries no user data today" — and a
+ * chained cause IS such a text: `formatError` prints `cause.message`, and the
+ * CLI's top-level handler walks the whole chain. The raw message is the
+ * command line, so the moment an argv gains a `-e` or a `--build-arg` the
+ * secret is in a printed line again, from a call site nobody re-reads.
+ *
+ * So the returned cause carries the REDACTED description as its message, and
+ * chains nothing further. What the classifiers read is copied across — but
+ * through an ALLOWLIST ({@link CLASSIFICATION_FIELDS}), never by sweeping the
+ * original's own keys.
+ *
+ * The allowlist is the whole point, and a denylist was the first cut: it
+ * skipped `message` / `stack` / `cause` and copied the rest, which carried
+ * `err.cmd` — the full command line — onto the new error verbatim. That is
+ * the SAME field that defeated four rounds of the go-to-k/cdkd#2440 fence
+ * (`.claude/rules/docker-argv-redaction.md`), reintroduced inside the function
+ * written to close it. `stderr` / `stdout` are excluded for the same reason:
+ * the composer above has already read and REDACTED them into the message, so
+ * copying the raw streams would hand back exactly what it removed.
+ *
+ * Fail-closed is the correct direction here for the reason the cache-param
+ * allowlist gives: a field missing from the allowlist costs one degraded retry
+ * classification, while a field missing from a denylist costs a printed
+ * credential.
+ */
+/**
+ * The fields {@link redactedDockerCause} carries from the original error onto
+ * the redacted one.
+ *
+ * WHAT EACH HALF IS FOR, stated precisely because an earlier revision of this
+ * comment got it wrong in a way that reads as more than it is. The AWS-shaped
+ * entries (`$metadata`, `$fault`, `__type`, `code`, `statusCode`) are what
+ * `isThrottlingError` / `isTransientServerError` /
+ * `describeRetryClassificationSignals` actually consult, and they are reachable
+ * here only when an SDK error is the cause -- the ECR-login path, whose
+ * `GetAuthorizationToken` failure can be one.
+ *
+ * `exitCode` is NOT read by any classifier. It is carried because it is the
+ * ONLY field the DOMINANT failure has: these four sites reject through
+ * `spawnStreaming`, whose `SpawnError` sets `stderr` / `stdout` / `exitCode`
+ * and nothing else, so without it a non-zero docker exit produced a cause with
+ * a name and a message and no other content at all. What that buys is the
+ * DIAGNOSTIC -- `cli/index.ts` renders the chain's own enumerable props -- not
+ * a retry decision. Do not restate it as a classification field.
+ *
+ * `stderr` / `stdout` stay OFF: the composer has already read and REDACTED
+ * them into the message, so copying the raw streams would hand back exactly
+ * what it removed.
+ */
+const CLASSIFICATION_FIELDS = [
+  'exitCode',
+  'code',
+  'errno',
+  'signal',
+  'status',
+  'statusCode',
+  '$metadata',
+  '$fault',
+  '__type',
+] as const;
+
+export function redactedDockerCause(error: unknown, args: readonly string[]): Error | undefined {
+  if (!(error instanceof Error)) return undefined;
+  const cause = new Error(describeDockerFailure(error, args));
+  // Every read below is guarded, for the reason `capturedStreamText` and
+  // `safeStringify` in this file are: this helper runs ONLY inside a `catch`,
+  // so a throwing getter or a Proxy on the caught value would escape that
+  // catch and replace a docker diagnostic with an unrelated crash.
+  try {
+    cause.name = error.name;
+  } catch {
+    /* leave the default 'Error' */
+  }
+  // The non-retryable MARKER, which no string allowlist can reach: it is a
+  // symbol property, so copying the named fields silently drops it and an
+  // error someone marked non-retryable would be retried. `Symbol.for` puts it
+  // in the global registry, so this file can name it without importing from
+  // `src/deployment/**` and inverting the layering. Nothing on the docker path
+  // marks one TODAY -- it is carried so that adding a `markNonRetryable` there
+  // later does not need anyone to remember this function exists.
+  const NON_RETRYABLE_MARKER = Symbol.for('cdkd.nonRetryable');
+  try {
+    if ((error as unknown as Record<symbol, unknown>)[NON_RETRYABLE_MARKER] === true) {
+      Object.defineProperty(cause, NON_RETRYABLE_MARKER, {
+        value: true,
+        enumerable: false,
+        configurable: true,
+      });
+    }
+  } catch {
+    /* a marker that cannot be read is simply not carried */
+  }
+
+  const source = error as unknown as Record<string, unknown>;
+  const target = cause as unknown as Record<string, unknown>;
+  for (const key of CLASSIFICATION_FIELDS) {
+    try {
+      if (key in source) target[key] = source[key];
+    } catch {
+      /* a field that cannot be read is simply not carried */
+    }
+  }
+  return cause;
+}
+
+/**
  * Composer for a captured-output failure where the diagnostic may be on
  * STDOUT rather than stderr (`runDockerStreaming`'s non-zero-exit path, whose
  * `SpawnError` carries both). `fallback` is used when neither stream said

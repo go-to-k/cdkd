@@ -321,7 +321,8 @@ export class S3StateBackend {
         throw new StateError(
           `State bucket '${this.config.bucket}' does not exist. ` +
             `Run 'cdkd bootstrap' to create it, or specify an existing bucket via ` +
-            `--state-bucket, CDKD_STATE_BUCKET, or cdk.json context.cdkd.stateBucket.`
+            `--state-bucket, CDKD_STATE_BUCKET, or cdk.json context.cdkd.stateBucket.`,
+          error instanceof Error ? error : undefined
         );
       }
       const normalized = normalizeAwsError(error, {
@@ -547,7 +548,8 @@ export class S3StateBackend {
     } catch (error) {
       if ((error as { name: string }).name === 'PreconditionFailed') {
         throw new StateError(
-          `State has been modified by another process. Expected ETag: ${expectedEtag}, but state has changed.`
+          `State has been modified by another process. Expected ETag: ${expectedEtag}, but state has changed.`,
+          error instanceof Error ? error : undefined
         );
       }
 

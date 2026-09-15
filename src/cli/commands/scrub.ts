@@ -77,6 +77,13 @@ import {
   secretSafeKeyDisplay,
   type SecretSafeKeyDisplay,
 } from '../../deployment/outputs-export-alias.js';
+import {
+  STATE_RESOURCES_MALFORMED,
+  hasReadableResources,
+  malformedResourcesWarning,
+  malformedStateRefusalMessage,
+  repairMalformedResourcesForReadOnly,
+} from '../../state/malformed-resources-bag.js';
 
 /**
  * Signals `cdkd scrub` found plaintext it is reporting rather than removing.
@@ -590,6 +597,12 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   // not read as clean and `--fail` must not exit 0, but the stack itself was
   // still scrubbed for everything else and must not be refused outright.
   let totalStacksWithUnverifiableReads = 0;
+  /**
+   * Stacks this `--dry-run` proceeded over with an UNREADABLE resources map
+   * (issue go-to-k/cdkd#3018). Tracked exactly like `indexUnreadable`: an
+   * audit this run could not perform is a FINDING, never a clean result.
+   */
+  const malformedRecords: string[] = [];
   // Stacks this run could not scrub at all, one entry per stack (issue #2109
   // review). A refusal is per-REFERENCE evidence but is raised for the whole
   // STACK, and without a boundary here one refused stack in a `--all` run
@@ -827,6 +840,9 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       // other.
       logger.info(`No plaintext secrets found in ${stack.stackName}`);
     }
+    if (scrubbed.malformedResources) {
+      malformedRecords.push(stack.stackName);
+    }
     if (scrubbed.unverifiableReads > 0) {
       totalStacksWithUnverifiableReads++;
       logger.warn(
@@ -900,7 +916,12 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     totalStacksWithUnverifiableReads === 0 &&
     totalIndexEntriesConverged === 0 &&
     indexUnwritten.length === 0 &&
-    indexUnreadable.length === 0
+    indexUnreadable.length === 0 &&
+    // A dry run that proceeded over an unreadable resources map has every
+    // counter above legitimately at zero, so without this it would land here
+    // and print `No plaintext secrets found in any target stack state` -- a
+    // claim about records it never read.
+    malformedRecords.length === 0
   ) {
     // `totalIndexEntriesAbsent` and `totalIndexEntriesUnexamined` are
     // deliberately NOT in this condition (issue #2667). Past it, the `--dry-run
@@ -1005,6 +1026,13 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     if (indexUnwritten.length > 0 || indexUnreadable.length > 0) {
       throw exportIndexIncompleteError(indexUnwritten, indexUnreadable, true);
     }
+    // Same rank, and this is the ONLY branch that can raise it: the repair
+    // fires only under `--dry-run`, and this branch RETURNS -- so the copy
+    // below the `if` is unreachable for it. Above `options.fail` because
+    // `ScrubNeededError` is exit 1 AND silent: leaving it lower would report
+    // "scrub found a leak" for a record scrub could not read, and swallow this
+    // message on the way out.
+    if (malformedRecords.length > 0) throw malformedRecordsAuditedError(malformedRecords);
     if (options.fail) throw new ScrubNeededError();
     return;
   }
@@ -1052,6 +1080,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   if (indexUnwritten.length > 0 || indexUnreadable.length > 0) {
     throw exportIndexIncompleteError(indexUnwritten, indexUnreadable, false);
   }
+  // Unreachable today -- only the `--dry-run` branch above repairs, and it
+  // returns. Kept so a later writer of the flag on the real-run path cannot
+  // drop the finding silently; `tests/unit/state/malformed-resources-bag.test.ts`
+  // pins that the dry-run copy is the one that fires.
+  if (malformedRecords.length > 0) throw malformedRecordsAuditedError(malformedRecords);
   // `totalStacksWithUnverifiableReads` joins the key-only leak here for the
   // reason stated on that counter: a real run cannot fix either one, so exiting
   // 0 over them is exactly backwards (issue #2133 review).
@@ -1999,6 +2032,26 @@ export function orderScrubTargets<
  * through the real backend, so the read-modify-write still sees S3 rather than
  * a cache, and its ETag precondition still means what it says.
  */
+/**
+ * The finding a `--dry-run` raises for a record whose resources map it could
+ * not read (issue go-to-k/cdkd#3018).
+ *
+ * `ScrubRefusalError`, so it carries scrub's exit **2**: `1` means "--fail
+ * looked and found a leak -- rotate the secret", and this is the opposite
+ * remedy ("repair the record and re-run"). Without it the run exits 0, or 1
+ * under `--fail` via the SILENT `ScrubNeededError`, whose suppression would
+ * also swallow this text.
+ */
+function malformedRecordsAuditedError(stackNames: readonly string[]): ScrubRefusalError {
+  return new ScrubRefusalError(
+    `${stackNames.length} stack(s) were audited with an EMPTY resource set because their ` +
+      `state record has no readable 'resources' map: ${stackNames.join(', ')}. The report ` +
+      `above describes their outputs only — nothing is known about their resources, so this ` +
+      `run cannot certify them clean. See the warnings above for the record to inspect.`,
+    STATE_RESOURCES_MALFORMED
+  );
+}
+
 function memoizeCrossStackStateReads(backend: S3StateBackend): S3StateBackend {
   const view = Object.create(backend) as S3StateBackend;
   let listed: ReturnType<S3StateBackend['listStacks']> | undefined;
@@ -2836,6 +2889,94 @@ function isRegionAmbiguousRefusal(err: unknown): boolean {
 }
 
 /**
+ * The marker the resolver's NAMELESS-dynamic-reference throw carries
+ * (`Dynamic reference: <service> PARAMETER_NAME is required`).
+ *
+ * Pinned against the resolver's own literal by
+ * `tests/unit/cli/scrub-nameless-dynamic-ref.test.ts`, because this is a
+ * consumer of a string the resolver owns: a reword there would otherwise make
+ * the predicate below silently stop matching and restore the very silence it
+ * exists to remove (`.claude/rules/testing.md` -> "A fixture that greps
+ * cdkd's OWN output must fail loudly when the format drifts").
+ */
+const NAMELESS_DYNAMIC_REFERENCE_MARKERS = [
+  'PARAMETER_NAME is required',
+  'SECRET_ID is required',
+] as const;
+
+/**
+ * The prefix a matching message must ALSO carry. Without it the bare tails
+ * above are reachable from an unrelated throw: `resolveParameters` raises
+ * `Parameter ${name} is required but no value was provided`, so a template
+ * parameter literally NAMED `PARAMETER_NAME` would flip an ordinary
+ * best-effort miss into a whole-stack refusal.
+ */
+const DYNAMIC_REFERENCE_PREFIX = 'Dynamic reference: ';
+
+/**
+ * A NAMELESS dynamic reference is NOT a best-effort miss, however unresolvable
+ * the rest of the resource is (issue go-to-k/cdkd#2692) — `{{resolve:ssm-secure}}`
+ * with no parameter name, or `{{resolve:secretsmanager}}` /
+ * `{{resolve:secretsmanager:}}` with no secret id.
+ *
+ * The resolver raises a bare `Error` for both, so they fall through the
+ * typed-refusal test above into the `debug` below and `cdkd scrub` reports the
+ * run CLEAN. What makes that wrong is WHERE the throw happens: the token loop
+ * in `resolveDynamicReferences` has NO per-token `try`, so either one abandons
+ * every remaining `{{resolve:...}}` token in the leaf. A real
+ * `{{resolve:secretsmanager:prod/db}}` after it is never fetched and records NO
+ * needle — and a legacy plaintext already in `state.json` then survives under
+ * `No plaintext secrets found`, exit 0.
+ *
+ * BOTH spellings are matched, and the second is the DOMINANT one. The first
+ * cut matched `PARAMETER_NAME is required` alone, leaving the more common way
+ * to write a secret silent — and the fence certified that as deliberate by
+ * asserting the marker occurred exactly once in the resolver, which passed
+ * precisely BECAUSE the other throw spells it differently.
+ *
+ * WHY THE SET STOPS AT "is required", having once been widened to the whole
+ * `Dynamic reference:` family and reverted. The loop's missing per-token `try`
+ * means four SIBLING failures — a deleted SSM parameter, a secret with no
+ * `SecretString`, a missing `JSON_KEY`, a non-JSON secret — abandon the leaf
+ * exactly the same way, so on the surface they belong here. They do not,
+ * because scrub resolves with template DEFAULTS and takes no `--parameters`:
+ * an `Fn::Sub` that warn-and-KEEPS its raw `${Field}` produces a JSON_KEY miss
+ * on a perfectly healthy stack, so refusing on that class refuses ordinary
+ * stacks (measured — it reddened
+ * `tests/unit/cli/commands/scrub-cross-region-secret.test.ts`). A nameless
+ * reference is far narrower: an UNBOUND variable keeps its literal `${...}`
+ * rather than vanishing, so ordinary missing-parameter resolution cannot
+ * produce one.
+ *
+ * That is narrower, NOT universal, and the difference is stated rather than
+ * glossed: a parameter DECLARED with `Default: ''` binds the empty string
+ * verbatim (`isUnboundTemplateParameter` returns false once `Default` is
+ * present), so `{{resolve:ssm-secure:${P}}}` assembles to
+ * `{{resolve:ssm-secure:}}` and refuses here — while the same stack deploys
+ * fine under `--parameters P=/real/name`. The failure is fail-CLOSED (a
+ * refusal, never a silent clean run) and the shape is a rare one, so it is
+ * accepted rather than worked around; go-to-k/cdkd#3160 carries it alongside
+ * the sibling class, which needs a countable unverifiable-leaf finding rather
+ * than a refusal.
+ *
+ * It is a loudness REGRESSION rather than a new gap: before go-to-k/cdkd#2689
+ * fixed `ssmParameterName`, this input produced a bogus `secretName` and
+ * therefore an `ambiguous` verdict, whose typed error scrub already re-raises.
+ * The old, wrong-in-substance refusal was backstopping this one.
+ */
+function isNamelessDynamicReferenceFailure(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    errorCauseChain(err).some(
+      (link) =>
+        link instanceof Error &&
+        link.message.includes(DYNAMIC_REFERENCE_PREFIX) &&
+        NAMELESS_DYNAMIC_REFERENCE_MARKERS.some((marker) => link.message.includes(marker))
+    )
+  );
+}
+
+/**
  * A secrets map with its OWN identity whose entries ARE `target`'s (issue
  * #2531): every read and write goes to `target`; nothing is stored here.
  *
@@ -3491,6 +3632,19 @@ function makeCrossStackPrePass(deps: {
 
 /** What one stack's scrub found. */
 export interface ScrubStackResult {
+  /**
+   * The record's `resources` map could not be READ, and this `--dry-run`
+   * proceeded over an empty one (issue go-to-k/cdkd#3018).
+   *
+   * Carried out to the caller rather than warned-and-forgotten because
+   * `--dry-run --fail` is documented as a STANDING CI gate: the repair makes
+   * every downstream counter legitimately zero, which lands on the clean-exit
+   * arm and prints `No plaintext secrets found in any target stack state`,
+   * exit 0 — over a record whose resources this run never examined. A real run
+   * REFUSES this record, so without the flag the dry run would be the one mode
+   * that reports a false success, and it is the mode CI uses.
+   */
+  malformedResources?: true;
   recordsChanged: number;
   secretsFound: number;
   secretBearingKeys: number;
@@ -3617,6 +3771,32 @@ export async function scrubStack(
       };
     }
     const state = loaded.state;
+    // `cdkd scrub` SAVES state whenever anything changed -- an OUTPUTS change
+    // alone satisfies that gate -- so a record whose resource map cannot be
+    // read is refused rather than repaired: saving would replace the evidence
+    // with a well-formed empty bag and lose it permanently (go-to-k/cdkd#3018).
+    //
+    // `--dry-run` is the exception, and it is decidable rather than a
+    // judgement: the write gate is `recordsChanged > 0 && !opts.dryRun`, so
+    // under it this command provably cannot persist anything. Refusing there
+    // would remove the one diagnostic that lists surviving plaintext in a
+    // broken record -- the audit a user reaches for precisely because the
+    // record is broken.
+    let malformedResources: true | undefined;
+    if (opts.dryRun) {
+      if (repairMalformedResourcesForReadOnly(state)) {
+        malformedResources = true;
+        logger.warn(malformedResourcesWarning(stack.stackName, region));
+      }
+    } else if (!hasReadableResources(state)) {
+      // scrub's own class, NOT `refuseMalformedState`: exit 1 is spoken for
+      // here ("--fail found plaintext"), and a CI gate reading the code alone
+      // must be able to tell that from "scrub refused to look".
+      throw new ScrubRefusalError(
+        malformedStateRefusalMessage(stack.stackName, region),
+        STATE_RESOURCES_MALFORMED
+      );
+    }
 
     // Re-resolve each resource's TEMPLATE properties to collect the resolved
     // secret plaintext -> expression map (into the two maps hoisted above). The
@@ -3819,7 +3999,7 @@ export async function scrubStack(
     // so one condition's slow parts must not spend the next one's, and that
     // reasoning does not change under a lock.
     await withSharedDrainBudget(async () => {
-      for (const logicalId of Object.keys(state.resources)) {
+      for (const logicalId of Object.keys(state.resources ?? {})) {
         const templateResource = templateResources[logicalId];
         if (!templateResource?.Properties) continue;
         const recordedSecretValues = new Map<string, string>();
@@ -3872,7 +4052,7 @@ export async function scrubStack(
         } catch (err) {
           // A region-AMBIGUOUS refusal is not best-effort -- see
           // `isRegionAmbiguousRefusal`.
-          if (isRegionAmbiguousRefusal(err)) throw err;
+          if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
           // Best-effort: a resource whose intrinsics cannot resolve (a Ref to
           // something not in state) still has its own {{resolve:...}} leaves
           // recorded along the way; leave the rest untouched.
@@ -3947,7 +4127,7 @@ export async function scrubStack(
         try {
           await resolver.resolve(resolveInput, resolverContext(recordedSecretValues));
         } catch (err) {
-          if (isRegionAmbiguousRefusal(err)) throw err;
+          if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
           logger.debug(
             `Resolution of orphan record ${record.logicalId} during scrub was partial: ` +
               `${maskSecretsInText(err instanceof Error ? err.message : String(err), recordedSecretValues)}`
@@ -4074,7 +4254,7 @@ export async function scrubStack(
           } catch (err) {
             // A region-AMBIGUOUS refusal is not best-effort -- see
             // `isRegionAmbiguousRefusal`.
-            if (isRegionAmbiguousRefusal(err)) throw err;
+            if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
             nameFailed = true;
             nameError = err;
           }
@@ -4216,7 +4396,7 @@ export async function scrubStack(
         } catch (err) {
           // A region-AMBIGUOUS refusal is not best-effort -- see
           // `isRegionAmbiguousRefusal`.
-          if (isRegionAmbiguousRefusal(err)) throw err;
+          if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
           // MASKED for the same reason as the two above — `valueSource` is a
           // post-pin bag. Verbose-only.
           logger.debug(
@@ -4292,6 +4472,7 @@ export async function scrubStack(
         secretsFound: 0,
         secretBearingKeys: secretBearingKeys.length,
         unverifiableReads: prePassFindings.unverifiable.length,
+        ...(malformedResources ? { malformedResources } : {}),
         // No needle was recorded, so no redaction pass ran and the stored bag
         // is what this run leaves — including on a RE-RUN over already-scrubbed
         // state, which is the case the index step exists to finish.
@@ -4304,7 +4485,7 @@ export async function scrubStack(
     // template bag (#1910), + the outputs; count changes.
     let recordsChanged = 0;
     const newResources: StackState['resources'] = {};
-    for (const [logicalId, record] of Object.entries(state.resources)) {
+    for (const [logicalId, record] of Object.entries(state.resources ?? {})) {
       const secrets = perResourceSecrets.get(logicalId);
       const templateProps = perResourceTemplateProps.get(logicalId);
       // A record with NO recorded secret is still worth scrubbing once a source
@@ -4513,6 +4694,7 @@ export async function scrubStack(
       secretsFound: totalSecrets,
       secretBearingKeys: secretBearingKeys.length,
       unverifiableReads: prePassFindings.unverifiable.length,
+      ...(malformedResources ? { malformedResources } : {}),
       outputs: newOutputs,
       exportNameDisplay: (name) => secretSafeKeyDisplay(name, outputSecrets),
     };

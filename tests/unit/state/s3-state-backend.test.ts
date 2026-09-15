@@ -149,6 +149,31 @@ describe('S3StateBackend.verifyBucketExists', () => {
     expect((caught as Error).message).toMatch(/cdkd bootstrap/);
   });
 
+  it('threads the underlying AWS error as `cause` on the missing-bucket arm', async () => {
+    // go-to-k/cdkd#2075. Without the cause the retry classifiers
+    // (`isTransientServerError` / `isThrottlingError` / `isMarkedNonRetryable`)
+    // and `extractDeploymentEventError` see only the interpolated message, so
+    // the AWS error code and request id never reach the persisted event. The
+    // wrapper's own text is asserted above; what is asserted HERE is that the
+    // original object survives, which nothing else in the suite checked.
+    const err = Object.assign(new Error('Not Found'), {
+      name: 'NotFound',
+      $metadata: { httpStatusCode: 404, requestId: 'req-abc' },
+    });
+    s3Client.send.mockRejectedValue(err);
+
+    const caught = (await backend.verifyBucketExists().catch((e: unknown) => e)) as Error;
+    expect(
+      caught.cause,
+      'the missing-bucket StateError dropped the AWS error; the classifiers are back to ' +
+        'matching on an interpolated message (go-to-k/cdkd#2075).'
+    ).toBe(err);
+    expect((caught.cause as { $metadata?: unknown }).$metadata).toEqual({
+      httpStatusCode: 404,
+      requestId: 'req-abc',
+    });
+  });
+
   it('throws a StateError with bootstrap hint when the bucket is missing (NoSuchBucket)', async () => {
     const err = Object.assign(new Error('The specified bucket does not exist'), {
       name: 'NoSuchBucket',
@@ -1114,6 +1139,36 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
 
       const put = s3Client.send.mock.calls[0][0];
       expect(put.input.IfMatch).toBe('"prev"');
+    });
+
+    it('raises the optimistic-lock race as a StateError carrying the AWS error as `cause`', async () => {
+      // The `PreconditionFailed` arm had NO behavioural test at all, in either
+      // half: neither the wrapper's own message nor, since go-to-k/cdkd#2075,
+      // the threaded cause. It matters for the same reason the missing-bucket
+      // arm does -- `extractDeploymentEventError` walks the cause chain for the
+      // AWS code and request id it PERSISTS, so without the cause the recorded
+      // event for a lost race says nothing about why.
+      const err = Object.assign(new Error('At least one of the pre-conditions failed'), {
+        name: 'PreconditionFailed',
+        $metadata: { httpStatusCode: 412, requestId: 'req-race' },
+      });
+      s3Client.send.mockRejectedValue(err);
+
+      const caught = (await backend
+        .saveState('MyStack', 'us-west-2', v2State('MyStack', 'us-west-2'), {
+          expectedEtag: '"prev"',
+        })
+        .catch((e: unknown) => e)) as Error;
+
+      expect(caught).toBeInstanceOf(StateError);
+      expect(caught.message).toMatch(/modified by another process/);
+      // The ETag the caller expected is named, so an operator can tell a real
+      // race from a stale in-memory record.
+      expect(caught.message).toContain('"prev"');
+      expect(
+        caught.cause,
+        'the optimistic-lock StateError dropped the AWS error (go-to-k/cdkd#2075).'
+      ).toBe(err);
     });
 
     it('migrates: writes new key then deletes the legacy key when migrateLegacy: true', async () => {

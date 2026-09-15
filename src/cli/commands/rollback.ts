@@ -38,6 +38,7 @@ import {
 } from '../../types/state.js';
 import type { StackStateRef } from '../../state/s3-state-backend.js';
 import { displayIdent, displaySafe } from '../../utils/display-safe.js';
+import { refuseMalformedState } from '../../state/malformed-resources-bag.js';
 
 interface RollbackOptions {
   force?: boolean;
@@ -386,6 +387,12 @@ export async function rollbackCommand(
         );
       }
       const baseState = stateData.state;
+      // `cdkd rollback` replays journal segments and SAVES after each one, and
+      // a spread of a null bag yields `{}` silently -- so without this the
+      // command would replace an unreadable resource map with a well-formed
+      // empty one, in the command a user reaches for when state is ALREADY
+      // suspect (go-to-k/cdkd#3018).
+      refuseMalformedState(baseState, stackName, region);
       const stateResources: Record<string, ResourceState> = { ...baseState.resources };
       // Resources THIS command's replays leave in AWS under
       // `DeletionPolicy: Retain` (issue #2934). Declared beside

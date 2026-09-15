@@ -68,6 +68,7 @@ import {
   type ResourceState,
   type StackState,
 } from '../../types/state.js';
+import { refuseMalformedState } from '../../state/malformed-resources-bag.js';
 
 interface ImportOptions {
   app?: string;
@@ -550,6 +551,7 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
     // to `saveState` for optimistic locking.
     const existingResult = await stateBackend.getState(stackInfo.stackName, targetRegion);
     const existingState = existingResult?.state ?? null;
+    if (existingState) refuseMalformedState(existingState, stackInfo.stackName, targetRegion);
     const existingEtag = existingResult?.etag;
     const migrationPending = existingResult?.migrationPending ?? false;
 
@@ -579,7 +581,7 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
               `Pass --force to confirm the overwrite, or remove these IDs from --resource / --resource-mapping.`
           );
         }
-        const preservedCount = Object.keys(existingState.resources).filter(
+        const preservedCount = Object.keys(existingState.resources ?? {}).filter(
           (id) => !overrides.has(id)
         ).length;
         logger.info(
@@ -728,7 +730,7 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
         const importedCount = importedRows.length;
         const preservedCount =
           selectiveMode && existingState
-            ? Object.keys(existingState.resources).filter((id) => !overrides.has(id)).length
+            ? Object.keys(existingState.resources ?? {}).filter((id) => !overrides.has(id)).length
             : 0;
         const totalAfter = importedCount + preservedCount;
         const breakdown =
@@ -1638,7 +1640,7 @@ export async function resolveImportedProperties(
   logger: ReturnType<typeof getLogger>
 ): Promise<Set<string>> {
   const unsafeObservedBaselineLogicalIds = new Set<string>();
-  const entries = Object.entries(stackState.resources);
+  const entries = Object.entries(stackState.resources ?? {});
   if (entries.length === 0) return unsafeObservedBaselineLogicalIds;
 
   const resolver = new IntrinsicFunctionResolver(region);
@@ -2535,7 +2537,7 @@ export async function captureObservedForImportedResources(
   unsafeObservedBaselineLogicalIds: ReadonlySet<string>,
   rebuiltLogicalIds: ReadonlySet<string>
 ): Promise<void> {
-  const entries = Object.entries(stackState.resources);
+  const entries = Object.entries(stackState.resources ?? {});
   if (entries.length === 0) return;
 
   await Promise.all(

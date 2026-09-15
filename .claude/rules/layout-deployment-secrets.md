@@ -654,8 +654,8 @@ Index of every area: [code-layout.md](code-layout.md).
   `ResolverContext.producerRegions`, AND it must let the resulting refusal
   survive its own error handling — `cdkd scrub` (the only supplier) wraps
   each resolution pass in a best-effort `catch`, so it re-raises
-  `DynamicReferenceRegionAmbiguousError` by cause-chain walk at all three
-  sites; swallowed, the refusal produces exactly the silent success it exists
+  `DynamicReferenceRegionAmbiguousError` by cause-chain walk at EVERY such
+  site; swallowed, the refusal produces exactly the silent success it exists
   to prevent. Conversely a REGION-PINNED sibling must NOT inherit the
   evidence (`siblingContext` in the resolver strips it): `producerRegions`
   describes the CONSUMER's reads, and a sibling classifies with its own

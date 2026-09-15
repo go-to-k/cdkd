@@ -281,6 +281,24 @@ The two non-zero codes call for opposite responses, which is why they are
 distinct: `1` means scrub looked and found a leak (rotate the secret), while
 `2` means scrub declined to look (fix the reference and re-run).
 
+**A state record whose `resources` map cannot be read exits `2`.** A
+hand-edited or truncated `state.json` can carry a `resources` field that is
+absent, `null`, or not an object at all. A real run REFUSES such a record
+outright, because scrub saves whenever anything changed — an `Outputs` change
+alone is enough — and saving would replace the unreadable map with a
+well-formed empty one, destroying the only evidence that the record is broken.
+
+Under `--dry-run`, where scrub provably cannot write, it audits the record's
+outputs instead, warns that the resource half was never examined, and **still
+exits `2`** — ranked above `--fail`'s exit `1` on purpose. Reporting `1` there
+would name the opposite remedy ("scrub looked and found a leak — rotate the
+secret") for a record scrub could not look at, and exit `0` would be the
+false-clean this whole check exists to prevent, in the mode a CI gate uses.
+
+Either way the message names the record and tells you not to run `cdkd deploy`
+or `cdkd destroy` against it — both read the same map, and an unreadable one is
+indistinguishable from an empty stack.
+
 **What a real run can report as `1`.** `--fail` is documented as a
 `--dry-run` CI gate, but a real run exits non-zero too when it found a leak it
 cannot rewrite. Two shapes qualify, and both are also reported in words:
@@ -303,7 +321,7 @@ cannot rewrite. Two shapes qualify, and both are also reported in words:
 
 ## Refusals
 
-Five error codes stop the run rather than reporting it clean. All exit `2`.
+These error codes stop the run rather than reporting it clean. All exit `2`.
 
 | Code | What triggers it | What to do |
 | --- | --- | --- |
@@ -311,6 +329,7 @@ Five error codes stop the run rather than reporting it clean. All exit `2`.
 | `SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT` | The read succeeded, but the producer's own state still stores the plaintext instead of the expression. | `cdkd scrub <producer>` first, then re-run. For a chain, every stack in it, head first. |
 | `SCRUB_CROSS_REGION_SECRET_UNRESOLVED` | A secret reference whose ARN names another region could not be read in that region. | Grant the read there, or restore the secret. scrub will not fall back to the stack's own region. |
 | `SCRUB_STACKS_FAILED` | Under `--all`, one or more stacks ended in one of the above. | Fix each named stack; the others were still scrubbed. Each stack's own reason was logged as it happened. |
+| `STATE_RESOURCES_MALFORMED` | A state record's `resources` map is absent, `null`, or not an object. A real run refuses it; `--dry-run` audits the outputs and reports this rather than a clean result. | Inspect the record with `cdkd state show <stack> --stack-region <region> --json` and repair or remove it. Do NOT `cdkd deploy` or `cdkd destroy` against it first. |
 | `SCRUB_EXPORT_INDEX_INCOMPLETE` | `state.json` was rewritten and an entry of the [exports index](#the-exports-index) was not — a refused write, or a region whose index could not be read. | Clear the cause (usually an S3 permission on `{state-prefix}/_index/...`) and re-run. The re-run writes only the entries still differing. |
 
 Everything else the per-item best-effort handler swallows is unchanged: a

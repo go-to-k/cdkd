@@ -286,8 +286,13 @@ diag_output() { # diag_output <text>
   # one decision that must not be wrong in the "no match" direction: a false
   # negative here PRINTS the secret. That pipeline shape DOES report false
   # negatives (issue #2582), and no content check in this file is a
-  # `printf | grep` pipeline: this helper and Guard 1b use `[[ == * ]]`
-  # tests, every other check on a CAPTURED value is a here-string
+  # `printf | grep` pipeline. That INVARIANT is exact; the inventory that
+  # follows is NOT exhaustive and is not meant to be (issue #2756 item 3):
+  # about ten further checks are `case "${VAR}" in` globs on captured values,
+  # and one of those takes its input through a `printf | jq` pipeline, so a
+  # reader treating the list as the complete population would be wrong.
+  # The forms it does name: this helper and Guard 1b use `[[ == * ]]`
+  # tests, most other checks on a CAPTURED value are a here-string
   # `grep -q <needle> <<< "${text}"`, the three checks that read a FILE grep
   # the file, and the one surviving pipeline is the canonical `gone_probe`
   # block above, which

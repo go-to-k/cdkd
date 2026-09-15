@@ -23,13 +23,20 @@ while the sibling debug line redacted the same bytes.
 
 **The rule for a new site: COMPOSE, never hand-write.** All 27 docker failure
 texts in the modules above go through `describeDockerFailure(error, args)` or
-one of its two siblings in `docker-cmd.ts`. Each takes a REQUIRED `args` and
+one of its siblings in `docker-cmd.ts`. Each takes a REQUIRED `args` and
 redacts internally, so a call site cannot get the text without handing over
 the argv to redact it with — the guarantee is type-checked. **Pass the array
 you actually spawned**: the redaction keys on it, and a plausible-looking
 substitute silently leaks. This includes sites whose argv carries no user data
 today, since an edit adding a `-e` pair later would otherwise reopen the hole
 with no edit to the error site.
+
+**A chained `cause` is such a text too** — `formatError` prints
+`cause.message` and the CLI walks the chain — so a site threading one uses
+`redactedDockerCause(err, args)`, never the caught error. Its field copy is an
+ALLOWLIST: the denylist first written for it skipped `message`/`stack`/`cause`
+and carried `err.cmd`, the command line, across verbatim
+(go-to-k/cdkd#2075).
 
 **What is masked**: the VALUE of `-e` / `--env` / `--opt` / `--label` /
 `--build-arg`, and every NON-LOCATOR param of `--cache-from` / `--cache-to`,

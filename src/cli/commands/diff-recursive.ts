@@ -29,6 +29,10 @@ import {
 import { findActionableSilentDrops } from '../../provisioning/property-coverage.js';
 import { wouldReturnToSdkProvider } from '../../provisioning/provider-registry.js';
 import { NESTED_STACK_RESOURCE_TYPE } from './retire-cfn-stack.js';
+import {
+  malformedResourcesWarning,
+  repairMalformedResourcesForReadOnly,
+} from '../../state/malformed-resources-bag.js';
 
 /**
  * The one spelling of the routing token for a resource leaving Cloud Control
@@ -249,7 +253,12 @@ async function loadStateOrEmpty(
   stateBackend: S3StateBackend
 ): Promise<StackState> {
   const result = await stateBackend.getState(stackName, region);
-  if (result) return result.state;
+  if (result) {
+    if (repairMalformedResourcesForReadOnly(result.state)) {
+      logger.warn(malformedResourcesWarning(stackName, region));
+    }
+    return result.state;
+  }
   return {
     stackName,
     region,
@@ -1071,7 +1080,7 @@ export async function buildDiffTree(args: {
   }
 
   // State-only children (removed from the template → recursive DELETE).
-  for (const [logicalId, resource] of Object.entries(state.resources)) {
+  for (const [logicalId, resource] of Object.entries(state.resources ?? {})) {
     if (resource.resourceType !== NESTED_STACK_RESOURCE_TYPE) continue;
     if (templateChildIds.has(logicalId)) continue;
     node.children.push(
@@ -1145,7 +1154,7 @@ async function buildDeletedSubtree(
     outputChanges,
     children: [],
   };
-  for (const [logicalId, resource] of Object.entries(state.resources)) {
+  for (const [logicalId, resource] of Object.entries(state.resources ?? {})) {
     if (resource.resourceType !== NESTED_STACK_RESOURCE_TYPE) continue;
     node.children.push(
       // Propagated, not recomputed: a grandchild's template is gone for the
