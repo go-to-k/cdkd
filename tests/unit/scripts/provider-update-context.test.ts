@@ -195,6 +195,7 @@ describe('provider UpdateContext fence — the real tree', () => {
       'ELBv2Provider',
       'KinesisStreamProvider',
       'LambdaFunctionProvider',
+      'LogsLogGroupProvider',
       'Route53Provider',
       'S3BucketProvider',
       'SNSTopicProvider',
@@ -454,22 +455,26 @@ describe('provider UpdateContext fence — the checker still discriminates', () 
   }, SPAWN_TIMEOUT_MS);
 
   it('an OMITTING provider that gains the parameter fails with the good news', () => {
+    // Subject: `CloudWatchAlarmProvider`, an omitter whose file carries the
+    // five-parameter header and the import tail once each. It was
+    // `LogsLogGroupProvider` until that provider gained the parameter (issue
+    // #2699 reads `desiredFromAwsReadback`) and left the omitting set.
     const dir = copyProvidersTree();
     mutate(
       dir,
-      'logs-loggroup-provider.ts',
+      'cloudwatch-alarm-provider.ts',
       `  ResourceImportResult,
 } from '../../types/resource.js';`,
       `  ResourceImportResult,
   UpdateContext,
 } from '../../types/resource.js';`
     );
-    mutate(dir, 'logs-loggroup-provider.ts', FIVE_PARAM_UPDATE, SIX_PARAM_UPDATE);
+    mutate(dir, 'cloudwatch-alarm-provider.ts', FIVE_PARAM_UPDATE, SIX_PARAM_UPDATE);
     const result = runCheck(dir);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('[newly-declaring]');
     expect(result.stderr).toContain('good news');
-    expect(result.stderr).toContain('LogsLogGroupProvider');
+    expect(result.stderr).toContain('CloudWatchAlarmProvider');
   }, SPAWN_TIMEOUT_MS);
 
   it('a RENAMED provider leaves a stale allow-list entry and fails', () => {
@@ -492,7 +497,7 @@ describe('provider UpdateContext fence — the checker still discriminates', () 
     const dir = copyProvidersTree();
     mutate(
       dir,
-      'logs-loggroup-provider.ts',
+      'cloudwatch-alarm-provider.ts',
       FIVE_PARAM_UPDATE,
       `  async update(
     logicalId: string,
@@ -506,7 +511,7 @@ describe('provider UpdateContext fence — the checker still discriminates', () 
     const result = runCheck(dir);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('[refusal]');
-    expect(result.stderr).toContain('LogsLogGroupProvider');
+    expect(result.stderr).toContain('CloudWatchAlarmProvider');
     expect(result.stderr).toContain('not `UpdateContext`');
     // The refusal must NOT quietly reclassify it as declaring.
     expect(result.stderr).not.toContain('[newly-declaring]');

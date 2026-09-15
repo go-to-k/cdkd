@@ -1079,3 +1079,138 @@ describe('AWS::S3Tables::Namespace composite-id splitter (issue #1659 live-test 
     );
   });
 });
+
+/**
+ * Issue [#2932](https://github.com/go-to-k/cdkd/issues/2932): the `properties`
+ * mask blocker (issue #2274) did not look at `attributes`, and since issue
+ * #2847 `CloudControlProvider.import` routinely writes the redaction mask
+ * THERE — for every model key it cannot certify read-only, the whole model
+ * when `cloudformation:DescribeType` was unavailable. The export reads
+ * `attributes` at exactly ONE position (the identifier attribute of a
+ * `COMPOSITE_PHYSICAL_ID_IDENTIFIERS` type), so the guarantee is stated at the
+ * value the template would receive, not over the whole bag: widening the
+ * blocker to any masked attribute would make every Cloud-Control-imported
+ * record permanently unexportable — the population control below pins that
+ * this did NOT happen.
+ */
+describe('buildImportPlan — a redaction mask never reaches the import identifier (issue #2932)', () => {
+  const SECRET_MASK = '***';
+
+  it('BLOCKS a record whose identifier ATTRIBUTE holds the mask, naming the bag and the field', async () => {
+    // Clean `properties`, so the #2274 blocker is NOT what fires; the
+    // physicalId is the composite, so the resolver cannot fall back to it.
+    const state = stateWith({
+      Table: {
+        resourceType: 'AWS::S3Tables::Table',
+        physicalId: TABLE_COMPOSITE,
+        properties: { Namespace: 'analytics', TableName: 'events' },
+        attributes: { TableARN: SECRET_MASK },
+      },
+    });
+    const template = {
+      Resources: {
+        Table: {
+          Type: 'AWS::S3Tables::Table',
+          Properties: { Namespace: 'analytics', TableName: 'events' },
+        },
+      },
+    };
+    const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');
+    expect(plan.phase1Imports).toEqual([]);
+    expect(plan.blocked).toHaveLength(1);
+    expect(plan.blocked[0]!.logicalId).toBe('Table');
+    const reason = plan.blocked[0]!.reason;
+    expect(reason).toMatch(/redaction mask/);
+    expect(reason).toMatch(/attributes\.TableARN/);
+    // The remedy is the MASK's, not the shape refusal's: a re-deploy re-masks
+    // the attribute, so "re-deploy the stack once so cdkd records TableARN"
+    // (the state-only wording this replaces) would send the user in a circle.
+    expect(reason).toMatch(/cloudformation:DescribeType/);
+    expect(reason).toMatch(/Re-deploying does NOT clear it/);
+    expect(reason).not.toMatch(/Re-deploy the stack once/);
+  });
+
+  it('CONTROL: the same record with a real recorded ARN exports', async () => {
+    const state = stateWith({
+      Table: {
+        resourceType: 'AWS::S3Tables::Table',
+        physicalId: TABLE_COMPOSITE,
+        properties: { Namespace: 'analytics', TableName: 'events' },
+        attributes: { TableARN: TABLE_ARN },
+      },
+    });
+    const template = { Resources: { Table: { Type: 'AWS::S3Tables::Table', Properties: {} } } };
+    const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');
+    expect(plan.blocked).toEqual([]);
+    expect(plan.phase1Imports[0]!.resourceIdentifier).toEqual({ TableARN: TABLE_ARN });
+  });
+
+  it('POPULATION CONTROL: masked attributes the export never reads do NOT block (the CC-imported shape)', async () => {
+    // A single-key type takes its identifier from the physicalId; its
+    // `attributes` can be masked wholesale by a Cloud Control import and it
+    // exports today. This is the row that distinguishes the position-scoped
+    // guarantee from a whole-bag `carriesSecretMask(attributes)` blocker,
+    // which would refuse this record forever (a re-import with the grant
+    // still masks every writable key).
+    const state = stateWith({
+      Bucket: {
+        resourceType: 'AWS::S3::Bucket',
+        physicalId: 'my-bucket',
+        properties: { BucketName: 'my-bucket' },
+        attributes: { Arn: SECRET_MASK, DomainName: SECRET_MASK, WebsiteURL: SECRET_MASK },
+      },
+    });
+    const template = {
+      Resources: { Bucket: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'my-bucket' } } },
+    };
+    const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');
+    expect(plan.blocked).toEqual([]);
+    expect(plan.phase1Imports).toHaveLength(1);
+    expect(plan.phase1Imports[0]!.resourceIdentifier).toEqual({ BucketName: 'my-bucket' });
+  });
+
+  it('does NOT block a masked identifier attribute when the physicalId is itself the identifier', async () => {
+    // The CC-routed `AWS::S3Tables::Table` shape: `S3TablesProvider.importTable`
+    // records the bare ARN as the physicalId, and a later Cloud Control import
+    // can mask the attribute beside it. The resolver prefers the attribute,
+    // finds it unusable, and falls back to the physicalId — nothing masked is
+    // shipped, so nothing is blocked. A blocker keyed on the attribute alone
+    // would refuse a record the export handles correctly.
+    const state = stateWith({
+      Table: {
+        resourceType: 'AWS::S3Tables::Table',
+        physicalId: TABLE_ARN,
+        attributes: { TableARN: SECRET_MASK },
+      },
+    });
+    const template = { Resources: { Table: { Type: 'AWS::S3Tables::Table', Properties: {} } } };
+    const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');
+    expect(plan.blocked).toEqual([]);
+    expect(plan.phase1Imports[0]!.resourceIdentifier).toEqual({ TableARN: TABLE_ARN });
+  });
+
+  it('BLOCKS at the choke point when the resolved identifier VALUE is the mask, whatever produced it', async () => {
+    // The structural half: the check sits where the identifier map is built,
+    // so a resolver that does not shape-validate — the "third resolver" the
+    // issue names — or a masked physicalId on the single-key path cannot put
+    // `***` into `ResourcesToImport`. Driven through the physicalId arm, the
+    // one route a test can reach without registering a resolver.
+    const state = stateWith({
+      Bucket: {
+        resourceType: 'AWS::S3::Bucket',
+        physicalId: SECRET_MASK,
+        properties: { BucketName: 'my-bucket' },
+      },
+    });
+    const template = {
+      Resources: { Bucket: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'my-bucket' } } },
+    };
+    const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');
+    expect(plan.phase1Imports).toEqual([]);
+    expect(plan.blocked).toHaveLength(1);
+    expect(plan.blocked[0]!.reason).toMatch(
+      /import identifier cdkd resolved for this resource is the redaction mask/
+    );
+    expect(plan.blocked[0]!.reason).toMatch(/masked physical id/);
+  });
+});

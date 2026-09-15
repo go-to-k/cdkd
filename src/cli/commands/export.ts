@@ -2029,9 +2029,48 @@ async function resolveIdentifierValue(
   try {
     return entry.resolve(ctx);
   } catch (stateOnlyError) {
-    if (!entry.backfill || !deps) throw stateOnlyError;
-    return await entry.backfill(ctx, deps);
+    if (entry.backfill && deps) return await entry.backfill(ctx, deps);
+    // Issue #2932: the recorded attribute this entry reads is the REDACTION
+    // MASK, so the state-only error's remedy ("re-deploy so cdkd records it")
+    // is wrong — a re-deploy re-masks it — and the masked value must be named
+    // for what it is. `CloudControlProvider.import` writes the mask into
+    // `attributes` for every model key it cannot certify read-only (issue
+    // #2847), whole-model when `cloudformation:DescribeType` was unavailable,
+    // so this is the ordinary shape of a CC-imported record, not a corner. A
+    // masked attribute whose physicalId is itself a usable identifier never
+    // reaches here: `resolve` returns the physicalId and nothing masked is
+    // shipped. Tested only when NO backfill ran — a live read that answered
+    // has already replaced the state-only question.
+    if (carriesSecretMask(ctx.attributes[entry.field])) {
+      throw new Error(maskedIdentifierAttributeReason(entry.field, ctx.logicalId));
+    }
+    throw stateOnlyError;
   }
+}
+
+/**
+ * The refusal for a recorded identifier attribute that holds the redaction
+ * mask (issue [#2932](https://github.com/go-to-k/cdkd/issues/2932)) — the
+ * `attributes` twin of the `properties` blocker in {@link buildImportPlan},
+ * scoped to the ONE position `cdkd export` reads out of that bag rather than
+ * to the whole bag. Widening it to any masked attribute would block every
+ * Cloud-Control-imported record permanently: since issue #2847 that import
+ * masks each writable model key BY DESIGN, so the population exports fine
+ * today and would never stop being blocked by a re-import.
+ */
+function maskedIdentifierAttributeReason(field: string, logicalId: string): string {
+  return (
+    `cdkd state holds only the redaction mask ('***') at attributes.${field} for '${logicalId}', ` +
+    `and that attribute is the value cdkd export reads as this resource type's CloudFormation ` +
+    `import identifier (${field}); nothing masked may reach the exported template, since ` +
+    `CloudFormation would either refuse it at IMPORT or write it onto the live resource at the ` +
+    `next update. The mask is what 'cdkd import' writes for a Cloud Control model key it could ` +
+    `not certify as read-only — every key when cloudformation:DescribeType was unavailable. ` +
+    `Re-deploying does NOT clear it. Repair the record with 'cdkd import <stack> --resource ` +
+    `${logicalId}=<physicalId> --force' after granting cloudformation:DescribeType, or export ` +
+    `the stack without this resource and adopt it into CloudFormation by hand. ` +
+    `See https://github.com/go-to-k/cdkd/issues/2932.`
+  );
 }
 
 /**
@@ -3922,7 +3961,10 @@ export async function buildImportPlan(
     // declare the literal mask, which CFn would either refuse at IMPORT (the
     // template must describe the live resource) or WRITE onto it at the next
     // update. Blocked per resource, like every other unexportable shape here,
-    // so the rest of the stack still reports.
+    // so the rest of the stack still reports. The `attributes` twin (issue
+    // #2932) is NOT a whole-bag test beside this one: it sits at the identifier
+    // choke point below, scoped to the one position the export reads —
+    // `maskedIdentifierAttributeReason` says why the whole bag must not be.
     if (carriesSecretMask(stateEntry.properties)) {
       blocked.push({
         logicalId,
@@ -4054,6 +4096,42 @@ export async function buildImportPlan(
     }
 
     const propertiesOverlay = resolved.propertiesOverlay ?? resolved.resourceIdentifier;
+
+    // Issue #2932: the GUARANTEE that no redaction mask reaches the exported
+    // template, stated once at the point the identifier is built rather than
+    // relied on per resolver. Every resolver above happens to shape-validate
+    // what it reads (`arn:` prefix, `sgr-` prefix), which is why a masked
+    // `attributes` value was refused rather than emitted — by accident, and an
+    // accident a third resolver added for a type whose identifier has no
+    // distinguishing prefix would remove silently. This check sees the VALUE
+    // the template would receive, whichever source produced it: a recorded
+    // attribute, a physicalId that is itself masked, a splitter's output, or a
+    // backfill's answer. It deliberately does NOT test the whole `attributes`
+    // bag — see `maskedIdentifierAttributeReason` for why that would block
+    // every Cloud-Control-imported record permanently.
+    //
+    // The overlay disjunct is DEFENCE with no witness today: every overlay is
+    // the identifier map itself, a subset of it, or a value recovered from
+    // `properties` (the `AWS::EC2::VPCCidrBlock` splitter), which the
+    // `properties` blocker above already fences. It stays so a splitter that
+    // one day reads a THIRD source into the overlay is still caught here.
+    if (carriesSecretMask(resolved.resourceIdentifier) || carriesSecretMask(propertiesOverlay)) {
+      blocked.push({
+        logicalId,
+        resourceType,
+        reason:
+          'the CloudFormation import identifier cdkd resolved for this resource is the redaction ' +
+          "mask ('***'), so the exported template would declare the mask as the resource's " +
+          'identity — CloudFormation would either refuse it at IMPORT or write it onto the live ' +
+          'resource at the next update. cdkd state holds only the mask where the identifier ' +
+          "should be (a masked attribute, or a masked physical id). Repair the record ('cdkd " +
+          `import <stack> --resource ${logicalId}=<physicalId> --force', granting ` +
+          'cloudformation:DescribeType first if the import warned that it could not read the ' +
+          'schema), or export the stack without this resource and adopt it into CloudFormation ' +
+          'by hand. See https://github.com/go-to-k/cdkd/issues/2932.',
+      });
+      continue;
+    }
 
     // Pre-flight the OVERLAY, not just the identifier (issue #1787). See
     // `unrepresentableOverlayFields` for why this cannot live at the overlay

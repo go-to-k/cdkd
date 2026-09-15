@@ -119,7 +119,13 @@ helper exists to stop:
   second: `create()` passes it only when `replayingState` is set, and
   `updateRoute` passes it UNCONDITIONALLY — see the update-path bullet below.
 - **A hand-written refusal** — `GlueProvider`'s
-  `enforceIcebergTableInputAbsent`.
+  `enforceIcebergTableInputAbsent`, and `LogsLogGroupProvider.create`'s
+  `RetentionInDays` refusal (issue #2699), which under `replayingState`
+  downgrades EVERY arm to warn-and-SKIP rather than warn-and-forward: a record
+  can carry a value the pre-#2699 create accepted (`0` skipped, `'0x1e'`
+  forwarded as its `Number()` reading), and re-creating from a spelling
+  CloudFormation rejects is the wrong restoration — "no retention" is what
+  every skipped member already meant on that path.
 
 **An UPDATE-path refusal is a replay refusal too**, and its downgrade is NOT
 the create one. `rollback-executor.ts`'s revert arm and `cdkd drift --revert`

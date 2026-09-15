@@ -1,11 +1,22 @@
 /**
- * `AWS::Logs::LogGroup` `RetentionInDays` coercion (issue #2521).
+ * `AWS::Logs::LogGroup` `RetentionInDays` coercion (issues #2521, #2698, #2699).
  *
  * CloudFormation is stringly typed and coerces `RetentionInDays: '30'` to the
  * number its schema declares. The AWS SDK does not — it serializes whatever it
  * is handed — so the provider used to put a JSON STRING on the wire, and its
  * update-side comparison read the state record's `'30'` as different from the
  * template's `30` and re-issued a `PutRetentionPolicy` on every deploy.
+ *
+ * Issues #2698 / #2699 replaced the guess about WHICH spellings CloudFormation
+ * accepts with a live A/B (the table is on `toCfnInteger` in
+ * `src/provisioning/dynamodb-warm-throughput.ts`). Every row below whose
+ * `before` names a forwarded or deleted call is a row that measurement moved:
+ * hex / exponent / decimal-point strings are REFUSED rather than forwarded as
+ * their `Number()` reading; `false`, `null`, `0` and `'0'` are REFUSED rather
+ * than routed to `DeleteRetentionPolicy`; a whitespace-only string joins `''`
+ * as CloudFormation's spelling of "no retention"; and a numeric `0` on a
+ * `desiredFromAwsReadback` bag (`cdkd drift --revert`) stays the delete-arm
+ * value `readCurrentState` writes for a never-expiring log group.
  *
  * The sibling half of the same issue lives in
  * `tests/unit/provisioning/stateful-types.test.ts`, where the stateful guard
@@ -20,7 +31,10 @@ import {
   PutRetentionPolicyCommand,
 } from '@aws-sdk/client-cloudwatch-logs';
 
-const mockSend = vi.fn();
+const { mockSend, warnSpy } = vi.hoisted(() => ({
+  mockSend: vi.fn(),
+  warnSpy: vi.fn(),
+}));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -36,7 +50,10 @@ vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    // Hoisted so the replay-downgrade case can read what the provider
+    // ANNOUNCED — a warn-and-skip that is not asserted is a silent skip with
+    // a green suite (review probe: deleting the warn call reddened nothing).
+    warn: warnSpy,
     error: vi.fn(),
     child: vi.fn().mockReturnThis(),
   };
@@ -62,16 +79,24 @@ const ABSENT = Symbol('absent');
 const ABSENT_PREVIOUS = Symbol('create');
 
 /**
- * WHICH refusal arm a value must land in. The three arms carry three distinct
- * `detail` strings, and matching only their shared prefix leaves all three
+ * WHICH refusal arm a value must land in. The five arms carry five distinct
+ * `detail` strings, and matching only their shared prefix leaves all of them
  * collapsible into one with nothing red — the failure this selector exists to
  * stop, and the one the non-finite arm shipped with until it was measured.
  */
 const arm = (value: unknown): RegExp => {
   if (typeof value === 'number' && !Number.isFinite(value)) return /declares a non-finite number/;
-  if (typeof value === 'number' || value === '-1') return /declares a negative number/;
-  return /does not parse as a finite number/;
+  if (value === null) return /declares null/;
+  if (value === 0 || value === '0') return /declares zero/;
+  if (typeof value === 'number' && Number.isInteger(value) && value < 0) {
+    return /declares a negative number/;
+  }
+  if (value === '-1') return /declares a negative number/;
+  if (typeof value === 'string') return /a string that is not a CloudFormation Integer/;
+  return /is of type (number|boolean|array|object)/;
 };
+
+const REFUSAL_PREFIX = /RetentionInDays must be a positive CloudFormation Integer/;
 
 const sentAll = (Command: new (input: never) => unknown) =>
   mockSend.mock.calls.filter((c) => c[0] instanceof Command).map((c) => c[0]);
@@ -111,13 +136,33 @@ const CREATE_MATRIX: ReadonlyArray<{
 }> = [
   { value: 30, expect: PUT(30), before: 'Put(30)' },
   { value: '30', expect: PUT(30), before: "Put('30') -> AWS rejects a string" },
-  { value: 0, expect: NONE, before: 'no call (falsy)' },
-  { value: '0', expect: NONE, before: "Put('0') -> AWS rejects" },
+  // Measured accepted by CloudFormation (issue #2698's table): a sign and
+  // surrounding whitespace are part of its Integer grammar.
+  { value: '+30', expect: PUT(30), before: 'Put(30)' },
+  { value: ' 30 ', expect: PUT(30), before: 'Put(30)' },
+  // --- CloudFormation's spellings of "no retention" (measured) -------------
   { value: '', expect: NONE, before: 'no call (falsy)' },
-  { value: false, expect: NONE, before: 'no call (falsy)' },
+  { value: '   ', expect: NONE, before: 'refused (#2521)' },
   { value: ABSENT, expect: NONE, before: 'no call (absent)' },
+  // --- the falsy family CloudFormation REJECTS (issue #2699) ---------------
+  // Every one of these was skipped as never-expire on the strength of being
+  // falsy (or, for `'0'`, of coercing to the falsy number). The Logs handler
+  // rejects `0` / `'0'` by enum and `false` by type; `null` is rejected by
+  // `update-stack` itself, and cdkd's resolver never produces one here
+  // (`AWS::NoValue` omits the key).
+  { value: 0, expect: REFUSE, before: 'no call (falsy)' },
+  { value: '0', expect: REFUSE, before: "Put('0') -> AWS rejects; then no call (#2521)" },
+  { value: false, expect: REFUSE, before: 'no call (falsy)' },
+  { value: null, expect: REFUSE, before: 'no call (falsy)' },
+  // --- spellings `Number()` accepted and CloudFormation rejects (#2698) ----
+  // The pre-#2698 reader FORWARDED these as their `Number()` reading.
+  { value: '0x1e', expect: REFUSE, before: 'Put(30) forwarded' },
+  { value: '1e3', expect: REFUSE, before: 'Put(1000) forwarded' },
+  { value: '30.5', expect: REFUSE, before: 'Put(30.5) forwarded' },
+  { value: '30.0', expect: REFUSE, before: 'Put(30) forwarded' },
+  { value: 30.5, expect: REFUSE, before: 'Put(30.5) forwarded' },
+  // --- not a number at all ------------------------------------------------
   { value: 'abc', expect: REFUSE, before: "Put('abc') -> AWS rejects" },
-  { value: '   ', expect: REFUSE, before: "Put('   ') -> AWS rejects" },
   { value: true, expect: REFUSE, before: 'Put(true) -> AWS rejects' },
   { value: [], expect: REFUSE, before: 'Put([]) -> AWS rejects' },
   { value: {}, expect: REFUSE, before: 'Put({}) -> AWS rejects' },
@@ -128,9 +173,6 @@ const CREATE_MATRIX: ReadonlyArray<{
   // FALSY, so it reached the send gate's `else` and, on the update path,
   // deleted a live retention. Refused ahead of the falsy return since round 4.
   { value: NaN, expect: REFUSE, before: 'no call (falsy)' },
-  // Falsy and NOT refused: `null` is how a template spells absent, and absent
-  // is CloudWatch Logs' never-expire.
-  { value: null, expect: NONE, before: 'no call (falsy)' },
 ];
 
 /**
@@ -138,36 +180,72 @@ const CREATE_MATRIX: ReadonlyArray<{
  * Its spelling is load-bearing and the rows say so: `-1` over `-1` is an
  * unchanged import record and passes, while `-1` over `'-1'` is a change and
  * is refused.
+ *
+ * `readback` marks a row driven with `UpdateContext.desiredFromAwsReadback`,
+ * the bag `cdkd drift --revert` hands `update()`.
  */
 const UPDATE_MATRIX: ReadonlyArray<{
   readonly value: unknown;
   readonly previous: unknown;
   readonly expect: RetentionOutcome;
   readonly before: string;
+  readonly readback?: true;
 }> = [
   // --- no real change -----------------------------------------------------
   { value: 30, previous: 30, expect: NONE, before: 'no call' },
   { value: '30', previous: 30, expect: NONE, before: "Put('30') -> AWS rejects" },
   { value: 30, previous: '30', expect: NONE, before: 'Put(30) for a retention that had not changed' },
   { value: '30', previous: '30', expect: NONE, before: 'no call' },
-  { value: '0', previous: 0, expect: NONE, before: "Put('0') -> AWS rejects" },
+  // Two more spellings of ONE retention, measured accepted by CloudFormation:
+  // the coerced comparison must read them as unchanged too.
+  { value: '+30', previous: 30, expect: NONE, before: 'no call' },
+  { value: ' 30 ', previous: 30, expect: NONE, before: 'no call' },
   // --- a real retention change -------------------------------------------
   { value: 90, previous: 30, expect: PUT(90), before: 'Put(90)' },
   { value: '90', previous: 30, expect: PUT(90), before: "Put('90') -> AWS rejects" },
+  { value: ' 90 ', previous: 30, expect: PUT(90), before: 'Put(90)' },
   { value: 30, previous: ABSENT, expect: PUT(30), before: 'Put(30)' },
   { value: 30, previous: 'abc', expect: PUT(30), before: 'Put(30)' },
   { value: 30, previous: false, expect: PUT(30), before: 'Put(30)' },
+  // A previous side the pre-#2698 reader FORWARDED as 30: AWS holds 30, the
+  // record spells it in hex, and the corrected template still compares as a
+  // change (the coerced sides differ), so the Put goes out — redundant, safe.
+  { value: 30, previous: '0x1e', expect: PUT(30), before: 'no call (both read 30)' },
   // --- never-expire: the delete arm --------------------------------------
   { value: ABSENT, previous: 30, expect: DELETE, before: 'DeleteRetentionPolicy' },
-  { value: 0, previous: 30, expect: DELETE, before: 'DeleteRetentionPolicy' },
   { value: '', previous: 30, expect: DELETE, before: 'DeleteRetentionPolicy' },
-  { value: false, previous: 30, expect: DELETE, before: 'DeleteRetentionPolicy' },
-  { value: 0, previous: 'abc', expect: DELETE, before: 'DeleteRetentionPolicy' },
-  // The one row that is a deliberate BEHAVIOUR CHANGE on this path.
-  { value: '0', previous: 30, expect: DELETE, before: "Put('0') -> AWS rejects" },
-  // --- refused ------------------------------------------------------------
+  // Whitespace-only is CloudFormation's "absent" (measured, #2699): the live
+  // retention is REMOVED there, so it is here.
+  { value: '   ', previous: 30, expect: DELETE, before: 'refused (#2521)' },
+  // cdkd's OWN never-expire spelling, on the ONE bag that carries it: a
+  // `drift --revert` over a console-added retention on a never-expiring log
+  // group is desired `0` (the observed baseline) over live `30`.
+  { value: 0, previous: 30, expect: DELETE, before: 'DeleteRetentionPolicy', readback: true },
+  { value: 0, previous: 0, expect: NONE, before: 'no call', readback: true },
+  // --- refused: the falsy family CloudFormation rejects (#2699) -----------
+  // Each of these DELETED a live retention before, on a template
+  // CloudFormation refuses to deploy at all.
+  { value: 0, previous: 30, expect: REFUSE, before: 'DeleteRetentionPolicy' },
+  { value: '0', previous: 30, expect: REFUSE, before: "Put('0') -> AWS rejects; then Delete (#2521)" },
+  { value: '0', previous: 0, expect: REFUSE, before: "Put('0') -> AWS rejects; then no call (#2521)" },
+  { value: false, previous: 30, expect: REFUSE, before: 'DeleteRetentionPolicy' },
+  { value: null, previous: 30, expect: REFUSE, before: 'DeleteRetentionPolicy' },
+  { value: 0, previous: 'abc', expect: REFUSE, before: 'DeleteRetentionPolicy' },
+  { value: false, previous: 'abc', expect: REFUSE, before: 'DeleteRetentionPolicy' },
+  { value: null, previous: '   ', expect: REFUSE, before: 'DeleteRetentionPolicy' },
+  // The readback flag licenses NUMERIC zero alone — `readCurrentState` writes
+  // a number, so a string zero or a boolean on that bag is not cdkd's spelling
+  // and stays refused.
+  { value: '0', previous: 30, expect: REFUSE, before: 'DeleteRetentionPolicy', readback: true },
+  { value: false, previous: 30, expect: REFUSE, before: 'DeleteRetentionPolicy', readback: true },
+  // --- refused: spellings `Number()` accepted and CloudFormation rejects ---
+  { value: '0x1e', previous: 30, expect: REFUSE, before: 'no call (both read 30)' },
+  { value: '0x1e', previous: 60, expect: REFUSE, before: 'Put(30) forwarded' },
+  { value: '1e3', previous: 30, expect: REFUSE, before: 'Put(1000) forwarded' },
+  { value: '30.5', previous: 30, expect: REFUSE, before: 'Put(30.5) forwarded' },
+  { value: 30.5, previous: 30, expect: REFUSE, before: 'Put(30.5) forwarded' },
+  // --- refused: not a number at all ----------------------------------------
   { value: 'abc', previous: 30, expect: REFUSE, before: "Put('abc') -> AWS rejects" },
-  { value: '   ', previous: 30, expect: REFUSE, before: "Put('   ') -> AWS rejects" },
   { value: true, previous: 30, expect: REFUSE, before: 'Put(true) -> AWS rejects' },
   { value: [], previous: 30, expect: REFUSE, before: 'Put([]) -> AWS rejects' },
   { value: -1, previous: 30, expect: REFUSE, before: 'Put(-1) -> AWS rejects' },
@@ -187,6 +265,8 @@ const UPDATE_MATRIX: ReadonlyArray<{
   { value: 'abc', previous: 'abc', expect: NONE, before: 'no call (raw ===)' },
   { value: '   ', previous: '   ', expect: NONE, before: 'no call (raw ===)' },
   { value: -1, previous: -1, expect: NONE, before: 'no call (raw ===)' },
+  { value: 0, previous: 0, expect: NONE, before: 'no call (raw ===)' },
+  { value: '0x1e', previous: '0x1e', expect: NONE, before: 'no call (raw ===)' },
   // Structurally identical but never the same REFERENCE, which is why the
   // gate is not a bare `Object.is`.
   { value: [], previous: [], expect: NONE, before: 'Put([]) -> AWS rejects (raw !== by reference)' },
@@ -197,22 +277,23 @@ const UPDATE_MATRIX: ReadonlyArray<{
   // renders `'null'`, which the stringify arm excludes, so reference identity
   // is all that is left to recognise it as unchanged.
   { value: Infinity, previous: Infinity, expect: NONE, before: 'Put(Infinity) -> AWS rejects' },
-  // Falsy non-finite and falsy null, over a live retention. `NaN` is REFUSED
-  // (round 4) while `null` still DELETES, and the pair is here so the two are
-  // pinned apart rather than argued apart.
+  // Falsy non-finite over a live retention, and the readback-flagged zero
+  // beside it: `NaN` is REFUSED (round 4) on every bag, where `0` is refused
+  // on a template bag and deletes on a readback one — pinned apart rather
+  // than argued apart.
   { value: NaN, previous: 30, expect: REFUSE, before: 'DeleteRetentionPolicy' },
-  { value: null, previous: 30, expect: DELETE, before: 'DeleteRetentionPolicy' },
+  { value: NaN, previous: 30, expect: REFUSE, before: 'DeleteRetentionPolicy', readback: true },
   { value: -Infinity, previous: 30, expect: REFUSE, before: 'Put(-Infinity) -> AWS rejects' },
   // --- the previous side is PRESENT but UNUSABLE ---------------------------
   // Both sides coerce to `undefined`, so the coerced gate alone issues
   // NOTHING and cdkd records absence while AWS may still hold a retention.
   // `previousRetentionUnknown` is what keeps these on the pre-#2521 answer.
   // Reachable through an imported record, which persists the template value
-  // without ever having called PutRetentionPolicy.
+  // without ever having called PutRetentionPolicy — and, since #2698, through
+  // a record whose hex spelling the OLD reader forwarded as a real retention.
   { value: ABSENT, previous: 'abc', expect: DELETE, before: 'DeleteRetentionPolicy' },
   { value: '', previous: [], expect: DELETE, before: 'DeleteRetentionPolicy' },
-  { value: false, previous: 'abc', expect: DELETE, before: 'DeleteRetentionPolicy' },
-  { value: null, previous: '   ', expect: DELETE, before: 'DeleteRetentionPolicy' },
+  { value: ABSENT, previous: '0x1e', expect: DELETE, before: 'DeleteRetentionPolicy' },
   // The NEGATIVE control for that clause, and the one call this change still
   // drops on purpose: a FALSY previous is not unknown. Every falsy value was
   // skipped by the pre-coercion truthiness test too, so no Put was ever issued
@@ -221,6 +302,11 @@ const UPDATE_MATRIX: ReadonlyArray<{
   // `!sameRawRetention` with nothing red.
   { value: ABSENT, previous: '', expect: NONE, before: 'DeleteRetentionPolicy (redundant)' },
   { value: ABSENT, previous: false, expect: NONE, before: 'DeleteRetentionPolicy (redundant)' },
+  // A whitespace-only previous is CloudFormation's "absent" (measured), so it
+  // is not unknown either; the clause excludes it explicitly since #2699 —
+  // it is TRUTHY, so the falsy test above does not reach it.
+  { value: ABSENT, previous: '   ', expect: NONE, before: 'DeleteRetentionPolicy' },
+  { value: '', previous: '   ', expect: NONE, before: 'DeleteRetentionPolicy' },
 ];
 
 describe('LogsLogGroupProvider RetentionInDays coercion (#2521)', () => {
@@ -238,7 +324,8 @@ describe('LogsLogGroupProvider RetentionInDays coercion (#2521)', () => {
    */
   const runRow = async (
     value: unknown,
-    previous: unknown | typeof ABSENT
+    previous: unknown | typeof ABSENT,
+    readback = false
   ): Promise<RetentionOutcome> => {
     vi.clearAllMocks();
     mockSend.mockResolvedValue({});
@@ -253,7 +340,17 @@ describe('LogsLogGroupProvider RetentionInDays coercion (#2521)', () => {
     } else {
       const prev = previous === ABSENT ? {} : { RetentionInDays: previous };
       await provider
-        .update('Lg', PHYSICAL_ID, RESOURCE_TYPE, props, prev)
+        .update(
+          'Lg',
+          PHYSICAL_ID,
+          RESOURCE_TYPE,
+          props,
+          prev,
+          // `undefined` on the ordinary rows, so the flag's ABSENCE is what
+          // most of the table runs under — a row cannot pass by a default the
+          // production callers do not set.
+          readback ? { desiredFromAwsReadback: true } : undefined
+        )
         .catch((e: Error) => {
           threw = e;
         });
@@ -271,7 +368,7 @@ describe('LogsLogGroupProvider RetentionInDays coercion (#2521)', () => {
       // A row expecting a CALL must not be satisfied by an unrelated throw,
       // and a row expecting REFUSE must be satisfied only by THIS refusal.
       expect(threw.message, 'threw for a reason other than the retention guard').toMatch(
-        /RetentionInDays must be a non-negative number/
+        REFUSAL_PREFIX
       );
       // Checked AFTER the sends are read, not instead of them: a refusal that
       // MUTATED first and then threw is the failure this whole PR is about,
@@ -309,10 +406,10 @@ describe('LogsLogGroupProvider RetentionInDays coercion (#2521)', () => {
           (acc, r) => ({ ...acc, [r.expect.call]: (acc[r.expect.call] ?? 0) + 1 }),
           {}
         );
-      expect(tally(CREATE_MATRIX)).toEqual({ put: 2, none: 6, refuse: 10 });
-      expect(tally(UPDATE_MATRIX)).toEqual({ none: 13, put: 5, delete: 11, refuse: 13 });
-      expect(CREATE_MATRIX.length).toBe(18);
-      expect(UPDATE_MATRIX.length).toBe(42);
+      expect(tally(CREATE_MATRIX)).toEqual({ put: 4, none: 3, refuse: 18 });
+      expect(tally(UPDATE_MATRIX)).toEqual({ none: 19, put: 7, delete: 7, refuse: 28 });
+      expect(CREATE_MATRIX.length).toBe(25);
+      expect(UPDATE_MATRIX.length).toBe(61);
     });
 
     // NOT `JSON.stringify`: it is the very non-injectivity these rows exist to
@@ -329,18 +426,34 @@ describe('LogsLogGroupProvider RetentionInDays coercion (#2521)', () => {
       // left all 69 tests green, because that row is the arm's only witness.
       // So the witnesses are named. Each pair below reds exactly one mutation
       // and nothing else does; losing the row loses the mutation silently.
-      const has = (value: unknown, previous: unknown): boolean =>
-        UPDATE_MATRIX.some((r) => Object.is(r.value, value) && Object.is(r.previous, previous));
+      const has = (value: unknown, previous: unknown, readback = false): boolean =>
+        UPDATE_MATRIX.some(
+          (r) =>
+            Object.is(r.value, value) &&
+            Object.is(r.previous, previous) &&
+            (r.readback === true) === readback
+        );
       // The gate's `Object.is` arm: `Infinity` renders `'null'`, which the
       // stringify arm excludes, so reference identity is all that recognises
       // this pair as unchanged.
       expect(has(Infinity, Infinity), 'the Object.is arm lost its only witness').toBe(true);
       // The gate's `!== 'null'` exclusion.
       expect(has(Infinity, null), "the !== 'null' exclusion lost its only witness").toBe(true);
-      // The non-finite refusal arm, and the deliberate exclusion of `null`
-      // from it — one row each, and they must disagree.
+      // The non-finite refusal arm.
       expect(has(NaN, 30), 'the non-finite arm lost its only witness').toBe(true);
-      expect(has(null, 30), "null's exclusion from that arm lost its only witness").toBe(true);
+      // The `null` arm (issue #2699): refused where #2521 had it deleting.
+      expect(has(null, 30), 'the null arm lost its only witness').toBe(true);
+      // `isAbsentRetention`'s readback-only `0` arm, BOTH polarities: the same
+      // pair must DELETE on a readback bag and REFUSE on a template bag, and
+      // the string zero must stay refused on the readback bag — the three rows
+      // that pin the arm to `desiredFromAwsReadback && raw === 0` exactly.
+      expect(has(0, 30, true), 'the readback zero arm lost its delete witness').toBe(true);
+      expect(has(0, 30), 'the readback zero arm lost its template-bag control').toBe(true);
+      expect(has('0', 30, true), 'the readback zero arm lost its string-zero control').toBe(true);
+      // The whitespace-only member of the absent family (issue #2699), and the
+      // `previousRetentionUnknown` exclusion for it on the PREVIOUS side.
+      expect(has('   ', 30), 'the whitespace-only absent witness was lost').toBe(true);
+      expect(has(ABSENT, '   '), "that clause's whitespace-previous control was lost").toBe(true);
       // The stringify arm, which a bare `Object.is` would break.
       expect(
         UPDATE_MATRIX.some(
@@ -351,7 +464,11 @@ describe('LogsLogGroupProvider RetentionInDays coercion (#2521)', () => {
       // The send gate's `previousRetentionUnknown` clause, and the negative
       // control that stops it being widened to every changed raw value.
       expect(has(ABSENT, 'abc'), 'previousRetentionUnknown lost its only witness').toBe(true);
-      expect(has(ABSENT, ''), "that clause's falsy-previous control was lost").toBe(true);
+      // `Boolean(rawPreviousRetention)`'s witness is `false` (the `''` row
+      // beside it is also excluded by `isAbsentRetention` since #2699, so it
+      // no longer pins the truthiness test on its own).
+      expect(has(ABSENT, false), "that clause's falsy-previous control was lost").toBe(true);
+      expect(has(ABSENT, ''), "the empty-string previous control was lost").toBe(true);
     });
 
     for (const row of CREATE_MATRIX) {
@@ -361,8 +478,9 @@ describe('LogsLogGroupProvider RetentionInDays coercion (#2521)', () => {
     }
 
     for (const row of UPDATE_MATRIX) {
-      it(`update: ${label(row.value)} over ${label(row.previous)} -> ${row.expect.call} (was: ${row.before})`, async () => {
-        expect(await runRow(row.value, row.previous)).toEqual(row.expect);
+      const bag = row.readback ? ' [readback]' : '';
+      it(`update: ${label(row.value)} over ${label(row.previous)}${bag} -> ${row.expect.call} (was: ${row.before})`, async () => {
+        expect(await runRow(row.value, row.previous, row.readback === true)).toEqual(row.expect);
       });
     }
   });
@@ -393,13 +511,15 @@ describe('LogsLogGroupProvider RetentionInDays coercion (#2521)', () => {
     });
 
     it('applies NO retention for the never-expire spellings', async () => {
-      // Absent and `0` are CloudWatch Logs' never-expire, and the pre-coercion
-      // truthiness test skipped both. The coercion must not turn either into a
-      // `PutRetentionPolicy` — nor, since the create path has no delete arm,
-      // into anything else.
+      // Absent, `''` and a whitespace-only string are CloudFormation's
+      // MEASURED spellings of no retention (issue #2699; `0` is not — the Logs
+      // handler rejects it by enum, so it is refused below). The coercion must
+      // not turn any of them into a `PutRetentionPolicy` — nor, since the
+      // create path has no delete arm, into anything else.
       for (const properties of [
         { LogGroupName: PHYSICAL_ID },
-        { LogGroupName: PHYSICAL_ID, RetentionInDays: 0 },
+        { LogGroupName: PHYSICAL_ID, RetentionInDays: '' },
+        { LogGroupName: PHYSICAL_ID, RetentionInDays: '  ' },
       ]) {
         vi.clearAllMocks();
         mockSend.mockResolvedValue({});
@@ -421,7 +541,25 @@ describe('LogsLogGroupProvider RetentionInDays coercion (#2521)', () => {
       // fail the `> 0` send test and the create path silently applies no
       // retention at all (the update path's twin below is worse -- it
       // DELETES a live one).
-      for (const value of ['   ', 'abc', true, [], {}, -1, '-1', -30, NaN, Infinity, -Infinity]) {
+      //
+      // The third group is issue #2698's: spellings `Number()` reads and
+      // CloudFormation rejects, which the old reader FORWARDED as numbers.
+      for (const value of [
+        'abc',
+        true,
+        [],
+        {},
+        -1,
+        '-1',
+        -30,
+        NaN,
+        Infinity,
+        -Infinity,
+        '0x1e',
+        '1e3',
+        '30.5',
+        30.5,
+      ]) {
         vi.clearAllMocks();
         mockSend.mockResolvedValue({});
         const err = await provider
@@ -430,9 +568,9 @@ describe('LogsLogGroupProvider RetentionInDays coercion (#2521)', () => {
         expect(err, `RetentionInDays: ${JSON.stringify(value)} must be refused`).toBeInstanceOf(
           Error
         );
-        expect((err as Error).message).toMatch(/RetentionInDays must be a non-negative number/);
-        // ...and the ARM, not just the shared prefix. The refusal has two
-        // branches with two `detail` strings; matching only the prefix leaves
+        expect((err as Error).message).toMatch(REFUSAL_PREFIX);
+        // ...and the ARM, not just the shared prefix. The refusal has five
+        // branches with five `detail` strings; matching only the prefix leaves
         // them swappable, and a collapse to one string, with nothing red.
         expect((err as Error).message).toMatch(arm(value));
         expect(sent(PutRetentionPolicyCommand)).toBeUndefined();
@@ -446,23 +584,117 @@ describe('LogsLogGroupProvider RetentionInDays coercion (#2521)', () => {
       }
     });
 
-    it('treats a STRING zero the way it treats a numeric zero — never-expire, no call', async () => {
-      // The boundary the refusal deliberately does NOT cross. `0` is what
-      // `readCurrentState` records for a group with no retention policy, so
-      // cdkd already spells never-expire that way, and the pre-coercion
-      // truthiness test skipped a numeric `0` too. `'0'` is TRUTHY raw, so it
-      // reaches the refusal and must pass through it.
-      for (const value of [0, '0']) {
+    it('REFUSES zero in both spellings, and `false` / `null`, instead of skipping them (issue #2699)', async () => {
+      // The boundary issue #2521 deliberately did NOT cross, and the live A/B
+      // then settled: the Logs handler rejects `0` / `'0'` by enum and `false`
+      // by type, and `update-stack` rejects `null` outright. Skipping them
+      // deployed a log group with no retention on a template CloudFormation
+      // refuses — the silent-drop shape this whole family exists to close.
+      // Each lands in its own arm, and the create is retired like every other
+      // refusal here.
+      for (const value of [0, '0', false, null]) {
         vi.clearAllMocks();
         mockSend.mockResolvedValue({});
-        await provider.create('Lg', RESOURCE_TYPE, {
-          LogGroupName: PHYSICAL_ID,
-          RetentionInDays: value,
-        });
+        const err = await provider
+          .create('Lg', RESOURCE_TYPE, { LogGroupName: PHYSICAL_ID, RetentionInDays: value })
+          .catch((e: Error) => e);
+        expect(err, `RetentionInDays: ${JSON.stringify(value)} must be refused`).toBeInstanceOf(
+          Error
+        );
+        expect((err as Error).message).toMatch(REFUSAL_PREFIX);
+        expect((err as Error).message).toMatch(arm(value));
+        expect(sent(PutRetentionPolicyCommand)).toBeUndefined();
+        expect(sent(DeleteLogGroupCommand)).toBeDefined();
+      }
+    });
+
+    it('DOWNGRADES a refusal to a warn-and-skip on a state-record replay (rollback)', async () => {
+      // `.claude/rules/provider-replay-and-refusals.md`: the rollback executor's
+      // reverse-replacement arm re-creates the OLD log group from a state
+      // record the user cannot edit from the template. A record can carry a
+      // value this refusal rejects and the pre-#2699 create SKIPPED (the zero
+      // family, `'abc'`), so a refusal there would leave the resource
+      // unrestorable. For those the re-created group has no retention and
+      // the warning says so. A spelling the pre-#2698 create FORWARDED is the
+      // next case, not this one.
+      for (const value of [0, '0', false, null, 'abc', '30.5']) {
+        vi.clearAllMocks();
+        mockSend.mockResolvedValue({});
+        const result = await provider.create(
+          'Lg',
+          RESOURCE_TYPE,
+          { LogGroupName: PHYSICAL_ID, RetentionInDays: value },
+          { replayingState: true }
+        );
+        expect(result.physicalId).toBe(PHYSICAL_ID);
         expect(sent(CreateLogGroupCommand)).toBeDefined();
         expect(sent(PutRetentionPolicyCommand)).toBeUndefined();
         expect(sent(DeleteLogGroupCommand)).toBeUndefined();
+        // A skip is ANNOUNCED, never silent (`provider-property-fidelity.md`):
+        // the warning carries the refusal's own arm, names the property and
+        // the manual re-apply. A silent skip passed the three assertions
+        // above unchanged (review probe), so the announcement is pinned here.
+        const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
+        expect(warnings, `RetentionInDays: ${JSON.stringify(value)} skipped silently`).toHaveLength(1);
+        expect(warnings[0]).toMatch(REFUSAL_PREFIX);
+        expect(warnings[0]).toMatch(arm(value));
+        expect(warnings[0]).toContain('aws logs put-retention-policy');
       }
+      // The control: a usable value on the same bag still issues its Put — and
+      // announces nothing.
+      vi.clearAllMocks();
+      mockSend.mockResolvedValue({});
+      await provider.create(
+        'Lg',
+        RESOURCE_TYPE,
+        { LogGroupName: PHYSICAL_ID, RetentionInDays: '30' },
+        { replayingState: true }
+      );
+      expect(sent(PutRetentionPolicyCommand).input.retentionInDays).toBe(30);
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('RESTORES on replay a spelling the record-writing cdkd forwarded as a positive integer (PR #3137 review)', async () => {
+      // The binary that wrote the record read `RetentionInDays` with
+      // `Number()`: `'30.0'` and `'0x1e'` went out as 30 and CloudWatch Logs
+      // applied them. A rollback that re-created the old log group WITHOUT
+      // that retention would silently drop a compliance bound the deploy had
+      // set, so the replay forwards the same reading again and warns about
+      // the spelling. Both sides are pinned: the Put carries the legacy
+      // reading, and the warning names the restore rather than the skip.
+      for (const [value, expected] of [
+        ['30.0', 30],
+        ['0x1e', 30],
+        ['1e3', 1000],
+      ] as const) {
+        vi.clearAllMocks();
+        mockSend.mockResolvedValue({});
+        await provider.create(
+          'Lg',
+          RESOURCE_TYPE,
+          { LogGroupName: PHYSICAL_ID, RetentionInDays: value },
+          { replayingState: true }
+        );
+        expect(
+          sent(PutRetentionPolicyCommand)?.input.retentionInDays,
+          `RetentionInDays: ${JSON.stringify(value)} must be restored on replay`
+        ).toBe(expected);
+        expect(sent(DeleteLogGroupCommand)).toBeUndefined();
+        const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toMatch(REFUSAL_PREFIX);
+        expect(warnings[0]).toContain(`RESTORED as ${expected} days`);
+        expect(warnings[0]).not.toContain('SKIPPED');
+      }
+      // NEGATIVE CONTROL: the same spellings on a TEMPLATE bag (no replay
+      // flag) are still refused — the restore is licensed by the flag alone.
+      vi.clearAllMocks();
+      mockSend.mockResolvedValue({});
+      const err = await provider
+        .create('Lg', RESOURCE_TYPE, { LogGroupName: PHYSICAL_ID, RetentionInDays: '30.0' })
+        .catch((e: Error) => e);
+      expect(err).toBeInstanceOf(Error);
+      expect(sent(PutRetentionPolicyCommand)).toBeUndefined();
     });
   });
 
@@ -512,7 +744,27 @@ describe('LogsLogGroupProvider RetentionInDays coercion (#2521)', () => {
       // issuing `DeleteRetentionPolicy` and silently REMOVING a retention the
       // template never asked to drop, where the pre-coercion code sent the
       // value and failed loudly at AWS.
-      for (const value of ['abc', '   ', true, -1, '-1', NaN, Infinity, -Infinity]) {
+      //
+      // `false`, `null`, `0` and `'0'` joined the list with issue #2699 (the
+      // measured falsy family CloudFormation rejects), and the `Number()`-only
+      // spellings with #2698; a whitespace-only string LEFT it — CloudFormation
+      // reads that as absent, so it takes the delete arm below.
+      for (const value of [
+        'abc',
+        true,
+        -1,
+        '-1',
+        NaN,
+        Infinity,
+        -Infinity,
+        false,
+        null,
+        0,
+        '0',
+        '0x1e',
+        '1e3',
+        '30.5',
+      ]) {
         vi.clearAllMocks();
         mockSend.mockResolvedValue({});
         const err = await provider
@@ -527,7 +779,7 @@ describe('LogsLogGroupProvider RetentionInDays coercion (#2521)', () => {
         expect(err, `RetentionInDays: ${JSON.stringify(value)} must be refused`).toBeInstanceOf(
           Error
         );
-        expect((err as Error).message).toMatch(/RetentionInDays must be a non-negative number/);
+        expect((err as Error).message).toMatch(REFUSAL_PREFIX);
         expect((err as Error).message).toMatch(arm(value));
         expect(
           sent(DeleteRetentionPolicyCommand),
@@ -570,10 +822,14 @@ describe('LogsLogGroupProvider RetentionInDays coercion (#2521)', () => {
       // with the property silently discarded while state recorded it. The gate
       // is on the RAW value now, so only a genuinely unchanged raw value is
       // exempt.
+      //
+      // `['  ', '']` was in this list until issue #2699: both are now the SAME
+      // measured "absent" spelling, so that pair is a no-op, pinned in
+      // `UPDATE_MATRIX` rather than here.
       for (const [value, previous] of [
         ['abc', undefined],
         ['abc', 'xyz'],
-        ['  ', ''],
+        ['0x1e', ''],
         [[], true],
       ] as Array<[unknown, unknown]>) {
         vi.clearAllMocks();
@@ -591,7 +847,7 @@ describe('LogsLogGroupProvider RetentionInDays coercion (#2521)', () => {
           err,
           `RetentionInDays ${JSON.stringify(value)} over ${JSON.stringify(previous)} must be refused, not silently dropped`
         ).toBeInstanceOf(Error);
-        expect((err as Error).message).toMatch(/RetentionInDays must be a non-negative number/);
+        expect((err as Error).message).toMatch(REFUSAL_PREFIX);
       }
     });
 
@@ -617,7 +873,7 @@ describe('LogsLogGroupProvider RetentionInDays coercion (#2521)', () => {
       expect(err).toBeInstanceOf(Error);
       // WHICH error: without this an unrelated earlier throw would satisfy the
       // absence assertions below and the ordering claim would be untested.
-      expect((err as Error).message).toMatch(/RetentionInDays must be a non-negative number/);
+      expect((err as Error).message).toMatch(REFUSAL_PREFIX);
       expect(sent(AssociateKmsKeyCommand)).toBeUndefined();
       expect(sent(PutRetentionPolicyCommand)).toBeUndefined();
       expect(sent(DeleteRetentionPolicyCommand)).toBeUndefined();
@@ -635,20 +891,75 @@ describe('LogsLogGroupProvider RetentionInDays coercion (#2521)', () => {
       expect((err as Error).message).toContain('Lg (AWS::Logs::NotReallyThisType)');
     });
 
-    it('treats a STRING zero as never-expire, matching the numeric zero it compares against', async () => {
-      // `'0'` is truthy raw, so it reaches the refusal and must pass through
-      // it, and it must then compare EQUAL to a recorded numeric `0` — which
-      // is what `readCurrentState` writes for a never-expiring group, so this
-      // is the ordinary redeploy of such a record rather than a corner.
+    it('deletes a console-added retention on `drift --revert` (readback `0` over live `30`)', async () => {
+      // The one bag on which numeric `0` is NOT a template's rejected zero:
+      // `readCurrentState` records `0` for a never-expiring log group, that is
+      // the observed baseline, and `cdkd drift --revert` hands it back as the
+      // DESIRED bag with `desiredFromAwsReadback` set. Reverting a
+      // console-added retention is therefore exactly this call, and it must
+      // reach the delete arm — refusing it would leave `--revert` unable to
+      // undo the drift it just reported.
       await provider.update(
         'Lg',
         PHYSICAL_ID,
         RESOURCE_TYPE,
-        { RetentionInDays: '0' },
-        { RetentionInDays: 0 }
+        { RetentionInDays: 0 },
+        { RetentionInDays: 30 },
+        { desiredFromAwsReadback: true }
       );
+      expect(sent(DeleteRetentionPolicyCommand)).toBeDefined();
       expect(sent(PutRetentionPolicyCommand)).toBeUndefined();
-      expect(sent(DeleteRetentionPolicyCommand)).toBeUndefined();
+    });
+
+    it('REFUSES the same `0` over `30` on a template bag (the readback flag is the whole difference)', async () => {
+      // The control for the case above, and the fence on the flag: the pair is
+      // byte-identical, only the context differs, so a provider that stopped
+      // reading `desiredFromAwsReadback` — or read it as "any context" — goes
+      // red on one of the two.
+      for (const context of [undefined, {}, { desiredFromAwsReadback: false }]) {
+        vi.clearAllMocks();
+        mockSend.mockResolvedValue({});
+        const err = await provider
+          .update(
+            'Lg',
+            PHYSICAL_ID,
+            RESOURCE_TYPE,
+            { RetentionInDays: 0 },
+            { RetentionInDays: 30 },
+            context
+          )
+          .catch((e: Error) => e);
+        expect(err, `context ${JSON.stringify(context)} must refuse`).toBeInstanceOf(Error);
+        expect((err as Error).message).toMatch(REFUSAL_PREFIX);
+        expect((err as Error).message).toMatch(/declares zero/);
+        expect(sent(DeleteRetentionPolicyCommand)).toBeUndefined();
+      }
+    });
+
+    it('issues NO call for a padded or signed spelling of the recorded retention (#2698)', async () => {
+      // `' 30 '` and `'+30'` are measured-accepted CloudFormation spellings of
+      // 30. Read through `toCfnInteger` they compare EQUAL to the recorded 30,
+      // so no redundant Put goes out — and the same reader rejects `'0x1e'`,
+      // which `Number()` would also have read as 30 and then compared equal,
+      // silently accepting a template CloudFormation refuses.
+      for (const value of [' 30 ', '+30']) {
+        vi.clearAllMocks();
+        mockSend.mockResolvedValue({});
+        await provider.update(
+          'Lg',
+          PHYSICAL_ID,
+          RESOURCE_TYPE,
+          { RetentionInDays: value },
+          { RetentionInDays: 30 }
+        );
+        expect(sent(PutRetentionPolicyCommand)).toBeUndefined();
+        expect(sent(DeleteRetentionPolicyCommand)).toBeUndefined();
+      }
+      const err = await provider
+        .update('Lg', PHYSICAL_ID, RESOURCE_TYPE, { RetentionInDays: '0x1e' }, { RetentionInDays: 30 })
+        .catch((e: Error) => e);
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toMatch(/a string that is not a CloudFormation Integer/);
     });
   });
 });

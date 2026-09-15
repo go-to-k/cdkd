@@ -121,7 +121,44 @@ describe('LogsLogGroupProvider partial-create cleanup (Issue #376)', () => {
 
     expect(warnSpy).toHaveBeenCalled();
     const warnMsg = String(warnSpy.mock.calls[0][0]);
-    expect(warnMsg).toContain('aws logs delete-log-group --log-group-name');
-    expect(warnMsg).toContain('/cdkd/my-log-group');
+    // The command AS RENDERED (issue #2669's same-file sibling): a clean name
+    // is bare — the hand-quoted `'${logGroupName}'` this replaced would leave
+    // this needle green, so the whole command is pinned, quotes and all.
+    expect(warnMsg).toContain(
+      'aws logs delete-log-group --log-group-name /cdkd/my-log-group'
+    );
+    expect(warnMsg).not.toContain("--log-group-name '/cdkd/my-log-group'");
+  });
+
+  it('shell-quotes the manual delete command for a name carrying a quote, and suppresses it for a control byte (#2669)', async () => {
+    // Same failure shape as the case above, driven with the two hostile names
+    // the shared renderer exists for. A `'` used to break out of the
+    // hand-quoting; a control byte used to be pasted raw into a warn line that
+    // is also persisted into `deployments/*.jsonl`.
+    mockSend.mockResolvedValueOnce({}); // CreateLogGroupCommand
+    mockSend.mockRejectedValueOnce(new Error('PutRetentionPolicy boom (original)'));
+    mockSend.mockRejectedValueOnce(new Error('DeleteLogGroup also failed'));
+    await expect(
+      provider.create('MyLG', RESOURCE_TYPE, {
+        LogGroupName: "/cdkd/it's-a-group",
+        RetentionInDays: 7,
+      })
+    ).rejects.toThrow('PutRetentionPolicy boom (original)');
+    const quoted = String(warnSpy.mock.calls[0][0]);
+    expect(quoted).toContain("aws logs delete-log-group --log-group-name '/cdkd/it'\\''s-a-group'");
+
+    warnSpy.mockClear();
+    mockSend.mockResolvedValueOnce({}); // CreateLogGroupCommand
+    mockSend.mockRejectedValueOnce(new Error('PutRetentionPolicy boom (original)'));
+    mockSend.mockRejectedValueOnce(new Error('DeleteLogGroup also failed'));
+    await expect(
+      provider.create('MyLG', RESOURCE_TYPE, {
+        LogGroupName: '/cdkd/forged\u001b[2Kline',
+        RetentionInDays: 7,
+      })
+    ).rejects.toThrow('PutRetentionPolicy boom (original)');
+    const suppressed = String(warnSpy.mock.calls[0][0]);
+    expect(suppressed).not.toContain('aws logs delete-log-group');
+    expect(suppressed).toContain('cannot be reproduced safely on a command line');
   });
 });

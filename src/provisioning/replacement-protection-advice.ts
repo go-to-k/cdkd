@@ -37,12 +37,16 @@
  * `tests/unit/provisioning/replacement-remedy-preconditions.test.ts`.
  *
  * **Read that as a decision about the TEXT, never about the id rendering.**
- * That site hand-quotes its `physicalId` and does NOT get
- * {@link renderDisableCommand}'s sanitize / quote / suppress -- issue
- * [#2669](https://github.com/go-to-k/cdkd/issues/2669), deferred because
- * `tests/integration/loggroup-class-guard/verify.sh` REBUILDS the exact command
- * string to grep for it, so changing the rendering without re-running that
- * fixture leaves it green and blind.
+ * Since issue [#2669](https://github.com/go-to-k/cdkd/issues/2669) that site
+ * renders its command through the EXPORTED {@link renderDisableCommand} —
+ * the same sanitize / quote / suppress the five callers above get, with the
+ * log-group text kept around it — and falls back to
+ * {@link UNNAMEABLE_ID_CLAUSE} when the id is suppressed. The export exists
+ * for exactly one caller that owns its own sentence; a second one should ask
+ * whether it can use {@link protectedReplacementAdvice} instead.
+ * `tests/integration/loggroup-class-guard/verify.sh` greps the rendered
+ * command, so its needle is the UNQUOTED form `shellQuote` produces for a
+ * clean id.
  *
  * Two properties every caller owes, because only the caller can answer them:
  *
@@ -233,11 +237,24 @@ export interface ProtectedReplacementAdviceArgs<
  *    wrong-target harm that module exists to prevent, and the reason emitting
  *    no command is the honest answer rather than a fallback.
  */
-function renderDisableCommand(disable: ResolvedDisableCommand): string {
-  const safeId = displaySafe(disable.identifier, { asciiOnly: true });
-  if (!safeId || safeId !== disable.identifier) return '';
-  const tail = disable.after ? ` ${disable.after}` : '';
-  return `${disable.before} ${shellQuote(safeId)}${tail}`;
+export function renderDisableCommand<
+  Before extends string,
+  After extends string = string,
+  Caveat extends string = string,
+>(disable: ProtectedReplacementDisableCommand<Before, After, Caveat>): string {
+  // EXPORTED since issue [#2669] for the one caller that owns its own sentence
+  // (`logs-loggroup-provider.ts`), and exported OVER THE CONSTRAINED shape:
+  // the generic signature keeps `CdkdAuthoredLiteral` in force for a direct
+  // caller exactly as {@link protectedReplacementAdvice} keeps it for the
+  // five, so a template-derived `before` / `after` is a COMPILE error at both
+  // entry points (`tests/unit/cli/replacement-remedy-cli-facts.test.ts` pins
+  // the direct call). Exporting the discharged `ResolvedDisableCommand`
+  // instead would have re-opened the door the constraint exists to close.
+  const resolved = disable as ResolvedDisableCommand;
+  const safeId = displaySafe(resolved.identifier, { asciiOnly: true });
+  if (!safeId || safeId !== resolved.identifier) return '';
+  const tail = resolved.after ? ` ${resolved.after}` : '';
+  return `${resolved.before} ${shellQuote(safeId)}${tail}`;
 }
 
 /**
@@ -256,10 +273,10 @@ export function protectedReplacementAdvice<
   Caveat extends string = string,
 >(args: ProtectedReplacementAdviceArgs<Before, After, Caveat>): string {
   const { evidence, replaceFlags } = args;
-  // The literal constraint has done its work at the call site; inside, these
-  // are ordinary strings.
+  // Rendered from the still-CONSTRAINED shape, so this call is fenced like a
+  // direct one; the discharged view below is only for reading `caveat`.
+  const command = renderDisableCommand(args.disable);
   const disable = args.disable as ResolvedDisableCommand;
-  const command = renderDisableCommand(disable);
   const head =
     `${evidence}, so ${replaceFlags} alone will NOT succeed while AWS still has protection on: ` +
     `the replacement DELETES the resource, AWS refuses that delete while protection is on, and ` +

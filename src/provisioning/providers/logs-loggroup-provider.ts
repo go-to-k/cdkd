@@ -34,17 +34,57 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { isTruthyCfnBoolean } from '../data-delete-intent.js';
-import { toFiniteNumber } from '../dynamodb-warm-throughput.js';
+import { toCfnInteger, toFiniteNumber } from '../dynamodb-warm-throughput.js';
+import { renderDisableCommand, UNNAMEABLE_ID_CLAUSE } from '../replacement-protection-advice.js';
 import type {
+  CreateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  UpdateContext,
 } from '../../types/resource.js';
 
 /**
- * Refuse a `RetentionInDays` the send path cannot USE (issue [#2521]).
+ * Whether a raw `RetentionInDays` is CloudFormation's spelling of "no
+ * retention" — the shapes the send path SKIPS on create and routes to
+ * `DeleteRetentionPolicy` on update, rather than refusing.
+ *
+ * MEASURED, not read off the docs (issue
+ * [#2699](https://github.com/go-to-k/cdkd/issues/2699), live CloudFormation
+ * A/B on `AWS::Logs::LogGroup`, us-east-1, 2026-09-14; the full table is on
+ * `toCfnInteger` in `../dynamodb-warm-throughput.ts`): an ABSENT property, an
+ * EMPTY string and a WHITESPACE-ONLY string are all accepted by CloudFormation
+ * and all REMOVE the live retention policy. Nothing else in the falsy family
+ * is: `false`, `0`, `"0"` and `null` are every one REJECTED (the first three by
+ * the Logs handler, `null` at `update-stack` itself), so routing them here
+ * would make cdkd delete a live retention on a template CloudFormation refuses
+ * to deploy. They go to {@link assertUsableRetention}.
+ *
+ * The ONE cdkd-side exception is a numeric `0` when `desiredFromAwsReadback`
+ * is set. `0` is what {@link LogsLogGroupProvider.readCurrentState} records for
+ * a log group with no retention policy — cdkd's OWN never-expire spelling,
+ * persisted into `observedProperties` at every deploy — and `cdkd drift
+ * --revert` hands `update()` that baseline as the DESIRED bag. Reverting a
+ * console-added retention on a never-expiring log group is therefore desired
+ * `0` over live `30`, and it must reach the delete arm; refusing it would leave
+ * `--revert` unable to undo exactly the drift it reports. `UpdateContext`'s
+ * own contract licenses this reading and nothing wider: the flag says every
+ * value in the bag describes what AWS held, so `0` there is a report of "no
+ * retention", not a template's request. On the template path `0` stays
+ * refused, matching CloudFormation. `"0"` is never cdkd-produced (the readback
+ * writes a number) and is refused everywhere.
+ */
+function isAbsentRetention(raw: unknown, desiredFromAwsReadback: boolean): boolean {
+  if (raw === undefined) return true;
+  if (typeof raw === 'string' && raw.trim() === '') return true;
+  return desiredFromAwsReadback && raw === 0;
+}
+
+/**
+ * Refuse a `RetentionInDays` the send path cannot USE (issues [#2521],
+ * [#2698], [#2699]).
  *
  * **The scope of this refusal is a TEST, not a paragraph.** Every review round
  * on issue [#2521] found a hole in a PROSE statement of it — a coercible
@@ -61,50 +101,58 @@ import type {
  * not cover; do not restate the rule here, because a fourth restatement is
  * the thing that keeps being wrong.
  *
- * THREE refusal CASES across TWO `throw` statements — the non-finite guard
- * clause at the top of the body has its own, and the other two share the
- * second, differing only in the `detail` clause. Only the WHY of each:
+ * What IS stated here is the RULE the rows pin, because since issues #2698 /
+ * #2699 it is a measurement rather than a guess: the value is read through
+ * `toCfnInteger` — CloudFormation's own Integer grammar, `optional sign +
+ * decimal digits`, surrounding whitespace trimmed — and anything that grammar
+ * rejects is refused here where CloudFormation would have refused it at
+ * deploy time. The pre-#2698 reader was `Number()`, which FORWARDED `'0x1e'`
+ * as 30 and `'30.5'` as 30.5 on a template CloudFormation rejects outright.
+ * Five refusal ARMS, each with its own `detail` clause; only the WHY of each:
  *
- *  - **a non-finite NUMBER** (`NaN`, `Infinity`, `-Infinity`). It sits ahead
- *    of the falsy return because `NaN` is FALSY: without it that value exits
- *    early, fails the `> 0` send test and reaches `DeleteRetentionPolicy`,
- *    while its two siblings — truthy — were already refused. Leaving one
- *    member of a family out is the inconsistency the negative arm below
- *    introduced, so the arm names the family.
- *  - **not a number at all** (`'  '`, `'abc'`, `[]`, `{}`, `true`). The
- *    pre-coercion code tested `if (properties['RetentionInDays'])` and handed
- *    the raw value to `PutRetentionPolicyCommand`, so CloudWatch Logs rejected
- *    it. Refusing moves that rejection one layer earlier and names the
- *    property.
+ *  - **a non-finite NUMBER** (`NaN`, `Infinity`, `-Infinity`). Unreachable in
+ *    production — both bags are `JSON.parse` output, which cannot express one —
+ *    and kept as defence so the family is named whole. Sits BEFORE the null /
+ *    type arms because `NaN` is a number whose siblings were already refused.
+ *  - **`null`**. CloudFormation rejects it at `update-stack` (`'null' values
+ *    are not allowed in templates`), and cdkd's own resolver never
+ *    manufactures one for this key: an `AWS::NoValue` — bare or as an `Fn::If`
+ *    branch — OMITS the property (`intrinsic-function-resolver.ts`,
+ *    `resolveValue`'s object arm), so `null` arriving here is a literal the
+ *    template wrote, not cdkd's spelling of absent. Issue #2521 left it in the
+ *    delete arm on the guess that it was; the measurement settled it.
+ *  - **not a CloudFormation Integer at all** (`'abc'`, `'0x1e'`, `'1e3'`,
+ *    `'30.5'`, `[]`, `{}`, `true`, `false`). The pre-coercion code handed the
+ *    raw value to `PutRetentionPolicyCommand` and CloudWatch Logs rejected it;
+ *    refusing moves that rejection one layer earlier and names the property.
+ *    `false` joined this arm with #2699 — it was in the delete arm before, on
+ *    the same guess as `null`.
+ *  - **ZERO** (`0`, `'0'`). The Logs handler rejects it by enum (`Valid values
+ *    are: [1, 3, 5, ...]`), so it is not CloudFormation's never-expire — the
+ *    ABSENT property or an empty string is. Numeric `0` under
+ *    `desiredFromAwsReadback` never reaches this arm; see
+ *    {@link isAbsentRetention} for why that one is cdkd's own spelling.
  *  - **a NEGATIVE number** (`-1`, `'-1'`). It coerces, so a refusal gated on
  *    coercibility alone let it through; it then failed the `> 0` send test and
  *    fell into the UPDATE path's `else`, which issues
  *    `DeleteRetentionPolicy` — a template typo SILENTLY REMOVING a live
  *    retention where the old code sent `-1` and failed loudly.
  *
- * The FALSY values pass through, as they did before — `0`, `''`, `false`,
- * `null` and absent; `NaN` is the one exception, refused above because it is a
- * malformed number rather than a spelling of "no retention".
- *
- * `'0'` is TRUTHY, so it reaches this function and passes too: zero is
- * what {@link LogsLogGroupProvider.readCurrentState} records for a group with
- * no retention policy, and CloudFormation coerces `'0'` to `0`, so routing the
- * string to the same arm as the number is the consistency the coercion is for.
- * On the UPDATE path against a live positive retention that is a real change —
- * it DELETES where the old code sent and was rejected — and `UPDATE_MATRIX`
- * pins it.
- *
  * The message names the value's TYPE and never the value. A provider's
  * `properties` bag arrives with dynamic references already RESOLVED, so a
  * `{{resolve:secretsmanager:...}}` scalar is PLAINTEXT by the time it reaches
- * here, and this function has no masker to thread — `create()` takes no
- * `CreateContext` and `applyUpdate` no `UpdateContext`
+ * here, and this function has no masker threaded
  * (`.claude/rules/provider-masking.md`). Interpolating it as
  * `${JSON.stringify(raw)}` was the first draft and
  * `vp run audit:provider-secret-mask:check` refused it — but read that as one
  * SPELLING being fenced, not the rule: the critic's population is
  * interpolated `JSON.stringify` calls, so a bare `${raw}` here would leave it
  * green. Do not put the value back without threading the capability first.
+ *
+ * The caller decides the ABSENT family FIRST, through {@link isAbsentRetention},
+ * and never calls this for one: an absent value is not an error, and the
+ * readback-only reading of `0` lives in that predicate rather than here, so
+ * the zero arm below can stay unconditional.
  */
 function assertUsableRetention(
   raw: unknown,
@@ -112,51 +160,38 @@ function assertUsableRetention(
   logicalId: string,
   resourceType: string
 ): void {
-  // BEFORE the falsy return, because `NaN` is FALSY. Without this arm it exits
-  // here, fails the `> 0` send test, and reaches `DeleteRetentionPolicy` — the
-  // same silent-removal outcome as the negative arm below, reached through the
-  // one non-finite number JavaScript makes falsy, while its two truthy
-  // siblings were already refused.
-  //
-  // UNREACHABLE in production, and that is stated rather than argued around:
-  // the deploy-side bag is `JSON.parse` of the cloud assembly and the previous
-  // bag is `JSON.parse` of `state.json`, neither of which JSON can express;
-  // `cdkd import --migrate-from-cloudformation` synthesizes and reads the same
-  // JSON assembly rather than handing a YAML bag to a provider, so the `.nan`
-  // / `.inf` route an earlier revision of this comment claimed does not exist.
-  // Two review rounds traced that independently. It is kept as defence with no
-  // reachable case, for the same reason the family is named at all: a member
-  // left out is one to be rediscovered.
-  //
-  // Pre-#2521 `NaN` DELETED too (the old gate was `if (retentionInDays)` on
-  // the raw value), so nothing here repairs a regression.
-  //
-  // `null`, `''` and `false` deliberately stay OUT and keep taking the delete
-  // arm. Not because they are better-formed — `''` and `false` are as
-  // malformed as `true`, which IS refused, and unlike `NaN` they are
-  // reachable — but because the whole FALSY family behaves exactly as it did
-  // pre-#2521, and narrowing it is a decision about what CloudFormation's
-  // never-expire spelling is, wider than issue [#2521]. `NaN` is separated
-  // only because it is a NUMBER whose siblings this change already refuses.
-  if (typeof raw === 'number' && !Number.isFinite(raw)) {
-    throw new ProvisioningError(
-      `${logicalId} (${resourceType}): RetentionInDays must be a non-negative number or a ` +
-        `numeric string (CloudFormation coerces '30' to 30); the template declares a ` +
-        `non-finite number`,
-      resourceType,
-      logicalId
-    );
-  }
-  if (!raw) return;
-  if (coerced !== undefined && coerced >= 0) return;
-  const detail =
-    coerced === undefined
-      ? `the template's value is of type ${Array.isArray(raw) ? 'array' : typeof raw} and ` +
-        `does not parse as a finite number`
-      : 'the template declares a negative number';
+  const detail = (() => {
+    if (typeof raw === 'number' && !Number.isFinite(raw)) {
+      return 'the template declares a non-finite number';
+    }
+    if (raw === null) {
+      return (
+        "the template declares null, which CloudFormation rejects ('null' values are not " +
+        'allowed in templates); to declare no retention, omit the property'
+      );
+    }
+    if (coerced === undefined) {
+      if (typeof raw === 'string') {
+        return (
+          'the template declares a string that is not a CloudFormation Integer (hex, ' +
+          'exponent and decimal-point spellings are rejected, as they are by CloudFormation)'
+        );
+      }
+      return `the template's value is of type ${Array.isArray(raw) ? 'array' : typeof raw}`;
+    }
+    if (coerced === 0) {
+      return (
+        'the template declares zero, which CloudWatch Logs rejects; to declare no retention, ' +
+        'omit the property or declare an empty string'
+      );
+    }
+    if (coerced < 0) return 'the template declares a negative number';
+    return undefined;
+  })();
+  if (detail === undefined) return;
   throw new ProvisioningError(
-    `${logicalId} (${resourceType}): RetentionInDays must be a non-negative number or a ` +
-      `numeric string (CloudFormation coerces '30' to 30); ${detail}`,
+    `${logicalId} (${resourceType}): RetentionInDays must be a positive CloudFormation Integer ` +
+      `(optional sign then decimal digits, as a number or a string — 30 or '30'); ${detail}`,
     resourceType,
     logicalId
   );
@@ -241,7 +276,8 @@ export class LogsLogGroupProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating log group ${logicalId}`);
 
@@ -300,14 +336,16 @@ export class LogsLogGroupProvider implements ResourceProvider {
       try {
         // Apply retention policy if specified.
         //
-        // COERCED, not cast (issue [#2521]). CloudFormation is stringly typed
-        // and coerces `RetentionInDays: '30'` to the number its schema
+        // COERCED, not cast (issue [#2521]), and coerced the way
+        // CLOUDFORMATION coerces (issue [#2698]). CloudFormation is stringly
+        // typed and coerces `RetentionInDays: '30'` to the number its schema
         // declares; the SDK does not — it serializes whatever it is handed, so
-        // a `'30'` reached CloudWatch Logs as a JSON string. `toFiniteNumber`
-        // is the repo's one answer to "is this stringly-typed CFn value a
-        // number?" (see its doc for why it is not a bare `Number()`).
+        // a `'30'` reached CloudWatch Logs as a JSON string. `toCfnInteger` is
+        // CloudFormation's own Integer grammar, measured (its doc carries the
+        // table): the `Number()`-based `toFiniteNumber` this read used before
+        // FORWARDED `'0x1e'` as 30 on a template CloudFormation rejects.
         const rawRetention = properties['RetentionInDays'];
-        const retentionInDays = toFiniteNumber(rawRetention);
+        let retentionInDays = toCfnInteger(rawRetention);
         // Unconditional here, unlike the UPDATE path's twin, and the
         // asymmetry has ONE reason, not two: a create has no previous side, so
         // there is no "unchanged" case to exempt.
@@ -326,10 +364,61 @@ export class LogsLogGroupProvider implements ResourceProvider {
         //
         // What each value does is the table on {@link assertUsableRetention};
         // on THIS path the refusal turns an AWS-side rejection into a
-        // cdkd-side one naming the property, and every falsy value is still
-        // skipped exactly as before rather than read as a request to remove a
-        // retention that was never set.
-        assertUsableRetention(rawRetention, retentionInDays, logicalId, resourceType);
+        // cdkd-side one naming the property. The ABSENT family (absent, `''`,
+        // whitespace-only — CloudFormation's measured spellings of "no
+        // retention", see {@link isAbsentRetention}) is skipped: a create has
+        // no live retention to remove. Numeric `0` is NOT in that family here:
+        // `desiredFromAwsReadback` is an `UpdateContext` field, and no create
+        // caller hands this provider a readback bag.
+        //
+        // REPLAY downgrade (`.claude/rules/provider-replay-and-refusals.md`):
+        // the rollback executor's reverse-replacement arm re-creates the OLD
+        // log group from a STATE record, which the user cannot edit from the
+        // template. A record can carry a value this refusal now rejects and
+        // the pre-#2699 create accepted (`0`, `'0'`, `false`, `null` were
+        // skipped; `'0x1e'` was forwarded as 30), so refusing there would
+        // leave the old resource unrestorable — the case the MUST exists for.
+        // The downgrade reproduces what the record CERTIFIES was sent (PR
+        // #3137 security review): the binary that wrote the record read the
+        // value with `Number()`-based `toFiniteNumber`, so a spelling that
+        // read as a positive integer there (`'30.0'`, `'0x1e'`) was FORWARDED
+        // as that integer, CloudWatch Logs accepted it, and a rollback that
+        // re-creates the old log group without it silently drops a compliance
+        // retention the deploy had applied. That reading is forwarded again
+        // here, with a warning naming the spelling. Every other refused member
+        // (`0`, `'0'`, `false`, `null`, `'abc'`, a non-integer) was SKIPPED or
+        // rejected by AWS on the original create, so "no retention" is what
+        // the record meant for it; those stay warn-and-skip.
+        if (!isAbsentRetention(rawRetention, false)) {
+          try {
+            assertUsableRetention(rawRetention, retentionInDays, logicalId, resourceType);
+          } catch (refusal) {
+            if (context?.replayingState !== true || !(refusal instanceof ProvisioningError)) {
+              throw refusal;
+            }
+            const legacyReading = toFiniteNumber(rawRetention);
+            if (
+              legacyReading !== undefined &&
+              Number.isInteger(legacyReading) &&
+              legacyReading > 0
+            ) {
+              retentionInDays = legacyReading;
+              this.logger.warn(
+                `${refusal.message}. This create replays a cdkd state record (rollback) written ` +
+                  `by a cdkd that read the value as ${legacyReading} and applied it, so the ` +
+                  `retention is RESTORED as ${legacyReading} days rather than refused. Fix the ` +
+                  `template spelling and re-deploy.`
+              );
+            } else {
+              this.logger.warn(
+                `${refusal.message}. This create replays a cdkd state record (rollback), so the ` +
+                  `retention is SKIPPED rather than refused: the log group is re-created with no ` +
+                  `retention policy. Re-apply it by hand (aws logs put-retention-policy) or fix the ` +
+                  `template and re-deploy.`
+              );
+            }
+          }
+        }
         if (retentionInDays !== undefined && retentionInDays > 0) {
           await this.logsClient.send(
             new PutRetentionPolicyCommand({
@@ -397,8 +486,24 @@ export class LogsLogGroupProvider implements ResourceProvider {
               `Cleaned up partially-created log group ${logicalId} (${logGroupName}) after wiring failure`
             );
           } catch (cleanupError) {
+            // The same-file sibling of the #2669 remedy: a pasteable command
+            // naming a TEMPLATE-chosen name, hand-quoted until that issue.
+            // Rendered through the shared sanitize / quote / suppress, so the
+            // COMMAND never carries a quote or a control byte raw. The prose
+            // `(${logGroupName})` beside it is still interpolated as-is: this
+            // line takes only the pasteable half, and display-sanitizing the
+            // prose of provider warnings is a class no issue holds yet
+            // (#3136 covers the COMMAND half across providers, not prose).
+            const deleteCommand = renderDisableCommand({
+              before: 'aws logs delete-log-group --log-group-name',
+              identifier: logGroupName,
+            });
+            const manualStep = deleteCommand
+              ? `Manual deletion may be required before the next deploy: ${deleteCommand}`
+              : 'Manual deletion may be required before the next deploy, via the console: the log ' +
+                'group name cannot be reproduced safely on a command line.';
             this.logger.warn(
-              `Failed to clean up partially-created log group ${logicalId} (${logGroupName}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws logs delete-log-group --log-group-name '${logGroupName}'`
+              `Failed to clean up partially-created log group ${logicalId} (${logGroupName}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. ${manualStep}`
             );
           }
         }
@@ -457,7 +562,8 @@ export class LogsLogGroupProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     try {
       return await this.applyUpdate(
@@ -465,7 +571,8 @@ export class LogsLogGroupProvider implements ResourceProvider {
         physicalId,
         resourceType,
         properties,
-        previousProperties
+        previousProperties,
+        context
       );
     } catch (error) {
       // Pass through every cdkd-typed error untouched: ResourceUpdateNotSupportedError
@@ -491,7 +598,12 @@ export class LogsLogGroupProvider implements ResourceProvider {
     // update if this provider ever serves another one.
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    // Read for ONE field: `desiredFromAwsReadback`, which decides whether a
+    // numeric `0` is cdkd's own never-expire readback or a template's rejected
+    // zero (see `isAbsentRetention`). No masker is threaded from it; the
+    // retention refusal names no value.
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating log group ${logicalId}: ${physicalId}`);
 
@@ -603,8 +715,31 @@ export class LogsLogGroupProvider implements ResourceProvider {
       // be precise. A shorter message that is TRUE beats a complete one that
       // is not.
       const deletionProtected = isTruthyCfnBoolean(previousProperties['DeletionProtectionEnabled']);
+      // The id in the pasteable command is `state.json`-borne, not an
+      // AWS-minted literal (issue [#2669]): the deploy engine hands this
+      // method `currentResource.physicalId` straight off the record, which
+      // `lock-manager.ts` already treats as attacker-influenced for anyone who
+      // can write the bucket. It therefore gets exactly what the five
+      // `protectedReplacementAdvice` callers get — `displaySafe(asciiOnly)`,
+      // then `shellQuote`, and the WHOLE command suppressed when sanitizing
+      // changed the id, since a command naming a sanitized id acts on a
+      // DIFFERENT resource. Only the rendering is shared; the sentence around
+      // it stays this type's own (the header of that module says why). For a
+      // clean id `shellQuote` emits it UNQUOTED — its quote-free class is
+      // `[A-Za-z0-9._/@:+-]`, which every ordinary CloudWatch Logs name is in
+      // (a `#`, legal in a name, is outside it and gets quoted, correctly) —
+      // and that bare form is what
+      // `tests/integration/loggroup-class-guard/verify.sh` greps.
+      const disableCommand = renderDisableCommand({
+        before: 'aws logs put-log-group-deletion-protection --log-group-identifier',
+        identifier: physicalId,
+        after: '--no-deletion-protection-enabled',
+      });
+      const disableStep = disableCommand
+        ? `Then disable deletion protection — \`${disableCommand}\`, or via the console — and re-deploy with ${replaceFlags}`
+        : `${UNNAMEABLE_ID_CLAUSE} Then re-deploy with ${replaceFlags}`;
       const remedy = deletionProtected
-        ? `cdkd's recorded properties for this log group carry DeletionProtectionEnabled, so ${replaceFlags} alone will NOT succeed while AWS still has it on: the replacement normally deletes the log group, AWS refuses that delete while protection is on, and cdkd deploy has no --remove-protection flag to clear it (only cdkd destroy and cdkd state destroy act on one). Read "Deletion protection blocks a replacement" in docs/cli-deploy-safety.md BEFORE you disable anything: whether disabling helps at all, and what the flag ends up as, depend on your UpdateReplacePolicy and on whether the deploy completes — neither of which this refusal can see. Then disable deletion protection — \`aws logs put-log-group-deletion-protection --log-group-identifier '${physicalId}' --no-deletion-protection-enabled\`, or via the console — and re-deploy with ${replaceFlags} to delete + recreate the log group under the new class (its stored log events are lost). Setting DeletionProtectionEnabled: false in the template does NOT clear it in the same deploy: this refusal fires before that property is applied, so that route needs its own deploy with the LogGroupClass change reverted. Or revert the LogGroupClass change and keep the current class.`
+        ? `cdkd's recorded properties for this log group carry DeletionProtectionEnabled, so ${replaceFlags} alone will NOT succeed while AWS still has it on: the replacement normally deletes the log group, AWS refuses that delete while protection is on, and cdkd deploy has no --remove-protection flag to clear it (only cdkd destroy and cdkd state destroy act on one). Read "Deletion protection blocks a replacement" in docs/cli-deploy-safety.md BEFORE you disable anything: whether disabling helps at all, and what the flag ends up as, depend on your UpdateReplacePolicy and on whether the deploy completes — neither of which this refusal can see. ${disableStep} to delete + recreate the log group under the new class (its stored log events are lost). Setting DeletionProtectionEnabled: false in the template does NOT clear it in the same deploy: this refusal fires before that property is applied, so that route needs its own deploy with the LogGroupClass change reverted. Or revert the LogGroupClass change and keep the current class.`
         : `Re-deploy with ${replaceFlags} to delete + recreate the log group under the new class (its stored log events are lost), or revert the LogGroupClass change.`;
       throw new ResourceUpdateNotSupportedError(
         'AWS::Logs::LogGroup',
@@ -616,7 +751,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
     // Read + VALIDATE the retention here, above every mutation, and send it
     // further down (issue [#2521]).
     //
-    // BOTH sides go through `toFiniteNumber`, and the comparison matters as
+    // BOTH sides go through `toCfnInteger`, and the comparison matters as
     // much as the send: a state record carrying the string `'30'` — what
     // `cdkd import --migrate-from-cloudformation` persists from a CFn template
     // that spelled it that way — is `!==` the template's numeric `30`, so
@@ -631,7 +766,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
     //    pre-coercion code compared it EQUAL and issued nothing; refusing it
     //    would fail an unrelated property change on a template nobody touched.
     //  - gating on RAW rather than on the COERCED comparison below, because
-    //    `toFiniteNumber` maps `'abc'`, `'  '`, `[]`, `{}`, `true`, `''` and
+    //    `toCfnInteger` maps `'abc'`, `'  '`, `[]`, `{}`, `true`, `''` and
     //    ABSENT all to `undefined`. A coerced gate therefore reads `'abc'`
     //    against an absent-or-differently-unusable previous side as
     //    UNCHANGED, skips the refusal AND the send, and the deploy succeeds
@@ -674,9 +809,40 @@ export class LogsLogGroupProvider implements ResourceProvider {
       (renderedRetention !== undefined &&
         renderedRetention !== 'null' &&
         renderedRetention === JSON.stringify(rawPreviousRetention));
-    const retentionInDays = toFiniteNumber(rawRetention);
-    const oldRetentionInDays = toFiniteNumber(rawPreviousRetention);
-    if (!sameRawRetention) {
+    // `toCfnInteger`, CloudFormation's measured Integer grammar (issue
+    // [#2698]) — `Number()` forwarded `'0x1e'` as 30 here. The PREVIOUS side
+    // reads through the same function so the two spellings of one retention
+    // still compare equal; a previous value the grammar rejects is the
+    // `previousRetentionUnknown` case below, exactly as an `'abc'` was.
+    const retentionInDays = toCfnInteger(rawRetention);
+    const oldRetentionInDays = toCfnInteger(rawPreviousRetention);
+    // Absent FIRST (issue [#2699]): absent / `''` / whitespace-only are
+    // CloudFormation's measured spellings of "no retention" and take the
+    // delete arm below; numeric `0` joins them ONLY on a readback bag. Every
+    // other falsy value — `false`, `null`, a template `0` / `'0'` — is refused
+    // by `assertUsableRetention` like `'abc'`, because CloudFormation rejects
+    // the template and cdkd must not delete a live retention on its behalf.
+    //
+    // Decided per site, as `.claude/rules/provider-replay-and-refusals.md`
+    // asks of an update-path refusal, and the ACCEPTED RESIDUAL is this: the
+    // rollback executor's revert arms hand `update()` `previousState.properties`
+    // with a context carrying NO `desiredFromAwsReadback` (and `UpdateContext`
+    // has no `replayingState`), so a record whose `properties` spell the
+    // retention as `0` / `'0'` / `false` / `null` — a pre-#2699 template cdkd
+    // accepted and recorded, or `drift --accept` writing the readback `0` into
+    // `properties` on a record with no `observedProperties` — is REFUSED on a
+    // rollback where it used to take the delete arm, and the resource stays
+    // at the failed deploy's retention until the record is corrected. That is
+    // a regression on that arm, taken knowingly: the update path cannot tell
+    // that replay from a template deploy, and admitting `0` on every bag is
+    // the silent-removal defect this refusal closes. `'abc'` was refused on
+    // the same arm before; the zero family joins it rather than the flag
+    // widening to "any context". Closing it means threading `replayingState`
+    // through `UpdateContext` and the executor's revert arms — issue #3141,
+    // filed rather than taken here because the executor is held by an open
+    // peer PR.
+    const desiredFromAwsReadback = context?.desiredFromAwsReadback === true;
+    if (!sameRawRetention && !isAbsentRetention(rawRetention, desiredFromAwsReadback)) {
       assertUsableRetention(rawRetention, retentionInDays, logicalId, resourceType);
     }
 
@@ -714,7 +880,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
     // the values were read and validated above, before any mutation.
     //
     // `previousRetentionUnknown` is the second trigger, and without it the
-    // coerced comparison DROPS a call the pre-#2521 code made. `toFiniteNumber`
+    // coerced comparison DROPS a call the pre-#2521 code made. `toCfnInteger`
     // answers `undefined` for two different things — "the previous deploy
     // applied no retention" and "cdkd cannot tell what it applied" — and a
     // PRESENT, TRUTHY previous value that does not coerce is the second. Remove
@@ -735,8 +901,17 @@ export class LogsLogGroupProvider implements ResourceProvider {
     // retention. Removing the property against one of those is the one place
     // this change still drops a pre-#2521 call, deliberately: the call was
     // redundant. `UPDATE_MATRIX` carries a row for it.
+    //
+    // A WHITESPACE-ONLY previous is excluded the same way since issue [#2699]:
+    // it is CloudFormation's measured spelling of "absent" (an import record
+    // is the only writer — cdkd never sent one), so AWS provably holds no
+    // retention for it either. `isAbsentRetention` is called with the readback
+    // flag OFF: a previous-side `0` is already excluded by the truthiness test.
     const previousRetentionUnknown =
-      !sameRawRetention && Boolean(rawPreviousRetention) && oldRetentionInDays === undefined;
+      !sameRawRetention &&
+      Boolean(rawPreviousRetention) &&
+      !isAbsentRetention(rawPreviousRetention, false) &&
+      oldRetentionInDays === undefined;
     if (retentionInDays !== oldRetentionInDays || previousRetentionUnknown) {
       if (retentionInDays !== undefined && retentionInDays > 0) {
         await this.logsClient.send(

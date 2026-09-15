@@ -29,6 +29,7 @@ import { buildProgram } from '../../../src/cli/program.js';
 import {
   DELETION_PROTECTION_DOC_POINTER,
   protectedReplacementAdvice,
+  renderDisableCommand,
 } from '../../../src/provisioning/replacement-protection-advice.js';
 
 /** Resolve a command by its `cdkd <a> <b>` path, failing loudly if it moved. */
@@ -233,6 +234,28 @@ describe('the disable-command contract: only the ID is untrusted', () => {
         caveat: derived,
       },
     });
+  });
+
+  it('REJECTS a widened `before` at the DIRECT `renderDisableCommand` entry too (#2669)', () => {
+    // The function is exported for `logs-loggroup-provider.ts`, which renders
+    // the command inside its own sentence. An export typed over the discharged
+    // shape would have accepted a widened `before` here while every
+    // `protectedReplacementAdvice` caller stayed fenced — the one place a
+    // template-derived command could re-enter. Same self-verifying assertion.
+    renderDisableCommand({
+      // @ts-expect-error -- widens to `string`; the direct entry is fenced like the wrapped one
+      before: 'aws logs put-log-group-deletion-protection --log-group-identifier ' + derived,
+      identifier: 'w-1',
+    });
+    expect(
+      renderDisableCommand({
+        before: 'aws logs put-log-group-deletion-protection --log-group-identifier',
+        identifier: '/cdkd/x',
+        after: '--no-deletion-protection-enabled',
+      })
+    ).toBe(
+      'aws logs put-log-group-deletion-protection --log-group-identifier /cdkd/x --no-deletion-protection-enabled'
+    );
   });
 
   it('leaves the IDENTIFIER deliberately unconstrained — it is the untrusted one', () => {
