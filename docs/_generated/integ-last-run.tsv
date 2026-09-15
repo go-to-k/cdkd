@@ -128,7 +128,7 @@ fsx-windows	2026-08-02T07:56:26Z	PASS	3895	verify.sh	0802 heavy TTL sweep; AD-jo
 full-stack-demo	2026-07-26T18:36:31Z	PASS	41	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 gc-custom-asset-names	2026-08-28T10:39:47Z	PASS	214	verify.sh	issue 2346 lane, site 6 (bootstrap marker). RUN IN eu-west-1, not us-east-1: the fixture correctly refuses a region whose bootstrap marker is not its own, and us-east-1 / ap-northeast-1 / us-west-2 all carry one. Premise 9 marker rows before teardown, then 1 row and 0 noncurrent; control 4 noncurrent lock.json versions survive. 0 errors, 0 orphans, no docker residue.
 getatt-fallback-guard	2026-09-07T10:13:59Z	PASS	225	verify.sh	PR for issue 2728: the --strict-getatt output-failure path live (its BadOutput names no secret; message prefix unchanged); cleanup clean, 66 state versions swept
-getstackoutput-crossregion	2026-07-26T19:05:27Z	PASS	79	verify.sh	0727b sweep-b8 staleness re-run (rc=0); account clean
+getstackoutput-crossregion	2026-09-15T13:11:17Z	PASS	102	verify.sh	rc ok, producer us-west-2 + consumer destroyed 0 err, both regions orph clean (#3150 resolver)
 glue-securityconfig-replace	2026-09-04T13:03:37Z	PASS	121	verify.sh	#2514 lane; --replace arm of the changed catch block, 4 phases, 1 del / 0 err
 glue-update-hardening	2026-08-13T13:57:41Z	PASS	230	verify.sh	issue 1807 final head; 16 deleted 0 errors 0 orphans
 iam-access-key	2026-07-31T07:18:11Z	PASS	210	verify.sh	new fixture #1323: create+status-flip+secret-preservation+destroy clean (1st run false-FAIL on async DeleteSecret probe, poll added)
@@ -142,16 +142,16 @@ import-auto-mode	2026-08-12T05:44:00Z	PASS	269	verify.sh	final source incl. #167
 import-nested-stack	2026-08-10T04:45:42Z	PASS	133	verify.sh	0810 sweep b3; 1st attempt failed on stale global cdk CLI 2.1120.0 (schema 54 needs >=2.1135.1, not a cdkd bug); PASS after vp update -g aws-cdk, 14 steps, 3 del 0 err
 import-secret-observed	2026-09-13T03:18:25Z	PASS	140	verify.sh	maintainer-side gating run for the PR 3052 merge at 9463a63b (import mark, #2745 site 3): rc0, 20 assertions, SubFloorParam persisted as the ARN-form expression in properties and observedProperties, 3 del 0 err, 0 surviving state versions
 import-value-strong-ref	2026-08-20T11:02:34Z	PASS	118	verify.sh	#2057 lane: regression check on state.imports[] and the destroy-time strong-ref refusal, the pre-existing bug this lane's union fix repairs; all state files removed, 0 orphans
-importvalue-chain	2026-08-10T05:50:57Z	PASS	76	verify.sh	0810 P2 sweep b10; 3-stack A->B->C ImportValue chain, exports index purged, 0 orph
+importvalue-chain	2026-09-15T13:08:45Z	PASS	164	verify.sh	rc ok, 3 stacks destroyed 0 err, exports index purged, orph clean (#3150 resolver)
 infra-security	2026-07-26T18:20:27Z	PASS	186	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
 inplace-attr-propagation	2026-07-26T19:25:15Z	PASS	57	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
 intrinsic-functions	2026-08-15T00:12:35Z	PASS	20	standard	0 err / 0 orph; resolver change regression check (#1916)
-intrinsics-torture	2026-09-14T19:26:20Z	PASS	57	verify.sh	rc ok, orph clean, #3126 capture sweep
+intrinsics-torture	2026-09-15T13:24:32Z	PASS	79	verify.sh	rc ok, 12 deleted 0 err, no orphan SSM params, orph clean (#3150 resolver)
 intrinsics-torture-2	2026-07-26T18:57:55Z	PASS	48	verify.sh	0727b sweep-b7 staleness re-run (rc=0); account clean
 kinesis-esm-filter	2026-08-10T04:23:28Z	PASS	63	verify.sh	0810 sweep b2; post-#1398 lambda-eventsource re-verify, 5 del 0 err, 0 orph
 kinesis-stream-mode-switch	2026-08-26T08:41:59Z	PASS	120	verify.sh	issue 2178 masker-threading sweep (kinesis); 3 phases, 0 err, 0 orphans
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-09-15T07:23:41Z	PASS	119	verify.sh	broad set for go-to-k/cdkd#3114 final tree (PR 3154 review round 1); destroy 0 err, orph clean
+lambda	2026-09-15T13:03:25Z	PASS	115	verify.sh	rc ok, 9 deleted 0 err, orph clean (#3150 resolver)
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-07-26T19:25:15Z	PASS	63	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
 lambda-config-field-removal	2026-08-11T13:09:08Z	PASS	132	verify.sh	issue #609 Lambda 4-prop backfill + review fixes; 5 del 0 err 0 orphans
@@ -268,7 +268,7 @@ schema-v9-to-v10-migration	2026-09-11T10:27:16Z	PASS	158	verify.sh	re-run after 
 sdk-ccapi-crossref	2026-08-10T04:23:28Z	PASS	85	verify.sh	0810 sweep b2; post-#1355 CC snapshot path, heterogeneous routing, 4 del 0 err, 0 orph
 sdk-to-cc-autoroute	2026-09-11T18:26:05Z	PASS	168	verify.sh	maintainer-side run gating PR 3020 at e67d273; phases 4b/4c rendered 'updated (metadata)'; 1 del 0 err 0 orph
 secrets-array-nested	2026-09-10T08:15:35Z	PASS	90	verify.sh	rc0 after fixture retired the plaintext residual (#2852); first run FAILed on the old assertion
-secrets-dynamic-ref	2026-09-14T18:25:15Z	PASS	590	verify.sh	rc ok, orph clean; issue 3119 lane (Base64Pin arm: state.outputs.Base64Pin is the mask, encoding absent from state and log, Fn::Base64 line masked on both halves); 4 deleted, 0 errors, 0 state versions; a pre-fix control with origin/main's resolver FAILED at 96 s on 'state.json carries the base64 of the framed sub-floor pin' (the named defect, measured) and its 7 surviving state versions were swept to 0 by hand
+secrets-dynamic-ref	2026-09-15T13:22:00Z	PASS	596	verify.sh	rc ok, 4 deleted 0 err, 0 surviving state versions, orph clean (#3150 resolver)
 secrets-rotation-schedule	2026-07-26T19:05:27Z	PASS	66	verify.sh	0727b sweep-b8 staleness re-run (rc=0); account clean
 secretsmanager-update-value-source	2026-09-14T04:47:25Z	PASS	74	verify.sh	rc ok, orph clean, 0 surviving versions (3068 lane: the new recipe's output accepted by the live service)
 serverless-api	2026-07-26T19:45:58Z	PASS	58	verify.sh	0727b sweep-b12 staleness re-run (rc=0); account clean
