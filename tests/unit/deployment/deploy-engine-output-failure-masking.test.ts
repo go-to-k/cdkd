@@ -114,6 +114,11 @@ vi.mock('@aws-sdk/client-secrets-manager', async (importOriginal) => {
  * resolver's own `Resolving dynamic reference: ssm:<name>` debug line BEFORE
  * the lookup; this fake names the parameter too, so the engine warn is
  * exercised as well.
+ *
+ * Like its Secrets Manager twin it REFUSES any command but
+ * `GetParameterCommand`, and that check runs first — a fake that silently
+ * serves a command the subject never sends is a fixture agreeing with an
+ * assumption rather than a test.
  */
 const { throttledParams, unknownTypeParams } = vi.hoisted(() => ({
   /** Parameter names whose FIRST lookup is answered with a throttle, so the retry label prints. */
@@ -128,13 +133,19 @@ vi.mock('@aws-sdk/client-ssm', async (importOriginal) => {
     constructor(_config?: unknown) {}
     async send(command: { input?: { Name?: string }; constructor: { name: string } }): Promise<unknown> {
       const name = command.input?.Name;
+      // The command refusal comes FIRST, matching the Secrets Manager twin
+      // above. Behind the throttle branch it did not quite "refuse any command
+      // but GetParameterCommand": one carrying a primed `input.Name` throttled
+      // before the check could see it. Unreachable today (the resolver sends
+      // only `GetParameterCommand`), so this is ordering the fake's own
+      // contract rather than a behaviour fix (go-to-k/cdkd#2756 item 1).
+      if (command.constructor.name !== 'GetParameterCommand') {
+        throw new Error(`unexpected SSM command ${command.constructor.name}`);
+      }
       if (name !== undefined && throttledParams.delete(name)) {
         const throttle = new Error('Rate exceeded');
         throttle.name = 'ThrottlingException';
         throw throttle;
-      }
-      if (command.constructor.name !== 'GetParameterCommand') {
-        throw new Error(`unexpected SSM command ${command.constructor.name}`);
       }
       if (name !== undefined && unknownTypeParams.has(name)) {
         return { Parameter: { Name: name, Value: 'unknown-type-value', Type: 'Weird' } };
@@ -443,6 +454,13 @@ describe('DeployEngine - an output resolution failure is reported MASKED (issue 
     const error = thrown as Error & { cause?: unknown };
     expect(error.message).toMatch(/^Failed to resolve output Leak: \[object Object\] \(--strict-getatt/);
     expect(error).not.toHaveProperty('cause');
+    // The line above is STRUCTURAL: a mutant attaching the raw object under a
+    // different key would leak and still satisfy it. Its two siblings carry a
+    // whole-string plaintext negative; this one now does too
+    // (go-to-k/cdkd#2756 item 2). A raw object under some OTHER property stays
+    // a review-time check — the point here is only that this case gets the
+    // negative its siblings have.
+    expect(error.message).not.toContain(LEAKED);
   });
 
   it('strict arm on the ALIAS call site: a failed Export.Name resolution aborts the deploy, masked, with the marker', async () => {

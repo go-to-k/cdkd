@@ -2836,6 +2836,46 @@ function isRegionAmbiguousRefusal(err: unknown): boolean {
 }
 
 /**
+ * The marker the resolver's NAMELESS-dynamic-reference throw carries
+ * (`Dynamic reference: <service> PARAMETER_NAME is required`).
+ *
+ * Pinned against the resolver's own literal by
+ * `tests/unit/cli/scrub-nameless-dynamic-ref.test.ts`, because this is a
+ * consumer of a string the resolver owns: a reword there would otherwise make
+ * the predicate below silently stop matching and restore the very silence it
+ * exists to remove (`.claude/rules/testing.md` -> "A fixture that greps
+ * cdkd's OWN output must fail loudly when the format drifts").
+ */
+const NAMELESS_DYNAMIC_REFERENCE_MARKER = 'PARAMETER_NAME is required';
+
+/**
+ * A nameless dynamic reference (`{{resolve:ssm-secure}}` with no parameter
+ * name) is NOT a best-effort miss, however unresolvable the rest of the
+ * resource is (issue go-to-k/cdkd#2692).
+ *
+ * The resolver raises a bare `Error` here, so it falls through the typed-refusal
+ * test above into the `debug` below, and `cdkd scrub` reports the run CLEAN.
+ * What makes that wrong is WHERE the throw happens: `resolver.resolve` aborts at
+ * the FIRST token, so a real `{{resolve:secretsmanager:...}}` sitting beside the
+ * nameless one in the same leaf is never fetched and records NO needle — and a
+ * legacy plaintext already in `state.json` then survives under
+ * `No plaintext secrets found`, exit 0.
+ *
+ * It is a loudness REGRESSION rather than a new gap: before go-to-k/cdkd#2689
+ * fixed `ssmParameterName`, this input produced a bogus `secretName` and
+ * therefore an `ambiguous` verdict, whose typed error scrub already re-raises.
+ * The old, wrong-in-substance refusal was backstopping this one.
+ */
+function isNamelessDynamicReferenceFailure(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    errorCauseChain(err).some(
+      (link) => link instanceof Error && link.message.includes(NAMELESS_DYNAMIC_REFERENCE_MARKER)
+    )
+  );
+}
+
+/**
  * A secrets map with its OWN identity whose entries ARE `target`'s (issue
  * #2531): every read and write goes to `target`; nothing is stored here.
  *
@@ -3819,7 +3859,7 @@ export async function scrubStack(
     // so one condition's slow parts must not spend the next one's, and that
     // reasoning does not change under a lock.
     await withSharedDrainBudget(async () => {
-      for (const logicalId of Object.keys(state.resources)) {
+      for (const logicalId of Object.keys(state.resources ?? {})) {
         const templateResource = templateResources[logicalId];
         if (!templateResource?.Properties) continue;
         const recordedSecretValues = new Map<string, string>();
@@ -3872,7 +3912,7 @@ export async function scrubStack(
         } catch (err) {
           // A region-AMBIGUOUS refusal is not best-effort -- see
           // `isRegionAmbiguousRefusal`.
-          if (isRegionAmbiguousRefusal(err)) throw err;
+          if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
           // Best-effort: a resource whose intrinsics cannot resolve (a Ref to
           // something not in state) still has its own {{resolve:...}} leaves
           // recorded along the way; leave the rest untouched.
@@ -3947,7 +3987,7 @@ export async function scrubStack(
         try {
           await resolver.resolve(resolveInput, resolverContext(recordedSecretValues));
         } catch (err) {
-          if (isRegionAmbiguousRefusal(err)) throw err;
+          if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
           logger.debug(
             `Resolution of orphan record ${record.logicalId} during scrub was partial: ` +
               `${maskSecretsInText(err instanceof Error ? err.message : String(err), recordedSecretValues)}`
@@ -4074,7 +4114,7 @@ export async function scrubStack(
           } catch (err) {
             // A region-AMBIGUOUS refusal is not best-effort -- see
             // `isRegionAmbiguousRefusal`.
-            if (isRegionAmbiguousRefusal(err)) throw err;
+            if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
             nameFailed = true;
             nameError = err;
           }
@@ -4216,7 +4256,7 @@ export async function scrubStack(
         } catch (err) {
           // A region-AMBIGUOUS refusal is not best-effort -- see
           // `isRegionAmbiguousRefusal`.
-          if (isRegionAmbiguousRefusal(err)) throw err;
+          if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
           // MASKED for the same reason as the two above — `valueSource` is a
           // post-pin bag. Verbose-only.
           logger.debug(
@@ -4304,7 +4344,7 @@ export async function scrubStack(
     // template bag (#1910), + the outputs; count changes.
     let recordsChanged = 0;
     const newResources: StackState['resources'] = {};
-    for (const [logicalId, record] of Object.entries(state.resources)) {
+    for (const [logicalId, record] of Object.entries(state.resources ?? {})) {
       const secrets = perResourceSecrets.get(logicalId);
       const templateProps = perResourceTemplateProps.get(logicalId);
       // A record with NO recorded secret is still worth scrubbing once a source

@@ -223,7 +223,8 @@ export class DockerAssetPublisher {
       } catch (err) {
         const e = err as { message?: string };
         throw new AssetError(
-          `Docker tag failed re-tagging '${actualTag}' → '${tag}': ${e.message ?? String(err)}`
+          `Docker tag failed re-tagging '${actualTag}' → '${tag}': ${e.message ?? String(err)}`,
+          err instanceof Error ? err : undefined
         );
       }
     }
@@ -332,7 +333,8 @@ export class DockerAssetPublisher {
       loggedInRegistries.add(registryKey);
     } catch (err) {
       throw new AssetError(
-        `ECR login failed: ${formatDockerLoginError(describeDockerFailure(err, loginArgs), endpoint)}`
+        `ECR login failed: ${formatDockerLoginError(describeDockerFailure(err, loginArgs), endpoint)}`,
+        err instanceof Error ? err : undefined
       );
     }
   }
@@ -345,7 +347,10 @@ export class DockerAssetPublisher {
     try {
       await runDockerStreaming(tagArgs);
     } catch (err) {
-      throw new AssetError(`Docker tag failed: ${describeDockerFailure(err, tagArgs)}`);
+      throw new AssetError(
+        `Docker tag failed: ${describeDockerFailure(err, tagArgs)}`,
+        err instanceof Error ? err : undefined
+      );
     }
   }
 
@@ -360,7 +365,10 @@ export class DockerAssetPublisher {
     try {
       await runDockerStreaming(pushArgs);
     } catch (err) {
-      throw new AssetError(`Docker push failed: ${describeDockerFailure(err, pushArgs)}`);
+      throw new AssetError(
+        `Docker push failed: ${describeDockerFailure(err, pushArgs)}`,
+        err instanceof Error ? err : undefined
+      );
     }
   }
 

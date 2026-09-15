@@ -1845,7 +1845,19 @@ describe("a resource's secret map is registered BEFORE anything can throw (issue
     // a per-site mask provably cannot reach.
     const here = fileURLToPath(new URL('.', import.meta.url));
     const src = readFileSync(`${here}../../../../src/cli/commands/scrub.ts`, 'utf8');
-    const body = src.slice(src.indexOf('for (const logicalId of Object.keys(state.resources))'));
+    // The anchor deliberately stops before the closing paren: the loop header
+    // gained a `?? {}` malformed-bag guard (go-to-k/cdkd#3018) and the exact
+    // spelling took this assertion to `-1` vs `-1`, i.e. GREEN-shaped inputs
+    // compared against each other. Assert the anchor was FOUND before using
+    // it, so a future rewrite fails as a missing anchor rather than as an
+    // ordering verdict about text this test never located.
+    const loopHeader = src.indexOf('for (const logicalId of Object.keys(state.resources');
+    expect(
+      loopHeader,
+      "scrub.ts no longer contains the per-resource loop header this test slices from; update " +
+        'the anchor rather than deleting the ordering assertion.',
+    ).toBeGreaterThan(-1);
+    const body = src.slice(loopHeader);
     const register = body.indexOf('perResourceSecrets.set(logicalId, recordedSecretValues)');
     const pin = body.indexOf('await pinCrossRegionSecrets(');
     expect(register).toBeGreaterThan(-1);

@@ -275,7 +275,7 @@ async function diffCommand(
     ): Promise<{ adopted: Record<string, ResourceState>; refusals: string[] }> => {
       const outcome = await planOrphanAdoption({
         records: state.orphans ?? [],
-        managedLogicalIds: new Set(Object.keys(state.resources)),
+        managedLogicalIds: new Set(Object.keys(state.resources ?? {})),
         template: effectiveTemplate,
         stackName: orphanStackName,
         region: orphanRegion,

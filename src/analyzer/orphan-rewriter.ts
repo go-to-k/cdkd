@@ -481,7 +481,7 @@ export async function rewriteResourceReferences(
 
   // Build the new resources map, skipping the orphans themselves.
   const newResources: Record<string, ResourceState> = {};
-  for (const [logicalId, resource] of Object.entries(state.resources)) {
+  for (const [logicalId, resource] of Object.entries(state.resources ?? {})) {
     if (orphanSet.has(logicalId)) continue;
 
     const rewrittenProperties = await rewriteValue(

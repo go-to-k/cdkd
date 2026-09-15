@@ -227,7 +227,7 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
       // would silently no-op while the user expected a removal.
       const missing = orphanLogicalIds.filter((id) => !(id in state.resources));
       if (missing.length > 0) {
-        const have = Object.keys(state.resources).join(', ');
+        const have = Object.keys(state.resources ?? {}).join(', ');
         throw new Error(
           `Resource(s) not in state for stack '${stackInfo.stackName}' (${targetRegion}): ` +
             `${missing.join(', ')}.\n` +

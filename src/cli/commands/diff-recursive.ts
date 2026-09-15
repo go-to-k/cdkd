@@ -1071,7 +1071,7 @@ export async function buildDiffTree(args: {
   }
 
   // State-only children (removed from the template → recursive DELETE).
-  for (const [logicalId, resource] of Object.entries(state.resources)) {
+  for (const [logicalId, resource] of Object.entries(state.resources ?? {})) {
     if (resource.resourceType !== NESTED_STACK_RESOURCE_TYPE) continue;
     if (templateChildIds.has(logicalId)) continue;
     node.children.push(
@@ -1145,7 +1145,7 @@ async function buildDeletedSubtree(
     outputChanges,
     children: [],
   };
-  for (const [logicalId, resource] of Object.entries(state.resources)) {
+  for (const [logicalId, resource] of Object.entries(state.resources ?? {})) {
     if (resource.resourceType !== NESTED_STACK_RESOURCE_TYPE) continue;
     node.children.push(
       // Propagated, not recomputed: a grandchild's template is gone for the
