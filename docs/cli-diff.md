@@ -177,12 +177,54 @@ The Outputs counts are a **separate** summary line. An Outputs change is a
 state / exports-index write with no AWS resource operation behind it, so it
 never inflates the create / update / delete counts.
 
-Output values are resolved best-effort against current state, exactly as
-`cdkd deploy` resolves them. When an output cannot be fully resolved — typically
+Output values are resolved best-effort against current state, with the
+resolver `cdkd deploy` uses. When an output cannot be fully resolved — typically
 because it references a resource this deploy has yet to create — the Outputs
-section is **omitted rather than guessed**, and a warning says so, so an absent
-section never silently means "unchanged". That resource's `CREATE` is already
-on the resource side of the diff.
+section is **omitted rather than guessed**. A warning says so when any
+difference remains beyond the failed outputs themselves — usually another
+output that would also have changed; when none does, the absent section is
+silent.
+That resource's `CREATE` is already on the resource side of the diff.
+
+One case is previewed instead of omitted: **no resource changes, and every
+output that failed did so with a signal the deploy also records** (the resolver threw, or
+returned nothing for the whole value). The deploy then persists the outputs
+that did resolve, as described below, so the diff shows that — a row
+for an added or changed sibling, no row for the failed output, plus a warning naming
+the failed outputs: those with a stored value are compared at it, those with
+no stored value under their own name are listed as such, and the deploy may
+still resolve one the diff could not — a lookup keyed by a secret the diff
+never fetches, for example. Unless every value carried from state for a failed
+output, an alias included, is itself a secret reference, the rows withhold
+their previous values, because a value the diff did not resolve cannot show
+whether the stored outputs predate secret redaction; when a row actually
+withholds one, the warning says so. That reason no longer applies once every
+failed output resolves, though the diff's other legacy-plaintext checks can
+still withhold the values. The section is still omitted when:
+
+- a resource change is pending;
+- a condition verdict can reach an output's value — an output carries its own
+  `Condition`, or an `Fn::If` or `Condition` reference appears anywhere outside
+  the template's resources and conditions, such as in a mapping. The diff
+  evaluates conditions best-effort and can reach a different verdict from the
+  deploy, so an output that fails here may resolve at deploy. A condition that
+  gates only resources, like the one CDK adds to its metadata resource, does
+  not count: an output never reads a resource's template properties. Should the
+  diff and the deploy disagree about such a resource, the warning above already
+  says the deploy may write a different value for each failed output;
+- a template parameter could not be bound for the diff, or condition evaluation
+  was skipped because a condition depends on a parameter holding a secret
+  reference (see [Condition pruning is skipped](#condition-pruning-is-skipped));
+- an output's value came back in a shape that does not tell the diff what the
+  deploy will do with it — a function the diff could not evaluate, an
+  `AWS::NoValue`, an `Fn::Sub` placeholder left unsubstituted, or a list or
+  object holding one of those or a missing value;
+- an output's `Export.Name` could not be resolved or decided;
+- the deploy would keep all of the previous outputs (the two cases below).
+
+One of those keep-whole checks the deploy repeats after it has captured
+observed state, where a secret it records late can refuse a merge the diff
+previewed, so a row shown here can still be kept back by the deploy.
 
 An output the **last deploy could not resolve and skipped** is not previewed
 as an `ADD` either. Two things get skipped, and only the first is announced:
@@ -289,8 +331,9 @@ what it costs. The key is resolved like any other output again, so **for the
 shape this page is about — a failure inside a secret lookup — the phantom
 `ADD` comes back**, and `cdkd diff --fail` exits `1` on the unchanged stack
 until the next deploy rewrites the record. For a key the diff cannot resolve
-either, it joins the ordinary suppression instead and the Outputs section is
-omitted. Bounded on both counts: one deploy clears it, and the alternative is
+either, it is handled like any other output that fails: the Outputs section is
+omitted, or — when no resource change is pending and the failure is one the
+deploy repeats — previewed through the merge described earlier on this page. Bounded on both counts: one deploy clears it, and the alternative is
 the diff asserting that nothing is coming while the next deploy publishes the
 key.
 
@@ -317,16 +360,20 @@ safeguards apply to that side of the output.
 the text and the `--json` output rather than printed into CI logs. The change
 itself is still reported; only the old value is replaced with a placeholder
 pointing at [`cdkd scrub`](cli-scrub.md#cdkd-scrub-state-secret-hygiene-clean-audit).
-Three refusal gates decide this:
+These refusal gates decide this:
 
 | Gate | Trigger | Scope |
 | --- | --- | --- |
 | Redacted-expression mismatch | The template side is still a `{{resolve:...}}` expression while state is not — exactly what `cdkd scrub` repairs. | Record-wide |
 | Template-declared dynamic reference | The template declares the output's value as a dynamic reference. Also covers an output that was condition-skipped, which has no template side left to compare. | Record-wide |
 | Unaccountable stored key | A stored key today's template cannot account for — no declared output name, no literal `Export.Name`, not in the resolved bag — i.e. an output deleted from the template. | Per-key |
+| Carried value in the merge preview | The no-change merge preview carried a value from state for a failed output, an alias included, that is not a secret reference. | Record-wide |
 
 The first two are record-wide because a record holding any such key was written
-by a pre-redaction binary, so every previous value in it is suspect.
+by a pre-redaction binary, so every previous value in it is suspect. The merge
+preview's gate is record-wide for the same reason from the other side: the diff
+never learns what a failed output would have resolved to, so a carried value
+that is not a secret reference cannot rule that out.
 
 The per-key gate is narrower on purpose, since deleting an output is an
 ordinary refactor. It fires **only** when the template still proves a secret
@@ -407,8 +454,10 @@ The payload is a flat array of one record per target stack:
 Each `outputChanges` entry is
 `{name, changeType: "ADD" | "MODIFY" | "REMOVE", oldValue?, newValue?, oldValueRedacted?, export}`.
 `oldValue` is absent on an `ADD` and `newValue` on a `REMOVE`; `oldValue` is
-also withheld — with `oldValueRedacted: true` in its place — when state holds
-legacy secret plaintext for that key.
+also withheld — with `oldValueRedacted: true` in its place — when state may
+hold legacy secret plaintext for that key, which includes every row beside a
+failed output whose value carried from state, an alias included, is not a
+secret reference (see [Outputs](#outputs)).
 
 ## `--recursive` (nested stacks)
 
