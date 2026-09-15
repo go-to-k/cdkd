@@ -345,13 +345,19 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // The go-to-k/cdkd#2413 / go-to-k/cdkd#2426 / go-to-k/cdkd#2457 /
     // go-to-k/cdkd#2655 batch then landed five deferred lessons across seven
     // stage files. The LEADER PAIR DID NOT MOVE: verify.md stays largest and
-    // implement.md runner-up, exactly as the entry above left them — which is
-    // the only ordering claim this entry makes, and deliberately so. THREE
-    // successive drafts asserted some other rank ("the runner-up changed
-    // hands", "implement.md is largest at every commit", "triage.md grew into
-    // third place") and review measured each one false; ranks below the two
-    // the fields ASSERT are derived, and a derived claim in this record has
-    // been wrong every time it has been made. Read them off the deltas.
+    // implement.md runner-up, exactly as the entry above left them. That pair
+    // is the only rank this entry ASSERTS, deliberately: three earlier claims
+    // about some other rank were each measured false by review — two of them
+    // standing in the same revision, the third written as their correction.
+    // They were, in order, that the runner-up had changed hands from verify.md
+    // to triage.md; that implement.md was the largest at every commit on this
+    // branch; and that triage.md had grown past retro.md into third place.
+    // (Paraphrased, not quoted — reading the exact wording back is what
+    // `git log -S` is for.) A rank below the asserted pair is DERIVED, and a
+    // derived claim in this record has been wrong every time one was made, so
+    // read them off the per-file deltas instead. The headroom line lower down
+    // names three files in size order, which is a per-file MEASUREMENT rather
+    // than a rank claim; it moves only when a measurement does.
     // implement.md took go-to-k/cdkd#2457's two probe-stage rules and funded
     // them ENTIRELY in-file, compressing incident narratives in 5-a, 5-b, 5-c,
     // 5-e, 5-f' and 5-g to their citations (+5 net), while triage.md took the
