@@ -17,8 +17,29 @@ export const STATE_RESOURCES_MALFORMED = 'STATE_RESOURCES_MALFORMED';
  * nowhere. The predicate is the plain-object test the bag's own type implies.
  */
 export function hasReadableResources(state: StackState): boolean {
-  const bag: unknown = state.resources;
-  return typeof bag === 'object' && bag !== null && !Array.isArray(bag);
+  return isReadableBag(state.resources);
+}
+
+/**
+ * The plain-object test itself, without the `resources` field bound to it.
+ *
+ * Exported because {@link hasReadableResources} is not the only caller any
+ * more: `cdkd state show` and `cdkd state resources` walk FOUR more record
+ * containers with `Object.entries` — `outputs`, `skippedOutputs`, and each
+ * resource's `attributes` and `properties` — and a non-object in any of them
+ * fabricates rows exactly as the `resources` bag did (go-to-k/cdkd#3187).
+ * Spelling the same test a second time there is what this export exists to
+ * prevent: the two could then drift, and the one that drifted would fabricate
+ * again while looking guarded.
+ *
+ * What it does NOT decide is whether a given container is malformed. That is a
+ * per-container call, because absence means different things: an absent
+ * `resources` bag is a defect ({@link hasReadableResources} says so), while an
+ * absent `skippedOutputs` is the normal pre-#2740 record. Each caller pairs
+ * this predicate with its own absence rule.
+ */
+export function isReadableBag(container: unknown): boolean {
+  return typeof container === 'object' && container !== null && !Array.isArray(container);
 }
 
 /**
@@ -130,6 +151,57 @@ export function malformedStateRefusalMessage(stackName: string, region: string):
     `rather than continuing: saving over a record whose resource map could not be read would ` +
     `replace the evidence with a well-formed empty one and lose it permanently. Repair or ` +
     `remove the record first.`
+  );
+}
+
+/**
+ * A record container a TEXT view walks with `Object.entries`, other than the
+ * `resources` bag the rest of this module is about.
+ *
+ * A CLOSED union on purpose: {@link malformedRenderedContainersWarning}
+ * interpolates these names into its text WITHOUT sanitizing them, which is only
+ * safe while every value is a literal written here rather than a key read out
+ * of a record. Widening this to `string` would open that message to a
+ * hand-edited record's own bytes.
+ */
+export type RenderedStateContainer = 'outputs' | 'skippedOutputs' | 'attributes' | 'properties';
+
+/**
+ * The warning a view emits when it emptied one or more {@link
+ * RenderedStateContainer}s it could not walk (go-to-k/cdkd#3187).
+ *
+ * Deliberately NOT {@link malformedResourcesWarning}'s text. That one tells the
+ * reader not to run `cdkd deploy` / `cdkd destroy`, because BOTH read the
+ * `resources` map and an unreadable one is indistinguishable from an empty
+ * stack. None of the containers here is read by either command's resource walk,
+ * so repeating that advice would make a display defect look like a
+ * deploy-blocking one. What stays the same is the remedy: `--json` is the mode
+ * that shows the stored value.
+ *
+ * ONE warning per record however many containers it names — a stack whose 500
+ * resources all carry a hand-edited `properties` gets one line, not 500. The
+ * caller sorts the names, so the text is stable across records.
+ *
+ * Both identifiers are sanitized and then shell-quoted, and the command is
+ * emitted LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s own note
+ * gives. The container names take neither: they are literals of the union
+ * above, never record-derived text.
+ */
+export function malformedRenderedContainersWarning(
+  stackName: string,
+  region: string,
+  containers: readonly RenderedStateContainer[]
+): string {
+  const stack = safeIdentifier(stackName);
+  const reg = safeIdentifier(region);
+  const names = containers.map((name) => `'${name}'`).join(', ');
+  return (
+    `State for ${shellQuote(stack)} (${shellQuote(reg)}) has a non-object ${names} — the record ` +
+    `is malformed or truncated. 'Object.entries' walks a string or a list as readily as a map, ` +
+    `so rendering one INVENTS a row per character or element. Continuing with it EMPTY: this ` +
+    `view shows no rows there, which is not the same as the record holding none. A per-resource ` +
+    `container is named once however many resources hold one. See the stored values with: ` +
+    `cdkd state show ${shellQuote(stack)} --stack-region ${shellQuote(reg)} --json`
   );
 }
 
