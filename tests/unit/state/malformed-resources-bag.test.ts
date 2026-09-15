@@ -358,9 +358,15 @@ describe('write-capable commands refuse; read-only ones repair', () => {
   const REPAIR = ['src/cli/commands/diff-recursive.ts'];
 
   /**
-   * The FIRST expression in each file that dereferences the resources bag. The
-   * refusal has to come before it; anything else leaves the raw TypeError in
-   * front of the named one.
+   * The FIRST expression in each file that READS the resources bag. The
+   * refusal has to come before it.
+   *
+   * For `import` / `orphan` / `rollback` the anchor is an UNGUARDED read, so
+   * a refusal below it leaves the raw TypeError in front of the named one --
+   * round 1's exact defect. `scrub`'s anchor carries a `?? {}` and so cannot
+   * throw; it is pinned anyway because a refusal below the point the bag is
+   * first CONSUMED would let the command act on an empty map before deciding
+   * it will not act at all.
    */
   const FIRST_DEREF: Record<string, string> = {
     'src/cli/commands/scrub.ts': 'Object.entries(state.resources',

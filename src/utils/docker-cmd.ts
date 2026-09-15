@@ -1658,18 +1658,29 @@ export function describeDockerFailure(error: unknown, args: readonly string[]): 
  */
 /**
  * The fields {@link redactedDockerCause} carries from the original error onto
- * the redacted one. Every retry / transience classifier in `src/deployment/`
- * reads one of these; none of them carries argv or stream text.
+ * the redacted one.
+ *
+ * WHAT EACH HALF IS FOR, stated precisely because an earlier revision of this
+ * comment got it wrong in a way that reads as more than it is. The AWS-shaped
+ * entries (`$metadata`, `$fault`, `__type`, `code`, `statusCode`) are what
+ * `isThrottlingError` / `isTransientServerError` /
+ * `describeRetryClassificationSignals` actually consult, and they are reachable
+ * here only when an SDK error is the cause -- the ECR-login path, whose
+ * `GetAuthorizationToken` failure can be one.
+ *
+ * `exitCode` is NOT read by any classifier. It is carried because it is the
+ * ONLY field the DOMINANT failure has: these four sites reject through
+ * `spawnStreaming`, whose `SpawnError` sets `stderr` / `stdout` / `exitCode`
+ * and nothing else, so without it a non-zero docker exit produced a cause with
+ * a name and a message and no other content at all. What that buys is the
+ * DIAGNOSTIC -- `cli/index.ts` renders the chain's own enumerable props -- not
+ * a retry decision. Do not restate it as a classification field.
+ *
+ * `stderr` / `stdout` stay OFF: the composer has already read and REDACTED
+ * them into the message, so copying the raw streams would hand back exactly
+ * what it removed.
  */
 const CLASSIFICATION_FIELDS = [
-  // `exitCode` FIRST because it is the one field the real failure carries:
-  // these four sites reject through `spawnStreaming`, whose `SpawnError` sets
-  // `stderr` / `stdout` / `exitCode` and nothing else. The list was written
-  // from the `execFile` shape and omitted it, so on the dominant failure --
-  // docker exiting non-zero -- the cause carried a name and a message and no
-  // classification at all, defeating the whole point of threading one
-  // (go-to-k/cdkd#2075). `stderr` / `stdout` stay OFF: the composer has
-  // already read and REDACTED them into the message.
   'exitCode',
   'code',
   'errno',

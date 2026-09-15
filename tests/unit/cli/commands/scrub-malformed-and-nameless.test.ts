@@ -18,9 +18,23 @@
  *   what the `Dynamic reference: ` prefix anchor exists for — a template
  *   parameter literally NAMED `PARAMETER_NAME` would otherwise flip every
  *   best-effort miss into a whole-stack refusal;
- *   `errorCauseChain`, so a wrapped one must still be seen.
+ * - the failure is seen through a WRAPPED cause, since the predicate walks
+ *   `errorCauseChain` rather than testing the top-level message;
  * - a real run REFUSES a malformed `resources` bag with exit 2;
  * - a `--dry-run` REPAIRS it, reports the finding, and writes nothing.
+ *
+ * WHAT THE FIXTURE REACHES, measured rather than assumed (2026-09-15). The
+ * predicate guards FOUR best-effort catches. Keeping exactly one guard and
+ * deleting the other three: with the first cut of this fixture (`Outputs: {}`,
+ * no orphans) only guards 1, 2 and 4 were individually sufficient and guard 3
+ * was never reached; adding the `Export.Name` below made all four sufficient.
+ *
+ * The limit of that measurement, stated because it is easy to over-read:
+ * deleting a SINGLE guard reds nothing, since the same rejection then travels
+ * to the next catch that still has one. So these cases prove every site is
+ * REACHED and re-raises, not that any one site is independently necessary. The
+ * whole-predicate mutation (`return false`) is what covers the set, and it
+ * reds 3 cases.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
@@ -59,8 +73,28 @@ function stackInfo(): { stackName: string; template: CloudFormationTemplate } {
           },
         },
       },
-      Outputs: {},
-    } as CloudFormationTemplate,
+      // A declared OUTPUT with an EXPORT NAME, and (below) a recorded ORPHAN,
+      // are what reach the predicate's other call sites. The first cut of this
+      // fixture had `Outputs: {}` and no orphans and so exercised ONE of the
+      // four guarded catches -- the same partial-coverage shape the sync fence
+      // had. The `Export.Name` specifically is what reaches the fourth: it is
+      // resolved through its OWN `resolveCrossStackReads` call, on the
+      // argument that a name a deploy never wrote must not be invented.
+      Outputs: {
+        DbEndpoint: {
+          Value: '{{resolve:ssm-secure}}',
+          // An INTRINSIC name, and the `unknown` cast below is what it costs.
+          // `TemplateOutput.Export.Name` is typed `string`, which is narrower
+          // than CloudFormation: `Export: { Name: !Sub '${AWS::StackName}-x' }`
+          // is the ordinary CDK output shape, and scrub RESOLVES it through
+          // its own `resolveCrossStackReads` call -- which is the catch this
+          // fixture needs to reach. Measured: a LITERAL name leaves that site
+          // unreached (it needs no resolving), so the intrinsic is
+          // load-bearing here, not decoration.
+          Export: { Name: { 'Fn::Sub': '${AWS::StackName}-db-endpoint' } },
+        },
+      },
+    } as unknown as CloudFormationTemplate,
   };
 }
 
@@ -70,7 +104,18 @@ function makeState(resources: unknown): StackState {
     region: 'us-east-1',
     stackName: 'MyStack',
     resources: resources as StackState['resources'],
-    outputs: {},
+    outputs: { DbEndpoint: 'a-stored-value' },
+    orphans: [
+      {
+        logicalId: 'OldDb',
+        orphanedAt: 0,
+        state: {
+          physicalId: 'old-db',
+          resourceType: 'AWS::RDS::DBInstance',
+          properties: { MasterUserPassword: '{{resolve:ssm-secure}}' },
+        },
+      },
+    ] as StackState['orphans'],
     lastModified: 0,
   };
 }

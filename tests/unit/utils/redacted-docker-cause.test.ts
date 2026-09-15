@@ -81,8 +81,14 @@ describe('redactedDockerCause', () => {
     // And specifically: the stream fields are NOT carried. The composer has
     // already redacted them into the message; copying the raw ones back would
     // hand over exactly what it removed.
-    expect(cause.stderr, 'stderr is on the allowlist — it carries the raw argv').toBeUndefined();
-    expect(cause.stdout, 'stdout is on the allowlist — it carries the raw argv').toBeUndefined();
+    expect(
+      cause.stderr,
+      'the cause carries raw `stderr`, which holds the un-redacted argv the message just masked'
+    ).toBeUndefined();
+    expect(
+      cause.stdout,
+      'the cause carries raw `stdout`, which holds the un-redacted argv the message just masked'
+    ).toBeUndefined();
   });
 
   it('preserves `exitCode`, which is the only classification the real error has', () => {
