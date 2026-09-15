@@ -182,7 +182,10 @@ not resolve (a deleted SSM parameter, a secret with no `SecretString`). The last
 one matters most as a gate result: the resolver stops at the first failing token,
 so a real secret AFTER it in the same value was never fetched, recorded no
 needle, and would otherwise have let the stack report clean. Each such record is
-named in a warning; resolve the reference and re-run.
+named in a warning; resolve the reference and re-run. A scan stopped by a
+TEMPLATE failure instead (an unresolvable `Ref` / `Fn::GetAtt`, or a parameter
+with no `Default`) is warned but does NOT fail `--fail`: scrub has only template
+defaults, so a gate failure there could not be cleared.
 
 Scrubbing needs the CDK app (`--app` / `CDKD_APP` / `cdk.json`) because state records the resolved value with no marker of which values are secrets — only the template carries the references. IMPORTANT: a secret that was ever stored in plaintext should be treated as compromised and ROTATED in Secrets Manager; scrub only stops it being re-read out of state going forward.
 

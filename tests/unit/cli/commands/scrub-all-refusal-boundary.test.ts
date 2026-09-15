@@ -433,6 +433,24 @@ describe('cdkd scrub: an ABANDONED scan reaches the verdict (go-to-k/cdkd#3160)'
     expect((err as { code?: string }).code).toBe('SCRUB_NEEDED');
   });
 
+  it('carries the note on the --dry-run summary too, which IS the CI gate output', async () => {
+    // `leafNote` is woven into FOUR render sites and the real-run case above
+    // reaches one of them. The two `Plan:` lines are the ones a standing
+    // `cdkd scrub --all --dry-run --fail` actually prints, so a note missing
+    // there is missing exactly where the gate is read.
+    const err = await scrubCommand([], commandOptions({ dryRun: true, fail: true })).catch(
+      (e: unknown) => e
+    );
+
+    const summary = commandLogger.info.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(summary, 'the dry-run plan does not mention the abandoned scan').toContain('ABANDONED');
+    expect(summary).not.toContain('No plaintext secrets found in any target stack state');
+    expect((err as { code?: string }).code).toBe('SCRUB_NEEDED');
+
+    // Nothing was written -- the note must not have come from a real run.
+    expect(commandStateBackend.saveState).not.toHaveBeenCalled();
+  });
+
   it('NEGATIVE CONTROL: the same stack without the abandoned scan exits clean', async () => {
     abandonScan.on = false;
 

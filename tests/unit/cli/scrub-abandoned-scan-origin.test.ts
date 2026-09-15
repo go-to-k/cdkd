@@ -49,12 +49,22 @@ function shippedPatterns(): RegExp[] {
   );
   expect(block, 'TEMPLATE_SHAPE_FAILURE_PATTERNS was renamed or removed').not.toBeNull();
   const literals = [...block![1]!.matchAll(/^\s*\/(.+)\/,\s*$/gm)].map((m) => m[1]!);
-  // A FLOOR, not decoration: a regex that stopped parsing would leave this
-  // empty and every `.some()` below would be vacuously false, which reads as
-  // "nothing is excluded" — the round-2 bug, certified green.
-  expect(literals.length, 'no pattern literals parsed out of the constant').toBeGreaterThanOrEqual(
-    2
-  );
+  // EQUALITY with the block's own entry count, not a `>= 2` floor. A floor is
+  // satisfied while a THIRD pattern — added later, or reformatted onto two
+  // lines, or given a flag (`/x/i,`) this regex cannot match — is silently
+  // dropped, and every `.some()` below then answers about a smaller set than
+  // ships. Vacuity in that direction reads as "nothing is excluded", which is
+  // the round-2 bug certified green.
+  const entries = block![1]!
+    .split('\n')
+    .filter((line) => line.includes('/')).length;
+  expect(
+    literals.length,
+    `parsed ${literals.length} pattern literals out of ${entries} entries in ` +
+      'TEMPLATE_SHAPE_FAILURE_PATTERNS. An entry this parser cannot read is an exclusion ' +
+      'this suite never checks.'
+  ).toBe(entries);
+  expect(entries, 'the constant is empty — nothing is excluded').toBeGreaterThanOrEqual(2);
   return literals.map((l) => new RegExp(l));
 }
 
@@ -66,7 +76,23 @@ describe('scrub abandoned-scan origin (go-to-k/cdkd#3160)', () => {
     // second assertion is what keeps the pair honest: a message the resolver
     // no longer produces would still satisfy the first one forever.
     const OWNED: ReadonlyArray<readonly [string, string, string]> = [
-      ['a Ref to something not in state', 'Ref MyBucket not found', 'Ref ${logicalId} not found'],
+      // Third element is the THROW EXPRESSION, not the message text. That
+      // distinction is the whole value of the second assertion: `Ref ${logicalId}
+      // not found` is ALSO a substring of the resolver's LOG line one branch
+      // above the throw, so a needle of just the message stays green after the
+      // throw alone is reworded — leaving the pattern matching nothing anyone
+      // raises, ordinary `Ref` failures counted again, and the round-2
+      // regression certified green.
+      [
+        'a Ref to something not in state',
+        'Ref MyBucket not found',
+        'throw markNonRetryable(new Error(`Ref ${logicalId} not found`))',
+      ],
+      [
+        'a Fn::GetAtt to a resource not in state',
+        'Resource MyBucket not found for Fn::GetAtt',
+        'throw markNonRetryable(new Error(`Resource ${logicalId} not found for Fn::GetAtt`))',
+      ],
       [
         'a parameter with no Default and no supplied value',
         'Parameter DbName is required but no value was provided and no default exists',
@@ -83,7 +109,7 @@ describe('scrub abandoned-scan origin (go-to-k/cdkd#3160)', () => {
         ).toBe(true);
       });
 
-      it(`and the resolver still produces the message behind ${label}`, () => {
+      it(`and the resolver still THROWS the message behind ${label}`, () => {
         const needle = resolverSpelling.replace(/^`|`$/g, '');
         expect(
           resolverSource.includes(needle),
@@ -132,18 +158,37 @@ describe('scrub abandoned-scan origin (go-to-k/cdkd#3160)', () => {
   });
 
   it('is a CONJUNCTION — position alone does not count', () => {
-    // Guards the wiring, not the predicate: a call site that dropped `err`
+    // Guards the WIRING, not the predicate: a call site that dropped `err`
     // would compile (the parameter is `unknown`) and silently restore round 2.
-    const calls = [...scrubSource.matchAll(/abandonedDynamicReferenceScan\(([^)]*)\)/g)]
+    const calls = [...scrubSource.matchAll(/abandonedScanVerdict\(([^)]*)\)/g)]
       .map((m) => m[1]!)
       .filter((args) => !args.includes(':')); // skip the declaration
     expect(calls.length, 'no call sites found — the counter was renamed').toBe(4);
     for (const args of calls) {
       expect(
         args.split(',').length,
-        `a call site passes only \`${args}\`. Without the error the predicate is positional ` +
+        `a call site passes only \`${args}\`. Without the error the verdict is positional ` +
           'again, and an ordinary `Ref` failure over a secret-bearing bag reds the CI gate.'
       ).toBe(2);
     }
+  });
+
+  it('separates VISIBILITY from the gate — only `count` increments', () => {
+    // The round-4 finding both the security and spec axes reached independently:
+    // excluding a template-shape failure also suppresses the FINDING for a live
+    // secret reference abandoned by it, so the exclusion has a cost in the
+    // issue's own harm direction. The resolution is that the excluded arm still
+    // WARNS and only the exit code is withheld — so a site that guarded the
+    // warn on `=== 'count'` would silently re-close that channel.
+    const increments = [...scrubSource.matchAll(/leafVerdict === 'count'\) unverifiableLeaves\+\+;/g)]
+      .length;
+    expect(increments, "the counter is no longer gated on the 'count' arm").toBe(4);
+
+    const speaks = [...scrubSource.matchAll(/if \(leafVerdict !== 'silent'\) \{/g)].length;
+    expect(
+      speaks,
+      'a counting site stopped warning on the non-counting arm, so a leaf abandoned by a ' +
+        'template failure is invisible again — exit 0 and no line naming the record.'
+    ).toBe(4);
   });
 });

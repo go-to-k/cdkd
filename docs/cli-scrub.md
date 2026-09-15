@@ -325,17 +325,23 @@ cannot rewrite. Three shapes qualify, and all three are also reported in words:
 
   The resolver stops at the first `{{resolve:...}}` token it cannot resolve —
   a deleted SSM parameter, a secret with no `SecretString`, a missing
-  `JSON_KEY`, a secret that is not JSON — and every later token in the SAME
-  value is then never resolved, so it contributes no needle. A plaintext
+  `JSON_KEY`, a secret that is not JSON, or an AWS rejection such as
+  `ParameterNotFound` / `AccessDeniedException` — and every later token in the
+  SAME value is then never resolved, so it contributes no needle. A plaintext
   sitting behind such a token therefore survives a scan that finds nothing.
-  cdkd cannot rewrite it (there is no needle to match) and cannot refuse the
-  stack either: `scrub` resolves with template DEFAULTS and takes no
-  `--parameters`, so an `Fn::Sub` that keeps its raw `${Field}` produces this
-  on a stack that is entirely healthy. It is reported and counted instead, and
-  each record is named in a warning at default verbosity. Resolve the
-  reference — restore the parameter or secret, or supply the value the
-  `Fn::Sub` needs — and re-run; the count going to zero is what certifies the
-  record.
+  cdkd cannot rewrite it (there is no needle to match) and does not refuse the
+  stack, so it is reported and counted instead, and each record is named in a
+  warning at default verbosity. Resolve the reference — restore the parameter
+  or secret — and re-run; the count going to zero is what certifies the record.
+
+  **A scan stopped by a TEMPLATE failure is warned but does NOT fail `--fail`.**
+  One throw aborts the whole properties bag, and some of those throws have
+  nothing to do with fetching a reference: an unresolvable `Ref` or
+  `Fn::GetAtt`, or a parameter with no `Default`. `scrub` resolves with template
+  DEFAULTS and takes no `--parameters`, so it cannot bind those — failing the
+  gate on them would red a CI build with no action available to clear it. You
+  still get a warning naming the record, because the leaf really was left
+  unscanned: fix the template reference and re-run to certify it.
 
 ## Refusals
 

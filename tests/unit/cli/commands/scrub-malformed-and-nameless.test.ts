@@ -162,13 +162,19 @@ describe('cdkd scrub - refusals this PR adds (go-to-k/cdkd#2692, go-to-k/cdkd#30
 
   function run(
     state: StackState,
-    opts: { dryRun?: boolean } = {}
+    opts: { dryRun?: boolean; stack?: ReturnType<typeof stackInfo> } = {}
   ): ReturnType<typeof scrubStack> {
     stateBackend.getState.mockResolvedValue({ state, etag: 'etag-1' });
-    return scrubStack(stackInfo() as never, 'us-east-1', stateBackend as never, lockManager as never, {
-      dryRun: opts.dryRun ?? false,
-      logger: logger as never,
-    });
+    return scrubStack(
+      (opts.stack ?? stackInfo()) as never,
+      'us-east-1',
+      stateBackend as never,
+      lockManager as never,
+      {
+        dryRun: opts.dryRun ?? false,
+        logger: logger as never,
+      }
+    );
   }
 
   const healthy = (): StackState =>
@@ -297,6 +303,7 @@ describe('cdkd scrub - refusals this PR adds (go-to-k/cdkd#2692, go-to-k/cdkd#30
     // with no `Default` makes every `{Ref: <param>}` in the stack throw.
     const TEMPLATE_SHAPE: ReadonlyArray<readonly [string, string]> = [
       ['a Ref to a resource not in state', 'Ref MyBucket not found'],
+      ['a Fn::GetAtt to a resource not in state', 'Resource MyBucket not found for Fn::GetAtt'],
       [
         'a parameter with no Default and no supplied value',
         'Parameter DbName is required but no value was provided and no default exists',
@@ -314,7 +321,63 @@ describe('cdkd scrub - refusals this PR adds (go-to-k/cdkd#2692, go-to-k/cdkd#30
             'no action the operator can take to clear it (go-to-k/cdkd#3178 round 2).'
         ).toBe(0);
       });
+
+      it(`but STILL WARNS about ${label} — visibility is not the gate`, async () => {
+        // The round-4 finding two axes reached independently: one throw aborts
+        // the whole properties bag, so excluding it also silences the finding
+        // for a LIVE secret reference in that same bag, and the stack can print
+        // `No plaintext secrets found` at exit 0. Counting is the round-2
+        // blocker; saying nothing is the original bug. So it says it and does
+        // not gate.
+        resolveThrows = new Error(message);
+        await run(healthy());
+        const warned = logger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(
+          warned,
+          'the record was not named, so an operator cannot tell this run apart from one ' +
+            'that genuinely scanned everything'
+        ).toContain("resource 'Db'");
+        expect(
+          warned,
+          'the warn does not say the gate is NOT firing, so "NOT certified clean" reads as a ' +
+            'contradiction beside exit 0'
+        ).toContain('does NOT fail --fail');
+      });
     }
+
+    it('does NOT count a token whose argument kept an unsubstituted ${...}', async () => {
+      // scrub resolves with `bestEffort`, under which an `Fn::Sub` over an
+      // unbound placeholder does not throw -- it warn-and-KEEPS the literal
+      // `${Field}`. The assembled token then asks for a JSON key literally
+      // named `${Field}` and fails with a `Dynamic reference:` message, which
+      // no exclusion pattern matches and which go-to-k/cdkd#3160 asks to COUNT
+      // when the key was real. The token, not the error, is what separates
+      // them: this one was never fetchable, because scrub has only template
+      // defaults and accepts no `--parameters`.
+      const KEPT = '{{resolve:secretsmanager:prod/db:SecretString:${Field}}}';
+      const state = healthy();
+      state.resources['Db']!.properties['MasterUserPassword'] = KEPT;
+      state.orphans = [];
+      // The whole stack must carry ONLY the placeholder-bearing token, or a
+      // sibling site counts and the zero below would be about the wrong thing.
+      const stack = stackInfo();
+      const template = stack.template as unknown as {
+        Resources: Record<string, { Properties: Record<string, unknown> }>;
+        Outputs: Record<string, unknown>;
+      };
+      template.Resources['Db']!.Properties['MasterUserPassword'] = KEPT;
+      template.Outputs = {};
+      resolveThrows = new Error(
+        "Dynamic reference: key '${Field}' not found in secret 'prod/db'"
+      );
+      const result = await run(state, { stack });
+      expect(
+        result.unverifiableLeaves,
+        'a kept `${...}` placeholder means the token was never fetchable, so counting it reds ' +
+          '`--dry-run --fail` on a healthy stack that merely has an unbound Fn::Sub variable ' +
+          '(go-to-k/cdkd#3178 round 4).'
+      ).toBe(0);
+    });
 
     it('counts NOTHING on a stack whose references all resolve', async () => {
       // The negative control: without it, a counter that increments
