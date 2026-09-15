@@ -432,6 +432,16 @@ gates:
       - "README.md"
       - "CLAUDE.md"
       - ".claude/rules/**"
+      # plugins/** is user-facing DOCUMENTATION as much as it is a checker
+      # input, and it was in `check` only (added by go-to-k/cdkd#2878 for the
+      # issue-reference fence). That left the asymmetry go-to-k/cdkd#2673
+      # reports: the plugin skill restates behaviour that `docs/` also
+      # describes, so a behaviour change stales THIS marker through `src/**`
+      # and gets re-read there, while the plugin copy of the same claim stays
+      # invisible to the check that exists to keep documentation true. Being
+      # in `check` does not cover it -- that gate asks whether the tree builds
+      # and passes, not whether a sentence still describes the code.
+      - "plugins/**"
 
   verify-pr:
     # `requires` (markgate 0.3+) declares verify-pr's freshness as the

@@ -38,6 +38,7 @@ You are checking whether documentation is up to date with recent code changes in
    - `package.json` dependency changes → check CLAUDE.md "Dependencies" section
    - New CLI options → check docs/getting-started.md and the per-command pages under docs/ (the README's usage cheatsheet moved there)
    - New integration tests → check docs/testing.md AND docs/integ-fixture-conventions.md (the fixture rules split out of it)
+   - **ANY behaviour change → `plugins/cdkd-skills/skills/cdkd/SKILL.md`**, the DISTRIBUTED plugin surface. It restates behaviour that `docs/` also describes, for an audience that never reads this repo, and it is the copy most likely to go stale: nothing routes a reader to it. It was in the `check` gate (go-to-k/cdkd#2878, for an issue-reference fence) but not in `docs`, so a behaviour change staled the docs marker through `src/**`, sent a session to `docs/` and `.claude/rules/`, and never named this file — issue [go-to-k/cdkd#2673](https://github.com/go-to-k/cdkd/issues/2673). Both halves are fixed together: the `docs` gate now includes `plugins/**`, and this line is what makes the marker mean something, since a gate that stales with no TARGET to read is just a re-run. Grep it for the subject you changed rather than reading all of it.
 
 4. **Read the relevant documentation sections** and compare with the actual code to find:
    - Missing mentions of new files, features, or options
