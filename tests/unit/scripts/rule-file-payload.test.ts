@@ -286,6 +286,9 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['layout-synthesis.md', 13], // measured 17
   ['layout-provisioning.md', 92],
   ['layout-scrub.md', 1], // literal list: EXACT, see below
+  // Four literal paths (go-to-k/cdkd#3121): the helper module and the three
+  // analyzer-side drift canonicalizers that rebuild by its rule.
+  ['own-keys.md', 4], // literal list: EXACT, see below
   ['layout-scripts.md', 38],
   // Its `paths:` frontmatter lists 16 globs: 3 checker globs (two are wildcards,
   // covering the six checkers between them), the shared subject module, the
@@ -679,6 +682,10 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // row here the satellite would sit under no budget, which is the state the
   // 2026-08-25 review probe showed a rule file can reach unnoticed.
   ['src/utils/aws-client-defaults.ts', 46_000, 58_000],  // measured  52,845
+  // The representative path for own-keys.md (go-to-k/cdkd#3121): payload is
+  // layout-utils.md + architecture.md + code-layout.md + the satellite, which
+  // split out because layout-utils.md sat 118 B under the row above's cap.
+  ['src/utils/own-keys.ts', 42_000, 52_000], // measured 49,437
   ['src/utils/logger.ts', 38_000, 50_000],                       // measured  43,397
   // The row the split changes most, and the clearest illustration of what the
   // grab-bag was doing: editing `vite.config.ts` used to load 19,581 B of rule
@@ -1227,7 +1234,10 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 // Neither branch's figure is the merged one. That is the whole reason this
 // count is asserted rather than described: two correct increments compose to a
 // number neither author wrote.
-const CORPUS_FILE_COUNT = 56; // + abort-capture.md (go-to-k/cdkd#3126): testing.md sat 38 B under
+const CORPUS_FILE_COUNT = 57; // + own-keys.md (go-to-k/cdkd#3121): layout-utils.md sat 118 B under
+                              //  the `aws-client-defaults.ts` path cap, so the own-key rule got
+                              //  its own satellite with a one-line pointer left behind.
+                              // Was 56: + abort-capture.md (go-to-k/cdkd#3126): testing.md sat 38 B under
                               //  its 52,000 B path cap, so the verify.sh capture rule got its own
                               //  satellite with a one-clause pointer left behind.
                               // Was 55: + no-change-outputs-merge.md (go-to-k/cdkd#3110).

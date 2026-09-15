@@ -3749,13 +3749,14 @@ export class DynamoDBTableProvider implements ResourceProvider {
           `accepts, so they were dropped from the request, which leaves ` +
           // Masked for CONSISTENCY with the sibling argument above, not because
           // this one can leak: `coerceWarmThroughput` admits only
-          // `toFiniteNumber` results into `spec`, and its keys are cdkd
+          // `coerceCfnInteger` results into `spec`, and its keys are cdkd
           // literals, so the walk is a no-op here BY CONSTRUCTION today. It is
           // written anyway so the site stays correct if that coercion is ever
           // widened -- and stated plainly so nobody reads it as a closed leak.
           `${JSON.stringify(maskLeafValue(coerced.spec, maskSecrets))}. Check for an ` +
-          `unresolved intrinsic or a ` +
-          `non-numeric value.`
+          `unresolved intrinsic or a spelling CloudFormation would reject: an Integer here ` +
+          `is an optional sign and decimal digits only (no surrounding whitespace, hex, ` +
+          `exponent or decimal point).`
       );
     }
     return coerced.spec;

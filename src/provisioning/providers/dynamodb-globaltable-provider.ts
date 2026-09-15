@@ -51,6 +51,7 @@ import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import {
+  coerceCfnInteger,
   configStringRefusal,
   readConfigString,
   replayWarn,
@@ -3260,7 +3261,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         //
         // The "was it dropped" test reads the RAW CFn keys, not the translated
         // side (issue #1440). `toSdkGlobalSecondaryIndexes` coerces through
-        // `toFiniteNumber`, so a present-but-unparseable value (an unresolved
+        // `coerceCfnInteger`, so a present-but-unparseable value (an unresolved
         // `{Ref: …}`) arrives here as `undefined` and is indistinguishable from
         // a removal — which sent `-1` and silently CLEARED the ceiling the
         // template was trying to SET.
@@ -3803,12 +3804,24 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     try {
       if (newEnabled) {
         // Register OR update scalable target (idempotent on no-op).
-        const minCapacity = Number(newSettings!['MinCapacity'] ?? 0);
-        const maxCapacity = Number(newSettings!['MaxCapacity'] ?? 0);
-        if (!Number.isFinite(minCapacity) || !Number.isFinite(maxCapacity)) {
+        //
+        // `coerceCfnInteger`, the same reader `pickAutoScalingCapacity` takes
+        // `MinCapacity` through for the table's own capacity (issue #3135):
+        // these two FORWARD the same member to two services, and on a
+        // `Number()` read a padded `" 7 "` registered a scalable target at 7
+        // while the capacity derivation beside it had already dropped the
+        // value and sent the announced 5/5 fallback. A spelling CloudFormation
+        // rejects now takes this block's existing warn-and-skip arm, exactly
+        // like a non-numeric value. The `?? 0` keeps an ABSENT member's
+        // pre-existing reading (zero, which AWS refuses by name).
+        const minCapacity = coerceCfnInteger(newSettings!['MinCapacity'] ?? 0);
+        const maxCapacity = coerceCfnInteger(newSettings!['MaxCapacity'] ?? 0);
+        if (minCapacity === undefined || maxCapacity === undefined) {
           warn(
             `Cannot apply auto-scaling diff on ${tableName} (${dimension}): ` +
-              `MinCapacity / MaxCapacity must be numbers, got ` +
+              `MinCapacity / MaxCapacity must be integers CloudFormation accepts ` +
+              `(an optional sign and decimal digits; no surrounding whitespace, hex, ` +
+              `exponent or decimal point), got ` +
               // Masked as RAW values (issue #1997): `String()` of a resolved
               // secret is the plaintext itself, and the WHOLE-VALUE arm matches at
               // any length where the sink's substring arm needs 4 characters.
@@ -3887,11 +3900,25 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           PredefinedMetricSpecification: { PredefinedMetricType: metricType },
           TargetValue: targetValue,
         };
-        if (tttCfg['ScaleInCooldown'] !== undefined) {
-          targetTrackingConfig['ScaleInCooldown'] = Number(tttCfg['ScaleInCooldown']);
-        }
-        if (tttCfg['ScaleOutCooldown'] !== undefined) {
-          targetTrackingConfig['ScaleOutCooldown'] = Number(tttCfg['ScaleOutCooldown']);
+        // The two cooldowns are CloudFormation Integers and are FORWARDED, so
+        // they take the DynamoDB grammar too (issue #3135); a rejected spelling
+        // is announced and OMITTED (the service default applies) rather than
+        // sent as `Number()`'s reading or as `NaN`. `TargetValue` above is a
+        // CloudFormation Double, whose grammar is unmeasured, and keeps `Number()`.
+        for (const cooldown of ['ScaleInCooldown', 'ScaleOutCooldown'] as const) {
+          const raw = tttCfg[cooldown];
+          if (raw === undefined) continue;
+          const seconds = coerceCfnInteger(raw);
+          if (seconds === undefined) {
+            warn(
+              `Auto-scaling policy on ${tableName} (${dimension}): ` +
+                `TargetTrackingScalingPolicyConfiguration.${cooldown} is not an integer ` +
+                `CloudFormation accepts (got ${JSON.stringify(maskDeep(raw, maskSecrets))?.slice(0, 80)}), ` +
+                `so it is omitted and the service default applies.`
+            );
+            continue;
+          }
+          targetTrackingConfig[cooldown] = seconds;
         }
         if (tttCfg['DisableScaleIn'] !== undefined) {
           targetTrackingConfig['DisableScaleIn'] = Boolean(tttCfg['DisableScaleIn']);
@@ -6692,16 +6719,32 @@ const ON_DEMAND_LIMIT_RESET = -1;
 // same AWS refusal. Same reason as `../dynamodb-warm-throughput.ts`: a rule two
 // providers answer is a rule that must not be answerable two ways.
 
-// `toFiniteNumber` — the CFn-numeric reader every capacity / throughput path in
-// this file uses — is IMPORTED from `../dynamodb-warm-throughput.ts` rather
-// than spelled here. It was a local copy until the review of issue #1857's PR:
-// this file's spelling, `dynamodb-table-provider.ts`'s `capacityNumber` and the
+// TWO numeric readers, chosen per site by what the number is FOR (issue #3135):
+//
+//  - `coerceCfnInteger` (`../config-shape.ts`) reads every value this file
+//    FORWARDS to AWS — a `ProvisionedThroughput` / `OnDemandThroughput` member,
+//    a `MinCapacity` / `SeedCapacity` the derivation turns into one — AND the
+//    diagnostic / mirror predicates paired with a forwarder
+//    (`reportUnresolvedRawMember`, `explicitCovers`, the `undefined` tests in
+//    `collectUncomparableCapacityGsiNames` and `toSdkReplicaThroughputOverrides`). It is
+//    CloudFormation's MEASURED DynamoDB Integer grammar, `/^[+-]?\d+$/` with NO
+//    trim (table on `toCfnInteger` in `../dynamodb-warm-throughput.ts`): a
+//    padded `" 7 "`, `"0x9"`, `"1e1"` or `"6.5"` is a template CloudFormation
+//    REFUSES, and `Number()` forwarded `7` / `9` / `10` for it. A predicate
+//    paired with a forwarder MUST read through the same function: on the wider
+//    reader `" 7 "` counted as "covered" / "determined" while the forwarder
+//    beside it dropped the value, so the default stood in silently or a live
+//    baseline read a 5/5 fallback as a scale-down.
+//  - `toFiniteNumber` (`../dynamodb-warm-throughput.ts`) reads the LIVE side
+//    only — a `DescribeTable` number compared against the desired one. A guard
+//    is safe on the wider set: over-acceptance can only skip fewer calls.
+//
+// `toFiniteNumber` was a local copy until the review of issue #1857's PR: this
+// file's spelling, `dynamodb-table-provider.ts`'s `capacityNumber` and the
 // shared module's own member parser were three hand-written statements of one
-// rule, which is the divergence that module exists to prevent, one level below
-// the rule it was extracted for. The `trim()` in it is load-bearing, not
-// defensive: `Number('   ')` is **0**, so a whitespace-only
-// `ReadCapacityUnits` / `MaxReadRequestUnits` would otherwise read as a request
-// for ZERO capacity that nobody declared.
+// rule, which is the divergence that module exists to prevent. Both readers
+// refuse a whitespace-only string, which `Number('   ')` reads as **0** — a
+// request for ZERO capacity that nobody declared.
 //
 // `WARM_THROUGHPUT_MEMBERS` / `WarmThroughputSpec` / `WarmThroughputCoercion` /
 // `coerceWarmThroughput` live there too — the same stringly-typed-CFn coercion
@@ -6712,6 +6755,17 @@ const ON_DEMAND_LIMIT_RESET = -1;
 // GlobalTable spelling answered differently was a whitespace-only string, where
 // a bare `Number('   ')` is 0 rather than NaN; the shared rule takes the
 // REFUSING answer, since that is not a capacity anyone declared.
+
+/**
+ * The sentence every "did not resolve to a number" diagnostic ends with, so a
+ * user whose value IS a number — `" 7 "`, `"1e1"` — learns why it was still
+ * dropped (issue #3135). Named once because the three diagnostics that carry
+ * it are worded per outcome and would otherwise each restate the grammar.
+ */
+const CFN_INTEGER_SPELLING_NOTE =
+  ` CloudFormation types this member as an Integer and accepts only an optional sign ` +
+  `and decimal digits (no surrounding whitespace, hex, exponent or decimal point), so a ` +
+  `spelling it would reject is treated the same way.`;
 
 /**
  * Build the {@link ThroughputDiagnostic} for a `WarmThroughput` block that did
@@ -6745,7 +6799,8 @@ function warmThroughputDiagnostic(
         `WarmThroughput.${dropped} did not resolve to a number and was DROPPED; ` +
         `${kept} is still sent. AWS types these as numbers, so a quoted "12000" is ` +
         `fine but an unresolved intrinsic or an object is not. The dropped member ` +
-        `keeps its current AWS value until the template supplies a usable one.`,
+        `keeps its current AWS value until the template supplies a usable one.` +
+        CFN_INTEGER_SPELLING_NOTE,
     };
   }
   return {
@@ -6756,7 +6811,8 @@ function warmThroughputDiagnostic(
       `${dropped ? ` (${dropped})` : ''}, so the whole block is REFUSED and not sent. ` +
       `Forwarding it would fail as an opaque AWS validation error naming neither cdkd ` +
       `nor the property. Set WarmThroughput.ReadUnitsPerSecond / WriteUnitsPerSecond to ` +
-      `numbers, or remove the block. Nothing else about the index is affected.`,
+      `numbers, or remove the block. Nothing else about the index is affected.` +
+      CFN_INTEGER_SPELLING_NOTE,
   };
 }
 
@@ -6822,9 +6878,10 @@ export interface ThroughputDiagnostic {
  * the pre-fix code forwarded such a block VERBATIM. Three defects followed, and fixing any subset leaves a
  * live one, which is why this helper does all three at once:
  *
- *  1. **Coercion.** The verbatim forward was the ONE path that skipped
- *     {@link toFiniteNumber}, so a stringly-typed CFn `"5"` reached the SDK
- *     unnormalized while every derived value was a number.
+ *  1. **Coercion.** The verbatim forward was the ONE path that skipped the
+ *     numeric reader (`coerceCfnInteger` since issue #3135), so a
+ *     stringly-typed CFn `"5"` reached the SDK unnormalized while every
+ *     derived value was a number.
  *  2. **Per-member merge.** Whole-block replacement meant a PARTIAL explicit
  *     block SUPPRESSED valid derived siblings — an explicit
  *     `{MaxReadRequestUnits: 41}` discarded a perfectly good
@@ -6865,11 +6922,18 @@ function mergeExplicitThroughputBlock<T>(
   const out: Record<string, number> = {};
   for (const member of members) {
     if (explicit && explicit[member] !== undefined) {
-      const coerced = toFiniteNumber(explicit[member]);
+      const coerced = coerceCfnInteger(explicit[member]);
       if (coerced !== undefined) {
         out[member] = coerced;
         continue;
       }
+      // Name what STANDS IN for the ignored member, when something does:
+      // on an explicit-only shape (no CFn `*ProvisionedThroughputSettings`
+      // block beside the SDK-shaped one) `reportUnresolvedProvisionedCapacity`
+      // has no block to blame and never fires, so this line is the only place
+      // the user learns that the derived default (5, on a PROVISIONED
+      // capacity) went to AWS instead of the value they wrote.
+      const standIn = derived?.[member];
       diagnostics?.push({
         kind: 'unresolved-member',
         ...(context.indexName !== undefined && { indexName: context.indexName }),
@@ -6877,8 +6941,11 @@ function mergeExplicitThroughputBlock<T>(
         message:
           `${context.blockName}.${member} is present but did not resolve to a number ` +
           `(${JSON.stringify(maskDeep(explicit[member], maskSecrets))?.slice(0, 80)}), so ` +
-          `it was ignored. ` +
-          `This is usually an unresolved intrinsic; resolve it to a literal.`,
+          (typeof standIn === 'number'
+            ? `it was ignored and ${standIn} was sent instead. `
+            : `it was ignored. `) +
+          `This is usually an unresolved intrinsic; resolve it to a literal.` +
+          CFN_INTEGER_SPELLING_NOTE,
       });
     }
     const derivedValue = derived?.[member];
@@ -6910,7 +6977,11 @@ function reportUnresolvedRawMember(
 ): void {
   if (!diagnostics) return;
   if (rawValue === undefined) return;
-  if (toFiniteNumber(rawValue) !== undefined) return;
+  // The FORWARDER's reader, not the guard's: a value this predicate calls
+  // usable is one `toSdkGlobalSecondaryIndexes` / `collectTableOnDemandCeilings`
+  // will actually send, so a padded `" 7 "` is reported here exactly because
+  // it is dropped there (issue #3135).
+  if (coerceCfnInteger(rawValue) !== undefined) return;
   diagnostics.push({
     kind: 'unresolved-member',
     ...(context.indexName !== undefined && { indexName: context.indexName }),
@@ -6921,7 +6992,8 @@ function reportUnresolvedRawMember(
       `throughput value was ` +
       `sent for it and the live AWS setting was left unchanged. This is usually an ` +
       `unresolved intrinsic; resolve it to a literal to apply the limit, or remove the ` +
-      `property entirely to clear it.`,
+      `property entirely to clear it.` +
+      CFN_INTEGER_SPELLING_NOTE,
   });
 }
 
@@ -7030,7 +7102,8 @@ function reportUnresolvedProvisionedCapacity(
       `${path} is declared but did not resolve to a number ` +
       `(${JSON.stringify(maskDeep(blame.value, maskSecrets))?.slice(0, 80)}), ${consequence}. ` +
       `This is usually an ` +
-      `unresolved intrinsic; resolve it to a literal to apply the capacity you declared.`,
+      `unresolved intrinsic; resolve it to a literal to apply the capacity you declared.` +
+      CFN_INTEGER_SPELLING_NOTE,
   });
 }
 
@@ -7061,7 +7134,7 @@ export function deriveWriteCapacityUnits(
   source: CapacitySource = 'min'
 ): number | undefined {
   if (!settings) return undefined;
-  const literal = toFiniteNumber(settings['WriteCapacityUnits']);
+  const literal = coerceCfnInteger(settings['WriteCapacityUnits']);
   if (literal !== undefined) return literal;
   const autoScaling = asRecord(settings['WriteCapacityAutoScalingSettings']);
   if (!autoScaling) return undefined;
@@ -7081,7 +7154,7 @@ export function deriveReadCapacityUnits(
   source: CapacitySource = 'min'
 ): number | undefined {
   if (!settings) return undefined;
-  const literal = toFiniteNumber(settings['ReadCapacityUnits']);
+  const literal = coerceCfnInteger(settings['ReadCapacityUnits']);
   if (literal !== undefined) return literal;
   const autoScaling = asRecord(settings['ReadCapacityAutoScalingSettings']);
   if (!autoScaling) return undefined;
@@ -7122,9 +7195,9 @@ function pickAutoScalingCapacity(
   autoScaling: Record<string, unknown>,
   source: CapacitySource
 ): number | undefined {
-  const min = toFiniteNumber(autoScaling['MinCapacity']);
-  if (source === 'min') return min ?? toFiniteNumber(autoScaling['SeedCapacity']);
-  return toFiniteNumber(autoScaling['SeedCapacity']) ?? min;
+  const min = coerceCfnInteger(autoScaling['MinCapacity']);
+  if (source === 'min') return min ?? coerceCfnInteger(autoScaling['SeedCapacity']);
+  return coerceCfnInteger(autoScaling['SeedCapacity']) ?? min;
 }
 
 /**
@@ -7317,9 +7390,13 @@ export function toSdkGlobalSecondaryIndexes(
       const derivedWrite = deriveWriteCapacityUnits(asRecord(rawWrite), source);
       // An explicit SDK-shaped member wins in the merge below, so a value it
       // supplies is what reaches AWS and there is nothing to warn about.
+      // The merge's own reader (`coerceCfnInteger`), so "covers" means the
+      // member really reaches AWS: on the wider `toFiniteNumber` a padded
+      // `" 7 "` counted as covered while the merge dropped it and the derived
+      // default stood in with no diagnostic (issue #3135).
       const explicitCovers = (member: string): boolean =>
         explicitProvisioned !== undefined &&
-        toFiniteNumber(explicitProvisioned[member]) !== undefined;
+        coerceCfnInteger(explicitProvisioned[member]) !== undefined;
       if (derivedRead === undefined && !explicitCovers('ReadCapacityUnits')) {
         // The replica spelling is the canonical CDK one and is blamed when
         // DECLARED, matching the on-demand half's choice of which of the two
@@ -7409,8 +7486,8 @@ export function toSdkGlobalSecondaryIndexes(
         maskSecrets
       );
 
-      const maxWrite = toFiniteNumber(rawWrite);
-      const maxRead = toFiniteNumber(rawReadLocal) ?? toFiniteNumber(rawReadGsi);
+      const maxWrite = coerceCfnInteger(rawWrite);
+      const maxRead = coerceCfnInteger(rawReadLocal) ?? coerceCfnInteger(rawReadGsi);
       const merged = mergeExplicitThroughputBlock<OnDemandThroughput>(
         explicitOnDemand,
         {
@@ -7792,7 +7869,7 @@ export interface RawOnDemandDeclaration {
  * The per-GSI reset needs to know "did the template DROP this member", and the
  * only faithful answer is whether the CFn key is THERE — not whether its value
  * coerced. `toSdkGlobalSecondaryIndexes` runs every value through
- * {@link toFiniteNumber}, which returns `undefined` for a present-but-
+ * `coerceCfnInteger`, which returns `undefined` for a present-but-
  * unparseable value (an unresolved `{Ref: …}`, `''`, an object). Deciding
  * "dropped" from that collapsed view sent the `-1` reset for a member the
  * template was actively trying to SET, silently clearing the ceiling — the same
@@ -7978,7 +8055,7 @@ export function collectUncomparableCapacityGsiNames(
     }
     // (b) NOT TEMPLATE-DETERMINED. This is the arm a review caught, and it is
     // the destructive one: `toSdkGlobalSecondaryIndexes` runs every capacity
-    // through `toFiniteNumber` and falls through to `DEFAULT_CAPACITY_UNITS`
+    // through `coerceCfnInteger` and falls through to `DEFAULT_CAPACITY_UNITS`
     // (5/5) when nothing resolves — the issue #1511 class. Outside this
     // recovery path both sides derive the same 5/5, so the invented default
     // never reaches AWS. With a live baseline it becomes a WRITE: live 25/25
@@ -7987,14 +8064,17 @@ export function collectUncomparableCapacityGsiNames(
     // template mention auto-scaling" but "did the template DETERMINE both
     // numbers" — mirroring `deriveRead/WriteCapacityUnits` returning
     // `undefined`, with the explicit SDK-shaped block counted because the
-    // translation merges it over the derived side.
+    // translation merges it over the derived side — read through the merge's
+    // OWN reader (`coerceCfnInteger`, issue #3135): a padded `" 7 "` the
+    // merge drops must count as NOT determined here, or the 5/5 fallback the
+    // translation sends reads as a scale-down against the live baseline.
     const explicitProvisioned = asRecord(gsi['ProvisionedThroughput']);
     const derivedRead =
-      toFiniteNumber(explicitProvisioned?.['ReadCapacityUnits']) ??
+      coerceCfnInteger(explicitProvisioned?.['ReadCapacityUnits']) ??
       deriveReadCapacityUnits(asRecord(readBlocks[0])) ??
       deriveReadCapacityUnits(asRecord(readBlocks[1]));
     const derivedWrite =
-      toFiniteNumber(explicitProvisioned?.['WriteCapacityUnits']) ??
+      coerceCfnInteger(explicitProvisioned?.['WriteCapacityUnits']) ??
       deriveWriteCapacityUnits(asRecord(writeBlock));
     if (derivedRead === undefined || derivedWrite === undefined) out.add(name);
   }
@@ -8250,7 +8330,7 @@ function toSdkReplicaThroughputOverrides(
     // defaulting to 5 (issue #1511).
     if (
       readCapacity === undefined &&
-      toFiniteNumber(explicitProvisioned?.['ReadCapacityUnits']) === undefined
+      coerceCfnInteger(explicitProvisioned?.['ReadCapacityUnits']) === undefined
     ) {
       reportUnresolvedProvisionedCapacity(
         rawRead,
@@ -8288,7 +8368,7 @@ function toSdkReplicaThroughputOverrides(
     },
     maskSecrets
   );
-  const maxReadRequestUnits = toFiniteNumber(rawMaxRead);
+  const maxReadRequestUnits = coerceCfnInteger(rawMaxRead);
   const merged = mergeExplicitThroughputBlock<{ MaxReadRequestUnits: number }>(
     explicitOnDemand,
     maxReadRequestUnits !== undefined ? { MaxReadRequestUnits: maxReadRequestUnits } : undefined,
@@ -8367,11 +8447,11 @@ export function collectTableOnDemandCeilings(
   return {
     read: {
       declared: rawRead !== undefined || isUnresolvedIntrinsicBlock(readBlock),
-      value: toFiniteNumber(rawRead),
+      value: coerceCfnInteger(rawRead),
     },
     write: {
       declared: rawWrite !== undefined || isUnresolvedIntrinsicBlock(writeBlock),
-      value: toFiniteNumber(rawWrite),
+      value: coerceCfnInteger(rawWrite),
     },
   };
 }

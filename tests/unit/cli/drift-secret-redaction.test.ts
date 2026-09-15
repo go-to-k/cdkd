@@ -3580,8 +3580,12 @@ describe('cdkd drift --revert refuses an unresolved intrinsic OBJECT baseline (i
 // select by destination (#2939). The third fix of the same PR, #2897's
 // `deepEqualUnordered` guard, is pinned in `drift-masked-leaf-preserve.test.ts`
 // through `collectNarrowedTopLevelKeys`; its `--accept` post-write observation
-// has NO case here because the drift normalisers flatten a non-plain readback
-// value (a `Date`) to `{}` before the check runs (measured; go-to-k/cdkd#3121).
+// had NO case here until issue #3121, because the drift normalisers flattened
+// a non-plain readback value (a `Date`) to `{}` before the check ran. The
+// `#3121` Date case at the end of this describe pins the persisted ISO value
+// on a resource with NO recorded secret; the post-write warning itself is a
+// regression guard there (see that case), and on a resource WITH a recorded
+// secret the redaction value walk still flattens the Date (go-to-k/cdkd#2427).
 describe('cdkd drift — the state-baseline walk and the destination-selected rules constant', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>;
 
@@ -3634,10 +3638,11 @@ describe('cdkd drift — the state-baseline walk and the destination-selected ru
   // fixture keeps the secret reference beside the exotic key.
   //
   // The key sits one level DOWN (`Environment.__proto__`) beside a drifting
-  // sibling, because a TOP-LEVEL `__proto__` cannot drift today: the
-  // comparison chain's own normalisers (`drift-normalize.ts`) rebuild both
-  // sides onto `{}` literals and drop it symmetrically — the same class one
-  // module over, filed separately, out of this file's scope.
+  // sibling: when this case was written a TOP-LEVEL `__proto__` could not
+  // drift (the comparison chain's normalisers rebuilt both sides onto `{}`
+  // literals and dropped it symmetrically). Issue #3121 closed that, and the
+  // `#3121` cases below pin the top-level key through the command; this one
+  // keeps its shape because its subject is the REVERT walk, not detection.
 
   /** The observed baseline as `JSON.parse` yields it: `Environment.__proto__` is an OWN key. */
   function protoKeyedBaseline(): Record<string, unknown> {
@@ -3689,6 +3694,181 @@ describe('cdkd drift — the state-baseline walk and the destination-selected ru
     // the exotic key arrives RESOLVED and the sibling drift is reverted.
     expect(vars['SECRET_PASSWORD']).toBe(SECRET_PLAINTEXT);
     expect(vars['PLAIN']).toBe('ok');
+  });
+
+  // --- #3121 -----------------------------------------------------------------
+  //
+  // The comparison chain's canonicalizers (`drift-normalize.ts`,
+  // `drift-principal-normalize.ts`, `cc-api-strip.ts`) rebuilt every object
+  // node onto a `{}` literal on BOTH comparison sides: an own `__proto__` key
+  // became the prototype and was dropped symmetrically (a drift there was
+  // invisible), and a `Date` readback was flattened to `{}` before the
+  // comparator saw it (phantom drift against an ISO-string baseline, and
+  // `--accept` persisted the `{}`). Both pinned through the command — the
+  // per-function cases are in the analyzer suites.
+
+  it('#3121: a drift at a TOP-LEVEL key literally named __proto__ is detected and reported', async () => {
+    const baseline = JSON.parse(
+      '{"FunctionName":"fn","__proto__":{"polluted":"base"}}'
+    ) as Record<string, unknown>;
+    expect(Object.getOwnPropertyNames(baseline)).toContain('__proto__');
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Consumer: {
+          physicalId: 'fn',
+          resourceType: LAMBDA_TYPE,
+          properties: { FunctionName: 'fn' },
+          observedProperties: baseline,
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () =>
+        JSON.parse('{"FunctionName":"fn","__proto__":{"polluted":"live"}}') as Record<
+          string,
+          unknown
+        >,
+    });
+
+    const { output } = await runDrift(['TestStack', '--json']);
+
+    const payload = JSON.parse(output) as Array<{
+      drifted: Array<{ changes: Array<{ path: string; stateValue: unknown; awsValue: unknown }> }>;
+    }>;
+    expect(payload[0]!.drifted).toHaveLength(1);
+    const change = payload[0]!.drifted[0]!.changes.find((c) => c.path === '__proto__.polluted');
+    expect(change).toEqual({ path: '__proto__.polluted', stateValue: 'base', awsValue: 'live' });
+  });
+
+  it('#3121: a Date readback reaches the comparator as a Date, and --accept persists its ISO form', async () => {
+    const when = new Date('2026-09-14T00:00:00.000Z');
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Consumer: {
+          physicalId: 'fn',
+          resourceType: LAMBDA_TYPE,
+          properties: { FunctionName: 'fn' },
+          observedProperties: { FunctionName: 'fn', Outer: { When: '2026-09-13T00:00:00.000Z' } },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ FunctionName: 'fn', Outer: { When: when } }),
+    });
+
+    await runDrift(['TestStack', '--accept', '--yes']);
+
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const saved = mockSaveState.mock.calls[0]![2];
+    const observed = saved.resources['Consumer']!.observedProperties as {
+      Outer: { When: unknown };
+    };
+    // Pre-fix the accepted value was a fresh `{}` — the flattened stand-in —
+    // and the baseline persisted `{}` at this path (measured: `Received: "{}"`
+    // under the revert). Now the Date itself is what was accepted, so the
+    // record round-trips it as its ISO string. THIS assertion is the
+    // discriminator for the canonicalizer fix; whether the NEXT run compares
+    // that string equal to the readback's `Date` is the comparator's job and
+    // is pinned by the run-2 case below.
+    expect(JSON.stringify(observed.Outer.When)).toBe('"2026-09-14T00:00:00.000Z"');
+    // A regression GUARD, not a discriminator: the #2897 post-write check
+    // calls a non-plain value equal only to ITSELF, and here it saw the very
+    // instance it accepted. Pre-fix it stayed silent too (both sides were the
+    // same `{}`, and `deepEqualUnordered` answers plain-vs-plain by keys), so
+    // this line cannot go red under this PR's mutations; it pins that the
+    // fix did not START the warning on a clean accept. Scope: this resource
+    // records NO secret, so the redaction value walk (which flattens a
+    // `Date` again — go-to-k/cdkd#2427, `secret-redaction.ts`) never runs.
+    expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(
+      'was NOT recorded'
+    );
+  });
+
+  it('#3121: run 2 after --accept compares the persisted ISO string equal to the same Date readback (0 drift)', async () => {
+    // The parent review's finding: with the canonicalizers returning the
+    // Date by identity, run 1 accepted it and persisted its ISO string, and
+    // run 2 then compared `'2026-...'` against a `Date` -- a `typeof`
+    // mismatch in `deepEqual`, reported as drift FOREVER (the pre-fix `{}`
+    // at least converged with itself). `drift-calculator.ts` now folds a
+    // non-plain `toJSON` value to its JSON form before comparing.
+    const when = new Date('2026-09-14T00:00:00.000Z');
+    const readback = async () => ({ FunctionName: 'fn', Outer: { When: when } });
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Consumer: {
+          physicalId: 'fn',
+          resourceType: LAMBDA_TYPE,
+          properties: { FunctionName: 'fn' },
+          observedProperties: { FunctionName: 'fn', Outer: { When: '2026-09-13T00:00:00.000Z' } },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({ readCurrentState: readback });
+    await runDrift(['TestStack', '--accept', '--yes']);
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    // The record as run 2 reads it back: a JSON round-trip, exactly what S3
+    // hands the next command (the in-memory Date must not leak across).
+    const persisted = JSON.parse(JSON.stringify(mockSaveState.mock.calls[0]![2])) as StackState;
+    expect(
+      (persisted.resources['Consumer']!.observedProperties as { Outer: { When: unknown } }).Outer
+        .When
+    ).toBe('2026-09-14T00:00:00.000Z');
+
+    // Run 2: the same Date comes back from AWS.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce({ state: persisted, etag: '"etag-2"' });
+    const { output } = await runDrift(['TestStack', '--json']);
+
+    const payload = JSON.parse(output) as Array<{
+      drifted: Array<{ logicalId: string; changes: Array<{ path: string }> }>;
+      clean: Array<{ logicalId: string }>;
+    }>;
+    expect(payload[0]!.drifted).toEqual([]);
+    expect(payload[0]!.clean.map((c) => c.logicalId)).toEqual(['Consumer']);
+  });
+
+  it('#3121: the same convergence for a Date INSIDE AN ARRAY, which only deepEqual folds (PR #3148 delta review)', async () => {
+    // `diffAt` descends objects itself, so the case above exercises only its
+    // own fold; an array is compared by `deepEqual` and never descended, so a
+    // `Date` element reaches ONLY `deepEqual`'s fold. Deleting that fold left
+    // every existing case green (delta probe) -- this one goes RED. Run 2's
+    // readback is a FRESH Date instance so identity cannot be the pass route.
+    const when = new Date('2026-09-14T00:00:00.000Z');
+    let readbackWhen = when;
+    const readback = async () => ({ FunctionName: 'fn', Items: [{ At: readbackWhen }] });
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Consumer: {
+          physicalId: 'fn',
+          resourceType: LAMBDA_TYPE,
+          properties: { FunctionName: 'fn' },
+          observedProperties: { FunctionName: 'fn', Items: [{ At: '2026-09-13T00:00:00.000Z' }] },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({ readCurrentState: readback });
+    await runDrift(['TestStack', '--accept', '--yes']);
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const persisted = JSON.parse(JSON.stringify(mockSaveState.mock.calls[0]![2])) as StackState;
+    expect(
+      (persisted.resources['Consumer']!.observedProperties as { Items: Array<{ At: unknown }> })
+        .Items[0]!.At
+    ).toBe('2026-09-14T00:00:00.000Z');
+
+    readbackWhen = new Date(when.getTime());
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce({ state: persisted, etag: '"etag-2"' });
+    const { output } = await runDrift(['TestStack', '--json']);
+    const payload = JSON.parse(output) as Array<{
+      drifted: Array<{ logicalId: string }>;
+      clean: Array<{ logicalId: string }>;
+    }>;
+    expect(payload[0]!.drifted).toEqual([]);
+    expect(payload[0]!.clean.map((c) => c.logicalId)).toEqual(['Consumer']);
   });
 
   // --- #2939 -----------------------------------------------------------------

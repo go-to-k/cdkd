@@ -28,7 +28,27 @@
  * `properties`-fallback baseline (a resource deployed before observed-capture,
  * whose baseline is the user's TEMPLATE order). Sorting only the AWS read side
  * would manufacture drift on exactly that path.
+ *
+ * Every object arm below returns a NON-PLAIN object (a `Date` the raw SDK
+ * readback carries, a `Uint8Array`) BY IDENTITY and rebuilds a plain one onto
+ * a NULL-prototype record (issue
+ * [#3121](https://github.com/go-to-k/cdkd/issues/3121), the analyzer-side
+ * population of the class PR #3124 closed in `drift.ts`). A `{}` literal
+ * rebuild had two consequences, both on the COMPARISON copies: an own
+ * `__proto__` key (what `JSON.parse` yields from `state.json`) became the
+ * rebuilt node's prototype and was dropped on BOTH sides, so a drift at that
+ * key was invisible; and `Object.entries(new Date())` is `[]`, so a `Date`
+ * member was flattened to `{}` before `calculateResourceDrift` could see it
+ * (phantom drift against an ISO-string baseline, and `--accept` persisted the
+ * `{}`). The identity return is what makes the second visible to the
+ * comparator; the null-prototype target is what keeps the first an own key.
+ * One layer LATER the same flattening survives in `secret-redaction.ts`'s
+ * value walk, which `--accept` runs over a resource that RECORDS a secret
+ * (issue #2427) -- so the ISO string reaches the baseline only where that
+ * walk does not run.
  */
+
+import { hasPlainPrototype, nullPrototypeRecord } from '../utils/own-keys.js';
 
 export function canonicalizeTagListsDeep(v: unknown): unknown {
   if (Array.isArray(v)) {
@@ -49,7 +69,8 @@ export function canonicalizeTagListsDeep(v: unknown): unknown {
     return mapped;
   }
   if (v && typeof v === 'object') {
-    const out: Record<string, unknown> = {};
+    if (!hasPlainPrototype(v)) return v;
+    const out = nullPrototypeRecord();
     for (const [k, val] of Object.entries(v as Record<string, unknown>))
       out[k] = canonicalizeTagListsDeep(val);
     return out;
@@ -69,7 +90,8 @@ export function canonicalizeIdArraysDeep(v: unknown): unknown {
     return mapped;
   }
   if (v && typeof v === 'object') {
-    const out: Record<string, unknown> = {};
+    if (!hasPlainPrototype(v)) return v;
+    const out = nullPrototypeRecord();
     for (const [k, val] of Object.entries(v as Record<string, unknown>))
       out[k] = canonicalizeIdArraysDeep(val);
     return out;
@@ -238,7 +260,8 @@ function walkUnordered(v: unknown, path: string, paths: readonly string[]): unkn
     return mapped;
   }
   if (v && typeof v === 'object') {
-    const out: Record<string, unknown> = {};
+    if (!hasPlainPrototype(v)) return v;
+    const out = nullPrototypeRecord();
     for (const [k, val] of Object.entries(v as Record<string, unknown>))
       out[k] = walkUnordered(val, path === '' ? k : `${path}.${k}`, paths);
     return out;

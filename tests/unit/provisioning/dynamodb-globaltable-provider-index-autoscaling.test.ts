@@ -301,6 +301,102 @@ describe('DynamoDBGlobalTable per-index auto-scaling (issue #1419)', () => {
         .toMatchObject({ MinCapacity: 5, MaxCapacity: 50 });
     });
 
+    // Issue #3135: `MinCapacity` / `MaxCapacity` reach `RegisterScalableTarget`
+    // through the SAME reader `pickAutoScalingCapacity` takes the member
+    // through for the table's own capacity (`coerceCfnInteger`, CloudFormation's
+    // measured DynamoDB Integer grammar), so a padded `" 7 "` -- which
+    // `Number()` read as 7 -- takes the block's existing warn-and-skip arm
+    // instead of registering a target the capacity derivation beside it had
+    // already refused.
+    it('SKIPS registering a dimension whose MinCapacity is a spelling CloudFormation rejects, and says which (#3135)', async () => {
+      const props = structuredClone(AUTOSCALED_PROPS) as Record<string, unknown>;
+      const gsi = (props['GlobalSecondaryIndexes'] as Array<Record<string, unknown>>)[0]!;
+      gsi['WriteProvisionedThroughputSettings'] = {
+        WriteCapacityAutoScalingSettings: { ...INDEX_WRITE_AS, MinCapacity: ' 7 ' },
+      };
+      // MaxCapacity takes the SAME arm through its own read: the table-level
+      // write dimension carries a hex max (probe: reverting the max read
+      // alone stayed green when only the index min was padded).
+      props['WriteProvisionedThroughputSettings'] = {
+        WriteCapacityAutoScalingSettings: { ...TABLE_WRITE_AS, MaxCapacity: '0x9' },
+      };
+
+      await provider.create('Prov', RESOURCE_TYPE, props);
+
+      const dims = registerInputs().map(
+        (i) => `${String(i['ScalableDimension'])}|${String(i['ResourceId'])}`
+      );
+      // The two READ dimensions still register; neither write one does.
+      expect(dims.sort()).toEqual(
+        [
+          `dynamodb:table:ReadCapacityUnits|table/${TABLE_NAME}`,
+          `dynamodb:index:ReadCapacityUnits|table/${TABLE_NAME}/index/gsi1`,
+        ].sort()
+      );
+      const skips = warnSpy.mock.calls
+        .map((c) => String(c[0]))
+        .filter((m) => m.includes('MinCapacity / MaxCapacity must be integers CloudFormation accepts'));
+      expect(skips).toHaveLength(2);
+      expect(skips.find((m) => m.includes('dynamodb:index:WriteCapacityUnits'))).toContain(' 7 ');
+      expect(skips.find((m) => m.includes('dynamodb:table:WriteCapacityUnits'))).toContain('0x9');
+    });
+
+    it('registers a target whose MinCapacity / MaxCapacity are ACCEPTED string spellings, as their integers (#3135)', async () => {
+      // The accepting direction of the same read: a signed and a zero-padded
+      // digit string are what CloudFormation accepts, and they must register
+      // (a reader refusing every string would skip a valid template).
+      const props = structuredClone(AUTOSCALED_PROPS) as Record<string, unknown>;
+      const gsi = (props['GlobalSecondaryIndexes'] as Array<Record<string, unknown>>)[0]!;
+      gsi['WriteProvisionedThroughputSettings'] = {
+        WriteCapacityAutoScalingSettings: { ...INDEX_WRITE_AS, MinCapacity: '+5', MaxCapacity: '010' },
+      };
+
+      await provider.create('Prov', RESOURCE_TYPE, props);
+
+      const target = registerInputs().find(
+        (i) =>
+          i['ScalableDimension'] === 'dynamodb:index:WriteCapacityUnits' &&
+          i['ResourceId'] === `table/${TABLE_NAME}/index/gsi1`
+      );
+      expect(target).toMatchObject({ MinCapacity: 5, MaxCapacity: 10 });
+      expect(
+        warnSpy.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('must be integers'))
+      ).toEqual([]);
+    });
+
+    it('OMITS a cooldown spelled a way CloudFormation rejects, announces it, and still sends the policy (#3135)', async () => {
+      const props = structuredClone(AUTOSCALED_PROPS) as Record<string, unknown>;
+      const replica = (props['Replicas'] as Array<Record<string, unknown>>)[0]!;
+      replica['ReadProvisionedThroughputSettings'] = {
+        ReadCapacityAutoScalingSettings: {
+          ...TABLE_READ_AS,
+          TargetTrackingScalingPolicyConfiguration: {
+            TargetValue: 55,
+            ScaleInCooldown: '1e1',
+            ScaleOutCooldown: '+30',
+          },
+        },
+      };
+
+      await provider.create('Prov', RESOURCE_TYPE, props);
+
+      const tableRead = policyInputs().find(
+        (p) => p['PolicyName'] === `DynamoDBReadCapacityUtilization:table/${TABLE_NAME}`
+      );
+      expect(tableRead).toBeDefined();
+      const cfg = tableRead!['TargetTrackingScalingPolicyConfiguration'] as Record<string, unknown>;
+      // The accepted signed spelling is forwarded as its integer; the
+      // exponent spelling -- `Number('1e1')` is 10 -- is ABSENT, not 10 and
+      // not NaN.
+      expect(cfg['ScaleOutCooldown']).toBe(30);
+      expect(Object.keys(cfg)).not.toContain('ScaleInCooldown');
+      const omitted = warnSpy.mock.calls
+        .map((c) => String(c[0]))
+        .find((m) => m.includes('ScaleInCooldown is not an integer CloudFormation accepts'));
+      expect(omitted).toBeDefined();
+      expect(omitted).toContain('"1e1"');
+    });
+
     it('attaches a target-tracking policy per dimension, named the AWS way', async () => {
       await provider.create('Prov', RESOURCE_TYPE, AUTOSCALED_PROPS);
 

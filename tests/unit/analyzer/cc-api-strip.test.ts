@@ -111,3 +111,43 @@ describe('stripCcApiAwsManagedFields', () => {
     expect(result['b']).not.toBe(input.b);
   });
 });
+
+// Issue #3121: the strip walk rebuilt every object node onto a `{}` literal on
+// its way to the comparison copy, so an own `__proto__` key in the
+// `JSON.parse`d Cloud Control `Properties` document became the prototype and
+// vanished, and a non-plain member was flattened to `{}`. Assertions read
+// `Object.getOwnPropertyNames` / JSON text, never an object-literal
+// `{ __proto__: ... }` expectation, which would SET the prototype and encode
+// the bug.
+describe('stripCcApiAwsManagedFields keeps an own __proto__ key and a non-plain value (#3121)', () => {
+  it('keeps a top-level and a nested own __proto__ key while still stripping beside them', () => {
+    const input = JSON.parse(
+      '{"__proto__":{"polluted":"base"},"A":"a","CreationDate":"x","Nested":{"__proto__":{"deep":1},"LastModifiedTime":"y","B":"b"}}'
+    ) as Record<string, unknown>;
+    expect(Object.getOwnPropertyNames(input)).toContain('__proto__');
+
+    const out = stripCcApiAwsManagedFields('AWS::Foo::Bar', input);
+
+    // The strip still ran (the walk really rebuilt these nodes)...
+    expect(Object.getOwnPropertyNames(out)).not.toContain('CreationDate');
+    expect(Object.getOwnPropertyNames(out['Nested'] as object)).not.toContain('LastModifiedTime');
+    // ...and the exotic key survived as a KEY at both depths.
+    expect(Object.getOwnPropertyNames(out)).toContain('__proto__');
+    expect(Object.getOwnPropertyNames(out['Nested'] as object)).toContain('__proto__');
+    expect((out as { polluted?: unknown }).polluted).toBeUndefined();
+    expect(JSON.stringify(out)).toBe(
+      '{"__proto__":{"polluted":"base"},"A":"a","Nested":{"__proto__":{"deep":1},"B":"b"}}'
+    );
+  });
+
+  it('returns a non-plain member by identity instead of flattening it to {}', () => {
+    const when = new Date('2026-09-14T00:00:00.000Z');
+    const input = { Outer: { When: when, CreationDate: 'x' } };
+
+    const out = stripCcApiAwsManagedFields('AWS::Foo::Bar', input);
+
+    const outer = out['Outer'] as Record<string, unknown>;
+    expect(outer['When']).toBe(when);
+    expect(Object.getOwnPropertyNames(outer)).toEqual(['When']);
+  });
+});

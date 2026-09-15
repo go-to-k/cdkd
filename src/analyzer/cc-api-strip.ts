@@ -31,8 +31,15 @@
  *
  * Strips are shallow only — fields are removed if they appear at any
  * depth (recursive walk) but the values themselves are not modified.
- * Arrays are walked element-wise.
+ * Arrays are walked element-wise. The rebuild target is a NULL-prototype
+ * record and a non-plain object is returned by identity, for the reason
+ * `drift-normalize.ts`'s header gives (issue #3121): the walk feeds the
+ * comparison copy, so a `{}` literal rebuild dropped an own `__proto__` key
+ * (which the `JSON.parse`d `Properties` document can carry) and flattened a
+ * non-plain member to `{}`.
  */
+
+import { hasPlainPrototype, nullPrototypeRecord } from '../utils/own-keys.js';
 
 /**
  * Field names AWS attaches to nearly every resource. These are NOT user
@@ -139,7 +146,8 @@ function stripWalk(value: unknown): unknown {
     return value.map(stripWalk);
   }
   if (typeof value === 'object') {
-    const out: Record<string, unknown> = {};
+    if (!hasPlainPrototype(value)) return value;
+    const out = nullPrototypeRecord();
     for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
       if (ALWAYS_STRIPPED_FIELDS.has(key)) continue;
       out[key] = stripWalk(child);
