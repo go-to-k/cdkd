@@ -572,11 +572,13 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
   });
 
   it('the pasted `--orphan` remedy is WITHHELD for a NON-STRING id (the gate must not coerce)', async () => {
-    // The journal parser validates no per-op field, so `logicalId` can arrive
-    // as a number. `RegExp.test` coerces (`test(123)` -> "123" passes), and
-    // the property lookups coerce the same way, so the op reaches the
-    // collision path with state keyed `'123'` -- and the remedy would read
-    // `--orphan 123`, a command that pastes but names nothing.
+    // `parseRollbackJournal` refuses a non-string `logicalId` (issue #3140),
+    // but the deploy engine's in-process rollback reaches this executor with
+    // ops it built itself, so the executor keeps its own guard. `RegExp.test`
+    // coerces (`test(123)` -> "123" passes), and the property lookups coerce
+    // the same way, so the op reaches the collision path with state keyed
+    // `'123'` -- and the remedy would read `--orphan 123`, a command that
+    // pastes but names nothing.
     const create = vi.fn().mockRejectedValue(new Error('Queue already exists'));
     const { ctx, lines } = makeCtx({ create, delete: vi.fn().mockResolvedValue(undefined) });
     const ops: CompletedOperation[] = [

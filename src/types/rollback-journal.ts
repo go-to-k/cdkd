@@ -122,9 +122,73 @@ function safeJournalText(value: unknown): string {
 }
 
 /**
+ * The per-operation shape check (issue #3140). The journal is an unchecked
+ * cast beyond `journalVersion` and `segments` being an array, and the
+ * executor keys EVERY lookup on `op.logicalId` -- `stateResources[..]`,
+ * `orphanLogicalIds.has(..)`, the events it records -- so a non-string id
+ * planted in the bucket either coerces at each lookup (`123` finds the
+ * record named `'123'`) or throws a raw `TypeError` at the first one (an
+ * object whose `toString` is not callable, the issue #2947 shape). Refused
+ * HERE, once, so no downstream reader has to remember; the executor keeps its
+ * own `typeof` guard on the one pasted command as defense-in-depth, because
+ * the deploy engine's in-process rollback reaches it without this parser.
+ *
+ * Only the fields a lookup or a route is keyed on: `logicalId` (non-empty
+ * string), `resourceType` (string), `changeType` (string -- an unknown value
+ * lands on the executor's UPDATE arm by design, pinned by a case there), and
+ * `physicalId` when present (string). `previousState` and the rest stay as
+ * they were; a bad value there fails the op it belongs to, not the parse.
+ *
+ * The refusal names the INDEX and the TYPE, never the value -- there is
+ * nothing to sanitize, so nothing to get wrong.
+ */
+function refuseMalformedOperation(shownStack: string, where: string, op: unknown): void {
+  const fail = (field: string, value: unknown, expected: string): never =>
+    refuseMalformed(shownStack, `${where}.${field} must be ${expected} (got ${kind(value)}).`);
+  if (typeof op !== 'object' || op === null || Array.isArray(op)) {
+    refuseMalformed(shownStack, `${where} must be an object (got ${kind(op)}).`);
+  }
+  const o = op as Record<string, unknown>;
+  if (typeof o['logicalId'] !== 'string' || o['logicalId'].length === 0) {
+    fail('logicalId', o['logicalId'], 'a non-empty string');
+  }
+  if (typeof o['resourceType'] !== 'string') fail('resourceType', o['resourceType'], 'a string');
+  if (typeof o['changeType'] !== 'string') fail('changeType', o['changeType'], 'a string');
+  if (o['physicalId'] !== undefined && typeof o['physicalId'] !== 'string') {
+    fail('physicalId', o['physicalId'], 'a string when present');
+  }
+}
+
+/** The TYPE of a JSON-derived value, for a refusal that must not echo the value. */
+function kind(v: unknown): string {
+  return v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v;
+}
+
+/**
+ * The one spelling of a malformed-journal refusal. `detail` is built from
+ * indices, field names and `kind()` words only -- never a journal value -- and
+ * every refusal names the way out, as `UnknownRollbackJournalVersionError`
+ * names `Upgrade cdkd`: the journal is a sibling of `state.json`, so removing
+ * that one object discards it (`cdkd destroy` sweeps it as well), and no
+ * other stack is affected because `cdkd rollback` never parses another
+ * stack's journal. The same text reaches the deploy engine's `Failed to write
+ * rollback journal` warning, since appending a segment parses the existing
+ * journal first.
+ */
+function refuseMalformed(shownStack: string, detail: string): never {
+  throw new Error(
+    `Rollback journal for '${shownStack}' is malformed: ${detail} ` +
+      `Remove the stack's rollback-journal.json (next to its state.json) to discard it.`
+  );
+}
+
+/**
  * Parse + validate a journal body. Throws
  * {@link UnknownRollbackJournalVersionError} on a newer version, and a plain
- * Error on a structurally-invalid body.
+ * Error on a structurally-invalid body -- including, since issue #3140, a
+ * segment that is not an object, an `operations` that is not an array, and an
+ * operation whose `logicalId` / `resourceType` / `changeType` / `physicalId`
+ * is not the string the executor keys on (see `refuseMalformedOperation`).
  */
 export function parseRollbackJournal(bodyString: string, stackName: string): RollbackJournal {
   // The ASCII allowlist, and the same reasoning `S3StateBackend.parseStateBody`
@@ -185,6 +249,33 @@ export function parseRollbackJournal(bodyString: string, stackName: string): Rol
   if (!Array.isArray(j.segments)) {
     throw new Error(`Rollback journal for '${shownStack}' is missing a 'segments' array.`);
   }
+  j.segments.forEach((segment: unknown, s) => {
+    if (typeof segment !== 'object' || segment === null || Array.isArray(segment)) {
+      refuseMalformed(shownStack, `segments[${s}] must be an object (got ${kind(segment)}).`);
+    }
+    const seg = segment as Record<string, unknown>;
+    if (!Array.isArray(seg['operations'])) {
+      refuseMalformed(
+        shownStack,
+        `segments[${s}].operations must be an array (got ${kind(seg['operations'])}).`
+      );
+    }
+    seg['operations'].forEach((op: unknown, i) =>
+      refuseMalformedOperation(shownStack, `segments[${s}].operations[${i}]`, op)
+    );
+    if (seg['failedOperations'] !== undefined) {
+      if (!Array.isArray(seg['failedOperations'])) {
+        refuseMalformed(
+          shownStack,
+          `segments[${s}].failedOperations must be an array when present ` +
+            `(got ${kind(seg['failedOperations'])}).`
+        );
+      }
+      seg['failedOperations'].forEach((op: unknown, i) =>
+        refuseMalformedOperation(shownStack, `segments[${s}].failedOperations[${i}]`, op)
+      );
+    }
+  });
   return {
     journalVersion: j.journalVersion,
     stackName: j.stackName ?? stackName,

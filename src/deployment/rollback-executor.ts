@@ -2582,9 +2582,11 @@ async function replaySingle(
                     // under `safe()` and is expanded by the user's shell before
                     // cdkd sees it. Otherwise the user is told why it is withheld
                     // and where to read it.
-                    // `typeof` first: `RegExp.test` coerces, so a journal whose
-                    // `logicalId` is not a string (the parser validates no per-op
-                    // field) would otherwise print `--orphan undefined` / `123`.
+                    // `typeof` first: `RegExp.test` coerces, so a non-string
+                    // `logicalId` would otherwise print `--orphan undefined` /
+                    // `123`. `parseRollbackJournal` refuses one since issue
+                    // #3140, but the deploy engine's in-process rollback reaches
+                    // this executor without that parser -- defense-in-depth.
                     (typeof op.logicalId === 'string' && PASTEABLE_LOGICAL_ID.test(op.logicalId)
                       ? `\`cdkd rollback --orphan ${op.logicalId}\`: one op failure stops the `
                       : `\`cdkd rollback --orphan <id>\` (the id is withheld: it is not a plain ` +
