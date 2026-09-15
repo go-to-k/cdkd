@@ -154,8 +154,14 @@ describe('a number or boolean Fn::Join part is literal text to the intrinsic par
           unknown
         >;
 
+        // `toBe(written)` is the whole claim: the leaf's own `/pub/8080` is in
+        // no store, the bag or the source (redaction never resolves the
+        // `Prefix` Ref), so no implementation could write it and a
+        // `not.toBe` against it would measure nothing (issue #3143). What
+        // lets the wrong reference through is asserted above: the map's
+        // survivor is `/sec/9090`, so condition 3 has no plaintext of
+        // `/sec/8080`'s own to refuse it by.
         expect(persisted['Password']).toBe(written);
-        expect(persisted['Password']).not.toBe('{{resolve:ssm:/pub/8080}}');
       });
     }
   });

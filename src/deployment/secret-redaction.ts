@@ -3061,7 +3061,11 @@ const UNKNOWN_PART_PLACEHOLDER = '\u0000';
  * longer equals the leaf's text around the middle, so the arm refuses) -- and,
  * through the frame arm's rewrite, for the nested-stack parameter recorder's
  * `frameSpellingOf`, which carries a framed parameter to the child only when
- * that arm wrote it. The recorder's own rendering of such a part does not
+ * the position pass rewrote it -- which, on a value the recorder's gate (ii)
+ * finds the scan silent on, only the frame arm can do (the value scan, the
+ * skeleton arm and the cross-stack arm each rewrite an object-sourced leaf
+ * whose WHOLE value is a recorded plaintext, and (ii) is what refuses that
+ * value). The recorder's own rendering of such a part does not
  * decide the case: a part outside the token leaves its one span and service
  * prefix the same either way.
  *
@@ -3397,8 +3401,15 @@ function positionByCrossStackSource(
  * the source leaf is an `Fn::Join` / `Fn::Sub` there is none, so the leaf fell
  * to the value scan — and the value map is keyed by the resolved PLAINTEXT, so
  * a colliding pair collapses there exactly as it did before #1904. That is the
- * DOMINANT CDK shape rather than an edge case: any secret reached through an L2
- * token renders the secret ARN as a `Ref`, hence an `Fn::Join`.
+ * DOMINANT CDK shape rather than an edge case: a secret reached through an L2
+ * token usually renders the secret ARN as a `Ref`, hence an `Fn::Join`. The
+ * exceptions render a plain `{{resolve:...}}` string, which the literal arm
+ * already positions: a secret imported by a LITERAL ARN
+ * (`Secret.fromSecretCompleteArn` / `fromSecretPartialArn`, whose
+ * `secretValue` and `secretValueFromJson` both inline it),
+ * `SecretValue.secretsManager('<literal arn>')` and
+ * `SecretValue.ssmSecure(...)` (synth-probed on this repo's aws-cdk-lib,
+ * issue #3143; `new Secret(...)` and `fromSecretNameV2` are the join).
  *
  * Three conditions must ALL hold before an expression is persisted, and each
  * removes a different way of being wrong:
