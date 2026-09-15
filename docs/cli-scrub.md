@@ -301,7 +301,7 @@ indistinguishable from an empty stack.
 
 **What a real run can report as `1`.** `--fail` is documented as a
 `--dry-run` CI gate, but a real run exits non-zero too when it found a leak it
-cannot rewrite. Two shapes qualify, and both are also reported in words:
+cannot rewrite. Three shapes qualify, and all three are also reported in words:
 
 - a **state KEY** holding a secret, which needs an `Export.Name` change plus a
   redeploy: `N output KEY(s) in <stack> hold plaintext and CANNOT be scrubbed`;
@@ -318,6 +318,30 @@ cannot rewrite. Two shapes qualify, and both are also reported in words:
 
 - a **cross-stack read cdkd declines by design**:
   `N cross-stack read(s) in <stack> could NOT be verified`.
+
+- a **record whose `{{resolve:...}}` scan was ABANDONED part-way**:
+  `N record(s) in <stack> had a {{resolve:...}} scan ABANDONED because a
+  reference could not be resolved`.
+
+  The resolver stops at the first `{{resolve:...}}` token it cannot resolve —
+  a deleted SSM parameter, a secret with no `SecretString`, a missing
+  `JSON_KEY`, a secret that is not JSON, or an AWS rejection such as
+  `ParameterNotFound` / `AccessDeniedException` — and every later token in the
+  SAME value is then never resolved, so it contributes no needle. A plaintext
+  sitting behind such a token therefore survives a scan that finds nothing.
+  cdkd cannot rewrite it (there is no needle to match) and does not refuse the
+  stack, so it is reported and counted instead, and each record is named in a
+  warning at default verbosity. Resolve the reference — restore the parameter
+  or secret — and re-run; the count going to zero is what certifies the record.
+
+  **A scan stopped by a TEMPLATE failure is warned but does NOT fail `--fail`.**
+  One throw aborts the whole properties bag, and some of those throws have
+  nothing to do with fetching a reference: an unresolvable `Ref` or
+  `Fn::GetAtt`, or a parameter with no `Default`. `scrub` resolves with template
+  DEFAULTS and takes no `--parameters`, so it cannot bind those — failing the
+  gate on them would red a CI build with no action available to clear it. You
+  still get a warning naming the record, because the leaf really was left
+  unscanned: fix the template reference and re-run to certify it.
 
 ## Refusals
 

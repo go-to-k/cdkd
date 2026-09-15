@@ -3855,6 +3855,7 @@ describe('cdkd scrub names WHICH arm declined a cross-stack read (issue #2163)',
       secretsFound: 0,
       secretBearingKeys: 0,
       unverifiableReads: 0,
+      unverifiableLeaves: 0,
       // The post-scrub bag `scrubStack` reports for the exports-index step
       // (issue #2667). Present and EMPTY here: this fixture's state record
       // carries no outputs, and the field is what the index converges an

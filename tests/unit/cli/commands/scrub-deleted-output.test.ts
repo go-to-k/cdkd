@@ -64,7 +64,13 @@ const RESOLVES: Record<string, string> = {
   [FLOOR_EXPR]: FLOOR_PLAINTEXT,
 };
 
-vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', () => ({
+// The spread is load-bearing: `scrub.ts` imports pure helpers from this module
+// besides the resolver class — `carriesDynamicReference`, behind the
+// abandoned-scan counter (go-to-k/cdkd#3160). A class-only factory makes each
+// one an undefined export, so the first case here that makes `resolve` REJECT
+// fails with a mock error instead of its own assertion.
+vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../../src/deployment/intrinsic-function-resolver.js')>()),
   IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
     resolveParameters: vi.fn().mockResolvedValue({}),
     evaluateConditions: vi.fn().mockResolvedValue({}),

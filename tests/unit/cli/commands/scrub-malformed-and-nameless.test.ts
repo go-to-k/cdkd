@@ -35,6 +35,12 @@
  * REACHED and re-raises, not that any one site is independently necessary. The
  * whole-predicate mutation (`return false`) is what covers the set, and it
  * reds 3 cases.
+ *
+ * The go-to-k/cdkd#3160 COUNTER has the same property and the same bound,
+ * measured the same way: deleting all four `unverifiableLeaves++` sites reds 4
+ * cases, deleting one reds none. Its own negative control is separate — a
+ * stack whose references all resolve must count ZERO, or a counter that
+ * incremented unconditionally would satisfy every positive case.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
@@ -44,7 +50,14 @@ import type { CloudFormationTemplate } from '../../../../src/types/resource.js';
 /** Thrown by the fake resolver when a case asks for it. */
 let resolveThrows: Error | undefined;
 
-vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', () => ({
+// `importActual` for everything but the resolver class: `carriesDynamicReference`
+// is a pure predicate scrub uses to decide whether an abandoned resolve had a
+// `{{resolve:...}}` in it at all, and stubbing it would make these cases assert
+// against a fake answer to the very question under test.
+vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', async () => ({
+  ...(await vi.importActual<
+    typeof import('../../../../src/deployment/intrinsic-function-resolver.js')
+  >('../../../../src/deployment/intrinsic-function-resolver.js')),
   IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
     resolveParameters: vi.fn().mockResolvedValue({}),
     evaluateConditions: vi.fn().mockResolvedValue({}),
@@ -91,7 +104,17 @@ function stackInfo(): { stackName: string; template: CloudFormationTemplate } {
           // fixture needs to reach. Measured: a LITERAL name leaves that site
           // unreached (it needs no resolving), so the intrinsic is
           // load-bearing here, not decoration.
-          Export: { Name: { 'Fn::Sub': '${AWS::StackName}-db-endpoint' } },
+          // The `{{resolve:ssm-secure}}` inside the name is what reaches the
+          // FOURTH counter site, and it is load-bearing twice over. The
+          // intrinsic alone only gets the catch to RUN (the sibling
+          // `Export.Name of output ... could not be resolved` warn fires either
+          // way); the counter is POSITIONAL, so without a `{{resolve:` in the
+          // name `carriesDynamicReference(nameSource)` is false and that site
+          // silently contributes nothing. An earlier revision of this fixture
+          // had the plain `${AWS::StackName}-db-endpoint` name and recorded
+          // that as "the harness cannot reach the site" — it reached it, and
+          // the predicate declined. Measured: with this name the count is 4.
+          Export: { Name: { 'Fn::Sub': '${AWS::StackName}-{{resolve:ssm-secure}}' } },
         },
       },
     } as unknown as CloudFormationTemplate,
@@ -139,13 +162,19 @@ describe('cdkd scrub - refusals this PR adds (go-to-k/cdkd#2692, go-to-k/cdkd#30
 
   function run(
     state: StackState,
-    opts: { dryRun?: boolean } = {}
+    opts: { dryRun?: boolean; stack?: ReturnType<typeof stackInfo> } = {}
   ): ReturnType<typeof scrubStack> {
     stateBackend.getState.mockResolvedValue({ state, etag: 'etag-1' });
-    return scrubStack(stackInfo() as never, 'us-east-1', stateBackend as never, lockManager as never, {
-      dryRun: opts.dryRun ?? false,
-      logger: logger as never,
-    });
+    return scrubStack(
+      (opts.stack ?? stackInfo()) as never,
+      'us-east-1',
+      stateBackend as never,
+      lockManager as never,
+      {
+        dryRun: opts.dryRun ?? false,
+        logger: logger as never,
+      }
+    );
   }
 
   const healthy = (): StackState =>
@@ -190,12 +219,185 @@ describe('cdkd scrub - refusals this PR adds (go-to-k/cdkd#2692, go-to-k/cdkd#30
       await expect(run(healthy())).resolves.toBeDefined();
     });
 
-    it('does NOT re-raise a dynamic-reference RESOLUTION failure', async () => {
-      // scrub resolves with template DEFAULTS and no `--parameters`, so an
-      // Fn::Sub that keeps its raw `${Field}` produces this on a HEALTHY
-      // stack. Refusing on it refuses those stacks — go-to-k/cdkd#3160.
-      resolveThrows = new Error("Dynamic reference: key '${Field' not found in secret 'x'");
-      await expect(run(healthy())).resolves.toBeDefined();
+    // The population is the ABANDONMENT, not a message vocabulary. The first
+    // cut keyed on the `Dynamic reference: ` prefix and so counted only the
+    // resolver's OWN prose -- missing the dominant class, because
+    // `GetParameter` / `GetSecretValue` go through `sendWithThrottleRetry`,
+    // which rethrows an AWS rejection RAW. A genuinely deleted parameter
+    // raises `ParameterNotFound` from the SDK; the prefixed
+    // "SSM parameter ... not found or has no value" string fires only on a 200
+    // whose `Parameter.Value` is absent. The table below therefore carries BOTH
+    // shapes, and the SDK ones are this issue's own headline repro.
+    const ABANDONING: ReadonlyArray<readonly [string, Error]> = [
+      // The resolver's own prose.
+      ['no SecretString', new Error("Dynamic reference: secret 'x' does not contain a SecretString value")],
+      ['missing JSON_KEY', new Error("Dynamic reference: key '${Field' not found in secret 'x'")],
+      ['non-JSON secret', new Error("Dynamic reference: secret 'x' is not valid JSON but JSON_KEY 'k' was specified")],
+      ['200 with no Value', new Error("Dynamic reference: SSM parameter '/p' not found or has no value")],
+      // Raw SDK rejections -- rethrown verbatim, no prefix.
+      ['deleted SSM parameter', Object.assign(new Error('Parameter /deleted not found.'), { name: 'ParameterNotFound' })],
+      ['deleted secret', Object.assign(new Error("Secrets Manager can't find the specified secret."), { name: 'ResourceNotFoundException' })],
+      ['denied secret', Object.assign(new Error('User is not authorized to perform secretsmanager:GetSecretValue'), { name: 'AccessDeniedException' })],
+      ['secret pending deletion', Object.assign(new Error('You can\'t perform this operation on the secret because it was marked for deletion.'), { name: 'InvalidRequestException' })],
+      ['KMS decryption failure', Object.assign(new Error('Secrets Manager cannot decrypt the protected secret text.'), { name: 'DecryptionFailure' })],
+      // A refusal that is neither prefixed nor an SDK error.
+      ['ssm-secure over a public parameter', new Error('Refusing to resolve ssm-secure against a String parameter')],
+    ];
+
+    for (const [label, error] of ABANDONING) {
+      it(`counts, but does NOT re-raise, an abandoned scan: ${label}`, async () => {
+        resolveThrows = error;
+        const result = await run(healthy());
+        expect(result).toBeDefined();
+        // EXACT, not `> 0`, so deleting any ONE counter site reds this —
+        // per-site coverage the sibling PREDICATE genuinely cannot have (a
+        // rejection travels to the next catch) but a counter can, because
+        // counters do not short-circuit.
+        //
+        // FOUR — one per counter site: the resource bag, the orphan record,
+        // the output's `Export.Name` and the output's VALUE. The `Export.Name`
+        // site is reached only because `healthy()`'s export name carries a
+        // `{{resolve:...}}`; see the comment on it for why the intrinsic alone
+        // is not enough.
+        expect(
+          result.unverifiableLeaves,
+          `the leaf abandoned by ${label} was counted ${result.unverifiableLeaves} time(s), ` +
+            'expected one per counter site. A lower number means a site stopped counting and ' +
+            'the run can report a stack clean over a scan that stopped early ' +
+            '(go-to-k/cdkd#3160).'
+        ).toBe(4);
+
+        // The count is only actionable if the operator can tell WHICH record
+        // it belongs to, and the summary line says "see the warnings above" —
+        // so the per-record line must be a `warn`, not the `debug` the first
+        // cut used. Three of the four sites logged only at `debug`, which made
+        // that sentence false at default verbosity.
+        const warned = logger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned, 'the abandoned resource record was not named at default verbosity').toContain(
+          "resource 'Db'"
+        );
+        expect(warned, 'the abandoned orphan record was not named at default verbosity').toContain(
+          "orphan record 'OldDb'"
+        );
+        // Anchored on `scan of output`, NOT the bare `output 'DbEndpoint'`:
+        // the Export.Name site's message CONTAINS that substring
+        // ("...scan of the Export.Name of output 'DbEndpoint'"), so the bare
+        // form is satisfied by either site and discriminates neither.
+        expect(warned, 'the abandoned output VALUE was not named at default verbosity').toContain(
+          "scan of output 'DbEndpoint'"
+        );
+        expect(
+          warned,
+          'the abandoned Export.Name was not named at default verbosity'
+        ).toContain("scan of the Export.Name of output 'DbEndpoint'");
+      });
+    }
+
+    // The round-2 blocker, as a case rather than as a comment. A bag can carry
+    // a `{{resolve:...}}` and still fail for a reason that has nothing to do
+    // with fetching it — this catch is documented as existing for exactly that
+    // (a `Ref` to something not in state). Counting those reds `--dry-run
+    // --fail`, the documented STANDING CI gate, on a healthy stack, and the
+    // operator cannot clear it: `scrubStack` catches `resolveParameters`
+    // wholesale and carries on with an EMPTY parameter bag, so ONE parameter
+    // with no `Default` makes every `{Ref: <param>}` in the stack throw.
+    const TEMPLATE_SHAPE: ReadonlyArray<readonly [string, string]> = [
+      ['a Ref to a resource not in state', 'Ref MyBucket not found'],
+      ['a Fn::GetAtt to a resource not in state', 'Resource MyBucket not found for Fn::GetAtt'],
+      [
+        'a parameter with no Default and no supplied value',
+        'Parameter DbName is required but no value was provided and no default exists',
+      ],
+    ];
+
+    for (const [label, message] of TEMPLATE_SHAPE) {
+      it(`does NOT count ${label}, even over a reference-bearing bag`, async () => {
+        resolveThrows = new Error(message);
+        const result = await run(healthy());
+        expect(
+          result.unverifiableLeaves,
+          `"${message}" is cdkd's own refusal to resolve a template SHAPE. Counting it makes ` +
+            '`cdkd scrub --dry-run --fail` exit 1 on a stack with nothing wrong with it, with ' +
+            'no action the operator can take to clear it (go-to-k/cdkd#3178 round 2).'
+        ).toBe(0);
+      });
+
+      it(`but STILL WARNS about ${label} — visibility is not the gate`, async () => {
+        // The round-4 finding two axes reached independently: one throw aborts
+        // the whole properties bag, so excluding it also silences the finding
+        // for a LIVE secret reference in that same bag, and the stack can print
+        // `No plaintext secrets found` at exit 0. Counting is the round-2
+        // blocker; saying nothing is the original bug. So it says it and does
+        // not gate.
+        resolveThrows = new Error(message);
+        await run(healthy());
+        const warned = logger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(
+          warned,
+          'the record was not named, so an operator cannot tell this run apart from one ' +
+            'that genuinely scanned everything'
+        ).toContain("resource 'Db'");
+        expect(
+          warned,
+          'the warn does not say the gate is NOT firing, so "NOT certified clean" reads as a ' +
+            'contradiction beside exit 0'
+        ).toContain('does NOT fail --fail');
+      });
+    }
+
+    it('does NOT count a token whose argument kept an unsubstituted ${...}', async () => {
+      // scrub resolves with `bestEffort`, under which an `Fn::Sub` over an
+      // unbound placeholder does not throw -- it warn-and-KEEPS the literal
+      // `${Field}`. The assembled token then asks for a JSON key literally
+      // named `${Field}` and fails with a `Dynamic reference:` message, which
+      // no exclusion pattern matches and which go-to-k/cdkd#3160 asks to COUNT
+      // when the key was real. The token, not the error, is what separates
+      // them: this one was never fetchable, because scrub has only template
+      // defaults and accepts no `--parameters`.
+      const KEPT = '{{resolve:secretsmanager:prod/db:SecretString:${Field}}}';
+      const state = healthy();
+      state.resources['Db']!.properties['MasterUserPassword'] = KEPT;
+      state.orphans = [];
+      // The whole stack must carry ONLY the placeholder-bearing token, or a
+      // sibling site counts and the zero below would be about the wrong thing.
+      const stack = stackInfo();
+      const template = stack.template as unknown as {
+        Resources: Record<string, { Properties: Record<string, unknown> }>;
+        Outputs: Record<string, unknown>;
+      };
+      template.Resources['Db']!.Properties['MasterUserPassword'] = KEPT;
+      template.Outputs = {};
+      resolveThrows = new Error(
+        "Dynamic reference: key '${Field}' not found in secret 'prod/db'"
+      );
+      const result = await run(state, { stack });
+      expect(
+        result.unverifiableLeaves,
+        'a kept `${...}` placeholder means the token was never fetchable, so counting it reds ' +
+          '`--dry-run --fail` on a healthy stack that merely has an unbound Fn::Sub variable ' +
+          '(go-to-k/cdkd#3178 round 4).'
+      ).toBe(0);
+    });
+
+    it('counts NOTHING on a stack whose references all resolve', async () => {
+      // The negative control: without it, a counter that increments
+      // unconditionally would satisfy every case above.
+      const result = await run(healthy());
+      expect(result.unverifiableLeaves).toBe(0);
+    });
+
+    it('does not count a NAMELESS reference — that one re-raises instead', async () => {
+      // The two classes must not collapse into each other: nameless is
+      // structurally broken and refuses; these are resolution failures and
+      // are counted.
+      resolveThrows = new Error('Dynamic reference: secretsmanager SECRET_ID is required');
+      // The MESSAGE, not a bare `toThrow()`: the network fence in
+      // `tests/setup.ts` fails a run from `afterEach`, and a bare assertion is
+      // satisfied by that refusal as readily as by the one under test.
+      await expect(run(healthy())).rejects.toThrow(/SECRET_ID is required/);
+      // ...and it must NOT also be counted — the two classes are pinned apart
+      // from both sides.
+      expect(logger.warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain('ABANDONED');
     });
   });
 
