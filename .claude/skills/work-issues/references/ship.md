@@ -416,6 +416,14 @@ forward anything expensive the lane measured (a live arm, a derived
 population, a family of bugs) so the next lane inherits the evidence rather
 than the diagnosis. A claim on an auto-closed issue needs nothing.
 
+**Write it AFTER the merge, or state the PR's ACTUAL state.** This step reads
+naturally as "summarize the batch outcome", which invites a future-tense fact
+written in the past tense: on 2026-09-02 a session published a release comment
+saying its lane "merged" a PR that was still in review, and had to patch the
+comment through `gh api`. The `--json state` loop above is the guard — a claim
+release is a public statement about ownership, and a wrong one tells the next
+session the work is finished.
+
 Do NOT stop here: what the run taught you is still only in this session's
 context — go on to §10, which also decides WHERE each lesson belongs (memory
 is the weakest of the options there, not the default one).

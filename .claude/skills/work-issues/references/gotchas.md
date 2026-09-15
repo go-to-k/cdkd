@@ -77,6 +77,30 @@
   when it bites (the 2026-09-02 run resumed itself at the reset instant from
   an in-session one-shot cron and finished its lane — the alternative is not
   "resume later" but "re-derive later"; go-to-k/cdkd#2417).
+- **`pr-body-item-number-gate` scans a HEREDOC that writes the body file, in
+  the same command — before the file exists.** So a `cat > body.md <<'EOF' …
+  EOF` chained to `gh issue comment --body-file body.md` is judged on the
+  heredoc's text (the refusal even says "heredoc, not yet written"), while the
+  same `gh` call run on its own is judged on the file on disk. That is the
+  whole of it — measured 2026-09-15, and written down in the hook itself, in
+  the block above its heredoc extraction rather than in its header; a
+  2026-09-02 run guessed instead that the gate scans every body-file argument
+  once any text in the command trips it, or that command SIZE matters, and
+  both are wrong. Writing the file with `Write` and passing it in a separate
+  call is the way through; a `#N` that must survive takes the qualified
+  `owner/repo#N` form the gate allows.
+- **An agent KILLED by a usage limit or a 429 keeps its context — `SendMessage`
+  it, never re-dispatch.** Measured at both grains: a REVIEWER had read the
+  whole diff before dying and finished its round in 148 s on resume instead of
+  re-reading it (08:05 JST, 2026-09-02; its sibling likewise, each needing only
+  its read-only-rules lines re-stated), and three killed LANES across
+  go-to-k/cdkd#3103 / go-to-k/cdkd#3139 (2026-09-14) came back the same way.
+  **Read the TREE before the message** — a killed lane may already have
+  committed, pushed and opened the PR, and one had `verify-pr` bound to a
+  superseded sha. This is the recovery for an agent that DIED; §5-g's "resume
+  with REPORT ONLY" covers the different case of one that finished quietly, and
+  its rule that a lost TRANSCRIPT restarts only from a prompt you kept
+  self-contained is what applies when the resume is refused.
 
 ## Important existing rules this skill leans on
 
@@ -111,8 +135,3 @@
   line and was over-applied anyway (the go-to-k/cdkd#2522 decision,
   2026-09-05). Everything else (which integ, how many reviewers, how deep
   to verify) you decide yourself and report as a decision.
-- **A lane killed by the account rate limit (HTTP 429 mid-turn) keeps its
-  context — `SendMessage` it, never re-dispatch.** Read the TREE before the
-  message: it may have committed, pushed and opened the PR already (three
-  kills across go-to-k/cdkd#3103 / go-to-k/cdkd#3139 on 2026-09-14; one had
-  the PR open with `verify-pr` bound to a superseded sha).

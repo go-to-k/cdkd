@@ -51,18 +51,18 @@ PR-specific context.
    Then, in order — the first match wins:
 
    - `MINE` empty → **no round has happened**; nothing to complete. Proceed.
-   - `THEIRS` newer than `MINE` → **their turn ended**. Proceed. ISO-8601
-     sorts lexically, so compare with bash's `[[ "$THEIRS" > "$MINE" ]]` — NOT
+   - `THEIRS` newer than `MINE` → **their turn ended**. Proceed. ISO-8601 sorts
+     lexically, so compare with bash's `[[ "$THEIRS" > "$MINE" ]]` — NOT
      `[ ... ]`, whose `>` is undefined for strings and which zsh rejects
-     outright (`condition expected: >`, measured while writing this). In a
-     shell you do not control:
+     outright (`condition expected: >`, measured). In a shell you do not
+     control:
      `[ "$(printf '%s\n%s\n' "$MINE" "$THEIRS" | sort | tail -1)" = "$THEIRS" ]`
-     with an added `!=` guard for the equal case.
+     plus a `!=` guard for the equal case.
    - otherwise → **you spoke last and they have not answered**. Compute
      `now - MINE`; under ~30 minutes, WAIT. Waiting means arming a signal, not
      a bare intention: a foreground `sleep` is blocked, so start a background
      poll (or a `Monitor`) and end the turn as WAITING naming it. At ~30
-     minutes or more, proceed and say in the comment which head you reviewed.
+     minutes or more, proceed and say which head you reviewed.
 
    Residual, stated rather than papered over: a contributor who replies and
    THEN pushes again reads as "their turn ended", so that push is reviewed
@@ -243,25 +243,23 @@ PR-specific context.
 
      Exact paths, not `.. | .messageHeadline?`. GraphQL returns `data` and
      `errors` together with HTTP 200, and a recursive-descent read harvests
-     every `messageHeadline` in the document — including blocks this query did
-     not ask for — which up-biases a PR with one round. The HOOK's copy of this
-     read is fenced by the `graphql-malformed` case in
-     `.claude/hooks/pr-review-gate.test.sh`; this snippet is prose, so keep the
-     two spellings in step by hand.
+     every `messageHeadline` in the document — blocks this query did not ask
+     for included — which up-biases a PR with one round. The HOOK's copy is
+     fenced by the `graphql-malformed` case in `pr-review-gate.test.sh`; this
+     snippet is prose, so keep the two spellings in step by hand.
    - **The code this PR edits shipped a defect in a RECENT PR.** A judgement
      trigger, not a path list: `pr-review-gate.sh` reads the diff's stats and
-     paths plus the BRANCH's own commit subjects, and has no view of the
-     edited file's HISTORY — so it cannot see this and may not require the
-     marker. Raise the tier anyway and say why. Read the tell off the history
-     step 1 gathered — 2 or more `fix:` commits among a touched file's last 3
-     — rather than from what you remember about the area. Measured on
-     go-to-k/cdkd#2593: the heuristic said `inline`,
-     while that log on `src/deployment/recreate-targets.ts` showed the two
-     preceding merges were both data-loss-guard fixes and the nearer one
-     (go-to-k/cdkd#2565) had fixed a fail-open reading in the very function
-     this PR edits again. Code + security ran, and both converged on the same
-     two untested response shapes. Recency is evidence about the code, the
-     same way a security path is.
+     paths plus the BRANCH's own commit subjects, and has no view of the edited
+     file's HISTORY — so it cannot see this and may not require the marker.
+     Raise the tier anyway and say why. Read the tell off the history
+     step 1 gathered — 2 or more `fix:` commits among a touched file's last 3 —
+     rather than from what you remember about the area. Measured on
+     go-to-k/cdkd#2593: the heuristic said `inline`, while that log on
+     `src/deployment/recreate-targets.ts` showed the two preceding merges were
+     both data-loss-guard fixes and the nearer one (go-to-k/cdkd#2565) had
+     fixed a fail-open in the very function this PR edits again. Code +
+     security ran and converged on the same two untested response shapes.
+     Recency is evidence about the code, the way a security path is.
 
    **Security add-on reviewer (additive — NOT part of the tier ladder).**
    Whenever ANY security / process-launch path matches (surface list +
@@ -311,10 +309,9 @@ PR-specific context.
      step 0 and not step 1, because a fix-round re-review IS the case step 0
      exists for: go-to-k/cdkd#2753's crossing happened on exactly this
      re-entry, so starting at step 1 leaves the rule inert on its own
-     motivating case. A
-     fix round adds LOC and files AND a `fix:` commit, so the tier is not
-     fixed for the life of a PR and neither is whether `pr-review-gate.sh`
-     requires the marker at all: go-to-k/cdkd#2593 opened at 306 LOC / 4
+     motivating case. A fix round adds LOC and files AND a `fix:` commit, so
+     the tier is not fixed for the life of a PR and neither is whether
+     `pr-review-gate.sh` requires the marker: go-to-k/cdkd#2593 opened at 306 LOC / 4
      files (`inline`, no marker required) and its review-fix commit took it
      to 406 LOC / 6 files — `1-reviewer` by size, and `3-axis` once the
      hook's second-`fix:`-commit up-bias fires on the same push. Caught only
@@ -324,6 +321,8 @@ PR-specific context.
      current HEAD sha:
 
      ```bash
+     mise trust   # unconditional; `markgate set` dies on an untrusted
+                  # `.mise.toml` and loses the round (`/check` step 0).
      # The pr-review gate's scope is the sentinel file at repo root, so
      # writing the PR HEAD sha into it before `markgate set` binds the marker
      # to that sha — a later push invalidates it. Sentinel + markgate state

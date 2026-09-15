@@ -171,19 +171,34 @@ verify, clean up.
 
 9. **Set the `integ-destroy` markgate marker (only on full clean success)** —
    when the destroy step finished with **0 errors**, step 6 found **0
-   leftovers**, and step 7 was skipped or re-checked clean:
+   leftovers**, and step 7 was skipped or re-checked clean. `mise trust` is
+   UNCONDITIONAL and is part of the pasted block rather than a caveat above
+   it: an untrusted `.mise.toml` makes every `markgate set` in this skill die
+   with a config-parse error naming no cause, and here that discards a
+   real-AWS run that cannot be cheaply repeated. (`/check` step 0 carries the
+   full account; on an already-trusted config it is a no-op.)
 
    ```bash
+   mise trust
    mise exec -- markgate set integ-destroy || {
      echo "markgate set integ-destroy FAILED — the marker was NOT recorded." >&2
      exit 1
    }
+   # The marker, not the rc. `grep` exits 0 even for `no marker`, so it cannot
+   # fail the block — ABSENCE of the line is the signal, which is what the
+   # untrusted-config case produces (markgate status itself dies).
+   mise exec -- markgate status | grep integ-destroy \
+     || echo 'NO integ-destroy LINE — markgate status itself failed' >&2
    ```
 
-   **Check the exit code; do not fire and forget.** The gate runs markgate
-   0.4's `hash: diff` mode, where `set` exits **2** if `origin/main` is
-   unresolvable in this worktree or the branch has no delta against the merge
-   base — silent-looking on stdout. Missing it means a burned real-AWS run
+   **Read BOTH the exit code and the status line; do not fire and forget** —
+   they fail in different directions, which is why the block runs each. The
+   gate runs markgate 0.4's `hash: diff` mode, where `set` exits **2** if
+   `origin/main` is unresolvable in this worktree or the branch has no delta
+   against the merge base — silent-looking on stdout, and caught by the `||`.
+   An untrusted `.mise.toml` is the other direction: `mise` writes its error
+   to stderr and the rc can still read as success, so only `markgate status`
+   says whether a marker exists. Missing it means a burned real-AWS run
    and a still-blocked merge; the remedy is `git fetch origin`, never
    re-running the integ. Run from the PR's own worktree on the PR branch. If
    any success condition failed, do NOT set the marker — the
