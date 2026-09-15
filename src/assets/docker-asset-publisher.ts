@@ -222,10 +222,15 @@ export class DockerAssetPublisher {
       try {
         await this.tagImage(actualTag, tag);
       } catch (err) {
-        const e = err as { message?: string };
+        // `this.tagImage` ALREADY wrapped the spawn failure in an AssetError
+        // carrying a redacted cause, so re-wrapping `err` here would render
+        // the message a second time and copy `AssetError`'s own class token
+        // into the cause's `code` as a fabricated classification. Adopt the
+        // inner cause, which is the one holding docker's exit status.
+        const e = err as { message?: string; cause?: unknown };
         throw new AssetError(
           `Docker tag failed re-tagging '${actualTag}' → '${tag}': ${e.message ?? String(err)}`,
-          redactedDockerCause(err, ['tag', actualTag, tag])
+          e.cause instanceof Error ? e.cause : redactedDockerCause(err, ['tag', actualTag, tag])
         );
       }
     }

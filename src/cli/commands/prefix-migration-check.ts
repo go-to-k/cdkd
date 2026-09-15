@@ -94,7 +94,7 @@ export function findPendingPrefixRenames(
   const prefix = `${stackName}-`;
   const out: PendingRename[] = [];
 
-  for (const [logicalId, resource] of Object.entries(state.resources ?? {})) {
+  for (const [logicalId, resource] of Object.entries(state.resources)) {
     if (!patternB.has(resource.resourceType)) continue;
     if (typeof resource.physicalId !== 'string') continue;
     if (!resource.physicalId.startsWith(prefix)) continue;

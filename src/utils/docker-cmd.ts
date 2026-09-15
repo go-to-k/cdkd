@@ -1675,11 +1675,23 @@ const CLASSIFICATION_FIELDS = [
 export function redactedDockerCause(error: unknown, args: readonly string[]): Error | undefined {
   if (!(error instanceof Error)) return undefined;
   const cause = new Error(describeDockerFailure(error, args));
-  cause.name = error.name;
+  // Every read below is guarded, for the reason `capturedStreamText` and
+  // `safeStringify` in this file are: this helper runs ONLY inside a `catch`,
+  // so a throwing getter or a Proxy on the caught value would escape that
+  // catch and replace a docker diagnostic with an unrelated crash.
+  try {
+    cause.name = error.name;
+  } catch {
+    /* leave the default 'Error' */
+  }
   const source = error as unknown as Record<string, unknown>;
   const target = cause as unknown as Record<string, unknown>;
   for (const key of CLASSIFICATION_FIELDS) {
-    if (key in source) target[key] = source[key];
+    try {
+      if (key in source) target[key] = source[key];
+    } catch {
+      /* a field that cannot be read is simply not carried */
+    }
   }
   return cause;
 }

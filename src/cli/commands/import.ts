@@ -68,10 +68,7 @@ import {
   type ResourceState,
   type StackState,
 } from '../../types/state.js';
-import {
-  malformedResourcesWarning,
-  normalizeLoadedState,
-} from '../../state/normalize-loaded-state.js';
+import { refuseMalformedState } from '../../state/malformed-resources-bag.js';
 
 interface ImportOptions {
   app?: string;
@@ -554,9 +551,7 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
     // to `saveState` for optimistic locking.
     const existingResult = await stateBackend.getState(stackInfo.stackName, targetRegion);
     const existingState = existingResult?.state ?? null;
-    if (existingState && normalizeLoadedState(existingState)) {
-      logger.warn(malformedResourcesWarning(stackInfo.stackName, targetRegion));
-    }
+    if (existingState) refuseMalformedState(existingState, stackInfo.stackName, targetRegion);
     const existingEtag = existingResult?.etag;
     const migrationPending = existingResult?.migrationPending ?? false;
 

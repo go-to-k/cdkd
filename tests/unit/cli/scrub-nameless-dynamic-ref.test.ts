@@ -4,18 +4,19 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 /**
- * `cdkd scrub` must not report a run CLEAN when the resolver aborted on a
+ * `cdkd scrub` must not report a run CLEAN when the resolver refused a
  * NAMELESS dynamic reference (issue go-to-k/cdkd#2692).
  *
  * The resolver raises a BARE `Error` for `{{resolve:ssm-secure}}` with no
  * parameter name and for `{{resolve:secretsmanager}}` with no secret id, so
- * either falls through scrub's typed-refusal test into a `logger.debug` and the
- * run exits 0 under `No plaintext secrets found`. What makes that a disclosure
- * rather than a cosmetic miss is WHERE the abort happens: `resolver.resolve`
- * stops at the FIRST token, so a real `{{resolve:secretsmanager:...}}` in the
- * same leaf is never fetched and records no needle, and a legacy plaintext
- * already sitting in `state.json` survives the scrub that was supposed to find
- * it.
+ * either falls through scrub's typed-refusal test into a `logger.debug` and
+ * the run exits 0 under `No plaintext secrets found`. What makes that a
+ * disclosure rather than a cosmetic miss is WHERE the abort happens: the token
+ * loop in `resolveDynamicReferences` has NO per-token `try`, so either one
+ * abandons every remaining `{{resolve:...}}` token in the leaf. A real
+ * `{{resolve:secretsmanager:prod/db}}` after it is never fetched and records no
+ * needle, and a legacy plaintext already sitting in `state.json` survives the
+ * scrub that was supposed to find it.
  *
  * WHY THIS FILE IS A SYNC FENCE RATHER THAN A BEHAVIOUR TEST. The correct fix
  * is a typed error at the throw site, but that site is in
@@ -30,33 +31,34 @@ import { dirname, join } from 'node:path';
  * occur" — here, indistinguishable from a clean scrub. So the two are pinned
  * to each other, and a reword fails HERE rather than going quiet in the field.
  *
- * THE POPULATION IS DERIVED FROM THE RESOLVER, not listed here. An earlier cut
- * of this file asserted its single marker occurred EXACTLY ONCE in the
- * resolver, which read as rigour and was the opposite: the assertion passed
- * precisely because the `secretsmanager` throw spelled `SECRET_ID` instead, so
- * the fence CERTIFIED half-coverage as deliberate — over the dominant secret
- * spelling. The case below instead reads every nameless-required throw out of
- * the resolver and requires each to be matched, so a third one reds this file
- * rather than silently joining the unmatched half.
+ * THE POPULATION IS DERIVED, AND ITS BOUNDARY IS ASSERTED IN BOTH DIRECTIONS.
+ * An earlier cut keyed on `PARAMETER_NAME is required` alone and asserted that
+ * literal occurred EXACTLY ONCE in the resolver — which passed precisely
+ * BECAUSE the secretsmanager throw spells `SECRET_ID`, so the fence CERTIFIED
+ * half-coverage as deliberate, over the dominant secret spelling. The next cut
+ * over-corrected to the whole `Dynamic reference:` family and had to be
+ * reverted: scrub resolves with template DEFAULTS and no `--parameters`, so
+ * the four RESOLUTION failures in the same loop fire on healthy stacks. The
+ * two cases below therefore pin both edges — every nameless-required throw is
+ * IN, every sibling is OUT (go-to-k/cdkd#3160 holds the sibling class).
  *
- * Retire this file, and the markers with it, when the throws become typed.
+ * Retire this file, and the marker with it, when the throws become typed.
  */
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const RESOLVER = join(repoRoot, 'src', 'deployment', 'intrinsic-function-resolver.ts');
 const SCRUB = join(repoRoot, 'src', 'cli', 'commands', 'scrub.ts');
 
-/** The literals scrub keys on, spelled here a THIRD time on purpose. */
+/** The literal scrub keys on, spelled here a THIRD time on purpose. */
 const MARKERS = ['PARAMETER_NAME is required', 'SECRET_ID is required'] as const;
 
 /**
- * Every `throw new Error(...)` in the resolver whose message declares a
- * dynamic reference is missing its name. Template literals are included —
- * the ssm-secure one interpolates `${service}` — so the match is on the
- * message's fixed TAIL rather than on the whole string.
+ * Every message the resolver raises for a dynamic reference it refused.
+ * Template literals are included — several interpolate a `${service}` or a
+ * secret id — so the match runs to the closing quote of the literal.
  */
 function namelessRequiredThrows(resolver: string): string[] {
   const matches = resolver.matchAll(
-    /throw new Error\(\s*[`'"](Dynamic reference:[^`'"]*?is required)[`'"]/g
+    /(?:new Error\(\s*)[`'"](Dynamic reference:[^`'"]*?is required)[`'"]/g
   );
   return [...matches].map((m) => m[1] as string);
 }
@@ -80,12 +82,41 @@ describe('scrub keys on the resolver nameless-dynamic-reference messages', () =>
     expect(
       unmatched,
       `the resolver raises ${unmatched.length} nameless-dynamic-reference failure(s) that ` +
-        `scrub's predicate does not match: ${JSON.stringify(unmatched)}. Each one aborts ` +
-        `\`resolver.resolve\` at the FIRST token, so a real secret beside it in the same leaf ` +
-        `records no needle and \`cdkd scrub\` reports the stack CLEAN over surviving plaintext ` +
-        `(go-to-k/cdkd#2692). Add the literal to NAMELESS_DYNAMIC_REFERENCE_MARKERS in ` +
-        `src/cli/commands/scrub.ts and to MARKERS here, or type the throw.`
+        `scrub's predicate does not match: ${JSON.stringify(unmatched)}. The token loop has no ` +
+        `per-token \`try\`, so each aborts every remaining {{resolve:...}} token in the leaf — ` +
+        `a real secret after it records no needle and \`cdkd scrub\` reports the stack CLEAN ` +
+        `over surviving plaintext (go-to-k/cdkd#2692). Add the literal to ` +
+        `NAMELESS_DYNAMIC_REFERENCE_MARKERS in src/cli/commands/scrub.ts and to MARKERS here, ` +
+        `or type the throw.`
     ).toEqual([]);
+  });
+
+  it('the SIBLING failures stay OUT — refusing on them refuses healthy stacks', () => {
+    // Four throws in the same loop abandon the leaf identically (deleted SSM
+    // parameter, no SecretString, missing JSON_KEY, non-JSON secret), so they
+    // look like they belong. They do not: scrub resolves with template
+    // DEFAULTS and no `--parameters`, so an Fn::Sub that warn-and-keeps its raw
+    // `${Field}` produces a JSON_KEY miss on a healthy stack. Widening to the
+    // whole `Dynamic reference:` family was tried and reverted — it reddened
+    // tests/unit/cli/commands/scrub-cross-region-secret.test.ts. The sibling
+    // class is go-to-k/cdkd#3160 and wants a countable finding, not a refusal.
+    const resolver = readFileSync(RESOLVER, 'utf8');
+    const siblings = [...resolver.matchAll(/new Error\(\s*[`'"](Dynamic reference:[^`'"]*)[`'"]/g)]
+      .map((m) => m[1] as string)
+      .filter((message) => !message.includes('is required'));
+    expect(
+      siblings.length,
+      'no sibling dynamic-reference throws found; this case is asserting nothing'
+    ).toBeGreaterThanOrEqual(1);
+    for (const message of siblings) {
+      expect(
+        MARKERS.some((m) => message.includes(m)),
+        `'${message}' is now matched by scrub's nameless predicate. It is a RESOLUTION ` +
+          `failure, not a structurally-broken reference, and scrub reaches it on healthy ` +
+          `stacks because it resolves with template defaults. Refusing on it refuses those ` +
+          `stacks — see go-to-k/cdkd#3160.`
+      ).toBe(false);
+    }
   });
 
   it('scrub declares every marker', () => {
@@ -101,8 +132,6 @@ describe('scrub keys on the resolver nameless-dynamic-reference messages', () =>
   });
 
   it('each marker is specific enough to be worth matching on', () => {
-    // A one-word marker would match unrelated resolver failures and make every
-    // partial resolution fatal. Pin the shape rather than trusting the reading.
     for (const marker of MARKERS) {
       expect(marker.split(/\s+/).length, `marker '${marker}' is too short`).toBeGreaterThanOrEqual(
         3

@@ -77,10 +77,7 @@ import {
   secretSafeKeyDisplay,
   type SecretSafeKeyDisplay,
 } from '../../deployment/outputs-export-alias.js';
-import {
-  malformedResourcesWarning,
-  normalizeLoadedState,
-} from '../../state/normalize-loaded-state.js';
+import { refuseMalformedState } from '../../state/malformed-resources-bag.js';
 
 /**
  * Signals `cdkd scrub` found plaintext it is reporting rather than removing.
@@ -2018,12 +2015,7 @@ function memoizeCrossStackStateReads(backend: S3StateBackend): S3StateBackend {
     const key = `${stackName}\u0000${stateRegion}`;
     let pending = states.get(key);
     if (!pending) {
-      pending = backend.getState(stackName, stateRegion).then((loaded) => {
-        if (loaded && normalizeLoadedState(loaded.state)) {
-          getLogger().warn(malformedResourcesWarning(stackName, stateRegion));
-        }
-        return loaded;
-      });
+      pending = backend.getState(stackName, stateRegion);
       states.set(key, pending);
     }
     return pending;
@@ -2861,24 +2853,40 @@ const NAMELESS_DYNAMIC_REFERENCE_MARKERS = [
 ] as const;
 
 /**
- * A nameless dynamic reference — `{{resolve:ssm-secure}}` with no parameter
- * name, or `{{resolve:secretsmanager}}` / `{{resolve:secretsmanager:}}` with no
- * secret id — is NOT a best-effort miss, however unresolvable the rest of the
- * resource is (issue go-to-k/cdkd#2692).
+ * A NAMELESS dynamic reference is NOT a best-effort miss, however unresolvable
+ * the rest of the resource is (issue go-to-k/cdkd#2692) — `{{resolve:ssm-secure}}`
+ * with no parameter name, or `{{resolve:secretsmanager}}` /
+ * `{{resolve:secretsmanager:}}` with no secret id.
  *
- * BOTH spellings are matched, and the second is the DOMINANT one: a
- * secretsmanager reference is the common way to write a secret, so a predicate
- * covering only the ssm-secure throw would leave the larger half of the
- * population reporting CLEAN over surviving plaintext — the exact defect, for
- * most users.
- *
- * The resolver raises a bare `Error` here, so it falls through the typed-refusal
- * test above into the `debug` below, and `cdkd scrub` reports the run CLEAN.
- * What makes that wrong is WHERE the throw happens: `resolver.resolve` aborts at
- * the FIRST token, so a real `{{resolve:secretsmanager:...}}` sitting beside the
- * nameless one in the same leaf is never fetched and records NO needle — and a
- * legacy plaintext already in `state.json` then survives under
+ * The resolver raises a bare `Error` for both, so they fall through the
+ * typed-refusal test above into the `debug` below and `cdkd scrub` reports the
+ * run CLEAN. What makes that wrong is WHERE the throw happens: the token loop
+ * in `resolveDynamicReferences` has NO per-token `try`, so either one abandons
+ * every remaining `{{resolve:...}}` token in the leaf. A real
+ * `{{resolve:secretsmanager:prod/db}}` after it is never fetched and records NO
+ * needle — and a legacy plaintext already in `state.json` then survives under
  * `No plaintext secrets found`, exit 0.
+ *
+ * BOTH spellings are matched, and the second is the DOMINANT one. The first
+ * cut matched `PARAMETER_NAME is required` alone, leaving the more common way
+ * to write a secret silent — and the fence certified that as deliberate by
+ * asserting the marker occurred exactly once in the resolver, which passed
+ * precisely BECAUSE the other throw spells it differently.
+ *
+ * WHY THE SET STOPS AT "is required", having once been widened to the whole
+ * `Dynamic reference:` family and reverted. The loop's missing per-token `try`
+ * means four SIBLING failures — a deleted SSM parameter, a secret with no
+ * `SecretString`, a missing `JSON_KEY`, a non-JSON secret — abandon the leaf
+ * exactly the same way, so on the surface they belong here. They do not,
+ * because scrub resolves with template DEFAULTS and takes no `--parameters`:
+ * an `Fn::Sub` that warn-and-KEEPS its raw `${Field}` produces a JSON_KEY miss
+ * on a perfectly healthy stack, so refusing on that class refuses ordinary
+ * stacks (measured — it reddened
+ * `tests/unit/cli/commands/scrub-cross-region-secret.test.ts`). A nameless
+ * reference has no such excuse: no parameter substitution yields an EMPTY
+ * argument, since the unresolved form keeps the literal `${...}`.
+ * go-to-k/cdkd#3160 holds the sibling class, which needs a countable
+ * unverifiable-leaf finding rather than a refusal.
  *
  * It is a loudness REGRESSION rather than a new gap: before go-to-k/cdkd#2689
  * fixed `ssmParameterName`, this input produced a bogus `secretName` and
@@ -3664,9 +3672,6 @@ export async function scrubStack(
   const prePassFindings: CrossStackPrePassFindings = { unverifiable: [] };
   try {
     const loaded = await stateBackend.getState(stack.stackName, region);
-    if (loaded && normalizeLoadedState(loaded.state)) {
-      logger.warn(malformedResourcesWarning(stack.stackName, region));
-    }
     if (!loaded) {
       logger.debug(`No state for ${stack.stackName} (${region}) — skipping`);
       return {
@@ -3681,6 +3686,11 @@ export async function scrubStack(
       };
     }
     const state = loaded.state;
+    // `cdkd scrub` SAVES state whenever anything changed -- an OUTPUTS change
+    // alone satisfies that gate -- so a record whose resource map cannot be
+    // read is refused rather than repaired: saving would replace the evidence
+    // with a well-formed empty bag and lose it permanently (go-to-k/cdkd#3018).
+    refuseMalformedState(state, stack.stackName, region);
 
     // Re-resolve each resource's TEMPLATE properties to collect the resolved
     // secret plaintext -> expression map (into the two maps hoisted above). The

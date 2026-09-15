@@ -30,10 +30,7 @@ import {
   type UnresolvableReference,
 } from '../../analyzer/orphan-rewriter.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
-import {
-  malformedResourcesWarning,
-  normalizeLoadedState,
-} from '../../state/normalize-loaded-state.js';
+import { refuseMalformedState } from '../../state/malformed-resources-bag.js';
 
 interface OrphanOptions {
   app?: string;
@@ -219,9 +216,6 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
 
     try {
       const stateData = await stateBackend.getState(stackInfo.stackName, targetRegion);
-      if (stateData && normalizeLoadedState(stateData.state)) {
-        logger.warn(malformedResourcesWarning(stackInfo.stackName, targetRegion));
-      }
       if (!stateData) {
         throw new Error(
           `No state found for stack '${stackInfo.stackName}' (${targetRegion}). ` +
@@ -229,6 +223,9 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
         );
       }
       const { state, etag, migrationPending } = stateData;
+      // `cdkd orphan` REWRITES and SAVES state, so a record whose resource map
+      // cannot be read is refused rather than repaired (go-to-k/cdkd#3018).
+      refuseMalformedState(state, stackInfo.stackName, targetRegion);
 
       // Validate that every requested orphan exists in state — otherwise we
       // would silently no-op while the user expected a removal.
