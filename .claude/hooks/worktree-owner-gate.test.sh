@@ -8,6 +8,13 @@
 
 set -u
 HOOK="$(cd "$(dirname "$0")" && pwd)/worktree-owner-gate.sh"
+# `HOOK_BASH=<path>` runs the HOOK under that interpreter, not merely this
+# suite -- the same shim the sibling suites carry (see hooks.md, "Running the
+# SUITE under 3.2 does not run the HOOK under 3.2"). `run-tests.sh` exports it
+# alongside each shell it drives; a bare `bash "$HOOK"` took PATH's bash.
+HOOK_RUNNER="${HOOK_BASH:-bash}"
+HOOK_RUNNER="$(command -v "$HOOK_RUNNER" 2>/dev/null || printf '%s' "$HOOK_RUNNER")"
+case "$HOOK_RUNNER" in /*) ;; *) HOOK_RUNNER="$PWD/$HOOK_RUNNER" ;; esac
 pass=0; fail=0
 ok(){ echo "  ok: $1"; pass=$((pass+1)); }
 no(){ echo "  FAIL: $1"; fail=$((fail+1)); }
@@ -27,30 +34,44 @@ wt="$tmp/wt"
 git -C "$main" worktree add -q "$wt" -b feat/x >/dev/null 2>&1
 WGD=$(git -C "$wt" rev-parse --absolute-git-dir)
 
-pl(){ # $1 session ($2 empty => omit), $2 file path
+# pl <session> <path> [<field> [<cwd>]]
+#   $1 session id (empty => omitted from the payload)
+#   $2 target path
+#   $3 which tool_input key carries it: `file_path` (default, the Edit / Write
+#      shape), `notebook_path` (the NotebookEdit shape -- that tool names its
+#      target so, and `file_path` is absent), or `none` (neither key, so the
+#      hook falls back to the payload cwd). `tool_name` is set to match; the
+#      hook does not read it, which is itself a property worth keeping visible.
+#   $4 payload cwd (default: the worktree). A case about WHICH path the hook
+#      resolves must put the cwd somewhere else, or the cwd fallback answers
+#      identically and the case discriminates nothing.
+pl(){
   python3 -c "
 import json,sys
-d={'tool_input':{'file_path':sys.argv[2]}, 'cwd':sys.argv[3]}
+field=sys.argv[4]
+tool={'notebook_path':'NotebookEdit','none':'Edit'}.get(field,'Edit')
+ti={} if field=='none' else {field:sys.argv[2]}
+d={'tool_name':tool,'tool_input':ti,'cwd':sys.argv[3]}
 if sys.argv[1]: d['session_id']=sys.argv[1]
-print(json.dumps(d))" "$1" "$2" "$wt"; }
+print(json.dumps(d))" "$1" "$2" "${4:-$wt}" "${3:-file_path}"; }
 
 rm -f "$WGD/session-owner"
 
 echo "== claim / re-entry =="
-pl sessA "$wt/f.txt" | bash "$HOOK" >/dev/null 2>&1; chk $? 0 "first edit allowed"
+pl sessA "$wt/f.txt" | "$HOOK_RUNNER" "$HOOK" >/dev/null 2>&1; chk $? 0 "first edit allowed"
 grep -q sessA "$WGD/session-owner" 2>/dev/null && ok "sentinel records the owner" || no "no sentinel"
-pl sessA "$wt/f.txt" | bash "$HOOK" >/dev/null 2>&1; chk $? 0 "same session re-edits"
+pl sessA "$wt/f.txt" | "$HOOK_RUNNER" "$HOOK" >/dev/null 2>&1; chk $? 0 "same session re-edits"
 
 echo "== the incident: a second session =="
-pl sessB "$wt/f.txt" | bash "$HOOK" 2>"$tmp/err"; chk $? 2 "foreign session BLOCKED"
+pl sessB "$wt/f.txt" | "$HOOK_RUNNER" "$HOOK" 2>"$tmp/err"; chk $? 2 "foreign session BLOCKED"
 grep -q "owned by another session" "$tmp/err" && ok "message names the cause" || no "message unclear"
 grep -q "session-owner" "$tmp/err" && ok "message gives the release command" || no "no release command"
 grep -q "sessA" "$tmp/err" && ok "message names the owner" || no "owner not named"
 
 echo "== fail-open cases =="
-pl "" "$wt/f.txt" | bash "$HOOK" >/dev/null 2>&1; chk $? 0 "no session_id => pass"
-pl sessB "$main/f.txt" | bash "$HOOK" >/dev/null 2>&1; chk $? 0 "MAIN tree is not gated here"
-pl sessB "$tmp/outside.txt" | bash "$HOOK" >/dev/null 2>&1; chk $? 0 "path outside any repo => pass"
+pl "" "$wt/f.txt" | "$HOOK_RUNNER" "$HOOK" >/dev/null 2>&1; chk $? 0 "no session_id => pass"
+pl sessB "$main/f.txt" | "$HOOK_RUNNER" "$HOOK" >/dev/null 2>&1; chk $? 0 "MAIN tree is not gated here"
+pl sessB "$tmp/outside.txt" | "$HOOK_RUNNER" "$HOOK" >/dev/null 2>&1; chk $? 0 "path outside any repo => pass"
 
 echo "== non-opted-in repo (no .markgate.yml) =="
 # The opt-in marker is resolved from the TARGET's own toplevel, which for a
@@ -59,17 +80,17 @@ echo "== non-opted-in repo (no .markgate.yml) =="
 # (correctly) still fires; the first version of this test made exactly that
 # mistake and read as a hook bug.
 rm -f "$wt/.markgate.yml"
-pl sessB "$wt/f.txt" | bash "$HOOK" >/dev/null 2>&1; chk $? 0 "repo without .markgate.yml => pass"
+pl sessB "$wt/f.txt" | "$HOOK_RUNNER" "$HOOK" >/dev/null 2>&1; chk $? 0 "repo without .markgate.yml => pass"
 git -C "$wt" checkout -q -- .markgate.yml
 
 echo "== stale owner takeover =="
 printf 'sessOLD 2020-01-01T00:00:00Z\n' > "$WGD/session-owner"
-pl sessB "$wt/f.txt" | bash "$HOOK" >/dev/null 2>&1; chk $? 0 "owner past TTL => allowed"
+pl sessB "$wt/f.txt" | "$HOOK_RUNNER" "$HOOK" >/dev/null 2>&1; chk $? 0 "owner past TTL => allowed"
 grep -q sessB "$WGD/session-owner" && ok "ownership transferred" || no "ownership not transferred"
 
 echo "== fresh owner is NOT stolen =="
 printf 'sessA %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$WGD/session-owner"
-pl sessB "$wt/f.txt" | bash "$HOOK" >/dev/null 2>&1; chk $? 2 "recent owner still blocks"
+pl sessB "$wt/f.txt" | "$HOOK_RUNNER" "$HOOK" >/dev/null 2>&1; chk $? 2 "recent owner still blocks"
 
 echo "== the sentinel is itself gated (2026-08-10 bypass) =="
 # The sentinel lives INSIDE the git dir, which has no work tree, so
@@ -77,7 +98,7 @@ echo "== the sentinel is itself gated (2026-08-10 bypass) =="
 # fall through to a pass. That made the LOCK the one file the lock did not
 # protect: a foreign session could take the worktree with a single Write.
 printf 'sessA %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$WGD/session-owner"
-pl sessB "$WGD/session-owner" | bash "$HOOK" 2>"$tmp/err"; chk $? 2 "foreign session cannot WRITE the sentinel"
+pl sessB "$WGD/session-owner" | "$HOOK_RUNNER" "$HOOK" 2>"$tmp/err"; chk $? 2 "foreign session cannot WRITE the sentinel"
 grep -q "This file IS the lock" "$tmp/err" && ok "message says the write IS a takeover" || no "takeover framing missing"
 grep -q "presumed LIVE" "$tmp/err" && ok "message refuses the dead-owner inference" || no "no presume-live guidance"
 grep -q "ASK THE MAINTAINER FIRST" "$tmp/err" && ok "message routes to the maintainer" || no "no maintainer escalation"
@@ -85,22 +106,48 @@ grep -q sessA "$WGD/session-owner" && ok "sentinel still records the original ow
 
 # The owner refreshing its own claim, and claiming a stale/absent one, must
 # still work — the guard tailors the message, it does not add a new rule.
-pl sessA "$WGD/session-owner" | bash "$HOOK" >/dev/null 2>&1; chk $? 0 "owner may write its own sentinel"
+pl sessA "$WGD/session-owner" | "$HOOK_RUNNER" "$HOOK" >/dev/null 2>&1; chk $? 0 "owner may write its own sentinel"
 printf 'sessOLD 2020-01-01T00:00:00Z\n' > "$WGD/session-owner"
-pl sessB "$WGD/session-owner" | bash "$HOOK" >/dev/null 2>&1; chk $? 0 "stale sentinel may be claimed by writing it"
+pl sessB "$WGD/session-owner" | "$HOOK_RUNNER" "$HOOK" >/dev/null 2>&1; chk $? 0 "stale sentinel may be claimed by writing it"
 rm -f "$WGD/session-owner"
-pl sessB "$WGD/session-owner" | bash "$HOOK" >/dev/null 2>&1; chk $? 0 "absent sentinel may be claimed by writing it"
+pl sessB "$WGD/session-owner" | "$HOOK_RUNNER" "$HOOK" >/dev/null 2>&1; chk $? 0 "absent sentinel may be claimed by writing it"
 
 # Opt-in still applies on the sentinel path: it is resolved from the linked
 # worktree's own checkout via `<git dir>/gitdir`, not from the main tree.
 rm -f "$wt/.markgate.yml"
 printf 'sessA %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$WGD/session-owner"
-pl sessB "$WGD/session-owner" | bash "$HOOK" >/dev/null 2>&1; chk $? 0 "non-opted-in repo => sentinel write passes"
+pl sessB "$WGD/session-owner" | "$HOOK_RUNNER" "$HOOK" >/dev/null 2>&1; chk $? 0 "non-opted-in repo => sentinel write passes"
 git -C "$wt" checkout -q -- .markgate.yml
 printf 'sessA %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$WGD/session-owner"
 
+echo "== NotebookEdit: the notebook_path fallback (go-to-k/cdkd#2794) =="
+# Every payload above carries `file_path`, so the second branch of
+# `.tool_input.file_path // .tool_input.notebook_path // ""` was reached by no
+# case: deleting `.tool_input.notebook_path //` from the hook left the suite
+# green (measured). Both polarities, with `notebook_path` and NO `file_path`.
+#
+# The payload cwd is the MAIN tree, deliberately: with the fallback deleted the
+# target collapses to the cwd, and a cwd that is itself the worktree makes the
+# cwd fallback claim and refuse exactly as the field would -- the first draft
+# of these cases sat green over the deleted branch for that reason. The main
+# tree is not gated, so a hook that lost the field answers 0 on both.
+rm -f "$WGD/session-owner"
+pl sessA "$wt/f.ipynb" notebook_path "$main" | "$HOOK_RUNNER" "$HOOK" >/dev/null 2>&1; chk $? 0 "NotebookEdit {notebook_path} from a main-tree cwd claims the FILE's worktree"
+grep -q sessA "$WGD/session-owner" 2>/dev/null && ok "sentinel records the notebook writer" || no "notebook write claimed nothing"
+pl sessB "$wt/f.ipynb" notebook_path "$main" | "$HOOK_RUNNER" "$HOOK" 2>"$tmp/err"; chk $? 2 "foreign session's NotebookEdit {notebook_path} BLOCKED"
+grep -q "sessA" "$tmp/err" && ok "notebook refusal names the owner" || no "notebook refusal did not name the owner"
+# The consequence the fallback prevents, pinned as the third shape: with
+# NEITHER key the hook resolves the payload CWD. From the worktree that still
+# refuses a foreign session (the cwd IS the worktree); from the main tree it
+# passes, which is what a NotebookEdit stripped of its field would do -- the
+# quiet mis-scoping the issue describes. Both directions, so the fallback is
+# pinned to the CWD rather than to a pass or to a refusal.
+pl sessB "$wt/f.ipynb" none | "$HOOK_RUNNER" "$HOOK" >/dev/null 2>&1; chk $? 2 "neither key, cwd = the worktree => judged against the cwd, refused"
+pl sessB "$wt/f.ipynb" none "$main" | "$HOOK_RUNNER" "$HOOK" >/dev/null 2>&1; chk $? 0 "neither key, cwd = the main tree => judged against the cwd, passes"
+printf 'sessA %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$WGD/session-owner"
+
 echo "== explicit bypass =="
-CDKD_SKIP_WORKTREE_OWNER_GATE=1 bash -c "printf '%s' '$(pl sessB "$wt/f.txt")' | bash '$HOOK'" >/dev/null 2>&1
+CDKD_SKIP_WORKTREE_OWNER_GATE=1 bash -c "printf '%s' '$(pl sessB "$wt/f.txt")' | '$HOOK_RUNNER' '$HOOK'" >/dev/null 2>&1
 chk $? 0 "CDKD_SKIP_WORKTREE_OWNER_GATE=1 bypasses"
 
 echo ""

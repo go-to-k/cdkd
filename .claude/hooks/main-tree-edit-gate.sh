@@ -73,6 +73,7 @@ __lib_loaded=1
 if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   || ! declare -F gate_unquote_span >/dev/null \
   || ! declare -F gate_unquote >/dev/null \
+  || ! declare -F gate_expand_tilde >/dev/null \
   || ! declare -F gate_segments_marked >/dev/null; then
   __lib_loaded=0
 fi
@@ -294,6 +295,80 @@ __union_cd_bases() {
       fi
     fi
   done
+}
+
+# __cd_named_earlier <absolute cd target> <raw cd target> -> 0 when an earlier
+# segment of the ordered walk names the target, 1 otherwise.
+#
+# The one exception to "a `cd` into a directory that does not exist does not
+# move the base" (go-to-k/cdkd#2684): the hook runs BEFORE the command, so a
+# directory the command itself creates is absent at hook time and present when
+# the `cd` runs. The walk cannot execute the `mkdir`, but it can see that the
+# command NAMES the directory before entering it, which every creating verb
+# must do (`mkdir -p X`, `git worktree add X`, `git clone <url> X`, `cp -r a
+# X`, `unzip -d X`) -- so the test is a MENTION, not a list of creators. A list
+# was the alternative and is the shape this file keeps paying for: every
+# creator left off it is a false block, and the list goes stale silently.
+#
+# A mention counts when a token of an earlier segment equals the target -- raw
+# (`mkdir sub && cd sub`) or resolved (`mkdir /tmp/x && cd /tmp/x`) -- or lies
+# UNDER it (`mkdir -p /tmp/x/docs && cd /tmp/x`: `mkdir -p` creates the parent
+# too). The one verb excluded is the one that names a directory in order to
+# REMOVE it: `rm -rf X ; cd X ; echo > f` is the cleanup accident the issue
+# describes, and bash stays put there exactly as it does for a directory that
+# was never created. Segments at every mark are read, because a `mkdir` inside
+# `$( )` or a subshell creates the directory all the same.
+#
+# The residue is a mention that neither creates nor removes (`echo X ; cd X ;
+# echo > f` advances the base and the write escapes), which no text scan can
+# distinguish from a creator it does not know. That is the same class the
+# hook's header calls the variable-indirected gap, and the same backstop
+# (`main-tree-dirty-detector`) covers it. Pinned as a case so the bound is a
+# measured one rather than a hope; the two directions the suite fences are
+# "not named -> stays" and "named by a creator -> advances".
+#
+# THE COST SITS ON THE WALK, NOT ON THE MISS. `__walk_note_names` runs once per
+# segment and appends that segment's tokens to `__named` (newline-delimited);
+# the test here is then one glob match against that string. The first revision
+# re-tokenised every earlier segment on each miss, which is quadratic in the
+# segment count: measured, 190 `cd /nx<i> ;` segments ahead of a write took the
+# hook from 0.9 s to 5.6 s under bash 3.2 -- past the oracle's 5 s budget and
+# on its way to the 10 s PreToolUse kill, after which the gate emits nothing.
+# Quotes are stripped by parameter expansion rather than `gate_unquote`, since
+# a `$( )` per token is the fork-per-segment cost the walk was rewritten to
+# remove; a token wearing an odd quote layout is over-matched, which is the
+# advancing (permissive) direction for a MENTION and therefore the wrong one --
+# but the residue above is already wider than that.
+__walk_note_names() { # <segment>
+  local __line="$1" __verb __tok __toks
+  __verb="${__line%%[[:space:]]*}"; __verb="${__verb//[\"\'\\]/}"
+  # `cd` is excluded with the removers: a `cd` names a directory to ENTER it,
+  # so without this a repeated `cd /nonexistent ; cd /nonexistent ; <write>`
+  # would count the first as a mention and advance on the second.
+  case "$__verb" in rm|rmdir|cd) return 0 ;; esac
+  [[ "$__line" =~ worktree[[:space:]]+remove ]] && return 0
+  __toks=()
+  read -ra __toks <<< "$__line"
+  # `set -u` and an EMPTY array: bash before 4.4 reports `${__toks[@]}` as
+  # unbound, and a whitespace-only line yields exactly that.
+  [ "${#__toks[@]}" -gt 0 ] || return 0
+  for __tok in "${__toks[@]}"; do
+    __tok="${__tok//[\"\']/}"; __tok="${__tok%/}"
+    [ -n "$__tok" ] || continue
+    __named="$__named$__tok"$'\n'
+  done
+  return 0
+}
+__cd_named_earlier() { # <absolute cd target> <raw cd target>
+  local __abs="$1" __raw="$2"
+  [ -n "$__named" ] || return 1
+  # A quoted variable inside a `[[ == ]]` pattern is matched LITERALLY, so a
+  # `*` or `?` in the target cannot become a glob here.
+  [[ $'\n'"$__named" == *$'\n'"$__abs"$'\n'* ]] && return 0
+  [[ $'\n'"$__named" == *$'\n'"$__abs"/* ]] && return 0
+  [[ $'\n'"$__named" == *$'\n'"$__raw"$'\n'* ]] && return 0
+  [[ $'\n'"$__named" == *$'\n'"$__raw"/* ]] && return 0
+  return 1
 }
 
 # Collapse (candidate, base) pairs to their distinct set.
@@ -612,6 +687,11 @@ case "$tool" in
     done <<< "$__marked"
 
     cur_base="$base_dir"
+    # Every token of every segment walked so far, at EVERY mark, one per line.
+    # Read only by `__cd_named_earlier`, on the rare path where a `cd` target
+    # does not exist; filled by `__walk_note_names`, builtins only, because
+    # this walk runs on every Bash call in every repo.
+    __named=""
     while IFS=$'\t' read -r __mark __seg; do
       [[ -n "$__seg" ]] || continue
       if [[ "$__mark" == 0 ]]; then
@@ -639,14 +719,47 @@ case "$tool" in
             case "$cdt" in
               *'$'* | *'`'*) : ;;   # unexpanded: not a path, leave the base
               *)
+                # A `cd` THAT FAILS LEAVES BASH WHERE IT WAS, and this walk
+                # used to advance anyway (go-to-k/cdkd#2684): from the main
+                # checkout, `cd /nonexistent 2>/dev/null ; echo POISON > <tracked>`
+                # answered rc=0 while the tracked file was really overwritten --
+                # the write resolved under a directory that does not exist, so
+                # nothing looked protected. Measured for `>`, `tee` and
+                # `tee -a`; inherited by every revision the oracle has scored.
+                #
+                # So the base advances only for a directory that EXISTS at hook
+                # time -- with one exception, because the hook runs BEFORE the
+                # command: a directory this same command CREATES is absent now
+                # and present when the `cd` runs (`mkdir -p /tmp/x && cd /tmp/x
+                # && echo > docs/a.md`, or CLAUDE.md's own `git worktree add
+                # <path> ... && cd <path>`). Refusing to advance there resolves
+                # the write against the protected tree and produces a FALSE
+                # BLOCK, so a missing target still advances when an EARLIER
+                # segment NAMES it (`__cd_named_earlier`). A command that creates
+                # a directory has to name it; the accident this fixes names the
+                # directory exactly once, in the `cd`.
+                #
+                # `~` is expanded first (`gate_expand_tilde`: a leading `~/` or a
+                # bare `~`, the same two shapes the strict resolver reads). Before
+                # the existence test it did not matter -- `<base>/~/x` was a
+                # bogus base that resolved every later write OUTSIDE the tree,
+                # which happened to agree with bash. Under the existence test
+                # that bogus base would fail the `-d` and turn `cd ~/x && echo >
+                # docs/a.md` into a false block, so the expansion is owed here.
+                cdt=$(gate_expand_tilde "$cdt")
+                __cdraw="$cdt"
                 [[ "$cdt" != /* ]] && cdt="$cur_base/$cdt"
-                cur_base="$cdt"
+                if [[ -d "$cdt" ]] || __cd_named_earlier "$cdt" "$__cdraw"; then
+                  cur_base="$cdt"
+                fi
                 ;;
             esac
+            __walk_note_names "$__seg"
             continue
           fi
         fi
       fi
+      __walk_note_names "$__seg"
       # Extract LITERAL redirection / write targets FROM THIS SEGMENT, against
       # the base as it stands here. We deliberately skip tokens containing `$`
       # (unexpandable variables) and `*?[` (globs).

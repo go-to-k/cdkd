@@ -1302,6 +1302,83 @@ run_case 0 "Bash a backslash target that is NOT tracked (control)" \
   "$(jq -nc --arg cmd 'echo hi > SCRAT\CH.txt' --arg cwd "$MAIN" \
     '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
 
+# 21b. A `cd` THAT FAILS (go-to-k/cdkd#2684). Bash leaves the shell where it
+#      was, so the write after it lands on the tracked file; the walk used to
+#      advance its base anyway and every one of these answered 0 while the file
+#      was really overwritten (inherited: `origin/main`'s hook answers 0 on all
+#      three as well -- measured side by side under the differential oracle).
+#      Three write vehicles, plus a RELATIVE target and a stderr-silenced one,
+#      because `cd <dir> 2>/dev/null ; <write>` is what the accident looks like.
+for __fc in "cd /nonexistent 2>/dev/null ; echo POISON > docs/_generated/ledger.tsv" \
+            "cd /nonexistent 2>/dev/null ; echo POISON | tee docs/_generated/ledger.tsv" \
+            "cd /nonexistent 2>/dev/null ; echo POISON | tee -a docs/_generated/ledger.tsv" \
+            "cd nope ; echo POISON > docs/_generated/ledger.tsv" \
+            "cd $TMPDIR/gone ; cd $TMPDIR/gone ; echo POISON > docs/_generated/ledger.tsv"; do
+  run_case_text 2 "tracked" "Bash a failed cd does not move the base: $__fc" \
+    "$(jq -nc --arg cmd "$__fc" --arg cwd "$MAIN" \
+      '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+done
+#      From the WORKTREE the same command lands in the worktree, which is not
+#      protected -- so the fix must not turn "stays put" into a refusal there.
+run_case 0 "Bash a failed cd from the feature worktree stays in the worktree" \
+  "$(jq -nc --arg cmd "cd /nonexistent 2>/dev/null ; echo POISON > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+#      And the polarity the issue named as the risk: a directory CREATED
+#      EARLIER IN THE SAME COMMAND is absent at hook time and present when the
+#      `cd` runs. Refusing to advance there would resolve `docs/a.md` against
+#      the main tree and refuse a write that never touches it. Four creators
+#      (an absolute `mkdir -p`, a relative one, a parent created by a deeper
+#      `mkdir -p`, and CLAUDE.md's own `git worktree add` recipe), plus a path
+#      with a SPACE, which the token walk must keep whole.
+for __cc in "mkdir -p $TMPDIR/fresh && cd $TMPDIR/fresh && echo POISON > docs/a.md" \
+            "mkdir -p fresh && cd fresh && echo POISON > docs/a.md" \
+            "mkdir -p $TMPDIR/fresh/docs/_generated && cd $TMPDIR/fresh && echo POISON > docs/_generated/ledger.tsv" \
+            "git worktree add .claude/worktrees/x -b x origin/main && cd .claude/worktrees/x && echo POISON > docs/a.md" \
+            "mkdir -p \"$TMPDIR/fresh q\" && cd \"$TMPDIR/fresh q\" && echo POISON > docs/a.md"; do
+  run_case 0 "Bash a cd into a directory this command creates still advances: $__cc" \
+    "$(jq -nc --arg cmd "$__cc" --arg cwd "$MAIN" \
+      '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+done
+#      The mention test excludes the verb that names a directory to REMOVE it:
+#      after `rm -rf X` the `cd X` fails and bash stays put, exactly as for a
+#      directory that never existed.
+run_case_text 2 "tracked" "Bash rm -rf X ; cd X ; write -- a removed directory is not a created one" \
+  "$(jq -nc --arg cmd "rm -rf $TMPDIR/gone ; cd $TMPDIR/gone ; echo POISON > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case_text 2 "tracked" "Bash git worktree remove X ; cd X ; write -- same" \
+  "$(jq -nc --arg cmd "git worktree remove $TMPDIR/gone ; cd $TMPDIR/gone ; echo POISON > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+#      `~` expands before the existence test. `<main>/~/x` is no directory, so
+#      without the expansion this would resolve `docs/a.md` against the main
+#      tree and refuse a write that lands under HOME.
+run_case 0 "Bash cd ~/ ; write -- tilde is expanded before the existence test" \
+  "$(jq -nc --arg cmd "cd ~/ ; echo POISON > docs/a.md" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+#      THE KNOWN RESIDUE, pinned as a measured bound rather than left as a
+#      hope: a mention that neither creates nor removes advances the base, and
+#      the write escapes. `main-tree-dirty-detector` is the backstop, as for
+#      the variable-indirected gap.
+run_case 0 "Bash echo X ; cd X ; write -- a bare mention advances (known residue)" \
+  "$(jq -nc --arg cmd "echo $TMPDIR/gone ; cd $TMPDIR/gone ; echo POISON > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+#      The clock: 190 missing `cd`s ahead of the write. The first revision
+#      re-tokenised every earlier segment on each miss and took 5.6 s under
+#      bash 3.2 -- past the oracle's 5 s budget, on its way to the 10 s kill.
+__fc_big=$(for i in $(seq 1 190); do printf 'cd /nx%s ; ' "$i"; done)
+__fc_json=$(jq -nc --arg cmd "${__fc_big}echo POISON > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+  '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')
+__fc_t0=$(date +%s)
+printf '%s' "$__fc_json" | "$HOOK_RUNNER" "$HOOK" >/dev/null 2>&1
+__fc_rc=$?
+__fc_secs=$(( $(date +%s) - __fc_t0 ))
+if [ "$__fc_rc" -eq 2 ] && [ "$__fc_secs" -le 3 ]; then
+  pass=$((pass + 1))
+  printf 'ok   (exit 2) latency: 190 missing cds ahead of a write refused in %ss (budget 3s)\n' "$__fc_secs"
+else
+  fail=$((fail + 1))
+  printf 'FAIL (exit %s, want 2) latency: 190 missing cds took %ss, budget 3s\n' "$__fc_rc" "$__fc_secs"
+fi
+
 # 22-25. THE OVER-SIZE SCAN. A security review confirmed `git ls-files` dies
 #        with E2BIG past ~20000 pathspecs, and `2>/dev/null` turned that into
 #        "not tracked" for a whole directory -- so the batched call is chunked
@@ -1347,7 +1424,7 @@ else
   printf 'FAIL latency: a 300 KB command took %ss to refuse, budget 4s\n' "$__os_secs"
 fi
 
-CASE_FLOOR=159
+CASE_FLOOR=175
 # `ran` is captured BEFORE the increment. Incrementing `fail` first and then
 # printing `$((pass + fail))` re-counted the floor's own failure as a case, so
 # one deleted case reported `only 135 cases ran, expected at least 135` -- a
