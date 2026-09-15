@@ -913,7 +913,16 @@ export interface ResourceProvider {
    * the SDK provider to apply custom transformations (e.g., default name generation)
    * so that CC API receives the same defaults the SDK provider would have applied.
    *
-   * If not implemented, properties are passed to CC API as-is.
+   * If not implemented (or the type has no registered SDK provider), the engine
+   * applies `applyDefaultNameForFallback` instead, which fills a
+   * `FALLBACK_NAME_RULES` name and returns any other bag unchanged.
+   *
+   * On an UPDATE the deploy engine takes a name back out of the returned bag
+   * when it is a `FALLBACK_NAME_RULES` name the template leaves falsy, restoring
+   * the template's own value where it has one
+   * (`withoutGeneratedFallbackName`, issue #3174): the recorded bag never holds
+   * a generated name, so sending one would patch the name. A hook's name for
+   * such a type therefore reaches Cloud Control on a create only.
    */
   preparePropertiesForFallback?(
     logicalId: string,

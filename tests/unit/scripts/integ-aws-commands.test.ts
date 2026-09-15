@@ -453,7 +453,10 @@ describe('integ fixture aws invocations (#1402)', () => {
     // rollback-cross-region-secret fixture (issue #2057) took the real total to
     // 3428; the band keeps the same proportional width it was written with
     // (~0.93x / ~1.13x of the measurement) rather than only its upper edge.
-    expect(stats.total).toBeGreaterThan(3200);
+    // Raised 3200 -> 3600 with the ceiling below when the
+    // lambda-capacity-provider-default-name fixture (issue #3174) took the real
+    // total to 3915: the old floor sat 18% under the measurement.
+    expect(stats.total).toBeGreaterThan(3600);
     // Re-tracked with the total (issue #2057): 55 / 290 sat 21% and 28% below
     // the measured 70 / 404, so either could have lost a fifth of its coverage
     // silently — the same argument the total's floor rests on. A floor is only
@@ -481,7 +484,10 @@ describe('integ fixture aws invocations (#1402)', () => {
     // -- a ceiling raised while the floor stays put silently widens the band
     // into a window a large parse collapse fits through, which is the failure
     // the paragraph above describes.
-    expect(stats.total).toBeLessThan(3900);
+    // Raised 3900 -> 4400 when the lambda-capacity-provider-default-name
+    // fixture (issue #3174) measured 3915 — ordinary growth had already brought
+    // the tree within a fixture of the old ceiling. Floor moved with it.
+    expect(stats.total).toBeLessThan(4400);
     // The highest-traffic services must always be represented.
     for (const svc of ['s3api', 'lambda', 'ec2', 'iam', 'logs']) {
       expect(stats.services.has(svc), `no aws ${svc} invocation parsed`).toBe(true);

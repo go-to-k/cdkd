@@ -30,6 +30,7 @@ import {
 import {
   withStackName,
   applyDefaultNameForFallback,
+  withoutGeneratedFallbackName,
   getCurrentStackName,
   looksLikeCdkdGeneratedName,
 } from '../provisioning/resource-name.js';
@@ -6431,7 +6432,11 @@ export class DeployEngine {
           const updateProvider = updateDecision.provider;
           const updateProps =
             updateDecision.provisionedBy === 'cc-api'
-              ? this.preparePropertiesForCcApi(resourceType, resolvedProps, logicalId)
+              ? withoutGeneratedFallbackName(
+                  resourceType,
+                  resolvedProps,
+                  this.preparePropertiesForCcApi(resourceType, resolvedProps, logicalId)
+                )
               : resolvedProps;
 
           let result;
@@ -7860,7 +7865,11 @@ export class DeployEngine {
    * back to `applyDefaultNameForFallback` (which mints stack-prefixed
    * names matching what the SDK provider would have done) otherwise.
    *
-   * No-ops for types with no registered SDK provider (Tier 2 / CC-native).
+   * A type with no registered SDK provider (Tier 2 / CC-native) takes the
+   * `applyDefaultNameForFallback` arm too, which fills a name only when the
+   * type has a `FALLBACK_NAME_RULES` entry (`AWS::Lambda::CapacityProvider`,
+   * issue #3174) and returns the bag unchanged otherwise. An UPDATE drops the
+   * generated name again (`withoutGeneratedFallbackName`).
    */
   private preparePropertiesForCcApi(
     resourceType: string,
