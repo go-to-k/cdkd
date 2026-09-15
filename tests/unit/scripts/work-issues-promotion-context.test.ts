@@ -449,6 +449,29 @@ describe('work-issues section 10-0 ctx() helper', () => {
     ).toHaveLength(0);
   }, 30_000);
 
+  it('(u) the suffix match is anchored at BOTH ends', () => {
+    // `grep -E "(^|/)<token>$"`. Both anchors are load-bearing and each
+    // fabricates a promotion when dropped — the same class as the unescaped
+    // dot in (t), and the same class as the ugrep defect: machinery artefact
+    // printed as a citation. Neither was watched by any other case.
+    const leading = runBlock('the subject is `a.md` here', 'dir/xa.md');
+    expect(leading.status).toBe(0);
+    expect(
+      leading.rows.filter((r) => r.startsWith('PROMOTE ')),
+      `token \`a.md\` must not match touched \`dir/xa.md\`; got ${JSON.stringify(leading.rows)}. ` +
+        `The leading \`(^|/)\` anchor is gone, so the token matches mid-segment.`,
+    ).toHaveLength(0);
+
+    const trailing = runBlock('the subject is `a.md` here', 'dir/a.md.bak');
+    expect(trailing.status).toBe(0);
+    expect(
+      trailing.rows.filter((r) => r.startsWith('PROMOTE ')),
+      `token \`a.md\` must not match touched \`dir/a.md.bak\`; got ` +
+        `${JSON.stringify(trailing.rows)}. The trailing \`$\` anchor is gone, so the token ` +
+        `matches a prefix of a longer name.`,
+    ).toHaveLength(0);
+  }, 30_000);
+
   it('(s) the Session-fit filter is LIVE — only `next` issues promote', () => {
     // Every other block case neutralises this gate. Run it for real in both
     // directions: without a case here, DELETING the filter from the recipe is
