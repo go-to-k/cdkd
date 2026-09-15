@@ -345,12 +345,17 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // The go-to-k/cdkd#2413 / go-to-k/cdkd#2426 / go-to-k/cdkd#2457 /
     // go-to-k/cdkd#2655 batch then landed five deferred lessons across seven
     // stage files. The LEADER PAIR DID NOT MOVE: verify.md stays largest and
-    // implement.md runner-up, exactly as the entry above left them. What
-    // changed is third place -- triage.md took the shared-pool batching rule
-    // and the `ListAgents` reading and grew past retro.md into it -- while
+    // implement.md runner-up, exactly as the entry above left them — which is
+    // the only ordering claim this entry makes, and deliberately so. THREE
+    // successive drafts asserted some other rank ("the runner-up changed
+    // hands", "implement.md is largest at every commit", "triage.md grew into
+    // third place") and review measured each one false; ranks below the two
+    // the fields ASSERT are derived, and a derived claim in this record has
+    // been wrong every time it has been made. Read them off the deltas.
     // implement.md took go-to-k/cdkd#2457's two probe-stage rules and funded
     // them ENTIRELY in-file, compressing incident narratives in 5-a, 5-b, 5-c,
-    // 5-e, 5-f' and 5-g to their citations (+5 net).
+    // 5-e, 5-f' and 5-g to their citations (+5 net), while triage.md took the
+    // shared-pool batching rule and the `ListAgents` reading.
     //
     // Per-file deltas against the merge base, measured on the MERGED tree
     // rather than described: verify +0, implement +5, triage +1,057,
@@ -842,9 +847,9 @@ const MIN_REFERENCE_FILES = 6;
 // (go-to-k/cdkd#2413 / go-to-k/cdkd#2426 / go-to-k/cdkd#2457 /
 // go-to-k/cdkd#2655; corpus 188,312 -> 198,624). MOST of the raise is
 // non-leader growth, as the 2026-09-04 note above requires, but not all of
-// it: implement.md funded its additions in-file (+5) while triage.md grew into
-// third place. MEASURED above carries the per-file accounting and no share is
-// derived from it there or here. MEASURED ON THE MERGED TREE, not by adding
+// it: implement.md funded its additions in-file (+5) while triage.md grew by
+// 1,057. MEASURED above carries the per-file accounting; no share and no rank
+// is derived from it there or here, for the reason recorded beside it. MEASURED ON THE MERGED TREE, not by adding
 // this branch's delta to the go-to-k/cdkd#3077 entry above — both changed this
 // record, so their sum is not their composition. Inputs: largest verify.md
 // 30,000, runner-up implement.md 29,997, so the two thresholds are 168,624
