@@ -169,8 +169,14 @@ describe('scrub keys on the resolver nameless-dynamic-reference messages', () =>
     // The issue named one call site; the same swallow shape occurs four times.
     // A per-site fix leaves the other three reporting CLEAN.
     const scrub = readFileSync(SCRUB, 'utf8');
-    const guarded = scrub.split('isNamelessDynamicReferenceFailure(err)').length - 1;
-    const ambiguous = scrub.split('isRegionAmbiguousRefusal(err)').length - 1;
+    // The RE-RAISE shape, not bare occurrences of the predicate name: since
+    // go-to-k/cdkd#3160 the sibling predicate CALLS this one in its own body,
+    // so counting names reported 5 call sites where there are 4. Counting the
+    // `... ) throw err;` tail keeps the subject the thing the case is about.
+    const RERAISE = /isNamelessDynamicReferenceFailure\(err\)\) throw err;/g;
+    const AMBIGUOUS = /isRegionAmbiguousRefusal\(err\) \|\|/g;
+    const guarded = [...scrub.matchAll(RERAISE)].length;
+    const ambiguous = [...scrub.matchAll(AMBIGUOUS)].length;
     expect(
       guarded,
       `${guarded} of scrub's best-effort catches re-raise a nameless dynamic reference, but ` +

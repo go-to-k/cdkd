@@ -35,6 +35,12 @@
  * REACHED and re-raises, not that any one site is independently necessary. The
  * whole-predicate mutation (`return false`) is what covers the set, and it
  * reds 3 cases.
+ *
+ * The go-to-k/cdkd#3160 COUNTER has the same property and the same bound,
+ * measured the same way: deleting all four `unverifiableLeaves++` sites reds 4
+ * cases, deleting one reds none. Its own negative control is separate — a
+ * stack whose references all resolve must count ZERO, or a counter that
+ * incremented unconditionally would satisfy every positive case.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
@@ -190,12 +196,43 @@ describe('cdkd scrub - refusals this PR adds (go-to-k/cdkd#2692, go-to-k/cdkd#30
       await expect(run(healthy())).resolves.toBeDefined();
     });
 
-    it('does NOT re-raise a dynamic-reference RESOLUTION failure', async () => {
-      // scrub resolves with template DEFAULTS and no `--parameters`, so an
-      // Fn::Sub that keeps its raw `${Field}` produces this on a HEALTHY
-      // stack. Refusing on it refuses those stacks — go-to-k/cdkd#3160.
-      resolveThrows = new Error("Dynamic reference: key '${Field' not found in secret 'x'");
-      await expect(run(healthy())).resolves.toBeDefined();
+    for (const message of [
+      "Dynamic reference: SSM parameter '/deleted' not found or has no value",
+      "Dynamic reference: secret 'x' does not contain a SecretString value",
+      "Dynamic reference: key '${Field' not found in secret 'x'",
+      "Dynamic reference: secret 'x' is not valid JSON but JSON_KEY 'k' was specified",
+    ]) {
+      it(`counts, but does NOT re-raise, \`${message.slice(0, 44)}...\``, async () => {
+        // scrub resolves with template DEFAULTS and no `--parameters`, so an
+        // Fn::Sub that keeps its raw `${Field}` produces this on a HEALTHY
+        // stack. Refusing refuses those stacks — but staying SILENT is the
+        // go-to-k/cdkd#3160 defect: the resolver stops at the first failing
+        // token, so a real secret after it in the same leaf records no needle
+        // and the run reported `No plaintext secrets found`, exit 0.
+        resolveThrows = new Error(message);
+        const result = await run(healthy());
+        expect(result).toBeDefined();
+        expect(
+          result.unverifiableLeaves,
+          'the abandoned leaf was not counted, so the run can still report the stack clean ' +
+            'over a scan that stopped early (go-to-k/cdkd#3160).'
+        ).toBeGreaterThan(0);
+      });
+    }
+
+    it('counts NOTHING on a stack whose references all resolve', async () => {
+      // The negative control: without it, a counter that increments
+      // unconditionally would satisfy every case above.
+      const result = await run(healthy());
+      expect(result.unverifiableLeaves).toBe(0);
+    });
+
+    it('does not count a NAMELESS reference — that one re-raises instead', async () => {
+      // The two classes must not collapse into each other: nameless is
+      // structurally broken and refuses; these are resolution failures and
+      // are counted.
+      resolveThrows = new Error('Dynamic reference: secretsmanager SECRET_ID is required');
+      await expect(run(healthy())).rejects.toThrow();
     });
   });
 

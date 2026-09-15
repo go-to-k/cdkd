@@ -597,6 +597,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   // not read as clean and `--fail` must not exit 0, but the stack itself was
   // still scrubbed for everything else and must not be refused outright.
   let totalStacksWithUnverifiableReads = 0;
+  let totalStacksWithUnverifiableLeaves = 0;
   /**
    * Stacks this `--dry-run` proceeded over with an UNREADABLE resources map
    * (issue go-to-k/cdkd#3018). Tracked exactly like `indexUnreadable`: an
@@ -822,6 +823,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     } else if (
       scrubbed.secretBearingKeys === 0 &&
       scrubbed.unverifiableReads === 0 &&
+      scrubbed.unverifiableLeaves === 0 &&
       indexConverged === 0
     ) {
       // A CONVERGE finding gates this line for the same reason the two below
@@ -842,6 +844,15 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     }
     if (scrubbed.malformedResources) {
       malformedRecords.push(stack.stackName);
+    }
+    if (scrubbed.unverifiableLeaves > 0) {
+      totalStacksWithUnverifiableLeaves++;
+      logger.warn(
+        `${scrubbed.unverifiableLeaves} leaf/leaves in ${stack.stackName} had their ` +
+          `{{resolve:...}} scan ABANDONED because a reference could not be resolved (see the ` +
+          `warnings above). The resolver stops at the first failing token, so a real secret ` +
+          `after it in the same leaf recorded no needle — this stack is not reported clean.`
+      );
     }
     if (scrubbed.unverifiableReads > 0) {
       totalStacksWithUnverifiableReads++;
@@ -914,6 +925,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     totalStacksScrubbed === 0 &&
     totalStacksWithUnscrubbableKeys === 0 &&
     totalStacksWithUnverifiableReads === 0 &&
+    totalStacksWithUnverifiableLeaves === 0 &&
     totalIndexEntriesConverged === 0 &&
     indexUnwritten.length === 0 &&
     indexUnreadable.length === 0 &&
@@ -1090,7 +1102,9 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   // 0 over them is exactly backwards (issue #2133 review).
   if (
     options.fail &&
-    (totalStacksWithUnscrubbableKeys > 0 || totalStacksWithUnverifiableReads > 0)
+    (totalStacksWithUnscrubbableKeys > 0 ||
+      totalStacksWithUnverifiableReads > 0 ||
+      totalStacksWithUnverifiableLeaves > 0)
   ) {
     throw new ScrubNeededError();
   }
@@ -2964,6 +2978,38 @@ const DYNAMIC_REFERENCE_PREFIX = 'Dynamic reference: ';
  * therefore an `ambiguous` verdict, whose typed error scrub already re-raises.
  * The old, wrong-in-substance refusal was backstopping this one.
  */
+/**
+ * A dynamic reference the resolver could not RESOLVE — a deleted SSM
+ * parameter, a secret with no `SecretString`, a missing `JSON_KEY`, a
+ * non-JSON secret (issue go-to-k/cdkd#3160).
+ *
+ * The SIBLING of {@link isNamelessDynamicReferenceFailure}, and deliberately
+ * NOT handled the same way. Both abandon the leaf — the token loop in
+ * `resolveDynamicReferences` has no per-token `try`, so a real
+ * `{{resolve:secretsmanager:...}}` sitting after the failing token is never
+ * fetched and records NO needle. But a nameless reference is structurally
+ * broken, while THESE fire on a perfectly healthy stack: scrub resolves with
+ * template DEFAULTS and takes no `--parameters`, so an `Fn::Sub` that
+ * warn-and-KEEPS its raw `${Field}` produces a JSON_KEY miss every run.
+ * Refusing on them refuses ordinary stacks — measured, it reddened
+ * `tests/unit/cli/commands/scrub-cross-region-secret.test.ts`.
+ *
+ * So the verdict is a counted FINDING, the shape this command already uses for
+ * a cross-stack read it declines by design: the rest of the stack is still
+ * scrubbed, the leaf is reported as unverifiable, and the run does not claim
+ * the record is clean. What it must NOT do is stay silent, which is what it
+ * did before — `No plaintext secrets found`, exit 0, over a leaf nothing read.
+ */
+function isDynamicReferenceResolutionFailure(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    !isNamelessDynamicReferenceFailure(err) &&
+    errorCauseChain(err).some(
+      (link) => link instanceof Error && link.message.includes(DYNAMIC_REFERENCE_PREFIX)
+    )
+  );
+}
+
 function isNamelessDynamicReferenceFailure(err: unknown): boolean {
   return (
     err instanceof Error &&
@@ -3656,6 +3702,16 @@ export interface ScrubStackResult {
    */
   unverifiableReads: number;
   /**
+   * Leaves whose `{{resolve:...}}` scan was ABANDONED mid-token because one
+   * reference failed to RESOLVE (issue go-to-k/cdkd#3160). A FINDING like
+   * {@link ScrubStackResult.unverifiableReads}, not a refusal: the rest of the
+   * stack is scrubbed, but a real secret sitting after the failing token in
+   * the same leaf recorded no needle, so the record must not be reported
+   * clean. Refusing instead would refuse healthy stacks — see
+   * `isDynamicReferenceResolutionFailure`.
+   */
+  unverifiableLeaves: number;
+  /**
    * `state.outputs` as this run leaves it — the bag written on a real run, and
    * the bag a real run WOULD write under `--dry-run` (issue #2667).
    *
@@ -3755,6 +3811,12 @@ export async function scrubStack(
   // beside the secret maps for the same reason they are: the value is needed
   // after a throw could have happened.
   const prePassFindings: CrossStackPrePassFindings = { unverifiable: [] };
+  /**
+   * Leaves whose dynamic-reference scan was ABANDONED mid-token (issue
+   * go-to-k/cdkd#3160). A counted finding, not a refusal — see
+   * `isDynamicReferenceResolutionFailure` for why these cannot refuse.
+   */
+  let unverifiableLeaves = 0;
   try {
     const loaded = await stateBackend.getState(stack.stackName, region);
     if (!loaded) {
@@ -3764,6 +3826,7 @@ export async function scrubStack(
         secretsFound: 0,
         secretBearingKeys: 0,
         unverifiableReads: 0,
+        unverifiableLeaves: 0,
         // No record, so nothing was resolved and the bag is empty — every name
         // tests as 'safe'. Bound to the same map the other two sites use so
         // the shape cannot drift.
@@ -4053,6 +4116,7 @@ export async function scrubStack(
           // A region-AMBIGUOUS refusal is not best-effort -- see
           // `isRegionAmbiguousRefusal`.
           if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
+          if (isDynamicReferenceResolutionFailure(err)) unverifiableLeaves++;
           // Best-effort: a resource whose intrinsics cannot resolve (a Ref to
           // something not in state) still has its own {{resolve:...}} leaves
           // recorded along the way; leave the rest untouched.
@@ -4128,6 +4192,7 @@ export async function scrubStack(
           await resolver.resolve(resolveInput, resolverContext(recordedSecretValues));
         } catch (err) {
           if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
+          if (isDynamicReferenceResolutionFailure(err)) unverifiableLeaves++;
           logger.debug(
             `Resolution of orphan record ${record.logicalId} during scrub was partial: ` +
               `${maskSecretsInText(err instanceof Error ? err.message : String(err), recordedSecretValues)}`
@@ -4255,6 +4320,7 @@ export async function scrubStack(
             // A region-AMBIGUOUS refusal is not best-effort -- see
             // `isRegionAmbiguousRefusal`.
             if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
+            if (isDynamicReferenceResolutionFailure(err)) unverifiableLeaves++;
             nameFailed = true;
             nameError = err;
           }
@@ -4397,6 +4463,7 @@ export async function scrubStack(
           // A region-AMBIGUOUS refusal is not best-effort -- see
           // `isRegionAmbiguousRefusal`.
           if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
+          if (isDynamicReferenceResolutionFailure(err)) unverifiableLeaves++;
           // MASKED for the same reason as the two above — `valueSource` is a
           // post-pin bag. Verbose-only.
           logger.debug(
@@ -4472,6 +4539,7 @@ export async function scrubStack(
         secretsFound: 0,
         secretBearingKeys: secretBearingKeys.length,
         unverifiableReads: prePassFindings.unverifiable.length,
+        unverifiableLeaves,
         ...(malformedResources ? { malformedResources } : {}),
         // No needle was recorded, so no redaction pass ran and the stored bag
         // is what this run leaves — including on a RE-RUN over already-scrubbed
@@ -4694,6 +4762,7 @@ export async function scrubStack(
       secretsFound: totalSecrets,
       secretBearingKeys: secretBearingKeys.length,
       unverifiableReads: prePassFindings.unverifiable.length,
+      unverifiableLeaves,
       ...(malformedResources ? { malformedResources } : {}),
       outputs: newOutputs,
       exportNameDisplay: (name) => secretSafeKeyDisplay(name, outputSecrets),
