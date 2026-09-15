@@ -852,8 +852,9 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
           `{{resolve:...}} scan ABANDONED because a reference could not be resolved (see the ` +
           `warnings above). The resolver stops at the first failing token, so a real secret ` +
           `after it in the same value recorded no needle — this stack is not reported clean. ` +
-          `The count is per RECORD (one resource, orphan or output), not per leaf: one record ` +
-          `may hold several abandoned leaves.`
+          `The count is per abandoned SCAN, not per secret: one record can contribute more ` +
+          `than once (an output whose Export.Name and Value both abandon), and one ` +
+          `abandoned scan can hide several unexamined leaves.`
       );
     }
     if (scrubbed.unverifiableReads > 0) {
@@ -2985,6 +2986,18 @@ const DYNAMIC_REFERENCE_PREFIX = 'Dynamic reference: ';
  * therefore an `ambiguous` verdict, whose typed error scrub already re-raises.
  * The old, wrong-in-substance refusal was backstopping this one.
  */
+function isNamelessDynamicReferenceFailure(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    errorCauseChain(err).some(
+      (link) =>
+        link instanceof Error &&
+        link.message.includes(DYNAMIC_REFERENCE_PREFIX) &&
+        NAMELESS_DYNAMIC_REFERENCE_MARKERS.some((marker) => link.message.includes(marker))
+    )
+  );
+}
+
 /**
  * The scan of `source`'s `{{resolve:...}}` leaves was ABANDONED by `err`
  * (issue go-to-k/cdkd#3160).
@@ -3003,27 +3016,90 @@ const DYNAMIC_REFERENCE_PREFIX = 'Dynamic reference: ';
  * stay silent — plus the `Refusing to resolve` arm for an `ssm-secure` over a
  * public parameter.
  *
- * So the question is not what the error SAYS but whether the value being
- * resolved had a dynamic reference in it at all: if it did and the resolve
- * threw, the remaining tokens in that leaf were not fetched and recorded no
- * needle. The two classes that must NOT count are the ones that re-raise
- * instead — checked by the caller before this is reached.
+ * So the first half of the question is not what the error SAYS but whether the
+ * value being resolved had a dynamic reference in it at all: if it did and the
+ * resolve threw, the remaining tokens in that leaf were not fetched and
+ * recorded no needle. The two classes that must NOT count are the ones that
+ * re-raise instead — checked by the caller before this is reached.
+ *
+ * The POSITION alone is not enough, though, and a cut that used it alone was
+ * wrong in the opposite direction from the message-matched one. This catch
+ * exists for the ORDINARY failure the comment beside it names — a `Ref` to
+ * something not in state — and that throw is not a dynamic-reference failure
+ * however many `{{resolve:...}}` leaves the same bag happens to carry. The
+ * population is not exotic: `scrubStack` catches `resolveParameters` wholesale
+ * and carries on with an EMPTY parameter bag, so ONE parameter with no
+ * `Default` makes every `{Ref: <param>}` in the stack throw — including refs
+ * to parameters that do have one. Counting those would red `--dry-run --fail`,
+ * the documented STANDING CI gate, on stacks that are entirely healthy and
+ * with no way for the operator to clear it. That is the same outcome
+ * go-to-k/cdkd#3160 gives as the reason NOT to widen into a refusal.
+ *
+ * Hence the conjunction, and note WHO OWNS each half. The excluded set is
+ * cdkd's OWN refusal prose, which cdkd controls and
+ * `scrub-abandoned-scan-origin.test.ts` fences against the resolver's throw
+ * sites. The included set is left unnamed on purpose, because it is AWS's:
+ * enumerating SDK error names is what the first cut did, and a name AWS adds
+ * later would silently rejoin the false-clean population this issue is about.
+ * The asymmetry is deliberate — an error we cannot classify counts, and the
+ * residual is a WARN on a healthy stack rather than a plaintext under `clean`.
+ *
+ * STATED RESIDUAL, in the other direction: `carriesDynamicReference` tests for
+ * the literal `{{resolve:` in the RAW bag, so an ASSEMBLED reference is not seen
+ * — a parameter whose `Default` holds the whole token, used as
+ * `{'Fn::Sub': '${DbSecretRef}'}` (the shape `pinCrossRegionSecrets` documents).
+ * A failed resolve there is NOT counted and the stack still reports clean. That
+ * is the original bug, surviving in a narrower population; closing it means
+ * composing `isAssembledSecretReference`, which is not a drive-by because it
+ * changes what the counter claims about every leaf, not just this one.
+ * Recorded rather than papered over: go-to-k/cdkd#3178 security review.
  */
-function abandonedDynamicReferenceScan(source: unknown): boolean {
-  return carriesDynamicReference(source);
+function abandonedDynamicReferenceScan(source: unknown, err: unknown): boolean {
+  return carriesDynamicReference(source) && !isTemplateShapeResolutionFailure(err);
 }
 
-function isNamelessDynamicReferenceFailure(err: unknown): boolean {
-  return (
-    err instanceof Error &&
-    errorCauseChain(err).some(
-      (link) =>
-        link instanceof Error &&
-        link.message.includes(DYNAMIC_REFERENCE_PREFIX) &&
-        NAMELESS_DYNAMIC_REFERENCE_MARKERS.some((marker) => link.message.includes(marker))
-    )
-  );
+/**
+ * `err` is cdkd's OWN refusal to resolve a template SHAPE — a `Ref`, an
+ * `Fn::GetAtt`, a parameter binding — rather than a failure to fetch a
+ * `{{resolve:...}}` reference.
+ *
+ * Matched on cdkd-authored prose, which is sound here for the reason the
+ * inverse is not: every string below is built by `intrinsic-function-resolver.ts`
+ * itself, so it changes only when this repo changes it, and the fence in
+ * `tests/unit/cli/scrub-abandoned-scan-origin.test.ts` reds when a throw site
+ * there stops matching. An AWS-authored message could never carry that
+ * guarantee.
+ */
+function isTemplateShapeResolutionFailure(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return TEMPLATE_SHAPE_FAILURE_PATTERNS.some((pattern) => pattern.test(err.message));
 }
+
+/**
+ * The cdkd-authored messages {@link isTemplateShapeResolutionFailure} excludes,
+ * ANCHORED. A substring test cannot be used here and the reason is concrete:
+ * `'Parameter '` alone also matches the SDK's own `Parameter /deleted not
+ * found.` — `ParameterNotFound`, this issue's HEADLINE repro — so the loose
+ * spelling would have excluded the very case the positional half exists to
+ * catch. Each pattern must stay tight enough that no AWS-authored message can
+ * satisfy it.
+ *
+ * Deliberately just these TWO, not every shape failure the resolver can raise.
+ * They are the ones that fire EN MASSE on a healthy stack: `resolveParameters`
+ * is caught wholesale by `scrubStack`, so one `Default`-less parameter empties
+ * the whole bag and every `{Ref: <param>}` throws. A rarer shape failure (an
+ * `Fn::Select` over a non-array, say) is a genuine template defect, and
+ * counting a leaf whose scan it abandoned is not wrong — the scan really did
+ * stop. Over-counting THERE costs a warn on a broken template; over-counting
+ * on the two below would cost a red CI gate on a working one.
+ *
+ * Per-pattern throw sites, and the fence that keeps them true, are in
+ * `tests/unit/cli/scrub-abandoned-scan-origin.test.ts`.
+ */
+const TEMPLATE_SHAPE_FAILURE_PATTERNS = [
+  /^Ref \S+ not found$/,
+  /^Parameter \S+ is required but no value was provided/,
+] as const;
 
 /**
  * A secrets map with its OWN identity whose entries ARE `target`'s (issue
@@ -3711,7 +3787,7 @@ export interface ScrubStackResult {
    * stack is scrubbed, but a real secret sitting after the failing token in
    * the same leaf recorded no needle, so the record must not be reported
    * clean. Refusing instead would refuse healthy stacks — see
-   * `isDynamicReferenceResolutionFailure`.
+   * `abandonedDynamicReferenceScan`.
    */
   unverifiableLeaves: number;
   /**
@@ -3817,7 +3893,7 @@ export async function scrubStack(
   /**
    * Leaves whose dynamic-reference scan was ABANDONED mid-token (issue
    * go-to-k/cdkd#3160). A counted finding, not a refusal — see
-   * `isDynamicReferenceResolutionFailure` for why these cannot refuse.
+   * `abandonedDynamicReferenceScan` for why these cannot refuse.
    */
   let unverifiableLeaves = 0;
   try {
@@ -4119,7 +4195,7 @@ export async function scrubStack(
           // A region-AMBIGUOUS refusal is not best-effort -- see
           // `isRegionAmbiguousRefusal`.
           if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
-          if (abandonedDynamicReferenceScan(resolveInput)) {
+          if (abandonedDynamicReferenceScan(resolveInput, err)) {
             unverifiableLeaves++;
             // WARN, not debug: this is the FINDING, and the count reported at the end
             // is useless without the record it belongs to. The CAUSE is deliberately
@@ -4128,7 +4204,7 @@ export async function scrubStack(
             // `pinCrossRegionSecrets` substituted into the bag.
             logger.warn(
               maskSecretsInText(
-                `The {{resolve:...}} scan of resource '${logicalId}' was ABANDONED, so any secret ` +
+                `The {{resolve:...}} scan of resource '${displaySafe(logicalId)}' was ABANDONED, so any secret ` +
                   `after the failing token in the same value recorded no needle: this ` +
                   `record is NOT certified clean. Re-run with --verbose for the cause.`,
                 recordedSecretValues
@@ -4210,7 +4286,7 @@ export async function scrubStack(
           await resolver.resolve(resolveInput, resolverContext(recordedSecretValues));
         } catch (err) {
           if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
-          if (abandonedDynamicReferenceScan(resolveInput)) {
+          if (abandonedDynamicReferenceScan(resolveInput, err)) {
             unverifiableLeaves++;
             // WARN, not debug: this is the FINDING, and the count reported at the end
             // is useless without the record it belongs to. The CAUSE is deliberately
@@ -4219,7 +4295,7 @@ export async function scrubStack(
             // `pinCrossRegionSecrets` substituted into the bag.
             logger.warn(
               maskSecretsInText(
-                `The {{resolve:...}} scan of orphan record '${record.logicalId}' was ABANDONED, so any secret ` +
+                `The {{resolve:...}} scan of orphan record '${displaySafe(record.logicalId)}' was ABANDONED, so any secret ` +
                   `after the failing token in the same value recorded no needle: this ` +
                   `record is NOT certified clean. Re-run with --verbose for the cause.`,
                 recordedSecretValues
@@ -4353,7 +4429,7 @@ export async function scrubStack(
             // A region-AMBIGUOUS refusal is not best-effort -- see
             // `isRegionAmbiguousRefusal`.
             if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
-            if (abandonedDynamicReferenceScan(nameSource)) {
+            if (abandonedDynamicReferenceScan(nameSource, err)) {
               unverifiableLeaves++;
               // WARN, not debug: this is the FINDING, and the count reported at the end
               // is useless without the record it belongs to. The CAUSE is deliberately
@@ -4362,9 +4438,9 @@ export async function scrubStack(
               // `pinCrossRegionSecrets` substituted into the bag.
               logger.warn(
                 maskSecretsInText(
-                  `The {{resolve:...}} scan of the Export.Name of output '${name}' was ABANDONED, so any secret ` +
+                  `The {{resolve:...}} scan of the Export.Name of output '${displaySafe(name)}' was ABANDONED, so any secret ` +
                     `after the failing token in the same value recorded no needle: this ` +
-                    `record is NOT certified clean. Re-run with --verbose for the cause.`,
+                    `record is NOT certified clean.`,
                   outputSecrets
                 )
               );
@@ -4511,7 +4587,7 @@ export async function scrubStack(
           // A region-AMBIGUOUS refusal is not best-effort -- see
           // `isRegionAmbiguousRefusal`.
           if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
-          if (abandonedDynamicReferenceScan(valueSource)) {
+          if (abandonedDynamicReferenceScan(valueSource, err)) {
             unverifiableLeaves++;
             // WARN, not debug: this is the FINDING, and the count reported at the end
             // is useless without the record it belongs to. The CAUSE is deliberately
@@ -4520,7 +4596,7 @@ export async function scrubStack(
             // `pinCrossRegionSecrets` substituted into the bag.
             logger.warn(
               maskSecretsInText(
-                `The {{resolve:...}} scan of output '${name}' was ABANDONED, so any secret ` +
+                `The {{resolve:...}} scan of output '${displaySafe(name)}' was ABANDONED, so any secret ` +
                   `after the failing token in the same value recorded no needle: this ` +
                   `record is NOT certified clean. Re-run with --verbose for the cause.`,
                 outputSecrets

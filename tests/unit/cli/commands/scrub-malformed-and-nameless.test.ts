@@ -104,7 +104,17 @@ function stackInfo(): { stackName: string; template: CloudFormationTemplate } {
           // fixture needs to reach. Measured: a LITERAL name leaves that site
           // unreached (it needs no resolving), so the intrinsic is
           // load-bearing here, not decoration.
-          Export: { Name: { 'Fn::Sub': '${AWS::StackName}-db-endpoint' } },
+          // The `{{resolve:ssm-secure}}` inside the name is what reaches the
+          // FOURTH counter site, and it is load-bearing twice over. The
+          // intrinsic alone only gets the catch to RUN (the sibling
+          // `Export.Name of output ... could not be resolved` warn fires either
+          // way); the counter is POSITIONAL, so without a `{{resolve:` in the
+          // name `carriesDynamicReference(nameSource)` is false and that site
+          // silently contributes nothing. An earlier revision of this fixture
+          // had the plain `${AWS::StackName}-db-endpoint` name and recorded
+          // that as "the harness cannot reach the site" — it reached it, and
+          // the predicate declined. Measured: with this name the count is 4.
+          Export: { Name: { 'Fn::Sub': '${AWS::StackName}-{{resolve:ssm-secure}}' } },
         },
       },
     } as unknown as CloudFormationTemplate,
@@ -238,21 +248,18 @@ describe('cdkd scrub - refusals this PR adds (go-to-k/cdkd#2692, go-to-k/cdkd#30
         // rejection travels to the next catch) but a counter can, because
         // counters do not short-circuit.
         //
-        // THREE, not four, measured: the resource bag, the orphan record and
-        // the output's VALUE. The fourth site — the output's `Export.Name` —
-        // is not reached by this harness at all; its `nameSource` goes through
-        // `pinCrossRegionSecrets` and a `resolveCrossStackReads` before the
-        // guarded `try`, and giving the name a `{{resolve:...}}` did not change
-        // the count (measured, so this is a gap in the HARNESS, not a claim
-        // that the site is dead). Stated rather than papered over with `> 0`,
-        // which would have hidden all three of the sites this does pin.
+        // FOUR — one per counter site: the resource bag, the orphan record,
+        // the output's `Export.Name` and the output's VALUE. The `Export.Name`
+        // site is reached only because `healthy()`'s export name carries a
+        // `{{resolve:...}}`; see the comment on it for why the intrinsic alone
+        // is not enough.
         expect(
           result.unverifiableLeaves,
           `the leaf abandoned by ${label} was counted ${result.unverifiableLeaves} time(s), ` +
             'expected one per counter site. A lower number means a site stopped counting and ' +
             'the run can report a stack clean over a scan that stopped early ' +
             '(go-to-k/cdkd#3160).'
-        ).toBe(3);
+        ).toBe(4);
 
         // The count is only actionable if the operator can tell WHICH record
         // it belongs to, and the summary line says "see the warnings above" —
@@ -266,9 +273,46 @@ describe('cdkd scrub - refusals this PR adds (go-to-k/cdkd#2692, go-to-k/cdkd#30
         expect(warned, 'the abandoned orphan record was not named at default verbosity').toContain(
           "orphan record 'OldDb'"
         );
-        expect(warned, 'the abandoned output record was not named at default verbosity').toContain(
-          "output 'DbEndpoint'"
+        // Anchored on `scan of output`, NOT the bare `output 'DbEndpoint'`:
+        // the Export.Name site's message CONTAINS that substring
+        // ("...scan of the Export.Name of output 'DbEndpoint'"), so the bare
+        // form is satisfied by either site and discriminates neither.
+        expect(warned, 'the abandoned output VALUE was not named at default verbosity').toContain(
+          "scan of output 'DbEndpoint'"
         );
+        expect(
+          warned,
+          'the abandoned Export.Name was not named at default verbosity'
+        ).toContain("scan of the Export.Name of output 'DbEndpoint'");
+      });
+    }
+
+    // The round-2 blocker, as a case rather than as a comment. A bag can carry
+    // a `{{resolve:...}}` and still fail for a reason that has nothing to do
+    // with fetching it — this catch is documented as existing for exactly that
+    // (a `Ref` to something not in state). Counting those reds `--dry-run
+    // --fail`, the documented STANDING CI gate, on a healthy stack, and the
+    // operator cannot clear it: `scrubStack` catches `resolveParameters`
+    // wholesale and carries on with an EMPTY parameter bag, so ONE parameter
+    // with no `Default` makes every `{Ref: <param>}` in the stack throw.
+    const TEMPLATE_SHAPE: ReadonlyArray<readonly [string, string]> = [
+      ['a Ref to a resource not in state', 'Ref MyBucket not found'],
+      [
+        'a parameter with no Default and no supplied value',
+        'Parameter DbName is required but no value was provided and no default exists',
+      ],
+    ];
+
+    for (const [label, message] of TEMPLATE_SHAPE) {
+      it(`does NOT count ${label}, even over a reference-bearing bag`, async () => {
+        resolveThrows = new Error(message);
+        const result = await run(healthy());
+        expect(
+          result.unverifiableLeaves,
+          `"${message}" is cdkd's own refusal to resolve a template SHAPE. Counting it makes ` +
+            '`cdkd scrub --dry-run --fail` exit 1 on a stack with nothing wrong with it, with ' +
+            'no action the operator can take to clear it (go-to-k/cdkd#3178 round 2).'
+        ).toBe(0);
       });
     }
 
