@@ -77,7 +77,11 @@ import {
   secretSafeKeyDisplay,
   type SecretSafeKeyDisplay,
 } from '../../deployment/outputs-export-alias.js';
-import { refuseMalformedState } from '../../state/malformed-resources-bag.js';
+import {
+  malformedResourcesWarning,
+  refuseMalformedState,
+  repairMalformedResourcesForReadOnly,
+} from '../../state/malformed-resources-bag.js';
 
 /**
  * Signals `cdkd scrub` found plaintext it is reporting rather than removing.
@@ -2853,6 +2857,15 @@ const NAMELESS_DYNAMIC_REFERENCE_MARKERS = [
 ] as const;
 
 /**
+ * The prefix a matching message must ALSO carry. Without it the bare tails
+ * above are reachable from an unrelated throw: `resolveParameters` raises
+ * `Parameter ${name} is required but no value was provided`, so a template
+ * parameter literally NAMED `PARAMETER_NAME` would flip an ordinary
+ * best-effort miss into a whole-stack refusal.
+ */
+const DYNAMIC_REFERENCE_PREFIX = 'Dynamic reference: ';
+
+/**
  * A NAMELESS dynamic reference is NOT a best-effort miss, however unresolvable
  * the rest of the resource is (issue go-to-k/cdkd#2692) — `{{resolve:ssm-secure}}`
  * with no parameter name, or `{{resolve:secretsmanager}}` /
@@ -2883,10 +2896,20 @@ const NAMELESS_DYNAMIC_REFERENCE_MARKERS = [
  * on a perfectly healthy stack, so refusing on that class refuses ordinary
  * stacks (measured — it reddened
  * `tests/unit/cli/commands/scrub-cross-region-secret.test.ts`). A nameless
- * reference has no such excuse: no parameter substitution yields an EMPTY
- * argument, since the unresolved form keeps the literal `${...}`.
- * go-to-k/cdkd#3160 holds the sibling class, which needs a countable
- * unverifiable-leaf finding rather than a refusal.
+ * reference is far narrower: an UNBOUND variable keeps its literal `${...}`
+ * rather than vanishing, so ordinary missing-parameter resolution cannot
+ * produce one.
+ *
+ * That is narrower, NOT universal, and the difference is stated rather than
+ * glossed: a parameter DECLARED with `Default: ''` binds the empty string
+ * verbatim (`isUnboundTemplateParameter` returns false once `Default` is
+ * present), so `{{resolve:ssm-secure:${P}}}` assembles to
+ * `{{resolve:ssm-secure:}}` and refuses here — while the same stack deploys
+ * fine under `--parameters P=/real/name`. The failure is fail-CLOSED (a
+ * refusal, never a silent clean run) and the shape is a rare one, so it is
+ * accepted rather than worked around; go-to-k/cdkd#3160 carries it alongside
+ * the sibling class, which needs a countable unverifiable-leaf finding rather
+ * than a refusal.
  *
  * It is a loudness REGRESSION rather than a new gap: before go-to-k/cdkd#2689
  * fixed `ssmParameterName`, this input produced a bogus `secretName` and
@@ -2899,6 +2922,7 @@ function isNamelessDynamicReferenceFailure(err: unknown): boolean {
     errorCauseChain(err).some(
       (link) =>
         link instanceof Error &&
+        link.message.includes(DYNAMIC_REFERENCE_PREFIX) &&
         NAMELESS_DYNAMIC_REFERENCE_MARKERS.some((marker) => link.message.includes(marker))
     )
   );
@@ -3690,7 +3714,20 @@ export async function scrubStack(
     // alone satisfies that gate -- so a record whose resource map cannot be
     // read is refused rather than repaired: saving would replace the evidence
     // with a well-formed empty bag and lose it permanently (go-to-k/cdkd#3018).
-    refuseMalformedState(state, stack.stackName, region);
+    //
+    // `--dry-run` is the exception, and it is decidable rather than a
+    // judgement: the write gate is `recordsChanged > 0 && !opts.dryRun`, so
+    // under it this command provably cannot persist anything. Refusing there
+    // would remove the one diagnostic that lists surviving plaintext in a
+    // broken record -- the audit a user reaches for precisely because the
+    // record is broken.
+    if (opts.dryRun) {
+      if (repairMalformedResourcesForReadOnly(state)) {
+        logger.warn(malformedResourcesWarning(stack.stackName, region));
+      }
+    } else {
+      refuseMalformedState(state, stack.stackName, region);
+    }
 
     // Re-resolve each resource's TEMPLATE properties to collect the resolved
     // secret plaintext -> expression map (into the two maps hoisted above). The

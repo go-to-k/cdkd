@@ -91,30 +91,56 @@ describe('scrub keys on the resolver nameless-dynamic-reference messages', () =>
     ).toEqual([]);
   });
 
-  it('the SIBLING failures stay OUT — refusing on them refuses healthy stacks', () => {
-    // Four throws in the same loop abandon the leaf identically (deleted SSM
-    // parameter, no SecretString, missing JSON_KEY, non-JSON secret), so they
-    // look like they belong. They do not: scrub resolves with template
-    // DEFAULTS and no `--parameters`, so an Fn::Sub that warn-and-keeps its raw
-    // `${Field}` produces a JSON_KEY miss on a healthy stack. Widening to the
-    // whole `Dynamic reference:` family was tried and reverted — it reddened
-    // tests/unit/cli/commands/scrub-cross-region-secret.test.ts. The sibling
-    // class is go-to-k/cdkd#3160 and wants a countable finding, not a refusal.
-    const resolver = readFileSync(RESOLVER, 'utf8');
-    const siblings = [...resolver.matchAll(/new Error\(\s*[`'"](Dynamic reference:[^`'"]*)[`'"]/g)]
-      .map((m) => m[1] as string)
-      .filter((message) => !message.includes('is required'));
+  it("the marker set is EXACTLY what scrub declares — no re-widening", () => {
+    // The previous cut of this case filtered the population with
+    // `!includes('is required')` and then asserted those did not contain
+    // 'PARAMETER_NAME is required' — a superset of the excluded substring, so
+    // the loop was a TAUTOLOGY for every possible input and could not detect a
+    // re-widening at all. The only thing that CAN detect it is reading scrub's
+    // own declared array and comparing it to this file's hand-copy.
+    const scrub = readFileSync(SCRUB, 'utf8');
+    const block = scrub.match(
+      /const NAMELESS_DYNAMIC_REFERENCE_MARKERS = \[([\s\S]*?)\] as const;/
+    );
+    expect(block, 'scrub no longer declares NAMELESS_DYNAMIC_REFERENCE_MARKERS as an array').not
+      .toBeNull();
+    const declared = [...(block?.[1] ?? '').matchAll(/'([^']*)'/g)].map((m) => m[1] as string);
     expect(
-      siblings.length,
-      'no sibling dynamic-reference throws found; this case is asserting nothing'
-    ).toBeGreaterThanOrEqual(1);
-    for (const message of siblings) {
+      [...declared].sort(),
+      `scrub declares ${JSON.stringify(declared)} but this fence pins ${JSON.stringify([...MARKERS])}. ` +
+        `If the set GREW, check the new entry is a structurally-broken reference and not a ` +
+        `RESOLUTION failure: scrub resolves with template defaults and no --parameters, so ` +
+        `refusing on a resolution failure refuses HEALTHY stacks (measured — widening to the ` +
+        `whole 'Dynamic reference:' family reddened ` +
+        `tests/unit/cli/commands/scrub-cross-region-secret.test.ts). See go-to-k/cdkd#3160.`
+    ).toEqual([...MARKERS].sort());
+  });
+
+  it('the SIBLING resolution failures are NOT matched by the predicate', () => {
+    // Real siblings, named rather than derived by a filter that presupposes
+    // the answer: each is a resolution failure the same token loop raises, and
+    // each must fall through to scrub's best-effort debug.
+    const SIBLINGS = [
+      "Dynamic reference: SSM parameter '/p' not found or has no value",
+      "Dynamic reference: secret 'x' does not contain a SecretString value",
+      "Dynamic reference: key 'k' not found in secret 'x'",
+      "Dynamic reference: secret 'x' is not valid JSON but JSON_KEY 'k' was specified",
+    ];
+    // Non-vacuity: each named sibling must really be a throw in the resolver,
+    // or this case is asserting things about messages nothing produces.
+    const resolver = readFileSync(RESOLVER, 'utf8');
+    for (const sibling of SIBLINGS) {
+      const stem = sibling.slice(0, sibling.indexOf("'"));
       expect(
-        MARKERS.some((m) => message.includes(m)),
-        `'${message}' is now matched by scrub's nameless predicate. It is a RESOLUTION ` +
-          `failure, not a structurally-broken reference, and scrub reaches it on healthy ` +
-          `stacks because it resolves with template defaults. Refusing on it refuses those ` +
-          `stacks — see go-to-k/cdkd#3160.`
+        resolver.includes(stem),
+        `the resolver no longer raises anything starting '${stem}'; this case is asserting ` +
+          `about a message that does not exist.`
+      ).toBe(true);
+      expect(
+        MARKERS.some((m) => sibling.includes(m)),
+        `'${sibling}' is now matched by scrub's nameless predicate. It is a RESOLUTION failure ` +
+          `that scrub reaches on HEALTHY stacks, because it resolves with template defaults — ` +
+          `refusing on it refuses those stacks. See go-to-k/cdkd#3160.`
       ).toBe(false);
     }
   });

