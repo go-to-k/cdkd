@@ -77,11 +77,25 @@ function resolveCommand(words: string[]): string {
   const pair = words.join(' ');
   if (specs.has(pair)) return pair;
   // Unknown pair: report it AS the pair when the parent really takes
-  // subcommands and the second word is a real word rather than a `<placeholder>`
-  // or an operand. Falling back to the parent here is bug 4.
+  // subcommands. Falling back to the parent here is bug 4 — it made every
+  // subcommand claim on the page vacuous.
+  //
+  // There is NO second predicate on `words[1]`, and an earlier revision's was
+  // worse than redundant: it tested `/^[a-z][a-z-]*$/`, which the invocation
+  // regex has already guaranteed, so it rejected nothing while its comment
+  // claimed it screened out `<placeholder>` operands. Measured: `cdkd events
+  // <stack> --all` yields group 1 `events` — a `<placeholder>` can never
+  // BE `words[1]`.
+  //
+  // The residual that predicate did not cover either, stated rather than
+  // implied: a command taking BOTH an operand and subcommands (`events` takes
+  // `<stack>` and has the child `prune`) would report `cdkd events prod` as a
+  // missing command. Safe on this page only because it spells operands as
+  // `<stack>` throughout — a convention, not a guarantee. If that breaks, the
+  // fix is to teach the extractor the page's operand spelling, not to
+  // re-add a predicate that screens nothing.
   const parent = specs.get(first);
-  const looksLikeSubcommand = /^[a-z][a-z-]*$/.test(words[1] as string);
-  if (parent && parent.children.size > 0 && looksLikeSubcommand) return pair;
+  if (parent && parent.children.size > 0) return pair;
   return first;
 }
 
@@ -102,13 +116,17 @@ function advertisedFlags(text: string): Claim[] {
     // Both fence spellings, with or without a language tag or indentation. A
     // fence closes only on its OWN marker, so a ``` inside a ~~~ block does
     // not end it.
-    const fence = /^\s*(```+|~~~+)/.exec(raw);
+    const fence = /^\s*(`{3,}|~{3,})/.exec(raw);
     if (fence) {
-      const marker = (fence[1] as string).slice(0, 3);
+      const marker = fence[1] as string;
       if (!inFence) {
         inFence = true;
         fenceMarker = marker;
-      } else if (marker === fenceMarker) {
+      } else if (marker[0] === fenceMarker[0] && marker.length >= fenceMarker.length) {
+        // CommonMark: a fence closes only on its OWN character, at the same
+        // length or longer. Collapsing to three characters let a ``` inside a
+        // ```` block close it early and INVERT the in/out state for the rest
+        // of the file.
         inFence = false;
       }
       continue;
@@ -156,18 +174,28 @@ describe('the distributed plugin skill advertises only flags the CLI has', () =>
         'documents several, so the extractor is seeing a fraction of its input.'
     ).toBeGreaterThanOrEqual(3);
 
-    // PER ARM, not per total. Measured: the fenced arm alone yields 18 flags
-    // and 16 commands, clearing both totals by itself — so the INLINE arm,
-    // which carries the widest command coverage on this page, could stop
-    // matching entirely and every aggregate floor would still pass.
-    for (const arm of ['fence', 'inline'] as const) {
+    // PER ARM, and per SHAPE within each arm. Measured today: fence 38 claims
+    // / 18 flags, inline 36 claims / 6 flags. A claims-only floor is the trap
+    // the aggregate one already was — inline yields 30 FLAGLESS claims, so its
+    // flag extraction could die entirely and both the arm floor and the 8-flag
+    // aggregate (covered by fence's 18 alone) would still pass.
+    for (const [arm, minClaims, minFlags] of [
+      ['fence', 12, 8],
+      ['inline', 12, 3],
+    ] as const) {
       const fromArm = claims.filter((c) => c.arm === arm);
       expect(
         fromArm.length,
-        `the ${arm} arm parsed nothing out of the plugin skill. Each arm reads a different ` +
-          'shape (fenced blocks vs inline `code` spans) and an aggregate floor is satisfied by ' +
-          'the other one alone, so a dead arm is invisible without this.'
-      ).toBeGreaterThanOrEqual(3);
+        `the ${arm} arm parsed ${fromArm.length} claim(s). Each arm reads a different shape ` +
+          '(fenced blocks vs inline `code` spans) and an aggregate floor is satisfied by the ' +
+          'other one alone, so a dead arm is invisible without this.'
+      ).toBeGreaterThanOrEqual(minClaims);
+      expect(
+        fromArm.filter((c) => c.flag !== undefined).length,
+        `the ${arm} arm parsed no FLAGS (it did parse ${fromArm.length} claims). A flagless ` +
+          'claim still clears a claims-only floor, so flag extraction can die on one arm while ' +
+          'every other floor passes.'
+      ).toBeGreaterThanOrEqual(minFlags);
     }
 
     // And the tree itself must be non-trivial, or every lookup below would
@@ -189,8 +217,34 @@ describe('the distributed plugin skill advertises only flags the CLI has', () =>
     expect(
       unknown.map((u) => `${PLUGIN_SKILL.slice(repoRoot.length + 1)}:${u.line} cdkd ${u.command} ${u.flag}`),
       'the distributed plugin skill advertises flags the CLI does not accept on those commands. ' +
-        'An agent following the page hits `unknown option` (go-to-k/cdkd#2673). Fix the page, or ' +
-        'add the flag to NOT_CDKD_FLAGS with the reason it is not cdkd\'s.'
+        'An agent following the page hits `unknown option` (go-to-k/cdkd#2673). Fix the page: ' +
+        'drop the flag, or attach it to a command that declares it.'
+    ).toEqual([]);
+  });
+
+  it('every flag it names ANYWHERE exists somewhere in the CLI', () => {
+    // The attached-to-a-command set is the smaller half. Ten flags on this
+    // page appear as bare `--flag` spans in prose — more than the 12 the
+    // command-attached check sees — and a flag removed from the CLI leaves
+    // those reading as current. This is deliberately the WEAKER question
+    // (does it exist at all?), because prose does not say which command it
+    // belongs to; the attached check above is what pins that.
+    const text = readFileSync(PLUGIN_SKILL, 'utf8');
+    const everyFlag = new Set(
+      [...text.matchAll(/`(--[a-z][a-z0-9-]*)`/g)].map((m) => m[1] as string)
+    );
+    expect(
+      everyFlag.size,
+      'no bare `--flag` spans parsed out of the page; this case is asserting nothing.'
+    ).toBeGreaterThanOrEqual(10);
+
+    const everyKnownFlag = new Set<string>();
+    for (const spec of specs.values()) for (const f of spec.longFlags) everyKnownFlag.add(f);
+    const unknown = [...everyFlag].filter((f) => !everyKnownFlag.has(f));
+    expect(
+      unknown,
+      `the plugin skill names flag(s) no cdkd command declares: ${unknown.join(', ')}. A flag ` +
+        'removed or renamed in src leaves the page advertising it.'
     ).toEqual([]);
   });
 
