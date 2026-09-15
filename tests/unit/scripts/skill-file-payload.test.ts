@@ -343,36 +343,36 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // The two leaders SWAPPED: verify.md is now largest, implement.md runner-up.
     //
     // The go-to-k/cdkd#2413 / go-to-k/cdkd#2426 / go-to-k/cdkd#2457 /
-    // go-to-k/cdkd#2655 batch then landed five deferred lessons across SEVEN
-    // stage files. The RUNNER-UP CHANGED HANDS, verify.md to triage.md — which
-    // is again why `largest` / `runnerUp` are asserted rather than described —
-    // and the useful part is that the NEW runner-up is also the leader that
-    // grew: implement.md took go-to-k/cdkd#2457's two probe-stage rules and
-    // funded them entirely in-file, compressing incident narratives in 5-a,
-    // 5-b, 5-c, 5-e, 5-f' and 5-g to their citations, while triage.md took the
-    // shared-pool batching rule and the `ListAgents` reading and GREW into the
-    // slot. Per-file deltas against the merge base, measured rather than
-    // described: triage +1,057, implement +5, verify +0, retro +5,693,
-    // gotchas +1,600, filing +913, ship +502, launch-mode +724. So the floor
-    // raise below is NOT charged to non-leader growth alone: triage.md is a
-    // leader and supplied part of it.
+    // go-to-k/cdkd#2655 batch then landed five deferred lessons across seven
+    // stage files. The LEADER PAIR DID NOT MOVE: verify.md stays largest and
+    // implement.md runner-up, exactly as the entry above left them. What
+    // changed is third place -- triage.md took the shared-pool batching rule
+    // and the `ListAgents` reading and grew past retro.md into it -- while
+    // implement.md took go-to-k/cdkd#2457's two probe-stage rules and funded
+    // them ENTIRELY in-file, compressing incident narratives in 5-a, 5-b, 5-c,
+    // 5-e, 5-f' and 5-g to their citations (+5 net).
+    //
+    // Per-file deltas against the merge base, measured on the MERGED tree
+    // rather than described: verify +0, implement +5, triage +1,057,
+    // retro +5,693, gotchas +1,418, filing +913, ship +502, launch-mode +724.
+    // They sum to 10,312, which reconciles 188,312 -> 198,624 exactly; a list
+    // that does not reconcile is the tell that one entry was not re-measured
+    // after a rebase, which is how `gotchas` sat at +1,600 through a review
+    // round (its two 429 bullets were folded into one and the delta was
+    // carried forward unmeasured).
     //
     // NO SHARE, RATIO OR SUMMARY OF THOSE DELTAS IS STATED, and that is a
-    // disposition rather than an omission. Every attempt to summarise them in
-    // this paragraph was measured false by a review round — the figure was
-    // wrong, and then the account of which figures had been wrong was itself
-    // wrong. The deltas are the accounting; anything derived from them is
-    // derivable on demand and stale the moment a leader moves, which here was
-    // three times in one change. `verify.md` §8-g calls this deleting the
-    // number rather than re-measuring it.
+    // disposition rather than an omission. Every attempt to summarise them
+    // here was measured false by a review round -- the figure first, then the
+    // account of which figures had been wrong, then the claim about which
+    // files were leaders at all. The deltas are the accounting; anything
+    // derived from them is derivable on demand and stale the moment the tree
+    // moves. `verify.md` section 8-g calls this deleting the number rather
+    // than re-measuring it, and this record is the worked example.
     //
-    // The RUNNER-UP changed hands, verify.md -> triage.md, and the two leaders
-    // ended 3 B apart — which is why they are ASSERTED below and never
-    // described. (An earlier draft said they "traded places repeatedly"; at
-    // every commit on this branch implement.md is the largest, so that was a
-    // claim about uncommitted working-tree states and unverifiable by
-    // construction.) Cap headroom is 3 B and 6 B, so the next edit to either
-    // opens with a compression pass.
+    // Cap headroom, in rank order: verify.md 0 B (AT the cap), implement.md
+    // 3 B, triage.md 6 B. All three open with a compression pass, not an
+    // addition.
     //
     // go-to-k/cdkd#2341's third lesson is deliberately NOT here. It targets
     // implement.md 5-f', which after the compression above has single-digit
@@ -840,7 +840,7 @@ const MIN_REFERENCE_FILES = 6;
 // binding); 158_670 clears the binding one by 350 B, inside the band.
 // RE-DERIVED UPWARD 158_670 -> 168_980 by the deferred-lesson batch
 // (go-to-k/cdkd#2413 / go-to-k/cdkd#2426 / go-to-k/cdkd#2457 /
-// go-to-k/cdkd#2655; corpus 187,940 -> 198,624). MOST of the raise is
+// go-to-k/cdkd#2655; corpus 188,312 -> 198,624). MOST of the raise is
 // non-leader growth, as the 2026-09-04 note above requires, but not all of
 // it: implement.md funded its additions in-file (+5) while triage.md grew into
 // third place. MEASURED above carries the per-file accounting and no share is

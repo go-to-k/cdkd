@@ -417,7 +417,7 @@ describe('work-issues section 10-0 ctx() helper', () => {
     // The extraction emits both a full path and its bare basename, so one
     // touched file matches twice; `| sort -u` is what collapses that, and the
     // block's own comment calls it load-bearing. Measured: deleting it left
-    // all 17 other cases green while every PROMOTE row and its ctx row
+    // every other case green while every PROMOTE row and its ctx row
     // printed twice. No other fixture names a path two ways.
     const { rows, status } = runBlock(
       'the subject is `scripts/gen-foo.ts`, and gen-foo.ts is also named bare here',
