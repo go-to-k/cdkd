@@ -125,6 +125,8 @@ different question — it lists stacks from the local CDK app via synthesis, for
 CDK CLI parity, whereas `cdkd state list` reports what is registered in the S3
 bucket.
 
+### Output streams
+
 **`cdkd state list`'s stdout is a payload in every mode, `--json` or not.** The
 default one-reference-per-line shape is exactly what a `while read -r ref` loop
 consumes, so everything cdkd's logger prints goes to stderr instead. The other
@@ -132,6 +134,8 @@ subcommands with a `--json` mode (`resources`, `show`, `info`) keep the
 `--json` gate, because their flagless output is a formatted human view rather
 than a record set. See
 [Output streams: when stdout is a payload](cli-reference.md#output-streams-when-stdout-is-a-payload).
+
+### The `--tree` view
 
 `--tree` walks each record's v6 `parentStack` / `parentRegion` fields, which a
 nested-stack deploy and the recursive
@@ -150,6 +154,47 @@ out-of-band, or state hand-deleted — surfaces at the root rather than
 vanishing. `--long` and `--tree` both read every record, so they cost extra
 S3 requests per stack — two for `--long` (the record and its lock), one for
 `--tree`. The plain listing reads none of them.
+
+### Unreadable records and unsafe values
+
+Neither `--long` nor `--tree` lets one stack it cannot read take down the rest
+of the listing.
+Under `--long`, a failed read costs only that stack's row, and the record read
+and the lock read degrade separately:
+
+| Read that failed | Text row | `--long --json` |
+| --- | --- | --- |
+| state record, or a `resources` that could not be counted (see below) | `Resources: unknown (...)`; the lock is still reported | `resourceCount: null`, `stateReadError` set |
+| lock | `Lock: unknown (...)`; the resource count is still reported | `locked: null`, `lockReadError` set |
+
+The reason text is fixed and never quotes the underlying error, because a
+malformed record's parse error can quote bytes of the record. Run
+`cdkd state show` for that one stack to see the error. A legacy row with no
+region is the exception: its lock reason names no command, because
+`cdkd state show` refuses a region-less record before it reads the lock. A
+warning on stderr counts the rows that could not be fully read or counted, and
+the command still exits 0.
+
+Other malformed values render instead of stopping the listing:
+
+| Value | How it renders |
+| --- | --- |
+| a `lastModified` outside the date range, or not a number | `Last Modified: unknown`, `null` under `--json` |
+| a `resources` that is neither a JSON object nor `null`, such as a string or a list | `Resources: unknown (...)`, and under `--json` `resourceCount: null` with `stateReadError` set; the warning counts the row. An absent or `null` `resources` counts as `0` |
+| a character outside printable ASCII in a stack name or region | replaced in the plain listing and the `--long` / `--tree` text views; a value with nothing printable left shows as `<unrenderable>` |
+| a parent link whose `parentStack` is not a string, or whose `parentRegion` is present but not a string | `--tree` drops the whole link and shows the stack at the root. An absent `parentRegion` still links to a legacy region-less parent |
+| a non-string `parentLogicalId` on an otherwise valid link | `--tree --json` emits it as `null` and keeps the link |
+| records that name each other as parent | `--tree` shows every stack on the loop at the root |
+
+A legacy `version: 1` record with no region is not read under `--long`, so its
+row shows `Resources: 0` and `Last Modified: unknown` with no reason attached.
+
+`--json` output is not sanitized. JSON escapes only C0 control characters,
+`"`, `\` and unpaired surrogates, so other invisible or line-breaking
+characters in a stack name or region pass through unchanged. Sanitize those
+values yourself before printing them to a terminal.
+
+### Without cdkd
 
 The equivalent low-level query, when you want it without cdkd:
 
@@ -237,7 +282,9 @@ a number or a string there always did (`Type` and `PhysicalID` read `undefined`,
 the other fields their defaults), and the JSON modes emit it —
 `cdkd state show --json` as the stored `null`. A `resources` bag that is absent
 or `null` no longer aborts either: `cdkd state list --long` counts it as zero
-resources, and `--show-nested` walks past it with no children. A lock whose
+resources, and `--show-nested` walks past it with no children. Any other
+`resources` that is not a JSON object shows an unknown count under
+`cdkd state list --long` instead. A lock whose
 `owner`, `operation` or `expiresAt` holds an object that cannot be coerced
 renders too: the owner and operation read as `[object Object]`, and the expiry
 reads as `expires at an unknown time` — the same words the lock-contention
@@ -245,12 +292,14 @@ refusal uses for any `expiresAt` that is not a finite number (`{}`, `"soon"`,
 absent), so a hand-edited deadline never prints as `NaNmNaNs`.
 
 A record malformed at its ROOT is still refused rather than rendered, with a
-message that names the problem — for example a `state.json` that is not valid
-JSON, one whose body is not a JSON object (it parses to `null`, an array or a
-primitive), or one whose schema version this binary does not read, whatever
-type that version holds. Plain `cdkd state show --json` remains the way to see
-a record's stored values: it emits the record as parsed, without walking it or
-rendering a lock summary.
+message that names the problem: a `state.json` that is not valid JSON, one whose
+body is not a JSON object (it parses to `null`, an array or a primitive), or one
+whose schema version this binary does not read, whatever type that version
+holds. Under `cdkd state list --long` only that stack's row degrades instead, as
+described under [`cdkd state list`](#cdkd-state-list).
+
+Plain `cdkd state show --json` remains the way to see a record's stored values:
+it emits the record as parsed, without walking it or rendering a lock summary.
 
 **Resource properties are deliberately excluded from every mode here** — use
 [`cdkd state show`](#cdkd-state-show) when you need them. A physical id may be

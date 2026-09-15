@@ -76,6 +76,10 @@ import { rebuildClientForBucketRegion } from '../../utils/bucket-region-client.j
 
 /**
  * Detail row for a single stack when --long is requested.
+ *
+ * The record read and the lock read degrade SEPARATELY (issue #3069): one
+ * unreadable stack used to reject the whole listing, and a single conflated
+ * failure field would withhold a row's real counts when only its lock failed.
  */
 interface StackDetail {
   stackName: string;
@@ -84,9 +88,97 @@ interface StackDetail {
    * state where no region was persisted in the state body.
    */
   region: string | null;
-  resourceCount: number;
+  /**
+   * `null` exactly when {@link stateReadError} is set: the record could not be
+   * read, or its `resources` is not a JSON object.
+   */
+  resourceCount: number | null;
   lastModified: string | null;
-  locked: boolean;
+  /** `null` when the lock could not be read ({@link lockReadError}). */
+  locked: boolean | null;
+  /**
+   * A fixed, class-level reason when the record read failed or its
+   * `resources` is not a JSON object, else `null`.
+   */
+  stateReadError: string | null;
+  /** A fixed, class-level reason when the lock read failed, else `null`. */
+  lockReadError: string | null;
+}
+
+/**
+ * The reasons a `--long` row carries for a failed read. FIXED text, never the
+ * caught error's message: `getState`'s invalid-JSON refusal interpolates V8's
+ * `SyntaxError`, which quotes bytes of the state body, and anyone with
+ * `s3:PutObject` on the bucket chooses those bytes. Sanitizing or truncating
+ * that message does not redact it, so a planted plaintext would reach both
+ * `--long` and `--long --json` (issue #3069). `cdkd state show` for the one
+ * stack is where the specific error is reported.
+ *
+ * The failure is deliberately not classified further: `getState` wraps a parse
+ * refusal, the unsupported-version refusal and an AWS read failure in the same
+ * `StateError`, so any finer reason would be a guess about the class.
+ */
+const STATE_READ_FAILED_REASON =
+  'state record could not be read; run `cdkd state show` for the error';
+const LOCK_READ_FAILED_REASON = 'lock could not be read; run `cdkd state show` for the error';
+/**
+ * The lock reason for a LEGACY row (no region). `cdkd state show` refuses such
+ * a record before it reads the lock, so pointing there would send the user to
+ * a command that never shows the error.
+ */
+const LEGACY_LOCK_READ_FAILED_REASON = 'lock could not be read';
+/**
+ * The record-side reason for a record that WAS read but whose `resources` is
+ * present and not a JSON object. `parseStateBody` validates nothing inside the
+ * root, so `Object.keys` would count a planted string per character or a list
+ * per element -- a made-up number, and for a string of millions of characters
+ * an array of that many keys, built outside {@link readOrFailure}'s `try`. It
+ * reuses `stateReadError` so `resourceCount` stays `null` exactly when a reason
+ * is set: the text row never prints `Resources: null`, and the warning counts
+ * the row (issue #3069).
+ */
+const RESOURCES_MALFORMED_REASON =
+  'resources is not a JSON object; run `cdkd state show --json` to see the record';
+
+/**
+ * A record's resource count, or `null` when its `resources` is not a JSON
+ * object ({@link RESOURCES_MALFORMED_REASON}). An absent or `null` bag counts
+ * as zero, the tolerance `docs/cli-state.md` documents for it.
+ */
+function resourceCountOrNull(resources: unknown): number | null {
+  if (resources === undefined || resources === null) return 0;
+  if (typeof resources !== 'object' || Array.isArray(resources)) return null;
+  return Object.keys(resources).length;
+}
+
+/**
+ * Run one read and report whether it threw, WITHOUT keeping the error. The
+ * error is dropped on purpose ({@link STATE_READ_FAILED_REASON} says why): a
+ * caller that never holds it cannot copy it into a row.
+ */
+async function readOrFailure<T>(
+  read: () => Promise<T>
+): Promise<{ ok: true; value: T } | { ok: false }> {
+  try {
+    return { ok: true, value: await read() };
+  } catch {
+    return { ok: false };
+  }
+}
+
+/**
+ * A record's `lastModified` as an ISO string, or `null` when it is not a
+ * timestamp `Date` can represent. `parseStateBody` does not validate the
+ * field, and `toISOString()` THROWS a `RangeError` for any number outside
+ * JavaScript's date range (`1e300`, `NaN`-producing values, `-1e20`). That
+ * throw sits AFTER {@link readOrFailure} reported success, so without this
+ * check one planted record would still reject the whole `--long` listing
+ * (issue #3069, security review).
+ */
+function isoTimestampOrNull(value: unknown): string | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
 /**
@@ -104,15 +196,10 @@ interface ResourceDetail {
 }
 
 /**
- * Render `Stack` or `Stack (region)` — used by every state subcommand's
- * default output mode and ambiguity error messages.
- */
-function formatStackRef(ref: StackStateRef): string {
-  return ref.region ? `${ref.stackName} (${ref.region})` : ref.stackName;
-}
-
-/**
- * {@link formatStackRef} for a sentence a CONFIRMATION PROMPT renders.
+ * Render `Stack` or `Stack (region)` for a line a terminal renders: a
+ * CONFIRMATION PROMPT's sentence, and every `state list` text view -- the
+ * default one-reference-per-line listing and the `--long` / `--tree` rows
+ * (issue #3069). The unsanitized twin it replaced lost its last caller there.
  *
  * Both halves come from an S3 key segment (or, for a legacy record, a state
  * body), so both are attacker-influenced in exactly the way issue #2170 round
@@ -174,9 +261,9 @@ export function resolveSingleRegion(
   // same values in the same file. A `region` here is a raw S3 KEY SEGMENT from
   // `listStacks`, and an S3 key admits any UTF-8 including newline and ESC, so
   // planting `cdkd/<victimStack>/<hostile>/state.json` puts attacker text into
-  // these messages. The rendered rows stopped forging lines in issue #2772;
-  // the refusal a malformed record is most likely to reach had not (issue
-  // #3003).
+  // these messages. `state list`'s formatted `--long` and `--tree` rows are
+  // sanitized too (issue #3069); the refusal a malformed record is most likely
+  // to reach had not been (issue #3003).
   const matches = refs.filter((r) => r.stackName === stackName);
   if (matches.length === 0) {
     throw new Error(
@@ -381,10 +468,16 @@ async function stateListCommand(options: {
       return;
     }
 
-    // Default mode: `Stack (region)` per line, sorted.
+    // Default mode: `Stack (region)` per line, sorted. Sanitized BECAUSE a
+    // `while read` loop consumes it: `listStacks` does not validate a key, so a
+    // planted `cdkd/Decoy<LF>ProdStack (us-east-1)/us-east-1/state.json` would
+    // otherwise emit a second, fully formed reference for a stack with no
+    // record, and a script would act on it. `safe()` is an ASCII allowlist, and
+    // stack names and region codes are printable ASCII, so every legitimate row
+    // is byte-identical (issue #3069).
     if (!options.long && !options.json) {
       for (const ref of refs) {
-        process.stdout.write(`${formatStackRef(ref)}\n`);
+        process.stdout.write(`${formatStackRefSafe(ref)}\n`);
       }
       return;
     }
@@ -397,6 +490,10 @@ async function stateListCommand(options: {
     }
 
     // --long (with or without --json): fetch detail per stack in parallel.
+    // Each row's two reads are guarded independently, the precedent being
+    // `renderTreeMode` below: one unreadable stack degrades ITS row instead of
+    // rejecting the whole listing (issue #3069). The two share an S3 client, so
+    // a credential failure usually lands on both, but either can fail alone.
     const details: StackDetail[] = await Promise.all(
       refs.map(async (ref): Promise<StackDetail> => {
         // For legacy refs (no region), passing the legacy region string would
@@ -405,25 +502,51 @@ async function stateListCommand(options: {
         // backend's getState uses the region as part of the key; for legacy
         // records the region embedded in the file is the one that matches.
         const lookupRegion = ref.region ?? '';
-        const [stateResult, locked] = await Promise.all([
-          lookupRegion
-            ? setup.stateBackend.getState(ref.stackName, lookupRegion)
-            : Promise.resolve(null),
-          setup.lockManager.isLocked(ref.stackName, ref.region),
+        const [stateRead, lockRead] = await Promise.all([
+          readOrFailure(() =>
+            lookupRegion
+              ? setup.stateBackend.getState(ref.stackName, lookupRegion)
+              : Promise.resolve(null)
+          ),
+          readOrFailure(() => setup.lockManager.isLocked(ref.stackName, ref.region)),
         ]);
-        const state = stateResult?.state;
+        const state = stateRead.ok ? stateRead.value?.state : undefined;
+        const resourceCount = !stateRead.ok
+          ? null
+          : state
+            ? resourceCountOrNull(state.resources)
+            : 0;
         return {
           stackName: ref.stackName,
           region: ref.region ?? null,
-          resourceCount: state ? Object.keys(state.resources ?? {}).length : 0,
-          lastModified:
-            state && typeof state.lastModified === 'number'
-              ? new Date(state.lastModified).toISOString()
+          resourceCount,
+          lastModified: state ? isoTimestampOrNull(state.lastModified) : null,
+          locked: lockRead.ok ? lockRead.value : null,
+          stateReadError: !stateRead.ok
+            ? STATE_READ_FAILED_REASON
+            : resourceCount === null
+              ? RESOURCES_MALFORMED_REASON
               : null,
-          locked,
+          lockReadError: lockRead.ok
+            ? null
+            : ref.region
+              ? LOCK_READ_FAILED_REASON
+              : LEGACY_LOCK_READ_FAILED_REASON,
         };
       })
     );
+
+    // A count only: the listing itself succeeded, and each affected row says
+    // why -- which of its two reads failed, or that its `resources` could not
+    // be counted. The reservation above routes this line to stderr, so it
+    // never lands inside a `--long --json` payload.
+    const degraded = details.filter((d) => d.stateReadError !== null || d.lockReadError !== null);
+    if (degraded.length > 0) {
+      logger.warn(
+        `${degraded.length} of ${details.length} stack(s) could not be fully read or counted; ` +
+          `their rows say why.`
+      );
+    }
 
     if (options.json) {
       process.stdout.write(`${JSON.stringify(details, null, 2)}\n`);
@@ -432,17 +555,39 @@ async function stateListCommand(options: {
 
     // Long human-readable format.
     const lines: string[] = [];
+    // The stack name and region go through `safe()`, as in the default mode
+    // above: both come from an S3 key segment, which admits a newline or ESC,
+    // so a planted key could otherwise forge a `Lock:` line inside another row.
+    // `--json` is NOT sanitized at all: `JSON.stringify` escapes only C0,
+    // `"`, `\` and lone surrogates, so DEL, the C1 range, the line and
+    // paragraph separators, the bidi overrides and the zero-width characters
+    // pass through verbatim (see `display-safe.ts`). Tracked as
+    // go-to-k/cdkd#3163.
     for (const detail of details) {
       lines.push(
-        formatStackRef({
+        formatStackRefSafe({
           stackName: detail.stackName,
           ...(detail.region ? { region: detail.region } : {}),
         })
       );
-      lines.push(`  Region: ${detail.region ?? '(legacy)'}`);
-      lines.push(`  Resources: ${detail.resourceCount}`);
+      lines.push(`  Region: ${detail.region === null ? '(legacy)' : safe(detail.region)}`);
+      lines.push(
+        `  Resources: ${
+          detail.stateReadError !== null
+            ? `unknown (${detail.stateReadError})`
+            : String(detail.resourceCount)
+        }`
+      );
       lines.push(`  Last Modified: ${detail.lastModified ?? 'unknown'}`);
-      lines.push(`  Lock: ${detail.locked ? 'locked' : 'unlocked'}`);
+      lines.push(
+        `  Lock: ${
+          detail.lockReadError !== null
+            ? `unknown (${detail.lockReadError})`
+            : detail.locked
+              ? 'locked'
+              : 'unlocked'
+        }`
+      );
       lines.push('');
     }
     if (lines.length > 0) {
@@ -495,14 +640,41 @@ async function renderTreeMode(
       } catch {
         return { stackName: ref.stackName, region: ref.region };
       }
+      // Only STRING parent fields are copied. `parseStateBody` does not type
+      // them, and `buildStackTree` interpolates both into a key OUTSIDE this
+      // per-row `try`, so a planted `"parentStack": {"toString": null}` threw
+      // a TypeError there and emptied the whole view -- the promise this
+      // function's JSDoc makes. cdkd writes these fields as strings, so a
+      // record it wrote links as before; a hand-edited array such as
+      // `["Parent"]`, which interpolation used to coerce into a working link,
+      // now lands at the root instead. `parentLogicalId` never reaches a key,
+      // but `--tree --json` declares it `string | null`, so it is typed the same
+      // way (issue #3069).
+      //
+      // The link is kept or dropped WHOLE. `refKey` reads a missing region as
+      // `''`, the key a legacy region-less record has, so keeping a string
+      // `parentStack` while dropping a non-string `parentRegion` would file the
+      // stack under an unrelated LEGACY record of the same name instead of at
+      // the root. An ABSENT `parentRegion` stays a valid link on purpose: that
+      // is how a child names a legacy region-less parent. This does not stop
+      // every legacy binding. An explicit `parentRegion: ""` is a string and
+      // keys the same way, and a planted legacy-layout key can capture any
+      // record that names its stack with no `parentRegion`. Neither shape is
+      // reachable from cdkd-written state, since every writer sets a
+      // non-empty `parentRegion`, so the captured record is hand-written too.
+      const linkIsValid =
+        typeof state?.parentStack === 'string' &&
+        (state.parentRegion === undefined || typeof state.parentRegion === 'string');
       return {
         stackName: ref.stackName,
         region: ref.region,
-        ...(state?.parentStack !== undefined && { parentStack: state.parentStack }),
-        ...(state?.parentLogicalId !== undefined && {
-          parentLogicalId: state.parentLogicalId,
-        }),
-        ...(state?.parentRegion !== undefined && { parentRegion: state.parentRegion }),
+        ...(linkIsValid && { parentStack: state!.parentStack }),
+        ...(linkIsValid &&
+          typeof state?.parentLogicalId === 'string' && {
+            parentLogicalId: state.parentLogicalId,
+          }),
+        ...(linkIsValid &&
+          typeof state?.parentRegion === 'string' && { parentRegion: state.parentRegion }),
       };
     })
   );
@@ -516,7 +688,11 @@ async function renderTreeMode(
 
   if (roots.length === 0) return;
   const rendered = renderStackTreeAscii(roots, (node: StackTreeNode) =>
-    formatStackRef({ stackName: node.stackName, ...(node.region ? { region: node.region } : {}) })
+    // The same formatted-view rule as `--long`'s text rows: sanitized.
+    formatStackRefSafe({
+      stackName: node.stackName,
+      ...(node.region ? { region: node.region } : {}),
+    })
   );
   process.stdout.write(`${rendered}\n`);
 }
