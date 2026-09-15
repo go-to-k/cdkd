@@ -224,8 +224,20 @@ than by a PreToolUse refusal: the workflow reads the body on `issues`
 the retired `issue-classification-label-gate.sh` could do — that one could only
 refuse. It reports instead of applying only when the body and an existing label
 CONTRADICT, since overwriting a deliberate human label is the one case where
-applying is wrong. A folded checklist row carries no classification of its own
-— write the severity into the row's text.
+applying is wrong. A folded checklist row carries no classification of its own,
+so **state its severity as PROSE and never as a `Severity:` key** — "prose
+only, nothing a user runs behaves differently", not
+`Severity: low — prose only`. The scan is body-wide and LINE-based by design
+and has no notion of a checklist row, so the key form makes the row state the
+UMBRELLA's classification: on an umbrella carrying no severity label there is
+nothing to contradict, so CI APPLIES the folded row's value to the whole issue,
+and §3's ranking rule then reads it as the umbrella's own. `head -1` makes it
+worse than a tie — the FIRST such line in the body wins, so a folded row can
+outrank the real classification sitting below it. This paragraph used to say
+to write the severity into the row's text; under the retired
+`issue-classification-label-gate.sh` that spelling was merely REFUSED (observed
+2026-09-02 folding three findings onto go-to-k/cdkd#1837), and the CI applier
+that replaced it fails in the opposite, silent direction.
 
 **This is not a filing threshold, and it must never be used as one.** §10-0 is
 explicit that `filed <= closed` is not a target and an unfiled finding is

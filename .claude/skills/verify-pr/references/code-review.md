@@ -9,6 +9,19 @@ Read at step 8 of `/verify-pr`, after CI is green and before the live-test.
   involved. Thresholds are NOT restated here — `pr-review-gate.sh` computes the
   tier that gates the merge; a copy can only drift from it. Trust the
   recommendation; override only with a concrete reason, noted here.
+- **RECOMPUTE the tier at the sha the marker binds to, not once at the first
+  commit.** The tier is a function of the diff and the diff GROWS across
+  fix-back rounds, while a decision made once does not. A sha-bound
+  `pr-review` marker correctly goes stale on a new push — but staleness only
+  forces a re-REVIEW at whatever tier was last chosen, so an under-tiered PR
+  is re-reviewed just as thinly the second time. Measured 2026-08-27 on
+  go-to-k/cdk-local#609: tiered from its first commit at 819 LOC / 5 files
+  (`1-reviewer`), one reviewer dispatched; its fix round took it to 1342 LOC,
+  which is `3-axis`. The spec and test reviewers added only after recomputing
+  found a live order-blind fail-open in the NEW code plus two wrong counts in
+  the PR body — neither inside the single code reviewer's remit. Re-run
+  `/review-pr <N>` before binding the marker, and read the tier it returns
+  rather than the one you remember.
 - Synthesize the reports into a verdict; any blocker → fix-back loop.
 
 ## Re-review every fix round

@@ -42,22 +42,117 @@ they remember making deliberately, so make it a QUERY:
 # the run's OWN merged diff touch a file the body names?
 RANGE="<the sha main was at when this run started>..origin/main"
 git diff --name-only "$RANGE" | sort -u > /tmp/run-touched.$$
+# ere() only ever gets a token from the extraction charset below, so `.` is
+# the one metacharacter it meets -- and escaping it is LOAD-BEARING, not
+# defensive: unescaped, `x.test.ts` is a wildcard that matches a touched
+# `x-test.ts`, promoting a file the run never touched under that name. The
+# rest of the class guards a future widening of that charset. None of it
+# protects a touched PATH holding `+` or `(` -- that path is the HAYSTACK, and
+# a body naming it yields a metacharacter-free token anyway
+# (`tests/a+b/verify.sh` -> `b/verify.sh`, which still suffix-matches).
+ere() { printf '%s' "$1" | sed 's/[][\\.*^$+?(){}|/]/\\&/g'; }
+# Centered context windows, one per OCCURRENCE. awk's index() is a LITERAL
+# substring search: no regex engine, so no complexity limit and no escaping.
+# The needle travels through the ENVIRONMENT, not `-v`, because `-v` processes
+# escape sequences -- a path containing a backslash would not arrive literally.
+# The empty-needle guard is not decoration: index(s, "") is 1, so the advance
+# below never moves and the loop does not terminate.
+ctx() { [ -n "$1" ] || return 0
+  CTX_NEEDLE="$1" awk '
+    BEGIN { n = ENVIRON["CTX_NEEDLE"] }
+    { line = $0; off = 0
+      while ((p = index(substr(line, off + 1), n)) > 0) {
+        abs = off + p; s = abs - 50; if (s < 1) s = 1
+        print substr(line, s, (abs - s) + length(n) + 50)
+        off = abs + length(n) - 1
+      } }'; }
 for n in <the numbers this run filed that are still open>; do
   b=$(gh issue view "$n" --json body -q .body)
   printf '%s' "$b" | grep -q 'Session-fit: *next' || continue
-  printf '%s' "$b" \
+  # Dedupe on the HIT, never on the printed line: the extraction yields both a
+  # full path and its bare basename, so one touched file matches twice, and a
+  # trailing `sort -u` over the output would also separate each context line
+  # from the row it belongs to.
+  hits=$(printf '%s' "$b" \
     | grep -oE '\.?[A-Za-z0-9_][A-Za-z0-9_./-]*\.[a-z]+' | sort -u \
     | while read -r f; do
         # Suffix match, not equality: bodies name files by BASENAME far more
         # often than by full path.
-        grep -E "(^|/)$(printf '%s' "$f" | sed 's/[.[\*^$]/\\&/g')\$" \
-          /tmp/run-touched.$$ | while read -r hit; do
-            echo "PROMOTE #$n -- this run touched $hit"
-          done
-      done
-done | sort -u
+        grep -E "(^|/)$(ere "$f")\$" /tmp/run-touched.$$
+      done | sort -u)
+  [ -n "$hits" ] || continue
+  printf '%s\n' "$hits" | while read -r hit; do
+    echo "PROMOTE #$n -- this run touched $hit"
+    # Context is derived from the HIT and printed for EVERY occurrence.
+    c=$(printf '%s' "$b" | ctx "$hit")
+    if [ -n "$c" ]; then
+      printf '%s\n' "$c" | sed 's/^/    ctx: /'
+    else
+      base=$(basename "$hit")
+      echo "    AMBIGUOUS -- the body never names $hit, only \`$base\`:"
+      printf '%s' "$b" | ctx "$base" | sed 's/^/    ctx: /'
+    fi
+  done
+done
 rm -f /tmp/run-touched.$$
 ```
+
+Three properties of that block are the fix rather than style, each a defect a
+previous attempt shipped (go-to-k/cdkd#2655):
+
+- **The context is grepped for `$hit`, not for the extracted token `$f`.** A
+  bare basename token pairs with EVERY touched path sharing it, so a `verify.sh`
+  token printed a sentence about a SIBLING fixture beside a hit naming this one
+  — reproducing, inside the mechanism, the citation-read-as-target error the
+  mechanism exists to stop. When the body names only the basename the row says
+  `AMBIGUOUS` and prints every occurrence, because there is genuinely no
+  sentence that belongs to this path.
+- **Every occurrence prints, not the first.** `grep -m1` binds a token that
+  appears in both a comparison sentence and a subject sentence to whichever
+  came first — and which one that is carries no information.
+- **The window is CENTERED on the match** (50 BYTES each side), never a head
+  cut. `cut -c1-110` truncated the token out of its own context line on
+  go-to-k/cdkd#2636, printing 110 characters that did not contain the thing
+  being explained.
+
+**`ctx` is `awk`, and the obvious `grep -oE ".{0,50}<tok>.{0,50}"` is a
+DEFECT rather than a stylistic alternative.** `grep` IN THE AGENT'S OWN BASH
+TOOL is ugrep, which REFUSES a bounded repeat around a short needle —
+`retro.md`, `ship.md` and `foo.md` all exit rc=2 with
+`exceeds complexity limits`, while `verify.sh` and `triage.md` pass (the
+boundary is exactly 9 characters), so the failure is invisible to any probe
+whose needle happens to be long enough — both probes written for
+go-to-k/cdkd#2655 were. An rc=2 leaves `c` EMPTY, which takes the `else` arm
+and prints `AMBIGUOUS`, the row this block defines as the STRONGEST citation
+signal. A tool failure rendered as a positive finding is worse than no context
+line at all.
+
+**And a probe cannot settle it, which is the transferable part.** Measured
+2026-09-15: `grep` is a shell FUNCTION injected by Claude Code's shell
+snapshot, so the agent's Bash tool gets ugrep while `zsh -l -i`, `zsh -l` and
+`bash -c` every one resolve `/usr/bin/grep`, which accepts the same pattern.
+The login shell is NOT where the divergence lives — the session pasting this
+block is — and a harness built on `bash -c` therefore reports clean on the
+exact input that fails in use. The remedy is not a better probe but a helper
+depending on no `grep` at all, which is what the fence asserts.
+
+**This block is EXECUTED by `tests/unit/scripts/work-issues-promotion-context.test.ts`,
+and that is the instrument change rather than a belt-and-braces addition.**
+The recipe shipped three defects as prose (basename pairing, head-cut window,
+the ugrep refusal) and its rewrite three more (an empty-needle non-terminating
+loop, `awk -v` escape processing, a byte-vs-character window). Six defects
+across three hand-verified rounds is this skill's own "three spellings in
+three rounds is the signal to change instrument" (`references/implement.md`
+5-f'), and the fence follows the precedent one file over: the launch-mode
+probe in `references/launch-mode.md` is extracted and run by
+`work-issues-launch-mode.test.ts` for the same reason. Edit the block and the
+suite runs it.
+
+Two bounds, stated so a silent row is not read as an absence. `awk` here is
+LINE-based, so a token wrapped across two lines of a body gets no context and
+prints `AMBIGUOUS`. And the scan is non-overlapping — each occurrence gets its
+own window, which `grep -o` did not give, but a needle overlapping ITSELF
+(`aaa` in `aaaaa`) still reports once; no repo path has that shape.
 
 - **The diff is a LOWER bound on what this run loaded — run the context test
   on every `next` as well.** The query above sees files the run EDITED; the
@@ -79,9 +174,10 @@ rm -f /tmp/run-touched.$$
 - **A hit is a prompt for judgement, not a verdict** — it cannot tell a
   citation from a target: a retro wrote go-to-k/cdkd#2621's citation of a
   SIBLING fixture into a rule as a sourced incident, unpicked only by review.
-  Open the body and read the SENTENCE around the token before believing any
-  hit (printing it automatically was withdrawn with two measured defects —
-  go-to-k/cdkd#2655). Do the item, or re-classify it in the issue with the
+  The `ctx:` lines the query now prints are what that judgement reads; an
+  `AMBIGUOUS` row means the body never names this path at all, which is the
+  strongest citation signal the query can give. Read the SENTENCE, not the
+  row. Do the item, or re-classify it in the issue with the
   reason the criterion no longer applies. When the run's own PRs ARE the
   follow-ups' subject — one lane, or several sharing a subsystem — expect
   EVERY one to hit, and read the issue's REASON instead (go-to-k/cdkd#2514,

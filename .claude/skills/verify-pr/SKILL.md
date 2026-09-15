@@ -22,7 +22,12 @@ very end. Everything kept below is read on every invocation.
 
 Run each check and report pass/fail:
 
-0. **Worktree pre-flight**: `[ -d node_modules ] || pnpm install`.
+0. **Worktree pre-flight**: `mise trust`, then
+   `[ -d node_modules ] || pnpm install`. `mise trust` is unconditional and
+   is what stops this skill's `markgate set` steps dying on an untrusted
+   `.mise.toml` with a config-parse error that names no cause — `/check`
+   step 0 carries the full account, including why the marker is verified by
+   `markgate status` rather than by an exit code.
    `git worktree add` does NOT copy `node_modules`, so a fresh worktree's
    typecheck/lint/build/test all fail with `tsc: command not found` etc. — and
    the failure is easy to miss when output is piped to `tail` (the exit code
@@ -177,6 +182,10 @@ After all checks pass, record THREE markers via
 `/check` and `/check-docs`. Use `mise exec` (cdkd pins markgate via mise):
 
 ```bash
+# 0. Unconditional; step 0 above says why an untrusted .mise.toml surfaces
+#    here rather than at the checks.
+mise trust
+
 # 1. Children FIRST: `check-gate` blocks the commit below unless both are
 #    fresh, and step 2 exists for runs that changed files in their scope.
 mise exec -- markgate set check

@@ -341,9 +341,48 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // at the agents file that already carries it (29,989 -> 30,000, exactly at
     // the cap), and gotchas.md gained the 429-resume bullet (7,966 -> 8,327).
     // The two leaders SWAPPED: verify.md is now largest, implement.md runner-up.
-    corpusBytes: 188_312,
+    //
+    // The go-to-k/cdkd#2413 / go-to-k/cdkd#2426 / go-to-k/cdkd#2457 /
+    // go-to-k/cdkd#2655 batch then landed five deferred lessons across SEVEN
+    // stage files. The RUNNER-UP CHANGED HANDS, verify.md to triage.md — which
+    // is again why `largest` / `runnerUp` are asserted rather than described —
+    // and the useful part is that the NEW runner-up is also the leader that
+    // grew: implement.md took go-to-k/cdkd#2457's two probe-stage rules and
+    // funded them entirely in-file, compressing incident narratives in 5-a,
+    // 5-b, 5-c, 5-e, 5-f' and 5-g to their citations, while triage.md took the
+    // shared-pool batching rule and the `ListAgents` reading and GREW into the
+    // slot. Per-file deltas against the merge base, measured rather than
+    // described: triage +1,057, implement +5, verify +0, retro +5,693,
+    // gotchas +1,600, filing +913, ship +502, launch-mode +724. So the floor
+    // raise below is NOT charged to non-leader growth alone: triage.md is a
+    // leader and supplied part of it.
+    //
+    // NO SHARE, RATIO OR SUMMARY OF THOSE DELTAS IS STATED, and that is a
+    // disposition rather than an omission. Every attempt to summarise them in
+    // this paragraph was measured false by a review round — the figure was
+    // wrong, and then the account of which figures had been wrong was itself
+    // wrong. The deltas are the accounting; anything derived from them is
+    // derivable on demand and stale the moment a leader moves, which here was
+    // three times in one change. `verify.md` §8-g calls this deleting the
+    // number rather than re-measuring it.
+    //
+    // The RUNNER-UP changed hands, verify.md -> triage.md, and the two leaders
+    // ended 3 B apart — which is why they are ASSERTED below and never
+    // described. (An earlier draft said they "traded places repeatedly"; at
+    // every commit on this branch implement.md is the largest, so that was a
+    // claim about uncommitted working-tree states and unverifiable by
+    // construction.) Cap headroom is 3 B and 6 B, so the next edit to either
+    // opens with a compression pass.
+    //
+    // go-to-k/cdkd#2341's third lesson is deliberately NOT here. It targets
+    // implement.md 5-f', which after the compression above has single-digit
+    // bytes left, and funding it would have meant deleting a rule rather than
+    // a narrative. It stays on that issue as a stated residual behind
+    // go-to-k/cdkd#2424's stage split, which is the structural answer this
+    // record has now predicted twice.
+    corpusBytes: 198_624,
     largest: { file: 'verify.md', bytes: 30_000 },
-    runnerUp: { file: 'implement.md', bytes: 29_992 },
+    runnerUp: { file: 'implement.md', bytes: 29_997 },
   },
 };
 
@@ -799,7 +838,22 @@ const MIN_REFERENCE_FILES = 6;
 // date: largest 30,000 (verify.md), runner-up 29,992 (implement.md), so the
 // thresholds are 158,312 (largest-side) and 158,320 (runner-up side,
 // binding); 158_670 clears the binding one by 350 B, inside the band.
-const MIN_REFERENCE_CORPUS_BYTES = 158_670;
+// RE-DERIVED UPWARD 158_670 -> 168_980 by the deferred-lesson batch
+// (go-to-k/cdkd#2413 / go-to-k/cdkd#2426 / go-to-k/cdkd#2457 /
+// go-to-k/cdkd#2655; corpus 187,940 -> 198,624). MOST of the raise is
+// non-leader growth, as the 2026-09-04 note above requires, but not all of
+// it: implement.md funded its additions in-file (+5) while triage.md grew into
+// third place. MEASURED above carries the per-file accounting and no share is
+// derived from it there or here. MEASURED ON THE MERGED TREE, not by adding
+// this branch's delta to the go-to-k/cdkd#3077 entry above — both changed this
+// record, so their sum is not their composition. Inputs: largest verify.md
+// 30,000, runner-up implement.md 29,997, so the two thresholds are 168,624
+// (largest-side) and 168,627 (runner-up side, binding); 168_980 clears the
+// binding one by 353 B, inside the 347-383 B band the derivations above
+// carried. All three of the top files are now AT or within 6 B of the
+// per-file cap, so the next edit to any of them opens with a compression
+// pass.
+const MIN_REFERENCE_CORPUS_BYTES = 168_980;
 
 function skillNames(): string[] {
   return readdirSync(skillsDir, { withFileTypes: true })

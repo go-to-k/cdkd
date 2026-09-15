@@ -92,8 +92,9 @@ Only `git switch -c <lane> origin/main` gets you the lane branch.
 **The outer tool renames too, so `show-ref` before the restore is mandatory
 rather than defensive** — Orca derives a workspace branch name from a session's
 FIRST PROMPT and can rename a tree out from under a recorded value
-(go-to-k/cdkd#2413). Recovery either way is the reflog, which records the old
-name and the sha it pointed at:
+(go-to-k/cdkd#2413). Recovery from EITHER rename — this run's own, or the
+outer tool's — is the reflog, which records the old name and the sha it
+pointed at:
 
 ```bash
 git reflog --all --date=iso | grep -i 'Branch: renamed'   # the old name + its sha
@@ -102,6 +103,16 @@ git branch <LAUNCH_BRANCH> <that sha>                     # re-create, then §9 
 
 Run that BEFORE §9's `git branch -D <lane>`: a branch's own reflog is deleted
 with the branch, so after the delete the rename survives only in HEAD's copy.
+
+**The consequence for §2's collision reading: pin lane identity to the TREE
+PATH, never to the branch name.** Because the outer tool derives that name
+from a prompt, a tree can sit on a branch NAMING ANOTHER WORKSPACE, which
+reads as a trespass and is noise. Measured 2026-09-02: the `mermaid` workspace
+was renamed to `go-to-k/work-issues-pearlside-lane` because its session's
+first prompt mentioned pearlside, while pearlside's own tree took
+`go-to-k/set-effort-xhigh-2` from an `/effort xhigh` prompt. Neither name said
+anything about what its tree owned. `LANE_TREE` is the identity; the branch
+name is a label that may be rewritten at any time (go-to-k/cdkd#2413).
 
 **The guard on the first line is not decoration.** Outside a work tree every
 `git rev-parse` fails and each substitution collapses to the empty string, so

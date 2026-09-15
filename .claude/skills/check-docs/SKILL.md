@@ -56,10 +56,10 @@ You are checking whether documentation is up to date with recent code changes in
 
 After documentation is verified consistent (either no issues were found, or all issues were fixed), record the `docs` markgate marker so the PreToolUse `check-gate` hook (see `.claude/hooks/check-gate.sh`) allows the next `git commit`. The `docs` gate is scoped to `src/**`, `docs/**`, `README.md`, `CLAUDE.md`, and `.claude/rules/**` via `.markgate.yml`, so it only invalidates when one of those is edited.
 
-Run from the repo root (use `mise exec` to avoid PATH issues when shims aren't active):
+Run from the repo root (use `mise exec` to avoid PATH issues when shims aren't active). In a fresh worktree run `mise trust` first — an untrusted `.mise.toml` makes the line below die with a config-parse error that names no cause, and this skill has no other step that would have surfaced it; `/check` step 0 carries the full account, including why the result is verified by `markgate status` rather than by an exit code.
 
 ```bash
-mise exec -- markgate set docs
+mise trust && mise exec -- markgate set docs
 ```
 
 Skip this step if issues remain unfixed — a stale or missing marker correctly forces the user (or Claude) to re-run `/check-docs` after fixing docs.
