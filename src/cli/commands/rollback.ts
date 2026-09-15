@@ -37,7 +37,7 @@ import {
   type StackOrphanRecord,
 } from '../../types/state.js';
 import type { StackStateRef } from '../../state/s3-state-backend.js';
-import { displaySafe, UNRENDERABLE } from '../../utils/display-safe.js';
+import { displayIdent, displaySafe } from '../../utils/display-safe.js';
 
 interface RollbackOptions {
   force?: boolean;
@@ -132,10 +132,14 @@ function snapshotNote(
  * worse than a forged diagnostic: the plan preview below is what the user
  * CONFIRMS against, so a planted journal could forge the plan rows themselves.
  *
- * The ASCII allowlist, because every value it guards has a known charset: a
+ * `displayIdent`, because every value it guards has a known charset: a
  * logical id, a CFn resource type, a change type, a run id, a segment reason,
- * a stack name, an AWS region. Call it for those; `grep safe(` answers the
- * scope and this comment does not.
+ * a stack name, an AWS region. The ASCII allowlist, a length cap, and -- since
+ * issue #3092 -- a visible boundary: an all-ASCII id such as
+ * `X (AWS::RDS::DBInstance) -- already reverted` survives the allowlist and
+ * plants this preview's own annotation wording inside a real row, so a value
+ * that is not a plain identifier renders JSON-quoted. Call it for those;
+ * `grep safe(` answers the scope and this comment does not.
  *
  * NOT for a value that is about to be USED rather than shown -- the preview
  * indexes `previewState` by the RAW `op.logicalId`, and sanitising a lookup
@@ -148,7 +152,7 @@ function snapshotNote(
  * answers how many; a count written here was wrong on its first revision.
  */
 function safe(value: unknown): string {
-  return displaySafe(value, { asciiOnly: true }) || UNRENDERABLE;
+  return displayIdent(value);
 }
 
 /**

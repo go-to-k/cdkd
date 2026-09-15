@@ -114,3 +114,70 @@ export function truncateCodePoints(
  * it, so its existing importers are unchanged.
  */
 export const UNRENDERABLE = '<unrenderable>';
+
+/**
+ * The longest an identifier this module renders can legitimately be. 255 is
+ * CloudFormation's cap on a logical id, the longest of the identifier shapes
+ * `displayIdent` sees (a resource type is at most `64::64::64::MODULE`, a stack
+ * name 128, a region 25, a run id ~40); a longer value is not an identifier,
+ * whatever else it is.
+ */
+export const IDENT_MAX_CODE_POINTS = 255;
+
+/**
+ * The shape of a value that renders WITHOUT a visible boundary: the characters
+ * a CloudFormation logical id, a resource type (`AWS::S3::Bucket`,
+ * `Custom::my-thing_v2@x`), a change type, a stack name -- including the
+ * `Parent~Child` name cdkd mints for a nested-stack child -- a region, a
+ * `deployments/` run id, an S3 key or a role ARN may contain. No space, no
+ * bracket, no quote -- so a value matching it cannot plant a `(type)` /
+ * `-- reason` annotation of the surrounding line inside itself. Known
+ * residual, cosmetic: an IAM path may legally carry `!#$%&'()*`, so a role ARN
+ * with one renders quoted; those characters are exactly the boundary-forging
+ * set, so they stay out.
+ */
+const PLAIN_IDENT = /^[A-Za-z0-9:_@./+=,~-]+$/;
+
+/**
+ * Render an untrusted IDENTIFIER -- a journal or S3-key field with a known
+ * ASCII charset -- into a message a terminal will show (issues
+ * [#3064](https://github.com/go-to-k/cdkd/issues/3064) /
+ * [#3092](https://github.com/go-to-k/cdkd/issues/3092)). Three rules, applied
+ * in this order:
+ *
+ * 1. `displaySafe(value, { asciiOnly: true })`, then `UNRENDERABLE` for a value
+ *    with nothing renderable left -- the same allowlist + fallback every
+ *    caller used to spell for itself.
+ * 2. A value longer than `IDENT_MAX_CODE_POINTS` is CUT there and the count of
+ *    withheld characters appended. Unbounded, a planted id pushed the line's
+ *    genuine trailing `(type)` off a narrow terminal.
+ * 3. A value that is NOT a `PLAIN_IDENT` -- one carrying a space, a bracket, a
+ *    quote -- is rendered as a JSON string literal, so its BOUNDARY is
+ *    visible. The allowlist alone cannot stop an all-ASCII
+ *    `X (AWS::RDS::DBInstance) -- already reverted` from reading as cdkd's own
+ *    annotation inside a real row; quoting it makes the row read
+ *    `"X (AWS::RDS::DBInstance) -- already reverted" (AWS::S3::Bucket)`, and
+ *    JSON escaping keeps an embedded `"` from faking the closing quote.
+ *    Conditional on purpose: every legitimate value is a plain identifier and
+ *    renders exactly as it always did, so no fixture, no unit pin and no
+ *    operator's grep changes -- only a value that could spoof gains quotes.
+ *
+ * A caller comparing the result against the input (the `--orphan <id>` remedy
+ * prints its id only when this function is the identity on it) inherits all
+ * three: a quoted, cut or fallback rendering is never pasted as a command
+ * argument.
+ *
+ * NOT for a value that is USED rather than shown (a lookup key, a provider
+ * argument), and NOT for free-form text (an SDK error message legitimately
+ * carries spaces and non-ASCII; it takes `displaySafe()` directly).
+ */
+export function displayIdent(value: unknown): string {
+  const clean = displaySafe(value, { asciiOnly: true });
+  if (!clean) return UNRENDERABLE;
+  const { text, truncated } = truncateCodePoints(clean, IDENT_MAX_CODE_POINTS);
+  const shown = PLAIN_IDENT.test(text) ? text : JSON.stringify(text);
+  // `clean` is ASCII here, so `.length` counts characters.
+  return truncated
+    ? `${shown} [cut: ${clean.length - text.length} more characters withheld]`
+    : shown;
+}
