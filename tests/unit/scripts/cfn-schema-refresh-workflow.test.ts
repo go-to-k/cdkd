@@ -277,6 +277,15 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       }
     });
 
+    it('dates the fragment in the format the assembler requires', () => {
+      // `assemble-changelog.ts`'s ENTRY_NAME demands `<YYYY-MM-DD>-<issue>-`.
+      // Regress this to `%Y-%m` and the job commits `2026-09-3173-...md`, which
+      // `readEntries` THROWS on -- breaking `vp run gen:changelog` repo-wide
+      // until a human renames the file. The same assertion already guards the
+      // branch name one step over; the fragment path had none.
+      expect(shellOf(CHANGELOG_STEP)).toContain('date -u +%Y-%m-%d');
+    });
+
     it('stages only the fragment it just wrote', () => {
       // `git add -A` here would sweep whatever an earlier step left behind into
       // a commit whose message says it carries a changelog entry.

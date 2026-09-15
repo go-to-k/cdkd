@@ -2721,7 +2721,11 @@ export function parseCcFallbackOptOuts(providerFiles, repoRoot = REPO_ROOT) {
       unreadable.add(resourceType);
       continue;
     }
-    if (/\bdisableCcApiFallback\s*(?::[^=]*)?=\s*true\b/.test(source)) optedOut.add(resourceType);
+    // The optional type annotation may not span LINES: `[^=]*` did, so a doc
+    // comment mentioning the field several lines above an unrelated `= true`
+    // read as a declaration and would have turned the routed sentence into a
+    // refusal that is false.
+    if (/\bdisableCcApiFallback\s*(?::[^=\n]*)?=\s*true\b/.test(source)) optedOut.add(resourceType);
   }
   return { optedOut, unreadable };
 }

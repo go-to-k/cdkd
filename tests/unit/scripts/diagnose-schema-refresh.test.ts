@@ -2766,6 +2766,33 @@ describe('--changelog-out, through the shipped binary', () => {
         { stdio: 'ignore' }
       );
 
+      // The probe type's PRECONDITIONS, asserted rather than assumed. All
+      // three are legitimate future edits to `AWS::DynamoDB::Table`, and
+      // without these the case would fail as a bare "expected fragment to
+      // contain ONE-WAY" and read as a regression in the renderer.
+      const registrySource = readFileSync(
+        join(REPO_ROOT, 'src/provisioning/provider-registry.ts'),
+        'utf-8'
+      );
+      expect(
+        parseStickyCcMigrationExempt(registrySource).has('AWS::DynamoDB::Table'),
+        'the probe type joined STICKY_CC_MIGRATION_EXEMPT; it no longer pins cc-api ONE-WAY'
+      ).toBe(false);
+      expect(
+        parseNonProvisionableTypes(
+          readFileSync(join(REPO_ROOT, 'src/provisioning/unsupported-types.generated.ts'), 'utf-8')
+        ).has('AWS::DynamoDB::Table'),
+        'the probe type became NON_PROVISIONABLE; it is refused, not routed'
+      ).toBe(false);
+      expect(
+        parseCcFallbackOptOuts(
+          mapTypesToProviderFiles(
+            readFileSync(join(REPO_ROOT, 'src/provisioning/register-providers.ts'), 'utf8')
+          )
+        ).optedOut.has('AWS::DynamoDB::Table'),
+        'the probe type’s provider now declines the CC fallback; it is refused, not routed'
+      ).toBe(false);
+
       // AWS publishing a writable property on a type that HAS a provider and
       // is neither NON_PROVISIONABLE nor a CC-fallback opt-out: the ordinary
       // cycle, and the one whose story must be the routed one.
@@ -3112,6 +3139,9 @@ describe('renderChangelogFragment', () => {
     // unknown sentence's own guard ships `...for , so this entry does not
     // state...` on EVERY fragment with the suite green.
     expect(fragment).not.toContain('could not read the routing declaration');
+    // Same for the refusal sentence's guard: an ordinary cycle refuses nothing,
+    // and an ungated sentence would name an empty list on every fragment.
+    expect(fragment).not.toContain('cannot take that route');
     // The pronoun follows the ROUTED population: one routed property is "it".
     expect(fragment).toContain('no SDK provider writes it yet');
   });
