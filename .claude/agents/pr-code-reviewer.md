@@ -38,7 +38,7 @@ Read every changed file end-to-end. For each, ask:
 ## What NOT to check
 
 - Whether tests pass (CI handles that).
-- Whether the change matches its spec — a design doc, or the bodies of the issues it says it closes (separate spec-compliance reviewer).
+- Whether the change matches its spec — a design doc, or the bodies of the issues it says it closes — WHEN the spec axis is dispatched (3-axis). At `1-reviewer` you are the only reviewer running, so deferring there defers to nobody: check it yourself.
 - Documentation prose.
 
 ## Report format
