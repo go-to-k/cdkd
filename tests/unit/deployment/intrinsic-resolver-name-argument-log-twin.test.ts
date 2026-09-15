@@ -185,6 +185,9 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
               br: '{{',
               whole: `Outputs.${PIN}`,
               stone: 'st-1',
+              // A 4-character secret HOLDING a control character, which only
+              // a mask taken before the strip can see.
+              ctl: `x${String.fromCharCode(1)}y7`,
               pinab: `${PIN}ab`,
             }),
           };
@@ -650,8 +653,11 @@ describe('issue #3150: Fn::GetAtt attribute names', () => {
         { 'Fn::GetAtt': ['Child', sub('${P}.env', 'word')] },
         makeContext({ resources: child({ 'Outputs.Real': 'x' }) })
       );
-      expect(message).toContain("declares no output named '***'.");
-      expect(message).not.toContain("output named 'env'");
+      expect(message).toBe(
+        "Cannot resolve Fn::GetAtt [Child, ***]: the nested stack 'Child' declares no output " +
+          "named '***'. Its outputs are Real. Check the output name in the nested stack's " +
+          'template, and deploy the child stack again if you have just added it.'
+      );
     });
 
     it('a mask covering PART of the Outputs prefix prints the suffix as ***', async () => {
@@ -1233,6 +1239,19 @@ describe('issue #3150: names parsed out of an assembled dynamic reference', () =
     expectNowhere(`sec-${PIN}`, String(outcome));
   });
 
+  it('CONTROL: a JSON key an inner Fn::Sub built from an unrecorded value prints verbatim', async () => {
+    const message = await messageOf(
+      {
+        'Fn::Sub': [
+          `{{resolve:secretsmanager:${SECRET_ID}:SecretString:\${K}}}`,
+          { K: plain('pw-${P}') },
+        ],
+      },
+      makeContext()
+    );
+    expect(message).toBe(`Dynamic reference: key 'pw-${UNRECORDED}' not found in secret '${SECRET_ID}'`);
+  });
+
   it('an SSM parameter name an inner Fn::Sub built', async () => {
     const message = await messageOf(
       { 'Fn::Sub': ['{{resolve:ssm:\${K}}}', { K: sub('param-${P}') }] },
@@ -1279,6 +1298,149 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
       'Resolving dynamic reference: secretsmanager:sec-***:SecretString:pin:AWSCURRENT:'
     );
     expectNowhere(`sec-${PIN}`, String(outcome));
+  });
+
+  it('CONTROL: a secret id assembled from an unrecorded value prints verbatim', async () => {
+    await new IntrinsicFunctionResolver('us-east-1')
+      .resolve(
+        { 'Fn::Sub': ['{{resolve:secretsmanager:sec-${P}:SecretString:pin}}', { P: UNRECORDED }] },
+        makeContext() as never
+      )
+      .catch(() => undefined);
+    expect(everyLine()).toContain(
+      `Resolving dynamic reference: secretsmanager:sec-${UNRECORDED}:SecretString:pin:AWSCURRENT:`
+    );
+  });
+
+  it('CONTROL: an SSM parameter name assembled from an unrecorded value prints verbatim', async () => {
+    const message = await messageOf(
+      { 'Fn::Sub': ['{{resolve:ssm:param-${P}}}', { P: UNRECORDED }] },
+      makeContext()
+    );
+    expect(message).toBe(`Dynamic reference: SSM parameter 'param-${UNRECORDED}' not found or has no value`);
+    expect(everyLine()).toContain(`Resolving dynamic reference: ssm:param-${UNRECORDED}`);
+  });
+
+  it('the region-scoped clients refusal of an invalid secret ARN region prints the region masked', async () => {
+    // No `isClientSafeRegion` gate sits in front of the `named-region` arm, so
+    // the guest built for `us-west-2_q7` reaches `clientsForRegion`'s backstop.
+    const message = await messageOf(
+      inline('{{resolve:secretsmanager:arn:aws:secretsmanager:us-west-2_${P}:210987654321:secret:x:SecretString:k}}'),
+      makeContext()
+    );
+    expect(message).toBe(
+      "Refusing to build AWS clients for the region 'us-west-2_***': it is not a valid AWS " +
+        'region name, and a region is substituted into the AWS service hostname.'
+    );
+    expectNowhere(`us-west-2_${PIN}`, message);
+  });
+
+  it('CONTROL: the region-scoped clients refusal of an unrecorded invalid region prints it verbatim', async () => {
+    const message = await messageOf(
+      {
+        'Fn::Sub': [
+          '{{resolve:secretsmanager:arn:aws:secretsmanager:us-west-2_${P}:210987654321:secret:x:SecretString:k}}',
+          { P: UNRECORDED },
+        ],
+      },
+      makeContext()
+    );
+    expect(message).toBe(
+      `Refusing to build AWS clients for the region 'us-west-2_${UNRECORDED}': it is not a valid AWS ` +
+        'region name, and a region is substituted into the AWS service hostname.'
+    );
+  });
+
+  it("CONTROL: the region-scoped clients refusal prints an ordinary resolver's own invalid region verbatim", async () => {
+    // No guest and no caller text: the region the command built the resolver with.
+    const message = await messageOf(
+      `{{resolve:secretsmanager:${SECRET_ID}:SecretString:pin}}`,
+      makeContext(),
+      new IntrinsicFunctionResolver(`us-west-2_${UNRECORDED}`)
+    );
+    expect(message).toBe(
+      `Refusing to build AWS clients for the region 'us-west-2_${UNRECORDED}': it is not a valid AWS ` +
+        'region name, and a region is substituted into the AWS service hostname.'
+    );
+  });
+
+  it('the region-scoped clients refusal masks a recorded secret the control-character strip rejoins', async () => {
+    // `s` + U+0001 + `t-1` holds no recorded needle until the refusal strips
+    // the control character, and `st-1` is recorded: the guest's region text is
+    // masked, stripped and masked again.
+    const { maskSecretsInText } = await import('../../../src/deployment/secret-redaction.js');
+    const { stripControlChars } = await import('../../../src/utils/regexp.js');
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const context = makeContext();
+    await resolver.resolve(ref('stone'), context as never);
+    const region = `us-west-2_s${String.fromCharCode(1)}t-1`;
+    expect(maskSecretsInText(region, context.recordedSecretValues), 'premise: the raw region holds no needle').toBe(region);
+    expect(
+      maskSecretsInText(stripControlChars(region), context.recordedSecretValues),
+      'premise: the stripped region does'
+    ).toBe('us-west-2_***');
+    const message = await messageOf(
+      `{{resolve:secretsmanager:arn:aws:secretsmanager:${region}:210987654321:secret:x:SecretString:k}}`,
+      context,
+      resolver
+    );
+    expect(message).toBe(
+      "Refusing to build AWS clients for the region 'us-west-2_***': it is not a valid AWS " +
+        'region name, and a region is substituted into the AWS service hostname.'
+    );
+  });
+
+  it('the region-scoped clients refusal masks a recorded secret holding a control character before the strip', async () => {
+    // The mirror case: `x` + U+0001 + `y7` is recorded whole, so only the mask
+    // taken BEFORE the strip sees it; stripping first would print `xy7`.
+    const { maskSecretsInText } = await import('../../../src/deployment/secret-redaction.js');
+    const { stripControlChars } = await import('../../../src/utils/regexp.js');
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const context = makeContext();
+    await resolver.resolve(ref('ctl'), context as never);
+    const region = `us-west-2_x${String.fromCharCode(1)}y7`;
+    expect(maskSecretsInText(region, context.recordedSecretValues), 'premise: the raw region holds a needle').toBe(
+      'us-west-2_***'
+    );
+    expect(
+      maskSecretsInText(stripControlChars(region), context.recordedSecretValues),
+      'premise: the stripped region does not'
+    ).toBe('us-west-2_xy7');
+    const message = await messageOf(
+      `{{resolve:secretsmanager:arn:aws:secretsmanager:${region}:210987654321:secret:x:SecretString:k}}`,
+      context,
+      resolver
+    );
+    expect(message).toBe(
+      "Refusing to build AWS clients for the region 'us-west-2_***': it is not a valid AWS " +
+        'region name, and a region is substituted into the AWS service hostname.'
+    );
+  });
+
+  it('both lookup helpers REQUIRE the name mapping (a compile-time pin, checked by typecheck:test)', () => {
+    // Never called: the pin is the two `@ts-expect-error` lines, which fail
+    // `vp run typecheck:test` as unused should either parameter regain a
+    // default that prints the names raw.
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const omitted = (): void => {
+      // @ts-expect-error -- `nameLogText` is required
+      void resolver['resolveSecretsManagerReference'](`secretsmanager:${SECRET_ID}:SecretString:pin`, undefined);
+      // @ts-expect-error -- `nameLogText` is required
+      void resolver['resolveSSMReference'](['ssm', 'host'], true, 'ssm', undefined);
+    };
+    expect(typeof omitted).toBe('function');
+  });
+
+  it('a synthesized version stage the token spells as part of a longer name prints as ***', async () => {
+    // `AWSCURRENT` is the default for the empty stage, so it is not a run of
+    // the token; the token still spells it inside `x-AWSCURRENT-q7`, so the
+    // name fails closed. The empty version id beside it still prints empty.
+    await new IntrinsicFunctionResolver('us-east-1')
+      .resolve(inline('{{resolve:secretsmanager:x-AWSCURRENT-${P}:SecretString:pin}}'), makeContext() as never)
+      .catch(() => undefined);
+    expect(everyLine()).toContain(
+      'Resolving dynamic reference: secretsmanager:x-AWSCURRENT-***:SecretString:pin:***:'
+    );
   });
 
   it('a parsed name leaves what Fn::Base64 persists for an equal literal unchanged', async () => {
@@ -1587,6 +1749,15 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
       expect(message).toBe("Dynamic reference: SSM parameter '***' not found or has no value");
       expect(everyLine()).toContain('Resolving dynamic reference: ssm:***');
       expectNowhere('param-q', message);
+    });
+
+    it('CONTROL: an unrecorded value carrying a ":" prints the parameter name verbatim', async () => {
+      const message = await messageOf(
+        { 'Fn::Sub': ['{{resolve:ssm:param-${P}}}', { P: 'k:9' }] },
+        makeContext()
+      );
+      expect(message).toBe("Dynamic reference: SSM parameter 'param-k:9' not found or has no value");
+      expect(everyLine()).toContain('Resolving dynamic reference: ssm:param-k:9');
     });
 
     it('an ssm-secure parameter name: the lookup line and the refusal', async () => {
