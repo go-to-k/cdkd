@@ -220,7 +220,7 @@ nlb-source-nat	2026-09-05T22:46:07Z	PASS	355	verify.sh	PR2662 gate run; destroy 
 nodejs-function	2026-08-10T05:29:23Z	PASS	50	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
 opensearch-domain-getatt	2026-08-10T08:05:51Z	PASS	1798	verify.sh	0810 P2 sweep b13; 60m CC delete floor ok, 0 err 0 orph
 orphan-resource	2026-07-26T18:04:53Z	PASS	38	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
-output-never-resolved-diff	2026-09-14T10:52:02Z	PASS	230	verify.sh	rc ok, orph clean; phases 4b/4c; merge gate for go-to-k/cdkd#3107
+output-never-resolved-diff	2026-09-15T17:00:05Z	PASS	409	verify.sh	rc ok, orph clean; phase 5c (stored output broken beside a sibling change, split warning with the full withheld-values reason and the withheld row, env-agnostic CDKMetadataAvailable arm); go-to-k/cdkd#3101
 outputs-only-export	2026-08-18T06:09:14Z	PASS	160	verify.sh	13 checks; #1921 preview + no-phantom arms; re-run after review round 3; destroy clean
 parameters	2026-07-26T18:04:53Z	PASS	24	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 propagation-races-2	2026-09-10T09:48:41Z	PASS	116	verify.sh	rc0, 22 deleted/0 err/0 orph; round-2 re-run; edge5 window 0ms (3rd)

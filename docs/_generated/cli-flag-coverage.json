@@ -1235,6 +1235,7 @@
         "nested-stack-3level",
         "nested-stack-secret",
         "opensearch-domain-getatt",
+        "output-never-resolved-diff",
         "redshift-cluster-getatt",
         "remove-protection",
         "rollback-sqs-cooldown",

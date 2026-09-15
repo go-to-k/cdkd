@@ -34,6 +34,7 @@ import * as path from 'node:path';
 import {
   computeOutputsDiff,
   resolveTemplateOutputs,
+  templateLetsConditionsReachOutputs,
   type OutputChange,
 } from '../../../src/analyzer/outputs-diff.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -750,6 +751,267 @@ describe('failedKeys (issue #1921 review round 2)', () => {
   });
 });
 
+describe('templateLetsConditionsReachOutputs (issue #3101 review, B1)', () => {
+  const base = (): CloudFormationTemplate => ({
+    Resources: { A: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } } },
+    Outputs: { Out: { Value: 'v' } },
+    Conditions: { IsOn: { 'Fn::Equals': ['a', 'a'] } },
+  });
+
+  it.each([
+    {
+      route: "an output's own Condition",
+      edit: (t: CloudFormationTemplate): void => {
+        (t.Outputs ??= {})['Out'] = { Value: 'v', Condition: 'IsOn' };
+      },
+    },
+    {
+      route: "an Fn::If in an output's value",
+      edit: (t: CloudFormationTemplate): void => {
+        (t.Outputs ??= {})['Out'] = { Value: { 'Fn::Join': ['', [{ 'Fn::If': ['IsOn', 'a', 'b'] }]] } };
+      },
+    },
+    {
+      route: 'an Fn::If in a mapping',
+      edit: (t: CloudFormationTemplate): void => {
+        t.Mappings = { M: { k: { V: { 'Fn::If': ['IsOn', 'a', 'b'] } } } };
+      },
+    },
+    {
+      route: 'a { Condition } reference outside Resources and Conditions',
+      edit: (t: CloudFormationTemplate): void => {
+        (t as unknown as Record<string, unknown>)['Metadata'] = { Note: { 'Fn::Not': [{ Condition: 'IsOn' }] } };
+      },
+    },
+  ])('is true for $route', ({ edit }) => {
+    const t = base();
+    edit(t);
+    expect(templateLetsConditionsReachOutputs(t)).toBe(true);
+  });
+
+  it.each([
+    { shape: 'no route at all', edit: (_t: CloudFormationTemplate): void => {} },
+    {
+      shape: 'a multi-key object whose first key is Condition, outside Resources and Conditions',
+      edit: (t: CloudFormationTemplate): void => {
+        (t as unknown as Record<string, unknown>)['Metadata'] = {
+          Note: { Condition: 'IsOn', Other: 'not a condition reference' },
+        };
+      },
+    },
+    {
+      shape: "a resource's own Condition (the CDKMetadataAvailable shape; a regression example only, since a multi-key resource object is inert here, and the property Fn::If case pins the Resources exclusion)",
+      edit: (t: CloudFormationTemplate): void => {
+        t.Resources['CDKMetadata'] = {
+          Type: 'AWS::CDK::Metadata',
+          Properties: {},
+          Condition: 'IsOn',
+        };
+      },
+    },
+    {
+      shape: "an Fn::If in a resource property",
+      edit: (t: CloudFormationTemplate): void => {
+        t.Resources['A'] = {
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Value: { 'Fn::If': ['IsOn', 'a', 'b'] } },
+        };
+      },
+    },
+    {
+      shape: 'a { Condition } reference inside Conditions',
+      edit: (t: CloudFormationTemplate): void => {
+        t.Conditions = { IsOn: { 'Fn::Equals': ['a', 'a'] }, Both: { 'Fn::And': [{ Condition: 'IsOn' }, { Condition: 'IsOn' }] } };
+      },
+    },
+    {
+      shape: 'a template with no Outputs section',
+      edit: (t: CloudFormationTemplate): void => {
+        delete t.Outputs;
+      },
+    },
+  ])('is false for $shape', ({ edit }) => {
+    const t = base();
+    edit(t);
+    expect(templateLetsConditionsReachOutputs(t)).toBe(false);
+  });
+});
+
+describe('failedOutputKeys / failuresMirrorDeploy (issue #3101)', () => {
+  // `computeStackDiff` previews the deploy's no-change merge only when every
+  // failure is one the deploy records too, named by OUTPUT key. These pin which
+  // arm answers which way; the preview itself is pinned in
+  // `tests/unit/cli/diff-recursive.test.ts`.
+  it('names a thrown and an undefined value by output key, never by alias', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: {
+        Threw: { Value: { 'Fn::GetAtt': ['Missing', 'Arn'] }, Export: { Name: 'S:Threw' } },
+        RoleId: { Value: { 'Fn::GetAtt': ['Role', 'RoleId'] } },
+        Fine: { Value: 'v' },
+      },
+    };
+    const r = await resolveTemplateOutputs(template, RESOLVER);
+    expect([...r.failedOutputKeys].sort()).toEqual(['RoleId', 'Threw']);
+    // The alias is still a failed KEY for the warning filter.
+    expect(r.failedKeys.has('S:Threw')).toBe(true);
+    expect(r.failuresMirrorDeploy).toBe(true);
+  });
+
+  it('is true with nothing named for a fully resolved bag and for no Outputs', async () => {
+    const resolvedFully = await resolveTemplateOutputs(templateWithExport(), RESOLVER);
+    expect(resolvedFully.resolutionFailed).toBe(false);
+    expect([...resolvedFully.failedOutputKeys]).toEqual([]);
+    expect(resolvedFully.failuresMirrorDeploy).toBe(true);
+    const none = await resolveTemplateOutputs({ Resources: {} }, RESOLVER);
+    expect([...none.failedOutputKeys]).toEqual([]);
+    expect(none.failuresMirrorDeploy).toBe(true);
+  });
+
+  it('is false for a surviving intrinsic, which the deploy does not record as failed', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: { Pending: { Value: { 'Fn::GetAtt': ['New', 'Arn'] } } },
+    };
+    const r = await resolveTemplateOutputs(template, lenientResolver);
+    expect(r.resolutionFailed).toBe(true);
+    expect([...r.failedOutputKeys]).toEqual([]);
+    expect(r.failuresMirrorDeploy).toBe(false);
+  });
+
+  it('is false for a NESTED undefined, since the deploy keys on a top-level one', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: { Listed: { Value: ['x', { 'Fn::GetAtt': ['Role', 'RoleId'] }] } },
+    };
+    const r = await resolveTemplateOutputs(template, async () => ['x', undefined]);
+    expect(r.resolutionFailed).toBe(true);
+    expect([...r.failedOutputKeys]).toEqual([]);
+    expect(r.failuresMirrorDeploy).toBe(false);
+  });
+
+  it('is false for a symbol, which is not the deploy failure signal (a top-level undefined)', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: { NoValue: { Value: { 'Fn::If': ['C', { Ref: 'AWS::NoValue' }, 'x'] } } },
+    };
+    const r = await resolveTemplateOutputs(template, async () => Symbol('AWS::NoValue'));
+    expect(r.resolutionFailed).toBe(true);
+    expect([...r.failedOutputKeys]).toEqual([]);
+    expect(r.failuresMirrorDeploy).toBe(false);
+  });
+
+  it.each([
+    { later: 'a top-level undefined', fail: async (): Promise<unknown> => undefined },
+    {
+      later: 'a throw',
+      fail: async (): Promise<unknown> => {
+        throw new Error('refused');
+      },
+    },
+  ])('stays false once cleared when a later output fails with $later', async ({ fail }) => {
+    // `Pending` clears the flag; `Later`, declared after it, fails through one of
+    // the two arms that name a key, and neither may set the flag back. Outputs
+    // resolve in declaration order.
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: {
+        Pending: { Value: { 'Fn::GetAtt': ['New', 'Arn'] } },
+        Later: { Value: { 'Fn::GetAtt': ['Role', 'RoleId'] } },
+      },
+    };
+    const resolver = async (value: unknown): Promise<unknown> =>
+      JSON.stringify(value).includes('RoleId') ? fail() : value;
+    const r = await resolveTemplateOutputs(template, resolver);
+    expect([...r.failedOutputKeys]).toEqual(['Later']);
+    expect(r.failuresMirrorDeploy).toBe(false);
+  });
+
+  it('strips control characters from the output key and error text on its debug lines', async () => {
+    // Output keys are template-controlled and never validated here, and the
+    // error text can quote one back. One output per debug line.
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    const debug = vi.mocked(getLogger().debug);
+    debug.mockClear();
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: {
+        'Threw\u001b[31m': { Value: { 'Fn::GetAtt': ['Missing\u001b[31m', 'Arn'] } },
+        'RoleId\u001b[31m': { Value: { 'Fn::GetAtt': ['Role', 'RoleId'] } },
+        'Named\u001b[31m': {
+          Value: 'v',
+          Export: { Name: { 'Fn::GetAtt': ['Missing\u001b[31m', 'Name'] } as unknown as string },
+        },
+      },
+    };
+    await resolveTemplateOutputs(template, RESOLVER);
+    const lines = debug.mock.calls.map((c) => String(c[0]));
+    expect(lines.some((l) => l.startsWith('Diff could not resolve output Threw[31m: '))).toBe(true);
+    expect(lines.some((l) => l.startsWith('Diff left output RoleId[31m unresolved'))).toBe(true);
+    expect(lines.some((l) => l.startsWith('Diff could not resolve Export.Name of Named[31m: '))).toBe(
+      true
+    );
+    expect(lines.filter((l) => l.includes('\u001b'))).toEqual([]);
+  });
+
+  it('strips control characters from a condition-false output on its skip line', async () => {
+    // Both the output key and the condition name come from the template.
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    const debug = vi.mocked(getLogger().debug);
+    debug.mockClear();
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: { 'Skip\u001b[31m': { Value: 'v', Condition: 'Off\u001b[31m' } },
+    };
+    await resolveTemplateOutputs(template, RESOLVER, { 'Off\u001b[31m': false });
+    const lines = debug.mock.calls.map((c) => String(c[0]));
+    expect(lines).toContain('Skipping output Skip[31m — condition Off[31m is false');
+    expect(lines.filter((l) => l.includes('\u001b'))).toEqual([]);
+  });
+
+  it('is false when an Export.Name throws', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: {
+        Named: {
+          Value: 'v',
+          Export: { Name: { 'Fn::GetAtt': ['Missing', 'Name'] } as unknown as string },
+        },
+      },
+    };
+    const r = await resolveTemplateOutputs(template, RESOLVER);
+    expect(r.resolutionFailed).toBe(true);
+    expect(r.failuresMirrorDeploy).toBe(false);
+  });
+
+  it('is false when an Export.Name stays intrinsic', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      // `TemplateOutput` types the name as a string; CloudFormation allows an intrinsic.
+      Outputs: {
+        Named: { Value: 'v', Export: { Name: { Ref: 'Unresolved' } as unknown as string } },
+      },
+    };
+    const r = await resolveTemplateOutputs(template, lenientResolver);
+    expect(r.resolutionFailed).toBe(true);
+    expect(r.failuresMirrorDeploy).toBe(false);
+  });
+
+  it('is false when a literal Export.Name cannot be decided in a secret-bearing stack', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: {
+        Secret: { Value: '{{resolve:secretsmanager:db:SecretString:pw}}' },
+        Named: { Value: 'v', Export: { Name: 'literal-name' } },
+      },
+    };
+    const r = await resolveTemplateOutputs(template, RESOLVER);
+    expect(r.resolutionFailed).toBe(true);
+    expect(r.failedKeys.has('literal-name')).toBe(true);
+    expect(r.failuresMirrorDeploy).toBe(false);
+  });
+});
+
 describe('anti-drift fence vs DeployEngine.resolveOutputs (issue #1921)', () => {
   // This module is a deliberate SECOND implementation of the deploy engine's
   // outputs resolution — see the file header for why sharing was rejected. The
@@ -864,8 +1126,10 @@ describe('anti-drift fence vs DeployEngine.resolveOutputs (issue #1921)', () => 
   it('deploy routes a failure through the merge and persists the MERGED bag (source spelling)', () => {
     // Issue #2771 moved the gate: a failed output no longer blocks the persist;
     // the bag goes through `mergeNoChangeOutputs`, and only its `kept` verdict
-    // keeps the previous bag (which can still save, for the #2740 record). This
-    // module stays the CONSERVATIVE side. A SPELLING fence, so it pins the
+    // keeps the previous bag (which can still save, for the #2740 record). The
+    // diff previews that merge by calling the same function on a no-change
+    // stack (issue #3101, pinned in `tests/unit/cli/diff-recursive.test.ts`),
+    // and suppresses everywhere else. A SPELLING fence, so it pins the
     // three lines below and nothing about their behaviour — that is pinned by
     // `deploy-engine-outputs-only-change.test.ts`.
     expect(source).toContain('mergeNoChangeOutputs({');

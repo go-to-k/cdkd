@@ -50,6 +50,16 @@
 #       `diff --fail` exits 1 and renders its row — the record must NOT
 #       suppress a repaired output; the deploy publishes the key as its
 #       expression and empties the record; `diff --fail` exits 0
+#   5c. STORED THEN BROKEN (go-to-k/cdkd#3101): CDKD_TEST_ATT_OUTPUT=true adds
+#       `AttOut` (the marker's `Ref`) and a no-change deploy stores it; then
+#       CDKD_TEST_ATT_BROKEN=true breaks it with an `Fn::GetAtt` both deploy
+#       and diff refuse, while CDKD_TEST_SIBLING=true changes `Plain`.
+#       `diff --fail` exits 1 with the one `[~] Plain` row and no suppression
+#       warning (pre-fix: rc 0, section omitted). The same diff synthesized
+#       env-agnostic (CDKD_TEST_ENV_AGNOSTIC=true, so CDK declares
+#       CDKMetadataAvailable) must show the same row and warning. The no-change
+#       deploy writes `Plain` and keeps `AttOut`'s stored value; `diff --fail`
+#       exits 0
 #   6.  destroy; secret gone or scheduled for deletion; state gone; every
 #       state-object version swept
 #
@@ -137,6 +147,11 @@ BROKEN_REF="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:password}}"
 REPAIRED_REF="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:username}}"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
+# Phase 5c's three toggles are set only where that phase sets them. Every earlier
+# invocation lists the toggles it clears with `env -u`; these three are cleared
+# once here instead, so a harness environment that happens to export any of them
+# cannot reach a phase that never mentions it.
+unset CDKD_TEST_ATT_OUTPUT CDKD_TEST_ATT_BROKEN CDKD_TEST_ENV_AGNOSTIC
 
 # Echo a captured command output as FAILURE diagnostics, never before proving
 # it carries no plaintext: these diagnostics sit on the paths that exist to
@@ -735,8 +750,92 @@ if [ "$(jq -cS '.Outputs.Plain2' "${SYNTH_ADD_FULL}")" != "$(jq -cS '.Outputs.Pl
   echo "FAIL: the repaired-carried synth declares Plain2 differently from the add-output synth" >&2
   exit 1
 fi
+# att-output / att-broken (phase 5c, go-to-k/cdkd#3101): every phase-5 toggle
+# carried, plus `AttOut`. Both pinned to the marker parameter's OWN logical id,
+# selected by type as above, so the `Ref` and the `Fn::GetAtt` are about that
+# resource and nothing else moves.
+SYNTH_CARRIED_FULL="${SYNTH_DIR}/repaired-carried.template.json"
+cp "${SYNTH_TEMPLATE}" "${SYNTH_CARRIED_FULL}"
+if ! MARKER_ID=$(jq -er "${MARKER_RESOURCE} | .key" "${SYNTH_BASELINE}" 2>"${RENDER_ERR}"); then
+  echo "FAIL: could not read the marker parameter's logical id out of the baseline synth" >&2
+  diag_output "$(cat "${RENDER_ERR}")"
+  exit 1
+fi
+if ! CDKD_TEST_ATT_OUTPUT=true CDKD_TEST_UPDATE=true CDKD_TEST_ADD_OUTPUT=true CDKD_TEST_PARTIAL_REPAIR=true env -u CDKD_TEST_SIBLING -u CDKD_TEST_RESOURCE_EDIT -u CDKD_TEST_ATT_BROKEN node "${LOCAL_DIST}" synth --region "${REGION}" --output "${SYNTH_DIR}" >/dev/null 2>&1; then
+  echo "FAIL: the att-output synth failed (output withheld — this variant's seed is not yet known to match the redaction needle)" >&2
+  exit 1
+fi
+assert_seed_needle "${SYNTH_TEMPLATE}" att-output
+if [ "$(jq -cS '.Outputs.AttOut.Value' "${SYNTH_TEMPLATE}")" != "$(jq -ncS --arg id "${MARKER_ID}" '{Ref: $id}')" ]; then
+  echo "FAIL: CDKD_TEST_ATT_OUTPUT=true did not declare AttOut as the marker parameter's Ref" >&2
+  exit 1
+fi
+if [ "$(jq -cS . "${SYNTH_CARRIED_FULL}")" != "$(jq -cS 'del(.Outputs.AttOut)' "${SYNTH_TEMPLATE}")" ]; then
+  echo "FAIL: CDKD_TEST_ATT_OUTPUT=true changed the repaired-carried template beyond declaring AttOut" >&2
+  exit 1
+fi
+# Kept so att-broken is compared against it with only the two values removed,
+# which keeps AttOut's Export / Condition / Description inside the comparison.
+SYNTH_ATT_OUTPUT_FULL="${SYNTH_DIR}/att-output.template.json"
+cp "${SYNTH_TEMPLATE}" "${SYNTH_ATT_OUTPUT_FULL}"
+if ! CDKD_TEST_ATT_BROKEN=true CDKD_TEST_SIBLING=true CDKD_TEST_ATT_OUTPUT=true CDKD_TEST_UPDATE=true CDKD_TEST_ADD_OUTPUT=true CDKD_TEST_PARTIAL_REPAIR=true env -u CDKD_TEST_RESOURCE_EDIT node "${LOCAL_DIST}" synth --region "${REGION}" --output "${SYNTH_DIR}" >/dev/null 2>&1; then
+  echo "FAIL: the att-broken synth failed (output withheld — this variant's seed is not yet known to match the redaction needle)" >&2
+  exit 1
+fi
+assert_seed_needle "${SYNTH_TEMPLATE}" att-broken
+if [ "$(jq -cS '.Outputs.AttOut.Value' "${SYNTH_TEMPLATE}")" != "$(jq -ncS --arg id "${MARKER_ID}" '{"Fn::GetAtt": [$id, "NotARealArn"]}')" ]; then
+  echo "FAIL: CDKD_TEST_ATT_BROKEN=true did not switch AttOut to Fn::GetAtt [<marker>, NotARealArn]" >&2
+  exit 1
+fi
+if [ "$(jq -r '.Outputs.Plain.Value' "${SYNTH_TEMPLATE}")" != "${EXPECTED_PLAIN_CHANGED}" ]; then
+  echo "FAIL: the att-broken synth did not change Plain to the value phase 5c greps for" >&2
+  exit 1
+fi
+# ...and minus AttOut's Value and Plain's Value it is the att-output template,
+# whole — AttOut's Export, Condition and Description included.
+if [ "$(jq -cS 'del(.Outputs.AttOut.Value) | del(.Outputs.Plain.Value)' "${SYNTH_ATT_OUTPUT_FULL}")" != "$(jq -cS 'del(.Outputs.AttOut.Value) | del(.Outputs.Plain.Value)' "${SYNTH_TEMPLATE}")" ]; then
+  echo "FAIL: the att-broken synth changed the template beyond AttOut and Plain's value" >&2
+  exit 1
+fi
+# env-agnostic (phase 5c's second diff, go-to-k/cdkd#3101 review B1): the
+# att-broken toggles plus CDKD_TEST_ENV_AGNOSTIC=true, which drops `env`. CDK
+# then declares CDKMetadataAvailable and gates its metadata resource on it, and
+# nothing else may move: the arm exists to prove that this one declared
+# condition, which every env-agnostic app carries, does not refuse the preview.
+SYNTH_ATT_BROKEN_FULL="${SYNTH_DIR}/att-broken.template.json"
+cp "${SYNTH_TEMPLATE}" "${SYNTH_ATT_BROKEN_FULL}"
+if ! CDKD_TEST_ENV_AGNOSTIC=true CDKD_TEST_ATT_BROKEN=true CDKD_TEST_SIBLING=true CDKD_TEST_ATT_OUTPUT=true CDKD_TEST_UPDATE=true CDKD_TEST_ADD_OUTPUT=true CDKD_TEST_PARTIAL_REPAIR=true env -u CDKD_TEST_RESOURCE_EDIT node "${LOCAL_DIST}" synth --region "${REGION}" --output "${SYNTH_DIR}" >/dev/null 2>&1; then
+  echo "FAIL: the env-agnostic synth failed (output withheld — this variant's seed is not yet known to match the redaction needle)" >&2
+  exit 1
+fi
+assert_seed_needle "${SYNTH_TEMPLATE}" env-agnostic
+if [ "$(jq -c '[(.Conditions // {}) | keys[]]' "${SYNTH_ATT_BROKEN_FULL}")" != '[]' ]; then
+  echo "FAIL: premise: the env-pinned att-broken synth already declares Conditions, so the env-agnostic arm would test nothing new (names withheld: template-controlled)" >&2
+  exit 1
+fi
+if [ "$(jq -c '[(.Conditions // {}) | keys[]]' "${SYNTH_TEMPLATE}")" != '["CDKMetadataAvailable"]' ]; then
+  echo "FAIL: CDKD_TEST_ENV_AGNOSTIC=true did not declare exactly CDKMetadataAvailable (names withheld: template-controlled)" >&2
+  exit 1
+fi
+if [ "$(jq -r '[.Resources[] | select(.Condition != null) | "\(.Type)=\(.Condition)"] | join(",")' "${SYNTH_TEMPLATE}")" != "AWS::CDK::Metadata=CDKMetadataAvailable" ]; then
+  echo "FAIL: the env-agnostic synth gates something other than exactly the CDK metadata resource on a condition" >&2
+  exit 1
+fi
+if [ "$(jq -cS 'del(.Conditions) | del(.Resources.CDKMetadata)' "${SYNTH_TEMPLATE}")" != "$(jq -cS 'del(.Conditions) | del(.Resources.CDKMetadata)' "${SYNTH_ATT_BROKEN_FULL}")" ]; then
+  echo "FAIL: CDKD_TEST_ENV_AGNOSTIC=true changed the att-broken template beyond Conditions and the CDK metadata resource" >&2
+  exit 1
+fi
+# ...and the invariant itself, not only its equality with the pinned template: no
+# route by which a condition verdict can reach an output. An output carrying its
+# own Condition, or an Fn::If / {Condition} anywhere outside Resources and
+# Conditions, would refuse the merge preview on both templates alike.
+if [ "$(jq '[(.Outputs // {})[] | select(has("Condition"))] | length' "${SYNTH_TEMPLATE}")" != "0" ] \
+   || [ "$(jq '[del(.Resources, .Conditions) | .. | objects | select(has("Fn::If") or (keys == ["Condition"]))] | length' "${SYNTH_TEMPLATE}")" != "0" ]; then
+  echo "FAIL: premise: the env-agnostic synth gives a condition verdict a route to an output, so its diff would keep the suppression for a reason other than CDKMetadataAvailable" >&2
+  exit 1
+fi
 rm -rf "${SYNTH_DIR}"
-echo "    OK: all seven variants seed the same secret; both spellings render as asserted; the repair flips both broken outputs; the resource edit moves the resource and nothing the digest reads; the sibling toggle moves Plain; the add-output, partial-repair and repaired-carried variants change exactly what their phases rest on"
+echo "    OK: all ten variants seed the same secret; both spellings render as asserted; the repair flips both broken outputs; the resource edit moves the resource and nothing the digest reads; the sibling toggle moves Plain; the add-output, partial-repair, repaired-carried, att-output, att-broken and env-agnostic variants change exactly what their phases rest on"
 
 # --- Phase 1: deploy — the output fails INSIDE the secret lookup -------------
 echo "==> Phase 1: deploy (the NeverResolves lookup fails on the missing 'password' key)"
@@ -1388,6 +1487,191 @@ if [ "${DIFF_5B_RC}" -ne 0 ]; then
 fi
 echo "    OK: both keys published as their expressions, record emptied, diff --fail exits 0"
 
+# --- Phase 5c: a STORED output breaks beside a sibling change (go-to-k/cdkd#3101)
+# The secret-lookup outputs above cannot drive this shape: the diff never
+# fetches a secret, so their failure is invisible to it and the #2740 record
+# handles them. `AttOut` is stored first as the marker parameter's `Ref`, then
+# broken with an `Fn::GetAtt` cdkd refuses at deploy AND in the diff, while
+# `Plain` changes. With no resource change the deploy writes `Plain` and keeps
+# `AttOut`'s stored value, so the diff must show `Plain`; pre-fix it omitted the
+# whole Outputs section and `--fail` exited 0.
+echo "==> Phase 5c: store AttOut (CDKD_TEST_ATT_OUTPUT=true), then break it beside a Plain change (CDKD_TEST_ATT_BROKEN=true, CDKD_TEST_SIBLING=true)"
+# The diff-side debug line the premise below greps, pinned against the BUILT
+# bundle so a reword cannot leave the premise failing for the wrong reason.
+DIFF_FAILED_FRAGMENT="Diff could not resolve output "
+if ! grep -rqF "${DIFF_FAILED_FRAGMENT}" "$(dirname "${LOCAL_DIST}")"/*.js; then
+  echo "FAIL: the built CLI no longer carries the diff debug fragment phase 5c's premise greps for: ${DIFF_FAILED_FRAGMENT}" >&2
+  exit 1
+fi
+# ...and the warning that names a failed output compared at its stored value,
+# pinned the same way so the positive check below cannot pass on a reword.
+CARRIED_WARN_FRAGMENT="Compared at their stored values: "
+# ...and the sentence saying why previous values are withheld: AttOut's stored
+# value is the marker's name, not a secret reference, so the merge preview forces
+# the legacy verdict and this sentence must appear (review M10).
+# The WHOLE sentence (review M16): its tail has been wrong once already.
+WITHHELD_WARN_FRAGMENT="Previous values in this Outputs section are withheld because a value carried from state for a failed output is not a secret reference, so this diff cannot rule out legacy plaintext in state. That reason no longer applies once every failed output resolves, though other legacy-plaintext checks still can withhold them."
+# ...and the stand-in a withheld row renders, so the fixture proves the
+# withholding itself rather than only its announcement (review m18).
+WITHHELD_ROW_FRAGMENT="<redacted: may be legacy plaintext in state"
+if ! grep -rqF "${WITHHELD_ROW_FRAGMENT}" "$(dirname "${LOCAL_DIST}")"/*.js; then
+  echo "FAIL: the built CLI no longer carries the withheld-row stand-in phase 5c asserts: ${WITHHELD_ROW_FRAGMENT}" >&2
+  exit 1
+fi
+if ! grep -rqF "${WITHHELD_WARN_FRAGMENT}" "$(dirname "${LOCAL_DIST}")"/*.js; then
+  echo "FAIL: the built CLI no longer carries the withheld-values fragment phase 5c asserts: ${WITHHELD_WARN_FRAGMENT}" >&2
+  exit 1
+fi
+if ! grep -rqF "${CARRIED_WARN_FRAGMENT}" "$(dirname "${LOCAL_DIST}")"/*.js; then
+  echo "FAIL: the built CLI no longer carries the carried-output warning fragment phase 5c asserts: ${CARRIED_WARN_FRAGMENT}" >&2
+  exit 1
+fi
+set +e
+DEPLOY_5C1=$(CDKD_TEST_ATT_OUTPUT=true CDKD_TEST_UPDATE=true CDKD_TEST_ADD_OUTPUT=true CDKD_TEST_PARTIAL_REPAIR=true env -u CDKD_TEST_SIBLING -u CDKD_TEST_RESOURCE_EDIT -u CDKD_TEST_ATT_BROKEN node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)
+DEPLOY_5C1_RC=$?
+set -e
+assert_no_plaintext "the AttOut store deploy output" "${DEPLOY_5C1}"
+if [ "${DEPLOY_5C1_RC}" -ne 0 ] || ! grep -qF "No changes detected" <<<"${DEPLOY_5C1}"; then
+  echo "FAIL: the AttOut store deploy did not take the no-change path (rc=${DEPLOY_5C1_RC})" >&2
+  diag_output "${DEPLOY_5C1}"
+  exit 1
+fi
+STATE_5C1=$(read_state)
+assert_state_no_plaintext "state.json after the AttOut store deploy" "${STATE_5C1}"
+MARKER_NAME_5C=$(jq -r '[.resources[] | select(.resourceType == "AWS::SSM::Parameter") | .physicalId] | if length == 1 then .[0] else "AMBIGUOUS" end' <<<"${STATE_5C1}")
+if [ "${MARKER_NAME_5C}" = "AMBIGUOUS" ] || [ -z "${MARKER_NAME_5C}" ] || [ "${MARKER_NAME_5C}" = "null" ]; then
+  echo "FAIL: state does not hold exactly one SSM parameter, so the expected AttOut value cannot be derived (got: ${MARKER_NAME_5C})" >&2
+  exit 1
+fi
+# PREMISE: the value phase 5c breaks is really STORED, or the carry below is
+# about an absent key and the #2740 record would bind instead.
+if [ "$(jq -r '.outputs.AttOut // "ABSENT"' <<<"${STATE_5C1}")" != "${MARKER_NAME_5C}" ]; then
+  echo "FAIL: premise: state.outputs.AttOut is not the marker parameter's name after the store deploy (got: $(jq -c '.outputs.AttOut' <<<"${STATE_5C1}"))" >&2
+  exit 1
+fi
+
+# TWO diff runs over the same state, because `--verbose` prefixes EVERY
+# rendered line with a timestamp and level, so its output never matches the
+# four-space row anchor (measured on the first live run of this phase: the
+# `[~] Plain` row was printed and the count read 0).
+set +e
+DIFF_5C_VERBOSE=$(CDKD_TEST_ATT_BROKEN=true CDKD_TEST_SIBLING=true CDKD_TEST_ATT_OUTPUT=true CDKD_TEST_UPDATE=true CDKD_TEST_ADD_OUTPUT=true CDKD_TEST_PARTIAL_REPAIR=true env -u CDKD_TEST_RESOURCE_EDIT node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --fail --verbose 2>&1)
+set -e
+assert_no_plaintext "the broken-AttOut verbose diff output" "${DIFF_5C_VERBOSE}"
+# PREMISE: the diff itself failed AttOut — otherwise an AttOut that resolved to
+# its stored value would also render no row, and the assertions below would be
+# about a stack with no failure at all. Anchored on the colon for the same
+# prefix reason as the deploy-side needles.
+if ! grep -qF "${DIFF_FAILED_FRAGMENT}AttOut:" <<<"${DIFF_5C_VERBOSE}"; then
+  echo "FAIL: premise: the diff did not fail AttOut ('${DIFF_FAILED_FRAGMENT}AttOut:' absent at --verbose)" >&2
+  diag_output "${DIFF_5C_VERBOSE}"
+  exit 1
+fi
+set +e
+DIFF_5C=$(CDKD_TEST_ATT_BROKEN=true CDKD_TEST_SIBLING=true CDKD_TEST_ATT_OUTPUT=true CDKD_TEST_UPDATE=true CDKD_TEST_ADD_OUTPUT=true CDKD_TEST_PARTIAL_REPAIR=true env -u CDKD_TEST_RESOURCE_EDIT node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --fail 2>&1)
+DIFF_5C_RC=$?
+set -e
+assert_no_plaintext "the broken-AttOut diff output" "${DIFF_5C}"
+if [ "${DIFF_5C_RC}" -ne 1 ] || [ "$(count_output_rows "${DIFF_5C}")" -ne 1 ] \
+   || ! grep -qE "^ {4}\[~\] Plain( |\$)" <<<"${DIFF_5C}" \
+   || grep -qF "${DIFF_WARN_FRAGMENT}" <<<"${DIFF_5C}"; then
+  echo "FAIL: 'cdkd diff --fail' with AttOut broken and Plain changed must exit 1 with exactly the '[~] Plain' row and no suppression warning (rc=${DIFF_5C_RC}; pre-fix: rc 0 with the Outputs section omitted)" >&2
+  diag_output "${DIFF_5C}"
+  exit 1
+fi
+if ! grep -qF "${EXPECTED_PLAIN_CHANGED}" <<<"${DIFF_5C}"; then
+  echo "FAIL: the '[~] Plain' row does not carry the changed value ${EXPECTED_PLAIN_CHANGED}" >&2
+  diag_output "${DIFF_5C}"
+  exit 1
+fi
+# The failed output is named, not silently shown as unchanged.
+if ! grep -qF "1 output(s) could not be resolved for this diff. ${CARRIED_WARN_FRAGMENT}AttOut." <<<"${DIFF_5C}" \
+   || grep -qF "No stored value under their own names" <<<"${DIFF_5C}" \
+   || ! grep -qF "${WITHHELD_WARN_FRAGMENT}" <<<"${DIFF_5C}" \
+   || ! grep -qF "${WITHHELD_ROW_FRAGMENT}" <<<"${DIFF_5C}" \
+   || grep -qF "\"${EXPECTED_PLAIN}\"" <<<"${DIFF_5C}"; then
+  echo "FAIL: the broken-AttOut diff did not warn that AttOut alone was compared at its stored value with the withheld-values reason, or it still printed Plain's previous value instead of the withheld stand-in" >&2
+  diag_output "${DIFF_5C}"
+  exit 1
+fi
+# The same state and toggles, synthesized env-agnostic (review B1): the template
+# now declares CDKMetadataAvailable, which gates only the metadata resource, so
+# the diff must preview the same merge. A gate on "declares Conditions" refused
+# it here and printed the suppression warning with rc 0.
+set +e
+DIFF_5C_AGNOSTIC=$(CDKD_TEST_ENV_AGNOSTIC=true CDKD_TEST_ATT_BROKEN=true CDKD_TEST_SIBLING=true CDKD_TEST_ATT_OUTPUT=true CDKD_TEST_UPDATE=true CDKD_TEST_ADD_OUTPUT=true CDKD_TEST_PARTIAL_REPAIR=true env -u CDKD_TEST_RESOURCE_EDIT node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --fail 2>&1)
+DIFF_5C_AGNOSTIC_RC=$?
+set -e
+assert_no_plaintext "the env-agnostic broken-AttOut diff output" "${DIFF_5C_AGNOSTIC}"
+if [ "${DIFF_5C_AGNOSTIC_RC}" -ne 1 ] || [ "$(count_output_rows "${DIFF_5C_AGNOSTIC}")" -ne 1 ] \
+   || ! grep -qE "^ {4}\[~\] Plain( |\$)" <<<"${DIFF_5C_AGNOSTIC}" \
+   || grep -qF "${DIFF_WARN_FRAGMENT}" <<<"${DIFF_5C_AGNOSTIC}" \
+   || ! grep -qF "${EXPECTED_PLAIN_CHANGED}" <<<"${DIFF_5C_AGNOSTIC}" \
+   || ! grep -qF "1 output(s) could not be resolved for this diff. ${CARRIED_WARN_FRAGMENT}AttOut." <<<"${DIFF_5C_AGNOSTIC}" \
+   || ! grep -qF "${WITHHELD_WARN_FRAGMENT}" <<<"${DIFF_5C_AGNOSTIC}" \
+   || ! grep -qF "${WITHHELD_ROW_FRAGMENT}" <<<"${DIFF_5C_AGNOSTIC}" \
+   || grep -qF "\"${EXPECTED_PLAIN}\"" <<<"${DIFF_5C_AGNOSTIC}"; then
+  echo "FAIL: the env-agnostic diff (CDKMetadataAvailable declared) must match the env-pinned one: rc 1, exactly the '[~] Plain' row carrying the changed value, no suppression warning, and the warning naming AttOut with the withheld-values reason (rc=${DIFF_5C_AGNOSTIC_RC})" >&2
+  diag_output "${DIFF_5C_AGNOSTIC}"
+  exit 1
+fi
+
+set +e
+DEPLOY_5C2=$(CDKD_TEST_ATT_BROKEN=true CDKD_TEST_SIBLING=true CDKD_TEST_ATT_OUTPUT=true CDKD_TEST_UPDATE=true CDKD_TEST_ADD_OUTPUT=true CDKD_TEST_PARTIAL_REPAIR=true env -u CDKD_TEST_RESOURCE_EDIT node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)
+DEPLOY_5C2_RC=$?
+set -e
+assert_no_plaintext "the broken-AttOut deploy output" "${DEPLOY_5C2}"
+if [ "${DEPLOY_5C2_RC}" -ne 0 ] || ! grep -qF "No changes detected" <<<"${DEPLOY_5C2}"; then
+  echo "FAIL: the broken-AttOut deploy did not take the no-change path (rc=${DEPLOY_5C2_RC})" >&2
+  diag_output "${DEPLOY_5C2}"
+  exit 1
+fi
+# PREMISE: the deploy failed AttOut too, or the diff was previewing a failure
+# the deploy does not have.
+if ! grep -qF "Failed to resolve output AttOut:" <<<"${DEPLOY_5C2}"; then
+  echo "FAIL: premise: the broken-AttOut deploy did not warn 'Failed to resolve output AttOut:'" >&2
+  diag_output "${DEPLOY_5C2}"
+  exit 1
+fi
+if grep -qF "${KEPT_WHOLE_FRAGMENT}" <<<"${DEPLOY_5C2}"; then
+  echo "FAIL: the broken-AttOut deploy kept the previous outputs bag whole — the diff previewed a merge the deploy refused" >&2
+  diag_output "${DEPLOY_5C2}"
+  exit 1
+fi
+STATE_5C2=$(read_state)
+assert_state_no_plaintext "state.json after the broken-AttOut deploy" "${STATE_5C2}"
+if [ "$(jq -r '.outputs.Plain' <<<"${STATE_5C2}")" != "${EXPECTED_PLAIN_CHANGED}" ]; then
+  echo "FAIL: the broken-AttOut deploy did not write the changed Plain the diff previewed (got: $(jq -c '.outputs.Plain' <<<"${STATE_5C2}"))" >&2
+  exit 1
+fi
+if [ "$(jq -r '.outputs.AttOut // "ABSENT"' <<<"${STATE_5C2}")" != "${MARKER_NAME_5C}" ]; then
+  echo "FAIL: the broken-AttOut deploy did not keep AttOut's stored value (got: $(jq -c '.outputs.AttOut' <<<"${STATE_5C2}"))" >&2
+  exit 1
+fi
+if [ "$(jq -r '.outputs.NeverResolves // "ABSENT"' <<<"${STATE_5C2}")" != "${REPAIRED_REF}" ] \
+   || [ "$(jq -r '.outputs.Plain2 // "ABSENT"' <<<"${STATE_5C2}")" != "${EXPECTED_PLAIN2}" ]; then
+  echo "FAIL: the broken-AttOut deploy changed an output phase 5 had already published" >&2
+  exit 1
+fi
+set +e
+DIFF_5C2=$(CDKD_TEST_ATT_BROKEN=true CDKD_TEST_SIBLING=true CDKD_TEST_ATT_OUTPUT=true CDKD_TEST_UPDATE=true CDKD_TEST_ADD_OUTPUT=true CDKD_TEST_PARTIAL_REPAIR=true env -u CDKD_TEST_RESOURCE_EDIT node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --fail 2>&1)
+DIFF_5C2_RC=$?
+set -e
+assert_no_plaintext "the post-broken-AttOut diff output" "${DIFF_5C2}"
+if [ "${DIFF_5C2_RC}" -ne 0 ] || [ "$(count_output_rows "${DIFF_5C2}")" -ne 0 ] \
+   || grep -qF "${DIFF_WARN_FRAGMENT}" <<<"${DIFF_5C2}"; then
+  echo "FAIL: 'cdkd diff --fail' after the broken-AttOut deploy exited ${DIFF_5C2_RC}, rendered an output row, or warned the section was omitted" >&2
+  diag_output "${DIFF_5C2}"
+  exit 1
+fi
+echo "    OK: the diff showed the one [~] Plain row beside the failing AttOut, the deploy wrote it and kept AttOut, diff --fail exits 0"
+
 # --- Phase 6: destroy ----------------------------------------------------
 echo "==> Phase 6: destroy"
 # CAPTURED and checked BEFORE it is echoed, which is this fixture's actual
@@ -1461,4 +1745,4 @@ s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "output-never-resolved-diff state teardown"
 
 echo ""
-echo "[verify] PASS — output-never-resolved-diff (no phantom ADD on the unchanged stack, record written / carried / un-bound on a resource edit / cleared, an output added beside failing ones persisted and a partial repair published (#2771), clean destroy, zero surviving state versions)"
+echo "[verify] PASS — output-never-resolved-diff (no phantom ADD on the unchanged stack, record written / carried / un-bound on a resource edit / cleared, an output added beside failing ones persisted and a partial repair published (#2771), a sibling change beside a stored output that broke previewed and persisted (#3101), clean destroy, zero surviving state versions)"
