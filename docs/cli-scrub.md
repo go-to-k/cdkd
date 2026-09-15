@@ -287,12 +287,16 @@ absent, `null`, or not an object at all. A real run REFUSES such a record
 outright, because scrub saves whenever anything changed — an `Outputs` change
 alone is enough — and saving would replace the unreadable map with a
 well-formed empty one, destroying the only evidence that the record is broken.
+
 Under `--dry-run`, where scrub provably cannot write, it audits the record's
-outputs instead, warns that the resource half was never examined, and still
-exits `2`: the alternative is `No plaintext secrets found`, which would be a
-clean verdict about resources nothing read, in the mode a CI gate uses. Either
-way the message names the record and tells you not to run `cdkd deploy` or
-`cdkd destroy` against it — both read the same map, and an unreadable one is
+outputs instead, warns that the resource half was never examined, and **still
+exits `2`** — ranked above `--fail`'s exit `1` on purpose. Reporting `1` there
+would name the opposite remedy ("scrub looked and found a leak — rotate the
+secret") for a record scrub could not look at, and exit `0` would be the
+false-clean this whole check exists to prevent, in the mode a CI gate uses.
+
+Either way the message names the record and tells you not to run `cdkd deploy`
+or `cdkd destroy` against it — both read the same map, and an unreadable one is
 indistinguishable from an empty stack.
 
 **What a real run can report as `1`.** `--fail` is documented as a

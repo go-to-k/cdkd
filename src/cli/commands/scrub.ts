@@ -1026,6 +1026,13 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     if (indexUnwritten.length > 0 || indexUnreadable.length > 0) {
       throw exportIndexIncompleteError(indexUnwritten, indexUnreadable, true);
     }
+    // Same rank, and this is the ONLY branch that can raise it: the repair
+    // fires only under `--dry-run`, and this branch RETURNS -- so the copy
+    // below the `if` is unreachable for it. Above `options.fail` because
+    // `ScrubNeededError` is exit 1 AND silent: leaving it lower would report
+    // "scrub found a leak" for a record scrub could not read, and swallow this
+    // message on the way out.
+    if (malformedRecords.length > 0) throw malformedRecordsAuditedError(malformedRecords);
     if (options.fail) throw new ScrubNeededError();
     return;
   }
@@ -1073,20 +1080,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   if (indexUnwritten.length > 0 || indexUnreadable.length > 0) {
     throw exportIndexIncompleteError(indexUnwritten, indexUnreadable, false);
   }
-  // Ranked with the arms above rather than under `--fail`: this is "cdkd could
-  // not examine the record", not "cdkd looked and found something", and a
-  // `--dry-run --fail` CI gate must not pass because the thing it audits was
-  // unreadable. A real run refuses the same record outright.
-  if (malformedRecords.length > 0) {
-    throw new ScrubRefusalError(
-      `${malformedRecords.length} stack(s) were audited with an EMPTY resource set because ` +
-        `their state record has no readable 'resources' map: ${malformedRecords.join(', ')}. ` +
-        `The report above describes their outputs only — nothing is known about their ` +
-        `resources, so this run cannot certify them clean. See the warnings above for the ` +
-        `record to inspect.`,
-      STATE_RESOURCES_MALFORMED
-    );
-  }
+  // Unreachable today -- only the `--dry-run` branch above repairs, and it
+  // returns. Kept so a later writer of the flag on the real-run path cannot
+  // drop the finding silently; `scrub-malformed-record-exit.test.ts` pins that
+  // the dry-run copy is the one that fires.
+  if (malformedRecords.length > 0) throw malformedRecordsAuditedError(malformedRecords);
   // `totalStacksWithUnverifiableReads` joins the key-only leak here for the
   // reason stated on that counter: a real run cannot fix either one, so exiting
   // 0 over them is exactly backwards (issue #2133 review).
@@ -2034,6 +2032,26 @@ export function orderScrubTargets<
  * through the real backend, so the read-modify-write still sees S3 rather than
  * a cache, and its ETag precondition still means what it says.
  */
+/**
+ * The finding a `--dry-run` raises for a record whose resources map it could
+ * not read (issue go-to-k/cdkd#3018).
+ *
+ * `ScrubRefusalError`, so it carries scrub's exit **2**: `1` means "--fail
+ * looked and found a leak -- rotate the secret", and this is the opposite
+ * remedy ("repair the record and re-run"). Without it the run exits 0, or 1
+ * under `--fail` via the SILENT `ScrubNeededError`, whose suppression would
+ * also swallow this text.
+ */
+function malformedRecordsAuditedError(stackNames: readonly string[]): ScrubRefusalError {
+  return new ScrubRefusalError(
+    `${stackNames.length} stack(s) were audited with an EMPTY resource set because their ` +
+      `state record has no readable 'resources' map: ${stackNames.join(', ')}. The report ` +
+      `above describes their outputs only — nothing is known about their resources, so this ` +
+      `run cannot certify them clean. See the warnings above for the record to inspect.`,
+    STATE_RESOURCES_MALFORMED
+  );
+}
+
 function memoizeCrossStackStateReads(backend: S3StateBackend): S3StateBackend {
   const view = Object.create(backend) as S3StateBackend;
   let listed: ReturnType<S3StateBackend['listStacks']> | undefined;

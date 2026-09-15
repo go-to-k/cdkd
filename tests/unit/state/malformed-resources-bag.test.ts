@@ -237,6 +237,40 @@ describe('the user-facing text', () => {
         `a clean run over a record it never read (go-to-k/cdkd#3018).`
     ).toBe(results);
   });
+
+  it('the malformed-record finding is raised INSIDE the --dry-run branch', () => {
+    // The finding is set ONLY under `--dry-run`, and `scrubCommand`'s dry-run
+    // branch RETURNS -- so a throw placed after that branch is dead code for
+    // it. The first cut did exactly that: `--dry-run --fail` then exited 1 via
+    // `ScrubNeededError`, the code reserved for "scrub looked and found a leak
+    // -- rotate the secret", which is the opposite remedy; and because that
+    // error is `silent: true`, the finding's message never printed either.
+    //
+    // A source-shape check is what fits here: the defect is the POSITION of a
+    // throw relative to a `return`, and `scrubCommand` is behind synthesis.
+    const src = readFileSync(join(repoRoot, 'src/cli/commands/scrub.ts'), 'utf8');
+    const branchAt = src.indexOf('if (options.dryRun) {');
+    expect(branchAt, "scrubCommand's --dry-run branch is gone or renamed").toBeGreaterThan(-1);
+    const returnAt = src.indexOf('\n    return;', branchAt);
+    expect(returnAt, "the --dry-run branch's own return is gone").toBeGreaterThan(branchAt);
+
+    const branch = src.slice(branchAt, returnAt);
+    expect(
+      branch,
+      'the malformed-record finding is not raised inside the --dry-run branch. It can only be ' +
+        'SET under --dry-run, and that branch returns, so a throw below it never runs: the run ' +
+        'exits 0, or 1 via the SILENT ScrubNeededError, whose code means the opposite remedy ' +
+        '(go-to-k/cdkd#3018).'
+    ).toContain('malformedRecords.length > 0');
+
+    // And ABOVE the --fail gate, or ScrubNeededError wins the race and
+    // swallows the message.
+    expect(
+      branch.indexOf('malformedRecords.length > 0'),
+      'the finding is raised BELOW `options.fail`, so ScrubNeededError (exit 1, silent) fires ' +
+        'first and reports "scrub found a leak" for a record scrub could not read.'
+    ).toBeLessThan(branch.indexOf('if (options.fail)'));
+  });
 });
 
 /**
