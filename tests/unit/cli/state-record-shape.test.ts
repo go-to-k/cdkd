@@ -844,6 +844,13 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
             { resourceType: 'AWS::CloudFormation::Stack', physicalId: 'g-arn', properties: {} },
           ]);
           expect(grandchild.children).toEqual([]);
+          // ...and the cut at DEPTH 2 is announced, naming the grandchild and
+          // nothing else. Without this, deleting the warn pass's RECURSION reds
+          // only through `nodesWalked`'s arithmetic, which reports a wrong walk
+          // count and points a reader at the walker instead of the warner.
+          expect(warnSpy.mock.calls.map((call) => String(call[0]))).toEqual([
+            malformedResourcesWarning('MyStack~Child~Grand', 'us-east-1'),
+          ]);
         }
       }
     );
@@ -863,6 +870,41 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
       expect(out).toContain('Nested stack: MyStack~Child');
       expect(out).toContain('Nested stack: MyStack~Child~Grand');
     });
+
+    it.each([
+      ['text', [] as string[]],
+      ['--json', ['--json']],
+    ])(
+      'says NOTHING about a wholly healthy tree: --show-nested %s',
+      async (_label, flags) => {
+        // The FLOOR for the warning, paired with the cap above. Every other
+        // nested case asserts the warning FIRES; none asserts it stays quiet,
+        // and an unconditional warn — `void hasReadableResources(node.state);`
+        // followed by an unguarded `logger.warn(...)` — was measured GREEN
+        // across this file, `state-show.test.ts` and `export-nested-loop.test.ts`.
+        //
+        // That is not a cosmetic false positive. The text tells the operator the
+        // record is malformed and NOT to run `cdkd deploy` or `cdkd destroy`
+        // against it; emitting that for every healthy node of a healthy tree is
+        // its own harm.
+        //
+        // Both modes, because only the `--json` branch runs the warn PASS while
+        // the text branch warns from the repair — two independent ways to
+        // acquire the same false positive.
+        bucket.state = parentOf('Child');
+        bucket.children['MyStack~Child'] = parentOf('Grand');
+        bucket.children['MyStack~Child~Grand'] = record({ stackName: 'MyStack~Child~Grand' });
+
+        const { out, error } = await runState(['show', 'MyStack', '--show-nested', ...flags]);
+
+        expectRendered(error);
+        expect(warnSpy).not.toHaveBeenCalled();
+        // Proof the tree was actually WALKED, so the silence is a verdict on
+        // three healthy nodes rather than on a render that never happened.
+        expect(nodesWalked(flags)).toBe(3);
+        expect(out).toContain('MyStack~Child~Grand');
+      }
+    );
 
     it('a megabyte-scale CHILD bag costs no pair per element either', async () => {
       // The allocation half at depth-1, which is where it was live. The bound is
@@ -991,12 +1033,47 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
       // dropped the grep looking covered.
       expect(fixture).toContain(needle);
       expect(malformedResourcesWarning('MyStack', 'us-east-1')).toContain(needle);
-      // The count is the floor: ONE grep inside `malformed_view`, which its six
-      // call sites share, plus three absence checks — one per `--json` branch of
-      // `state show` and one for the healthy record — plus the depth arm's own
-      // PRESENCE check, which asserts the cut subtree is announced. Five
-      // occurrences; a grep deleted from the fixture has to move this number.
-      expect(fixture.split(needle)).toHaveLength(5 + 1);
+      // The count is the floor. Seven occurrences, and they are not all the same
+      // KIND, which is the thing to check when this number moves:
+      //
+      //   2 ABSENCE — plain `state show --json` (that branch repairs nothing)
+      //               and the healthy record
+      //   3 PRESENCE — `--show-nested --json` at the root, the depth arm's
+      //               child, and the one grep `malformed_view`'s six call sites
+      //               share
+      //   1 COUNT    — the depth arm's `grep -c`, asserting EXACTLY one node was
+      //               warned about, so a healthy parent cannot be warned about
+      //   1 PAYLOAD  — a `case` over captured STDOUT asserting the warning did
+      //               NOT reach the `--json` payload
+      //
+      // An earlier revision had FOUR, with `--show-nested --json` on the absence
+      // side; a real-AWS run failed on it once that branch started warning. The
+      // fixture was asserting silence where the contract only promises an
+      // untouched payload. If this number falls, check which KIND was lost
+      // before re-baselining it.
+      expect(fixture.split(needle)).toHaveLength(7 + 1);
+
+      // And the KIND, for the two branches whose polarity this PR changed —
+      // the defect that reached real AWS was a fixture asserting SILENCE on a
+      // branch the command warns on, which no unit test could see because
+      // nothing here executes `verify.sh`. Keyed on each branch's own stderr
+      // capture variable, so the check fails if a polarity is flipped back
+      // rather than merely if the file is reworded.
+      //
+      // `state show --show-nested --json` must assert the warning is PRESENT.
+      for (const errVar of ['NESTED_JSON_ERR', 'NESTED_JSON_ERR2']) {
+        expect(
+          fixture,
+          `${errVar}: --show-nested --json must assert the cut subtree IS announced`
+        ).toContain(`if ! grep -q "${needle}" "\${${errVar}}"`);
+        expect(
+          fixture,
+          `${errVar}: asserting SILENCE here is the go-to-k/cdkd#3172 live-run failure`
+        ).not.toContain(`if grep -q "${needle}" "\${${errVar}}"`);
+      }
+      // ...while plain `state show --json` returns above every repair and every
+      // warn pass, so there silence is the correct assertion and stays.
+      expect(fixture).toContain(`if grep -q "${needle}" "\${MALFORMED_SHOW_JSON_ERR}"`);
     });
 
     it('state.ts names renderStateBlock in CODE exactly 1 + 3 times', () => {

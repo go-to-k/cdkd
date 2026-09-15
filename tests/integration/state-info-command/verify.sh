@@ -274,9 +274,15 @@ EXPECTED_BAG="${MALFORMED_BAG}" node -e '
     process.exit(1);
   }
 ' "${MALFORMED_SHOW_JSON}"
-# ...and it says nothing, because it repaired nothing.
+# ...and this branch says nothing. The asymmetry with `--show-nested --json`
+# below is deliberate, so do not "fix" it: PLAIN `--json` returns the record
+# whole, so the malformed bag is right there in the output the operator is
+# reading and a warning would add nothing. The NESTED branch emits a TREE, where
+# an unreadable bag shows up only as `children: []` — indistinguishable from a
+# genuine leaf — so there the warning is the only thing that says a subtree was
+# cut. Asserting silence here is a claim about this branch alone.
 if grep -q "no readable 'resources' map" "${MALFORMED_SHOW_JSON_ERR}"; then
-  echo "[verify] FAIL: state show --json warned — it must emit the record untouched" >&2
+  echo "[verify] FAIL: plain state show --json warned — this branch repairs nothing and has nothing to report" >&2
   exit 1
 fi
 rm -f "${MALFORMED_SHOW_JSON_ERR}"
@@ -286,7 +292,20 @@ rm -f "${MALFORMED_SHOW_JSON_ERR}"
 # walker that dereferences the bag — so this is the branch where a bag
 # hand-edited from a map into a LIST of resource objects used to hard-fail
 # before any output, and where a planted multi-megabyte string used to allocate
-# a pair per character. It must exit 0, emit the bag AS STORED, and say nothing.
+# a pair per character. It must exit 0 and emit the bag AS STORED.
+#
+# It does NOT have to be silent, and an earlier revision of this block asserted
+# that it was — which a live run then failed once the command started warning
+# here. The `--json` contract is that STDOUT carries the stored value untouched;
+# a line on STDERR does not touch it, and `reserveStdoutForPayload()` exists so
+# that it cannot. Silence is in fact the defect: an unreadable bag makes the
+# walk return that node childless, `children: []` is byte-identical to a genuine
+# leaf, and a consumer enumerating the tree would read a CUT subtree as a
+# complete one. `cdkd state list --long --json` already warns on stderr the same
+# way for a degraded row (issue go-to-k/cdkd#3157).
+#
+# So this is asserted on BOTH sides: the payload is unchanged, and the warning
+# reached stderr rather than the payload.
 NESTED_JSON_ERR="${MALFORMED_TMP_DIR}/show-nested-json.err"
 NESTED_JSON="$(${CLI} state show "${MALFORMED_STACK}" \
   --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --show-nested --json \
@@ -306,10 +325,25 @@ EXPECTED_BAG="${MALFORMED_BAG}" node -e '
     process.exit(1);
   }
 ' "${NESTED_JSON}"
-if grep -q "no readable 'resources' map" "${NESTED_JSON_ERR}"; then
-  echo "[verify] FAIL: state show --show-nested --json warned — it must emit the record untouched" >&2
+if ! grep -q "no readable 'resources' map" "${NESTED_JSON_ERR}"; then
+  echo "[verify] FAIL: --show-nested --json reported a childless tree SILENTLY — a cut subtree is indistinguishable from a leaf" >&2
   exit 1
 fi
+if ! grep -qF "${MALFORMED_STACK}" "${NESTED_JSON_ERR}"; then
+  echo "[verify] FAIL: the --show-nested --json warning does not name the record whose subtree was cut" >&2
+  tail -20 "${NESTED_JSON_ERR}" >&2
+  exit 1
+fi
+# The other side, and the one that is actually the `--json` promise: the warning
+# went to STDERR and not into the payload. Checked against the captured stdout,
+# so a regression that routed the warning through `process.stdout` would fail
+# here even though the stderr assertions above would still pass.
+case "${NESTED_JSON}" in
+  *"no readable 'resources' map"*)
+    echo "[verify] FAIL: the warning reached the --json PAYLOAD on stdout" >&2
+    exit 1
+    ;;
+esac
 rm -f "${NESTED_JSON_ERR}"
 
 # The three fabricating views. Each asserts the OUTPUT first (the harm) and the
@@ -317,7 +351,7 @@ rm -f "${NESTED_JSON_ERR}"
 malformed_view() { # usage: malformed_view <label> <expected-stdout-check> <cli args...>
   local label="$1" check="$2"
   shift 2
-  local out err rc
+  local out err rc nested_child_block
   err="${MALFORMED_TMP_DIR}/${label}.err"
   out="$("$@" 2>"${err}")" && rc=0 || rc=$?
   if [ "${rc}" -ne 0 ]; then
@@ -349,9 +383,58 @@ malformed_view() { # usage: malformed_view <label> <expected-stdout-check> <cli 
       esac
       # `Type:` is printed once per RENDERED resource and nowhere else in the
       # block, so its absence is what a header count alone cannot prove.
+      #
+      # Whole-stdout, which is correct ONLY when the malformed record is the one
+      # the command was pointed at and nothing else renders. For a nested tree
+      # use `nested-child-zero-resources` below.
       case "${out}" in
         *"Type:"*)
           echo "[verify] FAIL: ${label} rendered a resource block for a fabricated row" >&2
+          echo "${out}" >&2
+          exit 1
+          ;;
+      esac
+      ;;
+    nested-child-zero-resources)
+      # The depth arm renders TWO blocks: a HEALTHY parent, whose one resource
+      # legitimately prints `Type: AWS::CloudFormation::Stack`, and then the
+      # child. Applying the whole-stdout predicate here fails on the parent's
+      # own correct output — measured, and the second `verify.sh` predicate on
+      # this PR written against an assumed render rather than a real one.
+      #
+      # So: slice from the child's header and judge only what follows it.
+      case "${out}" in
+        *"Nested stack: "*) ;;
+        *)
+          echo "[verify] FAIL: ${label} rendered no 'Nested stack: ' header — the walk found no child" >&2
+          echo "${out}" >&2
+          exit 1
+          ;;
+      esac
+      # `${out#*Nested stack: }` drops everything up to and including the FIRST
+      # header, which is the child under test; the parent's rows are gone with it.
+      nested_child_block="${out#*Nested stack: }"
+      case "${nested_child_block}" in
+        *"Resources (0):"*) ;;
+        *)
+          echo "[verify] FAIL: ${label} child block did not print 'Resources (0):'" >&2
+          echo "${nested_child_block}" >&2
+          exit 1
+          ;;
+      esac
+      case "${nested_child_block}" in
+        *"Type:"*)
+          echo "[verify] FAIL: ${label} rendered a resource block for a fabricated row under the child" >&2
+          echo "${nested_child_block}" >&2
+          exit 1
+          ;;
+      esac
+      # ...and the PARENT really did render its own resource, so the slice above
+      # is discriminating rather than merely cutting the output short.
+      case "${out}" in
+        *"Resources (1):"*) ;;
+        *)
+          echo "[verify] FAIL: ${label} parent did not render its own resource — the child-scoped check would pass vacuously" >&2
           echo "${out}" >&2
           exit 1
           ;;
@@ -396,7 +479,7 @@ plant_state_record "${NESTED_ROOT_STACK}" "${NESTED_ROOT_KEY}" \
 plant_state_record "${NESTED_CHILD_STACK}" "${NESTED_CHILD_KEY}" \
   '[{"resourceType":"AWS::CloudFormation::Stack","physicalId":"arn:aws:cloudformation:::stack/planted-grandchild","properties":{}}]'
 
-malformed_view nested-text zero-resources \
+malformed_view nested-text nested-child-zero-resources \
   ${CLI} state show "${NESTED_ROOT_STACK}" --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --show-nested
 
 NESTED_JSON_ERR2="${MALFORMED_TMP_DIR}/nested-depth-json.err"
@@ -432,6 +515,18 @@ if ! grep -q "no readable 'resources' map" "${NESTED_JSON_ERR2}"; then
 fi
 if ! grep -qF "${NESTED_CHILD_STACK}" "${NESTED_JSON_ERR2}"; then
   echo "[verify] FAIL: the depth-1 warning does not name the child record" >&2
+  tail -20 "${NESTED_JSON_ERR2}" >&2
+  exit 1
+fi
+# ...and EXACTLY ONE node was warned about. The parent of this pair is healthy,
+# so a warn that fired unconditionally would satisfy both checks above while
+# telling the operator not to run `cdkd deploy` or `cdkd destroy` against a
+# record that is fine. Counted rather than pattern-matched on the parent name,
+# because the child's name CONTAINS the parent's (`<parent>~Child`), so a
+# `grep -F "${NESTED_ROOT_STACK}"` matches the child's own warning too.
+NESTED_WARN_COUNT="$(grep -c "no readable 'resources' map" "${NESTED_JSON_ERR2}" || true)"
+if [ "${NESTED_WARN_COUNT}" != "1" ]; then
+  echo "[verify] FAIL: expected exactly 1 malformed-record warning (the child), got ${NESTED_WARN_COUNT} — a healthy parent must not be warned about" >&2
   tail -20 "${NESTED_JSON_ERR2}" >&2
   exit 1
 fi
