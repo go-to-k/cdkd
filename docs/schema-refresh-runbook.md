@@ -70,8 +70,19 @@ Daily, on `bot/cfn-schema-refresh/<YYYY-MM-DD>`:
    now a silent drop routed through Cloud Control, whether the type pins
    `provisionedBy: 'cc-api'` one way, and whether the snapshot marks it
    create-only — and nothing that needs a reading of WHY is in it. Edit it if
-   the delta deserves more; the job never overwrites a fragment that already
-   exists on the branch, so your edit survives every later cycle.
+   the delta deserves more; the job never overwrites a fragment already on the
+   branch for this pull request, so your edit survives every later cycle, a
+   rename included.
+
+   **This step never fails the job, which is the opposite of the push rule
+   below, deliberately.** By the time it runs the drift is committed and the
+   pull request exists, so the only thing a failure can still cost is the
+   marking step behind it — and trading the signal a human reads for a
+   changelog line is the wrong way round. A fragment the diagnosis never
+   rendered, or a push that lost a race, leaves a `::warning::` in the run and
+   no entry: write one by hand before merging. **A cycle that only REMOVES
+   properties writes no fragment at all** and still ships a behaviour delta —
+   that gap is [#3175](https://github.com/go-to-k/cdkd/issues/3175).
 7. Marks the pull request with how many decisions are left, or clears the
    marking when there are none. This is the step that also runs on a
    no-drift day, so a decision you have settled stops being advertised.

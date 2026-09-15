@@ -612,11 +612,15 @@ jobs:
 
           cycle=$(date -u +%Y-%m-%d)
           entry="changelog.d/entries/${cycle}-${PR_NUMBER}-cfn-schema-refresh.md"
-          # Create-only. A fragment already on the branch is either this same
-          # cycle re-dispatched, or one the maintainer has since EDITED — and
-          # the job's promise is that it never overwrites a classification a
-          # human wrote. A later cycle gets a different date and so its own file.
-          if [ -e "${entry}" ]; then
+          # Create-only, and keyed on the PR rather than on this exact path. A
+          # fragment already on the branch is either this same cycle
+          # re-dispatched, or one the maintainer has since edited — possibly
+          # RENAMED, which an `-e "${entry}"` test would miss, writing a second
+          # copy whose headline is byte-identical and which the changelog
+          # uniqueness fence then rejects. The job's promise is that it never
+          # overwrites a classification a human wrote; a later cycle gets a
+          # different date and so its own file.
+          if ls changelog.d/entries/*-"${PR_NUMBER}"-*.md >/dev/null 2>&1; then
             exit 0
           fi
 

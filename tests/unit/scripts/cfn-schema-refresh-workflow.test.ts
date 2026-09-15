@@ -299,7 +299,11 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       // fragment is prose a maintainer may have edited, so the write is
       // create-only; a later cycle gets a different date and its own file.
       const shell = shellOf(CHANGELOG_STEP);
-      const arm = guardArm(shell, 'if [ -e "${entry}" ]');
+      // Keyed on the PR, not on this cycle's exact path: a maintainer who
+      // RENAMES the fragment rather than editing it in place would otherwise
+      // get a second copy on a same-day re-dispatch, with a byte-identical
+      // headline the changelog uniqueness fence rejects.
+      const arm = guardArm(shell, 'if ls changelog.d/entries/*-"${PR_NUMBER}"-*.md');
       expect(arm).toContain('exit 0');
       expect(arm).not.toContain('rm ');
       expect(shell).toContain('changelog.d/entries/${cycle}-${PR_NUMBER}-cfn-schema-refresh.md');
