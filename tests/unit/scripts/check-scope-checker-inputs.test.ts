@@ -211,6 +211,34 @@ const NON_READ_LITERALS: ReadonlyMap<string, string> = new Map([
 const OPTIONAL_ON_DISK: ReadonlySet<string> = new Set(['.claude/settings.local.json']);
 
 /**
+ * The bare-only population — targets `extractBareTargets()` reaches that
+ * `extractJoinTargets()` does not — as last MEASURED, with the tree it was
+ * taken on. The parser-floor case derives its floor from this and fences the
+ * value from both sides, so it cannot drift silently the way the prose figure
+ * it replaces did (issue #2769: "Measured 97" sat beside a population of ~195).
+ *
+ * To re-measure, append a probe case to this file:
+ *
+ *   const joinKeys = new Set(extractJoinTargets().keys());
+ *   [...extractBareTargets().keys()].filter((k) => !joinKeys.has(k)).length
+ *
+ * and WRITE the result to a file — the stream fence in `tests/setup.ts`
+ * swallows `console.error` on a passing test. The number is tree-dependent
+ * (an isolated `git archive` copy once measured 4 under the checkout), which
+ * is why the tree is named beside it.
+ */
+const BARE_ONLY_MEASURED = { count: 198, tree: 'origin/main @ 1e4a75d7, 2026-09-15' } as const;
+/**
+ * Half-width of the band around the measurement, as a fraction. The floor is
+ * `count * (1 - band)` — the "ordinary churn is free while a narrowing is not"
+ * rationale the earlier literal floor claimed and had stopped delivering — and
+ * the ceiling `count * (1 + band)` is what forces the re-measure when the
+ * population outgrows the figure, which is the direction that went unwatched
+ * for two hundred commits.
+ */
+const BARE_ONLY_BAND = 0.25;
+
+/**
  * Whether the checkout at `root` ignores `rel` BY ITS OWN `.gitignore`.
  *
  * Four things are deliberate:
@@ -224,9 +252,23 @@ const OPTIONAL_ON_DISK: ReadonlySet<string> = new Set(['.claude/settings.local.j
  *    machine whose global ignore lists the path while CI, which has no such
  *    file, reads the repo alone (`settings-bash-first-optout.test.ts` closed
  *    this same hole for its own read). The top-level file is the specific
- *    one demanded because it is the only one inside `.markgate.yml`'s
- *    `check` include: a rule moved to `.claude/.gitignore` would stale
- *    nothing, so the fence must not accept it. `core.excludesFile` is
+ *    one demanded, and this function refuses EVERY nested `.gitignore`,
+ *    whatever directory holds it. The reason is scoped to the entry that
+ *    exists today: for `.claude/settings.local.json` the only nested source
+ *    that could win is `.claude/.gitignore`, and no `.markgate.yml` `check`
+ *    include entry covers a bare `.claude/` — so a rule moved there would
+ *    stale nothing, and the fence must not accept it. That is NOT a property
+ *    of every nested source: the `check` include carries directory globs
+ *    (`src/**`, `tests/**`, `docs/**`, `.claude/hooks/**` among them — read
+ *    the list, it is longer than any copy here would stay), each of which
+ *    would digest a `.gitignore` beneath it. So a future optional entry
+ *    under one of those would be refused here with a rationale that does not
+ *    hold for it; widening this function to accept an include-covered nested
+ *    source is the deliberate change that entry would need, and the
+ *    refusal-of-everything is the conservative default until then (issue
+ *    #2786 item 2 — an earlier revision of this comment claimed the
+ *    top-level file was "the only one inside" the include, which is false as
+ *    a universal). `core.excludesFile` is
  *    pointed at `/dev/null` too, though that changes no verdict the source
  *    column does not already decide — the global file is the lowest
  *    precedence source, so when it wins it is also what the column names.
@@ -817,19 +859,50 @@ describe('check-gate scope covers every literal checker input (issue #2364)', ()
     // defect), while the count only falls when the parser narrows.
     const joinKeys = new Set(extractJoinTargets().keys());
     const bareOnly = [...bareTargets.keys()].filter((k) => !joinKeys.has(k));
-    // Measured 97 on the shipping tree (99 with the carve-out disabled), by
-    // appending a probe case to this file that prints
-    // `[...extractBareTargets().keys()].filter((k) => !joinKeys.has(k)).length`.
-    // A review round measured 93 from an isolated `git archive` copy — the
-    // number is tree-dependent, so it is worth naming which tree rather than
-    // treating either as wrong. Floored at 75 (~77%) so ordinary churn is free
-    // while a narrowing is not. The first revision floored this at 5, which a
-    // 95% collapse would have passed — a floor far under its subject fences
-    // only total disappearance, which the named paths above already catch.
+    // The floor is DERIVED from a dated measurement, and the measurement is
+    // FENCED from both sides (issue #2769). The earlier shape was an absolute
+    // number in prose ("Measured 97") beside a literal floor of 75, and nothing
+    // watched the prose: the population drifted to ~178 and then ~195 while
+    // the comment still said 97, so the floor's own rationale ("~77% so
+    // ordinary churn is free while a narrowing is not") had quietly become
+    // ~38% — a 60% collapse of the bare parser would have passed it. Three
+    // reviewers in three rounds each proposed "96" for that comment by
+    // arithmetic on the stale base, which is what a stale absolute in prose
+    // invites. So the number now lives where the suite reads it, the floor is
+    // a RATIO of it, and a CEILING forces the re-measure: when the population
+    // moves more than the band in either direction, the case fails naming the
+    // probe, and the fix is to re-run the probe and update the literal and its
+    // date. The band is what keeps the floor meaning what it says.
+    const band = Math.floor(BARE_ONLY_MEASURED.count * BARE_ONLY_BAND);
     expect(
       bareOnly.length,
-      `the bare parser reaches only ${bareOnly.length} target(s) the join parser misses; it was narrowed toward what the join idiom already covers, so it is no longer fencing the table-sourced idiom it exists for`,
-    ).toBeGreaterThanOrEqual(75);
+      `the bare parser reaches only ${bareOnly.length} target(s) the join parser misses ` +
+        `(measured ${BARE_ONLY_MEASURED.count} on ${BARE_ONLY_MEASURED.tree}); it was narrowed ` +
+        `toward what the join idiom already covers, so it is no longer fencing the table-sourced ` +
+        `idiom it exists for. If the drop is deliberate, re-measure with the probe described at ` +
+        `BARE_ONLY_MEASURED and update it.`,
+    ).toBeGreaterThanOrEqual(BARE_ONLY_MEASURED.count - band);
+    expect(
+      bareOnly.length,
+      `the bare-only population is ${bareOnly.length}, more than ${BARE_ONLY_BAND * 100}% above ` +
+        `the ${BARE_ONLY_MEASURED.count} measured on ${BARE_ONLY_MEASURED.tree} — the floor is ` +
+        `derived from that measurement and no longer means what its rationale says. Re-measure ` +
+        `with the probe described at BARE_ONLY_MEASURED and update it.`,
+    ).toBeLessThanOrEqual(BARE_ONLY_MEASURED.count + band);
+
+    // THE CARVE-OUT RELATION, asserted rather than restated. The carved and
+    // uncarved bare-only populations differ by exactly the carve-out entries
+    // the JOIN parser does not also reach (an entry the join parser reaches is
+    // never bare-only in either walk). Every entry is LIVE by the dead-entry
+    // case below, so the difference is `NON_READ_LITERALS.size` minus the
+    // join-covered ones — a property the suite checks instead of a second
+    // number a human would have to keep in step with the first.
+    const uncarvedOnly = [...extractBareTargets(false).keys()].filter((k) => !joinKeys.has(k));
+    const carveOutsBareOnly = [...NON_READ_LITERALS.keys()].filter((k) => !joinKeys.has(k));
+    expect(
+      uncarvedOnly.length - bareOnly.length,
+      'disabling the carve-out must add back exactly the carve-out entries the join parser does not reach',
+    ).toBe(carveOutsBareOnly.length);
   }, POPULATION_WALK_TIMEOUT_MS);
 
   it('the root-file shape reaches real root files and no directory', () => {

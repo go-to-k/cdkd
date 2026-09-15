@@ -593,10 +593,27 @@ fi
 status=$?
 
 # Also verify the sentinel file's content matches the PR's HEAD sha.
-# markgate verify already enforces this via the digest, but reading
-# the sentinel directly lets the error message name the mismatch
-# explicitly ("marker bound to <other-sha>, PR is at <current-sha>")
-# rather than the generic "(digest differs)" markgate emits.
+#
+# THIS COMPARISON IS THE BINDING'S ENFORCEMENT -- do not remove it as a
+# duplicate of `markgate verify`. `verify` compares a DIGEST of the gate's
+# scope, and the sentinel is in that scope, so REWRITING it stales the
+# marker; but a sentinel nobody rewrote keeps its digest whatever the branch
+# or the PR moved to, and `verify` reports `match` for a sentinel naming a
+# different commit entirely. Measured on 2026-09-05 in an IN-PLACE
+# `/work-issues` run (go-to-k/cdkd#2681): sentinel = a MERGED lane's tip,
+# branch HEAD = PR `headRefOid` = another sha, `markgate verify pr-review`
+# rc=0. A revision of this comment said the opposite -- that `verify`
+# "already enforces this via the digest" and the read below only improves
+# the message -- which made deleting the check look like a safe
+# simplification. The explicit message ("marker bound to <other-sha>, PR is
+# at <current-sha>") is a bonus, not the reason.
+#
+# Pinned by `.claude/hooks/pr-review-gate.test.sh`: case 7
+# ("medium PR + fresh marker + sha mismatch -> block") and case 10
+# ("large PR + fresh marker + sha mismatch -> block") -- a FRESH marker plus a
+# sentinel holding a FOREIGN sha must still block. The ordinals are the
+# suite's own (`# 7.` and `# 10.` head those cases); a review round called
+# them invented and that was withdrawn on inspection.
 recorded_sha=""
 if [ -f .markgate-pr-review-sha ]; then
   recorded_sha=$(head -c 100 .markgate-pr-review-sha 2>/dev/null | tr -d '[:space:]')
