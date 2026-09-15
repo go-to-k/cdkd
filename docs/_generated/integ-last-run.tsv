@@ -287,7 +287,7 @@ sqs-esm-max-concurrency	2026-08-10T04:23:28Z	PASS	76	verify.sh	0810 sweep b2; la
 ssm-secure-dynamic-ref	2026-09-08T07:50:29Z	PASS	194	verify.sh	sibling span-arm fixture, re-run on the #2516 branch after its rebase onto main at 5cc82973 and the m1 copy change; 0 errors, 0 orphans, 0 surviving state versions
 stack-lock-renewal	2026-08-23T02:58:02Z	PASS	539	verify.sh	issue #2168 lock renewal final: 8 probe receipts (S3 answers NoSuchKey/404 for a conditional delete of an absent object) + 29 deploy samples, expiresAt +363s never lapsed never absent; destroy 0 err 0 orph
 state-destroy	2026-08-13T06:35:09Z	PASS	95	standard	PR 1774 gate; state destroy exit-code path, 1 del 0 err, zero-skip run byte-identical (no skipped suffix), orph clean
-state-info-command	2026-08-02T05:07:05Z	PASS	31	verify.sh	new verify.sh (#1335): state info human+json, flag+env sources, 1 del/0 err, 0 orphans
+state-info-command	2026-09-15T20:40:17Z	PASS	210	verify.sh	rc 0, depth>=1 arm, destroy 1 del 0 err, 3 planted keys 0 versions
 stepfunctions	2026-09-08T08:09:51Z	PASS	130	verify.sh	rc 0, ACTIVE w/ auto role, destroy 0 orphans (SFN arm for #2783)
 stepfunctions-logging	2026-09-09T03:36:24Z	PASS	310	verify.sh	rc 0; 1a 6 log-dest retries, 4a 5 assume-role (+1 log-dest tail); 2 destroys 0 errors (#2801)
 stepfunctions-s3-definition	2026-07-26T19:45:58Z	PASS	43	verify.sh	0727b sweep-b12 staleness re-run (rc=0); account clean

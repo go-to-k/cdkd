@@ -38,6 +38,11 @@ import {
   buildLockContentionMessage,
   type LockRecoveryContext,
 } from '../../state/lock-contention-message.js';
+import {
+  hasReadableResources,
+  malformedResourcesWarning,
+  repairMalformedResourcesForReadOnly,
+} from '../../state/malformed-resources-bag.js';
 import { ExportIndexStore } from '../../state/export-index-store.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
@@ -896,7 +901,27 @@ async function stateResourcesCommand(
       );
     }
 
-    const resources = stateResult.state.resources ?? {};
+    // `resources` is an unchecked cast, so a hand-edited or truncated record can
+    // hold a string, a list, a number or a boolean there — and `Object.entries`
+    // accepts all of them. `"abcdef"` yields six `[index, character]` pairs,
+    // which this command rendered as six resources that do not exist. BOTH
+    // output modes fabricated them: `details` is built above the `--json`
+    // branch, so the array that mode emits is the same one the text views
+    // render from.
+    //
+    // Repaired at the LOAD, never at the loop:
+    // `src/state/malformed-resources-bag.ts` owns that rule and the measurement
+    // behind it. This command cannot write state, so it repairs and WARNS
+    // rather than refusing — refusing the diagnostic that shows what is wrong
+    // with a record is the opposite of useful, and `cdkd state list --long`
+    // sends operators here for exactly that reason.
+    if (repairMalformedResourcesForReadOnly(stateResult.state)) {
+      logger.warn(malformedResourcesWarning(stackName, ref.region));
+    }
+    // No `?? {}`: the repair above leaves a plain object behind whatever the
+    // record held, and a fallback that can no longer fire only makes a later
+    // reader think the bag is guarded one line down instead of at the load.
+    const resources = stateResult.state.resources;
     const details: ResourceDetail[] = (
       Object.entries(resources) as Array<[string, ResourceState | null]>
     )
@@ -1229,7 +1254,15 @@ async function stateShowCommand(
     }
 
     if (options.showNested) {
-      const tree = await buildCdkdStateStackTree(
+      // No unreadable-bag test HERE, deliberately. An earlier cut of issue
+      // go-to-k/cdkd#3172 put one at this call site, which covered the ROOT
+      // record and nothing below it: `walkCdkdStateStackTree` RECURSES, so a
+      // healthy root naming a nested child still walked that child's bag
+      // unguarded — re-measured live at 1623 ms / 1277 MB for a planted
+      // 5,000,000-character CHILD bag, in `--json` as well as the text view.
+      // The predicate now lives inside the walker, at the one place every depth
+      // passes through, and its comment there carries the measurements.
+      const tree: CdkdStateStackTree = await buildCdkdStateStackTree(
         stackName,
         ref.region,
         setup.stateBackend,
@@ -1238,10 +1271,17 @@ async function stateShowCommand(
       const treeWithLocks = await loadLocksForTree(tree, setup.lockManager, lockInfo);
 
       if (options.json) {
+        // WARNED but not repaired. This is the one mode where an unreadable bag
+        // is invisible in the payload's SHAPE: the node comes back with
+        // `children: []`, which is exactly what a leaf looks like, so a consumer
+        // enumerating the tree concludes it is complete when a subtree was cut.
+        // The record itself is still emitted verbatim, so the evidence survives.
+        warnUnreadableTreeNodes(treeWithLocks, logger);
         process.stdout.write(`${JSON.stringify(treeToShowJson(treeWithLocks), null, 2)}\n`);
         return;
       }
 
+      repairTreeForTextRender(treeWithLocks, logger);
       const lines = renderTreeWithChildren(treeWithLocks);
       process.stdout.write(`${lines.join('\n')}\n`);
       return;
@@ -1254,6 +1294,7 @@ async function stateShowCommand(
       return;
     }
 
+    repairResourcesForTextRender(stateResult.state, stackName, ref.region, logger);
     process.stdout.write(`${renderStateBlock(stateResult.state, lockInfo, true).join('\n')}\n`);
   } finally {
     setup.dispose();
@@ -1321,9 +1362,100 @@ function skippedOutputsLegend(): string[] {
 }
 
 /**
+ * Give the TEXT render a readable `resources` bag, and warn when that was a
+ * repair rather than a no-op.
+ *
+ * {@link renderStateBlock} walks the bag with `Object.entries`, which takes a
+ * string, a list, a number and a boolean as readily as an object. A planted
+ * `"abcdef"` rendered six `[index, character]` pairs as six resources that do
+ * not exist, under a `Resources (6):` header — and the cost grows with the
+ * planted length, since one pair is allocated per character.
+ *
+ * Called AFTER every `--json` branch rather than at the load, which is this
+ * command's one departure from the rule `src/state/malformed-resources-bag.ts`
+ * states, and is deliberate: `cdkd state show --json` is the command
+ * `cdkd state list --long` names as the way to SEE a record it could not count,
+ * so repairing above that branch would hand the operator a well-formed
+ * `"resources": {}` and delete the evidence they came for.
+ *
+ * That placement is only safe because ONE thing reads the bag earlier — the
+ * `--show-nested` walker — and `walkCdkdStateStackTree` now returns a childless
+ * node on an unreadable bag before it dereferences one. The comment at that
+ * guard carries what the walker did with such a bag before, in both directions:
+ * a scalar-element bag yielded no children but still allocated per element, and
+ * a LIST of resource objects hard-failed. Do not move this call up, and do not
+ * drop that guard: either one alone leaves the other half live.
+ *
+ * The guard is in the WALKER and not at its caller because the walker recurses.
+ * A caller-side test covers the root record only, which is what an earlier cut
+ * of this fix shipped — a healthy root naming a nested child still walked that
+ * child's bag unguarded.
+ */
+function repairResourcesForTextRender(
+  state: StackState,
+  stackName: string,
+  region: string,
+  logger: ReturnType<typeof getLogger>
+): void {
+  if (repairMalformedResourcesForReadOnly(state)) {
+    logger.warn(malformedResourcesWarning(stackName, region));
+  }
+}
+
+/**
+ * The same repair for every node {@link renderTreeWithChildren} will render,
+ * the root included. Each node carries its own record, so a CHILD with a
+ * malformed bag fabricates rows exactly as the root does; one warning per
+ * repaired record names which stack it came from.
+ *
+ * Both identifiers are strings by construction rather than record fields: the
+ * walker builds a child's name as `` `${parent}~${logicalId}` `` and threads the
+ * region it walked against, having already refused any child whose recorded
+ * region disagrees.
+ */
+function repairTreeForTextRender(
+  node: CdkdStateStackTreeWithLock,
+  logger: ReturnType<typeof getLogger>
+): void {
+  repairResourcesForTextRender(node.state, node.stackName, node.region, logger);
+  for (const child of node.children) repairTreeForTextRender(child, logger);
+}
+
+/**
+ * Say which nodes the walk could not read, WITHOUT repairing any of them.
+ *
+ * `--show-nested --json` is the one mode that must not repair — it exists to
+ * show the operator the stored record — but "cannot repair" is not "must stay
+ * silent". An unreadable bag makes the walk return that node childless, and a
+ * childless node is byte-indistinguishable from a genuine leaf: a consumer
+ * enumerating `children` reads a CUT subtree as a complete one. The text views
+ * do not have this problem, because a cut node renders `Resources (0):` where
+ * the operator expected rows.
+ *
+ * `logger.warn` writes to stderr, and `stateShowCommand` has already called
+ * `reserveStdoutForPayload()` for this branch, so this cannot corrupt the JSON.
+ */
+function warnUnreadableTreeNodes(
+  node: CdkdStateStackTreeWithLock,
+  logger: ReturnType<typeof getLogger>
+): void {
+  if (!hasReadableResources(node.state)) {
+    logger.warn(malformedResourcesWarning(node.stackName, node.region));
+  }
+  for (const child of node.children) warnUnreadableTreeNodes(child, logger);
+}
+
+/**
  * Render one stack's state record as a human-readable multi-line block —
  * the shared body used by both the single-stack default output and each
  * nested child rendered under `--show-nested`.
+ *
+ * Every caller must have run {@link repairResourcesForTextRender} over the
+ * record first (`repairTreeForTextRender` does it per node for the tree): the
+ * resource walk below is what fabricates rows from a non-object bag, and the
+ * `state.ts names renderStateBlock in CODE exactly 1 + 3 times` case in
+ * `tests/unit/cli/state-record-shape.test.ts` refuses a fourth call site so
+ * that choice cannot be made silently.
  */
 function renderStateBlock(
   state: StackState,
@@ -1457,12 +1589,15 @@ function renderStateBlock(
     if (withLegend) lines.push(...skippedOutputsLegend());
   }
 
-  // Possibly-`null` entries, for the reason `state resources` spells out (issue
+  // Possibly-`null` ENTRIES, for the reason `state resources` spells out (issue
   // #2947): the loop below dereferenced a hand-edited `{"R": null}` and took the
   // whole render with it.
-  const resourceEntries = (
-    Object.entries(state.resources ?? {}) as Array<[string, ResourceState | null]>
-  )
+  //
+  // No `?? {}` on the BAG, for the reason the same command's load site gives:
+  // every caller has repaired it, so a fallback that can no longer fire only
+  // makes a later reader think the bag is guarded here instead of at the entry
+  // to the render. The two sites now state one rule rather than two.
+  const resourceEntries = (Object.entries(state.resources) as Array<[string, ResourceState | null]>)
     .map(([logicalId, entry]): [string, ResourceState] => [
       logicalId,
       (entry ?? {}) as ResourceState,
