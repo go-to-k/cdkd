@@ -1187,6 +1187,10 @@ Notes:
   branch), reachable from a provider's `attributes` value — the literal, a
   hoisted `const` / `let` and its reassignments, a builder's element writes, a
   same-file helper's return, a call's arguments and receiver, or a spread.
+  It carries no allow-list: the last two exempt sites (the security group's
+  `VpcId`, once copied from the template) were retired by reading the value
+  back from `DescribeSecurityGroups` (issue #3097) — when a provider has no
+  read-back for an attribute, add one rather than an exemption.
 - Tests for `import` go in the same file as the create/update/delete
   tests, with three cases: explicit-override path, tag-based lookup
   hit, tag-based lookup miss (returns `null`)

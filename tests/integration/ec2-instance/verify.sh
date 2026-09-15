@@ -27,6 +27,15 @@
 # no-change second deploy whose Outputs pass heals `PublicIp` to the live
 # address -- the half that reds with the pre-#3077 `?? ''` restored.
 #
+# Also the issue #3097 arm: a security group declared WITHOUT VpcId (lands in
+# the account's default VPC). Its state record must carry `attributes.VpcId`
+# from the Phase 0 deploy on (the provider reads it back at create), and the
+# `DefaultVpcSgVpcId` Output must equal the default VPC's id read live
+# (`describe-vpcs --filters Name=is-default`) -- never '' (the pre-#3097
+# record copied the absent template property), 'undefined' (the pre-#3097
+# resolver arm inside a join) or the group id. Negative control: the stack's
+# own `VpcId` Output still equals its own VPC, which is NOT the default one.
+#
 # Authored against a RAW L1 `ec2.CfnInstance` because the L2 construct does not
 # expose the five #609 security-backfill props this fixture verifies -- see the
 # fixture stack doc.
@@ -101,6 +110,11 @@ INSTANCE_ID=""
 # Issue #2039: read off the live instance after deploy; `cleanup` sweeps every
 # instance carrying it, so a replay leak is reachable without a captured id.
 CLIENT_TOKEN=""
+# Issue #3097: the GroupName the fixture stack gives its default-VPC security
+# group -- a literal the stack and this sweep must agree on. A run killed
+# between CreateSecurityGroup and the state write leaves a group no state
+# record names, and the next run's create fails InvalidGroup.Duplicate.
+DEFAULT_VPC_SG_NAME="CdkdEc2InstanceIntegDefaultVpcSg"
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS instance"
@@ -115,6 +129,20 @@ cleanup() {
       --remove-protection \
       --yes
   fi
+  # Issue #3097: sweep the default-VPC security group by its fixture-only
+  # name, in case state destroy could not reach it. Scoped to the ONE name
+  # (never a prefix, never the VPC), so nothing else in the default VPC is
+  # touched; `|| true` because a missing group is the normal case here.
+  LEFTOVER_SG=$(aws ec2 describe-security-groups \
+    --filters "Name=group-name,Values=${DEFAULT_VPC_SG_NAME}" \
+    --region "${REGION}" \
+    --query 'SecurityGroups[].GroupId' \
+    --output text 2>/dev/null)
+  for leftover_sg in ${LEFTOVER_SG}; do
+    aws ec2 delete-security-group \
+      --group-id "${leftover_sg}" \
+      --region "${REGION}" >/dev/null 2>&1 || true
+  done
   if [ -n "${INSTANCE_ID}" ]; then
     # Belt-and-suspenders: flip protection off then terminate directly in
     # case state destroy could not (e.g. state already gone).
@@ -179,6 +207,126 @@ fi
 
 echo "==> Pre-run cleanup"
 cleanup
+
+# --- issue #3097 pre-flight: the account must have a default VPC here -------
+# The DefaultVpcSg fixture resource is declared without VpcId and lands in the
+# default VPC; read its id LIVE (never hardcoded) so the assertions below
+# compare against what AWS holds. An account with no default VPC in this
+# region cannot reach the premise, and the create would fail with
+# VPCIdNotSpecified -- say so up front rather than as a deploy failure.
+DEFAULT_VPC_ID=$(aws ec2 describe-vpcs \
+  --filters "Name=is-default,Values=true" \
+  --region "${REGION}" \
+  --query 'Vpcs[0].VpcId' \
+  --output text)
+case "${DEFAULT_VPC_ID}" in
+  vpc-*)
+    echo "    default VPC in ${REGION}: ${DEFAULT_VPC_ID} (issue #3097 control)"
+    ;;
+  *)
+    echo "FAIL: issue #3097 premise not reached -- no default VPC in ${REGION} (describe-vpcs is-default answered '${DEFAULT_VPC_ID}'); the DefaultVpcSg fixture resource needs one" >&2
+    exit 1
+    ;;
+esac
+
+# Issue #3097: the security group declared WITHOUT VpcId, as recorded in a
+# state file and as AWS holds it. Run after BOTH deploys: the provider reads
+# the VpcId back at CREATE, so the Phase 0 (--no-wait) record already carries
+# it, and the Phase 1 no-change deploy must keep it. `$1` is the state JSON,
+# `$2` the phase label for the messages.
+assert_default_vpc_sg() {
+  local state="$1" phase="$2"
+  local sg_logical sg_physical sg_route recorded_vpc output_vpc stack_vpc control_vpc live_vpc
+  sg_logical=$(echo "${state}" | jq -r --arg name "${DEFAULT_VPC_SG_NAME}" '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::SecurityGroup") | select(.value.properties.GroupName == $name) | .key] | first // ""')
+  if [ -z "${sg_logical}" ]; then
+    echo "FAIL: issue #3097 (${phase}) -- no AWS::EC2::SecurityGroup record with GroupName ${DEFAULT_VPC_SG_NAME} in state; the fixture stack must declare DefaultVpcSg" >&2
+    echo "${state}" | jq '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::SecurityGroup") | {key, properties: .value.properties}]'
+    exit 1
+  fi
+  sg_physical=$(echo "${state}" | jq -r --arg id "${sg_logical}" '.resources[$id].physicalId // ""')
+  case "${sg_physical}" in
+    sg-*) ;;
+    *)
+      echo "FAIL: issue #3097 (${phase}) -- ${sg_logical}.physicalId is '${sg_physical}', not a security group id" >&2
+      exit 1
+      ;;
+  esac
+  # The read-back under test is the SDK provider's; a cc-api route would
+  # record Cloud Control's readback instead and prove nothing about #3097.
+  sg_route=$(echo "${state}" | jq -r --arg id "${sg_logical}" '.resources[$id].provisionedBy // "sdk"')
+  if [ "${sg_route}" != "sdk" ]; then
+    echo "FAIL: issue #3097 (${phase}) -- ${sg_logical} was provisioned via ${sg_route}, not the SDK provider; a silent-drop property crept into the DefaultVpcSg declaration" >&2
+    exit 1
+  fi
+  # (1) The record carries attributes.VpcId, a real vpc- id, equal to the
+  # default VPC. `has` rather than `//`: an absent key, '' and the string
+  # 'undefined' must each fail with their own name.
+  recorded_vpc=$(echo "${state}" | jq -r --arg id "${sg_logical}" '.resources[$id].attributes // {} | if has("VpcId") then .VpcId | tostring else "<absent>" end')
+  if [ "${recorded_vpc}" != "${DEFAULT_VPC_ID}" ]; then
+    echo "FAIL: issue #3097 (${phase}) -- ${sg_logical}.attributes.VpcId is '${recorded_vpc}', expected the default VPC ${DEFAULT_VPC_ID} (the provider must record VpcId from DescribeSecurityGroups at create, never copy the template's absent property as '')" >&2
+    echo "${state}" | jq --arg id "${sg_logical}" '.resources[$id].attributes'
+    exit 1
+  fi
+  echo "    OK (${phase}): ${sg_logical}.attributes.VpcId == ${DEFAULT_VPC_ID} (read back at create, issue #3097)"
+  # (2) The Output over Fn::GetAtt [DefaultVpcSg, VpcId] is that same id --
+  # never '', null, the literal 'undefined' (the pre-#3097 resolver arm
+  # inside a join), or the group id.
+  output_vpc=$(echo "${state}" | jq -r '.outputs | if has("DefaultVpcSgVpcId") then .DefaultVpcSgVpcId | tostring else "<absent>" end')
+  case "${output_vpc}" in
+    ""|null|undefined|"<absent>")
+      echo "FAIL: issue #3097 (${phase}) -- .outputs.DefaultVpcSgVpcId is '${output_vpc}'; Fn::GetAtt [DefaultVpcSg, VpcId] must resolve to the default VPC's id" >&2
+      echo "${state}" | jq '{outputs, skippedOutputs}'
+      exit 1
+      ;;
+    sg-*)
+      echo "FAIL: issue #3097 (${phase}) -- .outputs.DefaultVpcSgVpcId is the group id '${output_vpc}'; the resolver degraded the attribute to the physical id" >&2
+      exit 1
+      ;;
+  esac
+  if [ "${output_vpc}" != "${DEFAULT_VPC_ID}" ]; then
+    echo "FAIL: issue #3097 (${phase}) -- .outputs.DefaultVpcSgVpcId is '${output_vpc}', expected the default VPC ${DEFAULT_VPC_ID}" >&2
+    echo "${state}" | jq '.outputs'
+    exit 1
+  fi
+  echo "    OK (${phase}): .outputs.DefaultVpcSgVpcId == ${DEFAULT_VPC_ID}"
+  # (3) Negative control: the stack's OWN VpcId Output still names the
+  # stack's VPC, which is a different VPC from the default one -- a fix that
+  # answered the default VPC for every VpcId would pass (1) and (2) and fail
+  # here.
+  stack_vpc=$(echo "${state}" | jq -r '[.resources[] | select(.resourceType == "AWS::EC2::VPC") | .physicalId] | first // ""')
+  control_vpc=$(echo "${state}" | jq -r '.outputs | if has("VpcId") then .VpcId | tostring else "<absent>" end')
+  case "${stack_vpc}" in
+    vpc-*) ;;
+    *)
+      echo "FAIL: issue #3097 (${phase}) -- no AWS::EC2::VPC record with a vpc- physical id in state (got '${stack_vpc}')" >&2
+      exit 1
+      ;;
+  esac
+  if [ "${control_vpc}" != "${stack_vpc}" ]; then
+    echo "FAIL: issue #3097 (${phase}) negative control -- .outputs.VpcId is '${control_vpc}', expected the stack's own VPC ${stack_vpc}" >&2
+    echo "${state}" | jq '.outputs'
+    exit 1
+  fi
+  if [ "${stack_vpc}" = "${DEFAULT_VPC_ID}" ]; then
+    echo "FAIL: issue #3097 (${phase}) negative control -- the stack's own VPC ${stack_vpc} IS the default VPC, so the two Outputs cannot discriminate" >&2
+    exit 1
+  fi
+  echo "    OK (${phase}): negative control .outputs.VpcId == ${stack_vpc} (the stack's own VPC, not the default one)"
+  # (4) AWS agrees: the live group sits in the default VPC. `|| return 1`
+  # because errexit is cleared inside `$( )` (#1120): the failure reaches the
+  # caller's `set -e` through the function's status, with the CLI's own
+  # stderr (not silenced) as the diagnostic.
+  live_vpc=$(aws ec2 describe-security-groups \
+    --group-ids "${sg_physical}" \
+    --region "${REGION}" \
+    --query 'SecurityGroups[0].VpcId' \
+    --output text) || return 1
+  if [ "${live_vpc}" != "${DEFAULT_VPC_ID}" ]; then
+    echo "FAIL: issue #3097 (${phase}) -- live DescribeSecurityGroups reports ${sg_physical} in '${live_vpc}', expected the default VPC ${DEFAULT_VPC_ID}" >&2
+    exit 1
+  fi
+  echo "    OK (${phase}): live ${sg_physical} sits in ${DEFAULT_VPC_ID}"
+}
 
 # --- Phase 0: --no-wait create records no '' attribute (issue #3077) --------
 # Under --no-wait the provider skips the `running` wait and describes the
@@ -246,6 +394,11 @@ for id in ${PENDING_OMITS}; do
   done
 done
 echo "    OK: launch-time members (PrivateIp / AvailabilityZone / InstanceId) recorded on the pending record"
+
+# (b') Issue #3097: the security group declared without VpcId already carries
+# the read-back on the --no-wait record (the describe runs at create, not in
+# a later wait), and its Output resolved from state.
+assert_default_vpc_sg "${NOWAIT_STATE}" "Phase 0 --no-wait"
 
 # (c) The Output over the omitted attribute took one of exactly two arms
 # (issue #3096): the resolver's live re-read answered the ADDRESS (EC2 had
@@ -337,6 +490,9 @@ if [ "${HEALED_SKIPPED}" != "false" ]; then
   exit 1
 fi
 echo "    OK: .skippedOutputs no longer records PublicIp after the healing deploy"
+
+# Issue #3097: the no-change deploy keeps the read-back and the Output.
+assert_default_vpc_sg "${STATE}" "Phase 1"
 
 # Confirm the instance took the SDK provider path (NOT Cloud Control). If a
 # silent-drop prop ever sneaks into the template, provisionedBy flips to
@@ -610,6 +766,22 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
+
+# Issue #3097: the default-VPC security group is deleted by the stack's own
+# destroy (nothing references it), and the default VPC itself is untouched.
+DEFAULT_VPC_SG_ID=$(echo "${STATE}" | jq -r --arg name "${DEFAULT_VPC_SG_NAME}" '[.resources[] | select(.resourceType == "AWS::EC2::SecurityGroup") | select(.properties.GroupName == $name) | .physicalId] | first // ""')
+assert_gone "issue #3097 -- default-VPC security group ${DEFAULT_VPC_SG_ID} still exists after destroy" aws ec2 describe-security-groups --group-ids "${DEFAULT_VPC_SG_ID}" --region "${REGION}"
+echo "    OK: default-VPC security group ${DEFAULT_VPC_SG_ID} is gone"
+DEFAULT_VPC_AFTER=$(aws ec2 describe-vpcs \
+  --vpc-ids "${DEFAULT_VPC_ID}" \
+  --region "${REGION}" \
+  --query 'Vpcs[0].VpcId' \
+  --output text)
+if [ "${DEFAULT_VPC_AFTER}" != "${DEFAULT_VPC_ID}" ]; then
+  echo "FAIL: issue #3097 -- the default VPC ${DEFAULT_VPC_ID} is no longer describable after destroy (got '${DEFAULT_VPC_AFTER}'); the fixture must never touch it" >&2
+  exit 1
+fi
+echo "    OK: default VPC ${DEFAULT_VPC_ID} untouched"
 
 # Instance should be terminated (or shutting-down right after the call).
 if gone_probe aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" --region "${REGION}"; then

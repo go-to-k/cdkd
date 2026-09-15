@@ -7472,15 +7472,12 @@
             "element-read"
           ],
           "seededBy": [
-            "applyUpdate",
             "create",
             "createNetworkAcl",
             "createRouteTable",
             "createSecurityGroup",
             "createSubnet",
-            "createVpcGatewayAttachment",
-            "update",
-            "updateSecurityGroup"
+            "createVpcGatewayAttachment"
           ]
         },
         {

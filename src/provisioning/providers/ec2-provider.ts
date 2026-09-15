@@ -198,6 +198,20 @@ const SG_INGRESS_IP_PROTOCOL_DEFAULT = '-1';
 const SG_INGRESS_IP_PROTOCOL_PATH = 'AWS::EC2::SecurityGroupIngress IpProtocol';
 
 /**
+ * Bounded eventual-consistency retry for the `DescribeSecurityGroups`
+ * read-back (`readSecurityGroupVpcId`, issue #3097): an answer
+ * `isNotFoundError` classifies as not-found is retried, everything else omits
+ * the attribute at once. Five ATTEMPTS (four retries) a second apart cover the
+ * propagation window EC2 documents for its read APIs;
+ * `securityGroupReadbackDelays.sleep` is the unit-test seam (the pattern
+ * `deleteTableRetryDelays` uses), and the fallback is the provider's own
+ * `sleep`, so the class has one timer to fake.
+ */
+export const SG_READBACK_NOT_FOUND_ATTEMPTS = 5;
+export const SG_READBACK_RETRY_DELAY_MS = 1000;
+export const securityGroupReadbackDelays: { sleep?: (ms: number) => Promise<void> } = {};
+
+/**
  * Page ceiling for {@link EC2Provider.lookupIngressRuleId}'s
  * `DescribeSecurityGroupRules` walk (issue #1761).
  *
@@ -2905,10 +2919,10 @@ export class EC2Provider implements ResourceProvider {
 
       return {
         physicalId: groupId,
-        attributes: {
+        attributes: definedAttributes({
           GroupId: groupId,
-          VpcId: (properties['VpcId'] as string) ?? '',
-        },
+          VpcId: await this.readSecurityGroupVpcId(groupId),
+        }),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -3059,10 +3073,10 @@ export class EC2Provider implements ResourceProvider {
       return {
         physicalId,
         wasReplaced: false,
-        attributes: {
+        attributes: definedAttributes({
           GroupId: physicalId,
-          VpcId: (properties['VpcId'] as string) ?? '',
-        },
+          VpcId: await this.readSecurityGroupVpcId(physicalId),
+        }),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -3177,24 +3191,94 @@ export class EC2Provider implements ResourceProvider {
     );
   }
 
+  /**
+   * The `VpcId` a security group's `attributes` map records, read back from
+   * `DescribeSecurityGroups` on the group id (issue #3097).
+   *
+   * The two `AWS::EC2::SecurityGroup` result maps used to copy the TEMPLATE's
+   * own `VpcId` property with a `?? ''` fallback — the last two sites issue
+   * #3077 left on that shape. A `CfnSecurityGroup` declared without `VpcId`
+   * lands in the account's default VPC, so the template has nothing to copy
+   * and the record held `''` where CloudFormation answers the default VPC's
+   * id. The read-back answers both shapes the same way: `CreateSecurityGroup`
+   * returns only the group id, and the describe reports `VpcId` for an
+   * explicit VPC and for the default one alike.
+   *
+   * Best-effort by design: the group is already created (or updated) and
+   * wired when this runs, so a failed or empty read must not fail the
+   * resource. It answers `undefined` then, which `definedAttributes` turns
+   * into an ABSENT key — never `''` — and the resolver's
+   * `AWS::EC2::SecurityGroup` `VpcId` arm re-reads it live on the next
+   * `Fn::GetAtt`. The error CLASS (and HTTP status when the SDK attached one)
+   * is what the debug line names at its head; AWS's own text follows it on the
+   * same debug line, since a denied describe quotes the caller's account, role
+   * and session (`.claude/rules/provider-resource-identity.md`).
+   *
+   * EC2's read API is eventually consistent: a `DescribeSecurityGroups` issued
+   * right after `CreateSecurityGroup` can answer `InvalidGroup.NotFound` for a
+   * group the write path already accepted tags and rules for (#3139 review).
+   * An answer `isNotFoundError` classifies as not-found (a substring
+   * predicate — on this API that is `InvalidGroup.NotFound`) is therefore
+   * retried a bounded number of times (`SG_READBACK_NOT_FOUND_ATTEMPTS`,
+   * `SG_READBACK_RETRY_DELAY_MS` apart) before the key is omitted; every
+   * other failure, and an EMPTY answer, omits at once. On the update path a
+   * group deleted out of band takes the same bounded wait and then omits —
+   * its own rule / tag calls MAY already have failed, but an update whose
+   * bags agree issues none, and the rollback replay / `drift --revert` reach
+   * `updateSecurityGroup` too, so this read can be the first call to touch
+   * it. `getSecurityGroupAttribute` (the orphan rewriter's live fetch) shares
+   * the wait. The sleep itself is inside the best-effort boundary: a
+   * rejecting sleep (only a test seam can reject) omits like a failed read.
+   */
+  private async readSecurityGroupVpcId(groupId: string): Promise<string | undefined> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const response = await this.ec2Client.send(
+          new DescribeSecurityGroupsCommand({ GroupIds: [groupId] })
+        );
+        const vpcId = response?.SecurityGroups?.[0]?.VpcId;
+        if (vpcId === undefined) {
+          this.logger.debug(
+            `DescribeSecurityGroups reported no VpcId for SecurityGroup ${groupId}; omitting the attribute`
+          );
+        }
+        return vpcId;
+      } catch (error) {
+        const name = error instanceof Error && error.name ? error.name : 'Error';
+        const status = (error as { $metadata?: { httpStatusCode?: unknown } } | null)?.$metadata
+          ?.httpStatusCode;
+        const errorClass = typeof status === 'number' ? `${name}, HTTP ${status}` : name;
+        if (this.isNotFoundError(error) && attempt < SG_READBACK_NOT_FOUND_ATTEMPTS) {
+          this.logger.debug(
+            `DescribeSecurityGroups for SecurityGroup ${groupId} answered not-found (${errorClass}) on attempt ${attempt}/${SG_READBACK_NOT_FOUND_ATTEMPTS}; retrying in ${SG_READBACK_RETRY_DELAY_MS}ms (eventual consistency)`
+          );
+          try {
+            await (securityGroupReadbackDelays.sleep ?? ((ms) => this.sleep(ms)))(
+              SG_READBACK_RETRY_DELAY_MS
+            );
+          } catch {
+            this.logger.debug(
+              `DescribeSecurityGroups retry sleep for SecurityGroup ${groupId} rejected; omitting the VpcId attribute`
+            );
+            return undefined;
+          }
+          continue;
+        }
+        this.logger.debug(
+          `DescribeSecurityGroups for SecurityGroup ${groupId} failed (${errorClass}); omitting the VpcId attribute: ${error instanceof Error ? error.message : String(error)}`
+        );
+        return undefined;
+      }
+    }
+  }
+
   private async getSecurityGroupAttribute(
     physicalId: string,
     attributeName: string
   ): Promise<unknown> {
     if (attributeName === 'GroupId') return physicalId;
-
-    try {
-      const response = await this.ec2Client.send(
-        new DescribeSecurityGroupsCommand({ GroupIds: [physicalId] })
-      );
-      const sg = response.SecurityGroups?.[0];
-      if (!sg) return undefined;
-
-      if (attributeName === 'VpcId') return sg.VpcId;
-      return undefined;
-    } catch {
-      return undefined;
-    }
+    if (attributeName === 'VpcId') return this.readSecurityGroupVpcId(physicalId);
+    return undefined;
   }
 
   // ─── AWS::EC2::SecurityGroupIngress ───────────────────────────────
@@ -6336,7 +6420,16 @@ export class EC2Provider implements ResourceProvider {
           const resp = await this.ec2Client.send(
             new DescribeSecurityGroupsCommand({ GroupIds: [physicalId] })
           );
-          return resp.SecurityGroups?.[0] ? { physicalId, attributes: {} } : null;
+          const group = resp.SecurityGroups?.[0];
+          if (!group) return null;
+          // The same two members create / update record (issue #3097), off
+          // the describe already in hand: an adopted group's `VpcId` is then
+          // served from state like a created one's, and an unreported one is
+          // ABSENT rather than the live arm's problem on every resolution.
+          return {
+            physicalId,
+            attributes: definedAttributes({ GroupId: physicalId, VpcId: group.VpcId }),
+          };
         }
         case 'AWS::EC2::SecurityGroupIngress': {
           // Only the `sgr-...` rule id is accepted: it is CloudFormation's own

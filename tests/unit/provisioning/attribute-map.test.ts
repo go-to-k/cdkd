@@ -22,14 +22,17 @@
  * pre-fix tree it measures the count the PR body records (the first,
  * literal-only cut saw 71 sites in 11 files -- two review rounds of PR
  * go-to-k/cdkd#3103 found the other shapes), and a prose rule had let all of
- * them ship. Two sites are ALLOW-LISTED by exact line text rather than
- * fixed, because they take a different premise: `AWS::EC2::SecurityGroup`'s
- * `VpcId` is the TEMPLATE's own property, not a read-back, and the resolver's
- * fallback for that attribute is `undefined` -- which `Fn::Join` stringifies
- * to `'undefined'` -- so omitting the key there is worse than `''` until the
- * resolver arm reads the group's VPC live (tracked in the follow-up issue the
- * PR names). Each allow-list entry must still MATCH, so a fixed site fails the
- * test until its entry is removed.
+ * them ship. The allow-list is EMPTY, and that is its green state. #3103
+ * shipped it with two entries -- `AWS::EC2::SecurityGroup`'s `VpcId` at the
+ * create and update literals, which copied the TEMPLATE's own property with
+ * `?? ''` because the resolver's fallback for that attribute was `undefined`,
+ * which `Fn::Join` stringifies to `'undefined'`, so omitting the key there
+ * was worse than `''`. Issue #3097 retired both: the provider now records
+ * `VpcId` from a post-create / post-update `DescribeSecurityGroups` through
+ * `definedAttributes`, and the resolver arm reads the group's VPC live on an
+ * absent key. The mechanism stays: each entry must still MATCH exactly, so a
+ * fixed site fails the test until its entry is removed, and a re-added
+ * `?? ''` fails the "no unexpected hit" case by name.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vite-plus/test';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -107,19 +110,18 @@ describe('stringifyIfAssigned (issue #3077)', () => {
 const PROVIDERS_DIR = join(process.cwd(), 'src', 'provisioning', 'providers');
 
 /**
- * The two sites deliberately left on the old shape, keyed by file and the
- * exact expression text. The match is an EQUALITY, one hit per entry: removing
- * a site from the code without removing it here fails, and a THIRD copy of an
- * allow-listed text fails too (a `some()` match let it through -- maintainer
- * review of PR go-to-k/cdkd#3103), so the list cannot rot in either direction.
+ * Sites deliberately left on the old shape, keyed by file and the exact
+ * expression text -- one entry per OCCURRENCE, consumed one-for-one. The
+ * match is an EQUALITY: removing a site from the code without removing it
+ * here fails, and a surplus copy of an allow-listed text fails too (a
+ * `some()` match let it through -- maintainer review of PR
+ * go-to-k/cdkd#3103), so the list cannot rot in either direction. EMPTY
+ * since issue #3097 retired the two `AWS::EC2::SecurityGroup` `VpcId`
+ * entries (`"(properties['VpcId'] as string) ?? ''"` at the create and
+ * update literals of `ec2-provider.ts`); the fixture-driven probe below
+ * keeps the consumption mechanism exercised with a synthetic list.
  */
-const ALLOW_LISTED_SITES: ReadonlyArray<readonly [string, string]> = [
-  // One entry per OCCURRENCE (the create and the update literal), consumed
-  // one-for-one by the "still matches" case below -- the two identical
-  // tuples are deliberate, not a duplicate.
-  ['ec2-provider.ts', "(properties['VpcId'] as string) ?? ''"],
-  ['ec2-provider.ts', "(properties['VpcId'] as string) ?? ''"],
-];
+const ALLOW_LISTED_SITES: ReadonlyArray<readonly [string, string]> = [];
 
 interface Hit {
   file: string;
@@ -502,8 +504,11 @@ const DEPTH_DROPPED_CAP = 25;
  * entries are consumed by the first two hits), and `unconsumed` holds every
  * entry no hit matched (a fixed site that kept its entry).
  */
-function allowListVerdict(scan: Scan): { unexpected: string[]; unconsumed: string[] } {
-  const remaining = [...ALLOW_LISTED_SITES];
+function allowListVerdict(
+  scan: Scan,
+  allowListed: ReadonlyArray<readonly [string, string]> = ALLOW_LISTED_SITES
+): { unexpected: string[]; unconsumed: string[] } {
+  const remaining = [...allowListed];
   const unexpected: string[] = [];
   for (const h of scan.hits) {
     const i = remaining.findIndex(([file, text]) => file === h.file && text === h.text);
@@ -545,6 +550,15 @@ describe('no provider records an attribute as `?? \'\'` (issue #3077 fence)', ()
       allowListVerdict(scan).unconsumed,
       'allow-list entries no longer present in the source'
     ).toEqual([]);
+  });
+
+  it('the allow-list is EMPTY: the two AWS::EC2::SecurityGroup VpcId entries were retired by issue #3097', () => {
+    // Pinned so a re-added entry is a diff a reviewer sees, not a quiet
+    // widening; the pre-#3097 shape at either site lands in `unexpected`
+    // above by name (probed: restoring `(properties['VpcId'] as string) ?? ''`
+    // at the create literal reds the "no unexpected hit" case).
+    expect(ALLOW_LISTED_SITES).toEqual([]);
+    expect(scan.hits.filter((h) => h.text.includes("properties['VpcId']"))).toEqual([]);
   });
 });
 
@@ -724,6 +738,18 @@ describe('the fence reds every shape it claims to see (fixture-driven probe)', (
   });
 
   it('refuses a THIRD copy of an allow-listed text (the allow-list is an equality, not a some())', () => {
+    // A SYNTHETIC two-entry list: the real one is empty since #3097, and the
+    // consumption mechanism (one hit per entry, surplus copies unexpected)
+    // must stay exercised for the next entry someone adds. The text is the
+    // retired site's, so the probe also pins that it is no longer excused.
+    const synthetic: ReadonlyArray<readonly [string, string]> = [
+      ['ec2-provider.ts', "(properties['VpcId'] as string) ?? ''"],
+      ['ec2-provider.ts', "(properties['VpcId'] as string) ?? ''"],
+      // A third entry that NO hit matches, so the `unconsumed` direction is
+      // fenced while the real list is empty (parent review of PR
+      // go-to-k/cdkd#3139: a mutant answering `unconsumed: []` stayed green).
+      ['ec2-provider.ts', 'never-present'],
+    ];
     const shapeDir = mkdtempSync(join(dir, 'allow-'));
     const copy = "VpcId: (properties['VpcId'] as string) ?? '',";
     writeFileSync(
@@ -745,9 +771,11 @@ describe('the fence reds every shape it claims to see (fixture-driven probe)', (
     );
     const scan = scanProviders(shapeDir);
     expect(scan.hits).toHaveLength(3);
-    const verdict = allowListVerdict(scan);
-    expect(verdict.unconsumed).toEqual([]);
+    const verdict = allowListVerdict(scan, synthetic);
+    expect(verdict.unconsumed).toEqual(['ec2-provider.ts: never-present']);
     expect(verdict.unexpected).toHaveLength(1);
     expect(verdict.unexpected[0]).toContain("(properties['VpcId'] as string) ?? ''");
+    // ...and against the REAL (empty) list every copy is unexpected.
+    expect(allowListVerdict(scan).unexpected).toHaveLength(3);
   });
 });

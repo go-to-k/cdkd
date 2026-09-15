@@ -1943,6 +1943,7 @@
           "l2"
         ],
         "ec2-instance": [
+          "l1",
           "l2"
         ],
         "ec2-instance-fanout": [

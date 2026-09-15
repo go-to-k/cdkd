@@ -1,6 +1,7 @@
 import {
   carriesDynamicReference,
   cfnRefValueFromPhysicalId,
+  isImpossibleEmptyStoredAttribute,
   refStateLookupFromResource,
 } from '../deployment/intrinsic-function-resolver.js';
 import { carriesSecretMask, SECRET_MASK } from '../deployment/secret-redaction.js';
@@ -319,7 +320,14 @@ class AttributeFetcher {
       return { ok: false, reason };
     }
     const orphan = this.orphans[orphanLogicalId]!;
-    const cached = orphan.attributes?.[attribute];
+    const stored = orphan.attributes?.[attribute];
+    // The resolver's flat lookup and this fallback are the two readers of a
+    // stored attribute; both read a value the resource can never hold (a
+    // security group's `VpcId: ''`, written by a pre-#3097 binary) as ABSENT,
+    // or `--force` would splice `''` into the referring resource as its VPC.
+    const cached = isImpossibleEmptyStoredAttribute(orphan.resourceType, attribute, stored)
+      ? undefined
+      : stored;
     if (cached === undefined) {
       this.logger.warn(
         `--force: state.attributes also lacks '${orphanLogicalId}.${attribute}'; leaving the original intrinsic in place.`
