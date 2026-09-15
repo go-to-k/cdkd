@@ -612,15 +612,35 @@ jobs:
 
           cycle=$(date -u +%Y-%m-%d)
           entry="changelog.d/entries/${cycle}-${PR_NUMBER}-cfn-schema-refresh.md"
-          # Create-only, and keyed on the PR rather than on this exact path. A
-          # fragment already on the branch is either this same cycle
-          # re-dispatched, or one the maintainer has since edited — possibly
-          # RENAMED, which an `-e "${entry}"` test would miss, writing a second
-          # copy whose headline is byte-identical and which the changelog
-          # uniqueness fence then rejects. The job's promise is that it never
-          # overwrites a classification a human wrote; a later cycle gets a
-          # different date and so its own file.
-          if ls changelog.d/entries/*-"${PR_NUMBER}"-*.md >/dev/null 2>&1; then
+          # Create-only, keyed on THIS CYCLE plus the PR — date and number
+          # fixed, slug free. The job's promise is that it never overwrites a
+          # classification a human wrote, and `ENTRY_NAME` forces
+          # `<date>-<digits>-<slug>.md`, so a legal rename keeps both fixed
+          # parts and is still caught while the slug may be anything.
+          #
+          # Both halves are load-bearing, and each was WRONG on its own in an
+          # earlier round. Keying on the exact PATH missed a rename, so a
+          # same-day re-dispatch wrote a second copy with a byte-identical
+          # headline, which the changelog uniqueness fence rejects. Keying on
+          # the PR ALONE was worse: it matched cycle 1's own fragment, so every
+          # later cycle on the same open pull request silently wrote nothing —
+          # the loss this step exists to stop — and a leading `*` spanned the
+          # slug, so another lane's `2026-09-20-3200-revert-3173-regression.md`
+          # suppressed PR 3173's fragment too (measured, alongside a real
+          # `...-1821-cdk-local-0148.md` of that shape).
+          #
+          # A `for` probe rather than `ls`, because under `shopt -s nullglob`
+          # an unmatched glob leaves `ls` with no arguments: it lists the
+          # directory, exits 0, and the guard would read TRUE forever with no
+          # warning.
+          existing=""
+          for f in changelog.d/entries/"${cycle}"-"${PR_NUMBER}"-*.md; do
+            if [ -e "${f}" ]; then
+              existing="${f}"
+              break
+            fi
+          done
+          if [ -n "${existing}" ]; then
             exit 0
           fi
 

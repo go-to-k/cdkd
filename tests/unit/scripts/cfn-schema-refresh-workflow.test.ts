@@ -299,11 +299,20 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       // fragment is prose a maintainer may have edited, so the write is
       // create-only; a later cycle gets a different date and its own file.
       const shell = shellOf(CHANGELOG_STEP);
-      // Keyed on the PR, not on this cycle's exact path: a maintainer who
-      // RENAMES the fragment rather than editing it in place would otherwise
-      // get a second copy on a same-day re-dispatch, with a byte-identical
-      // headline the changelog uniqueness fence rejects.
-      const arm = guardArm(shell, 'if ls changelog.d/entries/*-"${PR_NUMBER}"-*.md');
+      // Keyed on CYCLE + PR with the slug free. Both halves were wrong alone in
+      // an earlier round: the exact PATH missed a maintainer's RENAME, so a
+      // same-day re-dispatch wrote a second copy with a byte-identical headline
+      // the uniqueness fence rejects; the PR ALONE matched cycle 1's own
+      // fragment, so every later cycle on the same open PR silently wrote
+      // nothing -- the loss this step exists to stop.
+      expect(shell).toContain('for f in changelog.d/entries/"${cycle}"-"${PR_NUMBER}"-*.md');
+      expect(shell, 'a leading * would span the SLUG and match another lane’s fragment').not.toMatch(
+        /entries\/\*-"\$\{PR_NUMBER\}"/
+      );
+      // `ls` would read TRUE forever under `shopt -s nullglob` (no arguments,
+      // lists the directory, exits 0); the `for` probe cannot.
+      expect(shell).not.toContain('ls changelog.d/entries');
+      const arm = guardArm(shell, 'if [ -n "${existing}" ]');
       expect(arm).toContain('exit 0');
       expect(arm).not.toContain('rm ');
       expect(shell).toContain('changelog.d/entries/${cycle}-${PR_NUMBER}-cfn-schema-refresh.md');
