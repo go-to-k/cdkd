@@ -182,12 +182,25 @@ Other malformed values render instead of stopping the listing:
 | a `lastModified` outside the date range, or not a number | `Last Modified: unknown`, `null` under `--json` |
 | a `resources` that is neither a JSON object nor `null`, such as a string or a list | `Resources: unknown (...)`, and under `--json` `resourceCount: null` with `stateReadError` set; the warning counts the row. An absent or `null` `resources` counts as `0` |
 | a character outside printable ASCII in a stack name or region | replaced in the plain listing and the `--long` / `--tree` text views; a value with nothing printable left shows as `<unrenderable>` |
+| a stack name or region that is not a plain identifier — one carrying a space, a bracket, a quote, or anything outside `A-Za-z0-9` and `:_@./+=,~-` | rendered as a quoted string, so its boundary is visible: `"ProdStack (us-east-1)" (us-east-1)`. Applies to both halves of every reference |
+| a stack name or region longer than 255 characters | cut at 255, with `[cut: N more characters withheld]` appended |
 | a parent link whose `parentStack` is not a string, or whose `parentRegion` is present but not a string | `--tree` drops the whole link and shows the stack at the root. An absent `parentRegion` still links to a legacy region-less parent |
 | a non-string `parentLogicalId` on an otherwise valid link | `--tree --json` emits it as `null` and keeps the link |
 | records that name each other as parent | `--tree` shows every stack on the loop at the root |
 
 A legacy `version: 1` record with no region is not read under `--long`, so its
 row shows `Resources: 0` and `Last Modified: unknown` with no reason attached.
+
+The quoting matters because the ` (region)` suffix is cdkd's own annotation of
+the line rather than part of either value. Both halves come from an S3 key
+segment — or, for a legacy record, the state body — so a name that contains a
+space and brackets could otherwise render byte-identical to a different,
+genuine reference. The same rule applies to the confirmation prompts of
+[`cdkd state orphan`](#cdkd-state-orphan) and
+[`cdkd state refresh-observed`](#cdkd-state-refresh-observed), which list the
+same references. Every CloudFormation stack name and AWS region code is a plain
+identifier, so a real row is never quoted and a `while read -r ref` consumer
+sees exactly the bytes it always did.
 
 `--json` output is not sanitized. JSON escapes only C0 control characters,
 `"`, `\` and unpaired surrogates, so other invisible or line-breaking

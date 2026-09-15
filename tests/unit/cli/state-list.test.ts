@@ -613,7 +613,11 @@ describe('cdkd state list', () => {
       // The single line is the sanitized label itself, not an empty output.
       const lines = out.trimEnd().split('\n');
       expect(lines).toHaveLength(1);
-      expect(lines[0]).toMatch(/^Evil .*Forged \(us-east-1\).* \(us-east-1\)$/);
+      // Issue #3164: the label is now JSON-QUOTED, because the sanitized form
+      // carries this view's own connector characters and a bare render would
+      // read as a genuine sibling row. The `(us-east-1)` OUTSIDE the closing
+      // quote is cdkd's annotation; the one inside is the planted text.
+      expect(lines[0]).toMatch(/^"Evil .*Forged \(us-east-1\).*" \(us-east-1\)$/);
     });
 
     it('reports a resources value that is not a JSON object as unknown instead of counting it', async () => {
@@ -985,7 +989,9 @@ describe('cdkd state list', () => {
       expect(out).not.toContain('\u001b');
       const lines = out.trimEnd().split('\n');
       expect(lines).toHaveLength(1);
-      expect(lines[0]).toMatch(/^Decoy .*ProdStack \(us-east-1\).* \(us-east-1\)$/);
+      // Issue #3164: quoted, so the planted `ProdStack (us-east-1)` inside the
+      // name cannot be read as this row's own reference.
+      expect(lines[0]).toMatch(/^"Decoy .*ProdStack \(us-east-1\).*" \(us-east-1\)$/);
     });
 
     it('treats a non-number lastModified as unknown, in text and --json, instead of a made-up date', async () => {
