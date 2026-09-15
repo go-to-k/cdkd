@@ -179,9 +179,13 @@ describe('the distributed plugin skill advertises only flags the CLI has', () =>
     // the aggregate one already was — inline yields 30 FLAGLESS claims, so its
     // flag extraction could die entirely and both the arm floor and the 8-flag
     // aggregate (covered by fence's 18 alone) would still pass.
+    // Measured today: fence 38 claims / 18 flags, inline 36 / 6. The inline
+    // FLAG floor is 2 rather than a proportional 4 because 4 of those 6 sit in
+    // ONE bullet block — rewriting that section would red the arm with a
+    // "flag extraction died" message that is not what happened.
     for (const [arm, minClaims, minFlags] of [
       ['fence', 12, 8],
-      ['inline', 12, 3],
+      ['inline', 12, 2],
     ] as const) {
       const fromArm = claims.filter((c) => c.arm === arm);
       expect(
@@ -223,20 +227,28 @@ describe('the distributed plugin skill advertises only flags the CLI has', () =>
   });
 
   it('every flag it names ANYWHERE exists somewhere in the CLI', () => {
-    // The attached-to-a-command set is the smaller half. Ten flags on this
-    // page appear as bare `--flag` spans in prose — more than the 12 the
-    // command-attached check sees — and a flag removed from the CLI leaves
-    // those reading as current. This is deliberately the WEAKER question
-    // (does it exist at all?), because prose does not say which command it
-    // belongs to; the attached check above is what pins that.
-    const text = readFileSync(PLUGIN_SKILL, 'utf8');
+    // The attached-to-a-command set is the smaller half: 19 flags appear in
+    // inline spans against 13 distinct attached ones, and 10 are bare-ONLY. A
+    // flag removed from the CLI leaves those reading as current.
+    //
+    // This deliberately asks the WEAKER question — does any command declare
+    // it — because prose does not say which command a flag belongs to; the
+    // attached case above is what pins that.
+    //
+    // Scanning INSIDE a span, not requiring the flag to fill one: the first
+    // cut used /`(--flag)`/ and so missed `--older-than 30d`, `--dry-run
+    // --fail`, `--all` and `--json`, leaving `--older-than` the single flag on
+    // the page NO check covered. The backtick requirement itself is
+    // load-bearing and stays — it is what keeps `npm install --global` out,
+    // since that lives in a FENCE rather than a span.
     const everyFlag = new Set(
-      [...text.matchAll(/`(--[a-z][a-z0-9-]*)`/g)].map((m) => m[1] as string)
+      [...text.matchAll(/`[^`\n]*?(--[a-z][a-z0-9-]*)/g)].map((m) => m[1] as string)
     );
     expect(
       everyFlag.size,
-      'no bare `--flag` spans parsed out of the page; this case is asserting nothing.'
-    ).toBeGreaterThanOrEqual(10);
+      `only ${everyFlag.size} inline flag span(s) parsed; 23 are measured, so the extractor is ` +
+        'seeing a fraction of its input.'
+    ).toBeGreaterThanOrEqual(18);
 
     const everyKnownFlag = new Set<string>();
     for (const spec of specs.values()) for (const f of spec.longFlags) everyKnownFlag.add(f);
