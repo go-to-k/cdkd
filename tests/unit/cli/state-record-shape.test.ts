@@ -653,7 +653,11 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
       expectRendered(error);
       expect(JSON.parse(out).state.resources).toBe('abcdef');
       expect(JSON.parse(out).children).toEqual([]);
-      expect(warnSpy).not.toHaveBeenCalled();
+      // WARNED, unlike the plain `--json` branch. There the malformed bag is
+      // visible in the payload the operator is reading; here `children: []` is
+      // byte-identical to a genuine leaf, so the absence of a subtree is
+      // invisible without this line. The record is still emitted as stored.
+      expect(warnSpy.mock.calls.map((call) => String(call[0]))).toEqual([WARNING]);
     });
 
     it.each([
@@ -669,9 +673,8 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
       // They do NOT observe the walker's allocation under `--show-nested`:
       // measured, reverting the walk guard leaves all three of these GREEN,
       // because the walker finds no children in a string bag and the render is
-      // repaired either way. `never ENTERS the nested-stack walk` above is the
-      // case that reds for that, and it is the one to keep pointed at the
-      // guard.
+      // repaired either way. The `guards the walk at …` cases below are the ones
+      // that red for that, and they are the ones to keep pointed at the guard.
       //
       // The length bound is a proxy, so it is paired with an exact structural
       // assertion per mode below — a truncating implementation would satisfy
@@ -706,6 +709,24 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
         },
       });
 
+    /**
+     * How many nodes the WALK entered.
+     *
+     * `--show-nested --json` runs a second pass over the finished tree —
+     * `warnUnreadableTreeNodes` — which asks the SAME predicate once per node,
+     * so the raw spy count doubles there. Dividing is exact rather than
+     * approximate: both passes visit every node exactly once, and the division
+     * is asserted to be clean below, so a change that made the warn pass skip
+     * or revisit nodes shows up as a non-integer rather than as a plausible
+     * walk count.
+     */
+    const nodesWalked = (flags: string[]): number => {
+      const calls = walkSpy.mock.calls.length;
+      if (!flags.includes('--json')) return calls;
+      expect(calls % 2, 'warn pass must visit each walked node exactly once').toBe(0);
+      return calls / 2;
+    };
+
     /** Every `state.json` key the run asked S3 for, in order. */
     const requestedStateKeys = (): string[] =>
       s3Send.mock.calls
@@ -731,7 +752,7 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
         // the root once, which is indistinguishable from success by the count
         // alone.
         expectRendered(error);
-        expect(walkSpy).toHaveBeenCalledTimes(1);
+        expect(nodesWalked(flags)).toBe(1);
       }
     );
 
@@ -743,16 +764,28 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
       //
       // The discriminator is the per-node count: the walk must ENTER the child
       // (2 nodes, so the guard is reached where the harm was) and stop there.
+      //
+      // The child's bag is a LIST OF NESTED-STACK OBJECTS rather than a string,
+      // and that choice is what makes depth 1 fenced BEHAVIOURALLY. With a
+      // string bag, removing the guard's effect while keeping the call — the
+      // `void hasReadableResources(state);` mutant — leaves this case green,
+      // because a string yields no Stack entries either way and the render is
+      // repaired downstream regardless; only the spy's call site would have been
+      // under test. A list of Stack objects makes the unguarded walker read the
+      // INDEX `0` as a logical id and abort on the missing `MyStack~Child~0`,
+      // so the case reds on behaviour at the depth the round-2 blocker lived at.
       bucket.state = parentOf('Child');
       bucket.children['MyStack~Child'] = record({
         stackName: 'MyStack~Child',
-        resources: 'abcdef',
+        resources: [
+          { resourceType: 'AWS::CloudFormation::Stack', physicalId: 'g-arn', properties: {} },
+        ],
       });
 
       const { out, error } = await runState(['show', 'MyStack', '--show-nested']);
 
       expectRendered(error);
-      expect(walkSpy).toHaveBeenCalledTimes(2);
+      expect(nodesWalked([])).toBe(2);
       // ...and the child's own bag produced no grandchild lookup. Read off the
       // KEYS rather than the count, so a lookup for a fabricated grandchild is
       // named rather than merely tallied.
@@ -797,7 +830,7 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
         if (flags.includes('--show-nested')) {
           // Three nodes entered — root, child, grandchild — and the grandchild's
           // guard stopped the descent there.
-          expect(walkSpy).toHaveBeenCalledTimes(3);
+          expect(nodesWalked(flags)).toBe(3);
           expect(requestedStateKeys()).not.toContain(
             'cdkd/MyStack~Child~Grand~0/us-east-1/state.json'
           );
@@ -876,7 +909,9 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
         if (flags.includes('--json')) {
           expect(JSON.parse(out).state.resources).toEqual(listOfResources);
           expect(JSON.parse(out).children).toEqual([]);
-          expect(warnSpy).not.toHaveBeenCalled();
+          // `--show-nested --json`: the cut subtree is announced on stderr while
+          // the payload stays as stored.
+          expect(warnSpy.mock.calls.map((call) => String(call[0]))).toEqual([WARNING]);
         } else {
           expect(out).toContain('Resources (0):');
           // No `MyStack~0` anywhere: neither a fabricated child nor the
@@ -956,11 +991,12 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
       // dropped the grep looking covered.
       expect(fixture).toContain(needle);
       expect(malformedResourcesWarning('MyStack', 'us-east-1')).toContain(needle);
-      // The count is the floor: ONE grep inside `malformed_view`, which its
-      // five call sites share, plus the three absence checks — one for each
-      // `--json` branch of `state show` and one for the healthy record. Four
+      // The count is the floor: ONE grep inside `malformed_view`, which its six
+      // call sites share, plus three absence checks — one per `--json` branch of
+      // `state show` and one for the healthy record — plus the depth arm's own
+      // PRESENCE check, which asserts the cut subtree is announced. Five
       // occurrences; a grep deleted from the fixture has to move this number.
-      expect(fixture.split(needle)).toHaveLength(4 + 1);
+      expect(fixture.split(needle)).toHaveLength(5 + 1);
     });
 
     it('state.ts names renderStateBlock in CODE exactly 1 + 3 times', () => {

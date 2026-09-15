@@ -39,6 +39,7 @@ import {
   type LockRecoveryContext,
 } from '../../state/lock-contention-message.js';
 import {
+  hasReadableResources,
   malformedResourcesWarning,
   repairMalformedResourcesForReadOnly,
 } from '../../state/malformed-resources-bag.js';
@@ -1270,6 +1271,12 @@ async function stateShowCommand(
       const treeWithLocks = await loadLocksForTree(tree, setup.lockManager, lockInfo);
 
       if (options.json) {
+        // WARNED but not repaired. This is the one mode where an unreadable bag
+        // is invisible in the payload's SHAPE: the node comes back with
+        // `children: []`, which is exactly what a leaf looks like, so a consumer
+        // enumerating the tree concludes it is complete when a subtree was cut.
+        // The record itself is still emitted verbatim, so the evidence survives.
+        warnUnreadableTreeNodes(treeWithLocks, logger);
         process.stdout.write(`${JSON.stringify(treeToShowJson(treeWithLocks), null, 2)}\n`);
         return;
       }
@@ -1412,6 +1419,30 @@ function repairTreeForTextRender(
 ): void {
   repairResourcesForTextRender(node.state, node.stackName, node.region, logger);
   for (const child of node.children) repairTreeForTextRender(child, logger);
+}
+
+/**
+ * Say which nodes the walk could not read, WITHOUT repairing any of them.
+ *
+ * `--show-nested --json` is the one mode that must not repair — it exists to
+ * show the operator the stored record — but "cannot repair" is not "must stay
+ * silent". An unreadable bag makes the walk return that node childless, and a
+ * childless node is byte-indistinguishable from a genuine leaf: a consumer
+ * enumerating `children` reads a CUT subtree as a complete one. The text views
+ * do not have this problem, because a cut node renders `Resources (0):` where
+ * the operator expected rows.
+ *
+ * `logger.warn` writes to stderr, and `stateShowCommand` has already called
+ * `reserveStdoutForPayload()` for this branch, so this cannot corrupt the JSON.
+ */
+function warnUnreadableTreeNodes(
+  node: CdkdStateStackTreeWithLock,
+  logger: ReturnType<typeof getLogger>
+): void {
+  if (!hasReadableResources(node.state)) {
+    logger.warn(malformedResourcesWarning(node.stackName, node.region));
+  }
+  for (const child of node.children) warnUnreadableTreeNodes(child, logger);
 }
 
 /**

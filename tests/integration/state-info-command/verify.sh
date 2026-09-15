@@ -95,6 +95,24 @@ MALFORMED_PREFIX="cdkd/${MALFORMED_STACK}/${REGION}/"
 # that do not exist — the count is what the assertions below read.
 MALFORMED_BAG="abcdef"
 
+# The DEPTH arm (issue go-to-k/cdkd#3172 round 2). A healthy parent naming one
+# nested-stack child, whose OWN record carries the malformed bag — the shape a
+# root-only guard passes and the one the round-2 fix is about. No deploy is
+# involved: both are planted state records, and nothing ever creates a stack by
+# either name, so this costs two PutObjects rather than a nested-stack deploy.
+NESTED_ROOT_STACK="${STACK}MalformedNested"
+NESTED_CHILD_STACK="${NESTED_ROOT_STACK}~Child"
+NESTED_ROOT_KEY="cdkd/${NESTED_ROOT_STACK}/${REGION}/state.json"
+NESTED_CHILD_KEY="cdkd/${NESTED_CHILD_STACK}/${REGION}/state.json"
+NESTED_ROOT_PREFIX="cdkd/${NESTED_ROOT_STACK}/${REGION}/"
+NESTED_CHILD_PREFIX="cdkd/${NESTED_CHILD_STACK}/${REGION}/"
+# Newline-separated rather than a bash array: this is iterated inside `cleanup`
+# under `set -u`, where an empty array is an unbound-variable error on macOS's
+# bash 3.2 and would abort the sweep it exists to run.
+PLANTED_KEYS="${MALFORMED_KEY}
+${NESTED_ROOT_KEY}
+${NESTED_CHILD_KEY}"
+
 echo "[verify] region=${REGION} stack=${STACK} state-bucket=${STATE_BUCKET}"
 
 echo "[verify] step 1: install + build cdkd"
@@ -117,14 +135,18 @@ cleanup() {
   # by step 5 alone and is never wanted afterwards, on any exit path. Scoped to
   # the ONE key, so a sibling stack's live record under the same bucket cannot
   # be reached even with an unset variable (the helper refuses an empty key).
-  aws s3api delete-object --bucket "${STATE_BUCKET:-}" --key "${MALFORMED_KEY:-}" \
-    --region "${REGION:-}" >/dev/null 2>&1 || true
-  # `>/dev/null` WITHOUT `2>&1`: on the failure path this is the only sweep, and
-  # the helper reports a listing it could not complete on stderr. Swallowing that
-  # leaves a malformed `state.json` in the shared state bucket with nothing in
-  # the log saying so — and `cdkd gc` aborts on a malformed record, so the next
-  # lane inherits a wedge with no trail back to here.
-  s3_purge_key_versions "${STATE_BUCKET:-}" "${MALFORMED_KEY:-}" all >/dev/null || true
+  # Every planted key, not just the first. `>/dev/null` WITHOUT `2>&1` on the
+  # purge: on the failure path this is the only sweep, and the helper reports a
+  # listing it could not complete on stderr. Swallowing that leaves a malformed
+  # `state.json` in the shared state bucket with nothing in the log saying so —
+  # and `cdkd gc` aborts on a malformed record, so the next lane inherits a wedge
+  # with no trail back to here.
+  printf '%s\n' "${PLANTED_KEYS:-}" | while IFS= read -r planted_key; do
+    [ -n "${planted_key}" ] || continue
+    aws s3api delete-object --bucket "${STATE_BUCKET:-}" --key "${planted_key}" \
+      --region "${REGION:-}" >/dev/null 2>&1 || true
+    s3_purge_key_versions "${STATE_BUCKET:-}" "${planted_key}" all >/dev/null || true
+  done
   # The arm's scratch files. Named per RUN by `mktemp`, so two concurrent runs
   # cannot share one, and swept here because the success-path `rm -f`s below do
   # not run when a step fails — an untracked leftover dirties `git status` for
@@ -206,22 +228,32 @@ echo "[verify] step 5: malformed 'resources' bag — the two read-only views (is
 # behind. Created HERE rather than beside the other variables, so a run that
 # fails before this step has nothing to sweep.
 MALFORMED_TMP_DIR="$(mktemp -d)"
-MALFORMED_BODY="$(MALFORMED_STACK="${MALFORMED_STACK}" REGION="${REGION}" MALFORMED_BAG="${MALFORMED_BAG}" node -e '
-  process.stdout.write(
-    JSON.stringify({
-      version: 2,
-      stackName: process.env.MALFORMED_STACK,
-      region: process.env.REGION,
-      resources: process.env.MALFORMED_BAG,
-      outputs: {},
-      lastModified: 0,
-    })
-  );
-')"
-printf '%s' "${MALFORMED_BODY}" > "${MALFORMED_TMP_DIR}/planted-state.json"
-aws s3api put-object --bucket "${STATE_BUCKET}" --key "${MALFORMED_KEY}" \
-  --body "${MALFORMED_TMP_DIR}/planted-state.json" --region "${REGION}" --output json >/dev/null
-rm -f "${MALFORMED_TMP_DIR}/planted-state.json"
+
+# plant_state_record <stackName> <key> <resources-as-json>
+# The `resources` argument is spliced in as RAW JSON, so a caller can plant a
+# string, a list or an object — the whole point of the arm is that the field's
+# type is not what the schema claims.
+plant_state_record() {
+  local stack_name="$1" key="$2" resources_json="$3" body_file
+  body_file="${MALFORMED_TMP_DIR}/planted-$(printf '%s' "${key}" | tr '/~' '__').json"
+  PLANT_STACK="${stack_name}" PLANT_REGION="${REGION}" PLANT_RESOURCES="${resources_json}" node -e '
+    process.stdout.write(
+      JSON.stringify({
+        version: 2,
+        stackName: process.env.PLANT_STACK,
+        region: process.env.PLANT_REGION,
+        resources: JSON.parse(process.env.PLANT_RESOURCES),
+        outputs: {},
+        lastModified: 0,
+      })
+    );
+  ' > "${body_file}"
+  aws s3api put-object --bucket "${STATE_BUCKET}" --key "${key}" \
+    --body "${body_file}" --region "${REGION}" --output json >/dev/null
+  rm -f "${body_file}"
+}
+
+plant_state_record "${MALFORMED_STACK}" "${MALFORMED_KEY}" "\"${MALFORMED_BAG}\""
 
 # PREMISE first: the record really is readable as a cdkd state record, so a
 # later "zero resources" is the guard firing and not the command failing to
@@ -348,6 +380,69 @@ malformed_view show zero-resources \
 malformed_view show-nested zero-resources \
   ${CLI} state show "${MALFORMED_STACK}" --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --show-nested
 
+# DEPTH >= 1. Everything above plants the bad bag on the record the command was
+# POINTED AT, which a guard at the caller's own call site would also survive.
+# This pair puts a healthy parent in front of it, so the malformed record is
+# only reachable through the walker's RECURSION — the shape the round-2 fix is
+# about, and the one the earlier root-only guard passed.
+#
+# The child's bag is a LIST of nested-stack objects rather than a string: an
+# unguarded walk reads the list INDEX `0` as a logical id, looks for a child
+# record at `<child>~0`, finds none and ABORTS the whole command, which is a
+# louder and more specific failure than the per-element allocation a string
+# produces.
+plant_state_record "${NESTED_ROOT_STACK}" "${NESTED_ROOT_KEY}" \
+  '{"Child":{"resourceType":"AWS::CloudFormation::Stack","physicalId":"arn:aws:cloudformation:::stack/planted","properties":{}}}'
+plant_state_record "${NESTED_CHILD_STACK}" "${NESTED_CHILD_KEY}" \
+  '[{"resourceType":"AWS::CloudFormation::Stack","physicalId":"arn:aws:cloudformation:::stack/planted-grandchild","properties":{}}]'
+
+malformed_view nested-text zero-resources \
+  ${CLI} state show "${NESTED_ROOT_STACK}" --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --show-nested
+
+NESTED_JSON_ERR2="${MALFORMED_TMP_DIR}/nested-depth-json.err"
+NESTED_DEPTH_JSON="$(${CLI} state show "${NESTED_ROOT_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --show-nested --json \
+  2>"${NESTED_JSON_ERR2}")" || {
+  echo "[verify] FAIL: state show --show-nested --json aborted on a malformed CHILD record" >&2
+  tail -20 "${NESTED_JSON_ERR2}" >&2
+  exit 1
+}
+node -e '
+  const d = JSON.parse(process.argv[1]);
+  const fail = (m) => { console.error(`[verify] FAIL: depth arm: ${m}`); process.exit(1); };
+  if (!Array.isArray(d.children) || d.children.length !== 1) {
+    fail(`parent should report exactly one child, got ${JSON.stringify(d.children)}`);
+  }
+  const child = d.children[0];
+  // The child record comes back AS STORED — a list, not a repaired `{}`.
+  if (!Array.isArray(child.state.resources)) {
+    fail(`child bag was not preserved: ${JSON.stringify(child.state.resources)}`);
+  }
+  // ...and the walk stopped there rather than inventing `<child>~0`.
+  if (!Array.isArray(child.children) || child.children.length !== 0) {
+    fail(`walk descended past the malformed child: ${JSON.stringify(child.children)}`);
+  }
+' "${NESTED_DEPTH_JSON}"
+# The cut subtree is announced, and it names the CHILD rather than the parent —
+# `--show-nested --json` is the one mode where `children: []` is otherwise
+# indistinguishable from a genuine leaf.
+if ! grep -q "no readable 'resources' map" "${NESTED_JSON_ERR2}"; then
+  echo "[verify] FAIL: --show-nested --json cut a subtree SILENTLY at depth 1" >&2
+  exit 1
+fi
+if ! grep -qF "${NESTED_CHILD_STACK}" "${NESTED_JSON_ERR2}"; then
+  echo "[verify] FAIL: the depth-1 warning does not name the child record" >&2
+  tail -20 "${NESTED_JSON_ERR2}" >&2
+  exit 1
+fi
+case "${NESTED_DEPTH_JSON}" in
+  *"${NESTED_CHILD_STACK}~0"*)
+    echo "[verify] FAIL: payload names a fabricated grandchild" >&2
+    exit 1
+    ;;
+esac
+rm -f "${NESTED_JSON_ERR2}"
+
 # NEGATIVE CONTROL, and the reason it reads the REAL stack: step 2's record is
 # healthy, so a guard that fired on everything would warn here too and every
 # assertion above would still pass.
@@ -360,12 +455,22 @@ if grep -q "no readable 'resources' map" "${HEALTHY_ERR}"; then
 fi
 rm -f "${HEALTHY_ERR}"
 
-echo "[verify] step 5: removing the planted record"
-aws s3api delete-object --bucket "${STATE_BUCKET}" --key "${MALFORMED_KEY}" \
-  --region "${REGION}" --output json >/dev/null
-s3_purge_key_versions "${STATE_BUCKET}" "${MALFORMED_KEY}" all
+echo "[verify] step 5: removing every planted record"
+printf '%s\n' "${PLANTED_KEYS}" | while IFS= read -r planted_key; do
+  [ -n "${planted_key}" ] || continue
+  aws s3api delete-object --bucket "${STATE_BUCKET}" --key "${planted_key}" \
+    --region "${REGION}" --output json >/dev/null
+  s3_purge_key_versions "${STATE_BUCKET}" "${planted_key}" all
+done
+# Re-asserted OUTSIDE the loop: a `while` fed by a pipe runs in a SUBSHELL, so an
+# `exit 1` from `assert_gone` inside it would set the subshell's status and the
+# run would carry on. Each probe is its own statement here, under `set -e`.
 assert_gone "planted malformed state.json survived step 5" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${MALFORMED_KEY}" --region "${REGION}"
+assert_gone "planted nested-parent state.json survived step 5" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${NESTED_ROOT_KEY}" --region "${REGION}"
+assert_gone "planted nested-child state.json survived step 5" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${NESTED_CHILD_KEY}" --region "${REGION}"
 # The scratch directory itself, on the SUCCESS path. Each `.err` file is removed
 # as its check passes, so this only has to take the now-empty directory —
 # `cleanup` still sweeps contents-and-all on every failing path.
@@ -392,4 +497,6 @@ trap - EXIT INT TERM
 # stack's own prefix — the real stack's prefix legitimately keeps the delete
 # markers `cdkd destroy` leaves, so asserting over it would fail on a clean run.
 s3_assert_versions_swept "${STATE_BUCKET}" "${MALFORMED_PREFIX}" "state-info-command planted malformed record"
+s3_assert_versions_swept "${STATE_BUCKET}" "${NESTED_ROOT_PREFIX}" "state-info-command planted nested parent"
+s3_assert_versions_swept "${STATE_BUCKET}" "${NESTED_CHILD_PREFIX}" "state-info-command planted nested child"
 echo "[verify] PASS — cdkd state info (human + --json, flag + env bucket sources) verified end-to-end"

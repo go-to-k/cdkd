@@ -180,7 +180,7 @@ Other malformed values render instead of stopping the listing:
 | Value | How it renders |
 | --- | --- |
 | a `lastModified` outside the date range, or not a number | `Last Modified: unknown`, `null` under `--json` |
-| a `resources` that is neither a JSON object nor `null`, such as a string or a list | `Resources: unknown (...)`, and under `--json` `resourceCount: null` with `stateReadError` set; the warning counts the row. An absent or `null` `resources` counts as `0` |
+| a `resources` that is neither a JSON object nor `null`, such as a string or a list | `Resources: unknown (...)`, and under `--json` `resourceCount: null` with `stateReadError` set; the warning counts the row. An absent or `null` `resources` counts as `0`. What the other commands do with such a record is under [When `resources` is not an object](#when-resources-is-not-an-object) |
 | a character outside printable ASCII in a stack name or region | replaced with a space, and the value is then quoted (see the row below). A value with nothing printable left shows as `<unrenderable>` |
 | a stack name or region that cdkd had to CHANGE to render — anything outside printable ASCII, or surrounding whitespace it trimmed | rendered as a quoted string, so its boundary is visible. A trailing space is enough: `ProdStack ` renders `"ProdStack" (us-east-1)` |
 | a stack name or region carrying a space, a bracket or a quote — anything outside `A-Za-z0-9` and `:_@./+=,~-` | quoted the same way: `"ProdStack (us-east-1)" (us-east-1)`. Both rules apply to both halves of every reference |
@@ -284,15 +284,19 @@ they print as untrusted text:
   empty slot, and the underlying cause a refusal reports is flattened the same
   way. This covers the refusals these two commands raise; an error reaching you
   from the AWS SDK itself is that service's own text.
-- **`--json` applies none of this**, and is the mode to reach for when you need
-  the stored value rather than a readable one. It is not byte-for-byte in every
-  mode: `cdkd state show` emits the record as parsed, while
-  `cdkd state resources --json` substitutes an empty list or object for an absent
-  `dependencies` or `attributes`, and the lock `cdkd state show` reports has already
-  had its `owner` and `operation` put through the shared display sanitizer, with
-  an `expiresAt` whose number coercion THROWS emitted as `null` — one that merely
-  converts to `NaN`, such as `{}` or `"soon"`, is emitted as stored
-  (`cdkd state resources` never reads a lock).
+- **`--json` applies none of this sanitizing**, and `cdkd state show --json` is
+  the mode to reach for when you need the stored value rather than a readable
+  one. It is not byte-for-byte in every mode, and the exceptions differ per
+  command:
+
+  | Mode | What it is not |
+  | --- | --- |
+  | `cdkd state show --json` | the record as parsed; the lock it reports has had `owner` and `operation` put through the shared display sanitizer, with an `expiresAt` whose number coercion THROWS emitted as `null` — one that merely converts to `NaN`, such as `{}` or `"soon"`, is emitted as stored |
+  | `cdkd state resources --json` | substitutes an empty list or object for an absent `dependencies` or `attributes`; never reads a lock. **It is also not a view of the stored `resources` value at all** — it emits the resource array cdkd derived, so a `resources` that is not a JSON object yields `[]` with the warning described under [When `resources` is not an object](#when-resources-is-not-an-object), not the stored value |
+
+  So `--json` being the raw-value mode is true of `cdkd state show` and false of
+  `cdkd state resources`. When the question is what the record actually holds,
+  `cdkd state show --json` is the command that answers it.
 
 This tolerance also covers a record that is malformed beyond its values. A `resources`
 entry holding `null` rather than a resource no longer aborts any mode,
@@ -376,6 +380,10 @@ cdkd state show MyParent --show-nested --json
 The deepest read: stack metadata, the lock record, outputs, skipped outputs,
 and every resource with its properties, attributes, dependencies, and
 `provisionedBy` routing.
+
+What every mode here does with a record whose `resources` is not a JSON object —
+including `--show-nested` at any depth — is described once, under
+[When `resources` is not an object](#when-resources-is-not-an-object).
 
 ### Skipped outputs
 

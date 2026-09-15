@@ -3463,14 +3463,30 @@ async function walkCdkdStateStackTree(
   // record, so `cdkd state show --show-nested --json` still emits the stored bag
   // and the evidence survives. `state.ts` repairs the bags it RENDERS, per node,
   // after its `--json` branches.
+  //
+  // TWO callers, and the second is why this returns rather than throws.
+  // `stateShowCommand`'s `--show-nested` is the read-only one. `exportCommand`
+  // (this file) also walks, to migrate a cdkd state tree to CloudFormation, and
+  // there a record whose bag cannot be read must NOT be treated as a stack with
+  // no children and quietly migrated: it is refused, but EARLIER and by a
+  // different check — every template row resolves `state.resources[logicalId]`
+  // against the same non-object bag, is marked `blocked`, and the run throws on
+  // the blocked rows before the leaf-first import loop runs. So returning
+  // childless here is safe for export only because that backstop exists; if it
+  // ever moves, this function is where export would start silently migrating a
+  // truncated tree.
   if (!hasReadableResources(state)) return { stackName, region, state, nestedChildren };
 
-  // `?? {}` and a possibly-`null` entry, matching `renderStateBlock`: this is
-  // the `--show-nested` walker, and a hand-edited record with `resources`
-  // absent or `null`, or a `null` entry, threw here before anything rendered
-  // (issue #2947). A `null` entry cannot be a nested stack, so the type check
-  // skips it.
-  for (const [logicalId, entry] of Object.entries(state.resources ?? {}) as Array<
+  // No `?? {}` on the BAG: the guard above has already returned for every shape
+  // it covered, absent and `null` included, so a fallback here can no longer
+  // fire and would only make a later reader think the bag is guarded at the loop
+  // instead of at the entry. Same rule `state.ts` applies at its own two sites.
+  //
+  // The possibly-`null` ENTRY guard stays and is a different question: a
+  // hand-edited `{"R": null}` inside an otherwise readable map threw here before
+  // anything rendered (issue #2947). A `null` entry cannot be a nested stack, so
+  // the type check skips it.
+  for (const [logicalId, entry] of Object.entries(state.resources) as Array<
     [string, (typeof state.resources)[string] | null]
   >) {
     if (entry?.resourceType !== NESTED_STACK_RESOURCE_TYPE) continue;
@@ -6456,16 +6472,27 @@ export async function runPerStackImportLoop(args: {
           for (const row of plan.nestedStackRows) {
             const childArn = cfnArnByCdkdName.get(row.childStackName);
             if (!childArn) {
-              // Defensive cdkd-bug guard, intentionally untested: unreachable
-              // via the normal flow. `flattenCdkdStateTreeLeafFirst` guarantees
-              // every nested child is IMPORTed (and recorded in
-              // `cfnArnByCdkdName`) before its parent's Phase 1B runs, and
-              // `buildImportPlan` derives `row.childStackName` from the same
-              // `state.resources` nested entries the tree walk reads — so a
-              // recorded-ARN miss can only arise if those two invariants
-              // diverge in a future refactor. The leaf-first ordering itself is
+              // Defensive cdkd-bug guard, intentionally untested.
+              // `flattenCdkdStateTreeLeafFirst` guarantees every nested child is
+              // IMPORTed (and recorded in `cfnArnByCdkdName`) before its
+              // parent's Phase 1B runs, and `buildImportPlan` derives
+              // `row.childStackName` from the same `state.resources` nested
+              // entries the tree walk reads. The leaf-first ordering itself is
               // covered by the 3-level-tree test (Grandchild → Middle → Root
               // CreateChangeSet order) in export-nested-loop.test.ts.
+              //
+              // The two invariants CAN now diverge without a refactor, so this
+              // no longer claims to be unreachable: since issue
+              // go-to-k/cdkd#3172 `walkCdkdStateStackTree` returns a childless
+              // node for a record whose `resources` is not a readable map, so a
+              // parent with an unreadable bag contributes no `nestedStackRows`
+              // while `buildImportPlan` reads the same bag. It stays unreachable
+              // in PRACTICE because `cdkd export` is backstopped earlier: every
+              // template row resolves `state.resources[logicalId]` against that
+              // same non-object bag, marks the row `blocked`, and the run throws
+              // at the blocked-rows check below before this loop is reached. So
+              // the guard is defence in depth against that backstop moving, not
+              // against a hypothetical future edit.
               throw new Error(
                 `runPerStackImportLoop: nested-stack child '${row.childStackName}' has no ` +
                   `recorded CFn ARN when processing parent '${plan.cdkdName}'. Leaf-first ` +
