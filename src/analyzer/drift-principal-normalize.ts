@@ -54,7 +54,15 @@
  * and manufacturing a different phantom drift, so the pass is scoped to the
  * object shape — which is what `AWS::S3::BucketPolicy` and the other
  * `PolicyDocument`-typed properties carry in cdkd state.
+ *
+ * The two rewrite walks rebuild onto a NULL-prototype record and return a
+ * non-plain object by identity, for the reason `drift-normalize.ts`'s header
+ * gives (issue #3121): they run on the comparison copies of BOTH sides, so a
+ * `{}` literal rebuild dropped an own `__proto__` key symmetrically and
+ * flattened a `Date` to `{}` before the comparator saw it.
  */
+
+import { hasPlainPrototype, nullPrototypeRecord } from '../utils/own-keys.js';
 
 /**
  * An IAM unique id as it appears in a rendered policy. The prefix set is
@@ -171,7 +179,8 @@ export function rewritePrincipalUniqueIds(
 ): unknown {
   if (Array.isArray(value)) return value.map((el) => rewritePrincipalUniqueIds(el, arnByUniqueId));
   if (!value || typeof value !== 'object') return value;
-  const out: Record<string, unknown> = {};
+  if (!hasPlainPrototype(value)) return value;
+  const out = nullPrototypeRecord();
   for (const [key, member] of Object.entries(value as Record<string, unknown>)) {
     out[key] =
       key === 'Principal' || key === 'NotPrincipal'
@@ -192,7 +201,8 @@ function rewritePrincipalValue(
   if (typeof value === 'string') return swap(value);
   if (Array.isArray(value)) return value.map(swap);
   if (!value || typeof value !== 'object') return value;
-  const out: Record<string, unknown> = {};
+  if (!hasPlainPrototype(value)) return value;
+  const out = nullPrototypeRecord();
   for (const [key, member] of Object.entries(value as Record<string, unknown>)) {
     if (key !== 'AWS') {
       out[key] = rewritePrincipalUniqueIds(member, arnByUniqueId);

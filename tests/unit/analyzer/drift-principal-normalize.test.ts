@@ -299,3 +299,83 @@ describe('drift principal unique-id canonicalization (issue #1515)', () => {
     });
   });
 });
+
+// Issue #3121: both rewrite walks (`rewritePrincipalUniqueIds` over the policy
+// tree, `rewritePrincipalValue` over the `Principal` OBJECT form) rebuilt onto
+// a `{}` literal, and they run on the comparison copies of BOTH sides. One
+// case per walk, each fixture reaching its own object arm: an own `__proto__`
+// key beside a rewritten principal must survive as a KEY (asserted over
+// `Object.getOwnPropertyNames` / JSON text, never an object-literal
+// expectation — in a literal that key SETS the prototype), and a `Date`
+// member must come back by identity rather than as `{}`.
+describe('the rewrite walks keep an own __proto__ key and a non-plain value (#3121)', () => {
+  const arnByUniqueId = new Map([[ROLE_UNIQUE_ID, ROLE_ARN]]);
+
+  it('rewritePrincipalUniqueIds keeps an own __proto__ key on a Statement node', () => {
+    const doc = JSON.parse(
+      `{"Statement":[{"__proto__":{"polluted":"base"},"Effect":"Allow","Principal":${JSON.stringify(ROLE_UNIQUE_ID)}}]}`
+    ) as { Statement: Array<Record<string, unknown>> };
+    expect(Object.getOwnPropertyNames(doc.Statement[0]!)).toContain('__proto__');
+
+    const out = rewritePrincipalUniqueIds(doc, arnByUniqueId) as {
+      Statement: Array<Record<string, unknown>>;
+    };
+
+    const statement = out.Statement[0]!;
+    // The rewrite itself happened (the walk really rebuilt this node)...
+    expect(statement['Principal']).toBe(ROLE_ARN);
+    // ...and the exotic sibling is still a KEY of it, not its prototype.
+    expect(Object.getOwnPropertyNames(statement)).toContain('__proto__');
+    expect((statement as { polluted?: unknown }).polluted).toBeUndefined();
+    expect(JSON.stringify(out)).toContain('"__proto__":{"polluted":"base"}');
+  });
+
+  it('rewritePrincipalValue keeps an own __proto__ key inside the Principal object form', () => {
+    const doc = JSON.parse(
+      `{"Statement":[{"Effect":"Allow","Principal":{"__proto__":{"polluted":"base"},"AWS":${JSON.stringify(ROLE_UNIQUE_ID)}}}]}`
+    ) as { Statement: Array<{ Principal: Record<string, unknown> }> };
+    expect(Object.getOwnPropertyNames(doc.Statement[0]!.Principal)).toContain('__proto__');
+
+    const out = rewritePrincipalUniqueIds(doc, arnByUniqueId) as {
+      Statement: Array<{ Principal: Record<string, unknown> }>;
+    };
+
+    const principal = out.Statement[0]!.Principal;
+    expect(principal['AWS']).toBe(ROLE_ARN);
+    expect(Object.getOwnPropertyNames(principal)).toContain('__proto__');
+    expect((principal as { polluted?: unknown }).polluted).toBeUndefined();
+    expect(JSON.stringify(principal)).toContain('"__proto__":{"polluted":"base"}');
+  });
+
+  it('both walks return a Date member by identity instead of flattening it to {}', () => {
+    const when = new Date('2026-09-14T00:00:00.000Z');
+    const doc = {
+      Statement: [
+        {
+          Effect: 'Allow',
+          Principal: { AWS: ROLE_UNIQUE_ID, Stamp: when },
+          Stamp: when,
+        },
+      ],
+    };
+
+    const out = rewritePrincipalUniqueIds(doc, arnByUniqueId) as typeof doc;
+
+    expect(out.Statement[0]!.Principal.AWS).toBe(ROLE_ARN);
+    expect(out.Statement[0]!.Stamp).toBe(when);
+    expect(out.Statement[0]!.Principal.Stamp).toBe(when);
+  });
+
+  it('rewritePrincipalValue returns a non-plain Principal VALUE by identity (its own object arm)', () => {
+    // The `Principal` value itself is the non-plain object here, so the case
+    // reaches `rewritePrincipalValue`'s object arm rather than the outer
+    // walk's -- a mutation probe deleting THAT guard stayed green under the
+    // case above, whose `Date`s all sit beside a plain `Principal` object.
+    const when = new Date('2026-09-14T00:00:00.000Z');
+    const doc = { Statement: [{ Effect: 'Allow', Principal: when }] };
+
+    const out = rewritePrincipalUniqueIds(doc, arnByUniqueId) as typeof doc;
+
+    expect(out.Statement[0]!.Principal).toBe(when);
+  });
+});

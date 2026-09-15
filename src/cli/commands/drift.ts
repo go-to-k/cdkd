@@ -41,6 +41,10 @@ import {
 import { canonicalizeIpProtocols } from '../../analyzer/drift-protocol-normalize.js';
 import { CC_API_FALLBACK_DENY_LIST } from '../../analyzer/drift-cc-api-deny-list.js';
 import { stripCcApiAwsManagedFields } from '../../analyzer/cc-api-strip.js';
+// The own-key rule this command applies at every rebuild / membership site
+// (issues #2899 / #3124), shared with the analyzer-side canonicalizers since
+// issue #3121 — ONE spelling, from a LEAF module no suite mocks.
+import { defineOwnKey, hasOwnKey, hasPlainPrototype, ownValue } from '../../utils/own-keys.js';
 import { CloudControlProvider } from '../../provisioning/cloud-control-provider.js';
 import { withStackName } from '../../provisioning/resource-name.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
@@ -3077,10 +3081,10 @@ export function buildReadCurrentStateContext(
  * below would then compare against the accepted one. `undefined` is the answer
  * "the bag has nothing here", which is what an absent segment means.
  *
- * Exported, like `setAtPath`, as a test seam only: a `__proto__` path cannot
- * reach either through the command today (the comparison chain's normalisers
- * drop the key on both sides — issue #3121), so the own-key rule is pinned on
- * the helpers directly.
+ * Exported, like `setAtPath`, as a test seam: the own-key rule is pinned on
+ * the helpers directly, and since issue #3121 (the comparison chain's
+ * normalisers keep the key as an own key on both sides) a top-level
+ * `__proto__` drift also reaches both through the command.
  */
 export function getAtPath(source: unknown, path: string): unknown {
   if (path.length === 0) return source;
@@ -3125,25 +3129,9 @@ export function setAtPath(target: Record<string, unknown>, path: string, value: 
   defineOwnKey(cursor, segments[segments.length - 1]!, value);
 }
 
-/** Own-key membership: `in` reads the prototype chain, which a `JSON.parse`d bag never means. */
-function hasOwnKey(target: object, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(target, key);
-}
-
-/** An own-key read: `undefined` for an inherited name (`__proto__`, `constructor`, ...). */
-function ownValue(target: Record<string, unknown>, key: string): unknown {
-  return hasOwnKey(target, key) ? target[key] : undefined;
-}
-
-/** An ordinary (writable, enumerable, configurable) own data property — never the prototype. */
-function defineOwnKey(target: Record<string, unknown>, key: string, value: unknown): void {
-  Object.defineProperty(target, key, {
-    value,
-    writable: true,
-    enumerable: true,
-    configurable: true,
-  });
-}
+// `hasOwnKey` / `ownValue` / `defineOwnKey` / `hasPlainPrototype` were
+// file-local here until issue #3121 moved them to `src/utils/own-keys.ts`, so
+// the analyzer-side canonicalizers rebuild by the same rule.
 
 /**
  * `--accept`: state ← AWS.
@@ -3812,22 +3800,14 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/**
- * Does this value carry an ORDINARY object prototype?
- *
- * {@link isPlainRecord} admits `Date` / `Map` / `Set` / class instances, whose
- * own enumerable keys are `[]` — so a key-walk over one reports "no
- * contradiction" between two values that actually differ. The redaction walk's
- * `deepEqualJsonValue` carries the same guard for the same reason
- * (`secret-redaction.ts`, issue #2869): a `Date` anchor corroborates NOTHING.
- * Kept file-local rather than imported because `secret-redaction.js` is
- * `vi.mock`ed by several drift suites, and a value import from it reds them
- * with a missing-export failure.
- */
-function hasPlainPrototype(value: object): boolean {
-  const proto = Object.getPrototypeOf(value) as unknown;
-  return proto === Object.prototype || proto === null;
-}
+// `hasPlainPrototype` — the guard {@link isPlainRecord} lacks (it admits
+// `Date` / `Map` / `Set` / class instances, whose own enumerable keys are `[]`,
+// so a key-walk over one reports "no contradiction" between two values that
+// differ; the redaction walk's `deepEqualJsonValue` carries the same guard,
+// `secret-redaction.ts`, issue #2869) — is imported from `own-keys.ts`. It is
+// NOT imported from `secret-redaction.js`, which several drift suites
+// `vi.mock`: a value import from a mocked module reds them with a
+// missing-export failure.
 
 /**
  * Merge the AWS-current value with the revert baseline, KEEPING every path the

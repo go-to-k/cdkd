@@ -30,6 +30,7 @@ import {
   canonicalizeUnorderedArraysAtPaths,
   matchesPathPrefix,
 } from './drift-normalize.js';
+import { hasPlainPrototype } from '../utils/own-keys.js';
 
 /**
  * A single property-level drift between state and AWS-current.
@@ -196,7 +197,16 @@ function diffAt(
   ignorePaths: readonly string[],
   unionWalkObjects: boolean
 ): void {
-  if (deepEqual(stateValue, awsValue)) return;
+  // Compared and DESCENDED in JSON form (issue #3121 follow-up): a `Date` the
+  // raw SDK readback carries now survives the canonicalizers by identity, and
+  // the persisted baseline holds its ISO string, so without the fold run 2
+  // compared `'2026-...'` against a `Date` -- `typeof` mismatch, drift
+  // forever. The PUSHED values stay the originals: `--accept` serializes the
+  // Date to the same ISO string, and a caller inspecting `awsValue` sees what
+  // AWS returned.
+  const stateForm = jsonForm(stateValue);
+  const awsForm = jsonForm(awsValue);
+  if (deepEqual(stateForm, awsForm)) return;
 
   // FALLBACK for a state leaf whose `{{resolve:...}}` dynamic reference could
   // not be resolved (GHSA fix: cdkd persists the expression, not the resolved
@@ -219,10 +229,10 @@ function diffAt(
   if (typeof stateValue === 'string' && stateValue.includes('{{resolve:')) return;
 
   if (
-    isPlainObject(stateValue) &&
-    isPlainObject(awsValue) &&
-    !Array.isArray(stateValue) &&
-    !Array.isArray(awsValue)
+    isPlainObject(stateForm) &&
+    isPlainObject(awsForm) &&
+    !Array.isArray(stateForm) &&
+    !Array.isArray(awsForm)
   ) {
     // Recurse into nested object. With unionWalkObjects on, walk the
     // union of state + aws keys so console-side key additions to a
@@ -230,12 +240,12 @@ function diffAt(
     // drift; without it, only state's keys are walked (preserves the
     // pre-unionWalkObjects behavior for the v2-state-fallback baseline).
     const keys = unionWalkObjects
-      ? new Set([...Object.keys(stateValue), ...Object.keys(awsValue)])
-      : Object.keys(stateValue);
+      ? new Set([...Object.keys(stateForm), ...Object.keys(awsForm)])
+      : Object.keys(stateForm);
     for (const key of keys) {
       const childPath = `${path}.${key}`;
       if (isIgnoredPath(childPath, ignorePaths)) continue;
-      diffAt(childPath, stateValue[key], awsValue[key], out, ignorePaths, unionWalkObjects);
+      diffAt(childPath, stateForm[key], awsForm[key], out, ignorePaths, unionWalkObjects);
     }
     return;
   }
@@ -244,11 +254,40 @@ function diffAt(
 }
 
 /**
+ * The form `JSON.stringify` would serialize a value as, for the ONE shape the
+ * comparator's "JSON-roundtrip equality" contract did not cover: a NON-PLAIN
+ * object carrying `toJSON` (a `Date`, which serializes as its ISO string; a
+ * `Buffer`, whose prototype `toJSON` yields `{type, data}`). Every other value
+ * is returned untouched. What the comparator then does with an untouched
+ * non-plain object is what it does with a plain one -- it walks the OWN keys
+ * (`deepEqual` below, and `diffAt`'s descend gate, test `typeof === 'object'`
+ * and nothing about the prototype) -- so a `Uint8Array` compares by its
+ * index keys (the persisted `{"0":1,"1":2}` equals the readback typed array,
+ * the convergence this fold exists for) and a keyless `Map` / class instance
+ * compares equal to `{}` and to any other keyless one. That last case is
+ * PRE-EXISTING and is not what the canonicalizers' identity return protects:
+ * they keep a non-plain node from being REBUILT as `{}`, and this fold keeps
+ * the JSON-carrying ones from drifting forever against their persisted form;
+ * neither adds a prototype guard here, because a bare `hasPlainPrototype`
+ * gate would break the typed-array convergence (PR #3148 delta review).
+ */
+function jsonForm(value: unknown): unknown {
+  if (value === null || typeof value !== 'object' || hasPlainPrototype(value)) return value;
+  const toJSON = (value as { toJSON?: unknown }).toJSON;
+  return typeof toJSON === 'function' ? (toJSON.call(value) as unknown) : value;
+}
+
+/**
  * Structural equality used by the drift comparator. Identical to a
  * plain `JSON.stringify`-roundtrip equality except it tolerates
  * undefined-vs-missing-key gaps the same way (both serialize away).
+ * `Date`s (and anything else non-plain with `toJSON`) are compared in their
+ * JSON form via {@link jsonForm}, so the persisted ISO string of an accepted
+ * readback equals the `Date` the next readback returns.
  */
 function deepEqual(a: unknown, b: unknown): boolean {
+  a = jsonForm(a);
+  b = jsonForm(b);
   if (a === b) return true;
   if (a === null || b === null || a === undefined || b === undefined) {
     return a === b;

@@ -1585,8 +1585,11 @@ describe('buildRevertNewProperties defines a top-level __proto__ overlay as an O
 });
 
 // The other three sweep sites of the same class, pinned on the helpers
-// directly: a `__proto__` path cannot reach them through the command today
-// (the comparison chain's normalisers drop the key on both sides — #3121).
+// directly. When these were written a `__proto__` path could not reach them
+// through the command (the comparison chain's normalisers dropped the key on
+// both sides); issue #3121 closed that, and `drift-secret-redaction.test.ts`
+// pins the top-level key through the command. The helper-level pin stays the
+// unit of the own-key rule.
 describe('the --accept path helpers and the narrowing delta treat __proto__ as an OWN key (#2899 class)', () => {
   it('setAtPath defines a top-level __proto__ as an own key on a JSON-parsed bag', () => {
     const bag = JSON.parse('{"A":"a"}') as Record<string, unknown>;

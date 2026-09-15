@@ -267,6 +267,53 @@ describe('coerceWarmThroughput (issue #1857 / #1808)', () => {
     ]);
     expect(coerceWarmThroughput({ ReadUnitsPerSecond: undefined }).droppedMembers).toEqual([]);
   });
+
+  // Issue #3135: the block is FORWARDED, so a member is read through
+  // CloudFormation's measured DynamoDB Integer grammar (`coerceCfnInteger`,
+  // NO trim — the DynamoDB table on `toCfnInteger`'s doc), not `Number()`.
+  // Each spelling below is one CloudFormation was measured to REJECT on
+  // `AWS::DynamoDB::Table.ProvisionedThroughput` (us-east-1, 2026-09-14), and
+  // `Number()` forwarded a number for every one of them.
+  describe('reads a member through the measured DynamoDB Integer grammar (issue #3135)', () => {
+    it.each([
+      ['a padded string', ' 7 ', 7],
+      ['a trailing-space string', '7 ', 7],
+      ['a hex string', '0x9', 9],
+      ['an exponent string', '1e1', 10],
+      ['a decimal-point string', '6.5', 6.5],
+      ['a whole-valued decimal string', '6.0', 6],
+      ['a fractional NUMBER', 6.5, 6.5],
+    ])('DROPS %s and NAMES the member, never reading it as absent', (_label, value, numberReading) => {
+      // The premise the case rests on: the wider reader accepted it, so the
+      // pre-fix binary forwarded THIS number for a template CloudFormation
+      // refuses. Stated in the assertion so a future widening of
+      // `toFiniteNumber` cannot make the case vacuous.
+      expect(toFiniteNumber(value)).toBe(numberReading);
+
+      const coercion = coerceWarmThroughput({
+        ReadUnitsPerSecond: value,
+        WriteUnitsPerSecond: 4000,
+      });
+      // Dropped and NAMED — the same arm an unresolved intrinsic takes, so
+      // the provider's diagnostic reports it; NOT read as an absent member
+      // (an absent member is not named) and NOT forwarded.
+      expect(coercion.spec).toEqual({ WriteUnitsPerSecond: 4000 });
+      expect(coercion.droppedMembers).toEqual(['ReadUnitsPerSecond']);
+    });
+
+    it('still accepts every spelling CloudFormation accepts: a signed and a zero-padded digit string', () => {
+      expect(coerceWarmThroughput({ ReadUnitsPerSecond: '+8', WriteUnitsPerSecond: '010' })).toEqual({
+        spec: { ReadUnitsPerSecond: 8, WriteUnitsPerSecond: 10 },
+        droppedMembers: [],
+      });
+    });
+
+    it('refuses the whole block when its only member is a rejected spelling', () => {
+      expect(coerceWarmThroughput({ WriteUnitsPerSecond: ' 12000 ' })).toEqual({
+        droppedMembers: ['WriteUnitsPerSecond'],
+      });
+    });
+  });
 });
 
 describe('isWarmThroughputDecrease (issue #1857 / #1768)', () => {

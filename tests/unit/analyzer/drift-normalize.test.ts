@@ -5,6 +5,7 @@ import {
   canonicalizeUnorderedArraysAtPaths,
   matchesPathPrefix,
 } from '../../../src/analyzer/drift-normalize.js';
+import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
 
 describe('canonicalizeTagListsDeep', () => {
   it('sorts a tag list by Key so a reorder canonicalizes equal', () => {
@@ -396,5 +397,123 @@ describe('canonicalizeUnorderedArraysAtPaths — leaf-only entries (issue #1783)
   it('is a no-op at a path the leaf-only entry does not name', () => {
     const other = { Other: ['b', 'a'] };
     expect(canonicalizeUnorderedArraysAtPaths(other, ['GlobalSecondaryIndexes[]'])).toEqual(other);
+  });
+});
+
+// Issue #3121: the three canonicalizers rebuilt every object node onto a `{}`
+// literal, and they run on the COMPARISON copies of BOTH sides. Two
+// consequences, each pinned per function (so a mutation at any one site is
+// caught by its own case) and then through `calculateResourceDrift`, the one
+// caller, whose chain runs all three:
+//
+//  1. an OWN `__proto__` key — what `JSON.parse` yields from `state.json` —
+//     was ASSIGNED onto the literal, became the node's prototype and vanished
+//     as a key on both sides, so a drift at that key was invisible;
+//  2. a NON-PLAIN readback member (a `Date`, whose own enumerable keys are
+//     `[]`) was flattened to `{}` before the comparator saw it.
+//
+// Assertions read JSON text or `Object.getOwnPropertyNames`, never an
+// object-literal `{ __proto__: ... }` expectation: in a literal that key SETS
+// the prototype, so such an expectation would encode the very bug.
+describe('the canonicalizers keep an own __proto__ key and return a non-plain value by identity (#3121)', () => {
+  /** The bag as `JSON.parse` yields it: `__proto__` is an OWN data property. */
+  const protoBag = (): Record<string, unknown> =>
+    JSON.parse('{"__proto__":{"polluted":"base"},"A":"a","Nested":{"__proto__":{"deep":1},"B":"b"}}');
+
+  /** The fixture's own guard, so a case cannot pass on an input that never carried the key. */
+  const assertOwnProto = (bag: unknown): void => {
+    expect(Object.getOwnPropertyNames(bag as object)).toContain('__proto__');
+    expect(Object.getPrototypeOf(bag)).toBe(Object.prototype);
+  };
+
+  const assertProtoKept = (out: unknown): void => {
+    const names = Object.getOwnPropertyNames(out as object);
+    expect(names).toContain('__proto__');
+    expect(names).toContain('Nested');
+    // The key is a KEY, not the prototype: the rebuilt node inherits nothing
+    // from the polluted value, and the JSON round-trip carries it.
+    expect((out as { polluted?: unknown }).polluted).toBeUndefined();
+    expect(JSON.stringify(out)).toContain('"__proto__":{"polluted":"base"}');
+    expect(JSON.stringify(out)).toContain('"__proto__":{"deep":1}');
+    const nested = (out as Record<string, unknown>)['Nested'] as object;
+    expect(Object.getOwnPropertyNames(nested)).toContain('__proto__');
+  };
+
+  it('canonicalizeTagListsDeep keeps a top-level AND a nested own __proto__ key', () => {
+    const bag = protoBag();
+    assertOwnProto(bag);
+    assertProtoKept(canonicalizeTagListsDeep(bag));
+  });
+
+  it('canonicalizeIdArraysDeep keeps a top-level AND a nested own __proto__ key', () => {
+    const bag = protoBag();
+    assertOwnProto(bag);
+    assertProtoKept(canonicalizeIdArraysDeep(bag));
+  });
+
+  it('canonicalizeUnorderedArraysAtPaths keeps a top-level AND a nested own __proto__ key', () => {
+    const bag = protoBag();
+    assertOwnProto(bag);
+    // A non-empty path list, or the walk short-circuits by identity and the
+    // object arm is never exercised.
+    assertProtoKept(canonicalizeUnorderedArraysAtPaths(bag, ['Unrelated']));
+  });
+
+  it('each canonicalizer returns a Date member BY IDENTITY instead of flattening it to {}', () => {
+    const when = new Date('2026-09-14T00:00:00.000Z');
+    const bag = { Outer: { When: when }, Tags: [{ Key: 'k', Value: 'v' }] };
+    for (const out of [
+      canonicalizeTagListsDeep(bag),
+      canonicalizeIdArraysDeep(bag),
+      canonicalizeUnorderedArraysAtPaths(bag, ['Tags']),
+    ]) {
+      const outer = (out as Record<string, unknown>)['Outer'] as Record<string, unknown>;
+      expect(outer['When']).toBe(when);
+      // The plain container around it IS rebuilt (a fresh node), so the
+      // identity return is scoped to the non-plain value, not the whole bag.
+      expect(outer).not.toBe(bag.Outer);
+    }
+  });
+
+  it('calculateResourceDrift reports a drift at a key literally named __proto__ (top-level and nested)', () => {
+    // BOTH sides carry the key as an own key and DIFFER there and only there.
+    const state = JSON.parse(
+      '{"__proto__":{"polluted":"base"},"A":"a","Env":{"__proto__":{"deep":1},"B":"b"}}'
+    ) as Record<string, unknown>;
+    const aws = JSON.parse(
+      '{"__proto__":{"polluted":"live"},"A":"a","Env":{"__proto__":{"deep":2},"B":"b"}}'
+    ) as Record<string, unknown>;
+    assertOwnProto(state);
+    assertOwnProto(aws);
+
+    // A declared unordered path, so the third canonicalizer's object arm is
+    // on the chain too (with none it returns its input by identity and a
+    // regression there would go unseen here).
+    const drifts = calculateResourceDrift(state, aws, {
+      unionWalkObjects: true,
+      unorderedPaths: ['Unrelated'],
+    });
+
+    // The comparator descends into the object under the key, so the leaf
+    // path carries the exotic segment in the middle.
+    expect(drifts.map((d) => d.path).sort()).toEqual(['Env.__proto__.deep', '__proto__.polluted']);
+    const top = drifts.find((d) => d.path === '__proto__.polluted')!;
+    expect(top.stateValue).toBe('base');
+    expect(top.awsValue).toBe('live');
+  });
+
+  it('calculateResourceDrift sees a Date readback as the Date, not as {} (the value --accept persists)', () => {
+    const when = new Date('2026-09-14T00:00:00.000Z');
+    const state = { Outer: { When: '2026-09-13T00:00:00.000Z' } };
+    const aws = { Outer: { When: when } };
+
+    const drifts = calculateResourceDrift(state, aws, { unorderedPaths: ['Unrelated'] });
+
+    expect(drifts).toHaveLength(1);
+    expect(drifts[0]!.path).toBe('Outer.When');
+    // The SAME instance reaches the comparator's output — pre-fix this was a
+    // fresh `{}`, which `--accept` then wrote into the baseline.
+    expect(drifts[0]!.awsValue).toBe(when);
+    expect(JSON.stringify(drifts[0]!.awsValue)).toBe('"2026-09-14T00:00:00.000Z"');
   });
 });

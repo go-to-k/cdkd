@@ -129,20 +129,22 @@ export interface WarmThroughputCoercion {
  *
  * The accepted STRING set is `Number()`'s, which is WIDER than a decimal
  * integer: `'0x1e'`, `'0o36'`, `'1e3'`, `'30.5'` and `' 30 '` all coerce.
- * CloudFormation accepts only the LAST of those for an `Integer`-typed
- * property — measured on `AWS::Logs::LogGroup.RetentionInDays`, issue
- * [#2698](https://github.com/go-to-k/cdkd/issues/2698) — and
- * {@link toCfnInteger} is the reader that matches that measurement. It matters
- * at the CALLERS that FORWARD the result to AWS rather than merely compare it:
- * the log-group provider switched; the DynamoDB capacity / throughput
- * forwarders (`coerceWarmThroughput` below, and the `GlobalTable` provider's
- * `ProvisionedThroughput` / `OnDemandThroughput` readers) still read through
- * THIS helper, because the measurement covers one resource handler and
- * DynamoDB's has not been A/B'd — issue
- * [#3135](https://github.com/go-to-k/cdkd/issues/3135) holds that pass. A
- * GUARD caller (`stateful-types.ts`'s `has-retention`, the DynamoDB
- * already-matches / decrease tests) is safe on the wider set: over-acceptance
- * there can only produce MORE refusals or skip fewer calls.
+ * CloudFormation accepts NONE of those on a DynamoDB capacity and only the
+ * LAST on `AWS::Logs::LogGroup.RetentionInDays` (both measured — the tables
+ * are on {@link toCfnInteger}), so this helper is for the GUARD callers only:
+ * `stateful-types.ts`'s `has-retention`, the DynamoDB already-matches /
+ * decrease / zero-capacity tests, the live-readback compares. A guard is safe
+ * on the wider set — over-acceptance there can only produce MORE refusals or
+ * skip fewer calls. A caller that FORWARDS the number to AWS reads through the
+ * grammar CloudFormation measured for that handler instead:
+ * `logs-loggroup-provider.ts` through {@link toCfnInteger} (issue
+ * [#2698](https://github.com/go-to-k/cdkd/issues/2698)), every DynamoDB
+ * capacity / throughput forwarder (`coerceWarmThroughput` below, the
+ * `GlobalTable` provider's `ProvisionedThroughput` / `OnDemandThroughput`
+ * readers AND the diagnostic / mirror predicates paired with them) through
+ * `config-shape.ts`'s `coerceCfnInteger` (issue
+ * [#3135](https://github.com/go-to-k/cdkd/issues/3135)). A forwarder left on
+ * THIS helper sends `Number('0x9')` for a template CloudFormation refuses.
  *
  * EXPORTED, and not because warm throughput needs it exported. This exact rule
  * was hand-written three times — here, as `dynamodb-table-provider.ts`'s
@@ -206,6 +208,37 @@ export function toFiniteNumber(value: unknown): number | undefined {
  * behaviour varies on padding, so each helper carries its own measurement and
  * a caller picks by the property it forwards.
  *
+ * The DynamoDB measurement, read beside the Logs one so the two grammars sit
+ * side by side (`AWS::DynamoDB::Table.ProvisionedThroughput.ReadCapacityUnits`
+ * plus one `WriteCapacityUnits` row, us-east-1, 2026-09-14, issue
+ * [#3135](https://github.com/go-to-k/cdkd/issues/3135); same protocol, live
+ * value read back with `dynamodb describe-table`). "properties validation" is
+ * CloudFormation's own template-property check, which fires BEFORE the
+ * handler; "handler" is the DynamoDB resource handler's model validation:
+ *
+ * ```
+ * template spelling        CloudFormation                          live RCU after
+ * 5 (JSON number)          accepted                                5
+ * "6"                      accepted                                6
+ * "+8"                     accepted                                8
+ * "010"                    accepted (decimal, not octal)           10
+ * " 7 " (padded)           REJECTED (properties validation)        unchanged
+ * "7 " (trailing space)    REJECTED (properties validation)        unchanged
+ * "" (empty string)        REJECTED (properties validation)        unchanged
+ * "0x9" (RCU or WCU)       REJECTED (handler)                      unchanged
+ * "1e1"                    REJECTED (Validation failed)            unchanged
+ * "6.0"                    REJECTED (same)                         unchanged
+ * "6.5"                    REJECTED (same)                         unchanged
+ * ```
+ *
+ * The two agree on the digits (`/^[+-]?\d+$/`, hex / exponent / decimal-point
+ * rejected by both) and DISAGREE on padding: the Logs handler trims, DynamoDB
+ * rejects `" 7 "` and `"7 "` before any handler runs. So the DynamoDB
+ * forwarders read through {@link coerceCfnInteger} itself — the no-trim
+ * grammar — and NOT through this helper, whose trim is licensed by the Logs
+ * measurement alone. `""` is not portable as "absent" either: on a REQUIRED
+ * Integer it is rejected outright, where `RetentionInDays` reads it as absent.
+ *
  * What this helper does NOT decide: the empty / whitespace-only strings above
  * are CloudFormation's spelling of "property absent", which is a statement
  * about the PROPERTY, not about the number — they answer `undefined` here, and
@@ -240,6 +273,16 @@ export function toCfnInteger(value: unknown): number | undefined {
  * Pure: takes the raw bag, returns numbers, logs nothing. Each caller owns its
  * own message, so the wording stays consistent across that provider's send
  * sites without forcing one wording across both providers.
+ *
+ * A member is read through {@link coerceCfnInteger} — CloudFormation's
+ * measured DynamoDB Integer grammar (issue #3135, table on
+ * {@link toCfnInteger}) — because this block is FORWARDED. A spelling
+ * CloudFormation rejects (`" 7 "`, `"0x9"`, `"1e1"`, `"6.5"`) is therefore a
+ * DROPPED member, named in `droppedMembers` exactly like an unresolved
+ * intrinsic: the caller's diagnostic reports it and the live AWS value is left
+ * alone. It is never read as ABSENT (the `=== undefined` test above runs on
+ * the RAW value), and it is never forwarded as `Number()`'s reading, which
+ * sent `7` for a template CloudFormation refuses.
  */
 export function coerceWarmThroughput(raw: unknown): WarmThroughputCoercion {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return { droppedMembers: [] };
@@ -252,7 +295,7 @@ export function coerceWarmThroughput(raw: unknown): WarmThroughputCoercion {
     // and this is the spelling `dynamodb-table-provider.ts` shipped and its
     // tests pin.
     if (bag[member] === undefined) continue;
-    const coerced = toFiniteNumber(bag[member]);
+    const coerced = coerceCfnInteger(bag[member]);
     if (coerced === undefined) {
       droppedMembers.push(member);
       continue;

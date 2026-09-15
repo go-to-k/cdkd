@@ -272,6 +272,34 @@ describe('DynamoDBTableProvider WarmThroughput decrease (issue #1768)', () => {
     // 7 item 7) — it is the only place the dropped member is named.
     expect(announcement).toBeDefined();
     expect(announcement).toContain('ReadUnitsPerSecond');
+    // ...and names the Integer grammar beside the intrinsic hint (issue
+    // #3135), since a padded `" 7 "` takes this same dropped arm.
+    expect(announcement).toContain('no surrounding whitespace, hex, exponent or decimal point');
+  });
+
+  it('DROPS and announces a padded member the way it drops an unresolved one (issue #3135)', async () => {
+    // `Number(' 7000 ')` is 7000 and the pre-fix binary forwarded it;
+    // CloudFormation rejects the padded spelling on a DynamoDB Integer at
+    // properties validation, so it is now the dropped-and-named arm above.
+    primeLiveTable({ WarmThroughput: LIVE_WARM_THROUGHPUT });
+
+    await provider.update(
+      'L',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      { WarmThroughput: { ReadUnitsPerSecond: ' 7000 ', WriteUnitsPerSecond: 9000 } },
+      { WarmThroughput: { ReadUnitsPerSecond: 24000, WriteUnitsPerSecond: 8000 } }
+    );
+
+    // The usable write half (an INCREASE over the live 4000) is still sent.
+    const updates = warmThroughputUpdates();
+    expect(updates).toHaveLength(1);
+    expect(updates[0]!.input.WarmThroughput).toEqual({ WriteUnitsPerSecond: 9000 });
+    const messages = warn.mock.calls.map((c) => String(c[0]));
+    const announcement = messages.find((m) => m.includes('were dropped from the request'));
+    expect(announcement).toBeDefined();
+    expect(announcement).toContain('ReadUnitsPerSecond');
+    expect(announcement).toContain('" 7000 "');
   });
 
   it('accepts a YAML-borne numeric STRING on the desired side', async () => {
