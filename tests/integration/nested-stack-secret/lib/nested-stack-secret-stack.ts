@@ -94,6 +94,12 @@ import { Construct } from 'constructs';
  *    INSIDE the token (`port:{{resolve:...:pinjoin::}}` -> `port:k3`). The
  *    #2745 carry required a STRING source, so this child leaf persisted the
  *    framed plaintext while the parent's own row held the frame.
+ *  - `PinSsmNeverMatches` (child condition) — THE #3114 ARM. A parameter the
+ *    parent spelled as an `Fn::Join` around an `ssm` SecureString token with
+ *    the account `Ref` inside it (`port:{{resolve:ssm:...}}` -> `port:m8`).
+ *    The carry refuses that frame, so the child masks the value only through
+ *    the log twin the parent registered for it. Before #3114 the child's
+ *    parameter, `Ref` and `Fn::Join` debug lines printed `port:m8`.
  *  - `ParentConsumer` (parent) — reads the child's OUTPUT through
  *    `Fn::GetAtt: [Child, 'Outputs.ChildSecretOutput']`. Since PR #1899 the
  *    child persists that output REDACTED, so before #2055 the parent shipped
@@ -221,6 +227,19 @@ class SecretBearingChild extends cdk.NestedStack {
     // parent's `pinJoinReference`.
     const subFloorPinJoin = new cdk.CfnParameter(this, 'SubFloorPinJoin', { type: 'String' });
     subFloorPinJoin.overrideLogicalId('SubFloorPinJoin');
+    // THE #3114 ARM's input: a sub-floor SecureString the parent spells as an
+    // `Fn::Join` whose token is `ssm:`, which the parent's carry refuses by
+    // design, so the child's inherited bag holds no whole-value entry for it.
+    // Consumed ONLY by the condition below, never by a resource property: the
+    // carry's refusal leaves no redaction for a child leaf holding it, and a
+    // condition persists nothing, so this arm reads the child's debug lines
+    // without putting the plaintext into the child's state.
+    const subFloorPinSsm = new cdk.CfnParameter(this, 'SubFloorPinSsm', { type: 'String' });
+    subFloorPinSsm.overrideLogicalId('SubFloorPinSsm');
+    const pinSsmCondition = new cdk.CfnCondition(this, 'PinSsmNeverMatches', {
+      expression: cdk.Fn.conditionEquals(cdk.Fn.join('', ['x-', subFloorPinSsm.valueAsString]), 'never'),
+    });
+    pinSsmCondition.overrideLogicalId('PinSsmNeverMatches');
 
     const stageParam = new ssm.StringParameter(this, 'StageParam', {
       parameterName: names.stageParamName,
@@ -607,6 +626,17 @@ export class NestedStackSecretStack extends cdk.Stack {
       cdk.Aws.ACCOUNT_ID,
       ':SecretString:pinjoin::}}',
     ]);
+    // THE #3114 FRAME. `pinJoinReference`'s shape around an `ssm` SecureString
+    // token (verify.sh creates it with a 2-character value). An intrinsic frame
+    // whose token spells `ssm:` is one `recordNestedStackParameterExpressions`
+    // refuses to carry, so the child gets no whole-value entry and reads the
+    // mask only through the parent's log twin. Kept in sync with verify.sh's
+    // `PIN_SSM_PARAM_NAME`.
+    const pinSsmReference = cdk.Fn.join('', [
+      'port:{{resolve:ssm:cdkd-nested-pinssm-',
+      cdk.Aws.ACCOUNT_ID,
+      '}}',
+    ]);
     // THE #3079 TWIN. A SIXTH JSON key holding the SAME two characters as
     // `pin`, in the SAME `port:` frame -- two tokens, one middle, one frame.
     // Kept in sync with verify.sh's secret JSON (`pintwin`).
@@ -660,6 +690,8 @@ export class NestedStackSecretStack extends cdk.Stack {
           SubFloorPinTwin: pinTwinReference,
           // The #3062 frame: an `Fn::Join` with the account `Ref` inside the token.
           SubFloorPinJoin: pinJoinReference,
+          // The #3114 frame: an `Fn::Join` around an `ssm` SecureString token.
+          SubFloorPinSsm: pinSsmReference,
         },
       }
     );

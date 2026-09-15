@@ -43,7 +43,10 @@ import {
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
 import type { ResourceState } from '../../../src/types/state.js';
-import { resetAccountInfoCache } from '../../../src/deployment/intrinsic-function-resolver.js';
+import {
+  IntrinsicFunctionResolver,
+  resetAccountInfoCache,
+} from '../../../src/deployment/intrinsic-function-resolver.js';
 
 // The REAL retry loop with its waits removed, NOT a pass-through stub. The
 // binding under test sits INSIDE the thunk `withRetry` re-invokes, so a
@@ -344,6 +347,56 @@ describe('rollback-executor binds the nested-stack secrets scope (#2086)', () =>
 
     expect(mockSMSend).not.toHaveBeenCalled();
     expect(seen).toEqual([{}]);
+  });
+
+  it('binds the very bag the replay resolved with, not a copy of it (#3114)', async () => {
+    // The resolver keys what it registers for a pass (the log twins among it)
+    // by the `recordedSecretValues` OBJECT, and a nested child reaches those
+    // registrations only through the object it receives as `inheritedSecrets`.
+    // The content assertions above stay green on `new Map(secrets)`; identity
+    // does not.
+    const resolvedWith = new Set<unknown>();
+    const original = IntrinsicFunctionResolver.prototype.resolveDynamicReferences;
+    const spy = vi
+      .spyOn(IntrinsicFunctionResolver.prototype, 'resolveDynamicReferences')
+      .mockImplementation(function (
+        this: IntrinsicFunctionResolver,
+        ...args: Parameters<IntrinsicFunctionResolver['resolveDynamicReferences']>
+      ) {
+        const bag: RecordedSecretValues | undefined = args[1]?.recordedSecretValues;
+        if (bag) resolvedWith.add(bag);
+        return original.apply(this, args);
+      });
+    try {
+      const bound: unknown[] = [];
+      const update = vi.fn(async () => {
+        bound.push(getCurrentResourceSecrets());
+        return { physicalId: 'arn:cdkd-local:us-east-1:123456789012:nested-stack/Parent/Child' };
+      });
+      const ops: CompletedOperation[] = [
+        {
+          logicalId: 'Child',
+          changeType: 'UPDATE',
+          resourceType: NESTED,
+          physicalId: 'arn:cdkd-local:us-east-1:123456789012:nested-stack/Parent/Child',
+          previousState: prevNestedRow(),
+        },
+      ];
+      const state: Record<string, ResourceState> = {
+        Child: res({
+          properties: { Parameters: { DbPassword: SECRET_EXPR }, TemplateURL: 'child-v2.json' },
+        }),
+      };
+
+      await replayRollback(ops, state, 'Parent', makeCtx({ update }));
+
+      expect(update).toHaveBeenCalledOnce();
+      expect(resolvedWith.size).toBeGreaterThan(0);
+      expect(bound).toHaveLength(1);
+      expect(resolvedWith.has(bound[0])).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

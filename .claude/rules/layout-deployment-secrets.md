@@ -90,8 +90,8 @@ Index of every area: [code-layout.md](code-layout.md).
     no mask and no throw) precisely because it was fixed at callers.
     **Every one of these masks is BOUNDED** — `maskSecretsInText` matches
     literally, so a plaintext that has been truncated or re-encoded is not
-    masked, and neither is one below `MIN_NEEDLE_LENGTH` (4)
-    unless it is the ENTIRE string. Embedding alone is NOT a limit: the
+    masked, nor one below `MIN_NEEDLE_LENGTH` unless
+    WHOLE or log-twinned on resolver lines. Embedding alone is NOT a limit: the
     substring arm masks a plaintext inside a longer message. Do not restate
     WHICH shapes escape or where a fix would sit — that is acted on and kept
     true in `intrinsic-function-resolver.ts` (`maskValueLeaves`, and the
