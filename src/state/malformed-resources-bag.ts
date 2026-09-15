@@ -158,11 +158,17 @@ export function malformedStateRefusalMessage(stackName: string, region: string):
  * A record container a TEXT view walks with `Object.entries`, other than the
  * `resources` bag the rest of this module is about.
  *
- * A CLOSED union on purpose: {@link malformedRenderedContainersWarning}
- * interpolates these names into its text WITHOUT sanitizing them, which is only
- * safe while every value is a literal written here rather than a key read out
- * of a record. Widening this to `string` would open that message to a
- * hand-edited record's own bytes.
+ * A CLOSED union because a container name is the VIEW's own vocabulary — the
+ * set of blocks it renders — not anything a record can name. Widening it to
+ * `string` would let a caller hand the warning below a key read out of a
+ * hand-edited record, which is a different message from the one this is.
+ *
+ * That is a design reason and NOT a safety one, and the distinction is
+ * load-bearing: {@link malformedRenderedContainersWarning} sanitizes every name
+ * it prints, so the closed union is not what stops a forged one from forging a
+ * line. Do not read this note as licence to drop that sanitizing — an earlier
+ * revision of this comment said the opposite and would have licensed exactly
+ * that (review of go-to-k/cdkd#3190).
  */
 export type RenderedStateContainer = 'outputs' | 'skippedOutputs' | 'attributes' | 'properties';
 
@@ -186,16 +192,25 @@ export type RenderedStateContainer = 'outputs' | 'skippedOutputs' | 'attributes'
  * emitted LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s own note
  * gives.
  *
- * The container NAMES are sanitized but NOT shell-quoted, and the asymmetry is
- * deliberate in both halves. Not shell-quoted, because they appear in the
- * PROSE and never inside the command this text tells the reader to run — the
- * command carries the two identifiers and nothing else. Sanitized anyway,
- * because the alternative is a guarantee that lives in a comment: the union
- * above is closed at COMPILE time, and the day a caller derives a name from a
- * record instead of from a literal, an unsanitized element could carry a
- * newline and forge a second line of output. `displaySafe` costs nothing on a
- * literal — it is the identity on printable ASCII — and makes the guarantee
- * structural (security review of go-to-k/cdkd#3190).
+ * The container NAMES take {@link safeIdentifier} too — the SAME helper, so
+ * they cannot drift from it — but NOT `shellQuote`, because they appear in the
+ * PROSE and never inside the command this text tells the reader to run; the
+ * command carries the two identifiers and nothing else.
+ *
+ * Sanitizing them is not dead code written for a case that cannot happen. The
+ * union above is closed at COMPILE time, so without this the guarantee would
+ * live in a comment, and the day a caller derives a name from a record instead
+ * of from a literal an unsanitized element could forge a line, render as empty
+ * quotes naming nothing, or run to kilobytes and push the remedy command off
+ * the reader's screen. `safeIdentifier` closes all three and is the identity on
+ * all four literals, so no user-visible text moves.
+ *
+ * What it does NOT close, stated rather than reassured away: a forged name made
+ * only of printable ASCII still renders verbatim inside its quotes and could
+ * read as prose. That residual is bounded to the PROSE — the command the reader
+ * pastes is built from the two shell-quoted identifiers alone — and closing it
+ * would mean JSON-quoting a name in the one place the text is meant to read as
+ * English (review of go-to-k/cdkd#3190).
  */
 export function malformedRenderedContainersWarning(
   stackName: string,
@@ -204,7 +219,7 @@ export function malformedRenderedContainersWarning(
 ): string {
   const stack = safeIdentifier(stackName);
   const reg = safeIdentifier(region);
-  const names = containers.map((name) => `'${displaySafe(name, { asciiOnly: true })}'`).join(', ');
+  const names = containers.map((name) => `'${safeIdentifier(name)}'`).join(', ');
   return (
     `State for ${shellQuote(stack)} (${shellQuote(reg)}) has a non-object ${names} — the record ` +
     `is malformed or truncated. 'Object.entries' walks a string or a list as readily as a map, ` +

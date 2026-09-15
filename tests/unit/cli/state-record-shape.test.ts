@@ -1218,12 +1218,55 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
      * nothing legitimate in these records prints: every healthy container here
      * is keyed `Alpha` / `Beta`.
      *
-     * This is the discriminator, and it is the same one at all four sites — the
-     * block HEADER is not, because `  Attributes: (none)` contains
-     * `  Attributes:`, so a header assertion would pass over a fabricating
-     * render at two of the four.
+     * A READABILITY aid, not the fence — {@link expectRendersAsEmpty} is. Two
+     * review rounds measured why. It is keyed to one row GRAMMAR, so a walk
+     * rendering `    - key = value` instead of `    key: value` fabricates the
+     * same six phantom rows and this matches none of them (measured: 141 green
+     * with such a walk live). The block HEADER is no better — `Attributes:
+     * (none)` contains `  Attributes:` — which is why it was not the
+     * discriminator either.
      */
     const FABRICATED_ROW = /(^|\n)\s*0: /;
+
+    /**
+     * THE oracle: an unreadable container must render EXACTLY as an empty one.
+     *
+     * That is the invariant the fix actually establishes — the repair writes
+     * `{}` — and it is what makes the fence independent of how any renderer,
+     * present or future, spells a row. A seventh walk over a container this
+     * command does not repair adds output that the emptied record does not
+     * have, whatever grammar it uses, whatever key it prints, and whether it
+     * is destructured, aliased, bracket-accessed or reached through a
+     * two-level owner. The two spelling-keyed predicates it replaces were each
+     * defeated by a probe within one review round.
+     *
+     * The comparand is rendered by the SAME command in the SAME process, so a
+     * case cannot pass by both renders having collapsed: the caller floors it
+     * on a marker every healthy render prints.
+     */
+    async function expectRendersAsEmpty(
+      args: string[],
+      malformed: Record<string, unknown>,
+      emptied: Record<string, unknown>,
+      floor: string
+    ): Promise<string> {
+      bucket.state = record(emptied);
+      const reference = await runState(args);
+      expectRendered(reference.error);
+      expect(reference.out).toContain(floor);
+      expect(warnSpy).not.toHaveBeenCalled();
+
+      vi.clearAllMocks();
+      warnSpy.mockReset();
+      errorSpy.mockReset();
+      s3Send.mockImplementation(async (command) => route(command));
+
+      bucket.state = record(malformed);
+      const { out, error } = await runState(args);
+      expectRendered(error);
+      expect(out).toBe(reference.out);
+      return out;
+    }
 
     it('the fabricating shapes really do fabricate, so the cases below are not vacuous', () => {
       // A claim about `Object.entries`, not about cdkd: without it, "no row
@@ -1232,22 +1275,29 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
       for (const { label, value, rows } of MALFORMED) {
         expect(Object.entries(value as object), label).toHaveLength(rows);
       }
-      // ...and the discriminator matches what such a walk would print.
+      // ...and the readability aid matches what such a walk would print in the
+      // grammar these renderers happen to use today.
       expect(FABRICATED_ROW.test('\n  0: a\n')).toBe(true);
       expect(FABRICATED_ROW.test('\n  Alpha: one\n')).toBe(false);
+      // ...while a walk in ANY other grammar is invisible to it, which is the
+      // measured reason the oracle above exists. Pinned so a later reader does
+      // not reinstate it as the fence.
+      expect(FABRICATED_ROW.test('\n    - 0 = a\n')).toBe(false);
     });
 
     for (const site of SITES) {
       describe(site.name, () => {
         it.each(MALFORMED)(`state show empties ${site.name} for $label`, async ({ value }) => {
-          bucket.state = record(site.plant(value));
-
-          const { out, error } = await runState(['show', 'MyStack']);
-
-          expectRendered(error);
-          // The FABRICATION first: it is the harm, and it is the assertion only
-          // the string and the list shapes can red. The warning second, which is
-          // the whole delta for the number and the boolean.
+          // The FABRICATION first: it is the harm, and byte-identity with the
+          // emptied record is the assertion only the string and the list shapes
+          // can red. The warning second, which is the whole delta for the number
+          // and the boolean.
+          const out = await expectRendersAsEmpty(
+            ['show', 'MyStack'],
+            site.plant(value),
+            site.emptied,
+            'Resources ('
+          );
           expect(out).not.toMatch(FABRICATED_ROW);
           expect(out).not.toContain(site.blockHeader);
           expect(warnings()).toEqual([containerWarning(site.name)]);
@@ -1458,11 +1508,12 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
     });
 
     it.each(MALFORMED)('state resources --long empties attributes for $label', async ({ value }) => {
-      bucket.state = record({ resources: { R: resourceRow({ attributes: value }) } });
-
-      const { out, error } = await runState(['resources', 'MyStack', '--long']);
-
-      expectRendered(error);
+      const out = await expectRendersAsEmpty(
+        ['resources', 'MyStack', '--long'],
+        { resources: { R: resourceRow({ attributes: value }) } },
+        { resources: { R: resourceRow({ attributes: {} }) } },
+        'AWS::S3::Bucket'
+      );
       expect(out).not.toMatch(FABRICATED_ROW);
       expect(out).toContain('Attributes: (none)');
       expect(warnings()).toEqual([containerWarning('attributes')]);
@@ -1499,23 +1550,32 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
       // report a defect the user cannot see in the output in front of them —
       // and a set that silently widened to all four would red here rather than
       // going unnoticed.
-      bucket.state = record({
-        outputs: 'abcdef',
-        skippedOutputs: [1, 2, 3],
-        resources: { R: resourceRow({ properties: 'abcdef', attributes: HEALTHY }) },
-      });
-
-      const { out, error } = await runState(['resources', 'MyStack', '--long']);
-
-      expectRendered(error);
-      // FABRICATION first, as everywhere else in this block, and here it is the
-      // assertion that makes the case a fence rather than a scope note. Saying
-      // only "no warning" pins that this command IGNORES those containers; this
-      // pins that it does not RENDER them either. A later edit teaching `--long`
-      // to print properties — the plausible one — adds a walk the scope set does
-      // not cover, and it reds HERE. The source-population case below could not
-      // see that: a review probe added exactly such a walk, spelled with
-      // destructuring, and its regex matched nothing while all 103 cases passed.
+      // Byte-identity against the same record with those three containers
+      // EMPTY, and this is the case that makes the whole block a fence rather
+      // than a scope note. Saying only "no warning" pins that this command
+      // IGNORES those containers; this pins that it does not RENDER them
+      // either. A later edit teaching `--long` to print properties — the
+      // plausible one — adds a walk the scope set does not cover, and it reds
+      // HERE, in ANY row grammar.
+      //
+      // Both defeating probes a review round built landed on exactly this case:
+      // a destructured walk rendering `    key: value` (which the regex below
+      // does catch) and the same walk rendering `    - key = value` (which it
+      // does not). The comparand catches both.
+      const out = await expectRendersAsEmpty(
+        ['resources', 'MyStack', '--long'],
+        {
+          outputs: 'abcdef',
+          skippedOutputs: [1, 2, 3],
+          resources: { R: resourceRow({ properties: 'abcdef', attributes: HEALTHY }) },
+        },
+        {
+          outputs: {},
+          skippedOutputs: {},
+          resources: { R: resourceRow({ properties: {}, attributes: HEALTHY }) },
+        },
+        'AWS::S3::Bucket'
+      );
       expect(out).not.toMatch(FABRICATED_ROW);
       // The command still renders, and the attribute bag it DOES read is
       // untouched — so this is not passing because the record failed to load.
@@ -1533,12 +1593,17 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
         // over. `--long` and `--json` on the identical record DO warn, which is
         // what makes this a scope assertion rather than a claim the guard is
         // off.
-        bucket.state = record({ resources: { R: resourceRow({ attributes: value }) } });
-
-        const { out, error } = await runState(['resources', 'MyStack']);
-
-        expectRendered(error);
-        expect(out).not.toMatch(FABRICATED_ROW);
+        //
+        // Byte-identity is what carries it: `FABRICATED_ROW` cannot match this
+        // mode's one-line `id  type  physicalId` row in ANY case, so it would
+        // be inert here (review finding), while the comparand reds on any
+        // output this mode gains that the emptied record does not have.
+        const out = await expectRendersAsEmpty(
+          ['resources', 'MyStack'],
+          { resources: { R: resourceRow({ attributes: value }) } },
+          { resources: { R: resourceRow({ attributes: {} }) } },
+          'AWS::S3::Bucket'
+        );
         // The row itself still renders: a case passing because the listing was
         // empty would prove nothing about the container.
         expect(out).toContain('AWS::S3::Bucket');

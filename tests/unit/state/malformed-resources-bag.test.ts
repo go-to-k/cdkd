@@ -335,18 +335,37 @@ describe('the user-facing text', () => {
 });
 
 describe('isReadableBag is the ONE predicate (issue go-to-k/cdkd#3187)', () => {
-  it('agrees with hasReadableResources on every shape, so the two cannot drift', () => {
-    // The extraction's whole point: `cdkd state show` needed the same test for
-    // four more containers, and a second spelling would be free to disagree
-    // with this one. The comparison is over the same table the rest of this
-    // file uses, plus the readable shapes — a predicate agreeing only where it
-    // says NO is half a fence.
-    for (const [label, value] of [
-      ...UNREADABLE,
-      ['an empty object', {}] as const,
-      ['a populated object', { A: 1 }] as const,
-    ]) {
-      expect(isReadableBag(value), label).toBe(hasReadableResources(state(value)));
+  /**
+   * Every shape, with the verdict written as a LITERAL rather than taken from
+   * the sibling predicate.
+   *
+   * `hasReadableResources` delegates, so comparing the two is true by
+   * construction and reds on nothing inside `isReadableBag` (measured: mutating
+   * it to `return true` reds 14 cases in this file, none of them the comparison
+   * — review of go-to-k/cdkd#3190). The literals are the coverage; the
+   * comparison below is drift-detection for the day someone RE-INLINES the body
+   * into `hasReadableResources`, which is the only way the two can disagree.
+   */
+  const READABLE: ReadonlyArray<readonly [string, unknown, boolean]> = [
+    ['null', null, false],
+    ['absent', undefined, false],
+    ['an array', [], false],
+    ['a number', 5, false],
+    ['a string', 'ab', false],
+    ['a boolean', true, false],
+    ['an empty object', {}, true],
+    ['a populated object', { A: 1 }, true],
+  ];
+
+  it('answers the plain-object question for every shape', () => {
+    for (const [label, value, expected] of READABLE) {
+      expect(isReadableBag(value), label).toBe(expected);
+    }
+  });
+
+  it('and hasReadableResources still delegates to it, so the two cannot drift', () => {
+    for (const [label, value] of READABLE) {
+      expect(hasReadableResources(state(value)), label).toBe(isReadableBag(value));
     }
   });
 });
@@ -369,10 +388,15 @@ describe('the rendered-container warning (issue go-to-k/cdkd#3187)', () => {
 
     // The command is LAST and UNWRAPPED here — an outer `'...'` would compose
     // with `shellQuote`'s own quoting into something unpastable.
+    //
+    // `command.endsWith('--json')` is the whole LAST assertion. An
+    // `expect(w.endsWith(command))` beside it would be a tautology, since
+    // `command` is a suffix of `w` by construction, and it read as a second
+    // check (review of go-to-k/cdkd#3190). This one reds on any prose appended
+    // after the command.
     const start = w.indexOf('cdkd state show ');
     expect(start).toBeGreaterThan(-1);
     const command = w.slice(start);
-    expect(w.endsWith(command)).toBe(true);
     expect(command.endsWith('--json')).toBe(true);
 
     // ...and BYTE-IDENTICAL to the command the sibling message builds from the
@@ -424,7 +448,30 @@ describe('the rendered-container warning (issue go-to-k/cdkd#3187)', () => {
     const forged = `x\nStack: Decoy` as RenderedStateContainer;
     const w = malformedRenderedContainersWarning('S', 'us-east-1', [forged]);
     expect(w.split('\n')).toHaveLength(1);
-    expect(w).not.toContain('\nStack: Decoy');
+    // The RENDERED token, not just the line count: a sanitizer that returned
+    // `''` for everything would satisfy a line-count assertion while naming no
+    // container at all (review of go-to-k/cdkd#3190). The newline becomes a
+    // space, so the text survives as prose inside its quotes and cannot start a
+    // row.
+    expect(w).toContain(`'x Stack: Decoy'`);
+  });
+
+  it('floors a name that sanitizes to EMPTY and caps a multi-kilobyte one', () => {
+    // The two classes `safeIdentifier` closes that a bare sanitizer does not,
+    // and the reason the names take that helper rather than `displaySafe`
+    // alone: `''` names no container, and an uncapped name pushes the remedy
+    // command off the reader's screen. Same casts, same unreachable-today path.
+    const empty = malformedRenderedContainersWarning('S', 'us-east-1', [
+      String.fromCharCode(0x00, 0x01) as RenderedStateContainer,
+    ]);
+    expect(empty).toContain(`'${UNRENDERABLE}'`);
+
+    const long = malformedRenderedContainersWarning('S', 'us-east-1', [
+      'q'.repeat(5000) as RenderedStateContainer,
+    ]);
+    expect(long).toContain(`'${'q'.repeat(128)}...'`);
+    // The remedy is still on screen after the cap.
+    expect(long.endsWith('--json')).toBe(true);
   });
 });
 
