@@ -10,9 +10,12 @@
  * normalisation — so a case built that way proves nothing about it.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { NoSuchKey } from '@aws-sdk/client-s3';
 
 const errorSpy = vi.hoisted(() => vi.fn());
+const warnSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/utils/logger.js', () => ({
   reserveStdoutForPayload: vi.fn(),
@@ -20,7 +23,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
     setLevel: vi.fn(),
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: warnSpy,
     error: errorSpy,
     child: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
   }),
@@ -74,7 +77,52 @@ vi.mock('../../../src/utils/aws-clients.ts', () => ({
   getAwsClients: vi.fn(),
 }));
 
+/**
+ * Counts invocations of `walkCdkdStateStackTree` — every node the nested-stack
+ * walk enters, not just the top-level call.
+ *
+ * The walk is where the per-element allocation lives, and no assertion over
+ * cdkd's OUTPUT can see it: for a plain string bag the walker finds no children
+ * and the render is repaired afterwards either way, so a probe reverting the
+ * guard leaves every output-shaped case GREEN (measured). "The walk did not
+ * enter that node" is the only observable that discriminates.
+ *
+ * COUNTED VIA THE PREDICATE, and that indirection is the point. An earlier cut
+ * wrapped `buildCdkdStateStackTree`, which is the TOP-LEVEL entry point called
+ * exactly once per command — so it could not see the recursion, and the guard
+ * it was fencing was itself at the root only. A healthy root naming a nested
+ * child walked that child's bag unguarded, and this spy read 1 either way.
+ * `walkCdkdStateStackTree` is module-private, but it calls
+ * `hasReadableResources` exactly once on entry and is the only caller reached
+ * by these cases (`state.ts` no longer calls it; `repairMalformedResourcesForReadOnly`
+ * calls it INTERNALLY, which a module mock does not intercept), so this count IS
+ * the per-node walk count.
+ */
+const walkSpy = vi.hoisted(() => vi.fn());
+
+vi.mock('../../../src/state/malformed-resources-bag.js', async () => {
+  const actual =
+    await vi.importActual<typeof import('../../../src/state/malformed-resources-bag.js')>(
+      '../../../src/state/malformed-resources-bag.js'
+    );
+  return {
+    ...actual,
+    hasReadableResources: (...args: Parameters<typeof actual.hasReadableResources>) => {
+      walkSpy();
+      return actual.hasReadableResources(...args);
+    },
+  };
+});
+
 import { createStateCommand } from '../../../src/cli/commands/state.js';
+import { malformedResourcesWarning } from '../../../src/state/malformed-resources-bag.js';
+
+/**
+ * Where the source-population fence below reads its subject from. A literal
+ * path, not a glob: it is a claim about ONE function in ONE file, and a walk
+ * that silently matched nothing would be green.
+ */
+const STATE_TS = fileURLToPath(new URL('../../../src/cli/commands/state.ts', import.meta.url));
 
 /** Answer each command the real read path issues, by name and key. */
 function route(command: { constructor: { name: string }; input: { Key?: string } }): unknown {
@@ -86,8 +134,18 @@ function route(command: { constructor: { name: string }; input: { Key?: string }
     const key = command.input.Key ?? '';
     if (key.endsWith('/state.json')) {
       // `cdkd/<stack>/<region>/state.json`: a nested child is its own stack.
+      //
+      // A key that is NEITHER the root stack NOR a seeded child answers
+      // NoSuchKey, the way the real bucket does. An earlier cut fell back to the
+      // ROOT's body for every key, which made the harness answer a child lookup
+      // with the parent's own record: under a bag that names children, the
+      // walker then recursed forever and the worker died of heap exhaustion —
+      // so a probe reverting the walk guard reported an OOM where production
+      // raises `cdkd state is missing nested-child`. A mock must fail the way
+      // production fails, or the failure mode a test pins is the mock's.
       const stack = key.split('/')[1] ?? '';
-      const body = bucket.children[stack] ?? bucket.state;
+      const body = stack === 'MyStack' ? bucket.state : bucket.children[stack];
+      if (body === undefined) throw new NoSuchKey({ message: 'NoSuchKey', $metadata: {} });
       return { Body: { transformToString: () => Promise.resolve(body) }, ETag: '"s"' };
     }
     if (key.endsWith('/lock.json')) {
@@ -174,6 +232,8 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
   beforeEach(() => {
     vi.clearAllMocks();
     errorSpy.mockReset();
+    warnSpy.mockReset();
+    walkSpy.mockReset();
     exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
       throw new Error('process.exit-mock');
     }) as never);
@@ -416,5 +476,526 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
     const line = out.split('\n').find((l) => l.includes('Out:'));
     expect(line).toContain('abcdefghijk\u{1F600}…');
     expect(/[\uD800-\uDBFF]…/.test(line ?? '')).toBe(false);
+  });
+
+  describe('a non-object resources bag fabricates no rows (issue #3172)', () => {
+    /**
+     * The five shapes `cdkd state list --long` already pins (issue #3157),
+     * with what each one PROVES here, because they do not all prove the same
+     * thing and a table of five identical-looking rows hides that:
+     *
+     * - `"abcdef"` and `[1,2,3]` are the FABRICATING shapes —
+     *   `Object.entries` yields one `[index, element]` pair per character or
+     *   item, so the unfixed commands rendered six and three resources that do
+     *   not exist. `rows` is what each case asserts is gone.
+     * - `42` and `true` yield NO pairs, so the unfixed commands reported zero
+     *   resources over a corrupt record and said nothing. The warning is the
+     *   whole delta for them, which is why every case below asserts it.
+     * - `null` was already tolerated as an empty bag by the `?? {}` at the
+     *   walk, so — like the two above — only the warning changes. The RENDER
+     *   must stay byte-identical to a healthy empty bag, pinned separately.
+     */
+    const MALFORMED: Array<{ label: string; bag: unknown; rows: number }> = [
+      { label: 'a string', bag: 'abcdef', rows: 6 },
+      { label: 'a list', bag: [1, 2, 3], rows: 3 },
+      { label: 'a number', bag: 42, rows: 0 },
+      { label: 'a boolean', bag: true, rows: 0 },
+      { label: 'null', bag: null, rows: 0 },
+    ];
+
+    /** What the shared module says, for the one stack every case reads. */
+    const WARNING = malformedResourcesWarning('MyStack', 'us-east-1');
+
+    it('the fabricating shapes really do fabricate, so the cases below are not vacuous', () => {
+      // Not a claim about cdkd: a claim about `Object.entries`, which is the
+      // mechanism every case here is built on. Without it, a case asserting
+      // "no row rendered" would pass just as well against a bag that could
+      // never have produced one.
+      for (const { label, bag, rows } of MALFORMED) {
+        expect(Object.entries((bag ?? {}) as object), label).toHaveLength(rows);
+      }
+    });
+
+    it.each(MALFORMED)('state resources warns and lists nothing for $label', async ({ bag }) => {
+      bucket.state = record({ resources: bag });
+
+      const { out, error } = await runState(['resources', 'MyStack']);
+
+      expectRendered(error);
+      // The FABRICATION is asserted first, deliberately. It is the harm, and it
+      // is the assertion only `"abcdef"` and `[1,2,3]` can red — putting the
+      // warning ahead of it would make the warning red first for every shape
+      // and hide whether this one discriminates at all. The whole listing, not
+      // a substring: a fabricated row prints its logical id — `0`, `1`, ... —
+      // in the first column, so the honest assertion is that nothing printed.
+      expect(out).toBe('');
+      expect(warnSpy.mock.calls.map((call) => String(call[0]))).toEqual([WARNING]);
+    });
+
+    it.each(MALFORMED)(
+      'state resources --long warns and lists nothing for $label',
+      async ({ bag }) => {
+        bucket.state = record({ resources: bag });
+
+        const { out, error } = await runState(['resources', 'MyStack', '--long']);
+
+        expectRendered(error);
+        expect(out).toBe('');
+        expect(warnSpy.mock.calls.map((call) => String(call[0]))).toEqual([WARNING]);
+      }
+    );
+
+    it.each(MALFORMED)('state resources --json emits [] for $label', async ({ bag }) => {
+      // The mode the issue's first revision called safe. `details` is built
+      // ABOVE the `--json` branch, so this mode emitted the fabricated rows as
+      // JSON objects — and it is the mode a script consumes without a human
+      // reading it.
+      bucket.state = record({ resources: bag });
+
+      const { out, error } = await runState(['resources', 'MyStack', '--json']);
+
+      expectRendered(error);
+      expect(JSON.parse(out)).toEqual([]);
+      expect(warnSpy.mock.calls.map((call) => String(call[0]))).toEqual([WARNING]);
+    });
+
+    it.each(MALFORMED)('state show renders zero resources for $label', async ({ bag }) => {
+      bucket.state = record({ resources: bag });
+
+      const { out, error } = await runState(['show', 'MyStack']);
+
+      expectRendered(error);
+      // Fabrication first, warning second, for the reason the plain
+      // `state resources` case above states.
+      expect(out).toContain('Resources (0):');
+      // `Type:` is printed once per rendered resource and nowhere else in the
+      // block, so its absence is the discriminator a count in the header alone
+      // would not give: the unfixed render printed `Resources (6):` followed by
+      // six `Type: undefined` rows.
+      expect(out).not.toContain('Type:');
+      expect(warnSpy.mock.calls.map((call) => String(call[0]))).toEqual([WARNING]);
+    });
+
+    it('state show --json still emits the stored bag — the evidence is preserved', async () => {
+      // `cdkd state list --long`'s reason string sends the operator to exactly
+      // this command to SEE a record it could not count. Repairing before the
+      // `--json` branch would hand them `"resources": {}` instead, so this case
+      // is the one that must stay unchanged; it warns about nothing, because
+      // nothing was repaired.
+      bucket.state = record({ resources: 'abcdef' });
+
+      const { out, error } = await runState(['show', 'MyStack', '--json']);
+
+      expectRendered(error);
+      // The laundering is the harm, so it is asserted first: a repair moved
+      // above this branch emits `"resources": {}` here, and the warning being
+      // absent is the second, weaker tell.
+      expect(JSON.parse(out).state.resources).toBe('abcdef');
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('state show --show-nested warns per record and fabricates nothing for a CHILD', async () => {
+      // The child is a second record with its own bag, rendered by the same
+      // block through a different call site. Only the CHILD is malformed, so a
+      // fix applied to the root alone leaves this case red.
+      bucket.state = record({
+        resources: {
+          Child: {
+            resourceType: 'AWS::CloudFormation::Stack',
+            physicalId: 'child-arn',
+            properties: {},
+          },
+        },
+      });
+      bucket.children['MyStack~Child'] = record({
+        stackName: 'MyStack~Child',
+        resources: 'abcdef',
+      });
+
+      const { out, error } = await runState(['show', 'MyStack', '--show-nested']);
+
+      expectRendered(error);
+      expect(out).toContain('Nested stack: MyStack~Child');
+      // The parent's own row still renders; the child's block shows none.
+      const childBlock = out.slice(out.indexOf('Nested stack: MyStack~Child'));
+      expect(childBlock).toContain('Resources (0):');
+      expect(childBlock).not.toContain('Type:');
+      expect(out).toContain('AWS::CloudFormation::Stack');
+      // Named by the CHILD's stack name, not the root's — one warning per
+      // repaired record is what tells an operator which one is broken.
+      expect(warnSpy.mock.calls.map((call) => String(call[0]))).toEqual([
+        malformedResourcesWarning('MyStack~Child', 'us-east-1'),
+      ]);
+    });
+
+    it('state show --show-nested warns about a malformed ROOT and fabricates nothing', async () => {
+      // The other half of the tree render. The case above plants the bag on a
+      // CHILD, so the ROOT node's own render site was covered only by the
+      // source-population fence; this drives it.
+      bucket.state = record({ resources: 'abcdef' });
+
+      const { out, error } = await runState(['show', 'MyStack', '--show-nested']);
+
+      expectRendered(error);
+      expect(out).toContain('Resources (0):');
+      expect(out).not.toContain('Type:');
+      expect(warnSpy.mock.calls.map((call) => String(call[0]))).toEqual([WARNING]);
+    });
+
+    it('state show --show-nested --json preserves the bag too — the SECOND json branch', async () => {
+      // `stateShowCommand` returns from `--json` in two places. The plain case
+      // above drives one; without this one, hoisting a repair above the nested
+      // branch reds nothing.
+      bucket.state = record({ resources: 'abcdef' });
+
+      const { out, error } = await runState(['show', 'MyStack', '--show-nested', '--json']);
+
+      expectRendered(error);
+      expect(JSON.parse(out).state.resources).toBe('abcdef');
+      expect(JSON.parse(out).children).toEqual([]);
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['plain', [] as string[]],
+      ['--show-nested', ['--show-nested']],
+      ['--show-nested --json', ['--show-nested', '--json']],
+    ])('a planted megabyte-scale bag costs no pair per character: %s', async (_label, flags) => {
+      // The RENDER half of the memory problem: before the fix the text view
+      // turned a planted string into one resource block per character, so
+      // 100,000 characters emitted hundreds of thousands of lines. That is what
+      // these assertions observe.
+      //
+      // They do NOT observe the walker's allocation under `--show-nested`:
+      // measured, reverting the walk guard leaves all three of these GREEN,
+      // because the walker finds no children in a string bag and the render is
+      // repaired either way. `never ENTERS the nested-stack walk` above is the
+      // case that reds for that, and it is the one to keep pointed at the
+      // guard.
+      //
+      // The length bound is a proxy, so it is paired with an exact structural
+      // assertion per mode below — a truncating implementation would satisfy
+      // the bound alone.
+      bucket.state = record({ resources: 'x'.repeat(100_000) });
+
+      const { out, error } = await runState(['show', 'MyStack', ...flags]);
+
+      expectRendered(error);
+      if (flags.includes('--json')) {
+        // Emitted AS STORED, so the payload is necessarily ~100 KB — the bound
+        // that matters here is that no per-character structure was built, which
+        // the exact equality proves.
+        expect(JSON.parse(out).state.resources).toBe('x'.repeat(100_000));
+        expect(JSON.parse(out).children).toEqual([]);
+      } else {
+        expect(out).toContain('Resources (0):');
+        expect(out).not.toContain('Type:');
+        expect(out.length).toBeLessThan(2_000);
+      }
+    });
+
+    /** A record declaring ONE nested-stack child, so the walk has somewhere to go. */
+    const parentOf = (childLogicalId: string): string =>
+      record({
+        resources: {
+          [childLogicalId]: {
+            resourceType: 'AWS::CloudFormation::Stack',
+            physicalId: 'child-arn',
+            properties: {},
+          },
+        },
+      });
+
+    /** Every `state.json` key the run asked S3 for, in order. */
+    const requestedStateKeys = (): string[] =>
+      s3Send.mock.calls
+        .map((call) => (call[0] as { input?: { Key?: string } })?.input?.Key ?? '')
+        .filter((key) => key.endsWith('/state.json'));
+
+    it.each([
+      ['plain', [] as string[]],
+      ['--json', ['--json']],
+    ])(
+      'guards the walk at the ROOT and descends no further: --show-nested %s',
+      async (_label, flags) => {
+        // The guard lives INSIDE the walker, so the root node is still ENTERED
+        // — one predicate call — and returns childless before `Object.entries`
+        // touches the bag. Both modes, because the walk precedes the branch that
+        // separates them.
+        bucket.state = record({ resources: 'abcdef' });
+
+        const { error } = await runState(['show', 'MyStack', '--show-nested', ...flags]);
+
+        // Asserted even though the count is the point: without it the case is
+        // satisfied by a run that exited through the error handler having walked
+        // the root once, which is indistinguishable from success by the count
+        // alone.
+        expectRendered(error);
+        expect(walkSpy).toHaveBeenCalledTimes(1);
+      }
+    );
+
+    it('guards the walk at a CHILD, not only at the root', async () => {
+      // THE case the first cut of this guard could not fail. A caller-side test
+      // covers the root record and nothing below it, so a healthy root naming a
+      // nested child walked that child's bag unguarded — measured live at
+      // 1623 ms / 1277 MB for a 5,000,000-character child bag, in `--json` too.
+      //
+      // The discriminator is the per-node count: the walk must ENTER the child
+      // (2 nodes, so the guard is reached where the harm was) and stop there.
+      bucket.state = parentOf('Child');
+      bucket.children['MyStack~Child'] = record({
+        stackName: 'MyStack~Child',
+        resources: 'abcdef',
+      });
+
+      const { out, error } = await runState(['show', 'MyStack', '--show-nested']);
+
+      expectRendered(error);
+      expect(walkSpy).toHaveBeenCalledTimes(2);
+      // ...and the child's own bag produced no grandchild lookup. Read off the
+      // KEYS rather than the count, so a lookup for a fabricated grandchild is
+      // named rather than merely tallied.
+      expect(requestedStateKeys()).toEqual([
+        'cdkd/MyStack/us-east-1/state.json',
+        'cdkd/MyStack~Child/us-east-1/state.json',
+      ]);
+      expect(out).toContain('Nested stack: MyStack~Child');
+    });
+
+    it.each([
+      ['plain', [] as string[]],
+      ['--show-nested', ['--show-nested']],
+      ['--show-nested --json', ['--show-nested', '--json']],
+    ])(
+      'a GRANDCHILD bag that is a LIST of nested-stack objects no longer aborts the command: %s',
+      async (_label, flags) => {
+        // The shape `'abcdef'` cannot reach, planted at DEPTH 2 — the level a
+        // root-only guard and a top-level-entry counter are both blind to. Its
+        // elements are OBJECTS carrying the nested-stack type, so the walker
+        // matched `entry?.resourceType`, read the list INDEX `0` as a logical id
+        // and looked for `MyStack~Child~Grand~0`. That threw
+        // `cdkd state is missing nested-child` ABOVE the `--json` return, so
+        // both `--show-nested` modes exited 1 and the evidence branch was
+        // unreachable rather than merely noisy.
+        //
+        // Plain `show` is included as the CONTROL: it never walks, so it must be
+        // unaffected in every revision, and a change that made it fail would
+        // mean the guard leaked out of the walker.
+        bucket.state = parentOf('Child');
+        bucket.children['MyStack~Child'] = parentOf('Grand');
+        bucket.children['MyStack~Child~Grand'] = record({
+          stackName: 'MyStack~Child~Grand',
+          resources: [
+            { resourceType: 'AWS::CloudFormation::Stack', physicalId: 'g-arn', properties: {} },
+          ],
+        });
+
+        const { out, error } = await runState(['show', 'MyStack', ...flags]);
+
+        expectRendered(error);
+        if (flags.includes('--show-nested')) {
+          // Three nodes entered — root, child, grandchild — and the grandchild's
+          // guard stopped the descent there.
+          expect(walkSpy).toHaveBeenCalledTimes(3);
+          expect(requestedStateKeys()).not.toContain(
+            'cdkd/MyStack~Child~Grand~0/us-east-1/state.json'
+          );
+          expect(out).not.toContain('MyStack~Child~Grand~0');
+        }
+        if (flags.includes('--json')) {
+          // The evidence branch, reachable again: the grandchild's bag comes
+          // back as stored rather than the command aborting above it.
+          const grandchild = JSON.parse(out).children[0].children[0];
+          expect(grandchild.state.resources).toEqual([
+            { resourceType: 'AWS::CloudFormation::Stack', physicalId: 'g-arn', properties: {} },
+          ]);
+          expect(grandchild.children).toEqual([]);
+        }
+      }
+    );
+
+    it('still walks to DEPTH 2 for healthy records — the guard is not a blanket skip', async () => {
+      // The other direction, at depth. Without this, a "guard" that returned
+      // childless unconditionally would satisfy every case above while silently
+      // removing nested-stack support, and nothing else here would notice.
+      bucket.state = parentOf('Child');
+      bucket.children['MyStack~Child'] = parentOf('Grand');
+      bucket.children['MyStack~Child~Grand'] = record({ stackName: 'MyStack~Child~Grand' });
+
+      const { out, error } = await runState(['show', 'MyStack', '--show-nested']);
+
+      expectRendered(error);
+      expect(walkSpy).toHaveBeenCalledTimes(3);
+      expect(out).toContain('Nested stack: MyStack~Child');
+      expect(out).toContain('Nested stack: MyStack~Child~Grand');
+    });
+
+    it('a megabyte-scale CHILD bag costs no pair per element either', async () => {
+      // The allocation half at depth-1, which is where it was live. The bound is
+      // a proxy for "no per-element structure was built"; the per-node count
+      // above is the exact fence.
+      bucket.state = parentOf('Child');
+      bucket.children['MyStack~Child'] = record({
+        stackName: 'MyStack~Child',
+        resources: 'x'.repeat(100_000),
+      });
+
+      const { out, error } = await runState(['show', 'MyStack', '--show-nested']);
+
+      expectRendered(error);
+      expect(walkSpy).toHaveBeenCalledTimes(2);
+      const childBlock = out.slice(out.indexOf('Nested stack: MyStack~Child'));
+      expect(childBlock).toContain('Resources (0):');
+      expect(childBlock).not.toContain('Type:');
+      expect(out.length).toBeLessThan(3_000);
+    });
+
+    it('a resources bag hand-edited from a MAP into a LIST of resource objects renders', async () => {
+      // The shape `[1,2,3]` does NOT cover, and the one the nested-stack walker
+      // used to hard-fail on: its elements are OBJECTS, so `entry?.resourceType`
+      // matches, the walker reads the list INDEX `0` as a logical id, looks for
+      // a child record at `MyStack~0`, finds none, and throws
+      // `cdkd state is missing nested-child`. That happened above the `--json`
+      // return, so this shape reached neither the guard nor the evidence.
+      const listOfResources = [
+        { resourceType: 'AWS::CloudFormation::Stack', physicalId: 'arn:aws:...', properties: {} },
+      ];
+
+      for (const flags of [[], ['--show-nested'], ['--show-nested', '--json']]) {
+        vi.clearAllMocks();
+        warnSpy.mockReset();
+        errorSpy.mockReset();
+        s3Send.mockImplementation(async (command) => route(command));
+        bucket.state = record({ resources: listOfResources });
+
+        // eslint-disable-next-line no-await-in-loop
+        const { out, error } = await runState(['show', 'MyStack', ...flags]);
+
+        expectRendered(error);
+        if (flags.includes('--json')) {
+          expect(JSON.parse(out).state.resources).toEqual(listOfResources);
+          expect(JSON.parse(out).children).toEqual([]);
+          expect(warnSpy).not.toHaveBeenCalled();
+        } else {
+          expect(out).toContain('Resources (0):');
+          // No `MyStack~0` anywhere: neither a fabricated child nor the
+          // missing-nested-child refusal that used to name it.
+          expect(out).not.toContain('MyStack~0');
+          expect(warnSpy.mock.calls.map((call) => String(call[0]))).toEqual([WARNING]);
+        }
+      }
+    });
+
+    const ORDINARY: Array<{ label: string; bag: Record<string, unknown> }> = [
+      { label: 'an empty object', bag: {} },
+      {
+        label: 'a healthy bag',
+        bag: { R: { resourceType: 'AWS::S3::Bucket', physicalId: 'b', properties: {} } },
+      },
+    ];
+
+    it.each(ORDINARY)('does not swallow the ordinary case: $label', async ({ bag }) => {
+      bucket.state = record({ resources: bag });
+
+      const show = await runState(['show', 'MyStack']);
+      const resources = await runState(['resources', 'MyStack']);
+
+      expectRendered(show.error);
+      expectRendered(resources.error);
+      // The guard must not fire on a record nothing is wrong with — a warning
+      // here would train operators to ignore the one that matters.
+      expect(warnSpy).not.toHaveBeenCalled();
+      const expectedRows = Object.keys(bag).length;
+      expect(show.out).toContain(`Resources (${expectedRows}):`);
+      if (expectedRows > 0) {
+        expect(show.out).toContain('Type: AWS::S3::Bucket');
+        expect(resources.out).toContain('AWS::S3::Bucket');
+      } else {
+        expect(resources.out).toBe('');
+      }
+    });
+
+    it('a null and an absent bag still render exactly like an empty one', async () => {
+      // The render is what must not change for the two shapes
+      // `docs/cli-state.md` documents as tolerated; the added stderr warning is
+      // the only difference, and it is asserted above.
+      bucket.state = record({ resources: {} });
+      const empty = await runState(['show', 'MyStack']);
+
+      for (const bag of [null, undefined]) {
+        vi.clearAllMocks();
+        warnSpy.mockReset();
+        errorSpy.mockReset();
+        s3Send.mockImplementation(async (command) => route(command));
+        bucket.state = record({ resources: bag });
+        // eslint-disable-next-line no-await-in-loop
+        const rendered = await runState(['show', 'MyStack']);
+        expectRendered(rendered.error);
+        expect(rendered.out).toBe(empty.out);
+      }
+    });
+
+    it("the integ fixture's needle still matches the warning it greps for", () => {
+      // `tests/integration/state-info-command/verify.sh` greps cdkd's OWN
+      // output for this phrase, and two of its checks assert the phrase is
+      // ABSENT (`state show --json`, and the healthy record). Those two go
+      // blind — not red — if the wording moves, which is the one direction a
+      // re-run of the fixture cannot catch. This pins the needle to the string
+      // the module actually produces.
+      const fixture = readFileSync(
+        fileURLToPath(
+          new URL('../../../tests/integration/state-info-command/verify.sh', import.meta.url)
+        ),
+        'utf-8'
+      );
+      const needle = "no readable 'resources' map";
+
+      // Both halves: the fixture still greps for it, and the warning still
+      // contains it. Asserting only the second would leave a fixture that had
+      // dropped the grep looking covered.
+      expect(fixture).toContain(needle);
+      expect(malformedResourcesWarning('MyStack', 'us-east-1')).toContain(needle);
+      // The count is the floor: ONE grep inside `malformed_view`, which its
+      // five call sites share, plus the three absence checks — one for each
+      // `--json` branch of `state show` and one for the healthy record. Four
+      // occurrences; a grep deleted from the fixture has to move this number.
+      expect(fixture.split(needle)).toHaveLength(4 + 1);
+    });
+
+    it('state.ts names renderStateBlock in CODE exactly 1 + 3 times', () => {
+      // The source half of the fence, ported from
+      // `state-ref-display-boundary.test.ts`: the behavioural cases above cover
+      // the three call sites that exist, and cannot see a FOURTH being added.
+      // Every call site must be dominated by a repair, so a new one is a
+      // decision someone has to make rather than inherit — this number going
+      // red is how they are asked.
+      //
+      // Bare references over comment-stripped source, not a call-shaped regex:
+      // `const render = renderStateBlock;` adds a rendering site while matching
+      // neither a call nor the declaration, and the doc comments name both
+      // helpers repeatedly, so a prose edit would otherwise move the count.
+      const source = readFileSync(STATE_TS, 'utf-8');
+      const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+
+      const references = code.match(/\brenderStateBlock\b/g) ?? [];
+      const declarations = code.match(/\bfunction\s+renderStateBlock\b/g) ?? [];
+      // The repair helper's own population: one declaration, one call from the
+      // single-stack path, one from the tree walker. `repairTreeForTextRender`
+      // is one declaration, one call, one recursion.
+      const repairRefs = code.match(/\brepairResourcesForTextRender\b/g) ?? [];
+      const treeRepairRefs = code.match(/\brepairTreeForTextRender\b/g) ?? [];
+
+      // Prove the scan saw its input before trusting the counts: a stripper
+      // that ate the code as well as the comments would satisfy every equality
+      // below with zeros.
+      expect(code.length).toBeGreaterThan(50_000);
+      expect(declarations).toHaveLength(1);
+      expect(code).toContain('function repairResourcesForTextRender');
+
+      expect(references).toHaveLength(declarations.length + 3);
+      expect(repairRefs).toHaveLength(3);
+      expect(treeRepairRefs).toHaveLength(3);
+    });
   });
 });

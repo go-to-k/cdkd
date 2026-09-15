@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { Command } from 'commander';
 import { displaySafe } from '../../utils/display-safe.js';
 import { UNRENDERABLE } from '../../state/lock-contention-message.js';
+import { hasReadableResources } from '../../state/malformed-resources-bag.js';
 import {
   CreateChangeSetCommand,
   DescribeChangeSetCommand,
@@ -3438,6 +3439,32 @@ async function walkCdkdStateStackTree(
   stateBackend: S3StateBackend
 ): Promise<CdkdStateStackTree> {
   const nestedChildren = new Map<string, CdkdStateStackTree>();
+
+  // A record whose `resources` is not a map of logical id to resource declares
+  // no nested stack, so this walk has nothing to do — and doing it anyway costs
+  // two things (issue #3172).
+  //
+  // `Object.entries` allocates one `[index, element]` pair per ELEMENT, so a
+  // planted multi-megabyte string is a memory-exhaustion path: measured against
+  // the shipped binary, a 5,000,000-character bag costs 1623 ms and 1277 MB, in
+  // `--show-nested --json` as well as the text view, because the walk runs above
+  // both. And a bag hand-edited from a MAP into a LIST of resource objects
+  // survives the `entry?.resourceType` test below: the loop reads the list INDEX
+  // as a logical id, looks for a child record at `<parent>~0`, finds none, and
+  // hard-fails before anything is rendered.
+  //
+  // The test sits INSIDE the walker, not at its caller, because the walker
+  // RECURSES: a guard at `stateShowCommand`'s call site covers the root and
+  // nothing below it, and both costs above were re-measured live on a CHILD
+  // record with exactly that arrangement in place. One predicate, at the one
+  // place every depth passes through.
+  //
+  // Read-only, and deliberately NOT a repair: the node keeps the ORIGINAL
+  // record, so `cdkd state show --show-nested --json` still emits the stored bag
+  // and the evidence survives. `state.ts` repairs the bags it RENDERS, per node,
+  // after its `--json` branches.
+  if (!hasReadableResources(state)) return { stackName, region, state, nestedChildren };
+
   // `?? {}` and a possibly-`null` entry, matching `renderStateBlock`: this is
   // the `--show-nested` walker, and a hand-edited record with `resources`
   // absent or `null`, or a `null` entry, threw here before anything rendered

@@ -299,11 +299,9 @@ entry holding `null` rather than a resource no longer aborts any mode,
 `--show-nested` and both JSON walks included: the human views render it the way
 a number or a string there always did (`Type` and `PhysicalID` read `undefined`,
 the other fields their defaults), and the JSON modes emit it —
-`cdkd state show --json` as the stored `null`. A `resources` bag that is absent
-or `null` no longer aborts either: `cdkd state list --long` counts it as zero
-resources, and `--show-nested` walks past it with no children. Any other
-`resources` that is not a JSON object shows an unknown count under
-`cdkd state list --long` instead. A lock whose
+`cdkd state show --json` as the stored `null`. A `resources` bag that is not a
+JSON object at all yields no nested-stack children, at every depth — see
+[When `resources` is not an object](#when-resources-is-not-an-object). A lock whose
 `owner`, `operation` or `expiresAt` holds an object that cannot be coerced
 renders too: the owner and operation read as `[object Object]`, and the expiry
 reads as `expires at an unknown time` — the same words the lock-contention
@@ -326,6 +324,45 @@ a composite, pipe-delimited value for resource types AWS identifies by more
 than one field; see
 [State Management](state-management.md#composite-pipe-delimited-physicalids)
 for what those mean and why they are not what `Ref` returns.
+
+### When `resources` is not an object
+
+`resources` is a map of logical id to resource. A hand-edited or truncated
+record can hold a string, a list, a number or a boolean there instead, and
+walking one of those invents entries — a string yields one per character, a
+list one per element. Both views of `cdkd state resources` and the text view of
+`cdkd state show` therefore read a bag they cannot use as an EMPTY set, and say
+so on stderr, rather than describing resources that are not there.
+
+| Command | What it prints |
+| --- | --- |
+| `cdkd state resources`, plain and `--long` | nothing, plus the warning |
+| `cdkd state resources --json` | `[]`, plus the warning |
+| `cdkd state show`, `--show-nested` included | `Resources (0):` with no resource blocks, plus one warning per record read that way |
+| `cdkd state show --json`, `--show-nested` included | the stored value, unchanged and unwarned |
+| `cdkd state list --long` | `Resources: unknown (...)` for that row, as described under [`cdkd state list`](#cdkd-state-list) |
+
+`cdkd state show --json` is the mode to reach for here: it is the one view that
+shows what the record actually holds, which is why the `--long` listing's
+reason text names it.
+
+`--show-nested` reports no children for such a record — a bag that is not a map
+of logical id to resource declares no nested stack — and the record itself
+still comes back as stored. That applies **at every depth**, not only to the
+stack you named: each record the walk reaches is judged on its own bag, so a
+healthy parent whose nested child is malformed still renders the parent's
+resources, reports the child with none, and descends no further.
+
+The warning identifies the stack and region, says the output describes zero
+resources rather than a stack that has none, and tells you not to run
+`cdkd deploy` or `cdkd destroy` against the record. Both read the same map, and
+one they cannot read is indistinguishable from an empty stack: a deploy would
+re-create every resource and a destroy would delete none of them. Repair or
+remove the record instead.
+
+An absent or `null` bag is reported the same way and renders exactly as an
+empty one does. `cdkd state list --long` differs on those two: it counts them
+as `0` with no reason attached.
 
 ## `cdkd state show`
 
