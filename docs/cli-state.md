@@ -181,13 +181,32 @@ Other malformed values render instead of stopping the listing:
 | --- | --- |
 | a `lastModified` outside the date range, or not a number | `Last Modified: unknown`, `null` under `--json` |
 | a `resources` that is neither a JSON object nor `null`, such as a string or a list | `Resources: unknown (...)`, and under `--json` `resourceCount: null` with `stateReadError` set; the warning counts the row. An absent or `null` `resources` counts as `0` |
-| a character outside printable ASCII in a stack name or region | replaced in the plain listing and the `--long` / `--tree` text views; a value with nothing printable left shows as `<unrenderable>` |
+| a character outside printable ASCII in a stack name or region | replaced with a space, and the value is then quoted (see the row below). A value with nothing printable left shows as `<unrenderable>` |
+| a stack name or region that cdkd had to CHANGE to render — anything outside printable ASCII, or surrounding whitespace it trimmed | rendered as a quoted string, so its boundary is visible. A trailing space is enough: `ProdStack ` renders `"ProdStack" (us-east-1)` |
+| a stack name or region carrying a space, a bracket or a quote — anything outside `A-Za-z0-9` and `:_@./+=,~-` | quoted the same way: `"ProdStack (us-east-1)" (us-east-1)`. Both rules apply to both halves of every reference |
+| a very long stack name or region | cut, with `[cut: N more characters withheld]` appended. The limit is 1152 characters for a name, 255 for a region — no ordinary value is near either |
 | a parent link whose `parentStack` is not a string, or whose `parentRegion` is present but not a string | `--tree` drops the whole link and shows the stack at the root. An absent `parentRegion` still links to a legacy region-less parent |
 | a non-string `parentLogicalId` on an otherwise valid link | `--tree --json` emits it as `null` and keeps the link |
 | records that name each other as parent | `--tree` shows every stack on the loop at the root |
 
 A legacy `version: 1` record with no region is not read under `--long`, so its
 row shows `Resources: 0` and `Last Modified: unknown` with no reason attached.
+
+The quoting matters because the ` (region)` suffix is cdkd's own annotation of
+the line rather than part of either value. Both halves come from an S3 key
+segment — or, for a legacy record, the state body — so a name that contains a
+space and brackets could otherwise render byte-identical to a different,
+genuine reference.
+
+Where it applies, and what it does not promise:
+
+| Question | Answer |
+| --- | --- |
+| Where else? | [`cdkd state orphan`](#cdkd-state-orphan)'s prompt and its removal line, [`cdkd state refresh-observed`](#cdkd-state-refresh-observed)'s prompt, and `cdkd rollback`'s candidate list |
+| Does a real row change? | No. Real stack names and region codes are plain identifiers, so a `while read -r ref` consumer sees the bytes it always did |
+| Is a quoted value shell-safe? | No. The quotes are a boundary for a reader, not shell quoting — a shell still expands `$(...)` and backticks inside them |
+| Can a long name still mislead? | Yes, if your terminal wraps it: a wrapped line can read like a genuine row with the quotes off-screen. Widen the terminal, or use `--json` |
+| Can anything else still mislead? | Yes. A name ending in a comma is left unquoted, and the prompts above list references separated by `, ` — so one such name reads as two entries. `cdkd state orphan` prints no count to check it against |
 
 `--json` output is not sanitized. JSON escapes only C0 control characters,
 `"`, `\` and unpaired surrogates, so other invisible or line-breaking

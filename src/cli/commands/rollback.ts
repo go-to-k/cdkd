@@ -37,7 +37,7 @@ import {
   type StackOrphanRecord,
 } from '../../types/state.js';
 import type { StackStateRef } from '../../state/s3-state-backend.js';
-import { displayIdent, displaySafe } from '../../utils/display-safe.js';
+import { displayIdent, displaySafe, STACK_REF_MAX_CODE_POINTS } from '../../utils/display-safe.js';
 import { refuseMalformedState } from '../../state/malformed-resources-bag.js';
 
 interface RollbackOptions {
@@ -151,9 +151,38 @@ function snapshotNote(
  * one calls `displaySafe()` directly and takes the DENYLIST -- the same class
  * `formatError` picks for a `cause`, and for the same reason. `grep displaySafe(`
  * answers how many; a count written here was wrong on its first revision.
+ *
+ * Scope is answered by grepping BOTH `safe(` and `safeStack(` -- the latter is
+ * not matched by the former, and a sentence naming only one understates the
+ * population by twelve.
  */
 function safe(value: unknown): string {
   return displayIdent(value);
+}
+
+/**
+ * `safe()` for a cdkd STATE-RECORD STACK NAME specifically, which is the one
+ * value class in this file whose legitimate grammar runs past `displayIdent`'s
+ * 255-code-point default (issue #3164).
+ *
+ * A stack name here is not a CloudFormation stack name: `deriveChildStackName`
+ * appends `~<logicalId>` per nesting level, and with CDK's ~60-character
+ * generated nested-stack logical ids a legitimate child passes 255 around the
+ * fourth level. Cutting one is a byte change on a LEGITIMATE value, and this
+ * file is the worst place for it -- three of its renders are
+ * `re-run 'cdkd rollback <stack>'` COPY-PASTE hints and one is the
+ * confirmation prompt, so a cut name hands an operator an unrunnable command
+ * mid-incident.
+ *
+ * It is a NAMED helper rather than a `maxCodePoints` argument repeated per
+ * site, because a per-site spelling of exactly this rule is what issue #3164
+ * exists to stop: the first cut of that fix widened ONE of this file's twelve
+ * stack-name renders and left eleven cut. Every value that is NOT a stack name --
+ * a region (at most 25 characters), a logical id, a resource type, a change
+ * type -- keeps `safe()` and its tighter default.
+ */
+function safeStack(value: unknown): string {
+  return displayIdent(value, { maxCodePoints: STACK_REF_MAX_CODE_POINTS });
 }
 
 /**
@@ -297,7 +326,12 @@ export async function rollbackCommand(
         return;
       }
       if (scoped.length > 1) {
-        const list = scoped.map((c) => `  - ${safe(c.stackName)} (${safe(c.region)})`).join('\n');
+        // `safeStack` for the name, `safe` for the region -- the same split
+        // every stack-name render in this file takes. These rows are what the
+        // user picks a `cdkd rollback <stack>` argument from.
+        const list = scoped
+          .map((c) => `  - ${safeStack(c.stackName)} (${safe(c.region)})`)
+          .join('\n');
         throw new Error(
           `Multiple stacks have a rollback journal. Pick one:\n${list}\n` +
             `Re-run 'cdkd rollback <stack>' (add --stack-region if the same name spans regions).`
@@ -375,14 +409,20 @@ export async function rollbackCommand(
       const journal = await setup.stateBackend.loadRollbackJournal(stackName, region);
       if (!journal || journal.segments.length === 0) {
         throw new Error(
-          `Nothing to roll back for '${safe(stackName)}' (${safe(region)}). ` +
+          `Nothing to roll back for '${safeStack(stackName)}' (${safe(region)}). ` +
             "Run 'cdkd deploy' to (re)deploy, or 'cdkd destroy' to clean up."
         );
       }
       if (!stateData) {
         throw new Error(
-          `Rollback journal exists for '${safe(stackName)}' (${safe(region)}) but its state.json is missing ` +
-            `(keys: ${safe(`${setup.prefix}/${stackName}/${region}`)}/state.json and .../rollback-journal.json). ` +
+          `Rollback journal exists for '${safeStack(stackName)}' (${safe(region)}) but its state.json is missing ` +
+            // Rendered SEGMENT BY SEGMENT, not as one pre-joined string: this
+            // key is the operator's only route to the record the sentence says
+            // is corrupted, and joining first put the whole path under the
+            // 255-code-point identifier default -- cutting it mid-path for
+            // exactly the deep nested-stack names this file widens the cap for.
+            `(keys: ${safe(setup.prefix)}/${safeStack(stackName)}/${safe(region)}/state.json ` +
+            `and .../rollback-journal.json). ` +
             `State appears corrupted — inspect the bucket manually.`
         );
       }
@@ -414,7 +454,7 @@ export async function rollbackCommand(
       }
 
       // 5. Plan — newest-first, one block per segment.
-      logger.info(`\nRollback plan for '${safe(stackName)}' (${safe(region)}):`);
+      logger.info(`\nRollback plan for '${safeStack(stackName)}' (${safe(region)}):`);
       // Plan preview walks a COPY of state so it does not disturb replay.
       const planStateView: Record<string, ResourceState> = { ...stateResources };
       for (let s = journal.segments.length - 1; s >= 0; s--) {
@@ -448,7 +488,7 @@ export async function rollbackCommand(
       logger.info('');
 
       if (!skipConfirmation) {
-        const ok = await confirm(`Roll back '${safe(stackName)}' (${safe(region)})?`);
+        const ok = await confirm(`Roll back '${safeStack(stackName)}' (${safe(region)})?`);
         if (!ok) {
           logger.info('Rollback cancelled');
           return;
@@ -524,7 +564,7 @@ export async function rollbackCommand(
           } catch (retryError) {
             logger.warn(
               `Failed to persist state after a rollback operation: ${displaySafe(retryError instanceof Error ? retryError.message : String(retryError))}. ` +
-                `The resource was reverted in AWS; re-run 'cdkd rollback ${safe(stackName)}' to reconcile state.`
+                `The resource was reverted in AWS; re-run 'cdkd rollback ${safeStack(stackName)}' to reconcile state.`
             );
           }
         }
@@ -694,20 +734,20 @@ export async function rollbackCommand(
       ) {
         await setup.stateBackend.deleteState(stackName, region);
         logger.info(
-          `State for '${safe(stackName)}' (${safe(region)}) removed (stack fully rolled back).`
+          `State for '${safeStack(stackName)}' (${safe(region)}) removed (stack fully rolled back).`
         );
       }
 
       // 10. Exit codes.
       if (interrupted) {
         throw new PartialFailureError(
-          `Rollback interrupted. Journal preserved — re-run 'cdkd rollback ${safe(stackName)}' to finish.`
+          `Rollback interrupted. Journal preserved — re-run 'cdkd rollback ${safeStack(stackName)}' to finish.`
         );
       }
       if (totalFailures > 0) {
         throw new PartialFailureError(
           `Rollback completed with ${totalFailures} failed operation(s). Journal preserved — ` +
-            `re-run 'cdkd rollback ${safe(stackName)}' to retry.`
+            `re-run 'cdkd rollback ${safeStack(stackName)}' to retry.`
         );
       }
       if (totalWarnings > 0) {
@@ -715,7 +755,7 @@ export async function rollbackCommand(
           `Rollback completed with ${totalWarnings} skipped/unrecoverable operation(s) (see warnings above).`
         );
       }
-      logger.info(`\nRollback of '${safe(stackName)}' (${safe(region)}) complete.`);
+      logger.info(`\nRollback of '${safeStack(stackName)}' (${safe(region)}) complete.`);
     } finally {
       // Release FIRST, unregister LAST (issue #2118). While the release
       // round-trip is in flight the lock is still held, so the handlers must
@@ -743,7 +783,7 @@ export async function rollbackCommand(
       try {
         await setup.lockManager.releaseLock(stackName, region).catch((err) => {
           logger.warn(
-            `Failed to release lock for '${safe(stackName)}' (${safe(region)}): ${displaySafe(err instanceof Error ? err.message : String(err))}`
+            `Failed to release lock for '${safeStack(stackName)}' (${safe(region)}): ${displaySafe(err instanceof Error ? err.message : String(err))}`
           );
         });
       } finally {

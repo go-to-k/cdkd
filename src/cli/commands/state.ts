@@ -23,7 +23,12 @@ import { confirmOrRefuse } from './confirm-prompt.js';
 import { CdkdError, PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
 import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
-import { displaySafe, truncateCodePoints } from '../../utils/display-safe.js';
+import {
+  displayIdent,
+  displaySafe,
+  truncateCodePoints,
+  STACK_REF_MAX_CODE_POINTS,
+} from '../../utils/display-safe.js';
 import {
   UNRENDERABLE,
   buildForceUnlockCommand,
@@ -208,14 +213,74 @@ interface ResourceDetail {
  * PROMPT is strictly worse than one in an error, because the sentence it
  * corrupts is the one the operator answers `y` to.
  *
- * `asciiOnly` matches the lock error's own call on these same values — a
- * stack name and an AWS region both have a known charset — and is a no-op on
- * every ordinary input, so the shipped prompt strings are byte-identical.
- * `UNRENDERABLE` stands in when sanitising leaves nothing, since an empty
- * `()` would read as "no region" rather than "a region cdkd will not print".
+ * BOTH halves go through `displayIdent`, not the bare `safe()` allowlist below
+ * (issue #3164). The allowlist closes line FORGERY and nothing else: it is the
+ * identity on printable ASCII, and this function's ` (` / `)` is cdkd's OWN
+ * annotation of the line, so a planted 2-segment legacy key
+ * `cdkd/ProdStack (us-east-1)/state.json` yields a region-LESS ref whose
+ * `stackName` is literally `ProdStack (us-east-1)` and renders BYTE-EQUAL to
+ * the genuine `ProdStack` in `us-east-1`. A `while read -r ref` cleanup loop —
+ * the consumer the sanitization exists for — cannot tell the two apart, so it
+ * acts on the reference the operator believes is real and the planted record
+ * survives the sweep. The join in the two prompt callers is a second boundary
+ * of the same kind: they `join(', ')`, which a name carrying `, ` forges an
+ * extra entry in -- and quoting closes that, since a space is outside
+ * `PLAIN_IDENT`.
+ *
+ * A BARE `,` is NOT closed, and an earlier revision of this comment was wrong
+ * to call it harmless: the formatter supplies the space that completes the
+ * separator, so `ProdStack,` renders `ProdStack, (us-east-1)` and a two-target
+ * list reads as THREE entries. Only `state refresh-observed` prints a count
+ * beside its list; `state orphan`'s banner prints none, so there nothing on
+ * screen contradicts the forged entry -- the worse of the two. Removing `,`
+ * from `PLAIN_IDENT` would close it and was tried; it regresses a legitimate
+ * IAM role ARN, whose role-name segment allows `[\w+=,.@-]`. Recorded on
+ * go-to-k/cdkd#3179 rather than traded for that.
+ *
+ * `displayIdent` makes the boundary VISIBLE by JSON-quoting anything that is
+ * not a plain identifier, so the row above reads `"ProdStack (us-east-1)"` and
+ * no longer collides. It is applied to the REGION half too: a region is an S3
+ * key segment (or, for a legacy record, the state body via `readLegacyRegion`),
+ * so it is attacker-chosen in exactly the same way, and a planted region alone
+ * renders `Decoy (x) (us-east-1)` — the same spoof from the right-hand side.
+ *
+ * Every legitimate row is byte-identical, because `displayIdent` is the
+ * identity on a plain identifier and CloudFormation stack names
+ * (`Parent~Child` included) and AWS region codes all are — so no fixture, no
+ * script's grep and no round-trip into `cdkd state show` changes. It keeps
+ * `safe()`'s `UNRENDERABLE` fallback for a value sanitising leaves empty, since
+ * an empty `()` would read as "no region" rather than "a region cdkd will not
+ * print".
+ *
+ * The NAME half passes `STACK_REF_MAX_CODE_POINTS` rather than taking
+ * `displayIdent`'s 255 default, and that is load-bearing for the paragraph
+ * above rather than a tuning knob: a cdkd state-record name is not a
+ * CloudFormation stack name, because `deriveChildStackName` appends
+ * `~<logicalId>` per nesting level, so a legitimate deep nested-stack child
+ * exceeds 255 and would be rendered CUT — a byte change on a legitimate row, in
+ * the middle of a line `while read -r ref` consumes. The REGION half keeps the
+ * default; an AWS region code is at most 25 characters.
+ *
+ * The consequence is taken at ALL SIX callers, the confirmation prompt
+ * included, rather than at the listing alone: guarding one site and leaving
+ * five is the per-site spelling `safe()`'s own comment below records having
+ * failed twice. In the prompt a quoted spoof is the most valuable of the six —
+ * that sentence is the one an operator answers `y` to.
+ *
+ * What the quoting is NOT: shell-safe. A JSON string literal is visually
+ * indistinguishable from a shell DOUBLE-quoted argument, in which `$(...)`,
+ * backticks and `!` still expand — so `"Prod$(touch /tmp/pwn)" (us-east-1)`
+ * must not be pasted into a command line, and this rendering makes no claim
+ * that it may be. The repo's answer for a value that has to survive a command
+ * line is elsewhere and is SUPPRESSION, not quoting: `buildForceUnlockCommand`
+ * declines to print a command at all unless sanitisation was the identity, and
+ * `rollback-executor.ts`'s `PASTEABLE_LOGICAL_ID` records why identity alone is
+ * still not enough (`~user` and `=x` expand). What this function provides is a
+ * visible BOUNDARY for a value a human is reading, which is a different job.
  */
 function formatStackRefSafe(ref: StackStateRef): string {
-  return ref.region ? `${safe(ref.stackName)} (${safe(ref.region)})` : safe(ref.stackName);
+  const name = displayIdent(ref.stackName, { maxCodePoints: STACK_REF_MAX_CODE_POINTS });
+  return ref.region ? `${name} (${displayIdent(ref.region)})` : name;
 }
 
 /**
@@ -241,6 +306,29 @@ function formatStackRefSafe(ref: StackStateRef): string {
  * no-op on every legitimate input while an S3 key admits any UTF-8. Free-form
  * text (a parser's own message, an AWS error) takes the denylist class
  * instead; `display-safe.ts`'s header draws that line.
+ *
+ * It is the WEAKER of this file's two spellings and stays so deliberately.
+ * `formatStackRefSafe` above uses `displayIdent` instead, because it renders
+ * cdkd's own ` (region)` annotation right beside the value and the allowlist
+ * cannot stop a value from carrying that annotation itself (issue #3164).
+ * Widening this helper is tracked as go-to-k/cdkd#3179 rather than done here,
+ * for reasons that are per-SITE rather than uniform, so read that issue's
+ * table rather than generalising from this paragraph: most of these sites are
+ * REFUSALS, where the surrounding `'...'` is at least SOME boundary -- but not
+ * all of them are, and `  Region: ${safe(...)}` in the `--long` view below has
+ * no surrounding anything -- while `Run 'cdkd deploy <stack>'` sites are
+ * COMMAND HINTS, where quoting is not this repo's answer at all:
+ * `buildForceUnlockCommand` SUPPRESSES the whole command instead.
+ *
+ * `grep safe(` does NOT enumerate the class, in BOTH directions. Some sites
+ * spell `displaySafe(..., { asciiOnly: true })` inline rather than calling this
+ * helper (`warnOnLiveForeignLock` renders its own `stack (region)` that way,
+ * inside the same `state orphan` output); others sanitise NOTHING
+ * (`stateRefreshObservedCommand` interpolates raw `listStacks` values into its
+ * refusals, including a third `cdkd deploy` hint, and `stateDestroyCommand`
+ * writes raw names into its `--all` confirmation list); and `describeStateKey`
+ * (`state-file-keys.ts`) renders the same shape from raw key segments.
+ * go-to-k/cdkd#3179 enumerates them all; a grep of this helper does not.
  */
 function safe(value: string | undefined): string {
   return displaySafe(value, { asciiOnly: true }) || UNRENDERABLE;
@@ -257,13 +345,21 @@ export function resolveSingleRegion(
   refs: StackStateRef[],
   requestedRegion: string | undefined
 ): StackStateRef {
-  // Sanitized like `formatStackRefSafe` above, which already does this for the
-  // same values in the same file. A `region` here is a raw S3 KEY SEGMENT from
-  // `listStacks`, and an S3 key admits any UTF-8 including newline and ESC, so
-  // planting `cdkd/<victimStack>/<hostile>/state.json` puts attacker text into
-  // these messages. `state list`'s formatted `--long` and `--tree` rows are
-  // sanitized too (issue #3069); the refusal a malformed record is most likely
-  // to reach had not been (issue #3003).
+  // Sanitized for the same reason `formatStackRefSafe` above is, on the same
+  // values in the same file -- but through the bare allowlist rather than that
+  // helper's `displayIdent`. That is a scope judgement recorded on issue #3164
+  // and tracked as go-to-k/cdkd#3179, not an oversight: the sites below are
+  // REFUSALS, not the listing a `while read` loop consumes. None of THEM is a
+  // command hint (the two that are live at `stateResourcesCommand` /
+  // `stateShowCommand` below); what they do share with those is that a
+  // BOUNDARY, not a rejection, is the open question -- the candidate lists here
+  // `join(', ')`, so a region carrying `, ` reads as two candidates. A `region`
+  // here is a raw S3 KEY SEGMENT from `listStacks`, and an S3 key admits any
+  // UTF-8 including newline and ESC, so planting
+  // `cdkd/<victimStack>/<hostile>/state.json` puts attacker text into these
+  // messages. `state list`'s formatted `--long` and `--tree` rows are sanitized
+  // too (issue #3069); the refusal a malformed record is most likely to reach
+  // had not been (issue #3003).
   const matches = refs.filter((r) => r.stackName === stackName);
   if (matches.length === 0) {
     throw new Error(
@@ -472,9 +568,12 @@ async function stateListCommand(options: {
     // `while read` loop consumes it: `listStacks` does not validate a key, so a
     // planted `cdkd/Decoy<LF>ProdStack (us-east-1)/us-east-1/state.json` would
     // otherwise emit a second, fully formed reference for a stack with no
-    // record, and a script would act on it. `safe()` is an ASCII allowlist, and
-    // stack names and region codes are printable ASCII, so every legitimate row
-    // is byte-identical (issue #3069).
+    // record, and a script would act on it. Since issue #3164 the same helper
+    // also makes the ` (region)` BOUNDARY visible, so a planted name carrying
+    // cdkd's own annotation no longer renders byte-equal to a genuine row.
+    // Both rules are the identity on a plain identifier, and stack names and
+    // region codes are, so every legitimate row is byte-identical (issue
+    // #3069).
     if (!options.long && !options.json) {
       for (const ref of refs) {
         process.stdout.write(`${formatStackRefSafe(ref)}\n`);
@@ -555,9 +654,13 @@ async function stateListCommand(options: {
 
     // Long human-readable format.
     const lines: string[] = [];
-    // The stack name and region go through `safe()`, as in the default mode
-    // above: both come from an S3 key segment, which admits a newline or ESC,
-    // so a planted key could otherwise forge a `Lock:` line inside another row.
+    // The stack name and region go through `formatStackRefSafe`, as in the
+    // default mode above: both come from an S3 key segment, which admits a
+    // newline or ESC, so a planted key could otherwise forge a `Lock:` line
+    // inside another row -- and, since issue #3164, could spoof a genuine
+    // header row by carrying this view's own ` (region)` annotation. The
+    // `  Region:` line below keeps the bare allowlist: it has no adjacent
+    // cdkd-authored annotation for a value to impersonate.
     // `--json` is NOT sanitized at all: `JSON.stringify` escapes only C0,
     // `"`, `\` and lone surrogates, so DEL, the C1 range, the line and
     // paragraph separators, the bidi overrides and the zero-width characters
@@ -688,7 +791,9 @@ async function renderTreeMode(
 
   if (roots.length === 0) return;
   const rendered = renderStackTreeAscii(roots, (node: StackTreeNode) =>
-    // The same formatted-view rule as `--long`'s text rows: sanitized.
+    // The same formatted-view rule as `--long`'s text rows: sanitized, and
+    // since issue #3164 boundary-quoted -- which this view needs on its own
+    // account, a label carrying `└── ` being able to fake a sibling connector.
     formatStackRefSafe({
       stackName: node.stackName,
       ...(node.region ? { region: node.region } : {}),
@@ -1726,7 +1831,14 @@ async function stateOrphanCommand(
         // Sanitised, like the lock error above runs on these SAME values
         // (issue #2170 round 4) — see `formatStackRefSafe`. Both the warning
         // banner and the question below render this one string, so a forged
-        // line would land in whichever the operator is reading.
+        // line would land in whichever the operator is reading. Since issue
+        // #3164 the helper also quotes a value that is not a plain identifier,
+        // which this site needs twice over: the `[...]` list is joined with
+        // `, `, so an unquoted name carrying `, ` forges an extra entry in the
+        // set of records the operator is agreeing to remove. A BARE `,` is a
+        // plain identifier and still slips through — the formatter supplies the
+        // space — which `formatStackRefSafe` records as a residual on
+        // go-to-k/cdkd#3179 rather than closing at the cost of IAM role ARNs.
         const targetList = targets.map((t) => formatStackRefSafe(t)).join(', ');
         process.stdout.write(
           `\nWARNING: This removes cdkd's state record for [${targetList}] only. ` +
@@ -2800,7 +2912,10 @@ async function stateRefreshObservedCommand(
 
     if (!options.yes && !options.dryRun) {
       // Sanitised for the same reason as the `state orphan` prompt above: this
-      // file's OTHER confirmation prompt, built from the same S3 key segments.
+      // file's OTHER confirmation prompt, built from the same S3 key segments,
+      // joined the same way, and boundary-quoted by the same helper since
+      // issue #3164 -- here the joined list sits inside the sentence's own
+      // `(...)`, which an unquoted name carrying `)` could close early.
       const targetList = targets.map(formatStackRefSafe).join(', ');
       const ok = await confirmRefresh(
         `Refresh observedProperties for ${targets.length} stack(s) (${targetList})?`
