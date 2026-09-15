@@ -622,7 +622,22 @@ gate_segments_raw() {
     # review round 2, 1c2 / 1d2 / 1e3b). `$\047` is ANSI-C only OUTSIDE double
     # quotes, as close_paren has it. `${...}` and `$((...))` are skipped whole,
     # and a `#` at word start ends the scan, because a `<<` inside any of them
-    # is not an opener. Finally the FRAME of the opener is recorded -- the
+    # is not an opener. A backtick frame is skipped the same way, TEXTUALLY:
+    # bash ends a backtick substitution at the next unescaped backtick on any
+    # line, a quote inside it protecting nothing (security round 16: a `\047`
+    # inside the frame desynchronised the quote state, and the line closing
+    # bash\047s quote ran a verb), so nothing inside the frame is read -- not a
+    # quote, not an opener (round 14: the body of such an opener is not
+    # modelled) -- and the frame close is the only thing looked for. Not
+    # sticky: once the frame closes the substitution is a plain `$( )` again
+    # and a later heredoc in it is real (N1). Round 15 had traded the
+    # opener-time bail for the end-of-line check alone, which sees the frame
+    # only while it is still OPEN there -- a backtick closing after the opener
+    # on the same line latched, and all three shells ran the next line (X20a
+    # / X20b / X20c, three reviewers at once). The `${...}` skip bails when the
+    # span holds a quote, a backtick or a backslash: it runs to the first `}`,
+    # and `${a:-"}` puts that brace inside a double quote bash keeps open
+    # across lines (K1, all three shells). Finally the FRAME of the opener is recorded -- the
     # substitution depth -- and the
     # answer is "" whenever the line goes on to do something bash does not
     # read as "body follows on the next line": a NEW `$(` still open at end
@@ -636,10 +651,15 @@ gate_segments_raw() {
     # the line is scanned, so a backtick or `$(` opened after the `)` would
     # otherwise be missing from the carried state and the next line would
     # latch inside it (security review round 15); and a `#` after a `)` is a comment like one
-    # after a space (round 3; `)#` measured as a comment on bash 3.2.57,
-    # bash 5 and zsh -- an earlier claim that 3.2 rejects it was wrong; the
-    # opening-backtick member of that class went with round 14, since an
-    # opener inside a backtick frame bails before it is recorded). Third, an
+    # after a space ONLY when that `)` closed a bare `( )` -- `(true)#` is a
+    # comment on bash 3.2.57, bash 5 and zsh (round 3; an earlier claim that
+    # 3.2 rejects it was wrong) -- while the `)` closing a `$( )` or `$(( ))`
+    # ends a WORD, so `$(true)#"` glues the `#` and the `"` opens a quote the
+    # scan must see (G1 / G2, security round 16, all three shells ran the
+    # line closing it). The per-depth stack records which kind each frame is
+    # and `gp` the position of the last word-ending `)`. A backtick is not in
+    # the comment class: a closing one ends a word too (H2), and inside a
+    # frame nothing is read at all. Third, an
     # UNQUOTED opener ANYWHERE on the line
     # is a bail too, not merely "not latched": in `cat <<A <<\047B\047` bash
     # reads the A body FIRST and expands it, so recording only the quoted B
@@ -661,13 +681,15 @@ gate_segments_raw() {
     # (an opener recorded on THIS line, its frame, the end-of-line checks)
     # are locals, so an earlier opener whose body run() already dropped is
     # never re-found (the round-1 joined-scan fail-open, S2).
-    function lho_reset() { lho_iq = ""; lho_depth = 0; lho_bt = 0; lho_btq = ""; lho_bail = 0; split("", lho_OQ) }
-    function last_heredoc_opener(text,   j, n, c, d, rest, out, of, k) {
+    function lho_reset() { lho_iq = ""; lho_depth = 0; lho_bt = 0; lho_btq = ""; lho_bail = 0; split("", lho_OQ); split("", lho_OK) }
+    function last_heredoc_opener(text,   j, n, c, d, rest, out, of, k, gp, s) {
       if (lho_bail) return ""
-      out = ""; of = 0
+      out = ""; of = 0; gp = 0
       n = length(text)
       for (j = 1; j <= n; j++) {
         c = substr(text, j, 1)
+        if (lho_bt) { if (c == "\\") { j++; continue }
+                      if (c == "`") { lho_bt = 0; lho_iq = lho_btq }; continue }
         if (lho_iq == "A") { if (c == "\\") { j++; continue }
                              if (c == "\047") lho_iq = ""; continue }
         if (lho_iq == "\047") { if (c == lho_iq) lho_iq = ""; continue }
@@ -677,18 +699,18 @@ gate_segments_raw() {
                         if (d == "\047" && lho_iq == "") { lho_iq = "A"; j++; continue }
                         if (d == "(" && substr(text, j + 2, 1) == "(") {
                           k = index(substr(text, j + 3), "))"); if (k == 0) { lho_bail = 1; return "" }
-                          j = j + 3 + k; continue }
-                        if (d == "(") { lho_depth++; lho_OQ[lho_depth] = lho_iq; lho_iq = ""; j++; continue }
+                          gp = j + 3 + k; j = gp; continue }
+                        if (d == "(") { lho_depth++; lho_OQ[lho_depth] = lho_iq; lho_OK[lho_depth] = 1; lho_iq = ""; j++; continue }
                         if (d == "{") { k = index(substr(text, j + 2), "}"); if (k == 0) { lho_bail = 1; return "" }
+                          s = substr(text, j + 2, k - 1); if (s ~ /["\047`\\]/) { lho_bail = 1; return "" }
                           j = j + 1 + k; continue }
                         continue }
-        if (c == "`" && (lho_iq == "" || lho_iq == "\"")) { if (!lho_bt) { lho_btq = lho_iq; lho_iq = ""; lho_bt = 1 }
-                                                            else { lho_bt = 0; lho_iq = lho_btq }; continue }
+        if (c == "`" && (lho_iq == "" || lho_iq == "\"")) { lho_btq = lho_iq; lho_iq = ""; lho_bt = 1; continue }
         if (lho_iq != "") { if (c == lho_iq) lho_iq = ""; continue }
         if (c == "\"" || c == "\047") { lho_iq = c; continue }
-        if (c == "(") { lho_depth++; lho_OQ[lho_depth] = ""; continue }
-        if (c == ")") { if (lho_depth > 0) { if (out != "" && lho_depth <= of) { lho_bail = 1; return "" }; lho_iq = lho_OQ[lho_depth]; lho_depth-- }; continue }
-        if (c == "#" && (j == 1 || substr(text, j - 1, 1) ~ /[ \t;&|()]/)) break
+        if (c == "(") { lho_depth++; lho_OQ[lho_depth] = ""; lho_OK[lho_depth] = 0; continue }
+        if (c == ")") { if (lho_depth > 0) { if (out != "" && lho_depth <= of) { lho_bail = 1; return "" }; if (lho_OK[lho_depth]) gp = j; lho_iq = lho_OQ[lho_depth]; lho_depth-- }; continue }
+        if (c == "#" && (j == 1 || substr(text, j - 1, 1) ~ /[ \t;&|(]/ || (substr(text, j - 1, 1) == ")" && gp != j - 1))) break
         if (c == "<" && substr(text, j + 1, 1) == "<") {
           if (substr(text, j + 2, 1) == "<") { j += 2; continue }
           rest = substr(text, j)
@@ -703,14 +725,15 @@ gate_segments_raw() {
         }
       }
       if (lho_iq != "") return ""
-      # No latch while a backtick frame is open, or when a new `$(` opened after
-      # the opener: bash delimits a backtick substitution TEXTUALLY, so the
-      # first unescaped backtick on any body line -- a `\140foo\140` mention in
-      # quoted prose -- closes it and the rest of that body runs as commands
-      # (security round 14, all three shells); and bash defers a body that a
-      # later `$(` owns (round 2, 1g). Not sticky: once the backtick closes
-      # the substitution is a plain `$( )` again and a later heredoc in it is
-      # real.
+      # No latch when a backtick frame opened after the opener is still open
+      # here, or when a new `$(` opened after it: bash delimits a backtick
+      # substitution TEXTUALLY, so the first unescaped backtick on any body
+      # line -- a `\140foo\140` mention in quoted prose -- closes it and the
+      # rest of that body runs as commands (security round 14, all three
+      # shells); and bash defers a body that a later `$(` owns (round 2, 1g).
+      # Not sticky: the next line is read as commands, and a later heredoc in
+      # the substitution is real. An opener INSIDE a backtick frame never
+      # reaches this line -- the frame is skipped above.
       if (out != "" && lho_depth + lho_bt > of) return ""
       return out
     }

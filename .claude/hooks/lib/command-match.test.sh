@@ -261,11 +261,12 @@ r2_case "C1: a <<X after a closed \$( ) inside double quotes is still quoted" 0 
 # unbalanced quote. What the arm no longer does is LATCH a heredoc opened
 # inside a backtick frame: bash delimits a backtick substitution textually,
 # so a `\`foo\`` mention on a body line closes it and the rest of the body
-# runs (security round 14, all three shells; P01 / P03 below). A
-# backtick-framed opener is therefore the sticky bail and its prose body is
-# read as commands -- origin/main parity, a false refusal, never a miss.
-# What decides it is the end-of-line check (`lho-ol-check`): an opener with
-# a backtick frame still open is not recorded as a latch.
+# runs (security round 14, all three shells; P01 / P03 below). The scan
+# therefore reads NOTHING inside a backtick frame (round 16) -- the opener
+# is never seen -- and its prose body is read as commands: origin/main
+# parity, a false refusal, never a miss. A backtick frame still open at the
+# end of the opener's line (opened AFTER the opener) is the end-of-line
+# check's job (`lho-ol-check`).
 check "B1: a quoted heredoc inside a backtick substitution inside double quotes is read as commands (parity)" 0 "$MERGE" \
   "$(printf '%s\n' 'x="`cat <<'"'"'EOF'"'"'' 'gh pr merge 1 was refused' 'EOF' '`"')"
 check "P03: a backtick mention on a body line closes the backtick substitution, and the line after it runs" 0 "$MERGE" \
@@ -345,8 +346,9 @@ r3_case "d05: two QUOTED openers, verb after both terminators is still a segment
 # heredoc body is VERSION-DEPENDENT (bash 3.2 and zsh run the commit, bash 5
 # reads a body; the backtick twin runs it in all three), so the scan bails
 # the moment the opener frame closes -- a `)` at or below the recorded depth
-# -- rather than modelling it; a backtick-framed opener is never latched at
-# all (round 14), so the backtick half of this rule is gone.
+# -- rather than modelling it; an opener inside a backtick frame is never
+# seen at all (round 14; the frame is skipped whole since round 16), so the
+# backtick half of this rule is gone.
 r3_case "c1: opener frame closes, a new \$( opens -- \$( form" 0 "$COMMIT" \
   'y=$(cat <<'"'"'EOF'"'"') ; z=$(' 'git commit -m y' 'EOF' ')'
 r3_case "c1b: opener frame closes, a new \$( opens -- backtick form (the word <<'EOF'\` is unreadable, so this pins that bail)" 0 "$COMMIT" \
@@ -411,9 +413,9 @@ check "s8: a quoted heredoc closed on an earlier line is not re-found -- the pus
 # Code review round 4: the `#` class had `)` (round 3) but not the backtick,
 # so `` x=`#<<'X' `` read the comment as an opener inside the backtick frame
 # and latched it -- all three shells run the commit. Round 14 retired that
-# class member: an opener inside a backtick frame bails before it is
-# recorded, so this case now pins that bail.
-r3_case "s10: a <<'X' after # inside a backtick frame is not latched (the frame bails)" 0 "$COMMIT" \
+# class member, and since round 16 nothing inside a backtick frame is read
+# at all, so this case pins that skip.
+r3_case "s10: a <<'X' after # inside a backtick frame is not latched (the frame is skipped)" 0 "$COMMIT" \
   'x=`#<<'"'"'X'"'"'' 'git commit -m y' 'X' '`'
 # The carried state is per SUBSTITUTION: it resets when a line closes one, so
 # the sticky unquoted-opener bail from a first `$( )` does not leak into a
@@ -578,6 +580,72 @@ r3_case "X19c: the nested-frame twin" 0 "$MERGE" \
 # refused as commands.
 check "H1: a # right after an opening backtick is not a comment once the backtick closes on the same line" 1 "$MERGE" \
   "$(printf '%s\n' 'y=$(x=`#` ; cat <<'"'"'X'"'"'' 'gh pr merge 1 was refused' 'X' ')')"
+# Round 16 (spec, code and test review, one finding): round 15 dropped the
+# opener-time backtick bail for the end-of-line check, which sees a backtick
+# frame only while it is still OPEN at the end of the line. A backtick that
+# closes AFTER the opener on the same line left `lho_bt` at 0 there, the
+# opener latched, and all three shells ran the next line (the backtick's
+# heredoc has no body: "delimited by end-of-file"). The scan now skips a
+# backtick frame wholesale -- textually, the way bash delimits it -- so an
+# opener inside one is never seen. Mutant `lho-bt-fallthrough` reads the
+# frame's text again and reds X20a / X20b / X20c / Q1.
+r3_case "X20a: a backtick closing after the opener on the same line -- the opener is inside it" 0 "$MERGE" \
+  'x=$(echo `cat <<'"'"'E'"'"' ` ; true' 'gh pr merge 1' 'E' ')'
+r3_case "X20b: the assignment twin" 0 "$MERGE" \
+  'x=$(y=`cat <<'"'"'E'"'"' `' 'gh pr merge 1' 'E' ')'
+r3_case "X20c: the carried-state twin -- the frame opened on the line before" 0 "$MERGE" \
+  'x=$(echo `abc' '<<'"'"'X'"'"' `' 'gh pr merge 1' 'X' ')'
+# The skip is NOT sticky (test review round 16 asked for this control): a
+# backtick frame that closes on a LATER line leaves a plain `$( )`, and a
+# real quoted heredoc after the close is data in all three shells.
+r3_case "N1: a backtick frame closing on a later line, then a real quoted heredoc -- its body is data" 1 "$MERGE" \
+  'x=$(y=`cat <<'"'"'E'"'"'' 'a` ; cat <<'"'"'X'"'"'' 'gh pr merge 1 was refused' 'X' ')'
+# Round 16 (security): bash ends a backtick substitution at the next
+# unescaped backtick whatever quotes sit inside it, while the scan honoured a
+# quote there -- one `'"'"'` inside the frame closed it at the wrong backtick, and
+# the line closing bash's quote ran the verb (bash 5.3 and 3.2; zsh does
+# not). The skip above reads no quote inside the frame.
+r3_case "Q1: a quote inside a backtick frame protects nothing -- the frame ends at the next backtick" 0 "$MERGE" \
+  'x=$(echo `a '"'"'`'"'"' `' 'cat <<'"'"'E'"'"'' "' ; gh pr merge 1" 'E' ')'
+# Round 16 (security): the `)` closing a `$( )` or a `$(( ))` ends a WORD, so
+# a `#` right after it is glued (`$(true)#"` opens a quote bash keeps open
+# across lines), while the `)` closing a bare `( )` is an operator and the
+# `#` after it a comment -- all three shells, both directions. The scan read
+# every `)#` as a comment, stopped, missed the quote, latched the next line's
+# opener and dropped the line closing the quote. Mutant `lho-hash-glue`.
+r3_case "G1: \$(true)# glues the # -- the quote after it is real" 0 "$MERGE" \
+  'x=$(echo $(true)#"' 'cat <<'"'"'E'"'"'' '" ; gh pr merge 1' 'E' ')'
+r3_case "G2: \$((1))# glues the # -- the arithmetic close ends a word too" 0 "$MERGE" \
+  'x=$(echo $((1))#"' 'cat <<'"'"'E'"'"'' '" ; gh pr merge 1' 'E' ')'
+r3_case "G3: the single-quote twin of G1" 0 "$MERGE" \
+  'x=$(echo $(true)#'"'" 'cat <<'"'"'E'"'"'' "' ; gh pr merge 1" 'E' ')'
+r3_case "G-ctl: (true)# after a BARE subshell is a comment -- the heredoc after it is real (control)" 1 "$MERGE" \
+  'x=$( (true)#"' 'cat <<'"'"'E'"'"'' '" ; gh pr merge 1 was refused' 'E' ')'
+r3_case "H2: a closing backtick ends a word too -- \`a\`# glues the # (pins the class without the backtick)" 0 "$MERGE" \
+  'x=$(echo `a`#"' 'cat <<'"'"'E'"'"'' '" ; gh pr merge 1' 'E' ')'
+# Round 16 (security): the `${...}` skip runs to the first `}` whatever
+# quotes sit inside, and `${a:-"}` puts that brace inside a double quote
+# bash keeps open across lines: the scan reported a clean end of line,
+# latched the next opener and dropped the line closing the quote (all three
+# shells; the single-quote, backtick and backslash spellings measured the
+# same). A quote, backtick or backslash inside the span is the sticky bail.
+# Mutant `lho-brace-quote-bail`.
+r3_case "K1: \${a:-\"} -- a quote inside the brace span keeps the line open" 0 "$MERGE" \
+  'x=$(echo ${a:-"}' 'cat <<'"'"'E'"'"'' '"} ; gh pr merge 1' 'E' ')'
+r3_case "K2: the backslash twin" 0 "$MERGE" \
+  'x=$(echo ${a:-\}' 'cat <<'"'"'E'"'"'' '} ; gh pr merge 1' 'E' ')'
+r3_case "K-ctl: a plain \${a} before a real quoted heredoc -- its body is data (control)" 1 "$MERGE" \
+  'x=$(echo ${a} ; cat <<'"'"'E'"'"'' 'gh pr merge 1 was refused' 'E' ')'
+# Round 16 (code and test review): the round-15 sticky flag on an
+# unterminated `$((` was unfenced. bash reads `$((1 +` across the line break
+# and the heredoc opened after the `))` on the next line as data; the sticky
+# bail refuses its prose instead -- origin/main parity, the safe direction --
+# and the non-sticky return would pop the outer frame on that `))` and latch
+# the opener at depth 0. Mutant `lho-arith-not-sticky`. The `${` twin cannot
+# be fenced by a running shape: a `${a` left open at a line end is a bad
+# substitution in all three shells, so nothing runs either way.
+r3_case "AR1: an arithmetic span left open at the line end is a sticky bail -- the heredoc after its close is read as commands (parity)" 0 "$MERGE" \
+  'x=$(echo $((1 +' '2)); cat <<'"'"'X'"'"'' 'gh pr merge 1 was refused' 'X' ')'
 
 # --- The UNQUOTED delimiter is DELIBERATELY not latched (round 2) ------------
 # Two review rounds of go-to-k/cdkd#3040 each measured shapes bash executes

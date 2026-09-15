@@ -155,21 +155,21 @@ edits={
                          '          lho_reset(); pd = last_heredoc_opener(phys)\n'),
  'lho-no-reset-on-close': ('        lho_reset()\n        # A line that ends INSIDE a quoted span',
                            '        # A line that ends INSIDE a quoted span'),
- 'lho-frame-close-paren': ('if (out != "" && lho_depth <= of) { lho_bail = 1; return "" }; lho_iq = lho_OQ[lho_depth]', 'lho_iq = lho_OQ[lho_depth]'),
- 'lho-hash-class-paren': ('~ /[ \\t;&|()]/)) break', '~ /[ \\t;&|(]/)) break'),
+ 'lho-frame-close-paren': ('if (out != "" && lho_depth <= of) { lho_bail = 1; return "" }; if (lho_OK[lho_depth]) gp = j; lho_iq = lho_OQ[lho_depth]', 'if (lho_OK[lho_depth]) gp = j; lho_iq = lho_OQ[lho_depth]'),
+ 'lho-hash-class-paren': (' || (substr(text, j - 1, 1) == ")" && gp != j - 1))) break', ')) break'),
  'lho-herestring-skip': ('if (substr(text, j + 2, 1) == "<") { j += 2; continue }', 'if (0) { j += 2; continue }'),
  'lho-iq-bail':         ('      if (lho_iq != "") return ""\n', '      if (0) return ""\n'),
  'lho-ansi-c-arm':      ('if (d == "\\047" && lho_iq == "") { lho_iq = "A"; j++; continue }\n', ''),
  'lho-ansi-c-in-dq':    ('if (d == "\\047" && lho_iq == "") { lho_iq = "A"; j++; continue }', 'if (d == "\\047") { lho_iq = "A"; j++; continue }'),
  'lho-ol-check':        ('if (out != "" && lho_depth + lho_bt > of) return ""', 'if (0) return ""'),
- 'lho-hash-break':      ('if (c == "#" && (j == 1 || substr(text, j - 1, 1) ~ /[ \\t;&|()]/)) break', 'if (0) break'),
+ 'lho-hash-break':      ('if (c == "#" && (j == 1 || substr(text, j - 1, 1) ~ /[ \\t;&|(]/ || (substr(text, j - 1, 1) == ")" && gp != j - 1))) break', 'if (0) break'),
  'lho-brace-skip':      ('if (d == "{") { k = index(substr(text, j + 2), "}"); if (k == 0) { lho_bail = 1; return "" }', 'if (0) { k = index(substr(text, j + 2), "}"); if (k == 0) { lho_bail = 1; return "" }'),
  'lho-arith-skip':      ('if (d == "(" && substr(text, j + 2, 1) == "(") {', 'if (0) {'),
- 'lho-arith-landing':   ('j = j + 3 + k; continue }', 'j = j + 2 + k; continue }'),
- 'lho-paren-pop-restore': ('{ lho_bail = 1; return "" }; lho_iq = lho_OQ[lho_depth]; lho_depth-- }', '{ lho_bail = 1; return "" }; lho_depth-- }'),
- 'lho-bare-paren-push': ('if (c == "(") { lho_depth++; lho_OQ[lho_depth] = ""; continue }', 'if (0) { lho_depth++; lho_OQ[lho_depth] = ""; continue }'),
- 'lho-subst-push-save-iq': ('if (d == "(") { lho_depth++; lho_OQ[lho_depth] = lho_iq; lho_iq = ""; j++; continue }', 'if (d == "(") { lho_depth++; lho_OQ[lho_depth] = ""; lho_iq = ""; j++; continue }'),
- 'lho-backtick-arm':    ('if (c == "`" && (lho_iq == "" || lho_iq == "\\"")) { if (!lho_bt)', 'if (0) { if (!lho_bt)'),
+ 'lho-arith-landing':   ('gp = j + 3 + k; j = gp; continue }', 'gp = j + 2 + k; j = gp; continue }'),
+ 'lho-paren-pop-restore': ('{ lho_bail = 1; return "" }; if (lho_OK[lho_depth]) gp = j; lho_iq = lho_OQ[lho_depth]; lho_depth-- }', '{ lho_bail = 1; return "" }; if (lho_OK[lho_depth]) gp = j; lho_depth-- }'),
+ 'lho-bare-paren-push': ('if (c == "(") { lho_depth++; lho_OQ[lho_depth] = ""; lho_OK[lho_depth] = 0; continue }', 'if (0) { lho_depth++; lho_OQ[lho_depth] = ""; lho_OK[lho_depth] = 0; continue }'),
+ 'lho-subst-push-save-iq': ('if (d == "(") { lho_depth++; lho_OQ[lho_depth] = lho_iq; lho_OK[lho_depth] = 1; lho_iq = ""; j++; continue }', 'if (d == "(") { lho_depth++; lho_OQ[lho_depth] = ""; lho_OK[lho_depth] = 1; lho_iq = ""; j++; continue }'),
+ 'lho-backtick-arm':    ('if (c == "`" && (lho_iq == "" || lho_iq == "\\"")) { lho_btq = lho_iq; lho_iq = ""; lho_bt = 1; continue }', 'if (0) { lho_btq = lho_iq; lho_iq = ""; lho_bt = 1; continue }'),
  'lho-terminated-guard': ('if (pd != "" && terminated(pd, i + 1) > 0) ptag = pd', 'if (pd != "") ptag = pd'),
  # heredoc_word (round 7): the delimiter is the whole WORD after quote
  # removal. `hw-stop-at-quote` ends the word at the closing quote (the old
@@ -235,10 +235,27 @@ edits={
  # `lho-frame-close-not-sticky` returns from a frame close without the flag
  # (X19b / X19c); `lho-hash-class-bt` puts the opening backtick back into the
  # `#` class (H1, refusing direction).
- 'lho-frame-close-not-sticky': ('if (out != "" && lho_depth <= of) { lho_bail = 1; return "" }; lho_iq = lho_OQ[lho_depth]',
-                                'if (out != "" && lho_depth <= of) { return "" }; lho_iq = lho_OQ[lho_depth]'),
- 'lho-hash-class-bt':   ('~ /[ \\t;&|()]/)) break', '~ /[ \\t;&|()`]/)) break'),
+ 'lho-frame-close-not-sticky': ('if (out != "" && lho_depth <= of) { lho_bail = 1; return "" }; if (lho_OK[lho_depth]) gp = j; lho_iq = lho_OQ[lho_depth]',
+                                'if (out != "" && lho_depth <= of) { return "" }; if (lho_OK[lho_depth]) gp = j; lho_iq = lho_OQ[lho_depth]'),
+ 'lho-hash-class-bt':   ('~ /[ \\t;&|(]/ ||', '~ /[ \\t;&|(`]/ ||'),
  'pending-tag-restore': ('      pending_tag = saved_pt\n', ''),
+ # Round 16. `lho-bt-fallthrough` reads the text inside a backtick frame
+ # again -- the round-15 shape, where a frame closing after the opener on
+ # the same line latched it (X20a / X20b / X20c); `lho-bt-quoted` honours a
+ # quote inside the frame, so a backtick inside it no longer closes it (Q1);
+ # `lho-bt-skip-off` never closes a frame at all (H1, N1). `lho-hash-glue` reads every `)#`
+ # as a comment again (G1 / G2 / G3 / H2); `lho-frame-kind` makes every `)`
+ # glue, the bare-subshell one included (G-ctl). `lho-brace-quote-bail`
+ # skips a `${...}` span whatever it holds (K1 / K2); `lho-arith-not-sticky`
+ # returns from an unterminated `$((` without the flag (AR1).
+ 'lho-bt-fallthrough':  ('if (c == "`") { lho_bt = 0; lho_iq = lho_btq }; continue }', 'if (c == "`") { lho_bt = 0; lho_iq = lho_btq; continue } }'),
+ 'lho-bt-skip-off':     ('if (lho_bt) { if (c == "\\\\") { j++; continue }', 'if (0) { if (c == "\\\\") { j++; continue }'),
+ 'lho-bt-quoted':       ('        if (lho_bt) { if (c == "\\\\") { j++; continue }\n                      if (c == "`") { lho_bt = 0; lho_iq = lho_btq }; continue }\n',
+                         '        if (lho_bt && lho_iq != "") { if (c == lho_iq) lho_iq = ""; continue }\n        if (lho_bt) { if (c == "\\\\") { j++; continue }; if (c == "`") { lho_bt = 0; lho_iq = lho_btq; continue }; if (c == "\\"" || c == "\\047") { lho_iq = c; continue }; continue }\n'),
+ 'lho-hash-glue':       ('(substr(text, j - 1, 1) == ")" && gp != j - 1)', '(substr(text, j - 1, 1) == ")")'),
+ 'lho-frame-kind':      ('if (lho_OK[lho_depth]) gp = j;', 'gp = j;'),
+ 'lho-brace-quote-bail': ('s = substr(text, j + 2, k - 1); if (s ~ /["\\047`\\\\]/) { lho_bail = 1; return "" }', 's = substr(text, j + 2, k - 1); if (0) { lho_bail = 1; return "" }'),
+ 'lho-arith-not-sticky': ('k = index(substr(text, j + 3), "))"); if (k == 0) { lho_bail = 1; return "" }', 'k = index(substr(text, j + 3), "))"); if (k == 0) return ""'),
 }
 a,b=edits[probe]
 n=s.count(a)
@@ -249,7 +266,7 @@ PY
   esac
 }
 
-MUTANTS="${*:-passthrough wholeseg wholeseg-raw empty-pair-collapse dq-backslash open-quote-guard len-bound span-bound meta-reject gh-extra-always odd-trailing-bs lho-reset-each-line lho-no-reset-on-close lho-frame-close-paren lho-hash-class-paren lho-herestring-skip lho-iq-bail lho-ansi-c-arm lho-ansi-c-in-dq lho-ol-check lho-hash-break lho-brace-skip lho-arith-skip lho-arith-landing lho-paren-pop-restore lho-bare-paren-push lho-subst-push-save-iq lho-backtick-arm lho-terminated-guard hw-stop-at-quote hw-drop-inner-quote hw-unquoted-latch hw-bail-not-sticky hw-flush-line-regex hw-stop-at-dquote hw-dq-backslash hw-backslash-arm hw-toplevel-any-word hw-toplevel-ident-only ptag-paren-close ptag-keep-delimiter ptag-trim-both ptag-paren-clause bs-parity bs-arm-off ptag-latch-off lho-frame-close-not-sticky lho-hash-class-bt pending-tag-restore}"
+MUTANTS="${*:-passthrough wholeseg wholeseg-raw empty-pair-collapse dq-backslash open-quote-guard len-bound span-bound meta-reject gh-extra-always odd-trailing-bs lho-reset-each-line lho-no-reset-on-close lho-frame-close-paren lho-hash-class-paren lho-herestring-skip lho-iq-bail lho-ansi-c-arm lho-ansi-c-in-dq lho-ol-check lho-hash-break lho-brace-skip lho-arith-skip lho-arith-landing lho-paren-pop-restore lho-bare-paren-push lho-subst-push-save-iq lho-backtick-arm lho-terminated-guard hw-stop-at-quote hw-drop-inner-quote hw-unquoted-latch hw-bail-not-sticky hw-flush-line-regex hw-stop-at-dquote hw-dq-backslash hw-backslash-arm hw-toplevel-any-word hw-toplevel-ident-only ptag-paren-close ptag-keep-delimiter ptag-trim-both ptag-paren-clause bs-parity bs-arm-off ptag-latch-off lho-frame-close-not-sticky lho-hash-class-bt pending-tag-restore lho-bt-fallthrough lho-bt-quoted lho-bt-skip-off lho-hash-glue lho-frame-kind lho-brace-quote-bail lho-arith-not-sticky}"
 rc=0
 for m in $MUTANTS; do
   if ! mutate "$m" 2>"$WORK/err.txt"; then
