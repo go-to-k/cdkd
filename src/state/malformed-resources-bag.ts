@@ -184,8 +184,18 @@ export type RenderedStateContainer = 'outputs' | 'skippedOutputs' | 'attributes'
  *
  * Both identifiers are sanitized and then shell-quoted, and the command is
  * emitted LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s own note
- * gives. The container names take neither: they are literals of the union
- * above, never record-derived text.
+ * gives.
+ *
+ * The container NAMES are sanitized but NOT shell-quoted, and the asymmetry is
+ * deliberate in both halves. Not shell-quoted, because they appear in the
+ * PROSE and never inside the command this text tells the reader to run — the
+ * command carries the two identifiers and nothing else. Sanitized anyway,
+ * because the alternative is a guarantee that lives in a comment: the union
+ * above is closed at COMPILE time, and the day a caller derives a name from a
+ * record instead of from a literal, an unsanitized element could carry a
+ * newline and forge a second line of output. `displaySafe` costs nothing on a
+ * literal — it is the identity on printable ASCII — and makes the guarantee
+ * structural (security review of go-to-k/cdkd#3190).
  */
 export function malformedRenderedContainersWarning(
   stackName: string,
@@ -194,7 +204,7 @@ export function malformedRenderedContainersWarning(
 ): string {
   const stack = safeIdentifier(stackName);
   const reg = safeIdentifier(region);
-  const names = containers.map((name) => `'${name}'`).join(', ');
+  const names = containers.map((name) => `'${displaySafe(name, { asciiOnly: true })}'`).join(', ');
   return (
     `State for ${shellQuote(stack)} (${shellQuote(reg)}) has a non-object ${names} — the record ` +
     `is malformed or truncated. 'Object.entries' walks a string or a list as readily as a map, ` +

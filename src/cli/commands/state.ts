@@ -922,27 +922,37 @@ async function stateResourcesCommand(
       logger.warn(malformedResourcesWarning(stackName, ref.region));
     }
     // And the same for the one VALUE container this command renders — each
-    // resource's `attributes`, walked by `--long` (issue go-to-k/cdkd#3187).
-    // `properties`, `outputs` and `skippedOutputs` are deliberately out of
-    // scope here: this command renders none of them, and the set it passes
-    // says so (`RESOURCES_RENDERED_CONTAINERS`).
+    // resource's `attributes` (issue go-to-k/cdkd#3187). `properties`,
+    // `outputs` and `skippedOutputs` are deliberately out of scope here: this
+    // command renders none of them, and the set it passes says so
+    // (`RESOURCES_RENDERED_CONTAINERS`).
     //
-    // At the LOAD, so it covers `--json` too, which is the choice the repair
-    // one line up already made and for a related reason: `details` is a
-    // PROJECTION, not the stored record — it already substitutes `[]` for an
-    // absent `dependencies` and `{}` for an absent `attributes` — and
-    // `cdkd state show --json` is the mode that answers "what does the record
-    // hold", which is where this warning's own text sends the reader. Guarding
-    // in the `--long` branch instead would leave a script consuming
-    // `--json`'s `attributes` a non-object where its type says otherwise, with
-    // nothing said about it.
-    repairRenderedContainers(
-      stateResult.state,
-      RESOURCES_RENDERED_CONTAINERS,
-      stackName,
-      ref.region,
-      logger
-    );
+    // Gated on the two modes that CARRY attributes, and by the same rule that
+    // excludes the other three containers rather than by a second one. The
+    // default three-column listing prints logicalId / type / physicalId and
+    // nothing else, so an `attributes` it never walks can neither fabricate a
+    // row nor be described by a warning whose text promises "this view shows no
+    // rows there" — the warning would name a block that does not exist in the
+    // output in front of the reader. `cdkd state show` is where that record's
+    // attributes are visible, and this command's own `--long` is one flag away.
+    //
+    // `--json` is INSIDE the gate, not outside it, which is where this departs
+    // from `cdkd state show`: `details` is a PROJECTION rather than the stored
+    // record — it already substitutes `[]` for an absent `dependencies` and
+    // `{}` for an absent `attributes` — so leaving it alone would hand a script
+    // a non-object where the shape it consumes says otherwise, with nothing
+    // said about it. `cdkd state show --json` remains the mode that answers
+    // "what does the record hold", and this warning's text sends the reader
+    // there.
+    if (options.long || options.json) {
+      repairRenderedContainers(
+        stateResult.state,
+        RESOURCES_RENDERED_CONTAINERS,
+        stackName,
+        ref.region,
+        logger
+      );
+    }
     // No `?? {}`: the repair above leaves a plain object behind whatever the
     // record held, and a fallback that can no longer fire only makes a later
     // reader think the bag is guarded one line down instead of at the load.

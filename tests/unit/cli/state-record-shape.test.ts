@@ -93,10 +93,20 @@ vi.mock('../../../src/utils/aws-clients.ts', () => ({
  * it was fencing was itself at the root only. A healthy root naming a nested
  * child walked that child's bag unguarded, and this spy read 1 either way.
  * `walkCdkdStateStackTree` is module-private, but it calls
- * `hasReadableResources` exactly once on entry and is the only caller reached
- * by these cases (`state.ts` no longer calls it; `repairMalformedResourcesForReadOnly`
- * calls it INTERNALLY, which a module mock does not intercept), so this count IS
- * the per-node walk count.
+ * `hasReadableResources` exactly once on entry, and every OTHER caller a case
+ * here can reach is accounted for, so this count is the per-node walk count
+ * plus a known constant:
+ *
+ * - `repairMalformedResourcesForReadOnly` calls it INTERNALLY, which a module
+ *   mock does not intercept, so those calls never reach the spy.
+ * - `warnUnreadableTreeNodes` (`state.ts`) calls it once per node, and ONLY on
+ *   the `--show-nested --json` path. That is why the nested-JSON cases halve
+ *   the count they read; a case on any other path sees the walk alone. The
+ *   earlier wording here said `state.ts` no longer calls it at all, which was
+ *   false in exactly the direction that makes a halving look arbitrary.
+ * - `repairRenderedContainers` (issue go-to-k/cdkd#3187) deliberately reads
+ *   `isReadableBag` rather than this predicate, so it adds nothing here — a
+ *   second caller would silently inflate every count below.
  */
 const walkSpy = vi.hoisted(() => vi.fn());
 
@@ -1266,6 +1276,10 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
           bucket.state = record(site.emptied);
           const empty = await runState(['show', 'MyStack']);
           expectRendered(empty.error);
+          // The comparand needs its own floor: `toBe(empty.out)` is satisfied
+          // by three renders that all collapsed to `''`, so pin that the empty
+          // case rendered a block at all before comparing anything to it.
+          expect(empty.out).toContain('Resources (');
           expect(warnSpy).not.toHaveBeenCalled();
 
           for (const value of [null, undefined]) {
@@ -1382,6 +1396,39 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
       ]);
     });
 
+    it('state show --show-nested warns per RECORD when root and child are both malformed', async () => {
+      // Two warnings, each naming its own stack and its own containers, because
+      // `repairTreeForTextRender` visits every node. A fix that emptied the
+      // tree from one aggregated pass would print one line here and name the
+      // wrong stack in it. The child breaks a DIFFERENT container from the
+      // root, so a per-node pass that reused the root's repaired set would show
+      // up as the wrong names rather than the wrong count.
+      bucket.state = record({
+        outputs: 'abcdef',
+        resources: {
+          Child: {
+            resourceType: 'AWS::CloudFormation::Stack',
+            physicalId: 'child-arn',
+            properties: {},
+          },
+        },
+      });
+      bucket.children['MyStack~Child'] = record({
+        stackName: 'MyStack~Child',
+        resources: { R: resourceRow({ properties: [1, 2, 3] }) },
+      });
+
+      const { out, error } = await runState(['show', 'MyStack', '--show-nested']);
+
+      expectRendered(error);
+      expect(out).not.toMatch(FABRICATED_ROW);
+      expect(out).toContain('Nested stack: MyStack~Child');
+      expect(warnings()).toEqual([
+        containerWarning('outputs'),
+        malformedRenderedContainersWarning('MyStack~Child', 'us-east-1', ['properties']),
+      ]);
+    });
+
     it('state show --show-nested --json neither repairs nor warns about a container', async () => {
       // Deliberately unlike the `resources` bag, which that mode DOES warn
       // about: an unreadable bag makes the walk return a node with
@@ -1461,18 +1508,61 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
       const { out, error } = await runState(['resources', 'MyStack', '--long']);
 
       expectRendered(error);
+      // FABRICATION first, as everywhere else in this block, and here it is the
+      // assertion that makes the case a fence rather than a scope note. Saying
+      // only "no warning" pins that this command IGNORES those containers; this
+      // pins that it does not RENDER them either. A later edit teaching `--long`
+      // to print properties — the plausible one — adds a walk the scope set does
+      // not cover, and it reds HERE. The source-population case below could not
+      // see that: a review probe added exactly such a walk, spelled with
+      // destructuring, and its regex matched nothing while all 103 cases passed.
+      expect(out).not.toMatch(FABRICATED_ROW);
       // The command still renders, and the attribute bag it DOES read is
       // untouched — so this is not passing because the record failed to load.
       expect(out).toContain('Alpha: one');
       expect(warnSpy).not.toHaveBeenCalled();
     });
 
-    it('state.ts walks a rendered container in exactly 6 places, all repaired at an entry', () => {
-      // The source half, ported from `state-ref-display-boundary.test.ts`. The
-      // behavioural cases above cover the walks that exist and cannot see a
-      // SEVENTH being added — which is the way this defect arrived: #3185
-      // guarded the bag at the entry while four sibling walks kept their `?? {}`
-      // and kept fabricating.
+    it.each(MALFORMED)(
+      'state resources PLAIN mode neither walks attributes nor warns for $label',
+      async ({ value }) => {
+        // The default three-column listing prints logicalId / type / physicalId
+        // and nothing else, so it walks no container at all. Warning there would
+        // name a block absent from the output in front of the reader — the same
+        // false positive the scope set excludes `properties` to avoid, one mode
+        // over. `--long` and `--json` on the identical record DO warn, which is
+        // what makes this a scope assertion rather than a claim the guard is
+        // off.
+        bucket.state = record({ resources: { R: resourceRow({ attributes: value }) } });
+
+        const { out, error } = await runState(['resources', 'MyStack']);
+
+        expectRendered(error);
+        expect(out).not.toMatch(FABRICATED_ROW);
+        // The row itself still renders: a case passing because the listing was
+        // empty would prove nothing about the container.
+        expect(out).toContain('AWS::S3::Bucket');
+        expect(warnSpy).not.toHaveBeenCalled();
+      }
+    );
+
+    it('state.ts spells 6 `owner.container` walks and calls each repair entry once', () => {
+      // The source half, ported from `state-ref-display-boundary.test.ts`, and
+      // a CHANGE DETECTOR rather than a completeness proof — the distinction is
+      // measured, not cautious. A review probe added a SEVENTH, genuinely
+      // fabricating walk to `stateResourcesCommand --long`, spelled
+      // `const { properties } = ...; Object.entries(properties ?? {})`, and this
+      // case stayed green: the regex below requires a literal `ident.container`
+      // and matches neither a destructured binding nor an alias, a bracket
+      // access, a `for...in`, nor a two-level owner.
+      //
+      // Hardening the regex is the wrong instrument — each spelling admits the
+      // next — so the FENCE for a new walk is behavioural: every case above
+      // asserts `not.toMatch(FABRICATED_ROW)` over the whole render, in every
+      // mode of both commands, and that is what reds on the probe. What this
+      // case still buys is the OTHER direction: a repair entry silently losing
+      // a call site, or a scope set losing its reader, neither of which any
+      // output assertion can see.
       const source = readFileSync(STATE_TS, 'utf-8');
       const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
 

@@ -385,12 +385,16 @@ every container that was emptied.
 | `cdkd state show --show-nested` | the same, judged per record, so the warning names the stack whose record it was |
 | `cdkd state resources --long` | `Attributes: (none)`, plus the warning |
 | `cdkd state resources --json` | `"attributes": {}`, plus the warning |
+| `cdkd state resources`, plain | the three-column listing, unchanged and unwarned — it prints no attributes |
 | `cdkd state show --json`, `--show-nested` included | the stored value, unchanged and unwarned |
 
-`cdkd state resources` reads only `attributes` — it excludes properties from
-every mode and never prints outputs — so it says nothing about the other three
-however they are spelled. `cdkd state show --json` remains the mode that shows
-what the record actually holds, and the warning's text names it.
+The rule behind those rows is that a view reports only the containers IT
+renders. `cdkd state resources` prints attributes in `--long` and `--json` and
+nothing else in any mode, so it says nothing about `properties`, `outputs` or
+`skipped outputs` however they are spelled, and its plain listing says nothing
+at all. `cdkd state show` is where a record's four containers are visible, and
+`cdkd state show --json` remains the mode that shows what the record actually
+holds — the warning's own text names it.
 
 An absent or `null` container is NOT reported, and this is where these four
 differ from the `resources` bag. `skippedOutputs` is absent on every record
