@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vite-plus/test';
 import { redactedDockerCause } from '../../../src/utils/docker-cmd.js';
+import {
+  isMarkedNonRetryable,
+  isThrottlingError,
+  isTransientServerError,
+  markNonRetryable,
+} from '../../../src/deployment/retryable-errors.js';
+import { AssetError } from '../../../src/utils/error-handler.js';
 
 /**
  * go-to-k/cdkd#2075 threads a `cause` onto the four `AssetError`s the docker
@@ -140,5 +147,60 @@ describe('redactedDockerCause', () => {
     const cause = redactedDockerCause(hostile, ARGS) as Error & Record<string, unknown>;
     expect(cause.message).toContain('boom');
     expect(cause.exitCode).toBeUndefined();
+  });
+
+  /**
+   * go-to-k/cdkd#2075's acceptance is explicit that "the discriminator is the
+   * CLASSIFIER VERDICT", not the presence of a field. Every case above asserts
+   * a field; these assert what the wrapper is actually for -- and each carries
+   * its own dropped-cause negative control, so a verdict that would hold with
+   * NO cause proves nothing.
+   */
+  describe('the classifier verdict, which is what the cause is for', () => {
+    function wrapped(inner: Error, withCause: boolean): AssetError {
+      return new AssetError(
+        'ECR login failed: <redacted>',
+        withCause ? redactedDockerCause(inner, ARGS) : undefined
+      );
+    }
+
+    it('a throttled SDK failure classifies as throttling THROUGH the wrapper', () => {
+      const inner = new Error('Rate exceeded') as Error & Record<string, unknown>;
+      inner.name = 'ThrottlingException';
+      inner.$metadata = { httpStatusCode: 429 };
+
+      expect(isThrottlingError(wrapped(inner, true))).toBe(true);
+      // Negative control: without the cause the same wrapper is opaque.
+      expect(isThrottlingError(wrapped(inner, false))).toBe(false);
+    });
+
+    it('a 5xx SDK failure classifies as transient THROUGH the wrapper', () => {
+      const inner = new Error('Internal failure') as Error & Record<string, unknown>;
+      inner.name = 'InternalServerError';
+      inner.$metadata = { httpStatusCode: 500 };
+
+      expect(isTransientServerError(wrapped(inner, true))).toBe(true);
+      expect(isTransientServerError(wrapped(inner, false))).toBe(false);
+    });
+
+    it('a non-retryable MARK survives, though no string allowlist could carry it', () => {
+      // The marker is a symbol property, so the field copy cannot reach it --
+      // dropping it would let something deliberately marked non-retryable be
+      // retried. Nothing on the docker path marks one today; this pins that
+      // adding one later does not need anyone to remember the redactor exists.
+      const inner = markNonRetryable(new Error('bad argument')) as Error;
+
+      expect(isMarkedNonRetryable(wrapped(inner, true))).toBe(true);
+      expect(isMarkedNonRetryable(wrapped(inner, false))).toBe(false);
+    });
+
+    it('an ordinary docker exit is NOT classified as retryable by any of them', () => {
+      // The other direction: carrying `exitCode` must not make a plain
+      // non-zero exit look like a throttle or a 5xx.
+      const w = wrapped(spawnFailure('denied: requested access is denied'), true);
+      expect(isThrottlingError(w)).toBe(false);
+      expect(isTransientServerError(w)).toBe(false);
+      expect(isMarkedNonRetryable(w)).toBe(false);
+    });
   });
 });

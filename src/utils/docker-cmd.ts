@@ -1704,6 +1704,26 @@ export function redactedDockerCause(error: unknown, args: readonly string[]): Er
   } catch {
     /* leave the default 'Error' */
   }
+  // The non-retryable MARKER, which no string allowlist can reach: it is a
+  // symbol property, so copying the named fields silently drops it and an
+  // error someone marked non-retryable would be retried. `Symbol.for` puts it
+  // in the global registry, so this file can name it without importing from
+  // `src/deployment/**` and inverting the layering. Nothing on the docker path
+  // marks one TODAY -- it is carried so that adding a `markNonRetryable` there
+  // later does not need anyone to remember this function exists.
+  const NON_RETRYABLE_MARKER = Symbol.for('cdkd.nonRetryable');
+  try {
+    if ((error as unknown as Record<symbol, unknown>)[NON_RETRYABLE_MARKER] === true) {
+      Object.defineProperty(cause, NON_RETRYABLE_MARKER, {
+        value: true,
+        enumerable: false,
+        configurable: true,
+      });
+    }
+  } catch {
+    /* a marker that cannot be read is simply not carried */
+  }
+
   const source = error as unknown as Record<string, unknown>;
   const target = cause as unknown as Record<string, unknown>;
   for (const key of CLASSIFICATION_FIELDS) {
