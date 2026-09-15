@@ -36,8 +36,12 @@ export interface StackTreeNode extends StackTreeEntry {
  * or destroyed out-of-band) are reported at the root level so they stay
  * visible to `cdkd state list` rather than vanishing silently.
  *
- * A self-link (parent equals self) is treated as a missing parent — the
- * node lands at the root rather than building an infinite tree.
+ * Every node on a parent LOOP lands at the root rather than building an
+ * infinite tree. A self-link (parent equals self) is the one-node loop. A
+ * longer one (A names B, B names A) used to be linked as given, so each member
+ * was filed as the other's child, none was a root, and the whole loop vanished
+ * from both the text and the JSON view. A node hanging off a loop still sits
+ * under its parent, which is now visible (issue #3069).
  *
  * The roots and every child list are sorted alphabetically by `stackName`,
  * then by `region` (legacy `undefined` last), so output is stable across
@@ -51,14 +55,38 @@ export function buildStackTree(entries: readonly StackTreeEntry[]): StackTreeNod
     byKey.set(refKey(entry.stackName, entry.region), { ...entry, children: [] });
   }
 
+  const parentOf = (node: StackTreeNode): StackTreeNode | undefined =>
+    node.parentStack === undefined
+      ? undefined
+      : byKey.get(refKey(node.parentStack, node.parentRegion));
+  // Every node on a parent loop, found in ONE pass over the parent links so
+  // the cost stays linear in the number of records: each node is walked at
+  // most once, and a walk stops at a node an earlier walk already settled. A
+  // walk that reaches a node still on its OWN path has found a loop, whose
+  // members are the path from that node on. A self-link is the one-node case.
+  const loopMembers = new Set<StackTreeNode>();
+  const settled = new Set<StackTreeNode>();
+  for (const start of byKey.values()) {
+    const path: StackTreeNode[] = [];
+    const onPath = new Map<StackTreeNode, number>();
+    let current: StackTreeNode | undefined = start;
+    while (current !== undefined && !settled.has(current) && !onPath.has(current)) {
+      onPath.set(current, path.length);
+      path.push(current);
+      current = parentOf(current);
+    }
+    if (current !== undefined && onPath.has(current)) {
+      for (const member of path.slice(onPath.get(current)!)) loopMembers.add(member);
+    }
+    for (const node of path) settled.add(node);
+  }
+
   const roots: StackTreeNode[] = [];
   for (const node of byKey.values()) {
-    if (node.parentStack !== undefined) {
-      const parent = byKey.get(refKey(node.parentStack, node.parentRegion));
-      if (parent && parent !== node) {
-        parent.children.push(node);
-        continue;
-      }
+    const parent = parentOf(node);
+    if (parent && !loopMembers.has(node)) {
+      parent.children.push(node);
+      continue;
     }
     roots.push(node);
   }
