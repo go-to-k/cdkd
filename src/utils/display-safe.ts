@@ -116,13 +116,42 @@ export function truncateCodePoints(
 export const UNRENDERABLE = '<unrenderable>';
 
 /**
- * The longest an identifier this module renders can legitimately be. 255 is
- * CloudFormation's cap on a logical id, the longest of the identifier shapes
- * `displayIdent` sees (a resource type is at most `64::64::64::MODULE`, a stack
- * name 128, a region 25, a run id ~40); a longer value is not an identifier,
- * whatever else it is.
+ * The DEFAULT longest an identifier this module renders can legitimately be.
+ * 255 is CloudFormation's cap on a logical id, the longest of the identifier
+ * shapes `displayIdent` sees by default (a resource type is at most
+ * `64::64::64::MODULE`, a CloudFormation stack name 128, a region 25, a run id
+ * ~40); a longer value is not one of those identifiers, whatever else it is.
+ *
+ * It is a DEFAULT and not a universal because one caller's identifier is
+ * legitimately longer -- see `STACK_REF_MAX_CODE_POINTS`. A caller whose value
+ * has a different grammar passes its own `maxCodePoints` rather than widening
+ * this one, so the shapes above keep the tightest cap their grammar allows.
  */
 export const IDENT_MAX_CODE_POINTS = 255;
+
+/**
+ * The cap for a cdkd STATE-RECORD stack name, which is NOT bounded by
+ * CloudFormation's 128-character stack-name limit.
+ *
+ * `NestedStackProvider.deriveChildStackName` mints a child record's name as
+ * `${parentStackName}~${nestedLogicalId}` and applies that RECURSIVELY, one `~`
+ * segment per nesting level. CloudFormation allows five levels of nesting, so
+ * the longest legitimate name is a 128-character root plus four
+ * `~` + 255-character-logical-id segments:
+ *
+ *     128 + 4 * (1 + 255) = 1152
+ *
+ * The bound is not theoretical padding. CDK's generated nested-stack logical
+ * ids run ~60 characters (`XNestedStackXNestedStackResource<hash>`), so even a
+ * 20-character root passes 255 at the fourth level -- and a name cut there
+ * would print `[cut: N more characters withheld]` in the middle of a row that
+ * `cdkd state list | while read -r ref` consumes, which is a worse outcome than
+ * a long line. Every value under this cap renders byte-identically, which is
+ * the property the boundary rendering is only safe BECAUSE of.
+ *
+ * A planted value is still bounded: 1152 is a cap, not its absence.
+ */
+export const STACK_REF_MAX_CODE_POINTS = 128 + 4 * (1 + IDENT_MAX_CODE_POINTS);
 
 /**
  * The shape of a value that renders WITHOUT a visible boundary: the characters
@@ -148,9 +177,13 @@ const PLAIN_IDENT = /^[A-Za-z0-9:_@./+=,~-]+$/;
  * 1. `displaySafe(value, { asciiOnly: true })`, then `UNRENDERABLE` for a value
  *    with nothing renderable left -- the same allowlist + fallback every
  *    caller used to spell for itself.
- * 2. A value longer than `IDENT_MAX_CODE_POINTS` is CUT there and the count of
- *    withheld characters appended. Unbounded, a planted id pushed the line's
- *    genuine trailing `(type)` off a narrow terminal.
+ * 2. A value longer than `opts.maxCodePoints` (default `IDENT_MAX_CODE_POINTS`)
+ *    is CUT there and the count of withheld characters appended. Unbounded, a
+ *    planted id pushed the line's genuine trailing `(type)` off a narrow
+ *    terminal. A caller whose identifier has a LONGER legitimate grammar passes
+ *    its own cap -- `STACK_REF_MAX_CODE_POINTS` is the one such caller today --
+ *    because a cut that fires on a LEGITIMATE value breaks the byte-identity
+ *    that makes rule 3 safe to adopt at all.
  * 3. A value that is NOT a `PLAIN_IDENT` -- one carrying a space, a bracket, a
  *    quote -- is rendered as a JSON string literal, so its BOUNDARY is
  *    visible. The allowlist alone cannot stop an all-ASCII
@@ -171,10 +204,13 @@ const PLAIN_IDENT = /^[A-Za-z0-9:_@./+=,~-]+$/;
  * argument), and NOT for free-form text (an SDK error message legitimately
  * carries spaces and non-ASCII; it takes `displaySafe()` directly).
  */
-export function displayIdent(value: unknown): string {
+export function displayIdent(value: unknown, opts?: { maxCodePoints?: number }): string {
   const clean = displaySafe(value, { asciiOnly: true });
   if (!clean) return UNRENDERABLE;
-  const { text, truncated } = truncateCodePoints(clean, IDENT_MAX_CODE_POINTS);
+  const { text, truncated } = truncateCodePoints(
+    clean,
+    opts?.maxCodePoints ?? IDENT_MAX_CODE_POINTS
+  );
   const shown = PLAIN_IDENT.test(text) ? text : JSON.stringify(text);
   // `clean` is ASCII here, so `.length` counts characters.
   return truncated

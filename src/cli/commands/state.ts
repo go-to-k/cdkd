@@ -23,7 +23,12 @@ import { confirmOrRefuse } from './confirm-prompt.js';
 import { CdkdError, PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
 import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
-import { displayIdent, displaySafe, truncateCodePoints } from '../../utils/display-safe.js';
+import {
+  displayIdent,
+  displaySafe,
+  truncateCodePoints,
+  STACK_REF_MAX_CODE_POINTS,
+} from '../../utils/display-safe.js';
 import {
   UNRENDERABLE,
   buildForceUnlockCommand,
@@ -219,7 +224,10 @@ interface ResourceDetail {
  * acts on the reference the operator believes is real and the planted record
  * survives the sweep. The join in the two prompt callers is a second boundary
  * of the same kind: they `join(', ')`, which a name carrying `, ` forges an
- * extra entry in.
+ * extra entry in. Stated exactly, because the margin is one character: a SPACE
+ * is outside `PLAIN_IDENT`, so `, ` always quotes — while a BARE `,` is inside
+ * it and renders unquoted, which fools only a consumer that splits on `,`
+ * rather than on cdkd's `, `.
  *
  * `displayIdent` makes the boundary VISIBLE by JSON-quoting anything that is
  * not a plain identifier, so the row above reads `"ProdStack (us-east-1)"` and
@@ -234,21 +242,37 @@ interface ResourceDetail {
  * script's grep and no round-trip into `cdkd state show` changes. It keeps
  * `safe()`'s `UNRENDERABLE` fallback for a value sanitising leaves empty, since
  * an empty `()` would read as "no region" rather than "a region cdkd will not
- * print", and adds a 255-code-point cap so a planted name cannot push the
- * genuine trailing `(region)` off a narrow terminal.
+ * print".
+ *
+ * The NAME half passes `STACK_REF_MAX_CODE_POINTS` rather than taking
+ * `displayIdent`'s 255 default, and that is load-bearing for the paragraph
+ * above rather than a tuning knob: a cdkd state-record name is not a
+ * CloudFormation stack name, because `deriveChildStackName` appends
+ * `~<logicalId>` per nesting level, so a legitimate deep nested-stack child
+ * exceeds 255 and would be rendered CUT — a byte change on a legitimate row, in
+ * the middle of a line `while read -r ref` consumes. The REGION half keeps the
+ * default; an AWS region code is at most 25 characters.
  *
  * The consequence is taken at ALL SIX callers, the confirmation prompt
  * included, rather than at the listing alone: guarding one site and leaving
  * five is the per-site spelling `safe()`'s own comment below records having
  * failed twice. In the prompt a quoted spoof is the most valuable of the six —
- * that sentence is the one an operator answers `y` to — and the quoted form
- * being unpasteable as a command argument is the property the `--orphan`
- * remedy already relies on.
+ * that sentence is the one an operator answers `y` to.
+ *
+ * What the quoting is NOT: shell-safe. A JSON string literal is visually
+ * indistinguishable from a shell DOUBLE-quoted argument, in which `$(...)`,
+ * backticks and `!` still expand — so `"Prod$(touch /tmp/pwn)" (us-east-1)`
+ * must not be pasted into a command line, and this rendering makes no claim
+ * that it may be. The repo's answer for a value that has to survive a command
+ * line is elsewhere and is SUPPRESSION, not quoting: `buildForceUnlockCommand`
+ * declines to print a command at all unless sanitisation was the identity, and
+ * `rollback-executor.ts`'s `PASTEABLE_LOGICAL_ID` records why identity alone is
+ * still not enough (`~user` and `=x` expand). What this function provides is a
+ * visible BOUNDARY for a value a human is reading, which is a different job.
  */
 function formatStackRefSafe(ref: StackStateRef): string {
-  return ref.region
-    ? `${displayIdent(ref.stackName)} (${displayIdent(ref.region)})`
-    : displayIdent(ref.stackName);
+  const name = displayIdent(ref.stackName, { maxCodePoints: STACK_REF_MAX_CODE_POINTS });
+  return ref.region ? `${name} (${displayIdent(ref.region)})` : name;
 }
 
 /**
@@ -278,13 +302,22 @@ function formatStackRefSafe(ref: StackStateRef): string {
  * It is the WEAKER of this file's two spellings and stays so deliberately.
  * `formatStackRefSafe` above uses `displayIdent` instead, because it renders
  * cdkd's own ` (region)` annotation right beside the value and the allowlist
- * cannot stop a value from carrying that annotation itself (issue #3164). The
- * sites still here are REFUSALS, whose surrounding `'...'` is at least a
- * boundary, and several are `cdkd deploy <stack>` command hints where quoting
- * is not the established answer — `buildForceUnlockCommand` suppresses the
- * whole command instead. Widening this helper -- and `describeStateKey`, which
- * renders the same `stack (region)` shape from raw key segments and sanitizes
- * nothing -- is tracked as go-to-k/cdkd#3179 rather than done here.
+ * cannot stop a value from carrying that annotation itself (issue #3164).
+ * Widening this helper is tracked as go-to-k/cdkd#3179 rather than done here,
+ * for two reasons that are per-SITE rather than uniform, so read that issue's
+ * table rather than generalising from this paragraph: most of these sites are
+ * REFUSALS, where the surrounding `'...'` is at least SOME boundary -- but not
+ * all of them are, and `  Region: ${safe(...)}` in the `--long` view below has
+ * no surrounding anything -- and two of them (`Run 'cdkd deploy <stack>'`) are
+ * COMMAND HINTS, where quoting is not this repo's answer at all:
+ * `buildForceUnlockCommand` SUPPRESSES the whole command instead.
+ *
+ * `grep safe(` does NOT enumerate the class. Several sites spell
+ * `displaySafe(..., { asciiOnly: true })` inline rather than calling this
+ * helper -- `warnOnLiveForeignLock` renders its own `stack (region)` that way,
+ * inside the same `state orphan` output -- and `describeStateKey`
+ * (`state-file-keys.ts`) renders the same shape from raw key segments with no
+ * sanitisation at all. go-to-k/cdkd#3179 enumerates them; a grep does not.
  */
 function safe(value: string | undefined): string {
   return displaySafe(value, { asciiOnly: true }) || UNRENDERABLE;
@@ -302,19 +335,20 @@ export function resolveSingleRegion(
   requestedRegion: string | undefined
 ): StackStateRef {
   // Sanitized for the same reason `formatStackRefSafe` above is, on the same
-  // values in the same file -- through the bare allowlist rather than that
-  // helper's `displayIdent`, which is a scope judgement recorded on issue
-  // #3164 and tracked as go-to-k/cdkd#3179 rather than an oversight: these are
-  // REFUSALS, not the listing a `while read` loop consumes, and half of them
-  // are `cdkd deploy <stack>` COMMAND HINTS whose quoting has its own answer
-  // (`buildForceUnlockCommand` suppresses rather than quotes). A `region` here
-  // is a raw S3 KEY SEGMENT
-  // from `listStacks`, and an S3 key admits any UTF-8 including newline and
-  // ESC, so
-  // planting `cdkd/<victimStack>/<hostile>/state.json` puts attacker text into
-  // these messages. `state list`'s formatted `--long` and `--tree` rows are
-  // sanitized too (issue #3069); the refusal a malformed record is most likely
-  // to reach had not been (issue #3003).
+  // values in the same file -- but through the bare allowlist rather than that
+  // helper's `displayIdent`. That is a scope judgement recorded on issue #3164
+  // and tracked as go-to-k/cdkd#3179, not an oversight: these five sites are
+  // REFUSALS, not the listing a `while read` loop consumes. None of THEM is a
+  // command hint (the two that are live at `stateResourcesCommand` /
+  // `stateShowCommand` below); what they do share with those is that a
+  // BOUNDARY, not a rejection, is the open question -- the candidate lists here
+  // `join(', ')`, so a region carrying `, ` reads as two candidates. A `region`
+  // here is a raw S3 KEY SEGMENT from `listStacks`, and an S3 key admits any
+  // UTF-8 including newline and ESC, so planting
+  // `cdkd/<victimStack>/<hostile>/state.json` puts attacker text into these
+  // messages. `state list`'s formatted `--long` and `--tree` rows are sanitized
+  // too (issue #3069); the refusal a malformed record is most likely to reach
+  // had not been (issue #3003).
   const matches = refs.filter((r) => r.stackName === stackName);
   if (matches.length === 0) {
     throw new Error(
@@ -1790,7 +1824,10 @@ async function stateOrphanCommand(
         // #3164 the helper also quotes a value that is not a plain identifier,
         // which this site needs twice over: the `[...]` list is joined with
         // `, `, so an unquoted name carrying `, ` forges an extra entry in the
-        // set of records the operator is agreeing to remove.
+        // set of records the operator is agreeing to remove. The space is what
+        // carries that — a bare `,` is a plain identifier and stays unquoted
+        // (see `formatStackRefSafe`), which is harmless against THIS `, `
+        // separator and is why the residual is recorded rather than closed.
         const targetList = targets.map((t) => formatStackRefSafe(t)).join(', ');
         process.stdout.write(
           `\nWARNING: This removes cdkd's state record for [${targetList}] only. ` +

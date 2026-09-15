@@ -195,12 +195,15 @@ The quoting matters because the ` (region)` suffix is cdkd's own annotation of
 the line rather than part of either value. Both halves come from an S3 key
 segment — or, for a legacy record, the state body — so a name that contains a
 space and brackets could otherwise render byte-identical to a different,
-genuine reference. The same rule applies to the confirmation prompts of
-[`cdkd state orphan`](#cdkd-state-orphan) and
-[`cdkd state refresh-observed`](#cdkd-state-refresh-observed), which list the
-same references. Every CloudFormation stack name and AWS region code is a plain
-identifier, so a real row is never quoted and a `while read -r ref` consumer
-sees exactly the bytes it always did.
+genuine reference.
+
+Where it applies, and what it does not promise:
+
+| | |
+| --- | --- |
+| Also applies to | the confirmation prompts of [`cdkd state orphan`](#cdkd-state-orphan) and [`cdkd state refresh-observed`](#cdkd-state-refresh-observed), which list the same references |
+| Never changes | a real row — every CloudFormation stack name and AWS region code is a plain identifier, so a `while read -r ref` consumer sees the bytes it always did |
+| Does not make a value | safe to paste into a shell. The quotes are a visible boundary for a reader, not shell quoting; a shell expands `$(...)` and backticks inside double quotes |
 
 `--json` output is not sanitized. JSON escapes only C0 control characters,
 `"`, `\` and unpaired surrogates, so other invisible or line-breaking

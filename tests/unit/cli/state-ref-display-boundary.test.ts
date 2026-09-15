@@ -30,6 +30,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
  * TABLE: a seventh caller added to `state.ts` is a row added here, and the
  * floor below refuses a table that silently shrinks.
  */
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { setStdinIsTty } from '../../stdin-tty.js';
 
 const infoSpy = vi.hoisted(() => vi.fn());
@@ -113,6 +115,11 @@ vi.mock('node:readline/promises', () => ({
 }));
 
 import { createStateCommand } from '../../../src/cli/commands/state.js';
+import {
+  IDENT_MAX_CODE_POINTS,
+  STACK_REF_MAX_CODE_POINTS,
+  UNRENDERABLE,
+} from '../../../src/utils/display-safe.js';
 
 interface Ref {
   stackName: string;
@@ -226,14 +233,32 @@ const SITES: Array<{ name: string; render: (ref: Ref) => Promise<string> }> = [
  * less, which is the failure this number exists to make loud. It is NOT
  * derived from the source, deliberately -- a population computed from the
  * subject cannot notice the subject shrinking.
+ *
+ * It is only HALF the fence, and on its own it is the weaker half: it catches
+ * the table shrinking and cannot see the SOURCE growing. A seventh caller
+ * added to `state.ts` would be rendered by the changed helper and exercised by
+ * nothing here -- which is precisely the per-site miss this PR cites as having
+ * happened twice. `formatStackRefSafe callers` below closes that direction by
+ * counting the call sites in the source.
  */
 const EXPECTED_SITE_COUNT = 6;
 
 /**
- * Every shape a LEGITIMATE row takes. CloudFormation constrains a stack name
- * to `[A-Za-z][A-Za-z0-9-]*`, cdkd mints `Parent~Child` for a nested-stack
- * child, and an AWS region code is `[a-z]+(-[a-z]+)+-\d`; all of them are
- * plain identifiers, so all of them must render VERBATIM.
+ * Where the source population is read from. A literal path, not a glob: this
+ * fence is a claim about ONE function in ONE file, and a walk that silently
+ * matched nothing would be green.
+ */
+const STATE_TS = fileURLToPath(new URL('../../../src/cli/commands/state.ts', import.meta.url));
+
+/**
+ * Every shape a LEGITIMATE row takes. A top-level stack name comes from
+ * CloudFormation; cdkd's own `deriveChildStackName` mints `Parent~Child` for a
+ * nested-stack child; an AWS region code is `[a-z]+(-[a-z]+)+-\d`. The
+ * underscore row is deliberate and is NOT a CloudFormation stack name: a state
+ * record's first key segment is whatever `listStacks` read, and `_` is inside
+ * `PLAIN_IDENT`, so a record carrying one must still render bare rather than
+ * gaining quotes. All of these are plain identifiers, so all of them must
+ * render VERBATIM.
  */
 const LEGIT: Array<{ ref: Ref; expected: string }> = [
   { ref: { stackName: 'ProdStack', region: 'us-east-1' }, expected: 'ProdStack (us-east-1)' },
@@ -294,6 +319,25 @@ describe('every state-list / prompt reference renders its own boundary (issue #3
     expect(new Set(SITES.map((s) => s.name)).size).toBe(EXPECTED_SITE_COUNT);
   });
 
+  it('and the SOURCE has no caller the table does not cover', () => {
+    const source = readFileSync(STATE_TS, 'utf-8');
+
+    // Count CALLS, not mentions: the declaration is `function
+    // formatStackRefSafe(`, and the doc comments above it name the helper in
+    // prose several times. A call is the identifier followed by `(` or, at the
+    // two `.map(formatStackRefSafe)` sites, by `)`.
+    const calls = source.match(/\bformatStackRefSafe\s*[()]/g) ?? [];
+    const declarations = source.match(/\bfunction\s+formatStackRefSafe\s*\(/g) ?? [];
+
+    // Prove the scan SAW its input before trusting its verdict: a regex that
+    // silently stopped matching would report zero callers, which is green
+    // against a `<=` and meaningless.
+    expect(source.length).toBeGreaterThan(10_000);
+    expect(declarations).toHaveLength(1);
+
+    expect(calls.length - declarations.length).toBe(EXPECTED_SITE_COUNT);
+  });
+
   describe('a legitimate row is byte-identical', () => {
     for (const site of SITES) {
       it(`${site.name}`, async () => {
@@ -340,12 +384,82 @@ describe('every state-list / prompt reference renders its own boundary (issue #3
   });
 
   it('caps a planted name rather than pushing the genuine (region) off the line', async () => {
-    const long = `A${'b'.repeat(400)}`;
+    const long = `A${'b'.repeat(STACK_REF_MAX_CODE_POINTS)}`;
     const rendered = await SITES[0]!.render({ stackName: long, region: 'us-east-1' });
 
     expect(rendered.endsWith(' (us-east-1)')).toBe(true);
-    expect(rendered).toContain('[cut: 146 more characters withheld]');
-    // The cut is at IDENT_MAX_CODE_POINTS = 255, so 401 - 255 = 146 withheld.
-    expect(rendered.startsWith(`A${'b'.repeat(254)} [cut:`)).toBe(true);
+    // One code point over the cap, so exactly one is withheld.
+    expect(rendered).toContain('[cut: 1 more characters withheld]');
+    expect(rendered.startsWith(`A${'b'.repeat(STACK_REF_MAX_CODE_POINTS - 1)} [cut:`)).toBe(true);
+  });
+
+  it('does NOT cap the longest LEGITIMATE nested-stack chain', async () => {
+    // `deriveChildStackName` appends `~<logicalId>` per nesting level, so a
+    // state-record name is bounded by CloudFormation's NESTING limit (5 levels,
+    // i.e. four `~` segments) and its 255-character logical id -- NOT by the
+    // 128-character stack-name limit, and NOT by `displayIdent`'s 255 default.
+    // Rendering this CUT would be a byte change on a legitimate row, which is
+    // the property the whole boundary rendering rests on.
+    const root = 'R'.repeat(128);
+    const segment = `~${'L'.repeat(255)}`;
+    const deepest = `${root}${segment.repeat(4)}`;
+    expect(deepest).toHaveLength(STACK_REF_MAX_CODE_POINTS);
+
+    const rendered = await SITES[0]!.render({ stackName: deepest, region: 'us-east-1' });
+
+    expect(rendered).toBe(`${deepest} (us-east-1)`);
+    expect(rendered).not.toContain('[cut:');
+  });
+
+  it('caps the REGION half at the ordinary identifier bound', async () => {
+    // The region half keeps `displayIdent`'s default: an AWS region code is at
+    // most 25 characters, so nothing legitimate is near it and a planted region
+    // must not be able to run away with the line.
+    const longRegion = 'z'.repeat(IDENT_MAX_CODE_POINTS + 10);
+    const rendered = await SITES[0]!.render({ stackName: 'ProdStack', region: longRegion });
+
+    expect(rendered.startsWith('ProdStack (')).toBe(true);
+    expect(rendered).toContain('[cut: 10 more characters withheld]');
+  });
+
+  it('renders a value with nothing printable left as UNRENDERABLE, not as an empty gap', async () => {
+    // `safe()`'s fallback, which `formatStackRefSafe` keeps: an empty `()`
+    // would read as "no region" rather than "a region cdkd will not print".
+    // Asserted through the command, not through `displayIdent` directly --
+    // `display-safe.test.ts` already pins the helper; what is unpinned is that
+    // the six sites still reach it.
+    //
+    // The bad value is spelled as an ESCAPE, never as a raw byte: a raw NUL
+    // makes grep and rg treat this whole file as binary and skip it, which
+    // `tests/unit/scripts/source-control-bytes.test.ts` refuses. Identical at
+    // runtime -- the ASCII allowlist maps a control character to a space and
+    // `displaySafe` trims, so nothing renderable is left.
+    const nothingPrintable = '\u0000\u0007';
+
+    const rendered = await SITES[0]!.render({ stackName: 'ProdStack', region: nothingPrintable });
+    expect(rendered).toBe(`ProdStack (${UNRENDERABLE})`);
+
+    const nameless = await SITES[0]!.render({ stackName: nothingPrintable, region: 'us-east-1' });
+    expect(nameless).toBe(`${UNRENDERABLE} (us-east-1)`);
+  });
+
+  it('quotes an entry so a planted name cannot forge a second entry in a joined prompt list', async () => {
+    // The two prompt sites `join(', ')`. Every case above renders ONE ref, so
+    // the join itself never runs there; this is the case that exercises it.
+    mockListStacks.mockResolvedValue([
+      { stackName: 'Real', region: 'us-east-1' },
+      { stackName: 'Planted, Victim (us-east-1)', region: 'us-west-2' },
+    ]);
+    readlineQuestion.mockResolvedValue('n');
+    await runState(['refresh-observed', '--all']);
+
+    const prompt = readlineQuestion.mock.calls.at(-1)?.[0] ?? '';
+    const list = /^Refresh observedProperties for 2 stack\(s\) \((.*)\)\?/.exec(prompt)?.[1] ?? '';
+
+    // Split the way a reader (or a consumer) would. Unquoted, the planted name
+    // contributes TWO entries and the operator agrees to a set they did not
+    // read; quoted, the `, ` inside it is visibly inside the boundary.
+    expect(list).toBe('Real (us-east-1), "Planted, Victim (us-east-1)" (us-west-2)');
+    expect(list.split(', ')).not.toHaveLength(2);
   });
 });
