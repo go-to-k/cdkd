@@ -347,11 +347,11 @@ describe('isReadableBag is the ONE predicate (issue go-to-k/cdkd#3187)', () => {
    * into `hasReadableResources`, which is the only way the two can disagree.
    */
   const READABLE: ReadonlyArray<readonly [string, unknown, boolean]> = [
-    ['null', null, false],
-    ['absent', undefined, false],
-    ['an array', [], false],
-    ['a number', 5, false],
-    ['a string', 'ab', false],
+    // DERIVED from the shared table, not re-spelled beside it: a shape added
+    // there must be covered here too, and a hand-written copy silently would
+    // not be (review of go-to-k/cdkd#3190). The verdicts stay literals — that
+    // is the half that must not be computed.
+    ...UNREADABLE.map(([label, value]) => [label, value, false] as const),
     ['a boolean', true, false],
     ['an empty object', {}, true],
     ['a populated object', { A: 1 }, true],
@@ -470,8 +470,12 @@ describe('the rendered-container warning (issue go-to-k/cdkd#3187)', () => {
       'q'.repeat(5000) as RenderedStateContainer,
     ]);
     expect(long).toContain(`'${'q'.repeat(128)}...'`);
-    // The remedy is still on screen after the cap.
-    expect(long.endsWith('--json')).toBe(true);
+    // The remedy is still on SCREEN after the cap — a DISTANCE, not
+    // `endsWith('--json')`, which the template satisfies on every path with or
+    // without a cap and would be the tautology this suite just deleted one case
+    // over (review of go-to-k/cdkd#3190). Uncapped, the 5000-character name
+    // alone pushes the message past this bound.
+    expect(long.length).toBeLessThan(1000);
   });
 });
 

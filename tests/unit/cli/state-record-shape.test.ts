@@ -1185,7 +1185,6 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
         blockHeader: '\nOutputs:\n',
         healthyRow: '  Alpha: one',
         populated: { outputs: HEALTHY },
-        emptied: { outputs: {} },
       },
       {
         name: 'skippedOutputs' as const,
@@ -1193,7 +1192,6 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
         blockHeader: '\nSkipped outputs:\n',
         healthyRow: '  Alpha: one',
         populated: { skippedOutputs: HEALTHY },
-        emptied: { skippedOutputs: {} },
       },
       {
         name: 'attributes' as const,
@@ -1201,7 +1199,6 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
         blockHeader: '\n  Attributes:\n',
         healthyRow: '    Alpha: one',
         populated: { resources: { R: resourceRow({ attributes: HEALTHY }) } },
-        emptied: { resources: { R: resourceRow({ attributes: {} }) } },
       },
       {
         name: 'properties' as const,
@@ -1209,7 +1206,6 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
         blockHeader: '\n  Properties:\n',
         healthyRow: '    Alpha: one',
         populated: { resources: { R: resourceRow({ properties: HEALTHY }) } },
-        emptied: { resources: { R: resourceRow({ properties: {} }) } },
       },
     ];
 
@@ -1221,10 +1217,10 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
      * A READABILITY aid, not the fence — {@link expectRendersAsEmpty} is. Two
      * review rounds measured why. It is keyed to one row GRAMMAR, so a walk
      * rendering `    - key = value` instead of `    key: value` fabricates the
-     * same six phantom rows and this matches none of them (measured: 141 green
-     * with such a walk live). The block HEADER is no better — `Attributes:
-     * (none)` contains `  Attributes:` — which is why it was not the
-     * discriminator either.
+     * same phantom rows and this matches none of them: the whole suite stayed
+     * green with such a walk live. The block HEADER is no better —
+     * `Attributes: (none)` contains `  Attributes:` — which is why it was not
+     * the discriminator either.
      */
     const FABRICATED_ROW = /(^|\n)\s*0: /;
 
@@ -1233,16 +1229,27 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
      *
      * That is the invariant the fix actually establishes — the repair writes
      * `{}` — and it is what makes the fence independent of how any renderer,
-     * present or future, spells a row. A seventh walk over a container this
-     * command does not repair adds output that the emptied record does not
-     * have, whatever grammar it uses, whatever key it prints, and whether it
-     * is destructured, aliased, bracket-accessed or reached through a
-     * two-level owner. The two spelling-keyed predicates it replaces were each
-     * defeated by a probe within one review round.
+     * present or future, spells a row. A new walk over a container A CASE
+     * PLANTS A MALFORMED VALUE FOR adds output the emptied record does not
+     * have, whatever grammar it uses, whatever key it prints, and whether it is
+     * destructured, aliased, bracket-accessed or reached through a two-level
+     * owner. The two spelling-keyed predicates it replaces were each defeated
+     * by a probe within one review round.
      *
-     * The comparand is rendered by the SAME command in the SAME process, so a
-     * case cannot pass by both renders having collapsed: the caller floors it
-     * on a marker every healthy render prints.
+     * **Its blind spot, measured rather than reasoned:** a walk over a FIFTH
+     * container no case plants — `observedProperties` is the live example — is
+     * absent from BOTH renders, so byte-identity holds while the walk
+     * fabricates. That direction belongs to
+     * `walks exactly the fields a repair covers, and nothing else`, which reads
+     * the field names out of the source. Neither case subsumes the other; an
+     * earlier revision of this comment claimed this one caught "a seventh walk"
+     * outright, which is false.
+     *
+     * The comparand is `site.plant({})` — the same builder the malformed record
+     * uses, so the two cannot drift into a vacuously-equal pair — rendered by
+     * the SAME command in the SAME process, and the caller floors it on a
+     * marker every healthy render prints, so a case cannot pass by both renders
+     * having collapsed.
      */
     async function expectRendersAsEmpty(
       args: string[],
@@ -1295,7 +1302,7 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
           const out = await expectRendersAsEmpty(
             ['show', 'MyStack'],
             site.plant(value),
-            site.emptied,
+            site.plant({}),
             'Resources ('
           );
           expect(out).not.toMatch(FABRICATED_ROW);
@@ -1323,7 +1330,7 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
           // record and `attributes` is optional on `ResourceState`, so warning
           // about them would fire on records cdkd itself writes. The render must
           // stay byte-identical to the empty one, and nothing may be said.
-          bucket.state = record(site.emptied);
+          bucket.state = record(site.plant({}));
           const empty = await runState(['show', 'MyStack']);
           expectRendered(empty.error);
           // The comparand needs its own floor: `toBe(empty.out)` is satisfied
@@ -1611,53 +1618,68 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
       }
     );
 
-    it('state.ts spells 6 `owner.container` walks and calls each repair entry once', () => {
-      // The source half, ported from `state-ref-display-boundary.test.ts`, and
-      // a CHANGE DETECTOR rather than a completeness proof — the distinction is
-      // measured, not cautious. A review probe added a SEVENTH, genuinely
-      // fabricating walk to `stateResourcesCommand --long`, spelled
-      // `const { properties } = ...; Object.entries(properties ?? {})`, and this
-      // case stayed green: the regex below requires a literal `ident.container`
-      // and matches neither a destructured binding nor an alias, a bracket
-      // access, a `for...in`, nor a two-level owner.
+    it('walks exactly the fields a repair covers, and nothing else', () => {
+      // The direction the byte-identity oracle above CANNOT see, and it took a
+      // review probe to find it: that oracle compares a malformed render to an
+      // EMPTIED one, so it is blind to a walk over a container no case plants a
+      // malformed value for. A fabricating walk over `observedProperties` — a
+      // real optional `ResourceState` field — left every behavioural case green.
       //
-      // Hardening the regex is the wrong instrument — each spelling admits the
-      // next — so the FENCE for a new walk is behavioural: every case above
-      // asserts `not.toMatch(FABRICATED_ROW)` over the whole render, in every
-      // mode of both commands, and that is what reds on the probe. What this
-      // case still buys is the OTHER direction: a repair entry silently losing
-      // a call site, or a scope set losing its reader, neither of which any
-      // output assertion can see.
+      // So this case does not count walks over the four names, which would have
+      // been blind the same way. It reads the field name out of EVERY
+      // `Object.entries` / `.keys` over an `owner.field` in the file and requires
+      // the set, and the per-field counts, to equal the table below. A fifth
+      // field reds it, whatever it is called, and a decision has to be made about
+      // it rather than inherited.
+      //
+      // Counts per field and not just the set, because a field can also change
+      // PARTITION: a walk moving from a repaired site to an unrepaired one keeps
+      // the set identical while breaking the guarantee.
+      //
+      // What it still cannot see is a walk that never spells `owner.field` — a
+      // destructured binding, an alias, a bracket access, a two-level owner.
+      // That direction is the oracle's, and the two are complementary rather
+      // than redundant: each was measured blind to exactly what the other
+      // catches.
+      const WALKED: ReadonlyArray<readonly [string, number, string]> = [
+        ['outputs', 1, 'renderStateBlock; repaired by repairRecordForTextRender'],
+        ['skippedOutputs', 2, 'sortedSkippedOutputs + rendersSkippedBlock; same repair'],
+        ['attributes', 2, 'renderStateBlock + stateResourcesCommand --long; both repaired'],
+        ['properties', 1, 'renderStateBlock; repaired by repairRecordForTextRender'],
+        ['resources', 2, 'the bag, repaired by repairMalformedResourcesForReadOnly'],
+      ];
+
       const source = readFileSync(STATE_TS, 'utf-8');
       const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
 
-      // Every `Object.entries` / `.keys` over a rendered container, whatever the
-      // owner is called (`state`, `resource`, `detail`). Bare references for the
-      // helper and the two scope sets, so an alias counts like a call.
-      const walks =
-        code.match(
-          /Object\.(?:entries|keys)\(\s*[A-Za-z_$][\w$]*\.(?:outputs|skippedOutputs|attributes|properties)\b/g
-        ) ?? [];
+      const WALK = /Object\.(?:entries|keys)\(\s*[A-Za-z_$][\w$]*\.([A-Za-z_$][\w$]*)/g;
+      const found: Record<string, number> = {};
+      for (const m of code.matchAll(WALK)) found[m[1]!] = (found[m[1]!] ?? 0) + 1;
+
       const repairRefs = code.match(/\brepairRenderedContainers\b/g) ?? [];
       const showSet = code.match(/\bSHOW_RENDERED_CONTAINERS\b/g) ?? [];
       const resourcesSet = code.match(/\bRESOURCES_RENDERED_CONTAINERS\b/g) ?? [];
 
-      // Prove the scan saw its input before trusting any count: a stripper that
-      // ate the code as well as the comments satisfies every equality below with
-      // zeros, and the regex is pinned in both directions on lines whose answer
-      // is known by eye.
+      // Prove the scan saw its input before trusting any verdict: a stripper
+      // that ate the code as well as the comments satisfies every equality
+      // below with zeros, and the pattern is pinned in both directions on
+      // strings whose answer is known by eye — including the FIELD it extracts,
+      // which is the part this rewrite depends on.
       expect(code.length).toBeGreaterThan(50_000);
       expect(code).toContain('function repairRenderedContainers');
-      expect('Object.entries(state.outputs ?? {})'.match(/Object\.(?:entries|keys)\(\s*[A-Za-z_$][\w$]*\.(?:outputs|skippedOutputs|attributes|properties)\b/g)).toHaveLength(1);
-      expect('Object.entries(state.imports ?? [])'.match(/Object\.(?:entries|keys)\(\s*[A-Za-z_$][\w$]*\.(?:outputs|skippedOutputs|attributes|properties)\b/g)).toBeNull();
+      expect([...'Object.entries(state.outputs ?? {})'.matchAll(WALK)].map((m) => m[1])).toEqual([
+        'outputs',
+      ]);
+      expect([
+        ...'Object.entries(resource.observedProperties ?? {})'.matchAll(WALK),
+      ].map((m) => m[1])).toEqual(['observedProperties']);
+      expect([...'Object.entries(buildBag())'.matchAll(WALK)]).toHaveLength(0);
 
-      // Six: `sortedSkippedOutputs` and `rendersSkippedBlock` (2),
-      // `renderStateBlock`'s outputs / attributes / properties (3), and
-      // `stateResourcesCommand --long`'s `detail.attributes` (1).
-      expect(walks).toHaveLength(6);
-      // One declaration plus the two entries that dominate those walks:
-      // `repairRecordForTextRender` for `cdkd state show`, and the load site of
-      // `cdkd state resources`.
+      expect(found).toEqual(Object.fromEntries(WALKED.map(([name, n]) => [name, n])));
+
+      // One declaration plus the two entries that dominate the four container
+      // walks: `repairRecordForTextRender` for `cdkd state show`, and the
+      // mode-gated load site of `cdkd state resources`.
       expect(repairRefs).toHaveLength(3);
       // Each scope set is declared once and read once, at its own entry.
       expect(showSet).toHaveLength(2);
