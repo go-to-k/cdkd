@@ -343,7 +343,8 @@ so on stderr, rather than describing resources that are not there.
 | `cdkd state resources`, plain and `--long` | nothing, plus the warning |
 | `cdkd state resources --json` | `[]`, plus the warning |
 | `cdkd state show`, `--show-nested` included | `Resources (0):` with no resource blocks, plus one warning per record read that way |
-| `cdkd state show --json`, `--show-nested` included | the stored value, unchanged and unwarned |
+| `cdkd state show --json` | the stored value, unchanged and unwarned |
+| `cdkd state show --show-nested --json` | the stored value, unchanged, but still warned per record |
 | `cdkd state list --long` | `Resources: unknown (...)` for that row, as described under [`cdkd state list`](#cdkd-state-list) |
 
 `cdkd state show --json` is the mode to reach for here: it is the one view that
@@ -367,6 +368,44 @@ remove the record instead.
 An absent or `null` bag is reported the same way and renders exactly as an
 empty one does. `cdkd state list --long` differs on those two: it counts them
 as `0` with no reason attached.
+
+`--show-nested --json` is the one JSON mode that still warns, because there the
+damage is invisible in the payload's shape: a node whose bag could not be read
+comes back with an empty `children` list, which is exactly what a genuine leaf
+looks like, so a tool walking the tree reads a cut subtree as a complete one.
+
+### When a value container is not an object
+
+The same reading applies to the four containers these views walk for their
+rows: `outputs` and `skippedOutputs` on the record, and `attributes` and
+`properties` on each resource. A hand-edited or truncated record can hold a
+string, a list, a number or a boolean in any of them, and walking one invents
+rows the same way — a string yields one per character, a list one per element.
+Each is read as EMPTY instead, with one warning on stderr per record naming
+every container that was emptied.
+
+| Command | What it prints |
+| --- | --- |
+| `cdkd state show` | the record without that block — no `Outputs:`, no `Skipped outputs:`, `Attributes: (none)`, `Properties: (none)` — plus the warning |
+| `cdkd state show --show-nested` | the same, judged per record, so the warning names the stack whose record it was |
+| `cdkd state resources --long` | `Attributes: (none)`, plus the warning |
+| `cdkd state resources --json` | `"attributes": {}`, plus the warning |
+| `cdkd state resources`, plain | the three-column listing, unchanged and unwarned — it prints no attributes |
+| `cdkd state show --json`, `--show-nested` included | the stored value, unchanged and unwarned |
+
+The rule behind those rows is that a view reports only the containers IT
+renders. `cdkd state resources` prints attributes in `--long` and `--json` and
+nothing else in any mode, so it says nothing about `properties`, `outputs` or
+`skipped outputs` however they are spelled, and its plain listing says nothing
+at all. `cdkd state show` is where a record's four containers are visible, and
+`cdkd state show --json` remains the mode that shows what the record actually
+holds — the warning's own text names it.
+
+An absent or `null` container is NOT reported, and this is where these four
+differ from the `resources` bag. `skippedOutputs` is absent on every record
+written before it existed, `attributes` is absent on a resource that has none,
+and both views have always rendered a missing container as an empty one.
+Neither can invent a row, so neither is treated as a defect.
 
 ## `cdkd state show`
 

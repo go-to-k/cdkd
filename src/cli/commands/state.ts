@@ -40,8 +40,11 @@ import {
 } from '../../state/lock-contention-message.js';
 import {
   hasReadableResources,
+  isReadableBag,
+  malformedRenderedContainersWarning,
   malformedResourcesWarning,
   repairMalformedResourcesForReadOnly,
+  type RenderedStateContainer,
 } from '../../state/malformed-resources-bag.js';
 import { ExportIndexStore } from '../../state/export-index-store.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
@@ -918,6 +921,38 @@ async function stateResourcesCommand(
     if (repairMalformedResourcesForReadOnly(stateResult.state)) {
       logger.warn(malformedResourcesWarning(stackName, ref.region));
     }
+    // And the same for the one VALUE container this command renders — each
+    // resource's `attributes` (issue go-to-k/cdkd#3187). `properties`,
+    // `outputs` and `skippedOutputs` are deliberately out of scope here: this
+    // command renders none of them, and the set it passes says so
+    // (`RESOURCES_RENDERED_CONTAINERS`).
+    //
+    // Gated on the two modes that CARRY attributes, and by the same rule that
+    // excludes the other three containers rather than by a second one. The
+    // default three-column listing prints logicalId / type / physicalId and
+    // nothing else, so an `attributes` it never walks can neither fabricate a
+    // row nor be described by a warning whose text promises "this view shows no
+    // rows there" — the warning would name a block that does not exist in the
+    // output in front of the reader. `cdkd state show` is where that record's
+    // attributes are visible, and this command's own `--long` is one flag away.
+    //
+    // `--json` is INSIDE the gate, not outside it, which is where this departs
+    // from `cdkd state show`: `details` is a PROJECTION rather than the stored
+    // record — it already substitutes `[]` for an absent `dependencies` and
+    // `{}` for an absent `attributes` — so leaving it alone would hand a script
+    // a non-object where the shape it consumes says otherwise, with nothing
+    // said about it. `cdkd state show --json` remains the mode that answers
+    // "what does the record hold", and this warning's text sends the reader
+    // there.
+    if (options.long || options.json) {
+      repairRenderedContainers(
+        stateResult.state,
+        RESOURCES_RENDERED_CONTAINERS,
+        stackName,
+        ref.region,
+        logger
+      );
+    }
     // No `?? {}`: the repair above leaves a plain object behind whatever the
     // record held, and a fallback that can no longer fire only makes a later
     // reader think the bag is guarded one line down instead of at the load.
@@ -938,6 +973,9 @@ async function stateResourcesCommand(
           resourceType: resource.resourceType,
           physicalId: resource.physicalId,
           dependencies: resource.dependencies ?? [],
+          // Absent-only fallback: a non-object `attributes` was emptied at the
+          // load above, so what reaches `--long`'s `Object.entries` and the
+          // `--json` payload is a map either way (issue go-to-k/cdkd#3187).
           attributes: resource.attributes ?? {},
         };
       })
@@ -1294,7 +1332,7 @@ async function stateShowCommand(
       return;
     }
 
-    repairResourcesForTextRender(stateResult.state, stackName, ref.region, logger);
+    repairRecordForTextRender(stateResult.state, stackName, ref.region, logger);
     process.stdout.write(`${renderStateBlock(stateResult.state, lockInfo, true).join('\n')}\n`);
   } finally {
     setup.dispose();
@@ -1314,6 +1352,11 @@ const UNSERIALIZABLE = '(unserializable)';
 
 /**
  * The `skippedOutputs` rows a state record owes, sorted by key.
+ *
+ * The `?? {}` covers an ABSENT field — every pre-#2740 record, plus the writers
+ * that drop it. A non-object one is emptied at the render entry instead
+ * (`repairRenderedContainers`, issue go-to-k/cdkd#3187), so this walk and
+ * {@link rendersSkippedBlock}'s cannot disagree about how many rows exist.
  */
 function sortedSkippedOutputs(state: StackState): [string, string][] {
   return Object.entries(state.skippedOutputs ?? {}).sort(([a], [b]) => a.localeCompare(b));
@@ -1362,8 +1405,134 @@ function skippedOutputsLegend(): string[] {
 }
 
 /**
- * Give the TEXT render a readable `resources` bag, and warn when that was a
- * repair rather than a no-op.
+ * The order {@link repairRenderedContainers} names repaired containers in.
+ *
+ * Fixed here rather than taken from the order they were found in, so two
+ * records that lost the same containers produce the same warning line and a
+ * test can assert the text rather than a set.
+ */
+const RENDERED_CONTAINER_ORDER: readonly RenderedStateContainer[] = [
+  'outputs',
+  'skippedOutputs',
+  'attributes',
+  'properties',
+];
+
+/** Every container {@link renderStateBlock}'s text walks. */
+const SHOW_RENDERED_CONTAINERS: ReadonlySet<RenderedStateContainer> = new Set(
+  RENDERED_CONTAINER_ORDER
+);
+
+/**
+ * What `cdkd state resources` walks: the attribute bag alone.
+ *
+ * `properties` is deliberately absent — that command excludes them from every
+ * mode (`docs/cli-state.md` says so and `stateResourcesCommand`'s own doc
+ * repeats it), so warning about a container it never renders would report a
+ * defect the user cannot see in the output in front of them. `outputs` and
+ * `skippedOutputs` are absent for the same reason.
+ */
+const RESOURCES_RENDERED_CONTAINERS: ReadonlySet<RenderedStateContainer> = new Set([
+  'attributes' as const,
+]);
+
+/**
+ * Empty every container this view walks but cannot read, and warn ONCE naming
+ * the ones that were emptied (issue go-to-k/cdkd#3187).
+ *
+ * `renderStateBlock` and `stateResourcesCommand --long` walk four more
+ * containers with `Object.entries` than the `resources` bag go-to-k/cdkd#3185
+ * guarded, and `Object.entries` takes a string, a list, a number and a boolean
+ * as readily as an object. Measured on the shipped bundle: `cdkd state show`
+ * over a record whose `outputs` is a 5,000,000-character string and whose
+ * `resources` bag is HEALTHY costs ~1616 ms and ~1010 MB RSS and emits
+ * 5,000,002 lines; the same shape in `skippedOutputs` costs ~2436 ms and
+ * ~2148 MB. `--show-nested` pays that per node.
+ *
+ * AT THE RENDER ENTRY, not at the four loops, which is the rule
+ * `src/state/malformed-resources-bag.ts`'s header records and the measurement
+ * behind it. Here the reason the entry wins is narrower but the same in kind:
+ * the per-resource containers are reached from inside the resource loop, so a
+ * guard written there is one decision repeated per resource per container, and
+ * the `?? {}` already sitting at each of them is exactly the spelling that
+ * looks like a guard and is not.
+ *
+ * **Absent is NOT malformed here, and that is a different call from the one
+ * {@link hasReadableResources} makes.** `undefined` and `null` both mean "no
+ * such container" for all four, and the `?? {}` at each walk has always
+ * rendered the nullish case as empty, so none of them can fabricate a row.
+ * An unreadable `resources` bag is judged the other way because
+ * `Object.entries(null)` THROWS and takes the whole render with it.
+ *
+ * The stronger half of the reason covers TWO of the four, not all of them, and
+ * saying so is the point: `skippedOutputs?` and `attributes?` are OPTIONAL in
+ * `src/types/state.ts`, so cdkd itself writes records without them and warning
+ * would be a false positive on healthy state. `outputs` and `properties` are
+ * REQUIRED there, so a nullish one IS a malformed record and this exemption
+ * rests on the weaker reason alone — it cannot invent a row, and it renders
+ * identically to the empty bag the reader would otherwise see. Warning on a
+ * nullish REQUIRED container would be defensible; it is not done because the
+ * harm this guard exists for is fabrication (review of go-to-k/cdkd#3190).
+ *
+ * Callers must have repaired the `resources` bag first; both do — one line up
+ * in `repairRecordForTextRender`, and ~30 lines up in `stateResourcesCommand`,
+ * where the mode gate sits between them.
+ * The bag test below is that ORDER made local rather than a fallback: an
+ * unreadable bag is emptied by the repair, so the record renders zero resources
+ * and owns no per-resource container to repair. It reads
+ * {@link isReadableBag} rather than {@link hasReadableResources} on purpose —
+ * the latter is the probe `tests/unit/cli/state-record-shape.test.ts` counts to
+ * measure the nested walk, and a second caller here would silently inflate it.
+ */
+function repairRenderedContainers(
+  state: StackState,
+  walked: ReadonlySet<RenderedStateContainer>,
+  stackName: string,
+  region: string,
+  logger: ReturnType<typeof getLogger>
+): void {
+  const repaired = new Set<RenderedStateContainer>();
+  const emptyIfUnwalkable = (
+    owner: Record<string, unknown>,
+    name: RenderedStateContainer
+  ): void => {
+    if (!walked.has(name)) return;
+    const container = owner[name];
+    if (container === undefined || container === null) return;
+    if (isReadableBag(container)) return;
+    owner[name] = {};
+    repaired.add(name);
+  };
+
+  const record = state as unknown as Record<string, unknown>;
+  emptyIfUnwalkable(record, 'outputs');
+  emptyIfUnwalkable(record, 'skippedOutputs');
+  if ((walked.has('attributes') || walked.has('properties')) && isReadableBag(state.resources)) {
+    // A non-object ENTRY carries no container: `renderStateBlock` and the
+    // `details` map both read it through `(entry ?? {})`, so a string, a number
+    // or a `null` there already renders its fields as `undefined` rather than
+    // walking anything (issue #2947).
+    for (const entry of Object.values(state.resources) as unknown[]) {
+      if (!isReadableBag(entry)) continue;
+      const fields = entry as Record<string, unknown>;
+      emptyIfUnwalkable(fields, 'attributes');
+      emptyIfUnwalkable(fields, 'properties');
+    }
+  }
+
+  if (repaired.size === 0) return;
+  logger.warn(
+    malformedRenderedContainersWarning(
+      stackName,
+      region,
+      RENDERED_CONTAINER_ORDER.filter((name) => repaired.has(name))
+    )
+  );
+}
+
+/**
+ * Give the TEXT render a readable `resources` bag and readable value
+ * containers, and warn when either was a repair rather than a no-op.
  *
  * {@link renderStateBlock} walks the bag with `Object.entries`, which takes a
  * string, a list, a number and a boolean as readily as an object. A planted
@@ -1390,8 +1559,16 @@ function skippedOutputsLegend(): string[] {
  * A caller-side test covers the root record only, which is what an earlier cut
  * of this fix shipped — a healthy root naming a nested child still walked that
  * child's bag unguarded.
+ *
+ * The container pass runs SECOND and under the same `--json` placement, for one
+ * reason each. Second, because {@link repairRenderedContainers} reads the
+ * resource entries and the repair above is what guarantees there is a map to
+ * read them from. Under the same placement, because `--json` emits the record
+ * as parsed and a non-object `outputs` is evidence there exactly as a
+ * non-object `resources` bag is — and because the payload carries the stored
+ * value whole, it fabricates nothing to emit it.
  */
-function repairResourcesForTextRender(
+function repairRecordForTextRender(
   state: StackState,
   stackName: string,
   region: string,
@@ -1400,6 +1577,7 @@ function repairResourcesForTextRender(
   if (repairMalformedResourcesForReadOnly(state)) {
     logger.warn(malformedResourcesWarning(stackName, region));
   }
+  repairRenderedContainers(state, SHOW_RENDERED_CONTAINERS, stackName, region, logger);
 }
 
 /**
@@ -1417,7 +1595,7 @@ function repairTreeForTextRender(
   node: CdkdStateStackTreeWithLock,
   logger: ReturnType<typeof getLogger>
 ): void {
-  repairResourcesForTextRender(node.state, node.stackName, node.region, logger);
+  repairRecordForTextRender(node.state, node.stackName, node.region, logger);
   for (const child of node.children) repairTreeForTextRender(child, logger);
 }
 
@@ -1450,7 +1628,7 @@ function warnUnreadableTreeNodes(
  * the shared body used by both the single-stack default output and each
  * nested child rendered under `--show-nested`.
  *
- * Every caller must have run {@link repairResourcesForTextRender} over the
+ * Every caller must have run {@link repairRecordForTextRender} over the
  * record first (`repairTreeForTextRender` does it per node for the tree): the
  * resource walk below is what fabricates rows from a non-object bag, and the
  * `state.ts names renderStateBlock in CODE exactly 1 + 3 times` case in
@@ -1510,6 +1688,12 @@ function renderStateBlock(
     );
   }
 
+  // The `?? {}` here — and at the four other container walks, two above in
+  // the `skippedOutputs` helpers and two below in the resource loop — covers the
+  // ABSENT case alone (`undefined` / `null`), which is what it has always done.
+  // A non-object `outputs` is NOT guarded here: it is emptied at the render
+  // entry by `repairRenderedContainers`, because a guard repeated at four
+  // walks is four decisions where one belongs (issue go-to-k/cdkd#3187).
   const outputEntries = Object.entries(state.outputs ?? {});
   if (outputEntries.length > 0) {
     lines.push('');
@@ -1639,6 +1823,8 @@ function renderStateBlock(
     }
     lines.push(`  Dependencies: ${formatDependencyList(resource.dependencies)}`);
 
+    // Absent-only fallback, like the Outputs walk above: a non-object
+    // `attributes` or `properties` was emptied at the render entry.
     const attrEntries = Object.entries(resource.attributes ?? {});
     if (attrEntries.length === 0) {
       lines.push('  Attributes: (none)');

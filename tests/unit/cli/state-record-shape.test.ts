@@ -93,10 +93,20 @@ vi.mock('../../../src/utils/aws-clients.ts', () => ({
  * it was fencing was itself at the root only. A healthy root naming a nested
  * child walked that child's bag unguarded, and this spy read 1 either way.
  * `walkCdkdStateStackTree` is module-private, but it calls
- * `hasReadableResources` exactly once on entry and is the only caller reached
- * by these cases (`state.ts` no longer calls it; `repairMalformedResourcesForReadOnly`
- * calls it INTERNALLY, which a module mock does not intercept), so this count IS
- * the per-node walk count.
+ * `hasReadableResources` exactly once on entry, and every OTHER caller a case
+ * here can reach is accounted for, so this count is the per-node walk count
+ * plus a known constant:
+ *
+ * - `repairMalformedResourcesForReadOnly` calls it INTERNALLY, which a module
+ *   mock does not intercept, so those calls never reach the spy.
+ * - `warnUnreadableTreeNodes` (`state.ts`) calls it once per node, and ONLY on
+ *   the `--show-nested --json` path. That is why the nested-JSON cases halve
+ *   the count they read; a case on any other path sees the walk alone. The
+ *   earlier wording here said `state.ts` no longer calls it at all, which was
+ *   false in exactly the direction that makes a halving look arbitrary.
+ * - `repairRenderedContainers` (issue go-to-k/cdkd#3187) deliberately reads
+ *   `isReadableBag` rather than this predicate, so it adds nothing here — a
+ *   second caller would silently inflate every count below.
  */
 const walkSpy = vi.hoisted(() => vi.fn());
 
@@ -115,7 +125,10 @@ vi.mock('../../../src/state/malformed-resources-bag.js', async () => {
 });
 
 import { createStateCommand } from '../../../src/cli/commands/state.js';
-import { malformedResourcesWarning } from '../../../src/state/malformed-resources-bag.js';
+import {
+  malformedRenderedContainersWarning,
+  malformedResourcesWarning,
+} from '../../../src/state/malformed-resources-bag.js';
 
 /**
  * Where the source-population fence below reads its subject from. A literal
@@ -1096,7 +1109,7 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
       // The repair helper's own population: one declaration, one call from the
       // single-stack path, one from the tree walker. `repairTreeForTextRender`
       // is one declaration, one call, one recursion.
-      const repairRefs = code.match(/\brepairResourcesForTextRender\b/g) ?? [];
+      const repairRefs = code.match(/\brepairRecordForTextRender\b/g) ?? [];
       const treeRepairRefs = code.match(/\brepairTreeForTextRender\b/g) ?? [];
 
       // Prove the scan saw its input before trusting the counts: a stripper
@@ -1104,11 +1117,615 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
       // below with zeros.
       expect(code.length).toBeGreaterThan(50_000);
       expect(declarations).toHaveLength(1);
-      expect(code).toContain('function repairResourcesForTextRender');
+      expect(code).toContain('function repairRecordForTextRender');
 
       expect(references).toHaveLength(declarations.length + 3);
       expect(repairRefs).toHaveLength(3);
       expect(treeRepairRefs).toHaveLength(3);
+    });
+  });
+
+  describe('a non-object VALUE container fabricates no rows either (issue #3187)', () => {
+    /**
+     * go-to-k/cdkd#3185 guarded the `resources` bag. The four containers below
+     * are walked by the same renderers with the same `Object.entries`, from the
+     * same unchecked cast, and were left fabricating exactly as the bag did:
+     * `outputs` and `skippedOutputs` on the record, `attributes` and
+     * `properties` on each resource.
+     *
+     * Each case is TWO-SIDED, because go-to-k/cdkd#3185 shipped three one-sided
+     * fences and its false-positive direction stayed green across 63 tests: a
+     * case proving the guard fires on a malformed container, and a case proving
+     * nothing is said about a healthy one — populated, empty, `null` and absent.
+     */
+    const MALFORMED: Array<{ label: string; value: unknown; rows: number }> = [
+      { label: 'a string', value: 'abcdef', rows: 6 },
+      { label: 'a list', value: [1, 2, 3], rows: 3 },
+      { label: 'a number', value: 42, rows: 0 },
+      { label: 'a boolean', value: true, rows: 0 },
+    ];
+
+    /** A populated healthy container. Keys chosen so no row can read as an index. */
+    const HEALTHY = { Alpha: 'one', Beta: 'two' };
+
+    /** A healthy resource row, with the container a case breaks overridden. */
+    function resourceRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+      return {
+        resourceType: 'AWS::S3::Bucket',
+        physicalId: 'my-bucket',
+        properties: {},
+        ...overrides,
+      };
+    }
+
+    /** What the shared module says, for the one stack every case reads. */
+    function containerWarning(
+      ...containers: Parameters<typeof malformedRenderedContainersWarning>[2]
+    ): string {
+      return malformedRenderedContainersWarning('MyStack', 'us-east-1', containers);
+    }
+
+    /** Every warning the run emitted, in order. */
+    function warnings(): string[] {
+      return warnSpy.mock.calls.map((call) => String(call[0]));
+    }
+
+    /**
+     * The four sites, each with the record shape that plants a value in it and
+     * the marker that proves its block rendered.
+     *
+     * `absent` is what a case sets to REMOVE the container; `undefined` is not
+     * enough on `attributes` / `properties`, whose owner is a resource row, so
+     * each site spells its own removal.
+     */
+    const SITES = [
+      {
+        name: 'outputs' as const,
+        plant: (value: unknown) => ({ outputs: value }),
+        blockHeader: '\nOutputs:\n',
+        healthyRow: '  Alpha: one',
+        populated: { outputs: HEALTHY },
+      },
+      {
+        name: 'skippedOutputs' as const,
+        plant: (value: unknown) => ({ skippedOutputs: value }),
+        blockHeader: '\nSkipped outputs:\n',
+        healthyRow: '  Alpha: one',
+        populated: { skippedOutputs: HEALTHY },
+      },
+      {
+        name: 'attributes' as const,
+        plant: (value: unknown) => ({ resources: { R: resourceRow({ attributes: value }) } }),
+        blockHeader: '\n  Attributes:\n',
+        healthyRow: '    Alpha: one',
+        populated: { resources: { R: resourceRow({ attributes: HEALTHY }) } },
+      },
+      {
+        name: 'properties' as const,
+        plant: (value: unknown) => ({ resources: { R: resourceRow({ properties: value }) } }),
+        blockHeader: '\n  Properties:\n',
+        healthyRow: '    Alpha: one',
+        populated: { resources: { R: resourceRow({ properties: HEALTHY }) } },
+      },
+    ];
+
+    /**
+     * A row an `Object.entries` walk over a string or a list INVENTS, and which
+     * nothing legitimate in these records prints: every healthy container here
+     * is keyed `Alpha` / `Beta`.
+     *
+     * A READABILITY aid, not the fence — {@link expectRendersAsEmpty} is.
+     *
+     * It matches ONE row grammar. A walk rendering `    - key = value` instead
+     * of `    key: value` fabricates the same phantom rows and this matches
+     * none of them, which is why it is not the discriminator. The block HEADER
+     * is no better: `Attributes: (none)` contains `  Attributes:`.
+     *
+     * Nothing here says what a suite does or does not catch. An earlier
+     * revision did, and went false when the oracle beside it started catching
+     * that walk — the third stale claim a review round found in this file.
+     */
+    const FABRICATED_ROW = /(^|\n)\s*0: /;
+
+    /**
+     * THE oracle: an unreadable container must render EXACTLY as an empty one.
+     *
+     * That is the invariant the fix actually establishes — the repair writes
+     * `{}` — and it is what makes the fence independent of how any renderer,
+     * present or future, spells a row. A new walk over a container A CASE
+     * PLANTS A MALFORMED VALUE FOR adds output the emptied record does not
+     * have, whatever grammar it uses, whatever key it prints, and whether it is
+     * destructured, aliased, bracket-accessed or reached through a two-level
+     * owner. The two spelling-keyed predicates it replaces were each defeated
+     * by a probe within one review round.
+     *
+     * **Its blind spot, measured rather than reasoned:** a walk over a FIFTH
+     * container no case plants — `observedProperties` is the live example — is
+     * absent from BOTH renders, so byte-identity holds while the walk
+     * fabricates. That direction belongs to
+     * `walks exactly the fields a repair covers, and nothing else`, which reads
+     * the field names out of the source. Neither case subsumes the other; an
+     * earlier revision of this comment claimed this one caught "a seventh walk"
+     * outright, which is false.
+     *
+     * The comparand is rendered by the SAME command in the SAME process, and
+     * the caller floors it on a marker every healthy render prints, so a case
+     * cannot pass by both renders having collapsed. The four per-site cases
+     * build it as `site.plant({})`, from the same builder as the malformed
+     * record, so those two cannot drift apart; the three `state resources`
+     * call sites pass a hand-written comparand and carry no such coupling.
+     */
+    async function expectRendersAsEmpty(
+      args: string[],
+      malformed: Record<string, unknown>,
+      emptied: Record<string, unknown>,
+      floor: string
+    ): Promise<string> {
+      bucket.state = record(emptied);
+      const reference = await runState(args);
+      expectRendered(reference.error);
+      expect(reference.out).toContain(floor);
+      expect(warnSpy).not.toHaveBeenCalled();
+
+      vi.clearAllMocks();
+      warnSpy.mockReset();
+      errorSpy.mockReset();
+      s3Send.mockImplementation(async (command) => route(command));
+
+      bucket.state = record(malformed);
+      const { out, error } = await runState(args);
+      expectRendered(error);
+      expect(out).toBe(reference.out);
+      return out;
+    }
+
+    it('the fabricating shapes really do fabricate, so the cases below are not vacuous', () => {
+      // A claim about `Object.entries`, not about cdkd: without it, "no row
+      // rendered" would pass just as well against a value that could never have
+      // produced one.
+      for (const { label, value, rows } of MALFORMED) {
+        expect(Object.entries(value as object), label).toHaveLength(rows);
+      }
+      // ...and the readability aid matches what such a walk would print in the
+      // grammar these renderers happen to use today.
+      expect(FABRICATED_ROW.test('\n  0: a\n')).toBe(true);
+      expect(FABRICATED_ROW.test('\n  Alpha: one\n')).toBe(false);
+      // ...while a walk in ANY other grammar is invisible to it, which is the
+      // measured reason the oracle above exists. Pinned so a later reader does
+      // not reinstate it as the fence.
+      expect(FABRICATED_ROW.test('\n    - 0 = a\n')).toBe(false);
+    });
+
+    for (const site of SITES) {
+      describe(site.name, () => {
+        it.each(MALFORMED)(`state show empties ${site.name} for $label`, async ({ value }) => {
+          // The FABRICATION first: it is the harm, and byte-identity with the
+          // emptied record is the assertion only the string and the list shapes
+          // can red. The warning second, which is the whole delta for the number
+          // and the boolean.
+          const out = await expectRendersAsEmpty(
+            ['show', 'MyStack'],
+            site.plant(value),
+            site.plant({}),
+            'Resources ('
+          );
+          expect(out).not.toMatch(FABRICATED_ROW);
+          expect(out).not.toContain(site.blockHeader);
+          expect(warnings()).toEqual([containerWarning(site.name)]);
+        });
+
+        it(`state show renders a POPULATED ${site.name} and says nothing`, async () => {
+          // The floor. go-to-k/cdkd#3185's warning fired on healthy records
+          // undetected across 63 tests because only the malformed direction was
+          // pinned; every cap here carries this.
+          bucket.state = record(site.populated);
+
+          const { out, error } = await runState(['show', 'MyStack']);
+
+          expectRendered(error);
+          expect(out).toContain(site.blockHeader);
+          expect(out).toContain(site.healthyRow);
+          expect(warnSpy).not.toHaveBeenCalled();
+        });
+
+        it(`state show renders an empty, null and absent ${site.name} identically`, async () => {
+          // `null` and absent are NOT malformed for these four, unlike the
+          // `resources` bag: `skippedOutputs` is absent on every pre-#2740
+          // record and `attributes` is optional on `ResourceState`, so warning
+          // about them would fire on records cdkd itself writes. The render must
+          // stay byte-identical to the empty one, and nothing may be said.
+          bucket.state = record(site.plant({}));
+          const empty = await runState(['show', 'MyStack']);
+          expectRendered(empty.error);
+          // The comparand needs its own floor: `toBe(empty.out)` is satisfied
+          // by three renders that all collapsed to `''`, so pin that the empty
+          // case rendered a block at all before comparing anything to it.
+          expect(empty.out).toContain('Resources (');
+          expect(warnSpy).not.toHaveBeenCalled();
+
+          for (const value of [null, undefined]) {
+            vi.clearAllMocks();
+            warnSpy.mockReset();
+            errorSpy.mockReset();
+            s3Send.mockImplementation(async (command) => route(command));
+            bucket.state = record(site.plant(value));
+            // eslint-disable-next-line no-await-in-loop
+            const rendered = await runState(['show', 'MyStack']);
+            expectRendered(rendered.error);
+            expect(rendered.out).toBe(empty.out);
+            expect(warnSpy).not.toHaveBeenCalled();
+          }
+        });
+      });
+    }
+
+    it('names every emptied container ONCE, in a fixed order', async () => {
+      // One warning per record however many containers it names, and the order
+      // is the constant's rather than discovery order — so two records that lost
+      // the same set produce the same line. A production list in another order
+      // reds this, because the expectation builds its text from the canonical
+      // one.
+      bucket.state = record({
+        outputs: 'abcdef',
+        skippedOutputs: [1, 2, 3],
+        resources: { R: resourceRow({ attributes: 42, properties: true }) },
+      });
+
+      const { out, error } = await runState(['show', 'MyStack']);
+
+      expectRendered(error);
+      expect(out).not.toMatch(FABRICATED_ROW);
+      expect(warnings()).toEqual([
+        containerWarning('outputs', 'skippedOutputs', 'attributes', 'properties'),
+      ]);
+    });
+
+    it('names a per-resource container once however many resources hold one', async () => {
+      // The reason the warning is built per RECORD and not per container read:
+      // a stack whose resources were all hand-edited would otherwise emit one
+      // line each.
+      bucket.state = record({
+        resources: {
+          A: resourceRow({ properties: 'abcdef' }),
+          B: resourceRow({ properties: [1, 2] }),
+          C: resourceRow({ properties: 42 }),
+        },
+      });
+
+      const { out, error } = await runState(['show', 'MyStack']);
+
+      expectRendered(error);
+      expect(out).not.toMatch(FABRICATED_ROW);
+      expect(warnings()).toEqual([containerWarning('properties')]);
+    });
+
+    it('costs no line per character for a megabyte-scale outputs string', async () => {
+      // The measured harm, in the one form an assertion over cdkd's OUTPUT can
+      // see. On the shipped bundle a 5,000,000-character `outputs` cost
+      // ~1616 ms / ~1010 MB RSS and emitted 5,000,002 lines; this is the same
+      // shape at a size a unit suite can afford.
+      bucket.state = record({ outputs: 'x'.repeat(200_000) });
+
+      const { out, error } = await runState(['show', 'MyStack']);
+
+      expectRendered(error);
+      expect(out.split('\n').length).toBeLessThan(100);
+      expect(warnings()).toEqual([containerWarning('outputs')]);
+    });
+
+    it('state show --json still emits the stored container — the evidence is preserved', async () => {
+      // The same carve-out the `resources` bag takes: this mode is what
+      // `cdkd state list --long` and this warning's own text name as the way to
+      // SEE the record, so a repair above the `--json` branch would hand the
+      // operator a well-formed `{}` and delete what they came for. It
+      // fabricates nothing, because it emits the value whole rather than
+      // walking it.
+      bucket.state = record({ outputs: 'abcdef' });
+
+      const { out, error } = await runState(['show', 'MyStack', '--json']);
+
+      expectRendered(error);
+      expect(JSON.parse(out).state.outputs).toBe('abcdef');
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('state show --show-nested empties a CHILD container and names that child', async () => {
+      // Each node carries its own record and is rendered through the same
+      // block, so a fix applied to the root alone leaves this red — and the
+      // warning has to name the CHILD, not the stack the user typed.
+      bucket.state = record({
+        resources: {
+          Child: {
+            resourceType: 'AWS::CloudFormation::Stack',
+            physicalId: 'child-arn',
+            properties: {},
+          },
+        },
+      });
+      bucket.children['MyStack~Child'] = record({
+        stackName: 'MyStack~Child',
+        outputs: 'abcdef',
+      });
+
+      const { out, error } = await runState(['show', 'MyStack', '--show-nested']);
+
+      expectRendered(error);
+      expect(out).toContain('Nested stack: MyStack~Child');
+      expect(out).not.toMatch(FABRICATED_ROW);
+      expect(warnings()).toEqual([
+        malformedRenderedContainersWarning('MyStack~Child', 'us-east-1', ['outputs']),
+      ]);
+    });
+
+    it('state show --show-nested warns per RECORD when root and child are both malformed', async () => {
+      // Two warnings, each naming its own stack and its own containers, because
+      // `repairTreeForTextRender` visits every node. A fix that emptied the
+      // tree from one aggregated pass would print one line here and name the
+      // wrong stack in it. The child breaks a DIFFERENT container from the
+      // root, so a per-node pass that reused the root's repaired set would show
+      // up as the wrong names rather than the wrong count.
+      bucket.state = record({
+        outputs: 'abcdef',
+        resources: {
+          Child: {
+            resourceType: 'AWS::CloudFormation::Stack',
+            physicalId: 'child-arn',
+            properties: {},
+          },
+        },
+      });
+      bucket.children['MyStack~Child'] = record({
+        stackName: 'MyStack~Child',
+        resources: { R: resourceRow({ properties: [1, 2, 3] }) },
+      });
+
+      const { out, error } = await runState(['show', 'MyStack', '--show-nested']);
+
+      expectRendered(error);
+      expect(out).not.toMatch(FABRICATED_ROW);
+      expect(out).toContain('Nested stack: MyStack~Child');
+      expect(warnings()).toEqual([
+        containerWarning('outputs'),
+        malformedRenderedContainersWarning('MyStack~Child', 'us-east-1', ['properties']),
+      ]);
+    });
+
+    it('state show --show-nested --json neither repairs nor warns about a container', async () => {
+      // Deliberately unlike the `resources` bag, which that mode DOES warn
+      // about: an unreadable bag makes the walk return a node with
+      // `children: []`, byte-indistinguishable from a genuine leaf, so a
+      // consumer reads a cut subtree as complete. A container has no such
+      // ambiguity — the payload carries the stored value, and every mode that
+      // could fabricate from it is a text one.
+      bucket.state = record({
+        resources: {
+          Child: {
+            resourceType: 'AWS::CloudFormation::Stack',
+            physicalId: 'child-arn',
+            properties: {},
+          },
+        },
+      });
+      bucket.children['MyStack~Child'] = record({
+        stackName: 'MyStack~Child',
+        outputs: 'abcdef',
+      });
+
+      const { out, error } = await runState(['show', 'MyStack', '--show-nested', '--json']);
+
+      expectRendered(error);
+      expect(JSON.parse(out).children[0].state.outputs).toBe('abcdef');
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it.each(MALFORMED)('state resources --long empties attributes for $label', async ({ value }) => {
+      const out = await expectRendersAsEmpty(
+        ['resources', 'MyStack', '--long'],
+        { resources: { R: resourceRow({ attributes: value }) } },
+        { resources: { R: resourceRow({ attributes: {} }) } },
+        'AWS::S3::Bucket'
+      );
+      expect(out).not.toMatch(FABRICATED_ROW);
+      expect(out).toContain('Attributes: (none)');
+      expect(warnings()).toEqual([containerWarning('attributes')]);
+    });
+
+    it('state resources --json emits an attributes MAP, not the stored value', async () => {
+      // The repair sits at the LOAD here rather than after the `--json` branch,
+      // which is the choice the `resources` repair one line up already made:
+      // `details` is a PROJECTION — it already substitutes `[]` and `{}` for an
+      // absent `dependencies` / `attributes` — and `cdkd state show --json` is
+      // the mode that answers "what does the record hold". Leaving it alone
+      // would hand a script a non-object where the shape it consumes says
+      // otherwise, with nothing said about it.
+      bucket.state = record({ resources: { R: resourceRow({ attributes: 'abcdef' }) } });
+
+      const { out, error } = await runState(['resources', 'MyStack', '--json']);
+
+      expectRendered(error);
+      expect(JSON.parse(out)).toEqual([
+        {
+          logicalId: 'R',
+          resourceType: 'AWS::S3::Bucket',
+          physicalId: 'my-bucket',
+          dependencies: [],
+          attributes: {},
+        },
+      ]);
+      expect(warnings()).toEqual([containerWarning('attributes')]);
+    });
+
+    it('state resources says NOTHING about containers it does not render', async () => {
+      // The scope floor. `properties`, `outputs` and `skippedOutputs` are
+      // excluded from every mode of this command, so warning about them would
+      // report a defect the user cannot see in the output in front of them —
+      // and a set that silently widened to all four would red here rather than
+      // going unnoticed.
+      // Byte-identity against the same record with those three containers
+      // EMPTY, and this is the case that makes the whole block a fence rather
+      // than a scope note. Saying only "no warning" pins that this command
+      // IGNORES those containers; this pins that it does not RENDER them
+      // either. A later edit teaching `--long` to print properties — the
+      // plausible one — adds a walk the scope set does not cover, and it reds
+      // HERE, in ANY row grammar.
+      //
+      // Both defeating probes a review round built landed on exactly this case:
+      // a destructured walk rendering `    key: value` (which the regex below
+      // does catch) and the same walk rendering `    - key = value` (which it
+      // does not). The comparand catches both.
+      const out = await expectRendersAsEmpty(
+        ['resources', 'MyStack', '--long'],
+        {
+          outputs: 'abcdef',
+          skippedOutputs: [1, 2, 3],
+          resources: { R: resourceRow({ properties: 'abcdef', attributes: HEALTHY }) },
+        },
+        {
+          outputs: {},
+          skippedOutputs: {},
+          resources: { R: resourceRow({ properties: {}, attributes: HEALTHY }) },
+        },
+        'AWS::S3::Bucket'
+      );
+      expect(out).not.toMatch(FABRICATED_ROW);
+      // The command still renders, and the attribute bag it DOES read is
+      // untouched — so this is not passing because the record failed to load.
+      expect(out).toContain('Alpha: one');
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it.each(MALFORMED)(
+      'state resources PLAIN mode neither walks attributes nor warns for $label',
+      async ({ value }) => {
+        // The default three-column listing prints logicalId / type / physicalId
+        // and nothing else, so it walks no container at all. Warning there would
+        // name a block absent from the output in front of the reader — the same
+        // false positive the scope set excludes `properties` to avoid, one mode
+        // over. `--long` and `--json` on the identical record DO warn, which is
+        // what makes this a scope assertion rather than a claim the guard is
+        // off.
+        //
+        // Byte-identity is what carries it: `FABRICATED_ROW` cannot match this
+        // mode's one-line `id  type  physicalId` row in ANY case, so it would
+        // be inert here (review finding), while the comparand reds on any
+        // output this mode gains that the emptied record does not have.
+        const out = await expectRendersAsEmpty(
+          ['resources', 'MyStack'],
+          { resources: { R: resourceRow({ attributes: value }) } },
+          { resources: { R: resourceRow({ attributes: {} }) } },
+          'AWS::S3::Bucket'
+        );
+        // The row itself still renders: a case passing because the listing was
+        // empty would prove nothing about the container.
+        expect(out).toContain('AWS::S3::Bucket');
+        expect(warnSpy).not.toHaveBeenCalled();
+      }
+    );
+
+    it('state.ts walks exactly these record fields, at these counts', () => {
+      // The direction the byte-identity oracle above CANNOT see, and it took a
+      // review probe to find it: that oracle compares a malformed render to an
+      // EMPTIED one, so it is blind to a walk over a container no case plants a
+      // malformed value for. A fabricating walk over `observedProperties` — a
+      // real optional `ResourceState` field — left every behavioural case green.
+      //
+      // So this case does not count walks over the four names, which would have
+      // been blind the same way. It reads the field name out of EVERY
+      // `Object.entries` / `.keys` over an `owner.field` in the file and requires
+      // the set, and the per-field counts, to equal the table below. A fifth
+      // field reds it, whatever it is called, and a decision has to be made about
+      // it rather than inherited.
+      //
+      // Counts per field and not just the set, so that ADDING a walk under an
+      // existing field name reds too. It does NOT see a walk MOVING between
+      // sites — the set and the counts are both unchanged then, measured — so
+      // the annotations below are documentation, not assertions, and the table
+      // is a field inventory rather than a claim that every walk is repaired.
+      //
+      // What it cannot see, DERIVED BY GREP over this file rather than by
+      // listing the spellings that came to mind. The previous revision was
+      // reasoned, and a review round then found `Object.values` — which this
+      // pattern had simply omitted from its alternation while the walk DID
+      // spell `owner.field`, so it was a hole rather than a residual. Each
+      // class below carries what the search returned against `state.ts`:
+      //
+      //   two-level owner   `Object.X(a.b.field)`      0 today
+      //   bracket access    `Object.X(a['field'])`     0 today
+      //   destructured      `const { field } = ...`    0 today
+      //   for...in          `for (const k in bag)`     0 today
+      //   spread            `{ ...a.field }`           0 today
+      //   bare identifier   `Object.X(ident)`          2 TODAY
+      //
+      // The last is not hypothetical and is the one to know about:
+      // `resourceCountOrNull(resources)` and `stateResourcesCommand`'s
+      // `Object.entries(resources)` both walk a local bound from `state.resources`
+      // one line earlier, so the field name never appears at the walk. Both are
+      // over the REPAIRED bag, so neither is a defect — but a third such local,
+      // bound to an unrepaired container, would be invisible here. Closing that
+      // needs alias tracking, which is a different instrument again; the
+      // BEHAVIOURAL oracle covers it for any container a case plants.
+      //
+      // And a walk in any file but this one: the scan reads `STATE_TS` alone.
+      //
+      // The `resources` row is the reason the annotation column is worth
+      // keeping: its two walks are NOT both repaired.
+      const WALKED: ReadonlyArray<readonly [string, number, string]> = [
+        ['outputs', 1, 'renderStateBlock; repaired by repairRecordForTextRender'],
+        ['skippedOutputs', 2, 'sortedSkippedOutputs + rendersSkippedBlock; same repair'],
+        ['attributes', 2, 'renderStateBlock + stateResourcesCommand --long; both repaired'],
+        ['properties', 1, 'renderStateBlock; repaired by repairRecordForTextRender'],
+        [
+          'resources',
+          3,
+          'renderStateBlock, repaired by repairMalformedResourcesForReadOnly; ' +
+            'repairRenderedContainers` own Object.values, guarded by isReadableBag; and ' +
+            'refreshObservedForStack, which is NEITHER: `cdkd state refresh-observed` is a ' +
+            'WRITER, outside this PR`s read-only scope, folded onto go-to-k/cdkd#3018',
+        ],
+      ];
+
+      const source = readFileSync(STATE_TS, 'utf-8');
+      const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+
+      const WALK = /Object\.(?:entries|keys|values)\(\s*[A-Za-z_$][\w$]*\.([A-Za-z_$][\w$]*)/g;
+      const found: Record<string, number> = {};
+      for (const m of code.matchAll(WALK)) found[m[1]!] = (found[m[1]!] ?? 0) + 1;
+
+      const repairRefs = code.match(/\brepairRenderedContainers\b/g) ?? [];
+      const showSet = code.match(/\bSHOW_RENDERED_CONTAINERS\b/g) ?? [];
+      const resourcesSet = code.match(/\bRESOURCES_RENDERED_CONTAINERS\b/g) ?? [];
+
+      // Prove the scan saw its input before trusting any verdict. The equality
+      // below is over POSITIVE counts, so an emptied `code` reds it on its own;
+      // these floors say WHY it red, and the pattern is pinned in both
+      // directions on strings whose answer is known by eye — including the
+      // FIELD it extracts, which is the part this case depends on.
+      expect(code.length).toBeGreaterThan(50_000);
+      expect(code).toContain('function repairRenderedContainers');
+      expect([...'Object.entries(state.outputs ?? {})'.matchAll(WALK)].map((m) => m[1])).toEqual([
+        'outputs',
+      ]);
+      expect([
+        ...'Object.entries(resource.observedProperties ?? {})'.matchAll(WALK),
+      ].map((m) => m[1])).toEqual(['observedProperties']);
+      // `values` is pinned beside `entries` because omitting it from the
+      // alternation was a live HOLE, not a residual: a review probe added
+      // `Object.values(resource.observedProperties ?? {})` — which DOES spell
+      // `owner.field` — and both suites stayed green.
+      expect([
+        ...'Object.values(resource.observedProperties ?? {})'.matchAll(WALK),
+      ].map((m) => m[1])).toEqual(['observedProperties']);
+      expect([...'Object.entries(buildBag())'.matchAll(WALK)]).toHaveLength(0);
+
+      expect(found).toEqual(Object.fromEntries(WALKED.map(([name, n]) => [name, n])));
+
+      // One declaration plus the two entries that dominate the four container
+      // walks: `repairRecordForTextRender` for `cdkd state show`, and the
+      // mode-gated load site of `cdkd state resources`.
+      expect(repairRefs).toHaveLength(3);
+      // Each scope set is declared once and read once, at its own entry.
+      expect(showSet).toHaveLength(2);
+      expect(resourcesSet).toHaveLength(2);
     });
   });
 });
