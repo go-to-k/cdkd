@@ -848,10 +848,12 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     if (scrubbed.unverifiableLeaves > 0) {
       totalStacksWithUnverifiableLeaves++;
       logger.warn(
-        `${scrubbed.unverifiableLeaves} leaf/leaves in ${stack.stackName} had their ` +
+        `${scrubbed.unverifiableLeaves} record(s) in ${stack.stackName} had a ` +
           `{{resolve:...}} scan ABANDONED because a reference could not be resolved (see the ` +
           `warnings above). The resolver stops at the first failing token, so a real secret ` +
-          `after it in the same leaf recorded no needle — this stack is not reported clean.`
+          `after it in the same value recorded no needle — this stack is not reported clean. ` +
+          `The count is per RECORD (one resource, orphan or output), not per leaf: one record ` +
+          `may hold several abandoned leaves.`
       );
     }
     if (scrubbed.unverifiableReads > 0) {
@@ -972,6 +974,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       : '';
   // Same discipline as `keyNote`: a summary must never let a finding it could
   // not remedy read as a clean result (issue #2133 review).
+  const leafNote =
+    totalStacksWithUnverifiableLeaves > 0
+      ? ` ${totalStacksWithUnverifiableLeaves} stack(s) had a {{resolve:...}} scan ABANDONED ` +
+        `mid-value, so part of their state was never examined (see the warnings above).`
+      : '';
   const unverifiableNote =
     totalStacksWithUnverifiableReads > 0
       ? ` ${totalStacksWithUnverifiableReads} stack(s) carry a cross-stack read cdkd declines to ` +
@@ -1020,11 +1027,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     if (totalStacksScrubbed > 0) {
       logger.info(
         `\nPlan: ${totalStacksScrubbed} stack(s) hold plaintext secrets and would be scrubbed ` +
-          `(--dry-run, no state written).${keyNote}${unverifiableNote}${indexNote}${failureNote} ROTATE any exposed secret in Secrets Manager.`
+          `(--dry-run, no state written).${keyNote}${unverifiableNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret in Secrets Manager.`
       );
     } else {
       logger.info(
-        `\nPlan: no state record can be rewritten.${keyNote}${unverifiableNote}${indexNote}${failureNote} ROTATE any exposed secret.`
+        `\nPlan: no state record can be rewritten.${keyNote}${unverifiableNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret.`
       );
     }
     // The refusal outranks the `--fail` gate: it is an ERROR (exit 2) about
@@ -1072,11 +1079,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         `not purge it. So a value that was ever persisted must be treated as compromised — ` +
         `ROTATE it in Secrets Manager (scrub matches the current value, so scrub BEFORE ` +
         `rotating); rotation is what makes any surviving version ` +
-        `harmless.${keyNote}${unverifiableNote}${indexNote}${failureNote}`
+        `harmless.${keyNote}${unverifiableNote}${leafNote}${indexNote}${failureNote}`
     );
   } else {
     logger.info(
-      `\nNo state record was rewritten.${keyNote}${unverifiableNote}${indexNote}${failureNote} ROTATE any exposed secret.`
+      `\nNo state record was rewritten.${keyNote}${unverifiableNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret.`
     );
   }
   // `--fail` is documented as a --dry-run CI gate, but a REAL run over a
@@ -2979,35 +2986,31 @@ const DYNAMIC_REFERENCE_PREFIX = 'Dynamic reference: ';
  * The old, wrong-in-substance refusal was backstopping this one.
  */
 /**
- * A dynamic reference the resolver could not RESOLVE — a deleted SSM
- * parameter, a secret with no `SecretString`, a missing `JSON_KEY`, a
- * non-JSON secret (issue go-to-k/cdkd#3160).
+ * The scan of `source`'s `{{resolve:...}}` leaves was ABANDONED by `err`
+ * (issue go-to-k/cdkd#3160).
  *
- * The SIBLING of {@link isNamelessDynamicReferenceFailure}, and deliberately
- * NOT handled the same way. Both abandon the leaf — the token loop in
- * `resolveDynamicReferences` has no per-token `try`, so a real
- * `{{resolve:secretsmanager:...}}` sitting after the failing token is never
- * fetched and records NO needle. But a nameless reference is structurally
- * broken, while THESE fire on a perfectly healthy stack: scrub resolves with
- * template DEFAULTS and takes no `--parameters`, so an `Fn::Sub` that
- * warn-and-KEEPS its raw `${Field}` produces a JSON_KEY miss every run.
- * Refusing on them refuses ordinary stacks — measured, it reddened
- * `tests/unit/cli/commands/scrub-cross-region-secret.test.ts`.
+ * POSITIONAL, not message-matched, and the first cut of this got that wrong in
+ * a way that missed its own headline case. The resolver's token loop has no
+ * per-token `try`, so ANY throw abandons every remaining token in the leaf —
+ * and most of those throws are not the resolver's own prose. `GetParameter` /
+ * `GetSecretValue` go through `sendWithThrottleRetry`, which **rethrows an AWS
+ * rejection RAW**: a genuinely deleted parameter raises `ParameterNotFound`
+ * from the SDK, never the `Dynamic reference: SSM parameter '...' not found`
+ * string, which fires only on a 200 whose `Parameter.Value` is absent. Keying
+ * on that prefix therefore counted the MINORITY case and let
+ * `ResourceNotFoundException`, `AccessDeniedException`, `DecryptionFailure`,
+ * a pending-deletion `InvalidRequestException` and exhausted throttling all
+ * stay silent — plus the `Refusing to resolve` arm for an `ssm-secure` over a
+ * public parameter.
  *
- * So the verdict is a counted FINDING, the shape this command already uses for
- * a cross-stack read it declines by design: the rest of the stack is still
- * scrubbed, the leaf is reported as unverifiable, and the run does not claim
- * the record is clean. What it must NOT do is stay silent, which is what it
- * did before — `No plaintext secrets found`, exit 0, over a leaf nothing read.
+ * So the question is not what the error SAYS but whether the value being
+ * resolved had a dynamic reference in it at all: if it did and the resolve
+ * threw, the remaining tokens in that leaf were not fetched and recorded no
+ * needle. The two classes that must NOT count are the ones that re-raise
+ * instead — checked by the caller before this is reached.
  */
-function isDynamicReferenceResolutionFailure(err: unknown): boolean {
-  return (
-    err instanceof Error &&
-    !isNamelessDynamicReferenceFailure(err) &&
-    errorCauseChain(err).some(
-      (link) => link instanceof Error && link.message.includes(DYNAMIC_REFERENCE_PREFIX)
-    )
-  );
+function abandonedDynamicReferenceScan(source: unknown): boolean {
+  return carriesDynamicReference(source);
 }
 
 function isNamelessDynamicReferenceFailure(err: unknown): boolean {
@@ -4116,7 +4119,22 @@ export async function scrubStack(
           // A region-AMBIGUOUS refusal is not best-effort -- see
           // `isRegionAmbiguousRefusal`.
           if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
-          if (isDynamicReferenceResolutionFailure(err)) unverifiableLeaves++;
+          if (abandonedDynamicReferenceScan(resolveInput)) {
+            unverifiableLeaves++;
+            // WARN, not debug: this is the FINDING, and the count reported at the end
+            // is useless without the record it belongs to. The CAUSE is deliberately
+            // not repeated here -- the sibling log at this site prints it through
+            // `maskSecretsInText`, and `err.message` can echo a foreign plaintext
+            // `pinCrossRegionSecrets` substituted into the bag.
+            logger.warn(
+              maskSecretsInText(
+                `The {{resolve:...}} scan of resource '${logicalId}' was ABANDONED, so any secret ` +
+                  `after the failing token in the same value recorded no needle: this ` +
+                  `record is NOT certified clean. Re-run with --verbose for the cause.`,
+                recordedSecretValues
+              )
+            );
+          }
           // Best-effort: a resource whose intrinsics cannot resolve (a Ref to
           // something not in state) still has its own {{resolve:...}} leaves
           // recorded along the way; leave the rest untouched.
@@ -4192,7 +4210,22 @@ export async function scrubStack(
           await resolver.resolve(resolveInput, resolverContext(recordedSecretValues));
         } catch (err) {
           if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
-          if (isDynamicReferenceResolutionFailure(err)) unverifiableLeaves++;
+          if (abandonedDynamicReferenceScan(resolveInput)) {
+            unverifiableLeaves++;
+            // WARN, not debug: this is the FINDING, and the count reported at the end
+            // is useless without the record it belongs to. The CAUSE is deliberately
+            // not repeated here -- the sibling log at this site prints it through
+            // `maskSecretsInText`, and `err.message` can echo a foreign plaintext
+            // `pinCrossRegionSecrets` substituted into the bag.
+            logger.warn(
+              maskSecretsInText(
+                `The {{resolve:...}} scan of orphan record '${record.logicalId}' was ABANDONED, so any secret ` +
+                  `after the failing token in the same value recorded no needle: this ` +
+                  `record is NOT certified clean. Re-run with --verbose for the cause.`,
+                recordedSecretValues
+              )
+            );
+          }
           logger.debug(
             `Resolution of orphan record ${record.logicalId} during scrub was partial: ` +
               `${maskSecretsInText(err instanceof Error ? err.message : String(err), recordedSecretValues)}`
@@ -4320,7 +4353,22 @@ export async function scrubStack(
             // A region-AMBIGUOUS refusal is not best-effort -- see
             // `isRegionAmbiguousRefusal`.
             if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
-            if (isDynamicReferenceResolutionFailure(err)) unverifiableLeaves++;
+            if (abandonedDynamicReferenceScan(nameSource)) {
+              unverifiableLeaves++;
+              // WARN, not debug: this is the FINDING, and the count reported at the end
+              // is useless without the record it belongs to. The CAUSE is deliberately
+              // not repeated here -- the sibling log at this site prints it through
+              // `maskSecretsInText`, and `err.message` can echo a foreign plaintext
+              // `pinCrossRegionSecrets` substituted into the bag.
+              logger.warn(
+                maskSecretsInText(
+                  `The {{resolve:...}} scan of the Export.Name of output '${name}' was ABANDONED, so any secret ` +
+                    `after the failing token in the same value recorded no needle: this ` +
+                    `record is NOT certified clean. Re-run with --verbose for the cause.`,
+                  outputSecrets
+                )
+              );
+            }
             nameFailed = true;
             nameError = err;
           }
@@ -4463,7 +4511,22 @@ export async function scrubStack(
           // A region-AMBIGUOUS refusal is not best-effort -- see
           // `isRegionAmbiguousRefusal`.
           if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
-          if (isDynamicReferenceResolutionFailure(err)) unverifiableLeaves++;
+          if (abandonedDynamicReferenceScan(valueSource)) {
+            unverifiableLeaves++;
+            // WARN, not debug: this is the FINDING, and the count reported at the end
+            // is useless without the record it belongs to. The CAUSE is deliberately
+            // not repeated here -- the sibling log at this site prints it through
+            // `maskSecretsInText`, and `err.message` can echo a foreign plaintext
+            // `pinCrossRegionSecrets` substituted into the bag.
+            logger.warn(
+              maskSecretsInText(
+                `The {{resolve:...}} scan of output '${name}' was ABANDONED, so any secret ` +
+                  `after the failing token in the same value recorded no needle: this ` +
+                  `record is NOT certified clean. Re-run with --verbose for the cause.`,
+                outputSecrets
+              )
+            );
+          }
           // MASKED for the same reason as the two above — `valueSource` is a
           // post-pin bag. Verbose-only.
           logger.debug(

@@ -172,8 +172,17 @@ That is a statement about what cdkd WRITES. The state bucket is versioned, so a 
 ```bash
 AWS_PROFILE=<profile> AWS_REGION=<region> cdkd scrub <stack>              # scrub in place
 AWS_PROFILE=<profile> AWS_REGION=<region> cdkd scrub <stack> --dry-run    # report only, no write
-AWS_PROFILE=<profile> AWS_REGION=<region> cdkd scrub <stack> --dry-run --fail  # CI gate: exit 1 if plaintext remains
+AWS_PROFILE=<profile> AWS_REGION=<region> cdkd scrub <stack> --dry-run --fail  # CI gate: exit 1 on any finding
 ```
+
+`--fail` exits `1` for a finding scrub cannot REMEDY as well as for plaintext it
+can — a state KEY holding a secret, a cross-stack read cdkd declines to perform,
+and a record whose `{{resolve:...}}` scan was ABANDONED because a reference did
+not resolve (a deleted SSM parameter, a secret with no `SecretString`). The last
+one matters most as a gate result: the resolver stops at the first failing token,
+so a real secret AFTER it in the same value was never fetched, recorded no
+needle, and would otherwise have let the stack report clean. Each such record is
+named in a warning; resolve the reference and re-run.
 
 Scrubbing needs the CDK app (`--app` / `CDKD_APP` / `cdk.json`) because state records the resolved value with no marker of which values are secrets — only the template carries the references. IMPORTANT: a secret that was ever stored in plaintext should be treated as compromised and ROTATED in Secrets Manager; scrub only stops it being re-read out of state going forward.
 

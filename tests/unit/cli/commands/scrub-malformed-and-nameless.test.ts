@@ -50,7 +50,14 @@ import type { CloudFormationTemplate } from '../../../../src/types/resource.js';
 /** Thrown by the fake resolver when a case asks for it. */
 let resolveThrows: Error | undefined;
 
-vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', () => ({
+// `importActual` for everything but the resolver class: `carriesDynamicReference`
+// is a pure predicate scrub uses to decide whether an abandoned resolve had a
+// `{{resolve:...}}` in it at all, and stubbing it would make these cases assert
+// against a fake answer to the very question under test.
+vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', async () => ({
+  ...(await vi.importActual<
+    typeof import('../../../../src/deployment/intrinsic-function-resolver.js')
+  >('../../../../src/deployment/intrinsic-function-resolver.js')),
   IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
     resolveParameters: vi.fn().mockResolvedValue({}),
     evaluateConditions: vi.fn().mockResolvedValue({}),
@@ -196,27 +203,72 @@ describe('cdkd scrub - refusals this PR adds (go-to-k/cdkd#2692, go-to-k/cdkd#30
       await expect(run(healthy())).resolves.toBeDefined();
     });
 
-    for (const message of [
-      "Dynamic reference: SSM parameter '/deleted' not found or has no value",
-      "Dynamic reference: secret 'x' does not contain a SecretString value",
-      "Dynamic reference: key '${Field' not found in secret 'x'",
-      "Dynamic reference: secret 'x' is not valid JSON but JSON_KEY 'k' was specified",
-    ]) {
-      it(`counts, but does NOT re-raise, \`${message.slice(0, 44)}...\``, async () => {
-        // scrub resolves with template DEFAULTS and no `--parameters`, so an
-        // Fn::Sub that keeps its raw `${Field}` produces this on a HEALTHY
-        // stack. Refusing refuses those stacks — but staying SILENT is the
-        // go-to-k/cdkd#3160 defect: the resolver stops at the first failing
-        // token, so a real secret after it in the same leaf records no needle
-        // and the run reported `No plaintext secrets found`, exit 0.
-        resolveThrows = new Error(message);
+    // The population is the ABANDONMENT, not a message vocabulary. The first
+    // cut keyed on the `Dynamic reference: ` prefix and so counted only the
+    // resolver's OWN prose -- missing the dominant class, because
+    // `GetParameter` / `GetSecretValue` go through `sendWithThrottleRetry`,
+    // which rethrows an AWS rejection RAW. A genuinely deleted parameter
+    // raises `ParameterNotFound` from the SDK; the prefixed
+    // "SSM parameter ... not found or has no value" string fires only on a 200
+    // whose `Parameter.Value` is absent. The table below therefore carries BOTH
+    // shapes, and the SDK ones are this issue's own headline repro.
+    const ABANDONING: ReadonlyArray<readonly [string, Error]> = [
+      // The resolver's own prose.
+      ['no SecretString', new Error("Dynamic reference: secret 'x' does not contain a SecretString value")],
+      ['missing JSON_KEY', new Error("Dynamic reference: key '${Field' not found in secret 'x'")],
+      ['non-JSON secret', new Error("Dynamic reference: secret 'x' is not valid JSON but JSON_KEY 'k' was specified")],
+      ['200 with no Value', new Error("Dynamic reference: SSM parameter '/p' not found or has no value")],
+      // Raw SDK rejections -- rethrown verbatim, no prefix.
+      ['deleted SSM parameter', Object.assign(new Error('Parameter /deleted not found.'), { name: 'ParameterNotFound' })],
+      ['deleted secret', Object.assign(new Error("Secrets Manager can't find the specified secret."), { name: 'ResourceNotFoundException' })],
+      ['denied secret', Object.assign(new Error('User is not authorized to perform secretsmanager:GetSecretValue'), { name: 'AccessDeniedException' })],
+      ['secret pending deletion', Object.assign(new Error('You can\'t perform this operation on the secret because it was marked for deletion.'), { name: 'InvalidRequestException' })],
+      ['KMS decryption failure', Object.assign(new Error('Secrets Manager cannot decrypt the protected secret text.'), { name: 'DecryptionFailure' })],
+      // A refusal that is neither prefixed nor an SDK error.
+      ['ssm-secure over a public parameter', new Error('Refusing to resolve ssm-secure against a String parameter')],
+    ];
+
+    for (const [label, error] of ABANDONING) {
+      it(`counts, but does NOT re-raise, an abandoned scan: ${label}`, async () => {
+        resolveThrows = error;
         const result = await run(healthy());
         expect(result).toBeDefined();
+        // EXACT, not `> 0`, so deleting any ONE counter site reds this —
+        // per-site coverage the sibling PREDICATE genuinely cannot have (a
+        // rejection travels to the next catch) but a counter can, because
+        // counters do not short-circuit.
+        //
+        // THREE, not four, measured: the resource bag, the orphan record and
+        // the output's VALUE. The fourth site — the output's `Export.Name` —
+        // is not reached by this harness at all; its `nameSource` goes through
+        // `pinCrossRegionSecrets` and a `resolveCrossStackReads` before the
+        // guarded `try`, and giving the name a `{{resolve:...}}` did not change
+        // the count (measured, so this is a gap in the HARNESS, not a claim
+        // that the site is dead). Stated rather than papered over with `> 0`,
+        // which would have hidden all three of the sites this does pin.
         expect(
           result.unverifiableLeaves,
-          'the abandoned leaf was not counted, so the run can still report the stack clean ' +
-            'over a scan that stopped early (go-to-k/cdkd#3160).'
-        ).toBeGreaterThan(0);
+          `the leaf abandoned by ${label} was counted ${result.unverifiableLeaves} time(s), ` +
+            'expected one per counter site. A lower number means a site stopped counting and ' +
+            'the run can report a stack clean over a scan that stopped early ' +
+            '(go-to-k/cdkd#3160).'
+        ).toBe(3);
+
+        // The count is only actionable if the operator can tell WHICH record
+        // it belongs to, and the summary line says "see the warnings above" —
+        // so the per-record line must be a `warn`, not the `debug` the first
+        // cut used. Three of the four sites logged only at `debug`, which made
+        // that sentence false at default verbosity.
+        const warned = logger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned, 'the abandoned resource record was not named at default verbosity').toContain(
+          "resource 'Db'"
+        );
+        expect(warned, 'the abandoned orphan record was not named at default verbosity').toContain(
+          "orphan record 'OldDb'"
+        );
+        expect(warned, 'the abandoned output record was not named at default verbosity').toContain(
+          "output 'DbEndpoint'"
+        );
       });
     }
 
@@ -232,7 +284,13 @@ describe('cdkd scrub - refusals this PR adds (go-to-k/cdkd#2692, go-to-k/cdkd#30
       // structurally broken and refuses; these are resolution failures and
       // are counted.
       resolveThrows = new Error('Dynamic reference: secretsmanager SECRET_ID is required');
-      await expect(run(healthy())).rejects.toThrow();
+      // The MESSAGE, not a bare `toThrow()`: the network fence in
+      // `tests/setup.ts` fails a run from `afterEach`, and a bare assertion is
+      // satisfied by that refusal as readily as by the one under test.
+      await expect(run(healthy())).rejects.toThrow(/SECRET_ID is required/);
+      // ...and it must NOT also be counted — the two classes are pinned apart
+      // from both sides.
+      expect(logger.warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain('ABANDONED');
     });
   });
 

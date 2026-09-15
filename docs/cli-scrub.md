@@ -301,7 +301,7 @@ indistinguishable from an empty stack.
 
 **What a real run can report as `1`.** `--fail` is documented as a
 `--dry-run` CI gate, but a real run exits non-zero too when it found a leak it
-cannot rewrite. Two shapes qualify, and both are also reported in words:
+cannot rewrite. Three shapes qualify, and all three are also reported in words:
 
 - a **state KEY** holding a secret, which needs an `Export.Name` change plus a
   redeploy: `N output KEY(s) in <stack> hold plaintext and CANNOT be scrubbed`;
@@ -318,6 +318,24 @@ cannot rewrite. Two shapes qualify, and both are also reported in words:
 
 - a **cross-stack read cdkd declines by design**:
   `N cross-stack read(s) in <stack> could NOT be verified`.
+
+- a **record whose `{{resolve:...}}` scan was ABANDONED part-way**:
+  `N record(s) in <stack> had a {{resolve:...}} scan ABANDONED because a
+  reference could not be resolved`.
+
+  The resolver stops at the first `{{resolve:...}}` token it cannot resolve —
+  a deleted SSM parameter, a secret with no `SecretString`, a missing
+  `JSON_KEY`, a secret that is not JSON — and every later token in the SAME
+  value is then never resolved, so it contributes no needle. A plaintext
+  sitting behind such a token therefore survives a scan that finds nothing.
+  cdkd cannot rewrite it (there is no needle to match) and cannot refuse the
+  stack either: `scrub` resolves with template DEFAULTS and takes no
+  `--parameters`, so an `Fn::Sub` that keeps its raw `${Field}` produces this
+  on a stack that is entirely healthy. It is reported and counted instead, and
+  each record is named in a warning at default verbosity. Resolve the
+  reference — restore the parameter or secret, or supply the value the
+  `Fn::Sub` needs — and re-run; the count going to zero is what certifies the
+  record.
 
 ## Refusals
 

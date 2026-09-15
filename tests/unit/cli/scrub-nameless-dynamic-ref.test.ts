@@ -173,10 +173,19 @@ describe('scrub keys on the resolver nameless-dynamic-reference messages', () =>
     // go-to-k/cdkd#3160 the sibling predicate CALLS this one in its own body,
     // so counting names reported 5 call sites where there are 4. Counting the
     // `... ) throw err;` tail keeps the subject the thing the case is about.
-    const RERAISE = /isNamelessDynamicReferenceFailure\(err\)\) throw err;/g;
-    const AMBIGUOUS = /isRegionAmbiguousRefusal\(err\) \|\|/g;
-    const guarded = [...scrub.matchAll(RERAISE)].length;
-    const ambiguous = [...scrub.matchAll(AMBIGUOUS)].length;
+    // Guarded side counts the RE-RAISE shape, not the predicate NAME: since
+    // go-to-k/cdkd#3160 a sibling predicate mentions this one, so counting
+    // names reported 5 call sites where there are 4.
+    //
+    // The AMBIGUOUS side stays a bare name count on purpose. Anchoring it on
+    // `... ||` too would make both regexes match the SAME lines, so the
+    // equality would be near-tautological — and it would stop seeing the one
+    // regression it exists for: a NEW catch spelled
+    // `if (isRegionAmbiguousRefusal(err)) throw err;` alone, which must red
+    // because the nameless predicate is missing from it.
+    const guarded = [...scrub.matchAll(/isNamelessDynamicReferenceFailure\(err\)\) throw err;/g)]
+      .length;
+    const ambiguous = scrub.split('isRegionAmbiguousRefusal(err)').length - 1;
     expect(
       guarded,
       `${guarded} of scrub's best-effort catches re-raise a nameless dynamic reference, but ` +
