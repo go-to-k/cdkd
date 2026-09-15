@@ -2799,6 +2799,7 @@ export function renderChangelogFragment({
   writableAdded,
   exemptTypes,
   unroutableTypes = new Set(),
+  unknownRoutingTypes = new Set(),
   declared = new Map(),
 }) {
   // A property the provider already DECLARES is not a silent drop and gets no
@@ -2815,13 +2816,19 @@ export function renderChangelogFragment({
     .filter((e) => e.properties.length > 0);
   if (considered.length === 0) return null;
 
-  // Split BEFORE any sentence is written: a type whose provider opts out of the
-  // Cloud Control fallback, or that AWS reports NON_PROVISIONABLE, is REFUSED
-  // at pre-flight rather than auto-routed (`provider-registry.ts` throws
-  // `buildUnroutableSilentDropMessage`), so the routed story is not merely
-  // incomplete for it — it says the opposite of what a deploy does.
-  const routed = considered.filter((e) => !unroutableTypes.has(e.resourceType));
-  const unroutable = considered.filter((e) => unroutableTypes.has(e.resourceType));
+  // Split BEFORE any sentence is written, into THREE buckets rather than two.
+  // A type whose provider opts out of the Cloud Control fallback, or that AWS
+  // reports NON_PROVISIONABLE, is REFUSED at pre-flight rather than auto-routed
+  // (`provider-registry.ts` throws `buildUnroutableSilentDropMessage`), so the
+  // routed story is not merely incomplete for it — it says the opposite of what
+  // a deploy does. And a type whose routing could not be ESTABLISHED at all
+  // gets neither story: writing the refusal for it would assert a mechanism
+  // nothing measured, which is the same false-claim class in the other
+  // direction.
+  const unknown = considered.filter((e) => unknownRoutingTypes.has(e.resourceType));
+  const named = considered.filter((e) => !unknownRoutingTypes.has(e.resourceType));
+  const routed = named.filter((e) => !unroutableTypes.has(e.resourceType));
+  const unroutable = named.filter((e) => unroutableTypes.has(e.resourceType));
 
   const count = considered.reduce((n, e) => n + e.properties.length, 0);
   const pairs = considered.map(
@@ -2842,10 +2849,14 @@ export function renderChangelogFragment({
       `\`src/provisioning/property-coverage.generated.ts\` (regenerated).`,
   ];
 
+  const routedCount = routed.reduce((n, e) => n + e.properties.length, 0);
   const routedNames = routed.map((e) => renderName(e.resourceType));
   if (routed.length > 0) {
     sentences.push(
-      `On ${routedNames.join(' / ')}, no SDK provider writes ${routed.length === 1 && count === 1 ? 'it' : 'them'} ` +
+      // The pronoun follows THIS sentence's own population: the global count
+      // includes properties on refused types, so testing it said "them" of a
+      // single routed property whenever an unroutable type rode along.
+      `On ${routedNames.join(' / ')}, no SDK provider writes ${routedCount === 1 ? 'it' : 'them'} ` +
         `yet (\`not yet implemented by cdkd\`), so pre-flight classifies each as a silent drop and the ` +
         `issue [#614](https://github.com/go-to-k/cdkd/issues/614) auto-route sends a resource whose ` +
         `template carries one through Cloud Control, which forwards the full property map. Until this ` +
@@ -2861,6 +2872,19 @@ export function renderChangelogFragment({
         `${unroutable.length === 1 ? 'its provider declines' : 'their providers decline'} the Cloud ` +
         `Control fallback, or AWS reports the type NON_PROVISIONABLE — so a template carrying one is ` +
         `REFUSED at pre-flight with the unroutable-silent-drop message instead of deploying.`
+    );
+  }
+
+  const unknownNames = unknown.map((e) => renderName(e.resourceType));
+  if (unknown.length > 0) {
+    // What was actually established is "cdkd could not read the declaration",
+    // and that is all this says. Writing the refusal sentence here would assert
+    // a mechanism nothing measured — the class this whole template exists to
+    // avoid — and writing the routed one would be worse still.
+    sentences.push(
+      `cdkd could not read the routing declaration for ${unknownNames.join(' / ')}, so this entry ` +
+        `does not state how a template carrying one deploys; check the type's provider before ` +
+        `relying on either behaviour.`
     );
   }
 
@@ -2896,15 +2920,21 @@ export function renderChangelogFragment({
     if (index < 0 || index >= sentences.length) return;
     sentences[index] = sentences[index].replace(from, to);
   };
+  // The headline is always sentence 0.
   collapseList(
-    sentences.indexOf(sentences[0]),
+    0,
     ` -- ${pairs.join('; ')}.`,
     ` -- ${count} across ${considered.length} resource type${considered.length === 1 ? '' : 's'}, listed in this PR's fixture diff.`
   );
+  // Each replacement says what it COUNTS. "of them" after the headline
+  // collapsed to a type count reads as a count of TYPES, which the create-only
+  // list is not — it holds one entry per PROPERTY, so a 30-type cycle with two
+  // create-only properties each would have claimed 60 of 30 types.
   for (const [names, replacement] of /** @type {Array<[string[], string]>} */ ([
-    [routedNames, `${routed.length} of them`],
-    [unroutableNames, `${unroutable.length} of them`],
-    [pinnedNames, `${pinned.length} of them`],
+    [routedNames, `${routed.length} of those types`],
+    [unroutableNames, `${unroutable.length} of those types`],
+    [unknownNames, `${unknown.length} of those types`],
+    [pinnedNames, `${pinned.length} of those types`],
   ])) {
     if (names.length === 0) continue;
     const joined = names.join(' / ');
@@ -2913,7 +2943,11 @@ export function renderChangelogFragment({
   }
   if (createOnly.length > 0) {
     const at = sentences.findIndex((s) => s.includes(createOnly.join(', ')));
-    collapseList(at, createOnly.join(', '), `${createOnly.length} of them`);
+    collapseList(
+      at,
+      createOnly.join(', '),
+      `${createOnly.length} of the added propert${createOnly.length === 1 ? 'y' : 'ies'}`
+    );
   }
   return assemble();
 }
@@ -3658,6 +3692,9 @@ function main() {
   if (changelogOut !== undefined) {
     try {
       const optOuts = parseCcFallbackOptOuts(providerFiles);
+      const nonProvisionable = parseNonProvisionableTypes(
+        readFileSync(join(REPO_ROOT, 'src/provisioning/unsupported-types.generated.ts'), 'utf-8')
+      );
       const fragment = renderChangelogFragment({
         writableAdded,
         exemptTypes: parseStickyCcMigrationExempt(
@@ -3667,12 +3704,18 @@ function main() {
         // unroutable: the routed sentence is the one that can be false in the
         // dangerous direction (it tells a user the value reaches AWS), and the
         // refusal sentence is the conservative reading of an unknown.
-        unroutableTypes: new Set([
-          ...parseNonProvisionableTypes(
-            readFileSync(join(REPO_ROOT, 'src/provisioning/unsupported-types.generated.ts'), 'utf-8')
-          ),
-          ...optOuts.optedOut,
+        unroutableTypes: new Set([...nonProvisionable, ...optOuts.optedOut]),
+        // Routing NOT ESTABLISHED, which is a third answer and not a synonym
+        // for either. `mapTypesToProviderFiles` DROPS a registration whose
+        // path it cannot resolve, so a type can be missing from the opt-out
+        // scan without ever being reported unreadable — and it would then take
+        // the routed story by default, which is how the refusal case reopens
+        // through a different door.
+        unknownRoutingTypes: new Set([
           ...optOuts.unreadable,
+          ...writableAdded
+            .map((e) => e.resourceType)
+            .filter((t) => !providerFiles.has(t) && !nonProvisionable.has(t)),
         ]),
         // What each provider already DECLARES. A declared property never
         // becomes a `silentDrop` (`gen-property-coverage.ts` skips it), so

@@ -2978,6 +2978,12 @@ describe('the unroutable-type sources', () => {
     // nothing.
     expect(optedOut.has('AWS::FSx::FileSystem')).toBe(true);
     expect(optedOut.has('AWS::IAM::AccessKey')).toBe(true);
+    // The complement that DISCRIMINATES. `AWS::DynamoDB::Table` never mentions
+    // the token, so it passes under any regex; `logs-loggroup-provider.ts`
+    // quotes `disableCcApiFallback` in PROSE without setting it, and is the one
+    // type in the tree a loosened match would wrongly call opted out -- the
+    // routed sentence would then be replaced by a refusal that is false.
+    expect(optedOut.has('AWS::Logs::LogGroup')).toBe(false);
     expect(optedOut.has('AWS::DynamoDB::Table')).toBe(false);
     expect([...unreadable]).toEqual([]);
   });
@@ -3029,6 +3035,12 @@ describe('renderChangelogFragment', () => {
     expect(fragment.startsWith('- **')).toBe(true);
     expect(fragment).toContain('`AWS::DynamoDB::Table`: `VectorIndexes`');
     expect(fragment).toContain(`[#${PR_NUMBER_PLACEHOLDER}]`);
+    // BOTH placeholders, and the cycle one in the HEADLINE specifically. The
+    // workflow refuses a fragment missing either, so dropping this one from
+    // the template does not degrade the entry -- it fails the daily job at
+    // `::error::`, which also skips the decision-marking step behind it.
+    const headline = fragment.slice(4, fragment.indexOf('**', 4));
+    expect(headline).toContain(CYCLE_PLACEHOLDER);
     // ONE bullet, no dated heading: both are refusals in `readEntries`, and a
     // fragment the job writes unattended is never read before it lands.
     expect(fragment.split('\n').filter((l) => l.startsWith('- '))).toHaveLength(1);
@@ -3118,6 +3130,67 @@ describe('renderChangelogFragment', () => {
     expect(fragment).toContain('top-level-only');
   });
 
+  it('gives two cycles on ONE open PR different uniqueness keys', () => {
+    // The reason the date is in the headline at all. `changelog-entry-
+    // uniqueness.test.ts` keys an entry on its bolded headline; two cycles
+    // pushed onto one refresh PR share a PR number, so without the date a pair
+    // that happened to add the same number of properties collided and reds
+    // that fence -- on a PR opened unattended.
+    const render = (properties: string[]) =>
+      renderChangelogFragment({
+        writableAdded: [{ resourceType: 'AWS::DynamoDB::Table', properties, createOnly: [] }],
+        exemptTypes,
+      })!;
+    const keyOf = (fragment: string, cycle: string) => {
+      const substituted = fragment
+        .replaceAll(PR_NUMBER_PLACEHOLDER, '3167')
+        .replaceAll(CYCLE_PLACEHOLDER, cycle);
+      return substituted.slice(4, substituted.indexOf('**', 4));
+    };
+    // Same PR, same property COUNT -- everything the headline carries except
+    // the date is identical.
+    const monday = keyOf(render(['First']), '2026-09-15');
+    const tuesday = keyOf(render(['Second']), '2026-09-16');
+    expect(monday).not.toBe(tuesday);
+    // And the difference IS the date, not an accident of the property list.
+    expect(monday.replace('2026-09-15', 'X')).toBe(tuesday.replace('2026-09-16', 'X'));
+  });
+
+  it('tells neither story about a type whose routing could not be established', () => {
+    // A THIRD answer, not a synonym for either. `mapTypesToProviderFiles` drops
+    // a registration whose path it cannot resolve, so a type can be missing
+    // from the opt-out scan without ever being reported unreadable — and the
+    // routed story by default is how the refusal case reopens.
+    const fragment = renderChangelogFragment({
+      writableAdded: [{ resourceType: 'AWS::Mystery::Thing', properties: ['P'], createOnly: [] }],
+      exemptTypes,
+      unknownRoutingTypes: new Set(['AWS::Mystery::Thing']),
+    })!;
+    expect(fragment).toContain('could not read the routing declaration');
+    expect(fragment).toContain('`AWS::Mystery::Thing`');
+    // Neither mechanism may be asserted: nothing established either.
+    expect(fragment).not.toContain('auto-route');
+    expect(fragment).not.toContain('REFUSED at pre-flight');
+    expect(fragment).not.toContain('ONE-WAY');
+  });
+
+  it('renders a cycle whose every type is unroutable', () => {
+    // `routed` empty is a real cycle -- AWS adding a property to one FSx-shaped
+    // type -- and the sentence that names the routed list must not be emitted
+    // with nothing in it.
+    const fragment = renderChangelogFragment({
+      writableAdded: [{ resourceType: 'AWS::FSx::FileSystem', properties: ['P'], createOnly: [] }],
+      exemptTypes,
+      unroutableTypes: new Set(['AWS::FSx::FileSystem']),
+    })!;
+    expect(fragment).toContain('REFUSED at pre-flight');
+    expect(fragment).not.toContain('no SDK provider writes');
+    // The pin is derived from `routed`, so it must be absent too: a refused
+    // type never reaches Cloud Control and so never pins `cc-api`.
+    expect(fragment).not.toContain('ONE-WAY');
+    expect(fragment).not.toMatch(/On\s*,/);
+  });
+
   it('tells a REFUSED type from a routed one', () => {
     // `provider-registry.ts` THROWS `buildUnroutableSilentDropMessage` for a
     // provider that declines the CC fallback or a NON_PROVISIONABLE type, so
@@ -3142,7 +3215,11 @@ describe('renderChangelogFragment', () => {
     const routed = fragment.slice(fragment.lastIndexOf('On `', routedEnd), routedEnd);
     expect(routed).toContain('`AWS::DynamoDB::Table`');
     expect(routed).not.toContain('`AWS::FSx::FileSystem`');
-    const pin = fragment.slice(fragment.indexOf('not in `STICKY_CC_MIGRATION_EXEMPT`') - 60);
+    // Bounded on BOTH sides for the same reason the routed slice is: open to
+    // the end of the fragment, a later sentence naming a type would satisfy
+    // this without the pin sentence naming anything.
+    const pinEnd = fragment.indexOf('not in `STICKY_CC_MIGRATION_EXEMPT`');
+    const pin = fragment.slice(fragment.lastIndexOf('. ', pinEnd) + 2, pinEnd);
     expect(pin).not.toContain('`AWS::FSx::FileSystem`');
     expect(pin).toContain('`AWS::DynamoDB::Table`');
   });
@@ -3192,7 +3269,11 @@ describe('renderChangelogFragment', () => {
     }));
     const fragment = renderChangelogFragment({ writableAdded, exemptTypes })!;
     expect(fragment.trimEnd().length).toBeLessThanOrEqual(CHANGELOG_ENTRY_LIMIT);
-    expect(fragment).toContain('30 of them create-only');
+    // Each collapsed count says what it COUNTS. The headline collapses to a
+    // TYPE count, so a bare "N of them" in this sentence would read as N of
+    // those types while the create-only list holds one entry per PROPERTY.
+    expect(fragment).toContain('30 of the added properties create-only');
+    expect(fragment).toContain('30 of those types');
   });
 
   it('renders a fragment the ASSEMBLER accepts, over the real registry', () => {
@@ -3222,14 +3303,27 @@ describe('renderChangelogFragment', () => {
       .replaceAll(PR_NUMBER_PLACEHOLDER, '3167')
       .replaceAll(CYCLE_PLACEHOLDER, '2026-09-15');
     expect(substituted).not.toContain('__');
+    // The filename is DERIVED from the workflow's own `entry=` expression, not
+    // restated: a second copy would let the workflow's pattern drift into a
+    // shape the assembler refuses on `main`, with every test here green.
+    const workflow = readFileSync(
+      join(REPO_ROOT, '.github', 'workflows', 'cfn-schema-refresh.yml'),
+      'utf8'
+    );
+    const entryExpr = /entry="?(changelog\.d\/entries\/\S+?\.md)"?/.exec(workflow);
+    expect(entryExpr, "the workflow's fragment path expression is gone").not.toBeNull();
+    const entryPath = entryExpr![1]!
+      .replace('${cycle}', '2026-09-15')
+      .replace('${PR_NUMBER}', '3167');
+    expect(entryPath, 'the entry path still holds an unsubstituted shell variable').not.toContain(
+      '$'
+    );
+
     const root = mkdtempSync(join(tmpdir(), 'cdkd-fragment-'));
     try {
       mkdirSync(join(root, 'changelog.d', 'entries'), { recursive: true });
       writeFileSync(join(root, 'changelog.d', '_header.md'), '# header\n');
-      writeFileSync(
-        join(root, 'changelog.d', 'entries', '2026-09-15-3167-cfn-schema-refresh.md'),
-        substituted
-      );
+      writeFileSync(join(root, entryPath), substituted);
       const entries = readEntries(root);
       expect(entries).toHaveLength(1);
       expect(entries[0]!.issue).toBe(3167);

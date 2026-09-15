@@ -424,6 +424,8 @@ export declare function renderChangelogFragment(input: {
   exemptTypes: ReadonlySet<string>;
   /** Types cdkd REFUSES rather than auto-routing: a CC-fallback opt-out, or NON_PROVISIONABLE. */
   unroutableTypes?: ReadonlySet<string>;
+  /** Types whose routing could not be ESTABLISHED — neither story may be told about them. */
+  unknownRoutingTypes?: ReadonlySet<string>;
   /** What each provider declares handled — such a property never becomes a silent drop. */
   declared?: ReadonlyMap<string, ReadonlySet<string>>;
 }): string | null;
