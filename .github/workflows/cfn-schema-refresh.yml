@@ -597,9 +597,16 @@ jobs:
           if [ ! -s /tmp/changelog-fragment.md ]; then
             exit 0
           fi
-          # Refuse rather than commit a fragment whose provenance never resolved.
+          # Refuse rather than commit a fragment whose provenance never
+          # resolved. BOTH placeholders are checked: the date is what keeps two
+          # cycles on one open PR from rendering the same headline, which the
+          # changelog uniqueness fence keys on.
           if ! grep -q '__PR_NUMBER__' /tmp/changelog-fragment.md; then
             echo "::error::the rendered fragment carries no __PR_NUMBER__ placeholder to substitute"
+            exit 1
+          fi
+          if ! grep -q '__CYCLE__' /tmp/changelog-fragment.md; then
+            echo "::error::the rendered fragment carries no __CYCLE__ placeholder to substitute"
             exit 1
           fi
 
@@ -613,7 +620,8 @@ jobs:
             exit 0
           fi
 
-          sed "s/__PR_NUMBER__/${PR_NUMBER}/g" /tmp/changelog-fragment.md > "${entry}"
+          sed -e "s/__PR_NUMBER__/${PR_NUMBER}/g" -e "s/__CYCLE__/${cycle}/g" \
+            /tmp/changelog-fragment.md > "${entry}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "${entry}"

@@ -20,7 +20,11 @@
  * had exactly those two holes.
  */
 import { describe, it, expect } from 'vite-plus/test';
-import { CHECK_GUIDANCE } from '../../../scripts/diagnose-schema-refresh.mjs';
+import {
+  CHECK_GUIDANCE,
+  CYCLE_PLACEHOLDER,
+  PR_NUMBER_PLACEHOLDER,
+} from '../../../scripts/diagnose-schema-refresh.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
   existsSync,
@@ -217,22 +221,68 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
 
     it('tells a cycle with no behaviour delta apart from a diagnosis that died', () => {
       const shell = shellOf(CHANGELOG_STEP);
-      // MISSING file: loud. The diagnosis never got to the write, so nobody
-      // knows whether this refresh ships a delta.
-      expect(guardArm(shell, `! -f ${FRAGMENT_PATH}`)).toMatch(/::warning::/);
+      // MISSING file: loud, and NON-fatal — the PR already exists, and failing
+      // here would skip the marking step that follows.
+      const missing = guardArm(shell, `! -f ${FRAGMENT_PATH}`);
+      expect(missing).toMatch(/::warning::/);
+      expect(missing).toContain('exit 0');
+      expect(missing).not.toContain('exit 1');
       // EMPTY file: silent, and correct — AWS added no writable property.
       const empty = guardArm(shell, `! -s ${FRAGMENT_PATH}`);
       expect(empty).toContain('exit 0');
       expect(empty).not.toContain('::warning::');
     });
 
-    it('refuses to commit a fragment whose PR reference never resolved', () => {
-      // The placeholder is the provenance. A fragment reaching `main` with it
-      // unsubstituted would cite a PR that does not exist, so the substitution
-      // failing must red rather than ship.
+    it('refuses to commit a fragment whose PR or cycle reference never resolved', () => {
+      // The placeholders are the provenance. A fragment reaching `main` with
+      // one unsubstituted would cite a PR that does not exist, or collide with
+      // a sibling cycle's headline, so a failed substitution must red.
       const shell = shellOf(CHANGELOG_STEP);
-      expect(guardArm(shell, "! grep -q '__PR_NUMBER__'")).toMatch(/::error::[\s\S]*exit 1/);
-      expect(shell).toContain('sed "s/__PR_NUMBER__/${PR_NUMBER}/g"');
+      for (const placeholder of [PR_NUMBER_PLACEHOLDER, CYCLE_PLACEHOLDER]) {
+        expect(guardArm(shell, `! grep -q '${placeholder}'`)).toMatch(/::error::[\s\S]*exit 1/);
+        expect(shell).toContain(`s/${placeholder}/`);
+      }
+    });
+
+    it('spells the placeholders the way the RENDERER spells them', () => {
+      // Two unconnected copies otherwise: the renderer's exported constants and
+      // the shell's literals. Change one and every test stays green while the
+      // daily job dies on its own `::error::` refusal.
+      const shell = shellOf(CHANGELOG_STEP);
+      expect(shell).toContain(PR_NUMBER_PLACEHOLDER);
+      expect(shell).toContain(CYCLE_PLACEHOLDER);
+    });
+
+    it('declares every variable the step reads', () => {
+      // Dropping `PR_NUMBER` from `env:` aborts the step under `set -u`, which
+      // ALSO skips the marking step below on a live PR — the outcome the
+      // non-fatal push arm exists to prevent, reached a different way.
+      const step = byName(CHANGELOG_STEP);
+      const shell = shellOf(CHANGELOG_STEP);
+      const referenced = new Set([...shell.matchAll(/\$\{([A-Z][A-Z0-9_]*)[:}]/g)].map((m) => m[1]!));
+      expect(referenced.size, 'no environment reads found — the scan broke').toBeGreaterThanOrEqual(
+        3
+      );
+      const RUNNER_PROVIDED = new Set(['GITHUB_REPOSITORY']);
+      const assigned = new Set(
+        [...shell.matchAll(/(?:^|[\s;])([A-Za-z_][A-Za-z0-9_]*)=/gm)].map((m) => m[1]!)
+      );
+      for (const name of referenced) {
+        expect(
+          Object.keys(step.env ?? {}).includes(name) ||
+            RUNNER_PROVIDED.has(name) ||
+            assigned.has(name),
+          `\${${name}} is read but neither declared in env:, assigned by the step, nor provided by the runner`
+        ).toBe(true);
+      }
+    });
+
+    it('stages only the fragment it just wrote', () => {
+      // `git add -A` here would sweep whatever an earlier step left behind into
+      // a commit whose message says it carries a changelog entry.
+      const shell = shellOf(CHANGELOG_STEP);
+      expect(shell).toContain('git add "${entry}"');
+      expect(shell).not.toMatch(/git add\s+(-A|--all|\.)\b/);
     });
 
     it('never overwrites a fragment already on the branch', () => {

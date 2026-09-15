@@ -2618,6 +2618,15 @@ export function parseSilentDropByType(generatedSource) {
 export const PR_NUMBER_PLACEHOLDER = '__PR_NUMBER__';
 
 /**
+ * The same, for the cycle date. It rides in the HEADLINE because
+ * `changelog-entry-uniqueness.test.ts` keys an entry on its bolded headline
+ * and two cycles pushed onto one open refresh PR share a PR number: without
+ * the date, two cycles that happened to add the same number of properties
+ * would render byte-identical keys and red that fence.
+ */
+export const CYCLE_PLACEHOLDER = '__CYCLE__';
+
+/**
  * The per-entry cap `tests/unit/scripts/changelog-entry-size.test.ts` enforces
  * over `changelog.d/entries/*.md`. Duplicated as a number rather than imported
  * because this file runs under plain `node` with nothing installed; the fence
@@ -2664,6 +2673,88 @@ export function parseStickyCcMigrationExempt(registrySource) {
         'revision, so zero means the shape changed, not that the exemption was emptied.'
     );
   }
+  // A PARTIAL parse is the dangerous outcome and the zero-check cannot see it:
+  // an entry written on one line, or with a double-quoted key, is skipped while
+  // its siblings match, and the skipped type then reads as NOT exempt — the
+  // false ONE-WAY claim this function exists to prevent. So the matches are
+  // cross-checked against a count of ENTRY OPENERS, which is shape-independent.
+  const openers = [...table[1].matchAll(/\n\s{2}\[/g)].length;
+  if (openers !== types.length) {
+    throw new Error(
+      `STICKY_CC_MIGRATION_EXEMPT has ${openers} entries but ${types.length} parsed as types — ` +
+        'refusing a PARTIAL read, because a skipped entry reads as "not exempt" and ships a FALSE ' +
+        'one-way-pin claim for that type.'
+    );
+  }
+  return new Set(types);
+}
+
+/**
+ * The resource types whose SDK provider OPTS OUT of the Cloud Control fallback
+ * (`disableCcApiFallback = true`), read out of the provider sources.
+ *
+ * `ProviderRegistry.getProviderFor` THROWS `buildUnroutableSilentDropMessage`
+ * for such a type instead of auto-routing it, so a fragment that told the
+ * issue-614 story about one would describe the opposite of what the deploy
+ * does — a pre-flight refusal, not a value reaching AWS. Seven providers opt
+ * out today and their fixtures are all captured by the refresh, so this is a
+ * population the renderer meets, not a hypothetical.
+ *
+ * Unreadable provider files are REPORTED rather than swallowed: a type whose
+ * source could not be read is of unknown routing, and the caller words it as
+ * such rather than assuming the ordinary path.
+ *
+ * @param {ReadonlyMap<string, string>} providerFiles type -> provider path, from {@link mapTypesToProviderFiles}
+ * @param {string} [repoRoot]
+ * @returns {{optedOut: Set<string>, unreadable: Set<string>}}
+ */
+export function parseCcFallbackOptOuts(providerFiles, repoRoot = REPO_ROOT) {
+  /** @type {Set<string>} */
+  const optedOut = new Set();
+  /** @type {Set<string>} */
+  const unreadable = new Set();
+  for (const [resourceType, relPath] of providerFiles) {
+    let source;
+    try {
+      source = readFileSync(join(repoRoot, relPath), 'utf8');
+    } catch {
+      unreadable.add(resourceType);
+      continue;
+    }
+    if (/\bdisableCcApiFallback\s*(?::[^=]*)?=\s*true\b/.test(source)) optedOut.add(resourceType);
+  }
+  return { optedOut, unreadable };
+}
+
+/**
+ * The types cdkd refuses outright rather than routing, read out of
+ * `unsupported-types.generated.ts`.
+ *
+ * Same polarity argument as {@link parseStickyCcMigrationExempt}: an unread
+ * table reads as "every type is routable", which is the direction that ships a
+ * false claim, so an unparseable or empty set REFUSES.
+ *
+ * @param {string} generatedSource
+ * @returns {Set<string>}
+ */
+export function parseNonProvisionableTypes(generatedSource) {
+  const table = /NON_PROVISIONABLE_TYPES[^=]*=\s*new Set(?:<[^>]*>)?\(\s*\[([\s\S]*?)\n\]\s*\)/.exec(
+    generatedSource
+  );
+  if (!table) {
+    throw new Error(
+      'could not read NON_PROVISIONABLE_TYPES out of unsupported-types.generated.ts — refusing to ' +
+        'render a changelog fragment, because an unread table reads as "every type routes through ' +
+        'Cloud Control" and that is the polarity that ships a FALSE auto-route claim.'
+    );
+  }
+  const types = [...table[1].matchAll(/'([\w:]+::[\w:]+)'/g)].map((m) => m[1]);
+  if (types.length === 0) {
+    throw new Error(
+      'NON_PROVISIONABLE_TYPES parsed to zero types — the generated set has entries in every ' +
+        'shipped revision, so zero means the shape changed, not that AWS made everything routable.'
+    );
+  }
   return new Set(types);
 }
 
@@ -2683,41 +2774,95 @@ export function parseStickyCcMigrationExempt(registrySource) {
  * three review rounds to stop asserting things the code contradicted, and each
  * correction was a judgement call.
  *
- * The PR number is not known when the diagnosis runs — the pull request is
- * created from the same job a step later — so the reference is left as
- * {@link PR_NUMBER_PLACEHOLDER} for the publishing step to substitute. It is a
- * placeholder rather than an omission so that a fragment which somehow reached
- * `main` unsubstituted is GREPPABLE, instead of quietly carrying no provenance.
+ * Neither the PR number nor the cycle date is known when the diagnosis runs —
+ * the pull request is created from the same job a step later — so both are
+ * left as {@link PR_NUMBER_PLACEHOLDER} / {@link CYCLE_PLACEHOLDER} for the
+ * publishing step to substitute. They are placeholders rather than omissions
+ * so that a fragment which somehow reached `main` unsubstituted is GREPPABLE,
+ * instead of quietly carrying no provenance. The DATE is in the headline
+ * because `changelog-entry-uniqueness.test.ts` keys an entry on its bolded
+ * headline: two cycles pushed onto one open refresh PR each render a fragment
+ * with the same PR number, and without the date a same-sized pair of cycles
+ * would collide and red that fence.
  *
- * @param {{writableAdded: readonly AddedEntry[], exemptTypes: ReadonlySet<string>}} input
+ * `handledProperties` is subtracted because `gen-property-coverage.ts` skips a
+ * handled property outright — it never becomes a `silentDrop`, so every
+ * sentence below would be false for it. The condition is reachable: measured
+ * 2026-09-15, twelve properties across ten types are declared handled while
+ * absent from the snapshot, and AWS republishing any of them is exactly the
+ * event this renderer runs on.
+ *
+ * @param {{writableAdded: readonly AddedEntry[], exemptTypes: ReadonlySet<string>, unroutableTypes?: ReadonlySet<string>, declared?: ReadonlyMap<string, ReadonlySet<string>>}} input
  * @returns {string | null}
  */
-export function renderChangelogFragment({ writableAdded, exemptTypes }) {
-  if (writableAdded.length === 0) return null;
+export function renderChangelogFragment({
+  writableAdded,
+  exemptTypes,
+  unroutableTypes = new Set(),
+  declared = new Map(),
+}) {
+  // A property the provider already DECLARES is not a silent drop and gets no
+  // sentence; a type left with nothing gets no entry at all.
+  const considered = writableAdded
+    .map((e) => {
+      const handled = declared.get(e.resourceType) ?? new Set();
+      return {
+        ...e,
+        properties: e.properties.filter((p) => !handled.has(p)),
+        createOnly: (e.createOnly ?? []).filter((p) => !handled.has(p)),
+      };
+    })
+    .filter((e) => e.properties.length > 0);
+  if (considered.length === 0) return null;
 
-  const count = writableAdded.reduce((n, e) => n + e.properties.length, 0);
-  const pairs = writableAdded.map(
+  // Split BEFORE any sentence is written: a type whose provider opts out of the
+  // Cloud Control fallback, or that AWS reports NON_PROVISIONABLE, is REFUSED
+  // at pre-flight rather than auto-routed (`provider-registry.ts` throws
+  // `buildUnroutableSilentDropMessage`), so the routed story is not merely
+  // incomplete for it — it says the opposite of what a deploy does.
+  const routed = considered.filter((e) => !unroutableTypes.has(e.resourceType));
+  const unroutable = considered.filter((e) => unroutableTypes.has(e.resourceType));
+
+  const count = considered.reduce((n, e) => n + e.properties.length, 0);
+  const pairs = considered.map(
     (e) => `${renderName(e.resourceType)}: ${e.properties.map(renderName).join(', ')}`
   );
-  const pinned = writableAdded.filter((e) => !exemptTypes.has(e.resourceType));
-  const createOnly = writableAdded.flatMap((e) =>
+  const pinned = routed.filter((e) => !exemptTypes.has(e.resourceType));
+  const createOnly = considered.flatMap((e) =>
     (e.createOnly ?? []).map((p) => `${renderName(e.resourceType)}.${renderName(p)}`)
   );
 
   const sentences = [
-    `- **AWS published ${count} writable propert${count === 1 ? 'y' : 'ies'} the refreshed schema ` +
-      `fixtures now carry, so each is a known silent drop routed to Cloud Control instead of an ` +
-      `unrecognized property dropped with a warn (PR [#${PR_NUMBER_PLACEHOLDER}]` +
+    `- **AWS published ${count} writable propert${count === 1 ? 'y' : 'ies'} the ` +
+      `${CYCLE_PLACEHOLDER} schema refresh now carries, so cdkd classifies ` +
+      `${count === 1 ? 'it' : 'each'} instead of dropping ${count === 1 ? 'it' : 'them'} with a ` +
+      `warn (PR [#${PR_NUMBER_PLACEHOLDER}]` +
       `(https://github.com/go-to-k/cdkd/pull/${PR_NUMBER_PLACEHOLDER}))** -- ` +
       `${pairs.join('; ')}. Changed: \`tests/fixtures/cfn-schemas/\`, ` +
       `\`src/provisioning/property-coverage.generated.ts\` (regenerated).`,
-    `No SDK provider writes any of them yet (\`not yet implemented by cdkd\`), so pre-flight ` +
-      `classifies each as a silent drop and the issue ` +
-      `[#614](https://github.com/go-to-k/cdkd/issues/614) auto-route sends a resource whose template ` +
-      `carries one through Cloud Control, which forwards the full property map. Until this refresh ` +
-      `the same key post-dated the committed snapshot, so a resource on the SDK route with no other ` +
-      `actionable drop and no \`provisionedBy: 'cc-api'\` record warned and dropped it.`,
   ];
+
+  const routedNames = routed.map((e) => renderName(e.resourceType));
+  if (routed.length > 0) {
+    sentences.push(
+      `On ${routedNames.join(' / ')}, no SDK provider writes ${routed.length === 1 && count === 1 ? 'it' : 'them'} ` +
+        `yet (\`not yet implemented by cdkd\`), so pre-flight classifies each as a silent drop and the ` +
+        `issue [#614](https://github.com/go-to-k/cdkd/issues/614) auto-route sends a resource whose ` +
+        `template carries one through Cloud Control, which forwards the full property map. Until this ` +
+        `refresh the same key post-dated the committed snapshot, so a resource on the SDK route with no ` +
+        `other actionable drop and no \`provisionedBy: 'cc-api'\` record warned and dropped it.`
+    );
+  }
+
+  const unroutableNames = unroutable.map((e) => renderName(e.resourceType));
+  if (unroutable.length > 0) {
+    sentences.push(
+      `${unroutableNames.join(' / ')} cannot take that route — ` +
+        `${unroutable.length === 1 ? 'its provider declines' : 'their providers decline'} the Cloud ` +
+        `Control fallback, or AWS reports the type NON_PROVISIONABLE — so a template carrying one is ` +
+        `REFUSED at pre-flight with the unroutable-silent-drop message instead of deploying.`
+    );
+  }
 
   const pinnedNames = pinned.map((e) => renderName(e.resourceType));
   if (pinned.length > 0) {
@@ -2729,36 +2874,48 @@ export function renderChangelogFragment({ writableAdded, exemptTypes }) {
     );
   }
 
-  sentences.push(
-    createOnly.length === 0
+  const createOnlySentence = (list) =>
+    list === null
       ? `The snapshot marks none of them create-only, so \`createOnlyDrops\` and the record narrowing ` +
-          `are unchanged; the capture is top-level-only, so it says nothing about a nested create-only path.`
-      : `The snapshot marks ${createOnly.join(', ')} create-only, so ${createOnly.length === 1 ? 'it joins' : 'they join'} ` +
-          `\`createOnlyDrops\` and the record narrowing keeps ${createOnly.length === 1 ? 'it' : 'them'} in the ` +
-          `record; the capture is top-level-only, so it says nothing about a nested create-only path.`
-  );
+        `are unchanged; the capture is top-level-only, so it says nothing about a nested create-only path.`
+      : `The snapshot marks ${list} create-only, so ${createOnly.length === 1 ? 'it joins' : 'they join'} ` +
+        `\`createOnlyDrops\` and the record narrowing keeps ${createOnly.length === 1 ? 'it' : 'them'} in the ` +
+        `record; the capture is top-level-only, so it says nothing about a nested create-only path.`;
+  sentences.push(createOnlySentence(createOnly.length === 0 ? null : createOnly.join(', ')));
 
-  const rendered = `${sentences.join(' ')}\n`;
-  if (rendered.trimEnd().length <= CHANGELOG_ENTRY_LIMIT) return rendered;
+  const assemble = () => `${sentences.join(' ')}\n`;
+  if (assemble().trimEnd().length <= CHANGELOG_ENTRY_LIMIT) return assemble();
+
   // A cycle adding many properties would otherwise render a fragment the size
   // fence REJECTS, which reds CI on a PR whose whole point is to be merged
-  // unattended. The per-type list is the only unbounded part, so that is what
-  // collapses; every claim below it is preserved, because they are the ones a
-  // reader acts on. The fixture diff in the same PR still names each property.
-  sentences[0] = sentences[0].replace(
+  // unattended. EVERY per-type list collapses — there are four of them, and
+  // collapsing only the first still left a wide cycle over the cap (measured).
+  // The claims survive; the fixture diff in the same PR still names each
+  // property.
+  const collapseList = (index, from, to) => {
+    if (index < 0 || index >= sentences.length) return;
+    sentences[index] = sentences[index].replace(from, to);
+  };
+  collapseList(
+    sentences.indexOf(sentences[0]),
     ` -- ${pairs.join('; ')}.`,
-    ` -- ${count} across ${writableAdded.length} resource type${writableAdded.length === 1 ? '' : 's'}, listed in this PR's fixture diff.`
+    ` -- ${count} across ${considered.length} resource type${considered.length === 1 ? '' : 's'}, listed in this PR's fixture diff.`
   );
-  // Both unbounded lists collapse, not just the first: the pin sentence names
-  // one type per entry too, so collapsing the property list alone still left a
-  // fragment over the cap on a wide cycle (measured on a 40-type case).
-  if (pinned.length > 0) {
-    sentences[2] = sentences[2].replace(
-      `${pinnedNames.join(' / ')} ${pinned.length === 1 ? 'is' : 'are'}`,
-      `${pinned.length} of them ${pinned.length === 1 ? 'is' : 'are'}`
-    );
+  for (const [names, replacement] of /** @type {Array<[string[], string]>} */ ([
+    [routedNames, `${routed.length} of them`],
+    [unroutableNames, `${unroutable.length} of them`],
+    [pinnedNames, `${pinned.length} of them`],
+  ])) {
+    if (names.length === 0) continue;
+    const joined = names.join(' / ');
+    const at = sentences.findIndex((s) => s.includes(joined));
+    collapseList(at, joined, replacement);
   }
-  return `${sentences.join(' ')}\n`;
+  if (createOnly.length > 0) {
+    const at = sentences.findIndex((s) => s.includes(createOnly.join(', ')));
+    collapseList(at, createOnly.join(', '), `${createOnly.length} of them`);
+  }
+  return assemble();
 }
 
 /**
@@ -3500,11 +3657,27 @@ function main() {
   }
   if (changelogOut !== undefined) {
     try {
+      const optOuts = parseCcFallbackOptOuts(providerFiles);
       const fragment = renderChangelogFragment({
         writableAdded,
         exemptTypes: parseStickyCcMigrationExempt(
-          readFileSync('src/provisioning/provider-registry.ts', 'utf-8')
+          readFileSync(join(REPO_ROOT, 'src/provisioning/provider-registry.ts'), 'utf-8')
         ),
+        // A type whose provider source could not be READ is treated as
+        // unroutable: the routed sentence is the one that can be false in the
+        // dangerous direction (it tells a user the value reaches AWS), and the
+        // refusal sentence is the conservative reading of an unknown.
+        unroutableTypes: new Set([
+          ...parseNonProvisionableTypes(
+            readFileSync(join(REPO_ROOT, 'src/provisioning/unsupported-types.generated.ts'), 'utf-8')
+          ),
+          ...optOuts.optedOut,
+          ...optOuts.unreadable,
+        ]),
+        // What each provider already DECLARES. A declared property never
+        // becomes a `silentDrop` (`gen-property-coverage.ts` skips it), so
+        // every sentence the fragment writes would be false for one.
+        declared,
       });
       // An empty file, not a missing one: the publishing step distinguishes
       // "this cycle ships no behaviour delta" from "the diagnosis died before

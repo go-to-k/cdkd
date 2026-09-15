@@ -2,6 +2,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Entry as AssemblerEntry } from '../../../scripts/assemble-changelog.js';
+// The schema-refresh job renders a fragment against its own copy of the cap.
+import { CHANGELOG_ENTRY_LIMIT } from '../../../scripts/diagnose-schema-refresh.mjs';
 import {
   ENTRIES_DIR,
   FRAGMENT_DIR,
@@ -569,6 +571,12 @@ describe('changelog entry size', () => {
       `these files no longer state "${LIMIT} characters" where the contract lives; the cap and its ` +
         'documentation disagree (a missing file reports here too, rather than throwing)'
     ).toEqual([]);
+    // One copy is CODE, not prose, and the drift bites in a direction prose
+    // cannot: the schema-refresh job collapses its rendered fragment's lists to
+    // fit under its own copy of the number, so a LOWERED cap here would make
+    // that job commit a fragment this fence then REJECTS -- on a PR opened
+    // unattended, whose whole point is to merge without a human.
+    expect(CHANGELOG_ENTRY_LIMIT, 'the refresh job renders against a different cap').toBe(LIMIT);
   });
 
   it('selects over-limit entries and only those', () => {
