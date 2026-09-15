@@ -438,7 +438,8 @@ jobs:
             --failed-checks "${FAILED_CHECKS}" \
             --skipped-log /tmp/skipped.log \
             --auto-tolerated /tmp/auto-tolerated.json \
-            --decision-count-out /tmp/decision-count.txt > /tmp/diagnosis.md
+            --decision-count-out /tmp/decision-count.txt \
+            --changelog-out /tmp/changelog-fragment.md > /tmp/diagnosis.md
 
       - name: Publish the refresh
         id: publish
@@ -565,6 +566,129 @@ jobs:
           # open PR the guard found, so a lost race here does not also lose the
           # marking on a PR that still exists.
           echo "pr_number=${pr_number:-}" >> "$GITHUB_OUTPUT"
+
+      # A refresh that adds a writable property CHANGES WHAT THE SHIPPED BINARY
+      # DOES — the property stops being dropped with a warn and starts routing
+      # the resource through Cloud Control — so `changelog.d/_header.md`'s "WHEN
+      # an entry is required" section asks for a fragment. The job wrote none
+      # until go-to-k/cdkd#3167, where the delta was recorded only because a
+      # maintainer noticed and wrote one by hand.
+      #
+      # Its own step, AFTER Publish, for one reason: the fragment filename and
+      # body both carry the PR number, and Publish is where that number first
+      # exists. The BODY is rendered a step earlier by Diagnose, which is the
+      # only point at which the fixtures still differ from their committed
+      # copies — after Publish commits them, the same computation renders
+      # nothing. So the number is substituted here into text decided there.
+      - name: Record the refresh's changelog fragment
+        if: steps.publish.outputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.publish.outputs.pr_number }}
+        run: |
+          set -euo pipefail
+          # A MISSING file means Diagnose died before writing one; an EMPTY file
+          # means this cycle adds no writable property and ships no behaviour
+          # delta. Only the second is a silent no-op.
+          if [ ! -f /tmp/changelog-fragment.md ]; then
+            echo "::warning::no changelog fragment was rendered — write one by hand if this refresh adds a writable property"
+            exit 0
+          fi
+          if [ ! -s /tmp/changelog-fragment.md ]; then
+            exit 0
+          fi
+          # Refuse rather than commit a fragment whose provenance never
+          # resolved. BOTH placeholders are checked: the date is what keeps two
+          # cycles on one open PR from rendering the same headline, which the
+          # changelog uniqueness fence keys on.
+          if ! grep -q '__PR_NUMBER__' /tmp/changelog-fragment.md; then
+            echo "::error::the rendered fragment carries no __PR_NUMBER__ placeholder to substitute"
+            exit 1
+          fi
+          if ! grep -q '__CYCLE__' /tmp/changelog-fragment.md; then
+            echo "::error::the rendered fragment carries no __CYCLE__ placeholder to substitute"
+            exit 1
+          fi
+
+          cycle=$(date -u +%Y-%m-%d)
+          entry="changelog.d/entries/${cycle}-${PR_NUMBER}-cfn-schema-refresh.md"
+          # Create-only, keyed on THIS CYCLE plus the PR — date and number
+          # fixed, slug free. The job's promise is that it never overwrites a
+          # classification a human wrote, and `ENTRY_NAME` forces
+          # `<date>-<digits>-<slug>.md`, so a legal rename keeps both fixed
+          # parts and is still caught while the slug may be anything.
+          #
+          # Both halves are load-bearing, and each was WRONG on its own in an
+          # earlier round. Keying on the exact PATH missed a rename, so a
+          # same-day re-dispatch wrote a second copy with a byte-identical
+          # headline, which the changelog uniqueness fence rejects. Keying on
+          # the PR ALONE was worse: it matched cycle 1's own fragment, so every
+          # later cycle on the same open pull request silently wrote nothing —
+          # the loss this step exists to stop — and a leading `*` spanned the
+          # slug, so another lane's `2026-09-20-3200-revert-3173-regression.md`
+          # suppressed PR 3173's fragment too (measured, alongside a real
+          # `...-1821-cdk-local-0148.md` of that shape).
+          #
+          # A `for` probe rather than `ls`, because under `shopt -s nullglob`
+          # an unmatched glob leaves `ls` with no arguments: it lists the
+          # directory, exits 0, and the guard would read TRUE forever with no
+          # warning.
+          #
+          # Two shapes still escape, both deliberately. A rename that changes
+          # the DATE segment (legal under `ENTRY_NAME`) lets a same-day
+          # re-dispatch write a second copy — caught LOUDLY by the changelog
+          # uniqueness fence, on a pull request nobody has merged. A fragment
+          # the maintainer DELETED comes back on a same-day re-dispatch; the
+          # runbook asks for an edit rather than a deletion for that reason.
+          # Catching either needs a content probe over the entries, which would
+          # suppress the common legitimate cases instead — trading a loud, rare
+          # failure for a silent one.
+          # Substituted BEFORE the guard so the comparison below has something
+          # to compare against, and so one `sed` serves both paths.
+          sed -e "s/__PR_NUMBER__/${PR_NUMBER}/g" -e "s/__CYCLE__/${cycle}/g" \
+            /tmp/changelog-fragment.md > /tmp/fragment-final.md
+
+          existing=""
+          for f in changelog.d/entries/"${cycle}"-"${PR_NUMBER}"-*.md; do
+            if [ -e "${f}" ]; then
+              existing="${f}"
+              break
+            fi
+          done
+          if [ -n "${existing}" ]; then
+            # Create-only still, but not SILENT when the skip costs something.
+            # An ordinary same-day re-dispatch never reaches here — the
+            # fixtures are already committed, so the diagnosis renders nothing
+            # and the empty-file arm above exits first. Reaching here with a
+            # DIFFERENT rendering means this run found drift the existing
+            # fragment does not describe, which is exactly the case where
+            # skipping is wrong: say so rather than dropping it.
+            if ! cmp -s "${existing}" /tmp/fragment-final.md; then
+              echo "::warning::${existing} already exists for this cycle and differs from what this run rendered — new drift is NOT recorded in it; fold it in by hand before merging"
+            fi
+            exit 0
+          fi
+
+          cp /tmp/fragment-final.md "${entry}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${entry}"
+          git commit -m "chore(schemas): record the routing delta this refresh ships"
+          # The branch is read from the checkout rather than threaded through an
+          # output, and NOT interpolated with `${{ }}` — the same rule the
+          # switch and publish steps state: no expression inside a shell body.
+          # Publish left this working tree on the branch it pushed, both on the
+          # arm that created one and on the arm that reused the open PR's.
+          if ! git push \
+                 "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+                 "HEAD:$(git rev-parse --abbrev-ref HEAD)"; then
+            # Never RED over the fragment. Publish already landed the drift and
+            # opened or updated the PR, which is how the human finds out; a
+            # failed push here (a human pushing mid-run is the ordinary cause)
+            # costs a changelog line, and failing the job would instead leave
+            # the marking step below unrun on a PR that exists.
+            echo "::warning::could not push the changelog fragment for PR ${PR_NUMBER} — write one by hand before merging"
+          fi
 
       # Make a PR that needs a decision distinguishable from one that does not,
       # WITHOUT opening it — and make the marking go away once the decisions
