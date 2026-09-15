@@ -2628,7 +2628,8 @@ export class IntrinsicFunctionResolver {
    * How a producer-region guest PRINTS its own `explicitRegion` (issue
    * [#3150](https://github.com/go-to-k/cdkd/issues/3150)): the masked log text
    * its creator held for that region, which a template can assemble around a
-   * short secret. Display only; `undefined` on an ordinary resolver, whose
+   * short secret, or `***` once a later spelling of the same region masks
+   * differently. Display only; `undefined` on an ordinary resolver, whose
    * region its command built (the stack's synthesized or recorded region,
    * `--region`, or a region read out of a literal token).
    */
@@ -2896,7 +2897,7 @@ export class IntrinsicFunctionResolver {
   private clientsForRegion(
     targetRegion: string | undefined,
     // The region's masked LOG TEXT when the caller built it from a template
-    // (issue #3150), for the debug line below only.
+    // (issue #3150), for the debug line and the refusal below.
     targetLogText?: string
   ): AwsClients {
     const ambient = getAwsClients();
@@ -2916,7 +2917,8 @@ export class IntrinsicFunctionResolver {
       // Issue [#2827](https://github.com/go-to-k/cdkd/issues/2827)'s
       // enumeration, and issue #3150 for the guest: the guest's region arrives
       // as `explicitRegionLogText`, masked, stripped and masked again at the
-      // guest's construction, where the context is. `targetLogText` is
+      // guest's construction, where the context is (`***` once two spellings of its
+      // region mask differently). `targetLogText` is
       // `resolveGetAZs`' masked region, which `isClientSafeRegion` has
       // already accepted one arm up. Any other region is a resolver's own
       // region as its command built it -- the stack's synthesized or recorded
@@ -7523,8 +7525,29 @@ export class IntrinsicFunctionResolver {
     const target = canonicalizeRegion(producerRegion);
     if (target === canonicalizeRegion(this.explicitRegion)) return this;
 
+    // The region as `regionLogText` spells it (issue #3150): a `Fn::GetStackOutput`
+    // region or a secret ARN's region can be assembled around a short secret.
+    // A guest prints it on its region-scoped clients line and in that method's
+    // refusal, which strips it and cuts it to 64 characters: hence mask, strip,
+    // mask, as the `Fn::GetAZs` gate does. The creation line below prints the
+    // same text.
+    const regionText =
+      producerRegionLogText !== undefined
+        ? canonicalizeRegion(producerRegionLogText)
+        : this.regionLogText(producerRegion, context);
+    const guestRegionText = this.maskThenStripThenMask(regionText, context);
+
     const cached = this.producerRegionResolvers.get(target);
-    if (cached) return cached;
+    if (cached) {
+      // One guest serves every spelling of its canonical region, and its text
+      // came from the first. A later spelling that masks differently (a literal
+      // `us-west-2_q7` beside an `Fn::Sub` assembling it around a recorded
+      // `q7`) makes the guest print `***` from then on, not the first's text.
+      if (cached.explicitRegionLogText !== guestRegionText) {
+        cached.explicitRegionLogText = SECRET_MASK;
+      }
+      return cached;
+    }
 
     const scoped = new IntrinsicFunctionResolver(target, {
       strictGetAtt: this.strictGetAtt,
@@ -7534,20 +7557,9 @@ export class IntrinsicFunctionResolver {
     // INTERNAL mode with exactly one producer (the line above), and nothing
     // outside this class may declare itself a guest.
     scoped.producerRegionGuest = true;
-    // The region as `regionLogText` spells it (issue #3150): a `Fn::GetStackOutput`
-    // region or a secret ARN's region can be assembled around a short secret.
-    // The guest keeps the masked text for its own region-scoped clients line,
-    // and for that method's refusal, which strips it and cuts it to 64
-    // characters: hence mask, strip, mask, as the `Fn::GetAZs` gate does.
-    const regionText =
-      producerRegionLogText !== undefined
-        ? canonicalizeRegion(producerRegionLogText)
-        : this.regionLogText(producerRegion, context);
-    scoped.explicitRegionLogText = this.maskThenStripThenMask(regionText, context);
+    scoped.explicitRegionLogText = guestRegionText;
     this.producerRegionResolvers.set(target, scoped);
-    this.logger.debug(
-      `Using a producer-region resolver for ${this.maskSecretsForLog(regionText, context)}`
-    );
+    this.logger.debug(`Using a producer-region resolver for ${guestRegionText}`);
     return scoped;
   }
 
@@ -9287,7 +9299,7 @@ export class IntrinsicFunctionResolver {
    *
    * A name that is no run of the token is a default the caller synthesized
    * (`AWSCURRENT` for an empty version stage, `''` for an absent version id),
-   * printed as it is. Should the token spell such a name inside a longer
+   * printed as it is. Should the token spell such a non-empty name inside a longer
    * piece, it prints as `***`: the run rule says nothing about that text.
    */
   private dynamicReferenceNameLogText(
@@ -10393,11 +10405,11 @@ export class IntrinsicFunctionResolver {
    */
   private async resolveSSMReference(
     parts: string[],
-    decrypt = true,
+    decrypt: boolean,
     // The spelling being resolved — `ssm` or, since issue #2482, `ssm-secure`.
     // Log-only: it names the reference in the debug / retry / warning lines so
     // an `ssm-secure` lookup is not reported as an `ssm` one.
-    service: 'ssm' | 'ssm-secure' = 'ssm',
+    service: 'ssm' | 'ssm-secure',
     // For the log lines only (issue #2728) — see `resolveSecretsManagerReference`.
     context: ResolverContext | undefined,
     // As in `resolveSecretsManagerReference` (issue #3150), and required for

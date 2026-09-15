@@ -1278,6 +1278,23 @@ describe('issue #3150: names parsed out of an assembled dynamic reference', () =
     expectNowhere(`stage-${PIN}`);
     expectNowhere(`version-${PIN}`);
   });
+
+  it('CONTROL: a version stage and version id substituted from unrecorded values print verbatim', async () => {
+    await new IntrinsicFunctionResolver('us-east-1')
+      .resolve(
+        {
+          'Fn::Sub': [
+            `{{resolve:secretsmanager:${SECRET_ID}:SecretString:pin:\${S}:\${V}}}`,
+            { S: plain('stage-${P}'), V: plain('version-${P}') },
+          ],
+        },
+        makeContext() as never
+      )
+      .catch(() => undefined);
+    expect(everyLine()).toContain(
+      `Resolving dynamic reference: secretsmanager:${SECRET_ID}:SecretString:pin:stage-${UNRECORDED}:version-${UNRECORDED}`
+    );
+  });
 });
 
 describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic reference', () => {
@@ -1388,6 +1405,10 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
       "Refusing to build AWS clients for the region 'us-west-2_***': it is not a valid AWS " +
         'region name, and a region is substituted into the AWS service hostname.'
     );
+    expect(
+      everyLine().filter((l) => l.startsWith('Using a producer-region resolver for ')),
+      'the creation line masks the same text'
+    ).toEqual(['Using a producer-region resolver for us-west-2_***']);
   });
 
   it('the region-scoped clients refusal masks a recorded secret holding a control character before the strip', async () => {
@@ -1415,6 +1436,10 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
       "Refusing to build AWS clients for the region 'us-west-2_***': it is not a valid AWS " +
         'region name, and a region is substituted into the AWS service hostname.'
     );
+    expect(
+      everyLine().filter((l) => l.startsWith('Using a producer-region resolver for ')),
+      'the creation line masks the same text'
+    ).toEqual(['Using a producer-region resolver for us-west-2_***']);
   });
 
   it('both lookup helpers REQUIRE the name mapping (a compile-time pin, checked by typecheck:test)', () => {
@@ -1429,6 +1454,46 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
       void resolver['resolveSSMReference'](['ssm', 'host'], true, 'ssm', undefined);
     };
     expect(typeof omitted).toBe('function');
+  });
+
+  it('a producer-region resolver reused for the same spelling of its region keeps its masked text', async () => {
+    // The same literal region twice, splitting the recorded `st-1` with U+0001:
+    // the cache hit masks, strips and masks this call's text before comparing,
+    // so it agrees with the stored text and the second refusal is unchanged.
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const context = makeContext();
+    await resolver.resolve(ref('stone'), context as never);
+    const token = `{{resolve:secretsmanager:arn:aws:secretsmanager:us-west-2_s${String.fromCharCode(1)}t-1:210987654321:secret:x:SecretString:k}}`;
+    const expected =
+      "Refusing to build AWS clients for the region 'us-west-2_***': it is not a valid AWS " +
+      'region name, and a region is substituted into the AWS service hostname.';
+    expect(await messageOf(token, context, resolver), 'premise: the first refusal').toBe(expected);
+    expect(await messageOf(token, context, resolver)).toBe(expected);
+  });
+
+  it('a producer-region resolver reused for a second spelling of its region prints *** once the spellings mask differently', async () => {
+    // A literal region spelled as the template writes it creates the guest;
+    // an Fn::Sub assembling the same region around a recorded secret reuses it.
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const context = makeContext();
+    const literal = await messageOf(
+      `{{resolve:secretsmanager:arn:aws:secretsmanager:us-west-2_${PIN}:210987654321:secret:x:SecretString:k}}`,
+      context,
+      resolver
+    );
+    expect(literal, 'premise: the literal region prints as the template spells it').toBe(
+      `Refusing to build AWS clients for the region 'us-west-2_${PIN}': it is not a valid AWS ` +
+        'region name, and a region is substituted into the AWS service hostname.'
+    );
+    const assembled = await messageOf(
+      inline('{{resolve:secretsmanager:arn:aws:secretsmanager:us-west-2_${P}:210987654321:secret:x:SecretString:k}}'),
+      context,
+      resolver
+    );
+    expect(assembled).toBe(
+      "Refusing to build AWS clients for the region '***': it is not a valid AWS " +
+        'region name, and a region is substituted into the AWS service hostname.'
+    );
   });
 
   it('a synthesized version stage the token spells as part of a longer name prints as ***', async () => {
