@@ -77,6 +77,10 @@ import {
   secretSafeKeyDisplay,
   type SecretSafeKeyDisplay,
 } from '../../deployment/outputs-export-alias.js';
+import {
+  malformedResourcesWarning,
+  normalizeLoadedState,
+} from '../../state/normalize-loaded-state.js';
 
 /**
  * Signals `cdkd scrub` found plaintext it is reporting rather than removing.
@@ -2014,7 +2018,12 @@ function memoizeCrossStackStateReads(backend: S3StateBackend): S3StateBackend {
     const key = `${stackName}\u0000${stateRegion}`;
     let pending = states.get(key);
     if (!pending) {
-      pending = backend.getState(stackName, stateRegion);
+      pending = backend.getState(stackName, stateRegion).then((loaded) => {
+        if (loaded && normalizeLoadedState(loaded.state)) {
+          getLogger().warn(malformedResourcesWarning(stackName, stateRegion));
+        }
+        return loaded;
+      });
       states.set(key, pending);
     }
     return pending;
@@ -2846,12 +2855,22 @@ function isRegionAmbiguousRefusal(err: unknown): boolean {
  * exists to remove (`.claude/rules/testing.md` -> "A fixture that greps
  * cdkd's OWN output must fail loudly when the format drifts").
  */
-const NAMELESS_DYNAMIC_REFERENCE_MARKER = 'PARAMETER_NAME is required';
+const NAMELESS_DYNAMIC_REFERENCE_MARKERS = [
+  'PARAMETER_NAME is required',
+  'SECRET_ID is required',
+] as const;
 
 /**
- * A nameless dynamic reference (`{{resolve:ssm-secure}}` with no parameter
- * name) is NOT a best-effort miss, however unresolvable the rest of the
+ * A nameless dynamic reference — `{{resolve:ssm-secure}}` with no parameter
+ * name, or `{{resolve:secretsmanager}}` / `{{resolve:secretsmanager:}}` with no
+ * secret id — is NOT a best-effort miss, however unresolvable the rest of the
  * resource is (issue go-to-k/cdkd#2692).
+ *
+ * BOTH spellings are matched, and the second is the DOMINANT one: a
+ * secretsmanager reference is the common way to write a secret, so a predicate
+ * covering only the ssm-secure throw would leave the larger half of the
+ * population reporting CLEAN over surviving plaintext — the exact defect, for
+ * most users.
  *
  * The resolver raises a bare `Error` here, so it falls through the typed-refusal
  * test above into the `debug` below, and `cdkd scrub` reports the run CLEAN.
@@ -2870,7 +2889,9 @@ function isNamelessDynamicReferenceFailure(err: unknown): boolean {
   return (
     err instanceof Error &&
     errorCauseChain(err).some(
-      (link) => link instanceof Error && link.message.includes(NAMELESS_DYNAMIC_REFERENCE_MARKER)
+      (link) =>
+        link instanceof Error &&
+        NAMELESS_DYNAMIC_REFERENCE_MARKERS.some((marker) => link.message.includes(marker))
     )
   );
 }
@@ -3643,6 +3664,9 @@ export async function scrubStack(
   const prePassFindings: CrossStackPrePassFindings = { unverifiable: [] };
   try {
     const loaded = await stateBackend.getState(stack.stackName, region);
+    if (loaded && normalizeLoadedState(loaded.state)) {
+      logger.warn(malformedResourcesWarning(stack.stackName, region));
+    }
     if (!loaded) {
       logger.debug(`No state for ${stack.stackName} (${region}) — skipping`);
       return {

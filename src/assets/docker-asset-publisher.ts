@@ -6,6 +6,7 @@ import {
 import type { DockerImageAsset } from '../types/assets.js';
 import {
   describeDockerFailure,
+  redactedDockerCause,
   formatDockerLoginError,
   runDockerStreaming,
 } from '../utils/docker-cmd.js';
@@ -224,7 +225,7 @@ export class DockerAssetPublisher {
         const e = err as { message?: string };
         throw new AssetError(
           `Docker tag failed re-tagging '${actualTag}' → '${tag}': ${e.message ?? String(err)}`,
-          err instanceof Error ? err : undefined
+          redactedDockerCause(err, ['tag', actualTag, tag])
         );
       }
     }
@@ -334,7 +335,7 @@ export class DockerAssetPublisher {
     } catch (err) {
       throw new AssetError(
         `ECR login failed: ${formatDockerLoginError(describeDockerFailure(err, loginArgs), endpoint)}`,
-        err instanceof Error ? err : undefined
+        redactedDockerCause(err, loginArgs)
       );
     }
   }
@@ -349,7 +350,7 @@ export class DockerAssetPublisher {
     } catch (err) {
       throw new AssetError(
         `Docker tag failed: ${describeDockerFailure(err, tagArgs)}`,
-        err instanceof Error ? err : undefined
+        redactedDockerCause(err, tagArgs)
       );
     }
   }
@@ -367,7 +368,7 @@ export class DockerAssetPublisher {
     } catch (err) {
       throw new AssetError(
         `Docker push failed: ${describeDockerFailure(err, pushArgs)}`,
-        err instanceof Error ? err : undefined
+        redactedDockerCause(err, pushArgs)
       );
     }
   }

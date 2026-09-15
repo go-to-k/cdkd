@@ -30,6 +30,10 @@ import {
   type UnresolvableReference,
 } from '../../analyzer/orphan-rewriter.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
+import {
+  malformedResourcesWarning,
+  normalizeLoadedState,
+} from '../../state/normalize-loaded-state.js';
 
 interface OrphanOptions {
   app?: string;
@@ -215,6 +219,9 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
 
     try {
       const stateData = await stateBackend.getState(stackInfo.stackName, targetRegion);
+      if (stateData && normalizeLoadedState(stateData.state)) {
+        logger.warn(malformedResourcesWarning(stackInfo.stackName, targetRegion));
+      }
       if (!stateData) {
         throw new Error(
           `No state found for stack '${stackInfo.stackName}' (${targetRegion}). ` +

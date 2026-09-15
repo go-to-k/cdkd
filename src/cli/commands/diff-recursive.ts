@@ -29,6 +29,10 @@ import {
 import { findActionableSilentDrops } from '../../provisioning/property-coverage.js';
 import { wouldReturnToSdkProvider } from '../../provisioning/provider-registry.js';
 import { NESTED_STACK_RESOURCE_TYPE } from './retire-cfn-stack.js';
+import {
+  malformedResourcesWarning,
+  normalizeLoadedState,
+} from '../../state/normalize-loaded-state.js';
 
 /**
  * The one spelling of the routing token for a resource leaving Cloud Control
@@ -249,7 +253,12 @@ async function loadStateOrEmpty(
   stateBackend: S3StateBackend
 ): Promise<StackState> {
   const result = await stateBackend.getState(stackName, region);
-  if (result) return result.state;
+  if (result) {
+    if (normalizeLoadedState(result.state)) {
+      logger.warn(malformedResourcesWarning(stackName, region));
+    }
+    return result.state;
+  }
   return {
     stackName,
     region,

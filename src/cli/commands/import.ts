@@ -31,7 +31,6 @@ import {
   isUnboundTemplateParameter,
 } from '../../deployment/intrinsic-function-resolver.js';
 import {
-  carriesSecretMask,
   markSameGenerationBag,
   maskSecretsInText,
   redactSecretsForState,
@@ -69,6 +68,10 @@ import {
   type ResourceState,
   type StackState,
 } from '../../types/state.js';
+import {
+  malformedResourcesWarning,
+  normalizeLoadedState,
+} from '../../state/normalize-loaded-state.js';
 
 interface ImportOptions {
   app?: string;
@@ -551,6 +554,9 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
     // to `saveState` for optimistic locking.
     const existingResult = await stateBackend.getState(stackInfo.stackName, targetRegion);
     const existingState = existingResult?.state ?? null;
+    if (existingState && normalizeLoadedState(existingState)) {
+      logger.warn(malformedResourcesWarning(stackInfo.stackName, targetRegion));
+    }
     const existingEtag = existingResult?.etag;
     const migrationPending = existingResult?.migrationPending ?? false;
 
@@ -1397,37 +1403,8 @@ function buildStackState(
     // (`--resource X=<other>` with `--force`) would resurrect stale facts
     // about the old resource and hand them to `Fn::GetAtt`.
     const prior = existingState?.resources[row.logicalId];
-    // ...EXCEPT when the stored map carries the redaction MASK. That case is
-    // the one the carry-over makes unrecoverable (issue
-    // [#2927](https://github.com/go-to-k/cdkd/issues/2927)).
-    //
-    // `CloudControlProvider.import` masks the model keys it cannot certify as
-    // attributes (#2847), and `DeployEngine.refuseRedactedAttributeReads` then
-    // tells the user to RE-IMPORT the resource to rewrite them. That works
-    // whenever the re-import gets a usable model back. It does not when the
-    // second `GetResource` also yields none: `import()` returns
-    // `attributes: {}`, the normalization below turns that into `undefined`,
-    // the physical id is unchanged across a re-import so `priorAttributes`
-    // applies, and the PREVIOUS masked bag is carried forward. The next deploy
-    // raises the identical refusal, naming a remedy the user has just followed.
-    //
-    // The fallback itself is right and stays (#1098: a provider reporting no
-    // attributes must not wipe a map an earlier deploy recorded). What it
-    // cannot distinguish is "this provider reports no attributes" from "this
-    // provider tried and got nothing back THIS time" — and only the second
-    // should decline to overwrite a bag the user is explicitly asking to
-    // refresh. Keying on the MASK is the narrower of the two shapes the issue
-    // offers, and the one it prefers: a masked bag is by construction the
-    // product of a refusal, so dropping it can lose nothing a reader could
-    // have used — `Fn::GetAtt` against `***` is refused, not served.
-    //
-    // The result is `{}` rather than the mask, which is what a resource with
-    // no recorded attributes already looks like, so no reader learns a new
-    // shape.
     const priorAttributes =
-      prior && prior.physicalId === row.physicalId && !carriesSecretMask(prior.attributes)
-        ? prior.attributes
-        : undefined;
+      prior && prior.physicalId === row.physicalId ? prior.attributes : undefined;
     // Normalize "no attributes" to `undefined` BEFORE the coalesce below.
     // Almost no provider omits the field: across src/provisioning/providers
     // the overwhelming majority of `import()` return sites spell it

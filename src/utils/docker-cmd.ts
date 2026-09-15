@@ -1625,6 +1625,66 @@ export function describeDockerFailure(error: unknown, args: readonly string[]): 
 }
 
 /**
+ * A `cause` that is safe to CHAIN onto a wrapper error, for a caller that
+ * wants the retry classifiers to see the failure as an object rather than as
+ * an interpolated string (issue go-to-k/cdkd#2075).
+ *
+ * Attaching the raw `execFile` error reopens the channel go-to-k/cdkd#2440
+ * closed. The mandate above applies to every docker failure text this module
+ * hands out, "including one whose argv carries no user data today" — and a
+ * chained cause IS such a text: `formatError` prints `cause.message`, and the
+ * CLI's top-level handler walks the whole chain. The raw message is the
+ * command line, so the moment an argv gains a `-e` or a `--build-arg` the
+ * secret is in a printed line again, from a call site nobody re-reads.
+ *
+ * So the returned cause carries the REDACTED description as its message, and
+ * chains nothing further. What the classifiers read is copied across — but
+ * through an ALLOWLIST ({@link CLASSIFICATION_FIELDS}), never by sweeping the
+ * original's own keys.
+ *
+ * The allowlist is the whole point, and a denylist was the first cut: it
+ * skipped `message` / `stack` / `cause` and copied the rest, which carried
+ * `err.cmd` — the full command line — onto the new error verbatim. That is
+ * the SAME field that defeated four rounds of the go-to-k/cdkd#2440 fence
+ * (`.claude/rules/docker-argv-redaction.md`), reintroduced inside the function
+ * written to close it. `stderr` / `stdout` are excluded for the same reason:
+ * the composer above has already read and REDACTED them into the message, so
+ * copying the raw streams would hand back exactly what it removed.
+ *
+ * Fail-closed is the correct direction here for the reason the cache-param
+ * allowlist gives: a field missing from the allowlist costs one degraded retry
+ * classification, while a field missing from a denylist costs a printed
+ * credential.
+ */
+/**
+ * The fields {@link redactedDockerCause} carries from the original error onto
+ * the redacted one. Every retry / transience classifier in `src/deployment/`
+ * reads one of these; none of them carries argv or stream text.
+ */
+const CLASSIFICATION_FIELDS = [
+  'code',
+  'errno',
+  'signal',
+  'status',
+  'statusCode',
+  '$metadata',
+  '$fault',
+  '__type',
+] as const;
+
+export function redactedDockerCause(error: unknown, args: readonly string[]): Error | undefined {
+  if (!(error instanceof Error)) return undefined;
+  const cause = new Error(describeDockerFailure(error, args));
+  cause.name = error.name;
+  const source = error as unknown as Record<string, unknown>;
+  const target = cause as unknown as Record<string, unknown>;
+  for (const key of CLASSIFICATION_FIELDS) {
+    if (key in source) target[key] = source[key];
+  }
+  return cause;
+}
+
+/**
  * Composer for a captured-output failure where the diagnostic may be on
  * STDOUT rather than stderr (`runDockerStreaming`'s non-zero-exit path, whose
  * `SpawnError` carries both). `fallback` is used when neither stream said
