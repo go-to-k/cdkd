@@ -3,7 +3,10 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import {
+  STATE_RESOURCES_MALFORMED,
+  hasReadableResources,
   malformedResourcesWarning,
+  malformedStateRefusalMessage,
   refuseMalformedState,
   repairMalformedResourcesForReadOnly,
 } from '../../../src/state/malformed-resources-bag.js';
@@ -68,7 +71,7 @@ describe('refuseMalformedState', () => {
         thrown = err;
       }
       expect(thrown).toBeInstanceOf(CdkdError);
-      expect((thrown as CdkdError).code).toBe('STATE_RESOURCES_MALFORMED');
+      expect((thrown as CdkdError).code).toBe(STATE_RESOURCES_MALFORMED);
       expect((thrown as CdkdError).message).toContain('MyStack');
       // The refusal has to say WHY a write-capable command will not proceed,
       // or it reads as the same unhelpful abort go-to-k/cdkd#3018 reported.
@@ -169,6 +172,36 @@ describe('the user-facing text', () => {
     expect(text).toContain('<unrenderable>');
     expect(text, 'an empty argument collapsed the flags').not.toContain('--stack-region --json');
   });
+
+  it('carries the generic exit code — scrub needs a different one and says so', () => {
+    // `refuseMalformedState` is a plain CdkdError (exit 1, the generic error).
+    // That is right for import / orphan / rollback, and WRONG for scrub, whose
+    // exit 1 means "--fail found plaintext" — so scrub raises its own exit-2
+    // class around `malformedStateRefusalMessage` instead. A single shared
+    // code would be wrong in the other direction too: `cdkd rollback`
+    // documents 2 as "PARTIAL — journal kept, idempotent re-run", which would
+    // tell an operator to re-run a command that attempted nothing.
+    let thrown: CdkdError | undefined;
+    try {
+      refuseMalformedState(state(null), 'S', 'r');
+    } catch (err) {
+      thrown = err as CdkdError;
+    }
+    expect(thrown).toBeDefined();
+    expect(
+      (thrown as unknown as { exitCode?: number }).exitCode,
+      'refuseMalformedState now pins an exitCode; check it against EACH refusing command’s ' +
+        'documented contract before adopting it — they disagree.'
+    ).toBeUndefined();
+
+    // Both spellings say the same thing, so scrub's copy cannot drift.
+    expect(thrown?.message).toContain(malformedStateRefusalMessage('S', 'r'));
+  });
+
+  it('hasReadableResources is exported, because scrub branches on it directly', () => {
+    expect(hasReadableResources(state(null))).toBe(false);
+    expect(hasReadableResources(state({}))).toBe(true);
+  });
 });
 
 /**
@@ -201,11 +234,20 @@ describe('write-capable commands refuse; read-only ones repair', () => {
   for (const file of REFUSE) {
     it(`${file} REFUSES — it can saveState`, () => {
       const src = readFileSync(join(repoRoot, file), 'utf8');
+      // TWO spellings count as refusing. Most files call the shared helper;
+      // `scrub` branches on the exported predicate and raises its OWN exit-2
+      // class, because its exit 1 is spoken for ("--fail found plaintext").
+      // Both must carry the same MESSAGE, which the exit-code case pins.
+      const refuses =
+        src.includes('refuseMalformedState(') ||
+        (src.includes('hasReadableResources(') && src.includes('malformedStateRefusalMessage('));
       expect(
-        src,
+        refuses,
         `${file} calls saveState, so a malformed record must be refused, not repaired: saving ` +
-          `over it would replace the evidence with a well-formed empty bag permanently.`
-      ).toContain('refuseMalformedState(');
+          `over it would replace the evidence with a well-formed empty bag permanently. Call ` +
+          `refuseMalformedState(), or branch on hasReadableResources() and raise your own ` +
+          `class around malformedStateRefusalMessage().`
+      ).toBe(true);
       // `scrub` is the one file legitimately holding BOTH: its write gate is
       // `recordsChanged > 0 && !opts.dryRun`, so under `--dry-run` it provably
       // cannot persist and repairing preserves the audit. Any OTHER
@@ -216,11 +258,25 @@ describe('write-capable commands refuse; read-only ones repair', () => {
           `${file} repairs a malformed resources bag but can also WRITE state.`
         ).toBe(false);
       } else {
+        // NOT `toContain('!opts.dryRun')`: the doc comment beside the branch
+        // quotes that gate verbatim, so the assertion passed on the PROSE —
+        // delete the runtime gate, keep the comment, fence stays green. Pin
+        // the two things that actually make the exception sound, each as a
+        // statement rather than as explanation: the lock is not taken under
+        // --dry-run, and the save is gated on it.
+        expect(src, 'scrub no longer skips the lock under --dry-run').toMatch(
+          /acquired\s*=\s*!opts\.dryRun/
+        );
+        expect(src, "scrub's saveState is no longer gated on !opts.dryRun").toMatch(
+          /recordsChanged > 0 && !opts\.dryRun/
+        );
+        // And the repair must not be able to end in a clean verdict — the
+        // finding has to reach a non-zero exit (go-to-k/cdkd#3018 round 4).
         expect(
           src,
-          'scrub repairs under --dry-run; that is only sound while the write gate still ' +
-            'carries !opts.dryRun.'
-        ).toContain('!opts.dryRun');
+          'a --dry-run that repaired a malformed bag no longer raises; `--dry-run --fail` would ' +
+            'report a CI-green clean run over a record whose resources it never read.'
+        ).toContain('malformedRecords.length > 0');
       }
       // The premise of the rule, asserted rather than assumed — if this file
       // stops writing state the classification should be revisited, not

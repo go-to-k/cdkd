@@ -78,8 +78,10 @@ import {
   type SecretSafeKeyDisplay,
 } from '../../deployment/outputs-export-alias.js';
 import {
+  STATE_RESOURCES_MALFORMED,
+  hasReadableResources,
   malformedResourcesWarning,
-  refuseMalformedState,
+  malformedStateRefusalMessage,
   repairMalformedResourcesForReadOnly,
 } from '../../state/malformed-resources-bag.js';
 
@@ -595,6 +597,12 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   // not read as clean and `--fail` must not exit 0, but the stack itself was
   // still scrubbed for everything else and must not be refused outright.
   let totalStacksWithUnverifiableReads = 0;
+  /**
+   * Stacks this `--dry-run` proceeded over with an UNREADABLE resources map
+   * (issue go-to-k/cdkd#3018). Tracked exactly like `indexUnreadable`: an
+   * audit this run could not perform is a FINDING, never a clean result.
+   */
+  const malformedRecords: string[] = [];
   // Stacks this run could not scrub at all, one entry per stack (issue #2109
   // review). A refusal is per-REFERENCE evidence but is raised for the whole
   // STACK, and without a boundary here one refused stack in a `--all` run
@@ -832,6 +840,9 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       // other.
       logger.info(`No plaintext secrets found in ${stack.stackName}`);
     }
+    if (scrubbed.malformedResources) {
+      malformedRecords.push(stack.stackName);
+    }
     if (scrubbed.unverifiableReads > 0) {
       totalStacksWithUnverifiableReads++;
       logger.warn(
@@ -905,7 +916,12 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     totalStacksWithUnverifiableReads === 0 &&
     totalIndexEntriesConverged === 0 &&
     indexUnwritten.length === 0 &&
-    indexUnreadable.length === 0
+    indexUnreadable.length === 0 &&
+    // A dry run that proceeded over an unreadable resources map has every
+    // counter above legitimately at zero, so without this it would land here
+    // and print `No plaintext secrets found in any target stack state` -- a
+    // claim about records it never read.
+    malformedRecords.length === 0
   ) {
     // `totalIndexEntriesAbsent` and `totalIndexEntriesUnexamined` are
     // deliberately NOT in this condition (issue #2667). Past it, the `--dry-run
@@ -1056,6 +1072,20 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   // finish", exit 1 is "cdkd looked and found something".
   if (indexUnwritten.length > 0 || indexUnreadable.length > 0) {
     throw exportIndexIncompleteError(indexUnwritten, indexUnreadable, false);
+  }
+  // Ranked with the arms above rather than under `--fail`: this is "cdkd could
+  // not examine the record", not "cdkd looked and found something", and a
+  // `--dry-run --fail` CI gate must not pass because the thing it audits was
+  // unreadable. A real run refuses the same record outright.
+  if (malformedRecords.length > 0) {
+    throw new ScrubRefusalError(
+      `${malformedRecords.length} stack(s) were audited with an EMPTY resource set because ` +
+        `their state record has no readable 'resources' map: ${malformedRecords.join(', ')}. ` +
+        `The report above describes their outputs only — nothing is known about their ` +
+        `resources, so this run cannot certify them clean. See the warnings above for the ` +
+        `record to inspect.`,
+      STATE_RESOURCES_MALFORMED
+    );
   }
   // `totalStacksWithUnverifiableReads` joins the key-only leak here for the
   // reason stated on that counter: a real run cannot fix either one, so exiting
@@ -3584,6 +3614,19 @@ function makeCrossStackPrePass(deps: {
 
 /** What one stack's scrub found. */
 export interface ScrubStackResult {
+  /**
+   * The record's `resources` map could not be READ, and this `--dry-run`
+   * proceeded over an empty one (issue go-to-k/cdkd#3018).
+   *
+   * Carried out to the caller rather than warned-and-forgotten because
+   * `--dry-run --fail` is documented as a STANDING CI gate: the repair makes
+   * every downstream counter legitimately zero, which lands on the clean-exit
+   * arm and prints `No plaintext secrets found in any target stack state`,
+   * exit 0 — over a record whose resources this run never examined. A real run
+   * REFUSES this record, so without the flag the dry run would be the one mode
+   * that reports a false success, and it is the mode CI uses.
+   */
+  malformedResources?: true;
   recordsChanged: number;
   secretsFound: number;
   secretBearingKeys: number;
@@ -3721,12 +3764,20 @@ export async function scrubStack(
     // would remove the one diagnostic that lists surviving plaintext in a
     // broken record -- the audit a user reaches for precisely because the
     // record is broken.
+    let malformedResources: true | undefined;
     if (opts.dryRun) {
       if (repairMalformedResourcesForReadOnly(state)) {
+        malformedResources = true;
         logger.warn(malformedResourcesWarning(stack.stackName, region));
       }
-    } else {
-      refuseMalformedState(state, stack.stackName, region);
+    } else if (!hasReadableResources(state)) {
+      // scrub's own class, NOT `refuseMalformedState`: exit 1 is spoken for
+      // here ("--fail found plaintext"), and a CI gate reading the code alone
+      // must be able to tell that from "scrub refused to look".
+      throw new ScrubRefusalError(
+        malformedStateRefusalMessage(stack.stackName, region),
+        STATE_RESOURCES_MALFORMED
+      );
     }
 
     // Re-resolve each resource's TEMPLATE properties to collect the resolved
@@ -4403,6 +4454,8 @@ export async function scrubStack(
         secretsFound: 0,
         secretBearingKeys: secretBearingKeys.length,
         unverifiableReads: prePassFindings.unverifiable.length,
+        ...(malformedResources ? { malformedResources } : {}),
+        ...(malformedResources ? { malformedResources } : {}),
         // No needle was recorded, so no redaction pass ran and the stored bag
         // is what this run leaves — including on a RE-RUN over already-scrubbed
         // state, which is the case the index step exists to finish.

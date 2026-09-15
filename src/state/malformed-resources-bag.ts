@@ -1,7 +1,10 @@
 import { CdkdError } from '../utils/error-handler.js';
-import { UNRENDERABLE, displaySafe } from '../utils/display-safe.js';
+import { UNRENDERABLE, displaySafe, truncateCodePoints } from '../utils/display-safe.js';
 import { shellQuote } from './lock-contention-message.js';
 import type { StackState } from '../types/state.js';
+
+/** The error code every malformed-record refusal carries, whatever its class. */
+export const STATE_RESOURCES_MALFORMED = 'STATE_RESOURCES_MALFORMED';
 
 /**
  * Answer the ONE question both helpers below key on: can this record's
@@ -13,7 +16,7 @@ import type { StackState } from '../types/state.js';
  * empty or, for the string, absurd — repaired silently and warned about
  * nowhere. The predicate is the plain-object test the bag's own type implies.
  */
-function hasReadableResources(state: StackState): boolean {
+export function hasReadableResources(state: StackState): boolean {
   const bag: unknown = state.resources;
   return typeof bag === 'object' && bag !== null && !Array.isArray(bag);
 }
@@ -43,9 +46,22 @@ function hasReadableResources(state: StackState): boolean {
  * nothing — an empty argument makes `--stack-region` swallow the next flag,
  * turning a remedy into a differently-broken command.
  */
+function safeIdentifier(value: string): string {
+  // CAPPED as well as sanitized. A stack name can arrive from an S3 key, so a
+  // planted multi-kilobyte one would push the trailing remedy command off the
+  // reader's screen -- the message would be technically correct and useless.
+  // `truncateCodePoints` rather than `slice`, so the cut never lands inside a
+  // surrogate pair; `displaySafe` rather than `displayIdent`, because the
+  // latter JSON-quotes and that would compose badly with `shellQuote` below.
+  const safe = displaySafe(value, { asciiOnly: true });
+  if (!safe) return UNRENDERABLE;
+  const { text, truncated } = truncateCodePoints(safe, 128);
+  return truncated ? `${text}...` : text;
+}
+
 function malformedStateDetail(stackName: string, region: string): string {
-  const stack = displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE;
-  const reg = displaySafe(region, { asciiOnly: true }) || UNRENDERABLE;
+  const stack = safeIdentifier(stackName);
+  const reg = safeIdentifier(region);
   return (
     `State for ${shellQuote(stack)} (${shellQuote(reg)}) has no readable 'resources' map — the ` +
     `record is malformed or truncated. Do NOT run 'cdkd deploy' or 'cdkd destroy' against it: ` +
@@ -92,6 +108,31 @@ export function repairMalformedResourcesForReadOnly(state: StackState): boolean 
   return true;
 }
 
+/**
+ * The refusal TEXT, for a command whose own exit-code contract means this
+ * cannot be a plain `CdkdError`.
+ *
+ * `cdkd scrub` is the case: its exit `1` is SPOKEN FOR ("--fail found
+ * plaintext") and every one of its refusals carries `exitCode = 2`, because a
+ * CI gate reading the code alone must be able to tell "scrub looked and found
+ * a leak" from "scrub refused to look" — the two call for opposite responses.
+ * So scrub tests {@link hasReadableResources} and raises its own class around
+ * this text rather than calling {@link refuseMalformedState}.
+ *
+ * The other three refusing commands do NOT share that need, and giving them a
+ * single shared code would be wrong in the other direction: `cdkd rollback`
+ * documents `2` as "PARTIAL — journal kept, idempotent re-run", so a `2` here
+ * would tell an operator to re-run a command that attempted nothing.
+ */
+export function malformedStateRefusalMessage(stackName: string, region: string): string {
+  return (
+    `${malformedStateDetail(stackName, region)} This command can WRITE state, so it refuses ` +
+    `rather than continuing: saving over a record whose resource map could not be read would ` +
+    `replace the evidence with a well-formed empty one and lose it permanently. Repair or ` +
+    `remove the record first.`
+  );
+}
+
 /** The warning a caller of {@link repairMalformedResourcesForReadOnly} emits. */
 export function malformedResourcesWarning(stackName: string, region: string): string {
   return `${malformedStateDetail(stackName, region)} Continuing with an EMPTY resource set: this command's output describes zero resources, which is not the same as the stack having none.`;
@@ -120,11 +161,5 @@ export function malformedResourcesWarning(stackName: string, region: string): st
  */
 export function refuseMalformedState(state: StackState, stackName: string, region: string): void {
   if (hasReadableResources(state)) return;
-  throw new CdkdError(
-    `${malformedStateDetail(stackName, region)} This command can WRITE state, so it refuses ` +
-      `rather than continuing: saving over a record whose resource map could not be read would ` +
-      `replace the evidence with a well-formed empty one and lose it permanently. Repair or ` +
-      `remove the record first.`,
-    'STATE_RESOURCES_MALFORMED'
-  );
+  throw new CdkdError(malformedStateRefusalMessage(stackName, region), STATE_RESOURCES_MALFORMED);
 }
