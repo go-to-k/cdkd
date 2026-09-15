@@ -1679,6 +1679,43 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
     expect(message).not.toContain('[cut:');
   });
 
+  it('the CANDIDATE LIST still CUTS a planted name past the stack-name cap', async () => {
+    // The FLOOR half. Widening a cap is one-sided without it: site-local
+    // over-loosening (`maxCodePoints: 999999`) stays green against the case
+    // above, so only this one distinguishes "the right cap" from "no cap".
+    const planted = `P${'q'.repeat(1152)}`;
+
+    installSetup({
+      listRawKeys: vi.fn().mockResolvedValue([
+        `cdkd/${planted}/us-east-1/rollback-journal.json`,
+        `cdkd/Other/us-east-1/rollback-journal.json`,
+      ]),
+    });
+    const caught = await rollbackCommand(undefined, { ...baseOpts }).catch((e: unknown) => e);
+    const message = (caught as Error).message;
+
+    expect(message).toContain('[cut: 1 more characters withheld]');
+  });
+
+  it('every stack-name render in this file takes the wider cap, not just the candidate list', async () => {
+    // The population half: the first cut of issue #3164 widened ONE of this
+    // file's stack-name renders and left ten at the 255 default -- including
+    // three `re-run 'cdkd rollback <stack>'` COPY-PASTE hints. Reading the
+    // source closes the rest at once; a `safe(stackName)` anywhere here is a
+    // stack name rendered at the identifier default.
+    const src = readFileSync(
+      new URL('../../../../src/cli/commands/rollback.ts', import.meta.url),
+      'utf8'
+    );
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+
+    expect(code).toContain('function safeStack');
+    // The fence sees its input: the wrapped form must be present in numbers.
+    expect((code.match(/\bsafeStack\(/g) ?? []).length).toBeGreaterThanOrEqual(10);
+    expect(code.match(/\bsafe\(stackName\)/g) ?? []).toEqual([]);
+    expect(code.match(/\bsafe\(c\.stackName\)/g) ?? []).toEqual([]);
+  });
+
   it('SOURCE SHAPE: no plan-label arm interpolates a journal field bare', () => {
     // The per-arm wiring fence. `safe()` itself is pinned above, but each of
     // the ~20 label arms wires it separately, and a hostile fixture reaches

@@ -10,6 +10,7 @@ import {
   displayIdent,
   displaySafe,
   IDENT_MAX_CODE_POINTS,
+  STACK_REF_MAX_CODE_POINTS,
   truncateCodePoints,
   UNRENDERABLE,
 } from '../../../src/utils/display-safe.js';
@@ -193,8 +194,11 @@ describe('displayIdent (issues #3064 / #3092)', () => {
     const over = 'A'.repeat(IDENT_MAX_CODE_POINTS + 45);
     expect(displayIdent(over)).toBe(`${atCap} [cut: 45 more characters withheld]`);
     // The cut is measured AFTER sanitizing, so a value padded with invisibles
-    // to sneak under the cap is measured by what it renders as.
-    expect(displayIdent(`${atCap}\u200b`)).toBe(atCap);
+    // to sneak under the cap is measured by what it renders as -- and since
+    // issue #3164 it is also QUOTED, because sanitization was not the identity
+    // on it. That is the point of the padding rule: the bare form here was a
+    // same-line spoof of the unpadded value.
+    expect(displayIdent(`${atCap}\u200b`)).toBe(`"${atCap}"`);
   });
 
   it('renders nothing-left and absent values as the placeholder, unquoted', () => {
@@ -208,5 +212,101 @@ describe('displayIdent (issues #3064 / #3092)', () => {
     for (const v of ['Vic\u200btim', 'X (Y)', 'A'.repeat(IDENT_MAX_CODE_POINTS + 1), '\u200b', ' X ']) {
       expect(displayIdent(v)).not.toBe(v);
     }
+  });
+});
+
+describe('displayIdent quotes whenever sanitization was NOT the identity (issue #3164)', () => {
+  // The allowlist cannot supply this half: `displaySafe` maps every
+  // non-printable-ASCII character to a space and then TRIMS, so padding is gone
+  // before the plain-identifier test runs and a padded value tested as plain.
+  // Each of these rendered byte-identically to the bare `ProdStack` before the
+  // fix, which is a same-line spoof from a one-character input.
+  const PADDED: Array<[string, string]> = [
+    ['trailing space', 'ProdStack '],
+    ['leading space', ' ProdStack'],
+    ['tab', '\tProdStack'],
+    ['NUL', 'ProdStack\u0000'],
+    ['ESC', '\u001bProdStack'],
+    ['inner NUL', 'Prod\u0000Stack'],
+    ['zero-width joiner', 'ProdStack\u200b'],
+  ];
+
+  for (const [label, value] of PADDED) {
+    it(`quotes a value padded with ${label}`, () => {
+      const out = displayIdent(value);
+      expect(out).not.toBe('ProdStack');
+      expect(out.startsWith('"')).toBe(true);
+    });
+  }
+
+  it('leaves a value sanitization did NOT touch bare', () => {
+    for (const v of ['ProdStack', 'my-stack-1', 'Parent~Child', 'AWS::S3::Bucket', 'us-east-1']) {
+      expect(displayIdent(v)).toBe(v);
+    }
+  });
+
+  it('does NOT quote a bare comma -- a recorded residual, not an oversight', () => {
+    // An IAM role name allows `[\\w+=,.@-]`, so a comma-bearing role ARN is a
+    // legitimate shape this module renders (pinned as an identity shape above).
+    // The cost is that a name ending in `,` still slips through the `', '` join
+    // two `state.ts` prompts use, because the formatter supplies the space.
+    // Tracked on go-to-k/cdkd#3179; pinned here so closing it there is a
+    // deliberate, visible change rather than a silent one.
+    expect(displayIdent('ProdStack,')).toBe('ProdStack,');
+  });
+});
+
+describe('displayIdent maxCodePoints option (issue #3164)', () => {
+  it('defaults to IDENT_MAX_CODE_POINTS when no option is given', () => {
+    const over = 'A'.repeat(IDENT_MAX_CODE_POINTS + 3);
+    expect(displayIdent(over)).toBe(
+      `${'A'.repeat(IDENT_MAX_CODE_POINTS)} [cut: 3 more characters withheld]`
+    );
+  });
+
+  it('WIDENS the cut when a caller passes a larger cap', () => {
+    const long = 'A'.repeat(IDENT_MAX_CODE_POINTS + 3);
+    expect(displayIdent(long, { maxCodePoints: STACK_REF_MAX_CODE_POINTS })).toBe(long);
+  });
+
+  it('NARROWS the cut when a caller passes a smaller cap', () => {
+    // The floor half: without it, only the widening direction is watched.
+    expect(displayIdent('ABCDEFGH', { maxCodePoints: 3 })).toBe(
+      'ABC [cut: 5 more characters withheld]'
+    );
+  });
+
+  it('refuses a cap that would make the cut meaningless', () => {
+    // A slice with a negative length cuts from the END and reports a nonsense
+    // withheld count; zero leaves nothing at all. Both are floored to 1.
+    expect(displayIdent('ABCDEFGH', { maxCodePoints: -5 })).toBe(
+      'A [cut: 7 more characters withheld]'
+    );
+    expect(displayIdent('ABCDEFGH', { maxCodePoints: 0 })).toBe(
+      'A [cut: 7 more characters withheld]'
+    );
+  });
+
+  it('floors a fractional cap instead of slicing at one', () => {
+    expect(displayIdent('ABCDEFGH', { maxCodePoints: 3.9 })).toBe(
+      'ABC [cut: 5 more characters withheld]'
+    );
+  });
+
+  it('falls back to the default for a non-finite cap', () => {
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      const over = 'A'.repeat(IDENT_MAX_CODE_POINTS + 3);
+      expect(displayIdent(over, { maxCodePoints: bad })).toBe(
+        `${'A'.repeat(IDENT_MAX_CODE_POINTS)} [cut: 3 more characters withheld]`
+      );
+    }
+  });
+
+  it('QUOTES and CUTS together -- the only rule-2 x rule-3 combination', () => {
+    const spoof = `${'X (us-east-1) '.repeat(30)}`;
+    const out = displayIdent(spoof, { maxCodePoints: 20 });
+    expect(out.startsWith('"')).toBe(true);
+    expect(out).toContain('" [cut: ');
+    expect(out).toContain('more characters withheld]');
   });
 });

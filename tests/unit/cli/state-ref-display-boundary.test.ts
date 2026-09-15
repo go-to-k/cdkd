@@ -290,6 +290,30 @@ const NAME_SPOOF: Ref = { stackName: 'ProdStack (us-east-1)' };
 const REGION_SPOOF: Ref = { stackName: 'Decoy', region: 'x) (us-east-1' };
 const REGION_SPOOF_TARGET: Ref = { stackName: 'Decoy (x)', region: 'us-east-1' };
 
+/**
+ * PADDING spoofs -- a strictly SIMPLER input than the annotation-carrying one
+ * above, and the one the first cut of this fix left open (issue #3164 review).
+ *
+ * `displaySafe` maps every non-printable-ASCII character to a space and then
+ * TRIMS, so padding is erased BEFORE the plain-identifier test runs: a planted
+ * `cdkd/ProdStack /us-east-1/state.json` -- one trailing space -- used to test
+ * as plain, render UNQUOTED, and print byte-identical to the genuine
+ * `ProdStack` in `us-east-1`. `listStacks` dedupes on `stackName\0region`, so
+ * BOTH refs reach the output and a `sort -u`-ing cleanup loop collapses them:
+ * verbatim the harm this issue is about, from a one-character input.
+ *
+ * Spelled with escapes, never raw bytes -- a raw NUL makes grep treat this file
+ * as binary (`tests/unit/scripts/source-control-bytes.test.ts`).
+ */
+const PADDING_SPOOFS: Array<{ label: string; ref: Ref }> = [
+  { label: 'trailing space in the name', ref: { stackName: 'ProdStack ', region: 'us-east-1' } },
+  { label: 'leading space in the name', ref: { stackName: ' ProdStack', region: 'us-east-1' } },
+  { label: 'tab-wrapped name', ref: { stackName: '\tProdStack\t', region: 'us-east-1' } },
+  { label: 'NUL-wrapped name', ref: { stackName: '\u0000ProdStack\u0000', region: 'us-east-1' } },
+  { label: 'ESC-wrapped name', ref: { stackName: '\u001bProdStack\u001b', region: 'us-east-1' } },
+  { label: 'padded region', ref: { stackName: 'ProdStack', region: ' us-east-1 ' } },
+];
+
 describe('every state-list / prompt reference renders its own boundary (issue #3164)', () => {
   let originalIsTty: boolean | undefined;
 
@@ -407,6 +431,40 @@ describe('every state-list / prompt reference renders its own boundary (issue #3
         expect(target).toBe('"Decoy (x)" (us-east-1)');
       });
     }
+  });
+
+  describe('a PADDED name or region cannot impersonate a real row', () => {
+    for (const site of SITES) {
+      it(`${site.name}`, async () => {
+        const genuine = await site.render(GENUINE);
+        expect(genuine).toBe('ProdStack (us-east-1)');
+
+        for (const { label, ref } of PADDING_SPOOFS) {
+          // eslint-disable-next-line no-await-in-loop
+          const spoof = await site.render(ref);
+          // The discriminator: the bytes a `sort -u`-ing consumer compares.
+          // Before the fix EVERY one of these equalled `genuine`, because
+          // `displaySafe` trims the padding away before the plain-identifier
+          // test decides whether to quote.
+          expect(spoof, `${site.name} / ${label}`).not.toBe(genuine);
+          // ...and because the value is QUOTED, not because it was mangled
+          // into some third shape.
+          expect(spoof, `${site.name} / ${label}`).toContain('"');
+        }
+      });
+    }
+  });
+
+  it('a padded name is quoted at the exact boundary the trim would have erased', async () => {
+    // The shape assertion behind the non-collision above: the quotes sit around
+    // the TRIMMED text, so the row still reads honestly while no longer
+    // matching the genuine one byte for byte.
+    expect(await SITES[0]!.render({ stackName: 'ProdStack ', region: 'us-east-1' })).toBe(
+      '"ProdStack" (us-east-1)'
+    );
+    expect(await SITES[0]!.render({ stackName: 'ProdStack', region: ' us-east-1 ' })).toBe(
+      'ProdStack ("us-east-1")'
+    );
   });
 
   it('caps a planted name rather than pushing the genuine (region) off the line', async () => {

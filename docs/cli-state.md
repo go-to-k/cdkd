@@ -183,7 +183,7 @@ Other malformed values render instead of stopping the listing:
 | a `resources` that is neither a JSON object nor `null`, such as a string or a list | `Resources: unknown (...)`, and under `--json` `resourceCount: null` with `stateReadError` set; the warning counts the row. An absent or `null` `resources` counts as `0` |
 | a character outside printable ASCII in a stack name or region | replaced in the plain listing and the `--long` / `--tree` text views; a value with nothing printable left shows as `<unrenderable>` |
 | a stack name or region that is not a plain identifier — one carrying a space, a bracket, a quote, or anything outside `A-Za-z0-9` and `:_@./+=,~-` | rendered as a quoted string, so its boundary is visible: `"ProdStack (us-east-1)" (us-east-1)`. Applies to both halves of every reference |
-| a very long stack name or region | cut, with `[cut: N more characters withheld]` appended. The limit is 1152 for a stack name and 255 for a region — no real value of either reaches it |
+| a very long stack name or region | cut, with `[cut: N more characters withheld]` appended. The limit is 1152 characters for a stack name and 255 for a region. A region never approaches it; a stack name only can as a deeply nested `Parent~Child~…` chain built from hand-written, near-maximum-length logical ids |
 | a parent link whose `parentStack` is not a string, or whose `parentRegion` is present but not a string | `--tree` drops the whole link and shows the stack at the root. An absent `parentRegion` still links to a legacy region-less parent |
 | a non-string `parentLogicalId` on an otherwise valid link | `--tree --json` emits it as `null` and keeps the link |
 | records that name each other as parent | `--tree` shows every stack on the loop at the root |
@@ -201,7 +201,7 @@ Where it applies, and what it does not promise:
 
 | Question | Answer |
 | --- | --- |
-| Where else? | The confirmation prompts of [`cdkd state orphan`](#cdkd-state-orphan) and [`cdkd state refresh-observed`](#cdkd-state-refresh-observed) |
+| Where else? | The confirmation prompts of [`cdkd state orphan`](#cdkd-state-orphan) and [`cdkd state refresh-observed`](#cdkd-state-refresh-observed), and the candidate list `cdkd rollback` prints when more than one stack has a rollback journal |
 | Does a real row change? | No. Real stack names and region codes are plain identifiers, so a `while read -r ref` consumer sees the bytes it always did |
 | Is a quoted value shell-safe? | No. The quotes are a boundary for a reader, not shell quoting — a shell still expands `$(...)` and backticks inside them |
 | Can a long name still mislead? | Yes, if your terminal wraps it: a wrapped line can read like a genuine row with the quotes off-screen. Widen the terminal, or use `--json` |

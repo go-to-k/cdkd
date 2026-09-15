@@ -40,6 +40,44 @@
  * -- widening this helper would alter every caller that merely wants a
  * terminal-safe string.
  */
+/**
+ * The RAW text a value would render as, before any sanitization.
+ *
+ * Shared by `displaySafe` and `displayIdent` so the two agree on what the input
+ * WAS. `displayIdent` needs that to answer "did sanitization change anything?",
+ * and answering it by comparing against the caller's `unknown` would be wrong
+ * for every non-string: the comparison must be against the STRINGIFIED form,
+ * which is what `displaySafe` actually sanitizes.
+ *
+ * ABSENT means nothing to display, not the WORD. `String(undefined)` is
+ * `'undefined'` — a truthy string — so a caller keying its
+ * "is there anything here?" decision on the result was silently answered
+ * "yes" for a lock.json with no `owner`, printing `held by undefined` while
+ * certifying that the holder was live. The callers that key a decision on
+ * emptiness — the lock summary, and every refusal that falls back to
+ * `UNRENDERABLE` — would each need this same rule, so it lives here rather
+ * than at each of them. Not all of them do: `ConsoleLogger` concatenates the
+ * result and `sameLockIdentity` only compares two of them, and neither is
+ * harmed by it.
+ *
+ * `String(value)` is NOT total: an object whose `toString` is not callable —
+ * `{"toString": null}`, reachable through `JSON.parse` of a hand-edited record
+ * (issue #2947) — makes it throw, and a display helper that throws takes the
+ * whole render with it. The fallback is `Object.prototype.toString`, which
+ * calls none of the object's own methods — it reads only
+ * `Symbol.toStringTag`, a key `JSON.parse` cannot produce — so it cannot
+ * throw for any JSON-derived value. Every value `String` already handled
+ * renders exactly as before; only the throwing ones change.
+ */
+function toDisplayText(value: unknown): string {
+  if (value === undefined || value === null) return '';
+  try {
+    return String(value);
+  } catch {
+    return Object.prototype.toString.call(value);
+  }
+}
+
 export function displaySafe(value: unknown, opts?: { asciiOnly?: boolean }): string {
   // ABSENT means nothing to display, not the WORD. `String(undefined)` is
   // `'undefined'` — a truthy string — so a caller keying its
@@ -51,21 +89,8 @@ export function displaySafe(value: unknown, opts?: { asciiOnly?: boolean }): str
   // than at each of them. Not all of them do: `ConsoleLogger` concatenates the
   // result and `sameLockIdentity` only compares two of them, and neither is
   // harmed by it.
-  if (value === undefined || value === null) return '';
-  // `String(value)` is NOT total: an object whose `toString` is not callable —
-  // `{"toString": null}`, reachable through `JSON.parse` of a hand-edited record
-  // (issue #2947) — makes it throw, and a display helper that throws takes the
-  // whole render with it. The fallback is `Object.prototype.toString`, which
-  // calls none of the object's own methods — it reads only
-  // `Symbol.toStringTag`, a key `JSON.parse` cannot produce — so it cannot
-  // throw for any JSON-derived value. Every value `String` already handled
-  // renders exactly as before; only the throwing ones change.
-  let text: string;
-  try {
-    text = String(value);
-  } catch {
-    text = Object.prototype.toString.call(value);
-  }
+  const text = toDisplayText(value);
+  if (text === '') return '';
   const stripped = opts?.asciiOnly
     ? // Printable ASCII only. Correct for a stack name or an AWS region, both
       // of which have a known charset.
@@ -156,10 +181,14 @@ export const IDENT_MAX_CODE_POINTS = 255;
  * comment claimed them:
  *
  * 1. It is not an ENFORCED bound. cdkd never calls CloudFormation, and nothing
- *    in `src/` validates stack-name length or nesting depth, so a six-level app
- *    deploys happily and its record IS cut -- the same defect, moved deeper.
- *    Reading the nesting quota as five levels BELOW the root instead would put
- *    the figure at 1408. Treat 1152 as CDK practice with a margin, not a proof.
+ *    in `src/` validates stack-name length or nesting depth, so the cap is a
+ *    budget rather than a guarantee. It is NOT reachable by nesting deeper: at
+ *    CDK's ~60-character generated logical ids even a SIX-level chain is ~494
+ *    code points, so depth alone does not approach 1152. What reaches it is
+ *    length -- HAND-WRITTEN logical ids near CloudFormation's own 255-character
+ *    ceiling, stacked several levels deep. Reading the nesting quota as five
+ *    levels BELOW the root would put the figure at 1408. Treat 1152 as CDK
+ *    practice with a wide margin, not a proof.
  * 2. It does not keep the genuine trailing annotation on screen. At 255 that
  *    was arguable; at 1152 the `(region)` is many wrapped lines away, and a
  *    terminal WRAPPING a long quoted name can put a visual line that reads
@@ -181,6 +210,19 @@ export const STACK_REF_MAX_CODE_POINTS = 128 + 4 * (1 + IDENT_MAX_CODE_POINTS);
  * residual, cosmetic: an IAM path may legally carry `!#$%&'()*`, so a role ARN
  * with one renders quoted; those characters are exactly the boundary-forging
  * set, so they stay out.
+ *
+ * `,` STAYS IN THIS SET, and issue #3164's review measured the cost of that.
+ * Two callers join rendered values with `', '`, and the separator is split
+ * across the value and the formatter -- a name ending in a bare `,` is followed
+ * by the formatter's own ` (region)`, so `ProdStack,` renders
+ * `ProdStack, (us-east-1)` and a two-target prompt reads as THREE entries
+ * against a printed count of two. Removing `,` would close that, and was tried:
+ * it regresses a LEGITIMATE value class, because an IAM role name allows
+ * `[\w+=,.@-]`, so `arn:aws:iam::…:role/cdkd-deploy+role,x=y` is a real role
+ * ARN this module renders and `display-safe.test.ts` pins as an identity shape.
+ * Quoting every such ARN to disambiguate a list that does not contain ARNs is
+ * the wrong trade, so the joined-list ambiguity is recorded on
+ * go-to-k/cdkd#3179 rather than paid for here.
  */
 const PLAIN_IDENT = /^[A-Za-z0-9:_@./+=,~-]+$/;
 
@@ -203,16 +245,31 @@ const PLAIN_IDENT = /^[A-Za-z0-9:_@./+=,~-]+$/;
  *    cap -- `STACK_REF_MAX_CODE_POINTS` is the one such caller today -- because
  *    a cut that fires on a LEGITIMATE value breaks the byte-identity that makes
  *    rule 3 safe to adopt at all.
- * 3. A value that is NOT a `PLAIN_IDENT` -- one carrying a space, a bracket, a
- *    quote -- is rendered as a JSON string literal, so its BOUNDARY is
- *    visible. The allowlist alone cannot stop an all-ASCII
- *    `X (AWS::RDS::DBInstance) -- already reverted` from reading as cdkd's own
- *    annotation inside a real row; quoting it makes the row read
+ * 3. A value is rendered as a JSON string literal -- so its BOUNDARY is
+ *    visible -- unless BOTH of these hold: sanitization was the IDENTITY on it,
+ *    and what is left is a `PLAIN_IDENT`. The allowlist alone cannot stop an
+ *    all-ASCII `X (AWS::RDS::DBInstance) -- already reverted` from reading as
+ *    cdkd's own annotation inside a real row; quoting it makes the row read
  *    `"X (AWS::RDS::DBInstance) -- already reverted" (AWS::S3::Bucket)`, and
  *    JSON escaping keeps an embedded `"` from faking the closing quote.
- *    Conditional on purpose: every legitimate value is a plain identifier and
- *    renders exactly as it always did, so no fixture, no unit pin and no
- *    operator's grep changes -- only a value that could spoof gains quotes.
+ *    Conditional on purpose: every legitimate value survives sanitization
+ *    unchanged AND is a plain identifier, so it renders exactly as it always
+ *    did -- no fixture, no unit pin and no operator's grep changes, and only a
+ *    value that could spoof gains quotes.
+ *
+ *    THE IDENTITY HALF IS NOT REDUNDANT WITH THE ALLOWLIST, and omitting it was
+ *    a live spoof (issue #3164 review): `displaySafe` maps every
+ *    non-printable-ASCII character to a space and then TRIMS, so padding is
+ *    ERASED before the `PLAIN_IDENT` test ever runs. A planted
+ *    `cdkd/ProdStack /us-east-1/state.json` -- one trailing space -- therefore
+ *    tested as plain, rendered UNQUOTED, and printed byte-identical to the
+ *    genuine `ProdStack` in `us-east-1`; `listStacks` keys its dedupe on
+ *    `stackName\0region`, so both refs survive to the output and a
+ *    `sort -u`-ing consumer collapses them. Leading space, a tab, a NUL, an ESC
+ *    and a padded REGION all did the same with a one-character input. Comparing
+ *    against the raw text closes the class at its root rather than per padding
+ *    character. `src/state/lock-contention-message.ts` reached the same rule
+ *    first, for the same reason.
  *
  * A caller comparing the result against the input (the `--orphan <id>` remedy
  * prints its id only when this function is the identity on it) inherits all
@@ -235,7 +292,13 @@ export function displayIdent(value: unknown, opts?: { maxCodePoints?: number }):
     ? Math.max(1, Math.floor(requested))
     : IDENT_MAX_CODE_POINTS;
   const { text, truncated } = truncateCodePoints(clean, cap);
-  const shown = PLAIN_IDENT.test(text) ? text : JSON.stringify(text);
+  // Rule 3. `altered` is the half the allowlist cannot supply: `displaySafe`
+  // trims, so padding is gone from `clean` and `PLAIN_IDENT` would pass a value
+  // that did NOT arrive plain. Compared against the STRINGIFIED input, not the
+  // caller's `unknown`, so a non-string is judged on what actually gets
+  // rendered rather than failing the comparison for being a different type.
+  const altered = clean !== toDisplayText(value);
+  const shown = !altered && PLAIN_IDENT.test(text) ? text : JSON.stringify(text);
   // `clean` is ASCII here, so `.length` counts characters.
   return truncated
     ? `${shown} [cut: ${clean.length - text.length} more characters withheld]`

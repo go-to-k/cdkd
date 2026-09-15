@@ -224,10 +224,16 @@ interface ResourceDetail {
  * acts on the reference the operator believes is real and the planted record
  * survives the sweep. The join in the two prompt callers is a second boundary
  * of the same kind: they `join(', ')`, which a name carrying `, ` forges an
- * extra entry in. Stated exactly, because the margin is one character: a SPACE
- * is outside `PLAIN_IDENT`, so `, ` always quotes — while a BARE `,` is inside
- * it and renders unquoted, which fools only a consumer that splits on `,`
- * rather than on cdkd's `, `.
+ * extra entry in -- and quoting closes that, since a space is outside
+ * `PLAIN_IDENT`.
+ *
+ * A BARE `,` is NOT closed, and an earlier revision of this comment was wrong
+ * to call it harmless: the formatter supplies the space that completes the
+ * separator, so `ProdStack,` renders `ProdStack, (us-east-1)` and a two-target
+ * prompt reads as THREE entries against a printed count of two. Removing `,`
+ * from `PLAIN_IDENT` would close it and was tried; it regresses a legitimate
+ * IAM role ARN, whose role-name segment allows `[\w+=,.@-]`. Recorded on
+ * go-to-k/cdkd#3179 rather than traded for that.
  *
  * `displayIdent` makes the boundary VISIBLE by JSON-quoting anything that is
  * not a plain identifier, so the row above reads `"ProdStack (us-east-1)"` and
@@ -1827,10 +1833,10 @@ async function stateOrphanCommand(
         // #3164 the helper also quotes a value that is not a plain identifier,
         // which this site needs twice over: the `[...]` list is joined with
         // `, `, so an unquoted name carrying `, ` forges an extra entry in the
-        // set of records the operator is agreeing to remove. The space is what
-        // carries that — a bare `,` is a plain identifier and stays unquoted
-        // (see `formatStackRefSafe`), which is harmless against THIS `, `
-        // separator and is why the residual is recorded rather than closed.
+        // set of records the operator is agreeing to remove. A BARE `,` is a
+        // plain identifier and still slips through — the formatter supplies the
+        // space — which `formatStackRefSafe` records as a residual on
+        // go-to-k/cdkd#3179 rather than closing at the cost of IAM role ARNs.
         const targetList = targets.map((t) => formatStackRefSafe(t)).join(', ');
         process.stdout.write(
           `\nWARNING: This removes cdkd's state record for [${targetList}] only. ` +
