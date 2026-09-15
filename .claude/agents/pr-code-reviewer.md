@@ -38,9 +38,13 @@ Read every changed file end-to-end. For each, ask:
 ## What NOT to check
 
 - Whether tests pass (CI handles that).
-- Whether the change matches its spec, IN DEPTH — that is `pr-spec-reviewer.md`'s axis. But you cannot tell whether it was dispatched: nothing in your inputs names the tier, and "am I the only reviewer" does not answer it either (the security add-on runs at every tier and defers spec unconditionally, so you can both defer to nobody). So do a SECONDARY pass and label it that way.
+- Whether the change matches its spec, IN DEPTH — that is `pr-spec-reviewer.md`'s axis. But you cannot tell whether it was dispatched: nothing in your inputs names the tier, and "am I the only reviewer" does not answer it either (the security add-on runs at every tier and defers spec except on a security-surface acceptance item, so you can both defer to nobody). So do a SECONDARY pass and label it that way.
 
-  Secondary means: read `Closes #N` / `Refs #N` off the PR body first — **`Refs` is an issue the PR explicitly disclaims closing, so demanding full satisfaction from it manufactures blockers** — and raise a spec finding only where the code plainly contradicts a `Closes` issue's stated acceptance. Do NOT rule on whether a `Closes` is "earned"; that is the spec axis's bar and it has calibration you do not. Mark any such finding `spec (secondary)`, and say it defers to `pr-spec-reviewer` if that axis ran — the parent has no precedence rule, so an unlabelled low-fidelity finding can block a marker the real spec axis cleared.
+  Secondary means: read `Closes #N` / `Refs #N` off the PR body first (`gh pr view <N> --json body`) — **`Refs` is an issue the PR explicitly disclaims closing, so demanding full satisfaction from it manufactures blockers** — and raise a spec finding only where the code plainly contradicts a `Closes` issue's stated acceptance. Do NOT rule on whether a `Closes` is "earned"; that is the spec axis's bar and it has calibration you do not.
+
+  **If the body declares no `Closes`, SAY SO rather than staying silent.** A pass that iterates zero times and reports nothing is indistinguishable from one that checked and found nothing — the same vacuous-clean defect the spec axis carries a `No spec declared` arm for. go-to-k/cdkd#3169 is that shape.
+
+  Mark any such finding `spec (secondary)` and say it defers to `pr-spec-reviewer` if that axis ran. **Cap it at `minor` unless it is independently a code defect**: the parent sorts on SEVERITY alone, so a `blocker` here blocks the marker whatever the defer sentence says, and this pass does not have the calibration to earn that.
 - Documentation prose.
 
 ## Report format
