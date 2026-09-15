@@ -221,21 +221,36 @@ describe('the user-facing text', () => {
       toBeGreaterThan(repairAt);
 
     const body = src.slice(repairAt, endAt);
-    const results = body.split('unverifiableReads:').length - 1;
-    const flagged = body.split('malformedResources ? { malformedResources }').length - 1;
+
+    // PER LITERAL, not a union total. B1 was a DISTRIBUTION defect — one arm
+    // carried the spread twice and the other zero — so `2 spreads across 2
+    // literals` was true of the BUG and of the fix alike, and a summed fence
+    // passes on the source it exists to reject (measured against both blobs).
+    // Splitting on the required field and counting inside each literal is what
+    // makes `[2, 0]` distinguishable from `[1, 1]`.
+    const perLiteral = body
+      .split('unverifiableReads:')
+      .slice(1)
+      .map((rest) => {
+        const close = rest.indexOf('};');
+        const literal = close >= 0 ? rest.slice(0, close) : rest;
+        return literal.split('malformedResources ? { malformedResources }').length - 1;
+      });
 
     expect(
-      results,
+      perLiteral.length,
       'found fewer than two ScrubStackResult literals after the repair; this fence is ' +
         'asserting nothing'
     ).toBeGreaterThanOrEqual(2);
     expect(
-      flagged,
-      `${results} ScrubStackResult literal(s) are returned after the repair but only ${flagged} ` +
-        `carry \`malformedResources\`. A stack whose resources bag was repaired can return ` +
-        `through an unflagged one, and the finding is then lost — \`--dry-run --fail\` reports ` +
-        `a clean run over a record it never read (go-to-k/cdkd#3018).`
-    ).toBe(results);
+      perLiteral,
+      `each ScrubStackResult returned after the repair must carry \`malformedResources\` ` +
+        `exactly once; got ${JSON.stringify(perLiteral)}. A zero means a stack whose resources ` +
+        `bag was repaired can return through that arm with the finding LOST — ` +
+        `\`--dry-run --fail\` then reports a clean run over a record it never read ` +
+        `(go-to-k/cdkd#3018). A two means a duplicate spread, which is how the missing one was ` +
+        `masked the first time.`
+    ).toEqual(perLiteral.map(() => 1));
   });
 
   it('the malformed-record finding is raised INSIDE the --dry-run branch', () => {

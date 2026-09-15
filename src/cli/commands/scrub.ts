@@ -1082,8 +1082,8 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   }
   // Unreachable today -- only the `--dry-run` branch above repairs, and it
   // returns. Kept so a later writer of the flag on the real-run path cannot
-  // drop the finding silently; `scrub-malformed-record-exit.test.ts` pins that
-  // the dry-run copy is the one that fires.
+  // drop the finding silently; `tests/unit/state/malformed-resources-bag.test.ts`
+  // pins that the dry-run copy is the one that fires.
   if (malformedRecords.length > 0) throw malformedRecordsAuditedError(malformedRecords);
   // `totalStacksWithUnverifiableReads` joins the key-only leak here for the
   // reason stated on that counter: a real run cannot fix either one, so exiting

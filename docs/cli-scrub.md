@@ -321,7 +321,7 @@ cannot rewrite. Two shapes qualify, and both are also reported in words:
 
 ## Refusals
 
-Five error codes stop the run rather than reporting it clean. All exit `2`.
+These error codes stop the run rather than reporting it clean. All exit `2`.
 
 | Code | What triggers it | What to do |
 | --- | --- | --- |
@@ -329,6 +329,7 @@ Five error codes stop the run rather than reporting it clean. All exit `2`.
 | `SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT` | The read succeeded, but the producer's own state still stores the plaintext instead of the expression. | `cdkd scrub <producer>` first, then re-run. For a chain, every stack in it, head first. |
 | `SCRUB_CROSS_REGION_SECRET_UNRESOLVED` | A secret reference whose ARN names another region could not be read in that region. | Grant the read there, or restore the secret. scrub will not fall back to the stack's own region. |
 | `SCRUB_STACKS_FAILED` | Under `--all`, one or more stacks ended in one of the above. | Fix each named stack; the others were still scrubbed. Each stack's own reason was logged as it happened. |
+| `STATE_RESOURCES_MALFORMED` | A state record's `resources` map is absent, `null`, or not an object. A real run refuses it; `--dry-run` audits the outputs and reports this rather than a clean result. | Inspect the record with `cdkd state show <stack> --stack-region <region> --json` and repair or remove it. Do NOT `cdkd deploy` or `cdkd destroy` against it first. |
 | `SCRUB_EXPORT_INDEX_INCOMPLETE` | `state.json` was rewritten and an entry of the [exports index](#the-exports-index) was not — a refused write, or a region whose index could not be read. | Clear the cause (usually an S3 permission on `{state-prefix}/_index/...`) and re-run. The re-run writes only the entries still differing. |
 
 Everything else the per-item best-effort handler swallows is unchanged: a
