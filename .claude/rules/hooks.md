@@ -778,15 +778,29 @@ three integ gates first check whether the merged PR's diff touches their
 scope (via `gh pr view <N> --json files`) before consulting the marker —
 `integ-destroy-gate` against its delete-logic patterns, `integ-broad-gate`
 against `CROSS_CUTTING_REGEX`, `integ-local-gate` against
-`^src/local/|^src/cli/commands/local-*\.ts$|^tests/integration/local-`. A PR
-touching none of a gate's scope passes even with a stale marker — the integ
-markers carry a 14d TTL, so without the guard an expired marker would block
-EVERY merge. The three are scoped by different mechanisms: `integ-destroy` by
-this branch's delta against `origin/main` (markgate 0.4 `hash: diff`);
-`integ-local` by its file-scope content; `integ-broad` by a sentinel file a
-pull cannot touch. `integ-local-gate` — the only gate also firing on
-`git merge` — additionally scope-checks `git merge [flags] <ref>` (issue
-#1204) via `git diff --name-only HEAD...<ref>`, so the routine post-squash
+`^src/local/|^src/cli/commands/local-*\.ts$|^tests/integration/local-` **plus
+a second question a path list cannot answer** (go-to-k/cdkd#3040): when no
+path matches, the PR's diff (`gh pr diff <N>`) is read for a CHANGE to the
+`"cdk-local":` line of a `package.json` — a `-` and a `+` line both, inside a
+`package.json` file block. cdk-local IS the local-execution engine
+(`src/local/**` is largely shims over it), so a version bump moves what
+`cdkd local` does with zero lines under any scope path — measured on
+go-to-k/cdkd#3053, two user-visible deltas in a diff of manifest + lockfile +
+tests, merged ungated. The test is deliberately that narrow: a lockfile-only
+re-resolve (its rows are spelled `cdk-local:` unquoted), an unrelated dep
+bump beside the line, and prose in a README all stay out of scope, because
+`^package\.json$` in the regex would fire on every dependabot PR, which is the
+shape that gets a gate disabled rather than obeyed. `gh pr diff` failing
+decides scope from the file list alone (the sibling gates' infra fail-open).
+A PR touching none of a gate's scope passes even with a stale marker — the
+integ markers carry a 14d TTL, so without the guard an expired marker would
+block EVERY merge. The three are scoped by different mechanisms:
+`integ-destroy` by this branch's delta against `origin/main` (markgate 0.4
+`hash: diff`); `integ-local` by its file-scope content; `integ-broad` by a
+sentinel file a pull cannot touch. `integ-local-gate` — the only gate also
+firing on `git merge` — additionally scope-checks `git merge [flags] <ref>`
+(issue #1204) via `git diff --name-only HEAD...<ref>` and the same cdk-local
+question over `git diff HEAD...<ref>`, so the routine post-squash
 `git merge --ff-only origin/main` passes even with a stale marker; the
 merge-ref parse is a token walk and bails to the unconditional verify on
 `--abort` / `--continue` / `--quit`, octopus (2+ refs), or an unresolvable
@@ -862,7 +876,52 @@ substitution is a segment opener too, so a verb inside one arms the gates.
   introducing the helper was itself blocked by `integ-broad-gate` because its
   `git commit -F -` body quoted a chained merge command. The stripper keeps
   the OPENING line and drops through the terminator, handling `<<-` and
-  quoted / unquoted delimiters.
+  quoted / unquoted delimiters. **A heredoc INSIDE a `$( )` was not covered
+  until go-to-k/cdkd#3040**: a `$(` still open at end of line makes the
+  segmenter JOIN the following lines with `;` into one logical line BEFORE any
+  heredoc is recognised, so the body of `--body "$(cat <<'EOF' … EOF)"`
+  arrived in the substitution drain as `;`-separated commands, and prose
+  quoting `gh pr merge` refused `gh issue create` under `integ-local-gate`
+  (the backtick spans in that prose were then taken as nested substitutions
+  too). The join now latches onto the opener's delimiter under the same
+  terminator look-ahead the top-level `tag` uses and drops the body lines,
+  terminator included; a verb AFTER the terminator, inside the substitution
+  or after it closes, is still a segment, and an opener with no terminator
+  latches nothing — the fail-closed half, pinned in `command-match.test.sh`
+  and priced as `SUBST_HEREDOC` in the differential. go-to-k/cdkd#3066
+  (a LATER top-level heredoc reusing the delimiter: the body's re-flush in
+  `drain_extra` left `pending_tag` set and the top-level latch swallowed the
+  verb up to that later terminator, on `origin/main` too) closed with it —
+  `drain_extra` saves and restores `pending_tag` as it does `q`.
+  **Three things about
+  that latch are load-bearing, each measured against shapes bash executes
+  and origin/main matched**: the opener scan reads the PHYSICAL line, never
+  the joined `$(` text — the join re-finds an opener whose heredoc already
+  closed, and a later bare delimiter swallows the commands in between; the scan is QUOTE-AWARE
+  with a per-depth STACK — `$(` and a bare `(` push the quote state and the
+  matching `)` restores it, a backtick frame is skipped TEXTUALLY to the next unescaped backtick (bash reads no quote inside one), `${…}` / `$((…))` / a `#` comment (after an unescaped space, or a `)` closing a bare `( )` — `$(x)#` and `\)#` glue) are
+  skipped whole — and it BAILS to "no opener" on any line it cannot read to
+  the end: an unbalanced quote, a new `$(` or backtick still open after the delimiter, or — sticky to the close — the
+  opener's OWN frame closing on that line (`y=$(cat <<'EOF') ; z=$(` — shells
+  disagree there), an unterminated `$((` / `${`, or a quote, backtick or backslash in `${…}`; so a `'<<X'` mention plus a bare `X` later is prose; and the
+  latch is **QUOTED-DELIMITER ONLY** — the delimiter being the whole WORD
+  after quote removal (`<<'EOF'x` is `EOFx`, `<<\EOF` is quoted), in this arm and the
+  top-level one, which latches an unquoted word only when a whole identifier
+  (`origin/main` latched an identifier PREFIX — a decoy) — and an unquoted or unreadable opener ANYWHERE in the substitution is a
+  bail, sticky to its close: `cat <<A <<'B'` expands the A body first, so recording only B
+  dropped a verb. That lexer state CARRIES across the physical lines of one
+  `$( )` and resets when it closes. A body line beginning with the delimiter
+  and carrying a `)` ends the latch (bash 5 and 3.2 close the `$( )` there);
+  bash 3.2 alone also closes on ANY `)` in a body — not modelled. A
+  `<<EOF` body is expanded by bash — `$(git commit)` on a body line runs —
+  and two review rounds each measured a body-line shape a fall-through
+  still dropped, so under an unquoted delimiter the body is
+  read as commands, exactly as origin/main read it: a false REFUSAL of prose,
+  never a miss. The top-level `tag` keeps its pre-existing drop-everything
+  policy: a `$(git commit)` inside an unquoted-delimiter heredoc at TOP
+  level is run by bash and matched by nothing, on origin/main and here alike
+  — a known fail-open that predates this work and is NOT widened by it,
+  stated here so the two heredoc paths are not read as equivalent.
 - The `cd <path> &&` special case disappears — it is just a verb after `&&`.
 
 **Two gaps in the old anchor — issue

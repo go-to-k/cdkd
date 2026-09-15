@@ -157,6 +157,47 @@ cd "$target_dir" 2>/dev/null || exit 0
 # (conservative — we cannot cheaply enumerate the incoming diff there).
 LOCAL_SCOPE_REGEX='^src/local/|^src/cli/commands/local-[A-Za-z0-9_-]*\.ts$|^tests/integration/local-'
 
+# A PATH regex cannot see the change most certain to move local-execution
+# behaviour: a `cdk-local` VERSION bump. cdk-local IS the local-execution
+# engine -- `src/local/**` is largely shims over it -- so a bump changes what
+# `cdkd local` does with zero lines under any path above. Measured on
+# go-to-k/cdkd#3053 (0.147.7 -> 0.148.4): two user-visible deltas, an ECR-host
+# partition fix and a withheld resolver error text, and the diff was
+# `package.json` / `pnpm-lock.yaml` / tests / a rule file -- out of scope, so
+# the merge was ungated (go-to-k/cdkd#3040).
+#
+# `bumps_cdk_local <unified diff>` answers whether that diff CHANGES the
+# `cdk-local` dependency line of a `package.json`: a `-` line AND a `+` line
+# both carrying `"cdk-local":`, inside a `package.json` file block. Both
+# polarities, like integ-schema-migration-gate's version-bump test, so a
+# comment or an unrelated hunk in the manifest does not fire it; the
+# `package.json` restriction so the lockfile's own `cdk-local:` rows (a
+# different, unquoted shape) and any prose mentioning the string do not either.
+# Precise rather than `^package\.json$` in the scope regex on purpose: that
+# would fire on every dependabot PR in the repo, which is the shape that gets a
+# gate disabled rather than obeyed.
+#
+# KNOWN LIMIT, chosen rather than overlooked: a lockfile-only re-resolve inside
+# the caret range (`pnpm update cdk-local` moving 0.148.4 -> 0.148.9 with no
+# manifest edit) is a cdk-local change this does not see. The lockfile's
+# `version:` row carries the PEER resolution as a suffix
+# (`0.148.4(aws-cdk-lib@2.268.0(...))`), so it also changes when aws-cdk-lib
+# or constructs move -- keying on it would fire on every bump of those, which
+# is the same disabling shape. Dependabot edits the manifest for this repo's
+# direct dependencies -- measured on its own go-to-k/cdkd#2725 (cdk-local) and
+# go-to-k/cdkd#2498 (archiver), both of which moved the `package.json` range --
+# so the shape that reaches `main` unattended is covered; the by-hand in-range
+# update is the residue, and it is named here so nobody reads the manifest
+# test as complete.
+bumps_cdk_local() {
+  printf '%s\n' "$1" | awk '
+    /^diff --git / { in_pkg = ($0 ~ /^diff --git a\/(.*\/)?package\.json b\/(.*\/)?package\.json$/) ; next }
+    in_pkg && /^-[[:space:]]*"cdk-local":/ { minus = 1 }
+    in_pkg && /^\+[[:space:]]*"cdk-local":/ { plus = 1 }
+    END { exit (minus && plus) ? 0 : 1 }
+  '
+}
+
 # The SHARED matcher, not a local grep. The hand-rolled copy absorbed only a
 # `-C` with an unquoted value, so `gh -C "/a b" pr merge <N>` and
 # `gh -R <repo> pr merge <N>` skipped the PR-diff scope check below and took the
@@ -199,7 +240,24 @@ if gate_matches "$cmd" "$GATE_RE_GH_PR_MERGE"; then
     done <<EOF_FILES
 $paths
 EOF_FILES
-    # No local-execution file in the PR diff -> this gate does not apply.
+    # No local-execution FILE in the PR diff. Before passing through, ask the
+    # question the path list cannot answer: does the diff bump `cdk-local`?
+    # Same infra fail-open as the file list above -- an unrelated gh outage
+    # must not block merges -- but a diff that IS readable and carries the bump
+    # arms the gate exactly as a `src/local/**` edit would. `--color never`
+    # is pinned: `gh pr diff` defaults to `--color auto`, and under
+    # `GH_FORCE_TTY` (or a real terminal) the header and every `-`/`+` line
+    # arrive wrapped in SGR escapes, so the anchored `^diff --git ` and
+    # `^[-+]` keys in `bumps_cdk_local` match nothing -- a silent fail-open.
+    if [ "$touches_local" -eq 0 ]; then
+      if pr_diff=$(gh pr diff "$pr_number" --color never 2>/dev/null); then
+        if bumps_cdk_local "$pr_diff"; then
+          touches_local=1
+        fi
+      else
+        printf 'integ-local-gate: gh pr diff %s failed; scope decided from the file list alone (infra fail-open)\n' "$pr_number" >&2
+      fi
+    fi
     if [ "$touches_local" -eq 0 ]; then
       exit 0
     fi
@@ -284,7 +342,13 @@ if gate_matches "$cmd" "$GATE_RE_GIT_MERGE" \
 
   if [ "$parse_ok" -eq 1 ] && [ -n "$merge_ref" ] \
     && git rev-parse --verify --quiet "${merge_ref}^{commit}" >/dev/null 2>&1; then
-    if incoming=$(git diff --name-only "HEAD...${merge_ref}" 2>/dev/null); then
+    # `--no-relative` on BOTH readers: with `diff.relative=true` a `git diff`
+    # run from a subdirectory drops every path outside it, so a merge issued
+    # from `tests/` would see no `src/local/**` and no root `package.json` at
+    # all (measured, git 2.49: 0 lines from `sub/`, the root manifest back
+    # with the flag). The hook runs in the payload cwd, which is wherever
+    # the agent happened to be.
+    if incoming=$(git diff --no-relative --name-only "HEAD...${merge_ref}" 2>/dev/null); then
       touches_local=0
       while IFS= read -r f; do
         [ -z "$f" ] && continue
@@ -295,6 +359,30 @@ if gate_matches "$cmd" "$GATE_RE_GIT_MERGE" \
       done <<EOF_INCOMING
 $incoming
 EOF_INCOMING
+      # Same second question as the `gh pr merge` branch, over the incoming
+      # range's own diff. A `git diff` that fails leaves `touches_local` at 0,
+      # which is the existing pass-through for an unreadable range.
+      if [ "$touches_local" -eq 0 ]; then
+        # The prefixes and the colour are PINNED, because `bumps_cdk_local`
+        # keys on the `diff --git a/... b/...` header and on `^-` / `^+`, and
+        # a bare `git diff` inherits the user's config. Measured on git
+        # 2.x (code review of go-to-k/cdkd#3040): `diff.noprefix=true`
+        # prints `diff --git package.json package.json` for a commit range;
+        # `diff.mnemonicPrefix=true` does NOT touch a commit-range header
+        # (its `i/ w/` prefixes are for a worktree diff), so it is not the
+        # threat here, but `--src-prefix` / `--dst-prefix` cost nothing and
+        # settle both; and `color.ui=always` (or `color.diff=always`) wraps
+        # the header and every changed line in SGR escapes EVEN INTO A PIPE,
+        # so without `--no-color` this branch alone goes fail-open. `gh pr
+        # diff` is API output with no git config behind it; its own colour
+        # flag is pinned at the call above. (`diff.srcPrefix` / `dstPrefix`,
+        # git 2.45+, rewrite the header too and are settled by the same two
+        # flags.)
+        if incoming_diff=$(git diff --no-relative --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ "HEAD...${merge_ref}" 2>/dev/null) \
+          && bumps_cdk_local "$incoming_diff"; then
+          touches_local=1
+        fi
+      fi
       # No local-execution file in the incoming range -> gate does not apply.
       if [ "$touches_local" -eq 0 ]; then
         exit 0
