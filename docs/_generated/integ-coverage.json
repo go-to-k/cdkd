@@ -3684,6 +3684,7 @@
         "recreate-via-sdk-provider",
         "retain-orphan-redeploy",
         "rollback-failure-injection",
+        "rollback-replay-cc-generated-name",
         "s3-replication-and-filter",
         "scheduler-custom-group",
         "sdk-ccapi-crossref",
@@ -3886,6 +3887,10 @@
         ],
         "rollback-failure-injection": [
           "l2"
+        ],
+        "rollback-replay-cc-generated-name": [
+          "l1",
+          "literal"
         ],
         "s3-replication-and-filter": [
           "l2",
@@ -5480,6 +5485,7 @@
         "rollback-deletion-policy-snapshot",
         "rollback-failure-injection",
         "rollback-replacement-retain",
+        "rollback-replay-cc-generated-name",
         "rollback-replay-effective-props",
         "rollback-sqs-cooldown",
         "scheduler-custom-group",
@@ -5596,6 +5602,9 @@
           "l1"
         ],
         "rollback-replacement-retain": [
+          "l1"
+        ],
+        "rollback-replay-cc-generated-name": [
           "l1"
         ],
         "rollback-replay-effective-props": [

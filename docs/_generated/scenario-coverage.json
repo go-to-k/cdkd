@@ -1793,6 +1793,11 @@
       ]
     },
     {
+      "name": "rollback-replay-cc-generated-name",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "rollback-replay-effective-props",
       "annotated": true,
       "scenarios": [
@@ -2919,6 +2924,7 @@
     "retain-orphan-redeploy",
     "retain-orphan-secret",
     "rollback-command",
+    "rollback-replay-cc-generated-name",
     "s3-analytics-inventory",
     "s3-event-notification",
     "s3-lifecycle",

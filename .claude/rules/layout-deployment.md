@@ -165,12 +165,10 @@ Index of every area: [code-layout.md](code-layout.md).
     `drift --revert`) thread `maskSecrets` at every create/update site (the
     five providers that re-create inside their own `update()` do NOT), so
     fences read the context's KEY SET, not the call's arity.
-  - The replay-CREATE HONORS the provider's `effectiveProperties` (issue
-    #1682): the bag handed to `create()` IS `previousState.properties`, so a
-    returned bag replaces the record's `properties` wholesale and reporting
-    none keeps the previous bag. Pre-#1682 the arm's narrow local result type
-    dropped a substituted bag — do not re-narrow it. Real-AWS net:
-    `tests/integration/rollback-replay-effective-props/`.
+  - What reaches the replay-CREATE's `create()` — the `effectiveProperties`
+    honouring (issue #1682) and the Cloud Control fallback-name fill (issue
+    #3199) — is in
+    [rollback-replay-create.md](rollback-replay-create.md).
   - The providers that re-create inside their own `update()` (ACM
     certificate / IAM managed policy / IAM role / Lambda permission / SNS
     subscription) forward a STATE record on a replay but CANNOT receive a

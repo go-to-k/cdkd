@@ -328,6 +328,7 @@
         "replacement-immutable-name",
         "rollback-command",
         "rollback-replacement-retain",
+        "rollback-replay-cc-generated-name",
         "rollback-replay-effective-props",
         "rollback-sqs-cooldown",
         "update-replace"
@@ -565,6 +566,7 @@
         "rollback-deletion-policy-snapshot",
         "rollback-failure-injection",
         "rollback-replacement-retain",
+        "rollback-replay-cc-generated-name",
         "rollback-replay-effective-props",
         "rollback-sqs-cooldown",
         "route53",
@@ -642,7 +644,8 @@
         "loggroup-never-expire-guard",
         "recreate-mixed-direction",
         "recreate-nested-logical-id-collision",
-        "recreate-via-cc-api"
+        "recreate-via-cc-api",
+        "rollback-replay-cc-generated-name"
       ]
     },
     {
@@ -836,6 +839,7 @@
         "rollback-cross-region-secret",
         "rollback-deletion-policy-snapshot",
         "rollback-failure-injection",
+        "rollback-replay-cc-generated-name",
         "rollback-sqs-cooldown",
         "route53",
         "s3-analytics-inventory",
@@ -910,7 +914,8 @@
         "glue-securityconfig-replace",
         "lambda-durable-replacement",
         "lambda-layer-version-update",
-        "loggroup-class-guard"
+        "loggroup-class-guard",
+        "rollback-replay-cc-generated-name"
       ]
     },
     {
@@ -1135,6 +1140,7 @@
         "rollback-deletion-policy-snapshot",
         "rollback-failure-injection",
         "rollback-replacement-retain",
+        "rollback-replay-cc-generated-name",
         "rollback-replay-effective-props",
         "rollback-sqs-cooldown",
         "route53",
@@ -1413,6 +1419,7 @@
         "rollback-cross-region-secret",
         "rollback-deletion-policy-snapshot",
         "rollback-replacement-retain",
+        "rollback-replay-cc-generated-name",
         "rollback-replay-effective-props",
         "route53",
         "s3-analytics-inventory",
@@ -1686,6 +1693,7 @@
     "--password",
     "--password-stdin",
     "--path",
+    "--path-prefix",
     "--payload",
     "--pending-window-in-days",
     "--permissions-config",

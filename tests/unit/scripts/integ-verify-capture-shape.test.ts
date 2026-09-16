@@ -47,6 +47,7 @@ const CAPTURE_FIXTURES = [
   'local-invoke-provided',
   'local-invoke-python',
   'local-invoke-ruby',
+  'rollback-replay-cc-generated-name',
 ].sort();
 
 function readFixtures() {

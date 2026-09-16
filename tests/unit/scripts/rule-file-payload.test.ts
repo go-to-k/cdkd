@@ -330,6 +330,9 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   // population integ-verify-capture-shape.test.ts floors at 250.
   ['abort-capture.md', 250],
   ['providers.md', 92],
+  // literal list: EXACT. One path — the satellite is about `rollback-executor.ts`
+  // and nothing else, which is what keeps it off `secret-redaction.ts`'s payload.
+  ['rollback-replay-create.md', 1],
   ['session-report.md', 1], // literal list: EXACT, see below
   ['state-schema.md', 5],
   ['state-version-purge.md', 2], // literal list: EXACT, see below
@@ -382,6 +385,19 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // without this row the satellite would sit under no budget at all. Payload
   // is layout-deployment.md + architecture.md + code-layout.md + the satellite.
   ['src/deployment/no-change-outputs-merge.ts', 50_000, 62_000], // measured 56,993
+  // The one path that loads `rollback-replay-create.md` (go-to-k/cdkd#3199);
+  // without this row the satellite would sit under no budget at all. Payload is
+  // layout-deployment.md + architecture.md + code-layout.md + delete-outcome.md
+  // + the satellite. It does NOT load layout-deployment-secrets.md, which is
+  // what keeps this path's band well under `secret-redaction.ts`'s.
+  //
+  // Band calibrated to this file's own doctrine rather than picked round: the
+  // floor sits ~12% under the measurement (matching the sibling row above, not
+  // the ~20% a 50,000 floor would give), and the cap's slack is kept BELOW the
+  // size of the smallest satellite on the path (`rollback-replay-create.md`,
+  // 4,158 B) so a satellite going dark cannot be absorbed silently — the
+  // hazard the s3-bucket row documents.
+  ['src/deployment/rollback-executor.ts', 54_500, 66_000], // measured 62,112
   // The path family that loads `abort-capture.md` (go-to-k/cdkd#3126): payload
   // is testing.md + the satellite. Sized so the satellite cannot quietly grow
   // into a second testing.md while the parent sits at its own cap.
@@ -1234,7 +1250,13 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 // Neither branch's figure is the merged one. That is the whole reason this
 // count is asserted rather than described: two correct increments compose to a
 // number neither author wrote.
-const CORPUS_FILE_COUNT = 57; // + own-keys.md (go-to-k/cdkd#3121): layout-utils.md sat 118 B under
+const CORPUS_FILE_COUNT = 58; // + rollback-replay-create.md (go-to-k/cdkd#3199): the replay-CREATE's
+                              //  Cloud Control fallback-name fill took
+                              //  `src/deployment/secret-redaction.ts` 1,721 B over its 102,000 B
+                              //  cap, so the replay-CREATE bag rules (the #1682 effectiveProperties
+                              //  honouring and the #3199 fill) moved to a satellite globbed at
+                              //  `rollback-executor.ts` alone, with a one-line pointer left behind.
+                              // Was 57: + own-keys.md (go-to-k/cdkd#3121): layout-utils.md sat 118 B under
                               //  the `aws-client-defaults.ts` path cap, so the own-key rule got
                               //  its own satellite with a one-line pointer left behind.
                               // Was 56: + abort-capture.md (go-to-k/cdkd#3126): testing.md sat 38 B under
