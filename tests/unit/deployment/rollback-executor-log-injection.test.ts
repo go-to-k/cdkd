@@ -428,6 +428,72 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     expect(line).toContain(`Rollback: ${'B'.repeat(255)} [cut: 45 more characters withheld] already reverted`);
   });
 
+  it('the #3203 refusal messages: the logicalId reaches them as a helper PARAMETER too', async () => {
+    // `requireRestorableBaseline` renders `${safe(logicalId)}` from its own
+    // PARAMETER, so the source fence below -- which matches `${op.<field>}` --
+    // cannot see it, and dropping `safe(` from it was measured 0 red across
+    // `tests/unit/`. Same structural gap as the readopt case above, on a newer
+    // helper; the planted-journal threat model (go-to-k/cdkd#3092) reaches both
+    // of these arms, so the render is exercised rather than pattern-matched.
+    //
+    // Both halves, because they render independently: the SKIP warn (absent
+    // bag) and the THROW (present but unusable).
+    const { ctx: skipCtx, lines: skipLines } = makeCtx({ update: vi.fn() });
+    await replayRollback(
+      [
+        {
+          logicalId: FORGED_ID,
+          changeType: 'UPDATE',
+          resourceType: FORGED_TYPE,
+          physicalId: 'phys',
+          previousState: (() => {
+            const { properties: _dropped, ...rest } = res({ physicalId: 'phys' });
+            return rest as ResourceState;
+          })(),
+        },
+      ],
+      { [FORGED_ID]: res({ physicalId: 'phys', properties: { a: 1 } }) },
+      'S',
+      skipCtx
+    );
+    const skipWarn = skipLines.find((l) => l.includes('has no `properties` bag'));
+    expect(skipWarn).toBeDefined();
+    expect(skipWarn!.split('\n')).toHaveLength(1);
+    expect(skipWarn).not.toMatch(INVISIBLE);
+    expect(forgedLines(skipLines)).toEqual([]);
+    // The BOUNDARY, not just the class. Single-line + no-INVISIBLE + no forged
+    // line all still pass under `displaySafe(id, { asciiOnly: true })`, which
+    // is `displayIdent` minus the 255-codepoint cap, minus `UNRENDERABLE` and
+    // minus the quoting -- measured 0 red. Only `displayIdent` QUOTES a
+    // non-plain id, and the quote is what keeps a same-line spoof from reading
+    // as cdkd's own annotation.
+    expect(skipWarn).toContain('"Vic tim');
+
+    const { ctx: throwCtx, lines: throwLines } = makeCtx({ update: vi.fn() });
+    const throwResult = await replayRollback(
+      [
+        {
+          logicalId: FORGED_ID,
+          changeType: 'UPDATE',
+          resourceType: FORGED_TYPE,
+          physicalId: 'phys',
+          previousState: { ...res({ physicalId: 'phys' }), properties: 'abc' } as unknown as ResourceState,
+        },
+      ],
+      { [FORGED_ID]: res({ physicalId: 'phys', properties: { a: 1 } }) },
+      'S',
+      throwCtx
+    );
+    expect(throwResult.failures).toBe(1);
+    const throwLine = throwLines.find((l) => l.includes('not a property bag'));
+    expect(throwLine).toBeDefined();
+    expect(throwLine!.split('\n')).toHaveLength(1);
+    expect(throwLine).not.toMatch(INVISIBLE);
+    expect(forgedLines(throwLines)).toEqual([]);
+    // Same boundary on the throw render, which is a separate interpolation.
+    expect(throwLine).toContain('"Vic tim');
+  });
+
   it('the readopt-Retain WARN: a field passed through a helper PARAMETER is still sanitized', async () => {
     // The first round's population was every `${op.<field>}` interpolation --
     // and this line escaped it, because `retainedSurvivorMessages()` receives

@@ -414,6 +414,160 @@ export function retainedSurvivorMessages(
 }
 
 /**
+ * What a replay arm may do with the desired bag it is about to restore TO
+ * (issue #3203), and the one place the two dispositions are decided.
+ *
+ * Every arm coalesced its bag (`?? {}`), and `{}` is not a no-op: it is a
+ * COMPLETE desired state saying "this resource has no properties". What that
+ * costs depends on the ROUTE, so the caller passes the consequence rather than
+ * this helper asserting one: a patch provider removes every property
+ * (`JsonPatchGenerator.generatePatch`, called with no empty-desired guard);
+ * an SDK provider may instead RESET a subset or, where the bag names the
+ * resource (`IAMRoleProvider`'s `newRoleName`), create a replacement and
+ * delete the live one.
+ *
+ * TWO dispositions, and the seam is what the record actually holds -- each
+ * half follows an existing sibling rather than inventing a rule:
+ *
+ * - ABSENT (`undefined`): nothing was ever recorded, so there is nothing to
+ *   preserve and nothing a retry could use. SKIPPED, like
+ *   `skip-failed-absent`: the op is warned and the pass continues, the journal
+ *   segment pops, and the operator re-converges with `cdkd deploy`.
+ * - PRESENT but unusable (`null`, a string, an array): something was recorded
+ *   and only its shape is wrong. REFUSED by throwing, like
+ *   {@link refuseMaskedReplayBaseline}, whose case is the same class (a
+ *   desired bag that exists and cannot be used): the op counts as a FAILURE,
+ *   which keeps the segment from popping so a repaired record can be retried.
+ *   "Repairable" is the conservative reading rather than a promise -- the
+ *   security review measured that `null` and `[]` carry nothing to repair FROM,
+ *   and only a JSON-stringified object really does -- but keeping a
+ *   hand-edited artifact costs the user exit 2 and nothing else, while popping
+ *   it is irreversible. The RETRY phrase is per-arm: the failed-op arm runs
+ *   only under `--revert-failed`, so a plain `cdkd rollback` re-run there
+ *   replays the completed ops, pops the whole segment and discards the very
+ *   record this refusal preserved (measured by the code review).
+ *
+ * Reachability, because it decides what the message may promise, and it is NOT
+ * uniform across the three arms:
+ *
+ * - The two {@link replaySingle} arms are reached from the AUTOMATIC rollback
+ *   (`deploy-engine.ts` calls `replayRollback` directly), whose ops come from
+ *   `state.json` and pass no parser. That is where the throw has a live
+ *   producer. On the `cdkd rollback` path go-to-k/cdkd#3149 refuses the same
+ *   record at `parseRollbackJournal` first, with its own remedy.
+ * - The failed-op arm has NO such producer for its THROW.
+ *   `replayFailedOperations` has ONE caller (`src/cli/commands/rollback.ts`),
+ *   and that path is fed by `parseRollbackJournal`, whose
+ *   `refuseMalformedOperation` runs over `failedOperations[]` as well and
+ *   already rejects a non-object `previousState.properties`. So its throw, its
+ *   `--revert-failed` retry phrase and the case pinning them are kept for
+ *   PARITY -- the three arms answer one question and an arm that answered it
+ *   differently would be the defect. Its SKIP half IS reachable: the parser
+ *   TOLERATES an absent bag by an explicit decision, so only the present-
+ *   but-unusable shapes are filtered upstream.
+ *
+ * Neither message offers `cdkd rollback --orphan <id>`, but the reason DIFFERS
+ * by half and an earlier revision of this comment gave the throw's reason for
+ * both under an "Either way" (caught in review):
+ *
+ * - THROW: the parser refusal precedes that remedy, so it names the JOURNAL
+ *   record -- what `parseRollbackJournal` reads.
+ * - SKIP: the parser tolerates this record, so nothing precedes anything. The
+ *   omission is right for its own reason -- `--orphan` on an UPDATE op only
+ *   logs "Leaving X at its new state" and returns, which is the outcome the
+ *   skip already produces. Its message says "recorded previous state" rather
+ *   than "JOURNAL record", which is the accurate wording for a path whose
+ *   record is as often STATE-sourced.
+ *
+ * The two reviews of this change disagreed about which disposition applied,
+ * one reading "state and AWS stay consistent" (true for both) and the other
+ * "the skip deletes the only repairable copy" (true only for the present
+ * half). The split is the answer to both.
+ *
+ * Returns `false` when the caller should skip; throws when it must refuse.
+ *
+ * The three message strings arrive as a NAMED BAG rather than positionally.
+ * That is the round-2 BLOCKER's class removed at the type level rather than
+ * patched: `remedy` and `retry` are both `string`, a swap between them
+ * compiles, and on the `--revert-failed` arm a wrong `retry` tells the
+ * operator to run the command that DESTROYS the record this refusal just
+ * preserved. Review then measured that two of these positions were 0-red, so
+ * assertions alone were not holding the line either.
+ */
+interface RestorableBaselineRefusal {
+  /** Logical id of the op being replayed; rendered through {@link safe}. */
+  logicalId: string;
+  /** What replaying an unusable bag would DO, in the arm's own terms. */
+  consequence: string;
+  /** What re-converges the resource after a SKIP. */
+  remedy: string;
+  /** Which command retries the op after a THROW -- arm-specific. */
+  retry: string;
+}
+
+function requireRestorableBaseline(
+  bag: unknown,
+  logger: RollbackExecutorContext['logger'],
+  { logicalId, consequence, remedy, retry }: RestorableBaselineRefusal
+): bag is Record<string, unknown> {
+  if (isRestorableBag(bag)) return true;
+  if (bag === undefined) {
+    logger.warn(
+      `  Rollback: Cannot restore ${safe(logicalId)} \u2014 its recorded previous state has no ` +
+        `\`properties\` bag, so there is nothing to restore it to. An empty desired state ` +
+        `would ${consequence}. The resource is therefore left exactly as it is. ${remedy}`
+    );
+    return false;
+  }
+  // Article included on every arm: this renders inside `(...)` beside the two
+  // literals, and `(an array)` next to `(string)` was inconsistent (the test's
+  // own row LABEL already said `a string` while its expectation said `string`).
+  const shape = bag === null ? 'null' : Array.isArray(bag) ? 'an array' : `a ${typeof bag}`;
+  // The clause is framed to hold for ALL THREE refused shapes, which a bare
+  // `Replaying it would ${consequence}` does not (caught in review):
+  // `consequence` describes the EMPTY-bag outcome, and only `null` coalesces to
+  // `{}` -- a string or an array would reach the provider VERBATIM instead. So
+  // the empty-bag outcome is named as ONE of the two things a replay could do,
+  // not as the thing it would do. `consequence` stays rendered and per-arm:
+  // deleting it from this throw measured 0 red in round 2, and the refuse-side
+  // rows now pin it.
+  throw new CdkdError(
+    `Cannot roll ${safe(logicalId)} back: its recorded previous state has a \`properties\` ` +
+      `field that is not a property bag (${shape}), so cdkd cannot tell what to restore it to. ` +
+      `Replaying it would do one of two things, and cdkd does neither: send the malformed ` +
+      `value to the provider as-is, or send an empty desired state (which would ` +
+      `${consequence}). ` +
+      // `once ...` binds to `${retry}`, so it leads rather than trails: on the
+      // `--revert-failed` arm that value carries a 20-word parenthetical, and
+      // trailing the clause put it between the verb and its own condition.
+      `The rollback JOURNAL record is kept: once that record holds a property bag again, ` +
+      `${retry}. Otherwise fix forward with \`cdkd deploy\`, or remove the stack with ` +
+      `\`cdkd destroy\`.`,
+    'ROLLBACK_UNUSABLE_BASELINE'
+  );
+}
+
+/**
+ * Is this a desired bag a replay can actually restore TO?
+ *
+ * Absent is the shape issue #3203 started from, but `=== undefined` is the
+ * WRONG test and a 0-red mutation row is what said so: `null ?? {}` is `{}`,
+ * so a `null` bag reaches the provider as an empty desired state exactly as an
+ * absent one does. A non-object bag (`"abc"`, `[]`) is worse still -- it goes
+ * to the provider VERBATIM. go-to-k/cdkd#3149 refuses those shapes for a
+ * JOURNAL-sourced record at the parser, but `previousState` is equally often
+ * STATE-sourced, and `parseStateBody` deliberately validates no inner shape
+ * (go-to-k/cdkd#2947's placement decision), so this is the only boundary that
+ * sees them on that path.
+ *
+ * A PRESENT but empty `{}` is restorable and must pass: the operator recorded
+ * a resource that really has no properties. Only "no usable bag" is refused.
+ */
+function isRestorableBag(bag: unknown): bag is Record<string, unknown> {
+  return typeof bag === 'object' && bag !== null && !Array.isArray(bag);
+}
+
+/**
  * `DeletionPolicy: Snapshot` on a rolled-back CREATE (issue #1358) — the
  * executor's copy of the deploy engine's `prepareFinalSnapshotForDelete`
  * mechanism matrix, run BEFORE the delete. Shared with the FAILED in-flight
@@ -2328,11 +2482,28 @@ async function replaySingle(
         // resource from its journaled previousState and delete the new one.
         const current = stateResources[op.logicalId]!;
         const prev = op.previousState!;
+        // Issue #3203, BEFORE any AWS call and before the secret resolution:
+        // `{}` here would create a default-configured resource and then delete
+        // the live one.
+        if (
+          !requireRestorableBaseline(prev.properties, logger, {
+            logicalId: op.logicalId,
+            consequence: 'create a default-configured resource and then delete the live one',
+            remedy: 'Re-run `cdkd deploy` to re-converge it.',
+            retry: 're-running `cdkd rollback` retries this op',
+          })
+        ) {
+          result.warnings++;
+          return;
+        }
         // Re-resolve the redacted secret expressions for the re-CREATE (GHSA
         // fix): the old resource must be re-created with the concrete secret,
         // not the literal `{{resolve:...}}` string. `secrets` (hoisted to the
         // top of this function) captures plaintext->expression to redact the
         // rebuilt state record below AND to mask every log site downstream.
+        // The `?? {}` is DEAD AT RUNTIME since issue #3203's guard above --
+        // see the `revert` arm's note for the full reason; it is kept because
+        // `resolveReplayProps` DECLARES `| undefined` unconditionally.
         const resolvedPrevProps =
           (await resolveReplayProps(prev.properties, resolver, secrets, ctx, op.logicalId)) ?? {};
         // Issue #2274: this bag is about to be CREATED with. Refuse before the
@@ -3011,6 +3182,27 @@ async function replaySingle(
           result.warnings++;
           return;
         }
+        // Issue #3203, BEFORE the `Restoring ...` line below: announcing a
+        // restore and then refusing it reads as a failure mid-flight. The
+        // desired-side `?? {}` further down is now DEAD AT RUNTIME --
+        // `resolveReplayProps` returns `undefined` only for an absent bag,
+        // which this rejects -- and is kept because that function's DECLARED
+        // return type is unconditionally `| undefined`, so narrowing its
+        // ARGUMENT says nothing about its result. (The first spelling of this
+        // comment blamed the property access not narrowing; the review
+        // measured that against tsc and it is false.)
+        if (
+          !requireRestorableBaseline(previousState.properties, logger, {
+            logicalId: op.logicalId,
+            consequence:
+              'be applied as a complete desired state: a patch provider removes every property, and an SDK provider may reset a subset or replace the resource',
+            remedy: 'Re-run `cdkd deploy` to re-converge it.',
+            retry: 're-running `cdkd rollback` retries this op',
+          })
+        ) {
+          result.warnings++;
+          return;
+        }
         logger.info(
           `  Rollback: Restoring ${safe(op.logicalId)} (${safe(op.resourceType)}) to previous state`
         );
@@ -3121,6 +3313,21 @@ async function replaySingle(
             current.physicalId,
             op.resourceType,
             desiredProps ?? {},
+            // The PREVIOUS side is deliberately NOT guarded by issue #3203's
+            // check, and that is a recorded decision rather than an oversight
+            // the review had to infer. A malformed `current.properties` reaches
+            // the provider here verbatim, but it cannot strip a real property,
+            // and the reason is the OPPOSITE of what an earlier spelling of
+            // this comment said (it claimed no `remove` is derived from the
+            // previous side -- false: `JsonPatchGenerator.generatePatch` walks
+            // `Object.keys(previousProperties)` and every `remove` comes from
+            // exactly there). A malformed previous side can only UNDER-supply
+            // keys: `{}` yields no removes at all and turns the whole desired
+            // bag into `add`s, while a string or an array yields only junk
+            // numeric keys that name no live property. So the failure mode is a
+            // wrong patch, never a stripped resource -- and guarding it would
+            // refuse rollbacks that can still succeed. go-to-k/cdkd#3211 owns
+            // the malformed-state-record class this belongs to.
             currentProps ?? {},
             // Issue #1932 item 3: the UPDATE twin of the re-create arms above.
             // No `desiredFromAwsReadback` — this bag is `previousState.properties`,
@@ -3484,6 +3691,39 @@ export async function replayFailedOperations(
         case 'revert-failed-update': {
           const current = stateResources[op.logicalId]!;
           const prev = op.previousState!;
+          // Issue #3203, as on the `revert` arm, and the sibling of
+          // `skip-failed-absent` above: that one has no previous state at all,
+          // this one has a record with no `properties` bag. `break` rather
+          // than `return` -- this switch sits inside the failed-op loop, so
+          // one unrestorable op must not end the pass.
+          //
+          // ABOVE the `force-reverting ...` line below, for the reason round 3
+          // moved the `revert` arm's guard above its `Restoring ...` line:
+          // announcing a restore and then refusing it reads as a failure
+          // mid-flight. It is worse on THIS arm, whose announcement also
+          // asserts the remote state is unknown -- three reviewers read the
+          // guard's own "as on the `revert` arm" as a parity claim the old
+          // placement contradicted on the one dimension round 3 changed.
+          if (
+            !requireRestorableBaseline(prev.properties, logger, {
+              logicalId: op.logicalId,
+              consequence:
+                'be applied as a complete desired state: a patch provider removes every property, and an SDK provider may reset a subset or replace the resource',
+              // NOT `cdkd deploy` here: this arm's own line says the remote
+              // state is unknown, and `cdkd diff` compares the template against
+              // `state.properties` rather than an AWS readback, so a
+              // half-applied resource shows no change and is never
+              // re-converged. `cdkd drift` is the command that reads AWS.
+              remedy:
+                'Inspect it with `cdkd drift` (this op died mid-flight, so its remote state is ' +
+                'unknown) and re-converge with `cdkd drift --revert` or `cdkd deploy`.',
+              retry:
+                're-running `cdkd rollback --revert-failed` retries this op (a plain `cdkd rollback` replays only the COMPLETED ops and then pops the whole segment, discarding this record)',
+            })
+          ) {
+            result.warnings++;
+            break;
+          }
           logger.info(
             `  Rollback: force-reverting failed UPDATE of ${safe(op.logicalId)} (${safe(op.resourceType)}) ` +
               `to its pre-deploy properties (--revert-failed; remote state is unknown)`
@@ -3536,6 +3776,14 @@ export async function replayFailedOperations(
               op.logicalId,
               current.physicalId,
               op.resourceType,
+              // Desired-side `?? {}` DEAD AT RUNTIME since issue #3203's guard
+              // above (same reason as the other two sites). The previous-side
+              // one below is LIVE, but not for the reason an earlier spelling
+              // of this comment gave: `op.attemptedProperties` being optional
+              // does NOT reach it, because `?? current.properties` already
+              // covers that and `ResourceState.properties` is required. It is
+              // live because a malformed STATE record can lack `properties`
+              // altogether -- the same premise this whole guard rests on.
               desiredProps ?? {},
               attemptedProps ?? {},
               // Same as the `revert` arm: masker, no readback flag,
