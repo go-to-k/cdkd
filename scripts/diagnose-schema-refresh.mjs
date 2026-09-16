@@ -2412,6 +2412,12 @@ export function collectFixtureDeltas({
     // AWS having dropped the property from the schema is not a cdkd behaviour
     // delta. A removed property NOBODY declared was a `silentDrop` row, and
     // losing that row is what stops the resource auto-routing.
+    // BOUND, stated rather than assumed: a fixture type with no row in
+    // `property-coverage.generated.ts` has an EMPTY `declaredHere`, so every
+    // writable removal reads as a lost `silentDrop` row though the type has no
+    // coverage record at all. Zero today — 134 fixtures, 134 covered types —
+    // and a type gaining a fixture before its coverage row is the shape that
+    // would reach it.
     const silentDropGone = delta.writableRemoved.filter(
       (/** @type {string} */ p) => !declaredHere.has(p)
     );
@@ -2844,7 +2850,7 @@ export function parseNonProvisionableTypes(generatedSource) {
  * absent from the snapshot, and AWS republishing any of them is exactly the
  * event this renderer runs on.
  *
- * @param {{writableAdded: readonly AddedEntry[], exemptTypes: ReadonlySet<string>, unroutableTypes?: ReadonlySet<string>, declared?: ReadonlyMap<string, ReadonlySet<string>>}} input
+ * @param {{writableAdded: readonly AddedEntry[], exemptTypes: ReadonlySet<string>, unroutableTypes?: ReadonlySet<string>, unknownRoutingTypes?: ReadonlySet<string>, declared?: ReadonlyMap<string, ReadonlySet<string>>, silentDropRemoved?: readonly RemovedDropEntry[]}} input
  * @returns {string | null}
  */
 export function renderChangelogFragment({
@@ -2900,8 +2906,28 @@ export function renderChangelogFragment({
   const removedPairs = removedDrops.map(
     (e) => `${renderName(e.resourceType)}: ${e.properties.map(renderName).join(', ')}`
   );
-  const stillRouted = removedDrops.filter((e) => e.retainsOtherDrops);
-  const backToSdk = removedDrops.filter((e) => !e.retainsOtherDrops);
+  // The withdrawal half needs the SAME routing split as the addition half, and
+  // for the same reason: on a type whose provider declines the Cloud Control
+  // fallback, or that AWS reports NON_PROVISIONABLE, a remaining drop is
+  // REFUSED at pre-flight rather than routed, so "still takes the Cloud
+  // Control route" says the opposite of what a deploy does.
+  const removedRoutable = removedDrops.filter(
+    (e) => !unroutableTypes.has(e.resourceType) && !unknownRoutingTypes.has(e.resourceType)
+  );
+  const removedUnroutable = removedDrops.filter(
+    (e) => unroutableTypes.has(e.resourceType) && !unknownRoutingTypes.has(e.resourceType)
+  );
+  const stillRouted = removedRoutable.filter((e) => e.retainsOtherDrops);
+  // Split again on the sticky EXEMPTION: `wouldReturnToSdkProvider` lets a
+  // 'cc-broken' type escape unconditionally and an 'sdk-coverage' type escape
+  // exactly when both bags are drop-free — which IS this state — so the
+  // "an existing cc-api record stays put" clause is false for both.
+  const backToSdkSticky = removedRoutable.filter(
+    (e) => !e.retainsOtherDrops && !exemptTypes.has(e.resourceType)
+  );
+  const backToSdkExempt = removedRoutable.filter(
+    (e) => !e.retainsOtherDrops && exemptTypes.has(e.resourceType)
+  );
 
   // ONE headline covering whichever halves the cycle has. A refresh that only
   // withdraws properties ships a delta too -- the withdrawn key loses the
@@ -2920,7 +2946,8 @@ export function renderChangelogFragment({
   if (count > 0 && removedCount > 0) {
     headline =
       `- **The ${CYCLE_PLACEHOLDER} schema refresh adds ${added} and withdraws ${withdrawn}, ` +
-      `so cdkd starts classifying the first set and stops classifying the second ${provenance}** -- ` +
+      `so cdkd starts classifying the first set, and a template still carrying one of the second is ` +
+      `dropped with a warn ${provenance}** -- ` +
       `added: ${pairs.join('; ')}; withdrawn: ${removedPairs.join('; ')}. ${changed}`;
   } else if (count > 0) {
     headline =
@@ -2999,7 +3026,7 @@ export function renderChangelogFragment({
   }
 
   if (removedDrops.length > 0) {
-    droppable.push(sentences.length);
+    droppable.push(sentences.length);  // dropped only after the create-only one
     sentences.push(
       `The withdrawn ${removedCount === 1 ? 'key loses' : 'keys lose'} the \`silentDrop\` row that ` +
         `made the issue [#614](https://github.com/go-to-k/cdkd/issues/614) auto-route apply to ` +
@@ -3010,19 +3037,53 @@ export function renderChangelogFragment({
   }
   const stillRoutedNames = stillRouted.map((e) => renderName(e.resourceType));
   if (stillRouted.length > 0) {
+    // Scoped to a RESOURCE whose template carries one of the remaining drops,
+    // the way the addition half is: routing is decided per resource from its
+    // own property bag, not per type.
     sentences.push(
       `${stillRoutedNames.join(' / ')} still ${stillRouted.length === 1 ? 'carries' : 'carry'} ` +
-        `another actionable drop, so ${stillRouted.length === 1 ? 'that resource keeps' : 'those resources keep'} ` +
-        `taking the Cloud Control route and only the withdrawn ` +
+        `another actionable drop, so a resource whose template sets one keeps taking the Cloud ` +
+        `Control route and only the withdrawn ` +
         `${removedCount === 1 ? 'key stops' : 'keys stop'} reaching AWS.`
     );
   }
-  const backToSdkNames = backToSdk.map((e) => renderName(e.resourceType));
-  if (backToSdk.length > 0) {
+  const backToSdkNames = backToSdkSticky.map((e) => renderName(e.resourceType));
+  if (backToSdkSticky.length > 0) {
     sentences.push(
-      `${backToSdkNames.join(' / ')} ${backToSdk.length === 1 ? 'has' : 'have'} no actionable drop ` +
-        `left, so a NEW resource of ${backToSdk.length === 1 ? 'that type' : 'those types'} takes the ` +
-        `SDK path; one whose state already records \`provisionedBy: 'cc-api'\` stays on Cloud Control.`
+      `${backToSdkNames.join(' / ')} ${backToSdkSticky.length === 1 ? 'has' : 'have'} no actionable ` +
+        `drop left, so a NEW resource of ` +
+        `${backToSdkSticky.length === 1 ? 'that type' : 'those types'} takes the SDK path; one whose ` +
+        `state already records \`provisionedBy: 'cc-api'\` stays on Cloud Control.`
+    );
+  }
+  const backToSdkExemptNames = backToSdkExempt.map((e) => renderName(e.resourceType));
+  if (backToSdkExempt.length > 0) {
+    // The sticky record does NOT hold these: `wouldReturnToSdkProvider` lets a
+    // 'cc-broken' type out unconditionally, and an 'sdk-coverage' type out once
+    // both bags are drop-free — which is exactly the state this arm describes.
+    sentences.push(
+      `${backToSdkExemptNames.join(' / ')} ${backToSdkExempt.length === 1 ? 'has' : 'have'} no ` +
+        `actionable drop left and ${backToSdkExempt.length === 1 ? 'is' : 'are'} in ` +
+        `\`STICKY_CC_MIGRATION_EXEMPT\`, so even a resource recorded ` +
+        `\`provisionedBy: 'cc-api'\` returns to its SDK provider on the next mutating deploy.`
+    );
+  }
+  const removedUnroutableNames = removedUnroutable.map((e) => renderName(e.resourceType));
+  if (removedUnroutable.length > 0) {
+    sentences.push(
+      `${removedUnroutableNames.join(' / ')} never took that route — ` +
+        `${removedUnroutable.length === 1 ? 'its provider declines' : 'their providers decline'} the ` +
+        `Cloud Control fallback, or AWS reports the type NON_PROVISIONABLE — so a remaining drop is ` +
+        `REFUSED at pre-flight there rather than routed.`
+    );
+  }
+  const removedUnknownNames = removedDrops
+    .filter((e) => unknownRoutingTypes.has(e.resourceType))
+    .map((e) => renderName(e.resourceType));
+  if (removedUnknownNames.length > 0) {
+    sentences.push(
+      `cdkd could not read the routing declaration for ${removedUnknownNames.join(' / ')}, so this ` +
+        `entry does not state what a remaining drop does there.`
     );
   }
 
@@ -3072,7 +3133,10 @@ export function renderChangelogFragment({
     [unknownNames, `${unknown.length} of those types`],
     [pinnedNames, `${pinned.length} of those types`],
     [stillRoutedNames, `${stillRouted.length} of the withdrawing types`],
-    [backToSdkNames, `${backToSdk.length} of the withdrawing types`],
+    [backToSdkNames, `${backToSdkSticky.length} of the withdrawing types`],
+    [backToSdkExemptNames, `${backToSdkExempt.length} of the withdrawing types`],
+    [removedUnroutableNames, `${removedUnroutable.length} of the withdrawing types`],
+    [removedUnknownNames, `${removedUnknownNames.length} of the withdrawing types`],
   ])) {
     if (names.length === 0) continue;
     const joined = names.join(' / ');
@@ -3093,7 +3157,9 @@ export function renderChangelogFragment({
   // and two mechanism sentences, and the collapsed lists alone do not get it
   // under (measured, 30 added + 30 withdrawn: 2057 against the 2000 cap). Drop
   // the EXPLANATORY sentences one at a time, never the consequences.
-  for (const index of droppable) {
+  // Create-only LAST in the push order, so reverse: it is the only sentence
+  // that reports an ABSENCE, which makes it the cheapest thing to give up.
+  for (const index of [...droppable].reverse()) {
     sentences[index] = '';
     if (assemble().trimEnd().length <= CHANGELOG_ENTRY_LIMIT) break;
   }
@@ -3866,7 +3932,9 @@ function main() {
         unknownRoutingTypes: new Set(
           [
             ...optOuts.unreadable,
-            ...writableAdded.map((e) => e.resourceType).filter((t) => !providerFiles.has(t)),
+            ...[...writableAdded, ...silentDropRemoved]
+            .map((e) => e.resourceType)
+            .filter((t) => !providerFiles.has(t)),
           ].filter((t) => !nonProvisionable.has(t))
         ),
         // What each provider already DECLARES. A declared property never

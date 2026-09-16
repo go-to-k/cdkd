@@ -3201,7 +3201,9 @@ describe('renderChangelogFragment', () => {
       ],
     })!;
     expect(keeps).toContain('still carries another actionable drop');
-    expect(keeps).toContain('that resource keeps');
+    // Scoped to a RESOURCE whose template sets one of the remaining drops --
+    // routing is decided per resource from its own bag, not per type.
+    expect(keeps).toContain('a resource whose template sets one keeps taking the Cloud Control route');
     expect(keeps).not.toContain('takes the SDK path');
 
     const returns = renderChangelogFragment({
@@ -3217,6 +3219,77 @@ describe('renderChangelogFragment', () => {
     // cc-api resource does NOT come back with it.
     expect(returns).toContain("stays on Cloud Control");
     expect(returns).not.toContain('still carries another actionable drop');
+  });
+
+  it('drops the sticky claim for a type the exemption table lets return', () => {
+    // `wouldReturnToSdkProvider` lets a 'cc-broken' type out unconditionally
+    // and an 'sdk-coverage' type out once both bags are drop-free -- which IS
+    // the no-drops-left state -- so "an existing cc-api record stays put" is
+    // false for exactly the types in that table. Both have fixtures.
+    const fragment = renderChangelogFragment({
+      writableAdded: [],
+      exemptTypes: new Set(['AWS::SNS::Topic']),
+      silentDropRemoved: [
+        { resourceType: 'AWS::SNS::Topic', properties: ['OldThing'], retainsOtherDrops: false },
+      ],
+    })!;
+    expect(fragment).toContain('returns to its SDK provider on the next mutating deploy');
+    expect(fragment).not.toContain('stays on Cloud Control');
+  });
+
+  it('says a REFUSED type never took the route its remaining drop suggests', () => {
+    // A type whose provider declines the CC fallback is refused at pre-flight,
+    // so "still takes the Cloud Control route" would say the opposite of what
+    // a deploy does -- the same split the addition half already makes.
+    const fragment = renderChangelogFragment({
+      writableAdded: [],
+      exemptTypes,
+      unroutableTypes: new Set(['AWS::FSx::FileSystem']),
+      silentDropRemoved: [
+        { resourceType: 'AWS::FSx::FileSystem', properties: ['OldThing'], retainsOtherDrops: true },
+      ],
+    })!;
+    expect(fragment).toContain('REFUSED at pre-flight there rather than routed');
+    expect(fragment).not.toContain('keeps taking the Cloud Control route');
+    expect(fragment).not.toContain('takes the SDK path');
+  });
+
+  it('tells neither story about a WITHDRAWING type whose routing is unknown', () => {
+    const fragment = renderChangelogFragment({
+      writableAdded: [],
+      exemptTypes,
+      unknownRoutingTypes: new Set(['AWS::Mystery::Thing']),
+      silentDropRemoved: [
+        { resourceType: 'AWS::Mystery::Thing', properties: ['OldThing'], retainsOtherDrops: true },
+      ],
+    })!;
+    expect(fragment).toContain('does not state what a remaining drop does there');
+    expect(fragment).not.toContain('keeps taking the Cloud Control route');
+    expect(fragment).not.toContain('REFUSED at pre-flight there');
+  });
+
+  it('keeps the withdrawal CONSEQUENCE when the trim fires', () => {
+    // The warn/drop outcome is the one thing a reader acts on, and the wide
+    // trim used to take it: the mechanism sentence was dropped first and the
+    // headline said only "stops classifying the second". The headline now
+    // carries the outcome, and the create-only sentence -- the only one
+    // reporting an ABSENCE -- is what the trim gives up first.
+    const fragment = renderChangelogFragment({
+      writableAdded: Array.from({ length: 30 }, (_, i) => ({
+        resourceType: `AWS::Service${i}::LongishResourceTypeName`,
+        properties: [`SomeReasonablyLongPropertyName${i}`],
+        createOnly: [`SomeReasonablyLongPropertyName${i}`],
+      })),
+      exemptTypes,
+      silentDropRemoved: Array.from({ length: 30 }, (_, i) => ({
+        resourceType: `AWS::Other${i}::LongishResourceTypeName`,
+        properties: [`WithdrawnLongPropertyName${i}`],
+        retainsOtherDrops: i % 2 === 0,
+      })),
+    })!;
+    expect(fragment.trimEnd().length).toBeLessThanOrEqual(CHANGELOG_ENTRY_LIMIT);
+    expect(fragment.slice(0, fragment.indexOf('**', 4))).toContain('dropped with a warn');
+    expect(fragment).toContain('UNRECOGNIZED property');
   });
 
   it('carries both halves in one entry when a cycle adds and withdraws', () => {
