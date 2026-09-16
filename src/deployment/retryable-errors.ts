@@ -207,8 +207,13 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // the just-created security group not yet visible to Lambda -- and the
   // wording did not reproduce outside cdkd in six probe shapes, so neither was
   // ruled out. What IS measured is that the condition clears on its own, which
-  // is what the retry needs. Anchored on the full first sentence and not on
-  // the advisory tail, for the reason the operator-role entry above states.
+  // is what the retry needs -- and, once, how fast: a
+  // `lambda-capacity-provider-default-name` run (ap-northeast-1, 2026-09-16)
+  // failed a create's FIRST attempt on this wording, retried it, and created
+  // about 4s after the rejection. One sample, so it shows the dense grid CAN
+  // cover the window, not that it always does. Anchored on the full first
+  // sentence and not on the advisory tail, for the reason the operator-role
+  // entry above states.
   //
   // Unlike its siblings this one names no role, so a genuinely wrong security
   // group id in a template spends the bounded retries before surfacing. That
