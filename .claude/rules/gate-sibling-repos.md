@@ -146,6 +146,15 @@ the cdkd-only names are exactly the four fixed here. Re-run that comparison
 before assuming it still holds -- a gate renamed in any of the three repos puts
 its hook back into this class.
 
+**Read "NOT affected" as scoped to the gate NAME, which is the only question
+this file answers.** `verify-pr-gate` asks about a name both siblings declare
+AND additionally compared `<target top>/.markgate-verify-pr-sha`, a cdkd-only
+sentinel neither sibling writes -- so it carried an unclearable sibling refusal
+of its own until go-to-k/cdkd#3209, by a different mechanism than aliasing and
+with a different fix (require the binding only in the repo that defines it;
+`hooks.md`'s sibling-repo section has it). The lesson generalises past the name:
+when a gate refuses a sibling target, ask what ELSE it compares.
+
 **Three further defects came out of review round 1, all in the alias path.**
 
 - **Exit 2 is not staleness, and the alias is where that bites.** markgate exits
