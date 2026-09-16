@@ -3408,9 +3408,20 @@ export class IntrinsicFunctionResolver {
         // other consumer masks at ITS own boundary", which that fix retired. Same class as the
         // lookup echoes issue #2728 closed further down this file, and this sink
         // was missed there because it lives in a different method and renders
-        // ANY error, not only a lookup echo. Residual: a plaintext
-        // shorter than `MIN_NEEDLE_LENGTH` (4) is embedded here rather than
-        // whole, so no needle matches it and it still prints.
+        // ANY error, not only a lookup echo. What used to stand here as the
+        // residual — a plaintext shorter than `MIN_NEEDLE_LENGTH` (4) embedded
+        // in a longer name rather than whole, which no needle matches — is
+        // CLOSED by issue
+        // [#3150](https://github.com/go-to-k/cdkd/issues/3150): such a name is
+        // masked BY POSITION, out of the log twin `resolveSub` / `resolveJoin`
+        // register for the assembled string, so the example above prints
+        // `key 'key-***' not found`
+        // (`tests/unit/cli/import-resolver-error-masking.test.ts` pins it, and
+        // `intrinsic-resolver-name-argument-log-twin.test.ts` pins this sink's
+        // whole sentence). Residual: text an AWS SDK authored and this sink
+        // only FORWARDS, which carries no twin and reaches the needle mask
+        // alone — issue
+        // [#3171](https://github.com/go-to-k/cdkd/issues/3171).
         this.logger.warn(
           this.maskSecretsForLog(
             `Failed to evaluate condition ${name}: ${error instanceof Error ? error.message : String(error)}, assuming false`,
