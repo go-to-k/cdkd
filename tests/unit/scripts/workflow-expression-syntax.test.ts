@@ -73,8 +73,10 @@
  * No ordinary case can close that, because the thing it would assert is the
  * thing being mutated. So the wiring is fenced by SHAPE instead: the block at
  * the end reads this file's own source and counts the exact TEXT of each raw
- * primitive — one `readFileSync(`, one offence-line template, two `safeRender`
- * maps, three `boundedList` caps, two spellings of the probe-line read.
+ * primitive. The members are NOT listed here — a list in two places is a list
+ * that goes stale in one, which is what happened to the renderer count and then
+ * again to this very sentence, which named six of the ten. Read the block; it
+ * is one screen and each count carries the mistake it is there for.
  *
  * WHAT THOSE COUNTS DO AND DO NOT CATCH, stated exactly, because two earlier
  * versions of this paragraph overstated it and the second overstated it while
