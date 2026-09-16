@@ -19,10 +19,11 @@
 #      Control route, AWS reports them `Active`, the function's
 #      CapacityProviderConfig points at the first, and the ProviderArn output
 #      agrees. The deploy runs with `--verbose` so the log shows whether the
-#      create was retried on the operator-role propagation rejection
-#      (`IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS`); the count is reported, not
-#      asserted, since a role that propagates in time needs no retry. Two
-#      guards keep that reporting honest rather than vacuous: a provider whose
+#      create was retried on any of the THREE propagation rejections this
+#      create races (`IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS`); the counts are
+#      reported PER WORDING and not asserted, since a role that propagates in
+#      time needs no retry. Two guards keep that reporting honest rather
+#      than vacuous: a provider whose
 #      create logged Cloud Control's ASYNC `CREATE <id>: FAILED` poll line
 #      while the deploy still SUCCEEDED must carry a matching
 #      `Retrying <id> ... (attempt N/M` line, or the run exits 1 naming the
@@ -279,8 +280,52 @@ for logical_id in Provider2281708E SpareProvider8B33A338; do
     exit 1
   fi
 done
-OPERATOR_ROLE_RETRIES="$(grep -cE 'Retrying .*\(attempt [0-9]+/[0-9]+.*operator role is invalid' <<< "${DEPLOY_PLAIN}" || true)"
-echo "    operator-role propagation retries during phase 1: ${OPERATOR_ROLE_RETRIES} (debug lines captured: ${DEBUG_LINES})"
+# This create races THREE known propagation wordings, not one (issue #3274).
+# The operator-role rejection is issue #3174's; PR #3231 added
+# `doesn't have permission to perform ec2:DescribeSecurityGroups` and
+# `One or more security group IDs are invalid` to the same list for issue
+# #3227. This block is only meaningful once those two entries exist: before
+# PR #3231 merged, a create hitting either wording was never retried, so it
+# failed the deploy outright and the two rows below could only ever read 0.
+# That is why this change landed AFTER it, not beside it. A count keyed
+# on the operator-role wording alone reads 0 for a run that retried only on the
+# other two -- including the 2026-09-16 run whose create failed its FIRST
+# attempt on the security-group wording -- so it was wrong in the direction
+# that HIDES work, on the fixture that exists to exercise this engine.
+#
+# Reported PER WORDING rather than as one number: a run that retried only the
+# operator-role window proves nothing about the two newer entries, and a single
+# total cannot tell those two runs apart. That distinction is the whole signal
+# here -- PR #3231 had one green run of this fixture in each shape.
+#
+# Still REPORTED, not asserted, and deliberately so: the race is intermittent,
+# so any assertion on a count would flake. How intermittent is reported rather
+# than reproducible from this repo -- PR #3231's author counted the
+# security-group wording in one of six runs, and the ledger keeps only the
+# latest row, so that ratio is their measurement, not something re-derivable
+# here. The hard guard above is what keeps the reporting honest; these numbers
+# are for the human reading the run.
+#
+# The spellings are the ENTRIES from `src/deployment/retryable-errors.ts`,
+# matched with `grep -F` so the apostrophe and the periods stay literal. The
+# TOTAL is every retry line, not the sum of the three: a total exceeding the
+# sum means a retry on a wording this block does not know -- either an
+# ordinary transient (throttle, 5xx) or a drift in one of the three entries.
+# The comparison is one-sided on purpose. `sum > total` is possible too, and
+# means the opposite: one retry line carried two of the wordings at once, so
+# it was double-counted. Neither direction is asserted -- they are reading
+# aids for a human, and the hard guard above is the only thing that fails.
+RETRY_LINES="$(grep -E 'Retrying .*\(attempt [0-9]+/[0-9]+' <<< "${DEPLOY_PLAIN}" || true)"
+RETRY_LINE_COUNT="$(grep -c . <<< "${RETRY_LINES}" || true)"
+echo "    retry lines during phase 1: ${RETRY_LINE_COUNT} (debug lines captured: ${DEBUG_LINES})"
+while IFS= read -r wording; do
+  [ -n "${wording}" ] || continue
+  echo "      $(grep -cF "${wording}" <<< "${RETRY_LINES}" || true)  ${wording}"
+done <<'PROPAGATION_WORDINGS'
+operator role is invalid
+doesn't have permission to perform ec2:DescribeSecurityGroups
+One or more security group IDs are invalid
+PROPAGATION_WORDINGS
 
 STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
 STATE_PROVIDER_ID="$(read_state "s['resources']['Provider2281708E']['physicalId']")"
