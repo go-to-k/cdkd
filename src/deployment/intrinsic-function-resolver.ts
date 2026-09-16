@@ -3411,17 +3411,27 @@ export class IntrinsicFunctionResolver {
         // ANY error, not only a lookup echo. What used to stand here as the
         // residual — a plaintext shorter than `MIN_NEEDLE_LENGTH` (4) embedded
         // in a longer name rather than whole, which no needle matches — is
-        // CLOSED by issue
+        // CLOSED for the names the RESOLVER builds into its own text, by issue
         // [#3150](https://github.com/go-to-k/cdkd/issues/3150): such a name is
         // masked BY POSITION, out of the log twin `resolveSub` / `resolveJoin`
-        // register for the assembled string, so the example above prints
+        // BUILD for the assembled string — REGISTERED (`rememberLogTwin`) once
+        // the substitution completes, so a later `Fn::FindInMap` throw finds
+        // it, and HANDED to the dynamic-reference loop as a parameter for a
+        // throw raised INSIDE that call, which is the example above: it prints
         // `key 'key-***' not found`
         // (`tests/unit/cli/import-resolver-error-masking.test.ts` pins it, and
         // `intrinsic-resolver-name-argument-log-twin.test.ts` pins this sink's
-        // whole sentence). Residual: text an AWS SDK authored and this sink
-        // only FORWARDS, which carries no twin and reaches the needle mask
-        // alone — issue
-        // [#3171](https://github.com/go-to-k/cdkd/issues/3171).
+        // whole sentence). Do not shorten that to "registered": on the example's
+        // own path `rememberLogTwin` has not run yet.
+        // TWO residuals survive here, both being text composed OUTSIDE this
+        // resolver and therefore carrying no twin, so each reaches the needle
+        // mask alone: text an AWS SDK authored and this sink only FORWARDS
+        // ([#3171](https://github.com/go-to-k/cdkd/issues/3171)), and text
+        // cdkd itself composes in ANOTHER MODULE around a name this resolver
+        // did NOT mask before handing it over — `resolveGetStackOutput`'s
+        // uncaught state read, whose `StateError` quotes the producer stack
+        // name back ([#3234](https://github.com/go-to-k/cdkd/issues/3234); the
+        // `Fn::ImportValue` sibling catches and masks the same shape).
         this.logger.warn(
           this.maskSecretsForLog(
             `Failed to evaluate condition ${name}: ${error instanceof Error ? error.message : String(error)}, assuming false`,
