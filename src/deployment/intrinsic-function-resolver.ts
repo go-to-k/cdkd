@@ -3438,10 +3438,12 @@ export class IntrinsicFunctionResolver {
         // merely forwards
         // ([#3171](https://github.com/go-to-k/cdkd/issues/3171)); a name this
         // resolver hands to another module unmasked, where that module quotes
-        // it back ([#3234](https://github.com/go-to-k/cdkd/issues/3234) —
-        // `resolveGetStackOutput`'s uncaught state read; the `Fn::ImportValue`
-        // sibling catches and masks the same shape); and a PRODUCER's own
-        // output key, whose bound `describeAvailableOutputs`' docstring owns.
+        // it back — `resolveGetStackOutput`'s state read was that, and
+        // [#3234](https://github.com/go-to-k/cdkd/issues/3234) closed it by
+        // masking at the hand-over frame, while the `Fn::ImportValue` sibling
+        // still masks its caught message with the BAGS alone and so keeps the
+        // positional half of the class open; and a PRODUCER's own output key,
+        // whose bound `describeAvailableOutputs`' docstring owns.
         // Four review rounds on PR go-to-k/cdkd#3176 each found one more that
         // a tally here had missed, and `.claude/rules/layout-deployment-secrets.md`
         // records five rounds on go-to-k/cdkd#2803 refuting the same shape of
@@ -8028,6 +8030,10 @@ export class IntrinsicFunctionResolver {
       return await fetch;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const cfnNameMask = this.positionalNameMask([
+        [stackName, this.maskSecretsForLog(stackName, context)],
+        [region, loggedRegionText],
+      ]);
       this.logger.warn(
         // MASKED, the exact twin of `lookupCfnExport`'s own line (issue #2133
         // review), and this one prints at DEFAULT verbosity too. `stackName`
@@ -8039,9 +8045,16 @@ export class IntrinsicFunctionResolver {
         `Fn::GetStackOutput: CloudFormation DescribeStacks fallback failed for stack ` +
           // `message` masked too since issue #2827 — `DescribeStacks` quotes
           // the stack name back, and `region` is itself a resolved value.
+          //
+          // The AWS text goes through the POSITIONAL pass first (issue #3234):
+          // this frame hands `stackName` to `DescribeStacks` raw, and
+          // `maskSecretsForLog` over the returned sentence finds no twin for it
+          // and falls to the needle pass, whose substring arm cannot see a
+          // sub-floor secret assembled into the name. Same class and same frame
+          // as the state read below; the two share `positionalNameMask`.
           `'${this.maskSecretsForLog(stackName, context)}' ` +
           `(${this.maskSecretsForLog(loggedRegionText, context)}): ` +
-          `${this.maskSecretsForLog(message, context)}. ` +
+          `${this.maskSecretsForLog(cfnNameMask ? cfnNameMask(message) : message, context)}. ` +
           `Grant cloudformation:DescribeStacks to resolve outputs from CloudFormation-managed ` +
           `stacks, or pass --no-cfn-fallback to disable the fallback.`
       );
@@ -8360,9 +8373,14 @@ export class IntrinsicFunctionResolver {
     // module that holds no secrets bag — quotes them back through
     // `displaySafe`, an ASCII sanitizer rather than a masker. This frame is the
     // last one holding both the raw names and their masked spellings, so it is
-    // the only place the substitution can be exact. The `Fn::ImportValue`
-    // sibling already masks the same shape at its own catch; this site was
-    // simply missed.
+    // the only place the substitution can be exact.
+    //
+    // The `Fn::ImportValue` sibling catches its own read, but masks the caught
+    // message with the BAGS alone (`maskSecretsForLog` over a composed AWS
+    // sentence finds no twin and falls to the needle pass). That closes the
+    // 4+ character class there and leaves the POSITIONAL half open — the same
+    // gap in the same shape. Do not read it as the pattern this site is
+    // catching up to.
     let stateData: Awaited<ReturnType<S3StateBackend['getState']>>;
     try {
       stateData = roleArn
@@ -8567,6 +8585,67 @@ export class IntrinsicFunctionResolver {
   }
 
   /**
+   * A text transform replacing each RAW name this frame handed to another
+   * module with the masked spelling it holds for it (issue
+   * [#3234](https://github.com/go-to-k/cdkd/issues/3234)), or `undefined` when
+   * no pair carries a mask.
+   *
+   * This is what the BAGS structurally cannot do. A bag masks by VALUE, and a
+   * plaintext shorter than `MIN_NEEDLE_LENGTH` matches only as the WHOLE text,
+   * so a 1-3 character secret an `Fn::Sub` assembled into a longer name is
+   * invisible to it — while this frame knows the exact spans.
+   *
+   * Each pair contributes its raw spelling AND the spelling the reader will
+   * actually see: `S3StateBackend` and the CloudFormation fallback both print
+   * names through `displaySafe(..., { asciiOnly: true })`, which REPLACES every
+   * non-printable character with a space and then trims, so a secret carrying
+   * one is a DIFFERENT string by the time it is quoted back. Matching the raw
+   * form alone would miss it while reporting success — the one-string-space
+   * rule `outputs-export-alias.ts` states for its own scan: the text that was
+   * tested and the text that is printed must be the same text.
+   *
+   * LONGEST RAW FIRST, so a name that contains another is rewritten as itself
+   * rather than having its inner name replaced underneath it. **That ordering
+   * is DEFENSIVE and this suite does not distinguish it** — measured: reversing
+   * the comparator leaves every case green. The reason is that no case here
+   * builds two raws that NEST: the one case with two surviving pairs masks a
+   * stack name and a region that share no substring, and everywhere else one
+   * pair is dropped for carrying no mask. It earns its place on the shape that
+   * DOES diverge — a shorter raw whose mask is not a prefix of the longer's
+   * (`q7` -> `***` beside `q7x` -> `***` turns `q7x` into `***x` shortest-first,
+   * leaking the `x`) — which needs two separately recorded secrets, one of them
+   * masked WHOLE, and is not constructed here. Recorded as measured rather than
+   * claimed fenced.
+   */
+  private positionalNameMask(
+    pairs: readonly (readonly [string, string])[]
+  ): ((text: string) => string) | undefined {
+    const substitutions = pairs
+      .flatMap(([raw, masked]) => {
+        const shown = displaySafe(raw, { asciiOnly: true });
+        return shown === raw
+          ? [[raw, masked] as const]
+          : ([
+              [raw, masked],
+              [shown, masked],
+            ] as const);
+      })
+      // `raw !== ''` is REDUNDANT today — `maskSecretsForLog('')` is `''`, so
+      // the second test already drops it — and kept anyway: it is the guard
+      // against `''.split('')`, which splits between every character and would
+      // splice the mask through the whole text. Cheap, and the failure it
+      // prevents is not a wrong verdict but a destroyed message.
+      .filter(([raw, masked]) => raw !== '' && raw !== masked)
+      .sort(([a], [b]) => b.length - a.length);
+    if (substitutions.length === 0) return undefined;
+    return (text: string): string => {
+      let out = text;
+      for (const [raw, masked] of substitutions) out = out.split(raw).join(masked);
+      return out;
+    };
+  }
+
+  /**
    * Mask a failure raised by a module this resolver handed RAW names to (issue
    * [#3234](https://github.com/go-to-k/cdkd/issues/3234)).
    *
@@ -8578,40 +8657,15 @@ export class IntrinsicFunctionResolver {
    * and the chain shape, so every reader that classifies this error still
    * does — see `maskSecretsInError`'s own doc.
    *
-   * `pairs` are (raw, masked-log-text) for the names this frame handed over.
-   * They are what the BAGS cannot do: a 1-3 character secret assembled into a
-   * longer name is below `MIN_NEEDLE_LENGTH`, so the needle pass sees it only
-   * as a whole value, while this frame knows the exact spans. A pair whose two
-   * halves are equal carries no mask and is dropped, so the common path builds
-   * no transform at all; an empty raw name is dropped too, since replacing the
-   * empty string would splice the replacement between every character.
-   * LONGEST RAW FIRST, so a name that contains another is rewritten as itself
-   * rather than having its inner name replaced underneath it. **That ordering
-   * is DEFENSIVE and this suite does not distinguish it** — measured: reversing
-   * the sort leaves every case green, because the two names here either do not
-   * nest or their masked spellings nest the same way, and a pair carrying no
-   * mask is dropped before the sort runs. It earns its place on the shape that
-   * DOES diverge — a shorter raw whose mask is not a prefix of the longer's
-   * (`q7` -> `***` beside `q7x` -> `***` turns `q7x` into `***x` shortest-first,
-   * leaking the `x`) — which needs two separately recorded secrets to build and
-   * is not constructed here. Recorded rather than claimed fenced.
+   * `pairs` are (raw, masked-log-text) for the names this frame handed over;
+   * {@link positionalNameMask} turns them into the transform and owns why.
    */
   private maskStateReadError(
     error: unknown,
     pairs: readonly (readonly [string, string])[],
     context?: ResolverContext
   ): never {
-    const substitutions = pairs
-      .filter(([raw, masked]) => raw !== '' && raw !== masked)
-      .sort(([a], [b]) => b.length - a.length);
-    const extraMask =
-      substitutions.length === 0
-        ? undefined
-        : (text: string): string => {
-            let out = text;
-            for (const [raw, masked] of substitutions) out = out.split(raw).join(masked);
-            return out;
-          };
+    const extraMask = this.positionalNameMask(pairs);
     // The SAME two bags in the SAME order as `maskSecretsForLog`, for the same
     // reason (issue #1903 round 2): on a nested-stack child the parent's
     // decrypted parameter plaintext lives in the inherited bag alone until a
@@ -8623,14 +8677,6 @@ export class IntrinsicFunctionResolver {
     // rewrote is how a second substitution would corrupt the first. One pass
     // is also all it needs: `maskSecretsInError` walks the whole chain, so a
     // single call reaches every link.
-    //
-    // No empty-bag arm, and that is an INVARIANT rather than an omission: a
-    // pair carries a mask only when `maskSecretsForLog` changed the name, which
-    // needs either a registered log twin or a non-empty bag — and a twin's
-    // masked spans come from a recorded secret, so it implies one too. So
-    // whenever `extraMask` exists at all, at least one bag is non-empty and the
-    // loop runs. An arm for the other case was written, measured inert against
-    // this suite, and deleted rather than shipped unfenced.
     let masked: unknown = error;
     let positional = extraMask;
     for (const bag of [context?.inheritedSecrets, context?.recordedSecretValues]) {
@@ -8638,6 +8684,18 @@ export class IntrinsicFunctionResolver {
       masked = maskSecretsInError(masked, bag, positional);
       positional = undefined;
     }
+    // FAIL CLOSED when both bags are empty. An earlier revision deleted this
+    // arm, reasoning that a pair carries a mask only when `maskSecretsForLog`
+    // changed the name, which needs a twin or a bag, and a twin's spans come
+    // from a recorded secret — so `extraMask` should imply a non-empty bag.
+    // That argument is TRUE today and rests on things nothing fences: that
+    // `inheritedSecrets` is attached only when it is non-empty, and that every
+    // twin source also writes a bag entry. The cost of being wrong is not a
+    // worse message but the RAW name rethrown in the clear, so the arm stays
+    // and the invariant is the reason it is unreachable, not the reason it is
+    // absent. `maskSecretsInError` with an empty bag and a transform is
+    // exactly the shape its widened early return admits.
+    if (positional) masked = maskSecretsInError(masked, new Map(), positional);
     throw masked;
   }
 

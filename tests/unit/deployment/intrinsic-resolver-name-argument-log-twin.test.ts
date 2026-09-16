@@ -88,6 +88,12 @@ const cfnBehaviour = vi.hoisted(() => ({
   /** What `found` answers: one export, and one stack's outputs. */
   exportName: '',
   outputKey: '',
+  /**
+   * When set, `throw` mode QUOTES this text back the way a real AccessDenied
+   * names the resource ARN it refused (issue #3234). Empty leaves the original
+   * message, so every pre-existing case is unaffected.
+   */
+  deniedQuotes: '',
 }));
 vi.mock('@aws-sdk/client-cloudformation', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-cloudformation')>();
@@ -96,7 +102,12 @@ vi.mock('@aws-sdk/client-cloudformation', async (importOriginal) => {
     CloudFormationClient: vi.fn(() => ({
       send: vi.fn(async (command: { constructor: { name: string } }) => {
         if (cfnBehaviour.mode === 'throw') {
-          const denied = new Error('not authorized to perform this CloudFormation action');
+          const denied = new Error(
+            cfnBehaviour.deniedQuotes === ''
+              ? 'not authorized to perform this CloudFormation action'
+              : `not authorized to perform cloudformation:DescribeStacks on ` +
+                `arn:aws:cloudformation:us-east-1:210987654321:stack/${cfnBehaviour.deniedQuotes}/*`
+          );
           denied.name = 'AccessDeniedException';
           throw denied;
         }
@@ -321,6 +332,7 @@ beforeEach(() => {
   logSpies.warn.mockClear();
   logSpies.error.mockClear();
   cfnBehaviour.mode = 'empty';
+  cfnBehaviour.deniedQuotes = '';
   cfnBehaviour.exportName = '';
   cfnBehaviour.outputKey = '';
   ec2Behaviour.mode = 'empty';
@@ -1902,6 +1914,39 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
     } as unknown as S3StateBackend;
   }
 
+  /** The same shape, but the AWS link is a THROTTLE the classifiers must still see. */
+  function throttlingBackend(stackName: string, region = 'us-east-1'): S3StateBackend {
+    return {
+      listStacks: vi.fn(async () => []),
+      getState: vi.fn(async () => {
+        const aws = new Error(`Rate exceeded reading cdkd/${stackName}/${region}/state.json`);
+        aws.name = 'ThrottlingException';
+        throw new StateError(
+          `Failed to get state for stack '${stackName}' (${region}): ${aws.message}`,
+          aws
+        );
+      }),
+    } as unknown as S3StateBackend;
+  }
+
+  /**
+   * What PRODUCTION prints: `S3StateBackend` puts both names through
+   * `displaySafe(..., { asciiOnly: true })` before quoting them, so a secret
+   * carrying a non-printable character is a DIFFERENT string in the message
+   * than the one the resolver resolved.
+   */
+  function sanitizingBackend(stackName: string, region = 'us-east-1'): S3StateBackend {
+    const shown = (t: string): string => t.replace(/[^ -~]/g, ' ').trim();
+    return {
+      listStacks: vi.fn(async () => []),
+      getState: vi.fn(async () => {
+        throw new StateError(
+          `Failed to get state for stack '${shown(stackName)}' (${shown(region)}): Access Denied`
+        );
+      }),
+    } as unknown as S3StateBackend;
+  }
+
   /** The thrown value itself, so the CAUSE chain can be read. */
   async function errorOf(value: unknown, context: Ctx): Promise<Error> {
     const resolver = new IntrinsicFunctionResolver('us-east-1');
@@ -1998,7 +2043,20 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
     const cause = (error as { cause?: unknown }).cause as Record<string, unknown>;
     expect(cause['$metadata']).toEqual({ httpStatusCode: 403 });
     expect(cause['Code']).toBe('AccessDenied');
-    expect(isThrottlingError(error)).toBe(false);
+  });
+
+  it('a THROTTLE down the chain still classifies as one through the clone', async () => {
+    // The positive half, and the one that discriminates: `isThrottlingError`
+    // answers `false` for an error carrying no `$metadata` and no name too, so
+    // asserting `false` above would pass just as well if the clone had dropped
+    // every descriptor. This asserts `true`, which only survives if the walk
+    // still reaches the cause's name through the clone.
+    const error = await errorOf(
+      producer(sub('prod-${P}')),
+      makeContext({ stateBackend: throttlingBackend(`prod-${PIN}`) })
+    );
+    expect(isThrottlingError(error)).toBe(true);
+    expectNowhere(`prod-${PIN}`, error.message);
   });
 
   it('the positional pass runs BEFORE the bag pass, or a 4+ char secret beside the pin defeats it', async () => {
@@ -2022,6 +2080,73 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
     // The discriminator: with the passes swapped the bag rewrites `q7ab` first,
     // the raw name stops matching, and the tail survives as `svc-***-q7`.
     expectNowhere(PIN, error.message);
+  });
+
+  it('BOTH names masked at once, so the sort and the substitution loop run with two entries', async () => {
+    // Every other case here drops one pair (the other name carries no mask),
+    // leaving a single substitution that no ordering can get wrong. This is the
+    // only case where the loop iterates twice.
+    const error = await errorOf(
+      producer(sub('prod-${P}'), sub('us-west-${P}')),
+      makeContext({ stateBackend: rejectingBackend(`prod-${PIN}`, `us-west-${PIN}`) })
+    );
+    expect(error.message).toBe(
+      "Failed to get state for stack 'prod-***' (us-west-***): " +
+        'Access Denied: s3:GetObject on cdkd/prod-***/us-west-***/state.json'
+    );
+    expectNowhere(PIN, error.message);
+  });
+
+  it('the SANITIZED spelling is substituted too, since that is what the reader sees', async () => {
+    // `ctl` is `x` + U+0001 + `y7`. `S3StateBackend` prints the name through
+    // `displaySafe(..., { asciiOnly: true })`, which replaces the control
+    // character with a space — so the message holds `svc-x y7`, not the raw
+    // name. Matching the raw spelling alone would miss it and report success.
+    const raw = `svc-x${String.fromCharCode(1)}y7`;
+    const error = await errorOf(
+      producer(sub('svc-${P}', 'ctl')),
+      makeContext({ stateBackend: sanitizingBackend(raw) })
+    );
+    expect(error.message).toBe(
+      "Failed to get state for stack '***' (us-east-1): Access Denied"
+    );
+    expect(error.message).not.toContain('y7');
+  });
+
+  it('the CloudFormation fallback warn masks the name the AWS text quotes back', async () => {
+    // Same frame, same class, DEFAULT verbosity: this method hands `stackName`
+    // to `DescribeStacks` raw, and a real AccessDenied names the stack ARN it
+    // refused. `maskSecretsForLog` over that sentence finds no twin and falls
+    // to the needle pass, which cannot see a sub-floor secret in the name.
+    cfnBehaviour.mode = 'throw';
+    cfnBehaviour.deniedQuotes = `prod-${PIN}`;
+    await messageOf(
+      producer(sub('prod-${P}')),
+      makeContext({ stateBackend: emptyBackend() })
+    );
+    const warn = everyLine().find((l) => l.includes('DescribeStacks fallback failed'));
+    expect(warn).toBeDefined();
+    expect(warn).toContain('stack/prod-***/*');
+    expectNowhere(`prod-${PIN}`);
+  });
+
+  it('the CROSS-ACCOUNT arm is masked by the same catch', async () => {
+    // `RoleArn` routes through `getCrossAccountStackState`, which refuses a
+    // non-ARN before any STS call — and that refusal is raised INSIDE the try,
+    // so it takes the same masking path. The issue's plan named this arm.
+    const error = await errorOf(
+      {
+        'Fn::GetStackOutput': {
+          StackName: sub('prod-${P}'),
+          OutputName: 'Out',
+          Region: 'us-east-1',
+          RoleArn: 'not-an-arn',
+        },
+      },
+      makeContext({ stateBackend: emptyBackend() })
+    );
+    expect(error.message).toMatch(/^Fn::GetStackOutput: RoleArn 'not-an-arn' is not a valid/);
+    expectNowhere(`prod-${PIN}`, error.message);
   });
 
   it('a stack name that EMBEDS the region still masks only its own secret', async () => {

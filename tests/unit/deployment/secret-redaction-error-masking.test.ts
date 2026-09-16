@@ -273,3 +273,55 @@ describe('maskSecretsInError - the clone keeps a MASKED stack (issue #2038)', ()
     expect(Object.getOwnPropertyDescriptor(masked, 'stack')).toBeUndefined();
   });
 });
+
+describe('maskSecretsInError - the extraMask transform (issue #3234)', () => {
+  /** Substitutes one exact spelling, the way a caller holding (raw, masked) does. */
+  const swap =
+    (raw: string, masked: string) =>
+    (text: string): string =>
+      text.split(raw).join(masked);
+
+  it('masks BY POSITION what an empty bag cannot reach by value', () => {
+    // The whole point: a sub-floor secret EMBEDDED in a longer name. The bag
+    // arm matches a short needle only as the WHOLE text, so with no transform
+    // the name prints as written.
+    const inner = new Error("no such key 'cdkd/prod-q7/state.json'");
+    const top = new Error("failed for stack 'prod-q7'", { cause: inner });
+    const masked = maskSecretsInError(top, new Map(), swap('prod-q7', 'prod-***'));
+    expect(masked).not.toBe(top);
+    expect(masked.message).toBe("failed for stack 'prod-***'");
+    expect((masked.cause as Error).message).toBe("no such key 'cdkd/prod-***/state.json'");
+  });
+
+  it('CONTROL: the same call with no transform leaves an empty-bag error untouched', () => {
+    const top = new Error("failed for stack 'prod-q7'");
+    expect(maskSecretsInError(top, new Map())).toBe(top);
+  });
+
+  it('runs BEFORE the bag pass, so the bag cannot break the raw match', () => {
+    // `q7ab` is long enough for the needle arm. Run the bag first and the name
+    // becomes `svc-***-q7`, the raw stops matching, and the sub-floor tail
+    // survives — which is why the transform is applied first.
+    const secrets = new Map([['q7ab', '{{resolve:x}}']]);
+    const top = new Error("failed for stack 'svc-q7ab-q7'");
+    const masked = maskSecretsInError(top, secrets, swap('svc-q7ab-q7', 'svc-***'));
+    expect(masked.message).toBe("failed for stack 'svc-***'");
+  });
+
+  it('masks the stack text too, whose first line embeds the message', () => {
+    const top = new Error("failed for stack 'prod-q7'");
+    const masked = maskSecretsInError(top, new Map(), swap('prod-q7', 'prod-***'));
+    expect(typeof masked.stack).toBe('string');
+    expect(masked.stack).not.toContain('prod-q7');
+    expect(masked.stack).toContain('prod-***');
+  });
+
+  it('returns by identity when the transform changes nothing', () => {
+    const top = new Error('nothing to substitute here');
+    expect(maskSecretsInError(top, new Map(), swap('absent', '***'))).toBe(top);
+  });
+
+  it('still hands a non-Error straight back, transform or not', () => {
+    expect(maskSecretsInError('prod-q7', new Map(), swap('prod-q7', '***'))).toBe('prod-q7');
+  });
+});

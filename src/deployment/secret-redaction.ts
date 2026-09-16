@@ -6837,6 +6837,10 @@ export function errorCauseChain(root: Error): Error[] {
  * It is a pure `(text) => text` so this module stays a no-import LEAF. With
  * `extraMask` supplied the empty-bag short-circuit no longer applies — an empty
  * bag plus a positional transform still has work to do.
+ *
+ * THE BOUND, unchanged by `extraMask`: a thrown value that is not an `Error`
+ * is handed back BY IDENTITY and masked by neither pass. A caller whose
+ * callees can reject with a non-`Error` owes that case its own handling.
  */
 export function maskSecretsInError<T>(
   error: T,
