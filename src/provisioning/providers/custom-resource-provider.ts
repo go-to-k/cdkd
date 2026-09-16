@@ -1063,9 +1063,18 @@ export class CustomResourceProvider implements ResourceProvider {
    * that keeps `transientAuthzMaxRetries` at 2 is simply absent, and matching
    * every other resource type is the correct answer instead.
    *
-   * A thrown retry also skips the exec-env recycle: the denial is on CDKD's own
-   * principal, not on the backing function's role, so there is no warm
-   * container holding stale credentials to invalidate.
+   * A thrown retry also skips the exec-env recycle, because every rejection this
+   * arm admits is decided before the handler can run: no environment was ever
+   * CREATED, so there is no warm container holding stale credentials to
+   * invalidate. ("Before an execution environment is engaged" would be the
+   * weaker bar -- the issue #3227 VPC rejections are raised DURING environment
+   * setup, at ENI attach, not before it starts.) For the
+   * original case that is also a matter of whose permission it is -- the
+   * deploying principal's `lambda:InvokeFunction`, not the function's role --
+   * but that is not the general reason: the issue #3227 entries can surface as
+   * a VPC-networking rejection about the FUNCTION's own role
+   * (`EC2AccessDeniedException`), and there is still nothing to recycle,
+   * for the same reason.
    *
    * Deliberately NOT overridable by an env var. It bounds no handler
    * invocation, so there is nothing for a user to trade off — the same reason
@@ -1773,12 +1782,16 @@ export class CustomResourceProvider implements ResourceProvider {
           ) {
             throw error;
           }
-          // No exec-env recycle here, unlike the FAILED-response arm: the denial
-          // is on CDKD's OWN principal (the deploying role's `lambda:InvokeFunction`
-          // / `s3:PutObject`), not on the backing function's execution role, so
-          // there is no warm container holding stale credentials to invalidate —
-          // and `UpdateFunctionConfiguration` would need the very permissions that
-          // are still propagating.
+          // No exec-env recycle here, unlike the FAILED-response arm: every
+          // rejection `isTransientAuthzThrow` admits is decided before the
+          // handler can run -- no environment was ever created -- so there is
+          // no warm container holding stale credentials to invalidate. The deploying principal's
+          // `lambda:InvokeFunction` / `s3:PutObject` denial is the common case,
+          // but the rationale is not "whose permission" -- a VPC-networking
+          // rejection about the function's own role (issue #3227) arrives here
+          // too, and likewise created no environment. And
+          // `UpdateFunctionConfiguration` would need the very permissions that
+          // may still be propagating.
           const delayMs = Math.min(
             IAM_PROPAGATION_INITIAL_DELAY_MS * Math.pow(2, preDeliveryRetries),
             IAM_PROPAGATION_MAX_DELAY_MS
@@ -1979,7 +1992,20 @@ export class CustomResourceProvider implements ResourceProvider {
    * between acceptance and resolution — the exact window a post-acceptance
    * rejection arrives in — reaches this classifier with the flag still false.
    * Front-door-ness is therefore a property each entry owes, not one the shared
-   * list confers; check a new entry against this paragraph before adding it.
+   * list confers, and it is judged ON THIS PATH: a wording that is
+   * post-acceptance where it originates is admissible if it cannot reach a CR
+   * `Invoke` / `Publish` failure at all, OR if the only `Invoke` / `Publish`
+   * rejection that could carry it is itself decided before the handler can run.
+   * BOTH replayed calls are in scope: this classifier gates the SNS `Publish`
+   * replay as well as the Lambda `Invoke` one, so an argument about `Invoke`
+   * alone does not admit an entry. The issue #3227 entries rest on the second
+   * arm for `Invoke` -- `EC2AccessDeniedException` /
+   * `InvalidSecurityGroupIDException` are raised when Lambda cannot set up VPC
+   * networking, during setup and before the handler can run -- and on the
+   * first for `Publish`, which carries no Lambda VPC-networking text at all.
+   * The argument must cover the whole matched substring. The
+   * literal-set fence in `custom-resource-provider-thrown-retry.test.ts`
+   * enforces that an entry arrives examined, and carries the ledger.
    *
    * It is also why this classifier deliberately does NOT reach for the broader
    * `isRetryableTransientError`: a throttle, an HTTP 5xx or a socket timeout can

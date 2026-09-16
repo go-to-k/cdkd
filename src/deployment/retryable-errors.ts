@@ -174,6 +174,60 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // service's authorization failure false-positives into the retry loop.
   // CloudFormation tolerates it via deployment latency; cdkd retries.
   "The operator role is invalid or doesn't have sufficient permissions",
+  // Lambda CapacityProvider, the SAME create two stages later (issue #3227).
+  // The entry above covers the first window of a fresh operator role; probing
+  // `cloudcontrol create-resource` against a seconds-old role showed the
+  // rejection MOVE rather than clear -- two roles, same order, success 13s and
+  // 14s after the role was created: `The operator role is invalid ...` twice,
+  // then this wording, then SUCCESS. `not authorized to perform` does not
+  // match it, because the handler says "doesn't have permission to perform".
+  // Kept narrow to the ONE action observed: `doesn't have permission to
+  // perform ec2:` would cover every other EC2 action on the same phrasing,
+  // and none of them was measured. Confirmed inside cdkd too, not only by the
+  // probe: a `lambda-capacity-provider-default-name` run (ap-northeast-1,
+  // 2026-09-16) got this wording on attempt 2 of a create, after the entry
+  // above matched attempt 1, and retried it to success -- the attempt at which
+  // a build without this entry gives up.
+  //
+  // The cost, stated here beside the entry as its sibling below states its own:
+  // an operator role that GENUINELY lacks `ec2:DescribeSecurityGroups` -- a
+  // missing statement, or a deny from an SCP or a permissions boundary, none
+  // of which waiting fixes -- spends the full dense budget (~47.75s) before the
+  // create surfaces its real error.
+  "doesn't have permission to perform ec2:DescribeSecurityGroups",
+  // Lambda CapacityProvider, third wording of the same race (issue #3227), and
+  // the one that actually broke deploys: `One or more security group IDs are
+  // invalid. Check that the IDs are correct and try again.` (InvalidRequest,
+  // HTTP 400) on a create issued 0.19s and 1.84s after the same stack's
+  // security group. Three fresh deploys from empty state failed on it; a
+  // re-deploy minutes later succeeded with the same `VpcConfig`.
+  //
+  // **The CAUSE is not established, and the entry does not claim one.** Two
+  // explanations fit -- the operator role's permissions still propagating, or
+  // the just-created security group not yet visible to Lambda -- and the
+  // wording did not reproduce outside cdkd in six probe shapes, so neither was
+  // ruled out. What IS measured is that the condition clears on its own, which
+  // is what the retry needs. Anchored on the full first sentence and not on
+  // the advisory tail, for the reason the operator-role entry above states.
+  //
+  // Unlike its siblings this one names no role, so a genuinely wrong security
+  // group id in a template spends the bounded retries before surfacing. That
+  // is the trade this file already makes for `Invalid IAM Instance Profile`.
+  //
+  // An entry here reaches FIVE call sites, not only the create-side retry this
+  // comment is about. For both issue #3227 entries: `withRetry` twice -- its
+  // retryability test (`isRetryableTransientError`) and, separately, its
+  // cadence choice (`isIamPropagationError` picks the dense grid); the Custom
+  // Resource provider's `isTransientAuthzThrow`, which REPLAYS a delivery (why
+  // these are ledgered in `custom-resource-provider-thrown-retry.test.ts`);
+  // `destroy-runner.ts`'s DELETE loop, where a match costs up to 3 retries on
+  // its own 5s/10s/20s grid, ~35s per resource; and `isTerminalDeleteFailure`
+  // in `dynamodb-delete-budget.ts`, which reads the verdict INVERTED -- a match
+  // makes a delete failure non-terminal and skips
+  // `compensateRemovedDeletionProtection`. Both delete-side readers are inert
+  // for these wordings, which no delete carries, but the inverted one is the
+  // reader a future entry is likeliest to get wrong.
+  'One or more security group IDs are invalid',
   // CodeDeploy DeploymentGroup: the Cloud Control CreateResource references a
   // same-stack service IAM role, but cdkd's fast path issues the create before
   // IAM finishes propagating the just-created role's trust policy, so AWS

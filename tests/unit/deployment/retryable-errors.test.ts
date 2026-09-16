@@ -1402,6 +1402,119 @@ describe('Lambda CapacityProvider operator-role propagation (#3174)', () => {
   });
 });
 
+/**
+ * The SAME create, two stages further into the same race (issue #3227).
+ *
+ * The #3174 entry above covers the first window of a fresh operator role. A
+ * probe against a seconds-old role showed the rejection MOVE rather than
+ * clear -- two roles, same order, success 13s and 14s after the role was
+ * created: the operator-role wording twice, then the `ec2:` wording, then
+ * SUCCESS. And three fresh cdkd deploys from empty state failed on a THIRD
+ * wording, about the security group. Neither matched any pattern, so the
+ * create was single-shot on the first and gave up after one retry on the
+ * second -- `gave up after 1 IAM-propagation retry over 0.25s`, a budget that
+ * never opened rather than one that ran out.
+ */
+describe('Lambda CapacityProvider security-group propagation (#3227)', () => {
+  // Both in the CREATE-failure shape `CloudControlProvider` builds, which is
+  // what the retry loop classifies. SG_INVALID is verbatim from the issue's
+  // failing runs. EC2_PERMISSION is verbatim from a LIVE cdkd run of the
+  // `lambda-capacity-provider-default-name` fixture (ap-northeast-1,
+  // 2026-09-16), where this wording arrived on attempt 2 and was retried --
+  // with the account id and request id replaced. Note the tail the issue's
+  // probe table abbreviated: "... on the capacity provider. Grant the operator
+  // role ec2:DescribeSecurityGroups permission and try again." The pattern is a
+  // prefix of the sentence, so it matches either way; the verbatim tail is here
+  // so the case exercises the text AWS actually sends.
+  const SG_INVALID =
+    'CREATE failed for Provider2281708E: One or more security group IDs are invalid. ' +
+    'Check that the IDs are correct and try again. (Service: Lambda, Status Code: 400)';
+  const EC2_PERMISSION =
+    'CREATE failed for SpareProvider8B33A338: The operator role ' +
+    'arn:aws:iam::123456789012:role/CdkdLmiCapacityProviderExample-SpareProviderOperatorRole6345D27C ' +
+    "doesn't have permission to perform ec2:DescribeSecurityGroups on the capacity provider. " +
+    'Grant the operator role ec2:DescribeSecurityGroups permission and try again. ' +
+    '(Service: Lambda, Status Code: 400, Request ID: 00000000-0000-0000-0000-000000000000) ' +
+    '(SDK Attempt Count: 1)';
+
+  it.each([
+    ['the security-group wording', SG_INVALID],
+    ['the ec2:DescribeSecurityGroups wording', EC2_PERMISSION],
+  ])('classifies %s as IAM propagation and as retryable', (_label, message) => {
+    expect(isIamPropagationError(message)).toBe(true);
+    expect(isRetryableTransientError(new Error(message), message)).toBe(true);
+  });
+
+  // The exact set, not a boolean: deleting an entry goes red with an empty
+  // array rather than falling through to a neighbour that happens to match.
+  it.each([
+    ['the security-group wording', SG_INVALID, 'One or more security group IDs are invalid'],
+    [
+      'the ec2:DescribeSecurityGroups wording',
+      EC2_PERMISSION,
+      "doesn't have permission to perform ec2:DescribeSecurityGroups",
+    ],
+  ])('%s is matched by exactly its own entry', (_label, message, entry) => {
+    expect(RETRYABLE_ERROR_MESSAGE_PATTERNS.filter((p) => message.includes(p))).toEqual([entry]);
+  });
+
+  // `not authorized to perform` is in the list and is the phrase a reader
+  // expects to cover the ec2 case. It does NOT: the handler writes "doesn't
+  // have permission to perform". Without this the new entry looks redundant
+  // and the next reader deletes it.
+  it('is not covered by the `not authorized to perform` entry already in the list', () => {
+    expect(EC2_PERMISSION).not.toContain('not authorized to perform');
+    expect(RETRYABLE_ERROR_MESSAGE_PATTERNS).toContain('not authorized to perform');
+    // Positive witness, in THIS case: the wording IS retryable, and only
+    // through the new entry. Without it the two lines above hold with the
+    // entry deleted -- they would then describe a message nothing covers.
+    expect(RETRYABLE_ERROR_MESSAGE_PATTERNS.filter((p) => EC2_PERMISSION.includes(p))).toEqual([
+      "doesn't have permission to perform ec2:DescribeSecurityGroups",
+    ]);
+  });
+
+  // The narrowing the entry states: only the ONE action was observed, so the
+  // pattern must not generalise to every EC2 action on the same phrasing.
+  it('does not match the same phrasing for a different EC2 action', () => {
+    // The verbatim sentence with ONLY the action swapped, so the two differ in
+    // exactly the part the pattern's narrowness is about.
+    const other = EC2_PERMISSION.split('ec2:DescribeSecurityGroups').join(
+      'ec2:CreateNetworkInterface'
+    );
+    expect(other).not.toContain('DescribeSecurityGroups');
+    // Positive witness first: the identical sentence for the OBSERVED action
+    // matches. Without it this case is satisfied by an empty list too, and
+    // proves nothing about where the pattern stops.
+    expect(isIamPropagationError(EC2_PERMISSION)).toBe(true);
+    expect(isIamPropagationError(other)).toBe(false);
+    expect(isRetryableTransientError(new Error(other), other)).toBe(false);
+  });
+
+  // The stated cost of an entry that names no role: a genuinely wrong id in a
+  // template is retried before it surfaces. Pinned so the trade is visible
+  // rather than discovered.
+  it('also matches a genuinely wrong security group id, which is the stated trade', () => {
+    const permanent =
+      'CREATE failed for Other: One or more security group IDs are invalid. ' +
+      'Check that the IDs are correct and try again. (Service: Lambda, Status Code: 400)';
+    expect(isIamPropagationError(permanent)).toBe(true);
+  });
+
+  // A control: an unrelated Lambda 400 from the same handler stays terminal,
+  // so the two entries did not widen the classifier generally.
+  it('leaves an unrelated rejection from the same handler terminal', () => {
+    // Positive witnesses: both new wordings ARE retryable in this same case, so
+    // a terminal verdict below is a discrimination, not an empty table.
+    expect(isIamPropagationError(SG_INVALID)).toBe(true);
+    expect(isIamPropagationError(EC2_PERMISSION)).toBe(true);
+    const unrelated =
+      "CREATE failed for Provider2281708E: One or more subnets in Availability Zone(s) us-east-1e aren't " +
+      'supported. Select subnets from supported Availability Zones. (Service: Lambda, Status Code: 400)';
+    expect(isIamPropagationError(unrelated)).toBe(false);
+    expect(isRetryableTransientError(new Error(unrelated), unrelated)).toBe(false);
+  });
+});
+
 describe('RETRYABLE_ERROR_MESSAGE_PATTERNS composition', () => {
   it('is the union of the IAM-propagation subset and the rest, with no duplicates', () => {
     const all = RETRYABLE_ERROR_MESSAGE_PATTERNS;

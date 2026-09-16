@@ -1,12 +1,127 @@
 import { describe, it, expect, vi } from 'vite-plus/test';
 import {
   withRetry,
+  IAM_PROPAGATION_INITIAL_DELAY_MS,
+  IAM_PROPAGATION_MAX_DELAY_MS,
+  IAM_PROPAGATION_MAX_RETRIES,
   NAME_COOLDOWN_INITIAL_DELAY_MS,
   NAME_COOLDOWN_MAX_DELAY_MS,
   NAME_COOLDOWN_TOTAL_BUDGET_MS,
 } from '../../../src/deployment/retry.js';
 import { markNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
+
+/**
+ * The reported #3227 sequence, driven through the real `withRetry` rather
+ * than asserted on the classifier alone.
+ *
+ * What broke was not one unmatched message but the SHAPE: the create failed
+ * with the operator-role wording go-to-k/cdkd#3182 had just made retryable,
+ * cdkd retried once, the next attempt returned the security-group wording,
+ * and nothing matched it -- so the loop reported `gave up after 1
+ * IAM-propagation retry over 0.25s of propagation backoff`, which reads like
+ * an exhausted budget and was a budget that never opened. A classifier test
+ * cannot tell those two apart; this one can, by counting attempts.
+ */
+describe('withRetry - Lambda CapacityProvider propagation sequence (#3227)', () => {
+  const ROLE_WORDING =
+    "CREATE failed for Provider2281708E: The operator role is invalid or doesn't have " +
+    'sufficient permissions. (Service: Lambda, Status Code: 400)';
+  const SG_WORDING =
+    'CREATE failed for Provider2281708E: One or more security group IDs are invalid. ' +
+    'Check that the IDs are correct and try again. (Service: Lambda, Status Code: 400)';
+  // Verbatim from a live cdkd run of the capacity-provider fixture
+  // (ap-northeast-1, 2026-09-16), account and request ids replaced.
+  const EC2_WORDING =
+    'CREATE failed for SpareProvider8B33A338: The operator role ' +
+    'arn:aws:iam::123456789012:role/CdkdLmiCapacityProviderExample-SpareProviderOperatorRole6345D27C ' +
+    "doesn't have permission to perform ec2:DescribeSecurityGroups on the capacity provider. " +
+    'Grant the operator role ec2:DescribeSecurityGroups permission and try again. ' +
+    '(Service: Lambda, Status Code: 400)';
+
+  it('rides the probe sequence -- role, role, ec2:DescribeSecurityGroups, SUCCESS', async () => {
+    // The issue's four-stage probe of a seconds-old role, driven through the
+    // real loop. Before the ec2 entry the THIRD attempt's wording matched
+    // nothing and ended the loop there, reporting two retries as if a budget
+    // had run out. The live ap-northeast-1 run took the short form of the same
+    // path: role on attempt 1, this wording on attempt 2, then created.
+    const sequence = [ROLE_WORDING, ROLE_WORDING, EC2_WORDING];
+    let calls = 0;
+    const op = vi.fn().mockImplementation(async () => {
+      const message = sequence[calls++];
+      if (message !== undefined) throw new Error(message);
+      return 'ok';
+    });
+    await expect(withRetry(op, 'SpareProvider8B33A338', { sleep: () => Promise.resolve() })).resolves.toBe(
+      'ok'
+    );
+    // 4: three rejections, then the create. Without the entry this is 3.
+    expect(op).toHaveBeenCalledTimes(4);
+  });
+
+  it('retries a create that fails with the security-group wording on the FIRST attempt', async () => {
+    let calls = 0;
+    const op = vi.fn().mockImplementation(async () => {
+      calls++;
+      if (calls < 3) throw new Error(SG_WORDING);
+      return 'ok';
+    });
+    await expect(withRetry(op, 'Provider2281708E', { sleep: () => Promise.resolve() })).resolves.toBe(
+      'ok'
+    );
+    // Before the entry this was 1: the message matched nothing, so the first
+    // rejection was rethrown.
+    expect(op).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps retrying when the role wording is FOLLOWED by the security-group wording', async () => {
+    // The reported order, verbatim: the matched wording first, then the one
+    // that used to end the loop.
+    let calls = 0;
+    const op = vi.fn().mockImplementation(async () => {
+      calls++;
+      if (calls === 1) throw new Error(ROLE_WORDING);
+      if (calls === 2) throw new Error(SG_WORDING);
+      return 'ok';
+    });
+    await expect(withRetry(op, 'Provider2281708E', { sleep: () => Promise.resolve() })).resolves.toBe(
+      'ok'
+    );
+    // 3, not 2: attempt 2 is the one the reported run gave up on.
+    expect(op).toHaveBeenCalledTimes(3);
+  });
+
+  it('still TERMINATES on the dense budget when the security-group wording persists', async () => {
+    // The other direction, and the one that matters for a genuinely wrong id:
+    // retryable must not mean unbounded.
+    const sleeps: number[] = [];
+    const op = vi.fn().mockRejectedValue(new Error(SG_WORDING));
+    await expect(
+      withRetry(op, 'Provider2281708E', {
+        sleep: (ms) => {
+          sleeps.push(ms);
+          return Promise.resolve();
+        },
+      })
+    ).rejects.toThrow('One or more security group IDs are invalid');
+    expect(op).toHaveBeenCalledTimes(IAM_PROPAGATION_MAX_RETRIES + 1);
+
+    // The TOTAL, derived from the grid's own constants rather than copied, and
+    // NOT `sleeps.length`: the interruptible backoff (issue #2053) slices one
+    // delay into several `sleep` calls, so the call count is 49 for 26
+    // retries and pinning it would fence the slicing, not the budget.
+    const expectedTotalMs = Array.from({ length: IAM_PROPAGATION_MAX_RETRIES }, (_, i) =>
+      Math.min(IAM_PROPAGATION_INITIAL_DELAY_MS * 2 ** i, IAM_PROPAGATION_MAX_DELAY_MS)
+    ).reduce((a, b) => a + b, 0);
+    expect(sleeps.reduce((a, b) => a + b, 0)).toBe(expectedTotalMs);
+    // The number the comments quote, stated once so a grid change that keeps
+    // the formula but moves the budget is visible here.
+    expect(expectedTotalMs).toBe(47_750);
+    // The DENSE grid, not the generic one -- a misfiled pattern would change
+    // the cadence without changing retryability, which nothing else here sees.
+    expect(sleeps[0]).toBe(IAM_PROPAGATION_INITIAL_DELAY_MS);
+  });
+});
 
 describe('withRetry', () => {
   it('returns the operation result when it succeeds on first try', async () => {

@@ -324,9 +324,12 @@ describe('CustomResourceProvider retry on a THROWN transient error (issue #2033)
     // A FRESH response URL per attempt: the placeholder PUT is re-issued, so
     // the retry can never reuse the abandoned attempt's key.
     expect(counts.puts()).toBe(2);
-    // No exec-env recycle: the denial is on cdkd's principal, not the backing
-    // function's role. (This also distinguishes the fix from "route it through
-    // the existing FAILED-response arm".)
+    // No exec-env recycle: the rejection is decided before the handler can run,
+    // so no environment exists to recycle. For THIS fixture's message that is
+    // also a denial on cdkd's own principal, but that is not the rule -- the
+    // issue #3227 VPC rejections concern the function's role and skip the
+    // recycle for the same reason. (This also distinguishes the fix from
+    // "route it through the existing FAILED-response arm".)
     expect(counts.recycles()).toBe(0);
     expect(preDeliveryWarns()).toHaveLength(1);
   });
@@ -993,11 +996,28 @@ describe('CustomResourceProvider retry on a THROWN transient error (issue #2033)
  *   Is the new pattern a rejection AWS decides BEFORE engaging an execution
  *   environment?
  *
- * YES -> add it to `PINNED` and stop. NO -> it is admissible only if it
- * provably cannot reach a CR `Invoke` / `Publish` failure; establish that,
- * then add it to `PINNED` **and** to the ledger in the case below, carrying
- * the argument. If you cannot establish it, it must not reach this classifier
- * at all: split it out of the shared list, or gate the CR consumer.
+ * YES -> add it to `PINNED` and stop. NO -> it is still admissible if, ON
+ * THIS PATH, you can establish EITHER of two things, and the question is about
+ * this path because the list is shared: a wording that is a post-acceptance
+ * message where it originates can only ever reach a CR `Invoke` failure as
+ * something else.
+ *
+ *   (a) UNREACHABLE -- no CR `Invoke` / `Publish` failure can carry the text.
+ *   (b) FRONT-DOOR WHEN REACHED -- the only `Invoke` / `Publish` rejection
+ *       on this path that could carry it is itself decided before the handler
+ *       can run, so a replay still re-invokes nothing. ("Before the handler
+ *       can run", not "before an execution environment is engaged": a VPC
+ *       setup rejection is raised DURING environment setup.)
+ *
+ * Both replayed calls are in scope -- an argument about `Invoke` alone does
+ * not admit an entry -- and an entry may rest on a different arm for each.
+ *
+ * Either one: add it to `PINNED` **and** to the ledger in the case below,
+ * naming which of (a) / (b) it rests on and why. The argument must cover the
+ * WHOLE matched substring, not the one message that prompted the entry -- a
+ * shorter pattern admits more text than the example did. If you cannot
+ * establish either, it must not reach this classifier at all: split it out of
+ * the shared list, or gate the CR consumer.
  *
  * Re-pinning without answering that invokes a customer's non-idempotent
  * handler twice, which is the bug `disableOuterRetry` exists to prevent.
@@ -1025,6 +1045,8 @@ describe('the shared pattern list this classifier consumes (#3174 M5)', () => {
       "required permissions for: ENHANCED_MONITORING",
       "Caught ServiceAccessDeniedException",
       "The operator role is invalid or doesn't have sufficient permissions",
+      "doesn't have permission to perform ec2:DescribeSecurityGroups",
+      "One or more security group IDs are invalid",
       "permissions required to assume the role",
       "does not have a trust relationship allowing",
       "authorized to assume the provided role",
@@ -1045,28 +1067,55 @@ describe('the shared pattern list this classifier consumes (#3174 M5)', () => {
 
   it('holds a distinct, non-empty ledger of examined members, all still in the list', () => {
     // A LEDGER of entries someone has actually checked, not a claim that every
-    // OTHER entry is front-door -- nobody has walked all 32, and asserting
-    // that here would be the kind of unbacked invariant this block exists to
-    // replace. What it is for: when the case above reds, the author adds their
-    // entry to `PINNED` and, if it is not front-door, HERE too, with the
-    // argument for why it cannot reach a CR `Invoke` failure.
+    // OTHER entry is front-door -- nobody has walked the whole list, and
+    // asserting that here would be the kind of unbacked invariant this block
+    // exists to replace. What it is for: when the case above reds, the author
+    // adds their entry to `PINNED` and, if it is not front-door where it
+    // originates, HERE too, naming which of the header's arguments -- (a)
+    // unreachable, or (b) front-door when reached -- it rests on.
     const EXAMINED_NON_FRONT_DOOR: readonly string[] = [
-      // Issue #3174. A Cloud Control resource handler rejecting a same-stack
-      // operator role, i.e. after its own request was accepted. Unreachable
-      // here: no CR `Invoke` failure carries this text.
+      // Issue #3174, argument (a). A Cloud Control resource handler rejecting a
+      // same-stack operator role, i.e. after its own request was accepted.
+      // Unreachable here: no CR `Invoke` failure carries this text.
       "The operator role is invalid or doesn't have sufficient permissions",
-      // Issue #805, and the reason this list did not start at one: the entry's
-      // own comment in `retryable-errors.ts` says "any CC-provisioned type
-      // that validates a same-stack role at create time can hit this", which
-      // is the same post-acceptance shape. Unreachable here for the same
-      // reason -- the text is a Cloud Control handler's, not `Invoke`'s.
+      // Issue #805, argument (a), and the reason this list did not start at
+      // one: the entry's own comment in `retryable-errors.ts` says "any
+      // CC-provisioned type that validates a same-stack role at create time
+      // can hit this", which is the same post-acceptance shape. Unreachable
+      // here for the same reason -- the text is a Cloud Control handler's,
+      // not `Invoke`'s.
       'Caught ServiceAccessDeniedException',
+      // Issue #3227. `Invoke`: argument (b) -- and NOT (a), which is worth
+      // saying because (a) is the obvious first reach and does not hold for the
+      // SUBSTRING. The observed message names the operator role, but the
+      // pattern stops before it, so "no `Invoke` failure names an operator
+      // role" argues about text the pattern does not require. What does hold
+      // for the whole substring: on this path, a missing EC2 permission can
+      // only surface as `EC2AccessDeniedException`, the `Invoke` error Lambda
+      // raises while setting up the function's VPC networking -- during setup,
+      // before the handler can run. `Publish`: argument (a); SNS carries no
+      // Lambda VPC-networking text.
+      "doesn't have permission to perform ec2:DescribeSecurityGroups",
+      // Issue #3227. `Invoke`: argument (b), and the member where (a) is
+      // plainly unavailable: `@aws-sdk/client-lambda` carries an
+      // `InvalidSecurityGroupIDException` for `Invoke`, and its service-supplied
+      // message is not in the bundle, so a collision could not be ruled out by
+      // measurement. (b) covers it: that exception is raised when Lambda cannot
+      // attach the function's ENI -- during setup, before the handler can run --
+      // so a replay re-invokes nothing. `Publish`: argument (a), as above.
+      //
+      // Stated precisely, since neither (b) argument is measured HERE: both
+      // rest on the DOCUMENTED meaning of those two `Invoke` exception classes,
+      // not on an observed message. That is the same standing the #3174 and
+      // #805 arguments have -- a reading of AWS's behaviour -- and the reason
+      // this case says below what it cannot pin.
+      'One or more security group IDs are invalid',
     ];
     // Cardinality FIRST, and asserted rather than derived: an empty list
     // satisfies both the loop (which then runs no assertion at all) and a
     // `length <` comparison, so either alone lets this case pass while
     // asserting nothing. Raising the number is the deliberate act.
-    expect(EXAMINED_NON_FRONT_DOOR).toHaveLength(2);
+    expect(EXAMINED_NON_FRONT_DOOR).toHaveLength(4);
     // DISTINCT, or the length is satisfied by the same entry twice -- and the
     // name would then credit two examined members where there is one.
     expect(new Set(EXAMINED_NON_FRONT_DOOR).size).toBe(EXAMINED_NON_FRONT_DOOR.length);
@@ -1074,9 +1123,9 @@ describe('the shared pattern list this classifier consumes (#3174 M5)', () => {
       expect(IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS).toContain(pattern);
     }
     // What this case does NOT establish, stated so the name is not read as
-    // more: that these are the RIGHT two. "Is this pattern decided before an
-    // execution environment is engaged" is a judgement about AWS's behaviour
-    // that no assertion here can make -- swapping a member for another entry
+    // more: that these are the RIGHT members, or that each argument holds.
+    // "Is this rejection decided before the handler can run" is a judgement
+    // about AWS's behaviour that no assertion here can make -- swapping a member for another entry
     // of the shared list keeps every assertion above green. The per-entry
     // notes are the evidence; review is the check.
     // Premise: still a strict subset, so this is a statement about named
