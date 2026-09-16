@@ -513,6 +513,133 @@ describe('computeOutputsDiff', () => {
   });
 });
 
+/**
+ * A stored bag that is not a map at all (issue go-to-k/cdkd#3189).
+ *
+ * `current` is typed as a bag, but its only production argument is
+ * `StackState.outputs` read through an unchecked cast — `parseStateBody`
+ * validates the root object and the schema version and nothing inside — so a
+ * hand-edited or truncated record reaches here holding whatever JSON it holds.
+ * The walk that emits `REMOVE` rows takes a string or a list as readily as a
+ * map, so it INVENTED one row per character or element, each printing a
+ * character of the record as its `old:` side.
+ *
+ * The verdict is READ IT AS EMPTY, not refuse: `cdkd diff` is a preview and
+ * must still describe what the next deploy writes. The load site
+ * (`diff-recursive.ts`'s `loadStateOrEmpty`) is what WARNS, so the empty
+ * reading is never silent in the command; this function is the second line of
+ * defence for a direct caller.
+ */
+describe('computeOutputsDiff — a stored bag that is not a map (issue go-to-k/cdkd#3189)', () => {
+  const names = (changes: OutputChange[]) => changes.map((c) => `${c.changeType}:${c.name}`);
+
+  /**
+   * Split by what each shape did BEFORE the guard, measured at `aced052a`:
+   * `FABRICATING` produced rows, `INERT` produced none and is the control half.
+   * Keeping both in one table is what stops the case list from being
+   * all-positive — a guard that only ever sees fabricating shapes cannot show
+   * it left the inert ones alone.
+   */
+  const FABRICATING: ReadonlyArray<readonly [string, unknown, number]> = [
+    ['a string', 'abcdef', 6],
+    ['a list of scalars', [1, 2, 3], 3],
+    ['a list of objects (a bag serialized as an array)', [{ Out: 'v' }], 1],
+  ];
+  const INERT: ReadonlyArray<readonly [string, unknown]> = [
+    ['a number', 42],
+    ['a boolean', true],
+    ['null', null],
+    ['absent', undefined],
+  ];
+
+  for (const [label, value, priorRows] of FABRICATING) {
+    it(`emits NO row for ${label} (it invented ${priorRows} REMOVE rows before the guard)`, () => {
+      const changes = computeOutputsDiff(
+        value as unknown as Record<string, unknown>,
+        {},
+        new Set()
+      );
+      expect(changes).toEqual([]);
+    });
+  }
+
+  for (const [label, value] of INERT) {
+    it(`CONTROL: ${label} emitted no row before the guard and still emits none`, () => {
+      expect(
+        computeOutputsDiff(value as unknown as Record<string, unknown>, {}, new Set())
+      ).toEqual([]);
+    });
+  }
+
+  it('reads the bag as EMPTY rather than refusing, so the template side still previews', () => {
+    // The semantics decision, asserted rather than implied by an absence: every
+    // resolved output is an ADD, which is a truthful statement about what the
+    // next deploy writes to a record whose stored side could not be read.
+    const changes = computeOutputsDiff('abcdef' as unknown as Record<string, unknown>, {
+      Endpoint: 'https://x',
+    }, new Set());
+    expect(changes).toEqual([
+      { name: 'Endpoint', changeType: 'ADD', newValue: 'https://x', isExport: false },
+    ]);
+  });
+
+  it('never prints a character of the record — no row carries a stored value at all', () => {
+    // The discriminator the row COUNT alone does not give: the fabricated rows
+    // carried `oldValue: "a"`, i.e. the record's own bytes, into a diff that
+    // routinely runs in CI.
+    //
+    // Asserted as the JOIN of every emitted `oldValue`, not as a substring of
+    // the serialized rows: the fabrication splits the record one CHARACTER per
+    // row, so `not.toContain('SECRET')` passes under the mutation it exists to
+    // catch — measured, that spelling stayed green with all 13 characters
+    // present across 13 rows. The join reassembles them.
+    const planted = 'SECRET-abcdef';
+    const changes = computeOutputsDiff(
+      planted as unknown as Record<string, unknown>,
+      { Endpoint: 'https://x' },
+      new Set()
+    );
+    const storedSideEmitted = changes
+      .map((c) => c.oldValue)
+      .filter((v) => v !== undefined)
+      .join('');
+    expect(storedSideEmitted).toBe('');
+  });
+
+  it('FLOOR: a healthy populated bag still diffs exactly as it did', () => {
+    // The other side of the fence. A guard that emptied every bag would satisfy
+    // every assertion above.
+    const changes = computeOutputsDiff(
+      { Gone: 'g', Kept: 'k', Changed: 'before' },
+      { Kept: 'k', Changed: 'after' },
+      new Set()
+    );
+    expect(names(changes).sort()).toEqual(['MODIFY:Changed', 'REMOVE:Gone']);
+    expect(changes.find((c) => c.name === 'Gone')?.oldValue).toBe('g');
+  });
+
+  it('an empty bag previews the template side, unchanged by the guard', () => {
+    // NOT labelled FLOOR, because at this layer it cannot be one: an empty bag
+    // and a bag the guard repaired to empty are indistinguishable from here, so
+    // no mutation of the guard can red it. The real empty-bag floor is the
+    // identity `toBe(bag)` case in
+    // `tests/unit/state/malformed-resources-bag.test.ts`, which asserts the
+    // repair returned the SAME object rather than a replacement (review of
+    // go-to-k/cdkd#3194). Kept as a statement of the ADD side's behaviour.
+    expect(names(computeOutputsDiff({}, { Out: 'v' }, new Set()))).toEqual(['ADD:Out']);
+  });
+
+  it('FLOOR: a null-prototype bag is still readable (the shape both sides build)', () => {
+    // `resolveTemplateOutputs` builds its bag with `Object.create(null)` for the
+    // `__proto__` export-alias case, and the merge preview hands one back in as
+    // the stored side. A predicate keyed on the PROTOTYPE rather than on the
+    // plain-object test would empty it and take those rows with it.
+    const bag = Object.create(null) as Record<string, unknown>;
+    bag['Out'] = 'stored';
+    expect(names(computeOutputsDiff(bag, {}, new Set()))).toEqual(['REMOVE:Out']);
+  });
+});
+
 describe('computeOutputsDiff — legacy secret plaintext on the stored side', () => {
   const EXPR = '{{resolve:secretsmanager:prod/db:SecretString:password}}';
 

@@ -24,13 +24,26 @@ export function hasReadableResources(state: StackState): boolean {
  * The plain-object test itself, without the `resources` field bound to it.
  *
  * Exported because {@link hasReadableResources} is not the only caller any
- * more: `cdkd state show` and `cdkd state resources` walk FOUR more record
- * containers with `Object.entries` — `outputs`, `skippedOutputs`, and each
- * resource's `attributes` and `properties` — and a non-object in any of them
- * fabricates rows exactly as the `resources` bag did (go-to-k/cdkd#3187).
- * Spelling the same test a second time there is what this export exists to
- * prevent: the two could then drift, and the one that drifted would fabricate
- * again while looking guarded.
+ * more. Spelling the same test a second time at any of them is what this export
+ * exists to prevent: the copies could then drift, and the one that drifted
+ * would fabricate again while looking guarded.
+ *
+ * The consumers outside this module, DERIVED from
+ * `grep -rn "isReadableBag" src/` rather than from recall — re-run that command
+ * rather than trusting this list, which is the third enumeration in this
+ * module's history to be written by reasoning and come out incomplete:
+ *
+ * - `src/cli/commands/state.ts` (3 call sites, all in `repairRenderedContainers`):
+ *   `cdkd state show` and `cdkd state resources` walk FOUR more record
+ *   containers with `Object.entries` — `outputs`, `skippedOutputs`, and each
+ *   resource's `attributes` and `properties` — and a non-object in any of them
+ *   fabricates rows exactly as the `resources` bag did (go-to-k/cdkd#3187).
+ * - `src/analyzer/outputs-diff.ts` (1 call site, in `computeOutputsDiff`):
+ *   `cdkd diff` walks the stored `outputs` bag to emit its `REMOVE` rows, and a
+ *   string there invented one row per character (go-to-k/cdkd#3189). This one is
+ *   CROSS-LAYER — the analyzer sits above the state layer, so the import is
+ *   downward and carries no cycle, but it means an edit here reaches a layer the
+ *   two `resources`-bag callers do not.
  *
  * What it does NOT decide is whether a given container is malformed. That is a
  * per-container call, because absence means different things: an absent
@@ -246,6 +259,95 @@ export function malformedRenderedContainersWarning(
 /** The warning a caller of {@link repairMalformedResourcesForReadOnly} emits. */
 export function malformedResourcesWarning(stackName: string, region: string): string {
   return `${malformedStateDetail(stackName, region)} Continuing with an EMPTY resource set: this command's output describes zero resources, which is not the same as the stack having none.`;
+}
+
+/**
+ * The `outputs` half of {@link repairMalformedResourcesForReadOnly}, for a
+ * READ-ONLY command that DIFFS the stored bag rather than rendering it
+ * (go-to-k/cdkd#3189).
+ *
+ * `computeOutputsDiff` enumerates the stored bag twice, the second walk
+ * emitting one `REMOVE` row per stored key today's template no longer declares.
+ * It used to admit the bag on a bare `?? {}`, which covers `null` and
+ * `undefined` only — so a hand-edited or truncated record whose `outputs` holds
+ * a string or a list previewed the REMOVAL of outputs that never existed, one
+ * row per character or element, each carrying a character of the record as its
+ * `old:` side, with `cdkd diff --fail` exiting 1 on them.
+ *
+ * AT THE LOAD, for the reason
+ * {@link repairMalformedResourcesForReadOnly}'s own note records and one more
+ * that is specific to this container: `cdkd diff` dereferences the stored bag
+ * BEFORE the walk that fabricates. `resolveTemplateOutputs` asks
+ * `hasOwnProperty.call(storedOutputs, key)` for go-to-k/cdkd#2740's
+ * skipped-output record and for go-to-k/cdkd#1942's literal `Export.Name`
+ * verdict — which ANSWERS TRUE on a string for `'0'` or `'length'`, and THROWS
+ * outright on `null` (`Cannot convert undefined or null to object`). So a guard
+ * written at `computeOutputsDiff` alone leaves a wrong decision, or a raw
+ * `TypeError`, one call above it.
+ *
+ * ABSENT IS EXEMPT AND `null` IS NOT, which is the one place this diverges from
+ * {@link isReadableBag}'s verdict, and the split is measured rather than
+ * stylistic. Both stored-bag lookups named above gate on
+ * `storedOutputs !== undefined` before the `hasOwnProperty` call, so an ABSENT
+ * bag never reaches one; every other consumer on the diff path carries its own
+ * `?? {}` (`mergeNoChangeOutputs`'s `persisted`, `importableOutputKeys`, this
+ * function's own walk). An absent bag is therefore inert, exactly the condition
+ * under which `state.ts`'s `repairRenderedContainers` exempts it — and warning
+ * would be a false positive on a record cdkd itself supports: `cdkd scrub`
+ * round-trips a record with no `outputs` deliberately, refusing to materialize
+ * `{}` over it, and the deploy's failure-path saves write
+ * `outputs: currentState.outputs`, which `JSON.stringify` drops when it is
+ * undefined. A `null` bag is NOT inert — it passes the `!== undefined` gate and
+ * `hasOwnProperty.call(null, ...)` throws — so it is repaired and warned about
+ * like any other unreadable shape.
+ *
+ * That leaves one clause of go-to-k/cdkd#3189's stated floor overridden on
+ * purpose: it asked that a `null` bag "diff exactly as it does today and say
+ * nothing", and diffing exactly as it does today means THROWING. Recorded on
+ * the issue rather than silently traded.
+ *
+ * Mutates in place and returns whether it repaired anything; the caller warns
+ * on `true` with {@link malformedOutputsWarning}. Read-only commands ONLY, for
+ * the reason {@link refuseMalformedState} gives — a bag laundered into a
+ * well-formed empty one is permanent, and for `outputs` it would also take the
+ * exports index with it on the next write.
+ */
+export function repairMalformedOutputsForReadOnly(state: StackState): boolean {
+  if (state.outputs === undefined || isReadableBag(state.outputs)) return false;
+  state.outputs = {};
+  return true;
+}
+
+/**
+ * The warning a caller of {@link repairMalformedOutputsForReadOnly} emits.
+ *
+ * Deliberately neither {@link malformedResourcesWarning}'s text nor
+ * {@link malformedRenderedContainersWarning}'s, because the CONSEQUENCE of
+ * continuing empty differs from both. The resources text forbids
+ * `cdkd deploy` / `cdkd destroy` because an unreadable resource MAP is
+ * indistinguishable from an empty stack; the resource set is intact here. The
+ * rendered-containers text says the view "shows no rows there" — true of a
+ * renderer, false of a diff, which does not go quiet on an empty stored bag but
+ * reports every resolved output as an `ADD`. Saying so is the point: an
+ * operator who reads `ADD` rows for outputs the stack already has needs to know
+ * the comparison lost its left-hand side.
+ *
+ * Identifiers are sanitized and then shell-quoted and the command is emitted
+ * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
+ */
+export function malformedOutputsWarning(stackName: string, region: string): string {
+  const stack = safeIdentifier(stackName);
+  const reg = safeIdentifier(region);
+  return (
+    `State for ${shellQuote(stack)} (${shellQuote(reg)}) has no readable 'outputs' map — the ` +
+    `record is malformed or truncated. Where the stored value is a string or a list, ` +
+    `'Object.entries' walks it as readily as a map, so diffing it INVENTS a REMOVE row per ` +
+    `character or element carrying the record's own characters; where it is a number, a boolean ` +
+    `or null, it yields no comparison at all. Continuing with it EMPTY: every output this diff ` +
+    `resolves is reported as an ADD and no stored key is reported as a REMOVE, which is not the ` +
+    `same as the record holding none. See the stored value with: ` +
+    `cdkd state show ${shellQuote(stack)} --stack-region ${shellQuote(reg)} --json`
+  );
 }
 
 /**
