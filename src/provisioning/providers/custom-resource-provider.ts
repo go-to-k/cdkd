@@ -992,8 +992,11 @@ export class CustomResourceProvider implements ResourceProvider {
    *
    * **It is SMALL (2) because every retry it authorises RE-RUNS THE USER'S
    * HANDLER**, and that is the whole reason the second shape does not share it:
-   * a pre-delivery throw invokes the handler ZERO times, so the argument that
-   * bounds this number does not apply there at all. Sharing it was measured
+   * a pre-delivery throw it replays invokes the handler ZERO times, so the
+   * argument that bounds this number does not apply there at all. That "zero"
+   * is carried by {@link CustomResourceProvider.isTransientAuthzThrow}
+   * admitting FRONT-DOOR rejections only, not by the `delivered === false`
+   * gate reading it off — see that method's doc. Sharing it was measured
    * wrong — 2 retries on the dense schedule is 250ms + 500ms of coverage, i.e.
    * 0.75s against an IAM-propagation window this repo has measured at 7-12s, so
    * issue #2033's own scenario still failed with the fix in place.
