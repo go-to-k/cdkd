@@ -59,7 +59,7 @@ import { canonicalizeRegion } from '../../utils/aws-partition.js';
 // error message interpolates a bucket / key, so both reach the terminal only
 // through the same control-byte strip `export-index-store.ts` uses for the
 // name it logs.
-import { displaySafe } from '../../utils/display-safe.js';
+import { displayIdent, displaySafe } from '../../utils/display-safe.js';
 import type { StackState } from '../../types/state.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
@@ -82,14 +82,12 @@ import {
   hasReadableOutputs,
   hasReadableResources,
   isReadableBag,
-  malformedExportSourceWarning,
   malformedOutputsRefusalMessage,
   malformedOutputsWarning,
   malformedResourcesWarning,
   malformedStateRefusalMessage,
   repairMalformedOutputsForReadOnly,
   repairMalformedResourcesForReadOnly,
-  safeIdentifier,
 } from '../../state/malformed-resources-bag.js';
 
 /**
@@ -2107,11 +2105,13 @@ function malformedRecordsAuditedError(
   // so a single merged sentence would tell the reader nothing is known about
   // resources whose map was perfectly readable — and the two remedies point at
   // different parts of the same file.
-  // Through the SHARED `safeIdentifier`, not a local half-copy (review of
+  // SANITIZED, CAPPED and BOUNDED before interpolation (review of
   // go-to-k/cdkd#3206). These two sentences had interpolated raw since
-  // go-to-k/cdkd#3018; a first cut sanitized them with `displaySafe` alone and
-  // review caught that it dropped the CAP, so one run rendered the same stack
-  // name capped in the per-record warning and unbounded here.
+  // go-to-k/cdkd#3018. Two rounds of review moved this: a first cut used
+  // `displaySafe` alone and dropped the CAP, so one run rendered the same
+  // stack name capped in the per-record warning and unbounded here; a second
+  // hand-quoted the shared `safeIdentifier`, which leaves the quote inside the
+  // name.
   //
   // Provenance, stated correctly: these names are `stack.stackName` off the
   // synthesized Cloud Assembly, NOT an S3 key — scrub's targets come from the
@@ -2120,16 +2120,19 @@ function malformedRecordsAuditedError(
   // the half that matters either way, because a nested child is `Parent~Child`
   // recursively.
   //
-  // QUOTED, so the list has a boundary: every name here is otherwise bare
-  // printable text inside a sentence whose siblings end in a pasteable
-  // command, and an all-ASCII name can read as cdkd's own prose. No
-  // `shellQuote` — this message contains no command, and wrapping would
-  // compose badly with `safeIdentifier` for the reason its own note gives.
+  // `displayIdent`, not `'${safeIdentifier(n)}'`: hand-quoting leaves the
+  // quote character itself INSIDE the name, so a stack literally named
+  // `a', 'b` forges an extra list entry (review round 4). `displayIdent`
+  // JSON-quotes, which escapes the delimiter it adds, and carries its own cap
+  // and `UNRENDERABLE` fallback — the same three properties `safeIdentifier`
+  // gives, plus a boundary that cannot be closed from inside. It composes here
+  // precisely because there is no `shellQuote` to conflict with: this message
+  // contains no pasteable command.
   //
   // This closes THESE TWO sentences only. Other raw `${stackName}`
   // interpolations remain elsewhere in this file and are out of scope here.
   const safeNames = (names: readonly string[]): string =>
-    names.map((n) => `'${safeIdentifier(n)}'`).join(', ');
+    names.map((n) => displayIdent(n)).join(', ');
   const parts: string[] = [];
   if (stackNames.length > 0) {
     parts.push(
@@ -3606,6 +3609,18 @@ function makeCrossStackPrePass(deps: {
   // reachable space and `JSON.stringify`d every output of a widened root ten
   // times.
   const verdicts = new Map<string, SecretExpressionVerdict>();
+  /**
+   * Producer records already reported as having an unreadable `outputs` map, so
+   * that line is emitted once per RECORD rather than once per reference
+   * (review of go-to-k/cdkd#3206 round 4).
+   *
+   * Beside `verdicts` on purpose: both are per-pre-pass memos keyed by a
+   * producer coordinate, and both would repeat per reference without one.
+   * Measured before this: a consumer template with three `Fn::GetStackOutput`
+   * reads of ONE damaged producer emitted three identical ~600-character
+   * paragraphs, and a `--all` run repeated the set per consumer stack.
+   */
+  const warnedDamagedProducers = new Set<string>();
   const secretExpressionVerdict = (stack: string, key: string): SecretExpressionVerdict => {
     const id = `${stack}\u0000${key}`;
     let verdict = verdicts.get(id);
@@ -3769,7 +3784,32 @@ function makeCrossStackPrePass(deps: {
       // does not carry the key, is ORDINARY — a stale index entry, a producer
       // that never published that name — and stays unmentioned.
       if (outputs !== undefined && !isReadableBag(outputs)) {
-        logger.warn(malformedExportSourceWarning(producer.stack, producer.region));
+        // ONCE PER PRODUCER RECORD, not per reference: a consumer template
+        // with three `Fn::GetStackOutput` reads of one damaged producer emitted
+        // three identical ~600-character paragraphs, and a `--all` run repeated
+        // the set per consumer stack (measured, review round 4).
+        const seenKey = `${producer.stack}\u0000${producer.region}`;
+        if (!warnedDamagedProducers.has(seenKey)) {
+          warnedDamagedProducers.add(seenKey);
+          // MASKED, like every neighbouring line in this function: a producer
+          // STACK NAME is a needle whenever a stack is named after a value this
+          // pass resolved, and this is the only line here that runs at WARN.
+          //
+          // scrub's OWN sentence, not `malformedExportSourceWarning`: that text
+          // is about an exports-index REBUILD ("contributes NO exports to this
+          // region's index", "continuing with the other producers"), and scrub's
+          // pre-pass rebuilds no index and iterates no producers. Reusing it
+          // stated a consequence that does not happen here and never stated the
+          // one that does.
+          logger.warn(
+            `Scrub of ${stackName}: producer ` +
+              `'${maskSecretsInText(producer.stack, secrets)}' (${producer.region}) has no ` +
+              `readable 'outputs' map, so its stored value could NOT be classified — this run ` +
+              `cannot tell whether it still holds plaintext for the value ${stackName} imports ` +
+              `from it. ${stackName} is scrubbed for everything else. Repair that record and ` +
+              `scrub it first.`
+          );
+        }
         return undefined;
       }
       if (outputs === undefined) return undefined;

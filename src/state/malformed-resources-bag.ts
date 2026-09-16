@@ -84,15 +84,17 @@ export { isReadableBag };
  * nothing — an empty argument makes `--stack-region` swallow the next flag,
  * turning a remedy into a differently-broken command.
  *
- * EXPORTED since go-to-k/cdkd#3206's review: `cdkd scrub`'s audited-record
- * refusal builds its own name list, and a half-reimplementation there
- * sanitized without CAPPING — so one run rendered the same stack name capped
- * in the per-record warning and unbounded in the refusal. Nested children are
- * `Parent~Child` recursively, so an uncapped name really can push the rest of
- * the sentence off the reader's screen. Call this rather than spelling the
- * `displaySafe` + `truncateCodePoints` pair again.
+ * MODULE-PRIVATE, and it stayed that way after go-to-k/cdkd#3206's review
+ * considered exporting it. `cdkd scrub`'s audited-record refusal needed the
+ * same three properties (sanitize, cap, `UNRENDERABLE` on empty) plus a
+ * BOUNDARY, because its names go into a comma-joined list where a name
+ * containing the delimiter forges an entry. `displayIdent` has all four —
+ * JSON-quoting escapes the delimiter it adds — so that caller uses it and this
+ * stays private. The pair here is not duplicated: what differs is the
+ * `shellQuote` composition every message in THIS module needs and that one
+ * must not have.
  */
-export function safeIdentifier(value: string): string {
+function safeIdentifier(value: string): string {
   // CAPPED as well as sanitized. A stack name can arrive from an S3 key, so a
   // planted multi-kilobyte one would push the trailing remedy command off the
   // reader's screen -- the message would be technically correct and useless.

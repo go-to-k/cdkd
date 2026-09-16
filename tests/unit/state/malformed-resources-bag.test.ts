@@ -1174,11 +1174,16 @@ describe('write-capable commands refuse; read-only ones repair', () => {
           'scrub lists malformed records with a bare join, so a stack name reaches the refusal ' +
             'unsanitized and uncapped.'
         ).not.toMatch(/\$\{(stackNames|outputStackNames)\.join\(/);
+        // Anchored on the ARROW BODY, not a bare identifier: `src` is
+        // comment-stripped, but the name also appears in ordinary code
+        // elsewhere in the file, so a bare `toContain` would be satisfied by a
+        // use that has nothing to do with this list (round-4 nit).
         expect(
           src,
-          'scrub no longer routes the audited-record name list through the shared ' +
-            'safeIdentifier, so its cap can drift from the per-record warning that uses it.'
-        ).toContain('safeIdentifier(n)');
+          'scrub no longer renders the audited-record name list through a sanitizing, capping, ' +
+            'BOUNDED helper, so a stack name can reach the refusal unbounded — or, hand-quoted, ' +
+            'forge extra list entries.'
+        ).toMatch(/names\.map\(\(n\) => displayIdent\(n\)\)/);
       }
 
       // DOMINANCE.
