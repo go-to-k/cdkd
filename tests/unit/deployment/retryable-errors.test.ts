@@ -1163,6 +1163,35 @@ describe('Lambda CapacityProvider operator-role propagation (#3174)', () => {
     expect(isIamPropagationError(sharedPrefix)).toBe(false);
     expect(isRetryableTransientError(new Error(sharedPrefix), sharedPrefix)).toBe(false);
   });
+
+  // The case above fences the anchor's HEAD only, so a TAIL-anchored shortening
+  // (`or doesn't have sufficient permissions`, dropping the subject) survives it
+  // and the Availability Zone case alike. This one carries the identical tail
+  // under a DIFFERENT subject, so that cut turns it red. Constructed, like its
+  // sibling, and likewise not a message AWS has been observed to emit. The two
+  // together bound the anchor from both ends. Measured on this tree: every
+  // head prefix of length 1-45 reds the head case, and the first survivor is
+  // 46 -- a cut inside `sufficient`, ending `... doesn't have s`. That cut is
+  // NOT harmless: a shorter `.includes` needle matches MORE, so it would admit
+  // an unrelated `... doesn't have sufficient capacity`. Neither near-miss
+  // catches it, because both diverge from the anchor before that point; what
+  // catches it is the exact-set pair above, which compares the entry against
+  // `ANCHOR` itself. The near-misses fence what the classifier DISCRIMINATES;
+  // the exact-set cases fence what the entry IS.
+  it('does not retry a rejection sharing only the anchor tail', () => {
+    const sharedTail =
+      "CREATE failed for Provider2281708E: The scaling role is invalid or doesn't have " +
+      'sufficient permissions. (Service: Lambda, Status Code: 400)';
+    expect(sharedTail).toContain("or doesn't have sufficient permissions");
+    expect(sharedTail).not.toContain('The operator role');
+    // Premise: the subject is not itself a pattern (`execution role` IS one), so
+    // a green verdict here is about the anchor and not about a sibling entry.
+    expect(
+      RETRYABLE_ERROR_MESSAGE_PATTERNS.filter((pattern) => sharedTail.includes(pattern))
+    ).toEqual([]);
+    expect(isIamPropagationError(sharedTail)).toBe(false);
+    expect(isRetryableTransientError(new Error(sharedTail), sharedTail)).toBe(false);
+  });
 });
 
 describe('RETRYABLE_ERROR_MESSAGE_PATTERNS composition', () => {

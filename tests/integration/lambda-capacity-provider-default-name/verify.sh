@@ -23,9 +23,12 @@
 #      (`IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS`); the count is reported, not
 #      asserted, since a role that propagates in time needs no retry. Two
 #      guards keep that reporting honest rather than vacuous: a provider whose
-#      create logged `FAILED` while the deploy still SUCCEEDED must carry a
-#      matching `Retrying <id> ... (attempt N/M` line, or the run exits 1
-#      naming the wording drift; and the two per-provider operator IAM roles
+#      create logged Cloud Control's ASYNC `CREATE <id>: FAILED` poll line
+#      while the deploy still SUCCEEDED must carry a matching
+#      `Retrying <id> ... (attempt N/M` line, or the run exits 1 naming the
+#      wording drift -- a heuristic, not a total check, since a create AWS
+#      rejects SYNCHRONOUSLY logs no such poll line and passes it vacuously;
+#      and the two per-provider operator IAM roles
 #      CDK creates are read out of the state record and asserted LIVE here, so
 #      phase 4's teardown check cannot pass for the wrong reason.
 #   2. `cdkd diff` reports no changes (the generated name must not read as a
@@ -119,13 +122,27 @@ DEPLOY_LOG="${TMPDIR:-/tmp}/cdkd-3174-deploy.$$.log"
 delete_provider() { ( # usage: delete_provider <name>
   set +eu
   local name="$1" accepted="" gone="" err=""
+  # The CANONICAL signature, byte-for-byte.
+  # `tests/unit/scripts/integ-verify-probe-not-found.test.ts` refuses any other
+  # spelling tree-wide -- including inside a COMMENT, so this one describes the
+  # gap rather than quoting it. What review raised here: the signature's first
+  # alternative needs the two words adjacent, and AWS's "could not BE found"
+  # phrasing puts a word between them, so a provider that really is gone but is
+  # reported that way still ends this loop with `gone` unset and prints the "may
+  # still exist" WARN. That is a property of the SHARED signature, repo-wide,
+  # not something this fixture may diverge on locally.
   local not_found='not ?found|no ?such|does ?not ?exist|non ?existent|\(404'
   # Both the SERVICE's authorization rejections and the CLI's own
   # credential-resolution failures, which never reach a service and so carry
   # none of the service codes. Without the second half an unauthenticated
   # shell spends the full 40 x 15 s here per provider -- three providers, half
   # an hour of cleanup -- for a condition no amount of waiting changes.
-  local no_retry='AccessDenied|UnrecognizedClient|ExpiredToken|InvalidClientTokenId|AuthFailure|SignatureDoesNotMatch|InvalidSignature|Unable to locate credentials|NoCredentialProviders|Partial credentials|could not be found'
+  # Deliberately NOT carrying botocore's missing-profile wording: every spelling
+  # of it contains `could not be found`, which is the phrasing `not_found` above
+  # cannot recognise, so a pattern for it here would end the loop with `gone`
+  # unset on a provider that is in fact gone. The two credential entries cover
+  # the reachable cases; a missing PROFILE simply pays the full budget.
+  local no_retry='AccessDenied|UnrecognizedClient|ExpiredToken|InvalidClientTokenId|AuthFailure|SignatureDoesNotMatch|InvalidSignature|Unable to locate credentials|NoCredentialProviders|Partial credentials'
   for _ in $(seq 1 40); do
     if err="$(aws lambda delete-capacity-provider --capacity-provider-name "${name}" --region "${REGION}" 2>&1 >/dev/null)"; then
       accepted=1
@@ -280,8 +297,12 @@ VPC_ID="$(read_state "s['resources']['Vpc8378EB38']['physicalId']")"
 # is exactly 64 characters -- the IAM RoleName cap -- so one more character in
 # either name would take the truncate-and-hash path and a derived literal would
 # silently stop naming the live role.
-OPERATOR_ROLE="$(read_state "s['resources']['ProviderOperatorRoleDF614C31']['physicalId']")"
-SPARE_OPERATOR_ROLE="$(read_state "s['resources']['SpareProviderOperatorRole6345D27C']['physicalId']")"
+# `.get(...)`-chained, unlike the reads above: a missing key here must reach the
+# named guard below, and a bare subscript raises `KeyError` inside `read_state`,
+# which `set -e` turns into an abort at the assignment -- a Python traceback
+# instead of the sentence that says which logical ids to look at.
+OPERATOR_ROLE="$(read_state "s['resources'].get('ProviderOperatorRoleDF614C31', {}).get('physicalId', '')")"
+SPARE_OPERATOR_ROLE="$(read_state "s['resources'].get('SpareProviderOperatorRole6345D27C', {}).get('physicalId', '')")"
 
 [ "${STATE_PROVIDER_ID}" = "${PROVIDER_NAME}" ] ||
   { echo "FAIL: capacity provider physicalId '${STATE_PROVIDER_ID}' != generated name '${PROVIDER_NAME}'" >&2; exit 1; }
@@ -294,12 +315,18 @@ SPARE_OPERATOR_ROLE="$(read_state "s['resources']['SpareProviderOperatorRole6345
 echo "    state records ${PROVIDER_NAME} and ${SPARE_GENERATED} via cc-api"
 
 # Premise for the post-destroy operator-role assertions: both roles must be LIVE
-# here, or "gone after destroy" passes for the wrong reason. A strict capture --
-# a throttle or an auth failure aborts the run instead of reading as absent.
+# here, or "gone after destroy" passes for the wrong reason. Fail-CLOSED in
+# every direction -- a throttle or an auth failure is an abort, never "absent"
+# -- but each direction reaches its own sentence rather than a bare non-zero
+# exit, which on this premise is the difference between a diagnosable run and a
+# rerun.
 for role_name in "${OPERATOR_ROLE}" "${SPARE_OPERATOR_ROLE}"; do
   [ -n "${role_name}" ] ||
     { echo "FAIL: an operator role has no physicalId in state -- the logical ids above no longer match the synthesized template" >&2; exit 1; }
-  ROLE_LIVE_ARN="$(aws iam get-role --role-name "${role_name}" --region "${REGION}" --query 'Role.Arn' --output text)"
+  if ! ROLE_LIVE_ARN="$(aws iam get-role --role-name "${role_name}" --region "${REGION}" --query 'Role.Arn' --output text 2>&1)"; then
+    echo "FAIL: could not read operator role ${role_name} after the create -- it must be LIVE here or the post-destroy check is vacuous. AWS said: ${ROLE_LIVE_ARN}" >&2
+    exit 1
+  fi
   case "${ROLE_LIVE_ARN}" in
     arn:aws*:iam::*:role/*"${role_name}") ;;
     *) echo "FAIL: operator role ${role_name} is not live after the create (got ARN '${ROLE_LIVE_ARN}')" >&2; exit 1 ;;
