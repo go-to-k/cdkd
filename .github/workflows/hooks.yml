@@ -56,9 +56,24 @@ jobs:
     # the 360-minute default. A macOS runner executing two bash suites is the
     # slowest and most variable host in the matrix.
     #
-    # Making the suite FASTER is the better answer and is go-to-k/cdkd#3282: a
-    # 26-minute job is the longest feedback loop in the repo, and its ceiling is
-    # then the one worth lowering rather than raising.
+    # THE TRADE-OFF IS REAL HERE AND NOWHERE ELSE, so it is stated rather than
+    # waved past. Every other bound in this directory can be chosen generously
+    # at no cost. This one cannot: `hook-suites` is `pull_request`-triggered on
+    # `.claude/hooks/**`, checks out the PR ref and runs
+    # `bash .claude/hooks/run-tests.sh` — the ONE job in the repo that executes
+    # fork-authored shell — so raising the cap also lengthens the window a
+    # runaway gets on exactly that job.
+    #
+    # 60 is still the right call, because the two risks are not symmetric. The
+    # cost of 60 over 45 is fifteen extra minutes of bounded compute in an abuse
+    # case nobody has yet seen. The cost of 45 is 1.7x headroom over a 26.5-min
+    # observed run on the slowest and most variable host in the matrix, which
+    # risks killing legitimate runs — the failure this whole change exists to
+    # prevent, and the one `docs-deploy` was measurably already suffering.
+    #
+    # Making the suite FASTER removes the dilemma and is go-to-k/cdkd#3282: a
+    # 26-minute job is the longest feedback loop in the repo, and once it is
+    # shorter this ceiling is the one worth lowering rather than raising.
     timeout-minutes: 60
     permissions:
       contents: read

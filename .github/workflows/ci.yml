@@ -33,12 +33,31 @@ jobs:
     # "observed at least X" -- a claim that stays true however incomplete the
     # sample is, unlike "the maximum is X".
     #
-    # NO SAMPLE SIZE IS QUOTED, deliberately. Three revisions quoted one and it
-    # was wrong three different ways -- a positional window, then a `--limit`
-    # cap read as a population, then counts double-added across two overlapping
-    # sample files, which produced n's LARGER than the number of successful runs
-    # those workflows have ever had. The load-bearing claim is the lower bound,
-    # and it needs no n: "observed at least X" is true of one run or a thousand.
+    # NO PER-BOUND SAMPLE SIZE IS QUOTED. Three revisions quoted one and it was
+    # wrong three different ways -- a positional window, then a `--limit` cap
+    # read as a population, then counts double-added across two overlapping
+    # sample files, producing n's LARGER than the number of successful runs
+    # those workflows have ever had. The load-bearing claim is the lower bound
+    # and needs no n: "observed at least X" is true of one run or a thousand.
+    # (Population figures still appear where they are the POINT of a sentence --
+    # the 865 below, and `hooks.yml`'s 49 -- and an earlier version of this
+    # paragraph said "no sample size is quoted" while two sat within fifteen
+    # lines of it.)
+    #
+    # AND THE FIGURE MUST BE PER JOB, which is where three of them went wrong:
+    # `inherit`, `disarm` and `release-please` were briefly stated from a run's
+    # WALL CLOCK, taken from a review report while this token was rate-limited
+    # and published without re-deriving. A run includes queue time and every
+    # other job in it; `timeout-minutes` bounds neither. `disarm`'s run-level
+    # 235 s was a job that took 11 s.
+    #
+    # Every figure here is now one MEASURED AT JOB LEVEL BY THIS BRANCH. Review
+    # reported larger job-level maxima for `disarm` and `release-please` from a
+    # wider window; they could not be re-derived here (secondary rate limit) and
+    # so are not quoted. A weaker lower bound that was verified beats a stronger
+    # one that was not -- which is the whole lesson of the paragraph above, and
+    # no bound turns on the difference: the smallest ratio among the three is
+    # 15 minutes against 46 s.
     #
     # Samples come from the closed range 2026-09-09..2026-09-15, UTC:
     #

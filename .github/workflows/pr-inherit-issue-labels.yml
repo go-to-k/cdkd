@@ -39,8 +39,7 @@ concurrency:
 jobs:
   inherit:
     runs-on: ubuntu-latest
-    # observed at least 306 s -- GitHub API calls with no checkout, so the tail is
-    # the API's rather than this repo's.
+    # observed at least 9 s -- GitHub API calls with no checkout.
     timeout-minutes: 15
     steps:
       - name: Copy linked issues' labels onto the PR

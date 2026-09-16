@@ -9,7 +9,7 @@
  *
  * * A job with no `timeout-minutes` runs on the Actions default of **360
  *   minutes**. `ci.yml`'s `check-build-test` is reachable from a FORK through
- *   `pull_request`, and is observed at at least 823 s, so the gap between what
+ *   `pull_request`, and is observed at at least 823 s — so the gap between what
  *   the job needs and what it was allowed is a factor of about 26. "Longest
  *   measured run" is the framing this file now avoids — see the lower-bound
  *   note below.
@@ -82,32 +82,37 @@
  * line in the log of an already-failing run, no secret and no write — but the
  * cost of closing it at one site is two function calls.
  *
- * WHAT THE MUTATION TABLE SAYS, and what it does not.
+ * WHAT THE MUTATION EVIDENCE IS, AND WHAT IT IS NOT.
  *
- * Every arm of `auditWorkflowHardening`, `flatten`, `safeName`, `safeJson`,
- * `render`, `boundedList`, `workflowNamesIn`, both twins and both probe helpers
- * is killed by a case here — re-derive it rather than trusting this sentence.
- * That took four review rounds, and the shape of the failure was the same each
- * time: a table of seven arms all reddened, and a reviewer then measured
- * fifteen of eighteen surviving; a table of twenty-three, and eighty-five
- * probed found more. A table only ever covers the arms its author thought of.
+ * Every arm NAMED in the probe tables of this PR's commits is killed by a case
+ * here, and each was re-measured after the fix. That is the whole claim. It is
+ * deliberately NOT "every arm is killed", because this file has said that four
+ * times and been wrong four times: a reviewer probed 85 mutants and found arms
+ * my 23 missed, then 109 against my 26, then ~135, then 166 — each round the
+ * same shape, a table covering exactly the arms its author thought of.
  *
- * THREE ARMS ARE KILLED BY `vp run typecheck:test` AND BY NOTHING HERE, which
- * is the brand doing its job rather than a gap. Dropping `safeText` from a
- * field of a finding is TS2322; the `typeof timeout !== 'number'` guard, which
- * is redundant at runtime because `Number.isInteger` does not coerce, is
- * TS18046 when removed — and so is the twins' own copy of that guard, which an
- * earlier revision of this paragraph failed to name. Neither is visible to a run of this file, because vitest's
- * `typecheck.include` is `*.test-d.ts` alone and so the "Type Errors" line
- * printed here is vacuous. That is precisely why the brand is worth its weight:
- * it moves a defect that a green suite cannot see onto a gate that fails.
+ * So the census is a LOWER BOUND, and re-deriving it is the only way to know
+ * more. The residual is real and is stated rather than argued away: arms exist
+ * that no case here kills, mostly guards that the real workflow tree cannot
+ * reach (a job with two bounds, a name the filesystem cannot hold) and
+ * redundant pairs where either alone suffices. Two classes are worth knowing:
  *
- * ONE ARM IS GENUINELY EQUIVALENT: `findingsForAddedFile`'s filter, while the
- * real tree is clean. Every synthetic case adds one bad file to a directory
- * that reports nothing, so filtering and not filtering give the same list. It
- * earns its place only in the failing case it exists for — keeping a synthetic
- * case pointed at its own subject when the real tree regresses — and a
- * diagnostic property cannot be fenced by a green suite.
+ *   - THREE ARMS ARE KILLED BY `vp run typecheck:test`, and for two of them
+ *     nothing here kills them as well. Dropping `safeText` from a finding's
+ *     `detail` is TS2322 and runtime-invisible; the `typeof timeout !==
+ *     'number'` guard, redundant at runtime because `Number.isInteger` does not
+ *     coerce, is TS18046 when removed, and so is the twins' own copy of it.
+ *     `workflow` and `job` are different — a runtime case DOES red for each, so
+ *     an earlier version of this paragraph over-claimed by lumping all the
+ *     fields together. None of the three is visible to a run of this file:
+ *     vitest's `typecheck.include` is `*.test-d.ts` alone, so the "Type Errors"
+ *     line printed here is vacuous.
+ *   - `findingsForAddedFile`'s filter is EQUIVALENT while the real tree is
+ *     clean, since every synthetic case adds one bad file to a directory that
+ *     reports nothing. It earns its place only in the failing case it exists
+ *     for, and a diagnostic property cannot be fenced by a green suite. Its
+ *     filter also cannot match a name whose quoting ESCAPED a character, which
+ *     is why the quote case below goes around it.
  *
  * The probes at the bottom come in two kinds, and the split is deliberate per
  * `.claude/rules/testing.md` ("a checker must also prove it FAILS — against
@@ -408,7 +413,7 @@ export const auditWorkflowHardening = (dir: string): Audit => {
  * round 2 capped the findings and left the twins unbounded, which is the same
  * omission one layer over (measured: 3000 entries, nothing truncated).
  */
-const boundedList = (lines: readonly Safe[]): string[] =>
+const boundedList = (lines: readonly Safe[]): Safe[] =>
   lines.length > MAX_RENDERED_FINDINGS
     ? [
         ...lines.slice(0, MAX_RENDERED_FINDINGS),
@@ -425,13 +430,15 @@ const boundedList = (lines: readonly Safe[]): string[] =>
  * The cap is the second half of that contract — a fork workflow with a thousand
  * jobs would otherwise render a thousand lines.
  */
-const render = (findings: readonly Finding[]): string[] =>
+const render = (findings: readonly Finding[]): Safe[] =>
   boundedList(
     findings.map(
       (f) =>
         // Every interpolated part is `Safe` by `Finding`'s own type, and `kind`
-        // is a literal union. The cast is the boundary, and it is the ONLY one
-        // on this path — which is what makes the parameter type above load-bearing.
+        // is a literal union. The cast is a boundary; `boundedList`'s summary
+        // line carries the other one on this path, which an earlier version of
+        // this sentence claimed did not exist. What the parameter and return
+        // types buy is that no FOURTH renderer can be written without one.
         (`${f.workflow}${f.job === undefined ? '' : ` / ${f.job}`}: ${f.kind}` +
           `${f.detail === undefined ? '' : ` (${f.detail})`}`) as Safe,
     ),
@@ -462,7 +469,7 @@ const auditMutatedCopy = (mutate: (dir: string) => void): Audit => {
  * real workflow regresses, pointing at an innocent file. The real-code probes
  * below keep their whole-tree assertions, where that coupling is the point.
  */
-const findingsForAddedFile = (name: string, body: string): string[] => {
+const findingsForAddedFile = (name: string, body: string): Safe[] => {
   const audit = auditMutatedCopy((dir) => writeFileSync(join(dir, name), body));
   // The WHOLE name, not a prefix. An earlier cut cut at the first dot, so
   // `ci.yml_ but actually.yml` filtered on `ci` and also matched every real
@@ -596,7 +603,7 @@ const twinLabel = (workflow: Safe, job?: Safe, detail?: Safe): Safe =>
     detail === undefined ? '' : `: ${detail}`
   }` as Safe;
 
-const independentlyUnboundedJobs = (dir: string): string[] => {
+const independentlyUnboundedJobs = (dir: string): Safe[] => {
   const out: Safe[] = [];
   for (const workflow of workflowNamesIn(readdirSync(dir))) {
     let document: unknown;
@@ -629,7 +636,7 @@ const independentlyUnboundedJobs = (dir: string): string[] => {
   return boundedList(out);
 };
 
-const independentlyUndeclaredPermissions = (dir: string): string[] => {
+const independentlyUndeclaredPermissions = (dir: string): Safe[] => {
   const out: Safe[] = [];
   for (const workflow of workflowNamesIn(readdirSync(dir))) {
     let document: unknown;
@@ -682,15 +689,28 @@ describe('every workflow job is bounded and every workflow declares its permissi
 
 describe('the audit fails against real code', () => {
   it('a removed timeout in ci.yml is reported, naming the job', () => {
-    // Anchored on a timeout value rather than on a job name because the value
-    // is what the line contains. Which values are unique is not stated here: it
-    // changes whenever a bound is re-measured, and `deleteUniqueLine` refuses a
-    // duplicated anchor by name at the moment it stops being unique — a census
-    // in a comment would go stale silently instead.
+    // Anchored on the JOB, through `deleteJobTimeout`. This comment described
+    // value-anchoring for two rounds after the line beneath it stopped doing
+    // that — and a near-identical twin of it, twenty lines down, was corrected
+    // while this copy was missed. Duplicated prose goes stale one copy at a
+    // time, which is the same failure as a count in two places.
     const audit = auditMutatedCopy((dir) => {
       deleteJobTimeout(dir, 'ci.yml', 'ci-ok');
     });
     expect(render(audit.findings)).toEqual(['ci.yml / ci-ok: no-timeout']);
+  });
+
+  it('a removed timeout in a MIDDLE job is reported, naming only that job', () => {
+    // `once-leak-detect` is the third of five jobs and shares its value with
+    // `check-build-test` ABOVE it. That combination is what discriminates the
+    // helper's LOWER bound: with `i >= start` dropped, the delete also takes the
+    // earlier job's identical line. The round-4 probe picked `check-build-test`
+    // — the FIRST job — which by construction cannot see a missing lower bound,
+    // the same blind spot as the round-3 probes all targeting last jobs.
+    const audit = auditMutatedCopy((dir) => {
+      deleteJobTimeout(dir, 'ci.yml', 'once-leak-detect');
+    });
+    expect(render(audit.findings)).toEqual(['ci.yml / once-leak-detect: no-timeout']);
   });
 
   it('a removed timeout in a NON-LAST job is reported, naming only that job', () => {
@@ -748,7 +768,15 @@ describe('the audit fails against real code', () => {
     const audit = auditMutatedCopy((dir) => {
       writeFileSync(join(dir, 'ci.yml'), 'name: CI\njobs:\n  a:\n   - [unbalanced\n');
     });
-    expect(audit.findings.map((f) => `${f.workflow}: ${f.kind}`)).toEqual(['ci.yml: unparseable']);
+    // Through `boundedList`, not a bare `.map`. This was a FOURTH renderer of a
+    // finding — outside `render`, type-safe only by coincidence, and the only
+    // UNCAPPED one: measured at 302 lines / 7261 characters against 300 fork
+    // workflows while every other list assertion here stopped at 21. Closing
+    // `boundedList`'s return type to `Safe[]` is what makes a fifth impossible
+    // to write without a cast.
+    expect(boundedList(audit.findings.map((f) => `${safeName(f.workflow)}: ${f.kind}` as Safe))).toEqual(
+      ['ci.yml: unparseable'],
+    );
     // The FIRST LINE only: a YAML parse error's message continues into a code
     // frame quoting the offending source, which is the fork's bytes. Asserting
     // merely that a detail exists let the whole message through (measured).
@@ -833,6 +861,14 @@ describe('the audit fails against real code', () => {
         deleteJobTimeout(dir, 'zz-cmt.yml', 'a');
       }),
     ).not.toThrow();
+    // BOTH helpers: the anchor lives in each, and this case previously called
+    // only the first, leaving `setJobTimeout`'s copy unfenced.
+    expect(() =>
+      auditMutatedCopy((dir) => {
+        writeFileSync(join(dir, 'zz-cmt.yml'), body);
+        setJobTimeout(dir, 'zz-cmt.yml', 'a', '7');
+      }),
+    ).not.toThrow();
   });
 
   it.each([
@@ -877,8 +913,14 @@ describe('the audit fails against real code', () => {
       const t = line.trim();
       if (t.startsWith('timeout-minutes:')) counts.set(t, (counts.get(t) ?? 0) + 1);
     }
+    // The needle is a RAW line of `ci.yml` — fork-controlled under
+    // `pull_request`, measured at 329 characters carrying a bidi override. It
+    // is the only unsanitised string this file binds anywhere near an
+    // assertion, and while `toBeDefined()` cannot print it today, that is one
+    // edit away from being the fifth instance of the forgery this file has
+    // already had four of. Assert on the COUNT, and keep the raw line out.
     const duplicated = [...counts].find(([, n]) => n > 1);
-    expect(duplicated).toBeDefined();
+    expect([...counts].filter(([, n]) => n > 1)).toHaveLength(1);
     expect(() =>
       auditMutatedCopy((dir) => deleteUniqueLine(dir, 'ci.yml', duplicated?.[0] ?? '')),
     ).toThrow(/matched [2-9][0-9]* lines in ci\.yml/);
@@ -1006,6 +1048,34 @@ describe('a finding cannot forge a line in the log', () => {
     expect(lines[0]).toMatch(/^zz-evil\.yml \/ a ci\.yml/);
   });
 
+  it('a file name containing a quote cannot break out of the quoting', () => {
+    // `JSON.stringify` is doing TWO jobs in `safeName`: wrapping, and ESCAPING.
+    // Only the wrapping was fenced — replacing it with a template literal
+    // `"${safeText(name)}"` stayed green, and a fork name carrying a `"` then
+    // escapes the quotes and reads as a finding about another workflow:
+    // measured, `"zz" / ci.yml / check-build-test: no-timeout #.yml"`.
+    // No `/` in the name — that would make it a path rather than a file name,
+    // and the probe would die creating it rather than measuring anything.
+    const name = 'zz" ci.yml: check-build-test no-timeout #.yml';
+    // NOT through `findingsForAddedFile`: its filter looks for `safeText(name)`
+    // inside the rendered field, and escaping turns the interior `"` into `\"`,
+    // so the needle no longer occurs — the filter cannot see a name of exactly
+    // the shape this case is about. The real tree reports nothing, so the whole
+    // list IS this file's findings.
+    const audit = auditMutatedCopy((dir) =>
+      writeFileSync(join(dir, name), 'name: X\npermissions: {}\njobs:\n  a:\n    runs-on: x\n'),
+    );
+    const lines = render(audit.findings);
+    expect(lines).toHaveLength(1);
+    // The name field must be a WELL-FORMED JSON string: that is exactly what
+    // escaping buys, and a bare `"${...}"` wrapper does not. Parsing it back is
+    // the assertion — with the escaping gone, the interior quote terminates the
+    // string early and this throws.
+    const field = String(lines[0]).replace(/ \/ a: no-timeout$/, '');
+    expect(field.startsWith('"')).toBe(true);
+    expect(JSON.parse(field)).toBe(name);
+  });
+
   it('a hostile file NAME is quoted rather than emitted raw', () => {
     // `flatten` alone cannot stop this: the name below is pure ASCII with no
     // control byte, and reads as a complete finding about another file.
@@ -1096,7 +1166,10 @@ describe('the caps are literals, not whatever the constants say', () => {
     // `boundedList` has a 20/21 pair for, which this helper lacked.
     expect(safeText('x'.repeat(MAX_FIELD_LENGTH))).toHaveLength(MAX_FIELD_LENGTH);
     expect(safeText('x'.repeat(MAX_FIELD_LENGTH))).not.toContain('…');
+    // Length alone cannot discriminate here: clamped (120 + the marker) and
+    // unclamped (121 raw) are both 121. Assert the MARKER.
     expect(safeText('x'.repeat(MAX_FIELD_LENGTH + 1))).toHaveLength(MAX_FIELD_LENGTH + 1);
+    expect(safeText('x'.repeat(MAX_FIELD_LENGTH + 1))).toContain('…');
   });
 
   it('a field is clamped to 120 characters plus the clip marker', () => {
