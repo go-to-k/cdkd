@@ -33,6 +33,11 @@ import {
 // fails this equality instead of quietly shrinking the scanned set.
 const EXPECTED_TARGETS = [
   'review-pr',
+  'review-pr/references/bias-factors.md',
+  'review-pr/references/dispatch-and-marker.md',
+  'review-pr/references/output-template.md',
+  'review-pr/references/pr-stats.md',
+  'review-pr/references/round-completion.md',
   'pick-integ',
   'run-integ',
   'verify-pr',
