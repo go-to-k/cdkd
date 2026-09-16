@@ -272,7 +272,7 @@ No plaintext secrets found in any target stack state. Nothing to scrub.
 | --- | --- |
 | `0` | State was scrubbed, or there was nothing to scrub. |
 | `1` | `--fail` found plaintext: under `--dry-run`, any plaintext at all; on a real run, a leak scrub cannot rewrite. |
-| `2` | scrub refused to examine something, a stack failed outright, or the exports index was left incomplete. |
+| `2` | scrub refused to examine something, could not classify a producer it imports from, a stack failed outright, or the exports index was left incomplete. |
 
 The full cross-command table is in the
 [CLI Reference](cli-reference.md#exit-codes).
@@ -349,10 +349,17 @@ cannot rewrite. Three shapes qualify, and all three are also reported in words:
   own `outputs` map **cannot be read**, which is repairable: fix that record
   and scrub it first.
 
-  The second shape does not refuse the stack. Refusing would strand this
-  stack's own plaintext over a record that belongs to another stack — possibly
-  one the operator does not own — so scrub reports the finding, scrubs
-  everything else, and declines to call the stack clean.
+  The two also exit differently, because the remedies differ. The by-design
+  read is a `--fail` finding: exit `1`, and only with the flag. **A producer
+  whose `outputs` map cannot be read exits `2` on its own, with or without
+  `--fail`** — including under `--dry-run`. It means scrub could not tell
+  whether that producer still holds the plaintext this stack imports, which is
+  "cdkd did not finish", not "cdkd looked and found a leak".
+
+  Neither shape refuses the stack. Refusing would strand this stack's own
+  plaintext over a record that belongs to another stack — possibly one the
+  operator does not own — so scrub reports the finding, scrubs everything
+  else, and declines to call the stack clean.
 
 - a **record whose `{{resolve:...}}` scan was ABANDONED part-way**:
   `N scan(s) in <stack> were ABANDONED mid-value because a {{resolve:...}}
