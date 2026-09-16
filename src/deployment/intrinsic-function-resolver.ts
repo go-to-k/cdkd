@@ -8618,8 +8618,9 @@ export class IntrinsicFunctionResolver {
    * differ from `''`. Neither call site can reach it — both refuse an empty
    * name upstream — so it fences nothing measured today.
    *
-   * LONGEST RAW FIRST, so a name that contains another is rewritten as itself
-   * rather than having its inner name replaced underneath it. **That ordering
+   * LONGEST KEY FIRST — over every key, raw and sanitized alike, which is what
+   * the comparator sees — so a key that contains another is rewritten as itself
+   * rather than having the inner one replaced underneath it. **That ordering
    * is DEFENSIVE and this suite does not distinguish it** — measured: reversing
    * the comparator leaves every case green. The reason is that no case here
    * builds two raws that NEST: the one case with two surviving pairs masks a
@@ -8655,6 +8656,17 @@ export class IntrinsicFunctionResolver {
         // different way and each was fixed by enumerating one more shape, so
         // it is stated once here and enforced at construction instead.
         //
+        // PER ENTRY, and deliberately not a claim about the COMPOSITION. Each
+        // replacement is masked against its OWN twin only, so one pair's
+        // secret can survive as a literal inside another's replacement — the
+        // longer key runs first and the shorter one no longer matches there
+        // (measured: `us-qq-1x` / `us-qq-1` leaves the region's `qq` inside the
+        // stack entry's twin). That is the `q7`/`q7x` residual recorded at the
+        // sort, one composition over, and it is not a regression: every step
+        // replaces text with a value at least as masked, so the result is
+        // never weaker than the sentence the sink printed. Closing it means
+        // feeding each replacement through the other entries' masks here.
+        //
         // The raw key is what a sink that did NOT sanitize prints, so it takes
         // the twin as it is. The sanitized key is what a sink that DID prints,
         // and its replacement is sanitized to match — the twin keeps the
@@ -8665,7 +8677,11 @@ export class IntrinsicFunctionResolver {
         const shown = displaySafe(raw, { asciiOnly: true });
         if (shown === raw) return [[raw, masked] as const];
         // Empty after sanitizing: substituting `''` splices the replacement
-        // between every character, so that key contributes nothing.
+        // between every character, so that key contributes nothing. The
+        // `shownMask` half of that test is UNREACHABLE and kept as the other
+        // side of one rule rather than as a live case — `masked !== raw` is
+        // already guaranteed above, so masking fired and the text contains
+        // `***`, which `displaySafe` preserves.
         const shownMask = displaySafe(masked, { asciiOnly: true });
         return shown === '' || shownMask === ''
           ? [[raw, masked] as const]

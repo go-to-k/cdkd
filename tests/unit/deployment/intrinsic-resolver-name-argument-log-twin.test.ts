@@ -2116,9 +2116,10 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
   it('THE INVARIANT: nothing this masker prints is less sanitized than what the sink printed', async () => {
     // Asserted as the PROPERTY rather than as another example, because three
     // rounds of adding examples each missed the next shape. The sink sanitizes
-    // (`displaySafe`), so whatever comes back out must still be sanitized —
-    // whether the name carried a mask or not, and wherever the control
-    // character sits.
+    // (`displaySafe`), so whatever comes back out must still be sanitized,
+    // wherever the offending character sits and whichever character it is.
+    // Every shape here carries a mask; the UNMASKED half is the control case
+    // below, which is where that arm is pinned.
     //
     // This shape is the one an example-by-example fix kept missing: the name
     // DOES carry a mask, and the log twin keeps the template's literal parts
@@ -2130,14 +2131,18 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
     // `maskSecretsForLog`'s pre-existing behaviour at a different site, not
     // something this catch owns.
     const ctl = String.fromCharCode(1);
-    for (const name of [`pro${ctl}d-\${P}`, `svc-\${P}${ctl}`, 'plain-${P}']) {
+    for (const name of [`pro${ctl}d-\${P}`, `svc-\${P}${ctl}`, 'pro\td-${P}', 'plain-${P}']) {
       const raw = name.replace('${P}', PIN);
       const error = await errorOf(
         producer(sub(name)),
         makeContext({ stateBackend: sanitizingBackend(raw) })
       );
       const chain = chainMessages(error).join('\n');
-      expect(chain, `for ${JSON.stringify(name)}`).not.toMatch(/[^\t\n -~]/);
+      // `\n` is the JOIN above, nothing the sink produced. TAB is deliberately
+      // NOT whitelisted: the sink's class is `/[^ -~]/`, which strips it too,
+      // so admitting `\t` would let a name carrying one restore it and still
+      // pass — the exact shape this case exists to catch.
+      expect(chain, `for ${JSON.stringify(name)}`).not.toMatch(/[^\n -~]/);
       expect(chain).not.toContain(PIN);
     }
   });
