@@ -60,6 +60,10 @@
  * A LEAF module: it imports only a type. `src/analyzer/outputs-diff.ts` reads
  * the secret-expression predicate from here, so the deploy side's refusal and
  * the diff side's exoneration cannot disagree about what an expression is.
+ * `computeStackDiff` (`src/cli/commands/diff-recursive.ts`) calls
+ * {@link mergeNoChangeOutputs} itself to preview this merge on a stack with no
+ * resource change (issue #3101), so the preview and the persist share the
+ * rules rather than a copy of them.
  */
 
 import type { TemplateOutput } from '../types/resource.js';
@@ -214,7 +218,10 @@ export function mergeNoChangeOutputs(input: NoChangeOutputsMergeInput): NoChange
   return { kind: 'merged', outputs, exportNames, carriedKeys };
 }
 
-/** The sentence the deploy engine appends to its keep-whole warning. */
+/**
+ * The sentence naming a keep-whole reason: the deploy engine appends it to its
+ * keep-whole warning, and `cdkd diff` to the suppression warning it prints.
+ */
 export function keptWholeReasonText(reason: NoChangeOutputsKeptReason): string {
   switch (reason) {
     case 'intrinsic-export-name':

@@ -313,7 +313,7 @@ if [ -z "$loc" ] || [ -z "$fc" ]; then
 fi
 
 # Subtract auto-generated LOC before computing the tier — mirrors
-# /review-pr SKILL.md step 1 (added there after PR #404). Generated
+# /review-pr references/pr-stats.md, step 1 (added after PR #404). Generated
 # artifacts under docs/_generated/** and lockfiles inflate LOC without
 # adding reviewer surface (reviewers audit the script that produced
 # them, not the output line-by-line). Without this the hook and the
@@ -333,11 +333,14 @@ loc=$((loc - autogen_excl))
 if [ "$loc" -lt 0 ]; then loc=0; fi
 
 # --- Compute final tier per the /review-pr heuristic. ------------------
-# Reference: .claude/skills/review-pr/SKILL.md (steps 2-4). Logic
+# Reference: .claude/skills/review-pr/SKILL.md step 2 (the base-tier
+# table) and references/bias-factors.md (the triggers). Logic
 # duplicated here in Bash for hook-time evaluation; the duplication
 # is intentional and documented — the skill is the source of truth
-# for output formatting and dispatch prompts, the hook only needs
-# the final tier name. Keep these two in sync when editing.
+# for output formatting (references/output-template.md) and dispatch
+# prompts, the hook only needs the final tier name. Keep these in
+# sync when editing; the security-surface list is fenced against this
+# file by tests/unit/scripts/security-surface-list-sync.test.ts.
 
 # Base tier from (loc, fc):
 #   loc < 300 OR fc < 5            -> inline
@@ -593,10 +596,27 @@ fi
 status=$?
 
 # Also verify the sentinel file's content matches the PR's HEAD sha.
-# markgate verify already enforces this via the digest, but reading
-# the sentinel directly lets the error message name the mismatch
-# explicitly ("marker bound to <other-sha>, PR is at <current-sha>")
-# rather than the generic "(digest differs)" markgate emits.
+#
+# THIS COMPARISON IS THE BINDING'S ENFORCEMENT -- do not remove it as a
+# duplicate of `markgate verify`. `verify` compares a DIGEST of the gate's
+# scope, and the sentinel is in that scope, so REWRITING it stales the
+# marker; but a sentinel nobody rewrote keeps its digest whatever the branch
+# or the PR moved to, and `verify` reports `match` for a sentinel naming a
+# different commit entirely. Measured on 2026-09-05 in an IN-PLACE
+# `/work-issues` run (go-to-k/cdkd#2681): sentinel = a MERGED lane's tip,
+# branch HEAD = PR `headRefOid` = another sha, `markgate verify pr-review`
+# rc=0. A revision of this comment said the opposite -- that `verify`
+# "already enforces this via the digest" and the read below only improves
+# the message -- which made deleting the check look like a safe
+# simplification. The explicit message ("marker bound to <other-sha>, PR is
+# at <current-sha>") is a bonus, not the reason.
+#
+# Pinned by `.claude/hooks/pr-review-gate.test.sh`: case 7
+# ("medium PR + fresh marker + sha mismatch -> block") and case 10
+# ("large PR + fresh marker + sha mismatch -> block") -- a FRESH marker plus a
+# sentinel holding a FOREIGN sha must still block. The ordinals are the
+# suite's own (`# 7.` and `# 10.` head those cases); a review round called
+# them invented and that was withdrawn on inspection.
 recorded_sha=""
 if [ -f .markgate-pr-review-sha ]; then
   recorded_sha=$(head -c 100 .markgate-pr-review-sha 2>/dev/null | tr -d '[:space:]')

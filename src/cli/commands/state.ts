@@ -23,7 +23,12 @@ import { confirmOrRefuse } from './confirm-prompt.js';
 import { CdkdError, PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
 import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
-import { displaySafe, truncateCodePoints } from '../../utils/display-safe.js';
+import {
+  displayIdent,
+  displaySafe,
+  truncateCodePoints,
+  STACK_REF_MAX_CODE_POINTS,
+} from '../../utils/display-safe.js';
 import {
   UNRENDERABLE,
   buildForceUnlockCommand,
@@ -33,6 +38,14 @@ import {
   buildLockContentionMessage,
   type LockRecoveryContext,
 } from '../../state/lock-contention-message.js';
+import {
+  hasReadableResources,
+  isReadableBag,
+  malformedRenderedContainersWarning,
+  malformedResourcesWarning,
+  repairMalformedResourcesForReadOnly,
+  type RenderedStateContainer,
+} from '../../state/malformed-resources-bag.js';
 import { ExportIndexStore } from '../../state/export-index-store.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
@@ -76,6 +89,10 @@ import { rebuildClientForBucketRegion } from '../../utils/bucket-region-client.j
 
 /**
  * Detail row for a single stack when --long is requested.
+ *
+ * The record read and the lock read degrade SEPARATELY (issue #3069): one
+ * unreadable stack used to reject the whole listing, and a single conflated
+ * failure field would withhold a row's real counts when only its lock failed.
  */
 interface StackDetail {
   stackName: string;
@@ -84,9 +101,97 @@ interface StackDetail {
    * state where no region was persisted in the state body.
    */
   region: string | null;
-  resourceCount: number;
+  /**
+   * `null` exactly when {@link stateReadError} is set: the record could not be
+   * read, or its `resources` is not a JSON object.
+   */
+  resourceCount: number | null;
   lastModified: string | null;
-  locked: boolean;
+  /** `null` when the lock could not be read ({@link lockReadError}). */
+  locked: boolean | null;
+  /**
+   * A fixed, class-level reason when the record read failed or its
+   * `resources` is not a JSON object, else `null`.
+   */
+  stateReadError: string | null;
+  /** A fixed, class-level reason when the lock read failed, else `null`. */
+  lockReadError: string | null;
+}
+
+/**
+ * The reasons a `--long` row carries for a failed read. FIXED text, never the
+ * caught error's message: `getState`'s invalid-JSON refusal interpolates V8's
+ * `SyntaxError`, which quotes bytes of the state body, and anyone with
+ * `s3:PutObject` on the bucket chooses those bytes. Sanitizing or truncating
+ * that message does not redact it, so a planted plaintext would reach both
+ * `--long` and `--long --json` (issue #3069). `cdkd state show` for the one
+ * stack is where the specific error is reported.
+ *
+ * The failure is deliberately not classified further: `getState` wraps a parse
+ * refusal, the unsupported-version refusal and an AWS read failure in the same
+ * `StateError`, so any finer reason would be a guess about the class.
+ */
+const STATE_READ_FAILED_REASON =
+  'state record could not be read; run `cdkd state show` for the error';
+const LOCK_READ_FAILED_REASON = 'lock could not be read; run `cdkd state show` for the error';
+/**
+ * The lock reason for a LEGACY row (no region). `cdkd state show` refuses such
+ * a record before it reads the lock, so pointing there would send the user to
+ * a command that never shows the error.
+ */
+const LEGACY_LOCK_READ_FAILED_REASON = 'lock could not be read';
+/**
+ * The record-side reason for a record that WAS read but whose `resources` is
+ * present and not a JSON object. `parseStateBody` validates nothing inside the
+ * root, so `Object.keys` would count a planted string per character or a list
+ * per element -- a made-up number, and for a string of millions of characters
+ * an array of that many keys, built outside {@link readOrFailure}'s `try`. It
+ * reuses `stateReadError` so `resourceCount` stays `null` exactly when a reason
+ * is set: the text row never prints `Resources: null`, and the warning counts
+ * the row (issue #3069).
+ */
+const RESOURCES_MALFORMED_REASON =
+  'resources is not a JSON object; run `cdkd state show --json` to see the record';
+
+/**
+ * A record's resource count, or `null` when its `resources` is not a JSON
+ * object ({@link RESOURCES_MALFORMED_REASON}). An absent or `null` bag counts
+ * as zero, the tolerance `docs/cli-state.md` documents for it.
+ */
+function resourceCountOrNull(resources: unknown): number | null {
+  if (resources === undefined || resources === null) return 0;
+  if (typeof resources !== 'object' || Array.isArray(resources)) return null;
+  return Object.keys(resources).length;
+}
+
+/**
+ * Run one read and report whether it threw, WITHOUT keeping the error. The
+ * error is dropped on purpose ({@link STATE_READ_FAILED_REASON} says why): a
+ * caller that never holds it cannot copy it into a row.
+ */
+async function readOrFailure<T>(
+  read: () => Promise<T>
+): Promise<{ ok: true; value: T } | { ok: false }> {
+  try {
+    return { ok: true, value: await read() };
+  } catch {
+    return { ok: false };
+  }
+}
+
+/**
+ * A record's `lastModified` as an ISO string, or `null` when it is not a
+ * timestamp `Date` can represent. `parseStateBody` does not validate the
+ * field, and `toISOString()` THROWS a `RangeError` for any number outside
+ * JavaScript's date range (`1e300`, `NaN`-producing values, `-1e20`). That
+ * throw sits AFTER {@link readOrFailure} reported success, so without this
+ * check one planted record would still reject the whole `--long` listing
+ * (issue #3069, security review).
+ */
+function isoTimestampOrNull(value: unknown): string | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
 /**
@@ -104,15 +209,10 @@ interface ResourceDetail {
 }
 
 /**
- * Render `Stack` or `Stack (region)` — used by every state subcommand's
- * default output mode and ambiguity error messages.
- */
-function formatStackRef(ref: StackStateRef): string {
-  return ref.region ? `${ref.stackName} (${ref.region})` : ref.stackName;
-}
-
-/**
- * {@link formatStackRef} for a sentence a CONFIRMATION PROMPT renders.
+ * Render `Stack` or `Stack (region)` for a line a terminal renders: a
+ * CONFIRMATION PROMPT's sentence, and every `state list` text view -- the
+ * default one-reference-per-line listing and the `--long` / `--tree` rows
+ * (issue #3069). The unsanitized twin it replaced lost its last caller there.
  *
  * Both halves come from an S3 key segment (or, for a legacy record, a state
  * body), so both are attacker-influenced in exactly the way issue #2170 round
@@ -121,14 +221,74 @@ function formatStackRef(ref: StackStateRef): string {
  * PROMPT is strictly worse than one in an error, because the sentence it
  * corrupts is the one the operator answers `y` to.
  *
- * `asciiOnly` matches the lock error's own call on these same values — a
- * stack name and an AWS region both have a known charset — and is a no-op on
- * every ordinary input, so the shipped prompt strings are byte-identical.
- * `UNRENDERABLE` stands in when sanitising leaves nothing, since an empty
- * `()` would read as "no region" rather than "a region cdkd will not print".
+ * BOTH halves go through `displayIdent`, not the bare `safe()` allowlist below
+ * (issue #3164). The allowlist closes line FORGERY and nothing else: it is the
+ * identity on printable ASCII, and this function's ` (` / `)` is cdkd's OWN
+ * annotation of the line, so a planted 2-segment legacy key
+ * `cdkd/ProdStack (us-east-1)/state.json` yields a region-LESS ref whose
+ * `stackName` is literally `ProdStack (us-east-1)` and renders BYTE-EQUAL to
+ * the genuine `ProdStack` in `us-east-1`. A `while read -r ref` cleanup loop —
+ * the consumer the sanitization exists for — cannot tell the two apart, so it
+ * acts on the reference the operator believes is real and the planted record
+ * survives the sweep. The join in the two prompt callers is a second boundary
+ * of the same kind: they `join(', ')`, which a name carrying `, ` forges an
+ * extra entry in -- and quoting closes that, since a space is outside
+ * `PLAIN_IDENT`.
+ *
+ * A BARE `,` is NOT closed, and an earlier revision of this comment was wrong
+ * to call it harmless: the formatter supplies the space that completes the
+ * separator, so `ProdStack,` renders `ProdStack, (us-east-1)` and a two-target
+ * list reads as THREE entries. Only `state refresh-observed` prints a count
+ * beside its list; `state orphan`'s banner prints none, so there nothing on
+ * screen contradicts the forged entry -- the worse of the two. Removing `,`
+ * from `PLAIN_IDENT` would close it and was tried; it regresses a legitimate
+ * IAM role ARN, whose role-name segment allows `[\w+=,.@-]`. Recorded on
+ * go-to-k/cdkd#3179 rather than traded for that.
+ *
+ * `displayIdent` makes the boundary VISIBLE by JSON-quoting anything that is
+ * not a plain identifier, so the row above reads `"ProdStack (us-east-1)"` and
+ * no longer collides. It is applied to the REGION half too: a region is an S3
+ * key segment (or, for a legacy record, the state body via `readLegacyRegion`),
+ * so it is attacker-chosen in exactly the same way, and a planted region alone
+ * renders `Decoy (x) (us-east-1)` — the same spoof from the right-hand side.
+ *
+ * Every legitimate row is byte-identical, because `displayIdent` is the
+ * identity on a plain identifier and CloudFormation stack names
+ * (`Parent~Child` included) and AWS region codes all are — so no fixture, no
+ * script's grep and no round-trip into `cdkd state show` changes. It keeps
+ * `safe()`'s `UNRENDERABLE` fallback for a value sanitising leaves empty, since
+ * an empty `()` would read as "no region" rather than "a region cdkd will not
+ * print".
+ *
+ * The NAME half passes `STACK_REF_MAX_CODE_POINTS` rather than taking
+ * `displayIdent`'s 255 default, and that is load-bearing for the paragraph
+ * above rather than a tuning knob: a cdkd state-record name is not a
+ * CloudFormation stack name, because `deriveChildStackName` appends
+ * `~<logicalId>` per nesting level, so a legitimate deep nested-stack child
+ * exceeds 255 and would be rendered CUT — a byte change on a legitimate row, in
+ * the middle of a line `while read -r ref` consumes. The REGION half keeps the
+ * default; an AWS region code is at most 25 characters.
+ *
+ * The consequence is taken at ALL SIX callers, the confirmation prompt
+ * included, rather than at the listing alone: guarding one site and leaving
+ * five is the per-site spelling `safe()`'s own comment below records having
+ * failed twice. In the prompt a quoted spoof is the most valuable of the six —
+ * that sentence is the one an operator answers `y` to.
+ *
+ * What the quoting is NOT: shell-safe. A JSON string literal is visually
+ * indistinguishable from a shell DOUBLE-quoted argument, in which `$(...)`,
+ * backticks and `!` still expand — so `"Prod$(touch /tmp/pwn)" (us-east-1)`
+ * must not be pasted into a command line, and this rendering makes no claim
+ * that it may be. The repo's answer for a value that has to survive a command
+ * line is elsewhere and is SUPPRESSION, not quoting: `buildForceUnlockCommand`
+ * declines to print a command at all unless sanitisation was the identity, and
+ * `rollback-executor.ts`'s `PASTEABLE_LOGICAL_ID` records why identity alone is
+ * still not enough (`~user` and `=x` expand). What this function provides is a
+ * visible BOUNDARY for a value a human is reading, which is a different job.
  */
 function formatStackRefSafe(ref: StackStateRef): string {
-  return ref.region ? `${safe(ref.stackName)} (${safe(ref.region)})` : safe(ref.stackName);
+  const name = displayIdent(ref.stackName, { maxCodePoints: STACK_REF_MAX_CODE_POINTS });
+  return ref.region ? `${name} (${displayIdent(ref.region)})` : name;
 }
 
 /**
@@ -154,6 +314,29 @@ function formatStackRefSafe(ref: StackStateRef): string {
  * no-op on every legitimate input while an S3 key admits any UTF-8. Free-form
  * text (a parser's own message, an AWS error) takes the denylist class
  * instead; `display-safe.ts`'s header draws that line.
+ *
+ * It is the WEAKER of this file's two spellings and stays so deliberately.
+ * `formatStackRefSafe` above uses `displayIdent` instead, because it renders
+ * cdkd's own ` (region)` annotation right beside the value and the allowlist
+ * cannot stop a value from carrying that annotation itself (issue #3164).
+ * Widening this helper is tracked as go-to-k/cdkd#3179 rather than done here,
+ * for reasons that are per-SITE rather than uniform, so read that issue's
+ * table rather than generalising from this paragraph: most of these sites are
+ * REFUSALS, where the surrounding `'...'` is at least SOME boundary -- but not
+ * all of them are, and `  Region: ${safe(...)}` in the `--long` view below has
+ * no surrounding anything -- while `Run 'cdkd deploy <stack>'` sites are
+ * COMMAND HINTS, where quoting is not this repo's answer at all:
+ * `buildForceUnlockCommand` SUPPRESSES the whole command instead.
+ *
+ * `grep safe(` does NOT enumerate the class, in BOTH directions. Some sites
+ * spell `displaySafe(..., { asciiOnly: true })` inline rather than calling this
+ * helper (`warnOnLiveForeignLock` renders its own `stack (region)` that way,
+ * inside the same `state orphan` output); others sanitise NOTHING
+ * (`stateRefreshObservedCommand` interpolates raw `listStacks` values into its
+ * refusals, including a third `cdkd deploy` hint, and `stateDestroyCommand`
+ * writes raw names into its `--all` confirmation list); and `describeStateKey`
+ * (`state-file-keys.ts`) renders the same shape from raw key segments.
+ * go-to-k/cdkd#3179 enumerates them all; a grep of this helper does not.
  */
 function safe(value: string | undefined): string {
   return displaySafe(value, { asciiOnly: true }) || UNRENDERABLE;
@@ -170,13 +353,21 @@ export function resolveSingleRegion(
   refs: StackStateRef[],
   requestedRegion: string | undefined
 ): StackStateRef {
-  // Sanitized like `formatStackRefSafe` above, which already does this for the
-  // same values in the same file. A `region` here is a raw S3 KEY SEGMENT from
-  // `listStacks`, and an S3 key admits any UTF-8 including newline and ESC, so
-  // planting `cdkd/<victimStack>/<hostile>/state.json` puts attacker text into
-  // these messages. The rendered rows stopped forging lines in issue #2772;
-  // the refusal a malformed record is most likely to reach had not (issue
-  // #3003).
+  // Sanitized for the same reason `formatStackRefSafe` above is, on the same
+  // values in the same file -- but through the bare allowlist rather than that
+  // helper's `displayIdent`. That is a scope judgement recorded on issue #3164
+  // and tracked as go-to-k/cdkd#3179, not an oversight: the sites below are
+  // REFUSALS, not the listing a `while read` loop consumes. None of THEM is a
+  // command hint (the two that are live at `stateResourcesCommand` /
+  // `stateShowCommand` below); what they do share with those is that a
+  // BOUNDARY, not a rejection, is the open question -- the candidate lists here
+  // `join(', ')`, so a region carrying `, ` reads as two candidates. A `region`
+  // here is a raw S3 KEY SEGMENT from `listStacks`, and an S3 key admits any
+  // UTF-8 including newline and ESC, so planting
+  // `cdkd/<victimStack>/<hostile>/state.json` puts attacker text into these
+  // messages. `state list`'s formatted `--long` and `--tree` rows are sanitized
+  // too (issue #3069); the refusal a malformed record is most likely to reach
+  // had not been (issue #3003).
   const matches = refs.filter((r) => r.stackName === stackName);
   if (matches.length === 0) {
     throw new Error(
@@ -381,10 +572,19 @@ async function stateListCommand(options: {
       return;
     }
 
-    // Default mode: `Stack (region)` per line, sorted.
+    // Default mode: `Stack (region)` per line, sorted. Sanitized BECAUSE a
+    // `while read` loop consumes it: `listStacks` does not validate a key, so a
+    // planted `cdkd/Decoy<LF>ProdStack (us-east-1)/us-east-1/state.json` would
+    // otherwise emit a second, fully formed reference for a stack with no
+    // record, and a script would act on it. Since issue #3164 the same helper
+    // also makes the ` (region)` BOUNDARY visible, so a planted name carrying
+    // cdkd's own annotation no longer renders byte-equal to a genuine row.
+    // Both rules are the identity on a plain identifier, and stack names and
+    // region codes are, so every legitimate row is byte-identical (issue
+    // #3069).
     if (!options.long && !options.json) {
       for (const ref of refs) {
-        process.stdout.write(`${formatStackRef(ref)}\n`);
+        process.stdout.write(`${formatStackRefSafe(ref)}\n`);
       }
       return;
     }
@@ -397,6 +597,10 @@ async function stateListCommand(options: {
     }
 
     // --long (with or without --json): fetch detail per stack in parallel.
+    // Each row's two reads are guarded independently, the precedent being
+    // `renderTreeMode` below: one unreadable stack degrades ITS row instead of
+    // rejecting the whole listing (issue #3069). The two share an S3 client, so
+    // a credential failure usually lands on both, but either can fail alone.
     const details: StackDetail[] = await Promise.all(
       refs.map(async (ref): Promise<StackDetail> => {
         // For legacy refs (no region), passing the legacy region string would
@@ -405,25 +609,51 @@ async function stateListCommand(options: {
         // backend's getState uses the region as part of the key; for legacy
         // records the region embedded in the file is the one that matches.
         const lookupRegion = ref.region ?? '';
-        const [stateResult, locked] = await Promise.all([
-          lookupRegion
-            ? setup.stateBackend.getState(ref.stackName, lookupRegion)
-            : Promise.resolve(null),
-          setup.lockManager.isLocked(ref.stackName, ref.region),
+        const [stateRead, lockRead] = await Promise.all([
+          readOrFailure(() =>
+            lookupRegion
+              ? setup.stateBackend.getState(ref.stackName, lookupRegion)
+              : Promise.resolve(null)
+          ),
+          readOrFailure(() => setup.lockManager.isLocked(ref.stackName, ref.region)),
         ]);
-        const state = stateResult?.state;
+        const state = stateRead.ok ? stateRead.value?.state : undefined;
+        const resourceCount = !stateRead.ok
+          ? null
+          : state
+            ? resourceCountOrNull(state.resources)
+            : 0;
         return {
           stackName: ref.stackName,
           region: ref.region ?? null,
-          resourceCount: state ? Object.keys(state.resources ?? {}).length : 0,
-          lastModified:
-            state && typeof state.lastModified === 'number'
-              ? new Date(state.lastModified).toISOString()
+          resourceCount,
+          lastModified: state ? isoTimestampOrNull(state.lastModified) : null,
+          locked: lockRead.ok ? lockRead.value : null,
+          stateReadError: !stateRead.ok
+            ? STATE_READ_FAILED_REASON
+            : resourceCount === null
+              ? RESOURCES_MALFORMED_REASON
               : null,
-          locked,
+          lockReadError: lockRead.ok
+            ? null
+            : ref.region
+              ? LOCK_READ_FAILED_REASON
+              : LEGACY_LOCK_READ_FAILED_REASON,
         };
       })
     );
+
+    // A count only: the listing itself succeeded, and each affected row says
+    // why -- which of its two reads failed, or that its `resources` could not
+    // be counted. The reservation above routes this line to stderr, so it
+    // never lands inside a `--long --json` payload.
+    const degraded = details.filter((d) => d.stateReadError !== null || d.lockReadError !== null);
+    if (degraded.length > 0) {
+      logger.warn(
+        `${degraded.length} of ${details.length} stack(s) could not be fully read or counted; ` +
+          `their rows say why.`
+      );
+    }
 
     if (options.json) {
       process.stdout.write(`${JSON.stringify(details, null, 2)}\n`);
@@ -432,17 +662,43 @@ async function stateListCommand(options: {
 
     // Long human-readable format.
     const lines: string[] = [];
+    // The stack name and region go through `formatStackRefSafe`, as in the
+    // default mode above: both come from an S3 key segment, which admits a
+    // newline or ESC, so a planted key could otherwise forge a `Lock:` line
+    // inside another row -- and, since issue #3164, could spoof a genuine
+    // header row by carrying this view's own ` (region)` annotation. The
+    // `  Region:` line below keeps the bare allowlist: it has no adjacent
+    // cdkd-authored annotation for a value to impersonate.
+    // `--json` is NOT sanitized at all: `JSON.stringify` escapes only C0,
+    // `"`, `\` and lone surrogates, so DEL, the C1 range, the line and
+    // paragraph separators, the bidi overrides and the zero-width characters
+    // pass through verbatim (see `display-safe.ts`). Tracked as
+    // go-to-k/cdkd#3163.
     for (const detail of details) {
       lines.push(
-        formatStackRef({
+        formatStackRefSafe({
           stackName: detail.stackName,
           ...(detail.region ? { region: detail.region } : {}),
         })
       );
-      lines.push(`  Region: ${detail.region ?? '(legacy)'}`);
-      lines.push(`  Resources: ${detail.resourceCount}`);
+      lines.push(`  Region: ${detail.region === null ? '(legacy)' : safe(detail.region)}`);
+      lines.push(
+        `  Resources: ${
+          detail.stateReadError !== null
+            ? `unknown (${detail.stateReadError})`
+            : String(detail.resourceCount)
+        }`
+      );
       lines.push(`  Last Modified: ${detail.lastModified ?? 'unknown'}`);
-      lines.push(`  Lock: ${detail.locked ? 'locked' : 'unlocked'}`);
+      lines.push(
+        `  Lock: ${
+          detail.lockReadError !== null
+            ? `unknown (${detail.lockReadError})`
+            : detail.locked
+              ? 'locked'
+              : 'unlocked'
+        }`
+      );
       lines.push('');
     }
     if (lines.length > 0) {
@@ -495,14 +751,41 @@ async function renderTreeMode(
       } catch {
         return { stackName: ref.stackName, region: ref.region };
       }
+      // Only STRING parent fields are copied. `parseStateBody` does not type
+      // them, and `buildStackTree` interpolates both into a key OUTSIDE this
+      // per-row `try`, so a planted `"parentStack": {"toString": null}` threw
+      // a TypeError there and emptied the whole view -- the promise this
+      // function's JSDoc makes. cdkd writes these fields as strings, so a
+      // record it wrote links as before; a hand-edited array such as
+      // `["Parent"]`, which interpolation used to coerce into a working link,
+      // now lands at the root instead. `parentLogicalId` never reaches a key,
+      // but `--tree --json` declares it `string | null`, so it is typed the same
+      // way (issue #3069).
+      //
+      // The link is kept or dropped WHOLE. `refKey` reads a missing region as
+      // `''`, the key a legacy region-less record has, so keeping a string
+      // `parentStack` while dropping a non-string `parentRegion` would file the
+      // stack under an unrelated LEGACY record of the same name instead of at
+      // the root. An ABSENT `parentRegion` stays a valid link on purpose: that
+      // is how a child names a legacy region-less parent. This does not stop
+      // every legacy binding. An explicit `parentRegion: ""` is a string and
+      // keys the same way, and a planted legacy-layout key can capture any
+      // record that names its stack with no `parentRegion`. Neither shape is
+      // reachable from cdkd-written state, since every writer sets a
+      // non-empty `parentRegion`, so the captured record is hand-written too.
+      const linkIsValid =
+        typeof state?.parentStack === 'string' &&
+        (state.parentRegion === undefined || typeof state.parentRegion === 'string');
       return {
         stackName: ref.stackName,
         region: ref.region,
-        ...(state?.parentStack !== undefined && { parentStack: state.parentStack }),
-        ...(state?.parentLogicalId !== undefined && {
-          parentLogicalId: state.parentLogicalId,
-        }),
-        ...(state?.parentRegion !== undefined && { parentRegion: state.parentRegion }),
+        ...(linkIsValid && { parentStack: state!.parentStack }),
+        ...(linkIsValid &&
+          typeof state?.parentLogicalId === 'string' && {
+            parentLogicalId: state.parentLogicalId,
+          }),
+        ...(linkIsValid &&
+          typeof state?.parentRegion === 'string' && { parentRegion: state.parentRegion }),
       };
     })
   );
@@ -516,7 +799,13 @@ async function renderTreeMode(
 
   if (roots.length === 0) return;
   const rendered = renderStackTreeAscii(roots, (node: StackTreeNode) =>
-    formatStackRef({ stackName: node.stackName, ...(node.region ? { region: node.region } : {}) })
+    // The same formatted-view rule as `--long`'s text rows: sanitized, and
+    // since issue #3164 boundary-quoted -- which this view needs on its own
+    // account, a label carrying `└── ` being able to fake a sibling connector.
+    formatStackRefSafe({
+      stackName: node.stackName,
+      ...(node.region ? { region: node.region } : {}),
+    })
   );
   process.stdout.write(`${rendered}\n`);
 }
@@ -615,7 +904,59 @@ async function stateResourcesCommand(
       );
     }
 
-    const resources = stateResult.state.resources ?? {};
+    // `resources` is an unchecked cast, so a hand-edited or truncated record can
+    // hold a string, a list, a number or a boolean there — and `Object.entries`
+    // accepts all of them. `"abcdef"` yields six `[index, character]` pairs,
+    // which this command rendered as six resources that do not exist. BOTH
+    // output modes fabricated them: `details` is built above the `--json`
+    // branch, so the array that mode emits is the same one the text views
+    // render from.
+    //
+    // Repaired at the LOAD, never at the loop:
+    // `src/state/malformed-resources-bag.ts` owns that rule and the measurement
+    // behind it. This command cannot write state, so it repairs and WARNS
+    // rather than refusing — refusing the diagnostic that shows what is wrong
+    // with a record is the opposite of useful, and `cdkd state list --long`
+    // sends operators here for exactly that reason.
+    if (repairMalformedResourcesForReadOnly(stateResult.state)) {
+      logger.warn(malformedResourcesWarning(stackName, ref.region));
+    }
+    // And the same for the one VALUE container this command renders — each
+    // resource's `attributes` (issue go-to-k/cdkd#3187). `properties`,
+    // `outputs` and `skippedOutputs` are deliberately out of scope here: this
+    // command renders none of them, and the set it passes says so
+    // (`RESOURCES_RENDERED_CONTAINERS`).
+    //
+    // Gated on the two modes that CARRY attributes, and by the same rule that
+    // excludes the other three containers rather than by a second one. The
+    // default three-column listing prints logicalId / type / physicalId and
+    // nothing else, so an `attributes` it never walks can neither fabricate a
+    // row nor be described by a warning whose text promises "this view shows no
+    // rows there" — the warning would name a block that does not exist in the
+    // output in front of the reader. `cdkd state show` is where that record's
+    // attributes are visible, and this command's own `--long` is one flag away.
+    //
+    // `--json` is INSIDE the gate, not outside it, which is where this departs
+    // from `cdkd state show`: `details` is a PROJECTION rather than the stored
+    // record — it already substitutes `[]` for an absent `dependencies` and
+    // `{}` for an absent `attributes` — so leaving it alone would hand a script
+    // a non-object where the shape it consumes says otherwise, with nothing
+    // said about it. `cdkd state show --json` remains the mode that answers
+    // "what does the record hold", and this warning's text sends the reader
+    // there.
+    if (options.long || options.json) {
+      repairRenderedContainers(
+        stateResult.state,
+        RESOURCES_RENDERED_CONTAINERS,
+        stackName,
+        ref.region,
+        logger
+      );
+    }
+    // No `?? {}`: the repair above leaves a plain object behind whatever the
+    // record held, and a fallback that can no longer fire only makes a later
+    // reader think the bag is guarded one line down instead of at the load.
+    const resources = stateResult.state.resources;
     const details: ResourceDetail[] = (
       Object.entries(resources) as Array<[string, ResourceState | null]>
     )
@@ -632,6 +973,9 @@ async function stateResourcesCommand(
           resourceType: resource.resourceType,
           physicalId: resource.physicalId,
           dependencies: resource.dependencies ?? [],
+          // Absent-only fallback: a non-object `attributes` was emptied at the
+          // load above, so what reaches `--long`'s `Object.entries` and the
+          // `--json` payload is a map either way (issue go-to-k/cdkd#3187).
           attributes: resource.attributes ?? {},
         };
       })
@@ -948,7 +1292,15 @@ async function stateShowCommand(
     }
 
     if (options.showNested) {
-      const tree = await buildCdkdStateStackTree(
+      // No unreadable-bag test HERE, deliberately. An earlier cut of issue
+      // go-to-k/cdkd#3172 put one at this call site, which covered the ROOT
+      // record and nothing below it: `walkCdkdStateStackTree` RECURSES, so a
+      // healthy root naming a nested child still walked that child's bag
+      // unguarded — re-measured live at 1623 ms / 1277 MB for a planted
+      // 5,000,000-character CHILD bag, in `--json` as well as the text view.
+      // The predicate now lives inside the walker, at the one place every depth
+      // passes through, and its comment there carries the measurements.
+      const tree: CdkdStateStackTree = await buildCdkdStateStackTree(
         stackName,
         ref.region,
         setup.stateBackend,
@@ -957,10 +1309,17 @@ async function stateShowCommand(
       const treeWithLocks = await loadLocksForTree(tree, setup.lockManager, lockInfo);
 
       if (options.json) {
+        // WARNED but not repaired. This is the one mode where an unreadable bag
+        // is invisible in the payload's SHAPE: the node comes back with
+        // `children: []`, which is exactly what a leaf looks like, so a consumer
+        // enumerating the tree concludes it is complete when a subtree was cut.
+        // The record itself is still emitted verbatim, so the evidence survives.
+        warnUnreadableTreeNodes(treeWithLocks, logger);
         process.stdout.write(`${JSON.stringify(treeToShowJson(treeWithLocks), null, 2)}\n`);
         return;
       }
 
+      repairTreeForTextRender(treeWithLocks, logger);
       const lines = renderTreeWithChildren(treeWithLocks);
       process.stdout.write(`${lines.join('\n')}\n`);
       return;
@@ -973,6 +1332,7 @@ async function stateShowCommand(
       return;
     }
 
+    repairRecordForTextRender(stateResult.state, stackName, ref.region, logger);
     process.stdout.write(`${renderStateBlock(stateResult.state, lockInfo, true).join('\n')}\n`);
   } finally {
     setup.dispose();
@@ -992,6 +1352,11 @@ const UNSERIALIZABLE = '(unserializable)';
 
 /**
  * The `skippedOutputs` rows a state record owes, sorted by key.
+ *
+ * The `?? {}` covers an ABSENT field — every pre-#2740 record, plus the writers
+ * that drop it. A non-object one is emptied at the render entry instead
+ * (`repairRenderedContainers`, issue go-to-k/cdkd#3187), so this walk and
+ * {@link rendersSkippedBlock}'s cannot disagree about how many rows exist.
  */
 function sortedSkippedOutputs(state: StackState): [string, string][] {
   return Object.entries(state.skippedOutputs ?? {}).sort(([a], [b]) => a.localeCompare(b));
@@ -1040,9 +1405,235 @@ function skippedOutputsLegend(): string[] {
 }
 
 /**
+ * The order {@link repairRenderedContainers} names repaired containers in.
+ *
+ * Fixed here rather than taken from the order they were found in, so two
+ * records that lost the same containers produce the same warning line and a
+ * test can assert the text rather than a set.
+ */
+const RENDERED_CONTAINER_ORDER: readonly RenderedStateContainer[] = [
+  'outputs',
+  'skippedOutputs',
+  'attributes',
+  'properties',
+];
+
+/** Every container {@link renderStateBlock}'s text walks. */
+const SHOW_RENDERED_CONTAINERS: ReadonlySet<RenderedStateContainer> = new Set(
+  RENDERED_CONTAINER_ORDER
+);
+
+/**
+ * What `cdkd state resources` walks: the attribute bag alone.
+ *
+ * `properties` is deliberately absent — that command excludes them from every
+ * mode (`docs/cli-state.md` says so and `stateResourcesCommand`'s own doc
+ * repeats it), so warning about a container it never renders would report a
+ * defect the user cannot see in the output in front of them. `outputs` and
+ * `skippedOutputs` are absent for the same reason.
+ */
+const RESOURCES_RENDERED_CONTAINERS: ReadonlySet<RenderedStateContainer> = new Set([
+  'attributes' as const,
+]);
+
+/**
+ * Empty every container this view walks but cannot read, and warn ONCE naming
+ * the ones that were emptied (issue go-to-k/cdkd#3187).
+ *
+ * `renderStateBlock` and `stateResourcesCommand --long` walk four more
+ * containers with `Object.entries` than the `resources` bag go-to-k/cdkd#3185
+ * guarded, and `Object.entries` takes a string, a list, a number and a boolean
+ * as readily as an object. Measured on the shipped bundle: `cdkd state show`
+ * over a record whose `outputs` is a 5,000,000-character string and whose
+ * `resources` bag is HEALTHY costs ~1616 ms and ~1010 MB RSS and emits
+ * 5,000,002 lines; the same shape in `skippedOutputs` costs ~2436 ms and
+ * ~2148 MB. `--show-nested` pays that per node.
+ *
+ * AT THE RENDER ENTRY, not at the four loops, which is the rule
+ * `src/state/malformed-resources-bag.ts`'s header records and the measurement
+ * behind it. Here the reason the entry wins is narrower but the same in kind:
+ * the per-resource containers are reached from inside the resource loop, so a
+ * guard written there is one decision repeated per resource per container, and
+ * the `?? {}` already sitting at each of them is exactly the spelling that
+ * looks like a guard and is not.
+ *
+ * **Absent is NOT malformed here, and that is a different call from the one
+ * {@link hasReadableResources} makes.** `undefined` and `null` both mean "no
+ * such container" for all four, and the `?? {}` at each walk has always
+ * rendered the nullish case as empty, so none of them can fabricate a row.
+ * An unreadable `resources` bag is judged the other way because
+ * `Object.entries(null)` THROWS and takes the whole render with it.
+ *
+ * The stronger half of the reason covers TWO of the four, not all of them, and
+ * saying so is the point: `skippedOutputs?` and `attributes?` are OPTIONAL in
+ * `src/types/state.ts`, so cdkd itself writes records without them and warning
+ * would be a false positive on healthy state. `outputs` and `properties` are
+ * REQUIRED there, so a nullish one IS a malformed record and this exemption
+ * rests on the weaker reason alone — it cannot invent a row, and it renders
+ * identically to the empty bag the reader would otherwise see. Warning on a
+ * nullish REQUIRED container would be defensible; it is not done because the
+ * harm this guard exists for is fabrication (review of go-to-k/cdkd#3190).
+ *
+ * Callers must have repaired the `resources` bag first; both do — one line up
+ * in `repairRecordForTextRender`, and ~30 lines up in `stateResourcesCommand`,
+ * where the mode gate sits between them.
+ * The bag test below is that ORDER made local rather than a fallback: an
+ * unreadable bag is emptied by the repair, so the record renders zero resources
+ * and owns no per-resource container to repair. It reads
+ * {@link isReadableBag} rather than {@link hasReadableResources} on purpose —
+ * the latter is the probe `tests/unit/cli/state-record-shape.test.ts` counts to
+ * measure the nested walk, and a second caller here would silently inflate it.
+ */
+function repairRenderedContainers(
+  state: StackState,
+  walked: ReadonlySet<RenderedStateContainer>,
+  stackName: string,
+  region: string,
+  logger: ReturnType<typeof getLogger>
+): void {
+  const repaired = new Set<RenderedStateContainer>();
+  const emptyIfUnwalkable = (
+    owner: Record<string, unknown>,
+    name: RenderedStateContainer
+  ): void => {
+    if (!walked.has(name)) return;
+    const container = owner[name];
+    if (container === undefined || container === null) return;
+    if (isReadableBag(container)) return;
+    owner[name] = {};
+    repaired.add(name);
+  };
+
+  const record = state as unknown as Record<string, unknown>;
+  emptyIfUnwalkable(record, 'outputs');
+  emptyIfUnwalkable(record, 'skippedOutputs');
+  if ((walked.has('attributes') || walked.has('properties')) && isReadableBag(state.resources)) {
+    // A non-object ENTRY carries no container: `renderStateBlock` and the
+    // `details` map both read it through `(entry ?? {})`, so a string, a number
+    // or a `null` there already renders its fields as `undefined` rather than
+    // walking anything (issue #2947).
+    for (const entry of Object.values(state.resources) as unknown[]) {
+      if (!isReadableBag(entry)) continue;
+      const fields = entry as Record<string, unknown>;
+      emptyIfUnwalkable(fields, 'attributes');
+      emptyIfUnwalkable(fields, 'properties');
+    }
+  }
+
+  if (repaired.size === 0) return;
+  logger.warn(
+    malformedRenderedContainersWarning(
+      stackName,
+      region,
+      RENDERED_CONTAINER_ORDER.filter((name) => repaired.has(name))
+    )
+  );
+}
+
+/**
+ * Give the TEXT render a readable `resources` bag and readable value
+ * containers, and warn when either was a repair rather than a no-op.
+ *
+ * {@link renderStateBlock} walks the bag with `Object.entries`, which takes a
+ * string, a list, a number and a boolean as readily as an object. A planted
+ * `"abcdef"` rendered six `[index, character]` pairs as six resources that do
+ * not exist, under a `Resources (6):` header — and the cost grows with the
+ * planted length, since one pair is allocated per character.
+ *
+ * Called AFTER every `--json` branch rather than at the load, which is this
+ * command's one departure from the rule `src/state/malformed-resources-bag.ts`
+ * states, and is deliberate: `cdkd state show --json` is the command
+ * `cdkd state list --long` names as the way to SEE a record it could not count,
+ * so repairing above that branch would hand the operator a well-formed
+ * `"resources": {}` and delete the evidence they came for.
+ *
+ * That placement is only safe because ONE thing reads the bag earlier — the
+ * `--show-nested` walker — and `walkCdkdStateStackTree` now returns a childless
+ * node on an unreadable bag before it dereferences one. The comment at that
+ * guard carries what the walker did with such a bag before, in both directions:
+ * a scalar-element bag yielded no children but still allocated per element, and
+ * a LIST of resource objects hard-failed. Do not move this call up, and do not
+ * drop that guard: either one alone leaves the other half live.
+ *
+ * The guard is in the WALKER and not at its caller because the walker recurses.
+ * A caller-side test covers the root record only, which is what an earlier cut
+ * of this fix shipped — a healthy root naming a nested child still walked that
+ * child's bag unguarded.
+ *
+ * The container pass runs SECOND and under the same `--json` placement, for one
+ * reason each. Second, because {@link repairRenderedContainers} reads the
+ * resource entries and the repair above is what guarantees there is a map to
+ * read them from. Under the same placement, because `--json` emits the record
+ * as parsed and a non-object `outputs` is evidence there exactly as a
+ * non-object `resources` bag is — and because the payload carries the stored
+ * value whole, it fabricates nothing to emit it.
+ */
+function repairRecordForTextRender(
+  state: StackState,
+  stackName: string,
+  region: string,
+  logger: ReturnType<typeof getLogger>
+): void {
+  if (repairMalformedResourcesForReadOnly(state)) {
+    logger.warn(malformedResourcesWarning(stackName, region));
+  }
+  repairRenderedContainers(state, SHOW_RENDERED_CONTAINERS, stackName, region, logger);
+}
+
+/**
+ * The same repair for every node {@link renderTreeWithChildren} will render,
+ * the root included. Each node carries its own record, so a CHILD with a
+ * malformed bag fabricates rows exactly as the root does; one warning per
+ * repaired record names which stack it came from.
+ *
+ * Both identifiers are strings by construction rather than record fields: the
+ * walker builds a child's name as `` `${parent}~${logicalId}` `` and threads the
+ * region it walked against, having already refused any child whose recorded
+ * region disagrees.
+ */
+function repairTreeForTextRender(
+  node: CdkdStateStackTreeWithLock,
+  logger: ReturnType<typeof getLogger>
+): void {
+  repairRecordForTextRender(node.state, node.stackName, node.region, logger);
+  for (const child of node.children) repairTreeForTextRender(child, logger);
+}
+
+/**
+ * Say which nodes the walk could not read, WITHOUT repairing any of them.
+ *
+ * `--show-nested --json` is the one mode that must not repair — it exists to
+ * show the operator the stored record — but "cannot repair" is not "must stay
+ * silent". An unreadable bag makes the walk return that node childless, and a
+ * childless node is byte-indistinguishable from a genuine leaf: a consumer
+ * enumerating `children` reads a CUT subtree as a complete one. The text views
+ * do not have this problem, because a cut node renders `Resources (0):` where
+ * the operator expected rows.
+ *
+ * `logger.warn` writes to stderr, and `stateShowCommand` has already called
+ * `reserveStdoutForPayload()` for this branch, so this cannot corrupt the JSON.
+ */
+function warnUnreadableTreeNodes(
+  node: CdkdStateStackTreeWithLock,
+  logger: ReturnType<typeof getLogger>
+): void {
+  if (!hasReadableResources(node.state)) {
+    logger.warn(malformedResourcesWarning(node.stackName, node.region));
+  }
+  for (const child of node.children) warnUnreadableTreeNodes(child, logger);
+}
+
+/**
  * Render one stack's state record as a human-readable multi-line block —
  * the shared body used by both the single-stack default output and each
  * nested child rendered under `--show-nested`.
+ *
+ * Every caller must have run {@link repairRecordForTextRender} over the
+ * record first (`repairTreeForTextRender` does it per node for the tree): the
+ * resource walk below is what fabricates rows from a non-object bag, and the
+ * `state.ts names renderStateBlock in CODE exactly 1 + 3 times` case in
+ * `tests/unit/cli/state-record-shape.test.ts` refuses a fourth call site so
+ * that choice cannot be made silently.
  */
 function renderStateBlock(
   state: StackState,
@@ -1097,6 +1688,12 @@ function renderStateBlock(
     );
   }
 
+  // The `?? {}` here — and at the four other container walks, two above in
+  // the `skippedOutputs` helpers and two below in the resource loop — covers the
+  // ABSENT case alone (`undefined` / `null`), which is what it has always done.
+  // A non-object `outputs` is NOT guarded here: it is emptied at the render
+  // entry by `repairRenderedContainers`, because a guard repeated at four
+  // walks is four decisions where one belongs (issue go-to-k/cdkd#3187).
   const outputEntries = Object.entries(state.outputs ?? {});
   if (outputEntries.length > 0) {
     lines.push('');
@@ -1176,12 +1773,15 @@ function renderStateBlock(
     if (withLegend) lines.push(...skippedOutputsLegend());
   }
 
-  // Possibly-`null` entries, for the reason `state resources` spells out (issue
+  // Possibly-`null` ENTRIES, for the reason `state resources` spells out (issue
   // #2947): the loop below dereferenced a hand-edited `{"R": null}` and took the
   // whole render with it.
-  const resourceEntries = (
-    Object.entries(state.resources ?? {}) as Array<[string, ResourceState | null]>
-  )
+  //
+  // No `?? {}` on the BAG, for the reason the same command's load site gives:
+  // every caller has repaired it, so a fallback that can no longer fire only
+  // makes a later reader think the bag is guarded here instead of at the entry
+  // to the render. The two sites now state one rule rather than two.
+  const resourceEntries = (Object.entries(state.resources) as Array<[string, ResourceState | null]>)
     .map(([logicalId, entry]): [string, ResourceState] => [
       logicalId,
       (entry ?? {}) as ResourceState,
@@ -1223,6 +1823,8 @@ function renderStateBlock(
     }
     lines.push(`  Dependencies: ${formatDependencyList(resource.dependencies)}`);
 
+    // Absent-only fallback, like the Outputs walk above: a non-object
+    // `attributes` or `properties` was emptied at the render entry.
     const attrEntries = Object.entries(resource.attributes ?? {});
     if (attrEntries.length === 0) {
       lines.push('  Attributes: (none)');
@@ -1550,7 +2152,14 @@ async function stateOrphanCommand(
         // Sanitised, like the lock error above runs on these SAME values
         // (issue #2170 round 4) — see `formatStackRefSafe`. Both the warning
         // banner and the question below render this one string, so a forged
-        // line would land in whichever the operator is reading.
+        // line would land in whichever the operator is reading. Since issue
+        // #3164 the helper also quotes a value that is not a plain identifier,
+        // which this site needs twice over: the `[...]` list is joined with
+        // `, `, so an unquoted name carrying `, ` forges an extra entry in the
+        // set of records the operator is agreeing to remove. A BARE `,` is a
+        // plain identifier and still slips through — the formatter supplies the
+        // space — which `formatStackRefSafe` records as a residual on
+        // go-to-k/cdkd#3179 rather than closing at the cost of IAM role ARNs.
         const targetList = targets.map((t) => formatStackRefSafe(t)).join(', ');
         process.stdout.write(
           `\nWARNING: This removes cdkd's state record for [${targetList}] only. ` +
@@ -2624,7 +3233,10 @@ async function stateRefreshObservedCommand(
 
     if (!options.yes && !options.dryRun) {
       // Sanitised for the same reason as the `state orphan` prompt above: this
-      // file's OTHER confirmation prompt, built from the same S3 key segments.
+      // file's OTHER confirmation prompt, built from the same S3 key segments,
+      // joined the same way, and boundary-quoted by the same helper since
+      // issue #3164 -- here the joined list sits inside the sentence's own
+      // `(...)`, which an unquoted name carrying `)` could close early.
       const targetList = targets.map(formatStackRefSafe).join(', ');
       const ok = await confirmRefresh(
         `Refresh observedProperties for ${targets.length} stack(s) (${targetList})?`

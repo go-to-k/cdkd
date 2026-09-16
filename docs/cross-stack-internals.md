@@ -179,15 +179,22 @@ the fourth writer of the key space, and it has to agree ROW BY ROW: an
 alias the preview publishes and the deploy refuses (or the reverse) is a
 phantom change on every run and `cdkd diff --fail` red forever. Two rows
 are worth naming because they read as inconsistent otherwise. A LITERAL
-`Export.Name` spelled as a `{{resolve:...}}` token is PUBLISHED by both —
-the deploy never substitutes a string name, so the key holds the
-expression, which is what state stores anyway. And a LITERAL name in a
+`Export.Name` spelled as a `{{resolve:...}}` token is PUBLISHED by both in a
+stack that resolves no secret — the deploy never substitutes a string name,
+so the key holds the expression, which is what state stores anyway. (In a
+stack that DOES resolve one, such a name takes the second row's branch
+instead; the two rows overlap there, and the second one decides.) And a
+LITERAL name in a
 stack that resolves a secret makes `cdkd diff` omit its Outputs section
-entirely for that run: the deploy refuses such a name only when it CONTAINS
-the resolved plaintext, which the preview never resolves, so it declines to
-guess rather than print a row whose key may hold that plaintext. The
-omission is reported as the usual could-not-resolve notice, and the alias
-key is recorded so that notice does not fire on the alias alone.
+entirely for that run — but only while state does NOT already hold the
+alias key. The deploy refuses such a name only when it CONTAINS the
+resolved plaintext, which the preview never resolves, so with no stored
+verdict it declines to guess rather than print a row whose key may hold
+that plaintext; the omission is reported as the usual could-not-resolve
+notice, and the alias key is recorded so that notice does not fire on the
+alias alone. State HOLDING the key is the verdict: a previous deploy
+already evaluated the same literal name and published, so the preview
+publishes that key with today's value and the section renders.
 
 **A state KEY that already holds plaintext cannot be scrubbed.** State
 written by a pre-fix binary can carry `state.outputs["pre-<secret>"]`, and
@@ -628,9 +635,36 @@ deploy of any stack, or the next `lookup()` miss-and-patch).
 | Index file corrupt (JSON parse) | `lookup()` errors | Auto-rebuild on first access |
 | Index stale (post-deploy update failed) | `lookup()` returns stale or missing entry | Fallback scan retrieves correct value, patches entry incrementally |
 | Index drift from out-of-band edit (`aws s3 cp` against `state.json` directly) | `lookup()` may return stale value | Next deploy of any affected stack repopulates correctly |
+| Producer record whose `outputs` map or `exportNames` list cannot be read | That producer contributes NO exports; every other producer in the region is indexed as usual, and a warning names the record | Repair or remove the record, then redeploy that stack |
 
 The drift case (out-of-band edits) is an accepted limitation;
 production cdkd usage does not modify `state.json` directly.
+
+### An unreadable producer record contributes nothing, and says so
+
+A state record is an unchecked cast, so a hand-edited or truncated one can
+hold a string, a list, a number, a boolean or `null` where the `outputs` map
+belongs — and `Object.entries` walks a string as readily as a map. Enumerating
+a six-character value would publish **six fabricated exports**, keyed `"0"` …
+`"5"` and valued with the record's own characters, into the region-wide
+`exports.json` that every stack's `Fn::ImportValue` resolves against. The same
+holds for a non-array `exportNames`.
+
+The rebuild therefore fails **closed** for such a record: it publishes nothing
+from it and carries on with the other producers. Refusing the rebuild outright
+would take every stack's `Fn::ImportValue` resolution in the region down over
+one damaged file, and the index is best-effort by design.
+
+Contributing nothing is indistinguishable from a stack that genuinely exports
+nothing, so the drop is never silent — a warning names the producer stack and
+region. Without it the only symptom would be an `Fn::ImportValue` failing
+later in a **different** stack, naming the consumer rather than the record that
+is actually broken.
+
+The record itself is left exactly as stored. The commands that would otherwise
+rewrite it — `cdkd orphan`, `cdkd import` and `cdkd scrub` — refuse it by name
+instead (see [`cdkd scrub`](cli-scrub.md#exit-codes)), so the evidence survives
+for whoever repairs it.
 
 ---
 

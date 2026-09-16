@@ -426,6 +426,39 @@ describe('planOrphanAdoption (#2934)', () => {
     expect(plan.notices[0]).toContain('cannot update one in place');
   });
 
+  it('adopts AWS::Lambda::CapacityProvider, which cdkd names since issue #3174', async () => {
+    const { promise } = run({
+      records: [
+        record({
+          logicalId: 'KeptProvider',
+          state: {
+            physicalId: 'MyStack-Provider',
+            resourceType: 'AWS::Lambda::CapacityProvider',
+            properties: {},
+            deletionPolicy: 'Retain',
+          },
+        }),
+      ],
+      template: {
+        Resources: { KeptProvider: { Type: 'AWS::Lambda::CapacityProvider', Properties: {} } },
+      } as unknown as CloudFormationTemplate,
+      importImpl: vi.fn(async () => ({
+        physicalId: 'MyStack-Provider',
+      })) as ResourceProvider['import'],
+    });
+    const plan = await promise;
+
+    // Admitted on the three `ADOPTION_REFUSED_TYPES` tests, measured live
+    // against Cloud Control on 2026-09-15: a create with the recorded name
+    // COLLIDES rather than minting a second provider (the name is the primary
+    // identifier), so re-adopting is what breaks the deploy loop. Removing the
+    // `FALLBACK_NAME_RULES` entry reds this case through the allow-list gate.
+    expect(Object.keys(plan.adopted)).toEqual(['KeptProvider']);
+    expect(plan.adopted['KeptProvider']?.physicalId).toBe('MyStack-Provider');
+    expect(plan.remaining).toEqual([]);
+    expect(plan.refusals).toEqual([]);
+  });
+
   it('refuses a type cdkd names NOWHERE — the allow-list gate alone', async () => {
     const { promise } = run({
       records: [

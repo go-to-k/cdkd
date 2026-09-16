@@ -982,6 +982,50 @@ run_stublib 2 "Blocked by main-tree-edit-gate" \
   "$(jq -nc --arg fp "$MAIN/docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
     '{tool_name:"Edit", cwd:$cwd, tool_input:{file_path:$fp}}')"
 
+# A SECOND stub, defining `gate_segments_marked` but NOT `gate_expand_tilde`.
+# The `declare -F gate_expand_tilde` clause (added with the `cd`-existence
+# check, which calls it) is invisible to the stub above: that one trips the
+# `gate_segments_marked` clause first, so deleting the new clause left this
+# suite fully green. Without the clause a library lacking the helper reaches
+# the walk, `gate_expand_tilde` returns 127, and the `cd` target silently
+# becomes empty -- the base then resolves to the payload cwd, which is the
+# fail-open direction from a feature worktree.
+STUBLIB2="$TMPDIR/stublib2"
+cp -R "$(dirname "$HOOK")" "$STUBLIB2"
+{
+  printf 'gate_unquote_span() { printf %%s "$1"; }\n'
+  printf 'gate_unquote() { printf %%s "$1"; }\n'
+  printf 'gate_segments() { printf %%s "$1"; }\n'
+  printf 'gate_segments_marked() { printf %%s "$1" | tr ";" "\\n" | while IFS= read -r l; do printf "0\\t%%s\\n" "$l"; done; }\n'
+  printf 'gate_require_const() { :; }\n'
+} > "$STUBLIB2/lib/command-match.sh"
+# THE PAYLOAD HAS TO CALL IT. A command with no `cd` never reaches
+# `gate_expand_tilde`, so the first draft of this case stayed green with the
+# clause deleted -- it measured the stub, not the guard. This one is the
+# worktree-reaching-in shape: with the helper, the base becomes the MAIN tree
+# and the write is refused; without it, `$( )` yields EMPTY, the base never
+# leaves the worktree, and the same command returns 0.
+printf '%s' \
+  "$(jq -nc --arg m "$MAIN" --arg cwd "$WT" '{tool_name:"Bash", cwd:$cwd, tool_input:{command:("cd " + $m + " ; echo hi > docs/_generated/ledger.tsv")}}')" \
+  | "$HOOK_RUNNER" "$STUBLIB2/main-tree-edit-gate.sh" >/dev/null 2>&1
+sl2_rc=$?
+if [[ "$sl2_rc" == 2 ]]; then
+  pass=$((pass + 1)); echo "ok   (exit 2) a library missing gate_expand_tilde fails CLOSED"
+else
+  fail=$((fail + 1)); echo "not ok (exit $sl2_rc, want 2) a loadable library without gate_expand_tilde must fail CLOSED"
+fi
+# The same PAIR rule as its sibling: an Edit must survive that library, or the
+# refusal above is a lockout rather than enforcement.
+printf '%s' \
+  "$(jq -nc --arg fp "$TMPDIR/scratch.txt" --arg cwd "$MAIN" '{tool_name:"Edit", cwd:$cwd, tool_input:{file_path:$fp}}')" \
+  | "$HOOK_RUNNER" "$STUBLIB2/main-tree-edit-gate.sh" >/dev/null 2>&1
+sl2e_rc=$?
+if [[ "$sl2e_rc" == 0 ]]; then
+  pass=$((pass + 1)); echo "ok   (exit 0) an Edit survives a library missing gate_expand_tilde"
+else
+  fail=$((fail + 1)); echo "not ok (exit $sl2e_rc, want 0) an Edit must survive a library missing gate_expand_tilde"
+fi
+
 # An IDENTICAL copy with a WORKING library is the control: it proves the
 # assertions above came from the broken library and not from the copying.
 #
@@ -1266,12 +1310,20 @@ __kn_t0=$(date +%s)
 printf '%s' "$__kn_json" | "$HOOK_RUNNER" "$HOOK" >/dev/null 2>&1
 __kn_t1=$(date +%s)
 __kn_secs=$((__kn_t1 - __kn_t0))
-if [ "$__kn_secs" -le 4 ]; then
+# BUDGET 9s, NOT 4. PER ENGINE, because they differ by more than the budget
+# had room for and CI's macOS runner is the SLOW one: bash 5.x ~3 s isolated,
+# bash 3.2 2.75-6.18 s on a near-idle machine and 3-5 s measured here at load
+# 25; under an ordinary parallel load (a full vitest run plus a peer lane)
+# both reach 6-12 s. At 4 s the case was one busy runner away from a red that
+# means nothing -- the go-to-k/cdkd#2741 / go-to-k/cdkd#3038 flake class -- and
+# at 8 s it sat INSIDE its own measured 3.2 range. The number that matters is
+# the 10 s PreToolUse kill; 9 s still fails before the hook is killed.
+if [ "$__kn_secs" -le 9 ]; then
   pass=$((pass + 1))
-  printf 'ok   latency: 19 cd targets x 2000 candidates in %ss (budget 4s, timeout 10s)\n' "$__kn_secs"
+  printf 'ok   latency: 19 cd targets x 2000 candidates in %ss (budget 9s, timeout 10s)\n' "$__kn_secs"
 else
   fail=$((fail + 1))
-  printf 'FAIL latency: 19 cd targets x 2000 candidates took %ss, budget 4s\n' "$__kn_secs"
+  printf 'FAIL latency: 19 cd targets x 2000 candidates took %ss, budget 9s\n' "$__kn_secs"
 fi
 
 # 18-21. ROUND 15. Two blockers, both introduced by the round-14 commit, and
@@ -1301,6 +1353,195 @@ run_case_text 2 "tracked" "Bash a leading backslash in the target" \
 run_case 0 "Bash a backslash target that is NOT tracked (control)" \
   "$(jq -nc --arg cmd 'echo hi > SCRAT\CH.txt' --arg cwd "$MAIN" \
     '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+
+# 21b. A `cd` THAT FAILS (go-to-k/cdkd#2684). Bash leaves the shell where it
+#      was, so the write after it lands on the tracked file; the walk used to
+#      advance its base anyway and every one of these answered 0 while the file
+#      was really overwritten (inherited: `origin/main`'s hook answers 0 on all
+#      three as well -- measured side by side under the differential oracle).
+#      Three write vehicles, plus a RELATIVE target and a stderr-silenced one,
+#      because `cd <dir> 2>/dev/null ; <write>` is what the accident looks like.
+for __fc in "cd /nonexistent 2>/dev/null ; echo POISON > docs/_generated/ledger.tsv" \
+            "cd /nonexistent 2>/dev/null ; echo POISON | tee docs/_generated/ledger.tsv" \
+            "cd /nonexistent 2>/dev/null ; echo POISON | tee -a docs/_generated/ledger.tsv" \
+            "cd nope ; echo POISON > docs/_generated/ledger.tsv" \
+            "cd $TMPDIR/gone ; cd $TMPDIR/gone ; echo POISON > docs/_generated/ledger.tsv"; do
+  run_case_text 2 "tracked" "Bash a failed cd does not move the base: $__fc" \
+    "$(jq -nc --arg cmd "$__fc" --arg cwd "$MAIN" \
+      '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+done
+#      From the WORKTREE the same command lands in the worktree, which is not
+#      protected -- so the fix must not turn "stays put" into a refusal there.
+run_case 0 "Bash a failed cd from the feature worktree stays in the worktree" \
+  "$(jq -nc --arg cmd "cd /nonexistent 2>/dev/null ; echo POISON > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+#      And the polarity the issue named as the risk: a directory CREATED
+#      EARLIER IN THE SAME COMMAND is absent at hook time and present when the
+#      `cd` runs. Refusing to advance there would resolve `docs/a.md` against
+#      the main tree and refuse a write that never touches it. Four creators
+#      (an absolute `mkdir -p`, a relative one, a parent created by a deeper
+#      `mkdir -p`, and CLAUDE.md's own `git worktree add` recipe), plus a path
+#      with a SPACE -- which passes for a reason worth stating rather than
+#      leaving as a claim about the token walk: the `cd` TARGET regex above
+#      stops at the first whitespace, so both sides are cut at the same place
+#      and match on the truncation. A reviewer measured the consequence --
+#      `mkdir -p "/x/fresh q" ; cd "/x/fresh" ; <write>` also advances, though
+#      bash never enters `/x/fresh` -- and it is a residue of that parse, not
+#      of the mention rule; the hook's `__cd_named_earlier` header records it.
+for __cc in "mkdir -p $TMPDIR/fresh && cd $TMPDIR/fresh && echo POISON > docs/a.md" \
+            "mkdir -p fresh && cd fresh && echo POISON > docs/a.md" \
+            "mkdir -p $TMPDIR/fresh/docs/_generated && cd $TMPDIR/fresh && echo POISON > docs/_generated/ledger.tsv" \
+            "git worktree add .claude/worktrees/x -b x origin/main && cd .claude/worktrees/x && echo POISON > docs/a.md" \
+            "mkdir -p \"$TMPDIR/fresh q\" && cd \"$TMPDIR/fresh q\" && echo POISON > docs/a.md"; do
+  run_case 0 "Bash a cd into a directory this command creates still advances: $__cc" \
+    "$(jq -nc --arg cmd "$__cc" --arg cwd "$MAIN" \
+      '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+done
+#      The mention test excludes the verb that names a directory to REMOVE it:
+#      after `rm -rf X` the `cd X` fails and bash stays put, exactly as for a
+#      directory that never existed.
+run_case_text 2 "tracked" "Bash rm -rf X ; cd X ; write -- a removed directory is not a created one" \
+  "$(jq -nc --arg cmd "rm -rf $TMPDIR/gone ; cd $TMPDIR/gone ; echo POISON > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case_text 2 "tracked" "Bash git worktree remove X ; cd X ; write -- same" \
+  "$(jq -nc --arg cmd "git worktree remove $TMPDIR/gone ; cd $TMPDIR/gone ; echo POISON > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+#      `~` expands before the existence test. `<main>/~/x` is no directory, so
+#      without the expansion this would resolve `docs/a.md` against the main
+#      tree and refuse a write that lands under HOME.
+run_case 0 "Bash cd ~/ ; write -- tilde is expanded before the existence test" \
+  "$(jq -nc --arg cmd "cd ~/ ; echo POISON > docs/a.md" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+#      A creator reached by a DIFFERENT relative path still advances, which is
+#      what the prefix arm buys: `mkdir -p a/b` notes `a/b`, and `cd a` matches
+#      it as a parent. (The spellings that need NORMALISING -- a trailing `/`,
+#      a `./` prefix -- are false blocks now, pinned as residues below; the
+#      normaliser that fixed them is withdrawn, see the hook's header.)
+run_case 0 "Bash a creator reached by a parent path advances: mkdir -p a/b && cd a" \
+  "$(jq -nc --arg cmd "mkdir -p a/b && cd a && echo POISON > docs/a.md" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+#      A SINGLE trailing slash is stripped on the `cd` side too, so the
+#      tab-completion spelling is not a false block (it was, until this
+#      round -- rc=2 here against rc=0 on the merge base).
+run_case 0 "Bash mkdir -p X && cd X/ -- one trailing slash is stripped on both sides" \
+  "$(jq -nc --arg cmd "mkdir -p $TMPDIR/tabc && cd $TMPDIR/tabc/ && echo POISON > docs/a.md" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+#      The removers are read by BASENAME, so a path-qualified `rm` counts, and
+#      `mv` is one too (it names a directory it moves AWAY). Both measured
+#      rc=0 without the basename form.
+for __rm in "/bin/rm -rf $TMPDIR/gone ; cd $TMPDIR/gone ; echo POISON > docs/_generated/ledger.tsv" \
+            "mv $TMPDIR/gone $TMPDIR/gone2 ; cd $TMPDIR/gone ; echo POISON > docs/_generated/ledger.tsv"; do
+  run_case_text 2 "tracked" "Bash a path-qualified or renaming remover notes nothing: $__rm" \
+    "$(jq -nc --arg cmd "$__rm" --arg cwd "$MAIN" \
+      '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+done
+#      ...and the `-C` spelling of `git worktree remove` must stay recognised.
+#      Only the PLAIN spelling was pinned, so re-anchoring that regex -- the
+#      obvious future "fix" for the segment-scoped false block the hook's
+#      header documents -- left the suite green while restoring a fail-open
+#      (measured rc=2 -> rc=0 when it was anchored).
+run_case_text 2 "tracked" "Bash git -C <path> worktree remove X ; cd X ; write still refuses" \
+  "$(jq -nc --arg cmd "git -C $TMPDIR worktree remove $TMPDIR/wtgone ; cd $TMPDIR/wtgone ; echo POISON > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+#      Removing a CHILD does not remove its parent, so the parent stays
+#      creatable: `mkdir -p X/sub && rm -rf X/sub && cd X` must still advance.
+run_case 0 "Bash removing a CHILD leaves the parent created: mkdir -p X/sub && rm -rf X/sub && cd X" \
+  "$(jq -nc --arg cmd "mkdir -p $TMPDIR/keep/sub && rm -rf $TMPDIR/keep/sub && cd $TMPDIR/keep && echo POISON > docs/a.md" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+#      THE FALSE BLOCKS the withdrawn normalisation and note-side tilde had
+#      removed, pinned in the direction they now take. They are REFUSALS on
+#      writes that never touch the protected tree -- annoying and safe -- and
+#      they are cheaper than what removing them cost: a rescanning normaliser
+#      that reached the 10 s PreToolUse kill from under the byte cap, after
+#      which no gate on the call fires at all. Pinned so re-closing them is a
+#      deliberate act with these rows to update, and so the next attempt has
+#      to beat the timing case below rather than only these.
+for __fb in "mkdir -p $TMPDIR/slash && cd $TMPDIR/slash// && echo POISON > docs/a.md" \
+            "mkdir -p slash2 && cd .//slash2 && echo POISON > docs/a.md" \
+            "mkdir -p slash3 && cd ./slash3 && echo POISON > docs/a.md" \
+            "mkdir -p ~/zz-cdkd-2684 && cd ~/zz-cdkd-2684 && echo POISON > docs/a.md"; do
+  run_case_text 2 "new-source-file" "Bash an unnormalised creator spelling is a FALSE BLOCK (stated residue): $__fb" \
+    "$(jq -nc --arg cmd "$__fb" --arg cwd "$MAIN" \
+      '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+done
+#      THE KNOWN RESIDUE, pinned as a measured bound rather than left as a
+#      hope: a mention that neither creates nor removes advances the base, and
+#      the write escapes. `main-tree-dirty-detector` is the backstop, as for
+#      the variable-indirected gap.
+run_case 0 "Bash echo X ; cd X ; write -- a bare mention advances (known residue)" \
+  "$(jq -nc --arg cmd "echo $TMPDIR/absent ; cd $TMPDIR/absent ; echo POISON > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+#      The same residue in the shape a person actually writes, pinned as the
+#      SECOND bound so nobody later "closes" it by listing verbs: a guard that
+#      MENTIONS the directory to test it reads exactly like one that creates it.
+run_case 0 "Bash test -d X || cd X ; write -- a guard's mention advances (known residue)" \
+  "$(jq -nc --arg cmd "test -d $TMPDIR/absent || cd $TMPDIR/absent ; echo POISON > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+#      THE THIRD, and the one a round tried to close: a directory CREATED and
+#      then REMOVED in the same command. Tracking that needs the un-note the
+#      hook's header records as withdrawn -- it made the hook exceed the 10 s
+#      PreToolUse kill (28.2 s on bash 3.2 for an ordinary `gh pr create` with
+#      a 3 KB body) and leaked anyway on duplicate, differently-spelled and
+#      parent removals. Pinned in the SAME direction as its two siblings so the
+#      bound is measured, and so that re-closing it is a deliberate act with
+#      these three rows to update together.
+for __cr in "mkdir -p $TMPDIR/tmpd ; rm -rf $TMPDIR/tmpd ; cd $TMPDIR/tmpd ; echo POISON > docs/_generated/ledger.tsv" \
+            "ls $TMPDIR/tmpd $TMPDIR/tmpd $TMPDIR/tmpd ; rm -rf $TMPDIR/tmpd ; cd $TMPDIR/tmpd ; echo POISON > docs/_generated/ledger.tsv" \
+            "mkdir -p tmpr ; rm -rf $MAIN/tmpr ; cd tmpr ; echo POISON > docs/_generated/ledger.tsv" \
+            "mkdir -p $TMPDIR/par/sub ; rm -rf $TMPDIR/par ; cd $TMPDIR/par/sub ; echo POISON > docs/_generated/ledger.tsv" \
+            "mkdir -p $TMPDIR/tmpd ; git worktree remove $TMPDIR/tmpd ; cd $TMPDIR/tmpd ; echo POISON > docs/_generated/ledger.tsv"; do
+  run_case 0 "Bash a directory created then removed in one command advances (known residue): $__cr" \
+    "$(jq -nc --arg cmd "$__cr" --arg cwd "$MAIN" \
+      '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+done
+#      THE CLOCK THAT MADE THE UN-NOTE UNSHIPPABLE, kept as a case so the cost
+#      cannot come back unnoticed: an ORDINARY command -- a `gh pr create` with
+#      a 3 KB body, three `rm -f` targets and a write -- must be judged well
+#      inside the oracle's 5 s budget. The withdrawn revision measured 28.2 s
+#      here on bash 3.2 and was KILLED at 30 s on 5.3; a killed hook emits no
+#      exit 2, so every gate on that call is disarmed.
+__big_prose=$(for i in $(seq 1 60); do printf 'the quick brown fox jumps over the lazy dog %s ' "$i"; done)
+__lat_json=$(jq -nc --arg cmd "gh pr create --title t --body \"$__big_prose\" && rm -f /tmp/a /tmp/b /tmp/c && echo hi > README.md" --arg cwd "$MAIN" \
+  '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')
+__lat_t0=$(date +%s)
+printf '%s' "$__lat_json" | "$HOOK_RUNNER" "$HOOK" >/dev/null 2>&1
+__lat_rc=$?
+__lat_secs=$(( $(date +%s) - __lat_t0 ))
+# BUDGET 6s, for the reason the case above gives. PER ENGINE again: 0.21-0.38 s
+# under bash 5.x but 1.96-3.66 s under 3.2, an order of magnitude apart, so the
+# 5.x figure alone would have read as far more headroom than there is. The
+# withdrawn revisions this case exists for measured 28.2 s and were KILLED at
+# 30 s, so the discrimination it needs is nowhere near 6 s either way.
+if [ "$__lat_rc" -eq 2 ] && [ "$__lat_secs" -le 6 ]; then
+  pass=$((pass + 1))
+  printf 'ok   (exit 2) latency: a 3 KB --body plus three rm targets judged in %ss (budget 6s, timeout 10s)\n' "$__lat_secs"
+else
+  fail=$((fail + 1))
+  printf 'FAIL (exit %s, want 2) latency: a 3 KB --body plus three rm targets took %ss, budget 6s\n' "$__lat_rc" "$__lat_secs"
+fi
+#      The clock: 190 missing `cd`s ahead of the write. The first revision
+#      re-tokenised every earlier segment on each miss and took 5.6 s under
+#      bash 3.2 -- past the oracle's 5 s budget, on its way to the 10 s kill.
+__fc_big=$(for i in $(seq 1 190); do printf 'cd /nx%s ; ' "$i"; done)
+__fc_json=$(jq -nc --arg cmd "${__fc_big}echo POISON > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+  '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')
+__fc_t0=$(date +%s)
+printf '%s' "$__fc_json" | "$HOOK_RUNNER" "$HOOK" >/dev/null 2>&1
+__fc_rc=$?
+__fc_secs=$(( $(date +%s) - __fc_t0 ))
+# BUDGET 6s. Measured ~1 s on an idle machine, but every latency case here is
+# load-sensitive (this suite runs beside a full vitest run and peer lanes), and
+# one such case flaked once at load 27 during this very change -- the
+# go-to-k/cdkd#2741 / go-to-k/cdkd#3038 class. What the budget has to catch is
+# the 10 s PreToolUse kill, so 6 s still fails before the hook is killed while
+# leaving room for load.
+if [ "$__fc_rc" -eq 2 ] && [ "$__fc_secs" -le 6 ]; then
+  pass=$((pass + 1))
+  printf 'ok   (exit 2) latency: 190 missing cds ahead of a write refused in %ss (budget 6s, timeout 10s)\n' "$__fc_secs"
+else
+  fail=$((fail + 1))
+  printf 'FAIL (exit %s, want 2) latency: 190 missing cds took %ss, budget 6s\n' "$__fc_rc" "$__fc_secs"
+fi
 
 # 22-25. THE OVER-SIZE SCAN. A security review confirmed `git ls-files` dies
 #        with E2BIG past ~20000 pathspecs, and `2>/dev/null` turned that into
@@ -1347,7 +1588,7 @@ else
   printf 'FAIL latency: a 300 KB command took %ss to refuse, budget 4s\n' "$__os_secs"
 fi
 
-CASE_FLOOR=159
+CASE_FLOOR=194
 # `ran` is captured BEFORE the increment. Incrementing `fail` first and then
 # printing `$((pass + fail))` re-counted the floor's own failure as a case, so
 # one deleted case reported `only 135 cases ran, expected at least 135` -- a

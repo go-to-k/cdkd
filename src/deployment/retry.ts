@@ -45,7 +45,7 @@ export interface RetryLogger {
  * cdkd creates an `AWS::IAM::InstanceProfile` and issues `RunInstances` ~2.8s
  * later; CloudFormation and Terraform are slow enough between resources that
  * IAM has propagated by the time they call, cdkd outruns it. The measured
- * failure recovers in single-digit seconds, so the first re-probe should be
+ * failure usually recovers within seconds, so the first re-probe should be
  * sub-second rather than the generic 1s.
  */
 export const IAM_PROPAGATION_INITIAL_DELAY_MS = 250;
@@ -238,7 +238,7 @@ const defaultSleep = (ms: number): Promise<void> =>
  * IAM-propagation failures (see `isIamPropagationError`) instead use the dense
  * schedule 0.25s -> 0.5s -> 1s -> 2s -> 2s ... over
  * {@link IAM_PROPAGATION_MAX_RETRIES} retries (cumulative 47.75s), because that
- * class resolves in single-digit seconds and the generic schedule's coarse
+ * class usually resolves within seconds and the generic schedule's coarse
  * 4s/8s steps overshoot it. The dense schedule applies ONLY when the caller
  * left the schedule at its defaults — a caller that passed its own
  * `maxRetries` / `initialDelayMs` / `maxDelayMs` / `isRetryable` picked that

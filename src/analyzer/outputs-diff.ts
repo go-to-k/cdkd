@@ -6,6 +6,7 @@ import {
   isExportAliasCollision,
 } from '../deployment/outputs-export-alias.js';
 import { stripControlChars } from '../utils/regexp.js';
+import { isReadableBag } from '../state/malformed-resources-bag.js';
 import {
   bagHoldsSecretExpression,
   isSecretBearingReferenceString as isSecretDynamicReference,
@@ -48,9 +49,12 @@ export interface OutputChange {
    * projection must not emit the value when this is set.
    *
    * Deliberately ONE boolean covering both reasons the value can be withheld —
-   * a record judged pre-GHSA, and a stored key today's template cannot account
-   * for (issue #1948). Every consumer does the same thing with it (do not print
-   * the value), so a reason code would add a `--json` field nothing branches on.
+   * a record judged pre-GHSA (which includes one the no-change merge preview
+   * cannot clear, because a value carried from state for a failed output, an
+   * export alias included, is not a secret expression, issue #3101), and a
+   * stored key today's template cannot account for (issue #1948). Every
+   * consumer does the same thing with it (do not print the value), so a reason
+   * code would add a `--json` field nothing branches on.
    * "MAY be": both are SUSPICIONS by construction, which is why the rendered
    * stand-in is worded as a possibility.
    */
@@ -65,15 +69,59 @@ export interface ResolvedTemplateOutputs {
   exportNames: Set<string>;
   /**
    * True when at least one output could not be fully resolved against current
-   * state. See {@link computeOutputsDiff}'s caller contract: the diff must then
-   * report NO outputs delta. That is the conservative side of the deploy
-   * engine's NO-CHANGE branch, not a mirror of it: since issue #2771 that branch
-   * persists the outputs that resolved and keeps each failed key's stored
-   * value, while this preview cannot tell a failure the deploy will repeat from
-   * an output waiting on a resource this deploy creates. (The changed-resources
-   * branch has no gate at all, because by then every resource exists.)
+   * state. The caller then reports NO outputs delta, EXCEPT on a stack whose
+   * resource diff is empty, whose parameters bind and conditions evaluate, in
+   * which no condition verdict can reach an output
+   * ({@link templateLetsConditionsReachOutputs}; a condition gating only
+   * resources does not count), and where every failure is one
+   * {@link failuresMirrorDeploy} certifies: there the deploy
+   * takes its NO-CHANGE branch and persists a merge (issue #2771), and
+   * `computeStackDiff` previews that same merge (issue #3101). With a resource
+   * change pending the failure usually means an output waiting on a resource
+   * this deploy creates, which the preview cannot tell from one that will fail
+   * again, so the section stays suppressed.
+   * (Deploy's changed-resources branch has no gate at all, because by then
+   * every resource exists.)
    */
   resolutionFailed: boolean;
+  /**
+   * The template output NAMES whose VALUE failed in a way the deploy engine's
+   * `resolveOutputs` also records as a failure — the resolver threw, or it
+   * returned `undefined` — so the deploy keeps them in its bag as `undefined`
+   * and its no-change merge treats them as failed keys (issue #3101).
+   *
+   * Output names only, unlike {@link failedKeys}, which also holds a failed
+   * output's literal `Export.Name` alias: the merge derives the alias from the
+   * template itself, and an alias key fed in as a failed OUTPUT would be
+   * carried under the wrong rule.
+   */
+  failedOutputKeys: Set<string>;
+  /**
+   * True when every failure that set {@link resolutionFailed} is named in
+   * {@link failedOutputKeys}, so previewing the deploy's no-change merge is
+   * sound (issue #3101).
+   *
+   * False for the failures only this preview reports, and for the ones it
+   * cannot name:
+   * - a value that came back as a symbol, a surviving intrinsic, an
+   *   unsubstituted `Fn::Sub` placeholder, or a container holding any of
+   *   those — {@link isUnresolvedValue}'s arms wider than deploy's
+   *   `v === undefined`. Such a value is not the deploy's failure signal, so
+   *   it says nothing about what the deploy does with the key: it may write
+   *   the value, lose it when the bag is serialized (a symbol), or throw where
+   *   this best-effort pass kept a placeholder (a structural `Fn::Sub`
+   *   failure). The merge would treat as carried a key whose outcome it
+   *   cannot see;
+   * - an `Export.Name` that did not resolve, or a literal one this preview
+   *   cannot decide — the alias key is unknown, so no merge input can name it.
+   *
+   * Why the wider arms suppress rather than merge: a carried key renders no
+   * row, so carrying a key the deploy actually rewrites or drops hides that
+   * key's change, and the merged path's warning would not name it either (it
+   * lists {@link failedOutputKeys} only), while the suppression omits the
+   * section and warns whenever a difference remains beyond the failed outputs.
+   */
+  failuresMirrorDeploy: boolean;
   /**
    * The bag keys that FAILED to resolve, so they are absent from {@link outputs}
    * rather than present-with-a-bad-value.
@@ -276,6 +324,47 @@ export function templateHasSecretDynamicReference(template: CloudFormationTempla
   return containsSecretDynamicReference(template);
 }
 
+/**
+ * Can a condition verdict reach an output's VALUE in this template?
+ *
+ * The no-change merge preview (issue #3101) must not carry a failed output a
+ * condition verdict could change, because `cdkd diff` evaluates `Conditions`
+ * best-effort and its verdict can differ from the deploy's. An output never
+ * reads a resource's template properties (a `Ref` or `Fn::GetAtt` reads the
+ * stored record), so a verdict reaches its value only through the output's own
+ * `Condition`, or an `Fn::If` / `{ Condition: ... }` outside `Resources`: in an
+ * output, or in a mapping `Fn::FindInMap` returns. `Conditions` is skipped as
+ * well, since a reference there composes a verdict and reaches an output only
+ * through one of those. A verdict that prunes or keeps a resource differently
+ * changes the resource set instead; where that leaves the diff seeing no change
+ * the deploy sees, the warning naming every carried output already says the
+ * next deploy may write a different value for it.
+ *
+ * Not "the template declares `Conditions`": CDK attaches `CDKMetadataAvailable`
+ * to its `AWS::CDK::Metadata` resource in every env-agnostic stack, and that
+ * test refused the preview for the default app shape.
+ */
+export function templateLetsConditionsReachOutputs(template: CloudFormationTemplate): boolean {
+  for (const output of Object.values(template.Outputs ?? {})) {
+    if (output.Condition !== undefined) return true;
+  }
+  return Object.entries(template).some(
+    ([section, value]) =>
+      section !== 'Resources' && section !== 'Conditions' && readsConditionVerdict(value)
+  );
+}
+
+/** An `Fn::If`, or a `{ Condition: ... }` reference, anywhere under `value`. */
+function readsConditionVerdict(value: unknown): boolean {
+  if (value === null || typeof value !== 'object') return false;
+  if (Array.isArray(value)) return value.some(readsConditionVerdict);
+  const record = value as Record<string, unknown>;
+  if (Object.prototype.hasOwnProperty.call(record, 'Fn::If')) return true;
+  const keys = Object.keys(record);
+  if (keys.length === 1 && keys[0] === 'Condition') return true;
+  return Object.values(record).some(readsConditionVerdict);
+}
+
 /** Structural equality, mirroring the deploy engine's `outputMapsEqual` leaf rule. */
 function valuesEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
@@ -370,6 +459,10 @@ export async function resolveTemplateOutputs(
   const outputs: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   const exportNames = new Set<string>();
   const failedKeys = new Set<string>();
+  const failedOutputKeys = new Set<string>();
+  // Starts true and only ever turns false: an arm that cannot hand the merge a
+  // key clears it. See `ResolvedTemplateOutputs.failuresMirrorDeploy`.
+  let failuresMirrorDeploy = true;
   const secretSourceKeys = new Set<string>();
   const declaredKeys = new Set<string>();
   // Walked over the WHOLE template, `Resources` included (issue #1948). The
@@ -393,6 +486,8 @@ export async function resolveTemplateOutputs(
       outputs,
       exportNames,
       failedKeys,
+      failedOutputKeys,
+      failuresMirrorDeploy,
       secretSourceKeys,
       declaredKeys,
       templateHasSecretReference,
@@ -435,7 +530,9 @@ export async function resolveTemplateOutputs(
 
   for (const [outputKey, output] of Object.entries(template.Outputs)) {
     if (output.Condition !== undefined && conditions?.[output.Condition] === false) {
-      logger.debug(`Skipping output ${outputKey} — condition ${output.Condition} is false`);
+      logger.debug(
+        `Skipping output ${stripControlChars(outputKey)} — condition ${stripControlChars(String(output.Condition))} is false`
+      );
       // NOT a resolution failure — CFn genuinely does not create it, so the
       // deploy drops it from the bag too and a REMOVE here is CORRECT.
       continue;
@@ -476,18 +573,30 @@ export async function resolveTemplateOutputs(
       // deleted as dead weight, which is exactly what the invariant forbids.)
       value = await resolveFn(structuredClone(output.Value));
     } catch (error) {
-      logger.debug(`Diff could not resolve output ${outputKey}: ${String(error)}`);
+      logger.debug(
+        `Diff could not resolve output ${stripControlChars(outputKey)}: ${stripControlChars(String(error))}`
+      );
       resolutionFailed = true;
       recordFailure(outputKey, output);
+      // The deploy records a throw the same way (its catch stores `undefined`):
+      // a matching failure signal, not a promise that its resolution throws too.
+      failedOutputKeys.add(outputKey);
       continue;
     }
     if (isUnresolvedValue(value, sourceUsedSub)) {
       // The common, EXPECTED case: the output references a resource this deploy
       // has not created yet. Not a warning — the resource section already shows
       // that CREATE.
-      logger.debug(`Diff left output ${outputKey} unresolved (references a pending resource)`);
+      logger.debug(
+        `Diff left output ${stripControlChars(outputKey)} unresolved (references a pending resource)`
+      );
       resolutionFailed = true;
       recordFailure(outputKey, output);
+      // Only a TOP-LEVEL `undefined` is deploy's own signal. Every other arm of
+      // `isUnresolvedValue` (a nested `undefined` included) says nothing about
+      // what the deploy does with the key, so it cannot be previewed as carried.
+      if (value === undefined) failedOutputKeys.add(outputKey);
+      else failuresMirrorDeploy = false;
       continue;
     }
     outputs[outputKey] = value;
@@ -506,8 +615,13 @@ export async function resolveTemplateOutputs(
         try {
           exportName = await resolveFn(structuredClone(exportName));
         } catch (error) {
-          logger.debug(`Diff could not resolve Export.Name of ${outputKey}: ${String(error)}`);
+          logger.debug(
+            `Diff could not resolve Export.Name of ${stripControlChars(outputKey)}: ${stripControlChars(String(error))}`
+          );
           resolutionFailed = true;
+          // The value resolved, so deploy records no failure for this output,
+          // and the alias it will write has no name here to merge under.
+          failuresMirrorDeploy = false;
           continue;
         }
       }
@@ -601,6 +715,9 @@ export async function resolveTemplateOutputs(
             );
             failedKeys.add(exportName);
             resolutionFailed = true;
+            // Deploy DOES decide this alias, holding the plaintext, and the
+            // merge has no verdict to carry or drop it by.
+            failuresMirrorDeploy = false;
           }
         } else {
           outputs[exportName] = value;
@@ -611,6 +728,7 @@ export async function resolveTemplateOutputs(
         // WILL write is unknown, so the bag is incomplete — same suppression as
         // an unresolvable value rather than a diff missing a key.
         resolutionFailed = true;
+        failuresMirrorDeploy = false;
       }
     }
   }
@@ -619,6 +737,8 @@ export async function resolveTemplateOutputs(
     outputs,
     exportNames,
     failedKeys,
+    failedOutputKeys,
+    failuresMirrorDeploy,
     secretSourceKeys,
     declaredKeys,
     templateHasSecretReference,
@@ -660,6 +780,15 @@ export async function resolveTemplateOutputs(
  * record was written by a pre-GHSA binary, so every value in it is unredacted.
  * Withholding is therefore record-level. The change is still REPORTED — only
  * the value is withheld — so `--fail` and the exports story are unaffected.
+ *
+ * A third input forces the same verdict: `forceLegacyRecord`, set by the
+ * no-change merge preview (issue #3101) when a value it carried from state for
+ * a failed output, an export alias included, is not itself a secret expression.
+ * The first signal reads a carried key's desired side, which is then the stored
+ * value, so evidence only its resolved value held is gone; and where a resolved
+ * secret expression can come from (a stored attribute, a parameter, another
+ * stack's outputs) is not enumerable. Nothing short of the carried key's own stored expression can
+ * excuse it — the one value the per-key veto below would have excused.
  *
  * ## The key today's template cannot account for (issue #1948)
  *
@@ -724,24 +853,58 @@ export function computeOutputsDiff(
   unaccountableScan: {
     declaredKeys?: ReadonlySet<string>;
     templateHasSecretReference?: boolean;
+    /**
+     * Treat the record as pre-GHSA whatever pass 1 finds. Set by the no-change
+     * merge preview (issue #3101) when a value it carried from state for a failed
+     * output, an export alias included, is not a secret expression: pass 1 reads
+     * `desired`, and a carried key's desired side is the stored value, so
+     * evidence only its resolved value held is gone.
+     */
+    forceLegacyRecord?: boolean;
   } = {}
 ): OutputChange[] {
   const changes: OutputChange[] = [];
-  const currentBag = current ?? {};
+  // `isReadableBag`, NOT the `?? {}` that stood here (go-to-k/cdkd#3189). The
+  // parameter's TYPE says a bag, but its only production argument is
+  // `StackState.outputs` read out of an unchecked cast — `parseStateBody`
+  // validates the root object and the schema version and nothing inside — so a
+  // hand-edited or truncated record reached the two walks below holding a
+  // string or a list, which `Object.entries` enumerates as readily as a map:
+  // `'abcdef'` produced six REMOVE rows named `"0"`..`"5"`, each printing a
+  // character of the record as its `old:` side, and `--fail` exited 1 on them.
+  //
+  // SECOND line of defence, not the fix: the fix is at the LOAD, in
+  // `diff-recursive.ts`'s `loadStateOrEmpty`, which is what WARNS and what
+  // covers the lookups this function's caller makes against the same bag one
+  // call earlier. This one keeps the fabrication out of a direct caller that
+  // never passed through that load. It reads the SHARED predicate rather than
+  // re-spelling the plain-object test, so the two cannot drift.
+  // `current !== undefined` is NOT redundant, and reads as if it were —
+  // `isReadableBag(undefined)` is already false, so it changes no VERDICT. It is
+  // there for the TYPE: `isReadableBag` returns `boolean` rather than a type
+  // predicate (deliberately — it is shared with callers that pass `unknown`), so
+  // without this conjunct the true branch is still `... | undefined` and the
+  // assignment needs an `as` cast. Deleting it therefore does not simplify the
+  // line, it re-introduces the cast (review of go-to-k/cdkd#3194, which read it
+  // as dead code).
+  const currentBag: Record<string, unknown> =
+    current !== undefined && isReadableBag(current) ? current : {};
 
   // Pass 1: is this a pre-GHSA record? See the "Withholding" note above.
-  const legacyRecord = Object.entries(currentBag).some(([name, oldValue]) => {
-    // LEAF granularity on the VETO, deep on both positive arms — and the
-    // asymmetry is the point rather than an oversight. Widening this one (as an
-    // earlier revision did) makes a CONTAINER holding any expression leaf vote
-    // "already redacted", so a partially-redacted bag —
-    // `["{{resolve:secretsmanager:A}}", "prod-<plaintext>"]`, the residue
-    // `cdkd scrub` itself admits it can leave — is read as post-GHSA and its
-    // plaintext leaf then prints in a rendered row. A veto must be harder to
-    // earn than a suspicion.
-    if (typeof oldValue === 'string' && isSecretDynamicReference(oldValue)) return false;
-    return containsSecretDynamicReference(desired[name]) || secretSourceKeys.has(name);
-  });
+  const legacyRecord =
+    unaccountableScan.forceLegacyRecord === true ||
+    Object.entries(currentBag).some(([name, oldValue]) => {
+      // LEAF granularity on the VETO, deep on both positive arms — and the
+      // asymmetry is the point rather than an oversight. Widening this one (as an
+      // earlier revision did) makes a CONTAINER holding any expression leaf vote
+      // "already redacted", so a partially-redacted bag —
+      // `["{{resolve:secretsmanager:A}}", "prod-<plaintext>"]`, the residue
+      // `cdkd scrub` itself admits it can leave — is read as post-GHSA and its
+      // plaintext leaf then prints in a rendered row. A veto must be harder to
+      // earn than a suspicion.
+      if (typeof oldValue === 'string' && isSecretDynamicReference(oldValue)) return false;
+      return containsSecretDynamicReference(desired[name]) || secretSourceKeys.has(name);
+    });
 
   // Pass 2: the issue #1948 exoneration, RECORD-level unlike the per-key veto
   // above, and it has to be: the question is whether the LAST write redacted,

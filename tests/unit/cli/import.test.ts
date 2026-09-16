@@ -2438,6 +2438,85 @@ describe('cdkd import', () => {
       expect(options.expectedEtag).toBe('"existing-etag"');
     });
 
+    /**
+     * A malformed `outputs` bag on the EXISTING record (issue
+     * go-to-k/cdkd#3192). `cdkd import` does not rebuild the bag the way
+     * `cdkd orphan` and `cdkd scrub` do — it CARRIES it, through
+     * `outputs: existingState?.outputs ?? {}` — but that `?? {}` launders a
+     * `null` bag into a well-formed empty one, and a string one is carried
+     * into a record the exports index then republishes. It refuses for the
+     * same reason it already refuses a malformed `resources` map: this command
+     * writes state, and a record saved over is gone.
+     *
+     * The resource map is healthy here — the two containers are independent.
+     */
+    for (const [label, bag] of [
+      ['null', null],
+      ['a string', 'abcdef'],
+      ['a list', ['a', 'b']],
+    ] as const) {
+      it(`refuses an existing record whose outputs bag is ${label}, and writes nothing`, async () => {
+        mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+        mockGetState.mockResolvedValueOnce({
+          state: { ...existingState(), outputs: bag as unknown as Record<string, unknown> },
+          etag: '"existing-etag"',
+        });
+        mockHasProvider.mockReturnValue(true);
+        mockGetProvider.mockImplementation(() => ({
+          import: vi.fn(async () => ({ physicalId: 'cdkd-test-my-bucket', attributes: {} })),
+        }));
+
+        await expect(
+          runImport(['import', '--app', 'x', '--resource', 'MyBucket=cdkd-test-my-bucket', '--yes'])
+        ).rejects.toThrow();
+        // The MESSAGE, read off the error logger the command routes through
+        // before exiting — a bare `rejects.toThrow()` is satisfied by the
+        // `process.exit` mock itself and would pass for any failure at all.
+        const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+        expect(message).toContain(`'outputs'`);
+        // It names THIS container: borrowing the resources refusal would tell
+        // the operator their stack would be re-created, over an intact map.
+        expect(message).not.toContain(`'resources'`);
+        // The evidence survives. This assertion is the one that matters: the
+        // throw alone would also be satisfied by a refusal raised AFTER the
+        // save.
+        expect(
+          mockSaveState,
+          'cdkd import saved over a record whose outputs bag it could not read'
+        ).not.toHaveBeenCalled();
+      });
+    }
+
+    it('FLOOR: a populated, an empty and an ABSENT outputs bag are all still imported', async () => {
+      // Without this the refusal above is one-sided: a guard that threw on
+      // everything satisfies every case above it. The ABSENT row is
+      // load-bearing — a deploy's failure-path save writes
+      // `outputs: currentState.outputs`, which `JSON.stringify` DROPS when
+      // undefined, so a record with no outputs is ordinary state.
+      for (const bag of [{ ExistingOutput: 'preserved' }, {}, undefined]) {
+        mockSaveState.mockClear();
+        mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+        mockGetState.mockResolvedValueOnce({
+          state: { ...existingState(), outputs: bag as unknown as Record<string, unknown> },
+          etag: '"existing-etag"',
+        });
+        mockHasProvider.mockReturnValue(true);
+        mockGetProvider.mockImplementation(() => ({
+          import: vi.fn(async () => ({ physicalId: 'cdkd-test-my-bucket', attributes: {} })),
+        }));
+
+        await runImport([
+          'import',
+          '--app',
+          'x',
+          '--resource',
+          'MyBucket=cdkd-test-my-bucket',
+          '--yes',
+        ]);
+        expect(mockSaveState, `outputs bag ${JSON.stringify(bag)}`).toHaveBeenCalledTimes(1);
+      }
+    });
+
     it('carries the existing record export set forward with its outputs (#2193)', async () => {
       mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
       mockGetState.mockResolvedValueOnce({

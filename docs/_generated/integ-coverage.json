@@ -1109,6 +1109,7 @@
         "fsx-openzfs",
         "fsx-windows",
         "infra-security",
+        "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -1220,6 +1221,9 @@
         "infra-security": [
           "l2"
         ],
+        "lambda-capacity-provider-default-name": [
+          "l2"
+        ],
         "launchtemplate-asg-inplace": [
           "l2"
         ],
@@ -1303,6 +1307,7 @@
         "fsx-openzfs",
         "fsx-windows",
         "infra-security",
+        "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -1405,6 +1410,9 @@
           "l2"
         ],
         "infra-security": [
+          "l2"
+        ],
+        "lambda-capacity-provider-default-name": [
           "l2"
         ],
         "launchtemplate-asg-inplace": [
@@ -1512,6 +1520,7 @@
         "fsx-openzfs",
         "fsx-windows",
         "infra-security",
+        "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -1623,6 +1632,9 @@
           "l2"
         ],
         "infra-security": [
+          "l2"
+        ],
+        "lambda-capacity-provider-default-name": [
           "l2"
         ],
         "launchtemplate-asg-inplace": [
@@ -1711,6 +1723,7 @@
         "fsx-openzfs",
         "fsx-windows",
         "infra-security",
+        "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -1822,6 +1835,9 @@
         "infra-security": [
           "l2"
         ],
+        "lambda-capacity-provider-default-name": [
+          "l2"
+        ],
         "launchtemplate-asg-inplace": [
           "l2"
         ],
@@ -1896,6 +1912,7 @@
         "emr-instance-fleets",
         "export",
         "fsx-lustre",
+        "lambda-capacity-provider-default-name",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "nlb-source-nat",
@@ -1975,6 +1992,9 @@
         ],
         "fsx-lustre": [
           "literal"
+        ],
+        "lambda-capacity-provider-default-name": [
+          "l2"
         ],
         "local-start-alb-from-state": [
           "l2",
@@ -2081,6 +2101,7 @@
         "fsx-openzfs",
         "fsx-windows",
         "infra-security",
+        "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -2188,6 +2209,9 @@
         "infra-security": [
           "l2"
         ],
+        "lambda-capacity-provider-default-name": [
+          "l2"
+        ],
         "launchtemplate-asg-inplace": [
           "l2"
         ],
@@ -2279,6 +2303,7 @@
         "fsx-openzfs",
         "fsx-windows",
         "infra-security",
+        "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -2383,6 +2408,9 @@
         "infra-security": [
           "l2"
         ],
+        "lambda-capacity-provider-default-name": [
+          "l2"
+        ],
         "launchtemplate-asg-inplace": [
           "l2"
         ],
@@ -2465,6 +2493,7 @@
         "fsx-openzfs",
         "fsx-windows",
         "infra-security",
+        "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -2585,6 +2614,9 @@
         "infra-security": [
           "l2"
         ],
+        "lambda-capacity-provider-default-name": [
+          "l2"
+        ],
         "launchtemplate-asg-inplace": [
           "l2"
         ],
@@ -2675,6 +2707,7 @@
         "fsx-openzfs",
         "fsx-windows",
         "infra-security",
+        "lambda-capacity-provider-default-name",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -2785,6 +2818,9 @@
           "l2"
         ],
         "infra-security": [
+          "l2"
+        ],
+        "lambda-capacity-provider-default-name": [
           "l2"
         ],
         "launchtemplate-asg-inplace": [
@@ -3648,6 +3684,7 @@
         "recreate-via-sdk-provider",
         "retain-orphan-redeploy",
         "rollback-failure-injection",
+        "rollback-replay-cc-generated-name",
         "s3-replication-and-filter",
         "scheduler-custom-group",
         "sdk-ccapi-crossref",
@@ -3850,6 +3887,10 @@
         ],
         "rollback-failure-injection": [
           "l2"
+        ],
+        "rollback-replay-cc-generated-name": [
+          "l1",
+          "literal"
         ],
         "s3-replication-and-filter": [
           "l2",
@@ -4131,6 +4172,7 @@
         "lambda",
         "lambda-alias-provisioned-concurrency",
         "lambda-arch-switch",
+        "lambda-capacity-provider-default-name",
         "lambda-config-field-removal",
         "lambda-destinations",
         "lambda-durable-replacement",
@@ -4325,6 +4367,10 @@
         ],
         "lambda-arch-switch": [
           "l2"
+        ],
+        "lambda-capacity-provider-default-name": [
+          "l2",
+          "literal"
         ],
         "lambda-config-field-removal": [
           "l2",
@@ -5439,6 +5485,7 @@
         "rollback-deletion-policy-snapshot",
         "rollback-failure-injection",
         "rollback-replacement-retain",
+        "rollback-replay-cc-generated-name",
         "rollback-replay-effective-props",
         "rollback-sqs-cooldown",
         "scheduler-custom-group",
@@ -5555,6 +5602,9 @@
           "l1"
         ],
         "rollback-replacement-retain": [
+          "l1"
+        ],
+        "rollback-replay-cc-generated-name": [
           "l1"
         ],
         "rollback-replay-effective-props": [
@@ -6168,6 +6218,7 @@
     "AWS::Events::EventBusPolicy",
     "AWS::KMS::Grant",
     "AWS::Lambda::Alias",
+    "AWS::Lambda::CapacityProvider",
     "AWS::Lambda::CodeSigningConfig",
     "AWS::Lambda::Version",
     "AWS::Logs::LogStream",

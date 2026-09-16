@@ -35,7 +35,13 @@ const THROW_AFTER_RECORDING_EXPR = '{{resolve:secretsmanager:orphan-secret:Secre
 // Mock resolver: resolving a value equal to SECRET_EXPR records the secret and
 // returns the plaintext (as the real resolver does). This lets scrubStack learn
 // the plaintext->expression map without a live AWS GetSecretValue.
-vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', () => ({
+// The spread is load-bearing: `scrub.ts` imports pure helpers from this module
+// besides the resolver class — `carriesDynamicReference`, behind the
+// abandoned-scan counter (go-to-k/cdkd#3160). A class-only factory makes each
+// one an undefined export, so the first case here that makes `resolve` REJECT
+// fails with a mock error instead of its own assertion.
+vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../../src/deployment/intrinsic-function-resolver.js')>()),
   IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
     resolveParameters: vi.fn().mockResolvedValue({}),
     evaluateConditions: vi.fn().mockResolvedValue({}),
@@ -341,6 +347,8 @@ describe('cdkd scrub - scrubStack', () => {
       secretsFound: 0,
       secretBearingKeys: 0,
       unverifiableReads: 0,
+      unverifiableProducerRecords: 0,
+      unverifiableLeaves: 0,
       // Issue #2667 review: an export name is an outputs-bag KEY, so every
       // message naming one is masked through the stack's own secrets bag
       // rather than merely control-stripped. The field is REQUIRED so no

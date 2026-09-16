@@ -33,7 +33,7 @@ tell you anything the title has not already said.
 | What you see | What to do |
 | --- | --- |
 | No pull request | Usually nothing — most days are this. But it also looks like this when the job FAILED or never fired: see [When there is nothing to read](#when-there-is-nothing-to-read). |
-| A pull request with a plain title, no label | Nothing needs a decision. Read the diff, squash merge. |
+| A pull request with a plain title, no label | Nothing needs a decision. Read the diff and the changelog fragment it carries, then squash merge. |
 | `— N decisions needed` in the title, `needs-decision` label, assigned to you | N things need your call. They are labelled **D1**–**DN** in the body. |
 | A pull request saying the nested-key check failed unreadably | Read that job's log; the other sections still hold. |
 | A comment on an open pull request | New drift was added to it. Same classes. |
@@ -64,7 +64,40 @@ Daily, on `bot/cfn-schema-refresh/<YYYY-MM-DD>`:
    branch, no pull request, no comment.
 5. Otherwise regenerates the derived artifacts, then either opens a pull
    request or adds a commit and a diagnosis comment to the open one.
-6. Marks the pull request with how many decisions are left, or clears the
+6. Commits a changelog fragment under `changelog.d/entries/` when the cycle
+   added a writable property, because that changes what the shipped binary
+   does. The text is DERIVED — which type gained which property, that it is
+   now a silent drop routed through Cloud Control, whether the type pins
+   `provisionedBy: 'cc-api'` one way, and whether the snapshot marks it
+   create-only — and nothing that needs a reading of WHY is in it. Edit it if
+   the delta deserves more; the job never overwrites a fragment it already
+   wrote for this cycle, a rename included, and a later cycle writes its own
+   file rather than touching yours. EDIT it rather than deleting it — a
+   deletion is the one thing a same-day re-dispatch would undo.
+
+   **A missing fragment or a lost push never fails the job, which is the
+   opposite of the push rule below, deliberately.** By the time this step runs
+   the drift is committed and the pull request exists, so the only thing such
+   a failure can still cost is the marking step behind it — and trading the
+   signal a human reads for a changelog line is the wrong way round. Either
+   case leaves a `::warning::` in the run and no entry: write one by hand
+   before merging. A third warning says a fragment for this cycle already
+   exists and differs from what the run rendered — a second batch of drift
+   arrived the same day, and the existing entry does not describe it. The one arm that IS loud is an unsubstituted `__PR_NUMBER__`
+   or `__CYCLE__` placeholder, which means the renderer is broken rather than
+   a race being lost, and would otherwise commit an entry citing no pull
+   request.
+
+   **A cycle that only REMOVES properties gets an entry too**, because it
+   ships a delta of its own: a withdrawn property loses the row that made it
+   route through Cloud Control, so a template still carrying it is dropped
+   with a warn from that merge on. The entry says which of the two things
+   follows for each type — it keeps auto-routing on another property, or a new
+   resource of that type returns to the SDK path while one already recorded
+   `provisionedBy: 'cc-api'` stays where it is. A property the provider
+   DECLARES is not in that population: its removal makes the declaration
+   bogus, which the pull request escalates as a decision instead.
+7. Marks the pull request with how many decisions are left, or clears the
    marking when there are none. This is the step that also runs on a
    no-drift day, so a decision you have settled stops being advertised.
 

@@ -53,3 +53,4 @@ evidence on the first such command. The kept-arm warning keeps its
 refusals make it true by construction today: a future refusal that carries
 nothing would make the "Outputs changed but" wording wrong without it.
 Real-AWS net: `tests/integration/output-never-resolved-diff/` phases 4b / 4c.
+`computeStackDiff` calls the merge too, previewing it on a no-change stack (#3101, phase 5c).

@@ -321,6 +321,24 @@ describe('renderDiffTree', () => {
     expect(text.indexOf('Stack P:')).toBeLessThan(text.indexOf('Nested stack: P~C~G'));
   });
 
+  it('strips control characters from the stack names in both headers', () => {
+    // A nested child is named `${parent}~${logicalId}`, and neither half passes
+    // CloudFormation's logical-id validation in cdkd, so either can carry ANSI.
+    const child = leaf('P\u001b[31m~C', 'P\u001b[31m~C', [
+      { logicalId: 'ChildRes', changeType: 'CREATE', resourceType: 'T' },
+    ]);
+    const root = leaf('P\u001b[31m', 'P\u001b[31m', [
+      { logicalId: 'NewRes', changeType: 'CREATE', resourceType: 'T' },
+    ]);
+    root.children = [child];
+    const lines: string[] = [];
+    renderDiffTree(root, true, (m) => lines.push(m));
+    const text = lines.join('\n');
+    expect(text).toContain('Stack P[31m:');
+    expect(text).toContain('Nested stack: P[31m~C');
+    expect(text).not.toContain('\u001b');
+  });
+
   it('emits nothing for a node (and subtree) with no changes', () => {
     const root = leaf('P', 'P', [{ logicalId: 'A', changeType: 'NO_CHANGE', resourceType: 'T' }]);
     const lines: string[] = [];
@@ -2359,6 +2377,847 @@ describe('Outputs-only change (issue #1921)', () => {
     expect(outputChanges).toEqual([]);
     const messages = warn.mock.calls.map((c) => String(c[0]));
     expect(messages.some((m) => m.includes('could not be resolved'))).toBe(true);
+  });
+
+  describe('a no-change stack previews the deploy merge beside a failing output (issue #3101)', () => {
+    // `Gone` is in neither the template nor state, so `Fn::GetAtt` on it THROWS
+    // in the real resolver: the failure the deploy engine records too (its
+    // catch stores `undefined`). Every case keeps the resource diff empty
+    // except the pending-resource-change cases.
+    const FAILING = { 'Fn::GetAtt': ['Gone', 'Arn'] };
+
+    /**
+     * Clears the warn mock, and returns a reader for the section-suppression
+     * warnings since. Keyed on the diff's own sentence: the resolver's warning
+     * for a kept `Fn::Sub` placeholder also says "could not be resolved".
+     */
+    function captureSuppressionWarnings(): () => string[] {
+      const warn = vi.mocked(getLogger().warn);
+      warn.mockClear();
+      return () =>
+        warn.mock.calls
+          .map((c) => String(c[0]))
+          .filter((m) => m.includes('omitting the Outputs section from this diff'));
+    }
+
+    /** The merged-path warnings naming the outputs this diff could not resolve. */
+    function carriedOutputWarnings(): string[] {
+      return vi
+        .mocked(getLogger().warn)
+        .mock.calls.map((c) => String(c[0]))
+        .filter((m) => m.includes('output(s) could not be resolved for this diff.'));
+    }
+
+    it('reports a sibling ADD, and no row for a failed output that keeps its stored value', async () => {
+      const suppressed = captureSuppressionWarnings();
+      const { changes, outputChanges } = await diffFor(
+        stateWith({ Out: 'stored', Plain: 'p' }),
+        template({ Out: { Value: FAILING }, Plain: { Value: 'p' }, Plain2: { Value: 'p2' } })
+      );
+      expect([...changes.values()].every((c) => c.changeType === 'NO_CHANGE')).toBe(true);
+      // Pre-fix: `[]` plus the suppression warning. A merge fed the resolver's
+      // bag without `Out` present-as-undefined would also print a REMOVE of it.
+      expect(outputChanges).toEqual([
+        { name: 'Plain2', changeType: 'ADD', newValue: 'p2', isExport: false },
+      ]);
+      expect(suppressed()).toEqual([]);
+      // ...but not silent about the output it could not see.
+      const carried = carriedOutputWarnings();
+      expect(carried).toHaveLength(1);
+      expect(carried[0]).toContain(
+        '1 output(s) could not be resolved for this diff. Compared at their stored values: Out.'
+      );
+      // Only `Out` failed, and it is stored (m17).
+      expect(carried[0]).not.toContain('No stored value under their own names');
+      // `Out`'s stored plaintext forces the verdict, but the section is a single
+      // ADD, so nothing is withheld and the sentence must not claim otherwise
+      // (review M14).
+      expect(carried[0]).not.toContain('Previous values in this Outputs section are withheld');
+    });
+
+    it('makes the stack dirty for --fail', async () => {
+      const node = await buildDiffTree({
+        stackName: 'S',
+        displayName: 'S',
+        region: 'us-east-1',
+        template: template({ Out: { Value: FAILING }, Plain2: { Value: 'p2' } }),
+        nestedTemplates: {},
+        recursive: false,
+        stateBackend: fakeBackend({ S: stateWith({ Out: 'stored' }) }),
+        diffCalculator: new DiffCalculator(),
+      });
+      expect(treeHasChanges(node)).toBe(true);
+    });
+
+    // Every resource change kind, since the gate is "any change", not "a CREATE".
+    it.each([
+      {
+        changeType: 'CREATE',
+        logicalId: 'New',
+        edit: (tpl: CloudFormationTemplate, _state: StackState): void => {
+          tpl.Resources['New'] = { Type: 'AWS::SSM::Parameter', Properties: { Value: 'y' } };
+        },
+      },
+      {
+        changeType: 'UPDATE',
+        logicalId: 'A',
+        edit: (tpl: CloudFormationTemplate, _state: StackState): void => {
+          tpl.Resources['A'] = { Type: 'AWS::SSM::Parameter', Properties: { Value: 'changed' } };
+        },
+      },
+      {
+        changeType: 'DELETE',
+        logicalId: 'Old',
+        edit: (_tpl: CloudFormationTemplate, state: StackState): void => {
+          state.resources['Old'] = res('AWS::SSM::Parameter', { Value: 'z' });
+        },
+      },
+    ])(
+      'keeps the suppression while a resource $changeType is pending',
+      async ({ changeType, logicalId, edit }) => {
+        const suppressed = captureSuppressionWarnings();
+        const tpl = template({ Out: { Value: FAILING }, Plain2: { Value: 'p2' } });
+        const state = stateWith({ Out: 'stored' });
+        edit(tpl, state);
+        const { changes, outputChanges } = await diffFor(state, tpl);
+        expect(changes.get(logicalId)!.changeType).toBe(changeType);
+        expect(outputChanges).toEqual([]);
+        expect(suppressed()).toHaveLength(1);
+      }
+    );
+
+    it('reports a changed sibling and a key the merge removes', async () => {
+      const { outputChanges } = await diffFor(
+        stateWith({ Out: 'stored', Plain: 'old', Deleted: 'bye' }),
+        template({ Out: { Value: FAILING }, Plain: { Value: 'new' } })
+      );
+      // Both rows render; their old values are withheld because `Out` is carried
+      // at a stored value that is not a secret expression (see the B2 cases).
+      expect(outputChanges).toEqual([
+        { name: 'Plain', changeType: 'MODIFY', newValue: 'new', isExport: false, oldValueRedacted: true },
+        { name: 'Deleted', changeType: 'REMOVE', isExport: false, oldValueRedacted: true },
+      ]);
+    });
+
+    it('never previews a failed output with no stored value as an ADD', async () => {
+      // Pins the no-ADD outcome only. With no stored value the merge answers
+      // the same whether or not the failed key is present as `undefined`; that
+      // injection is pinned by the stored-value case above.
+      vi.mocked(getLogger().warn).mockClear();
+      const { outputChanges } = await diffFor(
+        stateWith({}),
+        template({ Out: { Value: FAILING }, Plain2: { Value: 'p2' } })
+      );
+      expect(outputChanges).toEqual([
+        { name: 'Plain2', changeType: 'ADD', newValue: 'p2', isExport: false },
+      ]);
+      // Nothing was carried, so the warning must not claim a comparison at all
+      // (review M9): only the left-out part appears.
+      const carried = carriedOutputWarnings();
+      expect(carried).toHaveLength(1);
+      expect(carried[0]).toContain('No stored value under their own names: Out.');
+      expect(carried[0]).not.toContain('Compared at their stored values');
+    });
+
+    it('carries the literal export alias the previous record published', async () => {
+      // `previousExportNames` comes from the record: without it the merge drops
+      // the alias and this prints a REMOVE of `S:Out`.
+      const state: StackState = {
+        ...stateWith({ Out: 'stored', 'S:Out': 'stored' }),
+        exportNames: ['S:Out'],
+      };
+      const { outputChanges } = await diffFor(
+        state,
+        template({ Out: { Value: FAILING, Export: { Name: 'S:Out' } }, Plain2: { Value: 'p2' } })
+      );
+      expect(outputChanges).toEqual([
+        { name: 'Plain2', changeType: 'ADD', newValue: 'p2', isExport: false },
+      ]);
+    });
+
+    it('tags the export alias of a resolved sibling in the merged bag', async () => {
+      // The alias row is `isExport: true` only if BOTH the merge's input export
+      // set and the set the comparison reads carry it.
+      const { outputChanges } = await diffFor(
+        stateWith({ Out: 'stored' }),
+        template({
+          Out: { Value: FAILING },
+          Shared: { Value: 'v', Export: { Name: 'S:Shared' } },
+        })
+      );
+      expect(outputChanges).toEqual([
+        { name: 'Shared', changeType: 'ADD', newValue: 'v', isExport: false },
+        { name: 'S:Shared', changeType: 'ADD', newValue: 'v', isExport: true },
+      ]);
+    });
+
+    it('keeps a resolved __proto__ export alias in the bag handed to the merge', async () => {
+      // `withFailedOutputsUndefined` copies into a null-prototype bag: on a
+      // plain object the `__proto__` write hits the prototype setter, the key
+      // is dropped, and the merge never sees the alias.
+      const { outputChanges } = await diffFor(
+        stateWith({ Out: 'stored' }),
+        template({
+          Out: { Value: FAILING },
+          Shared: { Value: 'v', Export: { Name: '__proto__' } },
+        })
+      );
+      expect(outputChanges).toEqual([
+        { name: 'Shared', changeType: 'ADD', newValue: 'v', isExport: false },
+        { name: '__proto__', changeType: 'ADD', newValue: 'v', isExport: true },
+      ]);
+    });
+
+    it('keeps the suppression when the deploy would keep the previous bag whole', async () => {
+      // A failed output with a stored value and an INTRINSIC `Export.Name`:
+      // the merge refuses, so the deploy writes nothing and neither may this.
+      const suppressed = captureSuppressionWarnings();
+      const { outputChanges } = await diffFor(
+        stateWith({ Out: 'stored', 'S-Out': 'stored' }),
+        template({
+          // `TemplateOutput` types the name as a string; CloudFormation allows an intrinsic.
+          Out: {
+            Value: FAILING,
+            Export: { Name: { 'Fn::Join': ['-', ['S', 'Out']] } as unknown as string },
+          },
+          Plain2: { Value: 'p2' },
+        })
+      );
+      expect(outputChanges).toEqual([]);
+      expect(suppressed()).toHaveLength(1);
+    });
+
+    it('keeps the suppression for a failure only the diff reports', async () => {
+      // An undeclared `Fn::Sub` head keeps its literal placeholder: the deploy
+      // writes that string, so the output is not a failed key there.
+      const suppressed = captureSuppressionWarnings();
+      const { outputChanges } = await diffFor(
+        stateWith({ Out: 'stored' }),
+        template({ Out: { Value: { 'Fn::Sub': '${Gone.Arn}-suffix' } }, Plain2: { Value: 'p2' } })
+      );
+      expect(outputChanges).toEqual([]);
+      expect(suppressed()).toHaveLength(1);
+    });
+
+    it('keeps the suppression when an Export.Name cannot be resolved', async () => {
+      const suppressed = captureSuppressionWarnings();
+      const { outputChanges } = await diffFor(
+        stateWith({ Out: 'stored' }),
+        template({
+          Out: { Value: FAILING },
+          Named: { Value: 'v', Export: { Name: { Ref: 'Missing' } as unknown as string } },
+        })
+      );
+      expect(outputChanges).toEqual([]);
+      expect(suppressed()).toHaveLength(1);
+    });
+
+    it('keeps the suppression when an Export.Name keeps an unsubstituted Fn::Sub placeholder', async () => {
+      // An undeclared `Fn::Sub` head keeps its placeholder, so the name comes
+      // back as a STRING carrying `${Gone.Arn}` rather than throwing. This is
+      // the placeholder arm; a surviving intrinsic OBJECT is covered in
+      // tests/unit/analyzer/outputs-diff.test.ts.
+      const suppressed = captureSuppressionWarnings();
+      const { outputChanges } = await diffFor(
+        stateWith({ Out: 'stored' }),
+        template({
+          Out: { Value: FAILING },
+          Named: {
+            Value: 'v',
+            Export: { Name: { 'Fn::Sub': '${Gone.Arn}-name' } as unknown as string },
+          },
+        })
+      );
+      expect(outputChanges).toEqual([]);
+      expect(suppressed()).toHaveLength(1);
+    });
+
+    it('carries the literal alias of a pre-v9 record whose export set is unknown', async () => {
+      // No `exportNames` on the record: every stored key counts as importable.
+      const { outputChanges } = await diffFor(
+        stateWith({ Out: 'stored', 'S:Out': 'stored' }),
+        template({ Out: { Value: FAILING, Export: { Name: 'S:Out' } }, Plain2: { Value: 'p2' } })
+      );
+      expect(outputChanges).toEqual([
+        { name: 'Plain2', changeType: 'ADD', newValue: 'p2', isExport: false },
+      ]);
+    });
+
+    it('names every failed output in the warning, stored or not, with control characters stripped', async () => {
+      // Two failures: `A` keeps a stored value, the second has none and a
+      // template-controlled name carrying an escape sequence.
+      const second = 'B\u001b[31m';
+      captureSuppressionWarnings();
+      const { outputChanges } = await diffFor(
+        stateWith({ A: 'stored' }),
+        template({ A: { Value: FAILING }, [second]: { Value: FAILING } })
+      );
+      expect(outputChanges).toEqual([]);
+      const carried = carriedOutputWarnings();
+      expect(carried).toHaveLength(1);
+      // Only `A` is carried; the second has no stored value, so the merge does
+      // not carry it and the warning must not claim it was compared (review M9).
+      expect(carried[0]).toContain(
+        '2 output(s) could not be resolved for this diff. Compared at their stored values: A. ' +
+          'No stored value under their own names: B[31m.'
+      );
+      expect(carried[0]).not.toContain('\u001b');
+      expect(carried[0]).toContain('The next deploy may write a value for any of them it can resolve.');
+    });
+
+    it('names the mixed-generation keep-whole reason in the suppression warning', async () => {
+      // Carrying `Old` into a bag that gains its FIRST secret expression is the
+      // merge's mixed-generation refusal; the warning must name that reason,
+      // not the intrinsic-Export.Name one.
+      const warn = vi.mocked(getLogger().warn);
+      warn.mockClear();
+      await diffFor(
+        stateWith({ Old: 'maybe-a-pre-ghsa-plaintext' }),
+        template({
+          Old: { Value: FAILING },
+          Sec: { Value: '{{resolve:secretsmanager:s:SecretString:k}}' },
+        })
+      );
+      const messages = warn.mock.calls
+        .map((c) => String(c[0]))
+        .filter((m) => m.includes('omitting the Outputs section from this diff'));
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toContain('would put a redacted secret reference beside a carried value');
+      expect(messages[0]).not.toContain('intrinsic Export.Name');
+      expect(carriedOutputWarnings()).toEqual([]);
+    });
+
+    it('keeps the suppression when a condition reads a secret-valued parameter', async () => {
+      // Condition evaluation is skipped (a condition reads a secret-valued
+      // parameter). No condition verdict can reach an output in this template,
+      // so the refusal is the `conditions` gate's; the unbound-parameter case
+      // below reaches that gate by the other route.
+      const suppressed = captureSuppressionWarnings();
+      const tpl: CloudFormationTemplate = {
+        ...template({ Out: { Value: FAILING }, Plain2: { Value: 'p2' } }),
+        Parameters: { Secret: { Type: 'String' } },
+        Conditions: { IsOn: { 'Fn::Equals': [{ Ref: 'Secret' }, 'x'] } },
+      };
+      const { outputChanges } = await computeStackDiff(
+        stateWith({ Out: 'stored' }),
+        tpl,
+        'us-east-1',
+        'S',
+        fakeBackend({}),
+        new DiffCalculator(),
+        { parameters: { Secret: '{{resolve:secretsmanager:s:SecretString:k}}' } }
+      );
+      expect(outputChanges).toEqual([]);
+      expect(suppressed()).toHaveLength(1);
+    });
+
+    it('keeps the suppression when template parameters cannot be bound', async () => {
+      const suppressed = captureSuppressionWarnings();
+      const tpl: CloudFormationTemplate = {
+        ...template({ Out: { Value: FAILING }, Plain2: { Value: 'p2' } }),
+        Parameters: { Required: { Type: 'String' } },
+      };
+      const { outputChanges } = await diffFor(stateWith({ Out: 'stored' }), tpl);
+      expect(outputChanges).toEqual([]);
+      expect(suppressed()).toHaveLength(1);
+    });
+
+    it('names the keep-whole reason in the suppression warning', async () => {
+      const warn = vi.mocked(getLogger().warn);
+      warn.mockClear();
+      await diffFor(
+        stateWith({ Out: 'stored', 'S-Out': 'stored' }),
+        template({
+          Out: {
+            Value: FAILING,
+            Export: { Name: { 'Fn::Join': ['-', ['S', 'Out']] } as unknown as string },
+          },
+          Plain2: { Value: 'p2' },
+        })
+      );
+      const messages = warn.mock.calls
+        .map((c) => String(c[0]))
+        .filter((m) => m.includes('omitting the Outputs section from this diff'));
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toContain('An unresolved output declares an intrinsic Export.Name');
+      expect(messages[0]).not.toContain('yet to create');
+    });
+
+    // A secret-bearing output that FAILS: the join resolves its `Fn::GetAtt`
+    // part first, which throws.
+    const SECRET_JOIN = {
+      'Fn::Join': [
+        '',
+        ['{{resolve:secretsmanager:', { 'Fn::GetAtt': ['Gone', 'Arn'] }, ':SecretString:pw}}'],
+      ],
+    };
+
+    it("withholds a legacy record's stored values on the merge path", async () => {
+      const { outputChanges } = await diffFor(
+        stateWith({ Out: 'LEGACY-PLAINTEXT', Plain: 'old-plain' }),
+        template({ Out: { Value: SECRET_JOIN }, Plain: { Value: 'new' } })
+      );
+      expect(outputChanges).toEqual([
+        {
+          name: 'Plain',
+          changeType: 'MODIFY',
+          newValue: 'new',
+          isExport: false,
+          oldValueRedacted: true,
+        },
+      ]);
+      const lines: string[] = [];
+      renderOutputChangeLines(outputChanges, (m) => lines.push(m));
+      const shown = JSON.stringify(outputChanges) + lines.join('\n');
+      expect(shown).not.toContain('LEGACY-PLAINTEXT');
+      expect(shown).not.toContain('old-plain');
+    });
+
+    it('withholds a deleted key beside a failing secret-bearing output', async () => {
+      const { outputChanges } = await diffFor(
+        stateWith({ Out: 'x', Deleted: 'DELETED-PLAINTEXT' }),
+        template({ Out: { Value: SECRET_JOIN } })
+      );
+      expect(outputChanges).toEqual([
+        { name: 'Deleted', changeType: 'REMOVE', isExport: false, oldValueRedacted: true },
+      ]);
+      const lines: string[] = [];
+      renderOutputChangeLines(outputChanges, (m) => lines.push(m));
+      expect(JSON.stringify(outputChanges) + lines.join('\n')).not.toContain('DELETED-PLAINTEXT');
+    });
+
+    it('withholds a deleted key when the only secret reference is in an unchanged resource', async () => {
+      // No output is secret-bearing, so the legacy-record arm stays off; only the
+      // template-wide secret-reference gate can withhold the deleted key's value.
+      const SECRET_REF = '{{resolve:secretsmanager:s:SecretString:k}}';
+      const state: StackState = {
+        ...stateWith({ Out: 'stored', Deleted: 'DELETED-ONLY-PLAINTEXT' }),
+        resources: { A: res('AWS::SSM::Parameter', { Value: SECRET_REF }) },
+      };
+      const tpl: CloudFormationTemplate = {
+        Resources: { A: { Type: 'AWS::SSM::Parameter', Properties: { Value: SECRET_REF } } },
+        Outputs: { Out: { Value: FAILING } },
+      };
+      const { changes, outputChanges } = await diffFor(state, tpl);
+      expect([...changes.values()].every((c) => c.changeType === 'NO_CHANGE')).toBe(true);
+      expect(outputChanges).toEqual([
+        { name: 'Deleted', changeType: 'REMOVE', isExport: false, oldValueRedacted: true },
+      ]);
+      expect(JSON.stringify(outputChanges)).not.toContain('DELETED-ONLY-PLAINTEXT');
+    });
+
+    // Issue #3101 review (B2): `F` resolves to a secret expression when it
+    // resolves (an `Fn::GetAtt` to an attribute the record stores as one), which
+    // is what marks this pre-GHSA record legacy on the fully-resolved path.
+    // Failing, it is carried at its stored PLAINTEXT and that evidence is gone,
+    // so the carry itself must force the verdict. `A` holds the template's only
+    // literal secret reference unless a case removes it.
+    const SECRET_REF = '{{resolve:secretsmanager:s:SecretString:k}}';
+    const WITHHELD_REASON =
+      'Previous values in this Outputs section are withheld because a value carried from state for a failed output is not a secret reference, so this diff cannot rule out legacy plaintext in state. That reason no longer applies once every failed output resolves, though other legacy-plaintext checks still can withhold them.';
+    function legacyStack(opts: {
+      storedOutputs: Record<string, unknown>;
+      attributes: Record<string, unknown>;
+      secretInTemplate?: boolean;
+    }): { state: StackState; tpl: CloudFormationTemplate } {
+      const aValue = opts.secretInTemplate === false ? 'x' : SECRET_REF;
+      const mySecret = { ...res('AWS::SSM::Parameter', { Value: 'y' }), attributes: opts.attributes };
+      return {
+        state: {
+          ...stateWith(opts.storedOutputs),
+          resources: { A: res('AWS::SSM::Parameter', { Value: aValue }), MySecret: mySecret },
+        },
+        tpl: {
+          Resources: {
+            A: { Type: 'AWS::SSM::Parameter', Properties: { Value: aValue } },
+            MySecret: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'y' } },
+          },
+          Outputs: {
+            F: { Value: { 'Fn::GetAtt': ['MySecret', 'SecretArn'] } },
+            G: { Value: 'new-g' },
+          },
+        },
+      };
+    }
+
+    it('withholds a legacy record when the output that proves it resolves (premise)', async () => {
+      vi.mocked(getLogger().warn).mockClear();
+      const { state, tpl } = legacyStack({
+        storedOutputs: { F: 'F-PLAINTEXT', G: 'old-g' },
+        attributes: { SecretArn: SECRET_REF },
+      });
+      const { outputChanges } = await diffFor(state, tpl);
+      expect(carriedOutputWarnings()).toEqual([]);
+      expect(outputChanges.find((c) => c.name === 'G')).toEqual({
+        name: 'G',
+        changeType: 'MODIFY',
+        newValue: 'new-g',
+        isExport: false,
+        oldValueRedacted: true,
+      });
+    });
+
+    // The last two are the shapes a template-wide or bag-wide condition let
+    // through: the fully-resolved path withholds `G` in both.
+    it.each([
+      {
+        shape: 'a plaintext carried beside a secret reference in the template',
+        opts: { storedOutputs: { F: 'F-PLAINTEXT', G: 'old-g' }, attributes: {} },
+      },
+      {
+        shape: 'no secret reference anywhere in the template',
+        opts: {
+          storedOutputs: { F: 'F-PLAINTEXT', G: 'old-g' },
+          attributes: {},
+          secretInTemplate: false,
+        },
+      },
+      {
+        // Pass 1's veto excuses only a STRING leaf, so a list holding a secret
+        // expression cannot excuse the carried key, and the force does not either
+        // (`isSecretBearingReferenceString` is false for a non-string). The
+        // carried list also marks the record legacy through `desired`, so this is
+        // a behaviour case rather than a pin of the force alone.
+        shape: 'a carried stored value that is a list holding a secret expression',
+        opts: { storedOutputs: { F: [SECRET_REF], G: 'old-g' }, attributes: {} },
+      },
+      {
+        shape: 'a secret expression stored under another key',
+        opts: { storedOutputs: { F: 'F-PLAINTEXT', G: 'old-g', H: SECRET_REF }, attributes: {} },
+      },
+    ])('never lets a carried output exonerate a legacy record: $shape', async ({ opts }) => {
+      vi.mocked(getLogger().warn).mockClear();
+      const { state, tpl } = legacyStack(opts);
+      const { changes, outputChanges } = await diffFor(state, tpl);
+      expect([...changes.values()].every((c) => c.changeType === 'NO_CHANGE')).toBe(true);
+      // PREMISE: F failed and was carried, so this is the merge path.
+      const carried = carriedOutputWarnings();
+      expect(carried).toHaveLength(1);
+      // The warning says why the old values are gone (review M10).
+      expect(carried[0]).toContain(WITHHELD_REASON);
+      expect(outputChanges.find((c) => c.name === 'G')).toEqual({
+        name: 'G',
+        changeType: 'MODIFY',
+        newValue: 'new-g',
+        isExport: false,
+        oldValueRedacted: true,
+      });
+      const lines: string[] = [];
+      renderOutputChangeLines(outputChanges, (m) => lines.push(m));
+      const shown = JSON.stringify(outputChanges) + lines.join('\n');
+      expect(shown).not.toContain('old-g');
+      expect(shown).not.toContain('F-PLAINTEXT');
+    });
+
+    it('does not explain a withholding the carried values did not force', async () => {
+      // `F` is carried at a stored secret expression, so the verdict is NOT
+      // forced; the record is still legacy through pass 1, because `H`'s template
+      // value is a secret reference while its stored value is plaintext. Rows are
+      // withheld, but the sentence names a reason that does not hold here, so it
+      // must stay silent: this pins the `withheld &&` half of its gate, a gap a maintainer-checklist pass found on the round-4 fixes.
+      vi.mocked(getLogger().warn).mockClear();
+      const { outputChanges } = await diffFor(
+        stateWith({ F: SECRET_REF, H: 'H-PLAINTEXT', G: 'old-g' }),
+        template({
+          F: { Value: FAILING },
+          H: { Value: '{{resolve:secretsmanager:h:SecretString:k}}' },
+          G: { Value: 'new-g' },
+        })
+      );
+      expect(outputChanges.find((c) => c.name === 'G')).toEqual({
+        name: 'G',
+        changeType: 'MODIFY',
+        newValue: 'new-g',
+        isExport: false,
+        oldValueRedacted: true,
+      });
+      const carried = carriedOutputWarnings();
+      expect(carried).toHaveLength(1);
+      expect(carried[0]).toContain('Compared at their stored values: F.');
+      expect(carried[0]).not.toContain('Previous values in this Outputs section are withheld');
+    });
+
+    it('explains the withholding truthfully when only a failed output ALIAS is carried', async () => {
+      // `Out` has no stored value under its own name, but its literal alias does
+      // and was published, so the merge carries the alias alone (review M15).
+      // The reason must not say a failed output was compared at a stored value.
+      vi.mocked(getLogger().warn).mockClear();
+      const { outputChanges } = await diffFor(
+        stateWith({ 'S:Out': 'ALIAS-PLAINTEXT', G: 'old-g' }),
+        template({ Out: { Value: FAILING, Export: { Name: 'S:Out' } }, G: { Value: 'new-g' } })
+      );
+      expect(outputChanges).toEqual([
+        { name: 'G', changeType: 'MODIFY', newValue: 'new-g', isExport: false, oldValueRedacted: true },
+      ]);
+      const carried = carriedOutputWarnings();
+      expect(carried).toHaveLength(1);
+      expect(carried[0]).toContain(
+        '1 output(s) could not be resolved for this diff. No stored value under their own names: Out.'
+      );
+      expect(carried[0]).not.toContain('Compared at their stored values');
+      expect(carried[0]).toContain(WITHHELD_REASON);
+      expect(JSON.stringify(outputChanges)).not.toContain('ALIAS-PLAINTEXT');
+    });
+
+    it('forces the verdict when the carried plaintext is an export alias', async () => {
+      // `merge.carriedKeys` holds carried ALIASES too. Here the output key's
+      // stored value is a secret expression while its alias's is not, so only
+      // the alias can force the verdict (review m11).
+      vi.mocked(getLogger().warn).mockClear();
+      const { state, tpl } = legacyStack({
+        storedOutputs: { F: SECRET_REF, 'S:F': 'ALIAS-PLAINTEXT', G: 'old-g' },
+        attributes: {},
+      });
+      (tpl.Outputs ??= {})['F'] = {
+        Value: { 'Fn::GetAtt': ['MySecret', 'SecretArn'] },
+        Export: { Name: 'S:F' },
+      };
+      const { outputChanges } = await diffFor(state, tpl);
+      const carried = carriedOutputWarnings();
+      expect(carried).toHaveLength(1);
+      expect(carried[0]).toContain(WITHHELD_REASON);
+      expect(outputChanges.find((c) => c.name === 'G')).toEqual({
+        name: 'G',
+        changeType: 'MODIFY',
+        newValue: 'new-g',
+        isExport: false,
+        oldValueRedacted: true,
+      });
+      const lines: string[] = [];
+      renderOutputChangeLines(outputChanges, (m) => lines.push(m));
+      expect(JSON.stringify(outputChanges) + lines.join('\n')).not.toContain('ALIAS-PLAINTEXT');
+    });
+
+    it('forces the verdict when ANY carried key is not a secret expression, not only the first', async () => {
+      vi.mocked(getLogger().warn).mockClear();
+      const { state, tpl } = legacyStack({
+        storedOutputs: { E: SECRET_REF, F: 'F-PLAINTEXT', G: 'old-g' },
+        attributes: {},
+      });
+      // `E` fails too and is declared first, so the carried keys are [E, F]: an
+      // expression first, a plaintext second.
+      tpl.Outputs = { E: { Value: FAILING }, ...tpl.Outputs };
+      const { outputChanges } = await diffFor(state, tpl);
+      const carried = carriedOutputWarnings();
+      expect(carried).toHaveLength(1);
+      expect(carried[0]).toContain(
+        '2 output(s) could not be resolved for this diff. Compared at their stored values: E, F.'
+      );
+      expect(outputChanges.find((c) => c.name === 'G')).toEqual({
+        name: 'G',
+        changeType: 'MODIFY',
+        newValue: 'new-g',
+        isExport: false,
+        oldValueRedacted: true,
+      });
+    });
+
+    it.each([
+      {
+        without: 'a carried key (the failed output had no stored value)',
+        opts: { storedOutputs: { G: 'old-g' }, attributes: {} },
+      },
+      {
+        without: 'a carried key whose stored value is anything but a secret expression',
+        opts: { storedOutputs: { F: SECRET_REF, G: 'old-g' }, attributes: {} },
+      },
+    ])('does not force the legacy verdict without $without', async ({ opts }) => {
+      vi.mocked(getLogger().warn).mockClear();
+      const { state, tpl } = legacyStack(opts);
+      const { outputChanges } = await diffFor(state, tpl);
+      const carried = carriedOutputWarnings();
+      expect(carried).toHaveLength(1);
+      expect(carried[0]).not.toContain(WITHHELD_REASON);
+      expect(outputChanges.find((c) => c.name === 'G')).toEqual({
+        name: 'G',
+        changeType: 'MODIFY',
+        oldValue: 'old-g',
+        newValue: 'new-g',
+        isExport: false,
+      });
+    });
+
+    it('previews the merge for a record that has no outputs bag at all', async () => {
+      // A hand-edited or pre-outputs record: the merge must read it as empty.
+      const state = { ...stateWith({}), outputs: undefined as unknown as Record<string, unknown> };
+      const { outputChanges } = await diffFor(
+        state,
+        template({ Out: { Value: FAILING }, Plain2: { Value: 'p2' } })
+      );
+      expect(outputChanges).toEqual([
+        { name: 'Plain2', changeType: 'ADD', newValue: 'p2', isExport: false },
+      ]);
+    });
+
+    it('keeps the suppression when the failed output reads a declared condition', async () => {
+      // Conditions ARE evaluated here, but best-effort: the diff can still reach
+      // a verdict the deploy does not, and an `Fn::If` in the output's own value
+      // is a route by which it reaches the output, so the failure is not carried.
+      const suppressed = captureSuppressionWarnings();
+      const tpl: CloudFormationTemplate = {
+        ...template({
+          Out: { Value: { 'Fn::If': ['IsOn', FAILING, 'fallback'] } },
+          Plain2: { Value: 'p2' },
+        }),
+        Conditions: { IsOn: { 'Fn::Equals': ['a', 'a'] } },
+      };
+      const { outputChanges } = await diffFor(stateWith({ Out: 'stored' }), tpl);
+      expect(outputChanges).toEqual([]);
+      expect(suppressed()).toHaveLength(1);
+    });
+
+    it('strips control characters from the stack name, parameter name and declared type in the parameter-type warning', async () => {
+      // Both names are template-controlled: a nested child is named
+      // `${parent}~${logicalId}`, and a parameter name is never validated here.
+      const warn = vi.mocked(getLogger().warn);
+      warn.mockClear();
+      const param = 'Secret\u001b[31m';
+      // A list type still reaches the warning with an escape in it, so the
+      // declared type's strip is pinned too.
+      await computeStackDiff(
+        stateWith({}),
+        { ...template(), Parameters: { [param]: { Type: 'List<X\u001b[31m>' } } },
+        'us-east-1',
+        'S\u001b[31m',
+        fakeBackend({}),
+        new DiffCalculator(),
+        { parameters: { [param]: '{{resolve:secretsmanager:s:SecretString:k}}' } }
+      );
+      const messages = warn.mock.calls
+        .map((c) => String(c[0]))
+        .filter((m) => m.includes('is fed a secret dynamic reference'));
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toContain("Stack S[31m: parameter 'Secret[31m' is declared 'Type: List<X[31m>'");
+      expect(messages[0]).not.toContain('\u001b');
+    });
+
+    it('previews the merge for the env-agnostic CDK shape, whose only condition gates CDKMetadata', async () => {
+      // What an env-agnostic CDK app synthesizes under cdkd, which turns version
+      // reporting on: `CDKMetadataAvailable`, referenced by the
+      // `AWS::CDK::Metadata` resource and by nothing an output can reach.
+      const suppressed = captureSuppressionWarnings();
+      const base = template({ Out: { Value: FAILING }, Plain2: { Value: 'p2' } });
+      const tpl: CloudFormationTemplate = {
+        ...base,
+        Resources: {
+          ...base.Resources,
+          CDKMetadata: {
+            Type: 'AWS::CDK::Metadata',
+            Properties: { Analytics: 'v2:deflate64:H4sIAAAAAAAA' },
+            Condition: 'CDKMetadataAvailable',
+          },
+        },
+        Conditions: {
+          CDKMetadataAvailable: {
+            'Fn::Or': [
+              { 'Fn::Equals': [{ Ref: 'AWS::Region' }, 'us-east-1'] },
+              { 'Fn::Equals': [{ Ref: 'AWS::Region' }, 'eu-west-1'] },
+            ],
+          },
+        },
+      };
+      const { changes, outputChanges } = await diffFor(stateWith({ Out: 'stored' }), tpl);
+      expect([...changes.values()].every((c) => c.changeType === 'NO_CHANGE')).toBe(true);
+      expect(outputChanges).toEqual([
+        { name: 'Plain2', changeType: 'ADD', newValue: 'p2', isExport: false },
+      ]);
+      expect(suppressed()).toEqual([]);
+      expect(carriedOutputWarnings()).toHaveLength(1);
+    });
+
+    it('strips control characters from the stack name in both Outputs warnings', async () => {
+      const warn = vi.mocked(getLogger().warn);
+      warn.mockClear();
+      const name = 'S\u001b[31m';
+      // Merged: the carried-output warning.
+      await computeStackDiff(
+        stateWith({ Out: 'stored' }),
+        template({ Out: { Value: FAILING }, Plain2: { Value: 'p2' } }),
+        'us-east-1',
+        name,
+        fakeBackend({}),
+        new DiffCalculator()
+      );
+      // A pending CREATE: the suppression warning.
+      const withCreate = template({ Out: { Value: FAILING }, Plain2: { Value: 'p2' } });
+      withCreate.Resources['New'] = { Type: 'AWS::SSM::Parameter', Properties: { Value: 'y' } };
+      await computeStackDiff(
+        stateWith({ Out: 'stored' }),
+        withCreate,
+        'us-east-1',
+        name,
+        fakeBackend({}),
+        new DiffCalculator()
+      );
+      const messages = warn.mock.calls
+        .map((c) => String(c[0]))
+        .filter((m) => m.startsWith('Outputs of stack '));
+      expect(messages.filter((m) => m.startsWith('Outputs of stack S[31m: 1 output(s)'))).toHaveLength(1);
+      expect(
+        messages.filter((m) => m.startsWith('Outputs of stack S[31m may have changed'))
+      ).toHaveLength(1);
+      expect(messages.filter((m) => m.includes('\u001b'))).toEqual([]);
+    });
+
+    it.each([
+      {
+        route: "the output's own Condition",
+        edit: (tpl: CloudFormationTemplate): void => {
+          (tpl.Outputs ??= {})['Out'] = { Value: FAILING, Condition: 'IsOn' };
+        },
+      },
+      {
+        route: 'an Fn::If in a mapping',
+        edit: (tpl: CloudFormationTemplate): void => {
+          tpl.Mappings = { M: { k: { V: { 'Fn::If': ['IsOn', 'a', 'b'] } } } };
+        },
+      },
+    ])(
+      'keeps the suppression when a condition verdict can reach an output through $route',
+      async ({ edit }) => {
+        const suppressed = captureSuppressionWarnings();
+        const tpl: CloudFormationTemplate = {
+          ...template({ Out: { Value: FAILING }, Plain2: { Value: 'p2' } }),
+          Conditions: { IsOn: { 'Fn::Equals': ['a', 'a'] } },
+        };
+        edit(tpl);
+        const { changes, outputChanges } = await diffFor(stateWith({ Out: 'stored' }), tpl);
+        expect([...changes.values()].every((c) => c.changeType === 'NO_CHANGE')).toBe(true);
+        expect(outputChanges).toEqual([]);
+        const messages = suppressed();
+        expect(messages).toHaveLength(1);
+        // With no resource change pending, a resource this deploy creates is not
+        // the cause, so the warning must not name one.
+        expect(messages[0]).not.toContain('yet to create');
+        expect(messages[0]).toContain('The stack has no resource change;');
+        expect(messages[0]).not.toContain('Export.Name');
+      }
+    );
+
+    it('names a failed output keyed by a secret the diff never fetches', async () => {
+      // The mapping key stays an unresolved token here, so the lookup throws;
+      // the deploy decrypts it and resolves the output. The carried stored
+      // value is therefore not a claim that the output is unchanged.
+      const suppressed = captureSuppressionWarnings();
+      const tpl: CloudFormationTemplate = {
+        ...template({
+          Out: {
+            Value: {
+              'Fn::FindInMap': ['M', '{{resolve:secretsmanager:s:SecretString:k}}', 'V'],
+            },
+          },
+        }),
+        Mappings: { M: { prod: { V: 'new' } } },
+      };
+      const { outputChanges } = await diffFor(stateWith({ Out: 'old' }), tpl);
+      expect(outputChanges).toEqual([]);
+      expect(suppressed()).toEqual([]);
+      const carried = carriedOutputWarnings();
+      expect(carried).toHaveLength(1);
+      expect(carried[0]).toContain(
+        '1 output(s) could not be resolved for this diff. Compared at their stored values: Out.'
+      );
+    });
   });
 
   it('keeps the pretty-printer newlines in a multi-line value', () => {

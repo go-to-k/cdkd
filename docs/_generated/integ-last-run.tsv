@@ -71,7 +71,7 @@ deletion-ordering-complex	2026-08-13T06:50:48Z	PASS	260	verify.sh	PR 1774; destr
 deletion-policy-retain	2026-09-05T03:27:04Z	PASS	29	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run
 deletion-policy-snapshot	2026-09-05T03:27:04Z	PASS	245	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run
 deletion-policy-snapshot-heavy	2026-08-03T06:58:15Z	PASS	1500	verify.sh	#1353 Redshift+ElastiCache RepGroup pre-delete snapshots verified; found 4 live defects across 5 runs
-deployment-events	2026-08-13T06:46:26Z	PASS	150	verify.sh	PR 1774; events.ts skip-count/reason rendering surface, rc 0, 2 del 0 err, sidecar removed
+deployment-events	2026-09-16T07:18:21Z	PASS	38	verify.sh	go-to-k/cdkd#3216 sidecar check made live (--recursive); prefix empty, orph clean
 destroy-data-guard	2026-08-02T14:22:57Z	PASS	95	verify.sh	guard fired on guarded pair, opt-ins force-cleaned, 2nd destroy clean, 0 orphans
 destroy-interrupt	2026-08-26T04:31:00Z	PASS	52	verify.sh	issue #2117 lane, re-run after the issue #2126 deploy flake (URLError Errno 16 in the Lambda sandbox) which never reached a destroy assertion. All 4 phases green incl. interrupt-then-resume; 0 errors. Independent scan clean after sweeping one auto-created /aws/lambda log group the fixture does not remove.
 diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 sweep b12; diff detects GetAtt target rebind, clean destroy
@@ -152,8 +152,10 @@ kinesis-esm-filter	2026-08-10T04:23:28Z	PASS	63	verify.sh	0810 sweep b2; post-#1
 kinesis-stream-mode-switch	2026-08-26T08:41:59Z	PASS	120	verify.sh	issue 2178 masker-threading sweep (kinesis); 3 phases, 0 err, 0 orphans
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
 lambda	2026-09-16T09:55:53Z	PASS	186	verify.sh	broad set gating the go-to-k/cdkd#3176 merge; 9 del 0 err, state gone, orph clean
+lambda	2026-09-16T04:07:16Z	PASS	94	verify.sh	broad set for go-to-k/cdkd#3199 (integ-broad gate); 9 del 0 err, orph clean
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-07-26T19:25:15Z	PASS	63	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
+lambda-capacity-provider-default-name	2026-09-16T06:02:17Z	PASS	510	verify.sh	rc ok, 17 deleted 0 errors, 2 operator-role retries, both operator roles live pre-destroy and gone after, orph clean, 0 versions
 lambda-config-field-removal	2026-08-11T13:09:08Z	PASS	132	verify.sh	issue #609 Lambda 4-prop backfill + review fixes; 5 del 0 err 0 orphans
 lambda-destinations	2026-08-10T05:50:57Z	PASS	70	verify.sh	0810 P2 sweep b10; rc ok, 0 orph
 lambda-durable-replacement	2026-08-12T03:07:25Z	PASS	300	verify.sh	#1636 re-run after rebase onto #1641; generated-name refusal + --replace fallback, 2 del/0 err
@@ -220,7 +222,7 @@ nlb-source-nat	2026-09-05T22:46:07Z	PASS	355	verify.sh	PR2662 gate run; destroy 
 nodejs-function	2026-08-10T05:29:23Z	PASS	50	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
 opensearch-domain-getatt	2026-08-10T08:05:51Z	PASS	1798	verify.sh	0810 P2 sweep b13; 60m CC delete floor ok, 0 err 0 orph
 orphan-resource	2026-07-26T18:04:53Z	PASS	38	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
-output-never-resolved-diff	2026-09-14T10:52:02Z	PASS	230	verify.sh	rc ok, orph clean; phases 4b/4c; merge gate for go-to-k/cdkd#3107
+output-never-resolved-diff	2026-09-15T17:00:05Z	PASS	409	verify.sh	rc ok, orph clean; phase 5c (stored output broken beside a sibling change, split warning with the full withheld-values reason and the withheld row, env-agnostic CDKMetadataAvailable arm); go-to-k/cdkd#3101
 outputs-only-export	2026-08-18T06:09:14Z	PASS	160	verify.sh	13 checks; #1921 preview + no-phantom arms; re-run after review round 3; destroy clean
 parameters	2026-07-26T18:04:53Z	PASS	24	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 propagation-races-2	2026-09-10T09:48:41Z	PASS	116	verify.sh	rc0, 22 deleted/0 err/0 orph; round-2 re-run; edge5 window 0ms (3rd)
@@ -233,19 +235,20 @@ recreate-nested-logical-id-collision	2026-09-05T18:18:50Z	PASS	150	verify.sh	rc 
 recreate-via-cc-api	2026-09-05T09:12:25Z	PASS	130	verify.sh	#2615 review round: greps took -F and dropped the dead has-objects branch; both polarities still discriminate, 0 orphans
 recreate-via-sdk-provider	2026-08-08T16:40:35Z	PASS	78	verify.sh	P1 post-#1360 replacement-rules touch; CC->SDK mid-life recreate ok, 2 del/0 err, 0 orphans
 redshift-cluster-getatt	2026-08-10T06:18:10Z	PASS	325	verify.sh	0810 P2 sweep b12; CC GetAtt Endpoint real hostname, 0 orph
-remove-protection	2026-09-05T22:10:42Z	PASS	1336	verify.sh	PR2662 gate run; 7 steps, refusal arm + --remove-protection destroy 12 deleted 0 errors, 0 orphans
+remove-protection	2026-09-16T04:04:58Z	FAIL	600	verify.sh	ABORTED by harness 10min Bash cap mid-destroy, not a cdkd defect; orphans (ASG/ALB/EC2/DDB/VPC/LogGroup/UserPool) hand-removed, account verified clean
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 replacement-fanout	2026-08-08T16:39:04Z	PASS	83	verify.sh	P1 post-#1360 replacement-rules touch; SNS replacement fanout to 10 dependents, 12 del/0 err, 0 orphans
 replacement-immutable-name	2026-09-05T03:27:04Z	PASS	112	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run
 retain-orphan-redeploy	2026-09-11T12:42:39Z	PASS	128	verify.sh	rc ok, orph clean; phase 8b diff preview added
 retain-orphan-secret	2026-09-11T07:14:27Z	PASS	175	verify.sh	rc ok, orph clean; review round 6
-rollback-command	2026-09-15T03:16:41Z	PASS	176	verify.sh	integ-destroy gating run for the 3140 merge (rollback-executor.ts comment-only edit is in scope); rc ok, destroy 3 deleted 0 errors, 0 surviving versions
+rollback-command	2026-09-16T07:18:21Z	PASS	141	verify.sh	go-to-k/cdkd#3216 sidecar check made live on both prefixes; 0 surviving versions
 rollback-cross-region-secret	2026-08-21T05:20:29Z	PASS	174	verify.sh	#2135 live arm, re-run after a round-2 review found the first note overclaimed: every pre-existing assertion here (notCompared roll-up, referencesUnresolved, drift rc=2, drifted+partial exits 1) is byte-identical to main and passes under the pre-#2135 shape too, so it was a #2108 regression net and no evidence about #2135. Added the one discriminating arm -- SecretEcho must be ABSENT from clean[], the sole user-visible payload delta -- guarded against vacuity by requiring clean[] to have been emitted. MUTATION-PROBED against real AWS: routing notCompared back into clean[] made the arm go RED with 'SecretEcho is STILL in clean[]'. Note the type system rejects that mutation outright (clean[] entries are typed referencesUnresolved: false). destroy 2 stacks 0 errors, 0 orphans
 rollback-deletion-policy-snapshot	2026-08-08T16:34:46Z	PASS	107	verify.sh	P0 first run post-#1361/#1365/#1367/#1369 rollback rework; rolled-back CREATE snapshot-then-deleted, state clean, 0 orphans
-rollback-failure-injection	2026-09-05T03:27:04Z	PASS	810	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run
+rollback-failure-injection	2026-09-16T07:18:21Z	PASS	367	verify.sh	go-to-k/cdkd#3216 sidecar check made live; destroy clean, 0 orphan VPC/SG/SSM
 rollback-replacement-retain	2026-09-05T14:10:16Z	PASS	70	verify.sh	rc 0, 7 phases, 0 orphans
-rollback-replay-effective-props	2026-08-13T05:57:36Z	PASS	191	verify.sh	1741 prune + 1742 ordering at 882fcef8; measured; 0 orphans
-rollback-sqs-cooldown	2026-08-20T01:42:30Z	PASS	156	verify.sh	#2032 lane: the direct twin of the change (name-cooldown arm). Live evidence the nested inner retry engages: retry cadence 1s/2s/4s/8s (inner default schedule) not the outer 2s/4s/8s/10s; 8 attempts absorbed the cooldown, destroy 1 deleted / 0 errors, 0 orphans
+rollback-replay-cc-generated-name	2026-09-16T06:45:53Z	PASS	167	verify.sh	go-to-k/cdkd#3199 confirming run after rebase onto main incl. go-to-k/cdkd#3182; CreateDate moved, 1 del 0 err, path empty, orph clean
+rollback-replay-effective-props	2026-09-16T03:35:40Z	PASS	206	verify.sh	go-to-k/cdkd#3199 regression net only (SDK-routed types: the cc-api fill cannot fire); 7 del 0 err, orph clean
+rollback-sqs-cooldown	2026-09-16T07:18:21Z	PASS	167	verify.sh	go-to-k/cdkd#3216 sidecar check made live; sidecars removed, orph clean
 route53	2026-08-22T19:12:07Z	PASS	267	verify.sh	issue 2176 masking sweep; rc 0, destroy 0 errors, orphans clean
 s3-analytics-inventory	2026-08-13T00:49:56Z	PASS	135	verify.sh	1707/1717/1718 live after review round 3; 49 assertions, 0 orphans
 s3-asset-deploy	2026-09-01T14:53:10Z	PASS	180	verify.sh	PR#2398 arm 3/6: asset-storage file/ZIP upload path, rc 0, 0 orphans
@@ -287,7 +290,7 @@ sqs-esm-max-concurrency	2026-08-10T04:23:28Z	PASS	76	verify.sh	0810 sweep b2; la
 ssm-secure-dynamic-ref	2026-09-08T07:50:29Z	PASS	194	verify.sh	sibling span-arm fixture, re-run on the #2516 branch after its rebase onto main at 5cc82973 and the m1 copy change; 0 errors, 0 orphans, 0 surviving state versions
 stack-lock-renewal	2026-08-23T02:58:02Z	PASS	539	verify.sh	issue #2168 lock renewal final: 8 probe receipts (S3 answers NoSuchKey/404 for a conditional delete of an absent object) + 29 deploy samples, expiresAt +363s never lapsed never absent; destroy 0 err 0 orph
 state-destroy	2026-08-13T06:35:09Z	PASS	95	standard	PR 1774 gate; state destroy exit-code path, 1 del 0 err, zero-skip run byte-identical (no skipped suffix), orph clean
-state-info-command	2026-08-02T05:07:05Z	PASS	31	verify.sh	new verify.sh (#1335): state info human+json, flag+env sources, 1 del/0 err, 0 orphans
+state-info-command	2026-09-15T20:40:17Z	PASS	210	verify.sh	rc 0, depth>=1 arm, destroy 1 del 0 err, 3 planted keys 0 versions
 stepfunctions	2026-09-08T08:09:51Z	PASS	130	verify.sh	rc 0, ACTIVE w/ auto role, destroy 0 orphans (SFN arm for #2783)
 stepfunctions-logging	2026-09-09T03:36:24Z	PASS	310	verify.sh	rc 0; 1a 6 log-dest retries, 4a 5 assume-role (+1 log-dest tail); 2 destroys 0 errors (#2801)
 stepfunctions-s3-definition	2026-07-26T19:45:58Z	PASS	43	verify.sh	0727b sweep-b12 staleness re-run (rc=0); account clean

@@ -73,6 +73,7 @@ __lib_loaded=1
 if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   || ! declare -F gate_unquote_span >/dev/null \
   || ! declare -F gate_unquote >/dev/null \
+  || ! declare -F gate_expand_tilde >/dev/null \
   || ! declare -F gate_segments_marked >/dev/null; then
   __lib_loaded=0
 fi
@@ -296,6 +297,178 @@ __union_cd_bases() {
   done
 }
 
+# __cd_named_earlier <absolute cd target> <raw cd target> -> 0 when an earlier
+# segment of the ordered walk names the target, 1 otherwise.
+#
+# The one exception to "a `cd` into a directory that does not exist does not
+# move the base" (go-to-k/cdkd#2684): the hook runs BEFORE the command, so a
+# directory the command itself creates is absent at hook time and present when
+# the `cd` runs. The walk cannot execute the `mkdir`, but it can see that the
+# command NAMES the directory before entering it, which every creating verb
+# must do (`mkdir -p X`, `git worktree add X`, `git clone <url> X`, `cp -r a
+# X`, `unzip -d X`) -- so the test is a MENTION, not a list of creators. A list
+# was the alternative and is the shape this file keeps paying for: every
+# creator left off it is a false block, and the list goes stale silently.
+#
+# WHAT THIS DELIBERATELY DOES NOT DO, after two rounds that tried and were
+# WITHDRAWN. The exception above is a MITIGATION for a false block, not the
+# #2684 fix -- the fix is the `[[ -d ]]` test at the call site, and the oracle
+# scores it at 10-15 fail-opens before and 0 after. Every attempt to make the
+# mitigation cleverer produced a fail-open or a regression instead, four across
+# two review rounds, all four in this function and none in the existence test:
+#
+#   - removers UN-NOTING their tokens (so `mkdir -p X ; rm -rf X ; cd X` would
+#     read as absent), plus dual raw/resolved noting and materialised
+#     ancestors: `${var#pat}` is quadratic and the note string held every word
+#     of every segment twice, so an ORDINARY `gh pr create --body "<3 KB>" &&
+#     rm -f a b c && echo > README.md` took 28.2 s on bash 3.2 and was killed
+#     at 30 s on 5.3. The un-note leaked anyway -- string surgery cannot remove
+#     ADJACENT duplicates, a remover spelled differently from the note missed,
+#     and removing a PARENT left its children noted.
+#   - a `__norm_mention` collapsing `./`, trailing slashes and interior `//`:
+#     its `//` loop removes one slash per iteration and RESCANS, which is
+#     superlinear, and it reached the 10 s kill from UNDER `GATE_EDIT_MAXBYTES`
+#     (21.7 s for a 4042-CHARACTER command; `${#cmd}` counts characters, so
+#     multi-byte text buys more tokens per byte of the cap).
+#   - remover detection by BASENAME with an ANCHORED `git … worktree remove`:
+#     the anchor matched `-C` but not its separate argument, so
+#     `git -C <path> worktree remove X ; cd X ; <write>` went rc=2 -> rc=0 --
+#     a regression on the spelling this repo's own instructions prescribe.
+#
+# A killed hook emits no exit 2, so every gate on that call is disarmed: the
+# mitigation's failures were WORSE than the false blocks it removed. What is
+# left is the dumbest rule that still stops the common false block, and the
+# rest is stated below rather than fixed.
+#
+# A mention counts when a token of an earlier segment equals the target, or
+# lies UNDER it (`mkdir -p /tmp/x/docs && cd /tmp/x`: `mkdir -p` creates the
+# parent too). One trailing slash is stripped from a noted token and nothing
+# else is normalised. Segments at every mark are read, because a `mkdir` inside
+# `$( )` or a subshell creates the directory all the same.
+#
+# THE RESIDUES, in the danger direction and each measured rather than reasoned.
+# FAIL-OPEN (rc=0; bash wrote the tracked file and this gate allowed it) --
+# every one is a MENTION that does not survive to the `cd`, which no text scan
+# separates from a creator it does not know:
+#
+#   echo X ; cd X ; echo > f                       (a bare mention)
+#   test -d X || cd X ; echo > f                   (a guard -- the plausible one)
+#   ls X X X ; rm -rf X ; cd X ; echo > f          (repeated token)
+#   ls X ; /bin/rm -rf X ; cd X ; echo > f         (...the remover is READ:
+#                                                   what survives is the
+#                                                   earlier mention, not the
+#                                                   remover being missed)
+#   mkdir -p X ; rm -rf X ; cd X ; echo > f        (created, then removed)
+#   mkdir -p X ; rm -rf <abs>/X ; cd X ; echo > f  (removed by another spelling)
+#   mkdir -p X/sub ; rm -rf X ; cd X/sub ; echo > f (parent removed)
+#
+# ...and one that predates #2684 entirely, unchanged by it (rc=0 on the merge
+# base, on both withdrawn revisions and here): `mkdir -p <main>/s && cd
+# <main>/s && echo > ../README.md`. The base is credited to a directory that
+# does not exist YET, so `..` cannot be resolved with `pwd -P` and the write
+# escapes.
+#
+# FALSE BLOCK (rc=2 on a write that never touches the protected tree) -- the
+# cost of withdrawing the normalisation and the note-side tilde. `cd X/` is
+# NOT among them: the single trailing slash is stripped on both sides, since
+# that is the tab-completion spelling and the strip is O(1).
+#
+#   mkdir -p X && cd X// && echo > docs/a.md       (a DOUBLE slash)
+#   mkdir -p x && cd .//x && echo > docs/a.md
+#   mkdir -p x && cd ./x && echo > docs/a.md
+#   mkdir -p ~/zz && cd ~/zz && echo > docs/a.md   (note side is not expanded)
+#
+# ...plus a creator sharing a SEGMENT with the text `worktree remove` (a
+# quoted mention included), whose tokens that segment then does not note --
+# the same refusing direction, measured rc=2.
+#
+# The fail-open class is the one the hook's header calls the
+# variable-indirected gap, with the same backstop
+# (`main-tree-dirty-detector`); the first two are pinned as cases so the bound
+# is measured. A future round reopens this with an executed oracle row or a
+# measured rc, not a reading -- and should weigh that four attempts at
+# cleverness here have cost two security-grade fail-opens and a regression,
+# while the existence test alone has cost none.
+#
+# THE COST SITS ON THE WALK, NOT ON THE MISS. `__walk_note_names` runs once per
+# segment and appends that segment's tokens to `__named` (newline-delimited);
+# the test here is then a glob match against that string. An earlier revision
+# re-tokenised every earlier segment on each miss, which is quadratic in the
+# segment count: measured, 190 `cd /nx<i> ;` segments ahead of a write took the
+# hook from 0.9 s to 5.6 s under bash 3.2 -- past the oracle's 5 s budget and
+# on its way to the 10 s PreToolUse kill, after which the gate emits nothing.
+# Quotes are stripped by parameter expansion rather than `gate_unquote`, since
+# a `$( )` per token is the fork-per-segment cost the walk was rewritten to
+# remove; a token wearing an odd quote layout is over-matched, which is the
+# advancing (permissive) direction -- but the residue above is already wider.
+
+__walk_note_names() { # <segment>
+  local __line="$1" __verb __tok __toks
+  __verb="${__line%%[[:space:]]*}"; __verb="${__verb//[\"\'\\]/}"
+  # `cd` is here because a `cd` names a directory to ENTER it: without it a
+  # repeated `cd /nonexistent ; cd /nonexistent ; <write>` would count the
+  # first as a mention and advance on the second.
+  #
+  # THE VERB IS READ BY BASENAME, and the phrase match is UNANCHORED. Those two
+  # are separate decisions and only one of them ever regressed:
+  #
+  #   - `${__verb##*/}` is O(1), cannot be driven superlinear, and only ever
+  #     widens the REFUSING direction, so `/bin/rm -rf X ; cd X` and
+  #     `mv X Y ; cd X` are recognised (both measured rc=0 without it).
+  #   - the ANCHORED `git … worktree remove` regex was the regression, and it
+  #     stays withdrawn: its `([[:space:]]+-[^[:space:]]+)*` matches `-C` but
+  #     not its separate argument, so `git -C <path> worktree remove X ; cd X ;
+  #     <write>` stopped being recognised and the write was ALLOWED -- rc=2
+  #     before that change, rc=0 after, on the `-C` spelling this repo's own
+  #     instructions prescribe.
+  #
+  # The unanchored form's only cost is the opposite, and it is SEGMENT-SCOPED:
+  # a segment whose text contains the phrase notes nothing, so a creator
+  # sharing THAT segment is suppressed and the write refuses (measured:
+  # `mkdir -p X "git worktree remove x" ; cd X` rc=2, while the same mention in
+  # a neighbouring segment leaves the creator intact at rc=0). Prefer the
+  # refusing failure.
+  case "${__verb##*/}" in rm|rmdir|cd|mv) return 0 ;; esac
+  [[ "$__line" =~ worktree[[:space:]]+remove ]] && return 0
+  __toks=()
+  read -ra __toks <<< "$__line"
+  # `set -u` and an EMPTY array: bash before 4.4 reports `${__toks[@]}` as
+  # unbound, and a whitespace-only line yields exactly that.
+  [ "${#__toks[@]}" -gt 0 ] || return 0
+  for __tok in "${__toks[@]}"; do
+    __tok="${__tok//[\"\']/}"
+    # ONE trailing slash, by parameter expansion, and NO normaliser. A
+    # `__norm_mention` collapsing every `./`, every trailing slash and every
+    # interior `//` was tried and WITHDRAWN: its `//` loop removes one slash
+    # per iteration and RESCANS, which is superlinear, and it put the hook
+    # back over the 10 s PreToolUse kill from UNDER `GATE_EDIT_MAXBYTES` --
+    # measured 21.7 s for a 4042-character command (`${#cmd}` counts
+    # CHARACTERS, so multi-byte text buys more tokens per byte of cap).
+    # A killed hook emits no exit 2 and every gate on that call is disarmed,
+    # so the false blocks it fixed (`cd X//`, `cd .//x`) are cheaper than the
+    # fix; they are listed with the other residues above.
+    __tok="${__tok%/}"
+    [ -n "$__tok" ] || continue
+    __named="$__named$__tok"$'\n'
+  done
+  return 0
+}
+__cd_named_earlier() { # <absolute cd target> <raw cd target>
+  local __abs="$1" __raw="$2"
+  [ -n "$__named" ] || return 1
+  # EXACT, or the noted path lies UNDER the target (`mkdir -p X/sub && cd X`).
+  # Both spellings are tried because a token is noted as it was written: an
+  # absolute `mkdir` matches `__abs`, a relative one matches `__raw`.
+  #
+  # A quoted variable inside a `[[ == ]]` pattern is matched LITERALLY, so a
+  # `*` or `?` in the target cannot become a glob here.
+  [[ $'\n'"$__named" == *$'\n'"$__abs"$'\n'* ]] && return 0
+  [[ $'\n'"$__named" == *$'\n'"$__abs"/* ]] && return 0
+  [[ $'\n'"$__named" == *$'\n'"$__raw"$'\n'* ]] && return 0
+  [[ $'\n'"$__named" == *$'\n'"$__raw"/* ]] && return 0
+  return 1
+}
+
 # Collapse (candidate, base) pairs to their distinct set.
 #
 # This is what makes the uncapped union above affordable, and it is a
@@ -498,8 +671,23 @@ case "$tool" in
     # 11.2 s; the PreToolUse timeout is 10 s, past which the hook is KILLED and
     # cannot emit exit 2, so the gate disappears at exactly the size where it
     # matters. Re-measured across candidate caps on the same shapes: 8192 ->
-    # 2.7 s, 4096 -> 0.58 s. It is set at 4096, which is roughly 17x of margin
-    # rather than the negative margin it shipped with. This runs BEFORE the on-`main` test, on every Bash, Edit and
+    # 2.7 s, 4096 -> 0.58 s.
+    #
+    # THOSE TWO FIGURES ARE STALE FOR THE WALK, and the margin they imply --
+    # "17x" in an earlier version of this sentence -- is not the margin today.
+    # Re-measured 2026-09-16 on the worst shape that FITS under the cap
+    # (`a;` x2035 then a write, 4089 characters), at machine load ~25:
+    #
+    #   merge base 1e4a75d7   4.1 s (bash 5.x)   4.9 s (bash 3.2)
+    #   this revision         5.4 s (bash 5.x)   6.4 s (bash 3.2)
+    #
+    # So the cap buys roughly 1.6-2x against the 10 s kill, not 17x, and most
+    # of that cost is INHERITED -- this revision's `cd`-existence walk adds
+    # about 1.2-1.5 s of it. The figure is dated rather than deleted because
+    # the decision it justifies (4096 rather than 8192) still follows from it,
+    # and it is stated per ENGINE because CI's macOS runner is the slower one.
+    # Anything added to the per-segment path should be re-measured HERE, not
+    # against the 0.58 s. This runs BEFORE the on-`main` test, on every Bash, Edit and
     # Write call in any repo on any branch, so the bound is not optional.
     #
     # Past the bound the base is NOT followed at all: it stays at the payload
@@ -612,6 +800,17 @@ case "$tool" in
     done <<< "$__marked"
 
     cur_base="$base_dir"
+    # Every token of every segment walked so far, at EVERY mark, one per line.
+    # Read only by `__cd_named_earlier`, on the rare path where a `cd` target
+    # does not exist; filled by `__walk_note_names`. The command text reaching
+    # this walk is under `GATE_EDIT_MAXBYTES`, so the string stays small --
+    # but do NOT read that as "bounded by construction", which an earlier
+    # revision of this comment claimed and which is FALSE for anything
+    # superlinear in what the cap admits: `${#cmd}` counts CHARACTERS, and a
+    # withdrawn normaliser rescanning per slash reached 21.7 s from a
+    # 4042-character command well under the cap. The cap bounds the INPUT, not
+    # the work; keep the per-token work linear.
+    __named=""
     while IFS=$'\t' read -r __mark __seg; do
       [[ -n "$__seg" ]] || continue
       if [[ "$__mark" == 0 ]]; then
@@ -639,14 +838,55 @@ case "$tool" in
             case "$cdt" in
               *'$'* | *'`'*) : ;;   # unexpanded: not a path, leave the base
               *)
+                # A `cd` THAT FAILS LEAVES BASH WHERE IT WAS, and this walk
+                # used to advance anyway (go-to-k/cdkd#2684): from the main
+                # checkout, `cd /nonexistent 2>/dev/null ; echo POISON > <tracked>`
+                # answered rc=0 while the tracked file was really overwritten --
+                # the write resolved under a directory that does not exist, so
+                # nothing looked protected. Measured for `>`, `tee` and
+                # `tee -a`; inherited by every revision the oracle has scored.
+                #
+                # So the base advances only for a directory that EXISTS at hook
+                # time -- with one exception, because the hook runs BEFORE the
+                # command: a directory this same command CREATES is absent now
+                # and present when the `cd` runs (`mkdir -p /tmp/x && cd /tmp/x
+                # && echo > docs/a.md`, or CLAUDE.md's own `git worktree add
+                # <path> ... && cd <path>`). Refusing to advance there resolves
+                # the write against the protected tree and produces a FALSE
+                # BLOCK, so a missing target still advances when an EARLIER
+                # segment NAMES it (`__cd_named_earlier`). A command that creates
+                # a directory has to name it; the accident this fixes names the
+                # directory exactly once, in the `cd`.
+                #
+                # `~` is expanded first (`gate_expand_tilde`: a leading `~/` or a
+                # bare `~`, the same two shapes the strict resolver reads). Before
+                # the existence test it did not matter -- `<base>/~/x` was a
+                # bogus base that resolved every later write OUTSIDE the tree,
+                # which happened to agree with bash. Under the existence test
+                # that bogus base would fail the `-d` and turn `cd ~/x && echo >
+                # docs/a.md` into a false block, so the expansion is owed here.
+                cdt=$(gate_expand_tilde "$cdt")
+                # ONE trailing slash, O(1), matching what the note side
+                # strips. `cd X/` is the tab-completion spelling, so without
+                # this the two sides disagree and a creator entered as `X/`
+                # is a FALSE BLOCK (measured rc=2 here, rc=0 on the merge
+                # base). Deliberately NOT a loop and not a `//` collapse --
+                # rescanning per slash is what made a withdrawn normaliser
+                # superlinear enough to reach the 10 s PreToolUse kill.
+                [[ "$cdt" == ?*/ ]] && cdt="${cdt%/}"
+                __cdraw="$cdt"
                 [[ "$cdt" != /* ]] && cdt="$cur_base/$cdt"
-                cur_base="$cdt"
+                if [[ -d "$cdt" ]] || __cd_named_earlier "$cdt" "$__cdraw"; then
+                  cur_base="$cdt"
+                fi
                 ;;
             esac
+            __walk_note_names "$__seg"
             continue
           fi
         fi
       fi
+      __walk_note_names "$__seg"
       # Extract LITERAL redirection / write targets FROM THIS SEGMENT, against
       # the base as it stands here. We deliberately skip tokens containing `$`
       # (unexpandable variables) and `*?[` (globs).

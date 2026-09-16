@@ -40,7 +40,15 @@ export declare const NESTED_KEY_FAILURE_RE: RegExp;
 export declare function comparePropertySets(
   committedJson: string,
   refreshedJson: string
-): { removed: string[]; added: string[]; writableAdded: string[] };
+): {
+  removed: string[];
+  added: string[];
+  writableAdded: string[];
+  /** The subset of `writableAdded` the REFRESHED schema marks create-only. */
+  createOnlyAdded: string[];
+  /** The subset of `removed` that was WRITABLE before — a read-only one was never sendable. */
+  writableRemoved: string[];
+};
 export declare function parseNestedKeyDivergences(
   checkOutput: string,
   exitCode?: number
@@ -84,6 +92,13 @@ export interface RemovedEntry {
 export interface AddedEntry {
   resourceType: string;
   properties: string[];
+  /**
+   * The subset of `properties` the refreshed schema marks create-only, read by
+   * the changelog fragment alone. Absent on a hand-built entry; an empty list
+   * means "not create-only at the TOP level", which is all the fixture capture
+   * can answer.
+   */
+  createOnly?: string[];
 }
 export interface DiagnosisInput {
   removed: RemovedEntry[];
@@ -222,6 +237,8 @@ export declare function collectFixtureDeltas(input: {
 }): {
   removed: RemovedEntry[];
   writableAdded: AddedEntry[];
+  /** Types that LOST silent-drop properties — the COMPLEMENT of `removed`. */
+  silentDropRemoved: RemovedDropEntry[];
   readOnlyAddedCount: number;
   unreadable: string[];
 };
@@ -387,3 +404,69 @@ export declare function writeAutoTolerated(
   written: Array<{ resourceType: string; property: string; rationale: string }>;
   escalated: Array<{ resourceType: string; property: string; reason: string }>;
 };
+
+/** Stands in for the PR number inside a fragment rendered before the PR exists. */
+export declare const PR_NUMBER_PLACEHOLDER: string;
+
+/** The per-entry character cap `changelog-entry-size.test.ts` enforces. */
+export declare const CHANGELOG_ENTRY_LIMIT: number;
+
+/**
+ * The resource types exempt from the sticky-CC rule, read out of
+ * `provider-registry.ts` as text. Throws rather than returning an empty set:
+ * an unread table would make the fragment claim a ONE-WAY pin for a type that
+ * does return to its SDK provider.
+ */
+export declare function parseStickyCcMigrationExempt(registrySource: string): Set<string>;
+
+/**
+ * This cycle's changelog fragment, or `null` when AWS added no writable
+ * property and the refresh therefore ships no behaviour delta.
+ */
+export declare function renderChangelogFragment(input: {
+  writableAdded: readonly AddedEntry[];
+  exemptTypes: ReadonlySet<string>;
+  /** Types cdkd REFUSES rather than auto-routing: a CC-fallback opt-out, or NON_PROVISIONABLE. */
+  unroutableTypes?: ReadonlySet<string>;
+  /** Types whose routing could not be ESTABLISHED — neither story may be told about them. */
+  unknownRoutingTypes?: ReadonlySet<string>;
+  /** What each provider declares handled — such a property never becomes a silent drop. */
+  declared?: ReadonlyMap<string, ReadonlySet<string>>;
+  /** Types that LOST silent-drop properties this cycle. */
+  silentDropRemoved?: readonly RemovedDropEntry[];
+}): string | null;
+
+/** Stands in for the cycle date inside a fragment rendered before the PR exists. */
+export declare const CYCLE_PLACEHOLDER: string;
+
+/**
+ * Resource types whose SDK provider declines the Cloud Control fallback, plus
+ * the ones whose provider source could not be read.
+ */
+export declare function parseCcFallbackOptOuts(
+  providerFiles: ReadonlyMap<string, string>,
+  repoRoot?: string
+): { optedOut: Set<string>; unreadable: Set<string> };
+
+/**
+ * The NON_PROVISIONABLE type set, read out of `unsupported-types.generated.ts`.
+ * Throws rather than returning empty: an unread table reads as "every type is
+ * routable", the polarity that ships a false auto-route claim.
+ */
+export declare function parseNonProvisionableTypes(generatedSource: string): Set<string>;
+
+/**
+ * A type that LOST silent-drop properties in this refresh — the changelog's
+ * removal population, and the complement of `RemovedEntry`: a removed property
+ * the provider declares was never a drop.
+ */
+export interface RemovedDropEntry {
+  resourceType: string;
+  properties: string[];
+  /**
+   * Whether the REFRESHED schema still leaves the type an actionable silent
+   * drop. False means the resource returns to the SDK path entirely; true
+   * means only these properties stop reaching AWS.
+   */
+  retainsOtherDrops: boolean;
+}

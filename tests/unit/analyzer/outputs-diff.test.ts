@@ -9,7 +9,7 @@
  * The fix deliberately does NOT share code with `DeployEngine.resolveOutputs`
  * (that file is in the `integ-broad` / `integ-destroy` gate scopes and was held
  * by a parallel lane). The last describe block is the anti-drift fence that
- * trade requires: it watches the three deploy-side semantics this module
+ * trade requires: it watches the deploy-side semantics this module
  * mirrors, so an edit to either side that breaks parity fails here rather than
  * silently reintroducing a preview/apply divergence.
  */
@@ -34,6 +34,7 @@ import * as path from 'node:path';
 import {
   computeOutputsDiff,
   resolveTemplateOutputs,
+  templateLetsConditionsReachOutputs,
   type OutputChange,
 } from '../../../src/analyzer/outputs-diff.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -512,6 +513,133 @@ describe('computeOutputsDiff', () => {
   });
 });
 
+/**
+ * A stored bag that is not a map at all (issue go-to-k/cdkd#3189).
+ *
+ * `current` is typed as a bag, but its only production argument is
+ * `StackState.outputs` read through an unchecked cast — `parseStateBody`
+ * validates the root object and the schema version and nothing inside — so a
+ * hand-edited or truncated record reaches here holding whatever JSON it holds.
+ * The walk that emits `REMOVE` rows takes a string or a list as readily as a
+ * map, so it INVENTED one row per character or element, each printing a
+ * character of the record as its `old:` side.
+ *
+ * The verdict is READ IT AS EMPTY, not refuse: `cdkd diff` is a preview and
+ * must still describe what the next deploy writes. The load site
+ * (`diff-recursive.ts`'s `loadStateOrEmpty`) is what WARNS, so the empty
+ * reading is never silent in the command; this function is the second line of
+ * defence for a direct caller.
+ */
+describe('computeOutputsDiff — a stored bag that is not a map (issue go-to-k/cdkd#3189)', () => {
+  const names = (changes: OutputChange[]) => changes.map((c) => `${c.changeType}:${c.name}`);
+
+  /**
+   * Split by what each shape did BEFORE the guard, measured at `aced052a`:
+   * `FABRICATING` produced rows, `INERT` produced none and is the control half.
+   * Keeping both in one table is what stops the case list from being
+   * all-positive — a guard that only ever sees fabricating shapes cannot show
+   * it left the inert ones alone.
+   */
+  const FABRICATING: ReadonlyArray<readonly [string, unknown, number]> = [
+    ['a string', 'abcdef', 6],
+    ['a list of scalars', [1, 2, 3], 3],
+    ['a list of objects (a bag serialized as an array)', [{ Out: 'v' }], 1],
+  ];
+  const INERT: ReadonlyArray<readonly [string, unknown]> = [
+    ['a number', 42],
+    ['a boolean', true],
+    ['null', null],
+    ['absent', undefined],
+  ];
+
+  for (const [label, value, priorRows] of FABRICATING) {
+    it(`emits NO row for ${label} (it invented ${priorRows} REMOVE rows before the guard)`, () => {
+      const changes = computeOutputsDiff(
+        value as unknown as Record<string, unknown>,
+        {},
+        new Set()
+      );
+      expect(changes).toEqual([]);
+    });
+  }
+
+  for (const [label, value] of INERT) {
+    it(`CONTROL: ${label} emitted no row before the guard and still emits none`, () => {
+      expect(
+        computeOutputsDiff(value as unknown as Record<string, unknown>, {}, new Set())
+      ).toEqual([]);
+    });
+  }
+
+  it('reads the bag as EMPTY rather than refusing, so the template side still previews', () => {
+    // The semantics decision, asserted rather than implied by an absence: every
+    // resolved output is an ADD, which is a truthful statement about what the
+    // next deploy writes to a record whose stored side could not be read.
+    const changes = computeOutputsDiff('abcdef' as unknown as Record<string, unknown>, {
+      Endpoint: 'https://x',
+    }, new Set());
+    expect(changes).toEqual([
+      { name: 'Endpoint', changeType: 'ADD', newValue: 'https://x', isExport: false },
+    ]);
+  });
+
+  it('never prints a character of the record — no row carries a stored value at all', () => {
+    // The discriminator the row COUNT alone does not give: the fabricated rows
+    // carried `oldValue: "a"`, i.e. the record's own bytes, into a diff that
+    // routinely runs in CI.
+    //
+    // Asserted as the JOIN of every emitted `oldValue`, not as a substring of
+    // the serialized rows: the fabrication splits the record one CHARACTER per
+    // row, so `not.toContain('SECRET')` passes under the mutation it exists to
+    // catch — measured, that spelling stayed green with all 13 characters
+    // present across 13 rows. The join reassembles them.
+    const planted = 'SECRET-abcdef';
+    const changes = computeOutputsDiff(
+      planted as unknown as Record<string, unknown>,
+      { Endpoint: 'https://x' },
+      new Set()
+    );
+    const storedSideEmitted = changes
+      .map((c) => c.oldValue)
+      .filter((v) => v !== undefined)
+      .join('');
+    expect(storedSideEmitted).toBe('');
+  });
+
+  it('FLOOR: a healthy populated bag still diffs exactly as it did', () => {
+    // The other side of the fence. A guard that emptied every bag would satisfy
+    // every assertion above.
+    const changes = computeOutputsDiff(
+      { Gone: 'g', Kept: 'k', Changed: 'before' },
+      { Kept: 'k', Changed: 'after' },
+      new Set()
+    );
+    expect(names(changes).sort()).toEqual(['MODIFY:Changed', 'REMOVE:Gone']);
+    expect(changes.find((c) => c.name === 'Gone')?.oldValue).toBe('g');
+  });
+
+  it('an empty bag previews the template side, unchanged by the guard', () => {
+    // NOT labelled FLOOR, because at this layer it cannot be one: an empty bag
+    // and a bag the guard repaired to empty are indistinguishable from here, so
+    // no mutation of the guard can red it. The real empty-bag floor is the
+    // identity `toBe(bag)` case in
+    // `tests/unit/state/malformed-resources-bag.test.ts`, which asserts the
+    // repair returned the SAME object rather than a replacement (review of
+    // go-to-k/cdkd#3194). Kept as a statement of the ADD side's behaviour.
+    expect(names(computeOutputsDiff({}, { Out: 'v' }, new Set()))).toEqual(['ADD:Out']);
+  });
+
+  it('FLOOR: a null-prototype bag is still readable (the shape both sides build)', () => {
+    // `resolveTemplateOutputs` builds its bag with `Object.create(null)` for the
+    // `__proto__` export-alias case, and the merge preview hands one back in as
+    // the stored side. A predicate keyed on the PROTOTYPE rather than on the
+    // plain-object test would empty it and take those rows with it.
+    const bag = Object.create(null) as Record<string, unknown>;
+    bag['Out'] = 'stored';
+    expect(names(computeOutputsDiff(bag, {}, new Set()))).toEqual(['REMOVE:Out']);
+  });
+});
+
 describe('computeOutputsDiff — legacy secret plaintext on the stored side', () => {
   const EXPR = '{{resolve:secretsmanager:prod/db:SecretString:password}}';
 
@@ -750,10 +878,271 @@ describe('failedKeys (issue #1921 review round 2)', () => {
   });
 });
 
+describe('templateLetsConditionsReachOutputs (issue #3101 review, B1)', () => {
+  const base = (): CloudFormationTemplate => ({
+    Resources: { A: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } } },
+    Outputs: { Out: { Value: 'v' } },
+    Conditions: { IsOn: { 'Fn::Equals': ['a', 'a'] } },
+  });
+
+  it.each([
+    {
+      route: "an output's own Condition",
+      edit: (t: CloudFormationTemplate): void => {
+        (t.Outputs ??= {})['Out'] = { Value: 'v', Condition: 'IsOn' };
+      },
+    },
+    {
+      route: "an Fn::If in an output's value",
+      edit: (t: CloudFormationTemplate): void => {
+        (t.Outputs ??= {})['Out'] = { Value: { 'Fn::Join': ['', [{ 'Fn::If': ['IsOn', 'a', 'b'] }]] } };
+      },
+    },
+    {
+      route: 'an Fn::If in a mapping',
+      edit: (t: CloudFormationTemplate): void => {
+        t.Mappings = { M: { k: { V: { 'Fn::If': ['IsOn', 'a', 'b'] } } } };
+      },
+    },
+    {
+      route: 'a { Condition } reference outside Resources and Conditions',
+      edit: (t: CloudFormationTemplate): void => {
+        (t as unknown as Record<string, unknown>)['Metadata'] = { Note: { 'Fn::Not': [{ Condition: 'IsOn' }] } };
+      },
+    },
+  ])('is true for $route', ({ edit }) => {
+    const t = base();
+    edit(t);
+    expect(templateLetsConditionsReachOutputs(t)).toBe(true);
+  });
+
+  it.each([
+    { shape: 'no route at all', edit: (_t: CloudFormationTemplate): void => {} },
+    {
+      shape: 'a multi-key object whose first key is Condition, outside Resources and Conditions',
+      edit: (t: CloudFormationTemplate): void => {
+        (t as unknown as Record<string, unknown>)['Metadata'] = {
+          Note: { Condition: 'IsOn', Other: 'not a condition reference' },
+        };
+      },
+    },
+    {
+      shape: "a resource's own Condition (the CDKMetadataAvailable shape; a regression example only, since a multi-key resource object is inert here, and the property Fn::If case pins the Resources exclusion)",
+      edit: (t: CloudFormationTemplate): void => {
+        t.Resources['CDKMetadata'] = {
+          Type: 'AWS::CDK::Metadata',
+          Properties: {},
+          Condition: 'IsOn',
+        };
+      },
+    },
+    {
+      shape: "an Fn::If in a resource property",
+      edit: (t: CloudFormationTemplate): void => {
+        t.Resources['A'] = {
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Value: { 'Fn::If': ['IsOn', 'a', 'b'] } },
+        };
+      },
+    },
+    {
+      shape: 'a { Condition } reference inside Conditions',
+      edit: (t: CloudFormationTemplate): void => {
+        t.Conditions = { IsOn: { 'Fn::Equals': ['a', 'a'] }, Both: { 'Fn::And': [{ Condition: 'IsOn' }, { Condition: 'IsOn' }] } };
+      },
+    },
+    {
+      shape: 'a template with no Outputs section',
+      edit: (t: CloudFormationTemplate): void => {
+        delete t.Outputs;
+      },
+    },
+  ])('is false for $shape', ({ edit }) => {
+    const t = base();
+    edit(t);
+    expect(templateLetsConditionsReachOutputs(t)).toBe(false);
+  });
+});
+
+describe('failedOutputKeys / failuresMirrorDeploy (issue #3101)', () => {
+  // `computeStackDiff` previews the deploy's no-change merge only when every
+  // failure is one the deploy records too, named by OUTPUT key. These pin which
+  // arm answers which way; the preview itself is pinned in
+  // `tests/unit/cli/diff-recursive.test.ts`.
+  it('names a thrown and an undefined value by output key, never by alias', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: {
+        Threw: { Value: { 'Fn::GetAtt': ['Missing', 'Arn'] }, Export: { Name: 'S:Threw' } },
+        RoleId: { Value: { 'Fn::GetAtt': ['Role', 'RoleId'] } },
+        Fine: { Value: 'v' },
+      },
+    };
+    const r = await resolveTemplateOutputs(template, RESOLVER);
+    expect([...r.failedOutputKeys].sort()).toEqual(['RoleId', 'Threw']);
+    // The alias is still a failed KEY for the warning filter.
+    expect(r.failedKeys.has('S:Threw')).toBe(true);
+    expect(r.failuresMirrorDeploy).toBe(true);
+  });
+
+  it('is true with nothing named for a fully resolved bag and for no Outputs', async () => {
+    const resolvedFully = await resolveTemplateOutputs(templateWithExport(), RESOLVER);
+    expect(resolvedFully.resolutionFailed).toBe(false);
+    expect([...resolvedFully.failedOutputKeys]).toEqual([]);
+    expect(resolvedFully.failuresMirrorDeploy).toBe(true);
+    const none = await resolveTemplateOutputs({ Resources: {} }, RESOLVER);
+    expect([...none.failedOutputKeys]).toEqual([]);
+    expect(none.failuresMirrorDeploy).toBe(true);
+  });
+
+  it('is false for a surviving intrinsic, which the deploy does not record as failed', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: { Pending: { Value: { 'Fn::GetAtt': ['New', 'Arn'] } } },
+    };
+    const r = await resolveTemplateOutputs(template, lenientResolver);
+    expect(r.resolutionFailed).toBe(true);
+    expect([...r.failedOutputKeys]).toEqual([]);
+    expect(r.failuresMirrorDeploy).toBe(false);
+  });
+
+  it('is false for a NESTED undefined, since the deploy keys on a top-level one', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: { Listed: { Value: ['x', { 'Fn::GetAtt': ['Role', 'RoleId'] }] } },
+    };
+    const r = await resolveTemplateOutputs(template, async () => ['x', undefined]);
+    expect(r.resolutionFailed).toBe(true);
+    expect([...r.failedOutputKeys]).toEqual([]);
+    expect(r.failuresMirrorDeploy).toBe(false);
+  });
+
+  it('is false for a symbol, which is not the deploy failure signal (a top-level undefined)', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: { NoValue: { Value: { 'Fn::If': ['C', { Ref: 'AWS::NoValue' }, 'x'] } } },
+    };
+    const r = await resolveTemplateOutputs(template, async () => Symbol('AWS::NoValue'));
+    expect(r.resolutionFailed).toBe(true);
+    expect([...r.failedOutputKeys]).toEqual([]);
+    expect(r.failuresMirrorDeploy).toBe(false);
+  });
+
+  it.each([
+    { later: 'a top-level undefined', fail: async (): Promise<unknown> => undefined },
+    {
+      later: 'a throw',
+      fail: async (): Promise<unknown> => {
+        throw new Error('refused');
+      },
+    },
+  ])('stays false once cleared when a later output fails with $later', async ({ fail }) => {
+    // `Pending` clears the flag; `Later`, declared after it, fails through one of
+    // the two arms that name a key, and neither may set the flag back. Outputs
+    // resolve in declaration order.
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: {
+        Pending: { Value: { 'Fn::GetAtt': ['New', 'Arn'] } },
+        Later: { Value: { 'Fn::GetAtt': ['Role', 'RoleId'] } },
+      },
+    };
+    const resolver = async (value: unknown): Promise<unknown> =>
+      JSON.stringify(value).includes('RoleId') ? fail() : value;
+    const r = await resolveTemplateOutputs(template, resolver);
+    expect([...r.failedOutputKeys]).toEqual(['Later']);
+    expect(r.failuresMirrorDeploy).toBe(false);
+  });
+
+  it('strips control characters from the output key and error text on its debug lines', async () => {
+    // Output keys are template-controlled and never validated here, and the
+    // error text can quote one back. One output per debug line.
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    const debug = vi.mocked(getLogger().debug);
+    debug.mockClear();
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: {
+        'Threw\u001b[31m': { Value: { 'Fn::GetAtt': ['Missing\u001b[31m', 'Arn'] } },
+        'RoleId\u001b[31m': { Value: { 'Fn::GetAtt': ['Role', 'RoleId'] } },
+        'Named\u001b[31m': {
+          Value: 'v',
+          Export: { Name: { 'Fn::GetAtt': ['Missing\u001b[31m', 'Name'] } as unknown as string },
+        },
+      },
+    };
+    await resolveTemplateOutputs(template, RESOLVER);
+    const lines = debug.mock.calls.map((c) => String(c[0]));
+    expect(lines.some((l) => l.startsWith('Diff could not resolve output Threw[31m: '))).toBe(true);
+    expect(lines.some((l) => l.startsWith('Diff left output RoleId[31m unresolved'))).toBe(true);
+    expect(lines.some((l) => l.startsWith('Diff could not resolve Export.Name of Named[31m: '))).toBe(
+      true
+    );
+    expect(lines.filter((l) => l.includes('\u001b'))).toEqual([]);
+  });
+
+  it('strips control characters from a condition-false output on its skip line', async () => {
+    // Both the output key and the condition name come from the template.
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    const debug = vi.mocked(getLogger().debug);
+    debug.mockClear();
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: { 'Skip\u001b[31m': { Value: 'v', Condition: 'Off\u001b[31m' } },
+    };
+    await resolveTemplateOutputs(template, RESOLVER, { 'Off\u001b[31m': false });
+    const lines = debug.mock.calls.map((c) => String(c[0]));
+    expect(lines).toContain('Skipping output Skip[31m — condition Off[31m is false');
+    expect(lines.filter((l) => l.includes('\u001b'))).toEqual([]);
+  });
+
+  it('is false when an Export.Name throws', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: {
+        Named: {
+          Value: 'v',
+          Export: { Name: { 'Fn::GetAtt': ['Missing', 'Name'] } as unknown as string },
+        },
+      },
+    };
+    const r = await resolveTemplateOutputs(template, RESOLVER);
+    expect(r.resolutionFailed).toBe(true);
+    expect(r.failuresMirrorDeploy).toBe(false);
+  });
+
+  it('is false when an Export.Name stays intrinsic', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      // `TemplateOutput` types the name as a string; CloudFormation allows an intrinsic.
+      Outputs: {
+        Named: { Value: 'v', Export: { Name: { Ref: 'Unresolved' } as unknown as string } },
+      },
+    };
+    const r = await resolveTemplateOutputs(template, lenientResolver);
+    expect(r.resolutionFailed).toBe(true);
+    expect(r.failuresMirrorDeploy).toBe(false);
+  });
+
+  it('is false when a literal Export.Name cannot be decided in a secret-bearing stack', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: {
+        Secret: { Value: '{{resolve:secretsmanager:db:SecretString:pw}}' },
+        Named: { Value: 'v', Export: { Name: 'literal-name' } },
+      },
+    };
+    const r = await resolveTemplateOutputs(template, RESOLVER);
+    expect(r.resolutionFailed).toBe(true);
+    expect(r.failedKeys.has('literal-name')).toBe(true);
+    expect(r.failuresMirrorDeploy).toBe(false);
+  });
+});
+
 describe('anti-drift fence vs DeployEngine.resolveOutputs (issue #1921)', () => {
   // This module is a deliberate SECOND implementation of the deploy engine's
   // outputs resolution — see the file header for why sharing was rejected. The
-  // cost of that trade is drift, so these assertions watch the three deploy-side
+  // cost of that trade is drift, so these assertions watch the deploy-side
   // behaviors the diff twin mirrors. If one fails, the deploy side moved: port
   // the change into `src/analyzer/outputs-diff.ts` (and its tests above) rather
   // than relaxing the assertion.
@@ -864,8 +1253,10 @@ describe('anti-drift fence vs DeployEngine.resolveOutputs (issue #1921)', () => 
   it('deploy routes a failure through the merge and persists the MERGED bag (source spelling)', () => {
     // Issue #2771 moved the gate: a failed output no longer blocks the persist;
     // the bag goes through `mergeNoChangeOutputs`, and only its `kept` verdict
-    // keeps the previous bag (which can still save, for the #2740 record). This
-    // module stays the CONSERVATIVE side. A SPELLING fence, so it pins the
+    // keeps the previous bag (which can still save, for the #2740 record). The
+    // diff previews that merge by calling the same function on a no-change
+    // stack (issue #3101, pinned in `tests/unit/cli/diff-recursive.test.ts`),
+    // and suppresses everywhere else. A SPELLING fence, so it pins the
     // three lines below and nothing about their behaviour — that is pinned by
     // `deploy-engine-outputs-only-change.test.ts`.
     expect(source).toContain('mergeNoChangeOutputs({');

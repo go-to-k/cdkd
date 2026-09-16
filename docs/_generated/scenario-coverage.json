@@ -1228,6 +1228,11 @@
       "scenarios": []
     },
     {
+      "name": "lambda-capacity-provider-default-name",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "lambda-config-field-removal",
       "annotated": false,
       "scenarios": []
@@ -1786,6 +1791,11 @@
       "scenarios": [
         "rollback-replacement-updatereplacepolicy-retain"
       ]
+    },
+    {
+      "name": "rollback-replay-cc-generated-name",
+      "annotated": false,
+      "scenarios": []
     },
     {
       "name": "rollback-replay-effective-props",
@@ -2882,6 +2892,7 @@
     "kinesis-stream-mode-switch",
     "lambda-alias-provisioned-concurrency",
     "lambda-arch-switch",
+    "lambda-capacity-provider-default-name",
     "lambda-config-field-removal",
     "lambda-destinations",
     "lambda-env-removal",
@@ -2913,6 +2924,7 @@
     "retain-orphan-redeploy",
     "retain-orphan-secret",
     "rollback-command",
+    "rollback-replay-cc-generated-name",
     "s3-analytics-inventory",
     "s3-event-notification",
     "s3-lifecycle",

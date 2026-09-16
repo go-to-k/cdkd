@@ -198,7 +198,13 @@ function resolveMovingInto(map: Map<string, string> | undefined, expr: string): 
   return plaintext;
 }
 
-vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', () => ({
+// The spread is load-bearing, not tidiness: `scrub.ts` imports pure helpers
+// from this module besides the resolver class — `carriesDynamicReference`, the
+// POSITIONAL predicate behind the abandoned-scan counter (go-to-k/cdkd#3160) —
+// and a factory that returns only `IntrinsicFunctionResolver` makes every one
+// of them an undefined export, which fails at the call rather than at the mock.
+vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../../src/deployment/intrinsic-function-resolver.js')>()),
   IntrinsicFunctionResolver: vi.fn().mockImplementation((region: string) => ({
     resolveParameters: vi.fn().mockResolvedValue({}),
     evaluateConditions: vi.fn().mockImplementation(() => Promise.resolve(conditionValues.value)),
@@ -620,6 +626,12 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
         // A key today's template cannot account for: the widened pass value-
         // scans it, so it shows which expression holds the collapsed slot.
         Orphan: MOVING_PLAINTEXT,
+        // A key holding the MOVED value only the NAME loop saw. Without it the
+        // `not.toContain(MOVING_FIRST)` below is vacuous -- no key ever held
+        // that plaintext, so the assertion passed whatever the name loop did
+        // with its entry (issue #2732; the cross-region twin below gained the
+        // same key in go-to-k/cdkd#2562's round 2 and this case did not).
+        Stale: MOVING_FIRST,
       }),
       etag: 'etag-1',
     });
@@ -644,6 +656,11 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
     expect(saved!.outputs['Orphan']).toBe(MOVING_EXPR_V1);
     expect(saved!.outputs['Dsn']).toBe(`pre-${MOVING_EXPR}-post`);
     expect(saved!.outputs['Whole']).toBe(MOVING_EXPR_V1);
+    // The name loop's ENTRY reached the pass map: the moved value's only
+    // needle was recorded by the name's resolution, and the value scan found
+    // it. This is what makes the `not.toContain(MOVING_FIRST)` line below
+    // load-bearing rather than trivially true.
+    expect(saved!.outputs['Stale']).toBe(MOVING_EXPR);
     expect(JSON.stringify(saved)).not.toContain(MOVING_PLAINTEXT);
     expect(JSON.stringify(saved)).not.toContain(MOVING_FIRST);
   });

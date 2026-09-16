@@ -45,7 +45,13 @@ const SECRET_EXPR = '{{resolve:secretsmanager:my-secret:SecretString:password::}
  */
 const STALE_LIST_ELEMENT = 'arn:aws:sqs:us-east-1:111122223333:previous-generation-queue';
 
-vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', () => ({
+// The spread is load-bearing: `scrub.ts` imports pure helpers from this module
+// besides the resolver class — `carriesDynamicReference`, behind the
+// abandoned-scan counter (go-to-k/cdkd#3160). A class-only factory makes each
+// one an undefined export, so the first case here that makes `resolve` REJECT
+// fails with a mock error instead of its own assertion.
+vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../../src/deployment/intrinsic-function-resolver.js')>()),
   IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
     resolveParameters: vi.fn().mockResolvedValue({}),
     evaluateConditions: vi.fn().mockResolvedValue({}),

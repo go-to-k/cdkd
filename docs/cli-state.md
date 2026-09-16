@@ -125,6 +125,8 @@ different question — it lists stacks from the local CDK app via synthesis, for
 CDK CLI parity, whereas `cdkd state list` reports what is registered in the S3
 bucket.
 
+### Output streams
+
 **`cdkd state list`'s stdout is a payload in every mode, `--json` or not.** The
 default one-reference-per-line shape is exactly what a `while read -r ref` loop
 consumes, so everything cdkd's logger prints goes to stderr instead. The other
@@ -132,6 +134,8 @@ subcommands with a `--json` mode (`resources`, `show`, `info`) keep the
 `--json` gate, because their flagless output is a formatted human view rather
 than a record set. See
 [Output streams: when stdout is a payload](cli-reference.md#output-streams-when-stdout-is-a-payload).
+
+### The `--tree` view
 
 `--tree` walks each record's v6 `parentStack` / `parentRegion` fields, which a
 nested-stack deploy and the recursive
@@ -150,6 +154,66 @@ out-of-band, or state hand-deleted — surfaces at the root rather than
 vanishing. `--long` and `--tree` both read every record, so they cost extra
 S3 requests per stack — two for `--long` (the record and its lock), one for
 `--tree`. The plain listing reads none of them.
+
+### Unreadable records and unsafe values
+
+Neither `--long` nor `--tree` lets one stack it cannot read take down the rest
+of the listing.
+Under `--long`, a failed read costs only that stack's row, and the record read
+and the lock read degrade separately:
+
+| Read that failed | Text row | `--long --json` |
+| --- | --- | --- |
+| state record, or a `resources` that could not be counted (see below) | `Resources: unknown (...)`; the lock is still reported | `resourceCount: null`, `stateReadError` set |
+| lock | `Lock: unknown (...)`; the resource count is still reported | `locked: null`, `lockReadError` set |
+
+The reason text is fixed and never quotes the underlying error, because a
+malformed record's parse error can quote bytes of the record. Run
+`cdkd state show` for that one stack to see the error. A legacy row with no
+region is the exception: its lock reason names no command, because
+`cdkd state show` refuses a region-less record before it reads the lock. A
+warning on stderr counts the rows that could not be fully read or counted, and
+the command still exits 0.
+
+Other malformed values render instead of stopping the listing:
+
+| Value | How it renders |
+| --- | --- |
+| a `lastModified` outside the date range, or not a number | `Last Modified: unknown`, `null` under `--json` |
+| a `resources` that is neither a JSON object nor `null`, such as a string or a list | `Resources: unknown (...)`, and under `--json` `resourceCount: null` with `stateReadError` set; the warning counts the row. An absent or `null` `resources` counts as `0`. What the other commands do with such a record is under [When `resources` is not an object](#when-resources-is-not-an-object) |
+| a character outside printable ASCII in a stack name or region | replaced with a space, and the value is then quoted (see the row below). A value with nothing printable left shows as `<unrenderable>` |
+| a stack name or region that cdkd had to CHANGE to render — anything outside printable ASCII, or surrounding whitespace it trimmed | rendered as a quoted string, so its boundary is visible. A trailing space is enough: `ProdStack ` renders `"ProdStack" (us-east-1)` |
+| a stack name or region carrying a space, a bracket or a quote — anything outside `A-Za-z0-9` and `:_@./+=,~-` | quoted the same way: `"ProdStack (us-east-1)" (us-east-1)`. Both rules apply to both halves of every reference |
+| a very long stack name or region | cut, with `[cut: N more characters withheld]` appended. The limit is 1152 characters for a name, 255 for a region — no ordinary value is near either |
+| a parent link whose `parentStack` is not a string, or whose `parentRegion` is present but not a string | `--tree` drops the whole link and shows the stack at the root. An absent `parentRegion` still links to a legacy region-less parent |
+| a non-string `parentLogicalId` on an otherwise valid link | `--tree --json` emits it as `null` and keeps the link |
+| records that name each other as parent | `--tree` shows every stack on the loop at the root |
+
+A legacy `version: 1` record with no region is not read under `--long`, so its
+row shows `Resources: 0` and `Last Modified: unknown` with no reason attached.
+
+The quoting matters because the ` (region)` suffix is cdkd's own annotation of
+the line rather than part of either value. Both halves come from an S3 key
+segment — or, for a legacy record, the state body — so a name that contains a
+space and brackets could otherwise render byte-identical to a different,
+genuine reference.
+
+Where it applies, and what it does not promise:
+
+| Question | Answer |
+| --- | --- |
+| Where else? | [`cdkd state orphan`](#cdkd-state-orphan)'s prompt and its removal line, [`cdkd state refresh-observed`](#cdkd-state-refresh-observed)'s prompt, and `cdkd rollback`'s candidate list |
+| Does a real row change? | No. Real stack names and region codes are plain identifiers, so a `while read -r ref` consumer sees the bytes it always did |
+| Is a quoted value shell-safe? | No. The quotes are a boundary for a reader, not shell quoting — a shell still expands `$(...)` and backticks inside them |
+| Can a long name still mislead? | Yes, if your terminal wraps it: a wrapped line can read like a genuine row with the quotes off-screen. Widen the terminal, or use `--json` |
+| Can anything else still mislead? | Yes. A name ending in a comma is left unquoted, and the prompts above list references separated by `, ` — so one such name reads as two entries. `cdkd state orphan` prints no count to check it against |
+
+`--json` output is not sanitized. JSON escapes only C0 control characters,
+`"`, `\` and unpaired surrogates, so other invisible or line-breaking
+characters in a stack name or region pass through unchanged. Sanitize those
+values yourself before printing them to a terminal.
+
+### Without cdkd
 
 The equivalent low-level query, when you want it without cdkd:
 
@@ -220,24 +284,28 @@ they print as untrusted text:
   empty slot, and the underlying cause a refusal reports is flattened the same
   way. This covers the refusals these two commands raise; an error reaching you
   from the AWS SDK itself is that service's own text.
-- **`--json` applies none of this**, and is the mode to reach for when you need
-  the stored value rather than a readable one. It is not byte-for-byte in every
-  mode: `cdkd state show` emits the record as parsed, while
-  `cdkd state resources --json` substitutes an empty list or object for an absent
-  `dependencies` or `attributes`, and the lock `cdkd state show` reports has already
-  had its `owner` and `operation` put through the shared display sanitizer, with
-  an `expiresAt` whose number coercion THROWS emitted as `null` — one that merely
-  converts to `NaN`, such as `{}` or `"soon"`, is emitted as stored
-  (`cdkd state resources` never reads a lock).
+- **`--json` applies none of this sanitizing**, and `cdkd state show --json` is
+  the mode to reach for when you need the stored value rather than a readable
+  one. It is not byte-for-byte in every mode, and the exceptions differ per
+  command:
+
+  | Mode | What it is not |
+  | --- | --- |
+  | `cdkd state show --json` | the record as parsed; the lock it reports has had `owner` and `operation` put through the shared display sanitizer, with an `expiresAt` whose number coercion THROWS emitted as `null` — one that merely converts to `NaN`, such as `{}` or `"soon"`, is emitted as stored |
+  | `cdkd state resources --json` | substitutes an empty list or object for an absent `dependencies` or `attributes`; never reads a lock. **It is also not a view of the stored `resources` value at all** — it emits the resource array cdkd derived, so a `resources` that is not a JSON object yields `[]` with the warning described under [When `resources` is not an object](#when-resources-is-not-an-object), not the stored value |
+
+  So `--json` being the raw-value mode is true of `cdkd state show` and false of
+  `cdkd state resources`. When the question is what the record actually holds,
+  `cdkd state show --json` is the command that answers it.
 
 This tolerance also covers a record that is malformed beyond its values. A `resources`
 entry holding `null` rather than a resource no longer aborts any mode,
 `--show-nested` and both JSON walks included: the human views render it the way
 a number or a string there always did (`Type` and `PhysicalID` read `undefined`,
 the other fields their defaults), and the JSON modes emit it —
-`cdkd state show --json` as the stored `null`. A `resources` bag that is absent
-or `null` no longer aborts either: `cdkd state list --long` counts it as zero
-resources, and `--show-nested` walks past it with no children. A lock whose
+`cdkd state show --json` as the stored `null`. A `resources` bag that is not a
+JSON object at all yields no nested-stack children, at every depth — see
+[When `resources` is not an object](#when-resources-is-not-an-object). A lock whose
 `owner`, `operation` or `expiresAt` holds an object that cannot be coerced
 renders too: the owner and operation read as `[object Object]`, and the expiry
 reads as `expires at an unknown time` — the same words the lock-contention
@@ -245,12 +313,14 @@ refusal uses for any `expiresAt` that is not a finite number (`{}`, `"soon"`,
 absent), so a hand-edited deadline never prints as `NaNmNaNs`.
 
 A record malformed at its ROOT is still refused rather than rendered, with a
-message that names the problem — for example a `state.json` that is not valid
-JSON, one whose body is not a JSON object (it parses to `null`, an array or a
-primitive), or one whose schema version this binary does not read, whatever
-type that version holds. Plain `cdkd state show --json` remains the way to see
-a record's stored values: it emits the record as parsed, without walking it or
-rendering a lock summary.
+message that names the problem: a `state.json` that is not valid JSON, one whose
+body is not a JSON object (it parses to `null`, an array or a primitive), or one
+whose schema version this binary does not read, whatever type that version
+holds. Under `cdkd state list --long` only that stack's row degrades instead, as
+described under [`cdkd state list`](#cdkd-state-list).
+
+Plain `cdkd state show --json` remains the way to see a record's stored values:
+it emits the record as parsed, without walking it or rendering a lock summary.
 
 **Resource properties are deliberately excluded from every mode here** — use
 [`cdkd state show`](#cdkd-state-show) when you need them. A physical id may be
@@ -258,6 +328,84 @@ a composite, pipe-delimited value for resource types AWS identifies by more
 than one field; see
 [State Management](state-management.md#composite-pipe-delimited-physicalids)
 for what those mean and why they are not what `Ref` returns.
+
+### When `resources` is not an object
+
+`resources` is a map of logical id to resource. A hand-edited or truncated
+record can hold a string, a list, a number or a boolean there instead, and
+walking one of those invents entries — a string yields one per character, a
+list one per element. Both views of `cdkd state resources` and the text view of
+`cdkd state show` therefore read a bag they cannot use as an EMPTY set, and say
+so on stderr, rather than describing resources that are not there.
+
+| Command | What it prints |
+| --- | --- |
+| `cdkd state resources`, plain and `--long` | nothing, plus the warning |
+| `cdkd state resources --json` | `[]`, plus the warning |
+| `cdkd state show`, `--show-nested` included | `Resources (0):` with no resource blocks, plus one warning per record read that way |
+| `cdkd state show --json` | the stored value, unchanged and unwarned |
+| `cdkd state show --show-nested --json` | the stored value, unchanged, but still warned per record |
+| `cdkd state list --long` | `Resources: unknown (...)` for that row, as described under [`cdkd state list`](#cdkd-state-list) |
+
+`cdkd state show --json` is the mode to reach for here: it is the one view that
+shows what the record actually holds, which is why the `--long` listing's
+reason text names it.
+
+`--show-nested` reports no children for such a record — a bag that is not a map
+of logical id to resource declares no nested stack — and the record itself
+still comes back as stored. That applies **at every depth**, not only to the
+stack you named: each record the walk reaches is judged on its own bag, so a
+healthy parent whose nested child is malformed still renders the parent's
+resources, reports the child with none, and descends no further.
+
+The warning identifies the stack and region, says the output describes zero
+resources rather than a stack that has none, and tells you not to run
+`cdkd deploy` or `cdkd destroy` against the record. Both read the same map, and
+one they cannot read is indistinguishable from an empty stack: a deploy would
+re-create every resource and a destroy would delete none of them. Repair or
+remove the record instead.
+
+An absent or `null` bag is reported the same way and renders exactly as an
+empty one does. `cdkd state list --long` differs on those two: it counts them
+as `0` with no reason attached.
+
+`--show-nested --json` is the one JSON mode that still warns, because there the
+damage is invisible in the payload's shape: a node whose bag could not be read
+comes back with an empty `children` list, which is exactly what a genuine leaf
+looks like, so a tool walking the tree reads a cut subtree as a complete one.
+
+### When a value container is not an object
+
+The same reading applies to the four containers these views walk for their
+rows: `outputs` and `skippedOutputs` on the record, and `attributes` and
+`properties` on each resource. A hand-edited or truncated record can hold a
+string, a list, a number or a boolean in any of them, and walking one invents
+rows the same way — a string yields one per character, a list one per element.
+Each is read as EMPTY instead, with one warning on stderr per record naming
+every container that was emptied.
+
+| Command | What it prints |
+| --- | --- |
+| `cdkd state show` | the record without that block — no `Outputs:`, no `Skipped outputs:`, `Attributes: (none)`, `Properties: (none)` — plus the warning |
+| `cdkd state show --show-nested` | the same, judged per record, so the warning names the stack whose record it was |
+| `cdkd state resources --long` | `Attributes: (none)`, plus the warning |
+| `cdkd state resources --json` | `"attributes": {}`, plus the warning |
+| `cdkd state resources`, plain | the three-column listing, unchanged and unwarned — it prints no attributes |
+| `cdkd state show --json`, `--show-nested` included | the stored value, unchanged and unwarned |
+
+The rule behind those rows is that a view reports only the containers IT
+renders. `cdkd state resources` prints attributes in `--long` and `--json` and
+nothing else in any mode, so it says nothing about `properties`, `outputs` or
+`skipped outputs` however they are spelled, and its plain listing says nothing
+at all. `cdkd state show` is where a record's four containers are visible, and
+`cdkd state show --json` remains the mode that shows what the record actually
+holds — the warning's own text names it.
+
+An absent or `null` container is NOT reported, and this is where these four
+differ from the `resources` bag. `skippedOutputs` is absent on every record
+written before it existed, `attributes` is absent on a resource that has none,
+and both views have always rendered a missing container as an empty one.
+Neither can invent a row, so neither is treated as a defect.
 
 ## `cdkd state show`
 
@@ -271,6 +419,10 @@ cdkd state show MyParent --show-nested --json
 The deepest read: stack metadata, the lock record, outputs, skipped outputs,
 and every resource with its properties, attributes, dependencies, and
 `provisionedBy` routing.
+
+What every mode here does with a record whose `resources` is not a JSON object —
+including `--show-nested` at any depth — is described once, under
+[When `resources` is not an object](#when-resources-is-not-an-object).
 
 ### Skipped outputs
 

@@ -27,6 +27,7 @@ import { describe, it, expect, beforeAll } from 'vite-plus/test';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -65,6 +66,13 @@ import {
   renderUmbrellaDocument,
   CHECK_GUIDANCE,
   KNOWN_FLAGS,
+  parseStickyCcMigrationExempt,
+  parseCcFallbackOptOuts,
+  parseNonProvisionableTypes,
+  renderChangelogFragment,
+  PR_NUMBER_PLACEHOLDER,
+  CYCLE_PLACEHOLDER,
+  CHANGELOG_ENTRY_LIMIT,
   classifyGitShowFailure,
   assertFixtureFloor,
   collectFixtureDeltas,
@@ -82,6 +90,10 @@ import {
 // defect was two definitions of "settled", and a second copy here would be a
 // third.
 import { classifyCoverage } from '../provisioning/_property-coverage-utils.js';
+// The real acceptance gate for a rendered fragment: filename shape, the `- `
+// opener, no dated heading, one bullet. Asserting those by hand here would be
+// a second copy of rules `assemble-changelog.ts` owns.
+import { readEntries } from '../../../scripts/assemble-changelog.js';
 import {
   providerWiresProperty,
   typedSdkMember,
@@ -89,12 +101,13 @@ import {
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
-const fixture = (properties: string[], readOnly: string[] = []) =>
+const fixture = (properties: string[], readOnly: string[] = [], createOnly: string[] = []) =>
   JSON.stringify({
     resourceType: 'AWS::Test::Type',
     generatedAt: '2026-01-01',
     properties,
     readOnlyProperties: readOnly,
+    createOnlyProperties: createOnly,
   });
 
 describe('comparePropertySets', () => {
@@ -112,7 +125,53 @@ describe('comparePropertySets', () => {
 
   it('reports nothing for an unchanged type', () => {
     const delta = comparePropertySets(fixture(['A']), fixture(['A']));
-    expect(delta).toEqual({ removed: [], added: [], writableAdded: [] });
+    expect(delta).toEqual({
+      removed: [],
+      added: [],
+      writableAdded: [],
+      createOnlyAdded: [],
+      writableRemoved: [],
+    });
+  });
+
+  it('marks which writable additions the refreshed schema calls create-only', () => {
+    // The changelog fragment states whether `createOnlyDrops` changes, and a
+    // create-only silent drop is the one the record narrowing must KEEP. Read
+    // from the REFRESHED side: a property AWS newly marks create-only is
+    // create-only for the deploy this refresh enables, whatever the committed
+    // copy said.
+    const delta = comparePropertySets(
+      fixture(['Keep']),
+      fixture(['Keep', 'Immutable', 'Mutable'], [], ['Immutable'])
+    );
+    expect(delta.writableAdded).toEqual(['Immutable', 'Mutable']);
+    expect(delta.createOnlyAdded).toEqual(['Immutable']);
+  });
+
+  it('separates the WRITABLE removals, since a read-only one was never sendable', () => {
+    // The removal half of the changelog reads this: a property AWS computed
+    // and returned was never a value cdkd could send, so its disappearance
+    // changes nothing a user can observe. Read off the BEFORE side, which is
+    // the only side that still describes the property.
+    const delta = comparePropertySets(
+      fixture(['Keep', 'WasSendable', 'WasComputed'], ['WasComputed']),
+      fixture(['Keep'])
+    );
+    expect(delta.removed).toEqual(['WasSendable', 'WasComputed']);
+    expect(delta.writableRemoved).toEqual(['WasSendable']);
+  });
+
+  it('does not report a create-only addition that is read-only', () => {
+    // A read-only property is never sent, so it can never be a silent drop --
+    // and a `createOnlyAdded` entry that is not in `writableAdded` would put a
+    // property in the fragment's create-only sentence that the entry never
+    // introduces as a drop.
+    const delta = comparePropertySets(
+      fixture(['Keep']),
+      fixture(['Keep', 'Computed'], ['Computed'], ['Computed'])
+    );
+    expect(delta.writableAdded).toEqual([]);
+    expect(delta.createOnlyAdded).toEqual([]);
   });
 });
 
@@ -1922,11 +1981,12 @@ describe('collectFixtureDeltas', () => {
   // The first draft of this helper used an object map and `/properties/X`
   // paths, and every case reported an empty delta — a fixture that does not
   // encode what its consumer reads proves nothing about the consumer.
-  const fixture = (props: string[], readOnly: string[] = []) =>
+  const fixture = (props: string[], readOnly: string[] = [], createOnly: string[] = []) =>
     JSON.stringify({
       resourceType: 'AWS::Glue::Connection',
       properties: props,
       readOnlyProperties: readOnly,
+      createOnlyProperties: createOnly,
     });
 
   it('COUNTS a fixture whose comparison threw, rather than skipping it', () => {
@@ -2110,9 +2170,69 @@ describe('collectFixtureDeltas', () => {
       currentOf: () => fixture(['Settable', 'ComputedArn'], ['ComputedArn']),
     });
     expect(out.writableAdded).toEqual([
-      { resourceType: 'AWS::Glue::Connection', properties: ['Settable'] },
+      { resourceType: 'AWS::Glue::Connection', properties: ['Settable'], createOnly: [] },
     ]);
     expect(out.readOnlyAddedCount).toBe(1);
+  });
+
+  it('hands the changelog the COMPLEMENT of the declared removals', () => {
+    // The two populations are disjoint and both matter, differently. A removed
+    // property the provider DECLARES makes that declaration bogus -- a decision
+    // the report escalates. One nobody declares was a `silentDrop` row, and
+    // losing it is what stops the resource auto-routing, which is the
+    // changelog's subject.
+    const out = collectFixtureDeltas({
+      ...base,
+      files: ['glue.json'],
+      committedOf: () => fixture(['OldProp', 'NobodyDeclaredThis', 'Computed'], ['Computed']),
+      currentOf: () => fixture(['Leftover']),
+    });
+    expect(out.removed.map((e) => e.properties)).toEqual([['OldProp']]);
+    expect(out.silentDropRemoved).toEqual([
+      {
+        resourceType: 'AWS::Glue::Connection',
+        properties: ['NobodyDeclaredThis'],
+        // `Leftover` is writable and undeclared, so the type still has a drop.
+        retainsOtherDrops: true,
+      },
+    ]);
+  });
+
+  it('reports a type left with NO actionable drop after the withdrawal', () => {
+    // The discriminator the fragment's routing sentence turns on: with nothing
+    // undeclared left, a new resource of the type returns to the SDK path.
+    const out = collectFixtureDeltas({
+      ...base,
+      files: ['glue.json'],
+      committedOf: () => fixture(['NobodyDeclaredThis', 'OldProp']),
+      currentOf: () => fixture(['OldProp']),
+    });
+    expect(out.silentDropRemoved).toEqual([
+      {
+        resourceType: 'AWS::Glue::Connection',
+        properties: ['NobodyDeclaredThis'],
+        retainsOtherDrops: false,
+      },
+    ]);
+  });
+
+  it('carries each type’s create-only additions through to the fragment renderer', () => {
+    // `createOnly` is the ONLY consumer-visible field added for the changelog
+    // fragment, and it travels per TYPE -- a union across types would make the
+    // fragment attribute one type's create-only property to another.
+    const out = collectFixtureDeltas({
+      ...base,
+      files: ['glue.json'],
+      committedOf: () => fixture([]),
+      currentOf: () => fixture(['Immutable', 'Mutable'], [], ['Immutable']),
+    });
+    expect(out.writableAdded).toEqual([
+      {
+        resourceType: 'AWS::Glue::Connection',
+        properties: ['Immutable', 'Mutable'],
+        createOnly: ['Immutable'],
+      },
+    ]);
   });
 });
 
@@ -2641,6 +2761,132 @@ describe('--decision-count-out', () => {
   });
 });
 
+describe('--changelog-out, through the shipped binary', () => {
+  const SCRIPT = join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs');
+
+  it('writes an EMPTY file when the cycle adds no writable property', () => {
+    // The distinction the workflow's two guards are built on: an EMPTY file is
+    // "no behaviour delta, pass silently", a MISSING one is "the diagnosis
+    // died, warn". A `if (fragment)` guard here would delete the empty file
+    // and make the job warn on every ordinary day.
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-frag-'));
+    const out = join(dir, 'fragment.md');
+    try {
+      // No fixture drift in a clean tree -> nothing writable was added.
+      const res = spawnSync('node', [SCRIPT, '--changelog-out', out], {
+        encoding: 'utf8',
+        cwd: REPO_ROOT,
+      });
+      expect(res.status).toBe(0);
+      expect(existsSync(out), 'the fragment file must exist even with no delta').toBe(true);
+      expect(readFileSync(out, 'utf8')).toBe('');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('refuses the flag with no value', () => {
+    const res = spawnSync('node', [SCRIPT, '--changelog-out'], { encoding: 'utf8', cwd: REPO_ROOT });
+    // Same forgiving shape as the count: the REPORT is still what the human
+    // reads, so the throw is caught upstream and printed rather than exiting.
+    expect(res.stdout + res.stderr).toContain('--changelog-out was given with no value');
+  }, 60_000);
+
+  it('is a known flag, so the unknown-flag guard does not refuse the workflow', () => {
+    expect(KNOWN_FLAGS).toContain('--changelog-out');
+  });
+
+  it('wires the routing buckets so a real addition takes the ROUTED story', () => {
+    // `main()`'s bucket construction is invisible on both channels otherwise:
+    // `!providerFiles.has(t)` selects nothing today (134 fixtures, 134
+    // registrations), so inverting that filter would put EVERY type in the
+    // unknown bucket and ship "cdkd could not read the routing declaration" in
+    // every future fragment -- green suite, and nobody reads the fragment
+    // before it lands. This drives the real `main()` over a real delta.
+    //
+    // REALPATH for the same reason the tolerance arms use it: git resolves
+    // macOS's `/var` tmpdir to `/private/var`, and a mismatch makes every
+    // fixture read as "outside repository", which is a VACUOUS pass.
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'cdkd-route-wiring-')));
+    try {
+      mkdirSync(join(root, 'scripts'), { recursive: true });
+      mkdirSync(join(root, 'fx'), { recursive: true });
+      for (const name of readdirSync(join(REPO_ROOT, 'scripts'))) {
+        const from = join(REPO_ROOT, 'scripts', name);
+        if (statSync(from).isFile()) cpSync(from, join(root, 'scripts', name));
+      }
+      symlinkSync(join(REPO_ROOT, 'node_modules'), join(root, 'node_modules'));
+      symlinkSync(join(REPO_ROOT, 'src'), join(root, 'src'));
+      cpSync(join(REPO_ROOT, 'tests/fixtures/cfn-schemas'), join(root, 'fx'), { recursive: true });
+      execFileSync('git', ['init', '-q', root]);
+      execFileSync('git', ['-C', root, 'add', '-A'], { stdio: 'ignore' });
+      execFileSync(
+        'git',
+        ['-C', root, '-c', 'user.email=t@e', '-c', 'user.name=t', 'commit', '-qm', 'seed'],
+        { stdio: 'ignore' }
+      );
+
+      // The probe type's PRECONDITIONS, asserted rather than assumed. All
+      // three are legitimate future edits to `AWS::DynamoDB::Table`, and
+      // without these the case would fail as a bare "expected fragment to
+      // contain ONE-WAY" and read as a regression in the renderer.
+      const registrySource = readFileSync(
+        join(REPO_ROOT, 'src/provisioning/provider-registry.ts'),
+        'utf-8'
+      );
+      expect(
+        parseStickyCcMigrationExempt(registrySource).has('AWS::DynamoDB::Table'),
+        'the probe type joined STICKY_CC_MIGRATION_EXEMPT; it no longer pins cc-api ONE-WAY'
+      ).toBe(false);
+      expect(
+        parseNonProvisionableTypes(
+          readFileSync(join(REPO_ROOT, 'src/provisioning/unsupported-types.generated.ts'), 'utf-8')
+        ).has('AWS::DynamoDB::Table'),
+        'the probe type became NON_PROVISIONABLE; it is refused, not routed'
+      ).toBe(false);
+      expect(
+        parseCcFallbackOptOuts(
+          mapTypesToProviderFiles(
+            readFileSync(join(REPO_ROOT, 'src/provisioning/register-providers.ts'), 'utf8')
+          )
+        ).optedOut.has('AWS::DynamoDB::Table'),
+        'the probe type’s provider now declines the CC fallback; it is refused, not routed'
+      ).toBe(false);
+
+      // AWS publishing a writable property on a type that HAS a provider and
+      // is neither NON_PROVISIONABLE nor a CC-fallback opt-out: the ordinary
+      // cycle, and the one whose story must be the routed one.
+      const target = join(root, 'fx', 'AWS-DynamoDB-Table.json');
+      const fixture = JSON.parse(readFileSync(target, 'utf8'));
+      fixture.properties = [...fixture.properties, 'ZzProbeProperty'];
+      writeFileSync(target, `${JSON.stringify(fixture, null, 2)}\n`);
+
+      const out = join(root, 'fragment.md');
+      const res = spawnSync(
+        'node',
+        [join(root, 'scripts/diagnose-schema-refresh.mjs'), '--fixtures-dir', join(root, 'fx'), '--changelog-out', out],
+        { encoding: 'utf8', cwd: root }
+      );
+      expect(res.error, 'the relocated diagnosis failed to spawn').toBeUndefined();
+      expect(res.status, `exited ${res.status}: ${res.stderr}`).toBe(0);
+
+      const fragment = readFileSync(out, 'utf8');
+      expect(fragment, `no fragment was rendered: ${res.stderr}`).toContain('ZzProbeProperty');
+      expect(fragment).toContain('`AWS::DynamoDB::Table`');
+      // The ROUTED story, and neither of the other two: the type is mapped,
+      // readable, declines nothing and is not NON_PROVISIONABLE.
+      expect(fragment).toContain('auto-route');
+      expect(fragment).toContain('ONE-WAY');
+      expect(fragment, 'the unknown bucket swallowed a type whose routing IS known').not.toContain(
+        'could not read the routing declaration'
+      );
+      expect(fragment).not.toContain('REFUSED at pre-flight');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 180_000);
+});
+
 describe('--umbrella-checklist returns before the refresh-report setup', () => {
   const SCRIPT = join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs');
 
@@ -2768,6 +3014,775 @@ describe('the finished-campaign sentinel', () => {
     expect(out.stdout).toMatch(/^- \[ \] `AWS::/m);
     expect(out.stdout).not.toContain(UMBRELLA_EMPTY_SENTINEL);
   }, 60_000);
+});
+
+describe('parseStickyCcMigrationExempt', () => {
+  // Anchored on the REAL registry, like the other parsers in this suite: a
+  // synthetic source would encode the same shape assumption the regex makes,
+  // and the shape is exactly what can drift out from under it.
+  const registrySource = readFileSync(
+    join(REPO_ROOT, 'src', 'provisioning', 'provider-registry.ts'),
+    'utf-8'
+  );
+
+  it('reads the exempt types out of the shipped registry', () => {
+    const exempt = parseStickyCcMigrationExempt(registrySource);
+    expect(exempt.has('AWS::Scheduler::Schedule')).toBe(true);
+    expect(exempt.has('AWS::SNS::Topic')).toBe(true);
+    // The complement is what the fragment's one-way-pin sentence is keyed on,
+    // so a parse that swept in every quoted type would be as wrong as an empty
+    // one and would read as success.
+    expect(exempt.has('AWS::DynamoDB::Table')).toBe(false);
+    expect(exempt.has('AWS::S3::Bucket')).toBe(false);
+  });
+
+  it('refuses a source it cannot read rather than reporting nothing exempt', () => {
+    // The dangerous polarity: an empty answer makes the fragment assert the
+    // ONE-WAY pin for a type that can in fact return to its SDK provider.
+    expect(() => parseStickyCcMigrationExempt('export const SOMETHING_ELSE = 1;\n')).toThrow(
+      /could not read STICKY_CC_MIGRATION_EXEMPT/
+    );
+  });
+
+  /**
+   * The real registry cannot discriminate these, and a case anchored on it
+   * reads as if it could. Measured: over the shipped table a LOOSE key regex
+   * (`/'(AWS::[\w:]+)'/g`) and a GREEDY slice both return the same two types,
+   * so neither guard would red if removed. The shapes below are synthetic on
+   * purpose — they are the ones the guards exist for, and they are the ones a
+   * future edit to `provider-registry.ts` could introduce.
+   */
+  describe('the guards the shipped table cannot exercise', () => {
+    it('does not collect an AWS:: type quoted inside an entry’s prose field', () => {
+      const source = [
+        'export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, E> = new Map([',
+        '  [',
+        "    'AWS::Scheduler::Schedule',",
+        '    {',
+        "      physicalIdForm: 'parity measured against AWS::DynamoDB::Table, which is NOT exempt',",
+        '    },',
+        '  ],',
+        ']);',
+        '',
+      ].join('\n');
+      const exempt = parseStickyCcMigrationExempt(source);
+      expect([...exempt]).toEqual(['AWS::Scheduler::Schedule']);
+    });
+
+    it('stops at the table’s own closing bracket, not a later Map in the file', () => {
+      const source = [
+        'export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, E> = new Map([',
+        '  [',
+        "    'AWS::Scheduler::Schedule',",
+        '    { mode: "cc-broken" },',
+        '  ],',
+        ']);',
+        '',
+        'const SOMETHING_ELSE = new Map([',
+        '  [',
+        "    'AWS::DynamoDB::Table',",
+        '    { mode: "unrelated" },',
+        '  ],',
+        ']);',
+        '',
+      ].join('\n');
+      expect([...parseStickyCcMigrationExempt(source)]).toEqual(['AWS::Scheduler::Schedule']);
+    });
+
+    it('refuses a PARTIAL read rather than reporting the skipped type as not exempt', () => {
+      // The failure the zero-check cannot see: one entry written on a single
+      // line parses to nothing while its sibling matches, and the skipped type
+      // then reads as NOT exempt — the false ONE-WAY claim in person.
+      const source = [
+        'export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, E> = new Map([',
+        '  [',
+        "    'AWS::Scheduler::Schedule',",
+        '    { mode: "cc-broken" },',
+        '  ],',
+        "  ['AWS::SNS::Topic', { mode: 'sdk-coverage' }],",
+        ']);',
+        '',
+      ].join('\n');
+      expect(() => parseStickyCcMigrationExempt(source)).toThrow(/refusing a PARTIAL read/);
+    });
+  });
+
+  it('refuses a table that parses to zero types', () => {
+    expect(() =>
+      parseStickyCcMigrationExempt(
+        'const STICKY_CC_MIGRATION_EXEMPT: Map<string, X> = new Map<string, X>([\n  // nothing\n]);\n'
+      )
+    ).toThrow(/parsed to zero types/);
+  });
+});
+
+describe('the unroutable-type sources', () => {
+  it('reads the CC-fallback opt-outs off the real provider sources', () => {
+    const providerFiles = mapTypesToProviderFiles(
+      readFileSync(join(REPO_ROOT, 'src/provisioning/register-providers.ts'), 'utf8')
+    );
+    const { optedOut, unreadable } = parseCcFallbackOptOuts(providerFiles);
+    // Anchored on two providers that declare it, and on the COMPLEMENT — the
+    // set is what decides whether a type gets the auto-route story or the
+    // refusal one, so sweeping in everything would be as wrong as sweeping in
+    // nothing.
+    expect(optedOut.has('AWS::FSx::FileSystem')).toBe(true);
+    expect(optedOut.has('AWS::IAM::AccessKey')).toBe(true);
+    // The complement that DISCRIMINATES. `AWS::DynamoDB::Table` never mentions
+    // the token, so it passes under any regex; `logs-loggroup-provider.ts`
+    // quotes `disableCcApiFallback` in PROSE without setting it, and is the one
+    // type in the tree a loosened match would wrongly call opted out -- the
+    // routed sentence would then be replaced by a refusal that is false.
+    expect(optedOut.has('AWS::Logs::LogGroup')).toBe(false);
+    expect(optedOut.has('AWS::DynamoDB::Table')).toBe(false);
+    expect([...unreadable]).toEqual([]);
+  });
+
+  it('reports a provider whose source cannot be read, instead of calling it routable', () => {
+    const { optedOut, unreadable } = parseCcFallbackOptOuts(
+      new Map([['AWS::Made::Up', 'src/provisioning/providers/does-not-exist.ts']])
+    );
+    expect([...unreadable]).toEqual(['AWS::Made::Up']);
+    expect([...optedOut]).toEqual([]);
+  });
+
+  it('reads NON_PROVISIONABLE_TYPES, and refuses an unreadable or empty set', () => {
+    const real = parseNonProvisionableTypes(
+      readFileSync(join(REPO_ROOT, 'src/provisioning/unsupported-types.generated.ts'), 'utf-8')
+    );
+    expect(real.has('AWS::DynamoDB::Table')).toBe(false);
+    expect(real.size).toBeGreaterThan(100);
+    // Both refusals: the polarity that ships a FALSE auto-route claim is the
+    // empty one, so neither may pass as "everything routes".
+    expect(() => parseNonProvisionableTypes('export const OTHER = 1;\n')).toThrow(
+      /could not read NON_PROVISIONABLE_TYPES/
+    );
+    expect(() =>
+      parseNonProvisionableTypes(
+        'export const NON_PROVISIONABLE_TYPES: ReadonlySet<string> = new Set([\n]);\n'
+      )
+    ).toThrow(/parsed to zero types/);
+  });
+});
+
+describe('renderChangelogFragment', () => {
+  const exemptTypes = new Set(['AWS::Scheduler::Schedule']);
+
+  it('records a REMOVAL-only cycle, which ships a delta of its own', () => {
+    // A withdrawn property loses its `silentDrop` row, so the issue-614
+    // auto-route stops applying to it and a template still carrying the key is
+    // dropped with a warn. Before this the job rendered nothing for such a
+    // cycle (go-to-k/cdkd#3175).
+    const fragment = renderChangelogFragment({
+      writableAdded: [],
+      exemptTypes,
+      silentDropRemoved: [
+        { resourceType: 'AWS::DynamoDB::Table', properties: ['OldThing'], retainsOtherDrops: true },
+      ],
+    })!;
+    expect(fragment).toMatch(/^- \*\*AWS withdrew 1 writable property/);
+    expect(fragment).toContain('`AWS::DynamoDB::Table`: `OldThing`');
+    expect(fragment).toContain('UNRECOGNIZED property');
+    // The ADDITION sentences must be absent -- nothing was added, and the
+    // create-only sentence is about what JOINS `createOnlyDrops`.
+    expect(fragment).not.toContain('no SDK provider writes');
+    expect(fragment).not.toContain('createOnlyDrops');
+  });
+
+  it('says whether the type keeps auto-routing after the withdrawal', () => {
+    // The one fact that decides what a user sees, and it is read off the
+    // REFRESHED fixture rather than guessed: another actionable drop left
+    // means the resource still takes the Cloud Control route.
+    const keeps = renderChangelogFragment({
+      writableAdded: [],
+      exemptTypes,
+      silentDropRemoved: [
+        { resourceType: 'AWS::DynamoDB::Table', properties: ['OldThing'], retainsOtherDrops: true },
+      ],
+    })!;
+    expect(keeps).toContain('still carries another actionable drop');
+    // Scoped to a RESOURCE whose template sets one of the remaining drops --
+    // routing is decided per resource from its own bag, not per type.
+    expect(keeps).toContain('a resource whose template sets one keeps taking the Cloud Control route');
+    expect(keeps).not.toContain('takes the SDK path');
+
+    const returns = renderChangelogFragment({
+      writableAdded: [],
+      exemptTypes,
+      silentDropRemoved: [
+        { resourceType: 'AWS::SQS::Queue', properties: ['OldThing'], retainsOtherDrops: false },
+      ],
+    })!;
+    expect(returns).toContain('no actionable drop left');
+    expect(returns).toContain('a NEW resource of that type takes the SDK path');
+    // The sticky record is stated as the mechanism it is -- an existing
+    // cc-api resource does NOT come back with it.
+    expect(returns).toContain("stays on Cloud Control");
+    expect(returns).not.toContain('still carries another actionable drop');
+  });
+
+  it('drops the sticky claim for a type the exemption table lets return', () => {
+    // `wouldReturnToSdkProvider` lets a 'cc-broken' type out unconditionally
+    // and an 'sdk-coverage' type out once both bags are drop-free -- which IS
+    // the no-drops-left state -- so "an existing cc-api record stays put" is
+    // false for exactly the types in that table. Both have fixtures.
+    const fragment = renderChangelogFragment({
+      writableAdded: [],
+      exemptTypes: new Set(['AWS::SNS::Topic']),
+      silentDropRemoved: [
+        { resourceType: 'AWS::SNS::Topic', properties: ['OldThing'], retainsOtherDrops: false },
+      ],
+    })!;
+    expect(fragment).toContain('returns to its SDK provider on the next mutating deploy');
+    expect(fragment).not.toContain('stays on Cloud Control');
+  });
+
+  it('says a REFUSED type never took the route its remaining drop suggests', () => {
+    // A type whose provider declines the CC fallback is refused at pre-flight,
+    // so "still takes the Cloud Control route" would say the opposite of what
+    // a deploy does -- the same split the addition half already makes.
+    const fragment = renderChangelogFragment({
+      writableAdded: [],
+      exemptTypes,
+      unroutableTypes: new Set(['AWS::FSx::FileSystem']),
+      silentDropRemoved: [
+        { resourceType: 'AWS::FSx::FileSystem', properties: ['OldThing'], retainsOtherDrops: true },
+      ],
+    })!;
+    expect(fragment).toContain('REFUSED at pre-flight there rather than routed');
+    expect(fragment).not.toContain('keeps taking the Cloud Control route');
+    expect(fragment).not.toContain('takes the SDK path');
+  });
+
+  it('tells neither story about a WITHDRAWING type whose routing is unknown', () => {
+    const fragment = renderChangelogFragment({
+      writableAdded: [],
+      exemptTypes,
+      unknownRoutingTypes: new Set(['AWS::Mystery::Thing']),
+      silentDropRemoved: [
+        { resourceType: 'AWS::Mystery::Thing', properties: ['OldThing'], retainsOtherDrops: true },
+      ],
+    })!;
+    expect(fragment).toContain('does not state what a remaining drop does there');
+    expect(fragment).not.toContain('keeps taking the Cloud Control route');
+    expect(fragment).not.toContain('REFUSED at pre-flight there');
+  });
+
+  it('says the pre-flight REFUSAL goes away when a refused type loses its last drop', () => {
+    // The largest delta the removal half can report, and it was collapsed into
+    // the keeps-a-drop wording: `AWS::Logs::LogGroup` carries exactly one
+    // silentDrop row on a provider that declines the CC fallback, so AWS
+    // withdrawing it flips a HARD pre-flight refusal into an SDK deploy.
+    const fragment = renderChangelogFragment({
+      writableAdded: [],
+      exemptTypes,
+      unroutableTypes: new Set(['AWS::Logs::LogGroup']),
+      silentDropRemoved: [
+        {
+          resourceType: 'AWS::Logs::LogGroup',
+          properties: ['ResourcePolicyDocument'],
+          retainsOtherDrops: false,
+        },
+      ],
+    })!;
+    expect(fragment).toContain('the pre-flight REFUSAL goes with the withdrawn key');
+    expect(fragment).toContain('now deploys on the SDK path');
+    // The keeps-a-drop wording would be vacuous here -- it describes drops the
+    // type no longer has.
+    expect(fragment).not.toContain('the drops it still carries are REFUSED');
+  });
+
+  it('fits the cap with every bucket populated, and says what it omitted', () => {
+    // Width is not what drives this: with all nine buckets carrying one type
+    // the sentence set is fixed-cost (~2700 measured), so the two droppable
+    // sentences cannot get under the cap on their own. The last-resort arm
+    // gives up whole per-type notes from the end and NAMES the count, so a
+    // reader knows to read the PR rather than assuming the entry is complete.
+    const added = (t: string) => ({ resourceType: t, properties: ['P'], createOnly: [] });
+    const gone = (t: string, keep: boolean) => ({
+      resourceType: t,
+      properties: ['P'],
+      retainsOtherDrops: keep,
+    });
+    const fragment = renderChangelogFragment({
+      writableAdded: [added('AWS::A::Routed'), added('AWS::B::Unroutable'), added('AWS::C::Unknown')],
+      exemptTypes: new Set(['AWS::G::Exempt']),
+      unroutableTypes: new Set([
+        'AWS::B::Unroutable',
+        'AWS::E::UnroutableKeep',
+        'AWS::F::UnroutableClear',
+      ]),
+      unknownRoutingTypes: new Set(['AWS::C::Unknown', 'AWS::I::UnknownRm']),
+      silentDropRemoved: [
+        gone('AWS::D::Still', true),
+        gone('AWS::G::Exempt', false),
+        gone('AWS::H::Sticky', false),
+        gone('AWS::E::UnroutableKeep', true),
+        gone('AWS::F::UnroutableClear', false),
+        gone('AWS::I::UnknownRm', true),
+      ],
+    })!;
+    expect(fragment.trimEnd().length).toBeLessThanOrEqual(CHANGELOG_ENTRY_LIMIT);
+    expect(fragment).toMatch(/\d+ further notes? omitted to fit the entry cap/);
+    // Given up by SEVERITY, not position. The refusal-goes-away note is the
+    // largest delta this half can report, and giving up from the end dropped
+    // it while the addition half's longer EXPLANATIONS survived (measured).
+    expect(fragment).toContain('the pre-flight REFUSAL goes with the withdrawn key');
+    expect(fragment, 'an absence outlived a consequence').not.toContain('createOnlyDrops');
+    // Both halves keep a note. An interleaved give-up was tried and reverted:
+    // over a fully saturated cycle the position tiebreak keeps 3 addition
+    // notes and 2 withdrawal ones, the interleave 1 and 4 -- five either way,
+    // favouring opposite halves.
+    expect(fragment, 'the addition half was wiped').toContain('ONE-WAY');
+    expect(fragment, 'the withdrawal half was wiped').toContain(
+      'still carries another actionable drop'
+    );
+    // The headline survives whatever else goes: it carries both lists, the
+    // counts and the warn/drop outcome.
+    expect(fragment.startsWith('- **')).toBe(true);
+    expect(fragment.slice(0, fragment.indexOf('**', 4))).toContain('dropped with a warn');
+  });
+
+  it('keeps the withdrawal CONSEQUENCE when the trim fires', () => {
+    // The warn/drop outcome is the one thing a reader acts on, and the wide
+    // trim used to take it: the mechanism sentence was dropped first and the
+    // headline said only "stops classifying the second". The headline now
+    // carries the outcome, and the create-only sentence -- the only one
+    // reporting an ABSENCE -- is what the trim gives up first.
+    const fragment = renderChangelogFragment({
+      writableAdded: Array.from({ length: 30 }, (_, i) => ({
+        resourceType: `AWS::Service${i}::LongishResourceTypeName`,
+        properties: [`SomeReasonablyLongPropertyName${i}`],
+        createOnly: [`SomeReasonablyLongPropertyName${i}`],
+      })),
+      exemptTypes,
+      silentDropRemoved: Array.from({ length: 30 }, (_, i) => ({
+        resourceType: `AWS::Other${i}::LongishResourceTypeName`,
+        properties: [`WithdrawnLongPropertyName${i}`],
+        retainsOtherDrops: i % 2 === 0,
+      })),
+    })!;
+    expect(fragment.trimEnd().length).toBeLessThanOrEqual(CHANGELOG_ENTRY_LIMIT);
+    expect(fragment.slice(0, fragment.indexOf('**', 4))).toContain('dropped with a warn');
+    expect(fragment).toContain('UNRECOGNIZED property');
+  });
+
+  it('carries both halves in one entry when a cycle adds and withdraws', () => {
+    const fragment = renderChangelogFragment({
+      writableAdded: [
+        { resourceType: 'AWS::DynamoDB::Table', properties: ['NewThing'], createOnly: [] },
+      ],
+      exemptTypes,
+      silentDropRemoved: [
+        { resourceType: 'AWS::SQS::Queue', properties: ['OldThing'], retainsOtherDrops: false },
+      ],
+    })!;
+    expect(fragment).toMatch(/^- \*\*The __CYCLE__ schema refresh adds 1 writable property and withdraws 1 writable property/);
+    expect(fragment).toContain('added: `AWS::DynamoDB::Table`: `NewThing`');
+    expect(fragment).toContain('withdrawn: `AWS::SQS::Queue`: `OldThing`');
+    // Both mechanisms, each scoped to its own half.
+    expect(fragment).toContain('auto-route sends a resource');
+    expect(fragment).toContain('UNRECOGNIZED property');
+  });
+
+  it('keeps a wide BOTH-halves cycle under the cap by dropping explanation, not consequence', () => {
+    // Two headline lists and two mechanism sentences: collapsing the lists
+    // alone leaves it over (measured 2057 against the 2000 cap), so the last
+    // resort drops the EXPLANATORY sentences. What a reader acts on -- which
+    // types changed route -- survives.
+    const fragment = renderChangelogFragment({
+      writableAdded: Array.from({ length: 30 }, (_, i) => ({
+        resourceType: `AWS::Service${i}::LongishResourceTypeName`,
+        properties: [`SomeReasonablyLongPropertyName${i}`],
+        createOnly: [`SomeReasonablyLongPropertyName${i}`],
+      })),
+      exemptTypes,
+      silentDropRemoved: Array.from({ length: 30 }, (_, i) => ({
+        resourceType: `AWS::Other${i}::LongishResourceTypeName`,
+        properties: [`WithdrawnLongPropertyName${i}`],
+        retainsOtherDrops: i % 2 === 0,
+      })),
+    })!;
+    expect(fragment.trimEnd().length).toBeLessThanOrEqual(CHANGELOG_ENTRY_LIMIT);
+    expect(fragment).toContain('30 across 30 resource types');
+    expect(fragment).toContain('of the withdrawing types');
+    expect(fragment).not.toContain('`AWS::Service0::LongishResourceTypeName`: ');
+    // The dropped sentences are the explanations, and the entry never runs
+    // two spaces together where one was removed.
+    expect(fragment).not.toMatch(/ {2}/);
+  });
+
+  it('renders nothing when AWS added no writable property', () => {
+    // A cycle that only removes, renames or adds read-only properties ships no
+    // behaviour delta, and an entry for it would be a changelog line about
+    // nothing.
+    expect(renderChangelogFragment({ writableAdded: [], exemptTypes })).toBeNull();
+  });
+
+  it('names each type and property, and leaves the PR number to be substituted', () => {
+    const fragment = renderChangelogFragment({
+      writableAdded: [
+        { resourceType: 'AWS::DynamoDB::Table', properties: ['VectorIndexes'], createOnly: [] },
+      ],
+      exemptTypes,
+    })!;
+    expect(fragment.startsWith('- **')).toBe(true);
+    expect(fragment).toContain('`AWS::DynamoDB::Table`: `VectorIndexes`');
+    expect(fragment).toContain(`[#${PR_NUMBER_PLACEHOLDER}]`);
+    // BOTH placeholders, and the cycle one in the HEADLINE specifically. The
+    // workflow refuses a fragment missing either, so dropping this one from
+    // the template does not degrade the entry -- it fails the daily job at
+    // `::error::`, which also skips the decision-marking step behind it.
+    const headline = fragment.slice(4, fragment.indexOf('**', 4));
+    expect(headline).toContain(CYCLE_PLACEHOLDER);
+    // ONE bullet, no dated heading: both are refusals in `readEntries`, and a
+    // fragment the job writes unattended is never read before it lands.
+    expect(fragment.split('\n').filter((l) => l.startsWith('- '))).toHaveLength(1);
+    expect(fragment.toLowerCase()).not.toContain('recently implemented');
+    // The ordinary cycle names no unknown type. Without this, dropping the
+    // unknown sentence's own guard ships `...for , so this entry does not
+    // state...` on EVERY fragment with the suite green.
+    expect(fragment).not.toContain('could not read the routing declaration');
+    // Same for the refusal sentence's guard: an ordinary cycle refuses nothing,
+    // and an ungated sentence would name an empty list on every fragment.
+    expect(fragment).not.toContain('cannot take that route');
+    // The pronoun follows the ROUTED population: one routed property is "it".
+    expect(fragment).toContain('no SDK provider writes it yet');
+  });
+
+  it('states the ONE-WAY pin only for a type that is not sticky-exempt', () => {
+    const pinned = renderChangelogFragment({
+      writableAdded: [{ resourceType: 'AWS::DynamoDB::Table', properties: ['P'], createOnly: [] }],
+      exemptTypes,
+    })!;
+    expect(pinned).toContain('ONE-WAY');
+    expect(pinned).toContain('`AWS::DynamoDB::Table`');
+
+    const exempt = renderChangelogFragment({
+      writableAdded: [
+        { resourceType: 'AWS::Scheduler::Schedule', properties: ['P'], createOnly: [] },
+      ],
+      exemptTypes,
+    })!;
+    // The claim is FALSE for an exempt type -- it returns to its SDK provider
+    // -- so its absence is the point, not a formatting preference.
+    expect(exempt).not.toContain('ONE-WAY');
+  });
+
+  it('splits a mixed batch so only the non-exempt types carry the pin sentence', () => {
+    const fragment = renderChangelogFragment({
+      writableAdded: [
+        { resourceType: 'AWS::Scheduler::Schedule', properties: ['A'], createOnly: [] },
+        { resourceType: 'AWS::DynamoDB::Table', properties: ['B'], createOnly: [] },
+      ],
+      exemptTypes,
+    })!;
+    const pinSentence = fragment.slice(fragment.indexOf('not in `STICKY_CC_MIGRATION_EXEMPT`') - 60);
+    expect(pinSentence).toContain('`AWS::DynamoDB::Table`');
+    expect(pinSentence).not.toContain('`AWS::Scheduler::Schedule`');
+    // Both types still reach the property list -- the exemption scopes ONE
+    // sentence, not the entry.
+    expect(fragment).toContain('`AWS::Scheduler::Schedule`: `A`');
+  });
+
+  it('says the narrowing is unchanged only when nothing added is create-only', () => {
+    const plain = renderChangelogFragment({
+      writableAdded: [{ resourceType: 'AWS::DynamoDB::Table', properties: ['P'], createOnly: [] }],
+      exemptTypes,
+    })!;
+    expect(plain).toContain('`createOnlyDrops` and the record narrowing\nare unchanged'.replace('\n', ' '));
+
+    const createOnly = renderChangelogFragment({
+      writableAdded: [
+        { resourceType: 'AWS::DynamoDB::Table', properties: ['P'], createOnly: ['P'] },
+      ],
+      exemptTypes,
+    })!;
+    expect(createOnly).toContain('create-only');
+    expect(createOnly).toContain('`createOnlyDrops`');
+    expect(createOnly).not.toContain('marks none of them create-only');
+  });
+
+  it('never claims the capture settles nested create-only paths', () => {
+    // `scripts/refresh-cfn-schemas.mjs` drops every path containing a slash, so
+    // an empty create-only list is silence about nested paths, not evidence.
+    for (const createOnly of [[], ['P']]) {
+      const fragment = renderChangelogFragment({
+        writableAdded: [{ resourceType: 'AWS::DynamoDB::Table', properties: ['P'], createOnly }],
+        exemptTypes,
+      })!;
+      expect(fragment).toContain('top-level-only');
+      expect(fragment).toContain('nested create-only path');
+    }
+  });
+
+  it('collapses the per-type list rather than rendering a fragment the size fence rejects', () => {
+    // The only unbounded part is the list, and a red size check on a PR meant
+    // to merge unattended is a worse outcome than a summarised one.
+    const writableAdded = Array.from({ length: 40 }, (_, i) => ({
+      resourceType: `AWS::Service${i}::LongishResourceTypeName`,
+      properties: [`SomeReasonablyLongPropertyName${i}`, `AnotherLongPropertyName${i}`],
+      createOnly: [],
+    }));
+    const fragment = renderChangelogFragment({ writableAdded, exemptTypes })!;
+    expect(fragment.trimEnd().length).toBeLessThanOrEqual(CHANGELOG_ENTRY_LIMIT);
+    expect(fragment).toContain('80 across 40 resource types');
+    expect(fragment).not.toContain('`AWS::Service0::LongishResourceTypeName`: ');
+    // The claims a reader ACTS on survive the collapse.
+    expect(fragment).toContain('ONE-WAY');
+    expect(fragment).toContain('top-level-only');
+  });
+
+  it('gives two cycles on ONE open PR different uniqueness keys', () => {
+    // The reason the date is in the headline at all. `changelog-entry-
+    // uniqueness.test.ts` keys an entry on its bolded headline; two cycles
+    // pushed onto one refresh PR share a PR number, so without the date a pair
+    // that happened to add the same number of properties collided and reds
+    // that fence -- on a PR opened unattended.
+    const render = (properties: string[]) =>
+      renderChangelogFragment({
+        writableAdded: [{ resourceType: 'AWS::DynamoDB::Table', properties, createOnly: [] }],
+        exemptTypes,
+      })!;
+    const keyOf = (fragment: string, cycle: string) => {
+      const substituted = fragment
+        .replaceAll(PR_NUMBER_PLACEHOLDER, '3167')
+        .replaceAll(CYCLE_PLACEHOLDER, cycle);
+      return substituted.slice(4, substituted.indexOf('**', 4));
+    };
+    // Same PR, same property COUNT -- everything the headline carries except
+    // the date is identical.
+    const monday = keyOf(render(['First']), '2026-09-15');
+    const tuesday = keyOf(render(['Second']), '2026-09-16');
+    expect(monday).not.toBe(tuesday);
+    // The fence MASKS backtick code spans before finding the closing `**`,
+    // and this re-implementation does not -- they agree only while the
+    // headline carries no backtick. Pinned so a future headline that adds one
+    // cannot make the two disagree silently.
+    expect(monday, 'the headline gained a code span; the key computed here is no longer the fence’s').not.toContain('`');
+    // And the difference IS the date, not an accident of the property list.
+    expect(monday.replace('2026-09-15', 'X')).toBe(tuesday.replace('2026-09-16', 'X'));
+  });
+
+  it('tells neither story about a type whose routing could not be established', () => {
+    // A THIRD answer, not a synonym for either. `mapTypesToProviderFiles` drops
+    // a registration whose path it cannot resolve, so a type can be missing
+    // from the opt-out scan without ever being reported unreadable — and the
+    // routed story by default is how the refusal case reopens.
+    const fragment = renderChangelogFragment({
+      writableAdded: [{ resourceType: 'AWS::Mystery::Thing', properties: ['P'], createOnly: [] }],
+      exemptTypes,
+      unknownRoutingTypes: new Set(['AWS::Mystery::Thing']),
+    })!;
+    expect(fragment).toContain('could not read the routing declaration');
+    expect(fragment).toContain('`AWS::Mystery::Thing`');
+    // Neither mechanism may be asserted: nothing established either.
+    expect(fragment).not.toContain('auto-route');
+    expect(fragment).not.toContain('REFUSED at pre-flight');
+    expect(fragment).not.toContain('ONE-WAY');
+  });
+
+  it('keeps an unknown type out of the routed list while still counting it', () => {
+    // The mixed cycle. The headline counts every property; the routed sentence
+    // must name only the type whose routing was established, or the fragment
+    // claims the auto-route for one it cannot answer for.
+    const fragment = renderChangelogFragment({
+      writableAdded: [
+        { resourceType: 'AWS::Mystery::Thing', properties: ['P'], createOnly: [] },
+        { resourceType: 'AWS::DynamoDB::Table', properties: ['Q'], createOnly: [] },
+      ],
+      exemptTypes,
+      unknownRoutingTypes: new Set(['AWS::Mystery::Thing']),
+    })!;
+    expect(fragment).toMatch(/^- \*\*AWS published 2 writable properties/);
+    expect(fragment).toContain('`AWS::Mystery::Thing`: `P`');
+    const routedEnd = fragment.indexOf('no SDK provider writes');
+    const routed = fragment.slice(fragment.lastIndexOf('On `', routedEnd), routedEnd);
+    expect(routed).toContain('`AWS::DynamoDB::Table`');
+    expect(routed).not.toContain('`AWS::Mystery::Thing`');
+    const pinEnd = fragment.indexOf('not in `STICKY_CC_MIGRATION_EXEMPT`');
+    expect(fragment.slice(fragment.lastIndexOf('. ', pinEnd) + 2, pinEnd)).not.toContain(
+      '`AWS::Mystery::Thing`'
+    );
+  });
+
+  it('collapses a wide UNKNOWN list like the others', () => {
+    const writableAdded = Array.from({ length: 40 }, (_, i) => ({
+      resourceType: `AWS::Service${i}::LongishResourceTypeName`,
+      properties: [`SomeReasonablyLongPropertyName${i}`],
+      createOnly: [],
+    }));
+    const fragment = renderChangelogFragment({
+      writableAdded,
+      exemptTypes,
+      unknownRoutingTypes: new Set(writableAdded.map((e) => e.resourceType)),
+    })!;
+    expect(fragment.trimEnd().length).toBeLessThanOrEqual(CHANGELOG_ENTRY_LIMIT);
+    expect(fragment).toContain('40 of those types');
+    expect(fragment).not.toContain('`AWS::Service0::LongishResourceTypeName`: ');
+  });
+
+  it('renders a cycle whose every type is unroutable', () => {
+    // `routed` empty is a real cycle -- AWS adding a property to one FSx-shaped
+    // type -- and the sentence that names the routed list must not be emitted
+    // with nothing in it.
+    const fragment = renderChangelogFragment({
+      writableAdded: [{ resourceType: 'AWS::FSx::FileSystem', properties: ['P'], createOnly: [] }],
+      exemptTypes,
+      unroutableTypes: new Set(['AWS::FSx::FileSystem']),
+    })!;
+    expect(fragment).toContain('REFUSED at pre-flight');
+    expect(fragment).not.toContain('no SDK provider writes');
+    // The pin is derived from `routed`, so it must be absent too: a refused
+    // type never reaches Cloud Control and so never pins `cc-api`.
+    expect(fragment).not.toContain('ONE-WAY');
+    expect(fragment).not.toMatch(/On\s*,/);
+  });
+
+  it('tells a REFUSED type from a routed one', () => {
+    // `provider-registry.ts` THROWS `buildUnroutableSilentDropMessage` for a
+    // provider that declines the CC fallback or a NON_PROVISIONABLE type, so
+    // the auto-route sentence would say the opposite of what a deploy does.
+    // Seven providers decline it today and their fixtures are all captured.
+    const fragment = renderChangelogFragment({
+      writableAdded: [
+        { resourceType: 'AWS::FSx::FileSystem', properties: ['P'], createOnly: [] },
+        { resourceType: 'AWS::DynamoDB::Table', properties: ['Q'], createOnly: [] },
+      ],
+      exemptTypes,
+      unroutableTypes: new Set(['AWS::FSx::FileSystem']),
+    })!;
+    const refusal = fragment.slice(fragment.indexOf('cannot take that route') - 40);
+    expect(refusal).toContain('`AWS::FSx::FileSystem`');
+    expect(refusal).toContain('REFUSED at pre-flight');
+    // ONE routed property alongside a refused type is still "it": the pronoun
+    // reads this sentence's own population, not the headline's count.
+    expect(fragment).toContain('no SDK provider writes it yet');
+    // The routed story and the ONE-WAY pin belong to the OTHER type only --
+    // both are false for a type that never reaches Cloud Control. Bounded to
+    // the sentence's own TYPE LIST: a slice by character count runs back into
+    // the headline, which names every type and would make this vacuous.
+    const routedEnd = fragment.indexOf('no SDK provider writes');
+    const routed = fragment.slice(fragment.lastIndexOf('On `', routedEnd), routedEnd);
+    expect(routed).toContain('`AWS::DynamoDB::Table`');
+    expect(routed).not.toContain('`AWS::FSx::FileSystem`');
+    // Bounded on BOTH sides for the same reason the routed slice is: open to
+    // the end of the fragment, a later sentence naming a type would satisfy
+    // this without the pin sentence naming anything.
+    const pinEnd = fragment.indexOf('not in `STICKY_CC_MIGRATION_EXEMPT`');
+    const pin = fragment.slice(fragment.lastIndexOf('. ', pinEnd) + 2, pinEnd);
+    expect(pin).not.toContain('`AWS::FSx::FileSystem`');
+    expect(pin).toContain('`AWS::DynamoDB::Table`');
+  });
+
+  it('writes NO sentence about a property the provider already declares handled', () => {
+    // `gen-property-coverage.ts` skips a handled property outright, so it never
+    // becomes a silentDrop and every claim in the fragment would be false for
+    // it. Reachable: twelve properties across ten types are declared handled
+    // while absent from the snapshot, and AWS republishing one is the event
+    // this renderer runs on.
+    const declared = new Map([['AWS::DynamoDB::Table', new Set(['AlreadyWired'])]]);
+    const fragment = renderChangelogFragment({
+      writableAdded: [
+        {
+          resourceType: 'AWS::DynamoDB::Table',
+          properties: ['AlreadyWired', 'Fresh'],
+          createOnly: [],
+        },
+      ],
+      exemptTypes,
+      declared,
+    })!;
+    expect(fragment).toContain('`Fresh`');
+    expect(fragment).not.toContain('AlreadyWired');
+    expect(fragment).toMatch(/^- \*\*AWS published 1 writable property/);
+  });
+
+  it('renders nothing when every addition is already declared handled', () => {
+    expect(
+      renderChangelogFragment({
+        writableAdded: [
+          { resourceType: 'AWS::DynamoDB::Table', properties: ['AlreadyWired'], createOnly: [] },
+        ],
+        exemptTypes,
+        declared: new Map([['AWS::DynamoDB::Table', new Set(['AlreadyWired'])]]),
+      })
+    ).toBeNull();
+  });
+
+  it('collapses the create-only list too', () => {
+    // The third unbounded list. Its own 40-type case used `createOnly: []`, so
+    // a wide CREATE-ONLY cycle blew the cap while every existing case passed.
+    const writableAdded = Array.from({ length: 30 }, (_, i) => ({
+      resourceType: `AWS::Service${i}::LongishResourceTypeName`,
+      properties: [`SomeReasonablyLongPropertyName${i}`],
+      createOnly: [`SomeReasonablyLongPropertyName${i}`],
+    }));
+    const fragment = renderChangelogFragment({ writableAdded, exemptTypes })!;
+    expect(fragment.trimEnd().length).toBeLessThanOrEqual(CHANGELOG_ENTRY_LIMIT);
+    // Each collapsed count says what it COUNTS. The headline collapses to a
+    // TYPE count, so a bare "N of them" in this sentence would read as N of
+    // those types while the create-only list holds one entry per PROPERTY.
+    expect(fragment).toContain('30 of the added properties create-only');
+    expect(fragment).toContain('30 of those types');
+  });
+
+  it('renders a fragment the ASSEMBLER accepts, over the real registry', () => {
+    // Fed through `readEntries` under the workflow's own filename shape, not
+    // merely length-checked: the assembler refuses a fragment that does not
+    // start with `- `, carries a dated heading, or holds a second column-0
+    // bullet, and the filename must satisfy `<date>-<issue>-<slug>.md`.
+    const fragment = renderChangelogFragment({
+      writableAdded: [
+        { resourceType: 'AWS::DynamoDB::Table', properties: ['VectorIndexes'], createOnly: [] },
+        {
+          resourceType: 'AWS::DynamoDB::GlobalTable',
+          properties: ['VectorIndexes'],
+          createOnly: [],
+        },
+      ],
+      exemptTypes: parseStickyCcMigrationExempt(
+        readFileSync(join(REPO_ROOT, 'src', 'provisioning', 'provider-registry.ts'), 'utf-8')
+      ),
+    })!;
+    expect(fragment.trimEnd().length).toBeLessThanOrEqual(CHANGELOG_ENTRY_LIMIT);
+    expect(fragment).toContain('ONE-WAY');
+    expect(fragment).toContain('`AWS::DynamoDB::GlobalTable`: `VectorIndexes`');
+
+    // Substituted the way the workflow substitutes, then assembled.
+    const substituted = fragment
+      .replaceAll(PR_NUMBER_PLACEHOLDER, '3167')
+      .replaceAll(CYCLE_PLACEHOLDER, '2026-09-15');
+    expect(substituted).not.toContain('__');
+    // The filename is DERIVED from the workflow's own `entry=` expression, not
+    // restated: a second copy would let the workflow's pattern drift into a
+    // shape the assembler refuses on `main`, with every test here green.
+    const workflow = readFileSync(
+      join(REPO_ROOT, '.github', 'workflows', 'cfn-schema-refresh.yml'),
+      'utf8'
+    );
+    const entryExpr = /entry="?(changelog\.d\/entries\/\S+?\.md)"?/.exec(workflow);
+    expect(entryExpr, "the workflow's fragment path expression is gone").not.toBeNull();
+    const entryPath = entryExpr![1]!
+      .replace('${cycle}', '2026-09-15')
+      .replace('${PR_NUMBER}', '3167');
+    expect(entryPath, 'the entry path still holds an unsubstituted shell variable').not.toContain(
+      '$'
+    );
+
+    const root = mkdtempSync(join(tmpdir(), 'cdkd-fragment-'));
+    try {
+      mkdirSync(join(root, 'changelog.d', 'entries'), { recursive: true });
+      writeFileSync(join(root, 'changelog.d', '_header.md'), '# header\n');
+      writeFileSync(join(root, entryPath), substituted);
+      const entries = readEntries(root);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]!.issue).toBe(3167);
+      expect(entries[0]!.date).toBe('2026-09-15');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('renderUmbrellaDocument', () => {

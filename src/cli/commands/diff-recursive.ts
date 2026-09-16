@@ -3,7 +3,17 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { CloudFormationTemplate, TemplateResource } from '../../types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../types/state.js';
-import { STATE_SCHEMA_VERSION_CURRENT } from '../../types/state.js';
+import {
+  STATE_SCHEMA_VERSION_CURRENT,
+  hasReadableExportSet,
+  importableOutputKeys,
+  isReadableBag,
+} from '../../types/state.js';
+import {
+  isSecretBearingReferenceString,
+  keptWholeReasonText,
+  mergeNoChangeOutputs,
+} from '../../deployment/no-change-outputs-merge.js';
 import { DiffCalculator, INTRINSIC_KEYS } from '../../analyzer/diff-calculator.js';
 import type { CanonicalizePropertiesFn } from '../../analyzer/diff-calculator.js';
 import { TemplateParser } from '../../analyzer/template-parser.js';
@@ -17,6 +27,7 @@ import {
   computeOutputsDiff,
   resolveTemplateOutputs,
   templateHasSecretDynamicReference,
+  templateLetsConditionsReachOutputs,
   type OutputChange,
 } from '../../analyzer/outputs-diff.js';
 import { bindingSkippedOutputs } from '../../analyzer/skipped-outputs.js';
@@ -30,7 +41,10 @@ import { findActionableSilentDrops } from '../../provisioning/property-coverage.
 import { wouldReturnToSdkProvider } from '../../provisioning/provider-registry.js';
 import { NESTED_STACK_RESOURCE_TYPE } from './retire-cfn-stack.js';
 import {
+  malformedExportNamesWarning,
+  malformedOutputsWarning,
   malformedResourcesWarning,
+  repairMalformedOutputsForReadOnly,
   repairMalformedResourcesForReadOnly,
 } from '../../state/malformed-resources-bag.js';
 
@@ -256,6 +270,52 @@ async function loadStateOrEmpty(
   if (result) {
     if (repairMalformedResourcesForReadOnly(result.state)) {
       logger.warn(malformedResourcesWarning(stackName, region));
+    }
+    // The SAME treatment for the `outputs` BAG (go-to-k/cdkd#3189). Every
+    // consumer of that bag below this line takes it from
+    // `currentState.outputs` — the resolver's stored-key lookups,
+    // `mergeNoChangeOutputs`'s `persisted`, and `computeOutputsDiff`'s two
+    // walks — so one call here dominates the bag, which is the placement rule
+    // `src/state/malformed-resources-bag.ts`'s header records.
+    //
+    // Scoped to the BAG, deliberately, and still is: the Outputs flow also
+    // reads `state.exportNames`, which this call does not touch. That half is
+    // now guarded where it is READ rather than here —
+    // `importableOutputKeys` (`src/types/state.ts`) used to call
+    // `state.exportNames.filter(...)` unconditionally and threw a raw
+    // `TypeError` from the `mergeNoChangeOutputs` call below on a hand-edited
+    // non-array; it reads a non-array as an EMPTY export set now
+    // (go-to-k/cdkd#3192). A guard here could not have covered it in any case:
+    // that helper is reached from the exports index, the deploy-time resolver
+    // and the local-command loader, none of which passes through this load.
+    //
+    // Two warnings rather than one: they name different containers with
+    // different consequences, and a record can be malformed in either alone.
+    if (repairMalformedOutputsForReadOnly(result.state)) {
+      logger.warn(malformedOutputsWarning(stackName, region));
+    }
+    // The `exportNames` FIELD, said out loud (go-to-k/cdkd#3192 review). The
+    // predicate fails closed wherever it is read, which is right — it serves
+    // five commands and holds no stack identity — but a LOUD wrong answer
+    // (the raw `TypeError` this replaced) becoming a QUIET one is its own
+    // regression, and this load is the one place that can name the record.
+    //
+    // AFTER the bag repair, deliberately: `hasReadableExportSet` also requires
+    // a readable `outputs`, so asking it first would blame `exportNames` for a
+    // damaged BAG. By here the bag is `{}` — readable — so a false verdict
+    // isolates the field, and a record damaged in both containers gets one
+    // accurate line about each rather than two about the same thing.
+    // The `isReadableBag` conjunct is what keeps this about `exportNames`.
+    // `hasReadableExportSet` requires a readable BAG too, and the repair above
+    // exempts an ABSENT one — a record cdkd itself writes — so without this a
+    // perfectly ordinary no-outputs record drew a line blaming its
+    // `exportNames`. The guard is watched from BOTH directions: dropping this
+    // conjunct reds the absent-bag floor one describe up, and disabling the
+    // whole line reds the four damaged-shape cases that assert the warning
+    // FIRES. Until review round 10 only the first direction was covered, so
+    // `if (false)` here was a zero-red mutation.
+    if (isReadableBag(result.state.outputs) && !hasReadableExportSet(result.state)) {
+      logger.warn(malformedExportNamesWarning(stackName, region));
     }
     return result.state;
   }
@@ -532,7 +592,7 @@ export async function computeStackDiff(
     const declaredType = (template.Parameters?.[name] as { Type?: unknown } | undefined)?.Type;
     if (typeof declaredType === 'string' && parameterTypeMayLoseSecretIdentity(declaredType)) {
       logger.warn(
-        `Stack ${stackName}: parameter '${name}' is declared 'Type: ${declaredType}' and is fed ` +
+        `Stack ${stripControlChars(stackName)}: parameter '${stripControlChars(name)}' is declared 'Type: ${stripControlChars(declaredType)}' and is fed ` +
           `a secret dynamic reference. 'cdkd deploy' refuses this when the coercion actually ` +
           `destroys the plaintext (a comma-bearing secret in a list-typed parameter) — declare ` +
           `it 'Type: String' — and this diff compares the unresolved reference, shaped by the ` +
@@ -742,71 +802,211 @@ export async function computeStackDiff(
     currentState.outputs,
     bindingSkipped
   );
-  // A partially-resolved bag reports NO delta. This is the CONSERVATIVE side of
-  // the deploy engine's NO-CHANGE branch rather than a mirror of it: since
-  // go-to-k/cdkd#2771 that branch persists the outputs that did resolve and
-  // keeps each failed key's stored value, while this preview, which cannot tell
-  // an output that will fail at deploy from one that merely waits on a pending
-  // resource, withholds the whole section and warns. Deploy's changed-resources
-  // branch has no gate at all, correctly, because by then every resource exists.
-  // Suppressing here keeps an unchanged stack at "no changes" instead of
-  // showing a phantom the apply would never write.
-  // Nothing is lost in the common case: an output usually fails to resolve
-  // because it references a resource this deploy has yet to create, and that
-  // CREATE is already on the resource side of the diff. Since issue #2740 a
-  // key the last deploy skipped is dropped before this point and never sets
-  // the flag — but only while its record still BINDS (digest unchanged, the
-  // key still absent from state, no referenced resource changing this run).
-  // Fail any of those and the key resolves here like any other, which is the
-  // fallback this arm keeps covering.
+  const templateHasSecretReference =
+    resolved.templateHasSecretReference || inheritSecretBearingTemplate === true;
+  const diffOutputsAgainst = (
+    desired: Record<string, unknown>,
+    exportNames: ReadonlySet<string>,
+    forceLegacyRecord = false
+  ): OutputChange[] =>
+    computeOutputsDiff(currentState.outputs, desired, exportNames, resolved.secretSourceKeys, {
+      declaredKeys: resolved.declaredKeys,
+      templateHasSecretReference,
+      forceLegacyRecord,
+    });
+
+  // A partially-resolved bag previews the deploy's NO-CHANGE merge when the
+  // deploy will take that branch, and reports NO delta otherwise.
+  //
+  // The merge (issue #3101). With no resource change the deploy persists what
+  // resolved and keeps each failed key's stored value (go-to-k/cdkd#2771), so a
+  // sibling output added or changed beside a broken one IS written, and
+  // suppressing it here let `--fail` exit 0 for a change the deploy makes. The
+  // preview runs the deploy's own `mergeNoChangeOutputs` rather than a copy,
+  // and only when `failuresMirrorDeploy` holds: every failure is one the deploy
+  // records too (a throw, or `undefined`), named by output key.
+  // `hasChanges` is the same predicate the deploy branches on.
+  //
+  // It also needs parameters that bound, and a template in which no condition
+  // verdict can reach an output (`templateLetsConditionsReachOutputs`, whose
+  // doc derives the routes). Conditions are evaluated best-effort here, so a
+  // verdict can differ from the deploy's (a malformed `Fn::Sub` inside
+  // `Fn::Equals` keeps its placeholder here and throws at deploy). The test is
+  // not "declares no `Conditions`": every env-agnostic CDK app declares
+  // `CDKMetadataAvailable` for its metadata resource alone. `conditions` stays
+  // undefined when parameter binding failed, where a `Ref` to the unbound
+  // parameter fails here and resolves at deploy. Both are shapes where the
+  // preview KNOWS its resolution differs, so it keeps the suppression there.
+  //
+  // Everywhere the merge does run, a failure can still depend on something only
+  // the deploy has: a secret this diff never fetches, used as a mapping key,
+  // throws here and resolves at deploy, and the routes to such information are
+  // not enumerable. So the preview never claims a failed output is unchanged:
+  // it compares each one that has a stored value at that value, leaves the rest
+  // out of the comparison, and a warning names both groups.
+  //
+  // The deploy runs the mixed-generation refusal TWICE: inside the merge, which
+  // this preview shares, and again on the bag as its save redacts it
+  // (`deploy-engine.ts`, after the observed-capture drain). The second check is
+  // not reproduced here, and it CAN answer differently. This preview's own bag
+  // never gains a late expression (it drains no captures and resolves with
+  // `skipDynamicReferences`), but the DEPLOY's can: a secret recorded during
+  // its drain whose plaintext equals a resolved literal output redacts that
+  // output into an expression and turns `merged` into `kept`, the behaviour
+  // `deploy-engine-outputs-only-change.test.ts` pins. What the deploy then
+  // writes depends on the values: a row this preview showed may not be
+  // written, and a late needle matching a STORED value makes the save redact
+  // that value in whichever bag it keeps, a rewrite no diff path previews,
+  // merge or not. `--strict-getatt` also departs from the preview: an output
+  // whose resolution throws aborts the deploy instead of reaching the merge
+  // (one that resolves to `undefined` still reaches it).
+  //
+  // The suppression, everywhere else. With a resource change pending an output
+  // usually fails because it references a resource this deploy has yet to
+  // create — that CREATE is already on the resource side — and this preview
+  // cannot tell it from an output that will fail again. Deploy's
+  // changed-resources branch has no gate at all, correctly, because by then
+  // every resource exists. Since issue #2740 a key the last deploy skipped is
+  // dropped before this point and never sets the flag — but only while its
+  // record still BINDS (digest unchanged, the key still absent from state, no
+  // referenced resource changing this run). Fail any of those and the key
+  // resolves here like any other.
   let outputChanges: OutputChange[] = [];
-  if (resolved.resolutionFailed) {
-    // Surface the case where the outputs DID differ but a resolution failure
-    // suppressed the report, mirroring the deploy engine's twin warning
-    // ("Outputs changed but one or more could not be resolved"). Silence would
-    // leave "no Outputs section" ambiguous between "unchanged" and "could not
-    // be computed".
-    //
-    // The failed keys are excluded first, and that exclusion is what keeps the
-    // warning meaningful. Unlike the deploy side — which keeps an unresolved key
-    // with the value `undefined` — this resolver DROPS it, so a naive diff reads
-    // every failed key as a REMOVE. Without the filter the warning would fire on
-    // the ordinary, expected case the resolver itself logs at debug (an output
-    // referencing a resource this deploy will create), including on the very
-    // first diff of a stack.
-    const wouldHaveChanged = computeOutputsDiff(
-      currentState.outputs,
-      resolved.outputs,
-      resolved.exportNames,
-      resolved.secretSourceKeys,
-      {
-        declaredKeys: resolved.declaredKeys,
-        templateHasSecretReference:
-          resolved.templateHasSecretReference || inheritSecretBearingTemplate === true,
-      }
-    ).filter((change) => !resolved.failedKeys.has(change.name));
-    if (wouldHaveChanged.length > 0) {
-      logger.warn(
-        `Outputs of stack ${stackName} may have changed, but one or more could not be resolved ` +
-          `against current state — omitting the Outputs section from this diff. ` +
-          `It is usually an output referencing a resource this deploy has yet to create.`
-      );
-    }
+  if (!resolved.resolutionFailed) {
+    outputChanges = diffOutputsAgainst(resolved.outputs, resolved.exportNames);
   } else {
-    outputChanges = computeOutputsDiff(
-      currentState.outputs,
-      resolved.outputs,
-      resolved.exportNames,
-      resolved.secretSourceKeys,
-      {
-        declaredKeys: resolved.declaredKeys,
-        templateHasSecretReference:
-          resolved.templateHasSecretReference || inheritSecretBearingTemplate === true,
+    const resourcesChange = diffCalculator.hasChanges(changes);
+    const merge =
+      resolved.failuresMirrorDeploy &&
+      conditions !== undefined &&
+      !templateLetsConditionsReachOutputs(template) &&
+      !resourcesChange
+        ? mergeNoChangeOutputs({
+            persisted: currentState.outputs ?? {},
+            resolved: withFailedOutputsUndefined(resolved.outputs, resolved.failedOutputKeys),
+            declaredOutputs: effectiveTemplate.Outputs,
+            previousExportNames: new Set(importableOutputKeys(currentState)),
+            resolvedExportNames: [...resolved.exportNames],
+          })
+        : undefined;
+    if (merge?.kind === 'merged') {
+      // A carried key is compared at its STORED value, which erases evidence only
+      // its resolved value held: an output that resolves to a secret expression
+      // (an `Fn::GetAtt` to an attribute the record stores as one) marks a
+      // pre-GHSA record through `desired`, and its carried plaintext does not.
+      // Where such an expression can come from (a stored attribute, a parameter,
+      // another stack's outputs) is not enumerable, so no test of the template
+      // stands in for it; and a secret expression stored under another key does
+      // not exonerate either, since pass 1 of `computeOutputsDiff` excuses only
+      // the key that holds one. So the record is treated as legacy, and every
+      // stored value on a rendered row withheld, whenever a carried key's stored
+      // value is anything but a secret expression: the one value pass 1 would
+      // have excused for that key.
+      const storedOutputs = currentState.outputs ?? {};
+      const withheld = merge.carriedKeys.some(
+        (key) => !isSecretBearingReferenceString(storedOutputs[key])
+      );
+      outputChanges = diffOutputsAgainst(merge.outputs, new Set(merge.exportNames), withheld);
+      // Every failure on this path is named (`failuresMirrorDeploy`), so the set
+      // holds every output this pass FAILED. A key a binding #2740 record skipped
+      // never reached resolution and is not in it: that record previews the key
+      // as absent on every diff path, merge or not, as it documents.
+      //
+      // The #1948 residual `computeOutputsDiff` documents (a stack that deletes
+      // its ONLY secret-bearing output prints that output's stored value as a
+      // REMOVE row's `old:` side) reaches a RENDERED section on this path, where
+      // the suppression used to hide it, only when every carried key's stored
+      // value is a secret expression; otherwise the forced verdict above
+      // withholds that row's value too.
+      //
+      // The warning splits the failed outputs the way the merge carries OUTPUT
+      // keys: one with a stored value under its own name is carried and compared
+      // at it, one without is not (the merge reads `hasOwn(persisted, key)`). The
+      // latter's literal `Export.Name` alias can still be carried on its own, so
+      // the second group is named for what it lacks, not as left out entirely.
+      //
+      // The withheld-values sentence is gated on the RENDERED result: the forced
+      // verdict redacts only non-ADD rows, so an ADD-only or empty section has
+      // nothing withheld to explain. Its reason names what forced it, a value
+      // carried from state (an output key OR an alias), not "a failed output
+      // compared at a stored value", which an alias-only carry contradicts. The
+      // stand-in alone advises `cdkd scrub`, which finds nothing on a stack that
+      // holds no secret, hence the sentence.
+      const failed = [...resolved.failedOutputKeys];
+      const isStored = (key: string): boolean =>
+        Object.prototype.hasOwnProperty.call(storedOutputs, key);
+      const compared = failed.filter(isStored);
+      const unstored = failed.filter((key) => !isStored(key));
+      const names = (keys: string[]): string => keys.map(stripControlChars).join(', ');
+      const explainWithheld =
+        withheld && outputChanges.some((change) => change.oldValueRedacted === true);
+      logger.warn(
+        `Outputs of stack ${stripControlChars(stackName)}: ${failed.length} output(s) could not be resolved for this diff.` +
+          (compared.length > 0 ? ` Compared at their stored values: ${names(compared)}.` : '') +
+          (unstored.length > 0
+            ? ` No stored value under their own names: ${names(unstored)}.`
+            : '') +
+          ` The next deploy may write a value for any of them it can resolve.` +
+          (explainWithheld
+            ? ` Previous values in this Outputs section are withheld because a value carried from state for a failed output is not a secret reference, so this diff cannot rule out legacy plaintext in state. That reason no longer applies once every failed output resolves, though other legacy-plaintext checks still can withhold them.`
+            : '')
+      );
+    } else {
+      // Surface the case where the outputs DID differ but a resolution failure
+      // suppressed the report, mirroring the deploy engine's twin warning
+      // ("Outputs changed but one or more could not be resolved"). Silence would
+      // leave "no Outputs section" ambiguous between "unchanged" and "could not
+      // be computed".
+      //
+      // The failed keys are excluded first, and that exclusion is what keeps the
+      // warning meaningful. Unlike the deploy side — which keeps an unresolved key
+      // with the value `undefined` — this resolver DROPS it, so a naive diff reads
+      // every failed key as a REMOVE. Without the filter the warning would fire on
+      // the ordinary, expected case the resolver itself logs at debug (an output
+      // referencing a resource this deploy will create), including on the very
+      // first diff of a stack.
+      // Reached with a merge in hand only when it KEPT the previous bag whole,
+      // which the deploy announces with its own warning; this one names the same
+      // reason. Without one, "a resource this deploy has yet to create" is the
+      // likely cause only while a resource change is pending: on a stack with
+      // none, a gate above refused the preview instead.
+      const wouldHaveChanged = diffOutputsAgainst(resolved.outputs, resolved.exportNames).filter(
+        (change) => !resolved.failedKeys.has(change.name)
+      );
+      if (wouldHaveChanged.length > 0) {
+        logger.warn(
+          `Outputs of stack ${stripControlChars(stackName)} may have changed, but one or more could not be resolved ` +
+            `against current state — omitting the Outputs section from this diff. ` +
+            (merge?.kind === 'kept'
+              ? keptWholeReasonText(merge.reason)
+              : resourcesChange
+                ? `It is usually an output referencing a resource this deploy has yet to create.`
+                : `The stack has no resource change; this diff cannot preview what the deploy does with the outputs that failed here.`)
+        );
       }
-    );
+    }
   }
 
   return { changes, outputChanges, adoptedOrphans, adoptedRecords, blocking };
+}
+
+/**
+ * The preview's bag in the shape `mergeNoChangeOutputs` reads from the deploy
+ * engine: each failed OUTPUT present with the value `undefined`
+ * (issue #3101). This resolver drops a failed key while the deploy keeps it,
+ * and the merge tells "failed, keep the stored value" from "not produced,
+ * remove it" by exactly that presence. A fresh null-prototype bag, like both
+ * bags it stands between, so a resolved `__proto__` export alias survives the
+ * copy as a data key.
+ */
+function withFailedOutputsUndefined(
+  outputs: Record<string, unknown>,
+  failedOutputKeys: ReadonlySet<string>
+): Record<string, unknown> {
+  const bag = Object.create(null) as Record<string, unknown>;
+  for (const [key, value] of Object.entries(outputs)) bag[key] = value;
+  for (const key of failedOutputKeys) bag[key] = undefined;
+  return bag;
 }
 
 /**
@@ -1764,7 +1964,11 @@ export function renderDiffTree(
   // prints is the one outcome this section exists to prevent.
   const hasChanges = nodeHasChanges(node);
   if (hasChanges || node.blocking.length > 0) {
-    logFn(isRoot ? `\nStack ${node.stackName}:` : `\nNested stack: ${node.displayName}`);
+    logFn(
+      isRoot
+        ? `\nStack ${stripControlChars(node.stackName)}:`
+        : `\nNested stack: ${stripControlChars(node.displayName)}`
+    );
   }
   if (hasChanges) {
     const {

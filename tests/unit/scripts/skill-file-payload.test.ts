@@ -381,8 +381,27 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // moves. `verify.md` section 8-g calls this deleting the number rather
     // than re-measuring it, and this record is the worked example.
     //
-    // Cap headroom, in size order: verify.md 0 B (AT the cap), implement.md
-    // 3 B, triage.md 6 B. All three open with a compression pass, not an
+    //
+    // The go-to-k/cdkd#3158 run's retro then landed five lessons and is the
+    // first change on record to FUND both leaders into the negative: verify.md
+    // took the "bounded by construction" cost-fence rule (8-a), the
+    // blocker-CONCENTRATION withdrawal trigger (8-h, which had said three
+    // ROUNDS) and the prescription-is-a-claim clause (8-h), and implement.md
+    // took 5-g's reviewer-named-file carve-out and its run-synchronously brief
+    // line -- each paid for in its own file by compressing incident narratives
+    // to citations and replacing two restatements (section 6's host-load
+    // paragraph, section 3's premise check) with pointers. Per-file deltas,
+    // measured: claim.md +1,178, gates-and-pr.md +774, gotchas.md +334,
+    // implement.md -57, verify.md -39, summing to +2,190 and reconciling
+    // 198,624 -> 200,814. The LEADERS therefore changed hands without either
+    // leader growing: triage.md was untouched and is now largest, verify.md
+    // runner-up, implement.md third. The floor below is RE-DERIVED upward,
+    // which section 10-c requires rather than forbids -- the three non-leader
+    // additions are charged to it in full, and the same assertion pins it from
+    // below so the raise buys no room.
+    //
+    // Cap headroom, in size order: triage.md 6 B, verify.md 39 B,
+    // implement.md 60 B. All three open with a compression pass, not an
     // addition.
     //
     // go-to-k/cdkd#2341's third lesson is deliberately NOT here. It targets
@@ -391,9 +410,9 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // a narrative. It stays on that issue as a stated residual behind
     // go-to-k/cdkd#2424's stage split, which is the structural answer this
     // record has now predicted twice.
-    corpusBytes: 198_624,
-    largest: { file: 'verify.md', bytes: 30_000 },
-    runnerUp: { file: 'implement.md', bytes: 29_997 },
+    corpusBytes: 200_814,
+    largest: { file: 'triage.md', bytes: 29_994 },
+    runnerUp: { file: 'verify.md', bytes: 29_961 },
   },
 };
 
@@ -864,7 +883,15 @@ const MIN_REFERENCE_FILES = 6;
 // carried. All three of the top files are now AT or within 6 B of the
 // per-file cap, so the next edit to any of them opens with a compression
 // pass.
-const MIN_REFERENCE_CORPUS_BYTES = 168_980;
+// RE-DERIVED UPWARD 168_980 -> 171_200 by the go-to-k/cdkd#3158 retro: its
+// three non-leader additions (claim.md, gates-and-pr.md, gotchas.md) moved
+// `corpus - runnerUp` from 168,627 to 170,853, which LAPSES the old value. The
+// new one keeps the same ~350 B margin the previous derivation carried, and is
+// recomputed from the tree rather than picked. It buys no room: the raise is
+// FORCED by the lapse (restoring 168_980 under this corpus goes RED at the
+// invariant below), and the corpus floor it also sets moves with it, so the
+// deletion this guard exists to catch is caught at the new size too.
+const MIN_REFERENCE_CORPUS_BYTES = 171_200;
 
 function skillNames(): string[] {
   return readdirSync(skillsDir, { withFileTypes: true })

@@ -135,5 +135,26 @@ export class OutputNeverResolvedDiffStack extends cdk.Stack {
         description: 'Added beside the broken outputs; must land on a no-change deploy',
       });
     }
+
+    // Issue #3101: an output that RESOLVED on an earlier deploy and now fails
+    // in a way the DIFF reproduces too — which the secret-lookup outputs above
+    // cannot, since the diff never fetches a secret. `CDKD_TEST_ATT_OUTPUT=true`
+    // declares it as the marker parameter's `Ref`, which resolves and is stored;
+    // `CDKD_TEST_ATT_BROKEN=true` switches it to an `Fn::GetAtt` whose `*Arn`
+    // attribute cdkd refuses to build from a physical id that is not an ARN, at
+    // deploy and in the diff alike. Only phase 5c sets either toggle, and no
+    // deploy runs after that phase, so no later deploy removes the output.
+    if (process.env['CDKD_TEST_ATT_OUTPUT'] === 'true') {
+      new cdk.CfnOutput(this, 'AttOut', {
+        value:
+          process.env['CDKD_TEST_ATT_BROKEN'] === 'true'
+            ? cdk.Fn.getAtt(
+                (marker.node.defaultChild as cdk.CfnResource).logicalId,
+                'NotARealArn'
+              ).toString()
+            : marker.parameterName,
+        description: 'Stored once, then broken in a way both deploy and diff reproduce',
+      });
+    }
   }
 }

@@ -357,19 +357,34 @@ break a consumer — was hidden the same way.
   key suppresses the whole Outputs section for that stack forever.
 - `computeOutputsDiff` compares **bag key by bag key**, which is exactly the
   `outputMapsEqual` predicate the deploy engine gates its persist on, so a fully
-  resolved preview compares the same bags the apply does. A partially-resolved
-  bag reports no delta at all. That is the conservative side of the deploy
-  engine's NO-CHANGE branch, which persists the outputs that did resolve and
-  keeps each failed output's stored value, or keeps the previous outputs whole
-  in the two cases it cannot merge safely (an intrinsic `Export.Name` on a
-  failed output with a stored value, and a first secret reference beside a kept
-  value, checked on the outputs as they will be saved; a kept value is not
-  repositioned onto today's template, though the secret scan still redacts it)
-  — so in one narrow shape the preview reports no delta that the apply then
-  writes. Its changed-resources branch has no gate at all, correctly, since by
-  then every resource exists, and usually nothing is lost, since an output
-  usually fails to resolve because it references a resource this deploy has yet
-  to CREATE, which the resource side already shows.
+  resolved preview compares the same bags the apply does.
+- A partially-resolved bag on a stack with **no resource change**, bound
+  parameters, conditions that were evaluated (not skipped for depending on a
+  secret-valued parameter), and no condition verdict that can reach an output (an output's
+  own `Condition`, or `Fn::If` / `{Condition: ...}` outside `Resources` and
+  `Conditions`) is previewed
+  through the deploy engine's own NO-CHANGE merge (`mergeNoChangeOutputs`),
+  which persists the outputs that did resolve and keeps each failed output's
+  stored value, or keeps the previous outputs whole in the two cases it cannot
+  merge safely (an intrinsic `Export.Name` on a failed output with a stored
+  value, and a first secret reference beside a kept value). It does so only
+  when every failure is one the deploy records too — the resolver threw, or
+  returned `undefined` at the top level — named by output key; a failure only
+  the wider detector reports (a nested `undefined` included), or an
+  `Export.Name` the preview cannot resolve or decide,
+  cannot be handed to the merge. A warning names the failed outputs, split into
+  those compared at their stored values and those with no stored value under
+  their own name, since the deploy can still resolve one the diff could not (a secret the
+  diff never fetches, used as a mapping key), and says when previous values are
+  withheld for that reason.
+  The deploy's save-time re-check of the mixed-generation refusal, run after
+  its observed-capture drain, is not reproduced, so a row shown here can still
+  be kept back by the deploy.
+- Everywhere else a partially-resolved bag reports no delta at all. With a
+  resource change pending the deploy's changed-resources branch has no gate,
+  correctly, since by then every resource exists, and usually nothing is lost,
+  since an output usually fails to resolve because it references a resource
+  this deploy has yet to CREATE, which the resource side already shows.
   A suppressed delta is WARNED about when a difference survives the failed-key
   filter; when none does, an absent Outputs section is silent.
 - Because this is the first code path that **displays** a stored output value,
@@ -384,7 +399,12 @@ break a consumer — was hidden the same way.
   ones, because those have no desired side at all and would otherwise print in
   full as a `REMOVE` row. A hit on either makes the whole record suspect (it was
   written by a pre-GHSA binary), so the withholding is record-level; the change
-  is still reported, only the value is withheld.
+  is still reported, only the value is withheld. The no-change merge preview
+  above forces the same record-level verdict whenever a value it carried from
+  state for a failed output, an export alias included, is not itself a secret
+  expression: a carried key's desired side is then the stored value, so
+  evidence only its resolved value held is gone, and where such an expression
+  can come from is not enumerable.
 - Neither signal reaches an output **deleted** from the template — both are built
   from what the template declares, and a deleted output declares nothing (issue
   [#1948](https://github.com/go-to-k/cdkd/issues/1948)). A third signal answers
@@ -406,12 +426,12 @@ break a consumer — was hidden the same way.
   up — it diffs against an *empty* template, so nothing is declared and nothing
   is resolved — and it takes the parent's answer, propagated unchanged to a
   deleted grandchild.
-- Two rows the preview cannot decide from the template alone come from state.
+- Rows the preview cannot decide from the template alone come from state.
   One is an output whose resolution failed inside a secret lookup at the last
   deploy — the diff never makes that lookup, so it trusts the deploy's
   `skippedOutputs` record while the digested template inputs are unchanged and
   no resource the output references is changing on this run.
-  The other is a **literal**
+  Another is a **literal**
   `Export.Name` in a stack that resolves a secret: the deploy refuses such a
   name when it contains a resolved plaintext, and the preview never substitutes
   one. It reads the verdict the apply already recorded (issue
@@ -420,7 +440,9 @@ break a consumer — was hidden the same way.
   the preview publishes the same key with today's value — which is what keeps a
   genuine export change visible instead of suppressing the whole section. An
   absent key records no verdict (a first deploy of the alias, or of the stack)
-  and still suppresses.
+  and still suppresses. A third is a failed output on a stack with no resource
+  change: the no-change merge preview above carries its stored value, and its
+  literal alias's, from state instead of resolving them.
 - It also strips control and bidi characters from template-controlled output /
   export names and rendered values before they reach the terminal — an
   `Export.Name` is a value cdkd *resolved*, so unlike a CFn logical ID it never
@@ -431,7 +453,7 @@ break a consumer — was hidden the same way.
 The module is a deliberate SECOND implementation rather than shared code: the
 deploy-side block lives in `deploy-engine.ts`, which is in the `integ-broad`
 and `integ-destroy` merge-gate scopes. `tests/unit/analyzer/outputs-diff.test.ts`
-pays for that trade with an anti-drift fence asserting the three mirrored
+pays for that trade with an anti-drift fence asserting the mirrored
 deploy-side semantics still hold.
 
 #### `intrinsic-function-resolver.ts`

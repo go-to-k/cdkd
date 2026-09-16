@@ -165,12 +165,10 @@ Index of every area: [code-layout.md](code-layout.md).
     `drift --revert`) thread `maskSecrets` at every create/update site (the
     five providers that re-create inside their own `update()` do NOT), so
     fences read the context's KEY SET, not the call's arity.
-  - The replay-CREATE HONORS the provider's `effectiveProperties` (issue
-    #1682): the bag handed to `create()` IS `previousState.properties`, so a
-    returned bag replaces the record's `properties` wholesale and reporting
-    none keeps the previous bag. Pre-#1682 the arm's narrow local result type
-    dropped a substituted bag — do not re-narrow it. Real-AWS net:
-    `tests/integration/rollback-replay-effective-props/`.
+  - What reaches the replay-CREATE's `create()` — the `effectiveProperties`
+    honouring (issue #1682) and the Cloud Control fallback-name fill (issue
+    #3199) — is in
+    [rollback-replay-create.md](rollback-replay-create.md).
   - The providers that re-create inside their own `update()` (ACM
     certificate / IAM managed policy / IAM role / Lambda permission / SNS
     subscription) forward a STATE record on a replay but CANNOT receive a
@@ -498,7 +496,7 @@ Index of every area: [code-layout.md](code-layout.md).
     (5s/8s/8s, since it passes `initialDelayMs` and leaves `maxDelayMs` at the
     8s default), and `describe-type.ts`'s throttle-only retry.
   - Dense-grid rationale: cdkd creates an IAM entity and consumes it ~1-3s
-    later, so propagation resolves in single-digit seconds — the generic
+    later, so propagation usually resolves within seconds — the generic
     4s/8s steps overshoot (measured: ~10.2s of a 25.9s deploy burned in
     backoff) while throttling genuinely wants exponential backoff. The dense
     budget is deliberately >= the generic one; the class is re-evaluated per

@@ -84,9 +84,28 @@ function mockBackend(
   stacks: Array<{
     stackName: string;
     region: string;
-    outputs?: Record<string, unknown>;
-    /** Omitted = a pre-v9 record (issue #2193): every output key importable. */
-    exportNames?: string[];
+    /**
+     * Set to a non-object to plant a damaged record; set to `undefined` to
+     * plant a genuinely ABSENT bag; OMIT the key for `{}`.
+     *
+     * `| undefined` is what makes the absent case testable at all (review of
+     * go-to-k/cdkd#3206 round 2): with only "omit the key", an absent-bag row
+     * got `{}`, which is a READABLE bag taking the healthy path — so the floor
+     * asserting the silent skip could not fail. Measured: deleting the
+     * production `state.outputs === undefined` skip left all 678
+     * `tests/unit/state` cases green.
+     */
+    outputs?: Record<string, unknown> | null | undefined;
+    /**
+     * Omitted = a pre-v9 record (issue #2193): every output key importable.
+     *
+     * `unknown[]` so a DAMAGED set can be planted — a non-array, or an array
+     * whose elements are not strings. Without the widening the
+     * `exportNames: [0]` shape had no row at this layer, so the delta it
+     * actually buys (that producer now WARNS by name at rebuild rather than
+     * being dropped silently) went unfenced.
+     */
+    exportNames?: readonly unknown[] | string;
     /** State record's lastModified; rebuild keeps the newer on a collision (#2194). */
     lastModified?: number;
   }>
@@ -104,7 +123,13 @@ function mockBackend(
           stackName: found.stackName,
           region: found.region,
           resources: {},
-          outputs: found.outputs ?? {},
+          // `'outputs' in found`, NOT `found.outputs ?? {}` (review of
+          // go-to-k/cdkd#3206). The `??` COERCED a planted `null` bag into a
+          // healthy `{}`, so a null-bag case could not exist here at all — it
+          // would have tested an empty record while reading as a damaged one,
+          // the fixture-decides-the-outcome trap. A row that omits the key
+          // still gets `{}`; a row that sets it gets exactly what it set.
+          outputs: ('outputs' in found ? found.outputs : {}) as Record<string, unknown>,
           ...(found.exportNames !== undefined && { exportNames: found.exportNames }),
           lastModified: found.lastModified ?? 1234,
         },
@@ -214,6 +239,132 @@ describe('ExportIndexStore', () => {
       const parsed = JSON.parse(savedBody) as ExportIndexFile;
       expect(Object.keys(parsed.exports).sort()).toEqual(['Topic', 'prod:VpcId']);
       expect(warnings()).toEqual([]);
+    });
+
+    /**
+     * A producer record whose export set cannot be read (issue
+     * go-to-k/cdkd#3192). The shared index is the highest-blast-radius
+     * consumer of `state.outputs`: every stack's `Fn::ImportValue` resolves
+     * against `cdkd/_index/<region>/exports.json`, so a fabricated entry here
+     * binds a CONSUMER to a value no stack ever exported.
+     *
+     * Both cases assert the PUBLISHED body, not just the `lookup` answer —
+     * the index is persisted and read by later processes, so a fabricated key
+     * that never reached the PUT would still be a different (and much
+     * smaller) defect from the one measured.
+     *
+     * And both put a HEALTHY sibling in the same rebuild, which is the
+     * two-sided half: fail-closed must drop the damaged record ONLY. A guard
+     * that aborted the rebuild would take every other producer in the region
+     * down with it, which is why this site warns rather than refusing.
+     */
+    for (const [label, damaged] of [
+      ['a string outputs bag', { outputs: 'abcdef' as unknown as Record<string, unknown> }],
+      ['a list outputs bag', { outputs: ['a', 'b'] as unknown as Record<string, unknown> }],
+      // FALSY, and the row three reviewers found missing (review of
+      // go-to-k/cdkd#3206). The three original rows are all TRUTHY, so the
+      // pre-existing `!state.outputs` skip above the guard dominated it for
+      // every falsy shape and this table could not see that — `null` was
+      // dropped with no warning, which is the exact defect the warning exists
+      // to close, at the shape the rest of this PR tests first.
+      ['a null outputs bag', { outputs: null as unknown as Record<string, unknown> }],
+      ['a zero outputs bag', { outputs: 0 as unknown as Record<string, unknown> }],
+      [
+        'a non-array exportNames',
+        {
+          outputs: { VpcId: 'vpc-broken' },
+          exportNames: 'not-an-array',
+        },
+      ],
+      // The shape the round-1 review nearly wrote off: structurally an array,
+      // so every earlier test called it readable, while `importableOutputKeys`
+      // drops every element as a non-string and answers `[]`. Read as
+      // "exports nothing" it was dropped SILENTLY. This row is what fences the
+      // warning at the consumer rather than only at the predicate.
+      [
+        'an all-non-string exportNames',
+        { outputs: { '0': 'fabricated', VpcId: 'vpc-broken' }, exportNames: [0, null] },
+      ],
+    ] as const) {
+      it(`rebuild publishes NOTHING from a record with ${label}, and says so (#3192)`, async () => {
+        let savedBody = '';
+        const s3 = mockS3(async (cmd) => {
+          if (cmd.constructor.name === 'GetObjectCommand') throw s3ErrorWith('NoSuchKey', 404);
+          if (cmd.constructor.name === 'PutObjectCommand') {
+            savedBody = String((cmd.input as { Body: string }).Body);
+            return { ETag: '"new-etag"' };
+          }
+          throw new Error(`unexpected command ${cmd.constructor.name}`);
+        });
+        const backend = mockBackend([
+          { stackName: 'Broken', region: 'us-east-1', ...damaged },
+          {
+            stackName: 'Healthy',
+            region: 'us-east-1',
+            outputs: { Topic: 'topic-1' },
+            exportNames: ['Topic'],
+          },
+        ]);
+        const store = new ExportIndexStore(s3, 'b', 'cdkd', 'us-east-1', backend);
+
+        // The healthy sibling still publishes — the floor.
+        expect(await store.lookup('Topic')).toEqual({
+          value: 'topic-1',
+          producerStack: 'Healthy',
+          producerRegion: 'us-east-1',
+        });
+
+        const parsed = JSON.parse(savedBody) as ExportIndexFile;
+        // The PUBLISHED index holds exactly the healthy record's one export.
+        // Pre-fix, a six-character bag put SIX entries here, keyed `'0'`…`'5'`
+        // and valued with the record's own characters.
+        expect(Object.keys(parsed.exports)).toEqual(['Topic']);
+        expect(parsed.exports['0']).toBeUndefined();
+        expect(parsed.exports['VpcId']).toBeUndefined();
+
+        // ...and the damaged producer is NAMED. An empty contribution is
+        // indistinguishable from a stack that exports nothing, so without this
+        // the only symptom is an Fn::ImportValue failing later in a DIFFERENT
+        // stack, naming the consumer.
+        const said = warnings().join('\n');
+        expect(said, 'the damaged producer record was dropped silently').toContain('Broken');
+        expect(said).toContain('CONSUMER');
+      });
+    }
+
+    it('FLOOR: a record with NO outputs contributes nothing and stays SILENT (#3192)', async () => {
+      // The other side of the split the review forced. `absent` must keep the
+      // silent skip — a record with no `outputs` is one cdkd writes on purpose
+      // (the deploy's failure-path saves emit `outputs: currentState.outputs`,
+      // which `JSON.stringify` drops when undefined), so warning here would
+      // fire on ordinary state on every rebuild. Without this case, "let every
+      // falsy shape through to the guard" would be satisfied by warning on
+      // absence too.
+      const s3 = mockS3(async (cmd) => {
+        if (cmd.constructor.name === 'GetObjectCommand') throw s3ErrorWith('NoSuchKey', 404);
+        if (cmd.constructor.name === 'PutObjectCommand') return { ETag: '"new-etag"' };
+        throw new Error(`unexpected command ${cmd.constructor.name}`);
+      });
+      const backend = mockBackend([
+        // `outputs: undefined` with the KEY PRESENT, not an omitted key. An
+        // omitted key gets `{}` from the helper, which is a READABLE bag on
+        // the healthy path — so this case would pass whatever the guard did.
+        // `parseStateBody` does not default the field, so a record whose save
+        // dropped it really does arrive as `undefined`.
+        { stackName: 'NoOutputs', region: 'us-east-1', outputs: undefined },
+        {
+          stackName: 'Healthy',
+          region: 'us-east-1',
+          outputs: { Topic: 'topic-1' },
+          exportNames: ['Topic'],
+        },
+      ]);
+      const store = new ExportIndexStore(s3, 'b', 'cdkd', 'us-east-1', backend);
+
+      expect(await store.lookup('Topic')).toBeDefined();
+      expect(warnings().join('\n'), 'an ordinary no-outputs record was warned about').not.toContain(
+        'NoOutputs'
+      );
     });
 
     it('rebuild WARNS when two stacks publish one export name, and keeps the later one (#2193)', async () => {

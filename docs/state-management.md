@@ -651,6 +651,16 @@ integ test proves the round-trip against real AWS — and first reproduces the
 shadowing under the v8 binary (a consumer bound to a decoy stack's plain
 output) before the v9 binary rebinds it to the real export.
 
+**A hand-edited `exportNames` that is not an array reads as an empty set**, not
+as an absent one. The distinction matters because absent means "not known" and
+falls back to the legacy every-key rule — so reading a corrupt field that way
+would republish every plain output name as an export, which is exactly the
+shadowing v9 exists to close. A string, a number, an object or `null` there is
+therefore read as "this stack exports nothing", and any element that is not a
+string is dropped — key lookup coerces rather than throwing, so
+`exportNames: [0]` against a bag holding a `"0"` key would otherwise publish
+it. A healthy `string[]` is unaffected.
+
 ### `version: 10` adds `observedBaselineRefused` (current writers)
 
 Schema `version: 10` adds a per-resource `observedBaselineRefused` flag, set
@@ -848,6 +858,43 @@ unresolved output is dropped from the block entirely rather than printed as
 `aws s3 cp s3://<bucket>/cdkd/{stackName}/{region}/state.json -` — or run
 `cdkd state show <stack>`, which renders any non-scalar through
 `JSON.stringify` and so preserves the distinction.
+
+#### When `outputs` is not an object
+
+A state record is parsed as JSON and used as typed data without a
+field-by-field shape check, so a hand-edited or truncated one can hold a
+string, a list, a number, a boolean or `null` where the `outputs` map belongs.
+`Object.entries` walks a string as readily as a map, so anything that rebuilds
+the bag from one produces a well-formed map of fabricated keys — `"abcdef"`
+becomes `{"0":"a", …, "5":"f"}`, and `null` becomes `{}`.
+
+Which answer a command gives depends on whether it can WRITE the record, and
+the two answers are deliberately opposite:
+
+| Command | Answer |
+| --- | --- |
+| `cdkd orphan` | **Refuses** (`STATE_RESOURCES_MALFORMED`, exit `1`) — it rebuilds the bag and saves the result |
+| `cdkd import` | **Refuses** (`STATE_RESOURCES_MALFORMED`, exit `1`) — it carries the bag into a save |
+| `cdkd scrub` | **Refuses** on a real run (exit `2`); audits and reports under `--dry-run` — see [`cdkd scrub`](cli-scrub.md#exit-codes) |
+| `cdkd diff` | **Repairs** in memory and warns — it never writes state; see [`cdkd diff`](cli-diff.md#when-the-state-record-is-malformed) |
+| `cdkd state show` / `state resources` | **Repairs** in memory and warns; `--json` still emits the stored value — see [`cdkd state`](cli-state.md#when-resources-is-not-an-object) |
+| The exports index rebuild | Publishes **nothing** from that record, warns, and indexes every other producer — see [cross-stack internals](cross-stack-internals.md#an-unreadable-producer-record-contributes-nothing-and-says-so) |
+
+Refusing is what keeps the damaged record readable. Saving over it replaces the
+only signal that anything is wrong with a legitimate-looking one, permanently —
+and the next deploy would republish the fabricated keys into the shared exports
+index that every other stack's `Fn::ImportValue` resolves against.
+
+An **absent** `outputs` field is not a defect and is never refused: a record
+with no outputs is one cdkd writes on purpose (a deploy's failure-path save
+emits `outputs: currentState.outputs`, which `JSON.stringify` drops when it is
+undefined), and `cdkd scrub` round-trips such a record rather than
+materializing `{}` over it. An empty `{}` is healthy too — a stack can
+legitimately publish no outputs.
+
+Each container is judged on its own: a record whose `resources` map is fine and
+whose `outputs` is damaged is refused with a message naming `outputs`, and vice
+versa.
 
 #### Example
 

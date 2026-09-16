@@ -148,6 +148,90 @@ describe('buildStackTree', () => {
     expect(roots[0]!.children).toHaveLength(0);
   });
 
+  it('places both members of a two-record parent loop at the root instead of hiding them', () => {
+    // Linked as given, A would be B's child and B would be A's child, so
+    // neither would be a root and both would vanish from every view.
+    const entries: StackTreeEntry[] = [
+      { stackName: 'A', region: 'us-east-1', parentStack: 'B', parentRegion: 'us-east-1' },
+      { stackName: 'B', region: 'us-east-1', parentStack: 'A', parentRegion: 'us-east-1' },
+    ];
+    const roots = buildStackTree(entries);
+    expect(roots.map((r) => r.stackName)).toEqual(['A', 'B']);
+    expect(roots.every((r) => r.children.length === 0)).toBe(true);
+  });
+
+  it('handles two DISJOINT parent loops, one with a hanging child, in a single build', () => {
+    // The outer walk must keep going after it has found one loop: a pass that
+    // stopped at the first cycle would leave the second loop's members nested
+    // under each other.
+    const entries: StackTreeEntry[] = [
+      { stackName: 'A', region: 'us-east-1', parentStack: 'B', parentRegion: 'us-east-1' },
+      { stackName: 'B', region: 'us-east-1', parentStack: 'A', parentRegion: 'us-east-1' },
+      { stackName: 'C', region: 'us-east-1', parentStack: 'D', parentRegion: 'us-east-1' },
+      { stackName: 'D', region: 'us-east-1', parentStack: 'C', parentRegion: 'us-east-1' },
+      { stackName: 'E', region: 'us-east-1', parentStack: 'C', parentRegion: 'us-east-1' },
+    ];
+    const roots = buildStackTree(entries);
+    expect(roots.map((r) => [r.stackName, r.children.map((c) => c.stackName)])).toEqual([
+      ['A', []],
+      ['B', []],
+      ['C', ['E']],
+      ['D', []],
+    ]);
+  });
+
+  it('places every member of a five-record parent loop at the root', () => {
+    // Longer than any other loop here, so a walk capped at a small fixed
+    // number of steps would miss it and hide the whole loop.
+    const names = ['L1', 'L2', 'L3', 'L4', 'L5'];
+    const entries: StackTreeEntry[] = names.map((stackName, i) => ({
+      stackName,
+      region: 'us-east-1',
+      parentStack: names[(i + 1) % names.length]!,
+      parentRegion: 'us-east-1',
+    }));
+    const roots = buildStackTree(entries);
+    expect(roots.map((r) => r.stackName)).toEqual(names);
+    expect(roots.every((r) => r.children.length === 0)).toBe(true);
+  });
+
+  it('keeps a hanging node under its parent even when the walk reaches the loop from it first', () => {
+    // `Tail` is listed FIRST, so the loop is discovered on a walk that starts
+    // at `Tail`. Only the part of that walk from the repeated node on is the
+    // loop; `Tail` itself must not be counted as a member.
+    const entries: StackTreeEntry[] = [
+      { stackName: 'Tail', region: 'us-east-1', parentStack: 'A', parentRegion: 'us-east-1' },
+      { stackName: 'A', region: 'us-east-1', parentStack: 'B', parentRegion: 'us-east-1' },
+      { stackName: 'B', region: 'us-east-1', parentStack: 'A', parentRegion: 'us-east-1' },
+    ];
+    const roots = buildStackTree(entries);
+    expect(roots.map((r) => r.stackName)).toEqual(['A', 'B']);
+    expect(roots[0]!.children.map((c) => c.stackName)).toEqual(['Tail']);
+    expect(roots[1]!.children).toHaveLength(0);
+  });
+
+  it('keeps a node that merely hangs off a parent loop under its parent', () => {
+    const entries: StackTreeEntry[] = [
+      { stackName: 'A', region: 'us-east-1', parentStack: 'C', parentRegion: 'us-east-1' },
+      { stackName: 'B', region: 'us-east-1', parentStack: 'A', parentRegion: 'us-east-1' },
+      { stackName: 'C', region: 'us-east-1', parentStack: 'B', parentRegion: 'us-east-1' },
+      { stackName: 'Tail', region: 'us-east-1', parentStack: 'A', parentRegion: 'us-east-1' },
+    ];
+    const roots = buildStackTree(entries);
+    // Every stack is visible exactly once.
+    const seen: string[] = [];
+    const walk = (nodes: StackTreeNode[]): void => {
+      for (const n of nodes) {
+        seen.push(n.stackName);
+        walk(n.children);
+      }
+    };
+    walk(roots);
+    expect(seen.sort()).toEqual(['A', 'B', 'C', 'Tail']);
+    expect(roots.map((r) => r.stackName)).toEqual(['A', 'B', 'C']);
+    expect(roots[0]!.children.map((c) => c.stackName)).toEqual(['Tail']);
+  });
+
   it('sorts children alphabetically', () => {
     const entries: StackTreeEntry[] = [
       { stackName: 'Parent', region: 'us-east-1' },

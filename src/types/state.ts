@@ -714,6 +714,54 @@ export function shouldRetainResource(
 }
 
 /**
+ * Can this container be read as the record map its type claims it is?
+ *
+ * THE single plain-object test behind every malformed-bag guard in the repo.
+ * `parseStateBody` validates the root object and the schema version and
+ * nothing inside, so a hand-edited or truncated record reaches a consumer with
+ * `resources` / `outputs` / `attributes` / `properties` holding a string, a
+ * list, a number or `null`. `Object.entries` walks a string or a list as
+ * readily as a map, so either FABRICATES entries. `in` and `Object.hasOwn`
+ * behave differently per shape and neither is a guard: `in` THROWS on a
+ * string, a number and `null`, but ANSWERS on a list (`0 in [1,2]` and
+ * `'length' in [1,2]` are both `true`), while `Object.hasOwn` ANSWERS on a
+ * string and a list alike (`Object.hasOwn('abcdef', '0')` is `true`) and
+ * throws ONLY on `null` / `undefined` — the one pair a `?? {}` upstream has
+ * usually already absorbed, which is what makes it look like a guard. Do not
+ * read a nearby `in` as already catching the list case. Widened past
+ * `null` / `undefined` for
+ * exactly that reason: `[]`, `5` and `"ab"` all survive `Object.entries` and
+ * yield a bag that is empty or, for the string, absurd.
+ *
+ * WHY IT LIVES HERE rather than beside the guards that grew out of it. Its
+ * first home was `src/state/malformed-resources-bag.ts`, which still re-exports
+ * it so no importer moved; it came down to this module when
+ * {@link importableOutputKeys} needed it (go-to-k/cdkd#3192). That helper sits
+ * in `src/types/**`, the layer every other one imports and which imports
+ * nothing itself, so the alternative — `src/types/state.ts` importing from
+ * `src/state/**` — inverts the layering AND pulls that module's
+ * `error-handler` / `display-safe` / `lock-contention-message` chain into the
+ * one module the whole codebase depends on. Same move, same reason, as
+ * `DEFAULT_STATE_PREFIX` in `src/state/state-prefix.ts`: home the leaf in the
+ * layer that needs it, re-export from where it was.
+ *
+ * Spelling this test a second time at any call site is what the single export
+ * exists to prevent: the copies could then drift, and the one that drifted
+ * would fabricate again while looking guarded. Enumerate the consumers with
+ * `grep -rn "isReadableBag" src/` rather than from a list here — three
+ * successive enumerations of them, written by reasoning, came out incomplete.
+ *
+ * What it does NOT decide is whether a given container is malformed. That is a
+ * per-container call, because ABSENCE means different things: an absent
+ * `resources` bag is a defect, while an absent `outputs` bag is an ordinary
+ * record `cdkd scrub` round-trips on purpose. Each caller pairs this predicate
+ * with its own absence rule.
+ */
+export function isReadableBag(container: unknown): boolean {
+  return typeof container === 'object' && container !== null && !Array.isArray(container);
+}
+
+/**
  * The keys of `state.outputs` an `Fn::ImportValue` may bind to (issue
  * [#2193](https://github.com/go-to-k/cdkd/issues/2193)) — THE predicate
  * behind "what does this stack export". Four readers used to answer that
@@ -731,18 +779,107 @@ export function shouldRetainResource(
  *
  * `outputs` is typed required but every consumer treats it as optional (a
  * state file may simply have none), so it is read defensively here too.
+ *
+ * ## Two FAIL-CLOSED arms for a malformed record (go-to-k/cdkd#3192)
+ *
+ * Both answer `[]` — "this record exports nothing" — and neither repairs the
+ * record or throws. The reasoning is the same for both and is a property of
+ * WHERE this function sits: it is a pure predicate with no stack name, no
+ * region and no writer of its own, reached from the exports-index rebuild, the
+ * deploy-time resolver's state scan, `cdkd diff`'s no-change merge and the
+ * local-command loader. Throwing here would be the bare `TypeError`
+ * go-to-k/cdkd#3018 set out to remove, renamed; and refusing the whole
+ * operation over ONE foreign record would take every OTHER stack's
+ * `Fn::ImportValue` down with it. Publishing nothing from a record whose
+ * export set cannot be read is the only answer that fabricates nothing and
+ * destroys nothing — the damaged record is left exactly as it is, for the
+ * write-capable commands (`cdkd orphan` / `import` / `scrub`) to REFUSE by
+ * name.
+ *
+ * 1. `outputs` is not a readable bag. `Object.keys('abcdef')` is
+ *    `['0'...'5']`, so the pre-fix code published one fabricated export per
+ *    CHARACTER into `cdkd/_index/<region>/exports.json` — the shared index
+ *    every consumer's `Fn::ImportValue` binds against. {@link isReadableBag}
+ *    is the test, so an ABSENT bag keeps answering `[]` exactly as the old
+ *    `?? {}` did; no verdict moves on a healthy or an absent record.
+ * 2. `exportNames` is present but not an array. `state.exportNames.filter(...)`
+ *    threw `TypeError: state.exportNames.filter is not a function` on a
+ *    hand-edited non-array or `null`, from `cdkd diff` among others. Falling
+ *    back to the `undefined` arm instead would be fail-OPEN in the one
+ *    direction #2193 exists to close — every plain Output name published as an
+ *    export — so a corrupt set is read as an EMPTY set, not as an unknown one.
+ *    A non-string element is dropped for the same reason: `Object.hasOwn` does
+ *    not throw on one, it COERCES, so `exportNames: [0]` would otherwise
+ *    publish the bag's `"0"` key. The filter is the identity on every healthy
+ *    `string[]`.
  */
 export function importableOutputKeys(state: Pick<StackState, 'outputs' | 'exportNames'>): string[] {
-  const outputs = state.outputs ?? {};
+  if (!hasReadableExportSet(state)) return [];
+  const outputs = state.outputs;
   if (state.exportNames === undefined) return Object.keys(outputs);
-  return state.exportNames.filter((name) => Object.hasOwn(outputs, name));
+  return state.exportNames.filter(
+    (name) => typeof name === 'string' && Object.hasOwn(outputs, name)
+  );
+}
+
+/**
+ * Whether {@link importableOutputKeys} can answer from this record at all —
+ * the two fail-closed arms of its own doc, as ONE predicate a caller can ask
+ * (issue go-to-k/cdkd#3192).
+ *
+ * It exists because `[]` is a real answer: a stack that exports nothing and a
+ * record whose export set could not be read produce the identical empty list,
+ * and a caller that must SAY which one it got cannot re-derive the difference
+ * from the list. `ExportIndexStore`'s rebuild is that caller — a silent
+ * fail-closed there would leave the next `Fn::ImportValue` miss naming the
+ * consumer rather than the damaged producer record.
+ *
+ * ONE spelling shared with {@link importableOutputKeys}, which calls this
+ * rather than repeating the two tests: a second copy could drift, and the copy
+ * that drifted would report a record readable while the key list stayed empty,
+ * or the reverse.
+ *
+ * `outputs` absent answers FALSE here, unlike
+ * `malformed-resources-bag.ts`'s `hasReadableOutputs`, and the difference is
+ * the QUESTION rather than a disagreement: that one asks "is this record
+ * damaged" (an absent bag is an ordinary record), this one asks "can an export
+ * set be read off it" (it cannot). A caller that must tell absent from damaged
+ * tests for absence first, as the exports-index rebuild does.
+ */
+export function hasReadableExportSet(state: Pick<StackState, 'outputs' | 'exportNames'>): boolean {
+  if (!isReadableBag(state.outputs)) return false;
+  if (state.exportNames === undefined) return true;
+  if (!Array.isArray(state.exportNames)) return false;
+  // A NON-EMPTY set whose every element is a non-string is DAMAGED, not
+  // "exports nothing" (review of go-to-k/cdkd#3206). Without this arm,
+  // `exportNames: [0]` answered READABLE while {@link importableOutputKeys}
+  // answered `[]`, so the exports-index rebuild dropped that producer with no
+  // warning — the same silent contribute-nothing shape the warning exists to
+  // close, one level down. It was nearly written off on the argument that
+  // closing it means making "readable" mean "yields at least one KEY", which
+  // would fire on the legitimate `exportNames: []`; that is not the only
+  // available predicate, and this one is narrower.
+  //
+  // `some`, NOT `every`: the question is whether ANY element is usable. Two
+  // legitimate shapes stay READABLE that an `every` test would reject — `[]`,
+  // which is how a record says it exports nothing, and `['Real', 0]`, where
+  // dropping the `0` still leaves `Real` to publish. Only a set with nothing
+  // usable in it at all is damaged. The residual is deliberate and bounded: a
+  // PARTIALLY non-string set publishes its usable names and says nothing about
+  // the dropped ones.
+  return state.exportNames.length === 0 || state.exportNames.some((n) => typeof n === 'string');
 }
 
 /** `state.outputs` narrowed to its {@link importableOutputKeys}. */
 export function importableOutputs(
   state: Pick<StackState, 'outputs' | 'exportNames'>
 ): Record<string, unknown> {
-  const outputs = state.outputs ?? {};
+  // Narrowed through the SAME predicate {@link importableOutputKeys} uses, not
+  // a bare `?? {}`: the key list is already empty for an unreadable bag, so
+  // this changes no verdict — it keeps the indexing below from being the one
+  // expression in the pair that would still read off a string if the key list
+  // ever stopped dominating it.
+  const outputs = isReadableBag(state.outputs) ? state.outputs : {};
   // `Object.create(null)`, NOT `{}`: a JSON-parsed `state.outputs` can carry an
   // OWN key named `__proto__` (JSON.parse makes it own, not the setter), and an
   // `Export.Name` of `__proto__` would then reach this reconstruction. Assigning

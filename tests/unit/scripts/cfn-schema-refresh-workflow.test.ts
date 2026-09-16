@@ -20,7 +20,11 @@
  * had exactly those two holes.
  */
 import { describe, it, expect } from 'vite-plus/test';
-import { CHECK_GUIDANCE } from '../../../scripts/diagnose-schema-refresh.mjs';
+import {
+  CHECK_GUIDANCE,
+  CYCLE_PLACEHOLDER,
+  PR_NUMBER_PLACEHOLDER,
+} from '../../../scripts/diagnose-schema-refresh.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
   existsSync,
@@ -131,6 +135,12 @@ const SETTLE_STEP = 'Settle the removals that carry no judgement';
 /** The branch namespace the job creates AND the one its skip-guard looks for. */
 const BRANCH_PREFIX = 'bot/cfn-schema-refresh/';
 
+/** The step that commits this cycle's changelog fragment. */
+const CHANGELOG_STEP = "Record the refresh's changelog fragment";
+
+/** Where the diagnosis writes the fragment and the step above reads it. */
+const FRAGMENT_PATH = '/tmp/changelog-fragment.md';
+
 describe('cfn-schema-refresh workflow (issue #2718)', () => {
   it('is not vacuous — the file exists and has real content', () => {
     expect(workflow.length).toBeGreaterThan(2000);
@@ -176,6 +186,161 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
         expect(byName(name).if).toContain("steps.drift.outputs.drifted == 'true'");
         expect(byName(name).if, `${name} runs unconditionally`).not.toBeUndefined();
       }
+    });
+
+    /**
+     * The changelog fragment (the go-to-k/cdkd#3167 gap: a refresh that adds a
+     * writable property changes what the shipped binary does, and the job wrote
+     * no entry for it).
+     *
+     * Two orderings are what make it work, and both are silently breakable: the
+     * fragment must be RENDERED by the diagnosis, which is the last point at
+     * which the fixtures still differ from their committed copies, and it must
+     * be COMMITTED after Publish, which is where the PR number first exists.
+     * Swap either and the step still runs, still exits 0, and writes nothing —
+     * on a cadence nobody watches.
+     */
+    it('renders the fragment in the diagnosis, before Publish commits the fixtures', () => {
+      expect(shellOf('Diagnose what needs a decision')).toContain(`--changelog-out ${FRAGMENT_PATH}`);
+      const stepNames = parsed.jobs.refresh.steps.map((s: { name?: string }) => s.name);
+      expect(stepNames.indexOf('Diagnose what needs a decision')).toBeLessThan(
+        stepNames.indexOf('Publish the refresh')
+      );
+      expect(stepNames.indexOf('Publish the refresh')).toBeLessThan(
+        stepNames.indexOf(CHANGELOG_STEP)
+      );
+    });
+
+    it('commits the fragment only when this cycle published a PR', () => {
+      // `steps.publish.outputs.pr_number` is empty on the closed-PR bail-out
+      // and when nothing published. Falling back to the guard's `OPEN_PR` the
+      // way the marking step does would commit onto a branch Publish just
+      // refused to touch.
+      expect(byName(CHANGELOG_STEP).if).toBe("steps.publish.outputs.pr_number != ''");
+    });
+
+    it('tells a cycle with no behaviour delta apart from a diagnosis that died', () => {
+      const shell = shellOf(CHANGELOG_STEP);
+      // MISSING file: loud, and NON-fatal — the PR already exists, and failing
+      // here would skip the marking step that follows.
+      const missing = guardArm(shell, `! -f ${FRAGMENT_PATH}`);
+      expect(missing).toMatch(/::warning::/);
+      expect(missing).toContain('exit 0');
+      expect(missing).not.toContain('exit 1');
+      // EMPTY file: silent, and correct — AWS added no writable property.
+      const empty = guardArm(shell, `! -s ${FRAGMENT_PATH}`);
+      expect(empty).toContain('exit 0');
+      expect(empty).not.toContain('::warning::');
+    });
+
+    it('refuses to commit a fragment whose PR or cycle reference never resolved', () => {
+      // The placeholders are the provenance. A fragment reaching `main` with
+      // one unsubstituted would cite a PR that does not exist, or collide with
+      // a sibling cycle's headline, so a failed substitution must red.
+      const shell = shellOf(CHANGELOG_STEP);
+      for (const placeholder of [PR_NUMBER_PLACEHOLDER, CYCLE_PLACEHOLDER]) {
+        expect(guardArm(shell, `! grep -q '${placeholder}'`)).toMatch(/::error::[\s\S]*exit 1/);
+        expect(shell).toContain(`s/${placeholder}/`);
+      }
+    });
+
+    it('spells the placeholders the way the RENDERER spells them', () => {
+      // Two unconnected copies otherwise: the renderer's exported constants and
+      // the shell's literals. Change one and every test stays green while the
+      // daily job dies on its own `::error::` refusal.
+      const shell = shellOf(CHANGELOG_STEP);
+      expect(shell).toContain(PR_NUMBER_PLACEHOLDER);
+      expect(shell).toContain(CYCLE_PLACEHOLDER);
+    });
+
+    it('declares every variable the step reads', () => {
+      // Dropping `PR_NUMBER` from `env:` aborts the step under `set -u`, which
+      // ALSO skips the marking step below on a live PR — the outcome the
+      // non-fatal push arm exists to prevent, reached a different way.
+      const step = byName(CHANGELOG_STEP);
+      const shell = shellOf(CHANGELOG_STEP);
+      const referenced = new Set([...shell.matchAll(/\$\{([A-Z][A-Z0-9_]*)[:}]/g)].map((m) => m[1]!));
+      expect(referenced.size, 'no environment reads found — the scan broke').toBeGreaterThanOrEqual(
+        3
+      );
+      const RUNNER_PROVIDED = new Set(['GITHUB_REPOSITORY']);
+      const assigned = new Set(
+        [...shell.matchAll(/(?:^|[\s;])([A-Za-z_][A-Za-z0-9_]*)=/gm)].map((m) => m[1]!)
+      );
+      for (const name of referenced) {
+        expect(
+          Object.keys(step.env ?? {}).includes(name) ||
+            RUNNER_PROVIDED.has(name) ||
+            assigned.has(name),
+          `\${${name}} is read but neither declared in env:, assigned by the step, nor provided by the runner`
+        ).toBe(true);
+      }
+    });
+
+    it('dates the fragment in the format the assembler requires', () => {
+      // `assemble-changelog.ts`'s ENTRY_NAME demands `<YYYY-MM-DD>-<issue>-`.
+      // Regress this to `%Y-%m` and the job commits `2026-09-3173-...md`, which
+      // `readEntries` THROWS on -- breaking `vp run gen:changelog` repo-wide
+      // until a human renames the file. The same assertion already guards the
+      // branch name one step over; the fragment path had none.
+      expect(shellOf(CHANGELOG_STEP)).toContain('date -u +%Y-%m-%d');
+    });
+
+    it('stages only the fragment it just wrote', () => {
+      // `git add -A` here would sweep whatever an earlier step left behind into
+      // a commit whose message says it carries a changelog entry.
+      const shell = shellOf(CHANGELOG_STEP);
+      expect(shell).toContain('git add "${entry}"');
+      expect(shell).not.toMatch(/git add\s+(-A|--all|\.)\b/);
+    });
+
+    it('never overwrites a fragment already on the branch', () => {
+      // The job's standing promise is that it rewrites only DERIVED files. A
+      // fragment is prose a maintainer may have edited, so the write is
+      // create-only; a later cycle gets a different date and its own file.
+      const shell = shellOf(CHANGELOG_STEP);
+      // Keyed on CYCLE + PR with the slug free. Both halves were wrong alone in
+      // an earlier round: the exact PATH missed a maintainer's RENAME, so a
+      // same-day re-dispatch wrote a second copy with a byte-identical headline
+      // the uniqueness fence rejects; the PR ALONE matched cycle 1's own
+      // fragment, so every later cycle on the same open PR silently wrote
+      // nothing -- the loss this step exists to stop.
+      expect(shell).toContain('for f in changelog.d/entries/"${cycle}"-"${PR_NUMBER}"-*.md');
+      expect(shell, 'a leading * would span the SLUG and match another lane’s fragment').not.toMatch(
+        /entries\/\*-"\$\{PR_NUMBER\}"/
+      );
+      // `ls` would read TRUE forever under `shopt -s nullglob` (no arguments,
+      // lists the directory, exits 0); the `for` probe cannot.
+      expect(shell).not.toContain('ls changelog.d/entries');
+      // Sliced to the arm's OWN `exit 0`, not through `guardArm`: the block now
+      // nests a `cmp` guard, so slicing to the first `fi` would stop inside it
+      // and read that one's contents as this arm's.
+      const at = shell.indexOf('if [ -n "${existing}" ]');
+      expect(at, 'the create-only guard is gone').toBeGreaterThan(-1);
+      const arm = shell.slice(at, shell.indexOf('exit 0', at) + 6);
+      expect(arm).toContain('exit 0');
+      expect(arm).not.toContain('rm ');
+      // Create-only, but NOT silent when the skip costs something: a rendering
+      // that differs from the fragment already there means this run found drift
+      // that fragment does not describe.
+      expect(arm).toContain('cmp -s "${existing}" /tmp/fragment-final.md');
+      expect(arm).toMatch(/::warning::[^\n]*differs from what this run rendered/);
+      expect(shell).toContain('changelog.d/entries/${cycle}-${PR_NUMBER}-cfn-schema-refresh.md');
+    });
+
+    it('does not fail the job when the fragment push loses a race', () => {
+      // Publish already landed the drift and opened or updated the PR. Failing
+      // here would ALSO skip the marking step below, on a PR that exists —
+      // trading the signal a human reads for a changelog line.
+      const shell = shellOf(CHANGELOG_STEP);
+      const at = shell.indexOf('if ! git push');
+      expect(at, 'the fragment push is no longer guarded').toBeGreaterThan(-1);
+      const arm = shell.slice(at, at + shell.slice(at).search(/\n\s*fi\b/));
+      expect(arm).toMatch(/::warning::/);
+      expect(arm).not.toMatch(/exit 1/);
+      // No `${{ }}` in a shell body — the rule the switch and publish steps
+      // state, and the reason the branch is read from the checkout.
+      expect(shell).not.toContain('${{');
     });
 
     it('switches onto the open PR branch only when one is open', () => {
