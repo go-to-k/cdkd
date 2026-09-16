@@ -18,8 +18,9 @@ readily as a map, and `in` throws on both.
 Issue [#3018](https://github.com/go-to-k/cdkd/issues/3018) settled the rule for
 the `resources` bag: a command that can WRITE state refuses, a read-only one
 repairs and warns. That rule does not decide this class on its own, because
-two consumers here are neither — a pure predicate, and a best-effort shared
-index. This page records the call made at each site and why.
+three consumers here are none of those — a pure predicate, a best-effort shared
+index, and a read of somebody ELSE's record. This page records the call made at
+each site and why.
 
 ## 1. The rule, and the two sites it does not decide
 
@@ -29,6 +30,7 @@ index. This page records the call made at each site and why.
 | **REPAIR + WARN** | The command provably cannot write | Reading the bag as empty keeps the command usable; the warning is what stops "no rows" reading as "the record holds none" |
 | **FAIL CLOSED, silently** | A pure predicate with no stack identity and no writer | It cannot name a record in a message, and throwing would be the bare `TypeError` renamed |
 | **FAIL CLOSED, warning** | A best-effort shared artifact rebuilt from many records | Refusing over one record would take every other record's consumers down with it |
+| **NO VERDICT, warning** | A read of ANOTHER stack's record, made to classify it | Refusing would strand the scrubbed stack's own plaintext over a record the user may not own; staying silent would trade a loud wrong answer for a quiet one (§6) |
 
 ## 2. Per-site decisions
 
@@ -39,6 +41,7 @@ index. This page records the call made at each site and why.
 | The carried bag in the saved state literal, guarded at the `cdkd import` load | `cdkd import` | REFUSE |
 | `importableOutputKeys` / `importableOutputs` | shared predicate | FAIL CLOSED, silently |
 | The exports-index rebuild | any command that touches the index | FAIL CLOSED, warning |
+| `producerStoredValue`, the cross-stack pre-pass's read of a FOREIGN producer | `cdkd scrub` | NO VERDICT + warning (§6) |
 | `loadStateOrEmpty` | `cdkd diff` | REPAIR + WARN (shipped with #3189) |
 | The render entry | `cdkd state show` / `state resources` | REPAIR + WARN (shipped with [#3187](https://github.com/go-to-k/cdkd/issues/3187)) |
 
@@ -81,9 +84,9 @@ the walk, so a per-walk guard is inert. `exportNames` has the opposite shape:
 `exportNamesCarriedFrom` beside it tests `=== undefined` and copies — so
 guarding there dominates every consumer.
 
-## 4. Residual: five consumers in a real-AWS gate scope
+## 4. Residual: the consumers in a real-AWS gate scope
 
-Five sites read the bag without going through the predicate above, and each
+These sites read the bag without going through the predicate above, and each
 lives in a file whose edit pulls a real-AWS integration gate into the change:
 
 | Site | Gate its file is in |
@@ -93,18 +96,21 @@ lives in a file whose edit pulls a real-AWS integration gate into the change:
 | The local-command loader's `Fn::GetStackOutput` `in` test | `integ-local` |
 | The local state provider's coercion walk | `integ-local` |
 | The deploy engine's persisted-outputs carry | `integ-destroy` and `integ-broad` |
+| `cdkd state destroy`'s strong-reference check | `integ-destroy` and `integ-broad` |
 
 Their `Fn::ImportValue` halves are already covered for free, because those go
-through `importableOutputKeys`. What remains is tracked by
+through `importableOutputKeys`. Every row is tracked by
 [#3207](https://github.com/go-to-k/cdkd/issues/3207), which names each site and
-the gate it drags, so it can be taken when a session is free to spend the runs.
+the gate it drags, so they can be taken when a session is free to spend the
+runs. That issue is the count-bearing list; this table is a summary of it.
 
-A fifth site joins them there and is NOT in the table above, because
-go-to-k/cdkd#3192's own grep did not name it: the resolver's
-`Fn::GetStackOutput` arm reads the bag through a local variable, so the
-`Object.(entries|keys|values)` filter that built the issue's site list skipped
-it. `Object.hasOwn('abcdef', '0')` is true, so it resolves a fabricated
-cross-stack value into a consumer's template.
+The resolver's `Fn::GetStackOutput` row was NOT in go-to-k/cdkd#3192's own site
+list, and the reason is worth keeping: that list came from a grep filtered to
+lines carrying `Object.(entries|keys|values)`, and this site reads the bag
+into a local variable one line earlier. `Object.hasOwn('abcdef', '0')` is true,
+so it resolves a fabricated cross-stack value into a consumer's template — and
+it is also the route by which a damaged producer record reaches `cdkd scrub`'s
+own classifier (§6).
 
 ## 5. A non-string export set is damaged, not "exports nothing"
 
@@ -133,3 +139,27 @@ One residual is accepted and bounded: a PARTIALLY non-string set publishes its
 usable names and says nothing about the dropped ones. Warning there would mean
 reporting a record damaged while still publishing from it, which is a worse
 signal than silence.
+
+## 6. A seventh site, found by review rather than by the grep
+
+`cdkd scrub`'s cross-stack pre-pass re-reads a PRODUCER's record to classify
+its stored value (`producerStoredValue`). That bag belongs to another stack, so
+the load guard of §2 never covers it, and the classifier asked
+`producer.key in outputs` — a bare `TypeError` on a string, escaping the
+`try` that only wraps the fetch.
+
+It takes a THIRD disposition, different from every row in §1: **no verdict,
+plus a warning.** Refusing would strand the scrubbed stack's own plaintext over
+a record the user may not even own; staying silent would trade a loud wrong
+answer for a quiet one. So the classifier returns "cannot classify" and the
+damaged producer is named, while an ABSENT bag — or one that simply lacks the
+key, an ordinary stale-index shape — stays unmentioned.
+
+Its reachability is the part worth recording. It is unreachable by
+`Fn::ImportValue`, because `importableOutputKeys` fails closed so the read
+never succeeds. It IS reachable by `Fn::GetStackOutput`, which consults no such
+predicate: a producer whose bag is the string `'abcdef'` and whose template
+declares an output named `'0'` resolves, records the read, and enters the
+classifier. An earlier revision of the test file asserted the opposite and
+shipped no case; three reviewers converged on the error, and one measured the
+raw `TypeError` escaping. The case now exists and reds without the guard.

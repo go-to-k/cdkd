@@ -404,21 +404,23 @@ describe('cdkd scrub resolves a cross-stack read (issue #2133)', () => {
    * at the `catch` that logs a failed re-read). That is a real #3018-class
    * defect and the guard is now `isReadableBag` + `Object.hasOwn`.
    *
-   * NO CASE IS PINNED ON THAT GUARD, deliberately, because MEASURED it cannot
-   * fire: reverting it leaves this file 117/117 green, and so does reverting
-   * `importableOutputKeys`' fail-closed arm. The reason is upstream — the
-   * classifier only runs for a producer whose read SUCCEEDED, and a read
-   * succeeds only when `importableOutputKeys` returned the key, which a
-   * damaged bag never does. A case asserting the named refusal below passes
-   * with the guard REMOVED, so shipping one would be a vacuous test wearing
-   * the guard's name.
+   * IT IS REACHABLE, and an earlier revision of this comment claimed the
+   * opposite. That claim was measured true only for the `Fn::ImportValue`
+   * route this file's other cases use, where `importableOutputKeys` fails
+   * closed so the read never succeeds and the classifier is never entered.
+   * `recordedProducer` has a SECOND arm: `Fn::GetStackOutput` does not consult
+   * that predicate at all — the resolver reads `state.outputs ?? {}` and asks
+   * `Object.hasOwn`, and `Object.hasOwn('abcdef', '0')` is TRUE — so a
+   * producer whose bag is a string and whose template declares an output named
+   * `'0'` resolves, records, and reaches the classifier. Three reviewers
+   * converged on this and one measured the raw
+   * `TypeError: Cannot use 'in' operator to search for '0' in abcdef`
+   * escaping to the user with the guard reverted.
    *
-   * What would make it reachable: an export name that is also an INDEX of the
-   * planted string (`'0'`), under a binary whose `importableOutputKeys` still
-   * enumerates one. Both halves are closed here, so the guard is
-   * defence-in-depth against a future caller that reaches the classifier by
-   * another route — which is worth the two tokens it costs, and is not worth a
-   * test that cannot fail.
+   * So the guard is fenced by the `Fn::GetStackOutput` case below, and the
+   * `Fn::ImportValue` case pins the OUTCOME on the route where the upstream
+   * predicate refuses first. Writing the unreachability claim down without a
+   * case behind it would have licensed a future lane to delete a live fix.
    */
   it('a damaged PRODUCER record refuses the consumer by name, not with a TypeError', async () => {
     consumerState = makeConsumerState(
@@ -444,6 +446,59 @@ describe('cdkd scrub resolves a cross-stack read (issue #2133)', () => {
     const message = thrown instanceof Error ? thrown.message : String(thrown);
     expect(message).not.toMatch(/in' operator|is not a function|Cannot read properties/);
     expect((thrown as { code?: string }).code).toBe('SCRUB_CROSS_STACK_READ_UNRESOLVED');
+  });
+
+  it('Fn::GetStackOutput REACHES the classifier with a damaged producer bag, and survives', async () => {
+    // The route that makes the guard fenceable rather than defence-in-depth.
+    // `Fn::GetStackOutput` bypasses `importableOutputKeys`, and the output is
+    // named `'0'` ON PURPOSE: that is an INDEX of the planted string, so
+    // `Object.hasOwn('abcdef', '0')` is true, the resolver returns `'a'`, the
+    // read is RECORDED, and `producerStoredValue` is entered with a bag it
+    // cannot walk. Pre-guard this aborted with
+    // `Cannot use 'in' operator to search for '0' in abcdef`.
+    const FABRICATED_KEY = '0';
+    consumerState = makeConsumerState(
+      { MasterUserPassword: 'not-a-secret', MasterUsername: 'admin' },
+      { DbUrl: PLAINTEXT }
+    );
+    useProducerOutputs('abcdef' as unknown as Record<string, unknown>);
+
+    let thrown: unknown;
+    try {
+      await scrub(
+        { MasterUserPassword: 'not-a-secret', MasterUsername: 'admin' },
+        {
+          outputs: {
+            DbUrl: {
+              Value: {
+                'Fn::GetStackOutput': { StackName: PRODUCER, OutputName: FABRICATED_KEY },
+              },
+            },
+          },
+          appStacks: [
+            makeProducerStackInfo({
+              [FABRICATED_KEY]: { Value: SECRET_EXPR, Export: { Name: EXPORT_NAME } },
+            }),
+          ],
+        }
+      );
+    } catch (err) {
+      thrown = err;
+    }
+
+    // Whatever the verdict, it must not be a raw TypeError out of the
+    // classifier. THIS is the assertion the guard owns.
+    const message = thrown instanceof Error ? thrown.message : String(thrown);
+    expect(
+      message,
+      'producerStoredValue walked a foreign bag it cannot walk'
+    ).not.toMatch(/in' operator|is not a function|Cannot read properties/);
+
+    // ...and the damaged producer is NAMED at default verbosity rather than
+    // swallowed at `debug`. `warn `-prefixed, so a `debug` line naming the
+    // same stack does not satisfy this.
+    const warned = logLines.filter((l) => l.startsWith('warn ')).join('\n');
+    expect(warned, 'the damaged producer record was tolerated silently').toContain(PRODUCER);
   });
 });
 

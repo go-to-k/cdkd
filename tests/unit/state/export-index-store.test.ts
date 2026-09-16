@@ -96,8 +96,16 @@ function mockBackend(
      * `tests/unit/state` cases green.
      */
     outputs?: Record<string, unknown> | null | undefined;
-    /** Omitted = a pre-v9 record (issue #2193): every output key importable. */
-    exportNames?: string[];
+    /**
+     * Omitted = a pre-v9 record (issue #2193): every output key importable.
+     *
+     * `unknown[]` so a DAMAGED set can be planted — a non-array, or an array
+     * whose elements are not strings. Without the widening the
+     * `exportNames: [0]` shape had no row at this layer, so the delta it
+     * actually buys (that producer now WARNS by name at rebuild rather than
+     * being dropped silently) went unfenced.
+     */
+    exportNames?: readonly unknown[] | string;
     /** State record's lastModified; rebuild keeps the newer on a collision (#2194). */
     lastModified?: number;
   }>
@@ -265,8 +273,17 @@ describe('ExportIndexStore', () => {
         'a non-array exportNames',
         {
           outputs: { VpcId: 'vpc-broken' },
-          exportNames: 'not-an-array' as unknown as string[],
+          exportNames: 'not-an-array',
         },
+      ],
+      // The shape the round-1 review nearly wrote off: structurally an array,
+      // so every earlier test called it readable, while `importableOutputKeys`
+      // drops every element as a non-string and answers `[]`. Read as
+      // "exports nothing" it was dropped SILENTLY. This row is what fences the
+      // warning at the consumer rather than only at the predicate.
+      [
+        'an all-non-string exportNames',
+        { outputs: { '0': 'fabricated', VpcId: 'vpc-broken' }, exportNames: [0, null] },
       ],
     ] as const) {
       it(`rebuild publishes NOTHING from a record with ${label}, and says so (#3192)`, async () => {

@@ -59,7 +59,7 @@ import { canonicalizeRegion } from '../../utils/aws-partition.js';
 // error message interpolates a bucket / key, so both reach the terminal only
 // through the same control-byte strip `export-index-store.ts` uses for the
 // name it logs.
-import { UNRENDERABLE, displaySafe } from '../../utils/display-safe.js';
+import { displaySafe } from '../../utils/display-safe.js';
 import type { StackState } from '../../types/state.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
@@ -82,12 +82,14 @@ import {
   hasReadableOutputs,
   hasReadableResources,
   isReadableBag,
+  malformedExportSourceWarning,
   malformedOutputsRefusalMessage,
   malformedOutputsWarning,
   malformedResourcesWarning,
   malformedStateRefusalMessage,
   repairMalformedOutputsForReadOnly,
   repairMalformedResourcesForReadOnly,
+  safeIdentifier,
 } from '../../state/malformed-resources-bag.js';
 
 /**
@@ -2105,16 +2107,29 @@ function malformedRecordsAuditedError(
   // so a single merged sentence would tell the reader nothing is known about
   // resources whose map was perfectly readable — and the two remedies point at
   // different parts of the same file.
-  // SANITIZED before interpolation (review of go-to-k/cdkd#3206). A stack name
-  // reaches scrub from an S3 key, so an unsanitized one can carry control
-  // bytes, bidi marks or ANSI escapes into a terminal and forge a line — the
-  // class `displaySafe` exists for, and which every message in
-  // `malformed-resources-bag.ts` already closes. The `resources` sentence had
-  // interpolated raw since go-to-k/cdkd#3018 and the `outputs` sentence copied
-  // it; both go through the helper now. No `shellQuote`: these names appear in
-  // PROSE and never inside a command the reader is told to paste.
+  // Through the SHARED `safeIdentifier`, not a local half-copy (review of
+  // go-to-k/cdkd#3206). These two sentences had interpolated raw since
+  // go-to-k/cdkd#3018; a first cut sanitized them with `displaySafe` alone and
+  // review caught that it dropped the CAP, so one run rendered the same stack
+  // name capped in the per-record warning and unbounded here.
+  //
+  // Provenance, stated correctly: these names are `stack.stackName` off the
+  // synthesized Cloud Assembly, NOT an S3 key — scrub's targets come from the
+  // app. That makes a forged name unlikely rather than impossible (a CDK
+  // construct id is not validated against control characters), and the cap is
+  // the half that matters either way, because a nested child is `Parent~Child`
+  // recursively.
+  //
+  // QUOTED, so the list has a boundary: every name here is otherwise bare
+  // printable text inside a sentence whose siblings end in a pasteable
+  // command, and an all-ASCII name can read as cdkd's own prose. No
+  // `shellQuote` — this message contains no command, and wrapping would
+  // compose badly with `safeIdentifier` for the reason its own note gives.
+  //
+  // This closes THESE TWO sentences only. Other raw `${stackName}`
+  // interpolations remain elsewhere in this file and are out of scope here.
   const safeNames = (names: readonly string[]): string =>
-    names.map((n) => displaySafe(n, { asciiOnly: true }) || UNRENDERABLE).join(', ');
+    names.map((n) => `'${safeIdentifier(n)}'`).join(', ');
   const parts: string[] = [];
   if (stackNames.length > 0) {
     parts.push(
@@ -3744,7 +3759,20 @@ function makeCrossStackPrePass(deps: {
       // narrows nothing and `Object.hasOwn` would not compile. It already
       // answers false for `undefined`, so no verdict moves — the same shape
       // `outputs-diff.ts` carries for the same reason.
-      if (outputs === undefined || !isReadableBag(outputs)) return undefined;
+      //
+      // DAMAGED is WARNED, ABSENT is not, and the split is the point (review
+      // of go-to-k/cdkd#3206). Before the guard, a damaged producer bag
+      // aborted scrub with a raw `TypeError`; degrading that to a silent
+      // `undefined` would trade a loud wrong answer for a quiet one, and this
+      // is the ONE place in this change where a damaged record would otherwise
+      // be tolerated without being named. An ABSENT bag, or one that simply
+      // does not carry the key, is ORDINARY — a stale index entry, a producer
+      // that never published that name — and stays unmentioned.
+      if (outputs !== undefined && !isReadableBag(outputs)) {
+        logger.warn(malformedExportSourceWarning(producer.stack, producer.region));
+        return undefined;
+      }
+      if (outputs === undefined) return undefined;
       if (!Object.hasOwn(outputs, producer.key)) return undefined;
       return { stored: outputs[producer.key] };
     };

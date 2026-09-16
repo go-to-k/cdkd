@@ -83,8 +83,16 @@ export { isReadableBag };
  * An identifier that sanitizes to EMPTY becomes `UNRENDERABLE` rather than
  * nothing — an empty argument makes `--stack-region` swallow the next flag,
  * turning a remedy into a differently-broken command.
+ *
+ * EXPORTED since go-to-k/cdkd#3206's review: `cdkd scrub`'s audited-record
+ * refusal builds its own name list, and a half-reimplementation there
+ * sanitized without CAPPING — so one run rendered the same stack name capped
+ * in the per-record warning and unbounded in the refusal. Nested children are
+ * `Parent~Child` recursively, so an uncapped name really can push the rest of
+ * the sentence off the reader's screen. Call this rather than spelling the
+ * `displaySafe` + `truncateCodePoints` pair again.
  */
-function safeIdentifier(value: string): string {
+export function safeIdentifier(value: string): string {
   // CAPPED as well as sanitized. A stack name can arrive from an S3 key, so a
   // planted multi-kilobyte one would push the trailing remedy command off the
   // reader's screen -- the message would be technically correct and useless.

@@ -1160,6 +1160,27 @@ describe('write-capable commands refuse; read-only ones repair', () => {
 
       expect(src, `${file} no longer calls saveState`).toContain('saveState(');
 
+      // `scrub` additionally LISTS the records it could not certify, in an
+      // audited-record refusal raised above `scrubStack`'s seam — so no
+      // behavioural case in this repo reaches it, and it interpolated stack
+      // names RAW from go-to-k/cdkd#3018 until go-to-k/cdkd#3206's review. A
+      // source fence is what fits: the names must go through the SHARED
+      // `safeIdentifier` (sanitize + 128-code-point cap + `UNRENDERABLE`), not
+      // a bare `.join`, and not a local half-copy that sanitizes without
+      // capping — which is exactly what the first fix shipped.
+      if (file === 'src/cli/commands/scrub.ts') {
+        expect(
+          src,
+          'scrub lists malformed records with a bare join, so a stack name reaches the refusal ' +
+            'unsanitized and uncapped.'
+        ).not.toMatch(/\$\{(stackNames|outputStackNames)\.join\(/);
+        expect(
+          src,
+          'scrub no longer routes the audited-record name list through the shared ' +
+            'safeIdentifier, so its cap can drift from the per-record warning that uses it.'
+        ).toContain('safeIdentifier(n)');
+      }
+
       // DOMINANCE.
       const refusalAt = Math.max(
         src.indexOf('refuseMalformedOutputs('),

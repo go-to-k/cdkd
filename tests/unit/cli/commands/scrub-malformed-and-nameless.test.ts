@@ -730,6 +730,33 @@ describe('cdkd scrub - refusals this PR adds (go-to-k/cdkd#2692, go-to-k/cdkd#30
       expect(s.outputs).toBeUndefined();
     });
 
+    it('sanitizes and CAPS a hostile stack name end-to-end through scrubStack', async () => {
+      // END-TO-END, which is what the helper's own unit cases cannot show:
+      // this drives the real command path and asserts on what actually reached
+      // the logger, so a caller that stopped routing the name through
+      // `safeIdentifier` would red here even with the helper still correct.
+      //
+      // It pins the PER-RECORD WARNING. The audited-record REFUSAL is raised
+      // in `scrubCommand`, above this seam, and is fenced by source shape in
+      // `tests/unit/state/malformed-resources-bag.test.ts` instead — an
+      // earlier revision of this case claimed to cover it and did not.
+      const stack = {
+        stackName: `Evil\u0000\u001b[31m${'q'.repeat(5000)}`,
+        template: stackInfo().template,
+      };
+      const result = await run(withOutputs('abcdef'), { dryRun: true, stack: stack as never });
+      expect((result as unknown as { malformedOutputs?: true }).malformedOutputs).toBe(true);
+
+      const warned = logger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+      // Sanitized: the control byte and the ANSI escape are gone, so no line
+      // can be forged in a terminal or a JSON log viewer.
+      expect(warned).not.toContain('\u0000');
+      expect(warned).not.toContain("\u001b[31m");
+      // Capped: the 5,000-character name is truncated rather than rendered.
+      expect(warned).not.toContain('q'.repeat(200));
+      expect(warned).toContain('q'.repeat(100));
+    });
+
     it('refuses on the outputs bag while the RESOURCES refusal stays silent', () => {
       // The two guards are pinned apart: collapsing them into one condition is
       // the obvious simplification and would make each fire on the other's
