@@ -2969,6 +2969,27 @@ export function renderChangelogFragment({
   }
 
   const sentences = [headline];
+  // How readily the last-resort trim gives each sentence up: HIGHER goes
+  // first. Position is the wrong order — measured on a saturated cycle, the
+  // addition half's long explanatory sentences survived while every
+  // withdrawal note went, including the pre-flight-refusal-goes-away one this
+  // half exists to report. Sentence 0 carries no priority and is never given
+  // up: it holds both lists, the counts and the warn/drop outcome.
+  /** @type {number[]} */
+  const priority = [0];
+  /** @param {string} text @param {number} giveUpFirst */
+  const push = (text, giveUpFirst) => {
+    sentences.push(text);
+    priority.push(giveUpFirst);
+  };
+  /** Never given up while anything else remains: the largest delta this half reports. */
+  const KEEP_LONGEST = 1;
+  /** A per-type consequence: what happens to a stack of that type. */
+  const CONSEQUENCE = 3;
+  /** Explains a mechanism the code already enforces. */
+  const EXPLANATION = 6;
+  /** Reports an ABSENCE — nothing changed — so it is the cheapest to lose. */
+  const ABSENCE = 9;
   // Indices the LAST-RESORT trim may drop, in the order it drops them. Both
   // are EXPLANATORY: the create-only sentence and the withdrawn-row mechanism
   // restate what the code does, while the headline and the per-type
@@ -2981,7 +3002,7 @@ export function renderChangelogFragment({
   const routedCount = routed.reduce((n, e) => n + e.properties.length, 0);
   const routedNames = routed.map((e) => renderName(e.resourceType));
   if (routed.length > 0) {
-    sentences.push(
+    push(
       // The pronoun follows THIS sentence's own population: the global count
       // includes properties on refused types, so testing it said "them" of a
       // single routed property whenever an unroutable type rode along.
@@ -2990,17 +3011,19 @@ export function renderChangelogFragment({
         `issue [#614](https://github.com/go-to-k/cdkd/issues/614) auto-route sends a resource whose ` +
         `template carries one through Cloud Control, which forwards the full property map. Until this ` +
         `refresh the same key post-dated the committed snapshot, so a resource on the SDK route with no ` +
-        `other actionable drop and no \`provisionedBy: 'cc-api'\` record warned and dropped it.`
+        `other actionable drop and no \`provisionedBy: 'cc-api'\` record warned and dropped it.`,
+      EXPLANATION
     );
   }
 
   const unroutableNames = unroutable.map((e) => renderName(e.resourceType));
   if (unroutable.length > 0) {
-    sentences.push(
+    push(
       `${unroutableNames.join(' / ')} cannot take that route — ` +
         `${unroutable.length === 1 ? 'its provider declines' : 'their providers decline'} the Cloud ` +
         `Control fallback, or AWS reports the type NON_PROVISIONABLE — so a template carrying one is ` +
-        `REFUSED at pre-flight with the unroutable-silent-drop message instead of deploying.`
+        `REFUSED at pre-flight with the unroutable-silent-drop message instead of deploying.`,
+      CONSEQUENCE
     );
   }
 
@@ -3010,67 +3033,36 @@ export function renderChangelogFragment({
     // and that is all this says. Writing the refusal sentence here would assert
     // a mechanism nothing measured — the class this whole template exists to
     // avoid — and writing the routed one would be worse still.
-    sentences.push(
+    push(
       // The two behaviours are NAMED rather than referred to: this sentence is
       // the only routing text in the fragment exactly when it stands alone, so
       // "either behaviour" would point at nothing.
       `cdkd could not read the routing declaration for ${unknownNames.join(' / ')}, so this entry ` +
         `does not state how a template carrying one deploys; check each type's provider before ` +
-        `relying on it either auto-routing to Cloud Control or being refused at pre-flight.`
+        `relying on it either auto-routing to Cloud Control or being refused at pre-flight.`,
+      CONSEQUENCE
     );
   }
 
   const pinnedNames = pinned.map((e) => renderName(e.resourceType));
   if (pinned.length > 0) {
-    sentences.push(
+    push(
       `${pinnedNames.join(' / ')} ${pinned.length === 1 ? 'is' : 'are'} ` +
         `not in \`STICKY_CC_MIGRATION_EXEMPT\`, so an existing SDK-provisioned resource of ` +
         `${pinned.length === 1 ? 'that type' : 'those types'} whose template gains one moves to Cloud ` +
-        `Control and pins \`provisionedBy: 'cc-api'\` ONE-WAY.`
+        `Control and pins \`provisionedBy: 'cc-api'\` ONE-WAY.`,
+      CONSEQUENCE
     );
   }
 
   if (removedDrops.length > 0) {
-    droppable.push(sentences.length); // dropped only after the create-only one
-    sentences.push(
+    push(
       `The withdrawn ${removedCount === 1 ? 'key loses' : 'keys lose'} the \`silentDrop\` row that ` +
         `made the issue [#614](https://github.com/go-to-k/cdkd/issues/614) auto-route apply to ` +
         `${removedCount === 1 ? 'it' : 'them'}, so a template still carrying ` +
         `${removedCount === 1 ? 'it' : 'one'} is an UNRECOGNIZED property from this merge on: ` +
-        `warned, and dropped on the SDK route.`
-    );
-  }
-  const stillRoutedNames = stillRouted.map((e) => renderName(e.resourceType));
-  if (stillRouted.length > 0) {
-    // Scoped to a RESOURCE whose template carries one of the remaining drops,
-    // the way the addition half is: routing is decided per resource from its
-    // own property bag, not per type.
-    sentences.push(
-      `${stillRoutedNames.join(' / ')} still ${stillRouted.length === 1 ? 'carries' : 'carry'} ` +
-        `another actionable drop, so a resource whose template sets one keeps taking the Cloud ` +
-        `Control route and only the withdrawn ` +
-        `${removedCount === 1 ? 'key stops' : 'keys stop'} reaching AWS.`
-    );
-  }
-  const backToSdkNames = backToSdkSticky.map((e) => renderName(e.resourceType));
-  if (backToSdkSticky.length > 0) {
-    sentences.push(
-      `${backToSdkNames.join(' / ')} ${backToSdkSticky.length === 1 ? 'has' : 'have'} no actionable ` +
-        `drop left, so a NEW resource of ` +
-        `${backToSdkSticky.length === 1 ? 'that type' : 'those types'} takes the SDK path; one whose ` +
-        `state already records \`provisionedBy: 'cc-api'\` stays on Cloud Control.`
-    );
-  }
-  const backToSdkExemptNames = backToSdkExempt.map((e) => renderName(e.resourceType));
-  if (backToSdkExempt.length > 0) {
-    // The sticky record does NOT hold these: `wouldReturnToSdkProvider` lets a
-    // 'cc-broken' type out unconditionally, and an 'sdk-coverage' type out once
-    // both bags are drop-free — which is exactly the state this arm describes.
-    sentences.push(
-      `${backToSdkExemptNames.join(' / ')} ${backToSdkExempt.length === 1 ? 'has' : 'have'} no ` +
-        `actionable drop left and ${backToSdkExempt.length === 1 ? 'is' : 'are'} in ` +
-        `\`STICKY_CC_MIGRATION_EXEMPT\`, so even a resource recorded ` +
-        `\`provisionedBy: 'cc-api'\` returns to its SDK provider on the next mutating deploy.`
+        `warned, and dropped on the SDK route.`,
+      EXPLANATION
     );
   }
   // Split on the same axis as the routable half, because the two states carry
@@ -3082,31 +3074,76 @@ export function renderChangelogFragment({
   // deploy that warns.
   const unroutableKeeping = removedUnroutable.filter((e) => e.retainsOtherDrops);
   const unroutableCleared = removedUnroutable.filter((e) => !e.retainsOtherDrops);
+  // FIRST of the withdrawal notes, because the truncation arm gives up
+  // notes from the END and this is the largest delta the half can report: a
+  // template that pre-flight REFUSED outright now deploys. Push order is
+  // severity order for whatever survives a saturated cycle.
+  const unroutableClearedNames = unroutableCleared.map((e) => renderName(e.resourceType));
+  if (unroutableCleared.length > 0) {
+    push(
+      `${unroutableClearedNames.join(' / ')} could not take that route — ` +
+        `${unroutableCleared.length === 1 ? 'its provider declines' : 'their providers decline'} the ` +
+        `Cloud Control fallback, or AWS reports the type NON_PROVISIONABLE — and now ` +
+        `${unroutableCleared.length === 1 ? 'has' : 'have'} no ` +
+        `actionable drop left, so the pre-flight REFUSAL goes with the withdrawn key: a template that ` +
+        `was rejected outright now deploys on the SDK path, warning about the unrecognized property.`,
+      KEEP_LONGEST
+    );
+  }
+  const stillRoutedNames = stillRouted.map((e) => renderName(e.resourceType));
+  if (stillRouted.length > 0) {
+    // Scoped to a RESOURCE whose template carries one of the remaining drops,
+    // the way the addition half is: routing is decided per resource from its
+    // own property bag, not per type.
+    push(
+      `${stillRoutedNames.join(' / ')} still ${stillRouted.length === 1 ? 'carries' : 'carry'} ` +
+        `another actionable drop, so a resource whose template sets one keeps taking the Cloud ` +
+        `Control route and only the withdrawn ` +
+        `${removedCount === 1 ? 'key stops' : 'keys stop'} reaching AWS.`,
+      CONSEQUENCE
+    );
+  }
+  const backToSdkNames = backToSdkSticky.map((e) => renderName(e.resourceType));
+  if (backToSdkSticky.length > 0) {
+    push(
+      `${backToSdkNames.join(' / ')} ${backToSdkSticky.length === 1 ? 'has' : 'have'} no actionable ` +
+        `drop left, so a NEW resource of ` +
+        `${backToSdkSticky.length === 1 ? 'that type' : 'those types'} takes the SDK path; one whose ` +
+        `state already records \`provisionedBy: 'cc-api'\` stays on Cloud Control.`,
+      CONSEQUENCE
+    );
+  }
+  const backToSdkExemptNames = backToSdkExempt.map((e) => renderName(e.resourceType));
+  if (backToSdkExempt.length > 0) {
+    // The sticky record does NOT hold these: `wouldReturnToSdkProvider` lets a
+    // 'cc-broken' type out unconditionally, and an 'sdk-coverage' type out once
+    // both bags are drop-free — which is exactly the state this arm describes.
+    push(
+      `${backToSdkExemptNames.join(' / ')} ${backToSdkExempt.length === 1 ? 'has' : 'have'} no ` +
+        `actionable drop left and ${backToSdkExempt.length === 1 ? 'is' : 'are'} in ` +
+        `\`STICKY_CC_MIGRATION_EXEMPT\`, so even a resource recorded ` +
+        `\`provisionedBy: 'cc-api'\` returns to its SDK provider on the next mutating deploy.`,
+      CONSEQUENCE
+    );
+  }
   const removedUnroutableNames = unroutableKeeping.map((e) => renderName(e.resourceType));
   if (unroutableKeeping.length > 0) {
-    sentences.push(
+    push(
       `${removedUnroutableNames.join(' / ')} never took that route — ` +
         `${unroutableKeeping.length === 1 ? 'its provider declines' : 'their providers decline'} the ` +
         `Cloud Control fallback, or AWS reports the type NON_PROVISIONABLE — so the drops it still ` +
-        `carries are REFUSED at pre-flight there rather than routed.`
-    );
-  }
-  const unroutableClearedNames = unroutableCleared.map((e) => renderName(e.resourceType));
-  if (unroutableCleared.length > 0) {
-    sentences.push(
-      `${unroutableClearedNames.join(' / ')} ${unroutableCleared.length === 1 ? 'declines' : 'decline'} ` +
-        `the Cloud Control fallback and now ${unroutableCleared.length === 1 ? 'has' : 'have'} no ` +
-        `actionable drop left, so the pre-flight REFUSAL goes with the withdrawn key: a template that ` +
-        `was rejected outright now deploys on the SDK path, warning about the unrecognized property.`
+        `carries are REFUSED at pre-flight there rather than routed.`,
+      CONSEQUENCE
     );
   }
   const removedUnknownNames = removedDrops
     .filter((e) => unknownRoutingTypes.has(e.resourceType))
     .map((e) => renderName(e.resourceType));
   if (removedUnknownNames.length > 0) {
-    sentences.push(
+    push(
       `cdkd could not read the routing declaration for ${removedUnknownNames.join(' / ')}, so this ` +
-        `entry does not state what a remaining drop does there.`
+        `entry does not state what a remaining drop does there.`,
+      CONSEQUENCE
     );
   }
 
@@ -3120,8 +3157,7 @@ export function renderChangelogFragment({
   // Only when the cycle ADDED something: the sentence is about what joins
   // `createOnlyDrops`, and a removal-only cycle joins nothing.
   if (considered.length > 0) {
-    droppable.push(sentences.length);
-    sentences.push(createOnlySentence(createOnly.length === 0 ? null : createOnly.join(', ')));
+    push(createOnlySentence(createOnly.length === 0 ? null : createOnly.join(', ')), ABSENCE);
   }
 
   const assemble = () => `${sentences.filter((line) => line !== '').join(' ')}\n`;
@@ -3181,26 +3217,23 @@ export function renderChangelogFragment({
   // and two mechanism sentences, and the collapsed lists alone do not get it
   // under (measured, 30 added + 30 withdrawn: 2057 against the 2000 cap). Drop
   // the EXPLANATORY sentences one at a time, never the consequences.
-  // Create-only LAST in the push order, so reverse: it is the only sentence
-  // that reports an ABSENCE, which makes it the cheapest thing to give up.
-  for (const index of [...droppable].reverse()) {
-    sentences[index] = '';
-    if (assemble().trimEnd().length <= CHANGELOG_ENTRY_LIMIT) return assemble();
-  }
-
-  // Still over, and width is no longer what drives it: with every bucket
-  // populated the sentence set is fixed-cost (~2700 at saturation, measured),
-  // so the BUCKET COUNT is the variable and the two droppable sentences are
-  // not enough. Give up whole per-type notes from the END — the earlier ones
-  // describe the populations a cycle is likeliest to carry — and say how many
-  // went, so a reader knows to read the pull request rather than assuming the
-  // entry is complete. Never sentence 0: the headline carries both lists, the
-  // counts and the warn/drop outcome.
+  // Give up in DESCENDING priority, so an absence goes before an explanation
+  // and an explanation before any per-type consequence; ties break on
+  // position, latest first. Never sentence 0. When anything goes, say how many
+  // so a reader knows to read the pull request rather than assuming the entry
+  // is complete.
+  const order = sentences
+    .map((_, index) => index)
+    .filter((index) => index > 0)
+    .sort((a, b) => priority[b] - priority[a] || b - a);
   let omitted = 0;
-  for (let i = sentences.length - 1; i > 0; i--) {
-    if (sentences[i] === '') continue;
-    sentences[i] = '';
+  for (const index of order) {
+    if (sentences[index] === '') continue;
+    sentences[index] = '';
     omitted += 1;
+    // The exit test includes the NOTE, because an entry that silently lost a
+    // sentence is the failure this arm exists to avoid: a reader would take it
+    // for complete. So keep giving up until the remainder fits WITH the note.
     const note =
       `${omitted} further per-type note${omitted === 1 ? '' : 's'} omitted to fit the entry cap; ` +
       `the pull request's diagnosis lists every type.`;

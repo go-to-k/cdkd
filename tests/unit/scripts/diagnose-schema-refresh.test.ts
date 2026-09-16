@@ -3324,6 +3324,11 @@ describe('renderChangelogFragment', () => {
     })!;
     expect(fragment.trimEnd().length).toBeLessThanOrEqual(CHANGELOG_ENTRY_LIMIT);
     expect(fragment).toMatch(/\d+ further per-type notes? omitted to fit the entry cap/);
+    // Given up by SEVERITY, not position. The refusal-goes-away note is the
+    // largest delta this half can report, and giving up from the end dropped
+    // it while the addition half's longer EXPLANATIONS survived (measured).
+    expect(fragment).toContain('the pre-flight REFUSAL goes with the withdrawn key');
+    expect(fragment, 'an absence outlived a consequence').not.toContain('createOnlyDrops');
     // The headline survives whatever else goes: it carries both lists, the
     // counts and the warn/drop outcome.
     expect(fragment.startsWith('- **')).toBe(true);
