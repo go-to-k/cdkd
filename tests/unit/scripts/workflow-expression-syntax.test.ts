@@ -273,9 +273,10 @@ export const analyseExpression = (
    * Asking one root at a time needed a loop and was quadratic in
    * attacker-controlled input — measured 35.5 s on a 200 KB body of distinct
    * roots against 0.02 s for every other 200 KB shape, four-fold per doubling —
-   * and `ci.yml` runs on `pull_request` with no `timeout-minutes`, so a fork PR
-   * adding one large workflow file burned runner-hours up to the six-hour
-   * ceiling. Vitest cannot preempt it either: a synchronous loop runs to
+   * and `ci.yml` then ran on `pull_request` with no `timeout-minutes`, so a
+   * fork PR adding one large workflow file burned runner-hours up to the
+   * six-hour ceiling. Past tense since go-to-k/cdkd#3229: every job in this
+   * directory now declares one, fenced by `workflow-job-hardening.test.ts`. Vitest cannot preempt it either: a synchronous loop runs to
    * completion and the 5 s `testTimeout` only reports afterwards.
    *
    * A BOOLEAN, after two rounds of being a Set — and the two rounds were dead

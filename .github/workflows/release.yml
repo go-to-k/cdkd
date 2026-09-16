@@ -50,7 +50,7 @@ permissions: {}
 jobs:
   release-please:
     runs-on: ubuntu-latest
-    # observed at least 46 s over 50 runs -- one action that reads history and
+    # observed at least 67 s -- one action that reads history and
     # opens or updates a PR.
     timeout-minutes: 15
     permissions:
@@ -68,7 +68,7 @@ jobs:
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
-    # observed at least 54 s over 10 runs; the tail is npm's publish latency.
+    # observed at least 67 s; the tail is npm's publish latency.
     timeout-minutes: 20
     permissions:
       contents: read

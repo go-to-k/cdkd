@@ -40,7 +40,7 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    # observed at least 6 s over 50 runs -- one action against the PR title.
+    # observed at least 6 s -- one action against the PR title.
     timeout-minutes: 15
     steps:
       - name: Check PR Title
@@ -64,7 +64,7 @@ jobs:
 
   prefix-scope:
     runs-on: ubuntu-latest
-    # observed at least 82 s over 50 runs -- checks out the base and runs one
+    # observed at least 82 s -- checks out the base and runs one
     # TypeScript checker.
     timeout-minutes: 20
     # Narrower than the workflow-level block: this job only READS. Nothing from

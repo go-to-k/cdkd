@@ -9,8 +9,10 @@
  *
  * * A job with no `timeout-minutes` runs on the Actions default of **360
  *   minutes**. `ci.yml`'s `check-build-test` is reachable from a FORK through
- *   `pull_request`, and its longest measured run is around 12 minutes, so the
- *   gap between what the job needs and what it is allowed was a factor of ~29.
+ *   `pull_request`, and is observed at at least 823 s, so the gap between what
+ *   the job needs and what it was allowed is a factor of about 26. "Longest
+ *   measured run" is the framing this file now avoids — see the lower-bound
+ *   note below.
  *   The concrete amplifier that surfaced this is fixed: go-to-k/cdkd#3195's
  *   fence read every file in this directory and had a quadratic step in it, so
  *   a fork-supplied workflow file bought tens of seconds of CPU per 200 KB. It
@@ -90,11 +92,12 @@
  * fifteen of eighteen surviving; a table of twenty-three, and eighty-five
  * probed found more. A table only ever covers the arms its author thought of.
  *
- * TWO ARMS ARE KILLED BY `vp run typecheck:test` AND BY NOTHING HERE, which is
- * the brand doing its job rather than a gap. Dropping `safeText` from a field
- * of a finding is TS2322; the `typeof timeout !== 'number'` guard, which is
- * redundant at runtime because `Number.isInteger` does not coerce, is TS18046
- * when removed. Neither is visible to a run of this file, because vitest's
+ * THREE ARMS ARE KILLED BY `vp run typecheck:test` AND BY NOTHING HERE, which
+ * is the brand doing its job rather than a gap. Dropping `safeText` from a
+ * field of a finding is TS2322; the `typeof timeout !== 'number'` guard, which
+ * is redundant at runtime because `Number.isInteger` does not coerce, is
+ * TS18046 when removed — and so is the twins' own copy of that guard, which an
+ * earlier revision of this paragraph failed to name. Neither is visible to a run of this file, because vitest's
  * `typecheck.include` is `*.test-d.ts` alone and so the "Type Errors" line
  * printed here is vacuous. That is precisely why the brand is worth its weight:
  * it moves a defect that a green suite cannot see onto a gate that fails.
@@ -293,7 +296,11 @@ export const safeText = (text: string): Safe => {
  */
 const WORKFLOW_NAME = /^[A-Za-z0-9._-]+\.ya?ml$/;
 export const safeName = (name: string): Safe =>
-  (WORKFLOW_NAME.test(name) ? safeText(name) : JSON.stringify(safeText(name))) as Safe;
+  // The cast is scoped to the quoting branch alone. Spanning the whole ternary
+  // would let a future edit return `name` raw from the passing branch and still
+  // typecheck — the brand silently switched off at the one site whose job is to
+  // be paranoid about names.
+  WORKFLOW_NAME.test(name) ? safeText(name) : (JSON.stringify(safeText(name)) as Safe);
 
 /**
  * Walk a workflow directory and report every job that does not declare a usable
@@ -401,9 +408,14 @@ export const auditWorkflowHardening = (dir: string): Audit => {
  * round 2 capped the findings and left the twins unbounded, which is the same
  * omission one layer over (measured: 3000 entries, nothing truncated).
  */
-const boundedList = (lines: readonly string[]): string[] =>
+const boundedList = (lines: readonly Safe[]): string[] =>
   lines.length > MAX_RENDERED_FINDINGS
-    ? [...lines.slice(0, MAX_RENDERED_FINDINGS), `… and ${lines.length - MAX_RENDERED_FINDINGS} more`]
+    ? [
+        ...lines.slice(0, MAX_RENDERED_FINDINGS),
+        // The only string this function builds itself, and it carries nothing
+        // fork-controlled — a subtraction of two lengths.
+        `… and ${lines.length - MAX_RENDERED_FINDINGS} more` as Safe,
+      ]
     : [...lines];
 
 /**
@@ -417,8 +429,11 @@ const render = (findings: readonly Finding[]): string[] =>
   boundedList(
     findings.map(
       (f) =>
-        `${f.workflow}${f.job === undefined ? '' : ` / ${f.job}`}: ${f.kind}` +
-        `${f.detail === undefined ? '' : ` (${f.detail})`}`,
+        // Every interpolated part is `Safe` by `Finding`'s own type, and `kind`
+        // is a literal union. The cast is the boundary, and it is the ONLY one
+        // on this path — which is what makes the parameter type above load-bearing.
+        (`${f.workflow}${f.job === undefined ? '' : ` / ${f.job}`}: ${f.kind}` +
+          `${f.detail === undefined ? '' : ` (${f.detail})`}`) as Safe,
     ),
   );
 
@@ -452,7 +467,10 @@ const findingsForAddedFile = (name: string, body: string): string[] => {
   // The WHOLE name, not a prefix. An earlier cut cut at the first dot, so
   // `ci.yml_ but actually.yml` filtered on `ci` and also matched every real
   // `ci.yml` finding — a filter that selects more than its subject.
-  return render(audit.findings.filter((f) => f.workflow.includes(name) || f.workflow.includes(safeText(name))));
+  // `safeText(name)` only: the raw-`name` clause it used to carry was DEAD,
+  // subsumed by this one for every name, which made it a second equivalent arm
+  // rather than the guard it looked like.
+  return render(audit.findings.filter((f) => f.workflow.includes(safeText(name))));
 };
 
 /**
@@ -475,13 +493,16 @@ const deleteJobTimeout = (dir: string, workflow: string, job: string): void => {
   const path = join(dir, workflow);
   const lines = readFileSync(path, 'utf8').split('\n');
   const start = lines.findIndex((line) => line === `  ${job}:`);
-  if (start < 0) throw new Error(`probe anchor: no job \`${job}\` in ${workflow}`);
+  if (start < 0) {
+    throw new Error(`probe anchor: no job \`${safeText(job)}\` in ${safeName(workflow)}`);
+  }
   const end = lines.findIndex((line, i) => i > start && /^  [A-Za-z0-9_-]+:\s*$/.test(line));
   const within = lines.slice(start, end < 0 ? lines.length : end);
   const hits = within.filter((line) => /^    timeout-minutes:/.test(line));
   if (hits.length !== 1) {
     throw new Error(
-      `probe anchor: ${workflow} / ${job} has ${hits.length} timeout-minutes lines; ` +
+      `probe anchor: ${safeName(workflow)} / ${safeText(job)} has ${hits.length} ` +
+        'timeout-minutes lines; ' +
         'a probe whose anchor is absent or ambiguous proves nothing — re-anchor it',
     );
   }
@@ -497,7 +518,9 @@ const setJobTimeout = (dir: string, workflow: string, job: string, value: string
   const path = join(dir, workflow);
   const lines = readFileSync(path, 'utf8').split('\n');
   const start = lines.findIndex((line) => line === `  ${job}:`);
-  if (start < 0) throw new Error(`probe anchor: no job \`${job}\` in ${workflow}`);
+  if (start < 0) {
+    throw new Error(`probe anchor: no job \`${safeText(job)}\` in ${safeName(workflow)}`);
+  }
   const end = lines.findIndex((line, i) => i > start && /^  [A-Za-z0-9_-]+:\s*$/.test(line));
   let replaced = 0;
   const out = lines.map((line, i) => {
@@ -507,7 +530,9 @@ const setJobTimeout = (dir: string, workflow: string, job: string, value: string
     return `    timeout-minutes: ${value}`;
   });
   if (replaced !== 1) {
-    throw new Error(`probe anchor: ${workflow} / ${job} had ${replaced} timeout-minutes lines`);
+    throw new Error(
+      `probe anchor: ${safeName(workflow)} / ${safeText(job)} had ${replaced} timeout-minutes lines`,
+    );
   }
   writeFileSync(path, out.join('\n'));
 };
@@ -517,9 +542,17 @@ const deleteUniqueLine = (dir: string, workflow: string, needle: string): void =
   const lines = readFileSync(path, 'utf8').split('\n');
   const hits = lines.filter((line) => line.trim() === needle);
   if (hits.length !== 1) {
+    // `safeText` on BOTH interpolated parts. The needle can be a raw line of a
+    // fork's workflow — the duplicate-anchor case derives it from the file —
+    // and `JSON.stringify` escapes only quote, backslash and C0, so NEL and RLO
+    // pass through it unchanged and unclamped. Chai truncates `message` but
+    // sets `actual` to the whole string, which vitest prints verbatim. Fourth
+    // instance of this class in this file, and the third to appear inside the
+    // code that fixed the previous one.
     throw new Error(
-      `probe anchor ${JSON.stringify(needle)} matched ${hits.length} lines in ${workflow}; ` +
-        'a probe whose anchor is absent or ambiguous proves nothing — re-anchor it',
+      `probe anchor ${JSON.stringify(safeText(needle))} matched ${hits.length} lines in ` +
+        `${safeName(workflow)}; a probe whose anchor is absent or ambiguous proves nothing ` +
+        '— re-anchor it',
     );
   }
   writeFileSync(path, lines.filter((line) => line.trim() !== needle).join('\n'));
@@ -558,11 +591,13 @@ const withMutatedCopy = <T,>(mutate: (dir: string) => void, read: (dir: string) 
  * vitest at column 0 where the Actions runner interprets a workflow command.
  * Independence is worth having; independence of the sanitiser is not.
  */
-const twinLabel = (workflow: Safe, job?: Safe, detail?: Safe): string =>
-  `${workflow}${job === undefined ? '' : ` / ${job}`}${detail === undefined ? '' : `: ${detail}`}`;
+const twinLabel = (workflow: Safe, job?: Safe, detail?: Safe): Safe =>
+  `${workflow}${job === undefined ? '' : ` / ${job}`}${
+    detail === undefined ? '' : `: ${detail}`
+  }` as Safe;
 
 const independentlyUnboundedJobs = (dir: string): string[] => {
-  const out: string[] = [];
+  const out: Safe[] = [];
   for (const workflow of workflowNamesIn(readdirSync(dir))) {
     let document: unknown;
     try {
@@ -595,7 +630,7 @@ const independentlyUnboundedJobs = (dir: string): string[] => {
 };
 
 const independentlyUndeclaredPermissions = (dir: string): string[] => {
-  const out: string[] = [];
+  const out: Safe[] = [];
   for (const workflow of workflowNamesIn(readdirSync(dir))) {
     let document: unknown;
     try {
@@ -658,6 +693,19 @@ describe('the audit fails against real code', () => {
     expect(render(audit.findings)).toEqual(['ci.yml / ci-ok: no-timeout']);
   });
 
+  it('a removed timeout in a NON-LAST job is reported, naming only that job', () => {
+    // Every other probe target happens to be the last job in its file with a
+    // file-unique value, so both helpers' job-scoping was unfenced: `end = -1`
+    // (scope to end of file) and collapsing the delete filter to `line !==
+    // target` (delete every identical line anywhere) both stayed green.
+    // `check-build-test` is the FIRST of five jobs in `ci.yml` and shares its
+    // value with `once-leak-detect`, so it discriminates both mutations.
+    const audit = auditMutatedCopy((dir) => {
+      deleteJobTimeout(dir, 'ci.yml', 'check-build-test');
+    });
+    expect(render(audit.findings)).toEqual(['ci.yml / check-build-test: no-timeout']);
+  });
+
   it('a removed timeout in a second workflow is reported too', () => {
     // A second file, because one probe cannot tell "the audit walks the
     // directory" from "the audit hard-codes ci.yml".
@@ -672,6 +720,28 @@ describe('the audit fails against real code', () => {
       deleteUniqueLine(dir, 'hooks.yml', 'permissions: {}');
     });
     expect(render(audit.findings)).toEqual(['hooks.yml: no-top-level-permissions']);
+  });
+
+  it("a parse error's own message is flattened and clamped", () => {
+    // `detail` is the one fork-controlled field of a finding that had NO runtime
+    // case: `detail: detail as Safe | undefined` typechecked AND passed every
+    // other case. `.split('\n')[0]` does not save it — measured with the real
+    // `yaml` package, an unresolved alias produces a FIRST LINE of 362
+    // characters carrying a raw RLO. Only `safeText` does.
+    //
+    // The sibling case below asserts `not.toContain('unbalanced')`, which the
+    // split alone satisfies, so it was satisfiable by construction and fenced
+    // nothing here.
+    const hostile = `x${String.fromCodePoint(0x202e)}${String.fromCodePoint(0x85)}${'p'.repeat(400)}`;
+    const audit = auditMutatedCopy((dir) =>
+      writeFileSync(join(dir, 'zz-alias.yml'), `name: X\npermissions: {}\njobs: *${hostile}\n`),
+    );
+    const finding = audit.findings.find((f) => f.workflow === 'zz-alias.yml');
+    expect(finding?.kind).toBe('unparseable');
+    const detail = finding?.detail ?? '';
+    expect(detail).not.toContain(String.fromCodePoint(0x202e));
+    expect(detail).not.toContain(String.fromCodePoint(0x85));
+    expect(detail.length).toBeLessThanOrEqual(MAX_FIELD_LENGTH + 1);
   });
 
   it('a workflow that does not parse is a finding, not a silent zero', () => {
@@ -704,9 +774,11 @@ describe('the audit fails against real code', () => {
     ['2.5', 'a fraction is not a whole minute', '2.5'],
     ['0', 'zero is not a bound, it is a refusal to start', '0'],
   ])('a timeout of %s is reported rather than accepted (%s)', (written, _why, rendered) => {
-    // Three cases, not one: each half of the numeric guard — the `typeof`, the
-    // `Number.isInteger` and the `>= 1` — survives deletion on its own, so one
-    // case leaves two halves unfenced.
+    // Three cases, not one: `Number.isInteger` and `>= 1` each survive deletion
+    // on their own, so a single case leaves the other unfenced. The `typeof`
+    // half is NOT among them — it is runtime-redundant and type-only, as the
+    // header says; the `'5'` row is here because a quoted number is the shape a
+    // reader expects refused, not because it fences a unique runtime arm.
     const audit = auditMutatedCopy((dir) => {
       setJobTimeout(dir, 'ci.yml', 'ci-ok', written);
     });
@@ -732,6 +804,34 @@ describe('the audit fails against real code', () => {
     ).not.toThrow();
     expect(() =>
       auditMutatedCopy((dir) => setJobTimeout(dir, 'docs-deploy.yml', 'deploy', '7')),
+    ).not.toThrow();
+  });
+
+  it('the helpers act on the NAMED job when it is not the last one', () => {
+    // `setJobTimeout`'s job scoping had no probe at all — every case used it on
+    // `ci-ok`, the last job in `ci.yml`, so `end = -1` was indistinguishable
+    // from the real boundary search. Setting the FIRST job's bound must leave
+    // every later job's alone.
+    const audit = auditMutatedCopy((dir) => setJobTimeout(dir, 'ci.yml', 'check-build-test', '360'));
+    expect(render(audit.findings)).toEqual([
+      'ci.yml / check-build-test: timeout-at-or-above-default (360 >= 360)',
+    ]);
+  });
+
+  it('the helpers read the KEY, not the word in a comment', () => {
+    // The `^    ` anchor on the key regex: unanchored, a comment mentioning
+    // `timeout-minutes:` inside a job body counts as a second hit and the helper
+    // refuses a job that is perfectly well formed. Nothing in the real tree
+    // writes that, so only a constructed file reaches it.
+    const body =
+      'name: X\npermissions: {}\njobs:\n  a:\n' +
+      '    # a note about timeout-minutes: why this one is what it is\n' +
+      '    timeout-minutes: 5\n  b:\n    timeout-minutes: 5\n';
+    expect(() =>
+      auditMutatedCopy((dir) => {
+        writeFileSync(join(dir, 'zz-cmt.yml'), body);
+        deleteJobTimeout(dir, 'zz-cmt.yml', 'a');
+      }),
     ).not.toThrow();
   });
 
@@ -990,6 +1090,15 @@ describe('the caps are literals, not whatever the constants say', () => {
   // MAX_RENDERED_FINDINGS to 39 both stayed green, because the assertions were
   // written in terms of the constants. A bound that moves with the thing it
   // bounds is not a bound.
+  it('a field of exactly 120 characters is not clipped', () => {
+    // The `>` in `safeText` — with `>=` a field at exactly the cap loses its
+    // last character to a marker that says nothing was lost. The same boundary
+    // `boundedList` has a 20/21 pair for, which this helper lacked.
+    expect(safeText('x'.repeat(MAX_FIELD_LENGTH))).toHaveLength(MAX_FIELD_LENGTH);
+    expect(safeText('x'.repeat(MAX_FIELD_LENGTH))).not.toContain('…');
+    expect(safeText('x'.repeat(MAX_FIELD_LENGTH + 1))).toHaveLength(MAX_FIELD_LENGTH + 1);
+  });
+
   it('a field is clamped to 120 characters plus the clip marker', () => {
     expect(safeText('x'.repeat(500))).toHaveLength(121);
     // A long name still MATCHES `WORKFLOW_NAME`, so it takes the passing
@@ -1196,6 +1305,19 @@ describe('the twins are exercised against hostile trees, not only clean ones', (
     expect(lines).toEqual([]);
   });
 
+  it.each([
+    ['an empty file', ''],
+    ['a scalar', 'just a string\n'],
+    ['a null job node', 'name: X\npermissions: {}\njobs:\n  a:\n'],
+  ])('the twins survive %s rather than throwing', (_what, body) => {
+    // `!isMapping(document)` and `isMapping(node)` both survived deletion in the
+    // twins: written without them these THROW on exactly these shapes, and the
+    // audit's own cases never exercise the twins. A twin that throws is a twin
+    // that takes the suite down instead of reporting.
+    const { jobs, perms } = twinLines('zz-shape.yml', body);
+    expect(jobs.length + perms.length).toBeGreaterThan(0);
+  });
+
   it('a workflow with no jobs mapping is reported by the jobs twin', () => {
     // The twin's own `no jobs mapping` arm, which survived deletion until this
     // case existed — every other twin case supplies a jobs mapping.
@@ -1287,7 +1409,11 @@ describe('the floors are load-bearing', () => {
     // notice a directory walk returning one file. These bracket them against
     // the real magnitudes instead, loosely enough that adding a workflow does
     // not fail an unrelated PR.
-    expect(MIN_WORKFLOWS).toBeGreaterThanOrEqual(REAL.workflows - 2);
-    expect(MIN_JOBS).toBeGreaterThanOrEqual(REAL.jobs - 4);
+    // Proportional, not a fixed margin. `REAL.jobs - 4` reds as soon as one
+    // three-job workflow is added, which is exactly the "fails an unrelated PR"
+    // outcome the comment above promises it avoids. Half the real count still
+    // catches a walk that collapses to a handful of entries.
+    expect(MIN_WORKFLOWS * 2).toBeGreaterThanOrEqual(REAL.workflows);
+    expect(MIN_JOBS * 2).toBeGreaterThanOrEqual(REAL.jobs);
   });
 });

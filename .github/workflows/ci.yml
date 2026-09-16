@@ -5,8 +5,9 @@ on:
   pull_request:
     branches: [main]
 
-# Deny by default, then grant per job. Nine of the eleven workflows already do
-# this; `ci.yml` did not, and relied on the repository's
+# Deny by default, then grant per job. Nine of the eleven workflows already
+# DECLARE a block and four use exactly this `{}`-plus-per-job shape; `ci.yml`
+# declared none at all, and relied on the repository's
 # `default_workflow_permissions` setting being `read`. That is a setting a
 # maintainer can change from the web UI, which would silently widen every job
 # here -- including ones a FORK triggers through `pull_request`. An explicit
@@ -32,6 +33,13 @@ jobs:
     # "observed at least X" -- a claim that stays true however incomplete the
     # sample is, unlike "the maximum is X".
     #
+    # NO SAMPLE SIZE IS QUOTED, deliberately. Three revisions quoted one and it
+    # was wrong three different ways -- a positional window, then a `--limit`
+    # cap read as a population, then counts double-added across two overlapping
+    # sample files, which produced n's LARGER than the number of successful runs
+    # those workflows have ever had. The load-bearing claim is the lower bound,
+    # and it needs no n: "observed at least X" is true of one run or a thousand.
+    #
     # Samples come from the closed range 2026-09-09..2026-09-15, UTC:
     #
     #   gh run list --workflow=<name>.yml --status=success \
@@ -42,7 +50,7 @@ jobs:
     # `--limit`: at 50 it silently CAPS the sample (the range holds 865 `ci.yml`
     # runs), which is how the 902 s build was missed.
     #
-    # observed at least 823 s (13.7 min) over 654 successful runs. This job is
+    # observed at least 823 s (13.7 min). This job is
     # fork-reachable through `pull_request`, so it is the one the cap matters
     # most for.
     timeout-minutes: 45
@@ -462,7 +470,7 @@ jobs:
   # new entry is not, and a new test file that leaks fails this job.
   once-leak-detect:
     runs-on: ubuntu-latest
-    # observed at least 745 s over 654 successful runs. Same cap as
+    # observed at least 745 s. Same cap as
     # check-build-test: it runs the same unit suite, so the two grow together.
     timeout-minutes: 45
     permissions:
@@ -509,7 +517,7 @@ jobs:
   runtime-compat:
     runs-on: ubuntu-latest
     needs: check-build-test
-    # observed at least 110 s over 1660 matrix legs. Dominated by install and
+    # observed at least 110 s across the matrix legs. Dominated by install and
     # build rather than by anything that scales with the repo.
     timeout-minutes: 20
     permissions:
@@ -566,7 +574,7 @@ jobs:
   release-pr-not-stale:
     if: startsWith(github.head_ref, 'release-please--')
     runs-on: ubuntu-latest
-    # observed at least 13 s over 24 runs; the job is gated on a release-please
+    # observed at least 13 s; the job is gated on a release-please
     # branch, so it runs rarely.
     timeout-minutes: 15
     permissions:
@@ -651,7 +659,7 @@ jobs:
     if: always()
     needs: [check-build-test, once-leak-detect, runtime-compat, release-pr-not-stale]
     runs-on: ubuntu-latest
-    # observed at least 5 s over 557 runs -- a shell loop over four strings.
+    # observed at least 5 s -- a shell loop over four strings.
     timeout-minutes: 10
     permissions: {}
     env:

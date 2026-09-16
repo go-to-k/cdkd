@@ -103,7 +103,7 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    # observed at least 80 s over 14 runs. Its tail is AWS's rather than this
+    # observed at least 80 s. Its tail is AWS's rather than this
     # repo's (a bundle download plus per-type DescribeType with retries), so the
     # observed spread understates a bad day more than elsewhere.
     timeout-minutes: 30

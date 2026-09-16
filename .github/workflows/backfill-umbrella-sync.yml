@@ -82,7 +82,7 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    # observed at least 102 s over 12 runs. Walks sub-issues through the GitHub
+    # observed at least 102 s. Walks sub-issues through the GitHub
     # API, so it grows with the campaign.
     timeout-minutes: 20
     permissions:
