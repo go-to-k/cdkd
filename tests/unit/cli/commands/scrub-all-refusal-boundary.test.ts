@@ -105,6 +105,12 @@ const NAME_EXPR = '{{resolve:secretsmanager:app/db:SecretString:password}}';
  * the distinction the pre-pass now makes.
  */
 const declineCrossStackRead = vi.hoisted(() => ({ on: false }));
+/**
+ * Abandon the `{{resolve:...}}` scan the way AWS does (go-to-k/cdkd#3160): a
+ * RAW SDK rejection, no resolver prose. `sendWithThrottleRetry` rethrows these
+ * verbatim, which is why the counter is not keyed on message text.
+ */
+const abandonScan = vi.hoisted(() => ({ on: false, spareMarker: undefined as string | undefined }));
 
 vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', async (importOriginal) => {
   // The module's non-class exports must survive the double: `scrub.ts` imports
@@ -139,6 +145,25 @@ vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', async (impo
             new CrossAccountSecretRefusalError(
               'Fn::GetStackOutput: cross-account reference to a redacted dynamic reference'
             )
+          );
+        }
+        if (
+          abandonScan.on &&
+          // `spareMarker` exempts one stack's bag from the rejection, keyed on a
+          // value the fixture plants there -- the mock sees only the properties
+          // bag, never the stack name. It is what lets a `--all` run have one
+          // stack SCRUB and another ABANDON, the only way to reach the
+          // `totalStacksScrubbed > 0` summary arms with a finding present.
+          !(
+            abandonScan.spareMarker !== undefined &&
+            JSON.stringify(value ?? null).includes(abandonScan.spareMarker)
+          ) &&
+          JSON.stringify(value ?? null).includes('{{resolve:')
+        ) {
+          return Promise.reject(
+            Object.assign(new Error('Parameter /deleted not found.'), {
+              name: 'ParameterNotFound',
+            })
           );
         }
         const walk = (v: unknown): unknown => {
@@ -361,6 +386,122 @@ describe('cdkd scrub --all: one stack refusing does not abandon the others (issu
     // above actually measured rather than an absence of plaintext.
     const summary = commandLogger.info.mock.calls.map((c) => String(c[0])).join('\n');
     expect(summary).toContain('would be scrubbed');
+  });
+});
+
+/**
+ * The COMMAND-level half of go-to-k/cdkd#3160. `scrubStack` returning a nonzero
+ * `unverifiableLeaves` is inert on its own — what the issue asks for is that the
+ * number reaches the VERDICT, and that plumbing (per-stack clean line, run-level
+ * clean gate, summary note, `--fail`) lives in `scrubCommand`, above every test
+ * that asserts the field. Without this block a regression anywhere in it leaves
+ * the count correct and the gate green, which is the original bug restored.
+ */
+describe('cdkd scrub: an ABANDONED scan reaches the verdict (go-to-k/cdkd#3160)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    abandonScan.on = true;
+    synthStacks.length = 0;
+    synthStacks.push(makeStackInfo('CrossAccount'));
+    // ALREADY scrubbed, exactly as the sibling block above: the stored value is
+    // the expression, so the ONLY thing this run can report is the abandoned
+    // scan. Without that, a finding of some other kind would satisfy every
+    // assertion below and none of them would be about this issue.
+    commandStateBackend.getState.mockImplementation((stackName: string) => {
+      const state = makeState(stackName, false);
+      state.resources['Db']!.properties['MasterUserPassword'] = NAME_EXPR;
+      return Promise.resolve({ state, etag: 'etag-1' });
+    });
+    commandStateBackend.saveState.mockResolvedValue('etag-2');
+  });
+
+  afterEach(() => {
+    abandonScan.on = false;
+    abandonScan.spareMarker = undefined;
+  });
+
+  it('is not a refusal, is reported, and --fail exits 1 over it', async () => {
+    const err = await scrubCommand([], commandOptions({ fail: true })).catch((e: unknown) => e);
+
+    // NOT refused — the rest of the stack is still scrubbed. This is the half
+    // that separates the counted finding from the NAMELESS spellings, which do
+    // refuse (go-to-k/cdkd#2692).
+    expect(commandLogger.error.mock.calls.map((c) => String(c[0])).join('\n')).toBe('');
+
+    // The record is named at DEFAULT verbosity, not buried at `debug`.
+    const warned = commandLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('ABANDONED');
+    expect(warned, 'the operator got a count with no record identity').toContain("resource 'Db'");
+
+    // Neither clean claim survives: not the per-stack one, not the run-level
+    // one. Both were reachable on `secretBearingKeys === 0` alone.
+    const summary = commandLogger.info.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(summary).not.toContain('No plaintext secrets found in any target stack state');
+    expect(summary).not.toContain('No plaintext secrets found in CrossAccount');
+    expect(summary, 'the summary note is missing, so the count is invisible there').toContain(
+      'ABANDONED'
+    );
+
+    // A FINDING (exit 1), not the exit-2 refusal.
+    expect((err as { code?: string }).code).toBe('SCRUB_NEEDED');
+  });
+
+  it('carries the note on the --dry-run summary too, which IS the CI gate output', async () => {
+    // `leafNote` is woven into FOUR render sites, and which one a run reaches
+    // depends on `totalStacksScrubbed`. This fixture stores the EXPRESSION, so
+    // `recordsChanged === 0` and the dry-run lands on the
+    // "Plan: no state record can be rewritten" arm. The `totalStacksScrubbed > 0`
+    // arms — the `Plan:` line a DIRTY gate prints, and the "Done: scrubbed" line
+    // — are covered by `scrub-dirty-abandoned-summary.test.ts`; a comment here
+    // once claimed this case covered "the two `Plan:` lines" and it covered one.
+    const err = await scrubCommand([], commandOptions({ dryRun: true, fail: true })).catch(
+      (e: unknown) => e
+    );
+
+    const summary = commandLogger.info.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(summary, 'the dry-run plan does not mention the abandoned scan').toContain('ABANDONED');
+    expect(summary).not.toContain('No plaintext secrets found in any target stack state');
+    expect((err as { code?: string }).code).toBe('SCRUB_NEEDED');
+
+    // Nothing was written -- the note must not have come from a real run.
+    expect(commandStateBackend.saveState).not.toHaveBeenCalled();
+  });
+
+  it('carries the note on the DIRTY summary arms too (a run that scrubbed something)', async () => {
+    // The other two `leafNote` render sites. Which arm a run reaches depends on
+    // `totalStacksScrubbed`, so a fixture where nothing is rewritten can only
+    // ever exercise two of the four. Two stacks, and only one of them abandons:
+    // the run is dirty AND carries the finding.
+    synthStacks.length = 0;
+    const clean = makeStackInfo('CleanStack') as { stackName: string; template: CloudFormationTemplate };
+    (clean.template.Resources!['Db']!.Properties as Record<string, unknown>)['MasterUsername'] =
+      'clean-marker';
+    synthStacks.push(clean, makeStackInfo('CrossAccount'));
+    abandonScan.spareMarker = 'clean-marker';
+
+    // The CLEAN stack still stores the PLAINTEXT, so scrubbing it rewrites a
+    // record; the other one stores the expression and only abandons.
+    commandStateBackend.getState.mockImplementation((stackName: string) => {
+      const state = makeState(stackName, false);
+      if (stackName !== 'CleanStack') state.resources['Db']!.properties['MasterUserPassword'] = NAME_EXPR;
+      return Promise.resolve({ state, etag: 'etag-1' });
+    });
+
+    await scrubCommand([], commandOptions({ dryRun: true, fail: true })).catch(() => undefined);
+    const plan = commandLogger.info.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(plan, 'the dry-run plan for a DIRTY run drops the note').toContain('ABANDONED');
+    expect(plan).toContain('would be scrubbed');
+  });
+
+  it('NEGATIVE CONTROL: the same stack without the abandoned scan exits clean', async () => {
+    abandonScan.on = false;
+
+    const err = await scrubCommand([], commandOptions({ fail: true })).catch((e: unknown) => e);
+
+    expect(err).toBeUndefined();
+    expect(commandLogger.info.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+      'No plaintext secrets found in any target stack state'
+    );
   });
 });
 

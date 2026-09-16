@@ -198,7 +198,13 @@ function resolveMovingInto(map: Map<string, string> | undefined, expr: string): 
   return plaintext;
 }
 
-vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', () => ({
+// The spread is load-bearing, not tidiness: `scrub.ts` imports pure helpers
+// from this module besides the resolver class — `carriesDynamicReference`, the
+// POSITIONAL predicate behind the abandoned-scan counter (go-to-k/cdkd#3160) —
+// and a factory that returns only `IntrinsicFunctionResolver` makes every one
+// of them an undefined export, which fails at the call rather than at the mock.
+vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../../src/deployment/intrinsic-function-resolver.js')>()),
   IntrinsicFunctionResolver: vi.fn().mockImplementation((region: string) => ({
     resolveParameters: vi.fn().mockResolvedValue({}),
     evaluateConditions: vi.fn().mockImplementation(() => Promise.resolve(conditionValues.value)),

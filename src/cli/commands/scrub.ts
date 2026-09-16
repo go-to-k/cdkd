@@ -597,6 +597,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   // not read as clean and `--fail` must not exit 0, but the stack itself was
   // still scrubbed for everything else and must not be refused outright.
   let totalStacksWithUnverifiableReads = 0;
+  let totalStacksWithUnverifiableLeaves = 0;
   /**
    * Stacks this `--dry-run` proceeded over with an UNREADABLE resources map
    * (issue go-to-k/cdkd#3018). Tracked exactly like `indexUnreadable`: an
@@ -822,6 +823,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     } else if (
       scrubbed.secretBearingKeys === 0 &&
       scrubbed.unverifiableReads === 0 &&
+      scrubbed.unverifiableLeaves === 0 &&
       indexConverged === 0
     ) {
       // A CONVERGE finding gates this line for the same reason the two below
@@ -842,6 +844,18 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     }
     if (scrubbed.malformedResources) {
       malformedRecords.push(stack.stackName);
+    }
+    if (scrubbed.unverifiableLeaves > 0) {
+      totalStacksWithUnverifiableLeaves++;
+      logger.warn(
+        `${scrubbed.unverifiableLeaves} scan(s) in ${stack.stackName} were ` +
+          `ABANDONED mid-value because a {{resolve:...}} reference could not be resolved (see the ` +
+          `warnings above). The resolver stops at the first failing token, so a real secret ` +
+          `after it in the same value recorded no needle — this stack is not reported clean. ` +
+          `The count is per abandoned SCAN, not per secret: one record can contribute more ` +
+          `than once (an output whose Export.Name and Value both abandon), and one ` +
+          `abandoned scan can hide several unexamined leaves.`
+      );
     }
     if (scrubbed.unverifiableReads > 0) {
       totalStacksWithUnverifiableReads++;
@@ -914,6 +928,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     totalStacksScrubbed === 0 &&
     totalStacksWithUnscrubbableKeys === 0 &&
     totalStacksWithUnverifiableReads === 0 &&
+    totalStacksWithUnverifiableLeaves === 0 &&
     totalIndexEntriesConverged === 0 &&
     indexUnwritten.length === 0 &&
     indexUnreadable.length === 0 &&
@@ -960,6 +975,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       : '';
   // Same discipline as `keyNote`: a summary must never let a finding it could
   // not remedy read as a clean result (issue #2133 review).
+  const leafNote =
+    totalStacksWithUnverifiableLeaves > 0
+      ? ` ${totalStacksWithUnverifiableLeaves} stack(s) had a {{resolve:...}} scan ABANDONED ` +
+        `mid-value, so part of their state was never examined (see the warnings above).`
+      : '';
   const unverifiableNote =
     totalStacksWithUnverifiableReads > 0
       ? ` ${totalStacksWithUnverifiableReads} stack(s) carry a cross-stack read cdkd declines to ` +
@@ -1008,11 +1028,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     if (totalStacksScrubbed > 0) {
       logger.info(
         `\nPlan: ${totalStacksScrubbed} stack(s) hold plaintext secrets and would be scrubbed ` +
-          `(--dry-run, no state written).${keyNote}${unverifiableNote}${indexNote}${failureNote} ROTATE any exposed secret in Secrets Manager.`
+          `(--dry-run, no state written).${keyNote}${unverifiableNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret in Secrets Manager.`
       );
     } else {
       logger.info(
-        `\nPlan: no state record can be rewritten.${keyNote}${unverifiableNote}${indexNote}${failureNote} ROTATE any exposed secret.`
+        `\nPlan: no state record can be rewritten.${keyNote}${unverifiableNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret.`
       );
     }
     // The refusal outranks the `--fail` gate: it is an ERROR (exit 2) about
@@ -1060,11 +1080,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         `not purge it. So a value that was ever persisted must be treated as compromised — ` +
         `ROTATE it in Secrets Manager (scrub matches the current value, so scrub BEFORE ` +
         `rotating); rotation is what makes any surviving version ` +
-        `harmless.${keyNote}${unverifiableNote}${indexNote}${failureNote}`
+        `harmless.${keyNote}${unverifiableNote}${leafNote}${indexNote}${failureNote}`
     );
   } else {
     logger.info(
-      `\nNo state record was rewritten.${keyNote}${unverifiableNote}${indexNote}${failureNote} ROTATE any exposed secret.`
+      `\nNo state record was rewritten.${keyNote}${unverifiableNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret.`
     );
   }
   // `--fail` is documented as a --dry-run CI gate, but a REAL run over a
@@ -1090,7 +1110,9 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   // 0 over them is exactly backwards (issue #2133 review).
   if (
     options.fail &&
-    (totalStacksWithUnscrubbableKeys > 0 || totalStacksWithUnverifiableReads > 0)
+    (totalStacksWithUnscrubbableKeys > 0 ||
+      totalStacksWithUnverifiableReads > 0 ||
+      totalStacksWithUnverifiableLeaves > 0)
   ) {
     throw new ScrubNeededError();
   }
@@ -2976,6 +2998,291 @@ function isNamelessDynamicReferenceFailure(err: unknown): boolean {
   );
 }
 
+// Background for `abandonedScanVerdict` below.
+//
+// How this counter came to be shaped the way it is (issue go-to-k/cdkd#3160),
+// and the two residuals it still carries. The verdict itself is
+// {@link abandonedScanVerdict} below.
+//
+// POSITIONAL, not message-matched, and the first cut of this got that wrong in
+// a way that missed its own headline case. The resolver's token loop has no
+// per-token `try`, so ANY throw abandons every remaining token in the leaf —
+// and most of those throws are not the resolver's own prose. `GetParameter` /
+// `GetSecretValue` go through `sendWithThrottleRetry`, which **rethrows an AWS
+// rejection RAW**: a genuinely deleted parameter raises `ParameterNotFound`
+// from the SDK, never the `Dynamic reference: SSM parameter '...' not found`
+// string, which fires only on a 200 whose `Parameter.Value` is absent. Keying
+// on that prefix therefore counted the MINORITY case and let
+// `ResourceNotFoundException`, `AccessDeniedException`, `DecryptionFailure`,
+// a pending-deletion `InvalidRequestException` and exhausted throttling all
+// stay silent — plus the `Refusing to resolve` arm for an `ssm-secure` over a
+// public parameter.
+//
+// So the first half of the question is not what the error SAYS but whether the
+// value being resolved had a dynamic reference in it at all: if it did and the
+// resolve threw, the remaining tokens in that leaf were not fetched and
+// recorded no needle. The two classes that must NOT count are the ones that
+// re-raise instead — checked by the caller before this is reached.
+//
+// The POSITION alone is not enough, though, and a cut that used it alone was
+// wrong in the opposite direction from the message-matched one. This catch
+// exists for the ORDINARY failure the comment beside it names — a `Ref` to
+// something not in state — and that throw is not a dynamic-reference failure
+// however many `{{resolve:...}}` leaves the same bag happens to carry. The
+// population is not exotic: `scrubStack` catches `resolveParameters` wholesale
+// and carries on with an EMPTY parameter bag, so ONE parameter with no
+// `Default` makes every `{Ref: <param>}` in the stack throw — including refs
+// to parameters that do have one. Counting those would red `--dry-run --fail`,
+// the documented STANDING CI gate, on stacks that are entirely healthy and
+// with no way for the operator to clear it. That is the same outcome
+// go-to-k/cdkd#3160 gives as the reason NOT to widen into a refusal.
+//
+// Hence the conjunction, and note WHO OWNS each half. The excluded set is
+// cdkd's OWN refusal prose, which cdkd controls and
+// `scrub-abandoned-scan-origin.test.ts` fences against the resolver's throw
+// sites. The included set is left unnamed on purpose, because it is AWS's:
+// enumerating SDK error names is what the first cut did, and a name AWS adds
+// later would silently rejoin the false-clean population this issue is about.
+// The asymmetry is deliberate — an error we cannot classify counts, and the
+// residual is a WARN on a healthy stack rather than a plaintext under `clean`.
+//
+// STATED RESIDUAL, in the other direction: `carriesDynamicReference` tests for
+// the literal `{{resolve:` in the RAW bag, so an ASSEMBLED reference is not seen
+// — a parameter whose `Default` holds the whole token, used as
+// `{'Fn::Sub': '${DbSecretRef}'}` (the shape `pinCrossRegionSecrets` documents).
+// A failed resolve there is NOT counted and the stack still reports clean. That
+// is the original bug, surviving in a narrower population; closing it means
+// composing `isAssembledSecretReference`, which is not a drive-by because it
+// changes what the counter claims about every leaf, not just this one.
+// Recorded rather than papered over: go-to-k/cdkd#3178 security review.
+/**
+ * The per-record line each counting site prints. Deliberately ONE SHORT
+ * SENTENCE, and that is a fix rather than a style choice: the first cut emitted
+ * a ~440-character paragraph PER RECORD at default verbosity, and the arm it
+ * fires on is one a single `Default`-less parameter triggers for every resource
+ * in the stack at once. Dozens of identical paragraphs bury the record names,
+ * which are the only part a reader cannot reconstruct.
+ *
+ * The explanation is emitted ONCE PER STACK instead, by
+ * {@link abandonedScanStackNote}.
+ *
+ * The CAUSE is absent on both arms: the sibling log at each site already prints
+ * it through `maskSecretsInText`, and a resolver error echoes what it was
+ * handed — which, after `pinCrossRegionSecrets`, can be a foreign plaintext.
+ *
+ * RESIDUAL on the `subject` the call sites pass. They compose
+ * `maskSecretsInText(... displaySafe(id) ...)` — sanitise, then mask — and
+ * `displaySafe` REPLACES a control character with a space rather than deleting
+ * it, so it cannot JOIN a split needle (the go-to-k/cdkd#2874 direction) but it
+ * can BREAK one, and it leaves `U+200B`-`U+200D` / `U+FEFF` untouched. A secret
+ * would have to sit inside a template logical id or Outputs key to be reachable,
+ * which is why `secretSafeKeyDisplay` is not used here — that one is for RESOLVED
+ * state-bag keys. Recorded rather than closed: go-to-k/cdkd#3178 security review.
+ */
+function abandonedScanWarning(subject: string, verdict: 'count' | 'warn'): string {
+  return verdict === 'count'
+    ? `The {{resolve:...}} scan of ${subject} was ABANDONED — this record is NOT certified clean.`
+    : `The {{resolve:...}} scan of ${subject} was cut short by a TEMPLATE problem — this record is NOT certified clean.`;
+}
+
+/**
+ * The one-per-stack explanation behind {@link abandonedScanWarning}'s lines.
+ *
+ * Two arms, because they need opposite things said. The `count` arm is a
+ * FINDING and gates; the reader needs the cause, which is verbose-only. The
+ * `warn` arm does NOT gate, and a reader seeing "NOT certified clean" beside a
+ * green exit has no way to tell a passing run from a broken one unless it says
+ * so.
+ *
+ * The `warn` arm's remedy is deliberately two-sided. The dominant population is
+ * a parameter with no `Default` — legal CloudFormation, no defect to fix — so
+ * telling the reader only to "fix the template reference" describes a repair
+ * that does not exist for them. It names what they CAN do and then says plainly
+ * that scrub may simply not be able to certify the record.
+ */
+function abandonedScanStackNote(verdict: 'count' | 'warn', records: number): string {
+  const subject = `${records} record(s) above`;
+  return verdict === 'count'
+    ? `${subject}: the resolver stops at the first {{resolve:...}} token it cannot fetch, so ` +
+        `any secret after it in the same value recorded no needle and could not be rewritten. ` +
+        `Re-run with --verbose for the cause of each.`
+    : `${subject}: the scan stopped on something cdkd scrub cannot resolve with template ` +
+        `defaults alone — an unresolvable Ref or Fn::GetAtt, a parameter with no Default, or a ` +
+        `reference whose own argument still holds an unsubstituted \${...}. These do NOT fail ` +
+        `--fail, because scrub takes no --parameters and a gate failure here could not be ` +
+        `cleared. Give the parameter a Default, or resolve the reference, to let scrub certify ` +
+        `these records; otherwise accept that it cannot.`;
+}
+
+/**
+ * The verdict a counting site acts on: `count` (a finding — warn AND raise the
+ * exit code), `warn` (say it, but do not gate) or `silent`.
+ *
+ * The middle arm exists because the EXCLUSION has a cost in
+ * go-to-k/cdkd#3160's OWN harm direction, and two round-4 reviewers found it
+ * independently. `resolver.resolve` walks the whole properties bag and ONE
+ * throw aborts the rest of it — so a bag holding `{A: {Ref: NoSuchThing},
+ * B: '{{resolve:secretsmanager:prod/db:...}}'}` has `B` abandoned by a failure
+ * that is nothing to do with `B`. Excluding it means `B` records no needle, its
+ * legacy plaintext is never rewritten, and the stack can still print
+ * `No plaintext secrets found` at exit 0. Reachable accidentally (one
+ * `Default`-less parameter empties the bag, so every `{Ref: <param>}` throws)
+ * and, on a repo whose CI runs `--dry-run --fail`, defeatable on purpose by
+ * adding one dangling `Ref` ahead of the secret. That loss is REAL and is not
+ * repaired by making it visible — go-to-k/cdkd#3196 tracks scoping the resolve
+ * per property so the sibling reference is still scanned.
+ *
+ * Counting it is not the answer — that is the round-2 blocker, an unclearable
+ * red gate on a healthy stack. What the two failure modes do NOT share is
+ * VISIBILITY: an operator can act on a warning naming the record, and a warning
+ * gates nothing. So the excluded arm still speaks, and only the exit code is
+ * withheld.
+ *
+ * **The ORDER of the three tests is load-bearing, and getting it wrong is how
+ * round 5 nearly shipped a silent regression.** An earlier cut asked
+ * `carriesFetchableDynamicReference` FIRST and returned `silent` on a miss,
+ * which made a gate-downgrade test into a universal silencer. Because
+ * `DYNAMIC_REFERENCE_INNER_CHAR` is `[^}]`, a token with a placeholder
+ * ANYWHERE in it fails that test — including the dominant CDK spelling, where
+ * the reference is assembled by an `Fn::Sub` over parameters that DO have
+ * defaults:
+ *
+ * ```json
+ * {"A": {"Fn::Sub": "{{resolve:ssm-secure:/deleted/${Env}/p}}"},
+ *  "B": {"Fn::Sub": "{{resolve:secretsmanager:${Db}:SecretString:password}}"}}
+ * ```
+ *
+ * Those assemble fine, `A` raises a RAW `ParameterNotFound`, `B` is abandoned
+ * and records no needle — and the earlier order printed nothing at all. That is
+ * go-to-k/cdkd#3160's own headline repro, silenced by the fix for a different
+ * false positive.
+ *
+ * So the tests are separated by what each one is EVIDENCE of:
+ *
+ * - `carriesDynamicReference` — did this bag hold a reference at all? If not,
+ *   nothing was lost and the pre-existing `logger.debug` is the right level.
+ *   This, and only this, decides SILENCE.
+ * - `isTemplateShapeResolutionFailure` / `carriesFetchableDynamicReference` —
+ *   is the abandonment one an operator could act on? If not, it still gets said;
+ *   it just does not gate. These decide the EXIT CODE, never the visibility.
+ */
+function abandonedScanVerdict(source: unknown, err: unknown): 'count' | 'warn' | 'silent' {
+  if (!carriesDynamicReference(source)) return 'silent';
+  if (isTemplateShapeResolutionFailure(err) || !carriesFetchableDynamicReference(source)) {
+    return 'warn';
+  }
+  return 'count';
+}
+
+/**
+ * `source` carries a `{{resolve:...}}` token cdkd could actually have FETCHED —
+ * i.e. one whose argument holds no surviving `${...}` placeholder.
+ *
+ * `carriesDynamicReference` alone is too generous here, and the gap is not
+ * theoretical: scrub resolves with `bestEffort`, under which
+ * `rethrowStructuralSubFailure` returns EARLY, so an `Fn::Sub` over an unbound
+ * placeholder does not throw — it warn-and-KEEPS the literal `${Field}`. The
+ * assembled token is then a request for a JSON key literally named `${Field}`,
+ * which fails as `Dynamic reference: key '${Field}' not found in secret '<id>'`.
+ * That is not a fetch that failed; it is a token that was never fetchable,
+ * because scrub has only template DEFAULTS and accepts no `--parameters`. It is
+ * ALSO not excludable by message, since `key ... not found` is a class
+ * go-to-k/cdkd#3160 asks to COUNT when the key was real. So the discriminator
+ * has to be the TOKEN, not the error.
+ *
+ * `some`, not `every`: a bag holding one placeholder-bearing token and one
+ * fully substituted token still counts, because the second one genuinely was
+ * fetchable and its scan genuinely stopped.
+ *
+ * WHAT THIS DOES AND DOES NOT BUY, since round 5 shipped a cut that confused
+ * the two. A `false` here downgrades the GATE only — the record is still named
+ * at default verbosity by the `warn` arm. It must never decide SILENCE: the
+ * inner class is `[^}]`, so a placeholder ANYWHERE in a token fails this test,
+ * and the reference assembled by an `Fn::Sub` over DEFAULTED parameters is the
+ * dominant CDK spelling rather than an edge case.
+ *
+ * STATED RESIDUALS, both UNDER-counts against the gate, neither a silence:
+ *
+ * - A two-argument `Fn::Sub` whose placeholder IS bound
+ *   (`{'Fn::Sub': ['{{resolve:ssm:${N}}}', {N: 'x'}]}`) substitutes fine and
+ *   yields a fetchable token, but the raw bag still spells `${`, so a real
+ *   fetch failure there warns instead of gating.
+ * - The same for a single-argument `Fn::Sub` over a defaulted parameter, and
+ *   for a placeholder mid-token, which yields no token at all.
+ *
+ * And one OVER-count, recorded for symmetry: this predicate is BAG-scoped while
+ * the failure is TOKEN-scoped, so a bag holding a placeholder-bearing token
+ * BESIDE a genuinely fetchable one returns `true`, and a `key '${Field}' not
+ * found` raised for the first is gated as if it came from the second. Safety
+ * is in the right direction (a gate that fires, not a plaintext under `clean`),
+ * and same-bag co-location bounds it.
+ *
+ * go-to-k/cdkd#3181 is the fix that removes the need for any of these proxies.
+ */
+function carriesFetchableDynamicReference(source: unknown): boolean {
+  if (typeof source === 'string') {
+    // `dynamicReferenceTokens`, never a local regex: issue #1936 forbids a
+    // second spelling of the token pattern, and a scan that disagreed with the
+    // resolver about where a token ENDS would disagree about which argument the
+    // `${` test is applied to. (The fence for that is
+    // `secret-redaction-dynamic-reference-pattern.test.ts`, which caught this
+    // line's first cut.)
+    return dynamicReferenceTokens(source).some((token) => !token.includes('${'));
+  }
+  if (Array.isArray(source)) return source.some(carriesFetchableDynamicReference);
+  if (source !== null && typeof source === 'object') {
+    return Object.values(source as Record<string, unknown>).some(carriesFetchableDynamicReference);
+  }
+  return false;
+}
+
+/**
+ * `err` is cdkd's OWN refusal to resolve a template SHAPE — a `Ref`, an
+ * `Fn::GetAtt`, a parameter binding — rather than a failure to fetch a
+ * `{{resolve:...}}` reference.
+ *
+ * Matched on cdkd-authored prose, which is sound here for the reason the
+ * inverse is not: every string below is built by `intrinsic-function-resolver.ts`
+ * itself, so it changes only when this repo changes it, and the fence in
+ * `tests/unit/cli/scrub-abandoned-scan-origin.test.ts` reds when a throw site
+ * there stops matching. An AWS-authored message could never carry that
+ * guarantee.
+ */
+function isTemplateShapeResolutionFailure(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return TEMPLATE_SHAPE_FAILURE_PATTERNS.some((pattern) => pattern.test(err.message));
+}
+
+/**
+ * The cdkd-authored messages {@link isTemplateShapeResolutionFailure} excludes,
+ * ANCHORED. A substring test cannot be used here and the reason is concrete:
+ * `'Parameter '` alone also matches the SDK's own `Parameter /deleted not
+ * found.` — `ParameterNotFound`, this issue's HEADLINE repro — so the loose
+ * spelling would have excluded the very case the positional half exists to
+ * catch. Each pattern must stay tight enough that no AWS-authored message can
+ * satisfy it.
+ *
+ * Deliberately just these THREE, not every shape failure the resolver can
+ * raise. They are the ones that fire EN MASSE on a healthy stack:
+ * `resolveParameters` is caught wholesale by `scrubStack`, so one
+ * `Default`-less parameter empties the whole bag and every `{Ref: <param>}`
+ * throws; and `resolveGetAtt` refuses on the same condition as `resolveRef`,
+ * which a branch adding a not-yet-deployed resource hits for every
+ * `Fn::GetAtt` to it. A rarer shape failure (an `Fn::Select` over a
+ * non-array, say) is a genuine template defect, and counting a leaf whose
+ * scan it abandoned is not wrong — the scan really did stop. Over-counting
+ * THERE costs a warn on a broken template; over-counting on the three below
+ * would cost a red CI gate on a working one.
+ *
+ * Per-pattern throw sites, and the fence that keeps them true, are in
+ * `tests/unit/cli/scrub-abandoned-scan-origin.test.ts`.
+ */
+const TEMPLATE_SHAPE_FAILURE_PATTERNS = [
+  /^Ref \S+ not found$/,
+  /^Resource \S+ not found for Fn::GetAtt$/,
+  /^Parameter \S+ is required but no value was provided/,
+] as const;
+
 /**
  * A secrets map with its OWN identity whose entries ARE `target`'s (issue
  * #2531): every read and write goes to `target`; nothing is stored here.
@@ -3656,6 +3963,16 @@ export interface ScrubStackResult {
    */
   unverifiableReads: number;
   /**
+   * Leaves whose `{{resolve:...}}` scan was ABANDONED mid-token because one
+   * reference failed to RESOLVE (issue go-to-k/cdkd#3160). A FINDING like
+   * {@link ScrubStackResult.unverifiableReads}, not a refusal: the rest of the
+   * stack is scrubbed, but a real secret sitting after the failing token in
+   * the same leaf recorded no needle, so the record must not be reported
+   * clean. Refusing instead would refuse healthy stacks — see
+   * `abandonedScanVerdict`.
+   */
+  unverifiableLeaves: number;
+  /**
    * `state.outputs` as this run leaves it — the bag written on a real run, and
    * the bag a real run WOULD write under `--dry-run` (issue #2667).
    *
@@ -3755,6 +4072,38 @@ export async function scrubStack(
   // beside the secret maps for the same reason they are: the value is needed
   // after a throw could have happened.
   const prePassFindings: CrossStackPrePassFindings = { unverifiable: [] };
+  /**
+   * Leaves whose dynamic-reference scan was ABANDONED mid-token (issue
+   * go-to-k/cdkd#3160). A counted finding, not a refusal — see
+   * `abandonedScanVerdict` for why these cannot refuse.
+   */
+  let unverifiableLeaves = 0;
+  // Not a result field: the `warn` arm gates nothing, so nothing outside this
+  // function reads it. It exists so the per-stack note below can say how many
+  // records it is explaining.
+  let ungateableAbandonedScans = 0;
+  /**
+   * ONE note per stack per arm. The per-record lines are deliberately short
+   * (see `abandonedScanWarning`), so this is where the explanation lives, and
+   * emitting it after the loops rather than at the first occurrence is what
+   * lets it say HOW MANY records it is explaining.
+   *
+   * A CLOSURE called at BOTH returns, not a block at the late one. The early
+   * `totalSecrets === 0` return is the DOMINANT path for an abandoned scan --
+   * an abandoned scan records no needle, which is the whole defect -- so a
+   * single late emission left the note unreachable for exactly the case it
+   * exists to explain. `emitted` because the two call sites are exclusive
+   * today and a third would not be.
+   */
+  let notesEmitted = false;
+  const emitAbandonedScanNotes = (): void => {
+    if (notesEmitted) return;
+    notesEmitted = true;
+    if (unverifiableLeaves > 0) logger.warn(abandonedScanStackNote('count', unverifiableLeaves));
+    if (ungateableAbandonedScans > 0) {
+      logger.warn(abandonedScanStackNote('warn', ungateableAbandonedScans));
+    }
+  };
   try {
     const loaded = await stateBackend.getState(stack.stackName, region);
     if (!loaded) {
@@ -3764,6 +4113,7 @@ export async function scrubStack(
         secretsFound: 0,
         secretBearingKeys: 0,
         unverifiableReads: 0,
+        unverifiableLeaves: 0,
         // No record, so nothing was resolved and the bag is empty — every name
         // tests as 'safe'. Bound to the same map the other two sites use so
         // the shape cannot drift.
@@ -4053,6 +4403,17 @@ export async function scrubStack(
           // A region-AMBIGUOUS refusal is not best-effort -- see
           // `isRegionAmbiguousRefusal`.
           if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
+          const leafVerdict = abandonedScanVerdict(resolveInput, err);
+          if (leafVerdict !== 'silent') {
+            if (leafVerdict === 'count') unverifiableLeaves++;
+            else ungateableAbandonedScans++;
+            logger.warn(
+              maskSecretsInText(
+                abandonedScanWarning(`resource '${displaySafe(logicalId)}'`, leafVerdict),
+                recordedSecretValues
+              )
+            );
+          }
           // Best-effort: a resource whose intrinsics cannot resolve (a Ref to
           // something not in state) still has its own {{resolve:...}} leaves
           // recorded along the way; leave the rest untouched.
@@ -4128,6 +4489,20 @@ export async function scrubStack(
           await resolver.resolve(resolveInput, resolverContext(recordedSecretValues));
         } catch (err) {
           if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
+          const leafVerdict = abandonedScanVerdict(resolveInput, err);
+          if (leafVerdict !== 'silent') {
+            if (leafVerdict === 'count') unverifiableLeaves++;
+            else ungateableAbandonedScans++;
+            logger.warn(
+              maskSecretsInText(
+                abandonedScanWarning(
+                  `orphan record '${displaySafe(record.logicalId)}'`,
+                  leafVerdict
+                ),
+                recordedSecretValues
+              )
+            );
+          }
           logger.debug(
             `Resolution of orphan record ${record.logicalId} during scrub was partial: ` +
               `${maskSecretsInText(err instanceof Error ? err.message : String(err), recordedSecretValues)}`
@@ -4255,6 +4630,20 @@ export async function scrubStack(
             // A region-AMBIGUOUS refusal is not best-effort -- see
             // `isRegionAmbiguousRefusal`.
             if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
+            const leafVerdict = abandonedScanVerdict(nameSource, err);
+            if (leafVerdict !== 'silent') {
+              if (leafVerdict === 'count') unverifiableLeaves++;
+              else ungateableAbandonedScans++;
+              logger.warn(
+                maskSecretsInText(
+                  abandonedScanWarning(
+                    `the Export.Name of output '${displaySafe(name)}'`,
+                    leafVerdict
+                  ),
+                  outputSecrets
+                )
+              );
+            }
             nameFailed = true;
             nameError = err;
           }
@@ -4397,6 +4786,17 @@ export async function scrubStack(
           // A region-AMBIGUOUS refusal is not best-effort -- see
           // `isRegionAmbiguousRefusal`.
           if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
+          const leafVerdict = abandonedScanVerdict(valueSource, err);
+          if (leafVerdict !== 'silent') {
+            if (leafVerdict === 'count') unverifiableLeaves++;
+            else ungateableAbandonedScans++;
+            logger.warn(
+              maskSecretsInText(
+                abandonedScanWarning(`output '${displaySafe(name)}'`, leafVerdict),
+                outputSecrets
+              )
+            );
+          }
           // MASKED for the same reason as the two above — `valueSource` is a
           // post-pin bag. Verbose-only.
           logger.debug(
@@ -4464,14 +4864,19 @@ export async function scrubStack(
       // `secretBearingKeys.length` is provably 0 on this branch and is carried
       // for SHAPE only (issue #2133 review): `totalSecrets === 0` implies
       // `outputSecrets.size === 0`, and `stateKeySecretExposure` needs a needle
-      // from that very map, so the loop above pushed nothing. The rationale
-      // above therefore covers `unverifiableReads` alone — it is the one field
-      // that can be non-zero here.
+      // from that very map, so the loop above pushed nothing. TWO fields can be
+      // non-zero here, not one: `unverifiableReads`, and — since
+      // go-to-k/cdkd#3160 — `unverifiableLeaves`. The second is not an edge
+      // case but the HEADLINE path: an abandoned scan records no needle, so
+      // `totalSecrets === 0` is exactly what it produces. The rationale above
+      // covers both, and it is why the per-stack notes are emitted here too.
+      emitAbandonedScanNotes();
       return {
         recordsChanged: 0,
         secretsFound: 0,
         secretBearingKeys: secretBearingKeys.length,
         unverifiableReads: prePassFindings.unverifiable.length,
+        unverifiableLeaves,
         ...(malformedResources ? { malformedResources } : {}),
         // No needle was recorded, so no redaction pass ran and the stored bag
         // is what this run leaves — including on a RE-RUN over already-scrubbed
@@ -4654,6 +5059,7 @@ export async function scrubStack(
       // these keys, so a coinciding literal is redacted too.
       allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets)
     );
+    emitAbandonedScanNotes();
     const outputsChanged = JSON.stringify(newOutputs) !== JSON.stringify(state.outputs);
     if (outputsChanged) recordsChanged++;
 
@@ -4694,6 +5100,7 @@ export async function scrubStack(
       secretsFound: totalSecrets,
       secretBearingKeys: secretBearingKeys.length,
       unverifiableReads: prePassFindings.unverifiable.length,
+      unverifiableLeaves,
       ...(malformedResources ? { malformedResources } : {}),
       outputs: newOutputs,
       exportNameDisplay: (name) => secretSafeKeyDisplay(name, outputSecrets),

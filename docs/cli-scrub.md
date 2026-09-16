@@ -301,7 +301,7 @@ indistinguishable from an empty stack.
 
 **What a real run can report as `1`.** `--fail` is documented as a
 `--dry-run` CI gate, but a real run exits non-zero too when it found a leak it
-cannot rewrite. Two shapes qualify, and both are also reported in words:
+cannot rewrite. Three shapes qualify, and all three are also reported in words:
 
 - a **state KEY** holding a secret, which needs an `Export.Name` change plus a
   redeploy: `N output KEY(s) in <stack> hold plaintext and CANNOT be scrubbed`;
@@ -318,6 +318,37 @@ cannot rewrite. Two shapes qualify, and both are also reported in words:
 
 - a **cross-stack read cdkd declines by design**:
   `N cross-stack read(s) in <stack> could NOT be verified`.
+
+- a **record whose `{{resolve:...}}` scan was ABANDONED part-way**:
+  `N scan(s) in <stack> were ABANDONED mid-value because a {{resolve:...}}
+  reference could not be resolved`.
+
+  The resolver stops at the first `{{resolve:...}}` token it cannot resolve —
+  a deleted SSM parameter, a secret with no `SecretString`, a missing
+  `JSON_KEY`, a secret that is not JSON, or an AWS rejection such as
+  `ParameterNotFound` / `AccessDeniedException` — and every later token in the
+  SAME value is then never resolved, so it contributes no needle. A plaintext
+  sitting behind such a token survives a scan that finds nothing. cdkd cannot
+  rewrite it (there is no needle to match) and does not refuse the stack, so it
+  is reported and counted instead. Restore the parameter or secret and re-run.
+
+### A scan `--fail` warns about but does not count
+
+Not every abandoned scan raises the exit code. One failure aborts the whole
+properties bag, and some of those have nothing to do with fetching a reference:
+
+| What stopped the scan | `--fail` | Why |
+| --- | --- | --- |
+| The reference itself — deleted parameter, denied secret, missing `JSON_KEY` | exits `1` | Restoring the reference clears it. |
+| An unresolvable `Ref` / `Fn::GetAtt`, or a parameter with no `Default` | warns only | `scrub` resolves with template defaults and takes no `--parameters`, so it cannot bind these. A gate failure could not be cleared. |
+| A reference whose own argument still holds an unsubstituted `${...}` | warns only | The token was never fetchable — same reason. |
+
+**Every one of them is named in a warning at default verbosity**, because the
+record really was left unscanned either way. So a green `--dry-run --fail` does
+not by itself mean every record was examined: read the warnings. A record cdkd
+could not certify may still hold a plaintext from an older binary, and giving
+the parameter a `Default` — or resolving the reference — is what lets a re-run
+certify it. Where neither is possible, cdkd cannot certify that record at all.
 
 ## Refusals
 
