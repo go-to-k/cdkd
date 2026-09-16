@@ -6,6 +6,8 @@ import {
   isIamPropagationError,
   isMarkedNonRetryable,
   isNameCollisionError,
+  isNameCollisionErrorFrom,
+  NAME_COLLISION_ERROR_NAMES,
   isNameCooldownError,
   isRecreateRetryableError,
   isRetryableTransientError,
@@ -685,6 +687,212 @@ describe('isNameCollisionError', () => {
     ['ResourceAlreadyExistException: function my-fn', 'singular error CODE'],
   ])('does not match %j (%s)', (message) => {
     expect(isNameCollisionError(message)).toBe(false);
+  });
+});
+
+describe('isNameCollisionErrorFrom — reading the ERROR, not the message (#3208)', () => {
+  /**
+   * VERBATIM, measured us-east-1 2026-09-16 against
+   * `@aws-sdk/client-elastic-load-balancing-v2` 3.1126.0 by calling
+   * CreateTargetGroup twice under one name with different ports. Pinning the
+   * exact text matters because it contains NO error code and never says
+   * "already exists" — which is why the message predicate cannot see it.
+   */
+  const ELBV2_MESSAGE =
+    "A target group with the same name 'cdkd3208probe' exists, but with different settings";
+  const ELBV2_NAME = 'DuplicateTargetGroupNameException';
+  /** The resource under classification. */
+  const LID = 'MyTargetGroup';
+
+  function sdkError(name: string, message: string): Error {
+    const e = new Error(message);
+    e.name = name;
+    return e;
+  }
+  /** An error carrying a `logicalId`, the shape `ProvisioningError` has. */
+  function ownedError(logicalId: string, name: string, message: string): Error {
+    return Object.assign(sdkError(name, message), { logicalId });
+  }
+
+  it('the measured ELBv2 message is NOT matched by the message predicate', () => {
+    // The premise. If this flips, the prose matcher has been widened and the
+    // delete-direction argument on NAME_COLLISION_ERROR_NAMES needs re-reading
+    // before anything below is trusted.
+    expect(isNameCollisionError(ELBV2_MESSAGE)).toBe(false);
+  });
+
+  it('matches the measured ELBv2 collision by exception NAME', () => {
+    expect(isNameCollisionErrorFrom(sdkError(ELBV2_NAME, ELBV2_MESSAGE), LID)).toBe(true);
+  });
+
+  it('reaches the SDK error through a provider wrap, which is how it arrives', () => {
+    // Providers render `Failed to create X: ${err.message}` and thread the
+    // original as `cause`; the NAME survives only on the cause. A top-level-only
+    // read reports false here.
+    const wrapped = new Error(`Failed to create TargetGroup ${LID}: ${ELBV2_MESSAGE}`, {
+      cause: sdkError(ELBV2_NAME, ELBV2_MESSAGE),
+    });
+    expect(isNameCollisionErrorFrom(wrapped, LID)).toBe(true);
+  });
+
+  it.each([
+    ['DuplicateTargetGroupNameException'],
+    ['DuplicateLoadBalancerNameException'],
+    ['DuplicateTrustStoreNameException'],
+  ])('credits %s', (name) => {
+    // The message deliberately does NOT match the prose predicate, so a green
+    // here is about the NAME and not about the text falling through.
+    const text = 'some text with no collision phrase';
+    expect(isNameCollisionError(text)).toBe(false);
+    expect(isNameCollisionErrorFrom(sdkError(name, text), LID)).toBe(true);
+  });
+
+  it.each([
+    // A listener already bound to that PORT — not a name, and no delete clears it.
+    ['DuplicateListenerException'],
+    // Repeated keys WITHIN one request — not an existence condition at all.
+    ['DuplicateTagKeysException'],
+  ])('does NOT credit %s by NAME', (name) => {
+    // Asserts the property that is actually true: the name is not in the list,
+    // so the NAME arm cannot credit it. Their real AWS messages DO contain
+    // "already exists" and are matched by the prose predicate — that is
+    // pre-existing and unchanged by #3208, and pinned as such below, so this
+    // case must not pretend to fence it.
+    expect(NAME_COLLISION_ERROR_NAMES.has(name)).toBe(false);
+    expect(isNameCollisionErrorFrom(sdkError(name, 'no collision phrase here'), LID)).toBe(false);
+  });
+
+  it('the excluded names are still reachable by their MESSAGE, unchanged by #3208', () => {
+    // Stated rather than left implicit: excluding a NAME does not make its
+    // message stop matching. `DuplicateListenerException`'s real text says
+    // "already exists", so the prose predicate credits it exactly as it did
+    // before this change — the exclusion is about not adding a SECOND route.
+    const real = 'A listener with the specified port already exists';
+    expect(isNameCollisionError(real)).toBe(true);
+    expect(isNameCollisionErrorFrom(sdkError('DuplicateListenerException', real), LID)).toBe(true);
+  });
+
+  it('does not credit Lambda ResourceConflictException by name', () => {
+    // Why this file refuses name-based classification in general: Lambda raises
+    // it for a function in a PENDING state too, so crediting the NAME would
+    // delete a live function under `--replace`.
+    expect(
+      isNameCollisionErrorFrom(sdkError('ResourceConflictException', 'The function is in Pending'), LID)
+    ).toBe(false);
+    expect(
+      isNameCollisionErrorFrom(sdkError('ResourceConflictException', 'Function already exist: fn'), LID)
+    ).toBe(true);
+  });
+
+  it('the name set is exactly the three unambiguous members', () => {
+    expect([...NAME_COLLISION_ERROR_NAMES].sort()).toEqual([
+      'DuplicateLoadBalancerNameException',
+      'DuplicateTargetGroupNameException',
+      'DuplicateTrustStoreNameException',
+    ]);
+  });
+
+  describe('the ANCHOR — a link naming another resource cannot classify this one', () => {
+    it('refuses a child resource collision reaching a parent nested stack', () => {
+      // NestedStackProvider.create runs a whole child DeployEngine.deploy()
+      // inside the PARENT's provider call, so a child failure arrives as the
+      // child's own ProvisioningError. Unanchored this classified the PARENT
+      // and deleted an entire live child stack.
+      //
+      // The child failure carries a NAME in the list on purpose. With only a
+      // prose message this case would pass for the WRONG reason — the depth-0
+      // gating already refuses a buried message, so the anchor would be
+      // untested here and the comment above would overclaim. Measured: with the
+      // anchor removed this returns true.
+      const childFailure = ownedError('ChildTargetGroup', ELBV2_NAME, ELBV2_MESSAGE);
+      const parentWrap = new Error('Failed to create resource ChildTargetGroup', {
+        cause: childFailure,
+      });
+      expect(isNameCollisionErrorFrom(parentWrap, 'MyNestedStack')).toBe(false);
+    });
+
+    it('refuses even a NAME match when the link names another resource', () => {
+      const other = ownedError('SomeOtherTg', ELBV2_NAME, ELBV2_MESSAGE);
+      expect(isNameCollisionErrorFrom(other, LID)).toBe(false);
+      // ...and credits it for its OWN resource, so the anchor is not simply
+      // rejecting everything.
+      expect(isNameCollisionErrorFrom(other, 'SomeOtherTg')).toBe(true);
+    });
+
+    it('an error carrying no logicalId is not rejected by the anchor', () => {
+      // A raw SDK error has no such field; the anchor must not make the common
+      // case unreachable.
+      expect(isNameCollisionErrorFrom(sdkError(ELBV2_NAME, ELBV2_MESSAGE), LID)).toBe(true);
+    });
+  });
+
+  describe('the MESSAGE is read at depth 0 ONLY', () => {
+    it('a collision phrase in a CAUSE does not classify, a top-level one does', () => {
+      // The widening this predicate deliberately does NOT do. Reading prose
+      // down the chain is what `retryClassificationText` refuses for a merely
+      // RETRY decision; here the verdict is a delete. Both halves pinned, so
+      // gating to depth 0 is a decision rather than an accident.
+      const buried = new Error('Failed to create resource Thing', {
+        cause: new Error('Bucket already exists'),
+      });
+      expect(isNameCollisionErrorFrom(buried, LID)).toBe(false);
+      expect(isNameCollisionErrorFrom(new Error('Bucket already exists'), LID)).toBe(true);
+    });
+  });
+
+  it('does NOT read .message off a non-Error object', () => {
+    // The DELETE-direction narrowing review caught. The call sites' pre-#3208
+    // arm was `err instanceof Error ? err.message : String(err)`, so a thrown
+    // plain object stringified to "[object Object]" and did NOT match. A
+    // revision that read `.message` off any object would have started matching
+    // it — widening the predicate that authorises a delete, under a comment
+    // claiming byte-identical behaviour.
+    const plain = { message: 'Bucket already exists' };
+    expect(isNameCollisionError(String(plain))).toBe(false);
+    expect(isNameCollisionErrorFrom(plain, LID)).toBe(false);
+    // ...while a real Error with the same text still matches, so the narrowing
+    // is about the SHAPE and not about the phrase.
+    expect(isNameCollisionErrorFrom(new Error(plain.message), LID)).toBe(true);
+  });
+
+  it('preserves the call sites pre-#3208 String() arm for a non-Error throw', () => {
+    // All three sites previously classified `String(err)`; reading `.message`
+    // alone would have dropped a thrown object with only a toString.
+    const thrown = { toString: () => 'Queue already exists' };
+    expect(isNameCollisionErrorFrom(thrown, LID)).toBe(true);
+  });
+
+  it('is strictly additive over the string form', () => {
+    const legacy = 'Failed to create S3 bucket MyBucket: BucketAlreadyExists';
+    expect(isNameCollisionError(legacy)).toBe(true);
+    expect(isNameCollisionErrorFrom(new Error(legacy), LID)).toBe(true);
+    expect(isNameCollisionErrorFrom(legacy, LID)).toBe(true);
+  });
+
+  it.each([[undefined], [null], [42], [{}], [new Error('unrelated failure')]])(
+    'returns false for %j rather than throwing',
+    (input) => {
+      expect(isNameCollisionErrorFrom(input, LID)).toBe(false);
+    }
+  );
+
+  it('terminates on a cyclic cause chain', () => {
+    // Termination rests on the depth bound alone — there is no `seen` set.
+    const a = new Error('round') as Error & { cause?: unknown };
+    a.cause = a;
+    expect(isNameCollisionErrorFrom(a, LID)).toBe(false);
+  });
+
+  it('walks exactly MAX_CAUSE_CHAIN_DEPTH links', () => {
+    // The TIGHT pair, matching this file's convention: depth 4 found, depth 5
+    // not. A 3/6 pair stays green with the bound mutated to either 4 or 6.
+    const atDepth = (n: number): Error => {
+      let e: Error = sdkError(ELBV2_NAME, ELBV2_MESSAGE);
+      for (let i = 0; i < n; i++) e = new Error(`wrap ${i}`, { cause: e });
+      return e;
+    };
+    expect(isNameCollisionErrorFrom(atDepth(4), LID)).toBe(true);
+    expect(isNameCollisionErrorFrom(atDepth(5), LID)).toBe(false);
   });
 });
 

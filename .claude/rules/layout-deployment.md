@@ -399,15 +399,10 @@ Index of every area: [code-layout.md](code-layout.md).
     carrying `$metadata` is named at any depth. `noMetadata` is false
     whenever any `$metadata` was seen, keeping "a status cdkd does not
     retry" distinct from "never reached error deserialization".
-  - `isNameCollisionError(message)` (issue #1207): shared by the deploy
-    engine's replacement create-first detection / `--replace` delete-first
-    retry and the rollback executor's reverse-replacement path; NOT in the
-    transient table (a collision is only retryable where the old name holder
-    was just deleted). Accepts BOTH spellings — Lambda raises the SINGULAR
-    `Function already exist:`, so a plural-only pattern left every
-    `AWS::Lambda::Function` off the collision path (#1625) — and a
-    lookbehind refuses negated/modal forms ("does NOT already exist"), whose
-    consequence here is a DELETION.
+  - The two name-collision predicates — `isNameCollisionError(message)`
+    (#1207) and `isNameCollisionErrorFrom(error, logicalId)` (#3208) — and the rule for
+    admitting an exception NAME to `NAME_COLLISION_ERROR_NAMES` are in
+    [name-collision-classification.md](name-collision-classification.md).
   - `isNameCooldownError(message)` (issue #1206): a same-name re-creation
     cooldown — separate from the collision matcher because a cooldown at a
     create-first site must not trigger delete-new-first. Its spellings are

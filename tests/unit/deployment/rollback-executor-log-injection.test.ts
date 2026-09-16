@@ -821,8 +821,16 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     // recreateError, deleteError (warn), rollbackError, revertError -- and the
     // fence proves it read the file.
     expect((src.match(wrapped) ?? []).length).toBe(4);
-    // `msg` is classified raw and rendered wrapped.
-    expect(src).toContain('isNameCollisionError(msg)');
+    // `msg` used to be classified RAW and rendered wrapped. Since issue #3208
+    // it is not classified at all: the collision decision moved to the ERROR
+    // (`isNameCollisionErrorFrom` walks the cause chain for an exception NAME,
+    // which a rendered message cannot carry), leaving the wrapped render as
+    // `msg`'s ONLY use. That is strictly safer for this file's subject, so all
+    // three halves are pinned — the absence too, so a revert to classifying the
+    // rendered text cannot pass quietly.
+    expect(src).toContain('isNameCollisionErrorFrom(createError, op.logicalId)');
+    expect(src).not.toContain('isNameCollisionError(msg)');
+    expect(src).toContain('displaySafe(msg)');
     expect(src).toContain('${displaySafe(msg)}');
   });
 

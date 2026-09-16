@@ -1100,6 +1100,7 @@
         "efs-lambda",
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
+        "elbv2-same-name-replacement",
         "emr-cluster",
         "emr-instance-configs",
         "emr-instance-fleets",
@@ -1192,6 +1193,9 @@
           "l2"
         ],
         "elasticache-replicationgroup-getatt": [
+          "l2"
+        ],
+        "elbv2-same-name-replacement": [
           "l2"
         ],
         "emr-cluster": [
@@ -1299,6 +1303,7 @@
         "efs-lambda",
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
+        "elbv2-same-name-replacement",
         "emr-cluster",
         "emr-instance-configs",
         "emr-instance-fleets",
@@ -1386,6 +1391,9 @@
           "l2"
         ],
         "elasticache-replicationgroup-getatt": [
+          "l2"
+        ],
+        "elbv2-same-name-replacement": [
           "l2"
         ],
         "emr-cluster": [
@@ -1511,6 +1519,7 @@
         "efs-lambda",
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
+        "elbv2-same-name-replacement",
         "emr-cluster",
         "emr-instance-configs",
         "emr-instance-fleets",
@@ -1604,6 +1613,9 @@
           "l2"
         ],
         "elasticache-replicationgroup-getatt": [
+          "l2"
+        ],
+        "elbv2-same-name-replacement": [
           "l2"
         ],
         "emr-cluster": [
@@ -1714,6 +1726,7 @@
         "efs-lambda",
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
+        "elbv2-same-name-replacement",
         "emr-cluster",
         "emr-instance-configs",
         "emr-instance-fleets",
@@ -1806,6 +1819,9 @@
           "l2"
         ],
         "elasticache-replicationgroup-getatt": [
+          "l2"
+        ],
+        "elbv2-same-name-replacement": [
           "l2"
         ],
         "emr-cluster": [
@@ -2093,6 +2109,7 @@
         "efs-lambda",
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
+        "elbv2-same-name-replacement",
         "emr-cluster",
         "emr-instance-configs",
         "emr-instance-fleets",
@@ -2183,6 +2200,9 @@
           "l2"
         ],
         "elasticache-replicationgroup-getatt": [
+          "l2"
+        ],
+        "elbv2-same-name-replacement": [
           "l2"
         ],
         "emr-cluster": [
@@ -2295,6 +2315,7 @@
         "efs-lambda",
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
+        "elbv2-same-name-replacement",
         "emr-cluster",
         "emr-instance-configs",
         "emr-instance-fleets",
@@ -2382,6 +2403,9 @@
           "l2"
         ],
         "elasticache-replicationgroup-getatt": [
+          "l2"
+        ],
+        "elbv2-same-name-replacement": [
           "l2"
         ],
         "emr-cluster": [
@@ -2484,6 +2508,7 @@
         "efs-lambda",
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
+        "elbv2-same-name-replacement",
         "emr-cluster",
         "emr-instance-configs",
         "emr-instance-fleets",
@@ -2578,6 +2603,9 @@
           "literal"
         ],
         "elasticache-replicationgroup-getatt": [
+          "l2"
+        ],
+        "elbv2-same-name-replacement": [
           "l2"
         ],
         "emr-cluster": [
@@ -2698,6 +2726,7 @@
         "efs-lambda",
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
+        "elbv2-same-name-replacement",
         "emr-cluster",
         "emr-instance-configs",
         "emr-instance-fleets",
@@ -2790,6 +2819,9 @@
           "l2"
         ],
         "elasticache-replicationgroup-getatt": [
+          "l2"
+        ],
+        "elbv2-same-name-replacement": [
           "l2"
         ],
         "emr-cluster": [
@@ -3298,6 +3330,7 @@
         "alb",
         "deletion-ordering-complex",
         "drift-revert-arrays",
+        "elbv2-same-name-replacement",
         "local-start-alb",
         "local-start-alb-from-state"
       ],
@@ -3310,6 +3343,10 @@
         ],
         "drift-revert-arrays": [
           "l1"
+        ],
+        "elbv2-same-name-replacement": [
+          "l1",
+          "literal"
         ],
         "local-start-alb": [
           "l1",
