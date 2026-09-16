@@ -3323,12 +3323,19 @@ describe('renderChangelogFragment', () => {
       ],
     })!;
     expect(fragment.trimEnd().length).toBeLessThanOrEqual(CHANGELOG_ENTRY_LIMIT);
-    expect(fragment).toMatch(/\d+ further per-type notes? omitted to fit the entry cap/);
+    expect(fragment).toMatch(/\d+ further notes? omitted to fit the entry cap/);
     // Given up by SEVERITY, not position. The refusal-goes-away note is the
     // largest delta this half can report, and giving up from the end dropped
     // it while the addition half's longer EXPLANATIONS survived (measured).
     expect(fragment).toContain('the pre-flight REFUSAL goes with the withdrawn key');
     expect(fragment, 'an absence outlived a consequence').not.toContain('createOnlyDrops');
+    // Both halves keep a note. An interleaved give-up was tried for this and
+    // reverted: measured on this very case it kept 1 addition note against 4
+    // withdrawal ones, where the position tiebreak keeps 2 and 2.
+    expect(fragment, 'the addition half was wiped').toContain('ONE-WAY');
+    expect(fragment, 'the withdrawal half was wiped').toContain(
+      'still carries another actionable drop'
+    );
     // The headline survives whatever else goes: it carries both lists, the
     // counts and the warn/drop outcome.
     expect(fragment.startsWith('- **')).toBe(true);

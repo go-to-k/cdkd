@@ -3222,6 +3222,11 @@ export function renderChangelogFragment({
   // position, latest first. Never sentence 0. When anything goes, say how many
   // so a reader knows to read the pull request rather than assuming the entry
   // is complete.
+  // Descending priority, position breaking ties. Interleaving the two halves
+  // within a tier was tried and REVERTED: measured on the saturated cycle it
+  // kept 1 addition note against 4 withdrawal ones, where the position
+  // tiebreak keeps 2 and 2 — so the asymmetry the tiers removed does not
+  // reappear here, and the extra machinery bought a worse balance.
   const order = sentences
     .map((_, index) => index)
     .filter((index) => index > 0)
@@ -3235,7 +3240,7 @@ export function renderChangelogFragment({
     // sentence is the failure this arm exists to avoid: a reader would take it
     // for complete. So keep giving up until the remainder fits WITH the note.
     const note =
-      `${omitted} further per-type note${omitted === 1 ? '' : 's'} omitted to fit the entry cap; ` +
+      `${omitted} further note${omitted === 1 ? '' : 's'} omitted to fit the entry cap; ` +
       `the pull request's diagnosis lists every type.`;
     const withNote = `${[...sentences.filter((line) => line !== ''), note].join(' ')}\n`;
     if (withNote.trimEnd().length <= CHANGELOG_ENTRY_LIMIT) {
