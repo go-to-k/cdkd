@@ -48,10 +48,11 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # Same range as every other bound here (see `ci.yml`): n=50, median 62 s,
-    # max 76 s -- 11.8x headroom. The work is a fixed SSG build, so the median
-    # barely moves; the slack is for install and for the docs corpus growing.
-    timeout-minutes: 15
+    # observed at least 76 s in a 50-run sample -- and review found a 902 s run in
+    # the SAME range that the sample's `--limit 50` had capped away. That single
+    # miss is why this bound is 45 and not the 15 an earlier revision set, and
+    # why the figures here are lower bounds rather than maxima.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
@@ -125,11 +126,9 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
-    # Same range: n=8 (the job is gated on a push to main), median 9 s, max
-    # 15 s. 10 minutes is deliberately loose -- the step hands an already-built
-    # artifact to GitHub Pages, so the variable is Pages' own latency rather
-    # than anything in this repo.
-    timeout-minutes: 10
+    # observed at least 15 s over 8 runs; hands an already-built artifact to
+    # GitHub Pages, so the variable is Pages' latency rather than this repo's.
+    timeout-minutes: 20
     permissions:
       pages: write
       id-token: write

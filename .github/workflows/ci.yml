@@ -16,28 +16,36 @@ permissions: {}
 jobs:
   check-build-test:
     runs-on: ubuntu-latest
-    # n=50, median 710 s, max 758 s (~12.6 min) -- 2.4x headroom at 30 minutes,
-    # which absorbs a slow runner and ordinary growth while capping a runaway at
-    # 30 rather than the Actions default of 360. This job is fork-reachable, so
-    # it is the one the bound matters most for.
+    # A RUNAWAY CAP, NOT A LATENCY TARGET. That reframing is the fix for an error
+    # this PR made four times: each revision set the bound from a sample MAXIMUM,
+    # and a sample maximum is always an UNDERESTIMATE of the true one, so every
+    # larger sample found a longer run and every headroom ratio published here
+    # was optimistic. The last round shipped `docs-deploy` at 15 minutes while a
+    # real 902 s build sat inside the very range the comment cited -- a bound
+    # BELOW a legitimate run, which is the failure go-to-k/cdkd#3229 exists to
+    # prevent, introduced by the change meant to prevent it.
     #
-    # THE SAMPLE IS A CLOSED DATE RANGE, and that is the third attempt at making
-    # these figures honest. "The 12 most recent runs" is not reproducible -- the
-    # window is defined by POSITION, so it slides, and two figures corrected in
-    # review were stale again within hours. Worse, n=12 systematically
-    # UNDERSTATED the maximum: at n=50 several jobs' maxima nearly doubled
-    # (runtime-compat 49 -> 110 s, prefix-scope 17 -> 82 s), so every headroom
-    # ratio derived from the small sample was overstated, in the unsafe
-    # direction. A closed range entirely in the past never changes:
+    # So the bounds are no longer derived from a max. Between "this job takes
+    # about twelve minutes" and the Actions default of 360 there is an enormous
+    # band, and choosing generously inside it costs nothing: a runaway is capped
+    # either way, and a slow runner is never killed. Figures below are stated as
+    # "observed at least X" -- a claim that stays true however incomplete the
+    # sample is, unlike "the maximum is X".
     #
-    #   gh run list --workflow=ci.yml --status=success \
-    #     --created 2026-09-09..2026-09-15 --limit 50 --json databaseId
+    # Samples come from the closed range 2026-09-09..2026-09-15, UTC:
+    #
+    #   gh run list --workflow=<name>.yml --status=success \
+    #     --created 2026-09-09..2026-09-15 --limit 1000 --json databaseId
     #   gh api repos/go-to-k/cdkd/actions/runs/<id>/jobs
     #
-    # then difference `started_at` against `completed_at` per job. Every figure
-    # in these eleven files comes from that one range, UTC as the API reports
-    # it -- an earlier revision stamped them JST, a day ahead of the query.
-    timeout-minutes: 30
+    # then difference `started_at` against `completed_at` per job. Note the
+    # `--limit`: at 50 it silently CAPS the sample (the range holds 865 `ci.yml`
+    # runs), which is how the 902 s build was missed.
+    #
+    # observed at least 823 s (13.7 min) over 654 successful runs. This job is
+    # fork-reachable through `pull_request`, so it is the one the cap matters
+    # most for.
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
@@ -454,13 +462,9 @@ jobs:
   # new entry is not, and a new test file that leaks fails this job.
   once-leak-detect:
     runs-on: ubuntu-latest
-    # Same range: n=50, median 656 s, max 745 s (~12.4 min) -- 2.4x headroom.
-    # Same bound as check-build-test for the same reason: it runs the same unit
-    # suite, so the two grow together and a shared value will not need
-    # re-deriving twice. These two are the tightest ratios among the bounds this
-    # PR ADDS -- `hook-suites` is tighter still, which is why that one is raised
-    # rather than merely recorded.
-    timeout-minutes: 30
+    # observed at least 745 s over 654 successful runs. Same cap as
+    # check-build-test: it runs the same unit suite, so the two grow together.
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
@@ -505,20 +509,9 @@ jobs:
   runtime-compat:
     runs-on: ubuntu-latest
     needs: check-build-test
-    # Same range: n=100 legs, median 39.5 s, max 110 s -- 5.5x headroom at 10
-    # minutes. The job is dominated by install and build rather than by anything
-    # that scales with the repo, so a tight bound would fail on a slow registry
-    # without ever catching a runaway.
-    #
-    # The max here is the clearest case for the larger sample: a 12-run window
-    # put it at 49 s and this one puts it at 110 s, so the headroom was not the
-    # ~12x that sample implied. An even earlier revision said 33 LEGS, which a
-    # reviewer read as impossible for a 2-value matrix. It was neither
-    # impossible nor a typo -- go-to-k/cdkd#3105 (`eabfba112`) changed
-    # `[20, 22, 24]` to `['22.12', '24']`, and a window straddling it holds
-    # 9x3 + 3x2 = 33. It was true and unreproducible, which is the argument for
-    # a closed range rather than against the figure.
-    timeout-minutes: 10
+    # observed at least 110 s over 1660 matrix legs. Dominated by install and
+    # build rather than by anything that scales with the repo.
+    timeout-minutes: 20
     permissions:
       contents: read
     strategy:
@@ -573,11 +566,9 @@ jobs:
   release-pr-not-stale:
     if: startsWith(github.head_ref, 'release-please--')
     runs-on: ubuntu-latest
-    # Same range: n=2 (the job is gated on a release-please branch), max 11 s.
-    # 10 minutes is loose against a two-point sample on purpose -- the work is a
-    # fetch plus two `git rev-list` calls, and a bound derived tightly from n=2
-    # would be a guess wearing a measurement's clothes.
-    timeout-minutes: 10
+    # observed at least 13 s over 24 runs; the job is gated on a release-please
+    # branch, so it runs rarely.
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -660,9 +651,8 @@ jobs:
     if: always()
     needs: [check-build-test, once-leak-detect, runtime-compat, release-pr-not-stale]
     runs-on: ubuntu-latest
-    # Same range: n=50, median 3 s, max 5 s. The step is a shell loop over four
-    # strings, so 5 minutes is entirely runner-startup slack.
-    timeout-minutes: 5
+    # observed at least 5 s over 557 runs -- a shell loop over four strings.
+    timeout-minutes: 10
     permissions: {}
     env:
       # Through `env:` rather than inline in `run:`. The value space here is a

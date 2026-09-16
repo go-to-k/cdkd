@@ -39,10 +39,8 @@ concurrency:
 jobs:
   inherit:
     runs-on: ubuntu-latest
-    # Same range as every other bound here (see `ci.yml`): n=50, median 4 s,
-    # max 9 s. The job is a handful of GitHub API calls with no checkout, so 5
-    # minutes is all runner startup and API slack.
-    timeout-minutes: 5
+    # observed at least 9 s over 50 runs -- GitHub API calls with no checkout.
+    timeout-minutes: 15
     steps:
       - name: Copy linked issues' labels onto the PR
         env:

@@ -46,10 +46,8 @@ concurrency:
 jobs:
   disarm:
     runs-on: ubuntu-latest
-    # Same range as every other bound here (see `ci.yml`): n=50, median 12 s,
-    # max 17 s. A 45 s run exists outside this range; 10 minutes is 13x even
-    # that, and the job is API calls with no checkout.
-    timeout-minutes: 10
+    # observed at least 17 s over 50 runs -- API calls with no checkout.
+    timeout-minutes: 15
     permissions:
       contents: read
       pull-requests: write

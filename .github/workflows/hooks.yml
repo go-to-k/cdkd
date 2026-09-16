@@ -42,25 +42,23 @@ permissions: {}
 jobs:
   hook-suites:
     runs-on: macos-latest
-    # RAISED from 30, which was the one bound in the repository this change's
-    # own standard condemned. Same closed range as every other bound here (see
-    # `ci.yml`): n=49, median 1040 s, max 1587 s -- 26.5 minutes, against a
-    # 30-minute bound. That is 1.1x, i.e. a real run had come within four
-    # minutes of being killed.
+    # RAISED from 30, which was the one bound in the repository this change's own
+    # standard condemned -- and the only pre-existing one it touches. Observed at
+    # least 1587 s (26.5 minutes) over 49 successful runs in the shared range,
+    # against that 30-minute bound: a real run came within 3.5 minutes of being
+    # killed, and nobody would have noticed, because a timeout kill reads as a
+    # flake, gets re-run, and passes. Review re-derived the same 1587 s over five
+    # weeks (n=355), so the week is not an artefact.
     #
-    # 45 was this PR's first answer and it was wrong for the same reason the
-    # original 30 was: it came from a 12-run sample whose max was 1290 s, and a
-    # small sample understates a tail. At n=49 the max is 1587 s and 45 gives
-    # only 1.7x. 60 gives 2.3x, in line with the two `ci.yml` unit-suite jobs,
-    # on the slowest and most variable host in the matrix -- a macOS runner
-    # executing two bash suites.
+    # 45 was an intermediate answer and shared the error described in `ci.yml`:
+    # it was computed as a multiple of a sample max. 60 is chosen the way every
+    # other bound here now is -- generously above anything observed, far below
+    # the 360-minute default. A macOS runner executing two bash suites is the
+    # slowest and most variable host in the matrix.
     #
-    # The bound predates this change and was never measured when written, which
-    # is the argument for the fence rather than an exception to it: a bound
-    # nobody re-derives drifts toward the work. Making the suite FASTER is the
-    # better answer and is filed separately -- this job runs fork-authored bash
-    # on a 10x-billed runner, so its ceiling is the one worth lowering, not
-    # raising, once the suite allows it.
+    # Making the suite FASTER is the better answer and is go-to-k/cdkd#3282: a
+    # 26-minute job is the longest feedback loop in the repo, and its ceiling is
+    # then the one worth lowering rather than raising.
     timeout-minutes: 60
     permissions:
       contents: read
