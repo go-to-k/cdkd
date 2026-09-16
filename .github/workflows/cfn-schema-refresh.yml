@@ -205,10 +205,12 @@ jobs:
           # Through `env:`, not a GitHub expression inside the shell body. The
           # value is a jq-extracted JSON integer, so it is contained today —
           # this removes the CLASS rather than a live bug, and costs one line.
-          # (Spelled out in words rather than as the literal opener: inside a
-          # workflow file that sequence is PARSED, and an empty one invalidates
-          # the whole file — go-to-k/cdkd#3195. Fenced by
-          # tests/unit/scripts/workflow-expression-syntax.test.ts.)
+          # (In words rather than as the literal opener. Here it would be
+          # harmless — a YAML comment reaches no parser — but the same sentence
+          # inside a `run:` body is PART OF THE STRING, and an empty expression
+          # there invalidated this whole file once (go-to-k/cdkd#3195). Telling
+          # the two apart by indentation is what failed, so the fence refuses
+          # both: tests/unit/scripts/workflow-expression-syntax.test.ts.)
           PR_NUMBER: ${{ steps.open_pr.outputs.number }}
         run: |
           set -euo pipefail
@@ -681,15 +683,16 @@ jobs:
           # The branch is read from the checkout rather than threaded through an
           # output, and NOT interpolated as a GitHub expression — the same rule
           # the switch and publish steps state: no expression inside a shell
-          # body. Those two say it with the opener spelled out and this one does
-          # not, and the asymmetry is load-bearing rather than sloppy: they are
-          # YAML comments, which never reach the expression parser, while this
-          # sits inside a `run:` BLOCK SCALAR and is therefore part of the
-          # string. Actions scans that whole string for openers without caring
-          # that one is behind a `#`, and an EMPTY one is a parse error that
-          # invalidates the entire file — which is how this job stopped being
-          # scheduled at all for a day (go-to-k/cdkd#3195). Fenced by
-          # tests/unit/scripts/workflow-expression-syntax.test.ts.
+          # body. NO comment in this file writes the literal opener any more,
+          # here or in a YAML comment, and the uniformity is the fix rather than
+          # tidiness. One of them DID write it, right here, and this is a `run:`
+          # BLOCK SCALAR, so the text is part of the string: Actions scans that
+          # whole string for openers without caring that one sits behind a `#`,
+          # and an EMPTY one is a parse error that invalidates the entire file —
+          # which is how this job stopped being scheduled at all
+          # (go-to-k/cdkd#3195). A YAML comment genuinely is safe, but telling
+          # the two apart by indentation is exactly what failed, so the fence
+          # refuses both: tests/unit/scripts/workflow-expression-syntax.test.ts.
           # Publish left this working tree on the branch it pushed, both on the
           # arm that created one and on the arm that reused the open PR's.
           if ! git push \
