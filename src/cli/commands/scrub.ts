@@ -2148,38 +2148,6 @@ function isOutputSuppressed(
 const CROSS_STACK_INTRINSIC_KEYS = ['Fn::ImportValue', 'Fn::GetStackOutput'] as const;
 
 /**
- * The intrinsic names `IntrinsicFunctionResolver.resolveValue` dispatches on by
- * PRESENCE. A bag carrying one of these IS an intrinsic node, whatever else it
- * carries, so scrub must hand it over whole rather than splitting it by key
- * (go-to-k/cdkd#3215 review).
- *
- * `Condition` is deliberately absent: its dispatch is gated on
- * `context.conditionResolver`, which scrub never sets.
- *
- * Fenced against the resolver by `scrub-import-value-secret.test.ts`, which
- * already pins the PRECEDENCE order over the same population.
- */
-const RESOLVER_DISPATCH_KEYS = new Set([
-  'Ref',
-  'Fn::GetAtt',
-  'Fn::Join',
-  'Fn::Sub',
-  'Fn::Select',
-  'Fn::Split',
-  'Fn::If',
-  'Fn::Equals',
-  'Fn::And',
-  'Fn::Or',
-  'Fn::Not',
-  'Fn::ImportValue',
-  'Fn::GetStackOutput',
-  'Fn::FindInMap',
-  'Fn::Base64',
-  'Fn::GetAZs',
-  'Fn::Cidr',
-]);
-
-/**
  * The intrinsic keys {@link IntrinsicFunctionResolver}'s `resolveValue`
  * dispatches on, IN ITS ORDER (issue #2133 review).
  *
@@ -2346,6 +2314,26 @@ export function scrubRefusalWording(
       : `Scrub the producer first ('cdkd scrub ${loggedProducerStack}')`;
   return { templateClaim, remedy };
 }
+
+/**
+ * The same names as a SET, for the one question scrub asks that is about
+ * membership rather than order: is this `Properties` bag itself an intrinsic
+ * NODE, which the resolver must be handed whole?
+ *
+ * DERIVED, never re-listed. Review of go-to-k/cdkd#3215 caught a hand-written
+ * copy of these seventeen names forty lines from this constant — a second
+ * spelling of one fact, in one file, each with its own fence. The membership is
+ * identical by construction now, so the drift class does not exist and
+ * `scrub-import-value-secret.test.ts`'s existing fence against the resolver
+ * covers both uses.
+ *
+ * NOT `HANDLED_INTRINSIC_KEYS` from the resolver, which answers a different
+ * question and deliberately carries `Fn::Transform` — handled so a stray
+ * already-expanded macro does not hard-error, but never DISPATCHED on. Routing
+ * a multi-key bag whole because it carries that key is the spurious-name case
+ * that re-opens go-to-k/cdkd#3196.
+ */
+const RESOLVER_DISPATCH_KEYS = new Set<string>(RESOLVER_INTRINSIC_PRECEDENCE);
 
 /**
  * `values` with repeats removed, keeping either the FIRST or the LAST occurrence
@@ -4495,8 +4483,22 @@ export async function scrubStack(
         // `Ref` throws, and `Password` is never fetched. Routing that whole
         // would restore exactly the defeat recipe go-to-k/cdkd#3196 closes.
         //
-        // A SOLE unhandled `Fn::X` key still splits into one unit carrying the
-        // same node, so nothing is lost there either.
+        // A SOLE unhandled `Fn::X` key splits into one unit carrying the key's
+        // VALUE, not the node — so `Properties: { 'Fn::ToJsonString': ... }` no
+        // longer reaches `buildUnknownIntrinsicError` here; scrub walks the
+        // argument instead. The direction is safe (more references fetched, no
+        // new silence) and the shape is invalid CloudFormation anyway, but it
+        // is a real delta rather than the no-op an earlier revision of this
+        // comment claimed.
+        //
+        // One rescue is LOST with the narrowing, and it was incidental rather
+        // than designed: asking the verdict about the BAG meant a bag-mate's
+        // literal `{{resolve:` could earn a warning for a property whose own
+        // reference is ASSEMBLED (its opening contributed by `Ref` / `Fn::Join`,
+        // which `carriesDynamicReference` cannot see). That class is already
+        // recorded below as the original bug surviving in a narrower
+        // population; this removes an accidental sibling rescue for it, and the
+        // net is still strictly less surviving plaintext.
         //
         // BOUND, stated because it is easy to over-read this as "no untaken
         // branch is ever fetched": it holds for the RESOLVE passes. The pin
