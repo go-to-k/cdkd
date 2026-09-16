@@ -49,6 +49,14 @@ import type { CloudFormationTemplate } from '../../../../src/types/resource.js';
 
 /** Thrown by the fake resolver when a case asks for it. */
 let resolveThrows: Error | undefined;
+/**
+ * Per-VALUE throw hook. `resolveThrows` aborts every call; this one lets a case
+ * abort ONE property and let its siblings resolve, which is the only way to
+ * exercise the per-property scoping go-to-k/cdkd#3196 added.
+ */
+let resolveThrowsFor: ((value: unknown) => Error | undefined) | undefined;
+/** Every value the fake resolver was handed, for cases that assert REACH. */
+const resolvedValues: unknown[] = [];
 
 // `importActual` for everything but the resolver class: `carriesDynamicReference`
 // is a pure predicate scrub uses to decide whether an abandoned resolve had a
@@ -62,6 +70,9 @@ vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', async () =>
     resolveParameters: vi.fn().mockResolvedValue({}),
     evaluateConditions: vi.fn().mockResolvedValue({}),
     resolve: vi.fn().mockImplementation((value: unknown) => {
+      resolvedValues.push(value);
+      const scoped = resolveThrowsFor?.(value);
+      if (scoped) return Promise.reject(scoped);
       if (resolveThrows) return Promise.reject(resolveThrows);
       return Promise.resolve(value);
     }),
@@ -153,6 +164,8 @@ describe('cdkd scrub - refusals this PR adds (go-to-k/cdkd#2692, go-to-k/cdkd#30
   beforeEach(() => {
     vi.clearAllMocks();
     resolveThrows = undefined;
+    resolveThrowsFor = undefined;
+    resolvedValues.length = 0;
     stateBackend = { getState: vi.fn(), saveState: vi.fn().mockResolvedValue('etag-2') };
     lockManager = {
       acquireLockWithRetry: vi.fn().mockResolvedValue(undefined),
@@ -415,6 +428,136 @@ describe('cdkd scrub - refusals this PR adds (go-to-k/cdkd#2692, go-to-k/cdkd#30
         'the record went unmentioned entirely. Fetchability may downgrade the GATE; only the ' +
           'absence of a reference may buy silence (go-to-k/cdkd#3178 round 5).'
       ).toContain("resource 'Db'");
+    });
+
+    it('scans a SIBLING property after another property aborts (go-to-k/cdkd#3196)', async () => {
+      // `resolver.resolve` walks whatever it is handed and one throw aborts the
+      // rest, so handing it the whole `Properties` bag meant an unresolvable
+      // `Ref` in property A abandoned the `{{resolve:...}}` in property B — B
+      // recorded no needle, its legacy plaintext was never rewritten, and the
+      // stack could still report clean. Reachable by accident (one
+      // `Default`-less parameter empties the parameter bag, so every
+      // `{Ref: <param>}` throws) and defeatable on purpose by putting one
+      // dangling `Ref` ahead of the secret.
+      const stack = stackInfo();
+      const template = stack.template as unknown as {
+        Resources: Record<string, { Properties: Record<string, unknown> }>;
+        Outputs: Record<string, unknown>;
+      };
+      // Order matters: the aborting property comes FIRST, which is the shape
+      // that made the bag-wide walk lose the sibling.
+      template.Resources['Db']!.Properties = {
+        DBSubnetGroupName: { Ref: 'NoSuchThing' },
+        MasterUserPassword: '{{resolve:ssm-secure}}',
+      };
+      template.Outputs = {};
+      const state = healthy();
+      state.orphans = [];
+
+      // Throw ONLY for the property holding the Ref; the sibling resolves.
+      resolveThrows = undefined;
+      resolveThrowsFor = (value) =>
+        JSON.stringify(value ?? null).includes('NoSuchThing')
+          ? new Error('Ref NoSuchThing not found')
+          : undefined;
+
+      const result = await run(state, { stack });
+
+      // THE POINT: the sibling REACHED the resolver. Under the bag-wide walk
+      // the single call was the whole `Properties` object, it threw on the
+      // `Ref`, and `MasterUserPassword` was never handed to the resolver at
+      // all — so no needle, no rewrite, and a stack that still reports clean.
+      expect(
+        resolvedValues,
+        'the `{{resolve:...}}` sibling never reached the resolver, so it recorded no needle and ' +
+          'its stored plaintext would survive a run reporting clean (go-to-k/cdkd#3196).'
+      ).toContain('{{resolve:ssm-secure}}');
+
+      // ...and the `Ref` property itself is SILENT, not a finding: it carries
+      // no dynamic reference, so nothing was lost when it aborted. That is the
+      // whole difference scoping buys — under the bag-wide walk this same
+      // failure abandoned a reference-bearing bag and had to be warned about.
+      expect(result.unverifiableLeaves).toBe(0);
+      const warned = logger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+      // `NOT certified clean` is the suffix BOTH arms share, so it excludes
+      // the `warn` arm too. `ABANDONED` alone appears only in the `count` arm's
+      // text, and the `warn` arm reads "cut short by a TEMPLATE problem" — so
+      // that needle passed under the PRE-FIX code as well and pinned nothing.
+      expect(
+        warned,
+        'a property with no dynamic reference was reported as an abandoned scan. Nothing was ' +
+          'lost when it aborted, so neither arm may claim the record is uncertified.'
+      ).not.toContain('NOT certified clean');
+    });
+
+    it('resolves an INTRINSIC-SHAPED Properties bag whole, not key by key', async () => {
+      // `Properties: { 'Fn::If': [...] }` is legal CloudFormation, and
+      // `resolveValue` dispatches on `'Fn::If' in obj` by PRESENCE. Splitting
+      // such a bag by key hands the resolver the raw `[cond, then, else]`
+      // ARRAY, which resolves BOTH branches — so a reference in the UNTAKEN
+      // branch gets fetched, recorded as a needle, and can rewrite a stored
+      // leaf onto an expression the stack never deployed; and an unfetchable
+      // one there reds `--dry-run --fail` on a healthy stack.
+      const stack = stackInfo();
+      const template = stack.template as unknown as {
+        Resources: Record<string, { Properties: unknown }>;
+        Outputs: Record<string, unknown>;
+      };
+      template.Resources['Db']!.Properties = {
+        'Fn::If': ['UseSecret', { MasterUserPassword: '{{resolve:ssm-secure}}' }, { MasterUserPassword: 'literal' }],
+      };
+      template.Outputs = {};
+      const state = healthy();
+      state.orphans = [];
+
+      await run(state, { stack });
+
+      // The SHAPE is what discriminates, not the count: splitting
+      // `{ 'Fn::If': [...] }` by key yields exactly one entry either way, so a
+      // length assertion alone cannot fail for the mutation this case names.
+      // What changes is WHAT the resolver is handed — the intrinsic NODE, or
+      // the raw `[cond, then, else]` array under it.
+      expect(
+        resolvedValues[0],
+        'the intrinsic-shaped bag was split by key, so the resolver saw the raw Fn::If ARRAY ' +
+          'and would resolve BOTH branches instead of the taken one.'
+      ).toHaveProperty('Fn::If');
+      // ...and nothing ELSE was resolved for this resource.
+      expect(resolvedValues).toHaveLength(1);
+    });
+
+    it('still SPLITS a bag whose intrinsic-looking key is not a handled one', async () => {
+      // The other half of the intrinsic guard, and the reason it names the
+      // HANDLED dispatch keys rather than matching an `Fn::` prefix.
+      // `resolveValue` dispatches only on the names it handles, and
+      // `detectUnknownIntrinsicKey` is SOLE-KEY-guarded — so this bag is
+      // dispatched by nothing and falls into the un-tried object walk. Routing
+      // it whole (which a prefix test would do) restores exactly the defeat
+      // recipe go-to-k/cdkd#3196 closes, with the dangling key renamed.
+      const stack = stackInfo();
+      const template = stack.template as unknown as {
+        Resources: Record<string, { Properties: unknown }>;
+        Outputs: Record<string, unknown>;
+      };
+      template.Resources['Db']!.Properties = {
+        'Fn::Meta': { Ref: 'NoSuchThing' },
+        MasterUserPassword: '{{resolve:ssm-secure}}',
+      };
+      template.Outputs = {};
+      const state = healthy();
+      state.orphans = [];
+      resolveThrowsFor = (value) =>
+        JSON.stringify(value ?? null).includes('NoSuchThing')
+          ? new Error('Ref NoSuchThing not found')
+          : undefined;
+
+      await run(state, { stack });
+
+      expect(
+        resolvedValues,
+        'the bag was routed WHOLE because a key merely looked intrinsic, so the `Ref` abort ' +
+          'took the secret reference with it — go-to-k/cdkd#3196 re-opened under a renamed key.'
+      ).toContain('{{resolve:ssm-secure}}');
     });
 
     it('counts NOTHING on a stack whose references all resolve', async () => {

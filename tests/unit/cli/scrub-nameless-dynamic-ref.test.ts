@@ -189,5 +189,28 @@ describe('scrub keys on the resolver nameless-dynamic-reference messages', () =>
         `${ambiguous} re-raise the region-ambiguous refusal. The two travel together — a catch ` +
         `that is loud for one and silent for the other reports a partial scrub as clean.`
     ).toBe(ambiguous);
+
+    // ...and a FLOOR, because the equality above cannot see BOTH sides shrink.
+    // The two predicates sit on the SAME line, so deleting a whole guard drops
+    // both counts by one and the equality still holds. Measured, not imagined:
+    // go-to-k/cdkd#3196 removed the orphan loop's guard while restructuring
+    // that catch, and this case stayed GREEN at 3 == 3 — the exact
+    // report-a-partial-scrub-as-clean outcome it exists to prevent.
+    //
+    // The floor is the number of best-effort catches that must carry it, and it
+    // is DERIVED rather than written: every `abandonedScanVerdict(` call site is
+    // one such catch by construction, since the verdict is only ever asked
+    // inside one.
+    // Two separate steps, because one `- 2` doing both jobs is a magic number
+    // that breaks (loudly, in the safe direction) if the declaration is ever
+    // rewritten as `const abandonedScanVerdict = (`.
+    const verdictMentions = scrub.split('abandonedScanVerdict(').length - 1;
+    const bestEffortCatches = verdictMentions - 1; // the declaration is not a catch
+    expect(
+      guarded,
+      `${guarded} re-raise guards for ${bestEffortCatches} best-effort catches. A catch that ` +
+        'lost its guard swallows a refusal that must abort the stack, and the equality above ' +
+        'cannot see it because both predicates share a line and shrink together.'
+    ).toBe(bestEffortCatches);
   });
 });

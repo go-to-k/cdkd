@@ -343,8 +343,15 @@ properties bag, and some of those have nothing to do with fetching a reference:
 | An unresolvable `Ref` / `Fn::GetAtt`, or a parameter with no `Default` | warns only | `scrub` resolves with template defaults and takes no `--parameters`, so it cannot bind these. A gate failure could not be cleared. |
 | A reference whose own argument still holds an unsubstituted `${...}` | warns only | The token was never fetchable — same reason. |
 
-**Every one of them is named in a warning at default verbosity**, because the
-record really was left unscanned either way. So a green `--dry-run --fail` does
+A failure is scoped to the PROPERTY that caused it — an unresolvable `Ref` in
+one property no longer stops the scan of a `{{resolve:...}}` in another
+property of the same resource — so the warning names the property, not just the
+record. It is scoped to the top-level property only: inside one property's
+value, a failing key still stops the keys after it.
+
+**Each record left unscanned is named in a warning at default verbosity**, and
+a property that fails while carrying no reference of its own is silent, because
+nothing was lost when it stopped. So a green `--dry-run --fail` does
 not by itself mean every record was examined: read the warnings. A record cdkd
 could not certify may still hold a plaintext from an older binary, and giving
 the parameter a `Default` — or resolving the reference — is what lets a re-run

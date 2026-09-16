@@ -2316,6 +2316,26 @@ export function scrubRefusalWording(
 }
 
 /**
+ * The same names as a SET, for the one question scrub asks that is about
+ * membership rather than order: is this `Properties` bag itself an intrinsic
+ * NODE, which the resolver must be handed whole?
+ *
+ * DERIVED, never re-listed. Review of go-to-k/cdkd#3215 caught a hand-written
+ * copy of these seventeen names forty lines from this constant — a second
+ * spelling of one fact, in one file, each with its own fence. The membership is
+ * identical by construction now, so the drift class does not exist and
+ * `scrub-import-value-secret.test.ts`'s existing fence against the resolver
+ * covers both uses.
+ *
+ * NOT `HANDLED_INTRINSIC_KEYS` from the resolver, which answers a different
+ * question and deliberately carries `Fn::Transform` — handled so a stray
+ * already-expanded macro does not hard-error, but never DISPATCHED on. Routing
+ * a multi-key bag whole because it carries that key is the spurious-name case
+ * that re-opens go-to-k/cdkd#3196.
+ */
+const RESOLVER_DISPATCH_KEYS = new Set<string>(RESOLVER_INTRINSIC_PRECEDENCE);
+
+/**
  * `values` with repeats removed, keeping either the FIRST or the LAST occurrence
  * of each and preserving the order of the ones kept.
  */
@@ -3100,8 +3120,8 @@ function abandonedScanWarning(subject: string, verdict: 'count' | 'warn'): strin
  * that does not exist for them. It names what they CAN do and then says plainly
  * that scrub may simply not be able to certify the record.
  */
-function abandonedScanStackNote(verdict: 'count' | 'warn', records: number): string {
-  const subject = `${records} record(s) above`;
+function abandonedScanStackNote(verdict: 'count' | 'warn', scans: number): string {
+  const subject = `${scans} abandoned scan(s) above`;
   return verdict === 'count'
     ? `${subject}: the resolver stops at the first {{resolve:...}} token it cannot fetch, so ` +
         `any secret after it in the same value recorded no needle and could not be rewritten. ` +
@@ -4337,7 +4357,7 @@ export async function scrubStack(
     // that all three invoke. Each `resolver.resolve` in them can WAIT on a
     // rejection and unwrapped would open its own budget, so the aggregate
     // drain WAIT would be at most
-    // `(#resources + 2 x #outputs) x (1 + #cross-stack-leaves) x` the cap.
+    // `(#top-level-properties + 2 x #outputs) x (1 + #cross-stack-leaves) x` the cap.
     // An UPPER bound: an iteration that resolves nothing -- a resource with
     // no `Properties`, an absent or literal export name -- costs nothing.
     // And it bounds that WAIT, not the pass, which ordinary resolution time
@@ -4397,38 +4417,142 @@ export async function scrubStack(
         // imported plaintext into it. A suppressed OUTPUT was never written at
         // all, so a read it needs is one the deploy never made.
         await resolveCrossStackReads(resolveInput, resourceContext, `resource '${logicalId}'`);
-        try {
-          await resolver.resolve(resolveInput, resourceContext);
-        } catch (err) {
-          // A region-AMBIGUOUS refusal is not best-effort -- see
-          // `isRegionAmbiguousRefusal`.
-          if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
-          const leafVerdict = abandonedScanVerdict(resolveInput, err);
-          if (leafVerdict !== 'silent') {
-            if (leafVerdict === 'count') unverifiableLeaves++;
-            else ungateableAbandonedScans++;
-            logger.warn(
+        // PER TOP-LEVEL PROPERTY, not per bag (issue go-to-k/cdkd#3196).
+        // `resolver.resolve` walks whatever it is handed and ONE throw aborts
+        // the rest of it, so handing it the whole `Properties` bag meant an
+        // unresolvable `Ref` in property A abandoned the `{{resolve:...}}` in
+        // property B — B recorded no needle, its legacy plaintext was never
+        // rewritten, and the stack could still print `No plaintext secrets
+        // found` at exit 0. Reachable by accident (one `Default`-less parameter
+        // empties the parameter bag, so every `{Ref: <param>}` throws) and, on a
+        // repo whose CI runs `--dry-run --fail`, defeatable on purpose by
+        // putting one dangling `Ref` ahead of the secret.
+        //
+        // BOUNDED TO THE TOP LEVEL, and the residual is real: `resolveValue`'s
+        // own object walk is a sequential `for await` over `Object.entries`
+        // with no per-key `try`, so inside ONE property's value a failing key
+        // still abandons the keys after it — `Environment.Variables.A` taking
+        // out `Environment.Variables.B` is the same defeat recipe one level
+        // down, and the dominant secret-bearing Lambda shape. Arrays are safe
+        // (`allSettledKeepingFirstRejection` settles every element first);
+        // objects are not. go-to-k/cdkd#3218 tracks it, and it belongs in the
+        // resolver rather than here.
+        //
+        // Scoping the resolve costs nothing this loop needs. The context is
+        // per-RESOURCE, not per-bag, so every property still accumulates into
+        // the SAME `recordedSecretValues`; `pinCrossRegionSecrets` already
+        // walked per-leaf and returned a bag of the same shape, so the pin is
+        // undisturbed; and a CloudFormation intrinsic references other
+        // RESOURCES, never a sibling property, so there is no cross-property
+        // context to lose.
+        //
+        // `resolveCrossStackReads` above stays whole-bag: its refusals are
+        // per-stack and arming them per property would change which of them
+        // wins, not whether one fires.
+        // A plain object is the ONLY shape with top-level properties to scope
+        // by. Anything else (an array, a bare value, `null`) is resolved whole,
+        // under the empty property name, so the scoping can never DROP a unit.
+        //
+        // ...and an INTRINSIC-SHAPED bag is resolved whole too, which is not a
+        // tidiness case but a correctness one. `Properties: { 'Fn::If': [...] }`
+        // is legal CloudFormation — `CfnInclude` and a raw `addOverride` both
+        // produce it — and `resolveValue` dispatches on `'Fn::If' in obj` by
+        // PRESENCE, not as a sole key (`property-coverage.ts` records the same
+        // fact for the same reason). Splitting such a bag hands the resolver the
+        // raw `[cond, then, else]` ARRAY, which resolves BOTH branches instead
+        // of the taken one: a `{{resolve:...}}` in the untaken branch would be
+        // fetched and recorded as a needle, so the rewrite could put a leaf onto
+        // an expression the stack never deployed (the #1917 wrong-generation
+        // class), and an unfetchable reference there would red `--dry-run
+        // --fail` on a healthy stack — the unclearable gate go-to-k/cdkd#3160
+        // exists to refuse. `resolveCrossStackReads` above still walks `Fn::If`
+        // selected-branch-only, so splitting would also make the two passes
+        // over one resource disagree about which branch is live.
+        const bagKeys =
+          resolveInput !== null && typeof resolveInput === 'object' && !Array.isArray(resolveInput)
+            ? Object.keys(resolveInput as Record<string, unknown>)
+            : undefined;
+        // The HANDLED dispatch names only, never a bare `Fn::` prefix. An
+        // earlier cut used the prefix on the argument that over-matching just
+        // falls back to the whole-bag walk, i.e. pre-PR behaviour — but pre-PR
+        // behaviour IS the bug this PR fixes, so over-matching re-opens it with
+        // the key renamed. `resolveValue` dispatches only on the names below,
+        // and `detectUnknownIntrinsicKey` is SOLE-KEY-guarded, so a bag like
+        // `{ 'Fn::Meta': { Ref: 'Env' }, Password: '{{resolve:...}}' }` is
+        // dispatched by nothing: it falls into the un-tried object walk, the
+        // `Ref` throws, and `Password` is never fetched. Routing that whole
+        // would restore exactly the defeat recipe go-to-k/cdkd#3196 closes.
+        //
+        // A SOLE unhandled `Fn::X` key splits into one unit carrying the key's
+        // VALUE, not the node — so `Properties: { 'Fn::ToJsonString': ... }` no
+        // longer reaches `buildUnknownIntrinsicError` here; scrub walks the
+        // argument instead. The direction is safe (more references fetched, no
+        // new silence) and the shape is invalid CloudFormation anyway, but it
+        // is a real delta rather than the no-op an earlier revision of this
+        // comment claimed.
+        //
+        // One rescue is LOST with the narrowing, and it was incidental rather
+        // than designed: asking the verdict about the BAG meant a bag-mate's
+        // literal `{{resolve:` could earn a warning for a property whose own
+        // reference is ASSEMBLED (its opening contributed by `Ref` / `Fn::Join`,
+        // which `carriesDynamicReference` cannot see). That class is already
+        // recorded below as the original bug surviving in a narrower
+        // population; this removes an accidental sibling rescue for it, and the
+        // net is still strictly less surviving plaintext.
+        //
+        // BOUND, stated because it is easy to over-read this as "no untaken
+        // branch is ever fetched": it holds for the RESOLVE passes. The pin
+        // above (`pinCrossRegionSecrets`) walks both `Fn::If` branches, so a
+        // foreign-region token in an untaken branch is still fetched and
+        // recorded there. Pre-existing and not introduced here.
+        const intrinsicShapedBag = bagKeys?.some((k) => RESOLVER_DISPATCH_KEYS.has(k)) ?? false;
+        const resolveUnits: Array<readonly [string, unknown]> =
+          bagKeys && !intrinsicShapedBag
+            ? Object.entries(resolveInput as Record<string, unknown>)
+            : [['', resolveInput]];
+        for (const [propertyName, propertyValue] of resolveUnits) {
+          try {
+            await resolver.resolve(propertyValue, resourceContext);
+          } catch (err) {
+            // A region-AMBIGUOUS refusal is not best-effort -- see
+            // `isRegionAmbiguousRefusal`.
+            if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
+            // The verdict is asked about THIS property, so a bag whose other
+            // properties resolved cleanly no longer inherits this one's
+            // abandonment.
+            const leafVerdict = abandonedScanVerdict(propertyValue, err);
+            if (leafVerdict !== 'silent') {
+              if (leafVerdict === 'count') unverifiableLeaves++;
+              else ungateableAbandonedScans++;
+              const subject = propertyName
+                ? `resource '${displaySafe(logicalId)}' property '${displaySafe(propertyName)}'`
+                : `resource '${displaySafe(logicalId)}'`;
+              logger.warn(
+                maskSecretsInText(abandonedScanWarning(subject, leafVerdict), recordedSecretValues)
+              );
+            }
+            // Best-effort: a property whose intrinsics cannot resolve (a Ref to
+            // something not in state) still has its own {{resolve:...}} leaves
+            // recorded along the way; leave the rest untouched — and, since
+            // go-to-k/cdkd#3196, its SIBLINGS are still resolved.
+            //
+            // MASKED, for the reason `unresolvableForeignScrubSecretError`
+            // states: `resolveInput` is a bag `pinCrossRegionSecrets` may
+            // already have SUBSTITUTED a foreign plaintext into, so a resolver
+            // error that echoes what it was handed can carry one — and
+            // `recordedSecretValues` holds exactly the plaintexts this
+            // resource's pin recorded. Verbose-only, so this is the
+            // lower-severity sibling of the `Export.Name` warn below, but it is
+            // the same site class.
+            logger.debug(
               maskSecretsInText(
-                abandonedScanWarning(`resource '${displaySafe(logicalId)}'`, leafVerdict),
+                `Resolution of ${displaySafe(logicalId)}` +
+                  `${propertyName ? `.${displaySafe(propertyName)}` : ''} during scrub was ` +
+                  `partial: ${err instanceof Error ? err.message : String(err)}`,
                 recordedSecretValues
               )
             );
           }
-          // Best-effort: a resource whose intrinsics cannot resolve (a Ref to
-          // something not in state) still has its own {{resolve:...}} leaves
-          // recorded along the way; leave the rest untouched.
-          //
-          // MASKED, for the reason `unresolvableForeignScrubSecretError` states:
-          // `resolveInput` is a bag `pinCrossRegionSecrets` may already have
-          // SUBSTITUTED a foreign plaintext into, so a resolver error that echoes
-          // what it was handed can carry one — and `recordedSecretValues` holds
-          // exactly the plaintexts this resource's pin recorded. Verbose-only, so
-          // this is the lower-severity sibling of the `Export.Name` warn below,
-          // but it is the same site class.
-          logger.debug(
-            `Resolution of ${logicalId} during scrub was partial: ` +
-              `${maskSecretsInText(err instanceof Error ? err.message : String(err), recordedSecretValues)}`
-          );
         }
         // The unresolved template bag is this record's POSITION source (#1910).
         // Captured for EVERY templated resource, not only the secret-bearing ones,
@@ -4485,28 +4609,45 @@ export async function scrubStack(
             origin: `orphan record '${record.logicalId}'`,
           }
         );
-        try {
-          await resolver.resolve(resolveInput, resolverContext(recordedSecretValues));
-        } catch (err) {
-          if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
-          const leafVerdict = abandonedScanVerdict(resolveInput, err);
-          if (leafVerdict !== 'silent') {
-            if (leafVerdict === 'count') unverifiableLeaves++;
-            else ungateableAbandonedScans++;
-            logger.warn(
+        // PER SUB-BAG, for the same reason the resource loop resolves per
+        // property (issue go-to-k/cdkd#3196): one throw aborts the walk, so a
+        // failure in `properties` abandoned `attributes` and
+        // `observedProperties` — both of which carry references of their own,
+        // and `scrubResourceRecord` scrubs all three.
+        //
+        // Splitting is unconditionally safe HERE, unlike the resource loop: this
+        // wrapper is one WE construct with three known keys, so it can never be
+        // an intrinsic-shaped bag the resolver would dispatch on.
+        const orphanContext = resolverContext(recordedSecretValues);
+        for (const [bagName, bagValue] of Object.entries(resolveInput)) {
+          try {
+            await resolver.resolve(bagValue, orphanContext);
+          } catch (err) {
+            // A region-AMBIGUOUS refusal is not best-effort -- see
+            // `isRegionAmbiguousRefusal`.
+            if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
+            const leafVerdict = abandonedScanVerdict(bagValue, err);
+            if (leafVerdict !== 'silent') {
+              if (leafVerdict === 'count') unverifiableLeaves++;
+              else ungateableAbandonedScans++;
+              logger.warn(
+                maskSecretsInText(
+                  abandonedScanWarning(
+                    `orphan record '${displaySafe(record.logicalId)}' ${bagName}`,
+                    leafVerdict
+                  ),
+                  recordedSecretValues
+                )
+              );
+            }
+            logger.debug(
               maskSecretsInText(
-                abandonedScanWarning(
-                  `orphan record '${displaySafe(record.logicalId)}'`,
-                  leafVerdict
-                ),
+                `Resolution of orphan record ${displaySafe(record.logicalId)} ${bagName} during ` +
+                  `scrub was partial: ${err instanceof Error ? err.message : String(err)}`,
                 recordedSecretValues
               )
             );
           }
-          logger.debug(
-            `Resolution of orphan record ${record.logicalId} during scrub was partial: ` +
-              `${maskSecretsInText(err instanceof Error ? err.message : String(err), recordedSecretValues)}`
-          );
         }
       }
 

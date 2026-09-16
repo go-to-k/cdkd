@@ -602,10 +602,18 @@ describe('the pre-pass walks what the RESOLVER walks (issue #2133 review)', () =
       resolverSrc.indexOf('private async resolveValue('),
       resolverSrc.indexOf('private async resolveRef(')
     );
-    const resolverOrder = [...dispatch.matchAll(/if \('([A-Za-z:]+)' in obj\)/g)]
+    // Scanned as `'X' in obj`, NOT as `if ('X' in obj)`. The `if (` form only
+    // matches a SINGLE-LINE condition, and `Condition`'s arm is wrapped — so it
+    // was never parsed, the `.filter` below was DEAD, and its comment described
+    // an exclusion that was not happening (go-to-k/cdkd#3215 review). The live
+    // cost is not the dead line: a FUTURE dispatch arm written multi-line (a
+    // `&&` guard, a wrapped condition) that is ALSO missing from
+    // `RESOLVER_INTRINSIC_PRECEDENCE` would be invisible to BOTH sides, and the
+    // equality below would pass over exactly the drift it exists to catch.
+    const resolverOrder = [...dispatch.matchAll(/'([A-Za-z:]+)' in obj/g)]
       .map((m) => m[1] as string)
       // `Condition` is gated on `context.conditionResolver`, which no context
-      // the pre-pass runs under supplies.
+      // the pre-pass runs under supplies. Now a REAL exclusion.
       .filter((k) => k !== 'Condition');
 
     const listStart = scrubSrc.indexOf('const RESOLVER_INTRINSIC_PRECEDENCE = [');

@@ -88,6 +88,16 @@ vi.mock('../../../../src/state/lock-manager.js', () => ({
 const SECRET_PLAINTEXT = 'second-stack-plaintext-value';
 /** The region-LESS name form — what a stack with a foreign producer read refuses. */
 const NAME_EXPR = '{{resolve:secretsmanager:app/db:SecretString:password}}';
+/**
+ * A second recordable expression, carrying the `spareMarker` INSIDE itself.
+ *
+ * Since go-to-k/cdkd#3196 the resolve is scoped per top-level property, so an
+ * exemption parked on a SIBLING property no longer covers the one under test —
+ * the marker has to sit in the same value the mock judges. This is what lets a
+ * `--all` run have one stack genuinely scrub while another abandons, which is
+ * the only way to reach the `totalStacksScrubbed > 0` summary arms.
+ */
+const CLEAN_EXPR = '{{resolve:secretsmanager:clean-marker/db:SecretString:password}}';
 
 // The RESOLVER is doubled here (unlike the sibling cross-region suite, which
 // fakes the SDK clients to observe regions): this file's subject is the LOOP,
@@ -167,6 +177,10 @@ vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', async (impo
           );
         }
         const walk = (v: unknown): unknown => {
+          if (v === CLEAN_EXPR) {
+            ctx.recordedSecretValues?.set(SECRET_PLAINTEXT, CLEAN_EXPR);
+            return SECRET_PLAINTEXT;
+          }
           if (v === NAME_EXPR) {
             ctx.recordedSecretValues?.set(SECRET_PLAINTEXT, NAME_EXPR);
             return SECRET_PLAINTEXT;
@@ -474,8 +488,14 @@ describe('cdkd scrub: an ABANDONED scan reaches the verdict (go-to-k/cdkd#3160)'
     // the run is dirty AND carries the finding.
     synthStacks.length = 0;
     const clean = makeStackInfo('CleanStack') as { stackName: string; template: CloudFormationTemplate };
-    (clean.template.Resources!['Db']!.Properties as Record<string, unknown>)['MasterUsername'] =
-      'clean-marker';
+    // The marker goes in the SAME property the mock judges, not a sibling.
+    // Since go-to-k/cdkd#3196 the resolve is scoped per top-level property, so a
+    // marker parked on `MasterUsername` no longer exempts `MasterUserPassword`
+    // — which is the whole point of that change, and this fixture was relying
+    // on the bag-wide behaviour it removed.
+    (clean.template.Resources!['Db']!.Properties as Record<string, unknown>)[
+      'MasterUserPassword'
+    ] = CLEAN_EXPR;
     synthStacks.push(clean, makeStackInfo('CrossAccount'));
     abandonScan.spareMarker = 'clean-marker';
 
