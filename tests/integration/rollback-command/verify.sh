@@ -594,7 +594,12 @@ echo "[verify] step 8: cleanup — remove the events sidecars so the integ leave
 aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/" --recursive >/dev/null 2>&1 || true
 aws s3 rm "s3://${STATE_BUCKET}/cdkd/${INIT_STACK}/" --recursive >/dev/null 2>&1 || true
 for prefix in "${STACK}" "${INIT_STACK}"; do
-  REMAINING="$(aws s3 ls "s3://${STATE_BUCKET}/cdkd/${prefix}/" 2>&1 || true)"
+  # `--recursive` is LOAD-BEARING, not tidiness: a delimited `s3 ls` of this
+  # prefix returns only `PRE <region>/`, while state.json and `deployments/`
+  # sit one level deeper — so the grep below had no key space to match and this
+  # check could never fail. Measured 2026-09-16 against a prefix holding 21
+  # sidecar objects: 0 matching lines delimited, 21 recursive. Issue go-to-k/cdkd#3216.
+  REMAINING="$(aws s3 ls "s3://${STATE_BUCKET}/cdkd/${prefix}/" --recursive 2>&1 || true)"
   if echo "${REMAINING}" | grep -E -q '\.(jsonl|json)$'; then
     echo "[verify] FAIL: sidecar not fully removed for ${prefix}:"
     echo "${REMAINING}" | sed 's/^/  /'

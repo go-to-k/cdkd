@@ -71,7 +71,7 @@ deletion-ordering-complex	2026-08-13T06:50:48Z	PASS	260	verify.sh	PR 1774; destr
 deletion-policy-retain	2026-09-05T03:27:04Z	PASS	29	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run
 deletion-policy-snapshot	2026-09-05T03:27:04Z	PASS	245	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run
 deletion-policy-snapshot-heavy	2026-08-03T06:58:15Z	PASS	1500	verify.sh	#1353 Redshift+ElastiCache RepGroup pre-delete snapshots verified; found 4 live defects across 5 runs
-deployment-events	2026-08-13T06:46:26Z	PASS	150	verify.sh	PR 1774; events.ts skip-count/reason rendering surface, rc 0, 2 del 0 err, sidecar removed
+deployment-events	2026-09-16T07:18:21Z	PASS	38	verify.sh	go-to-k/cdkd#3216 sidecar check made live (--recursive); prefix empty, orph clean
 destroy-data-guard	2026-08-02T14:22:57Z	PASS	95	verify.sh	guard fired on guarded pair, opt-ins force-cleaned, 2nd destroy clean, 0 orphans
 destroy-interrupt	2026-08-26T04:31:00Z	PASS	52	verify.sh	issue #2117 lane, re-run after the issue #2126 deploy flake (URLError Errno 16 in the Lambda sandbox) which never reached a destroy assertion. All 4 phases green incl. interrupt-then-resume; 0 errors. Independent scan clean after sweeping one auto-created /aws/lambda log group the fixture does not remove.
 diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 sweep b12; diff detects GetAtt target rebind, clean destroy
@@ -240,14 +240,14 @@ replacement-fanout	2026-08-08T16:39:04Z	PASS	83	verify.sh	P1 post-#1360 replacem
 replacement-immutable-name	2026-09-05T03:27:04Z	PASS	112	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run
 retain-orphan-redeploy	2026-09-11T12:42:39Z	PASS	128	verify.sh	rc ok, orph clean; phase 8b diff preview added
 retain-orphan-secret	2026-09-11T07:14:27Z	PASS	175	verify.sh	rc ok, orph clean; review round 6
-rollback-command	2026-09-15T03:16:41Z	PASS	176	verify.sh	integ-destroy gating run for the 3140 merge (rollback-executor.ts comment-only edit is in scope); rc ok, destroy 3 deleted 0 errors, 0 surviving versions
+rollback-command	2026-09-16T07:18:21Z	PASS	141	verify.sh	go-to-k/cdkd#3216 sidecar check made live on both prefixes; 0 surviving versions
 rollback-cross-region-secret	2026-08-21T05:20:29Z	PASS	174	verify.sh	#2135 live arm, re-run after a round-2 review found the first note overclaimed: every pre-existing assertion here (notCompared roll-up, referencesUnresolved, drift rc=2, drifted+partial exits 1) is byte-identical to main and passes under the pre-#2135 shape too, so it was a #2108 regression net and no evidence about #2135. Added the one discriminating arm -- SecretEcho must be ABSENT from clean[], the sole user-visible payload delta -- guarded against vacuity by requiring clean[] to have been emitted. MUTATION-PROBED against real AWS: routing notCompared back into clean[] made the arm go RED with 'SecretEcho is STILL in clean[]'. Note the type system rejects that mutation outright (clean[] entries are typed referencesUnresolved: false). destroy 2 stacks 0 errors, 0 orphans
 rollback-deletion-policy-snapshot	2026-08-08T16:34:46Z	PASS	107	verify.sh	P0 first run post-#1361/#1365/#1367/#1369 rollback rework; rolled-back CREATE snapshot-then-deleted, state clean, 0 orphans
-rollback-failure-injection	2026-09-05T03:27:04Z	PASS	810	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run
+rollback-failure-injection	2026-09-16T07:18:21Z	PASS	367	verify.sh	go-to-k/cdkd#3216 sidecar check made live; destroy clean, 0 orphan VPC/SG/SSM
 rollback-replacement-retain	2026-09-05T14:10:16Z	PASS	70	verify.sh	rc 0, 7 phases, 0 orphans
 rollback-replay-cc-generated-name	2026-09-16T06:45:53Z	PASS	167	verify.sh	go-to-k/cdkd#3199 confirming run after rebase onto main incl. go-to-k/cdkd#3182; CreateDate moved, 1 del 0 err, path empty, orph clean
 rollback-replay-effective-props	2026-09-16T03:35:40Z	PASS	206	verify.sh	go-to-k/cdkd#3199 regression net only (SDK-routed types: the cc-api fill cannot fire); 7 del 0 err, orph clean
-rollback-sqs-cooldown	2026-09-16T03:39:00Z	PASS	166	verify.sh	go-to-k/cdkd#3199 regression net only (SDK-routed queue, explicitly named); 1 del 0 err, orph clean
+rollback-sqs-cooldown	2026-09-16T07:18:21Z	PASS	167	verify.sh	go-to-k/cdkd#3216 sidecar check made live; sidecars removed, orph clean
 route53	2026-08-22T19:12:07Z	PASS	267	verify.sh	issue 2176 masking sweep; rc 0, destroy 0 errors, orphans clean
 s3-analytics-inventory	2026-08-13T00:49:56Z	PASS	135	verify.sh	1707/1717/1718 live after review round 3; 49 assertions, 0 orphans
 s3-asset-deploy	2026-09-01T14:53:10Z	PASS	180	verify.sh	PR#2398 arm 3/6: asset-storage file/ZIP upload path, rc 0, 0 orphans
