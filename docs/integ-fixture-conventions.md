@@ -1,6 +1,6 @@
 ---
 title: Integration fixture conventions
-description: "The rules a cdkd integration fixture follows — verify.sh signal traps, gone-probes, CLI flags, removal policies, S3 version sweeps, destructive prefix-sweep guards, and the unit-test priming conventions."
+description: "The rules a cdkd integration fixture follows — verify.sh signal traps, gone-probes, CLI flags, removal policies, S3 version sweeps, destructive prefix-sweep guards, wc count trims, and the unit-test priming conventions."
 unlisted: true
 ---
 
@@ -1160,6 +1160,64 @@ segment rather than a flag. Both are tracked in
 [#2682](https://github.com/go-to-k/cdkd/issues/2682). Write the guard anyway if
 you are adding one of those shapes: the rule above covers them, only the
 back-fill does not.
+
+## Trim every `wc` count
+
+BSD `wc` — the one on a stock macOS host — right-aligns its count in a field
+eight characters wide; GNU `wc` does not. `$(...)` strips only the trailing
+newline, so on macOS this captures `"       1"` and the comparison is false:
+
+```bash
+N="$(printf 'a\n' | wc -l)"
+[ "${N}" = "1" ] || { echo "FAIL" >&2; exit 1; }   # always fails on macOS
+```
+
+A fixture written on a GNU host passes review, passes CI and passes its own
+real-AWS run, then fails every time on a Mac. Pipe the count straight through a
+trim, as the next pipeline stage:
+
+```bash
+N="$(printf 'a\n' | wc -l | tr -d ' ')"
+```
+
+`| tr -d '[:space:]'` is accepted too. The rule covers every `wc`, including one
+only compared arithmetically (`-eq` reads a padded value correctly) or only
+echoed: where a count ends up is often a helper's return value or a comparison
+many lines later, so the only place a check can reliably look is where the
+count is produced.
+
+`tests/unit/scripts/integ-verify-wc-trim.test.ts` enforces this over every
+tracked shell file under `tests/integration/` (classifier:
+`scripts/check-integ-wc-trim.ts`). It reads each file word by word, tracking
+bash's quoting, substitution nesting, comments and heredocs, so a `wc` counts
+only where bash would run it:
+
+| Counted as a `wc` command | Not counted |
+| --- | --- |
+| fed by a pipe, a here-string (`wc -l <<<"${X}"`) or a file redirect (`wc -l <"${F}"`), including one written first (`</dev/null wc -l`) | text in quotes, a comment, or a heredoc whose delimiter is quoted |
+| by name or by path (`/usr/bin/wc`), quoted or escaped (`"wc"`) | a redirection target (`>wc`) or `wc` joined to more text (`wc"x"`) |
+| inside `$(...)`, backticks, `<(...)` / `>(...)`, a `${...}` default, or a `$(...)` in a heredoc whose delimiter is unquoted | a name inside `(( ... ))` / `$(( ... ))`, an array `ARR=( ... )`, or an operand of `[[ ... ]]` |
+| after `if` / `then` / `do` / `!` / `{`, a `NAME=value` prefix, or `command` / `exec` / `env` / `nohup` / `time` / `coproc` and their options | after `command -v` / `-V`, or as the name in `wc() {` / `function wc {` |
+
+The trim may sit on the line after the `|`, after a comment, or after the body
+of a heredoc the pipeline opened. It refuses a trim that is not the very next
+stage, a `||` fallback, a tab, extra arguments after the trim, and a trim that
+sits only in a trailing comment.
+
+It is not a full bash parser. A `wc` reached through a variable (`${WC} -l`),
+`eval`, an alias, or as an argument of another command (`xargs wc`,
+`find -exec wc`) is not seen, so do not write one: the test also fails on any
+`wc` word in a fixture that is neither a counted invocation nor comment text.
+The classifier's header names the remaining bounds — a `case` pattern's `)`, a
+substitution inside arithmetic, undecoded `$'...'` escapes, and a heredoc inside
+a substitution in `wc`'s own arguments — none of which occurs in the tree.
+
+A site that genuinely must stay untrimmed takes
+`# allow-untrimmed-wc: <reason>` as a real comment, trailing on the `wc`'s line
+or on its own line directly above; the test pins how many are in use. The
+per-shape floors match counts taken by hand, and a bash case runs each input
+form — piped, here-string, file redirect, backslash-continued — through a
+BSD-padding `wc`, so the convention is proven on a GNU host too (issue #3213).
 
 ## Unit tests: prime exactly what the code path consumes
 

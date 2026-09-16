@@ -1,0 +1,655 @@
+import { describe, it, expect } from 'vite-plus/test';
+import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
+import {
+  ALLOW_MARKER,
+  MIN_ALLOW_REASON_LENGTH,
+  classifyWcTrim,
+} from '../../../scripts/check-integ-wc-trim.js';
+
+/**
+ * Regression guard for issue #3213: a `wc` result in a `tests/integration`
+ * shell file must pipe straight through `tr -d ' '` / `tr -d '[:space:]'`,
+ * because BSD `wc` pads its count to width 8 and `$(...)` strips only the
+ * newline. `scripts/check-integ-wc-trim.ts` holds the mechanism, why the rule
+ * covers every `wc` rather than only a string comparison, and why it is a
+ * lexer rather than a list of patterns.
+ *
+ * Four layers, each of which the others cannot replace:
+ *  1. table tests on the classifier, every shape in BOTH polarities, including
+ *     each quoting / nesting / comment / heredoc case a review round found the
+ *     earlier pattern-based version getting wrong;
+ *  2. tree-wide: zero violations, plus a floor per SHAPE matching the counts
+ *     taken BY HAND, so a lexer that silently stops seeing one shape cannot pass;
+ *  3. real-code probes: removing a trim from a REAL fixture site is flagged at
+ *     that site's line;
+ *  4. bash, through a BSD-padding `wc` shim: the untrimmed `=` comparison
+ *     really fails and both trims really fix it, for each input form — so the
+ *     CONVENTION is proven on a GNU host too, where the real `wc` never shows it.
+ */
+
+const REPO_ROOT = join(import.meta.dirname, '../../..');
+const INTEG_ROOT = join(REPO_ROOT, 'tests/integration');
+
+/**
+ * Every TRACKED shell file under tests/integration, from git rather than a
+ * directory walk: a fixture's own `node_modules` can hold third-party `.sh`
+ * files, and a walk would make this suite's verdict depend on which fixtures
+ * happen to be installed on the machine running it.
+ */
+function trackedShellFiles(): string[] {
+  const r = spawnSync('git', ['ls-files', '-z', '--', 'tests/integration/*.sh'], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+  });
+  if (r.status !== 0) throw new Error(`git ls-files failed: ${r.stderr}`);
+  return r.stdout.split('\0').filter(Boolean);
+}
+
+const TAB = '\t';
+
+describe('classifyWcTrim', () => {
+  describe('flags an untrimmed wc', () => {
+    it.each([
+      ['a piped capture (the go-to-k/cdkd#3182 shape)', 'N="$(printf \'%s\\n\' "$X" | wc -w)"', 'pipe'],
+      ['a piped capture, unquoted substitution', 'N=$(docker ps -q | wc -l)', 'pipe'],
+      ['an inline here-string comparison', 'if [[ "$(wc -l <<<"${X}")" -ne 1 ]]; then :; fi', 'here-string'],
+      ['a file redirect inside an echo', 'echo "lines: $(wc -l <"${F}")"', 'redirect'],
+      ['a helper whose output is the count', 'count_words() { printf \'%s\\n\' "$1" | wc -w; }', 'pipe'],
+      ['an inline string comparison', 'if [ "$(printf \'%s\' "${rows}" | wc -w)" != "1" ]; then :; fi', 'pipe'],
+      ['a direct file argument', 'N="$(wc -l "${F}")"', 'argument'],
+      // Command positions the pattern-based first version could not see.
+      ['after `if`', 'if wc -l <file; then :; fi', 'redirect'],
+      ['as the first command of a function body', 'f() { wc -l <file; }', 'redirect'],
+      ['behind an environment assignment', 'LC_ALL=C wc -l <file', 'redirect'],
+      ['with no space before its redirect', 'N=$(wc<file)', 'redirect'],
+      ['after `!`', '! wc -l <file', 'redirect'],
+    ])('%s', (_label, stmt, form) => {
+      const c = classifyWcTrim(`set -euo pipefail\n${stmt}\n`);
+      expect(c.violations.map((v) => [v.line, v.inputForm])).toEqual([[2, form]]);
+    });
+
+    it.each([
+      ['a quoted assignment prefix', 'LC_ALL="C" wc -l </dev/null', 'redirect'],
+      ['an input redirection written before the command', '</dev/null wc -l', 'redirect'],
+      ['behind `command`', 'command wc -l </dev/null', 'redirect'],
+      ['a quoted command name', '"wc" -l </dev/null', 'redirect'],
+      ['an escaped command name', 'w\\c -l </dev/null', 'redirect'],
+      ['after a stderr redirection before the command', '2>/dev/null wc -l <file', 'redirect'],
+      ['an ANSI-C quoted command name', "$'wc' -l </dev/null", 'redirect'],
+      ['by absolute path', '/usr/bin/wc -l </dev/null', 'redirect'],
+      ['behind `coproc`', 'coproc wc -l </dev/null', 'redirect'],
+      ['after ||, which is not a pipe', 'false || wc -l x', 'argument'],
+      ['behind a here-string written before the command', '<<<"x" wc -l', 'here-string'],
+      ['behind `env -C DIR`, whose option takes a value', 'env -C /tmp wc -l </dev/null', 'redirect'],
+      ['behind `env -iu NAME`, clustered options ending in one that takes a value', 'env -iu HOME wc -l </dev/null', 'redirect'],
+      ['behind an appending assignment', 'N+=x wc -l </dev/null', 'redirect'],
+      ['behind an indexed assignment', 'A[1]=x wc -l </dev/null', 'redirect'],
+      ['behind `nohup`', 'nohup wc -l </dev/null', 'redirect'],
+      ['behind `time`', 'time wc -l </dev/null', 'redirect'],
+      ['behind `env -S STRING`', 'env -S x wc -l </dev/null', 'redirect'],
+      ['behind `env -0vu NAME`', 'env -0vu HOME wc -l </dev/null', 'redirect'],
+      ['behind `exec -cla NAME`', 'exec -cla name wc -l </dev/null', 'redirect'],
+      ['with an output process substitution holding a <', 'wc -l >(cat <list)', 'argument'],
+      ['in a substitution held in single quotes inside a quoted parameter default', 'echo "${X:-\'$(wc -l </dev/null)\'}"', 'redirect'],
+      ['behind a redirection whose target is digits', '>2<file wc -l', 'redirect'],
+      ['with a backtick argument holding a <', 'wc -l `cat <list`', 'argument'],
+      ['with a parameter default holding a <', 'wc -l ${X:-<file}', 'argument'],
+      ['as the first command of a named `coproc NAME {` body', 'coproc COUNTER { wc -l </dev/null; }', 'redirect'],
+      ['as the first command of a `function NAME {` body', 'function count { wc -l </dev/null; }', 'redirect'],
+      ['as the first command of a `function NAME() {` body', 'function count() { wc -l </dev/null; }', 'redirect'],
+      ['as a command after a [[ ]] test', '[[ -n "$X" ]] && wc -l </dev/null', 'redirect'],
+      ['behind `command -p`', 'command -p wc -l </dev/null', 'redirect'],
+      ['behind `env -i`', 'env -i wc -l </dev/null', 'redirect'],
+      ['behind `exec -a NAME`, whose option takes a value', 'exec -a name wc -l </dev/null', 'redirect'],
+    ])('%s', (_label, stmt, form) => {
+      const c = classifyWcTrim(`${stmt}\n`);
+      expect(c.violations.map((v) => [v.line, v.inputForm])).toEqual([[1, form]]);
+    });
+
+    it.each([
+      ['a substitution in a parameter default', 'echo "${N:-$(wc -l </dev/null)}"', 1],
+      ['a substitution inside a compound array assignment', 'ARR=($(wc -l </dev/null))', 1],
+      ['a command after an array holding a quoted parenthesis', "ARR=('(')\nwc -l </dev/null", 2],
+      ['a command after a parameter default holding a quoted brace', 'CONFIG=${CONFIG:-"{}"}\nwc -l </dev/null', 2],
+      ['a command after a quoted parameter default holding a quoted brace', 'CONFIG="${CONFIG:-"{}"}"\nwc -l </dev/null', 2],
+      ['a command after a heredoc body holding a quoted parameter default', 'cat <<EOF\n${X:-"text"}\nEOF\nwc -l </dev/null', 4],
+      ['a substitution in an UNQUOTED heredoc body, which bash runs', 'cat <<EOF\nN=$(ls | wc -l)\nEOF', 2],
+      ['a backtick in an unquoted heredoc body', 'cat <<EOF\nN=`ls | wc -l`\nEOF', 2],
+    ])('%s', (_label, body, line) => {
+      expect(classifyWcTrim(`${body}\n`).violations.map((v) => v.line)).toEqual([line]);
+    });
+
+    it.each([
+      ['escaped', 'cat <<\\EOF\nhello\nEOF\nwc -l </dev/null\n'],
+      ['ANSI-C quoted', "cat <<$'EOF'\nhello\nEOF\nwc -l </dev/null\n"],
+    ])('keeps scanning after an %s heredoc delimiter ends its body', (_label, body) => {
+      // Searching for the delimiter's SPELLING (`\EOF`, `$EOF`) as the
+      // terminator swallowed every later line.
+      expect(classifyWcTrim(body).violations.map((v) => v.line)).toEqual([4]);
+    });
+
+    it('as the last word of a file with no trailing newline', () => {
+      // Nothing after the word ends it; only the end-of-file flush does.
+      expect(classifyWcTrim('wc').violations.map((v) => [v.line, v.inputForm])).toEqual([[1, 'argument']]);
+    });
+
+    it('after a pipe and a newline, still reading the pipe', () => {
+      const c = classifyWcTrim('ls |\nwc -l\n');
+      expect(c.violations.map((v) => [v.line, v.inputForm])).toEqual([[2, 'pipe']]);
+    });
+
+    it('on a line of its own inside an open $( (a newline there separates commands)', () => {
+      // A joiner that folds the newline into a space reads `wc` as an argument
+      // of the `printf` above it and loses the invocation.
+      const c = classifyWcTrim("N=$(printf 'a\\n'\nwc -l)\n");
+      expect(c.violations.map((v) => v.line)).toEqual([2]);
+    });
+
+    it('after a quoted "<<EOF" that is NOT a heredoc opener', () => {
+      // Taking the quoted text for an opener blanked every line up to the next
+      // `EOF`, hiding this real invocation.
+      const c = classifyWcTrim('echo "<<EOF"\nwc -l <file\nEOF\n');
+      expect(c.violations.map((v) => v.line)).toEqual([2]);
+    });
+  });
+
+  describe('accepts a real trim, and records which', () => {
+    it.each([
+      ["tr -d ' '", "N=$(docker ps -q | wc -l | tr -d ' ')", 'space'],
+      ["tr -d '[:space:]'", "N=$(printf '%s' \"${rows}\" | wc -w | tr -d '[:space:]')", 'posix-space-class'],
+      ['tr -d " " (double-quoted)', 'N=$(docker ps -q | wc -l | tr -d " ")', 'space'],
+      ['tr -d "[:space:]" (double-quoted)', 'N=$(docker ps -q | wc -l | tr -d "[:space:]")', 'posix-space-class'],
+      ['the inline here-string, trimmed', "if [[ \"$(wc -l <<<\"${X}\" | tr -d ' ')\" -ne 1 ]]; then :; fi", 'space'],
+      ['the redirect in an echo, trimmed', "echo \"lines: $(wc -l <\"${F}\" | tr -d ' ')\"", 'space'],
+      ['a trim followed by more stages', "N=$(ls | wc -l | tr -d ' ' | head -1)", 'space'],
+      // Valid trims the pattern-based first version rejected.
+      ['a redirect target built by a nested substitution', "N=$(wc -l < $(printf '%s' file) | tr -d ' ')", 'space'],
+      ['stderr merged into the count', "N=$(wc -l <file 2>&1 | tr -d ' ')", 'space'],
+      ['a clobbering >| redirection before the trim', "wc -l </dev/null 2>|/dev/null | tr -d ' '", 'space'],
+      ['a redirect target built by backticks', "N=$(wc -l <`cat f` | tr -d ' ')", 'space'],
+      ['a here-string whose quoted text spans lines', "N=$(wc -l <<< 'a\nb' | tr -d ' ')", 'space'],
+      ['a trim on the line after the pipe', "N=$(wc -l </dev/null |\n  tr -d ' ')", 'space'],
+      ['a blank line between the pipe and the trim', "N=$(wc -l </dev/null |\n\n  tr -d ' ')", 'space'],
+      ['a line continuation between the pipe and the trim', "N=$(wc -l </dev/null | \\\n  tr -d ' ')", 'space'],
+      ['a line continuation after the trim argument', "N=$(wc -l </dev/null | tr -d ' ' \\\n  | head -1)", 'space'],
+      // Argument shapes the stage scan must read through to find the real `|`.
+      ['a quoted ) inside a substitution argument', "N=$(wc -l $(printf '%s' ')') | tr -d ' ')", 'space'],
+      ['a double-quoted ) inside a substitution argument', 'N=$(wc -l $(printf "%s" ")") | tr -d \' \')', 'space'],
+      ['a substitution nested in a substitution argument', "N=$(wc -l $(echo $(echo x) ) | tr -d ' ')", 'space'],
+      ['a ) inside a parameter default in a substitution argument', "N=$(wc -l $(echo ${X:-)}) | tr -d ' ')", 'space'],
+      ['a subshell inside a substitution argument', "N=$(wc -l $( (echo x) ) | tr -d ' ')", 'space'],
+      ['a pipe inside a quoted substitution argument', 'N=$(wc -l "$(echo "a|b")" | tr -d \' \')', 'space'],
+      ['a pipe inside a quoted backtick argument', 'N=$(wc -l "`echo "a|b"`" | tr -d \' \')', 'space'],
+      ['a } inside a substitution in a parameter default argument', "N=$(wc -l ${X:-$(echo })} | tr -d ' ')", 'space'],
+      ['a quoted <<EOF before a line-broken trim', "wc -l \"<<EOF\" |\ntr -d ' '", 'space'],
+      ['an escaped quote then <<EOF, all quoted, before a line-broken trim', "wc -l \"\\\"<<EOF\" |\ntr -d ' '", 'space'],
+      ['a here-string <<<EOF before a line-broken trim', "wc -l <<<EOF |\ntr -d ' '", 'space'],
+      ["a literal $' inside double quotes in the arguments", "wc -l \"$'\" | tr -d ' '", 'space'],
+      ["a literal $' inside a quoted parameter default in the arguments", "wc -l \"${X:-$'}\" | tr -d ' '", 'space'],
+      ["an ANSI-C quoted } inside an unquoted parameter default in the arguments", "wc -l ${X:-$'}'} | tr -d ' '", 'space'],
+      ['a trimmed pipeline sent to the background', "ls | wc -l | tr -d ' ' &", 'space'],
+      ['a comment between the pipe and the trim', "N=$(wc -l </dev/null | # trim BSD padding\n  tr -d ' ')", 'space'],
+      ['a trim continued across a backslash-newline', "N=$(wc -l </dev/null | tr \\\n  -d ' ')", 'space'],
+      ['an ANSI-C quoted here-string holding an escaped quote', "N=$(wc -l <<< $'\\'' | tr -d ' ')", 'space'],
+      ['a trimmed wc inside backticks', "N=`wc -l </dev/null | tr -d ' '`", 'space'],
+      ['a quoted brace inside an unquoted parameter default', "wc -l <<< ${N:-'}'} | tr -d ' '", 'space'],
+      ['a heredoc body between the pipe and the trim', "wc -l <<EOF |\na\nEOF\ntr -d ' '", 'space'],
+      ['a <<- heredoc body with a tab-indented terminator between the pipe and the trim', `wc -l <<-EOF |\na\n${TAB}EOF\ntr -d ' '`, 'space'],
+      ['the body of a heredoc opened earlier in the pipeline', "cat <<EOF | wc -l |\nx\nEOF\ntr -d ' '", 'space'],
+      ['that heredoc shape inside a double-quoted substitution', "N=\"$(wc -l <<EOF |\na\nEOF\ntr -d ' ')\"", 'space'],
+      ['a comment naming <<EOF between the pipe and the trim', "wc -l </dev/null | # <<EOF is just a comment\ntr -d ' '", 'space'],
+      ['a quoted brace in a double-quoted parameter default', "wc -l <<< \"${CONFIG:-\"{}\"}\" | tr -d ' '", 'space'],
+      ['a process substitution as the input', "N=$(wc -l <(printf x) | tr -d ' ')", 'space'],
+      ['a commented parenthesis inside a substitution argument', "N=$(wc -l $(printf x # )\n) | tr -d ' ')", 'space'],
+    ])('%s', (_label, stmt, trim) => {
+      const c = classifyWcTrim(`${stmt}\n`);
+      expect(c.violations).toEqual([]);
+      expect(classifyWcTrim(stmt).invocations.map((i) => i.trim), 'the same input with no trailing newline').toEqual([trim]);
+      expect(c.invocations.map((i) => i.trim)).toEqual([trim]);
+    });
+  });
+
+  describe('refuses what only looks like a trim', () => {
+    it.each([
+      ['a trim that is not the NEXT stage', "N=$(docker ps -q | wc -l | sort | tr -d ' ')"],
+      ['a fallback instead of a trim', 'N=$(docker ps -q | wc -l || echo 0)'],
+      // `tr` there runs only when `wc` FAILS, so a successful count keeps its
+      // padding. The `|| echo 0` case above cannot see this: it never reaches a
+      // `tr` at all, so a check that accepted `||` would still refuse it.
+      ['a `|| tr` that only runs when wc fails', "N=$(docker ps -q | wc -l || tr -d ' ')"],
+      ['a backslash-t, which tr reads as a tab', "N=$(docker ps -q | wc -l | tr -d '\\t')"],
+      ['a literal TAB between the quotes', `N=$(docker ps -q | wc -l | tr -d '${TAB}')`],
+      ['a trim followed by -c, which keeps the spaces and deletes the digits', "N=$(ls | wc -l | tr -d ' ' -c)"],
+      ['a trim followed by a QUOTED -c', 'N=$(ls | wc -l | tr -d \' \' "-c")'],
+      ['a trim followed by a backtick-substituted argument', "wc -l </dev/null | tr -d ' ' `printf %s -c`"],
+      ['a trim followed by a redirection and then another argument', "wc -l </dev/null | tr -d ' ' &>/dev/null -c"],
+      ['a trim argument joined to a # (the same word, not a comment)', "wc -l </dev/null | tr -d ' '#x"],
+      ['a trim that is text inside a nested parameter default', "wc -l <<< ${A:-${B:-x}| tr -d ' ';}"],
+      ['a trim argument with trailing text', "N=$(ls | wc -l | tr -d ' 'x)"],
+      ['sed instead of the accepted tr spellings', "N=$(docker ps -q | wc -l | sed 's/ //g')"],
+      ['the trim hidden in a trailing comment', "wc -l <file # | tr -d ' '"],
+      ['a trim inside the redirect target, not after the count', "N=$(wc -l < $(printf '%s' file | tr -d ' '))"],
+      // Only a pipe feeds the count into `tr`; after `;` or a newline, `tr` is
+      // a separate command reading its own stdin.
+      ['a tr after `;`, a separate command', "N=$(wc -l <file; tr -d ' ')"],
+      // The next stage must START with `tr`: here `cat` reads files named tr,
+      // -d and a space.
+      ['the trim words handed to a different command', 'N=$(ls | wc -l | cat tr -d " ")'],
+      ['a tr on the next line, a separate command', "N=$(wc -l <file\ntr -d ' ')"],
+    ])('%s', (_label, stmt) => {
+      expect(classifyWcTrim(`${stmt}\n`).violations).toHaveLength(1);
+    });
+  });
+
+  describe('sees no invocation in', () => {
+    it.each([
+      ['wc named in a comment line', '# count with wc -l and trim it'],
+      ['a trailing comment naming a pipe into wc', 'echo ok # example: | wc -l'],
+      ['the untrimmed shape inside a quoted heredoc body', "cat <<'EOF'\nN=$(ls | wc -l)\nEOF"],
+      ['a heredoc body whose delimiter is escaped', 'cat <<\\EOF\nN=$(ls | wc -l)\nEOF'],
+      ['wc as the TARGET of a redirection', '>wc printf x'],
+      ['wc joined to more text by a quote', 'wc"x" -l <file'],
+      ['wc as an argument after a backtick substitution', "printf '%s' `printf x` wc -l"],
+      ['a function named wc being defined', 'wc() { :; }'],
+      ['wc as a name inside arithmetic', '(( wc = 1 ))'],
+      ['wc as a name inside an arithmetic expansion', 'echo $(( wc + 1 ))'],
+      // `||` would restore command position if arithmetic were scanned as code.
+      ['wc after || inside arithmetic', '(( 0 || wc ))'],
+      ['wc after || inside an arithmetic expansion', 'echo $(( 0 || wc ))'],
+      ['wc as the value of `env -u`', 'env -u wc printf x'],
+      ['wc named after `command -V`, which only describes it', 'command -V wc'],
+      ['wc after a quoted coproc, which is a command name', "'coproc' wc -l </dev/null"],
+      ['wc after a quoted function, which is a command name', "'function' wc -l </dev/null"],
+      ['wc after a quoted [[, which is a command name', "'[[' wc -l </dev/null"],
+      ['wc as an operand after a quoted ]] inside [[ ]]', "[[ x == ']]' && wc == x ]]"],
+      ['a pipeline written inside a nested parameter default', 'echo ${A:-${B:-x}; wc -l}'],
+      ['a command written inside a quoted nested-quote parameter default', 'echo "${X:-"; wc -l </dev/null; "}"'],
+      ['a command written inside a quoted string in a quoted backtick', 'echo "`echo "; wc -l </dev/null; "`"'],
+      ['wc on its own line inside an array', 'ARR=(\nwc -l\n)'],
+      ['wc as an argument after a process substitution', 'cat <(ls) wc -l'],
+      ['wc as an argument after &>', 'cat file &>/dev/null wc -l'],
+      ['wc as an argument after 2>&1', 'echo x 2>&1 wc -l'],
+      ['wc as an argument of a command named by quoted digits', '"2">/dev/null wc -l </dev/null'],
+      ['wc inside a compound array assignment', 'ARR=(wc -l)'],
+      ['wc after a QUOTED reserved word, which is a command name', "'if' wc -l </dev/null"],
+      ['wc after an empty-quoted reserved word, which is a command name', '""if wc -l </dev/null'],
+      ['wc as an operand inside [[ ]]', '[[ -n "$X" && wc == "$TOOL" ]]'],
+      ['a quoted double-quoted name with a backslash bash keeps', '"w\\c" -l </dev/null'],
+      ['a single-quoted substitution in an unquoted parameter default', "echo ${N:-'$(wc -l </dev/null)'}"],
+      ['a heredoc whose quoted delimiter contains a hyphen', "cat <<'END-TEXT'\nwc -l\nEND-TEXT"],
+      ['a <<- heredoc whose terminator is tab-indented', `cat <<-EOF\nwc -l\n${TAB}EOF`],
+      ['the word wc as prose in an echo', 'echo "==> the wc column is padded on macOS"'],
+      ['a pipe into wc as prose inside double quotes', 'echo "a | wc -l"'],
+      ['a pipe into wc inside single quotes', "echo 'a | wc -l'"],
+      ['wc as an argument, not a command', 'command -v wc >/dev/null'],
+      ['a longer word containing wc', 'awcount=1; wcx=2; wc-helper -l'],
+      ['a parameter expansion carrying #', 'N=${#ARR[@]}'],
+    ])('%s', (_label, body) => {
+      expect(classifyWcTrim(`${body}\n`).invocations).toEqual([]);
+    });
+
+    it('keeps scanning after the heredoc body ends', () => {
+      const c = classifyWcTrim("cat <<'END-TEXT'\nwc -l\nEND-TEXT\nN=$(ls | wc -l)\n");
+      expect(c.violations.map((v) => v.line)).toEqual([4]);
+    });
+
+    it('ends a <<- body at its tab-indented terminator and keeps scanning', () => {
+      // Without the tab strip the terminator never matches, the body runs to
+      // the end of the file, and this real invocation disappears with it.
+      // A bare command after the terminator: inside an unterminated UNQUOTED
+      // body a `$(...)` would still run and hide the mutant.
+      const c = classifyWcTrim(`cat <<-EOF\nwc -l\n${TAB}EOF\nwc -l </dev/null\n`);
+      expect(c.violations.map((v) => v.line)).toEqual([4]);
+    });
+
+    it('ends a QUOTED <<- body at its tab-indented terminator and keeps scanning', () => {
+      const c = classifyWcTrim(`cat <<-'EOF'\nwc -l\n${TAB}EOF\nwc -l </dev/null\n`);
+      expect(c.violations.map((v) => v.line)).toEqual([4]);
+    });
+
+    it('consumes two heredoc bodies opened on one line, in order', () => {
+      const c = classifyWcTrim('cmd <<A <<B\nwc -l\nA\nwc -w\nB\nN=$(ls | wc -l)\n');
+      expect(c.violations.map((v) => v.line)).toEqual([6]);
+    });
+  });
+
+  it('reports the PHYSICAL line the wc sits on, not its statement\'s first line', () => {
+    // The two go-to-k/cdkd#3182 sites are backslash-wrapped, so `wc` sits two
+    // physical lines below the assignment — the line a reader has to edit.
+    const body = [
+      'set -euo pipefail',
+      'INSTANCES_LEFT="$(aws ec2 describe-instances --region "${REGION}" \\',
+      '  --filters "Name=vpc-id,Values=${VPC_ID}" \\',
+      "  --query 'Reservations[].Instances[].InstanceId' --output text | wc -w)\"",
+      '[ "${INSTANCES_LEFT}" = "0" ]',
+      '',
+    ].join('\n');
+    const c = classifyWcTrim(body);
+    expect(c.violations.map((v) => [v.line, v.quotedSubstitution])).toEqual([[4, true]]);
+  });
+
+  it('reports the wc stage exactly, ending at the substitution it sits in', () => {
+    // `stage` is what the tree-wide failure message prints, so it is output a
+    // reader acts on: a stage that ran past its `)` would quote the rest of the
+    // echo as if it were part of the `wc` command.
+    const c = classifyWcTrim('echo "lines: $(wc -l <"${F}") done"\n');
+    expect(c.violations.map((v) => v.stage)).toEqual(['wc -l <"${F}"']);
+  });
+
+  it('ends a stage at the backtick that closes its substitution', () => {
+    const c = classifyWcTrim('N=`wc -l </dev/null`; ls\n');
+    expect(c.violations.map((v) => v.stage)).toEqual(['wc -l </dev/null']);
+  });
+
+  it('reads a process substitution as a file argument, not a redirect', () => {
+    const c = classifyWcTrim('wc -l <(cat <file)\n');
+    expect(c.invocations.map((i) => i.inputForm)).toEqual(['argument']);
+  });
+
+  it('keeps a subshell inside a quoted substitution from closing it early', () => {
+    // A `)` that closed the substitution would leave `; wc ...` as quoted text.
+    const c = classifyWcTrim('X="$( (echo) ; wc -l </dev/null )"\n');
+    expect(c.violations.map((v) => [v.line, v.quotedSubstitution])).toEqual([[1, true]]);
+  });
+
+  it('does not read a < inside a substitution in wc\'s arguments as its input', () => {
+    // The redirect belongs to `cat`, not to `wc`, so the form comes from the
+    // pipe before `wc` (whether `cat` then hands `wc` file names is runtime).
+    const c = classifyWcTrim("N=$(printf 'a\\n' | wc -l $(cat <list) | tr -d ' ')\n");
+    expect(c.invocations.map((i) => i.inputForm)).toEqual(['pipe']);
+  });
+
+  it('keeps a quoted pipe inside the wc stage from ending it early', () => {
+    const c = classifyWcTrim("N=$(wc -l <<<\"a|b\" | tr -d ' ')\n");
+    expect(c.invocations.map((i) => [i.inputForm, i.trim])).toEqual([['here-string', 'space']]);
+  });
+
+  it('sees every wc in one statement, not only the first', () => {
+    const body = "echo \"out $(wc -l <\"${A}\" | tr -d ' ') err $(wc -l <\"${B}\")\"\n";
+    const c = classifyWcTrim(body);
+    expect(c.invocations.map((i) => i.trim)).toEqual(['space', null]);
+    expect(c.violations).toHaveLength(1);
+  });
+
+  it('records whether a wc sits in a substitution nested in double quotes', () => {
+    const c = classifyWcTrim("A=\"$(ls | wc -l | tr -d ' ')\"\nB=$(ls | wc -l | tr -d ' ')\n");
+    expect(c.invocations.map((i) => i.quotedSubstitution)).toEqual([true, false]);
+  });
+
+  describe(`# ${ALLOW_MARKER}: <reason>`, () => {
+    const reason = 'x'.repeat(MIN_ALLOW_REASON_LENGTH);
+
+    it.each([
+      ['as a full-line comment directly above', `# ${ALLOW_MARKER}: ${reason}\nN=$(ls | wc -l)\n`],
+      ['trailing on the same line', `N=$(ls | wc -l) # ${ALLOW_MARKER}: ${reason}\n`],
+      ['trailing on the wc line of a continued statement', `N="$(printf x \\\n  | wc -l)" # ${ALLOW_MARKER}: ${reason}\n`],
+    ])('allows an untrimmed site with a real reason %s', (_label, body) => {
+      const c = classifyWcTrim(body);
+      expect(c.violations).toEqual([]);
+      expect(c.invocations.map((i) => i.allowed)).toEqual([true]);
+    });
+
+    it('refuses a marker whose reason is too short, and reports it as malformed', () => {
+      const short = 'x'.repeat(MIN_ALLOW_REASON_LENGTH - 1);
+      const c = classifyWcTrim(`# ${ALLOW_MARKER}: ${short}\nN=$(ls | wc -l)\n`);
+      expect(c.violations).toHaveLength(1);
+      expect(c.malformedAllowMarkers).toEqual([1]);
+    });
+
+    it.each([
+      ['two lines above', `# ${ALLOW_MARKER}: ${reason}\n\nN=$(ls | wc -l)\n`],
+      ['inside a quoted string on the line above, where it is not a comment', `echo '# ${ALLOW_MARKER}: ${reason}'\nN=$(ls | wc -l)\n`],
+      ['trailing a DIFFERENT command on the line above', `true # ${ALLOW_MARKER}: ${reason}\nN=$(ls | wc -l)\n`],
+    ])('does not let a marker %s exempt the site', (_label, body) => {
+      expect(classifyWcTrim(body).violations).toHaveLength(1);
+    });
+
+    it('keeps physical lines through an escaped newline in a parameter expansion', () => {
+      const c = classifyWcTrim(`# ${ALLOW_MARKER}: ${reason}\necho "\${N:-\\\nx}"; wc -l </dev/null\n`);
+      expect(c.violations.map((v) => v.line)).toEqual([3]);
+    });
+
+    it('keeps physical lines through multi-line arithmetic, so a marker cannot exempt a later line', () => {
+      const c = classifyWcTrim(`# ${ALLOW_MARKER}: ${reason}\n((\n  n = 1\n)); wc -l </dev/null\n`);
+      expect(c.violations.map((v) => v.line)).toEqual([4]);
+    });
+
+    it('does not mark a TRIMMED site as allowed (the marker is only an escape for a violation)', () => {
+      const c = classifyWcTrim(`# ${ALLOW_MARKER}: ${reason}\nN=$(ls | wc -l | tr -d ' ')\n`);
+      expect(c.invocations.map((i) => i.allowed)).toEqual([false]);
+    });
+  });
+});
+
+describe('tree-wide (issue #3213)', () => {
+  const files = trackedShellFiles().map((rel) => {
+    const content = readFileSync(join(REPO_ROOT, rel), 'utf8');
+    return { rel, content, ...classifyWcTrim(content) };
+  });
+  const all = files.flatMap((f) => f.invocations.map((i) => ({ ...i, rel: f.rel })));
+  const count = (pred: (i: (typeof all)[number]) => boolean) => all.filter(pred).length;
+
+  it('sees the corpus', () => {
+    // 263 tracked shell files at introduction: 260 fixture verify.sh files,
+    // the shared s3-versions.sh helper, and two fixture-local scripts.
+    expect(files.length).toBeGreaterThanOrEqual(255);
+    expect(files.filter((f) => f.rel.endsWith('/verify.sh')).length).toBeGreaterThanOrEqual(250);
+  });
+
+  it('carries no untrimmed wc', () => {
+    const violations = files.flatMap((f) => f.violations.map((v) => `${f.rel}:${v.line}: ${v.stage}`));
+    expect(
+      violations,
+      "BSD wc (macOS) pads its count to width 8, so an untrimmed `$(... | wc -l)` never equals \"1\" there. Pipe it straight through `| tr -d ' '` (or `| tr -d '[:space:]'`). A site that genuinely must stay untrimmed takes `# allow-untrimmed-wc: <reason>`, trailing on its line or as a full-line comment directly above.",
+    ).toEqual([]);
+  });
+
+  it('uses no escape hatch, and carries no malformed one', () => {
+    // Zero at introduction. A new one is a deliberate decision this pin forces
+    // into the diff rather than into a quiet comment.
+    expect(count((i) => i.allowed)).toBe(0);
+    expect(files.flatMap((f) => f.malformedAllowMarkers.map((l) => `${f.rel}:${l}`))).toEqual([]);
+  });
+
+  it('sees every shape it claims to handle, at the counts taken by hand', () => {
+    // Counted by hand from the fixtures before this classifier existed, then
+    // cross-checked by an independent grep. The go-to-k/cdkd#3182
+    // review produced two different totals by hand, which is why the floor is
+    // per SHAPE rather than one aggregate: a lexer that stopped seeing the
+    // here-string form would lose 2 of 39 and still clear any total floor with
+    // slack.
+    //
+    // These are floors, not pins, so a fixture ADDING a trimmed `wc` stays
+    // green. A fixture REMOVING one reds here, and the fix is to lower the
+    // literal in the same change after confirming the removal was the intent.
+    expect(all.length).toBeGreaterThanOrEqual(39);
+    expect(count((i) => i.inputForm === 'pipe')).toBeGreaterThanOrEqual(33);
+    expect(count((i) => i.inputForm === 'here-string')).toBeGreaterThanOrEqual(2);
+    expect(count((i) => i.inputForm === 'redirect')).toBeGreaterThanOrEqual(4);
+    expect(count((i) => i.trim === 'space')).toBeGreaterThanOrEqual(36);
+    expect(count((i) => i.trim === 'posix-space-class')).toBeGreaterThanOrEqual(3);
+    // Inside a `$(...)` nested in double quotes: the two
+    // lambda-capacity-provider-default-name captures, the four in local-invoke's
+    // echoes, one in loggroup-never-expire-guard and three in
+    // local-ecs-service-connect. What proves the quote / substitution stack.
+    expect(count((i) => i.quotedSubstitution)).toBeGreaterThanOrEqual(10);
+    expect(new Set(all.map((i) => i.rel)).size).toBeGreaterThanOrEqual(18);
+  });
+});
+
+describe('the tree stays inside what the classifier reads (issue #3213)', () => {
+  /**
+   * The WORD `wc` (bare or as a path's last segment) outside a comment, on a
+   * line where the classifier recorded no invocation: a `wc` reached some way
+   * it does not read — through a variable (`COUNTER=wc; ${COUNTER} -l`),
+   * `eval`, an alias, or as an argument of `xargs` / `find -exec`. Returns the
+   * 1-based lines.
+   */
+  function uncountedWcWords(content: string): number[] {
+    const c = classifyWcTrim(content);
+    const counted = new Set(c.invocations.map((i) => i.offset));
+    const lineStarts = [0];
+    for (let k = 0; k < content.length; k++) if (content[k] === '\n') lineStarts.push(k + 1);
+    const lineOf = (offset: number) => lineStarts.filter((start) => start <= offset).length;
+    const out = new Set<number>();
+    for (const m of content.matchAll(/(^|[^A-Za-z0-9_.\/-])((?:[^\s'"`;|&()<>]*\/)?wc)(?![A-Za-z0-9_-])/gm)) {
+      const offset = m.index + m[1]!.length;
+      if (counted.has(offset)) continue;
+      const line = lineOf(offset);
+      // Comment text: a real comment (as the lexer found it) starts earlier on the same line.
+      if (c.commentOffsets.some((h) => h < offset && lineOf(h) === line)) continue;
+      out.add(line);
+    }
+    return [...out];
+  }
+
+  it('finds a wc the classifier does not read, in each spelling that reaches one', () => {
+    // Controls: without them an empty tree-wide result could mean the helper
+    // matches nothing at all.
+    for (const body of [
+      'COUNTER=wc\n${COUNTER} -l </dev/null',
+      'ls | xargs wc -l',
+      'ls | xargs \\\n  wc -l',
+      'eval "wc -l </dev/null"',
+      "alias count='wc -l'",
+      'find . -exec /usr/bin/wc -l {} +',
+    ]) {
+      expect(uncountedWcWords(`${body}\n`), body).not.toEqual([]);
+    }
+    expect(uncountedWcWords("N=$(ls | wc -l | tr -d ' ') # a wc in a comment\n")).toEqual([]);
+    // Per occurrence, not per line: a counted `wc` does not cover a second one.
+    expect(uncountedWcWords("wc -l </dev/null | tr -d ' '; eval 'wc -l </dev/null'\n")).toEqual([1]);
+    // A quoted `#` is not a comment.
+    expect(uncountedWcWords('printf \'%s\' " # "; eval \'wc -l </dev/null\'\n')).toEqual([1]);
+  });
+
+  it('every wc word in the tree is a counted invocation or comment text', () => {
+    const hits = trackedShellFiles().flatMap((rel) =>
+      uncountedWcWords(readFileSync(join(REPO_ROOT, rel), 'utf8')).map((line) => `${rel}:${line}`),
+    );
+    expect(
+      hits,
+      'the classifier did not count these as invocations, so its zero-violation verdict does not cover them. ' +
+        'Call wc directly as a command (and trim it), or extend scripts/check-integ-wc-trim.ts to read the new shape.',
+    ).toEqual([]);
+  });
+});
+
+describe('real-code probes (issue #3213)', () => {
+  const read = (fixture: string) => readFileSync(join(INTEG_ROOT, fixture, 'verify.sh'), 'utf8');
+  const lineOf = (content: string, index: number) => content.slice(0, index).split('\n').length;
+
+  it('removing the trim from the go-to-k/cdkd#3182 multi-line capture is flagged at the wc line', () => {
+    const real = read('lambda-capacity-provider-default-name');
+    const trimmed = "--output text | wc -w | tr -d ' ')\"\n[ \"${INSTANCES_LEFT}\" = \"0\" ]";
+    expect(real.split(trimmed), 'the fixture no longer carries the #3182 site this probe needs').toHaveLength(2);
+    const broken = real.replace(trimmed, trimmed.replace(" | tr -d ' '", ''));
+    const expectedLine = lineOf(broken, broken.indexOf("--output text | wc -w)\"\n[ \"${INSTANCES_LEFT}\""));
+    expect(classifyWcTrim(broken).violations.map((v) => v.line)).toEqual([expectedLine]);
+    expect(classifyWcTrim(real).violations).toEqual([]);
+  });
+
+  it('removing the trim from the inline here-string comparison is flagged at that line', () => {
+    const real = read('local-ecs-service-connect');
+    const trimmed = "if [[ \"$(wc -l <<<\"${UNIQ_ORDERS_IPS}\" | tr -d ' ')\" -ne 1 ]]; then";
+    expect(real.split(trimmed), 'the fixture no longer carries the here-string site this probe needs').toHaveLength(2);
+    const broken = real.replace(trimmed, trimmed.replace(" | tr -d ' '", ''));
+    const c = classifyWcTrim(broken);
+    expect(c.violations.map((v) => [v.line, v.inputForm])).toEqual([
+      [lineOf(broken, broken.indexOf('UNIQ_ORDERS_IPS}")')), 'here-string'],
+    ]);
+  });
+
+  it('removing a trim from the file redirect inside an echo is flagged, and only that one of the line\'s two', () => {
+    const real = read('local-invoke');
+    const trimmed = "($(wc -l <\"${SYNTH_ERR}\" | tr -d ' ') lines)";
+    expect(real.split(trimmed), 'the fixture no longer carries the redirect site this probe needs').toHaveLength(2);
+    const broken = real.replace(trimmed, trimmed.replace(" | tr -d ' '", ''));
+    const c = classifyWcTrim(broken);
+    expect(c.violations.map((v) => [v.line, v.inputForm])).toEqual([
+      [lineOf(broken, broken.indexOf('wc -l <"${SYNTH_ERR}") lines)')), 'redirect'],
+    ]);
+    expect(c.violations[0]!.stage).toContain('SYNTH_ERR');
+  });
+
+  it('removing the posix-class trim from a helper tail is flagged', () => {
+    const real = read('loggroup-class-guard');
+    const trimmed = "printf '%s' \"${rows}\" | wc -w | tr -d '[:space:]'";
+    expect(real.split(trimmed), 'the fixture no longer carries the helper-tail site this probe needs').toHaveLength(2);
+    const broken = real.replace(trimmed, "printf '%s' \"${rows}\" | wc -w");
+    expect(classifyWcTrim(broken).violations.map((v) => [v.line, v.inputForm])).toEqual([
+      [lineOf(broken, broken.indexOf("printf '%s' \"${rows}\" | wc -w")), 'pipe'],
+    ]);
+  });
+});
+
+describe('bash behavior (the convention itself, through a BSD-padding wc)', () => {
+  /**
+   * Runs `body` with a `wc` shim first on PATH that prints its count the way
+   * BSD `wc` does — right-aligned in a field eight wide. With the real `wc` on
+   * a GNU host the untrimmed cases would pass, so the host could never show the
+   * defect — which is exactly why it ships. The CONTROL case proves the padding.
+   */
+  function runWithBsdWc(body: string) {
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-3213-'));
+    try {
+      const bin = join(dir, 'bin');
+      mkdirSync(bin);
+      writeFileSync(
+        join(bin, 'wc'),
+        '#!/bin/sh\n' +
+          '# Count with the host wc, then re-emit the number BSD-style.\n' +
+          'n="$(/usr/bin/env -i PATH=/usr/bin:/bin wc "$@" | awk \'{print $1}\')"\n' +
+          'printf "%8d\\n" "$n"\n',
+        { mode: 0o755 },
+      );
+      writeFileSync(join(dir, 'lines.txt'), 'a\n');
+      const script = join(dir, 'probe.sh');
+      writeFileSync(script, `set -euo pipefail\ncd "${dir}"\n${body}`);
+      return spawnSync('bash', [script], {
+        encoding: 'utf8',
+        env: { ...process.env, PATH: `${bin}:${process.env['PATH'] ?? ''}` },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('CONTROL: the shim really pads, so the cases below are not vacuous', () => {
+    const r = runWithBsdWc('printf \'a\\n\' | wc -l\n');
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('       1\n');
+  });
+
+  const FORMS: Array<[string, string]> = [
+    ['piped', "printf 'a\\n' | wc -l"],
+    ['here-string', 'wc -l <<<"a"'],
+    ['file redirect', 'wc -l <lines.txt'],
+    ['backslash-continued pipe', "printf 'a\\n' \\\n  | wc -l"],
+  ];
+
+  it.each(FORMS)('%s: an untrimmed count fails a string comparison', (_label, form) => {
+    const r = runWithBsdWc(`N="$(${form})"\n[ "\${N}" = "1" ] && echo EQUAL || echo NOT-EQUAL\n`);
+    expect(r.stdout).toContain('NOT-EQUAL');
+  });
+
+  it.each(
+    FORMS.flatMap(([label, form]) => [
+      [label, form, "tr -d ' '"],
+      [label, form, "tr -d '[:space:]'"],
+    ]),
+  )('%s: %s -> %s makes the comparison pass', (_label, form, trim) => {
+    const r = runWithBsdWc(`N="$(${form} | ${trim})"\n[ "\${N}" = "1" ] && echo EQUAL || echo NOT-EQUAL\n`);
+    expect(r.stdout).toContain('EQUAL');
+    expect(r.stdout).not.toContain('NOT-EQUAL');
+  });
+
+  it('an ARITHMETIC comparison accepts the padded value (why the fence is wider than the defect, and says so)', () => {
+    const r = runWithBsdWc('N="$(printf \'a\\n\' | wc -l)"\n[ "${N}" -eq 1 ] && echo EQUAL || echo NOT-EQUAL\n');
+    expect(r.stdout).toContain('EQUAL');
+    expect(r.stdout).not.toContain('NOT-EQUAL');
+  });
+});
