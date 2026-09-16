@@ -84,7 +84,7 @@ HOOK="${GATE_HOOK:-.claude/hooks/main-tree-edit-gate.sh}"
 #     only path the kill exists for at all. `bounded_bash 1 'sleep 77 & sleep
 #     78 & wait'` left BOTH of them running, under both engines.
 #
-# This suite runs 207 real commands, so a stray process per row is precisely the
+# This suite runs 237 real commands, so a stray process per row is precisely the
 # failure mode it must not have.
 bounded_bash() { # <seconds> <command>
   local secs="$1" cmd="$2" pid watchdog
@@ -184,8 +184,24 @@ probe() { # <gate payload cwd> <sandbox cwd> <command> <label> [latency-only]
   t1=$(date +%s); ms=$((t1 - t0))
   # 5s of a 10s PreToolUse timeout. Past the budget the hook is on its way to
   # being KILLED, and a killed hook cannot emit exit 2 -- the gate disappears.
+  #
+  # RE-MEASURED ONCE before it counts, because this is a WALL-CLOCK reading and
+  # the machine it runs on is shared: measured 2026-09-16 on the merge tree,
+  # 3 rows over budget at load 46 with six peer vitest processes and 0 rows on
+  # the very next run at the same tree -- the go-to-k/cdkd#2741 / #3038 class,
+  # in an assertion CI runs (`hooks.yml` -> `run-tests.sh`). A load spike is
+  # transient and a pathological command is slow EVERY time, so the retry
+  # keeps the bound's meaning (it does not raise the 5s) while removing the
+  # reading that only measures the neighbours. The retry is paid only by a row
+  # that already blew the budget, so the clean path costs nothing.
   if [ "$ms" -gt 5 ]; then
-    slow=$((slow + 1)); slow_list="${slow_list}    ${ms}s  $label"$'\n'
+    t0=$(date +%s)
+    printf '%s' "$(jq -nc --arg c "$cmd" --arg w "$pcwd" \
+      '{tool_name:"Bash",cwd:$w,tool_input:{command:$c}}')" | "$HOOK_RUNNER" "$HOOK" >/dev/null 2>&1
+    t1=$(date +%s); ms=$((t1 - t0))
+    if [ "$ms" -gt 5 ]; then
+      slow=$((slow + 1)); slow_list="${slow_list}    ${ms}s  $label"$'\n'
+    fi
   fi
   [ -n "$latonly" ] && return 0
   if [ "$written" = yes ] && [ "$rc" != 2 ]; then
@@ -245,6 +261,56 @@ probe "$MAIN" "$MAIN" "x=\$(
 echo POISON > $PROT" "[multiline] a comment holding ) inside \$( )"
 probe "$MAIN" "$MAIN" "( echo a\\)b ; cd /tmp) ; echo POISON > $PROT" \
   "[escape] a backslash-escaped ) inside a subshell"
+# ARM F -- A `cd` THAT FAILS (go-to-k/cdkd#2684). Bash stays put, so the write
+# lands on the protected file; the walk used to advance its base anyway. The
+# row is a LEAD `cd`, which no dimension above varies (the TAILS axis puts the
+# `cd` AFTER the write, where it decides nothing). Both polarities per vehicle:
+#   - `cd /nonexistent ; <write>` from the main checkout  -> written, must block
+#   - `rm -rf X ; cd X ; <write>`                          -> the same, X named
+#     by a REMOVER, which the mention test must not read as a creator
+#   - `mkdir -p X/sub && cd X && <write>`                  -> X is absent when
+#     the hook runs and present when the `cd` runs; nothing protected is
+#     written, so a refusal here is the FALSE BLOCK the fix must not introduce.
+#     The row removes X afterwards so the hook -- which runs AFTER bash in
+#     `probe` -- still sees it missing, or the row would prove nothing.
+#   - `cd /nonexistent ; <write>` from the WORKTREE       -> lands in the
+#     worktree, must not block
+#   - `mkdir -p X/sub && cd X && <write>`                  -> a creator reached
+#     by a parent path: must not block
+#   - `mkdir -p X/sub && cd X/ && <write>`                 -> the same entered
+#     with a trailing slash: must not block
+#
+# `mkdir -p X ; rm -rf X ; cd X ; <write>` is deliberately NOT a row: the hook
+# advances there (the `__cd_named_earlier` header records why the machinery
+# that tracked it was withdrawn), so an oracle row would be a permanent
+# tolerated fail-open -- and a nonzero tolerance is how a REAL one gets
+# absorbed. The suite pins it as a stated residue instead.
+for wv in "${WRITES[@]}"; do
+  # shellcheck disable=SC2059
+  w=$(printf "$wv" "$PROT")
+  probe "$MAIN" "$MAIN" "cd /nonexistent 2>/dev/null ; $w" "[failed-cd] cd /nonexistent ; $w"
+  probe "$MAIN" "$MAIN" "rm -rf $FIX/gone ; cd $FIX/gone ; $w" "[failed-cd] rm -rf X ; cd X ; $w"
+  probe "$MAIN" "$MAIN" "mkdir -p $FIX/fresh/docs/_generated && cd $FIX/fresh && $w ; cd / ; rm -rf $FIX/fresh" \
+    "[created-cd] mkdir -p X/... && cd X && $w"
+  # Sandbox cwd = the worktree too: the row's claim is that the write lands in
+  # the WORKTREE's copy, so bash must run there. With `$MAIN` as the sandbox
+  # cwd the protected file is written and the row reads as a fail-open of the
+  # gate when it is a mis-set fixture (measured, three rows, first draft).
+  probe "$WT" "$WT" "cd /nonexistent 2>/dev/null ; $w" "[wt,failed-cd] cd /nonexistent ; $w"
+  # A creator reached by a PARENT path: `mkdir -p X/sub` names X/sub and the
+  # `cd X` matches it as a parent, so bash enters a directory this command
+  # made, nothing protected is written, and a refusal would be a FALSE BLOCK.
+  probe "$MAIN" "$MAIN" "mkdir -p $FIX/fresh2/docs/_generated && cd $FIX/fresh2 && $w ; cd / ; rm -rf $FIX/fresh2" \
+    "[created-cd] mkdir -p X/... && cd X && $w"
+  # ...and the same entered as `X/`, the tab-completion spelling. This row was
+  # briefly REMOVED from the corpus while `cd X/` was a false block, which is
+  # the one edit that could make this file's zero-false-block figure mean less
+  # than it says -- an oracle's value is that its corpus is not selected to
+  # flatter the subject. It is back because the slash is stripped on both
+  # sides now, not because the row was inconvenient.
+  probe "$MAIN" "$MAIN" "mkdir -p $FIX/fresh3/docs/_generated && cd $FIX/fresh3/ && $w ; cd / ; rm -rf $FIX/fresh3" \
+    "[created-cd,trailing-slash] mkdir -p X/... && cd X/ && $w"
+done
 # ARM E -- LATENCY ONLY: shapes whose cost is superlinear in ONE segment.
 probe "$MAIN" "$MAIN" "$(printf 'A=1 %.0s' $(seq 1 8000))echo POISON > $PROT" "[latency] 8000 assignment prefixes" latency
 probe "$MAIN" "$MAIN" "echo $(printf '(%.0s' $(seq 1 24000)) ; echo POISON > $PROT" "[latency] 24000 open parens" latency
@@ -258,9 +324,9 @@ report() { # <count> <max> <what> <list>
     printf 'ok   %s: %s (tolerated %s)\n' "$3" "$1" "$2"
   fi
 }
-# AT THE OBSERVED COUNTS, no slack. This hook does carry inherited divergences
-# (a `cd` into a nonexistent directory is honoured though bash stays put --
-# go-to-k/cdkd#2684), but no shape in this grid reaches one, so tolerating a
+# AT THE OBSERVED COUNTS, no slack. The one inherited divergence this file
+# used to name here (a `cd` into a nonexistent directory honoured though bash
+# stays put) is CLOSED by go-to-k/cdkd#2684 and ARM F now reaches it, so a
 # nonzero count would tolerate a NEW one.
 report "$open"  "${ORACLE_FAIL_OPEN_MAX:-0}"   "FAIL-OPEN (bash wrote the protected file, gate allowed it)" "$open_list"
 report "$block" "${ORACLE_FALSE_BLOCK_MAX:-0}" "false-block (nothing written, gate refused)" "$block_list"
@@ -269,8 +335,8 @@ report "$slow"  "${ORACLE_SLOW_MAX:-0}"        "over the 5s latency budget (10s 
 # which the first spelling of this floor did not: at 200 against 204 actual, the
 # whole multi-line arm plus the latency arm could be deleted and the run stayed
 # green. A floor with slack is how a corpus quietly stops covering a dimension.
-if [ "$n" -lt 207 ]; then
-  fail=$((fail + 1)); printf 'not ok corpus floor: %s inputs, expected at least 207\n' "$n"
+if [ "$n" -lt 237 ]; then
+  fail=$((fail + 1)); printf 'not ok corpus floor: %s inputs, expected at least 237\n' "$n"
 else
   printf 'ok   corpus: %s executed commands across 5 dimensions\n' "$n"
 fi
