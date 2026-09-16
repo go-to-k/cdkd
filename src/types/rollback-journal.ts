@@ -157,6 +157,88 @@ function refuseMalformedOperation(shownStack: string, where: string, op: unknown
   if (o['physicalId'] !== undefined && typeof o['physicalId'] !== 'string') {
     fail('physicalId', o['physicalId'], 'a string when present');
   }
+  // The NESTED records (issue #3149), each TYPE-when-present rather than
+  // required: `previousState` is forwarded verbatim from the state record
+  // (`deploy-engine.ts`'s `currentState.resources[logicalId]`), which
+  // `parseStateBody` deliberately does not validate, so requiring a field to
+  // be PRESENT here would turn a state-side tolerance into a journal-side
+  // refusal of a journal cdkd itself wrote.
+  //
+  // What IS refused is the shape no handling can make correct: a non-object
+  // `previousState` loses the whole desired bag, and every arm coalesces
+  // (`desiredProps ?? {}`), so the provider is handed an EMPTY desired bag
+  // over a LIVE resource -- a patch provider then removes every property.
+  // (Not `undefined`: issue #3149's body said so and the review measured the
+  // `??`.) A non-object `properties` hands the provider a STRING where a bag
+  // belongs, and `physicalId` / `resourceType` are rendered, compared AND
+  // written back into `state.json`.
+  //
+  // The TYPE checks do refuse a journal cdkd itself wrote off a hand-edited
+  // record (a state `physicalId: 7` is tolerated by `parseStateBody` and
+  // refused here) -- that is the governing clause doing its job, not an
+  // exception to it. Only PRESENCE is left to the state boundary: an absent
+  // field reaches every arm without a type error, and whether the arm then
+  // does the RIGHT thing is a separate defect -- for `properties` it is not
+  // (`desiredProps ?? {}` hands the provider an empty desired bag), which is
+  // issue #3149's sibling go-to-k/cdkd#3203 rather than a reason to refuse a
+  // journal cdkd itself wrote.
+  const prev: unknown = o['previousState'];
+  if (prev !== undefined) {
+    if (typeof prev !== 'object' || prev === null || Array.isArray(prev)) {
+      fail('previousState', prev, 'an object when present');
+    }
+    const p = prev as Record<string, unknown>;
+    if (p['physicalId'] !== undefined && typeof p['physicalId'] !== 'string') {
+      fail('previousState.physicalId', p['physicalId'], 'a string when present');
+    }
+    if (p['resourceType'] !== undefined && typeof p['resourceType'] !== 'string') {
+      fail('previousState.resourceType', p['resourceType'], 'a string when present');
+    }
+    if (
+      p['properties'] !== undefined &&
+      (typeof p['properties'] !== 'object' ||
+        p['properties'] === null ||
+        Array.isArray(p['properties']))
+    ) {
+      fail('previousState.properties', p['properties'], 'an object when present');
+    }
+  }
+  // `properties` is the COMPLETED-op twin of `attemptedProperties` below:
+  // `provider.delete(logicalId, physicalId, resourceType, op.properties, ..)`
+  // on the rolled-back-CREATE arm reads it for the auto-delete tag, the
+  // `EmptyOnDelete` gate and final-snapshot gating, in the same argument
+  // position. Refusing one and not the other would be arbitrary.
+  const own: unknown = o['properties'];
+  if (own !== undefined && (typeof own !== 'object' || own === null || Array.isArray(own))) {
+    fail('properties', own, 'an object when present');
+  }
+  const attempted: unknown = o['attemptedProperties'];
+  if (
+    attempted !== undefined &&
+    (typeof attempted !== 'object' || attempted === null || Array.isArray(attempted))
+  ) {
+    fail('attemptedProperties', attempted, 'an object when present');
+  }
+  // `oldResourceRetained` is the one nested flag cdkd COMPUTES rather than
+  // forwards (`retainedOldOnReplacement.has(..)`), so a non-boolean is a
+  // planted value, never a tolerated one -- and it selects the readopt arm
+  // through `??`, where a truthy `"no"` skips the re-create and re-points
+  // state at the old physical id.
+  if (o['oldResourceRetained'] !== undefined && typeof o['oldResourceRetained'] !== 'boolean') {
+    fail('oldResourceRetained', o['oldResourceRetained'], 'a boolean when present');
+  }
+  // NOT refused, deliberately: `provisionedBy`. cdkd forwards whatever the
+  // state record carried (`newResources[..]?.provisionedBy ?? previousState
+  // ?.provisionedBy`), so refusing the enum would lock `cdkd rollback` out of
+  // a journal cdkd itself wrote from a record `parseStateBody` tolerates.
+  // An unrecognised value routes to the SDK provider -- `=== 'cc-api'` is the
+  // only test any consumer makes -- and is then persisted and rendered
+  // through `safeId` / `formatAttributeValue`. It IS written into state.json
+  // by the rollback even when the planted journal put it there (the review
+  // corrected an earlier claim that state.json "already held it"), which
+  // changes no route and no ARN. Nothing throws and nothing is
+  // mis-provisioned, so the discriminator is the one above: refuse what no
+  // handling can make correct, tolerate what the state boundary tolerates.
 }
 
 /** The TYPE of a JSON-derived value, for a refusal that must not echo the value. */
