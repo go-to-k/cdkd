@@ -207,31 +207,27 @@ type Verdict =
 export const analyseExpression = (
   body: string,
   /**
-   * Roots to treat as known for this read. The caller uses it to ask "would
-   * this body be an expression if THESE roots existed?" — which settles a
-   * missing root against prose without any offset arithmetic, and without the
-   * single-occurrence bound a textual substitution had: `newctx.a == newctx.b`
-   * has the root twice, and replacing one left the other unknown, so an
-   * ordinary condition naming a new context reported as prose.
-   */
-  extraRoots: ReadonlySet<string> = new Set(),
-  /**
-   * When given, an unrecognised root is RECORDED here and the walk continues as
-   * if it were known, instead of returning at the first one.
+   * Read the body as if every unrecognised root were a documented one: the walk
+   * continues past each instead of returning at the first.
    *
-   * That turns the caller's question into a CONSTANT number of reads. Asking it
-   * one root at a time was quadratic in attacker-controlled input — measured
-   * 35.5 s on a 200 KB body of distinct roots against 0.02 s for every other
-   * 200 KB shape, four-fold per doubling — and `ci.yml` runs on
-   * `pull_request` with no `timeout-minutes`, so a fork PR adding one large
-   * workflow file burned runner-hours up to the six-hour ceiling. Vitest cannot
-   * preempt it either: a synchronous loop runs to completion and the 5 s
-   * `testTimeout` only reports afterwards.
+   * That is how the caller asks "is this shaped like a real reference, with
+   * only the root missing, or is it prose?" in a CONSTANT number of reads.
+   * Asking one root at a time needed a loop and was quadratic in
+   * attacker-controlled input — measured 35.5 s on a 200 KB body of distinct
+   * roots against 0.02 s for every other 200 KB shape, four-fold per doubling —
+   * and `ci.yml` runs on `pull_request` with no `timeout-minutes`, so a fork PR
+   * adding one large workflow file burned runner-hours up to the six-hour
+   * ceiling. Vitest cannot preempt it either: a synchronous loop runs to
+   * completion and the 5 s `testTimeout` only reports afterwards.
    *
-   * Recording and continuing does NOT make prose readable — `the same rule`
-   * still refuses, because `same` then arrives where an operator is due.
+   * A BOOLEAN, after two rounds of being a Set. It was first a set of roots the
+   * caller supplied, then a set the walker filled — and in both shapes nothing
+   * ever read it, so it was a mode flag sized by attacker input.
+   *
+   * It does NOT make prose readable: `the same rule` still refuses, because
+   * `same` then arrives where an operator is due.
    */
-  collect?: Set<string>,
+  treatUnknownRootsAsKnown = false,
 ): Verdict => {
   TOKEN.lastIndex = 0;
   let at = 0;
@@ -295,7 +291,6 @@ export const analyseExpression = (
         // `success`, `failure`, `cancelled`).
         const called = /^\s*\(/.test(body.slice(at));
         const known =
-          extraRoots.has(root) ||
           CONTEXT_HEADS.has(root) ||
           LITERAL_HEADS.has(tok) ||
           (FUNCTION_HEADS.has(tok) && called);
@@ -314,8 +309,7 @@ export const analyseExpression = (
           // re-reading the body with this root allowed.
           const bareWord = isFirst && !tok.includes('.') && body.slice(at).trim() === '';
           if (bareWord) return { ok: false };
-          if (collect !== undefined) {
-            collect.add(root);
+          if (treatUnknownRootsAsKnown) {
             expect = 'operator';
             continue;
           }
@@ -382,9 +376,10 @@ const forEachExpression = (
 };
 
 /**
- * Everything that can move the cursor or reorder the rendered line, collapsed
+ * Everything that can move the cursor, break the line, or reorder it, collapsed
  * to one space: whitespace (including the Unicode line separators), every C0
- * control byte, DEL, and the bidi overrides.
+ * and C1 control byte, DEL, and every bidi control — the overrides, the
+ * isolates, the marks, and the Arabic letter mark.
  *
  * The codepoints are tested by VALUE and the rest by `/\s/`, with no
  * backslash-u escape anywhere — one typed into this file is exactly how a raw
@@ -401,9 +396,11 @@ const forEachExpression = (
  *     U+FEFF and the rest of Unicode whitespace — and U+2028 / U+2029 ARE line
  *     separators to a Unicode-aware log reader, so dropping them from the
  *     class put the forged second line straight back;
- *   * neither reaches a bidi override, which reorders the rendered line in any
+ *   * neither reaches a bidi control, which reorders the rendered line in any
  *     bidi-aware renderer (the Trojan-source shape). That one was open in both
- *     earlier versions.
+ *     earlier versions, and a later one covered only the OVERRIDES while the
+ *     marks and U+061C went through — as did U+0085, a line break that is
+ *     neither `<= 0x20` nor `\s` and which `JSON.stringify` leaves alone.
  */
 const flatten = (s: string): string => {
   let out = '';
@@ -450,12 +447,53 @@ const flatten = (s: string): string => {
  * a comment that did not exhibit the shape it described.
  *
  * A real workflow file name is a short, dull thing. Anything else is quoted, so
- * it can only ever be read as one field, and clamped, since it is the one field
- * that had no length bound.
+ * it can only ever be read as one field, and clamped on that arm — a name that
+ * PASSES is emitted whole, which is bounded only by the filesystem's 255 and is
+ * a cost rather than a hazard. Said plainly because an earlier version of this
+ * sentence claimed a bound the accept path does not have.
  */
 const WORKFLOW_NAME = /^[A-Za-z0-9._-]+\.ya?ml$/;
 const safeName = (name: string): string =>
   WORKFLOW_NAME.test(name) ? name : JSON.stringify(flatten(name).slice(0, 120));
+
+/**
+ * The two listings' difference, COMPARED raw so the check stays exact and
+ * RENDERED through `safeName` so a failure cannot forge a line.
+ *
+ * Extracted rather than written inline because inline it could not be pinned:
+ * the rendering only matters when the sets DISAGREE, and on a healthy tree they
+ * never do — reverting it to a raw `toEqual` of both lists redded nothing. As a
+ * function it has its own cases below.
+ *
+ * Not a hypothetical, either: `git ls-files` output is split on newlines, so a
+ * newline-bearing path can never reconstruct, the sets ALWAYS mismatch, and the
+ * assertion is guaranteed to fail and guaranteed to print. Two earlier fixes
+ * closed this same shape in the finding and in the test title; this is the
+ * third renderer.
+ */
+/**
+ * Read a workflow, naming it SAFELY if the read fails.
+ *
+ * Node puts the raw path in an `ENOENT`, which is this forgery one layer below
+ * the fields the offence renders — reachable through a dangling symlink, which
+ * git tracks and `readdirSync` lists. Extracted from the case for the same
+ * reason `setDifference` is: inline, the failing arm could not be pinned.
+ */
+export const readWorkflow = (name: string): string => {
+  try {
+    return readFileSync(join(WORKFLOW_DIR, name), 'utf8');
+  } catch (cause) {
+    throw new Error(`could not read workflow ${safeName(name)}`, { cause });
+  }
+};
+
+export const setDifference = (
+  found: readonly string[],
+  tracked: readonly string[],
+): { missing: string[]; extra: string[] } => ({
+  missing: tracked.filter((t) => !found.includes(t)).map(safeName),
+  extra: found.filter((f) => !tracked.includes(f)).map(safeName),
+});
 
 interface Offence {
   readonly file: string;
@@ -565,15 +603,18 @@ export const findExpressionOffences = (rawFile: string, source: string): Offence
       // direction or the other: a `round < 10` count was not outcome-neutral
       // (eleven distinct roots fell to the PROSE message), and a
       // progress-bounded loop was quadratic in attacker-controlled input,
-      // re-tokenising the whole body per root. `collect` gathers them all in a
-      // single walk, so the cost is constant and there is no loop left to
-      // terminate.
-      // Annotated, because `verdict` is narrowed to the refusing arm here and
+      // re-tokenising the whole body per root. Reading once with every
+      // unrecognised root treated as known settles it in constant cost, and
+      // leaves no loop to terminate.
+      //
+      // `verdict` — the read WITHOUT that relaxation — stays the guard, so the
+      // second read can only choose the message, never clear an offence.
+      // Annotated because `verdict` is narrowed to the refusing arm here while
       // the re-read may well succeed.
       let probe: Verdict = verdict;
       let plausibleRoot = false;
       if (verdict.unknownRoot !== undefined) {
-        probe = analyseExpression(body, new Set(), new Set<string>());
+        probe = analyseExpression(body, true);
         plausibleRoot = probe.ok;
       }
       // The two refusals want OPPOSITE actions from the reader — rewrite the
@@ -583,16 +624,18 @@ export const findExpressionOffences = (rawFile: string, source: string): Offence
       // token instead told the bare one-word case — the headline
       // reintroduction wording — to add `expression` to the root set, which
       // would have permanently re-opened the hole this arm closes.
-      // `probe` alone, not `verdict.uncalledFunction ?? probe.uncalledFunction`:
-      // the two fields are never both set, so the first arm of that chain was
-      // unreachable. `newctx.a && format` names a new root first and the
-      // uncalled function only once the roots are allowed, which is why the
-      // LATER read is the one that carries it.
+      // `probe` alone, not `verdict.uncalledFunction ?? probe.uncalledFunction`.
+      // That first arm was REDUNDANT rather than unreachable, and the
+      // difference is worth stating because the earlier wording of this comment
+      // got it backwards: when `verdict` names an uncalled function it also has
+      // no `unknownRoot`, so the re-read never happens and `probe` IS
+      // `verdict`. The chain could only ever agree with itself.
       //
-      // Each name is clamped ONCE, at its binding — the charset rules out
-      // forgery, but a 200 k root would otherwise mean a 200 KB reason, and
-      // written inline the clamp had to be repeated three times.
-      const namedFn = (probe.ok ? undefined : probe.uncalledFunction)?.slice(0, 60);
+      // Only the ROOT is clamped. A root is attacker-supplied and can be
+      // 200 k characters; an uncalled function is a member of `FUNCTION_HEADS`,
+      // so it is at most ten, and clamping it was dead code whose comment
+      // claimed a bound it did not need.
+      const namedFn = probe.ok ? undefined : probe.uncalledFunction;
       const namedRoot = verdict.unknownRoot?.slice(0, 60);
       offences.push({
         file,
@@ -644,7 +687,7 @@ describe('workflow expression syntax', () => {
       .split('\n')
       .filter((p) => /\.ya?ml$/.test(p))
       .map((p) => p.slice(p.lastIndexOf('/') + 1));
-    expect([...workflowFiles].sort()).toEqual([...tracked].sort());
+    expect(setDifference(workflowFiles, tracked)).toEqual({ missing: [], extra: [] });
   });
 
   /**
@@ -658,7 +701,7 @@ describe('workflow expression syntax', () => {
   it.each(workflowFiles.map((name) => [safeName(name), name]))(
     '%s carries no unreadable expression',
     (_title, name) => {
-      const source = readFileSync(join(WORKFLOW_DIR, name), 'utf8');
+      const source = readWorkflow(name);
       const offences = findExpressionOffences(name, source);
       expect(
         offences.map((o) => `${o.file}:${o.line}: ${o.reason} — ${o.text}`),
@@ -929,16 +972,75 @@ describe('workflow expression syntax', () => {
       });
 
       it('refuses to render a file name that is not one', () => {
-        // The NAME is the third field this forgery has been found in, and the
-        // first two fixes did not reach it: a tracked file may be called
-        // `ci.yml:412: … — hooks.yml` in PRINTABLE ASCII, pass the `.ya?ml`
-        // filter and the tracked-set case, and render a line opening as a
-        // complete false finding about `ci.yml`. Flattening cannot touch it —
-        // every character is printable — so the shape is constrained instead.
-        const forged = 'ci.yml:412: empty expression body — hooks.yml';
+        // The NAME is the third field this forgery was found in, and the first
+        // two fixes did not reach it: a tracked file may be called this in PURE
+        // ASCII, pass the `.ya?ml` filter and the tracked-set case, and render
+        // a line opening as a complete false finding about `ci.yml`. Flattening
+        // cannot touch it — every character is printable — so the shape is
+        // constrained instead.
+        //
+        // ASCII HYPHENS, not em dashes. The earlier fixture used em dashes,
+        // which `WORKFLOW_NAME` rejects for being outside its charset whatever
+        // the colons and spaces do — so widening the charset to `[A-Za-z0-9._: -]`
+        // left this case green, and the one forgery the regex exists to stop
+        // had no case at all. The docstring had already been corrected to the
+        // ASCII spelling; the fixture had not.
+        const forged = 'ci.yml:412: empty expression body - and no more - hooks.yml';
         const [offence] = findExpressionOffences(forged, 'a: ${{ prose x }}');
         expect(offence!.file).not.toBe(forged);
         expect(offence!.file.startsWith('"')).toBe(true);
+      });
+
+      it('clamps a very long file name, without clamping it away', () => {
+        // BOTH bounds. Asserting only the cap let the window be tightened to
+        // five characters with nothing red — a clamp that throws the name away
+        // is as useless as no clamp, one direction louder.
+        const [offence] = findExpressionOffences(`${'n'.repeat(400)} x.yml`, 'a: ${{ prose x }}');
+        expect(offence!.file.length).toBeLessThanOrEqual(125);
+        expect(offence!.file.length).toBeGreaterThanOrEqual(120);
+      });
+
+      it.each([
+        ['a newline', 'evil\nci.yml:1: FORGED.yml'],
+        ['an ESC', `evil${String.fromCharCode(0x1b)}[1A[2K.yml`],
+        ['a colon and spaces', 'ci.yml:1: empty expression body - see - hooks.yml'],
+      ])('renders %s safely when the two listings disagree', (_label, hostile) => {
+        // The difference is what a FAILING capacity check prints, and it prints
+        // exactly when a hostile name is present — so this is the arm that
+        // matters and the one a healthy tree can never exercise.
+        const { extra } = setDifference([hostile], []);
+        expect(extra).toHaveLength(1);
+        expect(extra[0]).not.toBe(hostile);
+        expect(extra[0]!.startsWith('"')).toBe(true);
+        expect(extra[0]).not.toContain('\n');
+        expect(extra[0]).not.toContain(String.fromCharCode(0x1b));
+      });
+
+      it('renders the MISSING side safely too', () => {
+        // Its own case: feeding only `extra` left the mirrored `missing` map
+        // unpinned, and a fence half-applied is the shape this file keeps
+        // finding.
+        const { missing } = setDifference([], ['evil\nci.yml:1: FORGED.yml']);
+        expect(missing).toHaveLength(1);
+        expect(missing[0]).not.toContain('\n');
+        expect(missing[0]!.startsWith('"')).toBe(true);
+      });
+
+      it('leaves a legitimate name alone in the difference', () => {
+        expect(setDifference(['ci.yml'], [])).toEqual({ missing: [], extra: ['ci.yml'] });
+      });
+
+      it('names a workflow it cannot read without forging a line', () => {
+        // The read's own failure path. Node's ENOENT carries the raw path, so
+        // the rethrow is what keeps a hostile name from opening a second line.
+        expect(() => readWorkflow('evil\nci.yml:1: FORGED.yml')).toThrow(
+          /could not read workflow "evil ci\.yml:1: FORGED\.yml"/,
+        );
+        try {
+          readWorkflow('evil\nci.yml:1: FORGED.yml');
+        } catch (error) {
+          expect((error as Error).message).not.toContain('\n');
+        }
       });
 
       it('renders a legitimate name unquoted', () => {
@@ -1043,6 +1145,18 @@ describe('workflow expression syntax', () => {
         [2, 'a: 1\n${{ prose here }}\nb: 2\n'],
         [3, 'a: 1\nb: 2\n${{ prose here }}'],
       ])('reports line %i for an opener at the start of it', (line, source) => {
+        const found = findExpressionOffences('x.yml', source);
+        expect(found).toHaveLength(1);
+        expect(found[0]!.line).toBe(line);
+      });
+
+      it.each([
+        [1, '${{ dangling'],
+        [3, 'a: 1\nb: 2\n${{ dangling'],
+      ])('reports line %i for a DANGLING opener', (line, source) => {
+        // The dangling arm has its own `lineOf` call, and nothing read it:
+        // replacing it with a literal `1` redded nothing, because both existing
+        // dangling cases happened to sit on line 1.
         const found = findExpressionOffences('x.yml', source);
         expect(found).toHaveLength(1);
         expect(found[0]!.line).toBe(line);
