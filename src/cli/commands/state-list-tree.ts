@@ -28,6 +28,40 @@ export interface StackTreeNode extends StackTreeEntry {
 }
 
 /**
+ * How deep a node may sit below its root, counting the root as 0.
+ *
+ * A node that would sit deeper is made a root instead (see
+ * {@link buildStackTree}). The value is far beyond any nesting an app is
+ * written with: CloudFormation stops at five levels of nested stacks, so an
+ * app that also has to deploy through CloudFormation cannot exceed that.
+ * cdkd deploys nested stacks through its own engine and imposes no limit of
+ * its own, so a deliberately deeper app CAN produce a tree this reshapes —
+ * which is the point. The view stays whole either way.
+ *
+ * It exists because every step AFTER the tree is built recurses once per
+ * level: this module's own child sort, the box-drawing renderer and
+ * {@link stackTreeToJson}, plus the `JSON.stringify` that serializes that
+ * shape for `--tree --json`. Capping the tree bounds all four at once, which
+ * an iterative rewrite of any of them could not: `JSON.stringify` recurses
+ * into whatever nesting it is handed, and the text view indents four
+ * characters per level, so a chain deep enough would need more indentation
+ * than a string can hold.
+ *
+ * It bounds the DEPTH, not the bucket, and what it does to the failure at the
+ * far end is change its KIND. Before the cap, one deep chain exhausted the
+ * CALL STACK, at a record count nothing fixes — V8's budget moves with frame
+ * size and with what else is on the stack. After it, every recursion is at
+ * most a hundred frames and the remaining ceiling is V8's maximum STRING
+ * length: a capped tree still costs a roughly constant number of characters
+ * per record (the cap's own pretty-print indent dominates in `--tree --json`),
+ * so `JSON.stringify` refuses a large enough bucket deterministically instead
+ * of at a moving depth. Both are far past `renderTreeMode`'s unbounded
+ * one-read-per-reference fan-out, which gives out first. Read the cap as what
+ * stops a SINGLE chain taking the view down, not as a total bound.
+ */
+export const MAX_STACK_TREE_DEPTH = 100;
+
+/**
  * Build a parent → child tree from the flat list of state records.
  *
  * Children are linked to their parent by `(parentStack, parentRegion)`
@@ -42,6 +76,17 @@ export interface StackTreeNode extends StackTreeEntry {
  * was filed as the other's child, none was a root, and the whole loop vanished
  * from both the text and the JSON view. A node hanging off a loop still sits
  * under its parent, which is now visible (issue #3069).
+ *
+ * A node that would sit deeper than {@link MAX_STACK_TREE_DEPTH} levels below
+ * its root is placed at the root too, so the chain resumes there as its own
+ * tree. Every record still appears exactly once, and a tree within the cap is
+ * built as before. Without it a long enough chain took the whole view down with
+ * a `RangeError` instead of costing only its own rows, since the recursive
+ * steps AFTER this function are not covered by the per-stack guard around the
+ * state read. Reaching the depths that failed takes thousands of records — in
+ * practice a hand-edited bucket, or records planted by someone holding
+ * `s3:PutObject` on it — but nothing in cdkd bounds the depth, so the cap does
+ * (issue #3155).
  *
  * The roots and every child list are sorted alphabetically by `stackName`,
  * then by `region` (legacy `undefined` last), so output is stable across
@@ -81,10 +126,65 @@ export function buildStackTree(entries: readonly StackTreeEntry[]): StackTreeNod
     for (const node of path) settled.add(node);
   }
 
+  // Each node's depth below its root, capped at MAX_STACK_TREE_DEPTH — a node
+  // that would sit deeper becomes a root itself, the treatment an orphan or a
+  // loop member already gets, so the chain continues as a sibling tree instead
+  // of a deeper one. Found in ONE pass over the parent links, like the loop
+  // detection above: walk up to the first node whose depth is already known,
+  // then assign downward. A node is walked at most once, so THIS pass costs no
+  // stack frames for a chain of any length (the child sort below still recurses,
+  // which is exactly what the cap bounds), and the answer depends only on the
+  // chain above a node, never on the order `byKey` yields them in.
+  //
+  // Every loop member is SEEDED at 0 rather than walked to. It is a root by the
+  // rule above, so 0 is its depth — and seeding is also what makes the walk
+  // below terminate without a visited set of its own, since the only way it
+  // could repeat a node is a cycle and every cycle node is seeded here.
+  //
+  // That last step is the one worth deriving rather than asserting, because a
+  // walk that reaches a cycle it does not recognize does not FAIL — it never
+  // returns, which is worse than the `RangeError` this cap exists to stop.
+  // `parentOf` gives each node at most ONE parent, so the parent links form a
+  // functional graph and its cycles are disjoint. The detection pass above
+  // writes `settled` only AFTER a walk completes, so the first walk to touch
+  // any cycle finds no member of it settled: it runs the cycle all the way
+  // round to a node still on its own path, and `path.slice(onPath.get(...))`
+  // is exactly that cycle's member set. So no cycle is ever partially
+  // detected, and `loopMembers` covers every one of them. Change either pass
+  // and this is the property to re-derive.
+  const depthOf = new Map<StackTreeNode, number>();
+  for (const member of loopMembers) depthOf.set(member, 0);
+  for (const start of byKey.values()) {
+    // A short-circuit, NOT a guard: a start that already has a depth walks
+    // nowhere and assigns nothing, so removing this line changes no output —
+    // it only skips setting the walk up. Said plainly because a clause no test
+    // can pin reads like one that was never checked.
+    if (depthOf.has(start)) continue;
+    const path: StackTreeNode[] = [];
+    let current: StackTreeNode | undefined = start;
+    while (current !== undefined && !depthOf.has(current)) {
+      path.push(current);
+      current = parentOf(current);
+    }
+    // -1 so the topmost node on the path — one with no parent in the input —
+    // comes out at 0.
+    let depth = current === undefined ? -1 : depthOf.get(current)!;
+    // Downward, from the top of the path: each node's depth is read off the one
+    // above it, so the walk's own direction must be reversed here.
+    for (let i = path.length - 1; i >= 0; i--) {
+      depth = depth + 1 > MAX_STACK_TREE_DEPTH ? 0 : depth + 1;
+      depthOf.set(path[i]!, depth);
+    }
+  }
+
   const roots: StackTreeNode[] = [];
   for (const node of byKey.values()) {
     const parent = parentOf(node);
-    if (parent && !loopMembers.has(node)) {
+    // Depth 0 is what every root has, by all three routes: no parent in the
+    // input, a parent LOOP, or a chain the cap re-rooted. The last two DO have
+    // a parent here and are placed at the root anyway, which is why the depth
+    // is the test rather than the parent alone.
+    if (parent && depthOf.get(node)! > 0) {
       parent.children.push(node);
       continue;
     }

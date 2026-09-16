@@ -726,6 +726,12 @@ async function stateListCommand(options: {
  *
  * `tree --json` emits the nested {@link import('./state-list-tree.js').StackTreeJson}
  * shape; plain `tree` renders `tree(1)`-style box-drawing.
+ *
+ * The `JSON.stringify` below recurses once per level of the shape it is handed,
+ * and so does the box-drawing renderer. Neither needs a depth guard here:
+ * `buildStackTree` caps how deep a node may sit
+ * ({@link import('./state-list-tree.js').MAX_STACK_TREE_DEPTH}), which bounds
+ * both (issue #3155).
  */
 async function renderTreeMode(
   refs: readonly StackStateRef[],

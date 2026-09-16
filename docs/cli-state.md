@@ -155,6 +155,17 @@ vanishing. `--long` and `--tree` both read every record, so they cost extra
 S3 requests per stack — two for `--long` (the record and its lock), one for
 `--tree`. The plain listing reads none of them.
 
+The tree is capped at 100 levels. A record that would sit deeper is shown at
+the root instead, and the chain continues from there, so every record still
+appears exactly once. The cap is far beyond the nesting an app is written with
+— CloudFormation stops at five levels of nested stacks, so an app that also
+has to deploy through CloudFormation cannot exceed that — but cdkd deploys
+nested stacks through its own engine and imposes no limit of its own, so a
+deeper tree is possible and stays readable rather than failing. A re-rooted
+record keeps its own parent link: `--tree --json` still reports the
+`parentStack`, `parentLogicalId` and `parentRegion` it names, which is how a
+consumer tells it apart from a genuine top-level stack.
+
 ### Unreadable records and unsafe values
 
 Neither `--long` nor `--tree` lets one stack it cannot read take down the rest
@@ -188,6 +199,7 @@ Other malformed values render instead of stopping the listing:
 | a parent link whose `parentStack` is not a string, or whose `parentRegion` is present but not a string | `--tree` drops the whole link and shows the stack at the root. An absent `parentRegion` still links to a legacy region-less parent |
 | a non-string `parentLogicalId` on an otherwise valid link | `--tree --json` emits it as `null` and keeps the link |
 | records that name each other as parent | `--tree` shows every stack on the loop at the root |
+| a parent chain more than 100 levels deep | `--tree` shows the record that would sit deeper at the root; the chain resumes there and no record is dropped |
 
 A legacy `version: 1` record with no region is not read under `--long`, so its
 row shows `Resources: 0` and `Last Modified: unknown` with no reason attached.
