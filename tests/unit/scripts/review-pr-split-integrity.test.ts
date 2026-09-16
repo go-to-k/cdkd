@@ -359,7 +359,19 @@ describe('/review-pr split integrity (go-to-k/cdkd#3170)', () => {
     {
       file: 'SKILL.md',
       what: 'the ANY-tier security reviewer, and that its blocker blocks',
-      needles: ['ADDITIVE', '`inline` included', 'blocks the marker like any other'],
+      // The needle STARTS at `not a rung on the size ladder**: ` on purpose.
+      // Three bare tokens (`ADDITIVE`, '`inline` included', 'blocks the
+      // marker…') all SURVIVE the one-line reversal `dispatch it at ANY tier`
+      // → `do NOT dispatch it at ANY tier — only at 3-axis` (measured, 21/21
+      // green), which removes the security reviewer from every tier below
+      // 3-axis. And the obvious repair is itself a substring trap:
+      // 'dispatch it at ANY tier, `inline` included' occurs INSIDE the negated
+      // sentence too, so it stays green as well — the same shape as the
+      // `!=`/`=` flip on the marker guard.
+      needles: [
+        'not a rung on the size ladder**: dispatch it at ANY tier, `inline` included',
+        'blocks the marker like any other',
+      ],
     },
     {
       file: 'references/bias-factors.md',
@@ -382,7 +394,8 @@ describe('/review-pr split integrity (go-to-k/cdkd#3170)', () => {
     {
       file: 'references/output-template.md',
       what: 'the security add-on dispatch block step 5 actually emits',
-      needles: ['security add-on trigger fired', 'pr-security-reviewer.md'],
+      // 'at ANY tier' carried contiguously for the same reason as above.
+      needles: ['security add-on trigger fired**, append (at ANY tier', 'pr-security-reviewer.md'],
     },
     {
       file: 'references/pr-stats.md',
@@ -485,6 +498,20 @@ describe('/review-pr split integrity (go-to-k/cdkd#3170)', () => {
         'Degrading it to fewer makes the top tier the tier below it, which is what ' +
         '`pr-review-gate.sh` refuses to be talked down from.'
     ).toBe(3);
+    // PRESENCE of three names is not THREE DISPATCHES, and the difference is
+    // the likelier edit: an author trimming this block writes "escalate if
+    // needed" before they delete a filename. Rewriting it to "emit the block
+    // ONCE for the code reviewer, escalate to the other two only if asked"
+    // keeps all three names, keeps `ladder()` at 3, and stays green (measured)
+    // -- the top tier becomes one unconditional reviewer plus two conditional
+    // ones. Nothing downstream sees it either: `pr-review-gate.sh` checks the
+    // marker exists and is bound to HEAD, never how many reviewers ran.
+    expect(
+      flat(threeAxis),
+      'the `3-axis` block no longer says the reviewers are dispatched TOGETHER. Three names ' +
+        'present in the block is not three dispatches ordered — a block that escalates to two ' +
+        'of them conditionally reads as 3-axis and behaves as 1-reviewer.'
+    ).toContain('the same block three times in ONE parallel message');
     expect(
       ladder(oneReviewer),
       'the `1-reviewer` block no longer dispatches exactly one reviewer.'
