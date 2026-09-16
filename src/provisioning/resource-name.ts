@@ -512,9 +512,11 @@ export function applyDefaultNameForFallback(
  * The name property {@link applyDefaultNameForFallback} fills for
  * `resourceType`, or `undefined` when it fills none.
  *
- * Read by its sibling {@link withoutGeneratedFallbackName} — the deploy engine
- * calls THAT from its Cloud Control UPDATE path, which must NOT send the
- * generated name (issue #3174). The name only matters to a CREATE: an
+ * Read by its two siblings in this file, never by a caller outside it:
+ * {@link withoutGeneratedFallbackName}, which the deploy engine calls from its
+ * Cloud Control UPDATE path, and {@link explicitNamePropertyFor}, which layers
+ * the adoption-only table on top. The UPDATE path must NOT send the generated
+ * name (issue #3174). The name only matters to a CREATE: an
  * update is a JSON Patch against the recorded bag, which holds the template's
  * resolved properties and so never carries a generated name. Injecting one
  * there makes every update patch `add` the name — harmless while the live name
