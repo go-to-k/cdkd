@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path';
  * places, one of which is executable:
  *
  *   1. `.claude/hooks/pr-review-gate.sh`  -- `UP_PATH_REGEX`, a live merge gate
- *   2. `.claude/skills/review-pr/SKILL.md` -- the bullet list the hook calls
+ *   2. `.claude/skills/review-pr/references/bias-factors.md` -- the bullet list the hook calls
  *      its source of truth
  *   3. `.claude/agents/pr-security-reviewer.md` -- section 4
  *
@@ -42,7 +42,7 @@ import { dirname, join } from 'node:path';
  * proves the copies say the same thing, never that what they say is complete --
  * `sigv4-verify.ts` and `docker-cmd.ts` were both missing from every copy at
  * once while their callers were listed. That one needs the (a)/(b)/(c) judgment
- * call in `.claude/skills/review-pr/SKILL.md`, which states the same limit
+ * call in `.claude/skills/review-pr/references/bias-factors.md`, same limit
  * about itself.
  *
  * What the copies must prove is that they are the SAME LIST, and a list is an
@@ -73,7 +73,19 @@ import { dirname, join } from 'node:path';
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 const HOOK = join(repoRoot, '.claude', 'hooks', 'pr-review-gate.sh');
-const SKILL = join(repoRoot, '.claude', 'skills', 'review-pr', 'SKILL.md');
+// The step-3 detail moved out of the orchestrator into its stage file when
+// `/review-pr` was split (go-to-k/cdkd#3170). The list is READ at step 3, so
+// the stage file is where it has to be in sync -- pointing this at SKILL.md
+// would now find no list at all, which the bounds assertion below catches
+// rather than passing vacuously.
+const SKILL = join(
+  repoRoot,
+  '.claude',
+  'skills',
+  'review-pr',
+  'references',
+  'bias-factors.md'
+);
 const AGENT = join(repoRoot, '.claude', 'agents', 'pr-security-reviewer.md');
 
 /**
@@ -176,7 +188,7 @@ function hookEntries(): string[] {
 function skillEntries(): string[] {
   const md = readFileSync(SKILL, 'utf8');
   const start = md.indexOf('security / process-launch surface');
-  expect(start, 'review-pr SKILL.md must have a security-surface bullet list').toBeGreaterThan(-1);
+  expect(start, 'review-pr bias-factors.md must have a security-surface bullet list').toBeGreaterThan(-1);
   const rest = md.slice(start);
   // The terminator is the fix-back bullet. Its wording changed with
   // go-to-k/cdkd#2638 (the count moved off erasable branch history), and this
@@ -200,7 +212,7 @@ function skillEntries(): string[] {
     'gm',
   );
   const entries = [...rest.slice(0, end).matchAll(item)].map((m) => (m[1] ?? m[2])!);
-  assertFloor(entries, 'review-pr SKILL.md up-bias bullet list');
+  assertFloor(entries, 'review-pr bias-factors.md up-bias bullet list');
   return entries;
 }
 
@@ -274,7 +286,7 @@ function agentEntries(): string[] {
 function allCopies(): Record<string, string[]> {
   return {
     'pr-review-gate.sh UP_PATH_REGEX': hookEntries(),
-    'review-pr/SKILL.md bullet list': skillEntries(),
+    'review-pr/references/bias-factors.md bullet list': skillEntries(),
     'pr-security-reviewer.md section 4': agentEntries(),
   };
 }
