@@ -103,6 +103,14 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    # Measured over the 11 most recent successful runs: 31 31 32 33 41 72 74 74
+    # 77 80 80 seconds -- median 72, max 80. 20 minutes is ~15x that, and loose
+    # on purpose: this is the one job whose duration is bounded by AWS rather
+    # than by the repo (a bundle download plus per-type `DescribeType` calls,
+    # each with its own retry schedule), so the observed spread understates what
+    # a bad day looks like. What the bound still buys is a cap far below the
+    # 360-minute default on a job that holds `contents: write`.
+    timeout-minutes: 20
     permissions:
       contents: write
       # `pull-requests: write` covers the label and the assignee the marking

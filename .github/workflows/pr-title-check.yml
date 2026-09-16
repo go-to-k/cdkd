@@ -40,6 +40,10 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # Measured over the 12 most recent successful runs: 3 3 3 3 3 3 4 5 5 6 6 6
+    # seconds -- median 3.5, max 6. One action call against the PR title; 5
+    # minutes is runner-startup slack.
+    timeout-minutes: 5
     steps:
       - name: Check PR Title
         uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6
@@ -62,6 +66,11 @@ jobs:
 
   prefix-scope:
     runs-on: ubuntu-latest
+    # Measured over the 12 most recent successful runs: 12 13 13 13 14 14 15 15
+    # 15 15 15 16 seconds -- median 14.5, max 16. 10 minutes is ~37x that; the
+    # job checks out the base and runs one TypeScript checker, and the slack is
+    # sized for install rather than for the check itself.
+    timeout-minutes: 10
     # Narrower than the workflow-level block: this job only READS. Nothing from
     # the head is executed: the checkout is pinned to the BASE commit (see the
     # step below), and the two PR-controlled inputs (title, file list) are

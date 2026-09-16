@@ -33,10 +33,18 @@ on:
       - '.claude/settings.json'
       - '.github/workflows/hooks.yml'
 
+# Deny by default, then grant per job — see the same block in `ci.yml`. These
+# two were the only workflows relying on the repository's
+# `default_workflow_permissions` setting rather than declaring their own
+# (issue go-to-k/cdkd#3229).
+permissions: {}
+
 jobs:
   hook-suites:
     runs-on: macos-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 

@@ -5,9 +5,26 @@ on:
   pull_request:
     branches: [main]
 
+# Deny by default, then grant per job. Nine of the eleven workflows already do
+# this; `ci.yml` did not, and relied on the repository's
+# `default_workflow_permissions` setting being `read`. That is a setting a
+# maintainer can change from the web UI, which would silently widen every job
+# here -- including ones a FORK triggers through `pull_request`. An explicit
+# block cannot be widened from outside the file (issue go-to-k/cdkd#3229).
+permissions: {}
+
 jobs:
   check-build-test:
     runs-on: ubuntu-latest
+    # Measured over the 12 most recent successful runs: 558 585 591 678 680 684
+    # 697 703 716 721 722 746 seconds -- median 690.5, max 746 (~12.4 min). 30
+    # minutes is ~2.4x the slowest observed run, which absorbs a slow runner and
+    # ordinary growth while capping a runaway at 30 minutes rather than the
+    # Actions default of 360. This job is fork-reachable, so it is the one the
+    # bound matters most for.
+    timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
       # `fetch-depth: 0` is load-bearing, not a default anyone forgot to trim.
       # `rule-file-payload.test.ts` projects this branch's rule-file payload onto
@@ -422,6 +439,13 @@ jobs:
   # new entry is not, and a new test file that leaks fails this job.
   once-leak-detect:
     runs-on: ubuntu-latest
+    # Measured over the same 12 runs: 435 448 453 551 626 648 656 656 658 660
+    # 663 690 seconds -- median 652, max 690 (~11.5 min). Same bound as
+    # check-build-test for the same reason: it runs the same unit suite, so the
+    # two grow together and a shared value will not need re-deriving twice.
+    timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
       # Same reason as check-build-test: this job runs the unit suite too, so it
       # reaches the same `origin/main` projection and would fail closed without
@@ -464,6 +488,14 @@ jobs:
   runtime-compat:
     runs-on: ubuntu-latest
     needs: check-build-test
+    # Measured over 33 matrix legs from the same 12 runs: 32-48 seconds, median
+    # 39. 10 minutes is ~12x the slowest leg -- deliberately loose, because the
+    # job is dominated by install and build rather than by anything that scales
+    # with the repo, and a tight bound here would fail on a slow registry
+    # without ever catching a runaway.
+    timeout-minutes: 10
+    permissions:
+      contents: read
     strategy:
       matrix:
         # The first row is the EXACT published floor (`package.json`
@@ -516,6 +548,12 @@ jobs:
   release-pr-not-stale:
     if: startsWith(github.head_ref, 'release-please--')
     runs-on: ubuntu-latest
+    # One successful run in the 12-run window (the job is gated on a
+    # release-please branch): 11 seconds. 10 minutes is loose against a
+    # one-point sample on purpose -- the work is a fetch plus two `git rev-list`
+    # calls, and a bound derived tightly from n=1 would be a guess wearing a
+    # measurement's clothes.
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -598,6 +636,9 @@ jobs:
     if: always()
     needs: [check-build-test, once-leak-detect, runtime-compat, release-pr-not-stale]
     runs-on: ubuntu-latest
+    # Measured over the same 12 runs: 2-4 seconds. The step is a shell loop over
+    # four strings, so 5 minutes is entirely runner-startup slack.
+    timeout-minutes: 5
     permissions: {}
     env:
       # Through `env:` rather than inline in `run:`. The value space here is a

@@ -50,6 +50,10 @@ permissions: {}
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    # Measured over the 12 most recent successful runs: 7 8 10 10 11 14 14 15 17
+    # 18 22 22 seconds -- median 14, max 22. One action that reads history and
+    # opens or updates a PR; 10 minutes is ~27x the slowest observed.
+    timeout-minutes: 10
     permissions:
       contents: write
       pull-requests: write
@@ -65,6 +69,10 @@ jobs:
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
+    # Only 4 successful runs in the 12-run window (the job is gated on a release
+    # actually being created): 45 45 50 50 seconds. 15 minutes is ~18x that,
+    # loose because the tail is npm's own publish latency, not this repo's.
+    timeout-minutes: 15
     permissions:
       contents: read
       id-token: write

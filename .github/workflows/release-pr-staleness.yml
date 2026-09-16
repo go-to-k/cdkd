@@ -46,6 +46,11 @@ concurrency:
 jobs:
   disarm:
     runs-on: ubuntu-latest
+    # Measured over the 12 most recent successful runs: 9 9 10 10 11 11 11 12 12
+    # 13 15 45 seconds -- median 11, max 45. The 45 is the outlier the bound is
+    # sized against rather than the median: 10 minutes is ~13x it, and the job
+    # is API calls with no checkout.
+    timeout-minutes: 10
     permissions:
       contents: read
       pull-requests: write
