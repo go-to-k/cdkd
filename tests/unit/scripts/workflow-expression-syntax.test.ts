@@ -75,8 +75,14 @@
  * the end reads this file's own source and counts the exact TEXT of each raw
  * primitive. The members are NOT listed here — a list in two places is a list
  * that goes stale in one, which is what happened to the renderer count and then
- * again to this very sentence, which named six of the ten. Read the block —
- * about a hundred lines, each count commented with the mistake it is there for.
+ * again to this very sentence, which named six of the ten. Read the block.
+ *
+ * It says nothing more about the block on purpose. Four successive attempts to
+ * summarise it here — the member list, then a count, then "each count carries
+ * the mistake it is there for", then "one screen" — were each measured false in
+ * the round after they were written. A sentence describing code that sits a
+ * hundred lines away has nothing checking it, and this file has spent more
+ * review rounds on that class than on the checker it fences.
  *
  * WHAT THOSE COUNTS DO AND DO NOT CATCH, stated exactly, because two earlier
  * versions of this paragraph overstated it and the second overstated it while
@@ -523,11 +529,11 @@ const safeName = (name: string): string =>
  *
  * Hoisted to module scope because the renderers of this one forgery were found
  * and closed ONE AT A TIME, each fix reaching exactly the field it was written
- * for. Neither the list nor the count is repeated here: the header's "WHERE
- * THIS STOPS" owns both, and this sentence has now gone stale twice — once
+ * for. The count is the header's ("WHERE THIS STOPS"); no list of the sites
+ * exists anywhere, deliberately. This sentence has now gone stale three times —
  * saying "six" for two rounds after it was eleven, then listing nine sites
- * against the header's eleven, because two of the bullets covered two sites
- * each. Anything that prints a workflow's bytes or its name goes through this
+ * against that eleven, then claiming the header carried a list it does not.
+ * Anything that prints a workflow's bytes or its name goes through this
  * or through `safeName`.
  */
 const safeRender = (s: string): string => {
@@ -1634,8 +1640,8 @@ describe('workflow expression syntax', () => {
       // `readFileSync(join(WORKFLOW_DIR` caught a re-spelled read only when it
       // REPLACED the guarded one; a reader ADDED as
       // `readFileSync(`${WORKFLOW_DIR}/${n}`)` moved neither count and stayed
-      // green. Exactly ONE is legitimate — `readWorkflow`'s own; the fence's
-      // two reads of THIS file sit after the marker and are not in `SUBJECT`.
+      // green. Exactly ONE is legitimate — `readWorkflow`'s own; this block's
+      // own read of THIS file sits after the marker and is not in `SUBJECT`.
       expect(countOf('readFileSync(')).toBe(1);
       // The guarded reader's own uses: `bodies`, the per-file case, the probe
       // block's `REAL`, and one case that exercises its failure path. This
@@ -1660,8 +1666,10 @@ describe('workflow expression syntax', () => {
       // the same reason every other renderer needed counting rather than a case.
       //
       // Scoped to that one expression rather than banning `toContain` outright:
-      // twenty of its uses here read a reason or a message this file OWNS, and
-      // those are the assertions a reader wants a diff from.
+      // most of its other uses read a reason or a message this file OWNS, and
+      // those are the assertions a reader wants a diff from. Not all of them —
+      // a few do read file-derived text — so the ban would have to be argued
+      // case by case, which is why it is not attempted here.
       expect(countOf("mutated.split('\\n')[offences[0]!.line - 1]?.includes(")).toBe(2);
       // And the BARE expression, because the line above pins the safe spelling
       // only — the inverse of the `readFileSync(` lesson two counts up. A raw
