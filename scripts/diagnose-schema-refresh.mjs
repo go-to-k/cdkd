@@ -2925,6 +2925,11 @@ export function renderChangelogFragment({
   const backToSdkSticky = removedRoutable.filter(
     (e) => !e.retainsOtherDrops && !exemptTypes.has(e.resourceType)
   );
+  // BOUND: unreachable against the SHIPPED tables — both exempt types carry
+  // zero `silentDrop` rows (`AWS::SNS::Topic` by its admission requirement,
+  // `AWS::Scheduler::Schedule` as measured), so neither can appear in
+  // `silentDropRemoved`. Kept because the exemption table is a curated list
+  // that grows, and the arm it replaces asserted the opposite.
   const backToSdkExempt = removedRoutable.filter(
     (e) => !e.retainsOtherDrops && exemptTypes.has(e.resourceType)
   );
@@ -3026,7 +3031,7 @@ export function renderChangelogFragment({
   }
 
   if (removedDrops.length > 0) {
-    droppable.push(sentences.length);  // dropped only after the create-only one
+    droppable.push(sentences.length); // dropped only after the create-only one
     sentences.push(
       `The withdrawn ${removedCount === 1 ? 'key loses' : 'keys lose'} the \`silentDrop\` row that ` +
         `made the issue [#614](https://github.com/go-to-k/cdkd/issues/614) auto-route apply to ` +
@@ -3068,13 +3073,31 @@ export function renderChangelogFragment({
         `\`provisionedBy: 'cc-api'\` returns to its SDK provider on the next mutating deploy.`
     );
   }
-  const removedUnroutableNames = removedUnroutable.map((e) => renderName(e.resourceType));
-  if (removedUnroutable.length > 0) {
+  // Split on the same axis as the routable half, because the two states carry
+  // OPPOSITE news. With a drop left the type stays refusable; with none left
+  // the refusal itself goes away — and that is the largest delta this half can
+  // report. `AWS::Logs::LogGroup` is the live shape: one silentDrop row
+  // (`ResourcePolicyDocument`) on a provider that declines the CC fallback, so
+  // AWS withdrawing it flips a HARD pre-flight refusal into an ordinary SDK
+  // deploy that warns.
+  const unroutableKeeping = removedUnroutable.filter((e) => e.retainsOtherDrops);
+  const unroutableCleared = removedUnroutable.filter((e) => !e.retainsOtherDrops);
+  const removedUnroutableNames = unroutableKeeping.map((e) => renderName(e.resourceType));
+  if (unroutableKeeping.length > 0) {
     sentences.push(
       `${removedUnroutableNames.join(' / ')} never took that route — ` +
-        `${removedUnroutable.length === 1 ? 'its provider declines' : 'their providers decline'} the ` +
-        `Cloud Control fallback, or AWS reports the type NON_PROVISIONABLE — so a remaining drop is ` +
-        `REFUSED at pre-flight there rather than routed.`
+        `${unroutableKeeping.length === 1 ? 'its provider declines' : 'their providers decline'} the ` +
+        `Cloud Control fallback, or AWS reports the type NON_PROVISIONABLE — so the drops it still ` +
+        `carries are REFUSED at pre-flight there rather than routed.`
+    );
+  }
+  const unroutableClearedNames = unroutableCleared.map((e) => renderName(e.resourceType));
+  if (unroutableCleared.length > 0) {
+    sentences.push(
+      `${unroutableClearedNames.join(' / ')} ${unroutableCleared.length === 1 ? 'declines' : 'decline'} ` +
+        `the Cloud Control fallback and now ${unroutableCleared.length === 1 ? 'has' : 'have'} no ` +
+        `actionable drop left, so the pre-flight REFUSAL goes with the withdrawn key: a template that ` +
+        `was rejected outright now deploys on the SDK path, warning about the unrecognized property.`
     );
   }
   const removedUnknownNames = removedDrops
@@ -3135,7 +3158,8 @@ export function renderChangelogFragment({
     [stillRoutedNames, `${stillRouted.length} of the withdrawing types`],
     [backToSdkNames, `${backToSdkSticky.length} of the withdrawing types`],
     [backToSdkExemptNames, `${backToSdkExempt.length} of the withdrawing types`],
-    [removedUnroutableNames, `${removedUnroutable.length} of the withdrawing types`],
+    [removedUnroutableNames, `${unroutableKeeping.length} of the withdrawing types`],
+    [unroutableClearedNames, `${unroutableCleared.length} of the withdrawing types`],
     [removedUnknownNames, `${removedUnknownNames.length} of the withdrawing types`],
   ])) {
     if (names.length === 0) continue;
@@ -3161,7 +3185,30 @@ export function renderChangelogFragment({
   // that reports an ABSENCE, which makes it the cheapest thing to give up.
   for (const index of [...droppable].reverse()) {
     sentences[index] = '';
-    if (assemble().trimEnd().length <= CHANGELOG_ENTRY_LIMIT) break;
+    if (assemble().trimEnd().length <= CHANGELOG_ENTRY_LIMIT) return assemble();
+  }
+
+  // Still over, and width is no longer what drives it: with every bucket
+  // populated the sentence set is fixed-cost (~2700 at saturation, measured),
+  // so the BUCKET COUNT is the variable and the two droppable sentences are
+  // not enough. Give up whole per-type notes from the END — the earlier ones
+  // describe the populations a cycle is likeliest to carry — and say how many
+  // went, so a reader knows to read the pull request rather than assuming the
+  // entry is complete. Never sentence 0: the headline carries both lists, the
+  // counts and the warn/drop outcome.
+  let omitted = 0;
+  for (let i = sentences.length - 1; i > 0; i--) {
+    if (sentences[i] === '') continue;
+    sentences[i] = '';
+    omitted += 1;
+    const note =
+      `${omitted} further per-type note${omitted === 1 ? '' : 's'} omitted to fit the entry cap; ` +
+      `the pull request's diagnosis lists every type.`;
+    const withNote = `${[...sentences.filter((line) => line !== ''), note].join(' ')}\n`;
+    if (withNote.trimEnd().length <= CHANGELOG_ENTRY_LIMIT) {
+      sentences.push(note);
+      return assemble();
+    }
   }
   return assemble();
 }

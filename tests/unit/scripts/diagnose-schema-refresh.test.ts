@@ -3268,6 +3268,68 @@ describe('renderChangelogFragment', () => {
     expect(fragment).not.toContain('REFUSED at pre-flight there');
   });
 
+  it('says the pre-flight REFUSAL goes away when a refused type loses its last drop', () => {
+    // The largest delta the removal half can report, and it was collapsed into
+    // the keeps-a-drop wording: `AWS::Logs::LogGroup` carries exactly one
+    // silentDrop row on a provider that declines the CC fallback, so AWS
+    // withdrawing it flips a HARD pre-flight refusal into an SDK deploy.
+    const fragment = renderChangelogFragment({
+      writableAdded: [],
+      exemptTypes,
+      unroutableTypes: new Set(['AWS::Logs::LogGroup']),
+      silentDropRemoved: [
+        {
+          resourceType: 'AWS::Logs::LogGroup',
+          properties: ['ResourcePolicyDocument'],
+          retainsOtherDrops: false,
+        },
+      ],
+    })!;
+    expect(fragment).toContain('the pre-flight REFUSAL goes with the withdrawn key');
+    expect(fragment).toContain('now deploys on the SDK path');
+    // The keeps-a-drop wording would be vacuous here -- it describes drops the
+    // type no longer has.
+    expect(fragment).not.toContain('the drops it still carries are REFUSED');
+  });
+
+  it('fits the cap with every bucket populated, and says what it omitted', () => {
+    // Width is not what drives this: with all nine buckets carrying one type
+    // the sentence set is fixed-cost (~2700 measured), so the two droppable
+    // sentences cannot get under the cap on their own. The last-resort arm
+    // gives up whole per-type notes from the end and NAMES the count, so a
+    // reader knows to read the PR rather than assuming the entry is complete.
+    const added = (t: string) => ({ resourceType: t, properties: ['P'], createOnly: [] });
+    const gone = (t: string, keep: boolean) => ({
+      resourceType: t,
+      properties: ['P'],
+      retainsOtherDrops: keep,
+    });
+    const fragment = renderChangelogFragment({
+      writableAdded: [added('AWS::A::Routed'), added('AWS::B::Unroutable'), added('AWS::C::Unknown')],
+      exemptTypes: new Set(['AWS::G::Exempt']),
+      unroutableTypes: new Set([
+        'AWS::B::Unroutable',
+        'AWS::E::UnroutableKeep',
+        'AWS::F::UnroutableClear',
+      ]),
+      unknownRoutingTypes: new Set(['AWS::C::Unknown', 'AWS::I::UnknownRm']),
+      silentDropRemoved: [
+        gone('AWS::D::Still', true),
+        gone('AWS::G::Exempt', false),
+        gone('AWS::H::Sticky', false),
+        gone('AWS::E::UnroutableKeep', true),
+        gone('AWS::F::UnroutableClear', false),
+        gone('AWS::I::UnknownRm', true),
+      ],
+    })!;
+    expect(fragment.trimEnd().length).toBeLessThanOrEqual(CHANGELOG_ENTRY_LIMIT);
+    expect(fragment).toMatch(/\d+ further per-type notes? omitted to fit the entry cap/);
+    // The headline survives whatever else goes: it carries both lists, the
+    // counts and the warn/drop outcome.
+    expect(fragment.startsWith('- **')).toBe(true);
+    expect(fragment.slice(0, fragment.indexOf('**', 4))).toContain('dropped with a warn');
+  });
+
   it('keeps the withdrawal CONSEQUENCE when the trim fires', () => {
     // The warn/drop outcome is the one thing a reader acts on, and the wide
     // trim used to take it: the mechanism sentence was dropped first and the
