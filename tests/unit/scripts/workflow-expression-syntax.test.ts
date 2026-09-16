@@ -208,13 +208,30 @@ export const analyseExpression = (
   body: string,
   /**
    * Roots to treat as known for this read. The caller uses it to ask "would
-   * this body be an expression if THIS root existed?" — which settles a
+   * this body be an expression if THESE roots existed?" — which settles a
    * missing root against prose without any offset arithmetic, and without the
    * single-occurrence bound a textual substitution had: `newctx.a == newctx.b`
    * has the root twice, and replacing one left the other unknown, so an
    * ordinary condition naming a new context reported as prose.
    */
   extraRoots: ReadonlySet<string> = new Set(),
+  /**
+   * When given, an unrecognised root is RECORDED here and the walk continues as
+   * if it were known, instead of returning at the first one.
+   *
+   * That turns the caller's question into a CONSTANT number of reads. Asking it
+   * one root at a time was quadratic in attacker-controlled input — measured
+   * 35.5 s on a 200 KB body of distinct roots against 0.02 s for every other
+   * 200 KB shape, four-fold per doubling — and `ci.yml` runs on
+   * `pull_request` with no `timeout-minutes`, so a fork PR adding one large
+   * workflow file burned runner-hours up to the six-hour ceiling. Vitest cannot
+   * preempt it either: a synchronous loop runs to completion and the 5 s
+   * `testTimeout` only reports afterwards.
+   *
+   * Recording and continuing does NOT make prose readable — `the same rule`
+   * still refuses, because `same` then arrives where an operator is due.
+   */
+  collect?: Set<string>,
 ): Verdict => {
   TOKEN.lastIndex = 0;
   let at = 0;
@@ -296,7 +313,13 @@ export const analyseExpression = (
           // root GitHub has newly documented; the caller settles which by
           // re-reading the body with this root allowed.
           const bareWord = isFirst && !tok.includes('.') && body.slice(at).trim() === '';
-          return bareWord ? { ok: false } : { ok: false, unknownRoot: root };
+          if (bareWord) return { ok: false };
+          if (collect !== undefined) {
+            collect.add(root);
+            expect = 'operator';
+            continue;
+          }
+          return { ok: false, unknownRoot: root };
         }
       }
       expect = 'operator';
@@ -389,7 +412,13 @@ const flatten = (s: string): string => {
     const code = ch.codePointAt(0)!;
     const unsafe =
       code <= 0x20 ||
-      code === 0x7f ||
+      // DEL, and the C1 range: U+0085 is NEL, a line break to a Unicode-aware
+      // reader, and it is neither `<= 0x20` nor `\s`.
+      (code >= 0x7f && code <= 0x9f) ||
+      // Every bidi control, not only the overrides: the marks (U+200E, U+200F,
+      // U+061C) and the isolates reorder a rendered line too.
+      code === 0x61c ||
+      (code >= 0x200e && code <= 0x200f) ||
       (code >= 0x202a && code <= 0x202e) ||
       (code >= 0x2066 && code <= 0x2069) ||
       /\s/.test(ch);
@@ -408,19 +437,25 @@ const flatten = (s: string): string => {
  * A file name as it may appear in a finding.
  *
  * CONSTRAINED, not flattened — the distinction cost two rounds. `flatten` is a
- * control-byte guard, and a workflow file can be named in printable ASCII that
- * reads as a complete finding against a different file: a tracked file called
- * `ci.yml:412: empty expression body — … — hooks.yml` passes the `.ya?ml`
- * filter, passes the tracked-set equality case, and renders a line opening as a
- * false report about `ci.yml`. Every character in it is printable, so no
- * amount of flattening touches it.
+ * control-byte guard, and a workflow file can be named in PURE ASCII that reads
+ * as a complete finding against a different file. A tracked file called
+ *
+ *     ci.yml:412: empty expression body - and no more - hooks.yml
+ *
+ * passes the `.ya?ml` filter, passes the tracked-set equality case, is a
+ * `flatten` no-op, and renders a line opening as a false report about `ci.yml`.
+ * The example is spelled with ASCII hyphens on purpose: written with em dashes
+ * it was neither pure ASCII nor able to pass the tracked-set case, because
+ * `git ls-files` C-quotes a non-ASCII path and the two listings then disagree —
+ * a comment that did not exhibit the shape it described.
  *
  * A real workflow file name is a short, dull thing. Anything else is quoted, so
- * it can only ever be read as one field.
+ * it can only ever be read as one field, and clamped, since it is the one field
+ * that had no length bound.
  */
 const WORKFLOW_NAME = /^[A-Za-z0-9._-]+\.ya?ml$/;
 const safeName = (name: string): string =>
-  WORKFLOW_NAME.test(name) ? name : JSON.stringify(flatten(name));
+  WORKFLOW_NAME.test(name) ? name : JSON.stringify(flatten(name).slice(0, 120));
 
 interface Offence {
   readonly file: string;
@@ -525,34 +560,21 @@ export const findExpressionOffences = (rawFile: string, source: string): Offence
       // occurrence at a recorded offset failed `newctx.a == newctx.b` (same
       // root twice), and allowing one root failed `newa.foo && newb.bar`.
       //
-      // The bound is PROGRESS, not a round count. `known` tests `extraRoots`
-      // first, so a root already allowed cannot come back as `unknownRoot` and
-      // the set grows on every pass — but that is an argument about the walker,
-      // and the loop should not depend on it being true. Measured: deleting the
-      // `extraRoots` disjunct while a `round < N` guard was absent hung the
-      // suite for over two hours instead of redding, because the same root came
-      // back forever.
-      //
-      // A COUNT was the first fix and it was wrong in the other direction: it
-      // is not outcome-neutral, so a body naming eleven distinct unknown roots
-      // exhausted it and fell to the PROSE message — the true-verdict /
-      // false-diagnosis shape this three-way split exists to remove. Requiring
-      // the set to actually grow terminates unconditionally AND cannot change
-      // any verdict, since a pass that adds nothing had nothing left to learn.
-      // The calls are sequential, never nested.
-      const allowed = new Set<string>();
-      let probe = verdict;
+      // ONE extra read, whatever the body names. Asking the question a root at
+      // a time needed a loop, and every bound on that loop was wrong in one
+      // direction or the other: a `round < 10` count was not outcome-neutral
+      // (eleven distinct roots fell to the PROSE message), and a
+      // progress-bounded loop was quadratic in attacker-controlled input,
+      // re-tokenising the whole body per root. `collect` gathers them all in a
+      // single walk, so the cost is constant and there is no loop left to
+      // terminate.
+      // Annotated, because `verdict` is narrowed to the refusing arm here and
+      // the re-read may well succeed.
+      let probe: Verdict = verdict;
       let plausibleRoot = false;
-      while (probe.unknownRoot !== undefined) {
-        const before = allowed.size;
-        allowed.add(probe.unknownRoot);
-        if (allowed.size === before) break;
-        const next = analyseExpression(body, allowed);
-        if (next.ok) {
-          plausibleRoot = true;
-          break;
-        }
-        probe = next;
+      if (verdict.unknownRoot !== undefined) {
+        probe = analyseExpression(body, new Set(), new Set<string>());
+        plausibleRoot = probe.ok;
       }
       // The two refusals want OPPOSITE actions from the reader — rewrite the
       // prose, or add a root GitHub has newly documented — so a single message
@@ -561,23 +583,25 @@ export const findExpressionOffences = (rawFile: string, source: string): Offence
       // token instead told the bare one-word case — the headline
       // reintroduction wording — to add `expression` to the root set, which
       // would have permanently re-opened the hole this arm closes.
-      // The LAST probe's uncalled function counts too, not just the first
-      // verdict's: `newctx.a && format` names a new root, then an uncalled
-      // function once that root is allowed, and reading only `verdict` left it
-      // on the prose arm — a true verdict under a false diagnosis, which is
-      // the shape this split exists to remove.
-      const uncalled = verdict.uncalledFunction ?? probe.uncalledFunction;
-      // Clamped for the same reason the excerpt is — the charset rules out
-      // forgery, but a 200 k root would otherwise mean a 200 KB reason.
-      const named = (verdict.unknownRoot ?? uncalled ?? '').slice(0, 60);
+      // `probe` alone, not `verdict.uncalledFunction ?? probe.uncalledFunction`:
+      // the two fields are never both set, so the first arm of that chain was
+      // unreachable. `newctx.a && format` names a new root first and the
+      // uncalled function only once the roots are allowed, which is why the
+      // LATER read is the one that carries it.
+      //
+      // Each name is clamped ONCE, at its binding — the charset rules out
+      // forgery, but a 200 k root would otherwise mean a 200 KB reason, and
+      // written inline the clamp had to be repeated three times.
+      const namedFn = (probe.ok ? undefined : probe.uncalledFunction)?.slice(0, 60);
+      const namedRoot = verdict.unknownRoot?.slice(0, 60);
       offences.push({
         file,
         line: lineOf(at),
         reason:
-          uncalled !== undefined
-            ? `expression body names \`${(uncalled ?? '').slice(0, 60)}\`, an Actions FUNCTION, which is a value only when called — bare it is "Unrecognized named-value" and refuses the whole file. Write \`${(uncalled ?? '').slice(0, 60)}(…)\`, or if this is prose in a comment, say it in words`
+          namedFn !== undefined
+            ? `expression body names \`${namedFn}\`, an Actions FUNCTION, which is a value only when called — bare it is "Unrecognized named-value" and refuses the whole file. Write \`${namedFn}(…)\`, or if this is prose in a comment, say it in words`
             : plausibleRoot
-              ? `expression body names \`${named}\`, which is no Actions context or function — Actions answers "Unrecognized named-value" and refuses the whole file. If GitHub has added it, add it to CONTEXT_HEADS or FUNCTION_HEADS`
+              ? `expression body names \`${namedRoot}\`, which is no Actions context or function — Actions answers "Unrecognized named-value" and refuses the whole file. If GitHub has added it, add it to CONTEXT_HEADS or FUNCTION_HEADS`
               : 'expression body is prose, not an expression — inside a `run:` body this refuses the whole file the same way an empty one does',
         text: excerpt(at, close + 2),
       });
@@ -623,14 +647,25 @@ describe('workflow expression syntax', () => {
     expect([...workflowFiles].sort()).toEqual([...tracked].sort());
   });
 
-  it.each(workflowFiles)('%s carries no unreadable expression', (name) => {
-    const source = readFileSync(join(WORKFLOW_DIR, name), 'utf8');
-    const offences = findExpressionOffences(name, source);
-    expect(
-      offences.map((o) => `${o.file}:${o.line}: ${o.reason} — ${o.text}`),
-      'an expression Actions cannot read invalidates the ENTIRE workflow file, so the job simply stops being scheduled. A real YAML comment is refused too, deliberately: write "expression" in words there — the header says why',
-    ).toEqual([]);
-  });
+  /**
+   * The TEST TITLE renders the name too, and it was the last field still raw —
+   * `it.each(workflowFiles)('%s …')` interpolates it unescaped, so a file named
+   * with a newline printed the same forged second line `safeName` closes in the
+   * finding, and a raw ESC in a name erased the line above (where a sibling
+   * failure prints). Measured in a real vitest run. The safe name titles the
+   * case; the raw one still opens the file.
+   */
+  it.each(workflowFiles.map((name) => [safeName(name), name]))(
+    '%s carries no unreadable expression',
+    (_title, name) => {
+      const source = readFileSync(join(WORKFLOW_DIR, name), 'utf8');
+      const offences = findExpressionOffences(name, source);
+      expect(
+        offences.map((o) => `${o.file}:${o.line}: ${o.reason} — ${o.text}`),
+        'an expression Actions cannot read invalidates the ENTIRE workflow file, so the job simply stops being scheduled. A real YAML comment is refused too, deliberately: write "expression" in words there — the header says why',
+      ).toEqual([]);
+    },
+  );
 
   /**
    * The grammar's ACCEPT side, measured against the corpus rather than against
@@ -906,18 +941,50 @@ describe('workflow expression syntax', () => {
         expect(offence!.file.startsWith('"')).toBe(true);
       });
 
+      it('renders a legitimate name unquoted', () => {
+        // The ACCEPT arm of `WORKFLOW_NAME`: without this, tightening the regex
+        // so no real name passes — or quoting unconditionally — stays green,
+        // and over-refusal is the direction this file's header calls dangerous.
+        const [offence] = findExpressionOffences('ci.yml', 'a: ${{ prose x }}');
+        expect(offence!.file).toBe('ci.yml');
+      });
+
+      it('strips ESC from the EXCERPT, which no quoting protects', () => {
+        // `flatten`'s FIRST stated reason had no case. The file name is
+        // incidentally covered by `JSON.stringify`, which escapes every C0
+        // byte; the excerpt is not, so deleting the control-byte test emitted a
+        // raw cursor-up plus erase-line into the finding.
+        const esc = String.fromCharCode(0x1b);
+        const [offence] = findExpressionOffences('x.yml', `a: \${{ prose ${esc}[1A${esc}[2K x }}`);
+        expect(offence!.text).not.toContain(esc);
+      });
+
       it.each([
         ['a newline', 'evil\nci.yml:1: FORGED.yml'],
         ['a DEL byte', `evil${String.fromCharCode(0x7f)}.yml`],
+        ['a NEL byte', `evil${String.fromCharCode(0x85)}.yml`],
         ['a Unicode line separator', `evil${String.fromCharCode(0x2028)}.yml`],
         ['a bidi override', `evil${String.fromCharCode(0x202e)}.yml`],
+        ['a bidi isolate', `evil${String.fromCharCode(0x2066)}.yml`],
+        ['a bidi mark', `evil${String.fromCharCode(0x200f)}.yml`],
+        ['an Arabic letter mark', `evil${String.fromCharCode(0x61c)}.yml`],
       ])('strips %s from a rendered file name', (_label, name) => {
         const [offence] = findExpressionOffences(name, 'a: ${{ prose x }}');
         // A space is the REPLACEMENT, so it is expected; what must be gone is
         // anything that can move the cursor, break the line, or reorder it.
+        // The filter is derived from `flatten`'s own class rather than from the
+        // four characters an earlier version happened to feed.
         const dangerous = [...offence!.file].filter((ch) => {
           const code = ch.codePointAt(0)!;
-          return code < 0x20 || code === 0x7f || code === 0x2028 || code === 0x202e;
+          return (
+            code < 0x20 ||
+            (code >= 0x7f && code <= 0x9f) ||
+            code === 0x61c ||
+            (code >= 0x200e && code <= 0x200f) ||
+            (code >= 0x2028 && code <= 0x2029) ||
+            (code >= 0x202a && code <= 0x202e) ||
+            (code >= 0x2066 && code <= 0x2069)
+          );
         });
         expect(dangerous).toEqual([]);
       });
@@ -928,7 +995,21 @@ describe('workflow expression syntax', () => {
         // as complete. Nothing asserted `.text` on this arm at all.
         const [offence] = findExpressionOffences('x.yml', `a: \${{ ${'z'.repeat(400)}`);
         expect(offence!.text.endsWith('…')).toBe(true);
-        expect(offence!.text.length).toBeLessThanOrEqual(121);
+        // The EXACT length, not a cap: asserting only the marker and an upper
+        // bound left the window free to shrink — at 60 the excerpt silently
+        // dropped half its content while still ending in an ellipsis.
+        expect(offence!.text.length).toBe(121);
+      });
+
+      it.each([
+        [119, false],
+        [120, false],
+        [121, true],
+      ])('shows the marker at %i characters of tail: %s', (tail, marked) => {
+        // The boundary itself. `end > from + 120` has to fire on the first
+        // character actually dropped and not before.
+        const [offence] = findExpressionOffences('x.yml', `\${{ ${'z'.repeat(tail - 4)}`);
+        expect(offence!.text.endsWith('…')).toBe(marked);
       });
 
       it('clamps a very long root in the reason', () => {
