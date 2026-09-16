@@ -8030,9 +8030,11 @@ export class IntrinsicFunctionResolver {
       return await fetch;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      // Both halves are the spelling THIS line prints below, so the pair and
+      // the rendering cannot disagree about what "masked" means.
       const cfnNameMask = this.positionalNameMask([
         [stackName, this.maskSecretsForLog(stackName, context)],
-        [region, loggedRegionText],
+        [region, this.maskSecretsForLog(loggedRegionText, context)],
       ]);
       this.logger.warn(
         // MASKED, the exact twin of `lookupCfnExport`'s own line (issue #2133
@@ -8050,7 +8052,9 @@ export class IntrinsicFunctionResolver {
           // this frame hands `stackName` to `DescribeStacks` raw, and
           // `maskSecretsForLog` over the returned sentence finds no twin for it
           // and falls to the needle pass, whose substring arm cannot see a
-          // sub-floor secret assembled into the name. Same class and same frame
+          // sub-floor secret assembled into the name. Same class, and reached
+          // from the same caller as the state read below (this is its own
+          // method, not the same frame)
           // as the state read below; the two share `positionalNameMask`.
           `'${this.maskSecretsForLog(stackName, context)}' ` +
           `(${this.maskSecretsForLog(loggedRegionText, context)}): ` +
@@ -8595,14 +8599,20 @@ export class IntrinsicFunctionResolver {
    * so a 1-3 character secret an `Fn::Sub` assembled into a longer name is
    * invisible to it — while this frame knows the exact spans.
    *
-   * Each pair contributes its raw spelling AND the spelling the reader will
-   * actually see: `S3StateBackend` and the CloudFormation fallback both print
-   * names through `displaySafe(..., { asciiOnly: true })`, which REPLACES every
-   * non-printable character with a space and then trims, so a secret carrying
-   * one is a DIFFERENT string by the time it is quoted back. Matching the raw
-   * form alone would miss it while reporting success — the one-string-space
-   * rule `outputs-export-alias.ts` states for its own scan: the text that was
-   * tested and the text that is printed must be the same text.
+   * A pair that DOES carry a mask contributes its raw spelling AND the spelling
+   * the reader will actually see. `S3StateBackend` prints names through
+   * `displaySafe(..., { asciiOnly: true })`, which REPLACES every non-printable
+   * character with a space and then trims, so a secret carrying one is a
+   * DIFFERENT string by the time it is quoted back and matching the raw form
+   * alone would miss it while reporting success — the one-string-space rule
+   * `outputs-export-alias.ts` states for its own scan: the text that was tested
+   * and the text that is printed must be the same text. The CloudFormation
+   * fallback does NOT sanitize (it rethrows the SDK's message as it is), so the
+   * second spelling is inert at that call site and costs one comparison.
+   *
+   * `raw !== ''` is LOAD-BEARING, not tidying: a wholly non-printable name
+   * sanitizes to the empty string, and substituting `''` would splice the mask
+   * between every character of the message.
    *
    * LONGEST RAW FIRST, so a name that contains another is rewritten as itself
    * rather than having its inner name replaced underneath it. **That ordering
@@ -8621,21 +8631,30 @@ export class IntrinsicFunctionResolver {
     pairs: readonly (readonly [string, string])[]
   ): ((text: string) => string) | undefined {
     const substitutions = pairs
+      // DROP AN UNMASKED PAIR FIRST, and the order is the whole correctness
+      // argument rather than a tidying. Expanding first and filtering after
+      // tests the tuple that came out of the expansion, so for a pair carrying
+      // NO mask (`masked === raw`) the `[raw, raw]` entry is dropped while
+      // `[shown, raw]` survives — a transform that rewrites the SANITIZED
+      // spelling back into the RAW one. That un-does the `displaySafe` the
+      // printing module applied on purpose (issue #3003), re-opening the
+      // padded-name spoof `display-safe.ts` documents and putting a live
+      // escape sequence back on the terminal, and it corrupts unrelated text
+      // besides (`production` -> `prod uction` for a name `prod `). Measured,
+      // and a leading space is enough to reach it — no non-ASCII needed,
+      // because `trim()` is part of the transform.
+      .filter(([raw, masked]) => raw !== '' && raw !== masked)
       .flatMap(([raw, masked]) => {
         const shown = displaySafe(raw, { asciiOnly: true });
-        return shown === raw
+        // `shown === ''` for a wholly non-printable name: substituting the
+        // empty string would splice the mask between every character.
+        return shown === raw || shown === ''
           ? [[raw, masked] as const]
           : ([
               [raw, masked],
               [shown, masked],
             ] as const);
       })
-      // `raw !== ''` is REDUNDANT today — `maskSecretsForLog('')` is `''`, so
-      // the second test already drops it — and kept anyway: it is the guard
-      // against `''.split('')`, which splits between every character and would
-      // splice the mask through the whole text. Cheap, and the failure it
-      // prevents is not a wrong verdict but a destroyed message.
-      .filter(([raw, masked]) => raw !== '' && raw !== masked)
       .sort(([a], [b]) => b.length - a.length);
     if (substitutions.length === 0) return undefined;
     return (text: string): string => {

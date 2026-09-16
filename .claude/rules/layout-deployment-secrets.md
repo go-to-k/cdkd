@@ -109,8 +109,8 @@ Index of every area: [code-layout.md](code-layout.md).
     (`cdkd scrub` hands this pass its OUTPUTS bag on purpose). Per-SINK masking
     left the next sink open (#2728, then #2748); per-CALLER leaves the next
     caller.
-  - **`maskSecretsInError(error, secrets, extraMask?)`** (issue #2038; the
-    third parameter is #3234) is the object-level
+  - **`maskSecretsInError(error, secrets, extraMask?)`** (issue #2038) is the
+    object-level
     twin: a CLONE of EVERY link in the error's `cause` CHAIN, each with its
     own masked `message` — `formatError` renders
     `Caused by: <cause.message>` for a `CdkdError`'s direct cause and

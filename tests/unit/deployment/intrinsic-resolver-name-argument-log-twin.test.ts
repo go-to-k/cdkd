@@ -2113,6 +2113,26 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
     expect(error.message).not.toContain('y7');
   });
 
+  it('CONTROL: an UNMASKED name is never de-sanitized back to its raw spelling', async () => {
+    // The regression this pins: expanding a pair into its sanitized spelling
+    // BEFORE dropping the unmasked ones leaves `[shown, raw]` alive, and the
+    // transform then rewrites the sanitized text back to the raw one — undoing
+    // the printing module's own `displaySafe` and putting a live escape
+    // sequence back on the terminal. A trailing space is enough to reach it,
+    // because `trim()` is part of that transform.
+    const raw = 'prod ';
+    const error = await errorOf(
+      producer(raw),
+      makeContext({ stateBackend: sanitizingBackend(raw) })
+    );
+    expect(error.message).toBe(
+      "Failed to get state for stack 'prod' (us-east-1): Access Denied"
+    );
+    // The raw spelling must not come back: neither the trailing space nor, in
+    // the escape-sequence shape, the control character.
+    expect(error.message).not.toContain("'prod '");
+  });
+
   it('the CloudFormation fallback warn masks the name the AWS text quotes back', async () => {
     // Same frame, same class, DEFAULT verbosity: this method hands `stackName`
     // to `DescribeStacks` raw, and a real AccessDenied names the stack ARN it
