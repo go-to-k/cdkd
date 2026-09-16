@@ -393,6 +393,58 @@ describe('cdkd scrub resolves a cross-stack read (issue #2133)', () => {
     expect(stateBackend.getState.mock.calls).toContainEqual([PRODUCER, REGION]);
     expect(savedState().outputs['DbUrl']).toBe(SECRET_EXPR);
   });
+
+  /**
+   * A FOREIGN producer whose own `outputs` bag is not an object, and the
+   * REACHABILITY finding that came with it (review of go-to-k/cdkd#3206).
+   *
+   * `producerStoredValue` in `src/cli/commands/scrub.ts` classifies a
+   * producer's stored value and used to ask `producer.key in outputs`, which
+   * on a string is a bare `TypeError` that escapes (the enclosing `try` ends
+   * at the `catch` that logs a failed re-read). That is a real #3018-class
+   * defect and the guard is now `isReadableBag` + `Object.hasOwn`.
+   *
+   * NO CASE IS PINNED ON THAT GUARD, deliberately, because MEASURED it cannot
+   * fire: reverting it leaves this file 117/117 green, and so does reverting
+   * `importableOutputKeys`' fail-closed arm. The reason is upstream — the
+   * classifier only runs for a producer whose read SUCCEEDED, and a read
+   * succeeds only when `importableOutputKeys` returned the key, which a
+   * damaged bag never does. A case asserting the named refusal below passes
+   * with the guard REMOVED, so shipping one would be a vacuous test wearing
+   * the guard's name.
+   *
+   * What would make it reachable: an export name that is also an INDEX of the
+   * planted string (`'0'`), under a binary whose `importableOutputKeys` still
+   * enumerates one. Both halves are closed here, so the guard is
+   * defence-in-depth against a future caller that reaches the classifier by
+   * another route — which is worth the two tokens it costs, and is not worth a
+   * test that cannot fail.
+   */
+  it('a damaged PRODUCER record refuses the consumer by name, not with a TypeError', async () => {
+    consumerState = makeConsumerState(
+      { MasterUserPassword: 'not-a-secret', MasterUsername: 'admin' },
+      { DbUrl: PLAINTEXT }
+    );
+    useProducerOutputs('abcdef' as unknown as Record<string, unknown>);
+
+    let thrown: unknown;
+    try {
+      await scrub(
+        { MasterUserPassword: 'not-a-secret', MasterUsername: 'admin' },
+        { outputs: { DbUrl: { Value: { 'Fn::ImportValue': EXPORT_NAME } } } }
+      );
+    } catch (err) {
+      thrown = err;
+    }
+
+    // This pins the OUTCOME, not either guard: the consumer's
+    // `Fn::ImportValue` cannot resolve against a damaged producer, so scrub
+    // refuses the stack by name — the same answer as a producer that is simply
+    // missing, and never a raw TypeError reaching the user.
+    const message = thrown instanceof Error ? thrown.message : String(thrown);
+    expect(message).not.toMatch(/in' operator|is not a function|Cannot read properties/);
+    expect((thrown as { code?: string }).code).toBe('SCRUB_CROSS_STACK_READ_UNRESOLVED');
+  });
 });
 
 describe('cdkd scrub REFUSES a cross-stack read it cannot perform (issue #2133)', () => {

@@ -840,7 +840,26 @@ export function importableOutputKeys(state: Pick<StackState, 'outputs' | 'export
  */
 export function hasReadableExportSet(state: Pick<StackState, 'outputs' | 'exportNames'>): boolean {
   if (!isReadableBag(state.outputs)) return false;
-  return state.exportNames === undefined || Array.isArray(state.exportNames);
+  if (state.exportNames === undefined) return true;
+  if (!Array.isArray(state.exportNames)) return false;
+  // A NON-EMPTY set whose every element is a non-string is DAMAGED, not
+  // "exports nothing" (review of go-to-k/cdkd#3206). Without this arm,
+  // `exportNames: [0]` answered READABLE while {@link importableOutputKeys}
+  // answered `[]`, so the exports-index rebuild dropped that producer with no
+  // warning — the same silent contribute-nothing shape the warning exists to
+  // close, one level down. It was nearly written off on the argument that
+  // closing it means making "readable" mean "yields at least one KEY", which
+  // would fire on the legitimate `exportNames: []`; that is not the only
+  // available predicate, and this one is narrower.
+  //
+  // `some`, NOT `every`: the question is whether ANY element is usable. Two
+  // legitimate shapes stay READABLE that an `every` test would reject — `[]`,
+  // which is how a record says it exports nothing, and `['Real', 0]`, where
+  // dropping the `0` still leaves `Real` to publish. Only a set with nothing
+  // usable in it at all is damaged. The residual is deliberate and bounded: a
+  // PARTIALLY non-string set publishes its usable names and says nothing about
+  // the dropped ones.
+  return state.exportNames.length === 0 || state.exportNames.some((n) => typeof n === 'string');
 }
 
 /** `state.outputs` narrowed to its {@link importableOutputKeys}. */

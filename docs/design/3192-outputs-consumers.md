@@ -106,15 +106,30 @@ go-to-k/cdkd#3192's own grep did not name it: the resolver's
 it. `Object.hasOwn('abcdef', '0')` is true, so it resolves a fabricated
 cross-stack value into a consumer's template.
 
-## 5. One residual inside the shipped guard
+## 5. A non-string export set is damaged, not "exports nothing"
 
-`hasReadableExportSet` answers TRUE for `exportNames: [0]` over a bag holding a
-`"0"` key, while `importableOutputKeys` answers `[]` — so the exports-index
-rebuild drops that producer with no warning, the same silent
-contribute-nothing shape the warning exists to close, one level down.
+`exportNames: [0]` over a bag holding a `"0"` key is readable by every
+structural test — it is an array — while `importableOutputKeys` drops the `0`
+as a non-string and answers `[]`. Read as "exports nothing", the exports-index
+rebuild drops that producer with no warning: the same silent
+contribute-nothing shape §1's fourth disposition exists to close, one level
+down.
 
-It is left as-is deliberately. Closing it means making "readable" mean "yields
-at least one key", which is false: `exportNames: []` is a legitimate record
-that exports nothing, and a predicate that cannot tell those apart would warn
-on every such stack. The cost is bounded to a missing warning on a
-hand-edited record; nothing is fabricated, because the key list is still empty.
+This was nearly written off on the argument that closing it means making
+"readable" mean "yields at least one KEY", which would fire on the legitimate
+`exportNames: []`. That argument is wrong, because a narrower predicate
+exists: **a non-empty set is damaged when NOTHING in it is usable.**
+
+```
+hasReadableExportSet: exportNames.length === 0 || exportNames.some(isString)
+```
+
+`some`, not `every`, is what keeps two legitimate shapes quiet — `[]`, the v9
+way of saying a stack exports nothing, and `['Real', 0]`, which still has a
+name to publish. A string name merely ABSENT from the bag stays readable too;
+that is the ordinary "an alias whose value did not resolve publishes nothing".
+
+One residual is accepted and bounded: a PARTIALLY non-string set publishes its
+usable names and says nothing about the dropped ones. Warning there would mean
+reporting a record damaged while still publishing from it, which is a worse
+signal than silence.

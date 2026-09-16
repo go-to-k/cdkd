@@ -59,7 +59,7 @@ import { canonicalizeRegion } from '../../utils/aws-partition.js';
 // error message interpolates a bucket / key, so both reach the terminal only
 // through the same control-byte strip `export-index-store.ts` uses for the
 // name it logs.
-import { displaySafe } from '../../utils/display-safe.js';
+import { UNRENDERABLE, displaySafe } from '../../utils/display-safe.js';
 import type { StackState } from '../../types/state.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
@@ -81,6 +81,7 @@ import {
   STATE_RESOURCES_MALFORMED,
   hasReadableOutputs,
   hasReadableResources,
+  isReadableBag,
   malformedOutputsRefusalMessage,
   malformedOutputsWarning,
   malformedResourcesWarning,
@@ -2090,10 +2091,13 @@ export function orderScrubTargets<
 function malformedRecordsAuditedError(
   stackNames: readonly string[],
   // No DEFAULT: the function is module-private, both call sites pass both
-  // lists, and a default is the only way to reach `parts.length === 0` — which
-  // renders a message with a leading space and no subject (review of
-  // go-to-k/cdkd#3206). Requiring the argument makes that unreachable at the
-  // type level rather than by inspection.
+  // lists, and a default was the only way to reach `parts.length === 0` —
+  // which renders a message with a leading space and no subject (review of
+  // go-to-k/cdkd#3206). Two empty arrays are still type-legal, so what makes
+  // that unreachable is the CALL SITES, each guarded by
+  // `malformedRecords.length > 0 || malformedOutputRecords.length > 0`;
+  // requiring the argument only stops a third caller from omitting it by
+  // accident.
   outputStackNames: readonly string[]
 ): ScrubRefusalError {
   // One sentence per CONTAINER, and only for a container that actually has
@@ -2101,11 +2105,21 @@ function malformedRecordsAuditedError(
   // so a single merged sentence would tell the reader nothing is known about
   // resources whose map was perfectly readable — and the two remedies point at
   // different parts of the same file.
+  // SANITIZED before interpolation (review of go-to-k/cdkd#3206). A stack name
+  // reaches scrub from an S3 key, so an unsanitized one can carry control
+  // bytes, bidi marks or ANSI escapes into a terminal and forge a line — the
+  // class `displaySafe` exists for, and which every message in
+  // `malformed-resources-bag.ts` already closes. The `resources` sentence had
+  // interpolated raw since go-to-k/cdkd#3018 and the `outputs` sentence copied
+  // it; both go through the helper now. No `shellQuote`: these names appear in
+  // PROSE and never inside a command the reader is told to paste.
+  const safeNames = (names: readonly string[]): string =>
+    names.map((n) => displaySafe(n, { asciiOnly: true }) || UNRENDERABLE).join(', ');
   const parts: string[] = [];
   if (stackNames.length > 0) {
     parts.push(
       `${stackNames.length} stack(s) were audited with an EMPTY resource set because their ` +
-        `state record has no readable 'resources' map: ${stackNames.join(', ')}. The report ` +
+        `state record has no readable 'resources' map: ${safeNames(stackNames)}. The report ` +
         `above describes their outputs only — nothing is known about their resources, so this ` +
         `run cannot certify them clean.`
     );
@@ -2113,7 +2127,7 @@ function malformedRecordsAuditedError(
   if (outputStackNames.length > 0) {
     parts.push(
       `${outputStackNames.length} stack(s) were audited with an EMPTY outputs bag because ` +
-        `their state record has no readable 'outputs' map: ${outputStackNames.join(', ')}. ` +
+        `their state record has no readable 'outputs' map: ${safeNames(outputStackNames)}. ` +
         `The report above describes their resources only — nothing is known about the values ` +
         `their outputs hold, and those values are what the exports index republishes to ` +
         `consumer stacks, so this run cannot certify them clean.`
@@ -3714,7 +3728,24 @@ function makeCrossStackPrePass(deps: {
         return undefined;
       }
       const outputs = loaded?.state?.outputs;
-      if (!outputs || !(producer.key in outputs)) return undefined;
+      // `isReadableBag`, not truthiness (review of go-to-k/cdkd#3206). This is
+      // a FOREIGN producer's bag — the stack being scrubbed is guarded at its
+      // own load, this record is not — and `producer.key in 'abcdef'` is a
+      // bare `TypeError` that escapes: the `try` above ends at the `catch`
+      // that logs the re-read failure, so nothing here catches it.
+      //
+      // "No verdict" (`undefined`) rather than a refusal, because this is a
+      // classification of somebody ELSE's record: refusing would strand THIS
+      // stack's own plaintext over a damaged producer the user may not even
+      // own. The existing pre-pass already treats `undefined` as "could not
+      // classify" and falls back to the producer's TEMPLATE evidence.
+      // `outputs === undefined` first for the TYPE, not for a second verdict:
+      // `isReadableBag` returns `boolean` rather than a type predicate, so it
+      // narrows nothing and `Object.hasOwn` would not compile. It already
+      // answers false for `undefined`, so no verdict moves — the same shape
+      // `outputs-diff.ts` carries for the same reason.
+      if (outputs === undefined || !isReadableBag(outputs)) return undefined;
+      if (!Object.hasOwn(outputs, producer.key)) return undefined;
       return { stored: outputs[producer.key] };
     };
 

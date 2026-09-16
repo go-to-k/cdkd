@@ -84,8 +84,18 @@ function mockBackend(
   stacks: Array<{
     stackName: string;
     region: string;
-    /** Set to a non-object to plant a damaged record; OMIT the key for `{}`. */
-    outputs?: Record<string, unknown> | null;
+    /**
+     * Set to a non-object to plant a damaged record; set to `undefined` to
+     * plant a genuinely ABSENT bag; OMIT the key for `{}`.
+     *
+     * `| undefined` is what makes the absent case testable at all (review of
+     * go-to-k/cdkd#3206 round 2): with only "omit the key", an absent-bag row
+     * got `{}`, which is a READABLE bag taking the healthy path — so the floor
+     * asserting the silent skip could not fail. Measured: deleting the
+     * production `state.outputs === undefined` skip left all 678
+     * `tests/unit/state` cases green.
+     */
+    outputs?: Record<string, unknown> | null | undefined;
     /** Omitted = a pre-v9 record (issue #2193): every output key importable. */
     exportNames?: string[];
     /** State record's lastModified; rebuild keeps the newer on a collision (#2194). */
@@ -319,9 +329,12 @@ describe('ExportIndexStore', () => {
         throw new Error(`unexpected command ${cmd.constructor.name}`);
       });
       const backend = mockBackend([
-        // `outputs` OMITTED — the helper gives it `{}`, which is what an
-        // absent bag reads as on the load path.
-        { stackName: 'NoOutputs', region: 'us-east-1' },
+        // `outputs: undefined` with the KEY PRESENT, not an omitted key. An
+        // omitted key gets `{}` from the helper, which is a READABLE bag on
+        // the healthy path — so this case would pass whatever the guard did.
+        // `parseStateBody` does not default the field, so a record whose save
+        // dropped it really does arrive as `undefined`.
+        { stackName: 'NoOutputs', region: 'us-east-1', outputs: undefined },
         {
           stackName: 'Healthy',
           region: 'us-east-1',

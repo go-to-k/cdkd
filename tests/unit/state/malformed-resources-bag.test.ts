@@ -323,9 +323,10 @@ describe('the malformed-outputs REFUSAL text (issue go-to-k/cdkd#3192)', () => {
   });
 
   it('CAPS a multi-kilobyte name so the remedy command stays on screen', () => {
-    // The cap is inherited from the shared `safeIdentifier`, and inheritance is
-    // exactly what stops being true when someone inlines a helper — so each
-    // new message gets its own case (review of go-to-k/cdkd#3206). A stack name
+    // The cap is inherited from this module's own `safeIdentifier` (which in
+    // turn uses the shared `truncateCodePoints`), and inheritance is exactly
+    // what stops being true when someone inlines a helper — so each new
+    // message gets its own case (review of go-to-k/cdkd#3206). A stack name
     // can arrive from an S3 key, so this is reachable rather than theoretical.
     // Asserted as a DISTANCE, not `endsWith`: the template satisfies an
     // endsWith check with or without a cap.

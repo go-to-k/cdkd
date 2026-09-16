@@ -151,6 +151,31 @@ describe('importableOutputKeys — the `exportNames` arm (go-to-k/cdkd#3192)', (
     );
   });
 
+  it('a set whose EVERY element is a non-string is DAMAGED, not exports-nothing', () => {
+    // Review of go-to-k/cdkd#3206 round 2. `hasReadableExportSet` used to
+    // answer TRUE here while `importableOutputKeys` answered `[]`, so the
+    // exports-index rebuild dropped the producer with NO warning — the same
+    // silent contribute-nothing shape the warning exists to close. It was
+    // nearly written off on the claim that the only closing predicate would
+    // also fire on `exportNames: []`; the floor below is why that was wrong.
+    expect(hasReadableExportSet(record({ '0': 'fabricated' }, [0]))).toBe(false);
+    expect(hasReadableExportSet(record({ A: 1 }, [null, 5, {}]))).toBe(false);
+    expect(importableOutputKeys(record({ '0': 'fabricated' }, [0]))).toEqual([]);
+  });
+
+  it('FLOOR: `[]` and a PARTIALLY non-string set both stay READABLE', () => {
+    // The two shapes that make `some` the right polarity and `every` the wrong
+    // one. `[]` is how a record says it exports nothing — the v9 semantics —
+    // and `['Real', 0]` still has a usable name to publish, so reporting it
+    // damaged would both warn spuriously and stop `Real` being published.
+    expect(hasReadableExportSet(record({ A: 1 }, []))).toBe(true);
+    expect(hasReadableExportSet(record({ '0': 'f', Real: 'v' }, ['Real', 0]))).toBe(true);
+    expect(importableOutputKeys(record({ '0': 'f', Real: 'v' }, ['Real', 0]))).toEqual(['Real']);
+    // ...and a string name merely ABSENT from the bag is readable too: that is
+    // the ordinary "an alias whose value did not resolve publishes nothing".
+    expect(hasReadableExportSet(record({ A: 1 }, ['Gone']))).toBe(true);
+  });
+
   it('drops a NON-STRING element instead of coercing it into a key', () => {
     // `Object.hasOwn` does not throw on a number — it COERCES — so a
     // `exportNames: [0]` against a bag holding `"0"` would have published that
