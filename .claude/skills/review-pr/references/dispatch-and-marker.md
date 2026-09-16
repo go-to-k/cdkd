@@ -20,6 +20,22 @@ Orchestrator: [../SKILL.md](../SKILL.md).
 
 ### Pre-filters
 
+   An axis reporting **`No spec declared`** (the spec axis found no design doc AND no `Closes`
+     in the PR body) is an ANNOTATION, not a verdict. It is NOT a clean axis, and it does NOT
+     block — so it is struck from the set the verdict arms see, exactly like a
+     discounted finding. A round whose ONLY finding is this therefore takes the
+     minor / nit / clean arm and SETS the marker, with the unreviewed dimension
+     NAMED in the synthesis. Saying only what it does not do is what left this
+     shape with no instruction at all. Treat
+     it as an unreviewed dimension: say so in the synthesis, and decide
+     deliberately whether the PR should declare what it closes before merging.
+     It is called out separately because it falls silently into the bucket
+     otherwise — at the one place a verdict is consumed it is indistinguishable
+     from Clean. That gap is what go-to-k/cdkd#3169 recorded and could not fix: the
+     clause did not fit inside the 23,000 B cap, and six measured attempts were
+     all over it. Fitting here is the point of the split.
+
+
    A `spec (secondary)` finding is DISCOUNTED — struck from the
    set the verdict arms below see — when BOTH hold:
 
@@ -46,21 +62,19 @@ Orchestrator: [../SKILL.md](../SKILL.md).
 
    A SEVERITY-keyed discount is no better, for the opposite reason: minor
    findings never blocked the marker anyway, so keying on `minor or below`
-   makes the rule inert and drops go-to-k/cdkd#3170's actual case — a secondary
-   BLOCKER that should defer to a primary axis that already ruled. Condition 2
-   is what separates those two, and neither severity nor the label can.
+   makes the rule inert. Condition 2 is what separates those two failure modes,
+   and neither severity nor the label can.
 
+   **What this filter actually reaches, stated plainly.** For a COMPLIANT
+   reviewer it is unreachable: `pr-code-reviewer.md` and
+   `pr-security-reviewer.md` both cap a secondary finding at `minor` unless it
+   is independently a code or security defect, so `spec (secondary)` + blocker
+   already implies condition 2 is false, and a minor never blocked. It is a
+   BACKSTOP against a reviewer definition that overshoots its own cap — which
+   go-to-k/cdkd#3169 named as the standing risk, since the caps are agent-side
+   and nothing makes the parent enforce them. If that ever stops being the
+   right division of labour, the caps are what to revisit, not this filter.
 
-   An axis reporting **`No spec declared`** (the spec axis found no design doc AND no `Closes`
-     in the PR body) is an ANNOTATION, not a verdict: this is NOT a clean axis, and it does NOT
-     block, so it neither sets nor withholds the marker on its own. Treat
-     it as an unreviewed dimension: say so in the synthesis, and decide
-     deliberately whether the PR should declare what it closes before merging.
-     It is called out separately because it falls silently into the bucket
-     otherwise — at the one place a verdict is consumed it is indistinguishable
-     from Clean. That gap is what go-to-k/cdkd#3169 recorded and could not fix: the
-     clause did not fit inside the 23,000 B cap, and six measured attempts were
-     all over it. Fitting here is the point of the split.
 
 ### Verdict arms — exactly one runs
 

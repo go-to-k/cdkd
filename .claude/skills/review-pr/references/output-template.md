@@ -111,7 +111,7 @@ Calibration set — the skill run against these should produce:
 | #404 | 4286 raw → ~1100 LOC after auto-gen exclusion, 19 files | 3-axis (`fc >= 10`, file count not adjusted) | none (mixed paths) | **3-axis** |
 
 Divergence from these rows means the heuristic or trigger lists drifted —
-re-read this file before trusting the recommendation. **The rows are
+re-read SKILL.md step 2 and references/bias-factors.md before trusting the recommendation. **The rows are
 RECALCULATED expectations, not history** (#240 / #344 were originally decided
 under a wider docs bucket); do not "restore" the old bucket to make a row
 match.

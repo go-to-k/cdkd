@@ -28,7 +28,7 @@
  * bound reads every deletion as an improvement. These are the lower ones.
  */
 import { describe, it, expect } from 'vite-plus/test';
-import { readFileSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const skillDir = fileURLToPath(new URL('../../../.claude/skills/review-pr/', import.meta.url));
@@ -82,7 +82,7 @@ const INLINE_STEPS = [
     needles: [
       'inline+up→1-reviewer',
       '1-reviewer+up→3-axis',
-      '3-axis+up',
+      '3-axis+up→3-axis (clamp)',
       '3-axis+down→1-reviewer',
       '1-reviewer+down→inline',
       'inline+down→inline (clamp)',
@@ -134,11 +134,15 @@ function stepBlockOf(step: number): string | null {
  * trains the next author to delete it.
  */
 function flat(text: string): string {
-  return text.replace(/\s+/g, ' ');
+  // Whitespace around `→` is stripped too, so a needle can pin BOTH sides of a
+  // bias arm without encoding where the line happens to wrap. Pinning only the
+  // left side let the clamp be rewritten to `3-axis+up →inline (clamp)` -- a
+  // silent top-tier downgrade -- while staying green.
+  return text.replace(/\s+/g, ' ').replace(/\s*→\s*/g, '→');
 }
 
 /**
- * From a heading-or-marker line to the next `##` heading. Used to bound an
+ * The text between two explicit markers. Used to bound an
  * assertion to the SECTION that must carry it — an unbounded file-wide needle
  * is satisfied by the text surviving anywhere, including a trailing comment
  * after the step that reads it.
@@ -159,11 +163,18 @@ function sectionOf(body: string, marker: string, endMarker: string): string {
  * binding's head-sha guard with an unconditional `markgate set` while leaving
  * `# (historically guarded on $SHA = "$(git rev-parse HEAD)")` behind kept the
  * assertion green (measured). The guard has to be asserted where it RUNS.
+ *
+ * ONE block, selected by a marker, not every block joined: the first cut joined
+ * all of them, so gutting the marker block and appending a second
+ * "counter-example" block kept both needles green — position blindness one
+ * level up from the flaw it was added to fix.
  */
-function bashLines(body: string): string {
-  const blocks = [...body.matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]!);
-  return blocks
-    .join('\n')
+function bashBlockContaining(body: string, marker: string): string {
+  const block = [...body.matchAll(/```bash\n([\s\S]*?)```/g)]
+    .map((m) => m[1]!)
+    .find((b) => b.includes(marker));
+  if (block === undefined) return '';
+  return block
     .split('\n')
     .filter((l) => !l.trim().startsWith('#'))
     .join('\n');
@@ -280,7 +291,7 @@ describe('/review-pr split integrity (go-to-k/cdkd#3170)', () => {
         // CONTIGUOUS: `the marker is NOT set` also occurs in the `inline`
         // sentence lower down, so the two halves as separate needles stayed
         // green when the arm was reversed to "set the marker anyway".
-        needles: ['Any **blocker** surviving the pre-filters → the marker is NOT set'],
+        needles: ['Any **blocker** surviving the pre-filters→the marker is NOT set'],
       },
       {
         arm: 'No spec declared',
@@ -297,6 +308,11 @@ describe('/review-pr split integrity (go-to-k/cdkd#3170)', () => {
           // security defect, and severity is inert because minor findings
           // never blocked anyway.
           'not independently a code or security defect',
+          // ONE WORD carries the whole security property. Changing `when BOTH
+          // hold` to `when EITHER holds` left every other needle verbatim and
+          // stayed green -- and then condition 1 alone discounts a security
+          // blocker the primary axis never examined (measured).
+          'when BOTH hold',
           // ...and the fall-through, without which a discounted-only run never
           // reaches the arm that sets the marker.
           'FALL THROUGH',
@@ -329,8 +345,16 @@ describe('/review-pr split integrity (go-to-k/cdkd#3170)', () => {
   const SECURITY_ARMS = [
     {
       file: 'references/dispatch-and-marker.md',
-      what: 'the marker follows dispatch',
-      needles: ['NEVER set the marker without dispatching the reviewers first'],
+      what: 'the marker follows dispatch, and a security blocker blocks',
+      needles: [
+        'NEVER set the marker without dispatching the reviewers first',
+        'fold its findings in',
+        'a security blocker blocks the marker like any other',
+        // The rationale paragraphs are the only record of WHY the discount may
+        // not be re-keyed on the label or on severity -- one word away, per B1.
+        'Condition 2 is what makes this safe',
+        'BACKSTOP against a reviewer definition that overshoots',
+      ],
     },
     {
       file: 'SKILL.md',
@@ -382,20 +406,89 @@ describe('/review-pr split integrity (go-to-k/cdkd#3170)', () => {
   ] as const;
 
   it('the marker binding still guards on the PR head, where it RUNS', () => {
-    // Asserted against the EXECUTABLE lines only. A whole-file needle was
-    // satisfied by a COMMENT mentioning the guard while the command below it
-    // had been replaced with an unconditional `markgate set` — measured green.
-    const bash = flat(
-      bashLines(readFileSync(`${skillDir}references/dispatch-and-marker.md`, 'utf8'))
+    // Asserted against the EXECUTABLE lines of the block that actually binds.
+    const block = bashBlockContaining(
+      readFileSync(`${skillDir}references/dispatch-and-marker.md`, 'utf8'),
+      '.markgate-pr-review-sha'
     );
-    for (const needle of ['= "$(git rev-parse HEAD)"', 'markgate set pr-review']) {
+    expect(block, 'no bash block writes the pr-review sentinel').not.toBe('');
+    const bash = flat(block);
+
+    // The SPACE before `=` is load-bearing. `= "$(git rev-parse HEAD)"` is a
+    // SUBSTRING of `!= "$(git rev-parse HEAD)"`, so flipping the guard to bind
+    // the marker only when the PR head DISAGREES with local HEAD — worse than
+    // deleting it — stayed green (measured).
+    expect(
+      bash,
+      'the marker block no longer guards on the PR head EQUALLING local HEAD. Without it the ' +
+        'marker survives a later push, and a PR merges on a review that never saw its diff.'
+    ).toContain('" = "$(git rev-parse HEAD)"');
+
+    // ...and the binding must sit INSIDE that guard. Keeping the `if` while
+    // moving `markgate set` below the `fi` leaves both needles on executable
+    // lines and binds on any head (measured).
+    const guarded = bash.slice(bash.indexOf('; then'), bash.indexOf('else'));
+    expect(
+      guarded,
+      '`markgate set pr-review` is no longer inside the head-sha guard, so the guard is inert.'
+    ).toContain('markgate set pr-review');
+  });
+
+  /**
+   * DERIVED, not listed — every `pr-*-reviewer` agent on disk must be reachable
+   * from the dispatch templates, and each tier must name the right NUMBER.
+   *
+   * This is the structural answer to a defect the needle tables kept missing:
+   * they cannot see the absence of a thing nobody listed. Measured — the
+   * `3-axis` block could be degraded to dispatch a SINGLE reviewer and all 20
+   * cases stayed green, because `pr-spec-reviewer.md` and `pr-test-reviewer.md`
+   * appeared in no needle anywhere. The top tier silently becoming the tier
+   * below it is the same shape as the round-3 tier-column swap: conditions
+   * intact, verdict gutted, still reading as authoritative.
+   *
+   * Reading the agents off the FILESYSTEM is what stops this going stale: a new
+   * reviewer agent is a deliberate decision about the dispatch templates, not a
+   * silent no-op.
+   */
+  it('every reviewer agent is dispatched, and each tier names the right number', () => {
+    const template = readFileSync(`${skillDir}references/output-template.md`, 'utf8');
+    const agents = readdirSync(fileURLToPath(new URL('../../../.claude/agents/', import.meta.url)))
+      .filter((f) => /^pr-.*-reviewer\.md$/.test(f))
+      .sort();
+    expect(agents.length, 'no pr-*-reviewer agents found — the scan broke').toBeGreaterThanOrEqual(
+      4
+    );
+    for (const agent of agents) {
       expect(
-        bash,
-        `the marker block's executable lines no longer contain ${JSON.stringify(needle)}. ` +
-          'Without the head-sha equality the marker survives a later push, and a PR merges on ' +
-          'a review that never saw its current diff.'
-      ).toContain(needle);
+        template,
+        `${agent} exists but references/output-template.md never names it, so no tier ` +
+          'dispatches it. A reviewer nobody dispatches is a review axis that silently does ' +
+          'not happen.'
+      ).toContain(agent);
     }
+
+    // The SIZE tiers name an exact count. `pr-security-reviewer` is ADDITIVE
+    // and deliberately outside this ladder, so it is excluded from both counts.
+    const ladder = (block: string): number =>
+      agents.filter((a) => a !== 'pr-security-reviewer.md' && block.includes(a)).length;
+    // Markers taken verbatim from the file — the `1-reviewer` one opens
+    // `Then, **if final tier is ...` with a lowercase `if`, and a start marker
+    // that does not match yields '' and a count of 0, which reads as a
+    // regression rather than as a broken probe.
+    const threeAxis = sectionOf(template, '**If final tier is `3-axis`**', '**If final tier is `inline`**');
+    const oneReviewer = sectionOf(template, '**if final tier is `1-reviewer`**', '**If final tier is `3-axis`**');
+    expect(threeAxis, 'the 3-axis block could not be bounded').not.toBe('');
+    expect(oneReviewer, 'the 1-reviewer block could not be bounded').not.toBe('');
+    expect(
+      ladder(threeAxis),
+      'the `3-axis` block no longer dispatches exactly three reviewers (spec + code + test). ' +
+        'Degrading it to fewer makes the top tier the tier below it, which is what ' +
+        '`pr-review-gate.sh` refuses to be talked down from.'
+    ).toBe(3);
+    expect(
+      ladder(oneReviewer),
+      'the `1-reviewer` block no longer dispatches exactly one reviewer.'
+    ).toBe(1);
   });
 
   for (const { file, what, needles } of SECURITY_ARMS) {
