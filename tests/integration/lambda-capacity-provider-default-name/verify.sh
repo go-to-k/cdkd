@@ -21,7 +21,13 @@
 #      agrees. The deploy runs with `--verbose` so the log shows whether the
 #      create was retried on the operator-role propagation rejection
 #      (`IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS`); the count is reported, not
-#      asserted, since a role that propagates in time needs no retry.
+#      asserted, since a role that propagates in time needs no retry. Two
+#      guards keep that reporting honest rather than vacuous: a provider whose
+#      create logged `FAILED` while the deploy still SUCCEEDED must carry a
+#      matching `Retrying <id> ... (attempt N/M` line, or the run exits 1
+#      naming the wording drift; and the two per-provider operator IAM roles
+#      CDK creates are read out of the state record and asserted LIVE here, so
+#      phase 4's teardown check cannot pass for the wrong reason.
 #   2. `cdkd diff` reports no changes (the generated name must not read as a
 #      create-only change on the next run).
 #   2b. Re-point SpareProvider's state record at a provider created OUT OF BAND
@@ -36,8 +42,9 @@
 #      both go through the Cloud Control update path. Assert each tag reached
 #      AWS, each provider keeps its ARN and its state physical id (in place,
 #      not replaced), and a diff under the same mode is clean.
-#   4. Destroy. Assert every provider and the function are gone, no instance is
-#      left in the fixture VPC, the VPC is gone, and the state file is removed.
+#   4. Destroy. Assert every provider, the function and both per-provider
+#      operator IAM roles are gone, no instance is left in the fixture VPC, the
+#      VPC is gone, and the state file is removed.
 #
 # Not established by this fixture: that phase 3 FAILS on a binary without the
 # update-path fix. The unit suite carries that direction
@@ -100,19 +107,53 @@ FUNCTION_NAME="${STACK}-Handler886CB40B"
 DIFF_LOG="${TMPDIR:-/tmp}/cdkd-3174-diff.$$.log"
 DEPLOY_LOG="${TMPDIR:-/tmp}/cdkd-3174-deploy.$$.log"
 
-# Best-effort, retried delete of one capacity provider by name. A provider
+# Best-effort, bounded delete of one capacity provider by name. A provider
 # refuses deletion while a function version still runs on it or its instances
-# drain, so only an explicit not-found (or a successful delete) ends the loop.
+# drain, so the delete is retried (40 x 15 s) until it is accepted or AWS
+# reports not-found; a credential or authorization error ends BOTH loops at
+# once, since waiting cannot fix it. An accepted delete is asynchronous, so the
+# provider is then polled (60 x 5 s) for not-found: the caller deletes what it
+# references next (the operator role, security group and subnets), and those
+# deletes fail while the provider still exists. When neither confirms the
+# provider gone, it prints a WARN and returns anyway, as cleanup must go on.
 delete_provider() { ( # usage: delete_provider <name>
   set +eu
-  local name="$1" done="" err=""
+  local name="$1" accepted="" gone="" err=""
+  local not_found='not ?found|no ?such|does ?not ?exist|non ?existent|\(404'
+  # Both the SERVICE's authorization rejections and the CLI's own
+  # credential-resolution failures, which never reach a service and so carry
+  # none of the service codes. Without the second half an unauthenticated
+  # shell spends the full 40 x 15 s here per provider -- three providers, half
+  # an hour of cleanup -- for a condition no amount of waiting changes.
+  local no_retry='AccessDenied|UnrecognizedClient|ExpiredToken|InvalidClientTokenId|AuthFailure|SignatureDoesNotMatch|InvalidSignature|Unable to locate credentials|NoCredentialProviders|Partial credentials|could not be found'
   for _ in $(seq 1 40); do
-    err="$(aws lambda delete-capacity-provider --capacity-provider-name "${name}" --region "${REGION}" 2>&1 >/dev/null)" && { done=1; break; }
-    printf '%s\n' "${err}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' && { done=1; break; }
+    if err="$(aws lambda delete-capacity-provider --capacity-provider-name "${name}" --region "${REGION}" 2>&1 >/dev/null)"; then
+      accepted=1
+      break
+    fi
+    if grep -qiE "${not_found}" <<< "${err}"; then
+      gone=1
+      break
+    fi
+    grep -qiE "${no_retry}" <<< "${err}" && break
     sleep 15
   done
-  if [ -z "${done}" ]; then
-    echo "WARN: cleanup could not delete capacity provider ${name} after 40 attempts (~10 min) — it may still exist and MUST be checked. Last AWS error: ${err}" >&2
+  if [ -n "${accepted}" ]; then
+    for _ in $(seq 1 60); do
+      if err="$(aws lambda get-capacity-provider --capacity-provider-name "${name}" --region "${REGION}" 2>&1 >/dev/null)"; then
+        sleep 5
+        continue
+      fi
+      if grep -qiE "${not_found}" <<< "${err}"; then
+        gone=1
+        break
+      fi
+      grep -qiE "${no_retry}" <<< "${err}" && break
+      sleep 5
+    done
+  fi
+  if [ -z "${gone}" ]; then
+    echo "WARN: cleanup could not confirm capacity provider ${name} is gone (delete accepted: ${accepted:-no}) — it may still exist and MUST be checked. Last AWS error: ${err:-none}" >&2
   fi
 ) }
 
@@ -190,8 +231,10 @@ assert_clean_diff() { # $1 = phase label; runs under the caller's CDKD_TEST_UPDA
 
 # --- Phase 1: deploy with no CapacityProviderName ------------------------
 echo "==> Phase 1: deploy (two capacity providers without a name + an attached function)"
-# `--verbose` only for this deploy, and only to count retries below; nothing in
-# this script greps the deploy's own rows. `pipefail` keeps the deploy's rc.
+# `--verbose` only for this deploy. Everything read out of this log below is a
+# LOG line -- the retry loop's own line and Cloud Control's `CREATE <id>:
+# FAILED` poll line -- never a rendered plan / progress ROW, which `--verbose`
+# prefixes with a timestamp and would break. `pipefail` keeps the deploy's rc.
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --verbose 2>&1 | tee "${DEPLOY_LOG}"
 
 # Was the create retried on the operator-role propagation rejection? Reported,
@@ -203,7 +246,23 @@ DEPLOY_PLAIN="$(sed 's/\x1b\[[0-9;]*m//g' "${DEPLOY_LOG}")"
 DEBUG_LINES="$(grep -ciE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z +debug ' <<< "${DEPLOY_PLAIN}" || true)"
 [ "${DEBUG_LINES}" -gt 0 ] ||
   { echo "FAIL: phase 1 deploy log holds no debug lines -- the retry count below would be vacuous" >&2; exit 1; }
-OPERATOR_ROLE_RETRIES="$(grep -cE 'Retrying .*operator role is invalid' <<< "${DEPLOY_PLAIN}" || true)"
+# The rejection text is logged only on the retry loop's own line
+# (`Retrying <id> in Ns (attempt N/M, ...) - <error>`, src/deployment/retry.ts);
+# Cloud Control's poll line records the same failure as `CREATE <id>: FAILED`
+# without it and then throws (src/provisioning/cloud-control-provider.ts). That
+# poll line is the independent marker: a provider whose create FAILED while the
+# deploy above still succeeded was retried, so it must have a retry line, and a
+# failed create with none means the retry line's wording drifted and the count
+# below would read 0. The count also relies on the retry line quoting the
+# error, which nothing else in this log can check.
+for logical_id in Provider2281708E SpareProvider8B33A338; do
+  if grep -qE "CREATE ${logical_id}: FAILED" <<< "${DEPLOY_PLAIN}" &&
+    ! grep -qE "Retrying ${logical_id} in .*\(attempt [0-9]+/[0-9]+" <<< "${DEPLOY_PLAIN}"; then
+    echo "FAIL: the phase 1 log shows a failed create for ${logical_id} but no retry line for it -- the retry line's wording changed; update the patterns" >&2
+    exit 1
+  fi
+done
+OPERATOR_ROLE_RETRIES="$(grep -cE 'Retrying .*\(attempt [0-9]+/[0-9]+.*operator role is invalid' <<< "${DEPLOY_PLAIN}" || true)"
 echo "    operator-role propagation retries during phase 1: ${OPERATOR_ROLE_RETRIES} (debug lines captured: ${DEBUG_LINES})"
 
 STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
@@ -214,6 +273,15 @@ STATE_SPARE_ROUTE="$(read_state "s['resources']['SpareProvider8B33A338'].get('pr
 STATE_FUNCTION_ID="$(read_state "s['resources']['Handler886CB40B']['physicalId']")"
 OUT_ARN="$(read_state "s.get('outputs', {}).get('ProviderArn', '')")"
 VPC_ID="$(read_state "s['resources']['Vpc8378EB38']['physicalId']")"
+# `lambda.CapacityProvider` creates an OPERATOR ROLE per provider, which the
+# destroy phase has to reclaim along with the providers themselves. Read the
+# names out of state rather than deriving them: cdkd generates
+# `<stack>-<logicalId>` here, and `CdkdLmiCapacityProviderExample-SpareProviderOperatorRole6345D27C`
+# is exactly 64 characters -- the IAM RoleName cap -- so one more character in
+# either name would take the truncate-and-hash path and a derived literal would
+# silently stop naming the live role.
+OPERATOR_ROLE="$(read_state "s['resources']['ProviderOperatorRoleDF614C31']['physicalId']")"
+SPARE_OPERATOR_ROLE="$(read_state "s['resources']['SpareProviderOperatorRole6345D27C']['physicalId']")"
 
 [ "${STATE_PROVIDER_ID}" = "${PROVIDER_NAME}" ] ||
   { echo "FAIL: capacity provider physicalId '${STATE_PROVIDER_ID}' != generated name '${PROVIDER_NAME}'" >&2; exit 1; }
@@ -224,6 +292,20 @@ VPC_ID="$(read_state "s['resources']['Vpc8378EB38']['physicalId']")"
 [ "${STATE_FUNCTION_ID}" = "${FUNCTION_NAME}" ] ||
   { echo "FAIL: function physicalId '${STATE_FUNCTION_ID}' != '${FUNCTION_NAME}' (cleanup targets that name)" >&2; exit 1; }
 echo "    state records ${PROVIDER_NAME} and ${SPARE_GENERATED} via cc-api"
+
+# Premise for the post-destroy operator-role assertions: both roles must be LIVE
+# here, or "gone after destroy" passes for the wrong reason. A strict capture --
+# a throttle or an auth failure aborts the run instead of reading as absent.
+for role_name in "${OPERATOR_ROLE}" "${SPARE_OPERATOR_ROLE}"; do
+  [ -n "${role_name}" ] ||
+    { echo "FAIL: an operator role has no physicalId in state -- the logical ids above no longer match the synthesized template" >&2; exit 1; }
+  ROLE_LIVE_ARN="$(aws iam get-role --role-name "${role_name}" --region "${REGION}" --query 'Role.Arn' --output text)"
+  case "${ROLE_LIVE_ARN}" in
+    arn:aws*:iam::*:role/*"${role_name}") ;;
+    *) echo "FAIL: operator role ${role_name} is not live after the create (got ARN '${ROLE_LIVE_ARN}')" >&2; exit 1 ;;
+  esac
+done
+echo "    operator roles live: ${OPERATOR_ROLE}, ${SPARE_OPERATOR_ROLE}"
 
 PROVIDER_STATE="$(provider_field "${PROVIDER_NAME}" State)"
 PROVIDER_ARN="$(provider_field "${PROVIDER_NAME}" CapacityProviderArn)"
@@ -244,9 +326,14 @@ FN_PROVIDER_ARN="$(aws lambda get-function-configuration --function-name "${FUNC
   { echo "FAIL: function CapacityProviderArn '${FN_PROVIDER_ARN}' != '${PROVIDER_ARN}'" >&2; exit 1; }
 echo "    function ${FUNCTION_NAME} runs on the provider"
 
+# `| tr -d ' '`: BSD `wc` pads its count to width 8, and `$(...)` strips only the
+# trailing newline, so without the trim the captured value is `"       0"` on a
+# stock macOS host and every `=` comparison against it is false. The sibling
+# `wc` sites under tests/integration trim the same way (`tr -d ' '` or
+# `tr -d '[:space:]'`).
 INSTANCES_UP="$(aws ec2 describe-instances --region "${REGION}" \
   --filters "Name=vpc-id,Values=${VPC_ID}" "Name=instance-state-name,Values=pending,running,stopping,stopped" \
-  --query 'Reservations[].Instances[].InstanceId' --output text | wc -w)"
+  --query 'Reservations[].Instances[].InstanceId' --output text | wc -w | tr -d ' ')"
 echo "    instances in ${VPC_ID} after deploy: ${INSTANCES_UP} (informational)"
 
 # --- Phase 2: diff is clean ------------------------------------------------
@@ -358,11 +445,15 @@ assert_gone "capacity provider ${SPARE_GENERATED} still exists after destroy" \
   aws lambda get-capacity-provider --capacity-provider-name "${SPARE_GENERATED}" --region "${REGION}"
 assert_gone "function ${FUNCTION_NAME} still exists after destroy" \
   aws lambda get-function --function-name "${FUNCTION_NAME}" --region "${REGION}"
+assert_gone "operator role ${OPERATOR_ROLE} still exists after destroy" \
+  aws iam get-role --role-name "${OPERATOR_ROLE}" --region "${REGION}"
+assert_gone "operator role ${SPARE_OPERATOR_ROLE} still exists after destroy" \
+  aws iam get-role --role-name "${SPARE_OPERATOR_ROLE}" --region "${REGION}"
 assert_gone "state file ${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 INSTANCES_LEFT="$(aws ec2 describe-instances --region "${REGION}" \
   --filters "Name=vpc-id,Values=${VPC_ID}" "Name=instance-state-name,Values=pending,running,stopping,stopped" \
-  --query 'Reservations[].Instances[].InstanceId' --output text | wc -w)"
+  --query 'Reservations[].Instances[].InstanceId' --output text | wc -w | tr -d ' ')"
 [ "${INSTANCES_LEFT}" = "0" ] ||
   { echo "FAIL: ${INSTANCES_LEFT} instance(s) still in ${VPC_ID} after destroy" >&2; exit 1; }
 assert_gone "VPC ${VPC_ID} still exists after destroy" \

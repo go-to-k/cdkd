@@ -1955,16 +1955,29 @@ export class CustomResourceProvider implements ResourceProvider {
    *    documents the drop-`cause` class in this very directory; a top-level-only
    *    read would silently un-retry a wrapped propagation denial.
    *
-   * **Every pattern in that union is an AUTHORIZATION or REQUEST-VALIDATION
-   * rejection, and that is what makes replaying an `Invoke` safe here.** Such a
-   * rejection is decided at the API front door, before any execution environment
-   * is engaged, so the handler provably did not run and a replay cannot
-   * re-deliver work — the hazard `disableOuterRetry` exists for. It is also why
-   * this classifier deliberately does NOT reach for the broader
+   * **Nearly every pattern in that union is an AUTHORIZATION or
+   * REQUEST-VALIDATION rejection, and that is what makes replaying an `Invoke`
+   * safe here.** Such a rejection is decided at the API front door, before any
+   * execution environment is engaged, so the handler provably did not run and a
+   * replay cannot re-deliver work — the hazard `disableOuterRetry` exists for.
+   *
+   * The union is shared, so it can acquire a member that is NOT front-door, and
+   * one already has: the Lambda CapacityProvider operator-role rejection added
+   * for issue #3174 is emitted by a Cloud Control RESOURCE HANDLER, i.e. after
+   * its own request was accepted. It is inert here only because no CR `Invoke`
+   * failure carries that text. Do NOT discharge the next such entry against
+   * `delivered`: `onDelivered()` runs after `invokeLambda` RESOLVES, so a throw
+   * between acceptance and resolution — the exact window a post-acceptance
+   * rejection arrives in — reaches this classifier with the flag still false.
+   * Front-door-ness is therefore a property each entry owes, not one the shared
+   * list confers; check a new entry against this paragraph before adding it.
+   *
+   * It is also why this classifier deliberately does NOT reach for the broader
    * `isRetryableTransientError`: a throttle, an HTTP 5xx or a socket timeout can
    * each arrive AFTER the request was accepted, so replaying one could invoke a
    * non-idempotent handler twice. Those classes stay single-shot on this path by
-   * design, and the caller's `delivered` flag is the second, independent fence.
+   * design, and the caller's `delivered` flag is the second, independent fence
+   * for a delivery that COMPLETED — the case it can observe.
    */
   private isTransientAuthzThrow(error: unknown): boolean {
     if (isMarkedNonRetryable(error)) return false;

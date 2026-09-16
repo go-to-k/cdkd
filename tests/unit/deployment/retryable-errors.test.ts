@@ -1146,6 +1146,23 @@ describe('Lambda CapacityProvider operator-role propagation (#3174)', () => {
     expect(isIamPropagationError(azRejection)).toBe(false);
     expect(isRetryableTransientError(new Error(azRejection), azRejection)).toBe(false);
   });
+
+  // The AZ case above shares no token with the anchor, so it cannot constrain
+  // the anchor's LENGTH: an anchor shortened to "operator role is invalid"
+  // would still pass it. This one is CONSTRUCTED for that job and is not a
+  // message AWS has been observed to emit -- it reuses the anchor's opening
+  // clause and then diverges, so every prefix of the anchor short of
+  // "sufficient permissions" matches it and turns this case red. What it pins
+  // is that the entry keeps discriminating on the part of the sentence that
+  // names the propagation failure, not on the words identifying the role.
+  it('does not retry a rejection sharing only the anchor opening clause', () => {
+    const sharedPrefix =
+      "CREATE failed for Provider2281708E: The operator role is invalid or doesn't have the " +
+      'required trust relationship. (Service: Lambda, Status Code: 400)';
+    expect(sharedPrefix).toContain("The operator role is invalid or doesn't have");
+    expect(isIamPropagationError(sharedPrefix)).toBe(false);
+    expect(isRetryableTransientError(new Error(sharedPrefix), sharedPrefix)).toBe(false);
+  });
 });
 
 describe('RETRYABLE_ERROR_MESSAGE_PATTERNS composition', () => {

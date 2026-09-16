@@ -253,6 +253,10 @@ describe('resource-name', () => {
     });
 
     it('keeps a user-supplied name untouched', () => {
+      // Premise: identity return is also what the NO-RULE path does, so without
+      // this line the case stays green with the FALLBACK_NAME_RULES entry
+      // deleted -- passing for the opposite reason to the one it asserts.
+      expect(fallbackNamePropertyFor(TYPE)).toBe('CapacityProviderName');
       const props = { CapacityProviderName: 'my-provider' };
       const result = withStackName('MyStack', () =>
         applyDefaultNameForFallback('Provider2281708E', TYPE, props)

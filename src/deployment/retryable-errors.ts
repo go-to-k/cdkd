@@ -164,10 +164,15 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // this way, and a probe against a fresh role got this message 8s after the
   // role's policy was attached and a SUCCESS at 23s (one sample, 2026-09-15),
   // inside the dense grid's ~47.75s of backoff. Anchored on the handler's
-  // full "operator role" sentence so a genuinely missing permission only burns
-  // the bounded retries before surfacing, and no other service's authorization
-  // failure false-positives into the retry loop. CloudFormation tolerates it
-  // via deployment latency; cdkd retries.
+  // sentence up to "sufficient permissions" and NO further: the trailing
+  // "Verify the role and permissions and try again." is advisory text this
+  // pattern deliberately leaves out, so a reword of that tail cannot blunt the
+  // match -- which does make the `.includes` test broader than the quoted
+  // sentence, matching any message carrying this clause. The retained span is
+  // still the part naming the propagation failure, so a genuinely missing
+  // permission only burns the bounded retries before surfacing and no other
+  // service's authorization failure false-positives into the retry loop.
+  // CloudFormation tolerates it via deployment latency; cdkd retries.
   "The operator role is invalid or doesn't have sufficient permissions",
   // CodeDeploy DeploymentGroup: the Cloud Control CreateResource references a
   // same-stack service IAM role, but cdkd's fast path issues the create before
