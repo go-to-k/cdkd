@@ -75,8 +75,8 @@
  * the end reads this file's own source and counts the exact TEXT of each raw
  * primitive. The members are NOT listed here — a list in two places is a list
  * that goes stale in one, which is what happened to the renderer count and then
- * again to this very sentence, which named six of the ten. Read the block; it
- * is one screen and each count carries the mistake it is there for.
+ * again to this very sentence, which named six of the ten. Read the block —
+ * about a hundred lines, each count commented with the mistake it is there for.
  *
  * WHAT THOSE COUNTS DO AND DO NOT CATCH, stated exactly, because two earlier
  * versions of this paragraph overstated it and the second overstated it while
@@ -284,7 +284,6 @@ export const analyseExpression = (
    */
   treatUnknownRootsAsKnown = false,
 ): Verdict => {
-  TOKEN.lastIndex = 0;
   let at = 0;
   let expect: 'operand' | 'operator' = 'operand';
   let depth = 0;
@@ -522,15 +521,14 @@ const safeName = (name: string): string =>
  * `excerpt`'s marker needs the un-flattened end offset, and flattening 80 KB to
  * take 120 characters is the cost its own comment cites.
  *
- * Hoisted to module scope because renderers of this one forgery were found and
- * closed ONE AT A TIME — the excerpt, the root, the finding's file field, the
- * test title, the tracked-set difference, Node's `ENOENT`, the corpus bodies,
- * the corpus heads, the probe lines — and each fix reached exactly the field it
- * was written for. The header's "WHERE THIS STOPS" carries the count and the
- * residual; it is not repeated here, because a number in two places is a number
- * that goes stale in one (this sentence said "six" for two rounds after it was
- * eleven). Anything that prints a workflow's bytes or its name goes through
- * this or through `safeName`.
+ * Hoisted to module scope because the renderers of this one forgery were found
+ * and closed ONE AT A TIME, each fix reaching exactly the field it was written
+ * for. Neither the list nor the count is repeated here: the header's "WHERE
+ * THIS STOPS" owns both, and this sentence has now gone stale twice — once
+ * saying "six" for two rounds after it was eleven, then listing nine sites
+ * against the header's eleven, because two of the bullets covered two sites
+ * each. Anything that prints a workflow's bytes or its name goes through this
+ * or through `safeName`.
  */
 const safeRender = (s: string): string => {
   const flat = flatten(s);
@@ -905,12 +903,17 @@ describe('workflow expression syntax', () => {
       'github.run_attempt > +1',
       // The standalone `*` arm, reached where a filter follows a CALL. In
       // `contains(...labels.*.name, ...)` above, `.*` is swallowed by the path
-      // token instead — so that case exercises a different route to the same
-      // verdict, and deleting `|\*` from the path alternative reds nothing.
-      // That is an EQUIVALENT mutation, not a coverage gap: with the
-      // alternative gone the standalone arm absorbs the filter and the answer
-      // is unchanged. Recorded because the comment here used to claim the case
-      // above proved the path alternative, which it does not.
+      // token instead, so that case exercises a different route and neither one
+      // pins the path alternative.
+      //
+      // Deleting `|\*` from it USED to red nothing, and a comment here called
+      // that an equivalent mutation. It is not: the two routes disagree for a
+      // LITERAL head, because the literal test reads the whole token, so
+      // `true.*` is a literal by the standalone route and an unknown root by
+      // the path one. The claim survived a twelve-shape comparison that
+      // happened to contain no literal-headed filter — a measurement that was
+      // true and unrepresentative. `true.*` and `false.*.name` are in the
+      // reject table for that, and the deletion now reds 2.
       'fromJSON(steps.x.outputs.y).*.name',
       // A trailing empty argument — the permissiveness the docstring claims.
       // Spelled with a real root: `f(a,)` would be refused by the root check,
@@ -1035,6 +1038,13 @@ describe('workflow expression syntax', () => {
       ['one word that reads like a context', ' opener '],
       ['a dotted path under an unknown root', ' expression.body '],
       ['an underscore-led root, which no context is', ' _private.value '],
+      // A LITERAL with a filter. The literal test reads the WHOLE token, so
+      // `true.*` is not one — and this is the case that makes deleting the path
+      // alternative from `TOKEN` a real mutation rather than an equivalent one.
+      // Without it, `true.*` is refused by the path route and accepted by the
+      // standalone-`*` route, and nothing sees the difference.
+      ['a literal with a filter', ' true.* '],
+      ['a literal with a dotted filter', ' false.*.name '],
       ['a shell variable', ' ${GH_TOKEN} '],
       ['an unbalanced group', ' format(github.sha '],
       ['a trailing operator', ' github.ref == '],
@@ -1627,6 +1637,11 @@ describe('workflow expression syntax', () => {
       // green. Exactly ONE is legitimate — `readWorkflow`'s own; the fence's
       // two reads of THIS file sit after the marker and are not in `SUBJECT`.
       expect(countOf('readFileSync(')).toBe(1);
+      // The guarded reader's own uses: `bodies`, the per-file case, the probe
+      // block's `REAL`, and one case that exercises its failure path. This
+      // count is the one most likely to fire on a LEGITIMATE addition — a new
+      // case that reads a workflow — so if it reds with the number one higher
+      // than it says, adding the use was right and this line is the remedy.
       expect(countOf('readWorkflow(')).toBe(4);
     });
 
