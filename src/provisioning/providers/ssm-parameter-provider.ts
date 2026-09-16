@@ -19,6 +19,7 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+import { renderDisableCommand } from '../replacement-protection-advice.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -353,8 +354,38 @@ export class SSMParameterProvider implements ResourceProvider {
             `Cleaned up partially-created SSM parameter ${logicalId} (${name}) after wiring failure`
           );
         } catch (cleanupError) {
+          // The SSM twin of the issue #2669 remedy (issue #3136): a pasteable
+          // command naming a TEMPLATE-chosen value, hand-quoted with `'...'`
+          // until now — so a `'` in the parameter name broke out of the
+          // quoting and a control byte forged terminal lines. (A WARN, so the
+          // terminal is its whole reach: the recorder persists a thrown
+          // `error.message`, not this.) Rendered through the shared sanitize /
+          // shell-quote / SUPPRESS, so the COMMAND never carries either raw,
+          // and no command is shown at all when sanitizing CHANGED the name
+          // (it would act on a DIFFERENT parameter). The prose `(${name})`
+          // beside it is still interpolated as-is: this line takes only the
+          // pasteable half, and display-sanitizing the PROSE of provider
+          // warnings is tracked as issue
+          // [#3269](https://github.com/go-to-k/cdkd/issues/3269).
+          //
+          // `maskSecrets` is threaded, and is not decoration: `mask` below is
+          // a message-level masker matching by LITERAL occurrence, and
+          // `shellQuote` rewrites an inner `'` to `'\''` — so a resolved
+          // `{{resolve:secretsmanager:...}}` name carrying a quote would come
+          // through `warn` in PLAINTEXT. Supplying the masker suppresses the
+          // command for such a name instead (security review of issue #3136).
+          const deleteCommand = renderDisableCommand({
+            before: 'aws ssm delete-parameter --name',
+            identifier: name,
+            maskSecrets: mask,
+          });
+          const manualStep = deleteCommand
+            ? `Manual deletion may be required before the next deploy: ${deleteCommand}`
+            : 'Manual deletion may be required before the next deploy, via the console: the ' +
+              'parameter name cannot be reproduced safely on a command line, and a command ' +
+              'naming the sanitized form would delete a DIFFERENT parameter.';
           warn(
-            `Failed to clean up partially-created SSM parameter ${logicalId} (${name}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws ssm delete-parameter --name '${name}'`
+            `Failed to clean up partially-created SSM parameter ${logicalId} (${name}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. ${manualStep}`
           );
         }
         throw innerError;
@@ -774,13 +805,41 @@ export class SSMParameterProvider implements ResourceProvider {
         'form at all — so a derived name could silently address a DIFFERENT parameter.'
       : '';
 
+    // The pasteable half goes through the shared sanitize / shell-quote /
+    // SUPPRESS (issue #3136, the #2669 shape). `explicit` is the `--resource`
+    // override or the template's `Properties.Name`, so it is USER-controlled
+    // text on its way into a command this message tells the operator to run.
+    // A value sanitizing to something DIFFERENT gets no command at all: it
+    // would read a different parameter, which is worse than naming none.
+    //
+    // NO masker is threaded, and that is a fact about the PATH rather than an
+    // omission: `import()` takes a `ResourceImportInput`, which carries no
+    // `maskSecrets`, and `cdkd import` resolves no dynamic references, so
+    // there is no secret bag for one to be built from. For the same reason
+    // this message does NOT reach `deployments/{runId}.jsonl` — only
+    // deploy / destroy / rollback start the run recorder, and `import` is the
+    // only caller of `provider.import` (security review of issue #3136
+    // corrected an earlier claim here that it did).
+    const readCommand = renderDisableCommand({
+      before: 'aws ssm get-parameter --name',
+      identifier: explicit,
+      after: '--query Parameter.Name --output text',
+    });
+    const howToRead = readCommand
+      ? ` Read the name AWS holds with: ${readCommand}`
+      : // The same "via the console" wording the three sibling sites use, so a
+        // user who has seen one suppression recognises the next.
+        ' Read the name AWS holds via the console: the value cdkd was given cannot be reproduced ' +
+        'safely on a command line, so any command shown here would read a different parameter.';
     throw new ProvisioningError(
+      // The `('${explicit}')` clause is PROSE, not a pasteable span, and stays
+      // as it is — see the create-path note above for why that half is a
+      // separate class.
       `Cannot adopt SSM parameter ${input.logicalId} from ${shape} ('${explicit}'): cdkd records ` +
         `a parameter's NAME as its physical id, because SSM's write APIs accept only the name ` +
         `(PutParameter and DeleteParameter both reject an ARN, and a name cannot contain ':'), ` +
         `so the next cdkd deploy and cdkd destroy would fail with a ValidationException. ` +
-        `${remedy}.${whyNotDerived} Read the name AWS holds with: ` +
-        `aws ssm get-parameter --name '${explicit}' --query Parameter.Name --output text`,
+        `${remedy}.${whyNotDerived}${howToRead}`,
       input.resourceType,
       input.logicalId
     );

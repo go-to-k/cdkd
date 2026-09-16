@@ -328,7 +328,18 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
 
       const message = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
       expect(message).toContain('Not cleaning up S3 bucket');
-      expect(message).toContain(`aws s3api delete-bucket --bucket '${BUCKET}'`);
+      // UNQUOTED since issue #3136: the command is rendered through the shared
+      // `renderDisableCommand`, whose `shellQuote` leaves a clean bucket name
+      // bare and quotes only a value that needs it. The hand-written `'...'`
+      // this replaced was the defect, not the contract.
+      //
+      // The trailing `\n` is the END ANCHOR the removed closing quote used to
+      // supply: without one, `--bucket ${BUCKET}` also matches a rendering
+      // that appended anything to the name, which is precisely the wrong-target
+      // outcome the suppression exists to prevent. The command is last on its
+      // line, so the newline is the boundary (`warnSpy` calls are joined with
+      // one).
+      expect(`${message}\n`).toContain(`aws s3api delete-bucket --bucket ${BUCKET}\n`);
     });
   });
 
@@ -504,8 +515,10 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
       expect(warned).toContain('AccessDenied');
       expect(warned).not.toContain('assumed-role');
       expect(warned).toContain('--verbose');
-      // Still recoverable: the manual command survives the redaction.
-      expect(warned).toContain(`aws s3api delete-bucket --bucket '${BUCKET}'`);
+      // Still recoverable: the manual command survives the redaction. Bare
+      // rather than hand-quoted since issue #3136, and END-ANCHORED on the
+      // newline — see the sibling arm above for why the anchor matters.
+      expect(`${warned}\n`).toContain(`aws s3api delete-bucket --bucket ${BUCKET}\n`);
       expect(debugSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain('assumed-role');
     });
   });

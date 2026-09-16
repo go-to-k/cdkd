@@ -85,8 +85,8 @@ dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-prot
 dynamic-ref-cross-region	2026-08-21T18:32:07Z	PASS	164	verify.sh	#2157 live arm (Phase 3e), FINAL run on the merged shape. A THIRD stack carries ONE assembled foreign-ARN SecureString reference and no region-less one -- the other two spell theirs region-LESSLY and would classify ambiguous and refuse FIRST once foreign outputReads is seeded. Seeds the legacy plaintext plus that evidence, requires rc=0 AND 'Scrubbed 1 resource record(s)' AND the record back on its expression. MUTATION-PROBED against real AWS on an earlier build: restoring the pre-2157 refusal reds it with 'exited 2, expected 0'. The deferred-lookup FINDING that a Phase 3f once fenced was withdrawn after 3 review rounds (residual filed as go-to-k/cdkd#2166), so that phase is gone with it. 3 stacks destroyed, 0 errors, 0 orphans, 0 surviving state object versions
 dynamodb-autoscaling	2026-08-10T05:13:55Z	PASS	65	verify.sh	0810 sweep b5; table autoscaling re-verify post-#1451 GlobalTable work, 0 err 0 orph
 dynamodb-globaltable	2026-09-05T22:37:14Z	PASS	1521	verify.sh	PR2662 gate run; 16 steps, destroy 0 errors, 0 orphans across us-east-1/us-west-2/eu-west-1
-dynamodb-gsi-update	2026-09-16T12:24:56Z	PASS	1099	verify.sh	rc ok, orph clean (PR #3246: per-GSI capacity reader; #1931 index-busy destroy absorbed)
-dynamodb-ondemand	2026-09-16T12:24:56Z	PASS	223	verify.sh	rc ok, orph clean (PR #3246: BillingMode/ProvisionedThroughput in-place UPDATE is the changed flip path)
+dynamodb-gsi-update	2026-09-16T17:38:25Z	PASS	1649	verify.sh	rc ok, orph clean (PR #3268: per-GSI capacity on create + the three applyGsiUpdates send sites)
+dynamodb-ondemand	2026-09-16T17:38:25Z	PASS	309	verify.sh	rc ok, orph clean (PR #3268: billing-flip per-index reader unchanged by the coercion)
 dynamodb-sse	2026-08-01T10:07:21Z	PASS	40	verify.sh	0801 regression sweep; SSE mapping ok, 0 orphans
 dynamodb-stream-filter	2026-08-10T05:13:55Z	PASS	57	verify.sh	0810 sweep b5; stream filter criteria, 0 err 0 orph
 dynamodb-streams	2026-08-10T05:13:55Z	PASS	81	verify.sh	0810 sweep b5; streams+ESM+StreamSpec UPDATE, 0 err 0 orph

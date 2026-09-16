@@ -41,12 +41,28 @@
  * renders its command through the EXPORTED {@link renderDisableCommand} —
  * the same sanitize / quote / suppress the five callers above get, with the
  * log-group text kept around it — and falls back to
- * {@link UNNAMEABLE_ID_CLAUSE} when the id is suppressed. The export exists
- * for exactly one caller that owns its own sentence; a second one should ask
- * whether it can use {@link protectedReplacementAdvice} instead.
+ * {@link UNNAMEABLE_ID_CLAUSE} when the id is suppressed.
  * `tests/integration/loggroup-class-guard/verify.sh` greps the rendered
  * command, so its needle is the UNQUOTED form `shellQuote` produces for a
  * clean id.
+ *
+ * **The export is no longer for "exactly one caller".** Issue
+ * [#3136](https://github.com/go-to-k/cdkd/issues/3136) found the same
+ * hand-quoted `'${value}'` shape at four more sites that are NOT protected-arm
+ * remedies at all — two partial-create cleanup warnings
+ * (`ssm-parameter-provider.ts`, `s3-bucket-provider.ts`, the latter sharing one
+ * clause between its two arms) and one import refusal
+ * (`ssm-parameter-provider.ts`'s `refuseUnwritableParameterId`) — so the right
+ * question for a NEW caller is not "can it use
+ * {@link protectedReplacementAdvice} instead" but "is the value it pastes
+ * cdkd-MINTED with a proven charset". Where it is not, it belongs here.
+ * `efs-provider.ts`'s `aws efs describe-access-points --query
+ * "AccessPoints[?ClientToken=='<token>']"` is the recorded counter-example and
+ * deliberately does NOT route through this: the token comes from
+ * `acquireIdempotencyToken`, which mints `cdkd-<sha256 hex>` and nothing else,
+ * and those single quotes are JMESPath string delimiters INSIDE a
+ * double-quoted shell argument — `shellQuote`'s escaping would produce invalid
+ * JMESPath rather than safer shell.
  *
  * Two properties every caller owes, because only the caller can answer them:
  *
@@ -183,6 +199,28 @@ export interface ProtectedReplacementDisableCommand<
    * here.
    */
   caveat?: CdkdAuthoredLiteral<Caveat>;
+  /**
+   * The caller's secret masker, when it has one. Optional: most callers render
+   * a physical id read off `state.json` and have none.
+   *
+   * It exists because `shellQuote` can put a SECRET past the message-level
+   * mask, which is a hazard this module created and only this module can
+   * close (found by the security review of issue
+   * [#3136](https://github.com/go-to-k/cdkd/issues/3136)). `maskSecretsInText`
+   * matches by LITERAL occurrence, and `shellQuote` rewrites every inner `'`
+   * to `'\''` — so a resolved `{{resolve:secretsmanager:...}}` value
+   * containing a quote no longer OCCURS in the finished line and comes through
+   * a masking sink in PLAINTEXT. The hand-quoted `'${value}'` this module
+   * replaced did not have that problem, because it left the value
+   * byte-identical.
+   *
+   * Supplying it makes {@link renderDisableCommand} SUPPRESS the command for
+   * any id the masker would change — the same answer sanitization already
+   * gets, for the same reason: a command cdkd cannot show honestly is better
+   * not shown. It is deliberately NOT applied to the rendered command, which
+   * would only reintroduce the escaping problem one layer up.
+   */
+  maskSecrets?: (text: string) => string;
 }
 
 /** The same shape with the literal constraint discharged, for internal use. */
@@ -191,6 +229,7 @@ interface ResolvedDisableCommand {
   identifier: string;
   after?: string;
   caveat?: string;
+  maskSecrets?: (text: string) => string;
 }
 
 export interface ProtectedReplacementAdviceArgs<
@@ -253,6 +292,11 @@ export function renderDisableCommand<
   const resolved = disable as ResolvedDisableCommand;
   const safeId = displaySafe(resolved.identifier, { asciiOnly: true });
   if (!safeId || safeId !== resolved.identifier) return '';
+  // A SECRET-bearing id is suppressed for the same reason a sanitized one is:
+  // see {@link ProtectedReplacementDisableCommand.maskSecrets} for why the
+  // message-level mask cannot catch it once `shellQuote` has escaped a quote.
+  // Only a caller that HAS a masker can ask this; the rest are unchanged.
+  if (resolved.maskSecrets && resolved.maskSecrets(safeId) !== safeId) return '';
   const tail = resolved.after ? ` ${resolved.after}` : '';
   return `${resolved.before} ${shellQuote(safeId)}${tail}`;
 }

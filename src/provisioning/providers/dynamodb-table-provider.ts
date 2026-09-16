@@ -157,8 +157,27 @@ export function mapSSESpecification(
  * still are not.
  */
 function readCapacityNumber(block: unknown, member: string): number | undefined {
-  if (typeof block !== 'object' || block === null || Array.isArray(block)) return undefined;
-  return coerceCfnInteger((block as Record<string, unknown>)[member]);
+  if (!isPlainCapacityBlock(block)) return undefined;
+  return coerceCfnInteger(block[member]);
+}
+
+/**
+ * Is this a `ProvisionedThroughput` block whose MEMBERS can be read at all?
+ *
+ * One spelling, shared by {@link readCapacityNumber} — where a `false` answer
+ * means "no usable member" — and by
+ * {@link DynamoDBTableProvider.coerceIndexCapacityBlock}, where it means
+ * "forward this VERBATIM and let AWS name the shape" (issue
+ * [#3255](https://github.com/go-to-k/cdkd/issues/3255)). The two conclusions
+ * differ; the shape test must not, or the create forwarder could rewrite a
+ * block the flip's reader refuses to read (or vice versa).
+ *
+ * An ARRAY is excluded deliberately: `[]` indexes to `undefined` for both
+ * members, so treating it as a block would DROP nothing and report nothing
+ * while `CreateTable` rejects the list by name anyway.
+ */
+function isPlainCapacityBlock(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**
@@ -187,11 +206,23 @@ function hasUsableDeclaredCapacity(entry: Record<string, unknown> | undefined): 
 }
 
 /**
- * The two TABLE-level `ProvisionedThroughput` members, in the order both
- * forwarders build them. Named once so {@link hasUsableTableCapacity} and
- * {@link tableCapacityForSend} cannot come to disagree about the membership.
+ * The two `ProvisionedThroughput` members, in the order the forwarders build
+ * them. Named once so {@link hasUsableTableCapacity}, {@link tableCapacityForSend}
+ * and the per-INDEX create forwarder
+ * ({@link DynamoDBTableProvider.coerceIndexCapacityBlock}) cannot come to
+ * disagree about the membership.
+ *
+ * Deliberately NOT `TABLE_CAPACITY_MEMBERS` any more (issue
+ * [#3255](https://github.com/go-to-k/cdkd/issues/3255)): CloudFormation's
+ * `ProvisionedThroughput` block has the same two members at the TABLE level and
+ * inside every `GlobalSecondaryIndexes[]` entry, and a second list for the
+ * per-index reader would be exactly the drift this constant exists to prevent.
+ * What differs between the two levels is what an ABSENT member does — the table
+ * level substitutes {@link DEFAULT_TABLE_CAPACITY_UNITS}, the per-index level
+ * deliberately has no default ({@link readCapacityNumber}) — and that is a
+ * property of each forwarder, not of the membership.
  */
-const TABLE_CAPACITY_MEMBERS = ['ReadCapacityUnits', 'WriteCapacityUnits'] as const;
+const PROVISIONED_CAPACITY_MEMBERS = ['ReadCapacityUnits', 'WriteCapacityUnits'] as const;
 
 /**
  * The capacity both TABLE-level forwarders substitute for a member the
@@ -240,7 +271,7 @@ function hasUsableTableCapacity(value: unknown): boolean {
   const pt = value as Record<string, unknown>;
   // Each member the template DECLARES has to be a capacity AWS accepts; an
   // absent one takes the flip's own default and is fine.
-  for (const member of TABLE_CAPACITY_MEMBERS) {
+  for (const member of PROVISIONED_CAPACITY_MEMBERS) {
     const raw = pt[member];
     if (raw === undefined || raw === null) continue;
     const n = coerceCfnInteger(raw);
@@ -283,7 +314,7 @@ function hasUsableTableCapacity(value: unknown): boolean {
  */
 function tableCapacityForSend(
   pt: Record<string, unknown> | undefined,
-  member: (typeof TABLE_CAPACITY_MEMBERS)[number],
+  member: (typeof PROVISIONED_CAPACITY_MEMBERS)[number],
   onUnusable: (member: string, raw: unknown) => void
 ): number | undefined {
   const raw = pt?.[member];
@@ -809,7 +840,7 @@ function reverseMapSecondaryIndex(
  *    predicate EVERY per-index write path calls — the `Create` / `Update` GSI
  *    actions in `applyGsiUpdates` AND `create()`'s `CreateTable` forward, which
  *    maps each entry through
- *    {@link DynamoDBTableProvider.coerceIndexWarmThroughputForCreate}. It is
+ *    {@link DynamoDBTableProvider.coerceIndexThroughputForCreate}. It is
  *    TIGHTER than truthiness (at least one member resolving to a finite
  *    number), so `WarmThroughput: {}` is neither sent nor emitted on any path.
  *    An earlier version of this bullet carved out the TABLE-create path as an
@@ -818,9 +849,15 @@ function reverseMapSecondaryIndex(
  *    template failed on a fresh create and succeeded on a later GSI add. Fixed
  *    in PR review round 6; the carve-out is gone because the divergence is.
  *  - `ProvisionedThroughput` / `OnDemandThroughput` keep TRUTHINESS, which is
- *    what their write path does: those two members ARE still forwarded verbatim
- *    (the create-path mapper rewrites only `WarmThroughput`), and
- *    `applyGsiUpdates` gates on `gsi.ProvisionedThroughput` alone. Widening
+ *    still what their write path does: `applyGsiUpdates` gates on
+ *    `gsi.ProvisionedThroughput` alone, `OnDemandThroughput` is forwarded
+ *    verbatim on every path, and the `ProvisionedThroughput` coercion issue
+ *    [#3255](https://github.com/go-to-k/cdkd/issues/3255) added to ALL FOUR
+ *    per-index send sites (`create()`'s mapper plus `applyGsiUpdates`'
+ *    adopted-repair, `Create` and same-name `Update` actions) never
+ *    SUPPRESSES the block — it rewrites members inside a block that is sent
+ *    either way, so "would cdkd send this block" is unchanged by it, even
+ *    where both members were dropped and an empty block goes out. Widening
  *    `isSendableWarmThroughput` over them would be wrong twice over — it reads
  *    members those blocks do not have (`ReadUnitsPerSecond` vs
  *    `ReadCapacityUnits`), so every declared capacity would read as undeclared.
@@ -1116,7 +1153,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
       if (billingMode === 'PROVISIONED') {
         const pt = properties['ProvisionedThroughput'] as Record<string, unknown> | undefined;
         const onUnusable = (member: string, raw: unknown): void =>
-          this.warnUnusableTableCapacity(
+          this.warnUnusableProvisionedCapacity(
             `AWS::DynamoDB::Table ${logicalId}`,
             member,
             raw,
@@ -1169,18 +1206,32 @@ export class DynamoDBTableProvider implements ResourceProvider {
       }
 
       // Global secondary indexes. The array is forwarded as-is EXCEPT for each
-      // entry's `WarmThroughput`, which is coerced by the same helper the four
-      // update-side send sites use (PR review round 6). This was the FIFTH send
-      // site and it was missed: a per-index `{ReadUnitsPerSecond: '12000'}`
-      // reached `CreateTable` as the STRING `"12000"` in a Long field, and
-      // `WarmThroughput: {}` as an empty block, both silently — so one template
-      // SUCCEEDED when the index was added by a later update and FAILED on a
-      // fresh create, which is the divergence the coercion exists to remove.
+      // entry's two THROUGHPUT blocks, both coerced by the same readers their
+      // update-side siblings use:
       //
-      // Only `GlobalSecondaryIndexes` is mapped: `WarmThroughput` is not a
-      // member of CFn's `LocalSecondaryIndex` (nor of the SDK's), so an LSI has
-      // nothing to coerce, and rewriting those entries would be motion without
-      // a shape behind it.
+      //  - `WarmThroughput`, through `coerceWarmThroughputForSend` (PR review
+      //    round 6). This was the FIFTH send site of that value and it was
+      //    missed: a per-index `{ReadUnitsPerSecond: '12000'}` reached
+      //    `CreateTable` as the STRING `"12000"` in a Long field, and
+      //    `WarmThroughput: {}` as an empty block, both silently — so one
+      //    template SUCCEEDED when the index was added by a later update and
+      //    FAILED on a fresh create.
+      //  - `ProvisionedThroughput`, through `readCapacityNumber` (issue #3255).
+      //    The same divergence, one property over and one round later: the
+      //    BillingMode flip's per-index forwarder moved onto CloudFormation's
+      //    Integer grammar in issue #3147 while this forward stayed verbatim,
+      //    so a CFn-legal `ReadCapacityUnits: '7'` went out as a STRING in a
+      //    `number` field and a `' 7 '` CloudFormation refuses the template for
+      //    went out too. Neither #3147's enumeration nor its sweep could see
+      //    this site, because it is a CAST rather than a call.
+      //
+      // Only `GlobalSecondaryIndexes` is mapped, and that is now a statement
+      // about BOTH blocks: CFn's `LocalSecondaryIndex` (like the SDK's)
+      // declares neither `WarmThroughput` nor `ProvisionedThroughput` — an LSI
+      // shares the table's capacity — so there is nothing to coerce there, and
+      // rewriting those entries would be motion without a shape behind it.
+      // `AWS::DynamoDB::Table` has no replica blocks at all (those are
+      // `AWS::DynamoDB::GlobalTable`'s, with their own forwarders).
       //
       // A non-array value is passed through untouched rather than mapped: an
       // unresolved intrinsic or a mis-nested template value is AWS's to reject
@@ -1190,7 +1241,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         const declaredGsis = properties['GlobalSecondaryIndexes'];
         createParams.GlobalSecondaryIndexes = Array.isArray(declaredGsis)
           ? (declaredGsis as GlobalSecondaryIndex[]).map((entry) =>
-              this.coerceIndexWarmThroughputForCreate(logicalId, entry, maskSecrets)
+              this.coerceIndexThroughputForCreate(logicalId, entry, maskSecrets)
             )
           : (declaredGsis as GlobalSecondaryIndex[]);
       }
@@ -1892,7 +1943,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
           // names the member exactly as it does for an absent required one.
           const pt = properties['ProvisionedThroughput'] as Record<string, unknown>;
           const onUnusable = (member: string, raw: unknown): void =>
-            this.warnUnusableTableCapacity(
+            this.warnUnusableProvisionedCapacity(
               `AWS::DynamoDB::Table ${logicalId}`,
               member,
               raw,
@@ -3698,7 +3749,15 @@ export class DynamoDBTableProvider implements ResourceProvider {
               maskSecrets
             )
           ) {
-            adopted.ProvisionedThroughput = gsi.ProvisionedThroughput;
+            // COERCED, not forwarded verbatim (the review of issue #3255):
+            // the GUARDS above read the DECLARED block through
+            // `toFiniteNumber` exactly as before; only the wire value moves
+            // onto CloudFormation's Integer grammar.
+            adopted.ProvisionedThroughput = this.indexCapacityForSend(
+              this.indexScopeAt(name, physicalId, maskSecrets),
+              gsi.ProvisionedThroughput,
+              maskSecrets
+            );
             adoptedHasMember = true;
           }
           // WarmThroughput is repaired on the adopted index for the same reason
@@ -3740,7 +3799,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         // A declared-but-unsendable WarmThroughput is announced here rather
         // than vanishing into the spread below (PR review of issue #1768).
         this.warnRefusedWarmThroughput(
-          `GSI ${maskSecrets(name)} on DynamoDB table ${physicalId}`,
+          this.indexScopeAt(name, physicalId, maskSecrets),
           gsi.WarmThroughput,
           maskSecrets
         );
@@ -3748,7 +3807,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         // `'12000'` must reach AWS as a number, not as a string in a Long
         // field.
         const createWarm = this.coerceWarmThroughputForSend(
-          `GSI ${maskSecrets(name)} on DynamoDB table ${physicalId}`,
+          this.indexScopeAt(name, physicalId, maskSecrets),
           gsi.WarmThroughput,
           maskSecrets
         );
@@ -3757,8 +3816,19 @@ export class DynamoDBTableProvider implements ResourceProvider {
             IndexName: name,
             KeySchema: gsi.KeySchema,
             Projection: gsi.Projection,
+            // COERCED, not forwarded verbatim (the review of issue #3255).
+            // This is the site that made the divergence user-visible: with
+            // only `create()` coerced, ONE template succeeded on a fresh
+            // create and was rejected by AWS when the same index was added by
+            // a later update.
             ...(gsi.ProvisionedThroughput
-              ? { ProvisionedThroughput: gsi.ProvisionedThroughput }
+              ? {
+                  ProvisionedThroughput: this.indexCapacityForSend(
+                    this.indexScopeAt(name, physicalId, maskSecrets),
+                    gsi.ProvisionedThroughput,
+                    maskSecrets
+                  ),
+                }
               : {}),
             ...(gsi.OnDemandThroughput ? { OnDemandThroughput: gsi.OnDemandThroughput } : {}),
             // A declared per-index WarmThroughput rides the Create action
@@ -3839,7 +3909,15 @@ export class DynamoDBTableProvider implements ResourceProvider {
               maskSecrets
             )
           ) {
-            update.ProvisionedThroughput = gsi.ProvisionedThroughput;
+            // COERCED, not forwarded verbatim (the review of issue #3255).
+            // The change detector above compares the DECLARED block against
+            // the RECORDED one, both raw, which is what keeps it symmetric;
+            // this is only what goes on the wire.
+            update.ProvisionedThroughput = this.indexCapacityForSend(
+              this.indexScopeAt(name, physicalId, maskSecrets),
+              gsi.ProvisionedThroughput,
+              maskSecrets
+            );
             updateHasMember = true;
           }
         }
@@ -3916,53 +3994,238 @@ export class DynamoDBTableProvider implements ResourceProvider {
   }
 
   /**
-   * One `CreateTable` index entry with its `WarmThroughput` coerced (PR review
-   * round 6).
+   * `GSI <name> on AWS::DynamoDB::Table <logicalId>` — the scope every
+   * create-path per-index warning interpolates.
+   *
+   * The index NAME is a RESOLVED property value, so it is masked before it
+   * becomes part of a message (issue #1997). It is also an UNCHECKED cast off
+   * the template: `IndexName: 2024` (unquoted YAML) reaches here as a NUMBER,
+   * and the real masker is a `String.prototype.replace` call that THROWS on
+   * one — which would take the whole deploy down from a diagnostic path. So
+   * the type test is the guard, not merely `!== undefined`: anything that is
+   * not a string has no name to print and takes the `<unnamed>` arm, exactly
+   * as an absent one does. (Reached by the review of issue
+   * [#3255](https://github.com/go-to-k/cdkd/issues/3255): before it, the scope
+   * was built only for an entry declaring `WarmThroughput`, so the crash was
+   * unreachable for an ordinary PROVISIONED template.)
+   */
+  private indexScope(indexName: unknown, logicalId: string, maskSecrets: SecretMasker): string {
+    const name = typeof indexName === 'string' ? maskSecrets(indexName) : '<unnamed>';
+    return `GSI ${name} on AWS::DynamoDB::Table ${logicalId}`;
+  }
+
+  /**
+   * `GSI <name> on DynamoDB table <physicalId>` — {@link indexScope}'s twin for
+   * the UPDATE path, which names the LIVE table rather than the template's
+   * logical id.
+   *
+   * Same guard, same reason, and the reason is why this exists at all rather
+   * than the five call sites spelling `maskSecrets(name)` inline: `name` is a
+   * key of a map built from `g.IndexName!` off an UNCHECKED template cast, so
+   * `IndexName: 2024` (unquoted YAML) is truthy, becomes the key, and arrives
+   * here as a NUMBER — on which the real masker's `String.prototype.replace`
+   * THROWS. The create path was guarded when {@link indexScope} was added
+   * (the review of issue #3255); the update sites that now build a scope
+   * EAGERLY for the capacity coercion were not, which newly exposed the same
+   * crash on an ordinary PROVISIONED capacity update with a non-empty secret
+   * bag (found by the review of that round).
+   */
+  private indexScopeAt(indexName: unknown, physicalId: string, maskSecrets: SecretMasker): string {
+    const name = typeof indexName === 'string' ? maskSecrets(indexName) : '<unnamed>';
+    return `GSI ${name} on DynamoDB table ${physicalId}`;
+  }
+
+  /**
+   * The per-index `ProvisionedThroughput` an `UpdateTable` action should put on
+   * the wire (the review of issue
+   * [#3255](https://github.com/go-to-k/cdkd/issues/3255)).
+   *
+   * Exists because coercing only `create()`'s forward left the file
+   * INTERNALLY divergent in the direction the issue is about: the same index
+   * entry succeeded on a fresh create and was rejected by AWS when added by a
+   * later update, which is the `WarmThroughput` round-6 story with the
+   * polarity flipped. All three `applyGsiUpdates` send sites — the adopted
+   * index's repair `Update`, the `Create` action and the same-name `Update`
+   * action — now read through {@link coerceIndexCapacityBlock}, the same
+   * reader `create()` uses.
+   *
+   * **The GUARDS around those sites deliberately stay on `toFiniteNumber`**,
+   * and that is the split `dynamodb-warm-throughput.ts`'s header already
+   * records: a FORWARDER reads CloudFormation's grammar, a GUARD reads the
+   * wider one, because over-acceptance is the safe side of an
+   * already-matches / zero-capacity / change-detection test. Nothing moves as
+   * a result — `liveCapacityAlreadyMatches` and `skipZeroCapacityIndexUpdate`
+   * are asked about the DECLARED block exactly as before, and the change
+   * detector still compares the declared block against the recorded one, both
+   * raw. Only what reaches AWS changes.
+   */
+  private indexCapacityForSend(
+    scope: string,
+    declared: ProvisionedThroughput | undefined,
+    maskSecrets: SecretMasker
+  ): ProvisionedThroughput | undefined {
+    if (declared === undefined) return undefined;
+    const coerced = this.coerceIndexCapacityBlock(scope, declared, maskSecrets);
+    // `undefined` from the reader means "nothing to rewrite", NOT "send
+    // nothing" — a non-object block and an all-integer one both take that arm
+    // and must go out exactly as declared.
+    return (coerced ?? declared) as unknown as ProvisionedThroughput;
+  }
+
+  /**
+   * One `CreateTable` index entry with BOTH of its throughput blocks coerced —
+   * `WarmThroughput` (PR review round 6) and `ProvisionedThroughput` (issue
+   * [#3255](https://github.com/go-to-k/cdkd/issues/3255)).
    *
    * `create()` forwards the declared `GlobalSecondaryIndexes` array to
-   * `CreateTable`, so it is a SEND SITE for the same per-index value the
-   * update path coerces — and it was the one the round-5 sweep missed. Entries
-   * are rebuilt rather than mutated: the input bag belongs to the caller (the
-   * resolved template, which the engine also records into state), and a
-   * provider that edits it in place would change what state reports cdkd sent.
+   * `CreateTable`, so it is a SEND SITE for the same per-index values the
+   * update path coerces. `WarmThroughput` was the one the round-5 sweep
+   * missed; `ProvisionedThroughput` was missed by round 6 AND by issue #3147's
+   * own enumeration, because this forwarder is a CAST rather than a call, so
+   * neither sweep's grep could see it. The BillingMode flip's per-index reader
+   * ({@link readCapacityNumber}) has been on the grammar since #3147, so until
+   * now create and flip disagreed about the same property: a CFn-legal
+   * `ReadCapacityUnits: '7'` reached `CreateTable` as a STRING in a `number`
+   * field, and a `' 7 '` CloudFormation refuses the template for was forwarded
+   * unchanged.
    *
-   * An entry that is not a plain object, or that declares no `WarmThroughput`,
-   * is returned UNCHANGED — including the identity of the object, so the
-   * common case allocates nothing.
+   * Entries are rebuilt rather than mutated: the input bag belongs to the
+   * caller (the resolved template, which the engine also records into state),
+   * and a provider that edits it in place would change what state reports cdkd
+   * sent.
+   *
+   * An entry that is not a plain object, and one declaring NEITHER throughput
+   * block, is returned UNCHANGED — identity included. An entry that DOES
+   * declare one is rebuilt whenever that block's coercion changes anything;
+   * the `WarmThroughput` half rebuilds even for an already-numeric value,
+   * which is pre-existing behaviour and costs one spread per declared block.
    */
-  private coerceIndexWarmThroughputForCreate(
+  private coerceIndexThroughputForCreate(
     logicalId: string,
     entry: GlobalSecondaryIndex,
     maskSecrets: SecretMasker = (text) => text
   ): GlobalSecondaryIndex {
     if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return entry;
-    const declared = (entry as unknown as Record<string, unknown>)['WarmThroughput'];
-    if (declared === undefined) return entry;
-    // The index NAME is a resolved property value, so it is masked before it
-    // becomes part of the scope every warning below interpolates (issue #1997).
-    const scope = `GSI ${
-      entry.IndexName === undefined ? '<unnamed>' : maskSecrets(entry.IndexName)
-    } on AWS::DynamoDB::Table ${logicalId}`;
-    const coerced = this.coerceWarmThroughputForSend(scope, declared, maskSecrets);
-    if (coerced === undefined) {
-      // Nothing usable: drop the block from the request and say so, exactly as
-      // the update-side arms do.
-      this.warnRefusedWarmThroughput(scope, declared, maskSecrets);
-      const { WarmThroughput: _dropped, ...rest } = entry;
-      return rest;
+    const bag = entry as unknown as Record<string, unknown>;
+    const declaredWarm = bag['WarmThroughput'];
+    const declaredCapacity = bag['ProvisionedThroughput'];
+    // Nothing either half could rewrite: return the entry untouched, identity
+    // included. An entry that DOES declare a capacity block still reaches the
+    // scope below even when every member is already an integer — building the
+    // scope is what lets the member loop announce a drop, and it is one
+    // template-string concatenation per declared block.
+    if (declaredWarm === undefined && !isPlainCapacityBlock(declaredCapacity)) return entry;
+    const scope = this.indexScope(entry.IndexName, logicalId, maskSecrets);
+    let out: GlobalSecondaryIndex = entry;
+    if (declaredWarm !== undefined) {
+      const coerced = this.coerceWarmThroughputForSend(scope, declaredWarm, maskSecrets);
+      if (coerced === undefined) {
+        // Nothing usable: drop the block from the request and say so, exactly
+        // as the update-side arms do.
+        this.warnRefusedWarmThroughput(scope, declaredWarm, maskSecrets);
+        const { WarmThroughput: _dropped, ...rest } = out;
+        out = rest;
+      } else {
+        out = { ...out, WarmThroughput: coerced };
+      }
     }
-    return { ...entry, WarmThroughput: coerced };
+    const capacity = this.coerceIndexCapacityBlock(scope, declaredCapacity, maskSecrets);
+    if (capacity !== undefined) {
+      // `as unknown as` because a rewritten block can legitimately be MISSING a
+      // member the SDK type declares required — that is exactly the drop this
+      // helper announces, and DynamoDB naming the absent member is the intended
+      // outcome. The SDK type is `Required`-shaped for a happy-path caller, not
+      // a claim about what an invalid template may spell.
+      out = { ...out, ProvisionedThroughput: capacity as unknown as ProvisionedThroughput };
+    }
+    return out;
   }
 
   /**
-   * Announce a TABLE-level `ProvisionedThroughput` member
-   * {@link tableCapacityForSend} DROPPED (issue
-   * [#3147](https://github.com/go-to-k/cdkd/issues/3147)).
+   * One `CreateTable` index entry's `ProvisionedThroughput`, with each DECLARED
+   * member read through CloudFormation's DynamoDB Integer grammar (issue
+   * [#3255](https://github.com/go-to-k/cdkd/issues/3255)). Returns `undefined`
+   * when the block needs no rewriting at all.
    *
-   * Called from BOTH table-level forwarders — `create()`'s `CreateTable` and
-   * the BillingMode flip's `UpdateTable` — because the member vanishes at each
-   * independently, and a drop that is never announced is the silent-narrowing
-   * class this file's other warn arms exist to end.
+   * It reads through {@link readCapacityNumber} — the function the BillingMode
+   * flip's per-index forwarder calls — rather than restating the grammar, for
+   * the same reason {@link hasUsableDeclaredCapacity} does: that is what keeps
+   * create and flip answering identically about one template value.
+   *
+   * THREE decisions, each of which had a plausible alternative:
+   *
+   *  - **A rejected spelling drops the MEMBER, not the whole block.** This is
+   *    what {@link tableCapacityForSend} already does one level up for the
+   *    identical grammar, so create's two capacity forwarders answer the same
+   *    way; it keeps a sibling member the template spelled LEGALLY, which
+   *    dropping the block would discard; and it is the more informative
+   *    failure at AWS — `CreateTable` names the missing member at its exact
+   *    index position, where a missing block yields only
+   *    `ProvisionedThroughput must be specified for index: <name>`. Both
+   *    directions FAIL the deploy (DynamoDB requires both members on a
+   *    PROVISIONED index), so this is a choice of error TEXT, never of
+   *    outcome — what matters is that neither silently succeeds at a capacity
+   *    CloudFormation refuses the template for.
+   *
+   *    **That is also why this drop needs NO `effectiveProperties`**, which
+   *    `.claude/rules/provider-property-fidelity.md` otherwise requires of any
+   *    announced narrowing: the rule exists because a SUCCEEDING call plus a
+   *    record describing the declared value is permanent phantom drift. Here
+   *    `CreateTable` FAILS, so `create()` never returns and nothing is
+   *    recorded — the same reasoning `tableCapacityForSend` states for the
+   *    table-level omit one level up.
+   *  - **An ABSENT member stays absent — no `5` default.** The per-index
+   *    reader deliberately has none ({@link readCapacityNumber}'s doc, issue
+   *    #1588): a defaulted per-index capacity would land in cdkd state as if
+   *    the template had declared it, with no later call to correct it. Only
+   *    the TABLE level defaults.
+   *  - **A block that is not a plain object is forwarded VERBATIM**, the
+   *    fail-OPEN direction this file takes everywhere: an unresolved intrinsic
+   *    or a mis-nested template value is AWS's to reject by name, and that is
+   *    also the pre-existing behaviour of this forwarder.
+   *
+   * A member name the grammar does not know is preserved untouched, for the
+   * same fail-open reason — a misspelled `ReadCapacityUnit` reaches AWS and is
+   * named there rather than vanishing here.
+   */
+  private coerceIndexCapacityBlock(
+    scope: string,
+    declared: unknown,
+    maskSecrets: SecretMasker = (text) => text
+  ): Record<string, unknown> | undefined {
+    if (!isPlainCapacityBlock(declared)) return undefined;
+    const block = declared;
+    let rewritten: Record<string, unknown> | undefined;
+    for (const member of PROVISIONED_CAPACITY_MEMBERS) {
+      if (!(member in block)) continue;
+      const coerced = readCapacityNumber(block, member);
+      // Already the exact integer cdkd would send: leave the key alone, so a
+      // numeric template rebuilds nothing.
+      if (coerced === block[member]) continue;
+      rewritten ??= { ...block };
+      if (coerced === undefined) {
+        this.warnUnusableProvisionedCapacity(scope, member, block[member], maskSecrets);
+        delete rewritten[member];
+      } else {
+        rewritten[member] = coerced;
+      }
+    }
+    return rewritten;
+  }
+
+  /**
+   * Announce a `ProvisionedThroughput` member a forwarder DROPPED (issue
+   * [#3147](https://github.com/go-to-k/cdkd/issues/3147); widened to the
+   * per-index create forwarder by issue
+   * [#3255](https://github.com/go-to-k/cdkd/issues/3255)).
+   *
+   * Called from all THREE forwarders that can drop one — `create()`'s
+   * `CreateTable` table-level block, the BillingMode flip's `UpdateTable`
+   * table-level block, and `create()`'s per-`GlobalSecondaryIndexes[]` block —
+   * because the member vanishes at each independently, and a drop that is
+   * never announced is the silent-narrowing class this file's other warn arms
+   * exist to end. `scope` names the resource or the index, so a table with
+   * several GSIs says WHICH one.
    *
    * It says NO capacity was substituted, which is the whole decision: the
    * sibling `AWS::DynamoDB::GlobalTable` forwarders announce a 5/5 FALLBACK,
@@ -3970,7 +4233,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * table that does not exist. {@link tableCapacityForSend}'s doc carries why
    * this type differs.
    */
-  private warnUnusableTableCapacity(
+  private warnUnusableProvisionedCapacity(
     scope: string,
     member: string,
     raw: unknown,
@@ -3989,8 +4252,10 @@ export class DynamoDBTableProvider implements ResourceProvider {
       )} is not an Integer CloudFormation accepts ` +
         `(an optional sign and decimal digits only — no surrounding whitespace, hex, exponent ` +
         `or decimal point), so it was NOT sent and NO capacity was substituted for it. ` +
-        `DynamoDB requires both members on a PROVISIONED table and will reject the request ` +
-        `naming this one — CloudFormation refuses the same template at properties validation. ` +
+        `DynamoDB requires both members wherever a PROVISIONED ProvisionedThroughput block is ` +
+        `declared — the table itself, and every GlobalSecondaryIndexes[] entry of a PROVISIONED ` +
+        `table — and will reject the request naming this one; CloudFormation refuses the same ` +
+        `template at properties validation. ` +
         `Check for an unresolved intrinsic, or spell the value as a decimal integer.`
     );
   }
