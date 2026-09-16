@@ -43,6 +43,7 @@ import { isListParameterType, ssmResolvedValueType } from '../utils/parameter-ty
 import { classifyReplaySecretRegion } from './secret-region-classification.js';
 import { withRetry } from './retry.js';
 import {
+  dynamicReferenceTokens,
   maskSecretsInText,
   recordSecretExpression,
   forgetSecretExpression,
@@ -820,8 +821,8 @@ function withoutProducerRegions(context: ResolverContext | undefined): ResolverC
  * {@link SECRET_MASK}. `resolveJoin` / `resolveSub` build it alongside the
  * value and log the twin, never the value.
  *
- * It exists because `maskSecretsForLog` is a NEEDLE mask: a 1-3 character
- * secret is masked only as the WHOLE text (`MIN_NEEDLE_LENGTH`), so
+ * It exists because the NEEDLE mask (`maskNeedlesForLog`) masks a 1-3
+ * character secret only as the WHOLE text (`MIN_NEEDLE_LENGTH`), so
  * `port:` + a two-character secret printed in the clear. The floor is right for
  * a needle — a short needle would rewrite unrelated text in every line — and
  * what the needle lacks is POSITION, which only the writer holds. The twin is
@@ -2622,6 +2623,17 @@ export class IntrinsicFunctionResolver {
    * one.
    */
   private producerRegionGuest = false;
+
+  /**
+   * How a producer-region guest PRINTS its own `explicitRegion` (issue
+   * [#3150](https://github.com/go-to-k/cdkd/issues/3150)): the masked log text
+   * its creator held for that region, which a template can assemble around a
+   * short secret, or `***` once a later spelling of the same region masks
+   * differently. Display only; `undefined` on an ordinary resolver, whose
+   * region its command built (the stack's synthesized or recorded region,
+   * `--region`, or a region read out of a literal token).
+   */
+  private explicitRegionLogText: string | undefined;
   private readonly strictGetAtt: boolean;
   private readonly cfnFallback: boolean;
   /**
@@ -2882,26 +2894,40 @@ export class IntrinsicFunctionResolver {
    * uppercase spelling would build a second client for the same physical
    * region — benign, but wasteful and confusing in a debug log.
    */
-  private clientsForRegion(targetRegion: string | undefined): AwsClients {
+  private clientsForRegion(
+    targetRegion: string | undefined,
+    // The region's masked LOG TEXT when the caller built it from a template
+    // (issue #3150), for the debug line and the refusal below.
+    targetLogText?: string
+  ): AwsClients {
     const ambient = getAwsClients();
     if (!targetRegion) return ambient;
 
     const target = canonicalizeRegion(targetRegion);
+    // The region as this resolver prints it (issue #3150). A producer-region
+    // guest's `explicitRegion` is template-derived: `resolverForProducerRegion`
+    // builds one for a secret ARN's region, which no `isClientSafeRegion` gate
+    // checks first, and an `Fn::Sub` can assemble that region around a short
+    // secret. The guest carries the region's masked text for exactly this.
+    const loggedTarget =
+      targetLogText ??
+      (targetRegion === this.explicitRegion ? this.explicitRegionLogText : undefined) ??
+      target;
     if (!isClientSafeRegion(target)) {
-      // NOT masked, and deliberately so (issue
-      // [#2827](https://github.com/go-to-k/cdkd/issues/2827)'s enumeration).
-      // This method takes no `context` and every call site today passes either
-      // `this.explicitRegion` — the CLI's `--region`, never template-derived —
-      // or, at `resolveGetAZs`, a value `isClientSafeRegion` has ALREADY
-      // accepted one arm up. So the only value that can reach this backstop is
-      // one the operator typed, which is not a resolved secret. A future
-      // caller passing a template-derived region owes this method a `context`
-      // and this throw a mask; the two `Fn::GetAZs` / `Fn::GetStackOutput`
-      // gates that DO see one mask their raw value before truncating it.
-      // not-in-class(stripControlChars(target).slice(0, 64)): the backstop region; every caller passes --region or a value already accepted by isClientSafeRegion one arm up.
+      // Issue [#2827](https://github.com/go-to-k/cdkd/issues/2827)'s
+      // enumeration, and issue #3150 for the guest: the guest's region arrives
+      // as `explicitRegionLogText`, masked, stripped and masked again at the
+      // guest's construction, where the context is (`***` once two spellings of its
+      // region mask differently). `targetLogText` is
+      // `resolveGetAZs`' masked region, which `isClientSafeRegion` has
+      // already accepted one arm up. Any other region is a resolver's own
+      // region as its command built it -- the stack's synthesized or recorded
+      // region, `--region`, or a replay / drift / scrub resolver's region read
+      // out of a literal token -- and no resolution of this pass produced it.
+      // not-in-class(stripControlChars(loggedTarget).slice(0, 64)): a REGION's log text, masked at the guest's construction (issue #3150), or a resolver's own region as its command built it (stack / --region / literal-token region).
       throw new Error(
         `Refusing to build AWS clients for the region ` +
-          `'${stripControlChars(target).slice(0, 64)}': it is not a valid AWS region name, and a ` +
+          `'${stripControlChars(loggedTarget).slice(0, 64)}': it is not a valid AWS region name, and a ` +
           `region is substituted into the AWS service hostname.`
       );
     }
@@ -2919,8 +2945,8 @@ export class IntrinsicFunctionResolver {
 
     const scoped = ambient.withRegion(target);
     this.regionScopedClients.set(target, scoped);
-    // not-in-class(target): a REGION: operator-supplied (--region) or a state-record field.
-    this.logger.debug(`Using region-scoped AWS clients for ${target}`);
+    // not-in-class(loggedTarget): a REGION's log text, masked by the caller that built the region from a template (issue #3150), or a resolver's own region as its command built it (stack / --region / literal-token region).
+    this.logger.debug(`Using region-scoped AWS clients for ${loggedTarget}`);
     return scoped;
   }
 
@@ -3287,8 +3313,10 @@ export class IntrinsicFunctionResolver {
     // (issues [#2516](https://github.com/go-to-k/cdkd/issues/2516) /
     // [#2745](https://github.com/go-to-k/cdkd/issues/2745)): a plaintext below
     // `MIN_NEEDLE_LENGTH` embedded in a longer string reaches only the
-    // substring arm, so an `Fn::Base64` over such an input registers nothing
-    // either.
+    // substring arm, so an `Fn::Base64` over such an input registers its
+    // encoding only when the input has a registered log twin, its own pass's
+    // or one a parent stack registered (the position mask, issues #3119 /
+    // #3114), and nothing otherwise.
     const maskingContext: ResolverContext = context.recordedSecretValues
       ? context
       : { ...context, recordedSecretValues: new Map<string, string>() };
@@ -3373,16 +3401,50 @@ export class IntrinsicFunctionResolver {
         // below, and `resolveSub` / `resolveJoin` re-enter it with the
         // ASSEMBLED string — so a `Conditions` entry that builds a reference
         // out of a value this same pass resolved from a secret makes the
-        // lookup fail NAMING that plaintext (`key '<password>' not found in
-        // secret '<id>'`). That throw is masked AT THE THROW since issue
+        // lookup fail NAMING that plaintext (`key 'key-<password>' not found
+        // in secret '<id>'` — the EMBEDDED form, which is the one the residual
+        // below is about; a key that is the plaintext WHOLE reads
+        // `key '<password>' not found`). That throw is masked AT THE THROW since issue
         // [#2827](https://github.com/go-to-k/cdkd/issues/2827); this sentence
         // used to say it was "thrown unmasked by construction because every
         // other consumer masks at ITS own boundary", which that fix retired. Same class as the
         // lookup echoes issue #2728 closed further down this file, and this sink
         // was missed there because it lives in a different method and renders
-        // ANY error, not only a lookup echo. Residual: a plaintext
-        // shorter than `MIN_NEEDLE_LENGTH` (4) is embedded here rather than
-        // whole, so no needle matches it and it still prints.
+        // ANY error, not only a lookup echo. What used to stand here as the
+        // residual — a plaintext shorter than `MIN_NEEDLE_LENGTH` (4) embedded
+        // in a longer name rather than whole, which no needle matches — is
+        // CLOSED for the names THIS PASS ASSEMBLED, by issue
+        // [#3150](https://github.com/go-to-k/cdkd/issues/3150): such a name is
+        // masked BY POSITION, out of the log twin `resolveSub` / `resolveJoin`
+        // BUILD for the assembled string — REGISTERED (`rememberLogTwin`) once
+        // the substitution completes, so a later `Fn::FindInMap` throw finds
+        // it, and HANDED to the dynamic-reference loop as a parameter for a
+        // throw raised INSIDE that call, which is the example above: it prints
+        // `key 'key-***' not found`
+        // (`tests/unit/cli/import-resolver-error-masking.test.ts` pins it, and
+        // `intrinsic-resolver-name-argument-log-twin.test.ts` pins this sink's
+        // whole sentence). Do not shorten that to "registered": on the example's
+        // own path `rememberLogTwin` has not run yet.
+        //
+        // What is closed is exactly what a twin can cover, and NOTHING WIDER:
+        // a name this pass assembled. Any other text reaching this sink
+        // carries no twin and gets the needle mask alone, whose substring arm
+        // has a four-character floor — so a sub-floor plaintext can still
+        // print here. **The ways that happens are NOT enumerated here, and a
+        // count written here would be wrong.** State the DANGER DIRECTION;
+        // each instance is stated where it is OWNED, which is the only place
+        // that stays true when that code moves: an AWS SDK's text this sink
+        // merely forwards
+        // ([#3171](https://github.com/go-to-k/cdkd/issues/3171)); a name this
+        // resolver hands to another module unmasked, where that module quotes
+        // it back ([#3234](https://github.com/go-to-k/cdkd/issues/3234) —
+        // `resolveGetStackOutput`'s uncaught state read; the `Fn::ImportValue`
+        // sibling catches and masks the same shape); and a PRODUCER's own
+        // output key, whose bound `describeAvailableOutputs`' docstring owns.
+        // Four review rounds on PR go-to-k/cdkd#3176 each found one more that
+        // a tally here had missed, and `.claude/rules/layout-deployment-secrets.md`
+        // records five rounds on go-to-k/cdkd#2803 refuting the same shape of
+        // sentence. Do not restore a count.
         this.logger.warn(
           this.maskSecretsForLog(
             `Failed to evaluate condition ${name}: ${error instanceof Error ? error.message : String(error)}, assuming false`,
@@ -4317,7 +4379,7 @@ export class IntrinsicFunctionResolver {
             flatValue,
             nestedStackChildRegionFromLocalArn(resource.physicalId),
             context,
-            `nested stack ${logicalId} ${attributeName}`,
+            `nested stack ${logicalId} ${this.logTextOfLeaf(attributeName, context)}`,
             crossStackSourceKey({ 'Fn::GetAtt': getAtt })
           );
         }
@@ -4408,12 +4470,16 @@ export class IntrinsicFunctionResolver {
       resource.resourceType === NESTED_STACK_RESOURCE_TYPE &&
       attributeName.startsWith(NESTED_STACK_OUTPUT_ATTRIBUTE_PREFIX)
     ) {
+      // Each listed name through the twin of its WHOLE attribute key (issue
+      // #3150): a key an earlier write of this pass assembled around a short
+      // secret is registered under `Outputs.<name>`, and the sliced name alone
+      // has no twin of its own. Sorting the whole keys sorts the names.
       const declared = Object.keys(resource.attributes ?? {})
         .filter((k) => k.startsWith(NESTED_STACK_OUTPUT_ATTRIBUTE_PREFIX))
-        .map((k) => k.slice(NESTED_STACK_OUTPUT_ATTRIBUTE_PREFIX.length))
-        .sort();
+        .sort()
+        .map((k) => this.maskSecretsForLog(this.outputNameLogText(k, context), context));
+      const declaredText = declared.length > 0 ? declared.join(', ') : '(none)';
       // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
-      // not-in-class(declared.length > 0 ? declared.join(', ') : '(none)'): the nested stack's DECLARED output names, from its state record.
       throw markNonRetryable(
         new IntrinsicResolutionRefusalError(
           // MASKED (issue #2827 review). `attributeName` here is
@@ -4424,8 +4490,8 @@ export class IntrinsicFunctionResolver {
           // the fabricated-account refusal below.
           `Cannot resolve Fn::GetAtt [${logicalId}, ${this.maskSecretsForLog(attributeName, context)}]: the nested stack ` +
             `'${logicalId}' declares no output named ` +
-            `'${this.maskSecretsForLog(attributeName.slice(NESTED_STACK_OUTPUT_ATTRIBUTE_PREFIX.length), context)}'. ` +
-            `Its outputs are ${declared.length > 0 ? declared.join(', ') : '(none)'}. ` +
+            `'${this.maskSecretsForLog(this.outputNameLogText(attributeName, context), context)}'. ` +
+            `Its outputs are ${this.maskSecretsForLog(declaredText, context)}. ` +
             `Check the output name in the nested stack's template, and deploy the child ` +
             `stack again if you have just added it.`
         )
@@ -7208,7 +7274,9 @@ export class IntrinsicFunctionResolver {
        * `carriesDynamicReference` test is false and this path falls through it.
        */
       crossAccount?: boolean;
-    }
+    },
+    /** The producer region's log text, when the caller transformed the region (issue #3150). */
+    producerRegionLogText?: string
   ): Promise<unknown> {
     // Issue #2274: the CROSS-STACK twin of `noteAttributeSecrecy`, and it goes
     // HERE because this method is the one choke point every cross-stack read
@@ -7280,7 +7348,7 @@ export class IntrinsicFunctionResolver {
     }
     if (!carriesDynamicReference(value)) return value;
 
-    const resolver = this.resolverForProducerRegion(producerRegion);
+    const resolver = this.resolverForProducerRegion(producerRegion, context, producerRegionLogText);
     // The evidence must NOT reach a re-resolution whose ORIGIN IS ALREADY KNOWN
     // (issue #2134, rounds 1 and 2 of review). This method is handed the
     // producer it read the value out of, so when `producerRegion` is defined
@@ -7478,13 +7546,42 @@ export class IntrinsicFunctionResolver {
     else recordedSecretExpressions.delete(expression);
   }
 
-  private resolverForProducerRegion(producerRegion: string | undefined): IntrinsicFunctionResolver {
+  private resolverForProducerRegion(
+    producerRegion: string | undefined,
+    context?: ResolverContext,
+    // The region's log text when the caller holds it: a region parsed out of a
+    // dynamic reference, or one `canonicalizeRegion` already transformed
+    // (issue #3150), which may therefore already be lowercased; lowercasing
+    // it again is a no-op. Otherwise the raw region's twin is looked up.
+    producerRegionLogText?: string
+  ): IntrinsicFunctionResolver {
     if (!producerRegion) return this;
     const target = canonicalizeRegion(producerRegion);
     if (target === canonicalizeRegion(this.explicitRegion)) return this;
 
+    // The region as `regionLogText` spells it (issue #3150): a `Fn::GetStackOutput`
+    // region or a secret ARN's region can be assembled around a short secret.
+    // A guest prints it on its region-scoped clients line and in that method's
+    // refusal, which strips it and cuts it to 64 characters: hence mask, strip,
+    // mask, as the `Fn::GetAZs` gate does. The creation line below prints the
+    // same text.
+    const regionText =
+      producerRegionLogText !== undefined
+        ? canonicalizeRegion(producerRegionLogText)
+        : this.regionLogText(producerRegion, context);
+    const guestRegionText = this.maskThenStripThenMask(regionText, context);
+
     const cached = this.producerRegionResolvers.get(target);
-    if (cached) return cached;
+    if (cached) {
+      // One guest serves every spelling of its canonical region, and its text
+      // came from the first. A later spelling that masks differently (a literal
+      // `us-west-2_q7` beside an `Fn::Sub` assembling it around a recorded
+      // `q7`) makes the guest print `***` from then on, not the first's text.
+      if (cached.explicitRegionLogText !== guestRegionText) {
+        cached.explicitRegionLogText = SECRET_MASK;
+      }
+      return cached;
+    }
 
     const scoped = new IntrinsicFunctionResolver(target, {
       strictGetAtt: this.strictGetAtt,
@@ -7494,9 +7591,9 @@ export class IntrinsicFunctionResolver {
     // INTERNAL mode with exactly one producer (the line above), and nothing
     // outside this class may declare itself a guest.
     scoped.producerRegionGuest = true;
+    scoped.explicitRegionLogText = guestRegionText;
     this.producerRegionResolvers.set(target, scoped);
-    // not-in-class(target): a REGION: operator-supplied (--region) or a state-record field.
-    this.logger.debug(`Using a producer-region resolver for ${target}`);
+    this.logger.debug(`Using a producer-region resolver for ${guestRegionText}`);
     return scoped;
   }
 
@@ -7590,17 +7687,16 @@ export class IntrinsicFunctionResolver {
         // re-resolution below, so at this point there is nothing to mask
         // against. The shape note keeps the one fact that made the value worth
         // logging (redacted vs literal) and discloses nothing.
-        // not-in-class(entry.producerRegion): a REGION: operator-supplied (--region) or a state-record field.
         this.logger.info(
           `Resolved Fn::ImportValue: ${loggedExportName} (from index: ` +
-            `${this.maskSecretsForLog(entry.producerStack, context)} / ${entry.producerRegion}; ` +
+            `${this.maskSecretsForLog(entry.producerStack, context)} / ${this.maskSecretsForLog(entry.producerRegion, context)}; ` +
             `${carriesDynamicReference(entry.value) ? 'redacted dynamic reference' : 'literal value'})`
         );
         return await this.reresolveCrossStackValue(
           entry.value,
           entry.producerRegion,
           context,
-          `Fn::ImportValue '${exportName}' (producer ${entry.producerStack} / ${entry.producerRegion})`,
+          `Fn::ImportValue '${this.logTextOfLeaf(exportName, context)}' (producer ${this.logTextOfLeaf(entry.producerStack, context)} / ${this.logTextOfLeaf(entry.producerRegion, context)})`,
           sourceKey,
           // Issue #2274: the coordinate the value was READ from, so an in-run
           // producer's masked output can be recovered rather than refused. The
@@ -7647,9 +7743,8 @@ export class IntrinsicFunctionResolver {
         }
         const stateData = await context.stateBackend.getState(refStack, lookupRegion);
         if (!stateData) {
-          // not-in-class(lookupRegion): a REGION: operator-supplied (--region) or a state-record field.
           this.logger.debug(
-            `No state found for stack: ${this.maskSecretsForLog(refStack, context)} (${lookupRegion})`
+            `No state found for stack: ${this.maskSecretsForLog(refStack, context)} (${this.maskSecretsForLog(lookupRegion, context)})`
           );
           continue;
         }
@@ -7666,7 +7761,6 @@ export class IntrinsicFunctionResolver {
           // No VALUE, for the reason the index arm above states (issue #2133).
           // This is the arm `cdkd scrub` actually takes, since scrub
           // deliberately supplies no `exportIndex`.
-          // not-in-class(lookupRegion): a REGION: operator-supplied (--region) or a state-record field.
           this.logger.info(
             // `refStack` masked too (issue
             // [#2827](https://github.com/go-to-k/cdkd/issues/2827)'s sweep):
@@ -7675,7 +7769,7 @@ export class IntrinsicFunctionResolver {
             // whenever a producer stack is NAMED after a value this pass
             // resolved. Masking a non-needle is a no-op, so this costs
             // nothing on an ordinary stack.
-            `Resolved Fn::ImportValue: ${loggedExportName} (from stack: ${this.maskSecretsForLog(refStack, context)} / ${lookupRegion}; ` +
+            `Resolved Fn::ImportValue: ${loggedExportName} (from stack: ${this.maskSecretsForLog(refStack, context)} / ${this.maskSecretsForLog(lookupRegion, context)}; ` +
               `${carriesDynamicReference(value) ? 'redacted dynamic reference' : 'literal value'})`
           );
           // Patch the index with the just-discovered entry so subsequent
@@ -7729,7 +7823,7 @@ export class IntrinsicFunctionResolver {
         found.value,
         found.lookupRegion,
         context,
-        `Fn::ImportValue '${exportName}' (producer ${found.refStack} / ${found.lookupRegion})`,
+        `Fn::ImportValue '${this.logTextOfLeaf(exportName, context)}' (producer ${this.logTextOfLeaf(found.refStack, context)} / ${this.logTextOfLeaf(found.lookupRegion, context)})`,
         sourceKey,
         // Issue #2274 — see the index arm above. Same bag, reached by scanning
         // state instead of the index, so the same coordinate applies.
@@ -7870,9 +7964,11 @@ export class IntrinsicFunctionResolver {
    * `OutputName` is the overwhelmingly common cause, and the list is what makes
    * the error actionable.
    *
-   * Residual, stated rather than hidden: the needles belong to the CONSUMER's
-   * resolution, so a plaintext sitting in a PRODUCER key that this consumer
-   * never resolved is not maskable from here. The cap is what bounds that case;
+   * `maskSecretsForLog` reads the consumer pass's log twin first (issue #3150),
+   * so a key equal to a name this pass assembled around a short secret is
+   * masked. Residual, stated rather than hidden: the needles and twins belong to the
+   * CONSUMER's resolution, so a plaintext sitting in a PRODUCER key that this
+   * consumer never resolved is not maskable from here. The cap is what bounds that case;
    * `cdkd scrub` reporting the producer's own `secretBearingKeys` is the remedy.
    */
   private describeAvailableOutputs(keys: string[], context?: ResolverContext): string {
@@ -7909,7 +8005,9 @@ export class IntrinsicFunctionResolver {
   private async lookupCfnStackOutputs(
     stackName: string,
     region: string,
-    context?: ResolverContext
+    context: ResolverContext | undefined,
+    /** How `region` is printed: its caller's log text of the raw region (issue #3150). */
+    loggedRegionText: string
   ): Promise<Record<string, string> | undefined> {
     const cacheKey = `${region}\0${stackName}`;
     let fetch = this.cfnStackOutputsCache.get(cacheKey);
@@ -7941,7 +8039,7 @@ export class IntrinsicFunctionResolver {
           // `message` masked too since issue #2827 — `DescribeStacks` quotes
           // the stack name back, and `region` is itself a resolved value.
           `'${this.maskSecretsForLog(stackName, context)}' ` +
-          `(${this.maskSecretsForLog(region, context)}): ` +
+          `(${this.maskSecretsForLog(loggedRegionText, context)}): ` +
           `${this.maskSecretsForLog(message, context)}. ` +
           `Grant cloudformation:DescribeStacks to resolve outputs from CloudFormation-managed ` +
           `stacks, or pass --no-cfn-fallback to disable the fallback.`
@@ -8117,6 +8215,11 @@ export class IntrinsicFunctionResolver {
     }
 
     let region = this.resolverRegion;
+    // The spelling every line below prints `region` with (issue #3150): the
+    // log text of the resolver's own region, which a string this pass
+    // assembled can equal, or of a template-supplied region's RAW value, since
+    // `canonicalizeRegion` lowercases it past any twin lookup.
+    let loggedRegionText = this.logTextOfLeaf(region, context);
     if ('Region' in args && args['Region'] !== undefined && args['Region'] !== null) {
       const resolvedRegion = await this.resolveValue(args['Region'], context);
       if (typeof resolvedRegion !== 'string' || resolvedRegion === '') {
@@ -8151,12 +8254,13 @@ export class IntrinsicFunctionResolver {
         // gate — see the comment there for why the order is load-bearing
         // (issue [#2827](https://github.com/go-to-k/cdkd/issues/2827)).
         throw new Error(
-          `Fn::GetStackOutput: '${this.maskThenStripThenMask(resolvedRegion, context).slice(0, 64)}' is not a ` +
+          `Fn::GetStackOutput: '${this.maskThenStripThenMask(this.logTextOfLeaf(resolvedRegion, context) !== resolvedRegion ? SECRET_MASK : resolvedRegion, context).slice(0, 64)}' is not a ` +
             `valid AWS region name. The region selects both the AWS endpoint and the state-file ` +
             `key, so cdkd will not use it.`
         );
       }
       region = requestedRegion;
+      loggedRegionText = this.regionLogText(resolvedRegion, context);
     }
 
     // RoleArn must be a LITERAL string in the template — we check the raw
@@ -8221,7 +8325,7 @@ export class IntrinsicFunctionResolver {
       throw new Error(
         `Fn::GetStackOutput: cannot reference own stack ` +
           `'${this.maskSecretsForLog(stackName, context)}' in the same region ` +
-          `'${this.maskSecretsForLog(region, context)}'`
+          `'${this.maskSecretsForLog(loggedRegionText, context)}'`
       );
     }
 
@@ -8236,7 +8340,7 @@ export class IntrinsicFunctionResolver {
     // only proves it is `[a-z0-9-]{1,31}` — a real plaintext can be. Bound
     // here so the log lines and the three throws below share ONE masked
     // spelling instead of each deciding.
-    const loggedRegion = this.maskSecretsForLog(region, context);
+    const loggedRegion = this.maskSecretsForLog(loggedRegionText, context);
     // not-in-class(roleArn ? `, RoleArn=${roleArn}` : ''): the RoleArn argument, refused unless it is a literal template string.
     this.logger.debug(
       `Resolving Fn::GetStackOutput: StackName=${loggedStackName}, Region=${loggedRegion}, ` +
@@ -8258,7 +8362,12 @@ export class IntrinsicFunctionResolver {
       // exclusively (a cross-account CFn read would need a different
       // permission model; see the issue's out-of-scope note).
       if (!roleArn && this.cfnFallback) {
-        const cfnOutputs = await this.lookupCfnStackOutputs(stackName, region, context);
+        const cfnOutputs = await this.lookupCfnStackOutputs(
+          stackName,
+          region,
+          context,
+          loggedRegionText
+        );
         if (cfnOutputs) {
           // `Object.hasOwn` (issue #2767): `outputName` is template-controlled and
           // `cfnOutputs` is built from an AWS response, so a bare `in` let
@@ -8393,14 +8502,15 @@ export class IntrinsicFunctionResolver {
       value,
       region,
       context,
-      `Fn::GetStackOutput '${outputName}' (producer ${stackName} / ${region})`,
+      `Fn::GetStackOutput '${this.logTextOfLeaf(outputName, context)}' (producer ${this.logTextOfLeaf(stackName, context)} / ${loggedRegionText})`,
       sourceKey,
       // Issue #2274: this read is `outputs[outputName]` of that producer's
       // state, so the coordinate is exact — see the ImportValue arms. A
       // `RoleArn` makes it cross-ACCOUNT, which the coordinate cannot express,
       // so recovery is refused there rather than answered from the ambient
       // account's store.
-      { stackName, region, outputKey: outputName, ...(roleArn ? { crossAccount: true } : {}) }
+      { stackName, region, outputKey: outputName, ...(roleArn ? { crossAccount: true } : {}) },
+      loggedRegionText
     );
   }
 
@@ -8717,7 +8827,7 @@ export class IntrinsicFunctionResolver {
     if (
       context.recordedSecretValues &&
       (inputLogText !== resolvedValue ||
-        this.maskSecretsForLog(resolvedValue, context) !== resolvedValue)
+        this.maskNeedlesForLog(resolvedValue, context) !== resolvedValue)
     ) {
       recordMaskOnlyValue(context.recordedSecretValues, result);
     }
@@ -8756,6 +8866,9 @@ export class IntrinsicFunctionResolver {
      * given explicitly (see {@link explicitRegion}).
      */
     let clientRegion: string | undefined;
+    // How `region` is printed (issue #3150): a template-supplied region takes
+    // its raw value's log text; the account's own region has none.
+    let loggedRegionText: string | undefined;
     if (typeof resolvedValue === 'string' && resolvedValue !== '') {
       // REFUSE a template-derived region that is not region-shaped, BEFORE it
       // can reach `clientsForRegion` (issue #1957 review).
@@ -8791,13 +8904,14 @@ export class IntrinsicFunctionResolver {
         // applied. Masking the RAW value also reaches the whole-value arm,
         // which has no {@link MIN_NEEDLE_LENGTH} floor.
         throw new Error(
-          `Fn::GetAZs: '${this.maskThenStripThenMask(resolvedValue, context).slice(0, 64)}' is not a valid AWS ` +
+          `Fn::GetAZs: '${this.maskThenStripThenMask(this.logTextOfLeaf(resolvedValue, context) !== resolvedValue ? SECRET_MASK : resolvedValue, context).slice(0, 64)}' is not a valid AWS ` +
             `region name. A region is substituted into the AWS service hostname, so cdkd will ` +
             `not build a client from it.`
         );
       }
       region = requested;
       clientRegion = requested;
+      loggedRegionText = this.regionLogText(resolvedValue, context);
     } else {
       // Empty string or non-string: use current region
       const accountInfo = await getAccountInfo(this.resolverRegion);
@@ -8812,13 +8926,16 @@ export class IntrinsicFunctionResolver {
       // cleared `isClientSafeRegion`, which a real plaintext can (issue #2827
       // review).
       this.logger.debug(
-        `Resolved Fn::GetAZs from cache: ${this.maskSecretsForLog(region, context)} -> ${JSON.stringify(this.maskValueLeaves(cached, context))}`
+        `Resolved Fn::GetAZs from cache: ${this.maskSecretsForLog(loggedRegionText ?? region, context)} -> ${JSON.stringify(this.maskValueLeaves(cached, context))}`
       );
       return cached;
     }
 
     // Call EC2 DescribeAvailabilityZones
-    const ec2Client = this.clientsForRegion(clientRegion).ec2;
+    const ec2Client = this.clientsForRegion(
+      clientRegion,
+      loggedRegionText === undefined ? undefined : this.maskSecretsForLog(loggedRegionText, context)
+    ).ec2;
 
     // The try wraps ONLY the call. The empty-list refusal below deliberately
     // sits outside it: inside, the catch would rewrap it into
@@ -8853,7 +8970,7 @@ export class IntrinsicFunctionResolver {
       // caught AWS message quotes the region back.
       throw new Error(
         `Fn::GetAZs: failed to describe availability zones for region ` +
-          `'${this.maskSecretsForLog(region, context)}': ` +
+          `'${this.maskSecretsForLog(loggedRegionText ?? region, context)}': ` +
           `${this.maskSecretsForLog(error instanceof Error ? error.message : String(error), context)}`
       );
     }
@@ -8869,7 +8986,7 @@ export class IntrinsicFunctionResolver {
     if (azNames.length === 0) {
       throw new Error(
         `Fn::GetAZs: no availability zones returned for region ` +
-          `'${this.maskSecretsForLog(region, context)}'. Either the region ` +
+          `'${this.maskSecretsForLog(loggedRegionText ?? region, context)}'. Either the region ` +
           `is not enabled on this account (opt-in regions must be enabled before use), or the ` +
           `request was answered by a different region's endpoint.`
       );
@@ -8877,7 +8994,7 @@ export class IntrinsicFunctionResolver {
 
     cachedAvailabilityZones[region] = azNames;
     this.logger.debug(
-      `Resolved Fn::GetAZs: ${this.maskSecretsForLog(region, context)} -> ${JSON.stringify(this.maskValueLeaves(azNames, context))}`
+      `Resolved Fn::GetAZs: ${this.maskSecretsForLog(loggedRegionText ?? region, context)} -> ${JSON.stringify(this.maskValueLeaves(azNames, context))}`
     );
     return azNames;
   }
@@ -8973,8 +9090,38 @@ export class IntrinsicFunctionResolver {
    * Mask any resolved secret value out of a string bound for a log line, using
    * the secrets recorded on the resolution pass (GHSA fix). No-op when the pass
    * recorded no secrets.
+   *
+   * A value with a registered LOG TWIN prints as its twin first (issue
+   * [#3150](https://github.com/go-to-k/cdkd/issues/3150)). The needle mask
+   * matches a secret under {@link MIN_NEEDLE_LENGTH} only as the whole text,
+   * so a name an `Fn::Sub` assembled around a 1-3 character secret (a map key,
+   * a stack or output name, an attribute name, the secret id of a dynamic
+   * reference) printed in the clear at every site that handed its RAW value
+   * here, although the pass had registered where the secret sits. Looking the
+   * twin up HERE, rather than at each such site, is what makes the class
+   * closed for raw values: every one of those sites already calls this method.
+   * The twin prints as it is: it is the raw text with masked spans, so it
+   * holds no recorded needle the raw text lacks. When the needle mask ALSO
+   * changes the raw text the whole text is masked instead, the rule
+   * `logTwinText` applies to a Join / Sub line, since the two masks' spans
+   * cannot be merged. What this cannot see is a value TRANSFORMED before it
+   * arrives (a lowercased region, a sliced output name, an assembled
+   * sentence); those sites derive their text from the twin themselves.
    */
   private maskSecretsForLog(text: string, context?: ResolverContext): string {
+    const registered = this.registeredLogTwin(text, context);
+    if (registered === undefined) return this.maskNeedlesForLog(text, context);
+    return this.maskNeedlesForLog(text, context) !== text ? SECRET_MASK : registered;
+  }
+
+  /**
+   * The needle mask alone: {@link maskSecretsForLog} without the log-twin
+   * lookup. For the two DETECTORS that must ask the needle mask apart from the
+   * position mask: `logTwinText`, which asks it of a value that already has a
+   * twin, and `resolveBase64`, whose other operand is the position mask. A
+   * message masks through `maskSecretsForLog`.
+   */
+  private maskNeedlesForLog(text: string, context?: ResolverContext): string {
     let masked = text;
     // BOTH BAGS, and the inherited one FIRST (issue #1903 review round 2). A
     // nested-stack CHILD engine is the only place `context.parameters` holds
@@ -9024,7 +9171,7 @@ export class IntrinsicFunctionResolver {
    * resolver's mask-coverage checker sees a masker at the site.
    */
   private logTwinText(result: string, twin: string, context?: ResolverContext): string {
-    const bothMasksFire = twin !== result && this.maskSecretsForLog(result, context) !== result;
+    const bothMasksFire = twin !== result && this.maskNeedlesForLog(result, context) !== result;
     return bothMasksFire ? SECRET_MASK : twin;
   }
 
@@ -9098,16 +9245,15 @@ export class IntrinsicFunctionResolver {
    * the leaf treated as a resolution product — masked whole when it is a
    * recorded secret, otherwise the masked twin this pass registered for it —
    * and then `logTwinText`'s whole-line guard. The caller still wraps the
-   * result in `maskSecretsForLog`. Shared by every caller of `maskValueLeaves`
-   * (the `Fn::Select`, `Fn::Split`, `Fn::Equals`, `Fn::FindInMap`,
-   * `Fn::GetAZs` and `Fn::Cidr` lines and the VPC `Ipv6CidrBlocks` line among
-   * them) and by the `Fn::Base64` line, so a string one
-   * write already masked by position is not printed in the clear by the next
-   * intrinsic that logs it. `maskValueLeaves` also masks values interpolated
-   * into THROWN messages (the `Fn::Cidr` argument refusals, for one), so those
-   * messages take the same position mask: a short secret an earlier write put
-   * into the value is `***` there too, the direction the mask at the throw
-   * already takes for a whole secret.
+   * result in `maskSecretsForLog`. Used where the text is needed BEFORE that
+   * masker, or apart from it: the `Fn::Base64` line and its detector, and the
+   * names issue [#3150](https://github.com/go-to-k/cdkd/issues/3150)
+   * transforms or composes before printing (`regionLogText`,
+   * `outputNameLogText`, the invalid-region refusals, the cross-stack `origin`
+   * strings). A leaf printed as it is needs none of it: `maskSecretsForLog`
+   * looks the twin up itself, which is how `maskValueLeaves` gives its lines
+   * and the THROWN messages it masks (the `Fn::Cidr` argument refusals, for
+   * one) the same position mask.
    */
   private logTextOfLeaf(value: string, context?: ResolverContext): string {
     return this.logTwinText(
@@ -9115,6 +9261,106 @@ export class IntrinsicFunctionResolver {
       this.logTwinOfProduct({ result: value, twin: value }, context).twin,
       context
     );
+  }
+
+  /**
+   * The log text of a nested stack's OUTPUT name, the part of `attributeName`
+   * after `Outputs.` (issue [#3150](https://github.com/go-to-k/cdkd/issues/3150)).
+   * The twin registry is keyed by the exact string, so the suffix has no twin
+   * of its own: it is sliced from the twin of the WHOLE attribute name. A twin
+   * that no longer starts with the literal prefix has a mask over part of it
+   * (a secret was written into the prefix), so the slice offset no longer
+   * lines up and the suffix prints as `***`.
+   */
+  private outputNameLogText(attributeName: string, context?: ResolverContext): string {
+    const twin = this.logTextOfLeaf(attributeName, context);
+    return twin.startsWith(NESTED_STACK_OUTPUT_ATTRIBUTE_PREFIX)
+      ? twin.slice(NESTED_STACK_OUTPUT_ATTRIBUTE_PREFIX.length)
+      : SECRET_MASK;
+  }
+
+  /**
+   * The log text of a template-supplied REGION as the resolver uses it, i.e.
+   * after `canonicalizeRegion` (issue #3150). The twin is taken from the RAW
+   * value, the string a write registered, and lowercased the same way: a
+   * lookup of the canonical form finds no twin once the raw value had an
+   * upper-case part, and lowercasing leaves every `***` span where it was.
+   */
+  private regionLogText(rawRegion: string, context?: ResolverContext): string {
+    const canonical = canonicalizeRegion(rawRegion);
+    const text = canonicalizeRegion(this.logTextOfLeaf(rawRegion, context));
+    // Lowercasing can FORM a recorded needle the raw value's case hid, and it
+    // may overlap a masked span, where masking the twin cannot see it: the
+    // whole region is masked then, the rule `logTwinText` applies.
+    return text !== canonical && this.maskNeedlesForLog(canonical, context) !== canonical
+      ? SECRET_MASK
+      : text;
+  }
+
+  /**
+   * The log text of a name or token whose `twin` masks spans of `raw` (issue
+   * [#3150](https://github.com/go-to-k/cdkd/issues/3150)). The twin prints
+   * unless the needle mask ALSO changes `raw`; then the two must agree. When
+   * the needle-masked `raw` IS the twin, both masked the same spans and the
+   * twin is safe (`/probe/***` for a 4+ character secret the name holds
+   * whole). When they differ, a recorded secret straddles a masked span
+   * (`q7ab` across `id-***ab`), no text can honour both, and the name prints
+   * as `***`. Coarser `logTwinText` gives up whenever both masks fire.
+   */
+  private straddleSafeTwin(raw: string, twin: string, context?: ResolverContext): string {
+    if (twin === raw) return twin;
+    const needled = this.maskNeedlesForLog(raw, context);
+    if (needled === raw) return twin;
+    return needled === twin ? twin : SECRET_MASK;
+  }
+
+  /**
+   * The log text of a name parsed out of a dynamic-reference token (issue
+   * [#3150](https://github.com/go-to-k/cdkd/issues/3150)). `resolveSub` /
+   * `resolveJoin` re-enter the dynamic-reference loop with the ASSEMBLED string
+   * and its twin, so a secret id, JSON key, version stage or id, SSM parameter
+   * name, service or ARN region assembled around a short secret has its masked
+   * spelling in `tokenTwin` only. Every such name is a run of the token's
+   * `:`-separated pieces, so its log text is the twin's run over the same
+   * pieces. Nothing is registered: the pass's log-twin registry also decides
+   * what `Fn::Base64` persists, so the mapping lives in the returned function.
+   *
+   * `tokenTwin` is the twin's own `{{resolve:...}}` token paired with this one.
+   * Each run's text goes through `straddleSafeTwin`, so a name whose needle
+   * mask disagrees with its twin prints as `***`. A name whose runs carry different
+   * twins, or a token whose pieces do not pair with the twin's (a mask
+   * covering a `:`), prints as `***` too.
+   *
+   * A name that is no run of the token is a default the caller synthesized
+   * (`AWSCURRENT` for an empty version stage, `''` for an absent version id),
+   * printed as it is. Should the token spell such a non-empty name inside a longer
+   * piece, it prints as `***`: the run rule says nothing about that text.
+   */
+  private dynamicReferenceNameLogText(
+    inner: string,
+    tokenTwin: string,
+    context?: ResolverContext
+  ): (name: string) => string {
+    const twinPieces = tokenTwin.slice('{{resolve:'.length, -'}}'.length).split(':');
+    const pieces = inner.split(':');
+    if (twinPieces.length !== pieces.length) return () => SECRET_MASK;
+    return (name) => {
+      let text: string | undefined;
+      for (let start = 0; start < pieces.length; start++) {
+        for (let end = start + 1; end <= pieces.length; end++) {
+          if (pieces.slice(start, end).join(':') !== name) continue;
+          // Through `straddleSafeTwin`: a 4+ character recorded secret that
+          // overlaps a masked span is split in the twin, and only the raw
+          // name's needle mask can still see it.
+          const twin = this.straddleSafeTwin(name, twinPieces.slice(start, end).join(':'), context);
+          if (text !== undefined && text !== twin) return SECRET_MASK;
+          text = twin;
+          // A longer run from the same start is a longer string.
+          break;
+        }
+      }
+      return text ?? (name !== '' && inner.includes(name) ? SECRET_MASK : name);
+    };
   }
 
   /** The bag a pass's log twins are keyed by (issue #3100): the recorded one, else the inherited one. */
@@ -9265,7 +9511,7 @@ export class IntrinsicFunctionResolver {
     const done = new Map<object, unknown>();
     const walk = (node: unknown): unknown => {
       if (typeof node === 'string') {
-        return this.maskSecretsForLog(this.logTextOfLeaf(node, context), context);
+        return this.maskSecretsForLog(node, context);
       }
       if (node === null || typeof node !== 'object') return node;
       const memo = done.get(node);
@@ -9311,7 +9557,7 @@ export class IntrinsicFunctionResolver {
         // reason the receiver was changed from `{}`. The critic's own
         // `Object.create(null)` arm does not fire here because the bag is
         // declared inside this arrow rather than an enclosing scope.
-        out[this.maskSecretsForLog(this.logTextOfLeaf(key, context), context)] = walk(child);
+        out[this.maskSecretsForLog(key, context)] = walk(child);
       }
       return out;
     };
@@ -9340,14 +9586,14 @@ export class IntrinsicFunctionResolver {
    * visible. The FIRST mask is demonstrated by a test: deleting it (masking
    * only after the strip) reds the split-needle case, because the recorded
    * needle is then the split form and the strip has destroyed it. The SECOND
-   * mask is NOT reached by any test here and is defence in depth: it earns its
-   * place only when the bag holds a needle that is the STRIPPED form of the
-   * value in hand, and every route through THIS resolver records the value it
-   * actually resolved — so the split copy is itself a needle and the first
-   * mask already catches it. The shape was measured against a hand-built bag
-   * during review, not produced by the resolver. Kept anyway: it is one
-   * idempotent call, and the alternative is re-deciding per future caller
-   * whether the bag and the value can disagree.
+   * mask earns its place when the bag holds a needle that is the STRIPPED form
+   * of the text in hand. A value this resolver resolved cannot be that text
+   * (the split copy is itself recorded, so the first mask catches it), but a
+   * template LITERAL can: issue #3150's region-scoped clients refusal prints
+   * a producer-region guest's region through this helper, and a literal ARN
+   * region spelling a recorded `st-1` as `s` + U+0001 + `t-1` is masked only
+   * by the second pass (`intrinsic-resolver-name-argument-log-twin.test.ts`
+   * pins both halves on that route).
    *
    * THE BOUND, since this file's job is to state them: this covers a needle
    * split by a character `stripControlChars` removes. A needle split by
@@ -9389,7 +9635,12 @@ export class IntrinsicFunctionResolver {
   private async resolveDynamicReferencesWithLogTwin(
     value: string,
     logTwin: string,
-    context?: ResolverContext
+    context?: ResolverContext,
+    // The DISPLAY of a token a parent resolver delegated here (issue #3150):
+    // its log text and its names' log texts, as the parent paired them. Log
+    // lines only: `logTwin` stays the token itself, so the twin this method
+    // registers for its result is the one it registered before.
+    inherited?: { tokenLogText: string; nameLogText: (name: string) => string }
   ): Promise<LogTwin> {
     // Match all {{resolve:...}} patterns
     const pattern = /\{\{resolve:([^}]+)\}\}/g;
@@ -9402,9 +9653,26 @@ export class IntrinsicFunctionResolver {
     while ((match = pattern.exec(value)) !== null) {
       matches.push({ fullMatch: match[0], inner: match[1]! });
     }
+    // Each token's log twin, paired by position with the twin's own tokens
+    // (issue #3150). The two strings carry the same tokens in the same order
+    // unless a mask covers part of a token's `{{resolve:` opener or `}}`
+    // closer; then no token is paired and every name prints as `***`.
+    const twinTokens = dynamicReferenceTokens(logTwin);
+    const tokensAligned = twinTokens.length === matches.length;
 
-    for (const { fullMatch, inner } of matches) {
+    for (const [index, { fullMatch, inner }] of matches.entries()) {
       const service = inner.split(':')[0];
+      const pairedTwin = tokensAligned ? twinTokens[index] : undefined;
+      const tokenLogText =
+        inherited?.tokenLogText ??
+        (pairedTwin === undefined
+          ? SECRET_MASK
+          : this.straddleSafeTwin(fullMatch, pairedTwin, context));
+      const nameLogText =
+        inherited?.nameLogText ??
+        (pairedTwin === undefined
+          ? () => SECRET_MASK
+          : this.dynamicReferenceNameLogText(inner, pairedTwin, context));
       // A `secretsmanager` reference resolves to a real secret by SPELLING. A
       // plain `ssm` one resolves to a secret only when the parameter's `Type` is
       // `SecureString` (issue #1901) — a fact discovered from the GetParameter
@@ -9486,16 +9754,15 @@ export class IntrinsicFunctionResolver {
         // retry can only re-take it -- and the retry wrapper would otherwise
         // spend the full backoff budget before surfacing the message that
         // tells the user how to fix their template.
-        // not-in-class(regionVerdict.foreignProducerRegions.join(', ')): a REGION: operator-supplied (--region) or a state-record field.
         throw markNonRetryable(
           new DynamicReferenceRegionAmbiguousError(
             // `fullMatch` is the token cut from the ASSEMBLED reference string,
             // so `resolveSub` re-entering with an assembled body puts a
             // plaintext here — the same plaintext the sibling throws mask after
             // parsing it out of this very token (issue #2827 review round 2).
-            `Refusing to resolve the secret reference ${this.maskSecretsForLog(fullMatch, context)}: it names ` +
-              `'${this.maskSecretsForLog(regionVerdict.secretName, context)}' without a region, and this stack reads from ` +
-              `${regionVerdict.foreignProducerRegions.join(', ')} as well as its own ` +
+            `Refusing to resolve the secret reference ${this.maskSecretsForLog(tokenLogText, context)}: it names ` +
+              `'${this.maskSecretsForLog(nameLogText(regionVerdict.secretName), context)}' without a region, and this stack reads from ` +
+              `${this.maskSecretsForLog(regionVerdict.foreignProducerRegions.map((r) => this.maskSecretsForLog(r, context)).join(', '), context)} as well as its own ` +
               `region. cdkd cannot tell which one must answer, and resolving against ` +
               `the wrong one yields a different secret. Spell the reference as a full ARN ` +
               `to say which region owns it.`
@@ -9517,7 +9784,11 @@ export class IntrinsicFunctionResolver {
         // region against its own and returns `local`. A name-form reference can
         // never arrive here at all, because only the `named-region` arm
         // delegates.
-        const sibling = this.resolverForProducerRegion(regionVerdict.region);
+        const sibling = this.resolverForProducerRegion(
+          regionVerdict.region,
+          context,
+          nameLogText(regionVerdict.region)
+        );
         // Same evidence-stripping as `reresolveCrossStackValue` above, and for
         // the same reason. Harmless on THIS path today -- the token is ARN-form
         // by construction, so the sibling verdicts `local` whatever evidence it
@@ -9529,7 +9800,12 @@ export class IntrinsicFunctionResolver {
           // Unconditional here: this arm is reached only for an ARN-form token,
           // whose region the ARN itself states, so the origin is known by
           // construction and the evidence can only mislead.
-          withoutProducerRegions(context)
+          withoutProducerRegions(context),
+          // How the sibling PRINTS the token and its names (issue #3150). Not
+          // passed as the twin: the sibling registers its result against the
+          // twin it holds, and a masked twin there would register a public
+          // value as `***`, which `Fn::Base64` then persists.
+          { tokenLogText, nameLogText }
         );
         // Replacer FUNCTION for the same reason as every other substitution in
         // this method: a resolved secret legitimately containing `$&` would
@@ -9618,7 +9894,7 @@ export class IntrinsicFunctionResolver {
       let cacheable = true;
 
       if (service === 'secretsmanager') {
-        resolved = await this.resolveSecretsManagerReference(inner, context);
+        resolved = await this.resolveSecretsManagerReference(inner, context, nameLogText);
       } else if (service === 'ssm') {
         // On the comparison path fetch the parameter WITHOUT decryption: a
         // `SecureString` then comes back as its encrypted blob, so the type can
@@ -9626,7 +9902,7 @@ export class IntrinsicFunctionResolver {
         // `StringList` are unaffected by the flag, so the value is the same one
         // the deploy path would resolve and is safe to cache and substitute.
         const decrypt = context?.skipDynamicReferences !== true;
-        const param = await this.resolveSSMReference(parts, decrypt, 'ssm', context);
+        const param = await this.resolveSSMReference(parts, decrypt, 'ssm', context, nameLogText);
         // The FRESH response is authoritative, so a definitive public verdict
         // both clears `isSecret` and RETRACTS a stale memo. Without the
         // retraction the verdict could only ever be raised, so one transient
@@ -9683,7 +9959,13 @@ export class IntrinsicFunctionResolver {
         // resolving it would record a public value as a redaction needle over
         // that disagreement. `markNonRetryable` because the parameter's type
         // is not something a retry can change.
-        const param = await this.resolveSSMReference(parts, true, 'ssm-secure', context);
+        const param = await this.resolveSSMReference(
+          parts,
+          true,
+          'ssm-secure',
+          context,
+          nameLogText
+        );
         if (!param.secure) {
           // `secure` is false only for the two PUBLIC types the predicate
           // names, so `type` is a definitive `String` / `StringList` here.
@@ -9691,7 +9973,7 @@ export class IntrinsicFunctionResolver {
           throw markNonRetryable(
             new IntrinsicResolutionRefusalError(
               // Masked for the reason the `ssm-secure` refusal above states.
-              `Refusing to resolve ${this.maskSecretsForLog(fullMatch, context)}: the parameter is a ${param.type} ` +
+              `Refusing to resolve ${this.maskSecretsForLog(tokenLogText, context)}: the parameter is a ${param.type} ` +
                 `parameter, and the ssm-secure spelling is defined for SecureString parameters only. ` +
                 `Reference it as {{resolve:ssm:...}} if it is public configuration.`
             )
@@ -9709,7 +9991,10 @@ export class IntrinsicFunctionResolver {
         // literal span in the value, which redaction's strictly-inside
         // carve-out spares into `state.json` — issue #2743.)
         this.logger.warn(
-          this.maskSecretsForLog(`Unsupported dynamic reference service: ${service}`, context)
+          this.maskSecretsForLog(
+            `Unsupported dynamic reference service: ${this.maskSecretsForLog(nameLogText(String(service)), context)}`,
+            context
+          )
         );
         continue;
       }
@@ -9793,7 +10078,11 @@ export class IntrinsicFunctionResolver {
     // by `Fn::Sub` / `Fn::Join` from a value this pass resolved out of a
     // secret carries that plaintext in its secret id / JSON key, and the
     // debug echo and the retry label would print it.
-    context?: ResolverContext
+    context: ResolverContext | undefined,
+    // Each name's log text, from the token's twin (issue #3150,
+    // `dynamicReferenceNameLogText`). Required: a default would print the
+    // names raw for a caller that forgot it.
+    nameLogText: (name: string) => string
   ): Promise<string> {
     // inner = "secretsmanager:SECRET_ID:SecretString:JSON_KEY:VERSION_STAGE:VERSION_ID"
     // Remove the "secretsmanager:" prefix
@@ -9867,12 +10156,13 @@ export class IntrinsicFunctionResolver {
     // message reaches only the substring arm, where a sub-floor plaintext
     // prints in full. Same rule `masked-retry-logger.ts` states for a
     // provider's wrapped `error.message`.
-    const loggedSecretId = this.maskSecretsForLog(secretId, context);
-    const loggedJsonKey = this.maskSecretsForLog(jsonKey, context);
+    const loggedSecretId = this.maskSecretsForLog(nameLogText(secretId), context);
+    const loggedJsonKey = this.maskSecretsForLog(nameLogText(jsonKey), context);
 
     this.logger.debug(
       `Resolving dynamic reference: secretsmanager:${loggedSecretId}:SecretString:${loggedJsonKey}:` +
-        `${this.maskSecretsForLog(versionStage, context)}:${this.maskSecretsForLog(versionId, context)}`
+        `${this.maskSecretsForLog(nameLogText(versionStage), context)}:` +
+        `${this.maskSecretsForLog(nameLogText(versionId), context)}`
     );
 
     // Region-sensitive, and the reason issue #1957 is a security defect rather
@@ -10149,13 +10439,16 @@ export class IntrinsicFunctionResolver {
    */
   private async resolveSSMReference(
     parts: string[],
-    decrypt = true,
+    decrypt: boolean,
     // The spelling being resolved — `ssm` or, since issue #2482, `ssm-secure`.
     // Log-only: it names the reference in the debug / retry / warning lines so
     // an `ssm-secure` lookup is not reported as an `ssm` one.
-    service: 'ssm' | 'ssm-secure' = 'ssm',
+    service: 'ssm' | 'ssm-secure',
     // For the log lines only (issue #2728) — see `resolveSecretsManagerReference`.
-    context?: ResolverContext
+    context: ResolverContext | undefined,
+    // As in `resolveSecretsManagerReference` (issue #3150), and required for
+    // the same reason.
+    nameLogText: (name: string) => string
   ): Promise<{ value: string; secure: boolean; type: string | undefined }> {
     const parameterName = parts.slice(1).join(':');
 
@@ -10167,7 +10460,7 @@ export class IntrinsicFunctionResolver {
     // MASKED PER RAW VALUE — see `resolveSecretsManagerReference`'s twin
     // comment for why the raw form and not the assembled message (issue
     // [#2827](https://github.com/go-to-k/cdkd/issues/2827)).
-    const loggedParameterName = this.maskSecretsForLog(parameterName, context);
+    const loggedParameterName = this.maskSecretsForLog(nameLogText(parameterName), context);
 
     // not-in-class(service): the typed `service: 'ssm' | 'ssm-secure'` PARAMETER of resolveSSMReference, not the text parsed off an assembled reference.
     this.logger.debug(`Resolving dynamic reference: ${service}:${loggedParameterName}`);

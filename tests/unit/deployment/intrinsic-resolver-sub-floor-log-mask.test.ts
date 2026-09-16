@@ -3,8 +3,9 @@
  * `Resolved Fn::Join:` / `Resolved Fn::Sub:` debug lines printed a 1-3
  * character secret embedded in a longer string.
  *
- * `maskSecretsForLog` is a NEEDLE mask, and a needle shorter than
- * `MIN_NEEDLE_LENGTH` (4) is matched only as the WHOLE text, so `port:` + a
+ * The resolver's needle mask (`maskNeedlesForLog`, all that `maskSecretsForLog`
+ * did before issue #3150 added its twin lookup) matches a needle shorter than
+ * `MIN_NEEDLE_LENGTH` (4) only as the WHOLE text, so `port:` + a
  * two-character secret reached `--verbose` output as `port:q7`. The floor is
  * deliberate and stays; the fix builds a LOG TWIN of the value at the writes
  * that put a secret into it (`LogTwin` in the resolver), and logs the twin.
@@ -354,7 +355,10 @@ describe('issue #3100: Resolved Fn::Join / Fn::Sub lines mask a sub-floor secret
     const resolver = new IntrinsicFunctionResolver('us-east-1');
     const ctx = freshContext();
     // `A` registers `port:q7` masked; `B`, resolved AFTER it, is a literal
-    // Sub producing the same string with nothing masked.
+    // Sub producing the same string with nothing masked. B's own line takes
+    // A's twin too: `maskSecretsForLog` looks the registry up by VALUE (issue
+    // #3150), the over-masking direction the registry already accepts. What
+    // this pins is that B cannot REPLACE A's mask, so the outer line keeps it.
     await resolver.resolve(
       {
         'Fn::Sub': [
@@ -367,7 +371,7 @@ describe('issue #3100: Resolved Fn::Join / Fn::Sub lines mask a sub-floor secret
 
     expect(resolvedLines('Sub')).toEqual([
       'Resolved Fn::Sub: port:***',
-      `Resolved Fn::Sub: port:${PIN}`,
+      'Resolved Fn::Sub: port:***',
       'Resolved Fn::Sub: outer:port:***',
     ]);
   });
@@ -841,6 +845,23 @@ describe('issue #3100: Resolved Fn::Join / Fn::Sub lines mask a sub-floor secret
       expect(ctx.recordedSecretValues.get(encoded)).toBe('***');
       // The secret's own entry is untouched: a real expression, not demoted.
       expect(ctx.recordedSecretValues.get(PIN)).toBe(PIN_REF);
+    });
+
+    it('the NEEDLE operand: a literal Base64 input that embeds a 4+ character recorded secret is recorded mask-only', async () => {
+      // No write positioned anything in this input, so the position operand
+      // stays silent and only the needle mask can see the recorded `DSN` in it.
+      const resolver = new IntrinsicFunctionResolver('us-east-1');
+      const ctx = freshContext();
+      await resolver.resolve(
+        { 'Fn::Sub': `seed:{{resolve:secretsmanager:${SECRET_ID}:SecretString:dsn}}` },
+        ctx as never
+      );
+      expect(ctx.recordedSecretValues.has(DSN), 'premise: the 4+ character secret is recorded').toBe(true);
+      const input = `x-${DSN}`;
+
+      await resolver.resolve({ 'Fn::Base64': input }, ctx as never);
+
+      expect(ctx.recordedSecretValues.get(Buffer.from(input).toString('base64'))).toBe('***');
     });
 
     it('#3119 control: a Base64 input no write masked and no needle matches records nothing', async () => {
