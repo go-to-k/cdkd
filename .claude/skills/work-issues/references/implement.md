@@ -47,10 +47,9 @@ is the only signal the probes above cannot see.
 
 The rule is SYMMETRIC: **the orchestrator does not edit a live lane's tree
 either.** An uncommitted parent edit there is wiped without a trace by the
-lane's next amend + force-push, with no conflict reported (2026-09-05: a
-parent-side `.claude/rules` trim vanished into go-to-k/cdkd#2620's fix round,
-both parties trimming one budget). Hand the edit to the lane as an
-instruction; the lane owns the write.
+lane's next amend + force-push, no conflict reported (2026-09-05,
+go-to-k/cdkd#2620). Hand the edit to the lane as an instruction; the lane owns
+the write.
 
 **Take a fresh branch here — ALWAYS, and WITHOUT leaving the tree.** The
 branch this tree arrived on is `LAUNCH_BRANCH`: the OUTER TOOL's, not this
@@ -105,10 +104,9 @@ named, grep the shape across the repo. Rules, each bought by a measured miss:
   when it takes the same PREMISE — for a REFUSAL, what refusing COSTS there.**
   The sweep half is what gets skipped: the fix lands on one call site while a
   sibling keeps the defect, usually shipping a comment claiming completeness
-  (measured on two lanes in one day — a bare-string arm one line over, a
-  redaction fixing update/delete but not create, a second enumeration in the
-  same file and a third on the same LINE; all found by enumerating readers
-  with grep, none by re-reading the diff). **So does a SWEEP, over its OWN
+  (measured on two lanes in one day: four sibling sites, one of them on the
+  same LINE, all found by enumerating readers with grep and none by re-reading
+  the diff). **So does a SWEEP, over its OWN
   output** — re-run the predicate on the diff the sweep produced
   (go-to-k/cdkd#2662: three of ten false-guarantee comments were added or left
   by a sweep meant to end that class). After writing a fix:
@@ -155,8 +153,7 @@ named, grep the shape across the repo. Rules, each bought by a measured miss:
   (`git grep -n "<issue number>" -- src tests docs .claude`). Measured on
   go-to-k/cdkd#2466 closing go-to-k/cdkd#2421: four live citations, one a
   "deliberately NOT asserted" bullet in a fixture that already synthesized —
-  adding the assertion cost nothing and found a SECOND failure mode, usually
-  the cheapest high-value test in the change.
+  adding the assertion found a SECOND failure mode.
 
 **A defect the sweep turns up that this lane is NOT fixing gets FILED** —
 `references/filing.md` (§5-f) owns those rules.
@@ -175,17 +172,16 @@ suites run by `run-tests.sh`, not visible from `tests/unit/**`.
   fails everything with exit 127. For a before/after comparison write the old
   copy beside the real one as `.claude/hooks/_old-<name>.test.sh`, then delete
   it. §8's scratch-copy idiom is right for a data file, wrong for a runnable
-  harness and wrong for a WORKTREE (§8 carries both mechanisms).
+  harness and wrong for a WORKTREE.
 - **When the issue reports a stale ENTRY in an enumerated list, audit the whole
   list in BOTH directions** — every entry still resolves AND everything that
-  belongs is present; the second half is the one skipped (go-to-k/cdkd#1972
-  named one dead path; the audit found a second plus four live surfaces never
-  added). A list that must stay in sync with the repo is a test, not a
-  sentence.
+  belongs is present; the second half is the one skipped (go-to-k/cdkd#1972: one
+  dead path reported, a second plus four live surfaces found). A list that must
+  stay in sync with the repo is a test, not a sentence.
 - **Adding a HANDLER to a slot that already has one REPLACES it.** Bash `trap`
   does not chain: a second `trap ... EXIT` silently disarms the first, which in
   an integ fixture is the AWS teardown (a reviewer-nit fix nearly traded a
-  leaked temp file for live AWS resources on every failure path). Put the work
+  leaked temp file for live AWS resources). Put the work
   inside the EXISTING handler or re-install one that CALLS the original (fenced
   by `tests/unit/scripts/integ-single-exit-trap.test.ts`); before adding to ANY
   single-slot registration, count what is there.
@@ -195,7 +191,7 @@ suites run by `run-tests.sh`, not visible from `tests/unit/**`.
 **When the audit is a MEASUREMENT, the shape of the sample is the finding — a
 clean result from the wrong shape is indistinguishable from a clean subject.**
 go-to-k/cdkd#2096's audit produced SIX confident wrong answers, each from a
-plausible sampling shape, each hiding a real secret: newest-N (the newest
+plausible sampling shape hiding a real secret: newest-N (the newest
 versions come from the run likeliest already fixed — sample the range); one
 global needle (each fixture spells its own literal — derive it per subject, or
 assert a needle-independent observable); a name from convention (read it from
@@ -211,12 +207,11 @@ a case you KNOW is dirty first; only then trust a zero.
 
 **COMMIT the round's real fixes BEFORE running any mutation probe — because a
 probe RESTORE reverts anything committed nowhere.** A lane lost 133 lines of
-newly written tests to a harness restoring a snapshot taken before they
-existed: nothing was interrupted and nothing was ambiguous, the file simply
-went back to a state predating the work — which the older reason for this rule
-(telling wreckage apart in one dirty tree; go-to-k/cdkd#2416) does not describe
-at all. The next paragraph's `cp <backup> <file>` IS that mechanism. After the
-commit the separator is `git diff`.
+newly written tests to a harness restoring a snapshot predating them — nothing
+interrupted, nothing ambiguous — and the next paragraph's `cp <backup> <file>`
+IS that mechanism, a wider reason than the older one (telling wreckage apart in
+one dirty tree; go-to-k/cdkd#2416). After the commit the separator is
+`git diff`.
 
 **Restore a probe from a BYTE-EXACT COPY, never an inverse string replace**
 (`cp` before, `cp` back, proved by `git diff -- <file>` printing nothing). An
@@ -246,18 +241,18 @@ not a post-mortem (5-g's rule applies to a probe you run yourself):
 `grep -c '<anchor>'` BEFORE, `git diff -- <file>` after, read the hunk.
 **AIMED IT means the PRODUCTION file**: re-typing the subject's logic inside
 the test mutates a COPY and reports RED for a fence that does not exist
-(go-to-k/cdkd#2662: "27 probes, ALL RED", one of them green; reverting
+(go-to-k/cdkd#2662: "27 probes, ALL RED", one actually green; reverting
 production turned six more floors green). A count above 1 decides the tool, in
 opposite directions: `sed` / `perl -pi` are per-LINE, so a RED can belong to
 every copy at once, while `perl -0pi` without `/g` mutates only the FIRST
-(go-to-k/cdkd#2627: one of four identical lines, the arm under test untouched,
-a false GREEN);
+(go-to-k/cdkd#2627: a false GREEN on one of four identical lines, the arm under
+test untouched);
 (2) **does a case REACH the edited line — by EVERY arm that can?** A green
 licenses ADDING a case per arm / ruleset / caller — never a fence change,
 never DELETING a guard as "implied": before dropping a conjunct on a green
 probe, enumerate the arms reaching that line and state per arm what implies it
 (go-to-k/cdkd#3088: "the other conjuncts imply it" held under neither ruleset,
-one arm found per review round, no test built either shape); (3)
+one arm found per review round); (3)
 **did the command run where you think it did?** (appendix, "Bash cwd silent
 reset" — absolute paths, and a property the wrong tree cannot fake). Plus one
 fixture shape: **an expected value must be an INDEPENDENT variable from the one
@@ -270,8 +265,8 @@ never the rc, which lies in both directions (§6's rc rule; a suite can `skipIf`
 itself when `dist/` is absent). A load error or a short test count VOIDS the
 probe.
 
-**A SCRIPTED harness cannot tell "green" from "did not run", and the sentence
-above does not cover it** — "a short test count" presumes a count is PRESENT.
+**A SCRIPTED harness cannot tell "green" from "did not run"** — the sentence
+above presumes a count is PRESENT.
 A deleted `if` line is a parse error, and vitest then prints a `Tests` line
 with NO DIGITS (`Tests  no tests`), so a `[0-9]+ failed` parse extracts nothing
 and records "0 failed": a false UNFENCED verdict on a probe that ran no case.
@@ -284,11 +279,9 @@ file; no file-level FAIL has zero case failures.
 APPLYING it.** The usual probe breaks the code to prove a test discriminates;
 this one applies the alternative you turned down and proves a test REFUSES
 it — the only artifact that keeps a deliberate rejection from reading as an
-omission. go-to-k/cdkd#2578 asked for an absent S3 `Versions` /
-`DeleteMarkers` to count as a non-answer; applied literally that refuses every
-EMPTY bucket, and a probe applying the issue's own prescription turned one test
-red. Write that control before the paragraph explaining why you did not do what
-was asked.
+omission (go-to-k/cdkd#2578: taken literally, the issue's prescription refuses
+every EMPTY bucket, and a probe applying it turned one test red). Write that
+control before the paragraph explaining why you did not do what was asked.
 
 **A probe MATRIX that must recur is a SCRIPT, not a re-measured table** —
 §8-g's "delete the number" disposition. Re-measuring on the merge tree was
@@ -345,9 +338,8 @@ real tree:**
   count at the GRAIN it protects** — one incremented at PHASE boundaries
   survives deleting the individual assertion it was added for, so bump it per
   ASSERTION and probe by deleting SEVERAL: one deletion can still clear an
-  aggregate, reading as a fence that discriminates (go-to-k/cdkd#2842's
-  `import-secret-observed/verify.sh` bumps `ASSERTIONS_RUN` at each of 14
-  assertions, all 14 deletion-probed).
+  aggregate, reading as a fence that discriminates (go-to-k/cdkd#2842:
+  `ASSERTIONS_RUN` bumped at each of 14 assertions, all deletion-probed).
 - **Is anything RUNNING it?** (nine shell hook harnesses were invoked by no CI
   step and no task).
 
@@ -363,8 +355,8 @@ memory — and fail on any difference outside an enumerated set of intended
 classes, so a shape nobody imagined fails by default. Confirm agreement where
 they SHOULD agree before trusting where they differ. Two measured ways it goes
 inert: **classify by the resulting VALUE, not the input's shape** (bucketing a
-differing cell by which key it was let a total regression sit in the "intended
-repair" bucket); and **carry a floor per class** (the walk reaches a class only
+differing cell by its key let a total regression sit in the "intended repair"
+bucket); and **carry a floor per class** (the walk reaches a class only
 if the pool contains it — a pool that stops covering one reads as "no
 regressions").
 
@@ -400,9 +392,8 @@ axis?** (enumerate git history, environment, cwd, clock, locale, user; pin
 each or record a measured negative — prefer PINNING over normalizing, since a
 normalization layer sits exactly where a fence goes green-but-inert).
 `realpath` a scratch ROOT — macOS `tmpdir()` says `/var/…` and git
-`/private/var/…`, and three spawn cases under the raw root passed with stdout,
-stderr and rc identical to a clean run (go-to-k/cdkd#3029, caught only by a
-vacuity probe).
+`/private/var/…`, and three spawn cases under the raw root passed identically
+to a clean run (go-to-k/cdkd#3029, caught only by a vacuity probe).
 
 ### 5-g. Fan-out mechanics
 
@@ -427,9 +418,8 @@ past `verify-pr-gate`) — enforce quality yourself; the parent gates the MERGE.
   same trees were green. Each agent runs only `vp test run <its own suite>`.
 - **A PEER SESSION's suite is invisible to every probe here** — a full suite
   exited 1 with all tests passing (`Worker exited unexpectedly`, load 54, the
-  heaviest vitest in another session's worktree). Before reading a failure as a
-  regression, check the rc, the error section, `uptime` and `ps` for a vitest
-  whose path is not yours; re-run when the machine is quiet.
+  heaviest vitest in another session's worktree). Check the rc and the error
+  SECTION first — §6's host-load paragraph owns the rest.
 - Budget two fan-out costs: a lane waiting inside a tool call is killed at 600s
   of silence (background long runs with a log redirect, poll with short
   `tail`s), and a fix round re-touching an `integ-*` scope invalidates that
@@ -439,11 +429,21 @@ past `verify-pr-gate`) — enforce quality yourself; the parent gates the MERGE.
 
 - **Never force-push over a commit you did not author** — re-`git fetch` and
   inspect the branch first; STOP if it carries work you did not write.
+- **Permit a COMMENT-ONLY edit in a file a REVIEWER names, outside the allowed
+  set.** A finding routinely lands one file over from the fix
+  (go-to-k/cdkd#3124: a reviewer minor named the stale write-site table in
+  `src/deployment/secret-redaction.ts`, outside that drift lane's set); a lane
+  reading its scope strictly ships the stale prose as out-of-scope and the
+  orchestrator pays for it in its own round.
+- **"Run synchronously in this turn; never end a turn waiting on a monitor or a
+  background poll."** A lane that parks that way never wakes — nothing resumes
+  a subagent on a signal — and from outside it looks like one that merely went
+  quiet (twice in one lane, 2026-09-16, go-to-k/cdkd#3158).
 - **A new fixture literal must not collide with an existing assertion needle,
   nor a new fixture RESOURCE with an existing resource's VALUE**
   (go-to-k/cdkd#2270: a URL user equal to the swept needle produced a false
-  LEAK report, and an arm reusing an owned plaintext failed on an assertion
-  the lane never wrote). When an arm makes two things equal, ask what ELSE
+  LEAK report; a reused owned plaintext failed an assertion the lane never
+  wrote). When an arm makes two things equal, ask what ELSE
   holds that value; scope the sharing. **And check the arm's shape actually
   exercises the fix before spending a run** (two separate resources was
   vacuous — only one holding both leaves let the mechanism decide).

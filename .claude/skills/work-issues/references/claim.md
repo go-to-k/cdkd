@@ -105,10 +105,24 @@ gh issue view <n> --json comments \
 **Tie-break: the EARLIEST `createdAt` wins.** If a rival's claim predates
 yours, post a short stand-down comment naming the winning branch, drop the
 lane, and pick a different issue — without asking; both sessions independently
-reach the same answer from the same timestamps. Escalate to the maintainer only
-when the timestamps cannot settle it (go-to-k/cdkd#1419 / go-to-k/cdkd#1435
-were claimed twenty seconds apart and needed arbitration — 2026-08-09,
-go-to-k/cdkd#1446).
+reach the same answer from the same timestamps. Escalate to the maintainer when
+the timestamps cannot settle it (go-to-k/cdkd#1419 / go-to-k/cdkd#1435 were
+claimed twenty seconds apart and needed arbitration — 2026-08-09,
+go-to-k/cdkd#1446), and in the one other case the next paragraph names.
+
+**A QUEUED comment IS a claim, and its `createdAt` is the timestamp the
+tie-break reads** — stated because one run read it BOTH ways inside a day: a
+rival stood down to a QUEUED claim 11 minutes older, and the QUEUED claimant
+then published a precedence note weighing only the two `Working on this`
+comments, concluding it had been the LATER claimant and justifying itself on
+"no branch, no PR, no worktree" about the session that had already YIELDED on
+the thread (2026-09-15/16, go-to-k/cdkd#2458 / go-to-k/cdkd#2769 /
+go-to-k/cdkd#2732). So **re-read the thread to the END before publishing any
+precedence account** — the one-shot check above finds claims, never
+stand-downs — and **never infer absence from a missing branch**: §9's rule is
+that an ownership signal establishes LIFE only. An issue claim carries no TTL,
+so one you believe is dead goes to the maintainer arbitration above, never to a
+self-serve takeover.
 
 **The tie-break only works if the LOSER re-reads. Nothing makes it, so the
 window is not seconds — it is the whole lane.** The one-shot check above
@@ -142,4 +156,7 @@ decided not to do it — but a LATER run that takes it claims it normally.
 **Do not trust a handoff table — verify it live.** A "these issues are taken"
 note is a snapshot of the moment it was written; PRs merge and worktrees
 disappear. Re-derive occupancy from `gh pr list --state open`,
-`git worktree list`, and the issues' own comments before believing any of it.
+`git worktree list`, and the issues' own comments before believing any of it —
+each read as evidence of LIFE only, never of absence (§9). What RELEASES an
+issue is positive: a stand-down comment, or the issue closed. Absent one, a
+"taken" entry stands however old it looks.
