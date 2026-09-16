@@ -783,39 +783,55 @@ describe('cdkd scrub exit codes for an unreadable outputs bag (go-to-k/cdkd#3192
     ['a string', 'abcdef'],
     ['a list', ['plaintext-element']],
   ] as const) {
-    it(`exits 2 WITHOUT --fail when the producer bag is ${label}`, async () => {
+    it(`exits 2 for a ${label} producer bag, with AND without --fail`, async () => {
       // THE REGRESSION GUARD. At the merge base both shapes exited 2
       // unconditionally — the list through
       // `plaintextProducerCrossStackReadError` (`'0' in [...]` is true, so the
       // element was returned), the string through an escaping `TypeError`.
       // Guarding the read moved them to exit 0 on a plain run, and to exit 1
-      // under `--fail` — the code `docs/cli-reference.md` teaches as the
-      // OPPOSITE remedy. NO `fail` in these options, deliberately.
-      arrangeDamagedProducer(bag);
+      // under `--fail`.
+      //
+      // BOTH POLARITIES, because `docs/cli-scrub.md`'s row promises "with or
+      // without `--fail`" and that holds only by source ORDERING — the raise
+      // sits above `if (options.fail)` — which nothing pinned (review round
+      // 10). Without `--fail` the wrong answer is a silent exit 0; with it, a
+      // silent exit 1 through `ScrubNeededError`, the code that means "rotate
+      // the secret" rather than "repair the record".
+      for (const fail of [false, true]) {
+        vi.clearAllMocks();
+        synthStacks.length = 0;
+        commandStateBackend.saveState.mockResolvedValue('etag-2');
+        arrangeDamagedProducer(bag);
 
-      const err = await scrubCommand(["Consumer"], commandOptions({ all: false })).catch(
-        (e: unknown) => e
-      );
+        const err = await scrubCommand(
+          ['Consumer'],
+          commandOptions({ all: false, fail })
+        ).catch((e: unknown) => e);
 
-      expect(err, 'a plain run exited 0 over an unclassifiable producer').toBeInstanceOf(Error);
-      expect((err as { exitCode?: number }).exitCode).toBe(2);
-      expect((err as { code?: string }).code).toBe('SCRUB_PRODUCER_RECORD_UNREADABLE');
-      // Exit 2 and not 1: `ScrubNeededError` would say "rotate the secret" for
-      // a record the operator should REPAIR.
-      expect((err as { name?: string }).name).not.toBe('ScrubNeededError');
-      const summary = commandLogger.info.mock.calls.map((c) => String(c[0])).join('\n');
-      expect(summary).not.toContain('No plaintext secrets found in any target stack state');
+        const where = `--fail=${fail}`;
+        expect(err, `${where}: exited 0 over an unclassifiable producer`).toBeInstanceOf(Error);
+        expect((err as { exitCode?: number }).exitCode, where).toBe(2);
+        expect((err as { code?: string }).code, where).toBe('SCRUB_PRODUCER_RECORD_UNREADABLE');
+        // Exit 2 and not 1: `ScrubNeededError` would name the opposite remedy.
+        expect((err as { name?: string }).name, where).not.toBe('ScrubNeededError');
+        const summary = commandLogger.info.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(summary, where).not.toContain(
+          'No plaintext secrets found in any target stack state'
+        );
+      }
     });
   }
-
 
   it('exits 2 under --dry-run too, which is the arm the CI gate uses', async () => {
     // The `--dry-run` COPY of the raise, which had zero coverage until review
     // round 9 measured it: mutating it to `if (false && …)` left all 148 cases
     // in this file and its two siblings green, while the identical mutation on
-    // the real-run copy reds two. The existing `--dry-run` case above drives
-    // `malformedRecordsAuditedError` — a DIFFERENT raise — so it could not
-    // stand in for this one.
+    // the real-run copy reds two, and those two stay GREEN under this one --
+    // the coverage is disjoint. No existing case stands in: the other
+    // `--dry-run` cases in this file drive `SCRUB_STACKS_FAILED` and
+    // `SCRUB_NEEDED`, and the `malformedRecordsAuditedError` one is BELOW this
+    // (`--dry-run over an unreadable outputs bag`), so it is a different raise
+    // in every case.
     //
     // It is the arm that matters most: `--dry-run --fail` is documented as a
     // standing CI gate, and `docs/cli-scrub.md` promises this code "with or
@@ -891,7 +907,6 @@ describe('cdkd scrub exit codes for an unreadable outputs bag (go-to-k/cdkd#3192
     expect((err as { exitCode?: number }).exitCode).toBe(2);
     expect(commandStateBackend.saveState).not.toHaveBeenCalled();
   });
-
 
   it('a CONDITION-SUPPRESSED position over a damaged producer records NOTHING', async () => {
     // The `!nodeCanRefuse` gate, which had zero reds when it shipped (review
