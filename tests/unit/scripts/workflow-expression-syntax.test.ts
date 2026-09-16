@@ -359,25 +359,41 @@ const forEachExpression = (
 };
 
 /**
- * Whitespace and every C0 control byte, collapsed to one space.
+ * Everything that can move the cursor or reorder the rendered line, collapsed
+ * to one space: whitespace (including the Unicode line separators), every C0
+ * control byte, DEL, and the bidi overrides.
  *
- * Written as a CODEPOINT TEST with no escape sequence anywhere in it, because
- * a backslash-u escape typed into this file is exactly how a raw NUL got into
- * the source twice while writing this very helper — once inside the comment
- * warning about it. grep and rg then classify the whole file as BINARY and
- * skip it at exit 0, which is the class scripts/check-source-control-bytes.ts
- * exists for.
+ * The codepoints are tested by VALUE and the rest by `/\s/`, with no
+ * backslash-u escape anywhere — one typed into this file is exactly how a raw
+ * NUL got into the source twice while writing this very helper, the second
+ * time inside the comment warning about it. grep and rg then classify the whole
+ * file as BINARY and skip it at exit 0, which is the class
+ * scripts/check-source-control-bytes.ts exists for.
  *
- * Wider than a whitespace class on purpose: that does not cover ESC, and raw
- * ESC-bracket-1A ESC-bracket-2K reaching a terminal is cursor-up plus
- * erase-line, which overwrites the line above the finding.
+ * THREE separate reasons, because the first version of this covered only one
+ * and its comment claimed all of them:
+ *   * `/\s/` alone does not reach ESC, and raw ESC-bracket-1A ESC-bracket-2K
+ *     is cursor-up plus erase-line, overwriting the line above the finding;
+ *   * a codepoint test alone does not reach U+00A0, U+2028, U+2029, U+3000,
+ *     U+FEFF and the rest of Unicode whitespace — and U+2028 / U+2029 ARE line
+ *     separators to a Unicode-aware log reader, so dropping them from the
+ *     class put the forged second line straight back;
+ *   * neither reaches a bidi override, which reorders the rendered line in any
+ *     bidi-aware renderer (the Trojan-source shape). That one was open in both
+ *     earlier versions.
  */
 const flatten = (s: string): string => {
   let out = '';
   let blank = false;
   for (const ch of s) {
     const code = ch.codePointAt(0)!;
-    if (code <= 0x20 || code === 0x7f) {
+    const unsafe =
+      code <= 0x20 ||
+      code === 0x7f ||
+      (code >= 0x202a && code <= 0x202e) ||
+      (code >= 0x2066 && code <= 0x2069) ||
+      /\s/.test(ch);
+    if (unsafe) {
       if (!blank) out += ' ';
       blank = true;
     } else {
@@ -387,6 +403,24 @@ const flatten = (s: string): string => {
   }
   return out;
 };
+
+/**
+ * A file name as it may appear in a finding.
+ *
+ * CONSTRAINED, not flattened — the distinction cost two rounds. `flatten` is a
+ * control-byte guard, and a workflow file can be named in printable ASCII that
+ * reads as a complete finding against a different file: a tracked file called
+ * `ci.yml:412: empty expression body — … — hooks.yml` passes the `.ya?ml`
+ * filter, passes the tracked-set equality case, and renders a line opening as a
+ * false report about `ci.yml`. Every character in it is printable, so no
+ * amount of flattening touches it.
+ *
+ * A real workflow file name is a short, dull thing. Anything else is quoted, so
+ * it can only ever be read as one field.
+ */
+const WORKFLOW_NAME = /^[A-Za-z0-9._-]+\.ya?ml$/;
+const safeName = (name: string): string =>
+  WORKFLOW_NAME.test(name) ? name : JSON.stringify(flatten(name));
 
 interface Offence {
   readonly file: string;
@@ -405,10 +439,10 @@ interface Offence {
 export const findExpressionOffences = (rawFile: string, source: string): Offence[] => {
   const offences: Offence[] = [];
   // The NAME is a forgery surface too, and it was the field left open when the
-  // excerpt was clamped: a file named with a newline under `.github/workflows/`
-  // rendered a second line reading as a finding against another file — the same
-  // defect one field over. Measured in a real vitest run.
-  const file = flatten(rawFile);
+  // excerpt was clamped — the same defect one field over, measured in a real
+  // vitest run. Flattening it was the FIRST attempt and it was not enough: see
+  // `safeName`, which constrains the shape instead.
+  const file = safeName(rawFile);
   /**
    * Line starts, computed ONCE. The obvious `source.slice(0, i).split('\n')`
    * is O(offences x bytes): measured 2026-09-16 at 15 s on a 256 KB file of
@@ -433,21 +467,25 @@ export const findExpressionOffences = (rawFile: string, source: string): Offence
     return lo + 1;
   };
   /**
-   * A quoted excerpt, CLAMPED and single-line. The raw slice was both a forgery
-   * surface and a size bomb: a body carrying a newline rendered a second line
-   * reading as a finding against another file, and 20k openers sharing one
-   * trailing `}}` (80 KB in) produced 802 M characters (measured 2026-09-16),
-   * which made the assertion throw `Invalid string length` INSTEAD of
-   * reporting.
+   * A quoted excerpt, CLAMPED and single-line.
    *
-   * The control-byte half of the class matters because a whitespace class does
-   * not cover ESC, and raw
-   * `ESC[1A ESC[2K` reaching a terminal is cursor-up plus erase-line, which
-   * overwrites the line above the finding.
+   * The raw slice was a forgery surface (a body carrying a newline rendered a
+   * second line reading as a finding against another file) and, on the tree it
+   * was written against, a size bomb: with the `at + 3` resume of 84a5848f,
+   * 20k openers sharing one trailing `}}` (80 KB in) produced ~800 M characters
+   * and the assertion threw `Invalid string length` INSTEAD of reporting.
+   *
+   * THAT BOMB IS GONE, and the date on the measurement was wrong for the tree
+   * it named: the single forward pass landed in the same commit as the clamp,
+   * and re-measured with the clamp removed at 461c2211 the same input yields
+   * one offence of 80,002 characters. What still justifies the clamp is the
+   * ordinary case — an offence per line of a large file, each quoting its whole
+   * line — plus the forgery half, which no resume point touches.
    */
   const excerpt = (from: number, to: number): string => {
-    const raw = flatten(source.slice(from, Math.min(to, from + 120)));
-    return to > from + 120 ? `${raw}…` : raw;
+    const end = Math.min(to, source.length);
+    const raw = flatten(source.slice(from, Math.min(end, from + 120)));
+    return end > from + 120 ? `${raw}…` : raw;
   };
   forEachExpression(source, (at, close, body) => {
     if (close === -1) {
@@ -455,9 +493,12 @@ export const findExpressionOffences = (rawFile: string, source: string): Offence
         file,
         line: lineOf(at),
         reason: 'expression opener is never closed',
-        // The same 120 as every other arm: clipping at 60 made a truncated
-        // excerpt read as complete, since the ellipsis can only appear past 120.
-        text: excerpt(at, at + 120),
+        // To END OF FILE, not to a fixed window. Two earlier attempts at this
+        // line both clipped at exactly the ellipsis threshold — first 60, then
+        // 120 — which makes `end > from + 120` false by construction, so the
+        // arm truncated silently and a clipped excerpt read as complete. The
+        // second attempt shipped a comment asserting the opposite.
+        text: excerpt(at, source.length),
       });
       return;
     }
@@ -482,15 +523,30 @@ export const findExpressionOffences = (rawFile: string, source: string): Offence
       // ITERATED, because a body can name more than one. Two narrower versions
       // were each wrong on an ordinary condition: substituting the single
       // occurrence at a recorded offset failed `newctx.a == newctx.b` (same
-      // root twice), and allowing one root failed `newa.foo && newb.bar`. Each
-      // pass either finishes or names a root not yet allowed, so the set grows
-      // strictly and the loop terminates; the cap is belt-and-braces and the
-      // calls are sequential, never nested.
+      // root twice), and allowing one root failed `newa.foo && newb.bar`.
+      //
+      // The bound is PROGRESS, not a round count. `known` tests `extraRoots`
+      // first, so a root already allowed cannot come back as `unknownRoot` and
+      // the set grows on every pass — but that is an argument about the walker,
+      // and the loop should not depend on it being true. Measured: deleting the
+      // `extraRoots` disjunct while a `round < N` guard was absent hung the
+      // suite for over two hours instead of redding, because the same root came
+      // back forever.
+      //
+      // A COUNT was the first fix and it was wrong in the other direction: it
+      // is not outcome-neutral, so a body naming eleven distinct unknown roots
+      // exhausted it and fell to the PROSE message — the true-verdict /
+      // false-diagnosis shape this three-way split exists to remove. Requiring
+      // the set to actually grow terminates unconditionally AND cannot change
+      // any verdict, since a pass that adds nothing had nothing left to learn.
+      // The calls are sequential, never nested.
       const allowed = new Set<string>();
       let probe = verdict;
       let plausibleRoot = false;
-      for (let round = 0; probe.unknownRoot !== undefined && round < 10; round++) {
+      while (probe.unknownRoot !== undefined) {
+        const before = allowed.size;
         allowed.add(probe.unknownRoot);
+        if (allowed.size === before) break;
         const next = analyseExpression(body, allowed);
         if (next.ok) {
           plausibleRoot = true;
@@ -505,15 +561,21 @@ export const findExpressionOffences = (rawFile: string, source: string): Offence
       // token instead told the bare one-word case — the headline
       // reintroduction wording — to add `expression` to the root set, which
       // would have permanently re-opened the hole this arm closes.
+      // The LAST probe's uncalled function counts too, not just the first
+      // verdict's: `newctx.a && format` names a new root, then an uncalled
+      // function once that root is allowed, and reading only `verdict` left it
+      // on the prose arm — a true verdict under a false diagnosis, which is
+      // the shape this split exists to remove.
+      const uncalled = verdict.uncalledFunction ?? probe.uncalledFunction;
       // Clamped for the same reason the excerpt is — the charset rules out
       // forgery, but a 200 k root would otherwise mean a 200 KB reason.
-      const named = (verdict.unknownRoot ?? verdict.uncalledFunction ?? '').slice(0, 60);
+      const named = (verdict.unknownRoot ?? uncalled ?? '').slice(0, 60);
       offences.push({
         file,
         line: lineOf(at),
         reason:
-          verdict.uncalledFunction !== undefined
-            ? `expression body names \`${named}\`, an Actions FUNCTION, which is a value only when called — bare it is "Unrecognized named-value" and refuses the whole file. Write \`${named}(…)\`, or if this is prose in a comment, say it in words`
+          uncalled !== undefined
+            ? `expression body names \`${(uncalled ?? '').slice(0, 60)}\`, an Actions FUNCTION, which is a value only when called — bare it is "Unrecognized named-value" and refuses the whole file. Write \`${(uncalled ?? '').slice(0, 60)}(…)\`, or if this is prose in a comment, say it in words`
             : plausibleRoot
               ? `expression body names \`${named}\`, which is no Actions context or function — Actions answers "Unrecognized named-value" and refuses the whole file. If GitHub has added it, add it to CONTEXT_HEADS or FUNCTION_HEADS`
               : 'expression body is prose, not an expression — inside a `run:` body this refuses the whole file the same way an empty one does',
@@ -625,6 +687,9 @@ describe('workflow expression syntax', () => {
       // which is what made the earlier wording of that claim false.
       'format(github.sha,)',
       '(github.sha,)',
+      // The call test tolerates space before the paren, so the bare-function
+      // refusal must not fire here. Nothing pinned that tolerance.
+      'always ()',
     ])('accepts %s', (body) => {
       expect(isReadableExpression(` ${body} `)).toBe(true);
     });
@@ -735,6 +800,14 @@ describe('workflow expression syntax', () => {
       // the flag on its way through an infix and cannot discriminate.
       ['a member access reopened by an index', ' fromJSON(steps.x.outputs.y).a[expression] '],
       ['a group opened after a member access', ' github.event . ( expression ) '],
+      // A REAL PREFIX FOLLOWED BY PROSE — the shipped defect's own
+      // neighbourhood, and the arm that catches it (the tokeniser finding no
+      // token at all) had ZERO coverage: every other reject case starts with
+      // the bad character, so none of them reached it mid-body. Degrading that
+      // arm to a `break` accepted all three of these.
+      ['a real path then an em dash', ' github.sha — the same rule '],
+      ['a real path then a comment marker', ' github.sha # not interpolated '],
+      ['a real path then a shell variable', ' github.sha $GH_TOKEN '],
     ])('rejects %s', (_label, body) => {
       expect(isReadableExpression(body)).toBe(false);
     });
@@ -775,9 +848,13 @@ describe('workflow expression syntax', () => {
         // is most likely to appear twice.
         ' newctx.a == newctx.b ',
         ' newa.foo && newb.bar ',
-        // `bareWord`'s two remaining conjuncts, one each: not the first token,
-        // and not the whole body. Neither redded anything before — and both
-        // mutants send a reader to rewrite working syntax.
+        // `bareWord`'s two remaining conjuncts: not the first token, and not
+        // the whole body. Both mutants send a reader to rewrite working syntax.
+        // Only the FIRST is a sole killer — dropping the tail-empty conjunct
+        // also reds `newfn(github.sha)` above, a job that used to belong to the
+        // `!called` conjunct this round deleted as dead. An earlier version of
+        // this comment claimed one killer each, which the mutation table does
+        // not say.
         ' github.ref == newcontext ',
         " newcontext == 'x' ",
       ])('calls %s a missing root, not prose', (body) => {
@@ -786,7 +863,16 @@ describe('workflow expression syntax', () => {
         expect(reason).toContain('CONTEXT_HEADS');
       });
 
-      it.each([' format ', ' always.foo ', ' cancelled.x '])(
+      it.each([
+        ' format ',
+        ' always.foo ',
+        // A new ROOT and an uncalled FUNCTION in the same body. The first
+        // verdict names the root; the function only surfaces once that root is
+        // allowed, so reading the first verdict alone left this on the prose
+        // arm — the true-verdict / false-diagnosis shape again.
+        ' newctx.a && format ',
+        ' newa.x && newb.y && join ',
+      ])(
         'calls %s an uncalled function, naming neither prose nor a missing root',
         (body) => {
           const reason = reasonFor(body);
@@ -800,12 +886,49 @@ describe('workflow expression syntax', () => {
         expect(reasonFor(" github.ref == 'x' && newcontext.foo ")).toContain('`newcontext`');
       });
 
-      it('flattens a file name carrying a newline', () => {
-        // The excerpt clamp closed this one field over; the NAME was still raw,
-        // so a file named with a newline rendered a second line reading as a
-        // finding against another file.
-        const [offence] = findExpressionOffences('evil\nci.yml:1: FORGED.yml', 'a: ${{ prose x }}');
-        expect(offence!.file).not.toContain('\n');
+      it('still names a missing root when the body names many of them', () => {
+        // The iteration used to be capped at ten rounds, so a body naming
+        // eleven distinct unknown roots fell through to the PROSE message.
+        const body = Array.from({ length: 14 }, (_, i) => `newctx${i}.a`).join(' && ');
+        expect(reasonFor(` ${body} `)).toContain('Unrecognized named-value');
+      });
+
+      it('refuses to render a file name that is not one', () => {
+        // The NAME is the third field this forgery has been found in, and the
+        // first two fixes did not reach it: a tracked file may be called
+        // `ci.yml:412: … — hooks.yml` in PRINTABLE ASCII, pass the `.ya?ml`
+        // filter and the tracked-set case, and render a line opening as a
+        // complete false finding about `ci.yml`. Flattening cannot touch it —
+        // every character is printable — so the shape is constrained instead.
+        const forged = 'ci.yml:412: empty expression body — hooks.yml';
+        const [offence] = findExpressionOffences(forged, 'a: ${{ prose x }}');
+        expect(offence!.file).not.toBe(forged);
+        expect(offence!.file.startsWith('"')).toBe(true);
+      });
+
+      it.each([
+        ['a newline', 'evil\nci.yml:1: FORGED.yml'],
+        ['a DEL byte', `evil${String.fromCharCode(0x7f)}.yml`],
+        ['a Unicode line separator', `evil${String.fromCharCode(0x2028)}.yml`],
+        ['a bidi override', `evil${String.fromCharCode(0x202e)}.yml`],
+      ])('strips %s from a rendered file name', (_label, name) => {
+        const [offence] = findExpressionOffences(name, 'a: ${{ prose x }}');
+        // A space is the REPLACEMENT, so it is expected; what must be gone is
+        // anything that can move the cursor, break the line, or reorder it.
+        const dangerous = [...offence!.file].filter((ch) => {
+          const code = ch.codePointAt(0)!;
+          return code < 0x20 || code === 0x7f || code === 0x2028 || code === 0x202e;
+        });
+        expect(dangerous).toEqual([]);
+      });
+
+      it('marks a truncated excerpt on the dangling-opener arm', () => {
+        // Two earlier attempts clipped at exactly the ellipsis threshold, so
+        // the marker was unreachable by construction and a clipped excerpt read
+        // as complete. Nothing asserted `.text` on this arm at all.
+        const [offence] = findExpressionOffences('x.yml', `a: \${{ ${'z'.repeat(400)}`);
+        expect(offence!.text.endsWith('…')).toBe(true);
+        expect(offence!.text.length).toBeLessThanOrEqual(121);
       });
 
       it('clamps a very long root in the reason', () => {
