@@ -3,6 +3,7 @@ import {
   buildStackTree,
   renderStackTreeAscii,
   stackTreeToJson,
+  MAX_STACK_TREE_DEPTH,
   type StackTreeEntry,
   type StackTreeNode,
 } from '../../../src/cli/commands/state-list-tree.js';
@@ -267,6 +268,294 @@ describe('buildStackTree', () => {
 
   it('returns an empty array for an empty input', () => {
     expect(buildStackTree([])).toEqual([]);
+  });
+});
+
+/**
+ * Issue #3155: four steps in the `--tree` path recurse once per level of the
+ * tree — this module's child sort, its ASCII renderer, `stackTreeToJson`, and
+ * the `JSON.stringify` `state.ts` wraps that shape in. None sits inside
+ * `renderTreeMode`'s per-stack guard, which covers only the state READ, so a
+ * long enough parent chain took the WHOLE view down with a `RangeError`
+ * instead of costing only its own rows. `MAX_STACK_TREE_DEPTH` bounds all four
+ * at once by re-rooting a node that would sit deeper.
+ *
+ * Two of the chains below are far longer than the cap on purpose. Measured
+ * against the pre-fix module — `origin/main`'s copy with only the constant
+ * appended so it compiles — this FILE reports `5 failed | 22 passed (27)`.
+ * Two of the five throw `RangeError: Maximum call stack size exceeded` inside
+ * `sortRecursive` (the 30000-record case and the loop-chain case), so those
+ * inputs really do exceed the runner's recursion limit rather than merely
+ * exercising the new arithmetic; the past-cap, resume and branching cases fail
+ * on their assertions.
+ *
+ * Two cases here PASS pre-fix, each for its own reason. The at-cap case,
+ * because a chain of exactly 101 records is built identically with and without
+ * the cap — that is the in-cap compatibility this change owes, which the
+ * file's 20 pre-existing cases carry the bulk of. And the order-independence
+ * case, because pre-fix has no memoized pass whose entry point could matter:
+ * it watches the pass this change ADDS, not `origin/main`.
+ *
+ * The depths at which each step gives out are not fixed — V8's budget moves
+ * with frame size and what else is on the stack — which is why a case that
+ * asserts a depth at all asserts the CAP, never a threshold.
+ */
+describe('buildStackTree depth cap', () => {
+  /** A chain of `count` records, each naming the previous one as its parent. */
+  const chainEntries = (count: number, prefix: string): StackTreeEntry[] => {
+    const entries: StackTreeEntry[] = [];
+    for (let i = 0; i < count; i++) {
+      entries.push({
+        stackName: `${prefix}${i}`,
+        region: 'us-east-1',
+        ...(i > 0 && {
+          parentStack: `${prefix}${i - 1}`,
+          parentLogicalId: 'Child',
+          parentRegion: 'us-east-1',
+        }),
+      });
+    }
+    return entries;
+  };
+
+  /**
+   * Walk the built tree with an EXPLICIT stack. A recursive walk here would
+   * hit the same limit as the code under test, so a pass would say nothing
+   * about the subject.
+   */
+  const walk = (roots: readonly StackTreeNode[]): { names: string[]; maxDepth: number } => {
+    const names: string[] = [];
+    let maxDepth = 0;
+    const pending: Array<{ node: StackTreeNode; depth: number }> = roots.map((node) => ({
+      node,
+      depth: 0,
+    }));
+    while (pending.length > 0) {
+      const { node, depth } = pending.pop()!;
+      names.push(node.stackName);
+      if (depth > maxDepth) maxDepth = depth;
+      for (const child of node.children) pending.push({ node: child, depth: depth + 1 });
+    }
+    return { names, maxDepth };
+  };
+
+  it('builds, renders and serializes a 30000-record parent chain without exhausting the stack', () => {
+    const roots = buildStackTree(chainEntries(30_000, 'Chain'));
+
+    // 30000 records in segments of 101 (a root plus MAX_STACK_TREE_DEPTH
+    // levels under it): 297 full segments and a 3-record remainder. Written as
+    // a literal so the expectation does not re-derive itself from the cap the
+    // subject applies.
+    expect(roots).toHaveLength(298);
+
+    const { names, maxDepth } = walk(roots);
+    expect(names).toHaveLength(30_000);
+    expect(new Set(names).size).toBe(30_000);
+    expect(maxDepth).toBe(MAX_STACK_TREE_DEPTH);
+
+    // The two output steps recurse per level too, so they are part of the
+    // assertion rather than a smoke check.
+    const text = renderStackTreeAscii(roots, (node) => node.stackName);
+    expect(text.split('\n')).toHaveLength(30_000);
+    const json = JSON.stringify(stackTreeToJson(roots), null, 2);
+    expect(JSON.parse(json)).toHaveLength(298);
+    // An explicit bound, not latency policing: building 30000 nodes measured
+    // 0.8-1.2 s alone but 4.5 s beside nineteen peer vitest processes, and
+    // vitest's default is 5 s. Its job is to stop a HANG.
+  }, 30_000);
+
+  it('keeps a chain exactly at the cap as one tree', () => {
+    const roots = buildStackTree(chainEntries(MAX_STACK_TREE_DEPTH + 1, 'AtCap'));
+    expect(roots).toHaveLength(1);
+    expect(roots[0]!.stackName).toBe('AtCap0');
+
+    const { names, maxDepth } = walk(roots);
+    expect(names).toHaveLength(MAX_STACK_TREE_DEPTH + 1);
+    expect(maxDepth).toBe(MAX_STACK_TREE_DEPTH);
+  });
+
+  it('re-roots the first node PAST the cap, keeping its parent link visible', () => {
+    const roots = buildStackTree(chainEntries(MAX_STACK_TREE_DEPTH + 2, 'PastCap'));
+    expect(roots).toHaveLength(2);
+
+    const promoted = roots.find((r) => r.stackName === `PastCap${MAX_STACK_TREE_DEPTH + 1}`);
+    expect(promoted).toBeDefined();
+    expect(promoted!.children).toHaveLength(0);
+    // The record is shown at the root, but its own parent link is untouched —
+    // all THREE fields, and through `stackTreeToJson`, because that is the
+    // shape `--tree --json` emits and the one the claim is about. Asserting
+    // `parentStack` on the node alone leaves the other two free to be dropped.
+    expect(stackTreeToJson(roots).find((n) => n.stackName === promoted!.stackName)).toEqual({
+      stackName: `PastCap${MAX_STACK_TREE_DEPTH + 1}`,
+      region: 'us-east-1',
+      parentStack: `PastCap${MAX_STACK_TREE_DEPTH}`,
+      parentLogicalId: 'Child',
+      parentRegion: 'us-east-1',
+      children: [],
+    });
+
+    // "Shown at the root instead" is what docs/cli-state.md tells the user, and
+    // the DEFAULT view is the text one — so assert the rendered row, at column
+    // 0 with no `└── ` connector, rather than only the JSON shape.
+    const lines = renderStackTreeAscii(roots, (node) => node.stackName).split('\n');
+    expect(lines).toContain(`PastCap${MAX_STACK_TREE_DEPTH + 1}`);
+    expect(lines[lines.length - 1]).toBe(`PastCap${MAX_STACK_TREE_DEPTH + 1}`);
+
+    const { names, maxDepth } = walk(roots);
+    expect(names).toHaveLength(MAX_STACK_TREE_DEPTH + 2);
+    expect(maxDepth).toBe(MAX_STACK_TREE_DEPTH);
+  });
+
+  it('resumes the chain UNDER the re-rooted node rather than flattening the rest', () => {
+    // Re-rooting EVERY node past the cap — turning a long chain into a flat
+    // list — is already rejected by the 30000-record case's root count, but
+    // only arithmetically: 29900 roots instead of 298. This says the same
+    // thing as a SHAPE, on an input small enough to read.
+    const roots = buildStackTree(chainEntries(MAX_STACK_TREE_DEPTH + 3, 'Resume'));
+    expect(roots).toHaveLength(2);
+
+    const promoted = roots.find((r) => r.stackName === `Resume${MAX_STACK_TREE_DEPTH + 1}`)!;
+    expect(promoted.children.map((c) => c.stackName)).toEqual([
+      `Resume${MAX_STACK_TREE_DEPTH + 2}`,
+    ]);
+  });
+
+  it('re-roots each over-cap child of a BRANCHING node independently', () => {
+    // Every other case here is a straight chain, so `children` is never longer
+    // than one and the cap is only ever reached by a single node. A parent
+    // sitting exactly AT the cap with two children is the shape that says
+    // whether the depth is per-node or per-chain.
+    const entries: StackTreeEntry[] = [
+      ...chainEntries(MAX_STACK_TREE_DEPTH + 1, 'Branch'),
+      ...['Left', 'Right'].flatMap((side) => [
+        {
+          stackName: `Branch-${side}`,
+          region: 'us-east-1',
+          parentStack: `Branch${MAX_STACK_TREE_DEPTH}`,
+          parentLogicalId: side,
+          parentRegion: 'us-east-1',
+        },
+        {
+          stackName: `Branch-${side}-Leaf`,
+          region: 'us-east-1',
+          parentStack: `Branch-${side}`,
+          parentLogicalId: 'Leaf',
+          parentRegion: 'us-east-1',
+        },
+      ]),
+    ];
+
+    const roots = buildStackTree(entries);
+    expect(roots.map((r) => r.stackName)).toEqual(['Branch-Left', 'Branch-Right', 'Branch0']);
+
+    // Each over-cap child becomes its own root and KEEPS its own subtree —
+    // re-rooting one does not pull the other's leaf up with it.
+    for (const side of ['Left', 'Right']) {
+      const promoted = roots.find((r) => r.stackName === `Branch-${side}`)!;
+      expect(promoted.parentStack).toBe(`Branch${MAX_STACK_TREE_DEPTH}`);
+      expect(promoted.children.map((c) => c.stackName)).toEqual([`Branch-${side}-Leaf`]);
+    }
+
+    const { names, maxDepth } = walk(roots);
+    expect(names).toHaveLength(MAX_STACK_TREE_DEPTH + 5);
+    expect(new Set(names).size).toBe(MAX_STACK_TREE_DEPTH + 5);
+    expect(maxDepth).toBe(MAX_STACK_TREE_DEPTH);
+
+    // The order-independence case only samples a LINEAR chain; this is the
+    // branching topology in the reverse arrival order, so a start at a leaf
+    // walks up through the capped parent before its sibling has a depth.
+    expect(JSON.stringify(stackTreeToJson(buildStackTree([...entries].reverse())))).toBe(
+      JSON.stringify(stackTreeToJson(roots))
+    );
+  });
+
+  it('caps a deep chain hanging off a parent LOOP', () => {
+    // The maintainer's shape on issue #3155: before loop members were rooted
+    // (issue #3069 / PR #3157), a chain hanging off a 2-cycle was invisible
+    // rather than fatal, because no member was a root. Rooting them correctly
+    // made the chain their subtree — and so reachable by every recursive step.
+    const entries: StackTreeEntry[] = [
+      {
+        stackName: 'LoopA',
+        region: 'us-east-1',
+        parentStack: 'LoopB',
+        parentLogicalId: 'A',
+        parentRegion: 'us-east-1',
+      },
+      {
+        stackName: 'LoopB',
+        region: 'us-east-1',
+        parentStack: 'LoopA',
+        parentLogicalId: 'B',
+        parentRegion: 'us-east-1',
+      },
+      ...chainEntries(12_000, 'Hang').map((entry, i) =>
+        i === 0
+          ? {
+              ...entry,
+              parentStack: 'LoopA',
+              parentLogicalId: 'Hang',
+              parentRegion: 'us-east-1',
+            }
+          : entry
+      ),
+    ];
+
+    const roots = buildStackTree(entries);
+    const { names, maxDepth } = walk(roots);
+    expect(names).toHaveLength(12_002);
+    expect(new Set(names).size).toBe(12_002);
+    expect(maxDepth).toBe(MAX_STACK_TREE_DEPTH);
+
+    // Both loop members stay at the root, as they were before the cap.
+    expect(roots.map((r) => r.stackName)).toContain('LoopA');
+    expect(roots.map((r) => r.stackName)).toContain('LoopB');
+    // The chain still hangs off LoopA for its first MAX_STACK_TREE_DEPTH
+    // levels — the cap re-roots, it does not detach the whole chain.
+    const loopA = roots.find((r) => r.stackName === 'LoopA')!;
+    expect(loopA.children.map((c) => c.stackName)).toEqual(['Hang0']);
+
+    expect(() => renderStackTreeAscii(roots, (node) => node.stackName)).not.toThrow();
+    expect(() => JSON.stringify(stackTreeToJson(roots), null, 2)).not.toThrow();
+
+    // The loop topology in the reverse arrival order: the walks then reach the
+    // 2-cycle from the far end of the hanging chain first, so the seeded loop
+    // is met from below before anything else has a depth. Only `LoopA` is met:
+    // the walk halts at the first node carrying a depth, so `LoopB` is never
+    // walked to in that pass.
+    expect(JSON.stringify(stackTreeToJson(buildStackTree([...entries].reverse())))).toBe(
+      JSON.stringify(stackTreeToJson(roots))
+    );
+    // Bounded for the same reason as the 30000-record case above.
+  }, 30_000);
+
+  it('builds the identical tree whatever order the records arrive in', () => {
+    // What this pins is the DEPTH PASS, not the cap: the pass memoizes and
+    // walks up from an arbitrary start, so an entry order that reaches a chain
+    // from its deepest record first — or a reversal of the downward assignment
+    // loop — must still produce the identical tree. The cap is asserted by the
+    // cases above.
+    const entries = chainEntries(MAX_STACK_TREE_DEPTH * 3, 'Order');
+    const forward = JSON.stringify(stackTreeToJson(buildStackTree(entries)));
+    const reversed = JSON.stringify(stackTreeToJson(buildStackTree([...entries].reverse())));
+    expect(reversed).toBe(forward);
+
+    // A full reversal is the degenerate order: every start after the first hits
+    // the already-computed short-circuit, so it does one walk. What an
+    // INTERLEAVED order adds is a first walk that STARTS at a node the cap
+    // re-rooted, before any of the chain above it exists in `depthOf` — so the
+    // long second walk assigns downward from a memoized base and crosses a cap
+    // reset on the way. (Measured, because the obvious claim is wrong: it is
+    // the FORWARD order that stops at memoized nodes of non-zero depth, ~300
+    // times; this order's one such stop is at depth 0.)
+    const interleaved = [
+      entries[MAX_STACK_TREE_DEPTH + 1]!,
+      entries[entries.length - 1]!,
+      ...entries.filter(
+        (_, i) => i !== MAX_STACK_TREE_DEPTH + 1 && i !== entries.length - 1
+      ),
+    ];
+    expect(JSON.stringify(stackTreeToJson(buildStackTree(interleaved)))).toBe(forward);
   });
 });
 

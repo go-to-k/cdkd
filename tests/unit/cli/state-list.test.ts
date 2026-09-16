@@ -1158,6 +1158,67 @@ describe('cdkd state list', () => {
       expect(JSON.parse(out)).toEqual([]);
     });
 
+    // Issue #3155: `buildStackTree`'s depth cap is what keeps the steps AFTER
+    // it from recursing once per record — including the `JSON.stringify` that
+    // lives in this command rather than in the tree helper, which no test of
+    // that helper can reach. A 5000-record chain is past where that call gave
+    // out before the cap, so this case runs the whole command over one.
+    it('keeps --tree and --tree --json whole for a parent chain thousands of records deep', async () => {
+      const DEPTH = 5000;
+      const refs = Array.from({ length: DEPTH }, (_, i) => ({
+        stackName: `Deep${i}`,
+        region: 'us-east-1',
+      }));
+      mockListStacks.mockResolvedValue(refs);
+      mockGetState.mockImplementation(async (name: string) => {
+        const index = Number(name.slice('Deep'.length));
+        if (index === 0) {
+          return { state: { resources: {}, lastModified: 0 } };
+        }
+        return {
+          state: {
+            resources: {},
+            lastModified: 0,
+            parentStack: `Deep${index - 1}`,
+            parentLogicalId: 'Child',
+            parentRegion: 'us-east-1',
+          },
+        };
+      });
+
+      const json = await runStateList(['list', '--tree', '--json']);
+      // An explicit stack, not recursion: a recursive walk here would hit the
+      // same limit as the code under test and say nothing about it.
+      const parsed: Array<{ stackName: string; children: unknown[] }> = JSON.parse(json);
+      const seen: string[] = [];
+      let maxDepth = 0;
+      const pending = parsed.map((node) => ({ node, depth: 0 }));
+      while (pending.length > 0) {
+        const { node, depth } = pending.pop()!;
+        seen.push(node.stackName);
+        if (depth > maxDepth) maxDepth = depth;
+        for (const child of node.children as Array<{ stackName: string; children: unknown[] }>) {
+          pending.push({ node: child, depth: depth + 1 });
+        }
+      }
+      expect(seen).toHaveLength(DEPTH);
+      expect(new Set(seen).size).toBe(DEPTH);
+      // The cap's value spelled out rather than imported: this case is the
+      // command's own contract, and reading the constant the subject applies
+      // would make the expectation follow a change instead of catching it.
+      expect(maxDepth).toBe(100);
+
+      const text = await runStateList(['list', '--tree']);
+      const lines = text.trimEnd().split('\n');
+      expect(lines).toHaveLength(DEPTH);
+      // The actual first line, not a `startsWith` predicate collapsed to a
+      // boolean — a failure should print what WAS rendered.
+      expect(lines[0]).toBe('Deep0 (us-east-1)');
+      // Bounded like the two large-input cases in state-list-tree.test.ts. The
+      // flake risk is not the reason: with the two siblings declaring a bound,
+      // an omission here cannot be told apart from an oversight.
+    }, 30_000);
+
     it('rejects --tree combined with --long at option-parsing time', async () => {
       // commander's `.conflicts('long')` aborts BEFORE the action runs, so no
       // AWS call should happen. The exitOverride helper turns commander's
