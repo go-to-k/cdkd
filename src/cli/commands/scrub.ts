@@ -1007,11 +1007,18 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       ? ` ${totalStacksWithUnverifiableLeaves} stack(s) had a {{resolve:...}} scan ABANDONED ` +
         `mid-value, so part of their state was never examined (see the warnings above).`
       : '';
+  // The TWIN of the per-stack line, and it was missed when that one was fixed
+  // (review of go-to-k/cdkd#3206 round 6) — one screen apart, same false
+  // assertion. This bucket no longer holds only by-design refusals: a producer
+  // whose `outputs` map cannot be READ lands here too, and that one is
+  // REPAIRABLE, so naming the cross-account remedy is both wrong and
+  // actionless for it. The remedy differs per member, so the note stops
+  // prescribing one and points at the per-read warnings, which state it.
   const unverifiableNote =
     totalStacksWithUnverifiableReads > 0
-      ? ` ${totalStacksWithUnverifiableReads} stack(s) carry a cross-stack read cdkd declines to ` +
-        `perform, so their imported values could NOT be checked — export a non-secret value ` +
-        `(e.g. the secret's ARN) from the producer, or reference it from within its own account.`
+      ? ` ${totalStacksWithUnverifiableReads} stack(s) carry a cross-stack read that could NOT ` +
+        `be verified, so their imported values were not checked — see the warnings above for ` +
+        `which read, why, and what to do about it.`
       : '';
   // The exports index half (issue #2667). Three separate statements, because
   // they carry different obligations: an entry this run wrote, an entry it
@@ -3749,7 +3756,16 @@ function makeCrossStackPrePass(deps: {
      */
     const storedProducerValue = async (
       producer: { stack: string; region: string; key: string },
-      backend: ResolverContext['stateBackend']
+      backend: ResolverContext['stateBackend'],
+      // The SAME gate the by-design branch applies FIRST, threaded here for the
+      // same reason (review of go-to-k/cdkd#3206 round 6). A finding is a
+      // PERMANENT non-clean verdict for the run, and the positions carrying
+      // `canRefuse: false` — a condition-suppressed output, a malformed
+      // `Fn::If` — are exactly the ones that wrote no `state.outputs` key and
+      // may name a read the deploy never made. Recording one there produces a
+      // standing `--dry-run --fail` failure over a reference with nothing at
+      // risk, which is what `isOutputSuppressed` exists to spare.
+      nodeCanRefuse: boolean
     ): Promise<{ stored: unknown } | undefined> => {
       if (!backend) return undefined;
       let loaded: Awaited<ReturnType<NonNullable<ResolverContext['stateBackend']>['getState']>>;
@@ -3795,6 +3811,18 @@ function makeCrossStackPrePass(deps: {
         // with three `Fn::GetStackOutput` reads of one damaged producer emitted
         // three identical ~600-character paragraphs, and a `--all` run repeated
         // the set per consumer stack (measured, review round 4).
+        // A position that cannot refuse gets the `debug` treatment its
+        // by-design sibling gives, and records NOTHING -- see the parameter's
+        // own note. AHEAD of the dedupe `Set`, so a suppressed position never
+        // consumes the one-warning-per-record budget a refusable one needs.
+        if (!nodeCanRefuse) {
+          logger.debug(
+            `Scrub of ${stackName}: producer ` +
+              `'${maskSecretsInText(producer.stack, secrets)}' (${producer.region}) has no ` +
+              `readable 'outputs' map, and this position cannot refuse.`
+          );
+          return undefined;
+        }
         const seenKey = `${producer.stack}\u0000${producer.region}`;
         if (!warnedDamagedProducers.has(seenKey)) {
           warnedDamagedProducers.add(seenKey);
@@ -4010,7 +4038,7 @@ function makeCrossStackPrePass(deps: {
       // one (a spelling cdkd resolves for nobody — since issue #2482 that is
       // no CloudFormation service, only text that merely looks like one)
       // implies the stored value carries one too, and this arm returns for it.
-      const stored = await storedProducerValue(producer, context.stateBackend);
+      const stored = await storedProducerValue(producer, context.stateBackend, nodeCanRefuse);
       // No readable producer record, or no such key in it — cannot classify, so
       // do not refuse. DELIBERATELY UNFENCED, and measured rather than assumed:
       // making this arm throw leaves all 60 tests in
@@ -4170,10 +4198,24 @@ export interface ScrubStackResult {
   secretsFound: number;
   secretBearingKeys: number;
   /**
-   * Cross-stack references cdkd declined to resolve BY DESIGN (issue #2133
-   * review). A FINDING, not a refusal: the stack is still scrubbed for
-   * everything else, but it must not be reported clean, so the run exits
-   * non-zero exactly as a `secretBearingKeys` finding does.
+   * Cross-stack references this run could NOT verify. A FINDING, not a
+   * refusal: the stack is still scrubbed for everything else, but it must not
+   * be reported clean, so the run exits non-zero exactly as a
+   * `secretBearingKeys` finding does.
+   *
+   * TWO shapes, and the remedy differs, which is why every message about this
+   * count points at the per-read warnings instead of prescribing one:
+   *
+   * - a read cdkd declines BY DESIGN (issue #2133 review) — the cross-account
+   *   case, where no re-run can change the answer;
+   * - a PRODUCER whose own `outputs` map cannot be read (go-to-k/cdkd#3192
+   *   review), which IS repairable. It is counted rather than refused because
+   *   refusing would strand THIS stack's plaintext over another stack's
+   *   record; and it is counted rather than ignored because both damaged
+   *   shapes were already non-clean before that guard existed — an array bag
+   *   raised the producer-plaintext refusal, a string bag threw an escaping
+   *   `TypeError` — so guarding the read without recording anything would
+   *   have bought a false clean.
    */
   unverifiableReads: number;
   /**

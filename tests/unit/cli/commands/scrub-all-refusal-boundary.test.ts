@@ -576,7 +576,15 @@ describe('cdkd scrub reports a read it DECLINED BY DESIGN (issue #2133 review)',
     // (issue #2133 review). scrub does not know what the declined read's leaf
     // carries, so it cannot call this stack clean.
     expect(summary).not.toContain('No plaintext secrets found in CrossAccount');
-    expect(summary).toContain('cross-stack read cdkd declines to perform');
+    // The summary note stopped ASSERTING the by-design reason (review of
+    // go-to-k/cdkd#3206): this bucket now also holds a producer whose
+    // `outputs` map cannot be read, which IS repairable, so a note prescribing
+    // the cross-account remedy would be wrong and actionless for that member.
+    // What is pinned is that the stack is NAMED as unverified and pointed at
+    // the per-read warning, which still carries the by-design reason for THIS
+    // case — asserted on `warned` above.
+    expect(summary).toContain('cross-stack read that could NOT be verified');
+    expect(summary).toContain('see the warnings above');
     // ...and `--fail` treats it as a finding, exit 1, not the exit-2 refusal.
     expect((err as { code?: string }).code).toBe('SCRUB_NEEDED');
   });

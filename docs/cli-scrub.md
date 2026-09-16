@@ -337,8 +337,22 @@ cannot rewrite. Three shapes qualify, and all three are also reported in words:
   already leaking** — the change is what cdkd can see, not what the state
   holds. Rotate the secret and change the `Export.Name`.
 
-- a **cross-stack read cdkd declines by design**:
+- a **cross-stack read that could not be verified**:
   `N cross-stack read(s) in <stack> could NOT be verified`.
+
+  Two shapes land here and they call for different things, so the per-read
+  warning above the summary is what names the remedy. One is a read cdkd
+  **declines by design** — a cross-account reference whose producer stores a
+  secret expression cdkd will not resolve under the consumer's credentials —
+  and no re-run clears it; export a non-secret value such as the secret's ARN,
+  or reference it from within its own account. The other is a producer whose
+  own `outputs` map **cannot be read**, which is repairable: fix that record
+  and scrub it first.
+
+  The second shape does not refuse the stack. Refusing would strand this
+  stack's own plaintext over a record that belongs to another stack — possibly
+  one the operator does not own — so scrub reports the finding, scrubs
+  everything else, and declines to call the stack clean.
 
 - a **record whose `{{resolve:...}}` scan was ABANDONED part-way**:
   `N scan(s) in <stack> were ABANDONED mid-value because a {{resolve:...}}

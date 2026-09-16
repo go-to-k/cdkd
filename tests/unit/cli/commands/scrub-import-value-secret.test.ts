@@ -516,6 +516,44 @@ describe('cdkd scrub resolves a cross-stack read (issue #2133)', () => {
       'a damaged producer recorded no FINDING, so scrub can report this stack clean and exit 0'
     ).toBeGreaterThan(0);
   });
+
+  it('an ARRAY producer bag is non-clean too — the shape that used to raise exit 2', async () => {
+    // The OTHER regressed shape, and the one whose merge-base behaviour is
+    // easiest to get wrong: `'0' in ['<plaintext>']` is TRUE, so the pre-fix
+    // code RETURNED the array's element, found no dynamic reference in it, and
+    // raised `plaintextProducerCrossStackReadError` — exit 2, not a TypeError.
+    // `isReadableBag` rejects arrays, so it now shares the string bag's branch;
+    // this case exists because the commit message and the code comment both
+    // cite it and only the string shape had coverage (review round 6).
+    const FABRICATED_KEY = '0';
+    consumerState = makeConsumerState(
+      { MasterUserPassword: 'not-a-secret', MasterUsername: 'admin' },
+      { DbUrl: PLAINTEXT }
+    );
+    useProducerOutputs([PLAINTEXT] as unknown as Record<string, unknown>);
+
+    const result = await scrub(
+      { MasterUserPassword: 'not-a-secret', MasterUsername: 'admin' },
+      {
+        outputs: {
+          DbUrl: {
+            Value: { 'Fn::GetStackOutput': { StackName: PRODUCER, OutputName: FABRICATED_KEY } },
+          },
+        },
+        appStacks: [
+          makeProducerStackInfo({
+            [FABRICATED_KEY]: { Value: SECRET_EXPR, Export: { Name: EXPORT_NAME } },
+          }),
+        ],
+      }
+    );
+
+    expect(
+      result.unverifiableReads,
+      'an array producer bag reported nothing, so a shape that exited 2 at the merge base now ' +
+        'exits 0 over a consumer record still holding the imported plaintext'
+    ).toBeGreaterThan(0);
+  });
 });
 
 describe('cdkd scrub REFUSES a cross-stack read it cannot perform (issue #2133)', () => {
