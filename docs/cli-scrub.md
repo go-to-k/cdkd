@@ -346,9 +346,12 @@ properties bag, and some of those have nothing to do with fetching a reference:
 A failure is scoped to the PROPERTY that caused it — an unresolvable `Ref` in
 one property no longer stops the scan of a `{{resolve:...}}` in another
 property of the same resource — so the warning names the property, not just the
-record.
+record. It is scoped to the top-level property only: inside one property's
+value, a failing key still stops the keys after it.
 
-**Every one of them is named in a warning at default verbosity**, because the
+**Each record left unscanned is named in a warning at default verbosity**, and
+a property that fails while carrying no reference of its own is silent, because
+nothing was lost when it stopped. because the
 record really was left unscanned either way. So a green `--dry-run --fail` does
 not by itself mean every record was examined: read the warnings. A record cdkd
 could not certify may still hold a plaintext from an older binary, and giving

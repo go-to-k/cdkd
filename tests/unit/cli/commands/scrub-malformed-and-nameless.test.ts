@@ -479,10 +479,46 @@ describe('cdkd scrub - refusals this PR adds (go-to-k/cdkd#2692, go-to-k/cdkd#30
       // failure abandoned a reference-bearing bag and had to be warned about.
       expect(result.unverifiableLeaves).toBe(0);
       const warned = logger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+      // `NOT certified clean` is the suffix BOTH arms share, so it excludes
+      // the `warn` arm too. `ABANDONED` alone appears only in the `count` arm's
+      // text, and the `warn` arm reads "cut short by a TEMPLATE problem" — so
+      // that needle passed under the PRE-FIX code as well and pinned nothing.
       expect(
         warned,
-        'a property with no dynamic reference was reported as an abandoned scan'
-      ).not.toContain('ABANDONED');
+        'a property with no dynamic reference was reported as an abandoned scan. Nothing was ' +
+          'lost when it aborted, so neither arm may claim the record is uncertified.'
+      ).not.toContain('NOT certified clean');
+    });
+
+    it('resolves an INTRINSIC-SHAPED Properties bag whole, not key by key', async () => {
+      // `Properties: { 'Fn::If': [...] }` is legal CloudFormation, and
+      // `resolveValue` dispatches on `'Fn::If' in obj` by PRESENCE. Splitting
+      // such a bag by key hands the resolver the raw `[cond, then, else]`
+      // ARRAY, which resolves BOTH branches — so a reference in the UNTAKEN
+      // branch gets fetched, recorded as a needle, and can rewrite a stored
+      // leaf onto an expression the stack never deployed; and an unfetchable
+      // one there reds `--dry-run --fail` on a healthy stack.
+      const stack = stackInfo();
+      const template = stack.template as unknown as {
+        Resources: Record<string, { Properties: unknown }>;
+        Outputs: Record<string, unknown>;
+      };
+      template.Resources['Db']!.Properties = {
+        'Fn::If': ['UseSecret', { MasterUserPassword: '{{resolve:ssm-secure}}' }, { MasterUserPassword: 'literal' }],
+      };
+      template.Outputs = {};
+      const state = healthy();
+      state.orphans = [];
+
+      await run(state, { stack });
+
+      // ONE resolve call, carrying the whole intrinsic — never one per key.
+      expect(
+        resolvedValues,
+        'the intrinsic-shaped bag was split by key, so the resolver saw the raw Fn::If ARRAY ' +
+          'and would resolve BOTH branches instead of the taken one.'
+      ).toHaveLength(1);
+      expect(resolvedValues[0]).toHaveProperty('Fn::If');
     });
 
     it('counts NOTHING on a stack whose references all resolve', async () => {

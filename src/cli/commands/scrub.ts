@@ -3101,7 +3101,7 @@ function abandonedScanWarning(subject: string, verdict: 'count' | 'warn'): strin
  * that scrub may simply not be able to certify the record.
  */
 function abandonedScanStackNote(verdict: 'count' | 'warn', records: number): string {
-  const subject = `${records} record(s) above`;
+  const subject = `${records} abandoned scan(s) above`;
   return verdict === 'count'
     ? `${subject}: the resolver stops at the first {{resolve:...}} token it cannot fetch, so ` +
         `any secret after it in the same value recorded no needle and could not be rewritten. ` +
@@ -4408,6 +4408,16 @@ export async function scrubStack(
         // repo whose CI runs `--dry-run --fail`, defeatable on purpose by
         // putting one dangling `Ref` ahead of the secret.
         //
+        // BOUNDED TO THE TOP LEVEL, and the residual is real: `resolveValue`'s
+        // own object walk is a sequential `for await` over `Object.entries`
+        // with no per-key `try`, so inside ONE property's value a failing key
+        // still abandons the keys after it — `Environment.Variables.A` taking
+        // out `Environment.Variables.B` is the same defeat recipe one level
+        // down, and the dominant secret-bearing Lambda shape. Arrays are safe
+        // (`allSettledKeepingFirstRejection` settles every element first);
+        // objects are not. go-to-k/cdkd#3218 tracks it, and it belongs in the
+        // resolver rather than here.
+        //
         // Scoping the resolve costs nothing this loop needs. The context is
         // per-RESOURCE, not per-bag, so every property still accumulates into
         // the SAME `recordedSecretValues`; `pinCrossRegionSecrets` already
@@ -4422,8 +4432,30 @@ export async function scrubStack(
         // A plain object is the ONLY shape with top-level properties to scope
         // by. Anything else (an array, a bare value, `null`) is resolved whole,
         // under the empty property name, so the scoping can never DROP a unit.
-        const resolveUnits: Array<readonly [string, unknown]> =
+        //
+        // ...and an INTRINSIC-SHAPED bag is resolved whole too, which is not a
+        // tidiness case but a correctness one. `Properties: { 'Fn::If': [...] }`
+        // is legal CloudFormation — `CfnInclude` and a raw `addOverride` both
+        // produce it — and `resolveValue` dispatches on `'Fn::If' in obj` by
+        // PRESENCE, not as a sole key (`property-coverage.ts` records the same
+        // fact for the same reason). Splitting such a bag hands the resolver the
+        // raw `[cond, then, else]` ARRAY, which resolves BOTH branches instead
+        // of the taken one: a `{{resolve:...}}` in the untaken branch would be
+        // fetched and recorded as a needle, so the rewrite could put a leaf onto
+        // an expression the stack never deployed (the #1917 wrong-generation
+        // class), and an unfetchable reference there would red `--dry-run
+        // --fail` on a healthy stack — the unclearable gate go-to-k/cdkd#3160
+        // exists to refuse. `resolveCrossStackReads` above still walks `Fn::If`
+        // selected-branch-only, so splitting would also make the two passes
+        // over one resource disagree about which branch is live.
+        const bagKeys =
           resolveInput !== null && typeof resolveInput === 'object' && !Array.isArray(resolveInput)
+            ? Object.keys(resolveInput as Record<string, unknown>)
+            : undefined;
+        const intrinsicShapedBag =
+          bagKeys?.some((k) => k === 'Ref' || k.startsWith('Fn::')) ?? false;
+        const resolveUnits: Array<readonly [string, unknown]> =
+          bagKeys && !intrinsicShapedBag
             ? Object.entries(resolveInput as Record<string, unknown>)
             : [['', resolveInput]];
         for (const [propertyName, propertyValue] of resolveUnits) {
@@ -4461,8 +4493,12 @@ export async function scrubStack(
             // lower-severity sibling of the `Export.Name` warn below, but it is
             // the same site class.
             logger.debug(
-              `Resolution of ${logicalId}${propertyName ? `.${propertyName}` : ''} during scrub ` +
-                `was partial: ${maskSecretsInText(err instanceof Error ? err.message : String(err), recordedSecretValues)}`
+              maskSecretsInText(
+                `Resolution of ${displaySafe(logicalId)}` +
+                  `${propertyName ? `.${displaySafe(propertyName)}` : ''} during scrub was ` +
+                  `partial: ${err instanceof Error ? err.message : String(err)}`,
+                recordedSecretValues
+              )
             );
           }
         }
@@ -4521,28 +4557,42 @@ export async function scrubStack(
             origin: `orphan record '${record.logicalId}'`,
           }
         );
-        try {
-          await resolver.resolve(resolveInput, resolverContext(recordedSecretValues));
-        } catch (err) {
-          if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
-          const leafVerdict = abandonedScanVerdict(resolveInput, err);
-          if (leafVerdict !== 'silent') {
-            if (leafVerdict === 'count') unverifiableLeaves++;
-            else ungateableAbandonedScans++;
-            logger.warn(
-              maskSecretsInText(
-                abandonedScanWarning(
-                  `orphan record '${displaySafe(record.logicalId)}'`,
-                  leafVerdict
-                ),
-                recordedSecretValues
-              )
+        // PER SUB-BAG, for the same reason the resource loop resolves per
+        // property (issue go-to-k/cdkd#3196): one throw aborts the walk, so a
+        // failure in `properties` abandoned `attributes` and
+        // `observedProperties` — both of which carry references of their own,
+        // and `scrubResourceRecord` scrubs all three.
+        //
+        // Splitting is unconditionally safe HERE, unlike the resource loop: this
+        // wrapper is one WE construct with three known keys, so it can never be
+        // an intrinsic-shaped bag the resolver would dispatch on.
+        const orphanContext = resolverContext(recordedSecretValues);
+        for (const [bagName, bagValue] of Object.entries(resolveInput)) {
+          try {
+            await resolver.resolve(bagValue, orphanContext);
+          } catch (err) {
+            // A region-AMBIGUOUS refusal is not best-effort -- see
+            // `isRegionAmbiguousRefusal`.
+            if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
+            const leafVerdict = abandonedScanVerdict(bagValue, err);
+            if (leafVerdict !== 'silent') {
+              if (leafVerdict === 'count') unverifiableLeaves++;
+              else ungateableAbandonedScans++;
+              logger.warn(
+                maskSecretsInText(
+                  abandonedScanWarning(
+                    `orphan record '${displaySafe(record.logicalId)}' ${bagName}`,
+                    leafVerdict
+                  ),
+                  recordedSecretValues
+                )
+              );
+            }
+            logger.debug(
+              `Resolution of orphan record ${record.logicalId} during scrub was partial: ` +
+                `${maskSecretsInText(err instanceof Error ? err.message : String(err), recordedSecretValues)}`
             );
           }
-          logger.debug(
-            `Resolution of orphan record ${record.logicalId} during scrub was partial: ` +
-              `${maskSecretsInText(err instanceof Error ? err.message : String(err), recordedSecretValues)}`
-          );
         }
       }
 
