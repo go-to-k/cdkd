@@ -8052,10 +8052,9 @@ export class IntrinsicFunctionResolver {
           // this frame hands `stackName` to `DescribeStacks` raw, and
           // `maskSecretsForLog` over the returned sentence finds no twin for it
           // and falls to the needle pass, whose substring arm cannot see a
-          // sub-floor secret assembled into the name. Same class, and reached
-          // from the same caller as the state read below (this is its own
-          // method, not the same frame)
-          // as the state read below; the two share `positionalNameMask`.
+          // sub-floor secret assembled into the name. Same class, reached from
+          // the same caller as the state read below (this is its own method,
+          // not the same frame); the two share `positionalNameMask`.
           `'${this.maskSecretsForLog(stackName, context)}' ` +
           `(${this.maskSecretsForLog(loggedRegionText, context)}): ` +
           `${this.maskSecretsForLog(cfnNameMask ? cfnNameMask(message) : message, context)}. ` +
@@ -8610,9 +8609,14 @@ export class IntrinsicFunctionResolver {
    * fallback does NOT sanitize (it rethrows the SDK's message as it is), so the
    * second spelling is inert at that call site and costs one comparison.
    *
-   * `raw !== ''` is LOAD-BEARING, not tidying: a wholly non-printable name
-   * sanitizes to the empty string, and substituting `''` would splice the mask
-   * between every character of the message.
+   * `raw !== ''` is DEFENSIVE, and it is NOT the guard that handles a name
+   * whose sanitized form is empty — that one inspects `shown`, below, and its
+   * own comment says why. What this clause is not is redundant against
+   * `raw !== masked`: `rememberLogTwin` has no empty-key guard and
+   * `splitLogTwins` registers every piece it produces, so `registeredLogTwin`
+   * can answer `***` for the empty string and make `maskSecretsForLog('')`
+   * differ from `''`. Neither call site can reach it — both refuse an empty
+   * name upstream — so it fences nothing measured today.
    *
    * LONGEST RAW FIRST, so a name that contains another is rewritten as itself
    * rather than having its inner name replaced underneath it. **That ordering
@@ -8645,14 +8649,29 @@ export class IntrinsicFunctionResolver {
       // because `trim()` is part of the transform.
       .filter(([raw, masked]) => raw !== '' && raw !== masked)
       .flatMap(([raw, masked]) => {
+        // THE INVARIANT, and the only thing to check when touching this: a
+        // substitution's REPLACEMENT must be at least as sanitized and at
+        // least as masked as its KEY. Three review rounds each broke it a
+        // different way and each was fixed by enumerating one more shape, so
+        // it is stated once here and enforced at construction instead.
+        //
+        // The raw key is what a sink that did NOT sanitize prints, so it takes
+        // the twin as it is. The sanitized key is what a sink that DID prints,
+        // and its replacement is sanitized to match — the twin keeps the
+        // template's literal parts VERBATIM (only the secret span becomes
+        // `***`), so an unsanitized replacement there puts the control
+        // characters the printer had just removed back into the message, in
+        // the top-level text neither `formatError` nor the logger sanitizes.
         const shown = displaySafe(raw, { asciiOnly: true });
-        // `shown === ''` for a wholly non-printable name: substituting the
-        // empty string would splice the mask between every character.
-        return shown === raw || shown === ''
+        if (shown === raw) return [[raw, masked] as const];
+        // Empty after sanitizing: substituting `''` splices the replacement
+        // between every character, so that key contributes nothing.
+        const shownMask = displaySafe(masked, { asciiOnly: true });
+        return shown === '' || shownMask === ''
           ? [[raw, masked] as const]
           : ([
               [raw, masked],
-              [shown, masked],
+              [shown, shownMask],
             ] as const);
       })
       .sort(([a], [b]) => b.length - a.length);

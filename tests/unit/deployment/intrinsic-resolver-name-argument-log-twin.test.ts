@@ -2113,6 +2113,35 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
     expect(error.message).not.toContain('y7');
   });
 
+  it('THE INVARIANT: nothing this masker prints is less sanitized than what the sink printed', async () => {
+    // Asserted as the PROPERTY rather than as another example, because three
+    // rounds of adding examples each missed the next shape. The sink sanitizes
+    // (`displaySafe`), so whatever comes back out must still be sanitized —
+    // whether the name carried a mask or not, and wherever the control
+    // character sits.
+    //
+    // This shape is the one an example-by-example fix kept missing: the name
+    // DOES carry a mask, and the log twin keeps the template's literal parts
+    // verbatim, so substituting the sanitized key for the raw twin put the
+    // control character back.
+    // Scoped to what THIS masker produces — the thrown chain. The resolver's
+    // own debug lines print the log twin, which keeps the template's literal
+    // parts verbatim and so can carry a control character of its own; that is
+    // `maskSecretsForLog`'s pre-existing behaviour at a different site, not
+    // something this catch owns.
+    const ctl = String.fromCharCode(1);
+    for (const name of [`pro${ctl}d-\${P}`, `svc-\${P}${ctl}`, 'plain-${P}']) {
+      const raw = name.replace('${P}', PIN);
+      const error = await errorOf(
+        producer(sub(name)),
+        makeContext({ stateBackend: sanitizingBackend(raw) })
+      );
+      const chain = chainMessages(error).join('\n');
+      expect(chain, `for ${JSON.stringify(name)}`).not.toMatch(/[^\t\n -~]/);
+      expect(chain).not.toContain(PIN);
+    }
+  });
+
   it('CONTROL: an UNMASKED name is never de-sanitized back to its raw spelling', async () => {
     // The regression this pins: expanding a pair into its sanitized spelling
     // BEFORE dropping the unmasked ones leaves `[shown, raw]` alive, and the
@@ -2128,8 +2157,9 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
     expect(error.message).toBe(
       "Failed to get state for stack 'prod' (us-east-1): Access Denied"
     );
-    // The raw spelling must not come back: neither the trailing space nor, in
-    // the escape-sequence shape, the control character.
+    // The raw spelling must not come back. A trailing space is the cheapest
+    // shape that shows it; the same entry restores a control character just as
+    // readily, since `displaySafe` maps both.
     expect(error.message).not.toContain("'prod '");
   });
 
