@@ -40,7 +40,7 @@ Dispatch this single reviewer (run via Agent tool in the main session):
 ```
 
 **At `1-reviewer`, the ORCHESTRATOR still asks the `Closes` question itself**,
-exactly as in the `inline` block above — the dispatched code reviewer is
+exactly as in the `inline` block below — the dispatched code reviewer is
 explicitly told not to rule on it, so nothing else will.
 
 **If final tier is `3-axis`**, emit the same block three times in ONE

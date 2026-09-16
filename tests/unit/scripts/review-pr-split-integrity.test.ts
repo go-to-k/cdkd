@@ -66,14 +66,23 @@ const INLINE_STEPS = [
   // any one alone proves nothing about the other five.
   {
     step: 2,
-    needles: ['`loc < 300` OR `fc < 5`', '`300 <= loc < 1000`', '`loc >= 1000` OR `fc >= 10`'],
+    // FULL ROWS. Needling the condition cell alone left two mutations green:
+    // swapping the tier column of rows 2 and 3, and blanking all three tier
+    // cells. A base-tier table whose conditions are intact and whose verdicts
+    // are gone or transposed is worse than a missing table, because it still
+    // reads as authoritative.
+    needles: [
+      '`loc < 300` OR `fc < 5` | **inline**',
+      '`300 <= loc < 1000` AND `5 <= fc < 10` | **1-reviewer**',
+      '`loc >= 1000` OR `fc >= 10` | **3-axis**',
+    ],
   },
   {
     step: 4,
     needles: [
       'inline+up→1-reviewer',
       '1-reviewer+up→3-axis',
-      '3-axis+up →3-axis (clamp)',
+      '3-axis+up',
       '3-axis+down→1-reviewer',
       '1-reviewer+down→inline',
       'inline+down→inline (clamp)',
@@ -134,12 +143,30 @@ function flat(text: string): string {
  * is satisfied by the text surviving anywhere, including a trailing comment
  * after the step that reads it.
  */
-function sectionOf(body: string, marker: string): string {
+function sectionOf(body: string, marker: string, endMarker: string): string {
   const start = body.indexOf(marker);
   if (start === -1) return '';
-  const rest = body.slice(start);
-  const end = rest.search(/^## /m);
-  return end === -1 ? rest : rest.slice(0, end);
+  const rest = body.slice(start + marker.length);
+  const end = rest.indexOf(endMarker);
+  return end === -1 ? '' : rest.slice(0, end);
+}
+
+/**
+ * The EXECUTABLE lines of a markdown file's fenced bash blocks — comments and
+ * fences stripped.
+ *
+ * Needed because a whole-file needle is position-blind: replacing the marker
+ * binding's head-sha guard with an unconditional `markgate set` while leaving
+ * `# (historically guarded on $SHA = "$(git rev-parse HEAD)")` behind kept the
+ * assertion green (measured). The guard has to be asserted where it RUNS.
+ */
+function bashLines(body: string): string {
+  const blocks = [...body.matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]!);
+  return blocks
+    .join('\n')
+    .split('\n')
+    .filter((l) => !l.trim().startsWith('#'))
+    .join('\n');
 }
 
 describe('/review-pr split integrity (go-to-k/cdkd#3170)', () => {
@@ -167,7 +194,7 @@ describe('/review-pr split integrity (go-to-k/cdkd#3170)', () => {
           'is one the session reading that step will not follow.'
       ).toContain(`references/${file}`);
 
-      const body = readFileSync(`${skillDir}references/${file}`, 'utf8');
+      const body = flat(readFileSync(`${skillDir}references/${file}`, 'utf8'));
       const size = statSync(`${skillDir}references/${file}`).size;
       expect(
         size,
@@ -235,30 +262,45 @@ describe('/review-pr split integrity (go-to-k/cdkd#3170)', () => {
     // green with the entire verdict-sort list moved out of the step into a
     // trailing comment — the same unbounded-needle mistake the `inline` case
     // avoids by matching inside its own emitted block.
+    // BOTH ends given explicitly. The first cut searched forward for a `## `
+    // heading, and this file has none — so the "section" ran to EOF, covered
+    // 93% of the file, and the mutation the comment claimed to catch (the whole
+    // verdict list moved into a trailing comment) stayed GREEN. An unfound end
+    // marker returns '' and reds, rather than silently widening to everything.
     const dispatch = sectionOf(
       readFileSync(`${skillDir}references/dispatch-and-marker.md`, 'utf8'),
-      'waits for all, and synthesizes:'
+      'waits for all, and synthesizes:',
+      'For `inline`, the marker is NOT set'
     );
+    expect(dispatch, 'the step-6 synthesis section could not be bounded').not.toBe('');
     const ARMS = [
       {
         // The arm the whole gate rests on, and it deleted GREEN before this.
         arm: 'any blocker',
-        needles: ['Any **blocker**', 'the marker is NOT set'],
+        // CONTIGUOUS: `the marker is NOT set` also occurs in the `inline`
+        // sentence lower down, so the two halves as separate needles stayed
+        // green when the arm was reversed to "set the marker anyway".
+        needles: ['Any **blocker** surviving the pre-filters → the marker is NOT set'],
       },
       {
         arm: 'No spec declared',
         needles: ['No spec declared', 'NOT a clean axis', 'does NOT block'],
       },
       {
-        arm: 'spec (secondary) precedence',
-        needles: ['spec (secondary)', 'YIELDS', 'does not block on its own'],
-      },
-      {
-        // The ordering rule the two arms need to coexist: without it the
-        // "any blocker" arm and the precedence arm collide on exactly the case
-        // the second exists for.
-        arm: 'first-match-wins ordering',
-        needles: ['IN ORDER', 'FIRST match wins'],
+        arm: 'spec (secondary) pre-filter',
+        needles: [
+          'spec (secondary)',
+          'is DISCOUNTED',
+          // CONDITION 2 is the security-critical half and the reason this is
+          // not keyed on the label or on severity: the label is explicitly
+          // allowed to carry a blocker when the finding is independently a
+          // security defect, and severity is inert because minor findings
+          // never blocked anyway.
+          'not independently a code or security defect',
+          // ...and the fall-through, without which a discounted-only run never
+          // reaches the arm that sets the marker.
+          'FALL THROUGH',
+        ],
       },
     ] as const;
     for (const { arm, needles } of ARMS) {
@@ -287,12 +329,8 @@ describe('/review-pr split integrity (go-to-k/cdkd#3170)', () => {
   const SECURITY_ARMS = [
     {
       file: 'references/dispatch-and-marker.md',
-      what: 'the marker follows dispatch, and binds to the PR head',
-      needles: [
-        'NEVER set the marker without dispatching the reviewers first',
-        '= "$(git rev-parse HEAD)"',
-        'markgate set pr-review',
-      ],
+      what: 'the marker follows dispatch',
+      needles: ['NEVER set the marker without dispatching the reviewers first'],
     },
     {
       file: 'SKILL.md',
@@ -302,9 +340,63 @@ describe('/review-pr split integrity (go-to-k/cdkd#3170)', () => {
     {
       file: 'references/bias-factors.md',
       what: 'the additive rule at its authoritative copy',
-      needles: ['NOT part of the tier ladder', 'security fix'],
+      needles: [
+        'NOT part of the tier ladder',
+        'security fix',
+        // The belonging test is the ONLY defence against the surface list
+        // rotting by omission, and `security-surface-list-sync.test.ts` names
+        // it as ITS backstop while passing happily without it.
+        '(a) verifies or mints',
+        // The whole DOWN-bias section deleted green, taking with it the arm
+        // SKILL.md itself calls the one a `.claude/**`-only diff gets wrong --
+        // which is this PR's own shape.
+        'Down-bias triggers',
+        'Agent-instruction files are deliberately NOT here',
+        'never about budget',
+      ],
+    },
+    {
+      file: 'references/output-template.md',
+      what: 'the security add-on dispatch block step 5 actually emits',
+      needles: ['security add-on trigger fired', 'pr-security-reviewer.md'],
+    },
+    {
+      file: 'references/pr-stats.md',
+      what: 'both halves of step 1 — the LOC exclusion and the history probe',
+      needles: ['docs/_generated/', 'git rev-parse --verify -q'],
+    },
+    {
+      file: 'references/round-completion.md',
+      what: 'the ordered arms and the measured wait bound, not just the query',
+      needles: ['THEIRS` newer than `MINE', '30 minutes', 'Skip the wait outright'],
+    },
+    {
+      file: 'SKILL.md',
+      what: 'the mandatory-read rule and the cost-is-never-a-reason floor',
+      needles: [
+        'at stage entry is MANDATORY',
+        'FLOOR, not a cap',
+        'never a reason to come in under it',
+      ],
     },
   ] as const;
+
+  it('the marker binding still guards on the PR head, where it RUNS', () => {
+    // Asserted against the EXECUTABLE lines only. A whole-file needle was
+    // satisfied by a COMMENT mentioning the guard while the command below it
+    // had been replaced with an unconditional `markgate set` — measured green.
+    const bash = flat(
+      bashLines(readFileSync(`${skillDir}references/dispatch-and-marker.md`, 'utf8'))
+    );
+    for (const needle of ['= "$(git rev-parse HEAD)"', 'markgate set pr-review']) {
+      expect(
+        bash,
+        `the marker block's executable lines no longer contain ${JSON.stringify(needle)}. ` +
+          'Without the head-sha equality the marker survives a later push, and a PR merges on ' +
+          'a review that never saw its current diff.'
+      ).toContain(needle);
+    }
+  });
 
   for (const { file, what, needles } of SECURITY_ARMS) {
     it(`${file} still states ${what}`, () => {

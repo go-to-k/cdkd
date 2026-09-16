@@ -9,13 +9,63 @@ Orchestrator: [../SKILL.md](../SKILL.md).
    the orchestrator dispatches the recommended reviewers via the Agent tool,
    waits for all, and synthesizes:
 
-   The arms below are tried IN ORDER and the FIRST match wins. Without that
-   rule the first and third collide on exactly the case the third exists for:
-   a `spec (secondary)` finding raised at blocker severity by a reviewer
-   definition that forgot its cap.
+   FIRST the PRE-FILTERS, which discount findings and FALL THROUGH. THEN the
+   two VERDICT arms, which are mutually exclusive and one of which always runs.
 
-   - Any **blocker** not filtered by an arm below → the marker is NOT set;
-     address the blockers and
+   That order, and that shape, are both forced. An earlier revision wrote all
+   four as first-match-wins alternatives, and a run whose only finding was a
+   discounted one then matched an arm stating what does NOT happen, got no
+   instruction, and never reached the marker block — so `pr-review-gate.sh`
+   blocked the merge with no stated remedy.
+
+### Pre-filters
+
+   A `spec (secondary)` finding is DISCOUNTED — struck from the
+   set the verdict arms below see — when BOTH hold:
+
+   1. a primary `pr-spec-reviewer` verdict exists on the SAME question, and
+   2. the finding is not independently a code or security defect.
+
+   Then continue to the verdict arms. The code and security reviewers carry a
+   deliberately shallow spec pass and cannot tell whether the real spec axis
+   was dispatched — nothing in their inputs names the tier — so without this a
+   secondary finding blocks the marker on a question the primary axis already
+   cleared. Where no primary verdict exists on that question, the finding is
+   not discounted; judge it on its own merits.
+
+   **Condition 2 is what makes this safe, and severity is NOT a substitute for
+   it.** `pr-security-reviewer.md` tells that reviewer to cap its secondary
+   findings at `minor` *unless the finding is independently a security defect*
+   — so the label is explicitly allowed to carry a `blocker`. A label-keyed
+   discount would dismiss exactly the findings that must never be dismissed:
+   a PR closing a GHSA secret-leak issue draws a Clean from `pr-spec-reviewer`
+   on the design doc, while the security reviewer notices off the same
+   acceptance walk that the redaction is not inverted on the rollback replay
+   path, labels it `spec (secondary)`, and raises it as a blocker under that
+   escape clause. Discounting there sets the marker over a live exposure.
+
+   A SEVERITY-keyed discount is no better, for the opposite reason: minor
+   findings never blocked the marker anyway, so keying on `minor or below`
+   makes the rule inert and drops go-to-k/cdkd#3170's actual case — a secondary
+   BLOCKER that should defer to a primary axis that already ruled. Condition 2
+   is what separates those two, and neither severity nor the label can.
+
+
+   An axis reporting **`No spec declared`** (the spec axis found no design doc AND no `Closes`
+     in the PR body) is an ANNOTATION, not a verdict: this is NOT a clean axis, and it does NOT
+     block, so it neither sets nor withholds the marker on its own. Treat
+     it as an unreviewed dimension: say so in the synthesis, and decide
+     deliberately whether the PR should declare what it closes before merging.
+     It is called out separately because it falls silently into the bucket
+     otherwise — at the one place a verdict is consumed it is indistinguishable
+     from Clean. That gap is what go-to-k/cdkd#3169 recorded and could not fix: the
+     clause did not fit inside the 23,000 B cap, and six measured attempts were
+     all over it. Fitting here is the point of the split.
+
+### Verdict arms — exactly one runs
+
+   - Any **blocker** surviving the pre-filters → the marker is NOT set; address
+     the blockers and
      re-run `/review-pr <N>` **from step 0**, on the PR's CURRENT stats —
      step 0 and not step 1, because a fix-round re-review IS the case step 0
      exists for: go-to-k/cdkd#2753's crossing happened on exactly this
@@ -28,37 +78,6 @@ Orchestrator: [../SKILL.md](../SKILL.md).
      hook's second-`fix:`-commit up-bias fires on the same push. Caught only
      by recomputing before the merge; re-read the stats after every fix
      round, in both directions.
-   - **`No spec declared`** (the spec axis found no design doc AND no `Closes`
-     in the PR body) → this is NOT a clean axis, and it does NOT block. Treat
-     it as an unreviewed dimension: say so in the synthesis, and decide
-     deliberately whether the PR should declare what it closes before merging.
-     It has its own arm because it falls silently into the bucket below
-     otherwise — at the one place a verdict is consumed it is indistinguishable
-     from Clean. That gap is what go-to-k/cdkd#3169 recorded and could not fix: the
-     clause did not fit inside the 23,000 B cap, and six measured attempts were
-     all over it. Fitting here is the point of the split.
-   - A `spec (secondary)` finding **at `minor` or below** YIELDS to a primary
-     `pr-spec-reviewer` verdict on the same question, and does not block on its
-     own. **A `blocker` NEVER yields, whatever its label.** The code and
-     security reviewers carry a deliberately shallow spec pass and cannot tell
-     whether the real spec axis was dispatched — nothing in their inputs names
-     the tier — so without this arm a secondary finding blocks the marker even
-     on a question the primary axis already cleared.
-
-     The yield is scoped to SEVERITY and not to the label, and that distinction
-     is load-bearing rather than pedantic. `pr-security-reviewer.md` tells that
-     reviewer to cap its secondary findings at `minor` **unless the finding is
-     independently a security defect** — so the label is explicitly allowed to
-     carry a `blocker`, and a label-keyed yield would dismiss exactly the
-     findings that must never be dismissed. Worked example, which is why this
-     paragraph exists: a PR closing a GHSA secret-leak issue draws a Clean from
-     `pr-spec-reviewer` on the design doc, while the security reviewer notices
-     off the same acceptance walk that the redaction is not inverted on the
-     rollback replay path, labels it `spec (secondary)` and raises it as a
-     blocker under that escape clause. Yielding there sets the marker over a
-     live exposure.
-
-     Where NO primary spec verdict exists, judge the finding on its own merits.
    - Every finding minor / nit / clean → set the marker bound to the PR's
      current HEAD sha:
 
