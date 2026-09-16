@@ -581,10 +581,24 @@ describe('cdkd scrub reports a read it DECLINED BY DESIGN (issue #2133 review)',
     // `outputs` map cannot be read, which IS repairable, so a note prescribing
     // the cross-account remedy would be wrong and actionless for that member.
     // What is pinned is that the stack is NAMED as unverified and pointed at
-    // the per-read warning, which still carries the by-design reason for THIS
-    // case — asserted on `warned` above.
+    // the per-read warning — and, below, that the per-read warning really does
+    // still carry the by-design reason and the remedy. Moving the reason out
+    // of the summary removed the ONLY test-enforced carrier of that sentence;
+    // asserting the summary alone would have left it unfenced while this
+    // comment claimed otherwise (review of go-to-k/cdkd#3206 round 7).
     expect(summary).toContain('cross-stack read that could NOT be verified');
     expect(summary).toContain('see the warnings above');
+    expect(warned, 'the per-read warning stopped naming the by-design reason').toContain(
+      'declines this read by design'
+    );
+    // The REMEDY sentence ("Export a non-secret value (e.g. the secret's
+    // ARN)…") is deliberately NOT asserted here, and that is a scope
+    // statement rather than an oversight: it comes from
+    // `CrossAccountSecretRefusalError` in the resolver, which this fixture
+    // STUBS, so an assertion would pin the stub rather than the message a user
+    // sees. It reaches the user by interpolation into `detail`, which the
+    // sentence above does fence. The resolver's own string carries no test
+    // today; that predates this change and belongs with that module.
     // ...and `--fail` treats it as a finding, exit 1, not the exit-2 refusal.
     expect((err as { code?: string }).code).toBe('SCRUB_NEEDED');
   });
