@@ -808,6 +808,32 @@ describe('cdkd scrub exit codes for an unreadable outputs bag (go-to-k/cdkd#3192
     });
   }
 
+
+  it('exits 2 under --dry-run too, which is the arm the CI gate uses', async () => {
+    // The `--dry-run` COPY of the raise, which had zero coverage until review
+    // round 9 measured it: mutating it to `if (false && …)` left all 148 cases
+    // in this file and its two siblings green, while the identical mutation on
+    // the real-run copy reds two. The existing `--dry-run` case above drives
+    // `malformedRecordsAuditedError` — a DIFFERENT raise — so it could not
+    // stand in for this one.
+    //
+    // It is the arm that matters most: `--dry-run --fail` is documented as a
+    // standing CI gate, and `docs/cli-scrub.md` promises this code "with or
+    // without `--fail`, `--dry-run` included". No `fail` here, deliberately.
+    arrangeDamagedProducer('abcdef');
+
+    const err = await scrubCommand(['Consumer'], commandOptions({ all: false, dryRun: true })).catch(
+      (e: unknown) => e
+    );
+
+    expect(err, 'a --dry-run exited 0 over an unclassifiable producer').toBeInstanceOf(Error);
+    expect((err as { exitCode?: number }).exitCode).toBe(2);
+    expect((err as { code?: string }).code).toBe('SCRUB_PRODUCER_RECORD_UNREADABLE');
+    // ...and it wrote nothing, which is what makes the dry-run arm safe to
+    // raise from at all.
+    expect(commandStateBackend.saveState).not.toHaveBeenCalled();
+  });
+
   it('FLOOR: a HEALTHY producer bag exits 0 on the same fixture', async () => {
     // Without this the two cases above are satisfied by a run that refuses
     // every cross-stack read. The ONLY difference from them is the bag — and
