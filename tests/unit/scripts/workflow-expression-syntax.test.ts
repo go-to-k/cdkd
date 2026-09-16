@@ -1657,8 +1657,12 @@ describe('workflow expression syntax', () => {
       // own — the list is empty on a healthy tree — so it is pinned here.
       // Two lists of file-derived text: the corpus bodies and the corpus heads.
       expect(countOf('.map(safeRender)')).toBe(2);
-      // Every list of file-derived text goes through the same cap: the offence
-      // renderer, the corpus bodies, and the corpus heads.
+      // The three lists `boundedList` reaches: the offence renderer, the corpus
+      // bodies, the corpus heads. NOT every list of file-derived text —
+      // `setDifference`'s two are width-bounded by `safeName` and not
+      // count-bounded, so a directory of workflows in a subdirectory would
+      // print one line each. That sits under the header's residual rather than
+      // here, and saying "every" put a false claim on top of it.
       expect(countOf('boundedList(')).toBe(3);
       // The two probe assertions that read a LINE of the mutated file. They
       // must use `.includes`, because a failing `toContain` prints the whole
