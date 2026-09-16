@@ -46,6 +46,8 @@ export declare function comparePropertySets(
   writableAdded: string[];
   /** The subset of `writableAdded` the REFRESHED schema marks create-only. */
   createOnlyAdded: string[];
+  /** The subset of `removed` that was WRITABLE before — a read-only one was never sendable. */
+  writableRemoved: string[];
 };
 export declare function parseNestedKeyDivergences(
   checkOutput: string,
@@ -235,6 +237,8 @@ export declare function collectFixtureDeltas(input: {
 }): {
   removed: RemovedEntry[];
   writableAdded: AddedEntry[];
+  /** Types that LOST silent-drop properties — the COMPLEMENT of `removed`. */
+  silentDropRemoved: RemovedDropEntry[];
   readOnlyAddedCount: number;
   unreadable: string[];
 };
@@ -428,6 +432,8 @@ export declare function renderChangelogFragment(input: {
   unknownRoutingTypes?: ReadonlySet<string>;
   /** What each provider declares handled — such a property never becomes a silent drop. */
   declared?: ReadonlyMap<string, ReadonlySet<string>>;
+  /** Types that LOST silent-drop properties this cycle. */
+  silentDropRemoved?: readonly RemovedDropEntry[];
 }): string | null;
 
 /** Stands in for the cycle date inside a fragment rendered before the PR exists. */
@@ -448,3 +454,19 @@ export declare function parseCcFallbackOptOuts(
  * routable", the polarity that ships a false auto-route claim.
  */
 export declare function parseNonProvisionableTypes(generatedSource: string): Set<string>;
+
+/**
+ * A type that LOST silent-drop properties in this refresh — the changelog's
+ * removal population, and the complement of `RemovedEntry`: a removed property
+ * the provider declares was never a drop.
+ */
+export interface RemovedDropEntry {
+  resourceType: string;
+  properties: string[];
+  /**
+   * Whether the REFRESHED schema still leaves the type an actionable silent
+   * drop. False means the resource returns to the SDK path entirely; true
+   * means only these properties stop reaching AWS.
+   */
+  retainsOtherDrops: boolean;
+}
