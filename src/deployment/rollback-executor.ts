@@ -154,12 +154,18 @@ const SKIP_FINAL_SNAPSHOT_FLAG = '--skip-final-snapshot';
  * `update()` (`this.create(...)` in ACM certificate / IAM managed policy / IAM
  * role / Lambda permission / SNS subscription). Those are NOT template-driven
  * — this executor's `revert` arm calls `provider.update(...)` with
- * `previousState.properties`, so they forward a STATE record on a replay — but
- * they CANNOT receive a `CreateContext`: `update()`'s own context is an
- * `UpdateContext`, which carries no `replayingState` to forward.
- * The constraint that follows is on providers, not on this constant: a
- * provider with a create-side pre-flight refusal must not re-create inside
- * `update()`. See `CreateContext` in `src/types/resource.ts`.
+ * `previousState.properties`, so they forward a STATE record on a replay — and
+ * they still pass NO `CreateContext`, so a create-side pre-flight refusal
+ * would still fire there. The constraint that follows is on providers, not on
+ * this constant: a provider with a create-side pre-flight refusal must not
+ * re-create inside `update()`. See `CreateContext` in `src/types/resource.ts`.
+ *
+ * What issue [#3141](https://github.com/go-to-k/cdkd/issues/3141) changed is
+ * that the INFORMATION now exists on that path — `UpdateContext` carries its
+ * own `replayingState`, set by both revert arms below — so such a provider
+ * could build a `CreateContext` from it instead of relying on the constraint.
+ * None does today; the five sites are untouched. Read that as a route that
+ * opened, not as a constraint that lifted.
  */
 const REPLAYING_STATE_CREATE_CONTEXT: CreateContext = { replayingState: true };
 
@@ -3121,11 +3127,26 @@ async function replaySingle(
             // a TEMPLATE recorded earlier, and setting that flag here would delete
             // a live configuration on rollback (see `UpdateContext`'s own doc).
             //
+            // `replayingState` (issue #3141) says the OTHER thing, and the two
+            // are not interchangeable: this bag IS a cdkd state record, so a
+            // provider refusal written for a bad TEMPLATE has no template-side
+            // remedy here and must downgrade to whatever the binary that WROTE
+            // the record did. It is the UPDATE twin of
+            // `REPLAYING_STATE_CREATE_CONTEXT` above — same arm of the same
+            // rollback, one taking `create()` and one `update()` — and until it
+            // existed the `update()` half simply could not be told apart from a
+            // template deploy (`logs-loggroup-provider.ts` carried the accepted
+            // residual that named this issue).
+            //
             // `expectedRegion` (issue #2301 item 1): the same `ctx.region` this
             // executor already puts on every `DeleteContext` it builds. This arm
             // is addressed BY `current.physicalId`, read out of the state record
             // being reverted, so it carries the same wrong-region hazard.
-            { maskSecrets: createSecretMasker(secrets), expectedRegion: ctx.region },
+            {
+              maskSecrets: createSecretMasker(secrets),
+              expectedRegion: ctx.region,
+              replayingState: true,
+            },
           ],
           op.logicalId,
           logger,
@@ -3517,9 +3538,19 @@ export async function replayFailedOperations(
               op.resourceType,
               desiredProps ?? {},
               attemptedProps ?? {},
-              // Same as the `revert` arm: masker, no readback flag, and
-              // `ctx.region` as `expectedRegion` (issue #2301 item 1).
-              { maskSecrets: createSecretMasker(secrets), expectedRegion: ctx.region },
+              // Same as the `revert` arm: masker, no readback flag,
+              // `ctx.region` as `expectedRegion` (issue #2301 item 1), and
+              // `replayingState` (issue #3141). The DESIRED bag here is
+              // `prev.properties` — a cdkd state record, exactly as on the
+              // `revert` arm — so the replay licence is the same one. (The
+              // PREVIOUS side is `op.attemptedProperties`, the failed attempt's
+              // desired bag; `replayingState` describes the desired side, which
+              // is the side a provider's refusals read.)
+              {
+                maskSecrets: createSecretMasker(secrets),
+                expectedRegion: ctx.region,
+                replayingState: true,
+              },
             ],
             op.logicalId,
             logger,

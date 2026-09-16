@@ -266,6 +266,31 @@ describe('DeployEngine - provider calls carry a working secret masker (issue #19
     expect(updateContext?.expectedRegion).not.toBe('us-east-1');
   });
 
+  it('UPDATE: does NOT declare replayingState — the desired bag is the TEMPLATE (issue #3141)', async () => {
+    // The negative control for `UpdateContext.replayingState`, which issue
+    // #3141 added and only the rollback executor's two revert arms set. This
+    // engine call resolves the desired bag from the SYNTHESIZED TEMPLATE, so
+    // the user can edit whatever it contains and every provider refusal must
+    // STAND here. Setting the flag on this path would silently downgrade a
+    // template-borne refusal in every provider that reads it at once —
+    // `LogsLogGroupProvider` would start removing a live retention policy on
+    // an ordinary `cdkd deploy` of a template CloudFormation rejects.
+    //
+    // Asserted as a KEY-SET property, not just `!== true`: a context that
+    // grew the key with an `undefined` value would read as absent here while
+    // being one edit away from the downgrade.
+    const template = primeUpdatePath();
+
+    await makeEngine().deploy(stackName, template);
+
+    const updateContext = mockProvider.update.mock.calls[0]![5] as UpdateContext | undefined;
+    expect(updateContext).toBeDefined();
+    expect(Object.keys(updateContext ?? {}).sort()).toEqual(['expectedRegion', 'maskSecrets']);
+    // The sibling flag stays off for the same reason: this bag is a template,
+    // not an AWS readback.
+    expect(updateContext?.desiredFromAwsReadback).toBeUndefined();
+  });
+
   it('CREATE: the masker is an identity when this pass resolved no secret', async () => {
     // The back-compat direction. A resource with no dynamic reference must
     // still get a masker (so a provider never has to branch), and that masker

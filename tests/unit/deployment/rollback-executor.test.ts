@@ -513,7 +513,7 @@ describe('replayRollback', () => {
       { a: 2 },
       // `expectedRegion` is `ctx.region`, threaded for issue #2301 item 1 so a
       // Cloud-Control-routed revert cannot be applied from the wrong region.
-      { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1' }
+      { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1', replayingState: true }
     );
     expect(state.B).toBe(prev);
   });
@@ -1045,7 +1045,7 @@ describe('replayRollback', () => {
     const result = await replayRollback(ops, state, 'S', ctx);
 
     expect(result.failures).toBe(0);
-    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 2 }, { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1' });
+    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 2 }, { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1', replayingState: true });
     // The update went THROUGH withRetry, not around it.
     expect(vi.mocked(withRetry)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(withRetry).mock.calls[0]![1]).toBe('B');
@@ -1621,7 +1621,7 @@ describe('replayFailedOperations (#1198)', () => {
       { a: 2 },
       // `expectedRegion` is `ctx.region`, threaded for issue #2301 item 1 so a
       // Cloud-Control-routed revert cannot be applied from the wrong region.
-      { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1' }
+      { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1', replayingState: true }
     );
     expect(state.B).toBe(prev);
     expect(result.failures).toBe(0);
@@ -1643,7 +1643,7 @@ describe('replayFailedOperations (#1198)', () => {
     const result = await replayFailedOperations(failedOps, state, 'S', ctx);
 
     expect(result.failures).toBe(0);
-    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 2 }, { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1' });
+    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 2 }, { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1', replayingState: true });
     expect(vi.mocked(withRetry)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(withRetry).mock.calls[0]![1]).toBe('B');
   });
@@ -1743,7 +1743,7 @@ describe('replayFailedOperations (#1198)', () => {
     ];
     const state = { B: res({ physicalId: 'phys-B', properties: { a: 1 } }) };
     await replayFailedOperations(failedOps, state, 'S', ctx);
-    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 1 }, { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1' });
+    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 1 }, { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1', replayingState: true });
   });
 
   it('deletes a partially-recorded failed CREATE and drops it from state', async () => {

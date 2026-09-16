@@ -476,17 +476,28 @@ describe('rollbackCommand', () => {
       { a: 1 }, // desired = previous properties
       { a: 2 }, // previous side of the diff = ATTEMPTED properties
       // EXACT object, not `objectContaining`: `toHaveBeenCalledWith(a, b, c)`
-      // was itself an ARITY-STRICT #1463-style fence (no 6th argument at all), and
-      // `objectContaining` would admit `replayingState: true` — the exact leak
-      // those fences exist to catch. This site and the property-driven
-      // replacement are the ONLY fences covering the main CREATE path, so the
-      // loose form would have removed cover from the most-travelled site.
+      // was itself an ARITY-STRICT #1463-style fence (no 6th argument at all),
+      // and the loose form would admit any field a later change added silently.
+      // This site and the property-driven replacement are the ONLY fences
+      // covering the main CREATE path, so it would have removed cover from the
+      // most-travelled site.
       //
       // `expectedRegion` is the rollback context's own region, threaded for
       // issue #2301 item 1 so a Cloud-Control-routed revert-failed cannot be
       // applied against a client pointing somewhere else. It stays in the
       // EXACT object for the same arity-strict reason as the rest.
-      { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1' }
+      //
+      // `replayingState` is issue #3141 and it is CORRECT here — an earlier
+      // version of this comment cited it as the leak the exact form exists to
+      // catch, which was true only while the field was `CreateContext`-only.
+      // `UpdateContext` has its own since #3141, and this arm's desired bag IS
+      // `previousState.properties`, a cdkd state record: without the flag a
+      // provider refusal written for a bad TEMPLATE fires on a bag the user
+      // cannot edit and the force-revert cannot complete. The exact form still
+      // does its job — it now pins the flag's PRESENCE here as tightly as it
+      // pinned its absence before, and `deploy-engine-provider-secret-masker`
+      // carries the matching negative control for the template path.
+      { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1', replayingState: true }
     );
     expect(backend.saveState).toHaveBeenCalled();
     expect(backend.popRollbackJournalSegment).toHaveBeenCalled();

@@ -46,7 +46,7 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
-import { replayWarn, requireConfigString } from '../config-shape.js';
+import { coerceCfnInteger, replayWarn, requireConfigString } from '../config-shape.js';
 import {
   WARM_THROUGHPUT_MEMBERS,
   coerceWarmThroughput as coerceWarmThroughputSpec,
@@ -144,16 +144,21 @@ export function mapSSESpecification(
  * the index to the same warn-and-omit path an absent block takes, letting AWS
  * name it — the CFn-handler outcome.
  *
- * CFn is stringly typed, so a numeric string is accepted and coerced; `NaN` /
- * `Infinity` / objects / unresolved intrinsics are not.
+ * CFn is stringly typed, so a numeric string is accepted and coerced — through
+ * {@link coerceCfnInteger}, CloudFormation's MEASURED DynamoDB Integer grammar
+ * (issue [#3147](https://github.com/go-to-k/cdkd/issues/3147); the table is on
+ * `toCfnInteger` in `../dynamodb-warm-throughput.ts`): an optional sign and
+ * decimal digits, with NO trim, so `" 7 "` / `"7 "` / `""` / `"0x9"` / `"1e1"`
+ * / `"6.5"` are every one `undefined` here because CloudFormation refuses the
+ * template that spells them. The pre-#3147 reader was `Number()`, which
+ * forwarded `7` / `9` / `10` for the first four and deployed an index at a
+ * capacity CloudFormation would not have accepted. `NaN` / `Infinity` / a
+ * non-integer number / objects / unresolved intrinsics were never usable and
+ * still are not.
  */
 function readCapacityNumber(block: unknown, member: string): number | undefined {
   if (typeof block !== 'object' || block === null || Array.isArray(block)) return undefined;
-  const raw = (block as Record<string, unknown>)[member];
-  if (raw === undefined || raw === null || raw === '') return undefined;
-  if (typeof raw !== 'number' && typeof raw !== 'string') return undefined;
-  const value = Number(raw);
-  return Number.isFinite(value) ? value : undefined;
+  return coerceCfnInteger((block as Record<string, unknown>)[member]);
 }
 
 /**
@@ -165,6 +170,13 @@ function readCapacityNumber(block: unknown, member: string): number | undefined 
  * BOTH members are required, exactly as in the flip block: an entry declaring
  * only one is treated like an absent one there, so accepting it here would let
  * the pre-flip delete run ahead of a flip AWS still rejects.
+ *
+ * A MIRROR, so it calls {@link readCapacityNumber} — the function the flip's
+ * per-index forwarder calls — rather than restating the rule. That is what kept
+ * it correct across issue [#3147](https://github.com/go-to-k/cdkd/issues/3147):
+ * the reader moved to CloudFormation's Integer grammar and this predicate moved
+ * with it, so a padded `" 7 "` is "no usable declared capacity" here exactly
+ * because the forwarder drops it there.
  */
 function hasUsableDeclaredCapacity(entry: Record<string, unknown> | undefined): boolean {
   const declared = entry?.['ProvisionedThroughput'];
@@ -175,13 +187,28 @@ function hasUsableDeclaredCapacity(entry: Record<string, unknown> | undefined): 
 }
 
 /**
+ * The two TABLE-level `ProvisionedThroughput` members, in the order both
+ * forwarders build them. Named once so {@link hasUsableTableCapacity} and
+ * {@link tableCapacityForSend} cannot come to disagree about the membership.
+ */
+const TABLE_CAPACITY_MEMBERS = ['ReadCapacityUnits', 'WriteCapacityUnits'] as const;
+
+/**
+ * The capacity both TABLE-level forwarders substitute for a member the
+ * template does not declare at all — `create()`'s `CreateTable` and the
+ * BillingMode flip's `UpdateTable`. It is the pre-issue-#3147 `?? 5`, kept
+ * BYTE-identical in behaviour for the absent case; what changed is only what a
+ * DECLARED-but-unusable member does.
+ */
+const DEFAULT_TABLE_CAPACITY_UNITS = 5;
+
+/**
  * Whether the desired TABLE-level `ProvisionedThroughput` is one the flip can
  * actually send (issue #1617 PR review).
  *
  * Deliberately NOT {@link hasUsableDeclaredCapacity}: the flip defaults each
- * member to 5 when absent (`Number(pt['ReadCapacityUnits'] ?? 5)`), so a
- * half-declared TABLE capacity is sendable while a half-declared per-INDEX one
- * is not.
+ * ABSENT member to 5 ({@link tableCapacityForSend}), so a half-declared TABLE
+ * capacity is sendable while a half-declared per-INDEX one is not.
  *
  * It mirrors the flip's GATE as well as its arithmetic, which the first version
  * did not and a second review round caught — both halves of that miss are real:
@@ -189,10 +216,22 @@ function hasUsableDeclaredCapacity(entry: Record<string, unknown> | undefined): 
  * - the gate is plain TRUTHINESS (`properties['ProvisionedThroughput']`), so a
  *   non-object truthy value sends `{5, 5}` and SUCCEEDS. Requiring a plain
  *   object refused it and skipped a removal that would have been fine.
- * - a DECLARED member that coerces to `0` (`''`, `false`, `[]`) is finite, so
- *   an arithmetic-only check accepted it — while AWS rejects a capacity below
- *   1, which is precisely the deterministic rejection this predicate exists to
- *   keep a delete from running ahead of.
+ * - a DECLARED member that coerces to `0` (`0`, `'0'`) is a capacity AWS
+ *   rejects (below 1), which is precisely the deterministic rejection this
+ *   predicate exists to keep a delete from running ahead of.
+ *
+ * It reads through {@link tableCapacityForSend}'s OWN reader since issue
+ * [#3147](https://github.com/go-to-k/cdkd/issues/3147) — `coerceCfnInteger`,
+ * plus the `< 1` rule AWS adds on top of the grammar — so the two cannot
+ * answer differently. On the pre-#3147 `Number()` reader they DID, in both
+ * directions: a padded `" 7 "` counted as usable here while the forwarder now
+ * drops it, and a DECLARED `null` counted as UNUSABLE here while the
+ * forwarder's `?? 5` sent 5 and AWS accepted the flip — so this predicate
+ * refused a pre-flip removal on a flip that would have succeeded, warning that
+ * "AWS rejects the flip either way" when it does not. `null` therefore takes
+ * the ABSENT arm here, exactly as it does at the forwarder; `''` / `false` /
+ * `[]`, which `Number()` read as **0**, are now dropped-and-named by the
+ * forwarder, so they make the flip fail and stay UNUSABLE here.
  */
 function hasUsableTableCapacity(value: unknown): boolean {
   // Falsy: the flip sends no throughput at all and AWS rejects the mode change.
@@ -200,13 +239,61 @@ function hasUsableTableCapacity(value: unknown): boolean {
   if (typeof value !== 'object' || Array.isArray(value)) return true;
   const pt = value as Record<string, unknown>;
   // Each member the template DECLARES has to be a capacity AWS accepts; an
-  // absent one takes the flip's own `?? 5` default and is fine.
-  for (const member of ['ReadCapacityUnits', 'WriteCapacityUnits']) {
-    if (pt[member] === undefined) continue;
-    const n = Number(pt[member]);
-    if (!Number.isFinite(n) || n < 1) return false;
+  // absent one takes the flip's own default and is fine.
+  for (const member of TABLE_CAPACITY_MEMBERS) {
+    const raw = pt[member];
+    if (raw === undefined || raw === null) continue;
+    const n = coerceCfnInteger(raw);
+    if (n === undefined || n < 1) return false;
   }
   return true;
+}
+
+/**
+ * Read one TABLE-level `ProvisionedThroughput` member for the wire (issue
+ * [#3147](https://github.com/go-to-k/cdkd/issues/3147)).
+ *
+ * THREE answers, where the pre-#3147 `Number(pt[member] ?? 5)` had two:
+ *
+ *  - ABSENT (`undefined` / `null`, matching `??`) -> the
+ *    {@link DEFAULT_TABLE_CAPACITY_UNITS} default, silently, exactly as before.
+ *  - a value {@link coerceCfnInteger} accepts -> that integer.
+ *  - anything else -> `undefined`, i.e. the member is OMITTED from the request,
+ *    and `onUnusable` announces it.
+ *
+ * The third answer is the decision this function exists for, and it is NOT the
+ * announced-default one its `AWS::DynamoDB::GlobalTable` sibling takes. Two
+ * reasons, both local to this type:
+ *
+ *  - **This file's own precedent for the table-level capacity is "let AWS
+ *    reject it, by name".** A flip to PROVISIONED carrying NO
+ *    `ProvisionedThroughput` at all is deliberately left to fail at AWS as CFn
+ *    parity (see the comment at that gate), and the per-index arm below refuses
+ *    to invent a capacity in even stronger terms. Substituting 5 for a
+ *    DECLARED `" 7 "` would be the one place this type guesses.
+ *  - **A substituted capacity is invisible afterwards.** State records the
+ *    DESIRED bag, so a table created at 5 against a recorded `" 7 "` compares
+ *    EQUAL on every later `cdkd diff`: the divergence never surfaces and the
+ *    warning scrolls past once. Omitting the member fails the deploy with
+ *    DynamoDB naming the member, which is also what CloudFormation does with
+ *    this template (it refuses it at properties validation).
+ *
+ * `onUnusable` is called at most once per member and never for the absent case,
+ * so an ordinary template is silent.
+ */
+function tableCapacityForSend(
+  pt: Record<string, unknown> | undefined,
+  member: (typeof TABLE_CAPACITY_MEMBERS)[number],
+  onUnusable: (member: string, raw: unknown) => void
+): number | undefined {
+  const raw = pt?.[member];
+  if (raw === undefined || raw === null) return DEFAULT_TABLE_CAPACITY_UNITS;
+  const coerced = coerceCfnInteger(raw);
+  if (coerced === undefined) {
+    onUnusable(member, raw);
+    return undefined;
+  }
+  return coerced;
 }
 
 // `capacityNumber` — a capacity member, or `undefined` when the value is not a
@@ -1018,12 +1105,26 @@ export class DynamoDBTableProvider implements ResourceProvider {
         BillingMode: billingMode as 'PROVISIONED' | 'PAY_PER_REQUEST',
       };
 
-      // Provisioned throughput (required when BillingMode is PROVISIONED)
+      // Provisioned throughput (required when BillingMode is PROVISIONED).
+      //
+      // Read through {@link tableCapacityForSend} since issue #3147: an ABSENT
+      // member still takes the 5 default, while a DECLARED one CloudFormation
+      // would reject (`" 7 "`, `"0x9"`, `"1e1"`, `"6.5"`, `""`) is announced
+      // and OMITTED rather than forwarded as `Number()`'s reading — that
+      // reading deployed a table at a capacity CloudFormation refuses the
+      // template for.
       if (billingMode === 'PROVISIONED') {
         const pt = properties['ProvisionedThroughput'] as Record<string, unknown> | undefined;
+        const onUnusable = (member: string, raw: unknown): void =>
+          this.warnUnusableTableCapacity(
+            `AWS::DynamoDB::Table ${logicalId}`,
+            member,
+            raw,
+            maskSecrets
+          );
         createParams.ProvisionedThroughput = {
-          ReadCapacityUnits: Number(pt?.['ReadCapacityUnits'] ?? 5),
-          WriteCapacityUnits: Number(pt?.['WriteCapacityUnits'] ?? 5),
+          ReadCapacityUnits: tableCapacityForSend(pt, 'ReadCapacityUnits', onUnusable),
+          WriteCapacityUnits: tableCapacityForSend(pt, 'WriteCapacityUnits', onUnusable),
         };
       }
 
@@ -1155,7 +1256,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // wait above.
       await this.applyPointInTimeRecovery(
         tableName,
-        properties['PointInTimeRecoverySpecification']
+        properties['PointInTimeRecoverySpecification'],
+        undefined,
+        maskSecrets
       );
       await this.applyTimeToLive(tableName, properties['TimeToLiveSpecification']);
 
@@ -1296,8 +1399,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
       //    REQUEST table (or vice versa).
       // Constraints AWS enforces and we mirror here: PAY_PER_REQUEST must NOT
       // carry ProvisionedThroughput; PROVISIONED requires it. Numeric capacity
-      // values arrive as strings from the template, so coerce via Number()
-      // (matches create()).
+      // values arrive as strings from the template, so coerce through
+      // `coerceCfnInteger` — CloudFormation's own DynamoDB Integer grammar,
+      // matching create() (issue #3147; it was `Number()` in both until then).
       //
       // Per-index ProvisionedThroughput rides this same UpdateTable on a flip
       // TO PROVISIONED, because AWS requires it there (issue #1588 — see the
@@ -1781,10 +1885,22 @@ export class DynamoDBTableProvider implements ResourceProvider {
           billingMode !== 'PAY_PER_REQUEST' &&
           properties['ProvisionedThroughput']
         ) {
+          // Same reader as `create()` (issue #3147), so the two table-level
+          // forwarders and `hasUsableTableCapacity` all answer from one
+          // grammar: an absent member takes the 5 default, a DECLARED one
+          // CloudFormation rejects is announced and OMITTED, and AWS then
+          // names the member exactly as it does for an absent required one.
           const pt = properties['ProvisionedThroughput'] as Record<string, unknown>;
+          const onUnusable = (member: string, raw: unknown): void =>
+            this.warnUnusableTableCapacity(
+              `AWS::DynamoDB::Table ${logicalId}`,
+              member,
+              raw,
+              maskSecrets
+            );
           updateInput.ProvisionedThroughput = {
-            ReadCapacityUnits: Number(pt['ReadCapacityUnits'] ?? 5),
-            WriteCapacityUnits: Number(pt['WriteCapacityUnits'] ?? 5),
+            ReadCapacityUnits: tableCapacityForSend(pt, 'ReadCapacityUnits', onUnusable),
+            WriteCapacityUnits: tableCapacityForSend(pt, 'WriteCapacityUnits', onUnusable),
           };
         }
         // Per-index ProvisionedThroughput must ride the SAME UpdateTable as a
@@ -2168,7 +2284,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
           physicalId,
           properties['PointInTimeRecoverySpecification'],
           // On removal (new absent, previous present) explicitly disable.
-          previousProperties['PointInTimeRecoverySpecification']
+          previousProperties['PointInTimeRecoverySpecification'],
+          maskSecrets
         );
       }
 
@@ -2790,7 +2907,10 @@ export class DynamoDBTableProvider implements ResourceProvider {
   private async applyPointInTimeRecovery(
     tableName: string,
     spec: unknown,
-    previousSpec?: unknown
+    previousSpec?: unknown,
+    // Threaded for the ONE warning below (issue #3147). The spec arrives
+    // RESOLVED, so a member of it can be secret plaintext.
+    maskSecrets: SecretMasker = (text) => text
   ): Promise<void> {
     let enabled: boolean | undefined;
     let recoveryPeriodInDays: number | undefined;
@@ -2800,7 +2920,40 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // RecoveryPeriodInDays only applies when PITR is enabled; AWS rejects it
       // alongside PointInTimeRecoveryEnabled: false.
       if (enabled && s['RecoveryPeriodInDays'] !== undefined) {
-        recoveryPeriodInDays = Number(s['RecoveryPeriodInDays']);
+        // `coerceCfnInteger`, CloudFormation's MEASURED DynamoDB Integer
+        // grammar (issue #3147), not `Number()`. This is a FORWARDER — the
+        // value rides `UpdateContinuousBackups` — and `Number()` sent a
+        // padded `" 7 "` / `"0x9"` / `"1e1"` as 7 / 9 / 10 on a template
+        // CloudFormation refuses, and a non-numeric one as **NaN**, which the
+        // SDK serializes and AWS rejects with a message naming neither cdkd
+        // nor the property.
+        //
+        // The site carries no `?? default` arithmetic, so the announced arm
+        // is the one an ABSENT member already takes: the member is DROPPED
+        // and `UpdateContinuousBackups` goes out carrying only
+        // `PointInTimeRecoveryEnabled`, i.e. PITR is enabled at DynamoDB's own
+        // default period. Warned rather than thrown because this method is
+        // reached from `update()` as well, where the desired bag can BE a cdkd
+        // state record (the rollback executor's revert arms,
+        // `drift --revert`) and a refusal would leave the table un-rollbackable
+        // with no template-side remedy — the repo's warn-never-throw rule for
+        // the UPDATE path.
+        const rawRecoveryPeriod = s['RecoveryPeriodInDays'];
+        recoveryPeriodInDays = coerceCfnInteger(rawRecoveryPeriod);
+        if (recoveryPeriodInDays === undefined) {
+          // ONE masked sink (issue #1997), with the raw member masked leaf by
+          // leaf before `JSON.stringify` can escape it past the mask.
+          const warn = (message: string): void => this.logger.warn(maskSecrets(message));
+          warn(
+            `DynamoDB table ${tableName}: PointInTimeRecoverySpecification.RecoveryPeriodInDays ` +
+              `${JSON.stringify(maskLeafValue(rawRecoveryPeriod, maskSecrets))} is not an Integer ` +
+              `CloudFormation accepts (an optional sign and decimal digits only — no surrounding ` +
+              `whitespace, hex, exponent or decimal point), so it was DROPPED from the ` +
+              `UpdateContinuousBackups request: point-in-time recovery is enabled with DynamoDB's ` +
+              `default recovery period instead of the declared one. Check for an unresolved ` +
+              `intrinsic, or spell the value as a decimal integer.`
+          );
+        }
       }
     } else if (previousSpec !== undefined && previousSpec !== null) {
       // Removed from the template: disable.
@@ -3799,6 +3952,47 @@ export class DynamoDBTableProvider implements ResourceProvider {
       return rest;
     }
     return { ...entry, WarmThroughput: coerced };
+  }
+
+  /**
+   * Announce a TABLE-level `ProvisionedThroughput` member
+   * {@link tableCapacityForSend} DROPPED (issue
+   * [#3147](https://github.com/go-to-k/cdkd/issues/3147)).
+   *
+   * Called from BOTH table-level forwarders — `create()`'s `CreateTable` and
+   * the BillingMode flip's `UpdateTable` — because the member vanishes at each
+   * independently, and a drop that is never announced is the silent-narrowing
+   * class this file's other warn arms exist to end.
+   *
+   * It says NO capacity was substituted, which is the whole decision: the
+   * sibling `AWS::DynamoDB::GlobalTable` forwarders announce a 5/5 FALLBACK,
+   * and saying the wrong one of those two would send a user looking for a
+   * table that does not exist. {@link tableCapacityForSend}'s doc carries why
+   * this type differs.
+   */
+  private warnUnusableTableCapacity(
+    scope: string,
+    member: string,
+    raw: unknown,
+    maskSecrets: SecretMasker = (text) => text
+  ): void {
+    // ONE masked sink (issue #1997) — BUILT, not an inline wrap, with the raw
+    // declared member masked leaf by leaf first. See
+    // `coerceWarmThroughputForSend` for why both layers are needed: the member
+    // arrives RESOLVED, so a `{{resolve:secretsmanager:...}}` scalar is
+    // plaintext here, and `JSON.stringify` escaping it would put it past a
+    // message-level mask.
+    const warn = (message: string): void => this.logger.warn(maskSecrets(message));
+    warn(
+      `${scope}: ProvisionedThroughput.${member} ${JSON.stringify(
+        maskLeafValue(raw, maskSecrets)
+      )} is not an Integer CloudFormation accepts ` +
+        `(an optional sign and decimal digits only — no surrounding whitespace, hex, exponent ` +
+        `or decimal point), so it was NOT sent and NO capacity was substituted for it. ` +
+        `DynamoDB requires both members on a PROVISIONED table and will reject the request ` +
+        `naming this one — CloudFormation refuses the same template at properties validation. ` +
+        `Check for an unresolved intrinsic, or spell the value as a decimal integer.`
+    );
   }
 
   /**

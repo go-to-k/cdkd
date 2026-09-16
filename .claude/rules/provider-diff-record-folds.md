@@ -236,18 +236,29 @@ right for ALL of them.
 **That is what `UpdateContext` is for** (issue #1732) — the `update()` sibling of
 `CreateContext`, added because this class has no per-site workaround: the bags
 are byte-identical and only the CALLER knows which it is. It is optional, so
-none of the 77 providers implementing `update()` changed. Its own field,
+none of the 77 providers implementing `update()` changed. Its first field,
 `desiredFromAwsReadback`, is named for what it asserts rather than for
 "state-borne", and that distinction is load-bearing: the rollback executor's
 revert arms ARE state-borne, but their desired bag is
 `previousState.properties` — a TEMPLATE recorded earlier — so `{Rules: []}`
 there means what the template meant and the template answer (SKIP) is correct.
-Those arms deliberately never set that FLAG (they do pass a context, carrying
-only the `maskSecrets` capability below), and widening the flag to `stateBorne`
-would sweep them in and delete a live configuration during a rollback. Only
-`src/cli/commands/drift.ts`'s revert call sets it. When adding a field here,
-ask what the flag lets a provider CONCLUDE, not merely where the call came
-from.
+Those arms deliberately never set that FLAG, and widening the flag to
+`stateBorne` would sweep them in and delete a live configuration during a
+rollback. Only `src/cli/commands/drift.ts`'s revert call sets it. When adding a
+field here, ask what the flag lets a provider CONCLUDE, not merely where the
+call came from.
+
+**`replayingState` is the SECOND field, and it is the one those arms DO set**
+(issue [#3141](https://github.com/go-to-k/cdkd/issues/3141)) — added rather
+than widening `desiredFromAwsReadback`, which is exactly the merge the
+paragraph above forbids. It asserts only that the desired bag is a cdkd STATE
+record, so it licenses the `CreateContext.replayingState` asymmetry — a refusal
+written for a bad TEMPLATE downgrades to what the record's own writer did —
+and NOTHING about the values' provenance: a provider must not read it as
+permission to delete a live configuration. The `{Rules: []}` arms above read
+`desiredFromAwsReadback` and are untouched by it. `LogsLogGroupProvider`'s
+`RetentionInDays` refusal is the one consumer; the deploy engine and
+`drift --revert` leave it unset.
 
 **The other field is inherited, not its own** — `UpdateContext` and
 `CreateContext` both extend `SecretMaskingContext`, which supplies
@@ -278,14 +289,20 @@ where `DeleteContext` lives — that type belongs there because its
 Several providers call `this.create(logicalId, resourceType, properties)` from
 their own `update()` (ACM certificate, IAM managed policy, IAM role, Lambda
 permission, SNS subscription). Those internal re-creates CANNOT receive a
-`CreateContext` — `update()`'s own context is an `UpdateContext`, which
-carries no `replayingState` — and the `properties` they
+`CreateContext` — `update()`'s own context is an `UpdateContext`, and none of
+the five builds one from it — and the `properties` they
 forward ARE a state record during a rollback replay (`rollback-executor.ts`'s
 `revert` arm calls `provider.update(..., previousState.properties, ...)`, as
 does `drift --revert`). So a provider that both refuses on create AND
 re-creates inside `update()` would fire that refusal on a replay with no way
 to detect it. None of the five does today (required-field validation only,
 which correctly stays a hard error).
+
+**Since issue [#3141](https://github.com/go-to-k/cdkd/issues/3141) the
+information EXISTS on that path**, so read the constraint as a live one rather
+than an impossibility: `UpdateContext` carries its own `replayingState`, set by
+the rollback executor's two revert arms, so such a provider COULD build a
+`CreateContext` from it. None does; the five sites still pass nothing.
 
 ### Retiring what a FAILING create already materialized
 

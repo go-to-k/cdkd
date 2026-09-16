@@ -625,7 +625,12 @@ export interface SecretMaskingContext {
  * The five providers that re-create inside their own `update()` still pass
  * nothing, so "every provider call" would be too strong.)
  * Widening this to `stateBorne` would silently sweep them in and delete a
- * configuration on a rollback.
+ * configuration on a rollback. Since issue
+ * [#3141](https://github.com/go-to-k/cdkd/issues/3141) those arms DO announce
+ * themselves — through the SEPARATE {@link UpdateContext.replayingState} field,
+ * which says "this bag is a state record" and licenses only the
+ * refuse-on-template / replay-what-the-record-certifies asymmetry, never the
+ * readback reading this paragraph is about.
  *
  * **One bounded caveat on "a TEMPLATE recorded earlier"** (found in review):
  * `cdkd drift --accept` writes the AWS readback into `properties` for a
@@ -656,6 +661,41 @@ export interface UpdateContext extends SecretMaskingContext {
    * or a validation that protects the AWS call itself.
    */
   desiredFromAwsReadback?: boolean;
+
+  /**
+   * `true` when the desired properties handed to `update()` come from a cdkd
+   * STATE record rather than from the synthesized template — today that is the
+   * rollback executor's two REVERT arms (`revert` and `revert-failed-update`),
+   * which hand over `previousState.properties` (issue
+   * [#3141](https://github.com/go-to-k/cdkd/issues/3141)).
+   *
+   * The UPDATE twin of {@link CreateContext.replayingState}, and it carries the
+   * SAME licence, unchanged: the user has no template-side remedy for whatever
+   * the properties contain, because the only way to edit a state record is by
+   * hand-editing `state.json`. So a refusal that exists to stop a bad TEMPLATE
+   * must downgrade here to the arm the record's own writer took — otherwise the
+   * rollback fails and the resource is stranded at the failed deploy's
+   * configuration, which is the case the downgrade exists for.
+   *
+   * **It is NOT {@link desiredFromAwsReadback}, and the two must not be
+   * conflated.** That flag says every value in the bag is an AWS READBACK, so a
+   * shape a provider would read as collapsed is instead an accurate report of
+   * what AWS held — which licenses REMOVING a live configuration. This one says
+   * only that the bag is a TEMPLATE RECORDED EARLIER: it licenses nothing about
+   * the values' provenance and must never be read as permission to delete a
+   * live configuration. `AWS::S3::Bucket`'s `{Rules: []}` arms turn on exactly
+   * that difference (see this interface's own doc), and they read
+   * `desiredFromAwsReadback`, so they are untouched by this field.
+   *
+   * **What a provider MUST NOT conclude from it.** Nothing about the
+   * properties' CONTENT, and nothing about data safety: like its create-side
+   * twin, it is not a dry-run signal and must not relax a data-loss guard or a
+   * validation that protects the AWS call itself.
+   *
+   * Absent / `false` = an ordinary template-path update (`cdkd deploy`), OR a
+   * `cdkd drift --revert`, which sets `desiredFromAwsReadback` instead.
+   */
+  replayingState?: boolean;
 
   /**
    * Region recorded in the stack state for the resource being updated

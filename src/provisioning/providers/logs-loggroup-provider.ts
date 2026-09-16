@@ -599,10 +599,14 @@ export class LogsLogGroupProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    // Read for ONE field: `desiredFromAwsReadback`, which decides whether a
+    // Read for TWO fields: `desiredFromAwsReadback`, which decides whether a
     // numeric `0` is cdkd's own never-expire readback or a template's rejected
-    // zero (see `isAbsentRetention`). No masker is threaded from it; the
-    // retention refusal names no value.
+    // zero (see `isAbsentRetention`), and `replayingState` (issue #3141), which
+    // downgrades the refusal on a rollback replay. No masker is threaded from
+    // it, and the one VALUE any of those warnings interpolates is
+    // `toFiniteNumber`'s positive-integer reading of the retention itself —
+    // a day count, not a carrier for secret material (PR #3246 security
+    // review, which flagged the previous "names no value" wording as stale).
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating log group ${logicalId}: ${physicalId}`);
@@ -814,7 +818,9 @@ export class LogsLogGroupProvider implements ResourceProvider {
     // reads through the same function so the two spellings of one retention
     // still compare equal; a previous value the grammar rejects is the
     // `previousRetentionUnknown` case below, exactly as an `'abc'` was.
-    const retentionInDays = toCfnInteger(rawRetention);
+    // `let`, because the REPLAY downgrade below can restore the reading the
+    // binary that wrote the record took (see the `legacyReading` arm).
+    let retentionInDays = toCfnInteger(rawRetention);
     const oldRetentionInDays = toCfnInteger(rawPreviousRetention);
     // Absent FIRST (issue [#2699]): absent / `''` / whitespace-only are
     // CloudFormation's measured spellings of "no retention" and take the
@@ -824,26 +830,64 @@ export class LogsLogGroupProvider implements ResourceProvider {
     // the template and cdkd must not delete a live retention on its behalf.
     //
     // Decided per site, as `.claude/rules/provider-replay-and-refusals.md`
-    // asks of an update-path refusal, and the ACCEPTED RESIDUAL is this: the
-    // rollback executor's revert arms hand `update()` `previousState.properties`
-    // with a context carrying NO `desiredFromAwsReadback` (and `UpdateContext`
-    // has no `replayingState`), so a record whose `properties` spell the
-    // retention as `0` / `'0'` / `false` / `null` — a pre-#2699 template cdkd
-    // accepted and recorded, or `drift --accept` writing the readback `0` into
-    // `properties` on a record with no `observedProperties` — is REFUSED on a
-    // rollback where it used to take the delete arm, and the resource stays
-    // at the failed deploy's retention until the record is corrected. That is
-    // a regression on that arm, taken knowingly: the update path cannot tell
-    // that replay from a template deploy, and admitting `0` on every bag is
-    // the silent-removal defect this refusal closes. `'abc'` was refused on
-    // the same arm before; the zero family joins it rather than the flag
-    // widening to "any context". Closing it means threading `replayingState`
-    // through `UpdateContext` and the executor's revert arms — issue #3141,
-    // filed rather than taken here because the executor is held by an open
-    // peer PR.
+    // asks of an update-path refusal. Issue [#2699] left an ACCEPTED RESIDUAL
+    // here and issue [#3141] CLOSES it: the rollback executor's revert arms
+    // hand `update()` `previousState.properties`, and until #3141 they carried
+    // no flag saying so (`desiredFromAwsReadback` says something else — the bag
+    // is an AWS READBACK — and setting it on those arms would delete a live
+    // configuration elsewhere, see `UpdateContext`'s own doc). So a record
+    // whose `properties` spell the retention `0` / `'0'` / `false` / `null` —
+    // a pre-#2699 template cdkd accepted and recorded, or `drift --accept`
+    // writing the readback `0` into `properties` on a record with no
+    // `observedProperties` — was REFUSED on a rollback where it used to take
+    // the delete arm, and the resource stayed at the FAILED deploy's retention.
+    //
+    // `UpdateContext.replayingState` is now that flag, and the downgrade below
+    // is the UPDATE twin of `create()`'s (read that one for the pattern; both
+    // reproduce what the record CERTIFIES was applied rather than what the
+    // template grammar allows):
+    //
+    //  - a spelling the WRITING binary read as a positive integer through
+    //    `Number()`-based `toFiniteNumber` (`'30.0'`, `'0x1e'`) was FORWARDED
+    //    as that integer and CloudWatch Logs accepted it, so the revert
+    //    RESTORES it rather than refusing — otherwise the rollback leaves the
+    //    failed deploy's retention in place on a log group whose recorded one
+    //    is a compliance setting;
+    //  - every other refused member (`0`, `'0'`, `false`, `null`, `'abc'`, a
+    //    negative, a non-integer) was SKIPPED on create or rejected by AWS, so
+    //    "no retention" is what the record meant for it — that is the DELETE
+    //    arm below, which is exactly where it used to land.
+    //
+    // Both arms WARN naming the spelling; neither is silent, and neither
+    // widens what a TEMPLATE bag may say. A template deploy and
+    // `drift --revert` set no `replayingState`, so the refusal stands there.
     const desiredFromAwsReadback = context?.desiredFromAwsReadback === true;
     if (!sameRawRetention && !isAbsentRetention(rawRetention, desiredFromAwsReadback)) {
-      assertUsableRetention(rawRetention, retentionInDays, logicalId, resourceType);
+      try {
+        assertUsableRetention(rawRetention, retentionInDays, logicalId, resourceType);
+      } catch (refusal) {
+        if (context?.replayingState !== true || !(refusal instanceof ProvisioningError)) {
+          throw refusal;
+        }
+        const legacyReading = toFiniteNumber(rawRetention);
+        if (legacyReading !== undefined && Number.isInteger(legacyReading) && legacyReading > 0) {
+          retentionInDays = legacyReading;
+          this.logger.warn(
+            `${refusal.message}. This update replays a cdkd state record (rollback) written ` +
+              `by a cdkd that read the value as ${legacyReading} and applied it, so the ` +
+              `retention is RESTORED as ${legacyReading} days rather than refused. Fix the ` +
+              `template spelling and re-deploy.`
+          );
+        } else {
+          this.logger.warn(
+            `${refusal.message}. This update replays a cdkd state record (rollback), so the ` +
+              `value is read as the "no retention" the record meant rather than refused: the ` +
+              `log group's retention policy is REMOVED, which is what the cdkd that wrote the ` +
+              `record left in place. Re-apply it by hand (aws logs put-retention-policy) or fix ` +
+              `the template and re-deploy.`
+          );
+        }
+      }
     }
 
     // Update KmsKeyId if changed. CFn applies it in place ("Update
