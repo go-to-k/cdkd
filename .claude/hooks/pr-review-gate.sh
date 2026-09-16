@@ -40,6 +40,8 @@ if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   || ! declare -F gate_matches >/dev/null \
   || ! declare -F gate_target_dir_strict >/dev/null \
   || ! declare -F gate_refuse_unresolved_target >/dev/null \
+  || ! declare -F gate_gh_repo_slug >/dev/null \
+  || ! declare -F gate_bounded >/dev/null \
   || ! declare -F cmd_last_cd_target >/dev/null \
   || ! declare -F strip_noncommand_spans >/dev/null; then
   # FAIL CLOSED. Without the helper `cmd_matches_verb` is undefined, the
@@ -70,99 +72,17 @@ gate_require_const GATE_RE_GH_PR_MERGE
 
 set -u
 
-# Run a command under a hard wall-clock bound. Prints its stdout, returns its
-# exit status, and returns 124 if the bound expired.
-#
-# WHY. `.claude/settings.json` registers this hook with `timeout: 15`. A hook
-# killed by THAT timeout emits no `exit 2`, so the gate fails OPEN -- the wrong
-# direction for a merge gate. This hook makes one network call always and, since
-# go-to-k/cdkd#2638, a second serial one on most PRs, so a stalled GitHub must
-# resolve to a decision of ours rather than to an opaque kill.
-#
-# WHY NOT `alarm` + `exec`, which is the obvious spelling: `gh` is a Go binary,
-# and with no `os/signal` listener the Go runtime SWALLOWS SIGALRM. Measured on
-# macOS with a 2s alarm -- `sleep 20` returns rc 142 at 2s, a hanging
-# `gh api graphql` returns rc 1 at 30s. So the bound must FORK and signal the
-# child with something Go honours. Measured with this implementation, 3s bound:
-# a hanging `gh` returns rc 124 at 3s, a SIGALRM-deaf child returns 124 at 4s
-# (bound plus the TERM->KILL grace), a healthy `gh pr view` returns rc 0 with
-# its JSON intact, and a child exiting 7 still returns 7.
-#
-# `timeout(1)` is absent on macOS; `perl` already backs a dozen hooks here.
-gate_bounded() {
-  __gate_secs="$1"
-  shift
-  if ! command -v perl >/dev/null 2>&1; then
-    # Degrade LOUDLY rather than refuse a merge over a missing interpreter.
-    # The `2>/dev/null` lives INSIDE this function, on the wrapped command
-    # only -- when the callers carried it instead it also swallowed this
-    # warning, so the degraded mode was invisible exactly when it mattered.
-    echo "pr-review-gate: perl not found; running '$1' unbounded" >&2
-    "$@" 2>/dev/null
-    return $?
-  fi
-  perl -e '
-    my $secs = shift;
-    my $pid = fork();
-    if (!defined $pid) {
-      # No fork: run it unbounded rather than refuse, and SAY so. This warning
-      # is why the `2>/dev/null` moved OFF this perl invocation and INTO the
-      # child below: a redirect on the whole wrapper deleted the one line that
-      # announces the degraded mode, which is finding B one arm over.
-      print STDERR "pr-review-gate: fork failed; running unbounded\n";
-      open(STDERR, ">", "/dev/null");
-      exec @ARGV or exit 127;
-    }
-    if (!$pid) {
-      # New PROCESS GROUP, so the kill below reaches descendants too. Signalling
-      # only the direct child is not a bound: `gh pr view` shells out to `git`,
-      # and any descendant that inherited stdout keeps the caller`s command
-      # substitution blocked long after the child dies. Measured: a child that
-      # backgrounds a 25s sleeper returns rc 124 at the bound but the CALLER
-      # waits the full 25s -- past the 15s harness kill, i.e. the fail-open this
-      # bound exists to prevent. With the group kill the same case ends at 4s.
-      setpgrp(0, 0);
-      # The wrapped command`s own stderr is suppressed HERE rather than on the
-      # wrapper, so this function can still speak. Note the BACKTICK: this whole
-      # program is a single-quoted shell argument, so an apostrophe would end it
-      # and hand the rest to bash as code.
-      open(STDERR, ">", "/dev/null");
-      exec @ARGV or exit 127;
-    }
-    $SIG{ALRM} = sub {
-      return unless $pid;
-      kill "TERM", -$pid;
-      select(undef, undef, undef, 0.5);
-      kill "KILL", -$pid;
-      exit 124;
-    };
-    # `setpgrp` above moved the child OUT of this hook`s process group, so a
-    # harness reap of the hook no longer collects it. Without this, a killed
-    # wrapper leaves `gh` and its descendants running with nothing enforcing the
-    # bound at all -- narrow (the bounds are well under the 15s budget) but
-    # unbounded in duration once it opens.
-    $SIG{TERM} = $SIG{INT} = sub {
-      kill "KILL", -$pid if $pid;
-      exit 143;
-    };
-    alarm $secs;
-    waitpid($pid, 0);
-    my $status = $?;
-    # CLEAR $pid FIRST, then disarm. The bigger window is `waitpid` returning ->
-    # `alarm 0`, where the pid is already reaped: a SIGALRM there would signal a
-    # possibly-recycled process group and report a false timeout. Clearing first
-    # makes the handler a no-op for that window; the reverse order only closes
-    # the shorter one.
-    $pid = 0;
-    alarm 0;
-    # A SIGNAL-killed child must not look like success. `$status >> 8` is 0 when
-    # the child died on a signal, and a truncated `gh` response then parses into
-    # loc=0 / fc=0 -- an `inline` verdict and a SILENT pass, where every earlier
-    # version of this hook printed its infra fail-open reason. 125 is distinct
-    # from the 124 the timeout arm uses.
-    exit(($status & 127) ? 125 : ($status >> 8));
-  ' "$__gate_secs" "$@"
-}
+# `gate_bounded` MOVED TO `lib/command-match.sh` (go-to-k/cdkd#3273 review).
+# It lived here while this was the only hook making a network call from inside a
+# PreToolUse hook. `ci-green-gate` makes one too, and its `gh pr checks` was
+# UNBOUNDED -- measured, `gh pr checks <n> -R <unroutable host>` takes 30 s
+# against that hook's registered 20 s timeout, so the hook is KILLED and emits
+# no exit 2, which is a silent PASS. Since go-to-k/cdkd#3273 the command TEXT
+# can choose the host that stalls, so the bound stopped being optional there.
+# Copying 70 lines of perl was the alternative; the library is where a shared
+# mechanism goes ("the fix is one shared resolver, not 24 conditionals").
+# Behaviour here is unchanged: the wrapped command's stderr is still discarded
+# unless a caller sets `GATE_BOUNDED_KEEP_STDERR=1`, which this hook does not.
 
 # A TIMEOUT on the PR lookup must fail CLOSED, and that is the whole point of
 # telling it apart from an ordinary `gh` failure.
@@ -181,6 +101,35 @@ gate_refuse_on_timeout() {
   printf 'an answer -- allowing the merge here would let a stalled GitHub wave\n' >&2
   printf 'through exactly the large / security-sensitive PRs this gate exists\n' >&2
   printf 'for. Re-run the merge once `gh pr view %s` responds.\n' "$2" >&2
+  exit 2
+}
+
+# gate_refuse_on_foreign_repo_failure <gh-rc> <pr-number> <repo-slug>
+#
+# THE INFRA FAIL-OPEN DOES NOT SURVIVE AN EXPLICIT `-R` (go-to-k/cdkd#3273).
+# It is kept UNCHANGED for the ordinary cwd-relative merge -- an unrelated
+# GitHub outage must not block those. But once the command names another
+# repository, "the lookup failed" is far more likely to mean "that repository is
+# not reachable from here" than a global outage, and passing then merges a PR
+# whose size, files and head sha this gate never saw, in a repo whose review
+# history it has never seen either. Same reasoning as the timeout arm above:
+# a non-answer is not an answer.
+#
+# It is a no-op when no slug was named, so the everyday spelling is untouched
+# by construction rather than by a condition anyone has to keep true.
+gate_refuse_on_foreign_repo_failure() {
+  [ -n "$3" ] || return 0
+  printf 'Blocked by pr-review-gate: `gh pr view %s -R %s` failed (rc=%s).\n\n' \
+    "${2:-(current branch)}" "$3" "$1" >&2
+  printf 'This command names another repository, so there is no infra\n' >&2
+  printf 'fail-open here: with the lookup failed the gate has no PR stats at\n' >&2
+  printf 'all, and allowing the merge would wave through exactly the large /\n' >&2
+  printf 'security-sensitive PRs it exists for -- in a repository whose review\n' >&2
+  printf 'state this session has never read. Required action:\n\n' >&2
+  printf '  gh pr view %s -R %s --json number   # confirm the slug resolves\n' \
+    "${2:-<PR>}" "$3" >&2
+  printf '  # or run the merge from that repository own checkout, which is\n' >&2
+  printf '  # what .claude/rules/hooks.md prescribes for sibling-repo work.\n' >&2
   exit 2
 }
 
@@ -276,24 +225,67 @@ pr_number=""
 # gate did not call. A fence in a helper protects only the callers that use it.
 pr_number="$(gate_pr_selector "$cmd" "$GATE_RE_GH_PR_MERGE")"
 
+# --- Parse the target REPO, and forward it (go-to-k/cdkd#3273). ---------
+# The PR number was recovered from the command and the repository was not, so
+# `gh pr view <n>` below asked about the repo the SHELL was in. MEASURED through
+# this hook with an argv-recording `gh`, from a cdkd worktree:
+# `gh pr merge 42 -R go-to-k/cdk-local --squash` produced the argv
+# `pr view 42 --json …` -- no `-R`, so gh resolves the CWD's repo and the tier
+# comes from cdkd's PR 42. An unrelated PR's diff choosing this one's review
+# tier, and its `headRefOid` deciding what the `pr-review` sentinel is compared
+# against, so a marker bound to the real PR reads as stale and one bound to the
+# other repo's HEAD reads as fresh.
+#
+# The fix-back heuristic further down needs no separate change: it takes
+# `owner` / `repo` from the PR's OWN `url`, which now comes from the right PR.
+if ! repo_slug=$(gate_gh_repo_slug "$cmd" "$GATE_RE_GH_PR_MERGE"); then
+  cat >&2 <<EOF
+Blocked by pr-review-gate: this command names a repository with \`-R\` /
+\`--repo\`, but the value is not literal text (an unexpanded \$VAR, a
+substitution, or a trailing \`-R\` with no value), so this gate cannot
+tell WHICH repository's pull request it would have to size.
+
+Sizing the PR of whatever repo this shell is in is the go-to-k/cdkd#3273
+defect, and here it decides a REVIEW TIER and the sha the pr-review
+marker is bound to. Refusing instead.
+
+  # spell the slug literally
+  gh pr merge ${pr_number:-<PR>} -R <owner>/<repo> --squash --delete-branch
+
+  # ...or run the merge from that repository's own checkout, with no -R
+  cd <that repo> && gh pr merge ${pr_number:-<PR>} --squash --delete-branch
+EOF
+  exit 2
+fi
+# ABSENT rather than empty: `gh pr view -R ""` is not `gh pr view`. The
+# `${a[@]+"${a[@]}"}` spelling is the one that survives `set -u` on bash 3.2,
+# where a bare `"${a[@]}"` on an empty array aborts the hook.
+__repo_args=()
+[ -n "$repo_slug" ] && __repo_args=(-R "$repo_slug")
+
 # --- Fetch PR stats via gh. --------------------------------------------
 # Pass-through on any gh error so an unrelated infra outage doesn't
-# block merges (mirrors integ-destroy-gate.sh's posture).
+# block merges (mirrors integ-destroy-gate.sh's posture) -- EXCEPT when the
+# command named another repository, where the failure is more likely to be
+# "that repo is unreachable from here" and passing would let a PR this gate has
+# learned nothing about merge unreviewed (go-to-k/cdkd#3273).
 if [ -n "$pr_number" ]; then
-  pr_json=$(gate_bounded 6 gh pr view "$pr_number" \
+  pr_json=$(gate_bounded 6 gh pr view "$pr_number" ${__repo_args[@]+"${__repo_args[@]}"} \
     --json additions,deletions,changedFiles,files,headRefOid,headRefName,commits,url)
   __gh_rc=$?
   gate_refuse_on_timeout "$__gh_rc" "$pr_number"
   if [ "$__gh_rc" -ne 0 ]; then
+    gate_refuse_on_foreign_repo_failure "$__gh_rc" "$pr_number" "$repo_slug"
     printf 'pr-review-gate: gh pr view %s failed; allowing merge (infra fail-open)\n' "$pr_number" >&2
     exit 0
   fi
 else
-  pr_json=$(gate_bounded 6 gh pr view \
+  pr_json=$(gate_bounded 6 gh pr view ${__repo_args[@]+"${__repo_args[@]}"} \
     --json additions,deletions,changedFiles,files,headRefOid,headRefName,commits,url,number)
   __gh_rc=$?
   gate_refuse_on_timeout "$__gh_rc" ""
   if [ "$__gh_rc" -ne 0 ]; then
+    gate_refuse_on_foreign_repo_failure "$__gh_rc" "" "$repo_slug"
     echo "pr-review-gate: gh pr view failed; allowing merge (infra fail-open)" >&2
     exit 0
   fi

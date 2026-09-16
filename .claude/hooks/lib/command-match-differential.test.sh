@@ -350,6 +350,12 @@ Z2l0IC1DICQoZWNobyAkJ2FcJ2InKSBjb21taXQgLW0geA==
 Y2RcIC90bXAgOyBnaXQgY29tbWl0IC1tIHg=
 Y2RcXCAvdG1wIDsgZ2l0IGNvbW1pdCAtbSB4
 Z2l0IGNvbW1pdFwgLW0geA==
+Z2ggcHIgLS1qc29uIHVybCAibWVyZ2UiIDQyIC0tc3F1YXNo
+Z2ggcHIgLXEgLnggIm1lcmdlIiA0Mg==
+Z2ggaXNzdWUgLVIgby9yIC0tanNvbiB1cmwgImNyZWF0ZSIgLS10aXRsZSB4
+Z2ggcHIgLS1zZWFyY2ggIm1lcmdlIiBsaXN0
+Z2ggcHIgLVIgby9yIC0tanNvbiAibWVyZ2UiIHZpZXcgNDI=
+Z2ggcHIgLXNSIG8vciAibWVyZ2UiIDQy
 CORPUS_EOF
 
 # --------------------------------------------------------------- observables
@@ -581,6 +587,29 @@ ALLOWED="$TMPDIR/allowed.tsv"
 # marking corpus (process substitution, a quoted `)` in a subshell, an
 # `if (...)` compound, a `bash -c` body); what actually fences their behaviour
 # is `main-tree-edit-gate.test.sh`, where reverting each one turns cases red.
+# --- go-to-k/cdkd#3284: a verb quoted after a flag's VALUE (ids 240-245) -----
+#   DQ_VALUE  `gate_dequote_structural`'s between-slot walk took the token after
+#             an unenumerated BARE flag as the SUBCOMMAND and stopped there, so
+#             a verb QUOTED behind that value was never dequoted and no gate saw
+#             it: `gh pr --json url "merge" 42` matched nothing on `origin/main`
+#             and on go-to-k/cdkd#3242's head alike. The walk now consumes that
+#             token as the flag's value whatever its quoting, which is what gh
+#             itself does (measured on 2.92.0: `gh pr --json number "view" N`
+#             resolves, `gh pr --web "view" N` errors `unknown flag`).
+#             Ids 240 / 241 / 242 carry the cells -- a long flag, a short one,
+#             and the ISSUE group, the last one landing on the two carrier
+#             constants `pr-body-item-number-gate` reads.
+#
+# Ids 243-245 are the CONTROLS and declare NO cell, which is the half that
+# prices the change: `gh pr --search "merge" list` and
+# `gh pr -R o/r --json "merge" view 42` are ordinary READS whose quoted body
+# carries the verb word, and the consumed value is still emitted VERBATIM, so
+# they must stay unmatched. Id 245 (`gh pr -sR o/r "merge" 42`) is the
+# SURVIVING residue -- a short-flag cluster longer than `-X` reads as carrying
+# its own value, so the walk stops on the separate one. A row appearing for 243
+# or 244 means the walk has started dequoting flag VALUES, which is the
+# regression that got go-to-k/cdkd#2333's first attempt withdrawn; a row for 245
+# means the cluster arm changed and this legend is stale.
 cat > "$ALLOWED" <<'ALLOWED_EOF'
 26	segcount	2	SEGCOUNT	git -C subst-quoted commit
 27	segcount	2	SEGCOUNT	gh -C subst-quoted pr merge
@@ -859,6 +888,14 @@ cat > "$ALLOWED" <<'ALLOWED_EOF'
 230	segcount	2	QUOTED_PAREN	a quoted ) in a substitution before the verb
 236	m:GATE_RE_GIT_COMMIT	1	ANSI_C	an escaped quote in a $' ' span no longer ends the substitution early
 236	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	ANSI_C	an escaped quote in a $' ' span no longer ends the substitution early
+240	m:GATE_RE_GH_PR_MERGE	1	DQ_VALUE	gh pr --json url "merge" 42 -- verb quoted after a long flag's bare value
+240	m:GATE_RE_GH_PR_CREATE_OR_MERGE	1	DQ_VALUE	gh pr --json url "merge" 42 -- verb quoted after a long flag's bare value
+240	m:GATE_RE_GH_PR_WRITE	1	DQ_VALUE	gh pr --json url "merge" 42 -- verb quoted after a long flag's bare value
+241	m:GATE_RE_GH_PR_MERGE	1	DQ_VALUE	gh pr -q .x "merge" 42 -- the same behind a SHORT flag
+241	m:GATE_RE_GH_PR_CREATE_OR_MERGE	1	DQ_VALUE	gh pr -q .x "merge" 42 -- the same behind a SHORT flag
+241	m:GATE_RE_GH_PR_WRITE	1	DQ_VALUE	gh pr -q .x "merge" 42 -- the same behind a SHORT flag
+242	m:GATE_RE_GH_LABEL_CARRIER	1	DQ_VALUE	gh issue -R o/r --json url "create" -- the ISSUE group takes the same rule
+242	m:GATE_RE_GH_BODY_CARRIER	1	DQ_VALUE	gh issue -R o/r --json url "create" -- the ISSUE group takes the same rule
 ALLOWED_EOF
 
 paste "$TMPDIR/old.tsv" "$TMPDIR/new.tsv" \
@@ -897,7 +934,7 @@ fi
 # so the "undeclared" arm is blind to it and these floors are the only thing
 # that sees it. Raise them with the measurement whenever the corpus grows; do
 # not leave slack "for headroom", which is precisely what defeated them.
-for spec in "NOW_MATCH:93" "NOW_MISS:14" "TARGET:17" "SEGCOUNT:16" "WIDE_TRIGGER:23" "MLSUBST:15" "MLBACKTICK:7" "LATERQ:18" "ACCEPTED_FR:13" "INQUOTE_BACKTICK:6" "DEQUOTE:44" "QUOTED_PAREN:5" "ANSI_C:2"; do
+for spec in "NOW_MATCH:93" "NOW_MISS:14" "TARGET:17" "SEGCOUNT:16" "WIDE_TRIGGER:23" "MLSUBST:15" "MLBACKTICK:7" "LATERQ:18" "ACCEPTED_FR:13" "INQUOTE_BACKTICK:6" "DEQUOTE:44" "QUOTED_PAREN:5" "ANSI_C:2" "DQ_VALUE:8"; do
   cls="${spec%%:*}"; floor="${spec##*:}"
   seen=$(awk -F'\t' -v c="$cls" '$4==c' "$ALLOWED" | while IFS=$'\t' read -r id obs val rest; do
     awk -F'\t' -v i="$id" -v o="$obs" -v v="$val" '$1==i && $2==o && $3==v {print}' "$TMPDIR/diffs.tsv"
@@ -1112,6 +1149,15 @@ gen_gh_verbs=( "pr merge 42 --squash" "pr create --title x" )
 # behind, which is the failure this generator was built to end, so it is added
 # as an AXIS (group x verb x token x position) and not as a remembered string.
 gen_gh_groups=( "pr merge 42 --squash" "pr create --title x" "issue create --title x" "issue comment 42 --body x" )
+# THE VERB'S QUOTING IS AN AXIS TOO (go-to-k/cdkd#3284). Every gh row above
+# spells the verb BARE, so the grid could not see whether the dequote walk
+# reaches a verb sitting behind a flag's value -- and it did not, which is the
+# residue #3284 closed. Adding the spelling as a remembered string would have
+# been one case behind again, so it is an axis: group x token x POSITION x verb
+# QUOTING. The three members are not interchangeable -- the walk emits a
+# consumed value verbatim, so a single-quoted verb and a double-quoted one take
+# different paths through `_gate_struct_rewrite`.
+gen_verb_quotes=( bare dq sq )
 : > "$GEN"
 for g in "${gen_grid[@]}"; do
   gtok="${g#*|}"
@@ -1122,16 +1168,24 @@ for g in "${gen_grid[@]}"; do
     { printf 'gh -R o/r %s %s' "$gtok" "$v" | base64 | tr -d '\n'; echo; } >> "$GEN"
   done
   for v in "${gen_gh_groups[@]}"; do
-    # `<group> <token> <verb> <args>` -- the token moved one slot right.
-    { printf 'gh %s %s %s' "${v%% *}" "$gtok" "${v#* }" | base64 | tr -d '\n'; echo; } >> "$GEN"
-    # ...and with a repo flag in BOTH slots, since a caller may legitimately
-    # carry one on each side and neither absorber may swallow the other's verb.
-    { printf 'gh -R o/r %s %s %s' "${v%% *}" "$gtok" "${v#* }" | base64 | tr -d '\n'; echo; } >> "$GEN"
+    ggrp="${v%% *}"; grest="${v#* }"; gverb="${grest%% *}"; gargs="${grest#* }"
+    for gq in "${gen_verb_quotes[@]}"; do
+      case "$gq" in
+        bare) qverb="$gverb" ;;
+        dq)   qverb="\"$gverb\"" ;;
+        sq)   qverb="${GQ}${gverb}${GQ}" ;;
+      esac
+      # `<group> <token> <verb> <args>` -- the token moved one slot right.
+      { printf 'gh %s %s %s %s' "$ggrp" "$gtok" "$qverb" "$gargs" | base64 | tr -d '\n'; echo; } >> "$GEN"
+      # ...and with a repo flag in BOTH slots, since a caller may legitimately
+      # carry one on each side and neither absorber may swallow the other's verb.
+      { printf 'gh -R o/r %s %s %s %s' "$ggrp" "$gtok" "$qverb" "$gargs" | base64 | tr -d '\n'; echo; } >> "$GEN"
+    done
   done
 done
 gen_n=$(grep -c . "$GEN" | tr -d ' ')
 if [ "$gen_n" -ge 100 ]; then
-  ok "generated corpus: $gen_n inputs (${#gen_grid[@]} token shapes x $(( ${#gen_verbs[@]} + ${#gen_gh_verbs[@]} )) verbs x ${#gen_gh_groups[@]} gh group/verb pairs in 2 flag positions)"
+  ok "generated corpus: $gen_n inputs (${#gen_grid[@]} token shapes x $(( ${#gen_verbs[@]} + ${#gen_gh_verbs[@]} )) verbs x ${#gen_gh_groups[@]} gh group/verb pairs in 2 flag positions x ${#gen_verb_quotes[@]} verb quotings)"
 else
   ng "generated corpus: only $gen_n inputs -- the grid collapsed, so the assertions below are vacuous"
 fi
@@ -1160,14 +1214,22 @@ if [ -r "$PRE" ] && [ -s "$PRE" ] && [ "$gen_n" -ge 100 ]; then
   # axis collapsed, the group list emptied -- and the whole block would still
   # read as a clean run. Measured on this tree by emptying `GATE_GH_V` in the
   # library and re-running: 334 gained with the absorber, 136 without. The floor
-  # sits between them and well under 334, for the same reason `CASE_FLOOR` in
-  # command-match.test.sh is not pinned: it is a collapse detector, so adding
-  # corpus rows must not be bookkeeping here.
-  GEN_GAINED_FLOOR=250
+  # sits between them and well under the measured value, for the same reason
+  # `CASE_FLOOR` in command-match.test.sh is not pinned: it is a collapse
+  # detector, so adding corpus rows must not be bookkeeping here.
+  #
+  # RE-MEASURED after go-to-k/cdkd#3284 added the verb-QUOTING axis, which moved
+  # the observed number and would have left the old floor sitting at 34% of it:
+  # 730 gained with the absorber and 136 without (the SAME 136 as before, since
+  # the axis's extra gains all come from the absorber). The floor moves with it.
+  # Re-measure by emptying `GATE_GH_V` in a COPY of lib/ and running the copy's
+  # differential -- emptying it in place makes `gate_require_const` refuse every
+  # Bash call, this one included.
+  GEN_GAINED_FLOOR=500
   if [ "$gen_gained" -ge "$GEN_GAINED_FLOOR" ]; then
     ok "generated corpus: $gen_gained gained is at or above the floor $GEN_GAINED_FLOOR (the gh flag-position axis is live)"
   else
-    ng "generated corpus: only $gen_gained gained, floor $GEN_GAINED_FLOOR -- the flag-between-group-and-verb absorber (GATE_GH_V) or the axis that exercises it has collapsed; measured 334 with it and 136 without"
+    ng "generated corpus: only $gen_gained gained, floor $GEN_GAINED_FLOOR -- the flag-between-group-and-verb absorber (GATE_GH_V) or the axis that exercises it has collapsed; measured 730 with it and 136 without"
   fi
 
   if [ "$gen_lost" -eq 0 ]; then

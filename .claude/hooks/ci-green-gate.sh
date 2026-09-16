@@ -27,7 +27,11 @@
 #
 # Infra posture: `gh` transport errors fail OPEN (an unrelated GitHub
 # outage should not block merges); a successful `gh pr checks` answer
-# is enforced strictly.
+# is enforced strictly. THE FAIL-OPEN ENDS WHERE THE COMMAND NAMES ANOTHER
+# REPOSITORY: since go-to-k/cdkd#3273 a `-R` / `--repo` slug is forwarded to
+# `gh pr checks`, and when one is present an unreadable answer BLOCKS instead --
+# see the two blocks near the bottom of this file for why, and for the two
+# shapes "unreadable" takes.
 
 # Shared command-position matcher (issue #1455): catches the guarded verb
 # after ANY chained command (`git push && gh pr create`), not just after an
@@ -43,6 +47,8 @@ if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   || ! declare -F gate_matches >/dev/null \
   || ! declare -F gate_target_dir_strict >/dev/null \
   || ! declare -F gate_refuse_unresolved_target >/dev/null \
+  || ! declare -F gate_gh_repo_slug >/dev/null \
+  || ! declare -F gate_bounded >/dev/null \
   || ! declare -F cmd_last_cd_target >/dev/null \
   || ! declare -F strip_noncommand_spans >/dev/null; then
   # FAIL CLOSED. Without the helper `cmd_matches_verb` is undefined, the
@@ -137,17 +143,89 @@ pr_number=""
 # gate did not call. A fence in a helper protects only the callers that use it.
 pr_number="$(gate_pr_selector "$cmd" "$GATE_RE_GH_PR_MERGE")"
 
+# --- Parse the target REPO, and forward it (go-to-k/cdkd#3273). ---------
+# A PR NUMBER alone does not name a pull request: the same number exists in
+# every repository. This gate recovered the number and then asked `gh pr checks`
+# with no `-R`, so it judged whatever repo the SHELL was in. MEASURED through
+# this hook with an argv-recording `gh`, from a cdkd worktree:
+# `gh pr merge 42 -R go-to-k/cdk-local --squash` produced the argv
+# `pr checks 42` -- no `-R`, so gh resolves the CWD's repo and the verdict is
+# cdkd's PR 42's. Wrong in both directions, and the dangerous one is a green
+# local 42 clearing a red foreign one.
+if ! repo_slug=$(gate_gh_repo_slug "$cmd" "$__verb_ere"); then
+  cat >&2 <<EOF
+Blocked by ci-green-gate: this command names a repository with \`-R\` /
+\`--repo\`, but the value is not literal text (an unexpanded \$VAR, a
+substitution, or a trailing \`-R\` with no value), so this gate cannot
+tell WHICH repository's CI it would have to check.
+
+Asking about the repo this shell happens to be in is exactly the
+go-to-k/cdkd#3273 defect - a different PR, in a different repository,
+deciding this merge. Refusing instead.
+
+  # spell the slug literally
+  gh pr merge ${pr_number:-<PR>} -R <owner>/<repo> --squash --delete-branch
+
+  # ...or run the merge from that repository's own checkout, with no -R
+  cd <that repo> && gh pr merge ${pr_number:-<PR>} --squash --delete-branch
+EOF
+  exit 2
+fi
+
 # --- Query live check status. ------------------------------------------
 # `gh pr checks` exit codes: 0 = all passed, 1 = some failed/skipped,
 # 8 = checks pending, other = infra/arg errors. We inspect the tab-
 # separated status column instead of relying on the exit code so
 # `skipping` rows (exit 1 territory) don't false-block.
-if [ -n "$pr_number" ]; then
-  checks_out=$(gh pr checks "$pr_number" 2>&1)
-else
-  checks_out=$(gh pr checks 2>&1)
-fi
+#
+# THE CALL IS BOUNDED (go-to-k/cdkd#3273 review). It was not, while
+# `pr-review-gate` -- the other hook that makes a network call from inside a
+# PreToolUse hook -- has used `gate_bounded` since go-to-k/cdkd#2638. A hook
+# killed by its registered timeout emits NO exit 2, which propagates as a
+# non-blocking error, i.e. a SILENT PASS on a merge gate. That was tolerable
+# only while nothing in the COMMAND TEXT could choose what `gh` talks to;
+# forwarding a `-R` slug ends that, and it was measured:
+# `gh pr checks <n> -R <unroutable host>/o/r` takes 30 s against this hook's
+# registered 20 s, so the gate vanishes on an input the command supplies.
+#
+# `GATE_BOUNDED_KEEP_STDERR=1` because the "no checks reported" discriminator
+# below arrives on gh's STDERR, and `gate_bounded` discards the wrapped
+# command's stderr by default (its comment says why).
+#
+# The argv is assembled rather than spelled as four invocations because
+# `gate_bounded` EXECs its arguments and cannot run a shell function. The array
+# is never empty (`pr checks` is always there), so the `set -u` / bash 3.2 trap
+# that an empty `"${a[@]}"` carries cannot fire; both optional pieces are still
+# ABSENT rather than empty, which is the property that mattered (`gh pr checks
+# ""` is not `gh pr checks`).
+__gh_args=(pr checks)
+[ -n "$pr_number" ] && __gh_args+=("$pr_number")
+[ -n "$repo_slug" ] && __gh_args+=(-R "$repo_slug")
+checks_out=$(GATE_BOUNDED_KEEP_STDERR=1 gate_bounded 6 gh "${__gh_args[@]}" 2>&1)
 checks_rc=$?
+
+# A TIMEOUT WITH A SLUG NAMED FAILS CLOSED, for the same reason the arm further
+# down does: the command chose the repository, the gate got no answer about it,
+# and allowing the merge would clear a PR whose CI this session never saw. With
+# NO slug the bound is pure protection against the silent-pass kill and keeps
+# today's infra fail-open, so the everyday spelling is untouched.
+if [ "$checks_rc" -eq 124 ]; then
+  if [ -n "$repo_slug" ]; then
+    cat >&2 <<EOF
+Blocked by ci-green-gate: \`gh pr checks ${pr_number:-} -R ${repo_slug}\` timed out.
+
+The command names another repository, so there is no infra fail-open here:
+a timeout is not an answer, and allowing the merge would clear a PR whose
+CI state this gate never read. Required action:
+
+  gh pr checks ${pr_number:-<PR>} -R ${repo_slug} --watch   # confirm it resolves and settles
+  # or run the merge from that repository's own checkout.
+EOF
+    exit 2
+  fi
+  printf 'ci-green-gate: gh pr checks timed out; allowing merge (infra fail-open)\n' >&2
+  exit 0
+fi
 
 if printf '%s' "$checks_out" | grep -qiE 'no checks reported'; then
   cat >&2 <<EOF
@@ -180,6 +258,49 @@ it in a retry loop just spins. Poll until checks EXIST, then watch:
 
 If this repo genuinely has no CI, bypass explicitly:
   CDKD_SKIP_CI_GREEN_GATE=1 gh pr merge ${pr_number:-<PR>} --squash --delete-branch
+EOF
+  exit 2
+fi
+
+# WHEN THE COMMAND NAMED A REPO, THERE IS NO INFRA FAIL-OPEN (go-to-k/cdkd#3273).
+#
+# The fail-open below is for "an unrelated GitHub outage should not block
+# merges", and it is kept UNCHANGED for the ordinary cwd-relative merge. It does
+# not survive an explicit `-R`: with a slug forwarded, a failure is far more
+# likely to be "that repository is not reachable from here" than a global
+# outage, and the gate then holds NO information at all about the PR being
+# merged -- in a repo whose CI this session has never seen. That is precisely
+# the state this hook exists to refuse.
+#
+# TWO SHAPES, because rc alone does not cover them. A transport error is rc > 1;
+# but `gh pr checks <n> -R <unreachable>` answers rc=1 with its message on
+# STDERR and NO tab-separated rows, which the `not_green` awk below reads as
+# "nothing is red" and passes. So a forwarded slug additionally requires at
+# least one parsable row.
+#
+# NARROW BY CONSTRUCTION: neither branch can fire for a command that names no
+# repo, so nothing about the everyday spelling changes. The escape hatch and
+# "run it from that repo's checkout" both still clear it.
+__checks_rows=$(printf '%s\n' "$checks_out" | awk -F'\t' 'NF >= 2' | wc -l | tr -d '[:space:]')
+if [ -n "$repo_slug" ] && { { [ "$checks_rc" -gt 1 ] && [ "$checks_rc" -ne 8 ]; } || [ "$__checks_rows" = 0 ]; }; then
+  cat >&2 <<EOF
+Blocked by ci-green-gate: could not read CI status for PR ${pr_number:-(current branch)} in ${repo_slug}.
+
+  gh pr checks exited ${checks_rc} and returned no readable check rows:
+
+$checks_out
+
+This command names another repository with \`-R\` / \`--repo\`, so there is
+no infra fail-open here: with the lookup failed the gate knows nothing
+about the PR it would be clearing, and "unreachable repo" and "GitHub is
+down" are the same answer. Required action:
+
+  gh pr checks ${pr_number:-<PR>} -R ${repo_slug} --watch   # confirm it resolves and settles
+  # or run the merge from that repository's own checkout, which is what
+  # .claude/rules/hooks.md prescribes for sibling-repo work anyway.
+
+If that repository genuinely has no CI, bypass explicitly:
+  CDKD_SKIP_CI_GREEN_GATE=1 gh pr merge ${pr_number:-<PR>} -R ${repo_slug} --squash
 EOF
   exit 2
 fi

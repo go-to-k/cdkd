@@ -257,6 +257,7 @@ __hook_dir="${BASH_SOURCE[0]%/*}"
 [ "$__hook_dir" = "${BASH_SOURCE[0]}" ] && __hook_dir="."
 if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   || ! declare -F cmd_matches_verb >/dev/null 2>&1 \
+  || ! declare -F gate_matches >/dev/null 2>&1 \
   || ! declare -F cmd_last_cd_target >/dev/null 2>&1 \
   || ! declare -F gate_segments >/dev/null 2>&1 \
   || ! declare -F strip_noncommand_spans >/dev/null 2>&1; then
@@ -268,10 +269,12 @@ if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
 fi
 
 # go-to-k/cdkd#2729: the guard above covers the FUNCTIONS this hook calls and
-# CANNOT see a missing CONSTANT. This hook reads none of its OWN, so the call
-# takes no arguments and asks only about the library's -- the shared walk reads
-# several of them BARE inside function bodies, where the `${X:-}` defaults on
-# the load-time assignments do nothing.
+# CANNOT see a missing CONSTANT. Since go-to-k/cdkd#3266 this hook reads ONE of
+# its own -- `GATE_RE_GH_PR_MERGE`, which family 3 below now takes from the
+# library instead of hand-rolling -- so it is named here; the no-argument call
+# still asks about the library's own, which the shared walk reads BARE inside
+# function bodies where the `${X:-}` defaults on the load-time assignments do
+# nothing.
 #
 # The SOFT form: this hook is NON-BLOCKING and only OBSERVES a command that already ran, so it
 # skips rather than refuses, exactly as its library-load guard already does. It
@@ -282,7 +285,7 @@ fi
 if ! declare -F gate_require_const_soft >/dev/null 2>&1; then
   exit 0
 fi
-gate_require_const_soft || exit 0
+gate_require_const_soft GATE_RE_GH_PR_MERGE || exit 0
 
 set -u
 
@@ -334,11 +337,30 @@ GIT_VERB='git([[:space:]]+-[^[:space:]]+)*[[:space:]]+(commit|add|push|rebase|me
 RUNNER_PFX='(mise[[:space:]]+exec[[:space:]]+([^[:space:]]+[[:space:]]+)*--[[:space:]]+)?'
 VERIFY_VERB="${RUNNER_PFX}"'(vp[[:space:]]+run[[:space:]]+[^[:space:]]|vp[[:space:]]+test[[:space:]]+run([[:space:]]|$|[|;&])|markgate[[:space:]]+(set|verify)([[:space:]]|$|[|;&]))'
 
-# Family 3: `gh pr merge` (issue #2363). Same flag-token shape as
-# GIT_VERB, with the same accepted gap: a flag VALUE (`gh -R <repo> pr
-# merge`) breaks the match, a missed warning in a hook that only
-# informs. gh has no `-C`, so there is no `-C` handling to consider.
-GH_PR_MERGE_VERB='gh([[:space:]]+-[^[:space:]]+)*[[:space:]]+pr[[:space:]]+merge([[:space:]]|$|[|;&])'
+# Family 3: `gh pr merge` (issue #2363), taken from the SHARED library
+# since go-to-k/cdkd#3266 rather than hand-rolled here.
+#
+# The hand-rolled ERE it replaces was
+# `gh([[:space:]]+-[^[:space:]]+)*[[:space:]]+pr[[:space:]]+merge(...)`, which
+# absorbed only BARE flag TOKENS to the left of the group word. It therefore
+# went silent on every spelling that carries a flag VALUE or puts the flag in
+# the slot BETWEEN the group word and the verb -- the slot go-to-k/cdkd#3242
+# taught the eleven BLOCKING gates to read. Measured through this hook, with a
+# feature worktree active and the payload cwd in the main tree:
+#
+#   gh pr merge 42 --squash        warn   warn
+#   gh -R o/r pr merge 42          quiet  warn
+#   gh pr -R o/r merge 42          quiet  warn
+#   gh pr --repo=o/r merge 42      quiet  warn
+#   gh pr -Ro/r merge 42           quiet  warn
+#
+# The residue was a missed WARNING, never an ungated command -- this hook
+# refuses nothing -- but it had become ASYMMETRIC with every blocking gate,
+# which is what made it worth closing: the spelling an agent reaches for after
+# a refusal was also the one whose reminder disappeared.
+#
+# gh has no `-C`, so there is no `-C` handling to consider.
+GH_PR_MERGE_VERB="$GATE_RE_GH_PR_MERGE"
 
 # Cheap literal pre-filter before the shared matcher. This hook is a
 # PostToolUse `Bash` hook with no `if:` condition, so it runs on EVERY
@@ -358,7 +380,11 @@ ghpr_hit=0
 # routinely describe the commands they are about).
 cmd_matches_verb "$cmd" "$GIT_VERB" && git_hit=1
 cmd_matches_verb "$cmd" "$VERIFY_VERB" && verify_hit=1
-cmd_matches_verb "$cmd" "$GH_PR_MERGE_VERB" && ghpr_hit=1
+# `gate_matches`, not `cmd_matches_verb`, for family 3 alone: the latter wraps
+# its argument in `^( ... )` and the shared constants are ALREADY `^`-anchored,
+# so the wrapper would nest the anchor. Both families 1 and 2 keep
+# `cmd_matches_verb` because their EREs are local and unanchored.
+gate_matches "$cmd" "$GH_PR_MERGE_VERB" && ghpr_hit=1
 [[ "$git_hit" == 1 || "$verify_hit" == 1 || "$ghpr_hit" == 1 ]] || exit 0
 
 hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
@@ -373,8 +399,20 @@ base="${hook_cwd:-$PWD}"
 # is indistinguishable from "there was no cd at all". This mirrors its
 # scan to tell those two states apart; see rule 4 in the header for why
 # they must not collapse.
+#
+# THE PATTERN REACHES AWK THROUGH THE ENVIRONMENT, NOT `-v`, and that is
+# load-bearing since go-to-k/cdkd#3266 put a SHARED constant through here.
+# `awk -v x=<value>` runs ESCAPE PROCESSING on the value, so `\\` becomes `\`:
+# `GATE_RE_GH_PR_MERGE` contains `[^"\\]`, which arrives as `[^"\]` -- a bracket
+# expression whose `\` escapes the `]` -- and awk exits with
+# `syntax error in regular expression` (measured on macOS awk, and it kills the
+# whole pipeline, so the cd-scan answers "no cd" for EVERY command). `ENVIRON`
+# is not escape-processed and the same pattern matches. The arming test and this
+# scan must agree, because `lib/command-match.sh`'s header records that when
+# they disagree the disagreement IS the fail-open.
 has_cd_before_verb() {
-  strip_noncommand_spans "$1" | awk -v verb="$2" '
+  strip_noncommand_spans "$1" | GATE_CWD_VERB="$2" awk '
+    BEGIN { verb = ENVIRON["GATE_CWD_VERB"] }
     {
       n = split($0, seg, /[|;&]+/)
       for (k = 1; k <= n; k++) {

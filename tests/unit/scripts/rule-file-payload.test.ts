@@ -292,6 +292,18 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['hooks-main-tree-branch.md', 2], // literal list: EXACT, see below
   ['hooks-branch-gate.md', 2], // literal list: EXACT, see below
   ['hooks-cwd-detector.md', 2], // literal list: EXACT, see below
+  ['hooks-merge-target.md', 4], // literal list: EXACT, see below
+  // go-to-k/cdkd#3273 split the "which pull request do the merge-time gates
+  // judge" entry out of hooks.md. Its four globs are the two live-query gates
+  // and their suites -- the suites because the argv-recording blocks ARE the
+  // fence for that question, and a session editing one of them needs to read
+  // why an exit-code-only case is satisfied by the defect.
+  ['hooks-gate-name-fence.md', 1], // literal list: EXACT, see below
+  // go-to-k/cdkd#3273 moved the gate-name fence's entry out of
+  // hooks-class-fences.md: its subject is the markgate-backed hooks, not the
+  // shared matcher, so it has no business loading on every edit to
+  // `lib/command-match.sh` -- and that payload was 18 B over its cap.
+  // ONE glob, its own suite, because that is the only file the entry is about.
   ['hooks-main-tree-edit.md', 6], // literal list: EXACT, see below
   // +1 (go-to-k/cdkd#2650): lib/command-match.sh. This satellite now
   // asserts behaviour of the shared matcher (_gate_struct_next's
@@ -942,6 +954,19 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // entry above); without this row the satellite would sit under no
   // budget. Payload is hooks.md + hooks-cwd-detector.md.
   ['.claude/hooks/main-tree-git-cwd-detector.sh', 61_000, 99_000], // measured 74_955 on 2026-09-07
+  // go-to-k/cdkd#3273's entry took `lib/command-match.sh`'s payload to
+  // 121,483 B against its 120,000 B cap, so "which pull request do the
+  // merge-time gates judge" moved to its own satellite -- the same #2236
+  // precedent as the row above. Representative path for it (its four globs are
+  // the two gates and their suites, per the REACH_FLOORS entry). Payload is
+  // hooks.md + hooks-merge-target.md + hooks-authoring.md, the last because
+  // its glob covers every hook.
+  ['.claude/hooks/ci-green-gate.sh', 66_000, 105_000], // measured 91_620 on 2026-09-17
+  // The gate-name fence's entry moved out of hooks-class-fences.md in the same
+  // change, for the same cap. Representative path for it (its ONE glob is its
+  // own suite, per the REACH_FLOORS entry above). Payload is hooks.md +
+  // hooks-class-fences.md + hooks-gate-name-fence.md + hooks-authoring.md.
+  ['.claude/hooks/markgate-gate-name-class.test.sh', 80_000, 125_000], // measured 113_552 on 2026-09-17
   // main-tree-edit-gate's entry, and its main-tree-dirty-detector backstop,
   // moved out of hooks.md on 2026-09-05 when go-to-k/cdkd#2614's entry took
   // that file to 80,352 B -- past the 80,000 B per-file cap, which had only
@@ -1632,7 +1657,7 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 // Neither branch's figure is the merged one. That is the whole reason this
 // count is asserted rather than described: two correct increments compose to a
 // number neither author wrote.
-const CORPUS_FILE_COUNT = 70; // + state-malformed-properties-orphan.md (go-to-k/cdkd#3318): the
+const CORPUS_FILE_COUNT = 72; // + state-malformed-properties-orphan.md (go-to-k/cdkd#3318): the
                               //  `properties` container's THIRD reader, `cdkd orphan`, which runs
                               //  no diff and so is described by neither section of
                               //  `state-malformed-properties.md`. Listing `src/cli/commands/orphan.ts`
@@ -1663,6 +1688,25 @@ const CORPUS_FILE_COUNT = 70; // + state-malformed-properties-orphan.md (go-to-k
                               //  authority a deploy lane needs is the guard's own JSDoc plus the
                               //  comment at its call site. Third time this class has made that
                               //  call -- see the two `+` entries below.
+                              // + hooks-merge-target.md AND hooks-gate-name-fence.md
+                              //  (go-to-k/cdkd#3273): the repo-slug forwarding plus the
+                              //  go-to-k/cdkd#3284 / #3266 notes took `lib/command-match.sh`'s
+                              //  payload to 121,483 B against its 120,000 B cap, and shaving
+                              //  the new prose alone reached 18 B over -- the near-cap state
+                              //  this constant's own history keeps warning about -- so the
+                              //  merge-target entry moved to a satellite globbed at the two
+                              //  live-query gates and their suites, and the issue-2198
+                              //  gate-name fence to one globbed at its own suite. THIS LANE
+                              //  WROTE 64 FIRST, from a 62-file base, while main moved to 66,
+                              //  then 68 against main's 69: the ninth AND tenth independent
+                              //  figure, each re-derived at its rebase rather than resolved by
+                              //  keeping a side. Two rebases, two re-derivations, one lane --
+                              //  which is the strongest evidence yet that a COUNT maintained by
+                              //  hand beside a list cannot survive parallel lanes. FOURTH rebase:
+                              //  main reached 70 (go-to-k/cdkd#3298's intrinsic-refusals.md) while
+                              //  this branch sat at 71, so neither side's figure is the merge --
+                              //  the eleventh independent figure. MEASURED on the merged tree:
+                              //  72 files in `.claude/rules/`.
                               // + state-malformed-properties.md (go-to-k/cdkd#3191): the
                               //  `properties` container's triple took
                               //  `src/state/malformed-resources-bag.ts` 2,116 B over its 57,000 B
@@ -1948,7 +1992,22 @@ const CORPUS_FILE_COUNT = 70; // + state-malformed-properties-orphan.md (go-to-k
                               //  than against main, and a pointer always costs the index file
                               //  something. Measured on the tree that ships this line. That
                               //  makes 45.
-const CORPUS_BYTES_MIN = 1_098_000; // RE-DERIVED UPWARD 1_046_000 -> 1_098_000 (2026-09-17,
+const CORPUS_BYTES_MIN = 1_146_000; // RE-DERIVED UPWARD 1_098_000 -> 1_146_000 (2026-09-18,
+                                    // go-to-k/cdkd#3302's SECOND rebase): the largest-satellite
+                                    // case went RED again -- the corpus had grown to 1,180,425 B
+                                    // (71 files) while the floor stayed at 1,098,000, so its slack
+                                    // reached 82,425 B, PAST `hooks.md`'s 76,764 B, and the case
+                                    // could no longer see ANY single file emptied. Measured on the
+                                    // MERGE with main (`228985584`), not on the branch: slack is
+                                    // 34,425 B, the same ~34 KB every previous setting used, and
+                                    // `corpus - hooks.md` = 1,103,661 B sits 42,339 B under the
+                                    // floor, so the case discriminates with room. Third
+                                    // re-derivation in as many days, each on a rebase, each
+                                    // measured on the merge -- which is the note below working as
+                                    // designed, not a figure anyone should carry forward.
+                                    //
+                                    // Superseded history follows.
+                                    // RE-DERIVED UPWARD 1_046_000 -> 1_098_000 (2026-09-17,
                                     // go-to-k/cdkd#3236's PR): the "discriminates the deletion of
                                     // the LARGEST satellite" case went RED on the rebase, which is
                                     // the mechanical occasion this note promises. Measured
