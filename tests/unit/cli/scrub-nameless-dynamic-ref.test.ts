@@ -201,7 +201,11 @@ describe('scrub keys on the resolver nameless-dynamic-reference messages', () =>
     // is DERIVED rather than written: every `abandonedScanVerdict(` call site is
     // one such catch by construction, since the verdict is only ever asked
     // inside one.
-    const bestEffortCatches = scrub.split('abandonedScanVerdict(').length - 2; // minus the declaration
+    // Two separate steps, because one `- 2` doing both jobs is a magic number
+    // that breaks (loudly, in the safe direction) if the declaration is ever
+    // rewritten as `const abandonedScanVerdict = (`.
+    const verdictMentions = scrub.split('abandonedScanVerdict(').length - 1;
+    const bestEffortCatches = verdictMentions - 1; // the declaration is not a catch
     expect(
       guarded,
       `${guarded} re-raise guards for ${bestEffortCatches} best-effort catches. A catch that ` +

@@ -351,8 +351,7 @@ value, a failing key still stops the keys after it.
 
 **Each record left unscanned is named in a warning at default verbosity**, and
 a property that fails while carrying no reference of its own is silent, because
-nothing was lost when it stopped. because the
-record really was left unscanned either way. So a green `--dry-run --fail` does
+nothing was lost when it stopped. So a green `--dry-run --fail` does
 not by itself mean every record was examined: read the warnings. A record cdkd
 could not certify may still hold a plaintext from an older binary, and giving
 the parameter a `Default` — or resolving the reference — is what lets a re-run

@@ -512,13 +512,52 @@ describe('cdkd scrub - refusals this PR adds (go-to-k/cdkd#2692, go-to-k/cdkd#30
 
       await run(state, { stack });
 
-      // ONE resolve call, carrying the whole intrinsic — never one per key.
+      // The SHAPE is what discriminates, not the count: splitting
+      // `{ 'Fn::If': [...] }` by key yields exactly one entry either way, so a
+      // length assertion alone cannot fail for the mutation this case names.
+      // What changes is WHAT the resolver is handed — the intrinsic NODE, or
+      // the raw `[cond, then, else]` array under it.
       expect(
-        resolvedValues,
+        resolvedValues[0],
         'the intrinsic-shaped bag was split by key, so the resolver saw the raw Fn::If ARRAY ' +
           'and would resolve BOTH branches instead of the taken one.'
-      ).toHaveLength(1);
-      expect(resolvedValues[0]).toHaveProperty('Fn::If');
+      ).toHaveProperty('Fn::If');
+      // ...and nothing ELSE was resolved for this resource.
+      expect(resolvedValues).toHaveLength(1);
+    });
+
+    it('still SPLITS a bag whose intrinsic-looking key is not a handled one', async () => {
+      // The other half of the intrinsic guard, and the reason it names the
+      // HANDLED dispatch keys rather than matching an `Fn::` prefix.
+      // `resolveValue` dispatches only on the names it handles, and
+      // `detectUnknownIntrinsicKey` is SOLE-KEY-guarded — so this bag is
+      // dispatched by nothing and falls into the un-tried object walk. Routing
+      // it whole (which a prefix test would do) restores exactly the defeat
+      // recipe go-to-k/cdkd#3196 closes, with the dangling key renamed.
+      const stack = stackInfo();
+      const template = stack.template as unknown as {
+        Resources: Record<string, { Properties: unknown }>;
+        Outputs: Record<string, unknown>;
+      };
+      template.Resources['Db']!.Properties = {
+        'Fn::Meta': { Ref: 'NoSuchThing' },
+        MasterUserPassword: '{{resolve:ssm-secure}}',
+      };
+      template.Outputs = {};
+      const state = healthy();
+      state.orphans = [];
+      resolveThrowsFor = (value) =>
+        JSON.stringify(value ?? null).includes('NoSuchThing')
+          ? new Error('Ref NoSuchThing not found')
+          : undefined;
+
+      await run(state, { stack });
+
+      expect(
+        resolvedValues,
+        'the bag was routed WHOLE because a key merely looked intrinsic, so the `Ref` abort ' +
+          'took the secret reference with it — go-to-k/cdkd#3196 re-opened under a renamed key.'
+      ).toContain('{{resolve:ssm-secure}}');
     });
 
     it('counts NOTHING on a stack whose references all resolve', async () => {

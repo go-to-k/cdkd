@@ -2148,6 +2148,38 @@ function isOutputSuppressed(
 const CROSS_STACK_INTRINSIC_KEYS = ['Fn::ImportValue', 'Fn::GetStackOutput'] as const;
 
 /**
+ * The intrinsic names `IntrinsicFunctionResolver.resolveValue` dispatches on by
+ * PRESENCE. A bag carrying one of these IS an intrinsic node, whatever else it
+ * carries, so scrub must hand it over whole rather than splitting it by key
+ * (go-to-k/cdkd#3215 review).
+ *
+ * `Condition` is deliberately absent: its dispatch is gated on
+ * `context.conditionResolver`, which scrub never sets.
+ *
+ * Fenced against the resolver by `scrub-import-value-secret.test.ts`, which
+ * already pins the PRECEDENCE order over the same population.
+ */
+const RESOLVER_DISPATCH_KEYS = new Set([
+  'Ref',
+  'Fn::GetAtt',
+  'Fn::Join',
+  'Fn::Sub',
+  'Fn::Select',
+  'Fn::Split',
+  'Fn::If',
+  'Fn::Equals',
+  'Fn::And',
+  'Fn::Or',
+  'Fn::Not',
+  'Fn::ImportValue',
+  'Fn::GetStackOutput',
+  'Fn::FindInMap',
+  'Fn::Base64',
+  'Fn::GetAZs',
+  'Fn::Cidr',
+]);
+
+/**
  * The intrinsic keys {@link IntrinsicFunctionResolver}'s `resolveValue`
  * dispatches on, IN ITS ORDER (issue #2133 review).
  *
@@ -3100,8 +3132,8 @@ function abandonedScanWarning(subject: string, verdict: 'count' | 'warn'): strin
  * that does not exist for them. It names what they CAN do and then says plainly
  * that scrub may simply not be able to certify the record.
  */
-function abandonedScanStackNote(verdict: 'count' | 'warn', records: number): string {
-  const subject = `${records} abandoned scan(s) above`;
+function abandonedScanStackNote(verdict: 'count' | 'warn', scans: number): string {
+  const subject = `${scans} abandoned scan(s) above`;
   return verdict === 'count'
     ? `${subject}: the resolver stops at the first {{resolve:...}} token it cannot fetch, so ` +
         `any secret after it in the same value recorded no needle and could not be rewritten. ` +
@@ -4337,7 +4369,7 @@ export async function scrubStack(
     // that all three invoke. Each `resolver.resolve` in them can WAIT on a
     // rejection and unwrapped would open its own budget, so the aggregate
     // drain WAIT would be at most
-    // `(#resources + 2 x #outputs) x (1 + #cross-stack-leaves) x` the cap.
+    // `(#top-level-properties + 2 x #outputs) x (1 + #cross-stack-leaves) x` the cap.
     // An UPPER bound: an iteration that resolves nothing -- a resource with
     // no `Properties`, an absent or literal export name -- costs nothing.
     // And it bounds that WAIT, not the pass, which ordinary resolution time
@@ -4452,8 +4484,26 @@ export async function scrubStack(
           resolveInput !== null && typeof resolveInput === 'object' && !Array.isArray(resolveInput)
             ? Object.keys(resolveInput as Record<string, unknown>)
             : undefined;
-        const intrinsicShapedBag =
-          bagKeys?.some((k) => k === 'Ref' || k.startsWith('Fn::')) ?? false;
+        // The HANDLED dispatch names only, never a bare `Fn::` prefix. An
+        // earlier cut used the prefix on the argument that over-matching just
+        // falls back to the whole-bag walk, i.e. pre-PR behaviour — but pre-PR
+        // behaviour IS the bug this PR fixes, so over-matching re-opens it with
+        // the key renamed. `resolveValue` dispatches only on the names below,
+        // and `detectUnknownIntrinsicKey` is SOLE-KEY-guarded, so a bag like
+        // `{ 'Fn::Meta': { Ref: 'Env' }, Password: '{{resolve:...}}' }` is
+        // dispatched by nothing: it falls into the un-tried object walk, the
+        // `Ref` throws, and `Password` is never fetched. Routing that whole
+        // would restore exactly the defeat recipe go-to-k/cdkd#3196 closes.
+        //
+        // A SOLE unhandled `Fn::X` key still splits into one unit carrying the
+        // same node, so nothing is lost there either.
+        //
+        // BOUND, stated because it is easy to over-read this as "no untaken
+        // branch is ever fetched": it holds for the RESOLVE passes. The pin
+        // above (`pinCrossRegionSecrets`) walks both `Fn::If` branches, so a
+        // foreign-region token in an untaken branch is still fetched and
+        // recorded there. Pre-existing and not introduced here.
+        const intrinsicShapedBag = bagKeys?.some((k) => RESOLVER_DISPATCH_KEYS.has(k)) ?? false;
         const resolveUnits: Array<readonly [string, unknown]> =
           bagKeys && !intrinsicShapedBag
             ? Object.entries(resolveInput as Record<string, unknown>)
@@ -4589,8 +4639,11 @@ export async function scrubStack(
               );
             }
             logger.debug(
-              `Resolution of orphan record ${record.logicalId} during scrub was partial: ` +
-                `${maskSecretsInText(err instanceof Error ? err.message : String(err), recordedSecretValues)}`
+              maskSecretsInText(
+                `Resolution of orphan record ${displaySafe(record.logicalId)} ${bagName} during ` +
+                  `scrub was partial: ${err instanceof Error ? err.message : String(err)}`,
+                recordedSecretValues
+              )
             );
           }
         }
