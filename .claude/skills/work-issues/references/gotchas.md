@@ -95,9 +95,14 @@
   re-reading it (08:05 JST, 2026-09-02; its sibling likewise, each needing only
   its read-only-rules lines re-stated), and three killed LANES across
   go-to-k/cdkd#3103 / go-to-k/cdkd#3139 (2026-09-14) came back the same way.
-  **Read the TREE before the message** — a killed lane may already have
-  committed, pushed and opened the PR, and one had `verify-pr` bound to a
-  superseded sha. This is the recovery for an agent that DIED; §5-g's "resume
+  **Read the TREE, and the DIFF, before the message** — a killed lane may
+  already have committed, pushed and opened the PR, and one had `verify-pr`
+  bound to a superseded sha. **Uncommitted changes there are as likely to be
+  the round's real fix as an abandoned probe**, and the two are
+  indistinguishable without reading them: `git diff` decides, and a restore
+  taken on the probe assumption destroys work no commit holds (2026-09-16,
+  go-to-k/cdkd#3158's lane, killed mid-review-round). This is the recovery for
+  an agent that DIED; §5-g's "resume
   with REPORT ONLY" covers the different case of one that finished quietly, and
   its rule that a lost TRANSCRIPT restarts only from a prompt you kept
   self-contained is what applies when the resume is refused.

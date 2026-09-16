@@ -88,6 +88,18 @@ go-to-k/cdkd#2717 a `fix:`/`feat:` title with no `src/**` change is refused in
 CI on every push. `check-gate` requires fresh markers. Push, open the PR with
 `Closes #<n>`.
 
+**Whoever writes the PR BODY last owns re-checking it — a lane rewriting the
+body silently reverts the orchestrator's edits to it.** `gh pr edit
+--body-file` replaces the WHOLE body, so a regenerated draft reinstated a CJK
+character `issue-conventions.yml` had already failed the PR on (it re-runs on
+`pull_request: edited`, so the red returns and `ci-green-gate` holds the merge)
+and dropped the session attribution line, which no check covers (2026-09-16,
+go-to-k/cdkd#3158). Neither delta appears in `gh pr diff`. After any body
+rewrite, re-read the BODY: no CJK or hangul — the exact class
+`scripts/check-gh-body-english.ts` refuses, NOT non-ASCII, and `—` / `×` / `→`
+are ordinary in merged bodies — every `Closes #<n>` intact, attribution line
+still last.
+
 **A cluster of full-suite failures that pass in isolation is a HOST-LOAD
 artifact, not a regression.** Tests that spawn subprocesses or inherit the 5 s
 default timeout fail on elapsed time exactly when peer agents run their own

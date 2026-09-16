@@ -15,7 +15,7 @@ by a probe or a trace, never by re-reading the diff:
 - **Filing the structural fix does not STOP a cascade — making the artifact
   CLAIM LESS does** (go-to-k/cdk-local#596: twelve rounds, five instances
   introduced by fixes; it ended when the sweep printed raw output and named
-  both outcomes instead of emitting a verdict). The tell: each fix is more
+  both outcomes instead of a verdict). The tell: each fix is more
   SOPHISTICATED than the last while plain rc-only sweeps nearby were right all
   along. **WHICH part to shrink is a COUNT** — tally each round's blockers by
   PART of the diff: go-to-k/cdkd#2678 put 11 of 11 in its classifier over that
@@ -28,8 +28,8 @@ by a probe or a trace, never by re-reading the diff:
   seen** — say what the next finding would have to SHOW.
 - **If the thing you keep patching is a CLASSIFIER, stop and build §5's
   differential fence before the next fix** (go-to-k/cdkd#2027: five rounds,
-  each finding a new spelling, rounds 3–4 adding five regressions; the
-  differential walk ended it in one round). The tell is not the round count:
+  each a new spelling, rounds 3–4 adding five regressions; the differential
+  walk ended it in one). The tell is not the round count:
   each finding is a new INPUT CLASS, not a new place the logic is wrong.
 - **"The fence covers ONE ROW of a multi-dimensional guarantee" → widen to
   the CROSS PRODUCT before the next fix.** Count the cells; fewer assertions
@@ -37,14 +37,13 @@ by a probe or a trace, never by re-reading the diff:
   cell is not random — a hazard lives there BECAUSE that cell behaves
   differently, which is why "a representative case per dimension" skips it
   (go-to-k/cdkd#2466: 4 positions × 2 YAML readers, the `<<` merge key in the
-  missing cell, the fix inert through a full 3-axis round). **The POPULATION
+  missing cell). **The POPULATION
   is one of those dimensions** — a fence that derives its subject list from
   one directory is blind to the same claim restated outside it, so ask where
   the claim is WRITTEN and not only where it is implemented
   (`tests/unit/cli/local-state-source.test.ts` walks `src/` alone, so
-  `.claude/rules/layout-local.md` still named the DELETED fork's
-  CloudFormation API — the defect go-to-k/cdkd#2527 was closing, caught only
-  by a reviewer pointed at the rules delta; same shape in
+  `.claude/rules/layout-local.md` kept naming the API go-to-k/cdkd#2527
+  deleted, caught only by a reviewer pointed at the rules delta; same shape in
   `tests/unit/local/docker-argv-redaction-fence.test.ts`, whose
   `readdirSync('src/local')` cannot reach go-to-k/cdkd#2623's `src/assets/**`
   sites).
@@ -54,22 +53,23 @@ by a probe or a trace, never by re-reading the diff:
   survived" each both over- and under-reported). WITHDRAWING the half that
   cannot be made right is a legitimate outcome — and the residual issue must
   carry the MEASUREMENTS (each proxy tried, the input that broke it, the
-  number it produced), not just the diagnosis, or the next session re-runs
-  the probes.
+  number it produced), not just the diagnosis, or the next session re-probes.
 - **When the fix WIDENS what a guard catches, ask what the thing you are
   deleting was actually DOING — and confirm the instrument you measure with
   probes the POSITION your change acts in** (go-to-k/cdkd#2333's FIRST
   attempt, withdrawn after four rounds: the removed quote-behaviour was the
-  only brake on an earlier widening, and the survey returned zero because
-  every probe landed in argument position, never the flag prefix the change
-  acted on). A zero measured in the wrong position is not weak evidence; it is
-  none.
+  only brake on an earlier widening, and the survey's zero came from probes
+  landing only in argument position, never the flag prefix the change acted
+  on). A zero measured in the wrong position is no evidence at all.
 - **A benchmark or COST FENCE must exercise the path the change is on** — a
   lane published "+20% latency" from a run that early-returned before the new
   code; go-to-k/cdkd#2333's latency case was vacuous twice, first bailing at a
   bound, then plateauing because cost is per SEGMENT and the payload had two.
   Build the payload that was actually EXPENSIVE, and measure the threshold
-  with the fix AND with it deleted.
+  with the fix AND with it deleted. **"Bounded by construction" is a claim
+  about ONE quantity — name which, and measure the other.** Retracted as FALSE
+  on go-to-k/cdkd#3158: a byte cap bounds the INPUT, not the per-token work,
+  and a 4,042-CHARACTER command reached 21.7 s from UNDER it.
 
 ### 8-b. Integ ordering vs review rounds and rebases
 
@@ -83,25 +83,25 @@ list says in one command whether anything is still outstanding.
 - **A rebase can stale a `hash: diff` marker on its own** — the merge base
   moves, so an incoming change to a file this branch also touches invalidates
   it. Rebase BEFORE the integ; push first so CI runs alongside it — they are
-  independent, so serializing them spends wall-clock and weakens neither.
+  independent, so serializing them only spends wall-clock.
 - **Under iterative review rounds, DECLARE the tree final, in words, to
   whoever is still editing it.** Every gate-scoped touch buys another
   real-AWS run — comment-only deltas included, since `hash: diff` digests the
-  delta, not the behaviour (three `ecs-service-update-props` runs on
-  2026-08-26, the third for zero non-comment lines). Tell the implementing
+  delta, not the behaviour (three runs on 2026-08-26, the third for zero
+  non-comment lines). Tell the implementing
   agent to batch all remaining findings into ONE commit and report FINAL with
   no second pass. For reviewers, the reverse: dispatch a round scoped to the
   delta, ask for all findings at once — **and paste the delta's COMMIT
   MESSAGE into the brief**: all four reviewer agents read `gh pr diff`, none
   reads `git log`, so a false claim in a commit message is invisible to the
   whole tier (measured 2026-08-29: a blocker cited a function that never
-  existed, caught only because the orchestrator re-read the message).
+  existed).
 - **An EXEMPTION is the highest-risk edit a fence can receive — probe it in
   both directions before the round ends.** A carve-out is written while
   agreeing the fence was WRONG, the exact posture in which nobody asks what
   it now lets through (2026-09-02: three consecutive delta rounds each found
-  the previous round's carve-out token-spendable, at line, clause and sentence
-  scope in turn). Two cheap questions:
+  the previous carve-out token-spendable, at line, clause and sentence
+  scope). Two cheap questions:
   does a PRESCRIPTIVE use of the same words spend the exemption (probe one),
   and is the exemption LOAD-BEARING at all (delete its wiring; the suite must
   go red).
@@ -114,8 +114,8 @@ list says in one command whether anything is still outstanding.
 - **Reviewer subagents spawned BY A LANE report to the MAIN session** — a lane
   that dispatches and waits blocks forever (go-to-k/cdkd#2417). Pick one shape:
   the lane runs them synchronously, or the parent dispatches and relays down
-  (§9's queued-versus-`Resuming` rule); §5-g owns the rest of the plumbing,
-  including the lane whose OWN report never arrives.
+  (§9's queued-versus-`Resuming` rule); §5-g owns the plumbing and the brief
+  line that forbids parking.
 
 ### 8-c. The live-test tiers
 
@@ -157,7 +157,7 @@ Unit tests passing is necessary but NOT sufficient:
     DIRTY path — go-to-k/cdkd#1700 lost ~200 lines). Flag-order
     trap: a `vp run` flag after the task name is forwarded to the task and
     rejected — exit 1 from a command that never ran (go-to-k/cdkd#2017); read
-    help through `mise exec`, not the bare binary. **Drive the FAILURE
+    help through `mise exec`. **Drive the FAILURE
     direction too** — a config change that swallows an exit code turns a red
     tree green. For the lint gate: append an unused variable (not `_*`-named)
     to a `src/**` file — `tests/**` is never linted — confirm rc=1, then
@@ -180,10 +180,10 @@ fail. The probe is one extra run of a fixture you are already running: revert
 the fix, rebuild, run, confirm the arm goes RED — **at YOUR assertion: read
 which one fired**, since an older assert ahead of the new check reds first and
 the pre-fix log then names nothing about the issue (go-to-k/cdkd#3088: the
-control failed at a sibling's equality assert; the check was hoisted above
-it) — restore, rebuild. **Probe each HALF of a multi-part fix separately** (a
-scrub lane's probes proved the halves independently fenced — a single
-all-or-nothing revert cannot). Add a
+control failed at a sibling's equality assert; the check was hoisted above it)
+— restore, rebuild. **Probe each HALF of a multi-part fix separately** (a
+single all-or-nothing revert cannot prove the halves independently fenced). Add
+a
 NEGATIVE CONTROL inside the arm — a sibling case that must NOT trip the new
 behaviour — or a refusal that fires on everything satisfies every positive
 assertion. The vacuity shapes, none visible by reading the script
@@ -202,14 +202,12 @@ assertion. The vacuity shapes, none visible by reading the script
   byte-identical to an earlier phase's is that trap with no fix to blame** —
   the diff is `NO_CHANGE`, the flag under test is never read (the engine
   consults it only under `case 'UPDATE'`), the phase cannot pass, and `set -e`
-  takes every later one with it (go-to-k/cdkd#2565: the three phases proving
-  the regression never ran, past every author-side round). Make each phase
-  assert its own change LANDED first.
+  takes every later one with it (go-to-k/cdkd#2565, past every author-side
+  round). Make each phase assert its own change LANDED first.
 - **The arm's PREMISE is out of scope, and the tell is both counts zero** —
   `0 leaks AND 0 masks` is an arm that did nothing (go-to-k/cdkd#2176: the
-  spelling used was one cdkd deliberately does not resolve, so nothing was
-  ever plaintext). Prove the premise independently before reading the
-  assertions.
+  spelling used was one cdkd deliberately does not resolve). Prove the premise
+  independently before reading the assertions.
 - **Any outcome REACHABLE BY TWO PATHS is a confluence point** — "the bad
   value was not written" is satisfied by a correct refusal AND by any
   unrelated failure that stopped short (measured: fix mutated back, arm
@@ -237,9 +235,9 @@ assertion. The vacuity shapes, none visible by reading the script
   review rounds).
 - **A fixture that establishes its precondition on the HAPPY path cannot test
   the arm where the FAILING path creates it** (go-to-k/cdkd#2057: passed with
-  a refusal that could not fire; four diff-reading reviewers missed it, a
-  fifth traced the evidence). Ask which step wrote the state in the fixture,
-  and which writes it in the reachable case; if they differ, add the arm where one
+  a refusal that could not fire; four diff-reading reviewers missed it). Ask
+  which step wrote the state in the fixture, and which writes it in the
+  reachable case; if they differ, add the arm where one
   operation does both, and prove it discriminates (mutate the fix: original
   arm still green, new arm red).
 - **An arm added to a SHARED fixture must not touch an identifier the fixture
@@ -292,7 +290,7 @@ required (`integ-local`), verify registry reach FIRST (`docker pull
 hello-world` under a 120s cap) — `docker version` says nothing about registry
 networking. `/run-integ`'s "Important" section owns the rest: hang diagnosis,
 the do-NOT-restart-Docker rule, and that a run blocked before its assertions is
-not a failing fix (with its ledger note).
+not a failing fix.
 
 ### 8-g. Prose claims are verified to the same bar as code
 
@@ -301,8 +299,7 @@ entries, PR bodies and rationale comments have none. Habits that each caught a
 false claim a review round had read past:
 
 - **A claim inherited from the ISSUE BODY is the least trustworthy of all** —
-  re-verify an issue's mechanism against current `main` before restating it
-  (a later PR may already have falsified it).
+  §3's premise check applies AGAIN when you restate it, against current `main`.
 - **A correction can be a new false claim — RUN it, do not re-read it** —
   twice the replacement sentence was wrong in the other direction; a third
   (go-to-k/cdkd#3029, withdrawing a refuted exemption) named a subtraction
@@ -324,8 +321,8 @@ false claim a review round had read past:
 - **The remedy is to DELETE the unproved clause, not rewrite it — and write
   the survivor in the DANGER direction**: say what the code mechanically does
   and what can still go wrong. The falsified ones were REASSURANCES — a closure
-  claim, a closed-set enumeration, a "reduces", "nothing makes that case worse"
-  — asserting over inputs nobody enumerated. Every surviving
+  claim, a closed-set enumeration, a "reduces" — asserting over inputs nobody
+  enumerated. Every surviving
   affirmative NAMES its backing; one that cannot is DELETED rather than
   verified. The recurring form is a CONSEQUENCE bolted onto a verified claim
   ("X is load-bearing: deleting it would hard-fail" — X probed, the consequence
@@ -343,9 +340,9 @@ false claim a review round had read past:
 - **Then STOP hardening the sweep: a claim falsified ONCE becomes a FENCE.**
   Enumerating spellings has no termination proof. In go-to-k/cdkd#2878 one
   proposition beat five vocabularies in turn — two tree lists, a line-oriented
-  grep (copies wrapped as `performs no\n# AWS mutation`), a normalised grep
-  holding `lands in` but not `reaches`, and an independently derived synonym set
-  that found three more — so **report what the METHOD returned, never that the
+  grep, a normalised grep holding `lands in` but not `reaches`, and an
+  independently derived synonym set that found three more — so **report what
+  the METHOD returned, never that the
   claim is gone**, and register the proposition instead. A sweep audits once and
   nobody can prove it complete; a fence reds on the NEXT occurrence, including
   one worded in a vocabulary nobody thought of, because it tests the CODE's
@@ -369,12 +366,13 @@ false claim a review round had read past:
 
 - **A NIT is not a work item.** Fix what a reviewer DEMONSTRATES is wrong;
   leave the polish (go-to-k/cdkd#2592, four rounds: every NEW defect came
-  from a low-severity suggestion — a "no escape hatch" nit produced a flag
-  that could not reach green). The
-  tell: the new code answers a hypothetical, not an observation. When three
-  rounds have each found a defect inside the last one's fix, WITHDRAW the
-  addition rather than bounding it — §8-a's blocker count names which one — and
-  brief the next round to report only demonstrable defects.
+  from a low-severity suggestion). The
+  tell: the new code answers a hypothetical, not an observation. When a
+  round's blockers CONCENTRATE in one added part — three rounds each finding a
+  defect inside the last one's fix, or 4 of 4 in one part over TWO
+  (go-to-k/cdkd#3158) — WITHDRAW the addition rather than bounding it (§8-a's
+  count names the part); the trigger is concentration, not a round count. Brief
+  the next round to report only demonstrable defects.
 - **After several rounds, ask whether the change is worth merging AT ALL, and
   say you are not looking for reassurance** — price the residue in what an
   adversary pays (go-to-k/cdkd#2333 buys one byte: an 18-byte residue against
@@ -397,7 +395,11 @@ false claim a review round had read past:
   TRUE when sent goes false inside the RECIPIENT's own commit** — re-derive
   every briefed measurement against the tree you are about to push
   (go-to-k/cdkd#2697: a lane's same-commit alias pass left the briefed
-  addition inert).
+  addition inert). **A PRESCRIPTION is a claim too** — "revert to the merge
+  base's spelling of `f`" asserts the merge base HAS one, and a spec nit
+  asserts a grep result; both shipped wrong in one run's briefs and came back
+  from the LANE's reviewers (2026-09-16, go-to-k/cdkd#3158). Grep before
+  prescribing.
 - **A REVIEWER brief fails worse** — a false premise aims the round at the
   wrong subject and the report still reads as authoritative (one false
   mechanism reached three briefs). Correct one in-flight.
@@ -437,13 +439,12 @@ is the tell). On a hit, review from scratch.
 **And your own review round is not optional because the lane already ran one.**
 A lane's reviewers are its children — same brief, same framing — so what they
 cannot doubt is the premise the lane handed them (go-to-k/cdkd#2383: three
-rounds of lane reviewers each found the next spelling of one defect; the
-independent orchestrator round found the YAML merge key the lane's own
-tripwire had been added to backstop and did not fire on). Take the tier the
+lane rounds each found the next spelling of one defect; the independent round
+found the YAML merge key the lane's own tripwire did not fire on). Take the tier the
 heuristic gives for YOUR pass, and keep the LATE rounds independent too —
 author-side round COUNT does not converge on the author's blind spot
-(go-to-k/cdkd#2519: its lane rounds reported no blockers; later independent
-rounds kept finding deltas INSIDE the previous round's fix). Three rounds of
+(go-to-k/cdkd#2519: lane rounds reported no blockers; later independent rounds
+kept finding deltas INSIDE the previous fix). Three rounds of
 that shape means change the METHOD, not add a round — §5's "three spellings in
 three rounds". Review the FIXTURE as part of that diff, not as scaffolding
 around it — go-to-k/cdkd#2565's merge blocker was there (§8-d).
