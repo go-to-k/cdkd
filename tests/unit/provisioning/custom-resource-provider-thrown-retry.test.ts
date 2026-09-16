@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS } from '../../../src/deployment/retryable-errors.js';
 
 // Issue #2033: retry behaviour for an error THROWN by one of the Custom
 // Resource provider's OWN AWS SDK calls, as opposed to the handler RETURNING
@@ -961,6 +962,127 @@ describe('CustomResourceProvider retry on a THROWN transient error (issue #2033)
     expect(counts.recycles()).toBe(10);
     expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
       'CDKD_CR_AUTHZ_MAX_RETRIES=1e9 is out of range'
+    );
+  });
+});
+
+/**
+ * The STRUCTURAL half of `isTransientAuthzThrow`'s front-door argument
+ * (issue #3174, review round 2 item M5).
+ *
+ * That method replays a Lambda `Invoke` / SNS `Publish` PRE-DELIVERY on the
+ * full dense budget, and what makes replaying safe is that every pattern it
+ * reaches is decided at the API front door, so the handler provably did not
+ * run. `delivered === false` is NOT what establishes it — the flag flips when
+ * the call RETURNS, so a throw between acceptance and resolution arrives with
+ * it still false; the classifier is the fence, and `delivered` is the second
+ * one, for a delivery that COMPLETED.
+ *
+ * The hazard this file pins is that the list is SHARED. It is grown by lanes
+ * working on other resource types, for whom the CR path is invisible, and
+ * issue #3174 is the proof that it can acquire a NON-front-door member: its
+ * `The operator role is invalid ...` entry is a Cloud Control RESOURCE HANDLER
+ * message, emitted after that handler's own request was accepted. It is inert
+ * here only because no CR `Invoke` failure carries that text — an argument
+ * about today's throw sites, not a property of the entry.
+ *
+ * So the set is pinned as a LITERAL rather than described in prose. Adding an
+ * entry to `IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS` reds this case, and the
+ * author has to come here and answer one question before re-pinning it:
+ *
+ *   Is the new pattern a rejection AWS decides BEFORE engaging an execution
+ *   environment?
+ *
+ * YES -> add it to `PINNED` and stop. NO -> it is admissible only if it
+ * provably cannot reach a CR `Invoke` / `Publish` failure; establish that,
+ * then add it to `PINNED` **and** to the ledger in the case below, carrying
+ * the argument. If you cannot establish it, it must not reach this classifier
+ * at all: split it out of the shared list, or gate the CR consumer.
+ *
+ * Re-pinning without answering that invokes a customer's non-idempotent
+ * handler twice, which is the bug `disableOuterRetry` exists to prevent.
+ */
+describe('the shared pattern list this classifier consumes (#3174 M5)', () => {
+  it('is exactly this set, so a new entry cannot arrive unexamined', () => {
+    const PINNED: readonly string[] = [
+      "cannot be assumed",
+      "Firehose is unable to assume role",
+      "is unable to assume provided role",
+      "is unable to assume the role",
+      "security token included in the request is invalid. (Service:",
+      "role defined for the function",
+      "not authorized to perform",
+      "execution role",
+      "trust policy",
+      "Role validation failed",
+      "does not have required permissions",
+      "Trusted Entity",
+      "Invalid principal in policy",
+      "Verify in IAM that the role has adequate trust relationships",
+      "The user with name",
+      "Policy Error: PrincipalNotFound",
+      "Invalid value for the parameter Policy",
+      "required permissions for: ENHANCED_MONITORING",
+      "Caught ServiceAccessDeniedException",
+      "The operator role is invalid or doesn't have sufficient permissions",
+      "permissions required to assume the role",
+      "does not have a trust relationship allowing",
+      "authorized to assume the provided role",
+      "not authorized to access the Log Destination",
+      "Cannot access stream",
+      "Please ensure the role can perform",
+      "KMS key is invalid for CreateGrant",
+      "Policy contains a statement with one or more invalid principals",
+      "Invalid IAM Instance Profile",
+      "Invalid InstanceProfile",
+      "Failed to authorize instance profile",
+      "is not a valid role to allow SNS",
+    ];
+    // Order included: the list is authored, not derived, so a reordering is an
+    // edit a reviewer should see.
+    expect([...IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS]).toEqual(PINNED);
+  });
+
+  it('holds a distinct, non-empty ledger of examined members, all still in the list', () => {
+    // A LEDGER of entries someone has actually checked, not a claim that every
+    // OTHER entry is front-door -- nobody has walked all 32, and asserting
+    // that here would be the kind of unbacked invariant this block exists to
+    // replace. What it is for: when the case above reds, the author adds their
+    // entry to `PINNED` and, if it is not front-door, HERE too, with the
+    // argument for why it cannot reach a CR `Invoke` failure.
+    const EXAMINED_NON_FRONT_DOOR: readonly string[] = [
+      // Issue #3174. A Cloud Control resource handler rejecting a same-stack
+      // operator role, i.e. after its own request was accepted. Unreachable
+      // here: no CR `Invoke` failure carries this text.
+      "The operator role is invalid or doesn't have sufficient permissions",
+      // Issue #805, and the reason this list did not start at one: the entry's
+      // own comment in `retryable-errors.ts` says "any CC-provisioned type
+      // that validates a same-stack role at create time can hit this", which
+      // is the same post-acceptance shape. Unreachable here for the same
+      // reason -- the text is a Cloud Control handler's, not `Invoke`'s.
+      'Caught ServiceAccessDeniedException',
+    ];
+    // Cardinality FIRST, and asserted rather than derived: an empty list
+    // satisfies both the loop (which then runs no assertion at all) and a
+    // `length <` comparison, so either alone lets this case pass while
+    // asserting nothing. Raising the number is the deliberate act.
+    expect(EXAMINED_NON_FRONT_DOOR).toHaveLength(2);
+    // DISTINCT, or the length is satisfied by the same entry twice -- and the
+    // name would then credit two examined members where there is one.
+    expect(new Set(EXAMINED_NON_FRONT_DOOR).size).toBe(EXAMINED_NON_FRONT_DOOR.length);
+    for (const pattern of EXAMINED_NON_FRONT_DOOR) {
+      expect(IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS).toContain(pattern);
+    }
+    // What this case does NOT establish, stated so the name is not read as
+    // more: that these are the RIGHT two. "Is this pattern decided before an
+    // execution environment is engaged" is a judgement about AWS's behaviour
+    // that no assertion here can make -- swapping a member for another entry
+    // of the shared list keeps every assertion above green. The per-entry
+    // notes are the evidence; review is the check.
+    // Premise: still a strict subset, so this is a statement about named
+    // members rather than about the list as a whole.
+    expect(EXAMINED_NON_FRONT_DOOR.length).toBeLessThan(
+      IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS.length
     );
   });
 });

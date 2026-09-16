@@ -1103,6 +1103,97 @@ describe('Cognito SMS-role trust propagation (#2901)', () => {
   });
 });
 
+describe('Lambda CapacityProvider operator-role propagation (#3174)', () => {
+  // The message the Cloud Control create of the #3174 fixture failed with,
+  // copied from that run's log (request id kept). Its shape is the
+  // CREATE-failure text `CloudControlProvider` builds, which is what the
+  // engine's retry loop classifies.
+  const ANCHOR = "The operator role is invalid or doesn't have sufficient permissions";
+  const WRAPPED =
+    'CREATE failed for Provider2281708E: ' +
+    `${ANCHOR}. Verify the role and permissions and try again. ` +
+    '(Service: Lambda, Status Code: 400, Request ID: 6978e8e1-8aac-41fa-8a03-6400c7a96a28) ' +
+    '(SDK Attempt Count: 1)';
+
+  // An exact set, not a boolean, for the reason the #2901 block states: it
+  // proves THIS entry carries the classification, so deleting it goes red
+  // with an empty array instead of falling through to a neighbour.
+  it('is matched by exactly the operator-role pattern', () => {
+    const matching = IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS.filter((p) => WRAPPED.includes(p));
+    expect(matching).toEqual([ANCHOR]);
+  });
+
+  it('is classified as IAM propagation and as retryable', () => {
+    expect(isIamPropagationError(WRAPPED)).toBe(true);
+    expect(isRetryableTransientError(new Error(WRAPPED), WRAPPED)).toBe(true);
+  });
+
+  // The invariant rather than a list of neighbours: across EVERY message
+  // pattern, not only the propagation subset, this entry is the only one the
+  // rejection reaches. A loosened neighbour, or a new entry that also matches,
+  // shows up here as a second element.
+  it('is matched by no other retryable message pattern', () => {
+    const matching = RETRYABLE_ERROR_MESSAGE_PATTERNS.filter((p) => WRAPPED.includes(p));
+    expect(matching).toEqual([ANCHOR]);
+  });
+
+  // A different 400 from the same handler, measured on 2026-09-15, stays
+  // terminal: the anchor names the role, not the capacity provider.
+  it('does not retry the same handler rejecting an unsupported Availability Zone', () => {
+    const azRejection =
+      "CREATE failed for Provider2281708E: One or more subnets in Availability Zone(s) us-east-1e aren't supported. " +
+      'Select subnets from supported Availability Zones. (Service: Lambda, Status Code: 400)';
+    expect(isIamPropagationError(azRejection)).toBe(false);
+    expect(isRetryableTransientError(new Error(azRejection), azRejection)).toBe(false);
+  });
+
+  // The AZ case above shares no token with the anchor, so it cannot constrain
+  // the anchor's LENGTH: an anchor shortened to "operator role is invalid"
+  // would still pass it. This one is CONSTRUCTED for that job and is not a
+  // message AWS has been observed to emit -- it reuses the anchor's opening
+  // clause and then diverges, so every prefix of the anchor short of
+  // "sufficient permissions" matches it and turns this case red. What it pins
+  // is that the entry keeps discriminating on the part of the sentence that
+  // names the propagation failure, not on the words identifying the role.
+  it('does not retry a rejection sharing only the anchor opening clause', () => {
+    const sharedPrefix =
+      "CREATE failed for Provider2281708E: The operator role is invalid or doesn't have the " +
+      'required trust relationship. (Service: Lambda, Status Code: 400)';
+    expect(sharedPrefix).toContain("The operator role is invalid or doesn't have");
+    expect(isIamPropagationError(sharedPrefix)).toBe(false);
+    expect(isRetryableTransientError(new Error(sharedPrefix), sharedPrefix)).toBe(false);
+  });
+
+  // The case above fences the anchor's HEAD only, so a TAIL-anchored shortening
+  // (`or doesn't have sufficient permissions`, dropping the subject) survives it
+  // and the Availability Zone case alike. This one carries the identical tail
+  // under a DIFFERENT subject, so that cut turns it red. Constructed, like its
+  // sibling, and likewise not a message AWS has been observed to emit. The two
+  // together bound the anchor from both ends. Measured on this tree: every
+  // head prefix of length 1-45 reds the head case, and the first survivor is
+  // 46 -- a cut inside `sufficient`, ending `... doesn't have s`. That cut is
+  // NOT harmless: a shorter `.includes` needle matches MORE, so it would admit
+  // an unrelated `... doesn't have sufficient capacity`. Neither near-miss
+  // catches it, because both diverge from the anchor before that point; what
+  // catches it is the exact-set pair above, which compares the entry against
+  // `ANCHOR` itself. The near-misses fence what the classifier DISCRIMINATES;
+  // the exact-set cases fence what the entry IS.
+  it('does not retry a rejection sharing only the anchor tail', () => {
+    const sharedTail =
+      "CREATE failed for Provider2281708E: The scaling role is invalid or doesn't have " +
+      'sufficient permissions. (Service: Lambda, Status Code: 400)';
+    expect(sharedTail).toContain("or doesn't have sufficient permissions");
+    expect(sharedTail).not.toContain('The operator role');
+    // Premise: the subject is not itself a pattern (`execution role` IS one), so
+    // a green verdict here is about the anchor and not about a sibling entry.
+    expect(
+      RETRYABLE_ERROR_MESSAGE_PATTERNS.filter((pattern) => sharedTail.includes(pattern))
+    ).toEqual([]);
+    expect(isIamPropagationError(sharedTail)).toBe(false);
+    expect(isRetryableTransientError(new Error(sharedTail), sharedTail)).toBe(false);
+  });
+});
+
 describe('RETRYABLE_ERROR_MESSAGE_PATTERNS composition', () => {
   it('is the union of the IAM-propagation subset and the rest, with no duplicates', () => {
     const all = RETRYABLE_ERROR_MESSAGE_PATTERNS;

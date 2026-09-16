@@ -952,7 +952,7 @@ export class CustomResourceProvider implements ResourceProvider {
    * | call | retried on a throw? | why |
    * |---|---|---|
    * | S3 `PutObject` (response-key placeholder) | YES, own `withRetry` (the standard dense propagation schedule, 47.75s) — and its exhausted throw is `markNonRetryable`d so the loop below cannot spend a SECOND budget on it | idempotent PUT of an empty object at a key cdkd just minted; touches no response-URL lifecycle, so a replay is free |
-   * | Lambda `Invoke` / SNS `Publish` | YES, but only PRE-DELIVERY, on {@link CustomResourceProvider.preDeliveryAuthzMaxRetries} — its OWN budget, the same dense 47.75s schedule every other resource type gets | a replay re-delivers the request, which is the hazard this flag exists for, so the PRE-delivery fence is what makes the budget affordable: nothing has been delivered, so a replay re-invokes NOTHING — see {@link CustomResourceProvider.isTransientAuthzThrow} |
+   * | Lambda `Invoke` / SNS `Publish` | YES, but only PRE-DELIVERY, on {@link CustomResourceProvider.preDeliveryAuthzMaxRetries} — its OWN budget, the same dense 47.75s schedule every other resource type gets | a replay re-delivers the request, which is the hazard this flag exists for, so the PRE-delivery fence is what makes the budget affordable: nothing has been delivered, so a replay re-invokes NOTHING. That rests on {@link CustomResourceProvider.isTransientAuthzThrow} admitting FRONT-DOOR rejections only — `delivered === false` alone does not establish it, since the flag flips when the call RETURNS — so read that method's doc before adding a pattern to the shared list it reads |
    * | `waitUntilFunctionActiveV2` / `waitUntilFunctionUpdatedV2` | ALREADY, by the SDK waiter — and their wrapped failure is `markNonRetryable`d, so the loop below does not replay it either | measured against `@aws-sdk/client-lambda`: the generated `checkState` catches EVERY exception and returns `RETRY`, so a mid-propagation 403 on `lambda:GetFunction` is polled out to `maxWaitTime` (600s). Wrapping them again would only stack a second budget on top — and `@smithy/util-waiter` serializes its `observedResponses` into the TIMEOUT message, whose keys read `403: User: … is not authorized to perform: lambda:GetFunction …`, so a classifier reading that message would have replayed a PERMANENT denial for 3 x 600s |
    * | `GetFunction` (delete-path backing-Lambda probe) | NO, deliberately | it already fails OPEN — anything but a definitive `ResourceNotFoundException` falls through to the normal invoke path, whose waiters cover the same propagation window one call later. Retrying would only delay that fall-through by up to 47.75s on a genuine permission denial |
    * | anything AFTER delivery (`pollS3Response`, the `FunctionError` throw, `cleanupResponseObject`) | NO, deliberately | the handler is running and will PUT to the URL of THIS attempt; a replay strands it at a key nobody polls, which is precisely the bug `disableOuterRetry` prevents |
@@ -992,8 +992,11 @@ export class CustomResourceProvider implements ResourceProvider {
    *
    * **It is SMALL (2) because every retry it authorises RE-RUNS THE USER'S
    * HANDLER**, and that is the whole reason the second shape does not share it:
-   * a pre-delivery throw invokes the handler ZERO times, so the argument that
-   * bounds this number does not apply there at all. Sharing it was measured
+   * a pre-delivery throw it replays invokes the handler ZERO times, so the
+   * argument that bounds this number does not apply there at all. That "zero"
+   * is carried by {@link CustomResourceProvider.isTransientAuthzThrow}
+   * admitting FRONT-DOOR rejections only, not by the `delivered === false`
+   * gate reading it off — see that method's doc. Sharing it was measured
    * wrong — 2 retries on the dense schedule is 250ms + 500ms of coverage, i.e.
    * 0.75s against an IAM-propagation window this repo has measured at 7-12s, so
    * issue #2033's own scenario still failed with the fix in place.
@@ -1045,10 +1048,16 @@ export class CustomResourceProvider implements ResourceProvider {
    * doubling to {@link IAM_PROPAGATION_MAX_DELAY_MS}). The measured window this
    * has to cover is 7-12s; the FAILED-response budget's 0.75s does not.
    *
-   * **Why it can afford that while its sibling cannot**: it fires only when
-   * `delivered === false`, so the handler has been invoked ZERO times and a
-   * replay re-runs NOTHING — no partial work repeated, no second physical
-   * resource from a Provider-framework `onEvent`, no stranded response URL. The
+   * **Why it can afford that while its sibling cannot**: the handler has been
+   * invoked ZERO times, so a replay re-runs NOTHING — no partial work repeated,
+   * no second physical resource from a Provider-framework `onEvent`, no
+   * stranded response URL. That guarantee comes from
+   * {@link CustomResourceProvider.isTransientAuthzThrow} admitting FRONT-DOOR
+   * rejections only, NOT from the `delivered === false` gate on its own: that
+   * flag flips when `Invoke` / `Publish` returns, so a throw between acceptance
+   * and resolution reaches the catch with it still false. It is the second
+   * fence, for a delivery that COMPLETED — read that method's doc before adding
+   * a pattern the shared list carries. The
    * only cost of a retry here is one `PutObject` + one presign, and the
    * abandoned placeholder is swept before the next attempt. So the constraint
    * that keeps `transientAuthzMaxRetries` at 2 is simply absent, and matching
@@ -1955,16 +1964,29 @@ export class CustomResourceProvider implements ResourceProvider {
    *    documents the drop-`cause` class in this very directory; a top-level-only
    *    read would silently un-retry a wrapped propagation denial.
    *
-   * **Every pattern in that union is an AUTHORIZATION or REQUEST-VALIDATION
-   * rejection, and that is what makes replaying an `Invoke` safe here.** Such a
-   * rejection is decided at the API front door, before any execution environment
-   * is engaged, so the handler provably did not run and a replay cannot
-   * re-deliver work — the hazard `disableOuterRetry` exists for. It is also why
-   * this classifier deliberately does NOT reach for the broader
+   * **Nearly every pattern in that union is an AUTHORIZATION or
+   * REQUEST-VALIDATION rejection, and that is what makes replaying an `Invoke`
+   * safe here.** Such a rejection is decided at the API front door, before any
+   * execution environment is engaged, so the handler provably did not run and a
+   * replay cannot re-deliver work — the hazard `disableOuterRetry` exists for.
+   *
+   * The union is shared, so it can acquire a member that is NOT front-door, and
+   * one already has: the Lambda CapacityProvider operator-role rejection added
+   * for issue #3174 is emitted by a Cloud Control RESOURCE HANDLER, i.e. after
+   * its own request was accepted. It is inert here only because no CR `Invoke`
+   * failure carries that text. Do NOT discharge the next such entry against
+   * `delivered`: `onDelivered()` runs after `invokeLambda` RESOLVES, so a throw
+   * between acceptance and resolution — the exact window a post-acceptance
+   * rejection arrives in — reaches this classifier with the flag still false.
+   * Front-door-ness is therefore a property each entry owes, not one the shared
+   * list confers; check a new entry against this paragraph before adding it.
+   *
+   * It is also why this classifier deliberately does NOT reach for the broader
    * `isRetryableTransientError`: a throttle, an HTTP 5xx or a socket timeout can
    * each arrive AFTER the request was accepted, so replaying one could invoke a
    * non-idempotent handler twice. Those classes stay single-shot on this path by
-   * design, and the caller's `delivered` flag is the second, independent fence.
+   * design, and the caller's `delivered` flag is the second, independent fence
+   * for a delivery that COMPLETED — the case it can observe.
    */
   private isTransientAuthzThrow(error: unknown): boolean {
     if (isMarkedNonRetryable(error)) return false;
