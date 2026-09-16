@@ -74,8 +74,10 @@
  * thing being mutated. So the wiring is fenced by SHAPE instead: the block at
  * the end reads this file's own source and counts each raw PRIMITIVE — one
  * `readFileSync`, one offence-line template, two `safeRender` maps, two
- * `boundedList` caps. Re-inlining a helper, or adding a second reader under any
- * spelling, then reds by name. Same instrument
+ * `boundedList` caps. Re-inlining a helper, or adding a second reader under a
+ * different SPELLING of the same primitive, then reds by name. An aliased
+ * import (`readFileSync as rfs`) still would not — the counts are textual, and
+ * that is the bound on them. Same instrument
  * `scripts/check-source-control-bytes.ts` uses on the tree, turned on one file.
  *
  * WHERE THIS STOPS, stated because the alternative is pretending otherwise.
@@ -90,9 +92,12 @@
  * That residual is accepted deliberately. The harm is a misleading line in the
  * log of an already-failing run on a PUBLIC repository's CI — no secret, no
  * write, no bypass of the fence's verdict, which is computed from the file and
- * not from what it prints. Instance-hunting stopped here on that judgement
- * rather than on exhaustion; the structural half is the counts, and they are
- * what a future reader should extend if a new renderer is added.
+ * not from what it prints. What the verdict does NOT cover is output VOLUME: a
+ * renderer the counts do not reach could still be a size bomb, and its worst
+ * case is a killed runner — a failing run failing louder, not a passing one.
+ * Instance-hunting stopped here on that judgement rather than on exhaustion;
+ * the structural half is the counts, and they are what a future reader should
+ * extend if a new renderer is added.
  */
 import { describe, expect, it } from 'vite-plus/test';
 import { execFileSync } from 'node:child_process';
@@ -504,12 +509,15 @@ const safeName = (name: string): string =>
  * `excerpt`'s marker needs the un-flattened end offset, and flattening 80 KB to
  * take 120 characters is the cost its own comment cites.
  *
- * Hoisted to module scope because six
- * renderers of this one forgery have now been found and closed one at a time —
- * the excerpt, the root, the finding's file field, the test title, the
- * tracked-set difference, and Node's `ENOENT` — and each fix reached exactly
- * the field it was written for. Anything that prints a workflow's bytes or its
- * name goes through this or through `safeName`.
+ * Hoisted to module scope because renderers of this one forgery were found and
+ * closed ONE AT A TIME — the excerpt, the root, the finding's file field, the
+ * test title, the tracked-set difference, Node's `ENOENT`, the corpus bodies,
+ * the corpus heads, the probe lines — and each fix reached exactly the field it
+ * was written for. The header's "WHERE THIS STOPS" carries the count and the
+ * residual; it is not repeated here, because a number in two places is a number
+ * that goes stale in one (this sentence said "six" for two rounds after it was
+ * eleven). Anything that prints a workflow's bytes or its name goes through
+ * this or through `safeName`.
  */
 const safeRender = (s: string): string => {
   const flat = flatten(s);
@@ -551,13 +559,14 @@ export const readWorkflow = (name: string): string => {
  *
  * KNOWN BOUND: `includes` collapses duplicates, so two identical names on one
  * side and one on the other compare equal where the `sort()` + `toEqual` this
- * replaced would have differed. It costs nothing here because neither side can
- * hold a duplicate — `readdirSync` of one directory yields distinct names, and
- * the `git ls-files` side is reduced to basenames of paths that are themselves
- * distinct. (An earlier wording said "both sides are basenames from a flat
- * directory"; the tracked side recurses, so that reason was wrong even though
- * the conclusion holds.) Stated rather than claimed away — the docstring used
- * to say the comparison "stays exact", which is true of the CONTENT and not of
+ * replaced would have differed. It costs nothing WHILE the directory is flat:
+ * `readdirSync` yields distinct names, and `git ls-files` RECURSES, so a
+ * workflow in a subdirectory would reduce to a basename that could collide.
+ * There is none today. Two earlier attempts at this sentence were both wrong —
+ * "basenames from a flat directory" ignored the recursion, and "paths that are
+ * themselves distinct" does not imply distinct basenames — so the condition is
+ * named here rather than the reason. Stated at all because the docstring once
+ * said the comparison "stays exact", which is true of the CONTENT and not of
  * the multiplicity.
  */
 export const setDifference = (
@@ -839,7 +848,7 @@ describe('workflow expression syntax', () => {
     it('every one of them is readable', () => {
       // RENDERED, not raw. `bodies` holds verbatim file bytes, and this
       // assertion prints them on exactly the run that reports a real defect —
-      // so an unsanitised body here erases the six sanitised renderers printing
+      // so an unsanitised body here erases the sanitised findings printing
       // beside it. Measured against the real file: a raw newline and a live
       // `ESC[1A ESC[2K`. Unclamped, one body can be the whole file.
       //
@@ -1404,12 +1413,18 @@ describe('workflow expression syntax', () => {
           .filter((h): h is string => h !== undefined),
       );
       expect(heads.size).toBeGreaterThanOrEqual(5);
-      // Through `safeRender` like every other list of file-derived text: the
-      // charset rules out forgery here, but not LENGTH — a 500 k-character root
-      // printed whole, where the same root is clamped to 60 on the offence path.
+      // Through `safeRender` AND `boundedList`, like every other list of
+      // file-derived text. The charset rules out forgery here, but neither
+      // length nor count: a 500 k-character root printed whole, and `heads` is a
+      // set over the whole DIRECTORY, so a file of distinct roots is the same
+      // size bomb the corpus bodies were bounded for one round earlier. Width
+      // alone was the first fix, and it left this list the odd one out — "one of
+      // two lists" a third time.
       expect(
-        [...heads].map(safeRender).filter(
-          (h) => !CONTEXT_HEADS.has(h) && !FUNCTION_HEADS.has(h) && !LITERAL_HEADS.has(h),
+        boundedList(
+          [...heads]
+            .map(safeRender)
+            .filter((h) => !CONTEXT_HEADS.has(h) && !FUNCTION_HEADS.has(h) && !LITERAL_HEADS.has(h)),
         ),
       ).toEqual([]);
     });
@@ -1578,8 +1593,9 @@ describe('workflow expression syntax', () => {
       // own — the list is empty on a healthy tree — so it is pinned here.
       // Two lists of file-derived text: the corpus bodies and the corpus heads.
       expect(countOf('.map(safeRender)')).toBe(2);
-      // Both unbounded lists go through the same cap.
-      expect(countOf('boundedList(')).toBe(2);
+      // Every list of file-derived text goes through the same cap: the offence
+      // renderer, the corpus bodies, and the corpus heads.
+      expect(countOf('boundedList(')).toBe(3);
       // The two probe assertions that read a LINE of the mutated file. They
       // must use `.includes`, because a failing `toContain` prints the whole
       // subject — and reverting them redded nothing on a healthy tree, which is
@@ -1589,6 +1605,11 @@ describe('workflow expression syntax', () => {
       // twenty of its uses here read a reason or a message this file OWNS, and
       // those are the assertions a reader wants a diff from.
       expect(countOf("mutated.split('\\n')[offences[0]!.line - 1]?.includes(")).toBe(2);
+      // And the BARE expression, because the line above pins the safe spelling
+      // only — the inverse of the `readFileSync(` lesson two counts up. A raw
+      // `toContain` APPENDED beside them left every count green while shipping
+      // exactly the renderer they exist to stop.
+      expect(countOf("mutated.split('\\n')[offences[0]!.line - 1]")).toBe(2);
     });
 
     it('formats an offence line in exactly one place', () => {
