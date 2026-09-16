@@ -86,6 +86,7 @@ import {
 } from '../config-shape.js';
 import { generateResourceName } from '../resource-name.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+import { renderDisableCommand } from '../replacement-protection-advice.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -95,6 +96,51 @@ import type {
   CreateContext,
   UpdateContext,
 } from '../../types/resource.js';
+
+/**
+ * The "remove this bucket by hand" clause both partial-create cleanup arms end
+ * with, rendered through the shared sanitize / shell-quote / SUPPRESS
+ * (`renderDisableCommand`, the issue
+ * [#2669](https://github.com/go-to-k/cdkd/issues/2669) shape; adopted here by
+ * issue [#3136](https://github.com/go-to-k/cdkd/issues/3136)).
+ *
+ * `bucketName` is TEMPLATE-chosen — `Properties.BucketName`, or the name cdkd
+ * generated for the resource — and until now both arms hand-quoted it as
+ * `--bucket '<name>'`, so a `'` in the value broke out of the quoting and a
+ * control byte forged lines on the operator's terminal. (A WARN, so that is
+ * its whole reach — the recorder persists a thrown `error.message`, not this.)
+ * When sanitizing CHANGES the name the whole command is
+ * SUPPRESSED rather than shown with the sanitized value, because such a command
+ * would delete a DIFFERENT bucket — the wrong-target harm the shared renderer
+ * exists to prevent, and the reason emitting no command is the honest answer
+ * rather than a fallback.
+ *
+ * ONE clause for both arms so the two cannot come to render the same value
+ * differently. The prose `(${bucketName})` each arm carries BESIDE it is still
+ * interpolated as-is: this clause takes only the pasteable half, and
+ * display-sanitizing the PROSE of provider warnings is tracked as issue
+ * [#3269](https://github.com/go-to-k/cdkd/issues/3269) (#3136 covers the
+ * COMMAND half across providers, not prose).
+ *
+ * `maskSecrets` is REQUIRED rather than optional, and both call sites build it
+ * from `context?.maskSecrets` (security review of #3136, which found these two
+ * arms reaching no masker at all). It does two things: the arms now route
+ * their whole warning through it, and it makes `renderDisableCommand` SUPPRESS
+ * the command for a secret-bearing bucket name — which a message-level mask
+ * could not catch once `shellQuote` has escaped an inner quote.
+ */
+function manualBucketDeletionClause(bucketName: string, maskSecrets: MaskerFn): string {
+  const command = renderDisableCommand({
+    before: 'aws s3api delete-bucket --bucket',
+    identifier: bucketName,
+    maskSecrets,
+  });
+  return command
+    ? `Manual deletion may be required before the next deploy: ${command}`
+    : 'Manual deletion may be required before the next deploy, via the console: the bucket name ' +
+        'cannot be reproduced safely on a command line, so any command shown here would act on a ' +
+        'different bucket.';
+}
 
 /**
  * A plain (non-array) object. `typeof x === 'object'` alone accepts arrays and
@@ -6513,11 +6559,19 @@ export class S3BucketProvider implements ResourceProvider {
             this.logger.debug(
               `DeleteBucket cleanup failed for S3 bucket ${logicalId} (${bucketName}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`
             );
+            // Routed through the caller's masker (security review of issue
+            // #3136): `bucketName` is a RESOLVED property value, so a
+            // `{{resolve:secretsmanager:...}}` is plaintext here, and a
+            // provider's own `logger.warn` reaches NO engine sink. Both arms
+            // of this catch now take it.
+            const maskSecrets = maskerOrIdentity(context?.maskSecrets);
             this.logger.warn(
-              `Failed to clean up partially-created S3 bucket ${logicalId} (${bucketName}) ` +
-                `(${cleanupError instanceof Error ? cleanupError.name : typeof cleanupError}). ` +
-                `Re-run with --verbose for AWS's own message. Manual deletion may be required ` +
-                `before the next deploy: aws s3api delete-bucket --bucket '${bucketName}'`
+              maskSecrets(
+                `Failed to clean up partially-created S3 bucket ${logicalId} (${bucketName}) ` +
+                  `(${cleanupError instanceof Error ? cleanupError.name : typeof cleanupError}). ` +
+                  `Re-run with --verbose for AWS's own message. ` +
+                  manualBucketDeletionClause(bucketName, maskSecrets)
+              )
             );
           }
         } else if (preflight.kind === 'indeterminate') {
@@ -6539,12 +6593,17 @@ export class S3BucketProvider implements ResourceProvider {
             `GetBucketLocation failed for S3 bucket ${bucketName} (${logicalId}) during create: ` +
               `${preflight.reason}`
           );
+          // Masked for the same reason as the sibling arm above.
+          const maskSecrets = maskerOrIdentity(context?.maskSecrets);
           this.logger.warn(
-            `Not cleaning up S3 bucket ${logicalId} (${bucketName}) after a wiring failure: ` +
-              `this deploy could not confirm whether it created the bucket (region probe failed: ` +
-              `${preflight.errorName}), and in us-east-1 a successful CreateBucket does not prove ` +
-              `it. Re-run with --verbose for AWS's own message. If cdkd created it, delete it ` +
-              `manually before the next deploy: aws s3api delete-bucket --bucket '${bucketName}'`
+            maskSecrets(
+              `Not cleaning up S3 bucket ${logicalId} (${bucketName}) after a wiring failure: ` +
+                `this deploy could not confirm whether it created the bucket (region probe failed: ` +
+                `${preflight.errorName}), and in us-east-1 a successful CreateBucket does not ` +
+                `prove it. Re-run with --verbose for AWS's own message. If cdkd created it, the ` +
+                `bucket is an orphan. ` +
+                manualBucketDeletionClause(bucketName, maskSecrets)
+            )
           );
         }
         throw innerError;

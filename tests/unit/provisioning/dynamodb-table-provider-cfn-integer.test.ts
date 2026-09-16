@@ -530,4 +530,574 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
       expect(flip?.input.ProvisionedThroughput?.ReadCapacityUnits).toBe(0);
     });
   });
+
+  describe('the per-GSI ProvisionedThroughput on the CREATE path (#3255)', () => {
+    /**
+     * The SIXTH send site of a DynamoDB capacity value, and the one neither
+     * issue #3147's enumeration nor its PR's sweep could see, because
+     * `create()` reaches it through a CAST rather than a call. Until this fix
+     * the whole `GlobalSecondaryIndexes` array was forwarded verbatim except
+     * for each entry's `WarmThroughput`, so a CFn-legal `ReadCapacityUnits:
+     * '7'` reached `CreateTable` as a STRING in a `number` field, and a `' 7 '`
+     * CloudFormation refuses the template for was forwarded too — while the
+     * BillingMode FLIP's per-index reader had been on the grammar since #3147.
+     *
+     * Every row asserts the SENT value with `toBe`, which discriminates `7`
+     * from `'7'`: a test reading it with `Number(...)` or `toEqual` on a
+     * stringly object would pass against the unfixed provider.
+     */
+    const runCreate = async (indexes: unknown[]): Promise<CreateTableCommand | undefined> => {
+      primeGeneric();
+      await provider.create('L', RESOURCE_TYPE, {
+        TableName: TABLE_NAME,
+        KeySchema: KEY_SCHEMA,
+        AttributeDefinitions: ATTRIBUTE_DEFINITIONS,
+        BillingMode: 'PROVISIONED',
+        ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+        GlobalSecondaryIndexes: indexes,
+      });
+      return findCalls(CreateTableCommand)[0];
+    };
+
+    /** The `ProvisionedThroughput` block `CreateTable` received for `name`. */
+    const sentCapacity = (
+      create: CreateTableCommand | undefined,
+      name: string
+    ): Record<string, unknown> | undefined =>
+      (create?.input.GlobalSecondaryIndexes ?? []).find((g) => g.IndexName === name)
+        ?.ProvisionedThroughput as Record<string, unknown> | undefined;
+
+    /**
+     * One row per template spelling for a per-INDEX capacity member. `sent` is
+     * what must reach the wire; `ABSENT` there means the member is DROPPED from
+     * the block (DynamoDB then rejects the request naming it, which is what
+     * CloudFormation does with the same template at properties validation).
+     *
+     * `before` records what the pre-#3255 verbatim forward put on the wire, so
+     * a row also says what the fix changed — and the first four rows are why
+     * `toBe` matters: every one of them shipped a STRING into a `number` field.
+     */
+    const INDEX_CAPACITY_MATRIX: ReadonlyArray<{
+      readonly value: unknown;
+      readonly sent: unknown;
+      readonly warned: boolean;
+      readonly before: string;
+    }> = [
+      // --- CloudFormation ACCEPTS: now COERCED, previously forwarded raw -----
+      { value: '6', sent: 6, warned: false, before: "the string '6'" },
+      { value: '+8', sent: 8, warned: false, before: "the string '+8'" },
+      // Decimal, not octal — CloudFormation reads `"010"` as 10 and so does this.
+      { value: '010', sent: 10, warned: false, before: "the string '010'" },
+      { value: 7, sent: 7, warned: false, before: '7' },
+      // --- ABSENT stays ABSENT: the per-index reader has NO default ---------
+      // This is the row that separates the per-INDEX rule from the TABLE-level
+      // one, which substitutes 5 for an absent member. A defaulted per-index
+      // capacity would land in state as if the template had declared it, with
+      // no later call to correct it (issue #1588).
+      { value: ABSENT, sent: ABSENT, warned: false, before: 'absent' },
+      // --- CloudFormation REJECTS: dropped and named -----------------------
+      { value: ' 7 ', sent: ABSENT, warned: true, before: "the string ' 7 '" },
+      { value: '7 ', sent: ABSENT, warned: true, before: "the string '7 '" },
+      { value: '', sent: ABSENT, warned: true, before: "the string ''" },
+      { value: '0x9', sent: ABSENT, warned: true, before: "the string '0x9'" },
+      { value: '1e1', sent: ABSENT, warned: true, before: "the string '1e1'" },
+      { value: '6.5', sent: ABSENT, warned: true, before: "the string '6.5'" },
+      { value: 'abc', sent: ABSENT, warned: true, before: "the string 'abc'" },
+      { value: 6.5, sent: ABSENT, warned: true, before: '6.5' },
+      { value: true, sent: ABSENT, warned: true, before: 'true' },
+      // A DECLARED null: the flip's reader calls this unusable, so create now
+      // agrees with it. (The TABLE-level forwarder reads null as ABSENT and
+      // substitutes 5 — a deliberate difference, pinned on both sides.)
+      { value: null, sent: ABSENT, warned: true, before: 'null' },
+      // An unresolved intrinsic, the shape the diagnostics exist for.
+      { value: { Ref: 'Unset' }, sent: ABSENT, warned: true, before: '{"Ref":"Unset"}' },
+    ];
+
+    it('keeps its per-outcome row counts', () => {
+      // The floor, as LITERALS and per OUTCOME: re-classifying a row is the
+      // cheapest way to neutralise the table below, and it moves a number here.
+      const dropped = INDEX_CAPACITY_MATRIX.filter((r) => r.sent === ABSENT && r.warned);
+      const forwarded = INDEX_CAPACITY_MATRIX.filter((r) => r.sent !== ABSENT);
+      expect(INDEX_CAPACITY_MATRIX.length).toBe(16);
+      expect(dropped.length).toBe(11);
+      expect(forwarded.length).toBe(4);
+      // Every dropped row warns and no forwarded row does — the announcement is
+      // the whole licence for dropping, so the two must not come apart.
+      expect(forwarded.every((r) => !r.warned)).toBe(true);
+      // Exactly ONE row is absent-and-silent: the template that declares no
+      // member. Without it the table could not tell "dropped" from "never
+      // declared", which is the difference the no-default rule turns on.
+      expect(INDEX_CAPACITY_MATRIX.filter((r) => r.sent === ABSENT && !r.warned).length).toBe(1);
+      // At least three ACCEPTED rows are STRINGS: the fix is a coercion, so a
+      // table of numbers alone would stay green against the unfixed forwarder.
+      expect(forwarded.filter((r) => typeof r.value === 'string').length).toBe(3);
+    });
+
+    for (const row of INDEX_CAPACITY_MATRIX) {
+      it(`create: gsi ReadCapacityUnits ${label(row.value)} -> ${label(row.sent)} (was: ${row.before})`, async () => {
+        const create = await runCreate([
+          {
+            IndexName: 'gsi1',
+            KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+            Projection: { ProjectionType: 'ALL' },
+            ProvisionedThroughput: {
+              ...(row.value === ABSENT ? {} : { ReadCapacityUnits: row.value }),
+              WriteCapacityUnits: 3,
+            },
+          },
+        ]);
+
+        const capacity = sentCapacity(create, 'gsi1');
+        if (row.sent === ABSENT) {
+          expect(capacity && 'ReadCapacityUnits' in capacity).toBe(false);
+        } else {
+          expect(capacity?.['ReadCapacityUnits']).toBe(row.sent);
+        }
+        // The WRITE member is the control in every row: a change that dropped
+        // or rewrote BOTH members would otherwise look identical, and a fix
+        // that dropped the whole block would pass a member-only assertion.
+        expect(capacity?.['WriteCapacityUnits']).toBe(3);
+        expect(warnings().includes('ProvisionedThroughput.ReadCapacityUnits')).toBe(row.warned);
+      });
+    }
+
+    it('drops the MEMBER and keeps its legal sibling, rather than the whole block', async () => {
+      // The decision this fix had to make. Dropping the block would discard a
+      // member the template spelled LEGALLY and would make DynamoDB answer with
+      // `ProvisionedThroughput must be specified for index: gsi1`, which names
+      // neither the member nor why; dropping the member makes AWS name the
+      // exact position. Both fail the deploy, so this pins the error TEXT half.
+      const create = await runCreate([
+        {
+          IndexName: 'gsi1',
+          KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+          Projection: { ProjectionType: 'ALL' },
+          ProvisionedThroughput: { ReadCapacityUnits: '0x9', WriteCapacityUnits: '11' },
+        },
+      ]);
+
+      expect(sentCapacity(create, 'gsi1')).toEqual({ WriteCapacityUnits: 11 });
+      expect(warnings()).toContain('ProvisionedThroughput.ReadCapacityUnits');
+      expect(warnings()).not.toContain('ProvisionedThroughput.WriteCapacityUnits');
+    });
+
+    it('names the INDEX in the warning, and leaves a sibling index untouched', async () => {
+      // `scope` is threaded, not hardcoded: with one literal a table carrying
+      // several GSIs would not say which one to fix, and a per-entry rebuild
+      // that leaked across entries would be invisible to a one-index case.
+      const create = await runCreate([
+        {
+          IndexName: 'bad-index',
+          KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+          Projection: { ProjectionType: 'ALL' },
+          ProvisionedThroughput: { ReadCapacityUnits: ' 7 ', WriteCapacityUnits: 3 },
+        },
+        {
+          IndexName: 'good-index',
+          KeySchema: [{ AttributeName: 'sk', KeyType: 'HASH' }],
+          Projection: { ProjectionType: 'ALL' },
+          ProvisionedThroughput: { ReadCapacityUnits: '9', WriteCapacityUnits: 4 },
+        },
+      ]);
+
+      expect(warnings()).toContain('GSI bad-index on AWS::DynamoDB::Table L');
+      expect(warnings()).not.toContain('GSI good-index');
+      expect(sentCapacity(create, 'bad-index')).toEqual({ WriteCapacityUnits: 3 });
+      expect(sentCapacity(create, 'good-index')).toEqual({
+        ReadCapacityUnits: 9,
+        WriteCapacityUnits: 4,
+      });
+    });
+
+    it('says NO capacity was substituted, the same sentence the table level says', async () => {
+      // The GlobalTable sibling announces a 5/5 FALLBACK; this type omits. One
+      // wording for both levels of this type, so a user reading one log line
+      // does not have to know which forwarder produced it.
+      await runCreate([
+        {
+          IndexName: 'gsi1',
+          KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+          Projection: { ProjectionType: 'ALL' },
+          ProvisionedThroughput: { ReadCapacityUnits: ' 7 ', WriteCapacityUnits: 3 },
+        },
+      ]);
+
+      expect(warnings()).toContain('NO capacity was substituted');
+      expect(warnings()).toContain('decimal digits');
+      expect(warnings()).toContain('GlobalSecondaryIndexes[] entry');
+    });
+
+    it('forwards a NON-OBJECT ProvisionedThroughput verbatim and says nothing', async () => {
+      // Fail OPEN: a mis-nested value or an unresolved intrinsic in the BLOCK
+      // position is AWS's to reject by name, which is the pre-existing
+      // behaviour of this forwarder and the direction this file takes
+      // everywhere. Rewriting it would be inventing a block.
+      const create = await runCreate([
+        {
+          IndexName: 'gsi1',
+          KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+          Projection: { ProjectionType: 'ALL' },
+          ProvisionedThroughput: 'nonsense',
+        },
+      ]);
+
+      expect(sentCapacity(create, 'gsi1')).toBe('nonsense');
+      expect(warnings()).not.toContain('ProvisionedThroughput.');
+    });
+
+    it('leaves an index declaring NO ProvisionedThroughput exactly as it was', async () => {
+      // A PAY_PER_REQUEST-shaped index. The mapper must not manufacture a block
+      // for it, and must not lose the members it does carry.
+      const entry = {
+        IndexName: 'gsi1',
+        KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+        Projection: { ProjectionType: 'ALL' },
+        OnDemandThroughput: { MaxReadRequestUnits: 10 },
+      };
+      const create = await runCreate([entry]);
+
+      expect(create?.input.GlobalSecondaryIndexes?.[0]).toEqual(entry);
+      expect(warnings()).toBe('');
+    });
+
+    it('coerces the capacity and the WarmThroughput of the SAME entry', async () => {
+      // The two blocks are rewritten by one pass over the entry, so a rebuild
+      // that replaced rather than layered would drop whichever ran first.
+      const create = await runCreate([
+        {
+          IndexName: 'gsi1',
+          KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+          Projection: { ProjectionType: 'ALL' },
+          ProvisionedThroughput: { ReadCapacityUnits: '7', WriteCapacityUnits: '3' },
+          WarmThroughput: { ReadUnitsPerSecond: '12000' },
+        },
+      ]);
+
+      const gsi = create?.input.GlobalSecondaryIndexes?.[0];
+      expect(gsi?.ProvisionedThroughput).toEqual({ ReadCapacityUnits: 7, WriteCapacityUnits: 3 });
+      expect(gsi?.WarmThroughput).toEqual({ ReadUnitsPerSecond: 12000 });
+      expect(gsi?.KeySchema).toEqual([{ AttributeName: 'pk', KeyType: 'HASH' }]);
+    });
+
+    it("does not mutate the caller's entry, which the engine records into state", async () => {
+      // The resolved template bag belongs to the caller; a provider editing it
+      // in place would change what state reports cdkd sent.
+      const declared = {
+        IndexName: 'gsi1',
+        KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+        Projection: { ProjectionType: 'ALL' },
+        ProvisionedThroughput: { ReadCapacityUnits: '7', WriteCapacityUnits: ' 3 ' },
+      };
+      await runCreate([declared]);
+
+      expect(declared.ProvisionedThroughput).toEqual({
+        ReadCapacityUnits: '7',
+        WriteCapacityUnits: ' 3 ',
+      });
+    });
+
+    it('sends an EMPTY block, naming both, when NEITHER member is usable', async () => {
+      // The arm the drop-the-MEMBER decision reaches at its limit. Pinned
+      // because the obvious "tidy-up" — returning no block once everything is
+      // dropped — would forward the raw strings on the very template that
+      // needed naming, and because `indexDeclares` reads this block's
+      // truthiness (an empty object is truthy, so the drift side still agrees
+      // that cdkd SENT a block).
+      const create = await runCreate([
+        {
+          IndexName: 'gsi1',
+          KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+          Projection: { ProjectionType: 'ALL' },
+          ProvisionedThroughput: { ReadCapacityUnits: 'abc', WriteCapacityUnits: ' 3 ' },
+        },
+      ]);
+
+      expect(sentCapacity(create, 'gsi1')).toEqual({});
+      expect(warnings()).toContain('ProvisionedThroughput.ReadCapacityUnits');
+      expect(warnings()).toContain('ProvisionedThroughput.WriteCapacityUnits');
+    });
+
+    it('coerces the capacity of an entry whose WarmThroughput is DROPPED', async () => {
+      // The other order of the same one-pass rebuild. The sibling case above
+      // takes the WarmThroughput SUCCESS branch (`out = {...out, WarmThroughput}`);
+      // this one takes the DROP branch (`out = rest`), which rebuilds `out`
+      // from scratch — so a rebuild spreading `entry` rather than `out` would
+      // resurrect the dropped block, and one layering the capacity first would
+      // lose it.
+      const create = await runCreate([
+        {
+          IndexName: 'gsi1',
+          KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+          Projection: { ProjectionType: 'ALL' },
+          ProvisionedThroughput: { ReadCapacityUnits: '7', WriteCapacityUnits: 3 },
+          WarmThroughput: {},
+        },
+      ]);
+
+      const gsi = create?.input.GlobalSecondaryIndexes?.[0];
+      expect(gsi?.ProvisionedThroughput).toEqual({ ReadCapacityUnits: 7, WriteCapacityUnits: 3 });
+      expect(gsi && 'WarmThroughput' in gsi).toBe(false);
+      expect(warnings()).toContain('carries no usable');
+    });
+
+    it.each([
+      ['an array', [] as unknown],
+      ['null', null as unknown],
+      ['a number', 42 as unknown],
+    ])('forwards a %s ProvisionedThroughput verbatim and says nothing', async (_label, block) => {
+      // `isPlainCapacityBlock` excludes an ARRAY deliberately (its doc says
+      // why: `[]` indexes to `undefined` for both members, so treating it as a
+      // block would drop nothing and report nothing while AWS rejects the list
+      // by name). `null` and a scalar take the same arm.
+      const create = await runCreate([
+        {
+          IndexName: 'gsi1',
+          KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+          Projection: { ProjectionType: 'ALL' },
+          ProvisionedThroughput: block,
+        },
+      ]);
+
+      expect(sentCapacity(create, 'gsi1')).toEqual(block);
+      expect(warnings()).not.toContain('ProvisionedThroughput.');
+    });
+
+    it('leaves an UNKNOWN member name untouched, so AWS names it', async () => {
+      // Fail open on a misspelling: the member is not in the grammar's
+      // membership, so it is preserved rather than vanishing here.
+      const create = await runCreate([
+        {
+          IndexName: 'gsi1',
+          KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+          Projection: { ProjectionType: 'ALL' },
+          ProvisionedThroughput: { ReadCapacityUnit: '7' },
+        },
+      ]);
+
+      expect(sentCapacity(create, 'gsi1')).toEqual({ ReadCapacityUnit: '7' });
+      expect(warnings()).toBe('');
+    });
+
+    it('names an entry with no usable IndexName <unnamed>, and does not throw', async () => {
+      // `IndexName` is an UNCHECKED cast off the template, and the real masker
+      // is a `String.prototype.replace` that THROWS on a non-string. Before the
+      // review of #3255 the scope was built only for an entry declaring
+      // `WarmThroughput`, so an unquoted-YAML `IndexName: 2024` beside an
+      // ordinary capacity block would have taken a diagnostic path down with
+      // the whole deploy. A real (non-identity) masker is passed, because an
+      // identity default cannot exhibit the crash.
+      primeGeneric();
+      await provider.create(
+        'L',
+        RESOURCE_TYPE,
+        {
+          TableName: TABLE_NAME,
+          KeySchema: KEY_SCHEMA,
+          AttributeDefinitions: ATTRIBUTE_DEFINITIONS,
+          BillingMode: 'PROVISIONED',
+          ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+          GlobalSecondaryIndexes: [
+            {
+              IndexName: 2024,
+              KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+              Projection: { ProjectionType: 'ALL' },
+              ProvisionedThroughput: { ReadCapacityUnits: '0x9', WriteCapacityUnits: 3 },
+            },
+          ],
+        },
+        { maskSecrets: (text: string) => text.replace(/s3cr3t/g, '<redacted>') }
+      );
+
+      expect(warnings()).toContain('GSI <unnamed> on AWS::DynamoDB::Table L');
+      expect(warnings()).toContain('ProvisionedThroughput.ReadCapacityUnits');
+    });
+
+    it('MASKS a secret-bearing index name in the warning', async () => {
+      // The #1997 contract on the new sink: the scope is built from a RESOLVED
+      // property value, so a `{{resolve:secretsmanager:...}}` index name is
+      // plaintext here. Without this case, dropping the masker argument at any
+      // of the three call sites below the scope would be silent.
+      primeGeneric();
+      await provider.create(
+        'L',
+        RESOURCE_TYPE,
+        {
+          TableName: TABLE_NAME,
+          KeySchema: KEY_SCHEMA,
+          AttributeDefinitions: ATTRIBUTE_DEFINITIONS,
+          BillingMode: 'PROVISIONED',
+          ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+          GlobalSecondaryIndexes: [
+            {
+              IndexName: 'idx-s3cr3t',
+              KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+              Projection: { ProjectionType: 'ALL' },
+              // The RAW declared member is stringified into the warning too,
+              // so it is the second thing the masker has to reach.
+              ProvisionedThroughput: { ReadCapacityUnits: 's3cr3t', WriteCapacityUnits: 3 },
+            },
+          ],
+        },
+        { maskSecrets: (text: string) => text.replace(/s3cr3t/g, '<redacted>') }
+      );
+
+      expect(warnings()).toContain('GSI idx-<redacted> on AWS::DynamoDB::Table L');
+      expect(warnings()).not.toContain('s3cr3t');
+      expect(warnings()).toContain('<redacted>');
+    });
+  });
+
+  describe('the per-GSI ProvisionedThroughput on the UPDATE actions (#3255 review)', () => {
+    /**
+     * The three `applyGsiUpdates` send sites. Coercing only `create()`'s
+     * forward INVERTED the divergence this change exists to close: the same
+     * entry succeeded on a fresh create and was rejected by AWS when the index
+     * was added by a later update. Each case drives the real `update()`.
+     *
+     * The GUARDS around these sites stay on `toFiniteNumber` on purpose, so a
+     * case here asserts the WIRE value only.
+     */
+    const runUpdate = async (
+      desiredIndexes: unknown[],
+      previousIndexes: unknown[],
+      live?: { indexes?: unknown[] }
+    ): Promise<UpdateTableCommand[]> => {
+      primeGeneric({ billingMode: 'PROVISIONED', ...(live?.indexes ? { indexes: live.indexes } : {}) });
+      await provider.update(
+        'L',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          TableName: TABLE_NAME,
+          BillingMode: 'PROVISIONED',
+          ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+          GlobalSecondaryIndexes: desiredIndexes,
+        },
+        {
+          TableName: TABLE_NAME,
+          BillingMode: 'PROVISIONED',
+          ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+          GlobalSecondaryIndexes: previousIndexes,
+        }
+      );
+      return findCalls(UpdateTableCommand);
+    };
+
+    /** The `ProvisionedThroughput` of the first GSI op of the given kind. */
+    const opCapacity = (
+      calls: UpdateTableCommand[],
+      kind: 'Create' | 'Update'
+    ): Record<string, unknown> | undefined => {
+      for (const call of calls) {
+        for (const op of call.input.GlobalSecondaryIndexUpdates ?? []) {
+          const action = kind === 'Create' ? op.Create : op.Update;
+          if (action) return action.ProvisionedThroughput as Record<string, unknown> | undefined;
+        }
+      }
+      return undefined;
+    };
+
+    it('Create action: coerces a quoted capacity, as the create path does', async () => {
+      // The headline case. Pre-review this sent the STRING "7" into a `number`
+      // field, so a template that now deploys cleanly from scratch failed the
+      // moment the same index was added later.
+      const calls = await runUpdate([cfnGsi('gsi2', '7', '3')], []);
+      expect(opCapacity(calls, 'Create')).toEqual({
+        ReadCapacityUnits: 7,
+        WriteCapacityUnits: 3,
+      });
+    });
+
+    it('Create action: drops and names a spelling CloudFormation rejects', async () => {
+      const calls = await runUpdate([cfnGsi('gsi2', ' 7 ', 3)], []);
+      expect(opCapacity(calls, 'Create')).toEqual({ WriteCapacityUnits: 3 });
+      expect(warnings()).toContain('ProvisionedThroughput.ReadCapacityUnits');
+      expect(warnings()).toContain('gsi2');
+    });
+
+    it('same-name Update action: coerces a quoted capacity', async () => {
+      // The guard in front of this site compares the DECLARED block against the
+      // RECORDED one, both raw, so the differing spelling is what makes the op
+      // fire at all; only the wire value is coerced.
+      const calls = await runUpdate(
+        [cfnGsi('gsi1', '9', '4')],
+        [cfnGsi('gsi1', 3, 3)],
+        { indexes: [LIVE_GSI('gsi1')] }
+      );
+      expect(opCapacity(calls, 'Update')).toEqual({
+        ReadCapacityUnits: 9,
+        WriteCapacityUnits: 4,
+      });
+    });
+
+    it('adopted-index repair: coerces a quoted capacity', async () => {
+      // The third site: the index is LIVE but absent from the recorded previous
+      // side, so its Create is skipped and the capacity repaired by an Update.
+      const calls = await runUpdate(
+        [cfnGsi('gsi1', '9', '4')],
+        [],
+        {
+          indexes: [
+            {
+              IndexName: 'gsi1',
+              IndexStatus: 'ACTIVE',
+              ProvisionedThroughput: { ReadCapacityUnits: 3, WriteCapacityUnits: 3 },
+            },
+          ],
+        }
+      );
+      expect(warnings()).toContain('already exists in AWS');
+      expect(opCapacity(calls, 'Update')).toEqual({
+        ReadCapacityUnits: 9,
+        WriteCapacityUnits: 4,
+      });
+    });
+
+    it('survives a NUMERIC IndexName with a masker in play (PR #3268 review)', async () => {
+      // `IndexName: 2024` (unquoted YAML) is an UNCHECKED cast off the
+      // template: it is truthy, so it becomes the key of the name maps and
+      // arrives at the scope builders as a NUMBER — on which the real masker's
+      // `String.prototype.replace` THROWS. `create()` was guarded when
+      // `indexScope` was added; this round's eager scopes on the UPDATE sites
+      // were not, which newly exposed the crash on an ordinary capacity update.
+      // The guard lives in `indexScopeAt`, so the whole update must complete
+      // and the op must still carry the coerced capacity.
+      primeGeneric({ billingMode: 'PROVISIONED' });
+      await expect(
+        provider.update(
+          'L',
+          TABLE_NAME,
+          RESOURCE_TYPE,
+          {
+            TableName: TABLE_NAME,
+            BillingMode: 'PROVISIONED',
+            ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+            GlobalSecondaryIndexes: [
+              {
+                IndexName: 2024,
+                KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+                Projection: { ProjectionType: 'ALL' },
+                ProvisionedThroughput: { ReadCapacityUnits: '7', WriteCapacityUnits: '3' },
+              },
+            ],
+          },
+          {
+            TableName: TABLE_NAME,
+            BillingMode: 'PROVISIONED',
+            ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+            GlobalSecondaryIndexes: [],
+          },
+          // A non-empty secret bag is what makes the masker a real
+          // `String.replace` call rather than the identity default.
+          { maskSecrets: (text: string) => text.replace(/s3cr3t/g, '<redacted>') }
+        )
+      ).resolves.not.toThrow();
+
+      const calls = findCalls(UpdateTableCommand);
+      expect(opCapacity(calls, 'Create')).toEqual({
+        ReadCapacityUnits: 7,
+        WriteCapacityUnits: 3,
+      });
+    });
+  });
 });

@@ -76,8 +76,9 @@ Index of every area: [code-layout.md](code-layout.md).
   `RetentionInDays` through it. Since issues [#3135](https://github.com/go-to-k/cdkd/issues/3135) /
   [#3147](https://github.com/go-to-k/cdkd/issues/3147) the DynamoDB FORWARDERS (`coerceWarmThroughput`
   here, every capacity / ceiling reader in `dynamodb-globaltable-provider.ts`, the
-  TABLE-LEVEL `ProvisionedThroughput`, the billing-flip arm, the per-GSI FLIP reader
-  (`readCapacityNumber`) and `RecoveryPeriodInDays` in `dynamodb-table-provider.ts` — which went
+  TABLE-LEVEL `ProvisionedThroughput`, the billing-flip arm, the per-GSI FLIP and CREATE readers
+  (`readCapacityNumber` / `coerceIndexCapacityForCreate`) and `RecoveryPeriodInDays` in
+  `dynamodb-table-provider.ts` — which went
   through a bare `Number()` and so were outside #3135's `toFiniteNumber` grep — and the diagnostic /
   mirror predicates paired with each) read through `coerceCfnInteger` itself, because the DynamoDB A/B
   (table on `toCfnInteger`'s doc) rejects a padded `" 7 "` at properties validation where the Logs

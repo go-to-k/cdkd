@@ -468,8 +468,13 @@ describe('issue #1824 — uncached ARN attributes resolve through Fn::GetAtt', (
         // The ACTIONABLE half, not merely the diagnosis: the flag form to re-run
         // with, and the command that prints the name to pass.
         expect(msg).toContain('--resource MyParam=<parameterName>');
+        // UNQUOTED since issue #3136: the command is rendered through the
+        // shared `renderDisableCommand`, whose `shellQuote` leaves a value made
+        // only of `[A-Za-z0-9._/@:+-]` bare — which every well-formed parameter
+        // ARN is — and quotes only one that needs it. The hand-written `'...'`
+        // this replaced was the defect (a `'` in the value broke out of it).
         expect(msg).toContain(
-          `aws ssm get-parameter --name '${ARN_ID}' --query Parameter.Name --output text`
+          `aws ssm get-parameter --name ${ARN_ID} --query Parameter.Name --output text`
         );
         // ...plus the recorded reason no normalization was attempted, which is
         // the whole basis of the refuse-over-derive decision.
