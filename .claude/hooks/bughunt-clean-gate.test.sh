@@ -135,6 +135,21 @@ run "foreign owners + gh pr merge blocks"            dir "gh pr merge 5 --squash
 # A chained command containing BOTH verbs takes the stricter pr path.
 run "foreign owners + commit && pr create blocks"    dir "git commit -m x && gh pr create --fill" 2
 
+# A FLAG BETWEEN `pr` AND THE VERB (go-to-k/cdkd#3242). `gh` accepts `-R` /
+# `--repo` in either slot and resolves the repo from it identically, but
+# `GATE_RE_GH_PR_CREATE_OR_MERGE` saw only the slot LEFT of `pr` -- so this
+# gate released un-destroyed AWS resources for the price of moving one flag
+# three words right. Each of these passes (rc=0) against the pre-#3242 library
+# and blocks here; the two cases above are their unshifted controls.
+run "foreign owners + pr -R <slug> merge blocks"     dir "gh pr -R go-to-k/cdkd merge 5 --squash" 2
+run "foreign owners + pr --repo <slug> create blocks" dir "gh pr --repo go-to-k/cdkd create --fill" 2
+run "foreign owners + pr -R<slug> merge blocks"      dir "gh pr -Rgo-to-k/cdkd merge 5 --squash" 2
+run "foreign owners + pr --repo=<slug> merge blocks" dir "gh pr --repo=go-to-k/cdkd merge 5 --squash" 2
+# POLARITY: a READ verb under the same spelling must still pass -- the absorber
+# admits any token after the first flag, so `create|merge` is the only brake.
+run "foreign owners + pr -R <slug> view passes"      dir "gh pr -R go-to-k/cdkd view 5" 0
+run "foreign owners + pr -R <slug> list passes"      dir "gh pr -R go-to-k/cdkd list" 0
+
 # Armed via the committing tree's OWN owner file: git commit blocks.
 run "own owner + git commit blocks"       owndir "git commit -m x"      2
 

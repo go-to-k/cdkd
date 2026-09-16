@@ -1104,6 +1104,14 @@ gen_grid=(
 # Every shape with EVERY verb it can carry -- the round-4 lesson, mechanised.
 gen_verbs=( "commit -m x" "push origin HEAD" "checkout -- f.txt" "restore f.txt" "merge origin/main" "switch -c feat/x" )
 gen_gh_verbs=( "pr merge 42 --squash" "pr create --title x" )
+# THE FLAG POSITION IS AN AXIS TOO (go-to-k/cdkd#3242). Every gh row above puts
+# the token LEFT of the group word, so the whole grid was blind to the slot
+# BETWEEN the group word and the verb -- which `gh` accepts and resolves from
+# identically, and where every `gh <group> <verb>` constant used to match
+# nothing. That is the grid being one position behind rather than one case
+# behind, which is the failure this generator was built to end, so it is added
+# as an AXIS (group x verb x token x position) and not as a remembered string.
+gen_gh_groups=( "pr merge 42 --squash" "pr create --title x" "issue create --title x" "issue comment 42 --body x" )
 : > "$GEN"
 for g in "${gen_grid[@]}"; do
   gtok="${g#*|}"
@@ -1113,10 +1121,17 @@ for g in "${gen_grid[@]}"; do
   for v in "${gen_gh_verbs[@]}"; do
     { printf 'gh -R o/r %s %s' "$gtok" "$v" | base64 | tr -d '\n'; echo; } >> "$GEN"
   done
+  for v in "${gen_gh_groups[@]}"; do
+    # `<group> <token> <verb> <args>` -- the token moved one slot right.
+    { printf 'gh %s %s %s' "${v%% *}" "$gtok" "${v#* }" | base64 | tr -d '\n'; echo; } >> "$GEN"
+    # ...and with a repo flag in BOTH slots, since a caller may legitimately
+    # carry one on each side and neither absorber may swallow the other's verb.
+    { printf 'gh -R o/r %s %s %s' "${v%% *}" "$gtok" "${v#* }" | base64 | tr -d '\n'; echo; } >> "$GEN"
+  done
 done
 gen_n=$(grep -c . "$GEN" | tr -d ' ')
 if [ "$gen_n" -ge 100 ]; then
-  ok "generated corpus: $gen_n inputs (${#gen_grid[@]} token shapes x $(( ${#gen_verbs[@]} + ${#gen_gh_verbs[@]} )) verbs)"
+  ok "generated corpus: $gen_n inputs (${#gen_grid[@]} token shapes x $(( ${#gen_verbs[@]} + ${#gen_gh_verbs[@]} )) verbs x ${#gen_gh_groups[@]} gh group/verb pairs in 2 flag positions)"
 else
   ng "generated corpus: only $gen_n inputs -- the grid collapsed, so the assertions below are vacuous"
 fi
@@ -1137,6 +1152,22 @@ if [ -r "$PRE" ] && [ -s "$PRE" ] && [ "$gen_n" -ge 100 ]; then
     ok "generated corpus: $gen_rows observable rows per side, $gen_gained gained (a wider trigger; loud)"
   else
     ng "generated corpus: only $gen_rows rows per side -- too small to be evidence"
+  fi
+
+  # A FLOOR ON `gained`, not just a report (go-to-k/cdkd#3242). The line above
+  # PRINTS the number and asserts nothing about it, so the flag-position axis
+  # added with this change could stop contributing -- the absorber reverted, the
+  # axis collapsed, the group list emptied -- and the whole block would still
+  # read as a clean run. Measured on this tree by emptying `GATE_GH_V` in the
+  # library and re-running: 334 gained with the absorber, 136 without. The floor
+  # sits between them and well under 334, for the same reason `CASE_FLOOR` in
+  # command-match.test.sh is not pinned: it is a collapse detector, so adding
+  # corpus rows must not be bookkeeping here.
+  GEN_GAINED_FLOOR=250
+  if [ "$gen_gained" -ge "$GEN_GAINED_FLOOR" ]; then
+    ok "generated corpus: $gen_gained gained is at or above the floor $GEN_GAINED_FLOOR (the gh flag-position axis is live)"
+  else
+    ng "generated corpus: only $gen_gained gained, floor $GEN_GAINED_FLOOR -- the flag-between-group-and-verb absorber (GATE_GH_V) or the axis that exercises it has collapsed; measured 334 with it and 136 without"
   fi
 
   if [ "$gen_lost" -eq 0 ]; then

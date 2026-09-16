@@ -163,7 +163,7 @@ while IFS= read -r b64; do
   [ -n "$b64" ] || continue
   id=$((id + 1))
   t=$(printf '%s' "$b64" | base64 -d 2>/dev/null || printf '%s' "$b64" | base64 -D 2>/dev/null) || continue
-  for shape in commit pr commit_sq pr_sq pr_flagged read_grep read_show read_pathspec; do
+  for shape in commit pr commit_sq pr_sq pr_flagged pr_between pr_between_read read_grep read_show read_pathspec; do
     case "$shape" in
       commit) cmd="git commit -m \"$t\""; self="$SELF_COMMIT" ;;
       pr)     cmd="gh pr create --title x --body \"$t\""; self="$SELF_PR" ;;
@@ -180,6 +180,22 @@ while IFS= read -r b64; do
       # prefix actually changed: with no flag the prefix must be empty and the
       # old and new patterns agree by construction.
       pr_flagged) cmd="gh -R go-to-k/cdkd --template 'a b' pr create --title x --body '$t'"; self="$SELF_PR" ;;
+      # THE BETWEEN SLOT (go-to-k/cdkd#3242). Every gh shape above puts its flag
+      # LEFT of the group word, so all five were structurally blind to the slot
+      # that issue widened -- the survey's zero would have measured the shapes
+      # rather than the trigger, which is the exact failure the `*_sq` and
+      # `read_*` families were each added to end. The right slot is strictly
+      # more permissive than the left: `GATE_GH_V` sits between the group word
+      # and the VERB, so an arbitrary RUN of tokens may intervene before the
+      # alternation is tried, and only the VERB WORD has to appear in the body
+      # (the left slot needs the literal `pr merge`). Single-quoted, because
+      # that is the quoting the blind alternative can tile through.
+      pr_between) cmd="gh pr -R go-to-k/cdkd create --title x --body '$t'"; self="$SELF_PR" ;;
+      # ...and its READ twin, which is where the cost actually lands: a READ
+      # verb in the between slot runs no gated command, so every constant that
+      # fires on it is a false refusal by definition. `self` is empty for the
+      # same reason the `read_*` family's is.
+      pr_between_read) cmd="gh pr -R go-to-k/cdkd comment 3242 --body '$t'"; self="" ;;
       # READ VERBS, and their absence is what made this survey's zero unable to
       # see the class that WITHDREW an implementation (go-to-k/cdkd#2605). Every
       # shape above is a WRITE verb carrying the corpus text as an argument, so
@@ -258,7 +274,7 @@ lostfp=$(paste "$TMP/old.tsv" "$TMP/new.tsv" | awk -F'\t' '$5=="0" && $4=="1" &&
 affected=$(awk -F'\t' '{print $1"\t"$2}' "$TMP/newly.tsv" | sort -u | awk 'END{print NR}')
 
 echo "corpus            : $texts texts ($commit_n commit messages, $pr_n PR bodies)"
-echo "shapes            : commit / pr (double-quoted), commit_sq / pr_sq (single-quoted), pr_flagged, read_grep / read_show / read_pathspec (READ verbs, no self verb)"
+echo "shapes            : commit / pr (double-quoted), commit_sq / pr_sq (single-quoted), pr_flagged (LEFT slot), pr_between / pr_between_read (BETWEEN slot, go-to-k/cdkd#3242), read_grep / read_show / read_pathspec (READ verbs, no self verb)"
 echo "probed            : $cells (text, shape, verb) cells per side"
 echo "NEWLY CONSIDERED  : $newly cells, across $affected (text, shape) commands"
 echo "LOST, self verb   : $lost cells   <- must be 0; the gate stopped seeing its own command"

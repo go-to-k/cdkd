@@ -29,7 +29,76 @@ Measured against a materialised `origin/main` hook directory, all four property 
 
 **THE SHAPE, and it is the finding that outlives this fix.** Three review rounds each ended the same way: a spelling the parser did not know about. Every one is now a case in `command-match.test.sh` named for its round, so the inventory lives where it executes. That is not bad luck. **These gates decide policy by pattern-matching shell TEXT, and shell grammar is not a regular language**, so the set of spellings that slip past is unbounded and each round removes only the ones someone thought to try. Every miss is silent, and every miss lands in the FAIL-OPEN direction, because a gate that does not recognise a command does not fire. The fix is to **over-approximate the TRIGGER and stay strict on RESOLUTION**, with `gate_target_dir_strict` — which already refuses whatever it cannot read — deciding the outcome, and go-to-k/cdkd#2156 did it: `GATE_FLAGS` no longer enumerates flag spellings, the prefix being EITHER empty (verb next to the command word) OR one flag token then ANY tokens, so no flag VALUE has to parse and an unlisted spelling WIDENS rather than loses the match. A bare token in FIRST position stops it -- that IS the subcommand, so `git log --grep commit` settles with no name list to go stale; after a flag it stays ambiguous. Not the ONLY stopper: a QUOTED structural token used to evade every gate (go-to-k/cdkd#2333), CLOSED 2026-09-05 — and NOT by widening `GATE_FLAGS`, which is where the first attempt went and why it was withdrawn. Quoting is a load-bearing BRAKE on this very over-approximation: after a flag any later token can occupy the verb slot, and a quoted one happening not to match is the only thing keeping ordinary read-only work out of the gates, so a blanket dequote took 16 measured commands (`git -C <wt> log --grep "commit"` and siblings) from rc=0 to rc=2. `gate_dequote_structural` rewrites POSITIONS instead — the command word, the leading global-flag NAMES and the SUBCOMMAND slot, nothing after the verb — in `gate_segments`, so every reader that decides a gate outcome from a segment is covered at one point, without the segment TEXT changing for any consumer that parses its own arguments. (The issue's findings said EIGHT reader sites; `grep -c '\[\[ "\$segment" =~ '` says nine. The count is not the property — taking the same stream is — so it is not restated in the code either.) SUPERSET, now ENFORCED: a pinned pre-2156 baseline, any lost cell enumerated WITH ITS INPUT, 0 today. A category hid seven balanced commands; an enumerated cell hid three gates until its verb variants landed. False-refusal surface: see `.claude/hooks/lib/false-refusal-survey.sh`.
 
-**The mitigation actually taken is a DIFFERENTIAL fence** — `.claude/hooks/lib/command-match-differential.test.sh`, per `/work-issues` section 5, which says a change to a CLASSIFIER cannot be fenced by hand-picked cases. The segmenter is exactly that: command text in, "which gates consider this and where does it resolve" out. Five rounds of hand-picked cases each changed the verdict for spellings nobody enumerated, and both regressions that reached review were found by diffing against the parent commit rather than by any test here. The fence runs the pre-#2027 implementation and the current one over its corpus — every shape from all five rounds plus families nobody had exercised (concatenated assignments, process substitution, heredocs, multi-line bodies, both quote characters unbalanced together, globs, degenerate inputs) — and compares the two observables a gate consumes: does each guarded verb ERE match, and what target does it resolve to. **Any differing cell that is not in an enumerated table fails**, and each allowed cell is pinned as `id + observable + NEW VALUE` rather than by input, because bucketing by input is how a regression gets waved through under a heading that says "intended". Per-class floors at the OBSERVED count (slack let a probe delete 25 cells and pass) mean a corpus that stops covering a class is loud instead of reading like a clean run, and the baseline is a **vendored golden file** at `.claude/hooks/lib/testdata/command-match.baseline.sh`, pinned to a SHA rather than to `origin/main` — once this work merges, a ref-based baseline would compare the code to itself and report zero differences forever. It is VENDORED rather than read with `git show <sha>` because CI shallow-clones and the object is not in its store: the fence correctly refused to run there and said so in one line, but a fence that cannot run in CI is not a fence. The fixture is byte-identical to the blob (verified: sha256 `2af09c64…`) and its hash is re-checked on every run, so a drifted copy fails loudly instead of silently redefining what "unchanged" means. It lives under `testdata/` so neither `run-tests.sh` (globs `lib/*.test.sh`) nor the class fence picks it up — checked. The table doubles as the changelog of intentional behaviour changes to the classifier, every cell declared. **Read the counts off the run, not off this sentence** — the fence prints inputs, cells and per-class floors on every invocation. The figures that used to sit here are GONE rather than refreshed: they were restated once per change, drifted three times anyway, and a wrong number in a file about fences is worse than no number. The two go-to-k/cdkd#2156 classes are keyed to the CHANGE, not the verdict.
+**The next instance was not a spelling but a POSITION** (go-to-k/cdkd#3242).
+`gh` accepts `-R` / `--repo` before the GROUP word *and* between the group word
+and the verb, resolving from either identically; `GATE_GH_C` absorbed only the
+left slot, so every `gh <group> <verb>` constant matched NOTHING for
+`gh pr -R <slug> merge <n>` and eleven hooks sat out at once — including
+`pr-body-item-number`, the one gate [hooks.md](hooks.md)'s blocking criterion
+says must never be silent. The remedy follows this section's own rule rather
+than adding a spelling: `GATE_GH_V` is the SAME `GATE_FLAGS` absorber in the
+right slot, so the stopping rule (a bare token in FIRST position is the
+subcommand) is unchanged and `gh pr list` / `gh pr view` still match nothing.
+Two fences came with it, and the second is the transferable half. The FAMILY
+fence in `command-match.test.sh` reads its population out of the library's own
+`GATE_RE_GH_*` assignments — so a constant written without the absorber fails,
+which the per-gate cases cannot do — with a floor on the population, because a
+scan that stops matching reports zero violations over zero constants. Two
+corrections a reviewer forced on that fence are the transferable part. Its
+normalisation first rewrote the two literal alternations in the tree
+(`(issue|pr)`, `(pr|issue)`) and was defeated in one line by a copied neighbour
+spelled `(pr|issue|release)`, so it now collapses ANY parenthesised alternation
+of group words. And its block cardinality guard derived the expected count from
+the very arrays whose collapse it claims to detect, so emptying one shrank both
+sides and it reported `ok ... ran all 41 cases`; the axis sizes and the product
+are LITERALS now. Both are the same defect this file names at the top — a
+population derived from the thing being checked — arriving inside the fence
+written to avoid it. The remedy half also covers
+`gate_dequote_structural`, which took the token straight after the group word
+and so left a QUOTED verb behind a between-slot flag undequoted while the left
+slot handled it; it walks flag tokens to the first bare one now, bounded by
+`GATE_STRUCT_MAXTOK`, and the residue is the already-enumerated
+unenumerated-value-flag one rather than a new class. And the
+DIFFERENTIAL's generated corpus gained a flag-POSITION axis: every gh row in it
+put the token left of the group word, so the grid was one POSITION behind rather
+than one case behind, which is exactly the failure that generator was built to
+end. Its `gained` count is now FLOORED rather than merely printed (measured 334
+with the absorber and 136 without, so the axis collapsing is loud).
+
+**The false-refusal cost of that widening is wider than its first declaration
+said, and the correction is the reusable half.** The right slot is structurally
+more permissive than the left: the absorber sits between the group word and the
+VERB, so an arbitrary RUN of tokens may intervene before the alternation is
+tried, and only the VERB WORD has to appear later in the segment — where the
+left slot needed the literal `pr merge`. So an ordinary SINGLE-quoted body
+carrying the word reaches the gates. **The class is ANY bare or
+single-quoted mid-span verb word after a right-slot flag, not `--body` alone** —
+the second time this declaration was measured too narrow. Surveyed against
+origin/main over ~70 realistic read/comment shapes, 9 newly refuse:
+`list --search merge`, `--search 'is:open merge conflict'`, `--label merge`,
+`--template '{{.title}} merge {{.number}}'`, `--template create`,
+`comment -b 'LGTM, merge it'`, `comment --body 'Ready to merge once CI is
+green'`, `issue list --label edit`, `list --search create`. Inert: every
+double-quoted twin, `--json mergeable`, `--state merged`, a `--jq` program
+containing the word, and anything after a pipe — plus the EDGES of a quoted
+span, which are tighter than two successive descriptions of them claimed. The
+verb word must be STRICTLY INTERIOR: `--search 'create'` (first word) and
+`--search 'x create'` (LAST word) are both inert, only `--search 'x create y'`
+matches. The last-word half falls out of the pattern — the verb alternation is
+followed by `([[:space:]]|$)` and the character after a span's final word is the
+closing quote, which is neither — and it is pinned as three cases rather than a
+sentence, because prose about this boundary has now been wrong twice. Cobra accepts verb flags before the verb too, so
+`gh pr -R o/r --search merge -L 1 list` refuses as well. Priced rather than
+argued: the right-slot spelling appears 0 times in this repo's own instructions
+outside the rules describing this bug (left-slot 6, post-verb 18). The trade is KEPT, on the precedent `_GATE_WORD_LOOSE_FLAG` already sets
+in the library — a false refusal is loud and one rephrase away, a bypass is
+silent — but the declaration that said "exactly one shape" came from a corpus
+with no single-quoted body, which is the shape-measures-itself failure again.
+`false-refusal-survey.sh` gained between-slot write AND read shapes for the same
+reason its `*_sq` and `read_*` families exist: its five gh shapes were all
+left-slot, so its zero would have measured the shapes rather than the trigger.
+
+**The mitigation actually taken is a DIFFERENTIAL fence** — `.claude/hooks/lib/command-match-differential.test.sh`, per `/work-issues` section 5, which says a change to a CLASSIFIER cannot be fenced by hand-picked cases. The segmenter is exactly that: command text in, "which gates consider this and where does it resolve" out. Five rounds of hand-picked cases each changed the verdict for spellings nobody enumerated, and both regressions that reached review were found by diffing against the parent commit rather than by any test here. The fence runs the pre-#2027 implementation and the current one over its corpus — every shape from all five rounds plus families nobody had exercised (concatenated assignments, process substitution, heredocs, multi-line bodies, both quote characters unbalanced together, globs, degenerate inputs, and — since go-to-k/cdkd#3242 — a gh flag in either of its two slots) — and compares the two observables a gate consumes: does each guarded verb ERE match, and what target does it resolve to. **Any differing cell that is not in an enumerated table fails**, and each allowed cell is pinned as `id + observable + NEW VALUE` rather than by input, because bucketing by input is how a regression gets waved through under a heading that says "intended". Per-class floors at the OBSERVED count (slack let a probe delete 25 cells and pass) mean a corpus that stops covering a class is loud instead of reading like a clean run, and the baseline is a **vendored golden file** at `.claude/hooks/lib/testdata/command-match.baseline.sh`, pinned to a SHA rather than to `origin/main` — once this work merges, a ref-based baseline would compare the code to itself and report zero differences forever. It is VENDORED rather than read with `git show <sha>` because CI shallow-clones and the object is not in its store: the fence correctly refused to run there and said so in one line, but a fence that cannot run in CI is not a fence. The fixture is byte-identical to the blob (verified: sha256 `2af09c64…`) and its hash is re-checked on every run, so a drifted copy fails loudly instead of silently redefining what "unchanged" means. It lives under `testdata/` so neither `run-tests.sh` (globs `lib/*.test.sh`) nor the class fence picks it up — checked. The table doubles as the changelog of intentional behaviour changes to the classifier, every cell declared. **Read the counts off the run, not off this sentence** — the fence prints inputs, cells and per-class floors on every invocation. The figures that used to sit here are GONE rather than refreshed: they were restated once per change, drifted three times anyway, and a wrong number in a file about fences is worse than no number. The two go-to-k/cdkd#2156 classes are keyed to the CHANGE, not the verdict.
 
 
 **How far `gate_segments` moved: 28 of the differential's 239 inputs, 11.7%.**

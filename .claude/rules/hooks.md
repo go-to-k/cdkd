@@ -866,6 +866,20 @@ substitution is a segment opener too, so a verb inside one arms the gates.
   the OPENING line and drops through the terminator, handling `<<-` and
   quoted / unquoted delimiters.
 - The `cd <path> &&` special case disappears — it is just a verb after `&&`.
+- **A `gh` command has TWO flag slots, and only the left one was absorbed until
+  go-to-k/cdkd#3242.** `gh` takes `-R` / `--repo` before the GROUP word *and*
+  between the group word and the verb, resolving from either identically
+  (measured on gh 2.92.0 outside a repo: `gh pr -R go-to-k/cdkd view 3214`
+  answered the cdkd PR). `GATE_GH_C` covered the left slot only, so
+  `gh pr -R <slug> merge <n>` matched NOTHING and **no gate fired at all** —
+  verify-pr, ci-green, bughunt-clean, pr-review and the four integ gates, plus
+  `pr-body-item-number`, which is the one gate the blocking criterion above says
+  must never sit out. `GATE_GH_V` is the same constant in the right slot, so the
+  stopping rule is unchanged: a bare token in first position is the subcommand,
+  and `gh pr list` / `gh pr view` still match nothing. Fenced as a FAMILY in
+  `lib/command-match.test.sh` — the population read out of the library's own
+  `GATE_RE_GH_*` assignments, so a constant written without the absorber fails —
+  plus a flag-POSITION axis in the differential's generated corpus.
 
 **Two gaps in the old anchor — issue
 [#2093](https://github.com/go-to-k/cdkd/issues/2093), CLOSED by the #2129

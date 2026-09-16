@@ -279,6 +279,35 @@ run_case "gh issue create with #N body-file blocked" 2 \
 run_case "gh issue comment with #N body-file blocked" 2 \
   "$(printf '{"tool_input":{"command":"gh issue comment 123 --body-file %s"}}' "$B")"
 
+# A FLAG BETWEEN THE GROUP WORD AND THE VERB (go-to-k/cdkd#3242). `gh` accepts
+# `-R` / `--repo` in either slot and resolves the repo from it identically;
+# `GATE_RE_GH_BODY_CARRIER` saw only the slot left of `pr` / `issue`, so this
+# gate exited 0 on the shifted spelling. Measured against the pre-#3242 library,
+# same bodies: `gh issue create --title t --body-file <B>` gave rc=2 and
+# `gh issue -R go-to-k/cdkd create --title t --body-file <B>` gave rc=0 --
+# i.e. a bare `#N` reaching a THIRD PARTY's issue with the one gate
+# .claude/rules/hooks.md says must block sitting out.
+#
+# The FAMILY is fenced in lib/command-match.test.sh; these four pin that THIS
+# gate consults the shared constant, across BOTH group words, which a
+# library-level case cannot say. All four pass (rc=0) against the pre-#3242
+# library and block here.
+run_case "gh issue create with a flag between issue and create blocked" 2 \
+  "$(printf '{"tool_input":{"command":"gh issue -R go-to-k/cdkd create --title foo --body-file %s"}}' "$B")"
+run_case "gh issue comment with a flag between issue and comment blocked" 2 \
+  "$(printf '{"tool_input":{"command":"gh issue --repo go-to-k/cdkd comment 123 --body-file %s"}}' "$B")"
+run_case "gh pr create with a glued flag between pr and create blocked" 2 \
+  "$(printf '{"tool_input":{"command":"gh pr -Rgo-to-k/cdkd create --title foo --body-file %s"}}' "$B")"
+run_case "gh pr edit with an =value flag between pr and edit blocked" 2 \
+  "$(printf '{"tool_input":{"command":"gh pr --repo=go-to-k/cdkd edit 123 --body-file %s"}}' "$B")"
+# POLARITY for the same widening: a body-carrying-looking READ verb under the
+# same spelling still carries no body and must pass. Without this the four above
+# are satisfied by a pattern that matches every `gh` command.
+run_case "gh pr with a flag between pr and a read verb passes" 0 \
+  "$(printf '{"tool_input":{"command":"gh pr -R go-to-k/cdkd view 123 --body-file %s"}}' "$B")"
+run_case "gh issue with a flag between issue and list passes" 0 \
+  "$(printf '{"tool_input":{"command":"gh issue -R go-to-k/cdkd list --body-file %s"}}' "$B")"
+
 # Extra: bare '#N' in prose (no item-number prefix, no allow context) → exit 2.
 run_case "gh pr create with bare #N in prose blocked" 2 \
   "$(printf '{"tool_input":{"command":"gh pr create --body-file %s"}}' "$H")"
