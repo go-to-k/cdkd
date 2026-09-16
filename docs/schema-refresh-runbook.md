@@ -86,9 +86,17 @@ Daily, on `bot/cfn-schema-refresh/<YYYY-MM-DD>`:
    arrived the same day, and the existing entry does not describe it. The one arm that IS loud is an unsubstituted `__PR_NUMBER__`
    or `__CYCLE__` placeholder, which means the renderer is broken rather than
    a race being lost, and would otherwise commit an entry citing no pull
-   request. **A cycle that only REMOVES
-   properties writes no fragment at all** and still ships a behaviour delta —
-   that gap is [#3175](https://github.com/go-to-k/cdkd/issues/3175).
+   request.
+
+   **A cycle that only REMOVES properties gets an entry too**, because it
+   ships a delta of its own: a withdrawn property loses the row that made it
+   route through Cloud Control, so a template still carrying it is dropped
+   with a warn from that merge on. The entry says which of the two things
+   follows for each type — it keeps auto-routing on another property, or a new
+   resource of that type returns to the SDK path while one already recorded
+   `provisionedBy: 'cc-api'` stays where it is. A property the provider
+   DECLARES is not in that population: its removal makes the declaration
+   bogus, which the pull request escalates as a decision instead.
 7. Marks the pull request with how many decisions are left, or clears the
    marking when there are none. This is the step that also runs on a
    no-drift day, so a decision you have settled stops being advertised.

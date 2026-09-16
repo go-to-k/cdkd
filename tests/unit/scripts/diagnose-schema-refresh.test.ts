@@ -125,7 +125,13 @@ describe('comparePropertySets', () => {
 
   it('reports nothing for an unchanged type', () => {
     const delta = comparePropertySets(fixture(['A']), fixture(['A']));
-    expect(delta).toEqual({ removed: [], added: [], writableAdded: [], createOnlyAdded: [] });
+    expect(delta).toEqual({
+      removed: [],
+      added: [],
+      writableAdded: [],
+      createOnlyAdded: [],
+      writableRemoved: [],
+    });
   });
 
   it('marks which writable additions the refreshed schema calls create-only', () => {
@@ -140,6 +146,19 @@ describe('comparePropertySets', () => {
     );
     expect(delta.writableAdded).toEqual(['Immutable', 'Mutable']);
     expect(delta.createOnlyAdded).toEqual(['Immutable']);
+  });
+
+  it('separates the WRITABLE removals, since a read-only one was never sendable', () => {
+    // The removal half of the changelog reads this: a property AWS computed
+    // and returned was never a value cdkd could send, so its disappearance
+    // changes nothing a user can observe. Read off the BEFORE side, which is
+    // the only side that still describes the property.
+    const delta = comparePropertySets(
+      fixture(['Keep', 'WasSendable', 'WasComputed'], ['WasComputed']),
+      fixture(['Keep'])
+    );
+    expect(delta.removed).toEqual(['WasSendable', 'WasComputed']);
+    expect(delta.writableRemoved).toEqual(['WasSendable']);
   });
 
   it('does not report a create-only addition that is read-only', () => {
@@ -2156,6 +2175,47 @@ describe('collectFixtureDeltas', () => {
     expect(out.readOnlyAddedCount).toBe(1);
   });
 
+  it('hands the changelog the COMPLEMENT of the declared removals', () => {
+    // The two populations are disjoint and both matter, differently. A removed
+    // property the provider DECLARES makes that declaration bogus -- a decision
+    // the report escalates. One nobody declares was a `silentDrop` row, and
+    // losing it is what stops the resource auto-routing, which is the
+    // changelog's subject.
+    const out = collectFixtureDeltas({
+      ...base,
+      files: ['glue.json'],
+      committedOf: () => fixture(['OldProp', 'NobodyDeclaredThis', 'Computed'], ['Computed']),
+      currentOf: () => fixture(['Leftover']),
+    });
+    expect(out.removed.map((e) => e.properties)).toEqual([['OldProp']]);
+    expect(out.silentDropRemoved).toEqual([
+      {
+        resourceType: 'AWS::Glue::Connection',
+        properties: ['NobodyDeclaredThis'],
+        // `Leftover` is writable and undeclared, so the type still has a drop.
+        retainsOtherDrops: true,
+      },
+    ]);
+  });
+
+  it('reports a type left with NO actionable drop after the withdrawal', () => {
+    // The discriminator the fragment's routing sentence turns on: with nothing
+    // undeclared left, a new resource of the type returns to the SDK path.
+    const out = collectFixtureDeltas({
+      ...base,
+      files: ['glue.json'],
+      committedOf: () => fixture(['NobodyDeclaredThis', 'OldProp']),
+      currentOf: () => fixture(['OldProp']),
+    });
+    expect(out.silentDropRemoved).toEqual([
+      {
+        resourceType: 'AWS::Glue::Connection',
+        properties: ['NobodyDeclaredThis'],
+        retainsOtherDrops: false,
+      },
+    ]);
+  });
+
   it('carries each type’s create-only additions through to the fragment renderer', () => {
     // `createOnly` is the ONLY consumer-visible field added for the changelog
     // fragment, and it travels per TYPE -- a union across types would make the
@@ -3107,6 +3167,102 @@ describe('the unroutable-type sources', () => {
 
 describe('renderChangelogFragment', () => {
   const exemptTypes = new Set(['AWS::Scheduler::Schedule']);
+
+  it('records a REMOVAL-only cycle, which ships a delta of its own', () => {
+    // A withdrawn property loses its `silentDrop` row, so the issue-614
+    // auto-route stops applying to it and a template still carrying the key is
+    // dropped with a warn. Before this the job rendered nothing for such a
+    // cycle (go-to-k/cdkd#3175).
+    const fragment = renderChangelogFragment({
+      writableAdded: [],
+      exemptTypes,
+      silentDropRemoved: [
+        { resourceType: 'AWS::DynamoDB::Table', properties: ['OldThing'], retainsOtherDrops: true },
+      ],
+    })!;
+    expect(fragment).toMatch(/^- \*\*AWS withdrew 1 writable property/);
+    expect(fragment).toContain('`AWS::DynamoDB::Table`: `OldThing`');
+    expect(fragment).toContain('UNRECOGNIZED property');
+    // The ADDITION sentences must be absent -- nothing was added, and the
+    // create-only sentence is about what JOINS `createOnlyDrops`.
+    expect(fragment).not.toContain('no SDK provider writes');
+    expect(fragment).not.toContain('createOnlyDrops');
+  });
+
+  it('says whether the type keeps auto-routing after the withdrawal', () => {
+    // The one fact that decides what a user sees, and it is read off the
+    // REFRESHED fixture rather than guessed: another actionable drop left
+    // means the resource still takes the Cloud Control route.
+    const keeps = renderChangelogFragment({
+      writableAdded: [],
+      exemptTypes,
+      silentDropRemoved: [
+        { resourceType: 'AWS::DynamoDB::Table', properties: ['OldThing'], retainsOtherDrops: true },
+      ],
+    })!;
+    expect(keeps).toContain('still carries another actionable drop');
+    expect(keeps).toContain('that resource keeps');
+    expect(keeps).not.toContain('takes the SDK path');
+
+    const returns = renderChangelogFragment({
+      writableAdded: [],
+      exemptTypes,
+      silentDropRemoved: [
+        { resourceType: 'AWS::SQS::Queue', properties: ['OldThing'], retainsOtherDrops: false },
+      ],
+    })!;
+    expect(returns).toContain('no actionable drop left');
+    expect(returns).toContain('a NEW resource of that type takes the SDK path');
+    // The sticky record is stated as the mechanism it is -- an existing
+    // cc-api resource does NOT come back with it.
+    expect(returns).toContain("stays on Cloud Control");
+    expect(returns).not.toContain('still carries another actionable drop');
+  });
+
+  it('carries both halves in one entry when a cycle adds and withdraws', () => {
+    const fragment = renderChangelogFragment({
+      writableAdded: [
+        { resourceType: 'AWS::DynamoDB::Table', properties: ['NewThing'], createOnly: [] },
+      ],
+      exemptTypes,
+      silentDropRemoved: [
+        { resourceType: 'AWS::SQS::Queue', properties: ['OldThing'], retainsOtherDrops: false },
+      ],
+    })!;
+    expect(fragment).toMatch(/^- \*\*The __CYCLE__ schema refresh adds 1 writable property and withdraws 1 writable property/);
+    expect(fragment).toContain('added: `AWS::DynamoDB::Table`: `NewThing`');
+    expect(fragment).toContain('withdrawn: `AWS::SQS::Queue`: `OldThing`');
+    // Both mechanisms, each scoped to its own half.
+    expect(fragment).toContain('auto-route sends a resource');
+    expect(fragment).toContain('UNRECOGNIZED property');
+  });
+
+  it('keeps a wide BOTH-halves cycle under the cap by dropping explanation, not consequence', () => {
+    // Two headline lists and two mechanism sentences: collapsing the lists
+    // alone leaves it over (measured 2057 against the 2000 cap), so the last
+    // resort drops the EXPLANATORY sentences. What a reader acts on -- which
+    // types changed route -- survives.
+    const fragment = renderChangelogFragment({
+      writableAdded: Array.from({ length: 30 }, (_, i) => ({
+        resourceType: `AWS::Service${i}::LongishResourceTypeName`,
+        properties: [`SomeReasonablyLongPropertyName${i}`],
+        createOnly: [`SomeReasonablyLongPropertyName${i}`],
+      })),
+      exemptTypes,
+      silentDropRemoved: Array.from({ length: 30 }, (_, i) => ({
+        resourceType: `AWS::Other${i}::LongishResourceTypeName`,
+        properties: [`WithdrawnLongPropertyName${i}`],
+        retainsOtherDrops: i % 2 === 0,
+      })),
+    })!;
+    expect(fragment.trimEnd().length).toBeLessThanOrEqual(CHANGELOG_ENTRY_LIMIT);
+    expect(fragment).toContain('30 across 30 resource types');
+    expect(fragment).toContain('of the withdrawing types');
+    expect(fragment).not.toContain('`AWS::Service0::LongishResourceTypeName`: ');
+    // The dropped sentences are the explanations, and the entry never runs
+    // two spaces together where one was removed.
+    expect(fragment).not.toMatch(/ {2}/);
+  });
 
   it('renders nothing when AWS added no writable property', () => {
     // A cycle that only removes, renames or adds read-only properties ships no
