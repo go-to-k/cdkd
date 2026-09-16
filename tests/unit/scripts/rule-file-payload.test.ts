@@ -230,6 +230,12 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['docker-argv-redaction.md', 8], // literal list: EXACT, see below
   ['docs-page-template.md', 63], // `docs/**`; measured 79 tracked files (80%, per the convention above)
   ['hooks.md', 68],
+  // ONE literal path: the module the file is about (issue
+  // go-to-k/cdkd#3192). EXACT, like the other wildcard-free lists. Narrow on
+  // purpose -- `src/cli/commands/scrub.ts` and `import.ts` also hold these
+  // guards, but both sit within ~1 KB of their own payload caps, so adding
+  // them here would breach a budget rather than inform a lane.
+  ['state-malformed-containers.md', 1], // literal list: EXACT, see below
   // 93 files: the 92 entries `.claude/hooks/*.sh` reaches at depth 1 -- 46
   // whose names end `.test.sh` and 46 that do not, which ONE glob covers
   // because a suite's name also ends in `.sh` -- plus `.claude/settings.json`.
@@ -496,6 +502,14 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // sits under no budget at all: the `src/state/s3-state-backend.ts` row above
   // does NOT match it, which is the whole reason it was split out.
   ['src/state/s3-noncurrent-version-purge.ts', 43_000, 56_000], // measured 49,744; RE-DERIVED at the layout-misc split (was 53_000/64_000 at 61,168; the old CAP left 14 KB of slack, enough for a whole satellite to land unseen)
+  // The representative path for state-malformed-containers.md, whose single
+  // literal glob matches nothing else. Split out of layout-state-types.md
+  // under issue go-to-k/cdkd#3192, when the `outputs`-container guards pushed
+  // `src/types/state.ts` 1,715 B over the 48_000 row below. Without this row
+  // the satellite sits under no budget at all -- neither the
+  // `src/state/s3-state-backend.ts` row nor the `src/types/state.ts` one
+  // matches it, which is the point of the split.
+  ['src/state/malformed-resources-bag.ts', 46_000, 57_000], // measured 52,721
   // Ceiling was 57_000 -> 58_000 by go-to-k/cdkd#2717, calibrated against a
   // 57,019 B payload with 96 B of headroom, where a single `code-layout.md`
   // index row was enough to breach it. That reasoning stands and is why the
@@ -1250,12 +1264,19 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 // Neither branch's figure is the merged one. That is the whole reason this
 // count is asserted rather than described: two correct increments compose to a
 // number neither author wrote.
-const CORPUS_FILE_COUNT = 58; // + rollback-replay-create.md (go-to-k/cdkd#3199): the replay-CREATE's
+const CORPUS_FILE_COUNT = 59; // BOTH lanes added one, and each set this to 58 independently --
+                              //  a keep-either resolution silently drops the other satellite.
+                              // + rollback-replay-create.md (go-to-k/cdkd#3199): the replay-CREATE's
                               //  Cloud Control fallback-name fill took
                               //  `src/deployment/secret-redaction.ts` 1,721 B over its 102,000 B
                               //  cap, so the replay-CREATE bag rules (the #1682 effectiveProperties
                               //  honouring and the #3199 fill) moved to a satellite globbed at
                               //  `rollback-executor.ts` alone, with a one-line pointer left behind.
+                              // + state-malformed-containers.md (go-to-k/cdkd#3192): the `outputs`
+                              //  half of the malformed-container guards took `src/types/state.ts`
+                              //  1,715 B past its 48,000 B path cap, so the module's own notes got
+                              //  a satellite globbed at that one file, with one-line pointers left
+                              //  in layout-state-types.md and state-schema.md.
                               // Was 57: + own-keys.md (go-to-k/cdkd#3121): layout-utils.md sat 118 B under
                               //  the `aws-client-defaults.ts` path cap, so the own-key rule got
                               //  its own satellite with a one-line pointer left behind.
@@ -1442,7 +1463,15 @@ const CORPUS_FILE_COUNT = 58; // + rollback-replay-create.md (go-to-k/cdkd#3199)
                               //  than against main, and a pointer always costs the index file
                               //  something. Measured on the tree that ships this line. That
                               //  makes 45.
-const CORPUS_BYTES_MIN = 1_006_000; // RE-DERIVED UPWARD 966_000 -> 1_006_000 (2026-09-13, issue
+const CORPUS_BYTES_MIN = 1_046_000; // RE-DERIVED UPWARD 1_006_000 -> 1_046_000 (2026-09-16,
+                                    // go-to-k/cdkd#3192): the "discriminates the deletion of the
+                                    // LARGEST satellite" case went RED, which is the mechanical
+                                    // occasion this constant's own note below promises. Measured
+                                    // 1,080,007 B on a tree REBASED onto origin/main, so this is
+                                    // the merge rather than a stale branch -- 34,007 B of slack,
+                                    // the ~34 KB margin every previous setting used, and under
+                                    // hooks.md's 73,606 B so the case it failed now passes with
+                                    // room. Previously: RE-DERIVED UPWARD 966_000 -> 1_006_000 (2026-09-13, issue
                                     // go-to-k/cdkd#3003's PR): the "discriminates the deletion of
                                     // the LARGEST satellite" case went RED IN CI, which is the
                                     // mechanical occasion this constant's own note below promises.

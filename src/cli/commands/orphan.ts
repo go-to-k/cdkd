@@ -30,7 +30,10 @@ import {
   type UnresolvableReference,
 } from '../../analyzer/orphan-rewriter.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
-import { refuseMalformedState } from '../../state/malformed-resources-bag.js';
+import {
+  refuseMalformedOutputs,
+  refuseMalformedState,
+} from '../../state/malformed-resources-bag.js';
 
 interface OrphanOptions {
   app?: string;
@@ -226,6 +229,19 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
       // `cdkd orphan` REWRITES and SAVES state, so a record whose resource map
       // cannot be read is refused rather than repaired (go-to-k/cdkd#3018).
       refuseMalformedState(state, stackInfo.stackName, targetRegion);
+      // And the same for the `outputs` bag (go-to-k/cdkd#3192), which the
+      // refusal above does NOT cover — a record can be malformed in either
+      // container alone. `rewriteResourceReferences` rebuilds the bag from
+      // `Object.entries(state.outputs ?? {})` and this command SAVES the
+      // result at the `saveState` below, so `outputs: 'abcdef'` is written
+      // back as a well-formed `{"0":"a",…,"5":"f"}` and a null one as `{}`
+      // (both measured). The damaged record is the only signal anything is
+      // wrong; laundering it into a legitimate-looking one is permanent, and
+      // the next deploy republishes the fabricated keys into the shared
+      // exports index. AT THE LOAD, above every read: the rebuild is far
+      // below, and a guard written there would sit under the reads the
+      // `missing` check and the rewrite already made.
+      refuseMalformedOutputs(state, stackInfo.stackName, targetRegion);
 
       // Validate that every requested orphan exists in state — otherwise we
       // would silently no-op while the user expected a removal.

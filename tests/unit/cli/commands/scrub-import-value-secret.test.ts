@@ -393,6 +393,167 @@ describe('cdkd scrub resolves a cross-stack read (issue #2133)', () => {
     expect(stateBackend.getState.mock.calls).toContainEqual([PRODUCER, REGION]);
     expect(savedState().outputs['DbUrl']).toBe(SECRET_EXPR);
   });
+
+  /**
+   * A FOREIGN producer whose own `outputs` bag is not an object, and the
+   * REACHABILITY finding that came with it (review of go-to-k/cdkd#3206).
+   *
+   * `storedProducerValue` in `src/cli/commands/scrub.ts` classifies a
+   * producer's stored value and used to ask `producer.key in outputs`, which
+   * on a string is a bare `TypeError` that escapes (the enclosing `try` ends
+   * at the `catch` that logs a failed re-read). That is a real #3018-class
+   * defect and the guard is now `isReadableBag` + `Object.hasOwn`.
+   *
+   * IT IS REACHABLE, and an earlier revision of this comment claimed the
+   * opposite. That claim was measured true only for the `Fn::ImportValue`
+   * route this file's other cases use, where `importableOutputKeys` fails
+   * closed so the read never succeeds and the classifier is never entered.
+   * `recordedProducer` has a SECOND arm: `Fn::GetStackOutput` does not consult
+   * that predicate at all — the resolver reads `state.outputs ?? {}` and asks
+   * `Object.hasOwn`, and `Object.hasOwn('abcdef', '0')` is TRUE — so a
+   * producer whose bag is a string and whose template declares an output named
+   * `'0'` resolves, records, and reaches the classifier. Three reviewers
+   * converged on this and one measured the raw
+   * `TypeError: Cannot use 'in' operator to search for '0' in abcdef`
+   * escaping to the user with the guard reverted.
+   *
+   * So the guard is fenced by the `Fn::GetStackOutput` case below, and the
+   * `Fn::ImportValue` case pins the OUTCOME on the route where the upstream
+   * predicate refuses first. Writing the unreachability claim down without a
+   * case behind it would have licensed a future lane to delete a live fix.
+   */
+  it('a damaged PRODUCER record refuses the consumer by name, not with a TypeError', async () => {
+    consumerState = makeConsumerState(
+      { MasterUserPassword: 'not-a-secret', MasterUsername: 'admin' },
+      { DbUrl: PLAINTEXT }
+    );
+    useProducerOutputs('abcdef' as unknown as Record<string, unknown>);
+
+    let thrown: unknown;
+    try {
+      await scrub(
+        { MasterUserPassword: 'not-a-secret', MasterUsername: 'admin' },
+        { outputs: { DbUrl: { Value: { 'Fn::ImportValue': EXPORT_NAME } } } }
+      );
+    } catch (err) {
+      thrown = err;
+    }
+
+    // This pins the OUTCOME, not either guard: the consumer's
+    // `Fn::ImportValue` cannot resolve against a damaged producer, so scrub
+    // refuses the stack by name — the same answer as a producer that is simply
+    // missing, and never a raw TypeError reaching the user.
+    const message = thrown instanceof Error ? thrown.message : String(thrown);
+    expect(message).not.toMatch(/in' operator|is not a function|Cannot read properties/);
+    expect((thrown as { code?: string }).code).toBe('SCRUB_CROSS_STACK_READ_UNRESOLVED');
+  });
+
+  it('Fn::GetStackOutput REACHES the classifier with a damaged producer bag, and survives', async () => {
+    // The route that makes the guard fenceable rather than defence-in-depth.
+    // `Fn::GetStackOutput` bypasses `importableOutputKeys`, and the output is
+    // named `'0'` ON PURPOSE: that is an INDEX of the planted string, so
+    // `Object.hasOwn('abcdef', '0')` is true, the resolver returns `'a'`, the
+    // read is RECORDED, and `storedProducerValue` is entered with a bag it
+    // cannot walk. Pre-guard this aborted with
+    // `Cannot use 'in' operator to search for '0' in abcdef`.
+    const FABRICATED_KEY = '0';
+    consumerState = makeConsumerState(
+      { MasterUserPassword: 'not-a-secret', MasterUsername: 'admin' },
+      { DbUrl: PLAINTEXT }
+    );
+    useProducerOutputs('abcdef' as unknown as Record<string, unknown>);
+
+    let thrown: unknown;
+    let result: Awaited<ReturnType<typeof scrub>> | undefined;
+    try {
+      result = await scrub(
+        { MasterUserPassword: 'not-a-secret', MasterUsername: 'admin' },
+        {
+          outputs: {
+            DbUrl: {
+              Value: {
+                'Fn::GetStackOutput': { StackName: PRODUCER, OutputName: FABRICATED_KEY },
+              },
+            },
+          },
+          appStacks: [
+            makeProducerStackInfo({
+              [FABRICATED_KEY]: { Value: SECRET_EXPR, Export: { Name: EXPORT_NAME } },
+            }),
+          ],
+        }
+      );
+    } catch (err) {
+      thrown = err;
+    }
+
+    // Whatever the verdict, it must not be a raw TypeError out of the
+    // classifier. THIS is the assertion the guard owns.
+    const message = thrown instanceof Error ? thrown.message : String(thrown);
+    expect(
+      message,
+      'storedProducerValue walked a foreign bag it cannot walk'
+    ).not.toMatch(/in' operator|is not a function|Cannot read properties/);
+
+    // ...and the damaged producer is NAMED at default verbosity rather than
+    // swallowed at `debug`. `warn `-prefixed, so a `debug` line naming the
+    // same stack does not satisfy this.
+    const warned = logLines.filter((l) => l.startsWith('warn ')).join('\n');
+    expect(warned, 'the damaged producer record was tolerated silently').toContain(PRODUCER);
+
+    // THE REGRESSION GUARD, and the assertion that matters most here. At the
+    // merge base both damaged shapes were already non-clean — a string bag
+    // threw an escaping `TypeError`, an array bag resolved the plaintext and
+    // raised the producer-plaintext refusal. Guarding the read without
+    // RECORDING a finding would have converted both into
+    // `No plaintext secrets found`, exit 0, over a consumer record that still
+    // holds the imported plaintext. `--dry-run --fail` reads the exit code,
+    // not the warning above, so the warning alone does not close this.
+    expect(thrown, 'the run refused; this case needs it to COMPLETE so the count is readable')
+      .toBeUndefined();
+    expect(
+      result?.unverifiableReads,
+      'a damaged producer recorded no FINDING, so scrub can report this stack clean and exit 0'
+    ).toBeGreaterThan(0);
+  });
+
+  it('an ARRAY producer bag is non-clean too — the shape that used to raise exit 2', async () => {
+    // The OTHER regressed shape, and the one whose merge-base behaviour is
+    // easiest to get wrong: `'0' in ['<plaintext>']` is TRUE, so the pre-fix
+    // code RETURNED the array's element, found no dynamic reference in it, and
+    // raised `plaintextProducerCrossStackReadError` — exit 2, not a TypeError.
+    // `isReadableBag` rejects arrays, so it now shares the string bag's branch;
+    // this case exists because the commit message and the code comment both
+    // cite it and only the string shape had coverage (review round 6).
+    const FABRICATED_KEY = '0';
+    consumerState = makeConsumerState(
+      { MasterUserPassword: 'not-a-secret', MasterUsername: 'admin' },
+      { DbUrl: PLAINTEXT }
+    );
+    useProducerOutputs([PLAINTEXT] as unknown as Record<string, unknown>);
+
+    const result = await scrub(
+      { MasterUserPassword: 'not-a-secret', MasterUsername: 'admin' },
+      {
+        outputs: {
+          DbUrl: {
+            Value: { 'Fn::GetStackOutput': { StackName: PRODUCER, OutputName: FABRICATED_KEY } },
+          },
+        },
+        appStacks: [
+          makeProducerStackInfo({
+            [FABRICATED_KEY]: { Value: SECRET_EXPR, Export: { Name: EXPORT_NAME } },
+          }),
+        ],
+      }
+    );
+
+    expect(
+      result.unverifiableReads,
+      'an array producer bag reported nothing, so a shape that exited 2 at the merge base now ' +
+        'exits 0 over a consumer record still holding the imported plaintext'
+    ).toBeGreaterThan(0);
+  });
 });
 
 describe('cdkd scrub REFUSES a cross-stack read it cannot perform (issue #2133)', () => {
@@ -3863,6 +4024,7 @@ describe('cdkd scrub names WHICH arm declined a cross-stack read (issue #2163)',
       secretsFound: 0,
       secretBearingKeys: 0,
       unverifiableReads: 0,
+      unverifiableProducerRecords: 0,
       unverifiableLeaves: 0,
       // The post-scrub bag `scrubStack` reports for the exports-index step
       // (issue #2667). Present and EMPTY here: this fixture's state record

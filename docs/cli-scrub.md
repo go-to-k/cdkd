@@ -272,7 +272,7 @@ No plaintext secrets found in any target stack state. Nothing to scrub.
 | --- | --- |
 | `0` | State was scrubbed, or there was nothing to scrub. |
 | `1` | `--fail` found plaintext: under `--dry-run`, any plaintext at all; on a real run, a leak scrub cannot rewrite. |
-| `2` | scrub refused to examine something, a stack failed outright, or the exports index was left incomplete. |
+| `2` | scrub refused to examine something, could not classify a producer it imports from, a stack failed outright, or the exports index was left incomplete. |
 
 The full cross-command table is in the
 [CLI Reference](cli-reference.md#exit-codes).
@@ -299,6 +299,27 @@ Either way the message names the record and tells you not to run `cdkd deploy`
 or `cdkd destroy` against it — both read the same map, and an unreadable one is
 indistinguishable from an empty stack.
 
+**A record whose `outputs` map cannot be read exits `2` as well**, and it is
+decided separately: a record can be damaged in either container alone, so the
+message names the one that is actually broken. The reasoning is the same and
+the consequence is different. Scrub REBUILDS the outputs bag before saving it,
+and `Object.entries` walks a string as readily as a map — a six-character
+value comes back as a well-formed six-key map, a `null` one as `{}` — so a
+real run refuses rather than laundering the record. What is at stake is not
+the stack being re-created (the resource map is intact) but the shared exports
+index: `state.outputs` is what a redeploy republishes into
+`cdkd/_index/<region>/exports.json`, which every other stack's
+`Fn::ImportValue` resolves against.
+
+Under `--dry-run` scrub audits the resource half instead, warns that the
+outputs were never examined, and still exits `2` — otherwise every
+outputs-side counter is legitimately zero and the run would print
+`No plaintext secrets found` over a bag it replaced with an empty one.
+
+An **absent** `outputs` field is not a defect and is never refused: a record
+with no outputs is one cdkd writes on purpose, and scrub round-trips it
+without materializing `{}`.
+
 **What a real run can report as `1`.** `--fail` is documented as a
 `--dry-run` CI gate, but a real run exits non-zero too when it found a leak it
 cannot rewrite. Three shapes qualify, and all three are also reported in words:
@@ -316,8 +337,29 @@ cannot rewrite. Three shapes qualify, and all three are also reported in words:
   already leaking** — the change is what cdkd can see, not what the state
   holds. Rotate the secret and change the `Export.Name`.
 
-- a **cross-stack read cdkd declines by design**:
+- a **cross-stack read that could not be verified**:
   `N cross-stack read(s) in <stack> could NOT be verified`.
+
+  Two shapes land here and they call for different things, so the per-read
+  warning above the summary is what names the remedy. One is a read cdkd
+  **declines by design** — a cross-account reference whose producer stores a
+  secret expression cdkd will not resolve under the consumer's credentials —
+  and no re-run clears it; export a non-secret value such as the secret's ARN,
+  or reference it from within its own account. The other is a producer whose
+  own `outputs` map **cannot be read**, which is repairable: fix that record
+  and scrub it first.
+
+  The two also exit differently, because the remedies differ. The by-design
+  read is a `--fail` finding: exit `1`, and only with the flag. **A producer
+  whose `outputs` map cannot be read exits `2` on its own, with or without
+  `--fail`** — including under `--dry-run`. It means scrub could not tell
+  whether that producer still holds the plaintext this stack imports, which is
+  "cdkd did not finish", not "cdkd looked and found a leak".
+
+  Neither shape refuses the stack. Refusing would strand this stack's own
+  plaintext over a record that belongs to another stack — possibly one the
+  operator does not own — so scrub reports the finding, scrubs everything
+  else, and declines to call the stack clean.
 
 - a **record whose `{{resolve:...}}` scan was ABANDONED part-way**:
   `N scan(s) in <stack> were ABANDONED mid-value because a {{resolve:...}}
@@ -367,7 +409,8 @@ These error codes stop the run rather than reporting it clean. All exit `2`.
 | `SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT` | The read succeeded, but the producer's own state still stores the plaintext instead of the expression. | `cdkd scrub <producer>` first, then re-run. For a chain, every stack in it, head first. |
 | `SCRUB_CROSS_REGION_SECRET_UNRESOLVED` | A secret reference whose ARN names another region could not be read in that region. | Grant the read there, or restore the secret. scrub will not fall back to the stack's own region. |
 | `SCRUB_STACKS_FAILED` | Under `--all`, one or more stacks ended in one of the above. | Fix each named stack; the others were still scrubbed. Each stack's own reason was logged as it happened. |
-| `STATE_RESOURCES_MALFORMED` | A state record's `resources` map is absent, `null`, or not an object. A real run refuses it; `--dry-run` audits the outputs and reports this rather than a clean result. | Inspect the record with `cdkd state show <stack> --stack-region <region> --json` and repair or remove it. Do NOT `cdkd deploy` or `cdkd destroy` against it first. |
+| `STATE_RESOURCES_MALFORMED` | A state record's `resources` map is absent, `null`, or not an object — or its `outputs` map is `null` or not an object. A real run refuses the stack, which under `--all` is reported as `SCRUB_STACKS_FAILED`; `--dry-run` audits the other container and reports this code rather than a clean result. An ABSENT `outputs` map is not a defect and is never refused. | Inspect the record with `cdkd state show <stack> --stack-region <region> --json` and repair or remove it. Do NOT `cdkd deploy` or `cdkd destroy` against it first. |
+| `SCRUB_PRODUCER_RECORD_UNREADABLE` | A stack imports from a PRODUCER whose own `outputs` map cannot be read, so this run could not tell whether that producer still holds the plaintext. Raised with or without `--fail`, `--dry-run` included. | `cdkd scrub <producer>` cannot run until that record is repaired — inspect it with `cdkd state show <producer> --stack-region <region> --json`, repair it, scrub the producer, then re-run. The importing stack was still scrubbed for everything else (audited, under `--dry-run`). |
 | `SCRUB_EXPORT_INDEX_INCOMPLETE` | `state.json` was rewritten and an entry of the [exports index](#the-exports-index) was not — a refused write, or a region whose index could not be read. | Clear the cause (usually an S3 permission on `{state-prefix}/_index/...`) and re-run. The re-run writes only the entries still differing. |
 
 Everything else the per-item best-effort handler swallows is unchanged: a
