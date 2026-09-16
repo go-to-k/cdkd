@@ -45,6 +45,7 @@ import { withRetry } from './retry.js';
 import {
   dynamicReferenceTokens,
   maskSecretsInText,
+  maskSecretsInError,
   recordSecretExpression,
   forgetSecretExpression,
   isRecordedSecretExpression,
@@ -8351,9 +8352,32 @@ export class IntrinsicFunctionResolver {
     // state bucket from the role ARN's account ID, build an ephemeral
     // S3StateBackend pointed at it with the assumed credentials, then
     // read the producer's state.
-    const stateData = roleArn
-      ? await this.getCrossAccountStackState(roleArn, stackName, region, context)
-      : await this.getSameAccountStackState(stackName, region, context);
+    //
+    // MASKED AT THIS BOUNDARY (issue
+    // [#3234](https://github.com/go-to-k/cdkd/issues/3234)), and it has to be
+    // HERE rather than at the throw: the reads take the RAW `stackName` and
+    // `region` because those are state-KEY segments, and `S3StateBackend` — a
+    // module that holds no secrets bag — quotes them back through
+    // `displaySafe`, an ASCII sanitizer rather than a masker. This frame is the
+    // last one holding both the raw names and their masked spellings, so it is
+    // the only place the substitution can be exact. The `Fn::ImportValue`
+    // sibling already masks the same shape at its own catch; this site was
+    // simply missed.
+    let stateData: Awaited<ReturnType<S3StateBackend['getState']>>;
+    try {
+      stateData = roleArn
+        ? await this.getCrossAccountStackState(roleArn, stackName, region, context)
+        : await this.getSameAccountStackState(stackName, region, context);
+    } catch (error) {
+      this.maskStateReadError(
+        error,
+        [
+          [stackName, loggedStackName],
+          [region, loggedRegion],
+        ],
+        context
+      );
+    }
     if (!stateData) {
       // CloudFormation fallback (issue #1697): the producer may be a
       // CloudFormation-managed stack (deployed via `cdk deploy` / raw CFn)
@@ -8540,6 +8564,81 @@ export class IntrinsicFunctionResolver {
       sourceRegion: producerRegion,
       outputName,
     });
+  }
+
+  /**
+   * Mask a failure raised by a module this resolver handed RAW names to (issue
+   * [#3234](https://github.com/go-to-k/cdkd/issues/3234)).
+   *
+   * Returns a masked CLONE of the whole cause chain, not a new wrapper, and
+   * that is the point: `formatError` renders `Caused by: <cause>`, so masking
+   * only a fresh top-level message leaves the original message one link down
+   * and prints it anyway. The clone keeps the class, every own descriptor
+   * (`markNonRetryable`'s non-enumerable symbol, `$metadata`, `Code`, `name`)
+   * and the chain shape, so every reader that classifies this error still
+   * does — see `maskSecretsInError`'s own doc.
+   *
+   * `pairs` are (raw, masked-log-text) for the names this frame handed over.
+   * They are what the BAGS cannot do: a 1-3 character secret assembled into a
+   * longer name is below `MIN_NEEDLE_LENGTH`, so the needle pass sees it only
+   * as a whole value, while this frame knows the exact spans. A pair whose two
+   * halves are equal carries no mask and is dropped, so the common path builds
+   * no transform at all; an empty raw name is dropped too, since replacing the
+   * empty string would splice the replacement between every character.
+   * LONGEST RAW FIRST, so a name that contains another is rewritten as itself
+   * rather than having its inner name replaced underneath it. **That ordering
+   * is DEFENSIVE and this suite does not distinguish it** — measured: reversing
+   * the sort leaves every case green, because the two names here either do not
+   * nest or their masked spellings nest the same way, and a pair carrying no
+   * mask is dropped before the sort runs. It earns its place on the shape that
+   * DOES diverge — a shorter raw whose mask is not a prefix of the longer's
+   * (`q7` -> `***` beside `q7x` -> `***` turns `q7x` into `***x` shortest-first,
+   * leaking the `x`) — which needs two separately recorded secrets to build and
+   * is not constructed here. Recorded rather than claimed fenced.
+   */
+  private maskStateReadError(
+    error: unknown,
+    pairs: readonly (readonly [string, string])[],
+    context?: ResolverContext
+  ): never {
+    const substitutions = pairs
+      .filter(([raw, masked]) => raw !== '' && raw !== masked)
+      .sort(([a], [b]) => b.length - a.length);
+    const extraMask =
+      substitutions.length === 0
+        ? undefined
+        : (text: string): string => {
+            let out = text;
+            for (const [raw, masked] of substitutions) out = out.split(raw).join(masked);
+            return out;
+          };
+    // The SAME two bags in the SAME order as `maskSecretsForLog`, for the same
+    // reason (issue #1903 round 2): on a nested-stack child the parent's
+    // decrypted parameter plaintext lives in the inherited bag alone until a
+    // `{Ref: <Param>}` resolution copies it across.
+    //
+    // `extraMask` rides the FIRST pass only. It is not idempotent against
+    // itself in general — a masked spelling could in principle contain another
+    // pair's raw text — and re-running it over text the first pass already
+    // rewrote is how a second substitution would corrupt the first. One pass
+    // is also all it needs: `maskSecretsInError` walks the whole chain, so a
+    // single call reaches every link.
+    //
+    // No empty-bag arm, and that is an INVARIANT rather than an omission: a
+    // pair carries a mask only when `maskSecretsForLog` changed the name, which
+    // needs either a registered log twin or a non-empty bag — and a twin's
+    // masked spans come from a recorded secret, so it implies one too. So
+    // whenever `extraMask` exists at all, at least one bag is non-empty and the
+    // loop runs. An arm for the other case was written, measured inert against
+    // this suite, and deleted rather than shipped unfenced.
+    let masked: unknown = error;
+    let positional = extraMask;
+    for (const bag of [context?.inheritedSecrets, context?.recordedSecretValues]) {
+      if (!bag || bag.size === 0) continue;
+      masked = maskSecretsInError(masked, bag, positional);
+      positional = undefined;
+    }
+    throw masked;
   }
 
   /**

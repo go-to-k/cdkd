@@ -43,6 +43,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { StateError } from '../../../src/utils/error-handler.js';
+import { isThrottlingError } from '../../../src/deployment/retryable-errors.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { ExportIndexStore } from '../../../src/state/export-index-store.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -1860,5 +1862,179 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
       );
       expectNowhere('sec-q', message);
     });
+  });
+});
+
+/**
+ * Issue [#3234](https://github.com/go-to-k/cdkd/issues/3234): `resolveGetStackOutput`
+ * masks every name it prints ITSELF, then hands the RAW `StackName` and
+ * `Region` to the state read — they are state-KEY segments, so they have to be
+ * raw — and `S3StateBackend` quotes them back through `displaySafe`, an ASCII
+ * sanitizer rather than a masker. The read was uncaught, so that sentence
+ * reached `evaluateConditions`' warn and every other caller with a sub-floor
+ * secret in the clear.
+ *
+ * Two halves are pinned here, and the SECOND is the one the issue's own
+ * proposed remedy ("keep the cause unmasked so the retry classifiers still see
+ * `$metadata`") would have left open: `formatError` renders
+ * `Caused by: <cause>`, so masking only a fresh top-level message prints the
+ * original one link down. The fix therefore re-throws a masked CLONE of the
+ * whole chain rather than a new wrapper — which is also what keeps the
+ * classifiers working, since the clone carries every own descriptor.
+ */
+describe('issue #3234: the Fn::GetStackOutput state read', () => {
+  /** The realistic failure: cdkd's own wrapper over an AWS rejection, both quoting the key. */
+  function rejectingBackend(stackName: string, region = 'us-east-1'): S3StateBackend {
+    return {
+      listStacks: vi.fn(async () => []),
+      getState: vi.fn(async () => {
+        const aws = new Error(
+          `Access Denied: s3:GetObject on cdkd/${stackName}/${region}/state.json`
+        );
+        (aws as unknown as { $metadata: unknown }).$metadata = { httpStatusCode: 403 };
+        (aws as unknown as { Code: string }).Code = 'AccessDenied';
+        const wrapped = new StateError(
+          `Failed to get state for stack '${stackName}' (${region}): ${aws.message}`,
+          aws
+        );
+        throw wrapped;
+      }),
+    } as unknown as S3StateBackend;
+  }
+
+  /** The thrown value itself, so the CAUSE chain can be read. */
+  async function errorOf(value: unknown, context: Ctx): Promise<Error> {
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const outcome = await resolver
+      .resolve(value, context as never)
+      .then((resolved) => ({ resolvedInstead: JSON.stringify(resolved) }), (reason: unknown) => reason);
+    if (outcome && typeof outcome === 'object' && 'resolvedInstead' in outcome) {
+      throw new Error(`the site must throw; it resolved to ${String(outcome.resolvedInstead)}`);
+    }
+    expect(outcome).toBeInstanceOf(Error);
+    return outcome as Error;
+  }
+
+  /** Every message in the chain, top link first — what `formatError` can reach. */
+  function chainMessages(error: Error): string[] {
+    const out: string[] = [];
+    let link: unknown = error;
+    const seen = new Set<unknown>();
+    while (link instanceof Error && !seen.has(link)) {
+      seen.add(link);
+      out.push(link.message);
+      link = (link as { cause?: unknown }).cause;
+    }
+    return out;
+  }
+
+  const producer = (name: unknown, region: unknown = 'us-east-1'): unknown => ({
+    'Fn::GetStackOutput': { StackName: name, OutputName: 'Out', Region: region },
+  });
+
+  it('the thrown message masks a sub-floor secret assembled into the stack name', async () => {
+    const error = await errorOf(
+      producer(sub('prod-${P}')),
+      makeContext({ stateBackend: rejectingBackend(`prod-${PIN}`) })
+    );
+    expect(error.message).toBe(
+      "Failed to get state for stack 'prod-***' (us-east-1): " +
+        'Access Denied: s3:GetObject on cdkd/prod-***/us-east-1/state.json'
+    );
+    expectNowhere(`prod-${PIN}`, error.message);
+  });
+
+  it('the CAUSE chain is masked too, which a fresh top-level wrapper would not have been', async () => {
+    const error = await errorOf(
+      producer(sub('prod-${P}')),
+      makeContext({ stateBackend: rejectingBackend(`prod-${PIN}`) })
+    );
+    const messages = chainMessages(error);
+    expect(messages).toHaveLength(2);
+    expect(messages[1]).toBe(
+      'Access Denied: s3:GetObject on cdkd/prod-***/us-east-1/state.json'
+    );
+    expectNowhere(`prod-${PIN}`, ...messages);
+  });
+
+  it('the STACK text is masked as well, since its first line embeds the message', async () => {
+    const error = await errorOf(
+      producer(sub('prod-${P}')),
+      makeContext({ stateBackend: rejectingBackend(`prod-${PIN}`) })
+    );
+    expect(typeof error.stack).toBe('string');
+    expect(error.stack).not.toContain(`prod-${PIN}`);
+    expect(error.stack).toContain('prod-***');
+  });
+
+  it('CONTROL: an unrecorded name in the same shape prints verbatim', async () => {
+    const error = await errorOf(
+      producer(plain('prod-${P}')),
+      makeContext({ stateBackend: rejectingBackend(`prod-${UNRECORDED}`) })
+    );
+    expect(error.message).toContain(`prod-${UNRECORDED}`);
+    expect(error.message).not.toContain('***');
+  });
+
+  it('the REGION is masked by the same substitution', async () => {
+    const error = await errorOf(
+      producer('Producer', sub('us-west-${P}')),
+      makeContext({ stateBackend: rejectingBackend('Producer', `us-west-${PIN}`) })
+    );
+    expect(error.message).toBe(
+      "Failed to get state for stack 'Producer' (us-west-***): " +
+        'Access Denied: s3:GetObject on cdkd/Producer/us-west-***/state.json'
+    );
+    expectNowhere(`us-west-${PIN}`, error.message);
+  });
+
+  it('the clone keeps the descriptors the retry classifiers read', async () => {
+    const error = await errorOf(
+      producer(sub('prod-${P}')),
+      makeContext({ stateBackend: rejectingBackend(`prod-${PIN}`) })
+    );
+    expect(error).toBeInstanceOf(StateError);
+    expect(error.name).toBe('StateError');
+    const cause = (error as { cause?: unknown }).cause as Record<string, unknown>;
+    expect(cause['$metadata']).toEqual({ httpStatusCode: 403 });
+    expect(cause['Code']).toBe('AccessDenied');
+    expect(isThrottlingError(error)).toBe(false);
+  });
+
+  it('the positional pass runs BEFORE the bag pass, or a 4+ char secret beside the pin defeats it', async () => {
+    // `pinab` is `q7ab`, long enough for the needle mask to reach it as a
+    // SUBSTRING. Run the bag pass first and it rewrites the name to
+    // `svc-***-q7`, after which the raw `svc-q7ab-q7` no longer matches and the
+    // sub-floor `q7` — the half this issue is about — survives. This is the
+    // case probe 6 needed: with the order swapped, the tail reads `-q7`.
+    // The name's own log text is the WHOLE `***` here, not `svc-***-***`:
+    // `maskSecretsForLog` collapses to `***` when the needle mask also changes
+    // the raw text, which the 4-character half makes it do.
+    const name = { 'Fn::Sub': ['svc-${A}-${B}', { A: ref('pinab'), B: ref('pin') }] };
+    const error = await errorOf(
+      producer(name),
+      makeContext({ stateBackend: rejectingBackend(`svc-${PIN}ab-${PIN}`) })
+    );
+    expect(error.message).toBe(
+      "Failed to get state for stack '***' (us-east-1): " +
+        'Access Denied: s3:GetObject on cdkd/***/us-east-1/state.json'
+    );
+    // The discriminator: with the passes swapped the bag rewrites `q7ab` first,
+    // the raw name stops matching, and the tail survives as `svc-***-q7`.
+    expectNowhere(PIN, error.message);
+  });
+
+  it('a stack name that EMBEDS the region still masks only its own secret', async () => {
+    // Deliberately NOT a fence on the longest-raw-first sort: the region here
+    // carries no mask, so `maskStateReadError` drops that pair and one
+    // substitution is left, which no ordering can get wrong. Reversing the sort
+    // leaves this suite green (measured) — see the note at that sort.
+    const error = await errorOf(
+      producer(sub('us-east-1-app-${P}')),
+      makeContext({ stateBackend: rejectingBackend(`us-east-1-app-${PIN}`) })
+    );
+    expect(error.message).toContain("stack 'us-east-1-app-***'");
+    expect(error.message).toContain('(us-east-1)');
+    expectNowhere(`us-east-1-app-${PIN}`, error.message);
   });
 });
