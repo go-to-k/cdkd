@@ -3401,8 +3401,10 @@ export class IntrinsicFunctionResolver {
         // below, and `resolveSub` / `resolveJoin` re-enter it with the
         // ASSEMBLED string — so a `Conditions` entry that builds a reference
         // out of a value this same pass resolved from a secret makes the
-        // lookup fail NAMING that plaintext (`key '<password>' not found in
-        // secret '<id>'`). That throw is masked AT THE THROW since issue
+        // lookup fail NAMING that plaintext (`key 'key-<password>' not found
+        // in secret '<id>'` — the EMBEDDED form, which is the one the residual
+        // below is about; a key that is the plaintext WHOLE reads
+        // `key '<password>' not found`). That throw is masked AT THE THROW since issue
         // [#2827](https://github.com/go-to-k/cdkd/issues/2827); this sentence
         // used to say it was "thrown unmasked by construction because every
         // other consumer masks at ITS own boundary", which that fix retired. Same class as the
@@ -3411,7 +3413,7 @@ export class IntrinsicFunctionResolver {
         // ANY error, not only a lookup echo. What used to stand here as the
         // residual — a plaintext shorter than `MIN_NEEDLE_LENGTH` (4) embedded
         // in a longer name rather than whole, which no needle matches — is
-        // CLOSED for the names the RESOLVER builds into its own text, by issue
+        // CLOSED for the names THIS PASS ASSEMBLED, by issue
         // [#3150](https://github.com/go-to-k/cdkd/issues/3150): such a name is
         // masked BY POSITION, out of the log twin `resolveSub` / `resolveJoin`
         // BUILD for the assembled string — REGISTERED (`rememberLogTwin`) once
@@ -3423,15 +3425,26 @@ export class IntrinsicFunctionResolver {
         // `intrinsic-resolver-name-argument-log-twin.test.ts` pins this sink's
         // whole sentence). Do not shorten that to "registered": on the example's
         // own path `rememberLogTwin` has not run yet.
-        // TWO residuals survive here, both being text composed OUTSIDE this
-        // resolver and therefore carrying no twin, so each reaches the needle
-        // mask alone: text an AWS SDK authored and this sink only FORWARDS
-        // ([#3171](https://github.com/go-to-k/cdkd/issues/3171)), and text
-        // cdkd itself composes in ANOTHER MODULE around a name this resolver
-        // did NOT mask before handing it over — `resolveGetStackOutput`'s
-        // uncaught state read, whose `StateError` quotes the producer stack
-        // name back ([#3234](https://github.com/go-to-k/cdkd/issues/3234); the
-        // `Fn::ImportValue` sibling catches and masks the same shape).
+        //
+        // What is closed is exactly what a twin can cover, and NOTHING WIDER:
+        // a name this pass assembled. Any other text reaching this sink
+        // carries no twin and gets the needle mask alone, whose substring arm
+        // has a four-character floor — so a sub-floor plaintext can still
+        // print here. **The ways that happens are NOT enumerated here, and a
+        // count written here would be wrong.** State the DANGER DIRECTION;
+        // each instance is stated where it is OWNED, which is the only place
+        // that stays true when that code moves: an AWS SDK's text this sink
+        // merely forwards
+        // ([#3171](https://github.com/go-to-k/cdkd/issues/3171)); a name this
+        // resolver hands to another module unmasked, where that module quotes
+        // it back ([#3234](https://github.com/go-to-k/cdkd/issues/3234) —
+        // `resolveGetStackOutput`'s uncaught state read; the `Fn::ImportValue`
+        // sibling catches and masks the same shape); and a PRODUCER's own
+        // output key, whose bound `describeAvailableOutputs`' docstring owns.
+        // Four review rounds on PR go-to-k/cdkd#3176 each found one more that
+        // a tally here had missed, and `.claude/rules/layout-deployment-secrets.md`
+        // records five rounds on go-to-k/cdkd#2803 refuting the same shape of
+        // sentence. Do not restore a count.
         this.logger.warn(
           this.maskSecretsForLog(
             `Failed to evaluate condition ${name}: ${error instanceof Error ? error.message : String(error)}, assuming false`,
