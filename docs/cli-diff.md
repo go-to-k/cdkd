@@ -451,10 +451,16 @@ A non-array `exportNames` reads as an **empty export set**: the diff runs, and
 no stored key is reported as an export. It is deliberately not read as
 *unknown* — an absent `exportNames` means "not known" and falls back to the
 pre-v9 rule where every output key is importable, so taking that branch for a
-corrupt one would report every plain output name as an export. Nothing is
-warned about it: the rule lives in a predicate shared with the exports index,
-the deploy-time resolver and the `cdkd local` commands, which holds no stack
-name to put in a message.
+corrupt one would report every plain output name as an export.
+
+`cdkd diff` **warns** when it takes that branch, naming the stack and region.
+The rule itself lives in a predicate shared with the exports index, the
+deploy-time resolver and the `cdkd local` commands, and that predicate stays
+silent — it holds no stack name to put in a message. `cdkd diff` does hold one,
+so it says so rather than letting a loud failure become a quiet wrong answer.
+The warning is suppressed when the record's `outputs` bag is itself unreadable,
+since that is reported on its own and the `exportNames` line would just blame
+the wrong field.
 
 ## `--fail`
 

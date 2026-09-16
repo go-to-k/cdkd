@@ -1104,9 +1104,12 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     }
     // UNGATED by `--fail`, and above it for the same rank reason the refusals
     // here already are: exit 2 is "cdkd could not finish", exit 1 is "cdkd
-    // looked and found something". Both damaged shapes exited 2 unconditionally
-    // before the bag was guarded, so gating this would be the regression the
-    // guard was supposed to prevent (go-to-k/cdkd#3192 review round 5).
+    // looked and found something". Before the bag was guarded the LIST shape
+    // exited 2 unconditionally (through the producer-plaintext refusal) and
+    // the STRING shape died with a raw `TypeError`, which `error-handler.ts`
+    // maps to exit 1 — so neither shape ever reached a `--fail`-gated exit,
+    // and gating this would be the regression the guard was supposed to
+    // prevent (go-to-k/cdkd#3192 review rounds 5 and 10).
     if (damagedProducerStacks.length > 0) {
       throw damagedProducerRecordsError(damagedProducerStacks);
     }

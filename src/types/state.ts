@@ -724,9 +724,12 @@ export function shouldRetainResource(
  * readily as a map, so either FABRICATES entries. `in` and `Object.hasOwn`
  * behave differently per shape and neither is a guard: `in` THROWS on a
  * string, a number and `null`, but ANSWERS on a list (`0 in [1,2]` and
- * `'length' in [1,2]` are both `true`), and `Object.hasOwn` throws on nothing
- * at all — `Object.hasOwn('abcdef', '0')` is `true`. Do not read a nearby `in`
- * as already catching the list case. Widened past `null` / `undefined` for
+ * `'length' in [1,2]` are both `true`), while `Object.hasOwn` ANSWERS on a
+ * string and a list alike (`Object.hasOwn('abcdef', '0')` is `true`) and
+ * throws ONLY on `null` / `undefined` — the one pair a `?? {}` upstream has
+ * usually already absorbed, which is what makes it look like a guard. Do not
+ * read a nearby `in` as already catching the list case. Widened past
+ * `null` / `undefined` for
  * exactly that reason: `[]`, `5` and `"ab"` all survive `Object.entries` and
  * yield a bag that is empty or, for the string, absurd.
  *

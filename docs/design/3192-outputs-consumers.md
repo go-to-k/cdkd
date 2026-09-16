@@ -17,9 +17,12 @@ as readily as a map, so either fabricates entries.
 
 The membership tests are not a backstop, and it is worth being exact because a
 later reader could take one for a guard already in place. `in` throws on a
-string, a number and `null` — but ANSWERS on a list (`0 in [1,2]` is `true`) —
-and `Object.hasOwn` throws on nothing at all (`Object.hasOwn('abcdef', '0')`
-is `true`). Only the plain-object test catches every shape.
+string, a number and `null` — but ANSWERS on a list (`0 in [1,2]` is `true`).
+`Object.hasOwn` answers on a string and a list alike
+(`Object.hasOwn('abcdef', '0')` is `true`) and throws only on `null` /
+`undefined` — the pair an upstream `?? {}` has usually already absorbed, which
+is precisely why it reads as a guard while catching none of the shapes this
+issue is about. Only the plain-object test catches every shape.
 
 Issue [#3018](https://github.com/go-to-k/cdkd/issues/3018) settled the rule for
 the `resources` bag: a command that can WRITE state refuses, a read-only one

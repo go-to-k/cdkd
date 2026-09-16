@@ -220,6 +220,16 @@ describe('hasReadableExportSet', () => {
     // the test — the drift a single predicate exists to prevent. A readable
     // record may legitimately answer `[]` (it exports nothing), so the
     // implication is one-directional and asserted as such.
+    //
+    // FLOORS first (review round 10): both loops below are vacuous over an
+    // empty table, and an assertion that runs zero times passes. The counts
+    // are the tables' own lengths, so shrinking either one reds here rather
+    // than silently dropping a shape from every case that iterates them.
+    expect(UNREADABLE_BAGS.length, 'UNREADABLE_BAGS shrank').toBeGreaterThanOrEqual(5);
+    expect(
+      UNREADABLE_EXPORT_NAMES.length,
+      'UNREADABLE_EXPORT_NAMES shrank'
+    ).toBeGreaterThanOrEqual(4);
     for (const [label, bag] of UNREADABLE_BAGS) {
       expect(hasReadableExportSet(record(bag)), `bag ${label}`).toBe(false);
       expect(importableOutputKeys(record(bag)), `bag ${label}`).toEqual([]);

@@ -309,7 +309,11 @@ async function loadStateOrEmpty(
     // `hasReadableExportSet` requires a readable BAG too, and the repair above
     // exempts an ABSENT one — a record cdkd itself writes — so without this a
     // perfectly ordinary no-outputs record drew a line blaming its
-    // `exportNames`. Measured: it reds the absent-bag floor one describe up.
+    // `exportNames`. The guard is watched from BOTH directions: dropping this
+    // conjunct reds the absent-bag floor one describe up, and disabling the
+    // whole line reds the four damaged-shape cases that assert the warning
+    // FIRES. Until review round 10 only the first direction was covered, so
+    // `if (false)` here was a zero-red mutation.
     if (isReadableBag(result.state.outputs) && !hasReadableExportSet(result.state)) {
       logger.warn(malformedExportNamesWarning(stackName, region));
     }

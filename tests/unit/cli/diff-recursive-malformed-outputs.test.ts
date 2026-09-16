@@ -241,6 +241,21 @@ describe('cdkd diff over a malformed outputs bag (issue go-to-k/cdkd#3189)', () 
           node.outputChanges.filter((c) => c.isExport).map((c) => c.name),
           'a corrupt exportNames was read as the legacy every-key rule'
         ).toEqual([]);
+        // ...and it SAYS so. Reading the set as empty is the safe answer, but
+        // a silently-safe answer over a record the operator can repair is a
+        // loud failure turned quiet -- the regression review round 1 named.
+        // `cdkd diff` is the caller that holds the stack identity, so it is
+        // the one that warns; the shared predicate stays silent.
+        //
+        // Added in review round 10 (go-to-k/cdkd#3206): until then NOTHING
+        // asserted this warning ever fires. The guard was watched from one
+        // side only -- dropping its `isReadableBag` conjunct reds the
+        // absent-bag floor below -- so mutating the whole guard to
+        // `if (false)` left ZERO reds.
+        expect(warnings(), `no warning named the damaged exportNames (${label})`).toContain(
+          `has an unusable 'exportNames' list`
+        );
+        expect(warnings()).toContain(STACK);
       });
     }
 
