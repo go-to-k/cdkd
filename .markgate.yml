@@ -265,6 +265,23 @@ gates:
       - ".claude/settings.json"
       - ".claude/agents/**"
       - ".claude/hooks/**"
+      # The WHOLE workflow directory, which SUBSUMES every per-file entry
+      # below (issue go-to-k/cdkd#3195). The per-file entries and their
+      # comments are kept deliberately: each records which reader binds which
+      # file, and that is the thing a future narrowing would have to answer.
+      # What they cannot express is the new population.
+      # tests/unit/scripts/workflow-expression-syntax.test.ts `readdirSync`s
+      # this directory and asserts, over every `.yml` / `.yaml` directly in it,
+      # that no GitHub expression carries a body the Actions parser cannot read
+      # -- so the eleventh workflow (`hooks.yml` today) and the twelfth nobody
+      # has written yet are inside the checker's reach while outside a list of
+      # names. Same shape as `.claude/hooks/**` above and `docs/**` further
+      # down: a POPULATION-level binding settles glob over enumeration.
+      # The predicate is also the ORDINARY-content kind the carve-out note
+      # ABOVE refuses to exempt -- the defect that motivated it was one word
+      # of PROSE in a shell comment, which invalidated the entire file and
+      # stopped a daily job from being scheduled at all.
+      - ".github/workflows/**"
       - ".github/workflows/ci.yml"
       - ".github/workflows/pr-inherit-issue-labels.yml"
       # cfn-schema-refresh-workflow.test.ts reads this workflow as TEXT and
