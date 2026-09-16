@@ -332,16 +332,41 @@ describe('cdkd scrub - refusals this PR adds (go-to-k/cdkd#2692, go-to-k/cdkd#30
         resolveThrows = new Error(message);
         await run(healthy());
         const warned = logger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        // EVERY site, not just the first. This is the behavioural replacement
+        // for a source-shape grep that counted `if (leafVerdict !== 'silent')`
+        // occurrences: that grep reds on a legitimate extract-a-helper refactor
+        // and stays GREEN if a site's `logger.warn` is deleted while the `if`
+        // survives — i.e. it watches the wrong thing in both directions.
+        for (const subject of [
+          "resource 'Db'",
+          "orphan record 'OldDb'",
+          "the Export.Name of output 'DbEndpoint'",
+          "output 'DbEndpoint'",
+        ]) {
+          expect(
+            warned,
+            `${subject} was not named on the non-gating arm, so an operator cannot tell this ` +
+              'run apart from one that genuinely scanned everything'
+          ).toContain(subject);
+        }
         expect(
           warned,
-          'the record was not named, so an operator cannot tell this run apart from one ' +
-            'that genuinely scanned everything'
-        ).toContain("resource 'Db'");
+          'the per-stack note does not say the gate is NOT firing, so "NOT certified clean" ' +
+            'reads as a contradiction beside exit 0'
+        ).toContain('do NOT fail --fail');
+        // The per-record lines stay SHORT — the explanation is emitted once per
+        // stack, not once per record. A ~440-character paragraph per record was
+        // the first cut, and this arm fires for every resource in a stack at
+        // once when a single parameter has no `Default`.
+        const perRecord = logger.warn.mock.calls
+          .map((c) => String(c[0]))
+          .filter((line) => line.includes("scan of resource 'Db'"));
+        expect(perRecord).toHaveLength(1);
         expect(
-          warned,
-          'the warn does not say the gate is NOT firing, so "NOT certified clean" reads as a ' +
-            'contradiction beside exit 0'
-        ).toContain('does NOT fail --fail');
+          perRecord[0]!.length,
+          `the per-record line is ${perRecord[0]!.length} characters; dozens of these bury the ` +
+            'record names, which are the only part a reader cannot reconstruct'
+        ).toBeLessThan(160);
       });
     }
 
@@ -377,6 +402,19 @@ describe('cdkd scrub - refusals this PR adds (go-to-k/cdkd#2692, go-to-k/cdkd#30
           '`--dry-run --fail` on a healthy stack that merely has an unbound Fn::Sub variable ' +
           '(go-to-k/cdkd#3178 round 4).'
       ).toBe(0);
+
+      // ...but NOT silent. Round 5 found the first cut of this exclusion asking
+      // fetchability BEFORE anything else and returning `silent`, which hid the
+      // abandoned scan completely — and because the token pattern's inner class
+      // is `[^}]`, that swallowed the DOMINANT CDK spelling, where a reference
+      // is assembled by `Fn::Sub` over parameters that DO have defaults. The
+      // issue's own headline repro printed nothing at all.
+      const warned = logger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(
+        warned,
+        'the record went unmentioned entirely. Fetchability may downgrade the GATE; only the ' +
+          'absence of a reference may buy silence (go-to-k/cdkd#3178 round 5).'
+      ).toContain("resource 'Db'");
     });
 
     it('counts NOTHING on a stack whose references all resolve', async () => {

@@ -2998,87 +2998,120 @@ function isNamelessDynamicReferenceFailure(err: unknown): boolean {
   );
 }
 
+// Background for `abandonedScanVerdict` below.
+//
+// How this counter came to be shaped the way it is (issue go-to-k/cdkd#3160),
+// and the two residuals it still carries. The verdict itself is
+// {@link abandonedScanVerdict} below.
+//
+// POSITIONAL, not message-matched, and the first cut of this got that wrong in
+// a way that missed its own headline case. The resolver's token loop has no
+// per-token `try`, so ANY throw abandons every remaining token in the leaf —
+// and most of those throws are not the resolver's own prose. `GetParameter` /
+// `GetSecretValue` go through `sendWithThrottleRetry`, which **rethrows an AWS
+// rejection RAW**: a genuinely deleted parameter raises `ParameterNotFound`
+// from the SDK, never the `Dynamic reference: SSM parameter '...' not found`
+// string, which fires only on a 200 whose `Parameter.Value` is absent. Keying
+// on that prefix therefore counted the MINORITY case and let
+// `ResourceNotFoundException`, `AccessDeniedException`, `DecryptionFailure`,
+// a pending-deletion `InvalidRequestException` and exhausted throttling all
+// stay silent — plus the `Refusing to resolve` arm for an `ssm-secure` over a
+// public parameter.
+//
+// So the first half of the question is not what the error SAYS but whether the
+// value being resolved had a dynamic reference in it at all: if it did and the
+// resolve threw, the remaining tokens in that leaf were not fetched and
+// recorded no needle. The two classes that must NOT count are the ones that
+// re-raise instead — checked by the caller before this is reached.
+//
+// The POSITION alone is not enough, though, and a cut that used it alone was
+// wrong in the opposite direction from the message-matched one. This catch
+// exists for the ORDINARY failure the comment beside it names — a `Ref` to
+// something not in state — and that throw is not a dynamic-reference failure
+// however many `{{resolve:...}}` leaves the same bag happens to carry. The
+// population is not exotic: `scrubStack` catches `resolveParameters` wholesale
+// and carries on with an EMPTY parameter bag, so ONE parameter with no
+// `Default` makes every `{Ref: <param>}` in the stack throw — including refs
+// to parameters that do have one. Counting those would red `--dry-run --fail`,
+// the documented STANDING CI gate, on stacks that are entirely healthy and
+// with no way for the operator to clear it. That is the same outcome
+// go-to-k/cdkd#3160 gives as the reason NOT to widen into a refusal.
+//
+// Hence the conjunction, and note WHO OWNS each half. The excluded set is
+// cdkd's OWN refusal prose, which cdkd controls and
+// `scrub-abandoned-scan-origin.test.ts` fences against the resolver's throw
+// sites. The included set is left unnamed on purpose, because it is AWS's:
+// enumerating SDK error names is what the first cut did, and a name AWS adds
+// later would silently rejoin the false-clean population this issue is about.
+// The asymmetry is deliberate — an error we cannot classify counts, and the
+// residual is a WARN on a healthy stack rather than a plaintext under `clean`.
+//
+// STATED RESIDUAL, in the other direction: `carriesDynamicReference` tests for
+// the literal `{{resolve:` in the RAW bag, so an ASSEMBLED reference is not seen
+// — a parameter whose `Default` holds the whole token, used as
+// `{'Fn::Sub': '${DbSecretRef}'}` (the shape `pinCrossRegionSecrets` documents).
+// A failed resolve there is NOT counted and the stack still reports clean. That
+// is the original bug, surviving in a narrower population; closing it means
+// composing `isAssembledSecretReference`, which is not a drive-by because it
+// changes what the counter claims about every leaf, not just this one.
+// Recorded rather than papered over: go-to-k/cdkd#3178 security review.
 /**
- * How this counter came to be shaped the way it is (issue go-to-k/cdkd#3160),
- * and the two residuals it still carries. The verdict itself is
- * {@link abandonedScanVerdict} below.
+ * The per-record line each counting site prints. Deliberately ONE SHORT
+ * SENTENCE, and that is a fix rather than a style choice: the first cut emitted
+ * a ~440-character paragraph PER RECORD at default verbosity, and the arm it
+ * fires on is one a single `Default`-less parameter triggers for every resource
+ * in the stack at once. Dozens of identical paragraphs bury the record names,
+ * which are the only part a reader cannot reconstruct.
  *
- * POSITIONAL, not message-matched, and the first cut of this got that wrong in
- * a way that missed its own headline case. The resolver's token loop has no
- * per-token `try`, so ANY throw abandons every remaining token in the leaf —
- * and most of those throws are not the resolver's own prose. `GetParameter` /
- * `GetSecretValue` go through `sendWithThrottleRetry`, which **rethrows an AWS
- * rejection RAW**: a genuinely deleted parameter raises `ParameterNotFound`
- * from the SDK, never the `Dynamic reference: SSM parameter '...' not found`
- * string, which fires only on a 200 whose `Parameter.Value` is absent. Keying
- * on that prefix therefore counted the MINORITY case and let
- * `ResourceNotFoundException`, `AccessDeniedException`, `DecryptionFailure`,
- * a pending-deletion `InvalidRequestException` and exhausted throttling all
- * stay silent — plus the `Refusing to resolve` arm for an `ssm-secure` over a
- * public parameter.
+ * The explanation is emitted ONCE PER STACK instead, by
+ * {@link abandonedScanStackNote}.
  *
- * So the first half of the question is not what the error SAYS but whether the
- * value being resolved had a dynamic reference in it at all: if it did and the
- * resolve threw, the remaining tokens in that leaf were not fetched and
- * recorded no needle. The two classes that must NOT count are the ones that
- * re-raise instead — checked by the caller before this is reached.
+ * The CAUSE is absent on both arms: the sibling log at each site already prints
+ * it through `maskSecretsInText`, and a resolver error echoes what it was
+ * handed — which, after `pinCrossRegionSecrets`, can be a foreign plaintext.
  *
- * The POSITION alone is not enough, though, and a cut that used it alone was
- * wrong in the opposite direction from the message-matched one. This catch
- * exists for the ORDINARY failure the comment beside it names — a `Ref` to
- * something not in state — and that throw is not a dynamic-reference failure
- * however many `{{resolve:...}}` leaves the same bag happens to carry. The
- * population is not exotic: `scrubStack` catches `resolveParameters` wholesale
- * and carries on with an EMPTY parameter bag, so ONE parameter with no
- * `Default` makes every `{Ref: <param>}` in the stack throw — including refs
- * to parameters that do have one. Counting those would red `--dry-run --fail`,
- * the documented STANDING CI gate, on stacks that are entirely healthy and
- * with no way for the operator to clear it. That is the same outcome
- * go-to-k/cdkd#3160 gives as the reason NOT to widen into a refusal.
- *
- * Hence the conjunction, and note WHO OWNS each half. The excluded set is
- * cdkd's OWN refusal prose, which cdkd controls and
- * `scrub-abandoned-scan-origin.test.ts` fences against the resolver's throw
- * sites. The included set is left unnamed on purpose, because it is AWS's:
- * enumerating SDK error names is what the first cut did, and a name AWS adds
- * later would silently rejoin the false-clean population this issue is about.
- * The asymmetry is deliberate — an error we cannot classify counts, and the
- * residual is a WARN on a healthy stack rather than a plaintext under `clean`.
- *
- * STATED RESIDUAL, in the other direction: `carriesDynamicReference` tests for
- * the literal `{{resolve:` in the RAW bag, so an ASSEMBLED reference is not seen
- * — a parameter whose `Default` holds the whole token, used as
- * `{'Fn::Sub': '${DbSecretRef}'}` (the shape `pinCrossRegionSecrets` documents).
- * A failed resolve there is NOT counted and the stack still reports clean. That
- * is the original bug, surviving in a narrower population; closing it means
- * composing `isAssembledSecretReference`, which is not a drive-by because it
- * changes what the counter claims about every leaf, not just this one.
- * Recorded rather than papered over: go-to-k/cdkd#3178 security review.
- */
-/**
- * The line each counting site prints. ONE spelling, because the four sites had
- * four copies of it and the arm-specific tail below would have made that eight.
- *
- * The tail is the point: on the `warn` arm the run can still exit 0, and an
- * operator reading "NOT certified clean" beside a green gate has no way to tell
- * a passing run from a broken one. So that arm says which failure stopped the
- * scan and that it does not gate.
- *
- * The CAUSE is deliberately absent from the `count` arm: the sibling log at
- * each site already prints it through `maskSecretsInText`, and a resolver error
- * echoes what it was handed — which, after `pinCrossRegionSecrets`, can be a
- * foreign plaintext.
+ * RESIDUAL on the `subject` the call sites pass. They compose
+ * `maskSecretsInText(... displaySafe(id) ...)` — sanitise, then mask — and
+ * `displaySafe` REPLACES a control character with a space rather than deleting
+ * it, so it cannot JOIN a split needle (the go-to-k/cdkd#2874 direction) but it
+ * can BREAK one, and it leaves `U+200B`-`U+200D` / `U+FEFF` untouched. A secret
+ * would have to sit inside a template logical id or Outputs key to be reachable,
+ * which is why `secretSafeKeyDisplay` is not used here — that one is for RESOLVED
+ * state-bag keys. Recorded rather than closed: go-to-k/cdkd#3178 security review.
  */
 function abandonedScanWarning(subject: string, verdict: 'count' | 'warn'): string {
-  const head =
-    `The {{resolve:...}} scan of ${subject} was ABANDONED, so any secret after the ` +
-    `failing token in the same value recorded no needle: this record is NOT certified clean.`;
   return verdict === 'count'
-    ? `${head} Re-run with --verbose for the cause.`
-    : `${head} The scan stopped on a TEMPLATE failure (an unresolvable Ref, Fn::GetAtt or ` +
-        `parameter) rather than on the reference itself, so this does NOT fail --fail — scrub ` +
-        `cannot bind those with template defaults alone. Fix the template reference and re-run ` +
-        `to certify the record.`;
+    ? `The {{resolve:...}} scan of ${subject} was ABANDONED — this record is NOT certified clean.`
+    : `The {{resolve:...}} scan of ${subject} was cut short by a TEMPLATE problem — this record is NOT certified clean.`;
+}
+
+/**
+ * The one-per-stack explanation behind {@link abandonedScanWarning}'s lines.
+ *
+ * Two arms, because they need opposite things said. The `count` arm is a
+ * FINDING and gates; the reader needs the cause, which is verbose-only. The
+ * `warn` arm does NOT gate, and a reader seeing "NOT certified clean" beside a
+ * green exit has no way to tell a passing run from a broken one unless it says
+ * so.
+ *
+ * The `warn` arm's remedy is deliberately two-sided. The dominant population is
+ * a parameter with no `Default` — legal CloudFormation, no defect to fix — so
+ * telling the reader only to "fix the template reference" describes a repair
+ * that does not exist for them. It names what they CAN do and then says plainly
+ * that scrub may simply not be able to certify the record.
+ */
+function abandonedScanStackNote(verdict: 'count' | 'warn', records: number): string {
+  const subject = `${records} record(s) above`;
+  return verdict === 'count'
+    ? `${subject}: the resolver stops at the first {{resolve:...}} token it cannot fetch, so ` +
+        `any secret after it in the same value recorded no needle and could not be rewritten. ` +
+        `Re-run with --verbose for the cause of each.`
+    : `${subject}: the scan stopped on something cdkd scrub cannot resolve with template ` +
+        `defaults alone — an unresolvable Ref or Fn::GetAtt, a parameter with no Default, or a ` +
+        `reference whose own argument still holds an unsubstituted \${...}. These do NOT fail ` +
+        `--fail, because scrub takes no --parameters and a gate failure here could not be ` +
+        `cleared. Give the parameter a Default, or resolve the reference, to let scrub certify ` +
+        `these records; otherwise accept that it cannot.`;
 }
 
 /**
@@ -3095,7 +3128,9 @@ function abandonedScanWarning(subject: string, verdict: 'count' | 'warn'): strin
  * `No plaintext secrets found` at exit 0. Reachable accidentally (one
  * `Default`-less parameter empties the bag, so every `{Ref: <param>}` throws)
  * and, on a repo whose CI runs `--dry-run --fail`, defeatable on purpose by
- * adding one dangling `Ref` ahead of the secret.
+ * adding one dangling `Ref` ahead of the secret. That loss is REAL and is not
+ * repaired by making it visible — go-to-k/cdkd#3196 tracks scoping the resolve
+ * per property so the sibling reference is still scanned.
  *
  * Counting it is not the answer — that is the round-2 blocker, an unclearable
  * red gate on a healthy stack. What the two failure modes do NOT share is
@@ -3103,12 +3138,40 @@ function abandonedScanWarning(subject: string, verdict: 'count' | 'warn'): strin
  * gates nothing. So the excluded arm still speaks, and only the exit code is
  * withheld.
  *
- * `silent` is reserved for a bag with no fetchable reference at all, where
- * nothing was lost and the pre-existing `logger.debug` is the right level.
+ * **The ORDER of the three tests is load-bearing, and getting it wrong is how
+ * round 5 nearly shipped a silent regression.** An earlier cut asked
+ * `carriesFetchableDynamicReference` FIRST and returned `silent` on a miss,
+ * which made a gate-downgrade test into a universal silencer. Because
+ * `DYNAMIC_REFERENCE_INNER_CHAR` is `[^}]`, a token with a placeholder
+ * ANYWHERE in it fails that test — including the dominant CDK spelling, where
+ * the reference is assembled by an `Fn::Sub` over parameters that DO have
+ * defaults:
+ *
+ * ```json
+ * {"A": {"Fn::Sub": "{{resolve:ssm-secure:/deleted/${Env}/p}}"},
+ *  "B": {"Fn::Sub": "{{resolve:secretsmanager:${Db}:SecretString:password}}"}}
+ * ```
+ *
+ * Those assemble fine, `A` raises a RAW `ParameterNotFound`, `B` is abandoned
+ * and records no needle — and the earlier order printed nothing at all. That is
+ * go-to-k/cdkd#3160's own headline repro, silenced by the fix for a different
+ * false positive.
+ *
+ * So the tests are separated by what each one is EVIDENCE of:
+ *
+ * - `carriesDynamicReference` — did this bag hold a reference at all? If not,
+ *   nothing was lost and the pre-existing `logger.debug` is the right level.
+ *   This, and only this, decides SILENCE.
+ * - `isTemplateShapeResolutionFailure` / `carriesFetchableDynamicReference` —
+ *   is the abandonment one an operator could act on? If not, it still gets said;
+ *   it just does not gate. These decide the EXIT CODE, never the visibility.
  */
 function abandonedScanVerdict(source: unknown, err: unknown): 'count' | 'warn' | 'silent' {
-  if (!carriesFetchableDynamicReference(source)) return 'silent';
-  return isTemplateShapeResolutionFailure(err) ? 'warn' : 'count';
+  if (!carriesDynamicReference(source)) return 'silent';
+  if (isTemplateShapeResolutionFailure(err) || !carriesFetchableDynamicReference(source)) {
+    return 'warn';
+  }
+  return 'count';
 }
 
 /**
@@ -3131,13 +3194,30 @@ function abandonedScanVerdict(source: unknown, err: unknown): 'count' | 'warn' |
  * fully substituted token still counts, because the second one genuinely was
  * fetchable and its scan genuinely stopped.
  *
- * STATED RESIDUAL. A two-argument `Fn::Sub` whose placeholder IS bound
- * (`{'Fn::Sub': ['{{resolve:ssm:${N}}}', {N: 'x'}]}`) substitutes fine and
- * yields a fetchable token, but the raw bag still spells `${`, so this refuses
- * it and a real fetch failure there goes uncounted. That is an UNDER-count — the
- * same direction as the assembled-reference residual below, and the reason both
- * are recorded rather than argued away. go-to-k/cdkd#3181 is the fix that
- * removes the need for any of these proxies.
+ * WHAT THIS DOES AND DOES NOT BUY, since round 5 shipped a cut that confused
+ * the two. A `false` here downgrades the GATE only — the record is still named
+ * at default verbosity by the `warn` arm. It must never decide SILENCE: the
+ * inner class is `[^}]`, so a placeholder ANYWHERE in a token fails this test,
+ * and the reference assembled by an `Fn::Sub` over DEFAULTED parameters is the
+ * dominant CDK spelling rather than an edge case.
+ *
+ * STATED RESIDUALS, both UNDER-counts against the gate, neither a silence:
+ *
+ * - A two-argument `Fn::Sub` whose placeholder IS bound
+ *   (`{'Fn::Sub': ['{{resolve:ssm:${N}}}', {N: 'x'}]}`) substitutes fine and
+ *   yields a fetchable token, but the raw bag still spells `${`, so a real
+ *   fetch failure there warns instead of gating.
+ * - The same for a single-argument `Fn::Sub` over a defaulted parameter, and
+ *   for a placeholder mid-token, which yields no token at all.
+ *
+ * And one OVER-count, recorded for symmetry: this predicate is BAG-scoped while
+ * the failure is TOKEN-scoped, so a bag holding a placeholder-bearing token
+ * BESIDE a genuinely fetchable one returns `true`, and a `key '${Field}' not
+ * found` raised for the first is gated as if it came from the second. Safety
+ * is in the right direction (a gate that fires, not a plaintext under `clean`),
+ * and same-bag co-location bounds it.
+ *
+ * go-to-k/cdkd#3181 is the fix that removes the need for any of these proxies.
  */
 function carriesFetchableDynamicReference(source: unknown): boolean {
   if (typeof source === 'string') {
@@ -3182,14 +3262,17 @@ function isTemplateShapeResolutionFailure(err: unknown): boolean {
  * catch. Each pattern must stay tight enough that no AWS-authored message can
  * satisfy it.
  *
- * Deliberately just these TWO, not every shape failure the resolver can raise.
- * They are the ones that fire EN MASSE on a healthy stack: `resolveParameters`
- * is caught wholesale by `scrubStack`, so one `Default`-less parameter empties
- * the whole bag and every `{Ref: <param>}` throws. A rarer shape failure (an
- * `Fn::Select` over a non-array, say) is a genuine template defect, and
- * counting a leaf whose scan it abandoned is not wrong — the scan really did
- * stop. Over-counting THERE costs a warn on a broken template; over-counting
- * on the two below would cost a red CI gate on a working one.
+ * Deliberately just these THREE, not every shape failure the resolver can
+ * raise. They are the ones that fire EN MASSE on a healthy stack:
+ * `resolveParameters` is caught wholesale by `scrubStack`, so one
+ * `Default`-less parameter empties the whole bag and every `{Ref: <param>}`
+ * throws; and `resolveGetAtt` refuses on the same condition as `resolveRef`,
+ * which a branch adding a not-yet-deployed resource hits for every
+ * `Fn::GetAtt` to it. A rarer shape failure (an `Fn::Select` over a
+ * non-array, say) is a genuine template defect, and counting a leaf whose
+ * scan it abandoned is not wrong — the scan really did stop. Over-counting
+ * THERE costs a warn on a broken template; over-counting on the three below
+ * would cost a red CI gate on a working one.
  *
  * Per-pattern throw sites, and the fence that keeps them true, are in
  * `tests/unit/cli/scrub-abandoned-scan-origin.test.ts`.
@@ -3995,6 +4078,32 @@ export async function scrubStack(
    * `abandonedScanVerdict` for why these cannot refuse.
    */
   let unverifiableLeaves = 0;
+  // Not a result field: the `warn` arm gates nothing, so nothing outside this
+  // function reads it. It exists so the per-stack note below can say how many
+  // records it is explaining.
+  let ungateableAbandonedScans = 0;
+  /**
+   * ONE note per stack per arm. The per-record lines are deliberately short
+   * (see `abandonedScanWarning`), so this is where the explanation lives, and
+   * emitting it after the loops rather than at the first occurrence is what
+   * lets it say HOW MANY records it is explaining.
+   *
+   * A CLOSURE called at BOTH returns, not a block at the late one. The early
+   * `totalSecrets === 0` return is the DOMINANT path for an abandoned scan --
+   * an abandoned scan records no needle, which is the whole defect -- so a
+   * single late emission left the note unreachable for exactly the case it
+   * exists to explain. `emitted` because the two call sites are exclusive
+   * today and a third would not be.
+   */
+  let notesEmitted = false;
+  const emitAbandonedScanNotes = (): void => {
+    if (notesEmitted) return;
+    notesEmitted = true;
+    if (unverifiableLeaves > 0) logger.warn(abandonedScanStackNote('count', unverifiableLeaves));
+    if (ungateableAbandonedScans > 0) {
+      logger.warn(abandonedScanStackNote('warn', ungateableAbandonedScans));
+    }
+  };
   try {
     const loaded = await stateBackend.getState(stack.stackName, region);
     if (!loaded) {
@@ -4297,6 +4406,7 @@ export async function scrubStack(
           const leafVerdict = abandonedScanVerdict(resolveInput, err);
           if (leafVerdict !== 'silent') {
             if (leafVerdict === 'count') unverifiableLeaves++;
+            else ungateableAbandonedScans++;
             logger.warn(
               maskSecretsInText(
                 abandonedScanWarning(`resource '${displaySafe(logicalId)}'`, leafVerdict),
@@ -4382,6 +4492,7 @@ export async function scrubStack(
           const leafVerdict = abandonedScanVerdict(resolveInput, err);
           if (leafVerdict !== 'silent') {
             if (leafVerdict === 'count') unverifiableLeaves++;
+            else ungateableAbandonedScans++;
             logger.warn(
               maskSecretsInText(
                 abandonedScanWarning(
@@ -4522,6 +4633,7 @@ export async function scrubStack(
             const leafVerdict = abandonedScanVerdict(nameSource, err);
             if (leafVerdict !== 'silent') {
               if (leafVerdict === 'count') unverifiableLeaves++;
+              else ungateableAbandonedScans++;
               logger.warn(
                 maskSecretsInText(
                   abandonedScanWarning(
@@ -4677,6 +4789,7 @@ export async function scrubStack(
           const leafVerdict = abandonedScanVerdict(valueSource, err);
           if (leafVerdict !== 'silent') {
             if (leafVerdict === 'count') unverifiableLeaves++;
+            else ungateableAbandonedScans++;
             logger.warn(
               maskSecretsInText(
                 abandonedScanWarning(`output '${displaySafe(name)}'`, leafVerdict),
@@ -4751,9 +4864,13 @@ export async function scrubStack(
       // `secretBearingKeys.length` is provably 0 on this branch and is carried
       // for SHAPE only (issue #2133 review): `totalSecrets === 0` implies
       // `outputSecrets.size === 0`, and `stateKeySecretExposure` needs a needle
-      // from that very map, so the loop above pushed nothing. The rationale
-      // above therefore covers `unverifiableReads` alone — it is the one field
-      // that can be non-zero here.
+      // from that very map, so the loop above pushed nothing. TWO fields can be
+      // non-zero here, not one: `unverifiableReads`, and — since
+      // go-to-k/cdkd#3160 — `unverifiableLeaves`. The second is not an edge
+      // case but the HEADLINE path: an abandoned scan records no needle, so
+      // `totalSecrets === 0` is exactly what it produces. The rationale above
+      // covers both, and it is why the per-stack notes are emitted here too.
+      emitAbandonedScanNotes();
       return {
         recordsChanged: 0,
         secretsFound: 0,
@@ -4942,6 +5059,7 @@ export async function scrubStack(
       // these keys, so a coinciding literal is redacted too.
       allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets)
     );
+    emitAbandonedScanNotes();
     const outputsChanged = JSON.stringify(newOutputs) !== JSON.stringify(state.outputs);
     if (outputsChanged) recordsChanged++;
 

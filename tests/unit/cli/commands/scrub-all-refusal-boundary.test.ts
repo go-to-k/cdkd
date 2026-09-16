@@ -110,7 +110,7 @@ const declineCrossStackRead = vi.hoisted(() => ({ on: false }));
  * RAW SDK rejection, no resolver prose. `sendWithThrottleRetry` rethrows these
  * verbatim, which is why the counter is not keyed on message text.
  */
-const abandonScan = vi.hoisted(() => ({ on: false }));
+const abandonScan = vi.hoisted(() => ({ on: false, spareMarker: undefined as string | undefined }));
 
 vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', async (importOriginal) => {
   // The module's non-class exports must survive the double: `scrub.ts` imports
@@ -147,7 +147,19 @@ vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', async (impo
             )
           );
         }
-        if (abandonScan.on && JSON.stringify(value ?? null).includes('{{resolve:')) {
+        if (
+          abandonScan.on &&
+          // `spareMarker` exempts one stack's bag from the rejection, keyed on a
+          // value the fixture plants there -- the mock sees only the properties
+          // bag, never the stack name. It is what lets a `--all` run have one
+          // stack SCRUB and another ABANDON, the only way to reach the
+          // `totalStacksScrubbed > 0` summary arms with a finding present.
+          !(
+            abandonScan.spareMarker !== undefined &&
+            JSON.stringify(value ?? null).includes(abandonScan.spareMarker)
+          ) &&
+          JSON.stringify(value ?? null).includes('{{resolve:')
+        ) {
           return Promise.reject(
             Object.assign(new Error('Parameter /deleted not found.'), {
               name: 'ParameterNotFound',
@@ -405,6 +417,7 @@ describe('cdkd scrub: an ABANDONED scan reaches the verdict (go-to-k/cdkd#3160)'
 
   afterEach(() => {
     abandonScan.on = false;
+    abandonScan.spareMarker = undefined;
   });
 
   it('is not a refusal, is reported, and --fail exits 1 over it', async () => {
@@ -434,10 +447,13 @@ describe('cdkd scrub: an ABANDONED scan reaches the verdict (go-to-k/cdkd#3160)'
   });
 
   it('carries the note on the --dry-run summary too, which IS the CI gate output', async () => {
-    // `leafNote` is woven into FOUR render sites and the real-run case above
-    // reaches one of them. The two `Plan:` lines are the ones a standing
-    // `cdkd scrub --all --dry-run --fail` actually prints, so a note missing
-    // there is missing exactly where the gate is read.
+    // `leafNote` is woven into FOUR render sites, and which one a run reaches
+    // depends on `totalStacksScrubbed`. This fixture stores the EXPRESSION, so
+    // `recordsChanged === 0` and the dry-run lands on the
+    // "Plan: no state record can be rewritten" arm. The `totalStacksScrubbed > 0`
+    // arms — the `Plan:` line a DIRTY gate prints, and the "Done: scrubbed" line
+    // — are covered by `scrub-dirty-abandoned-summary.test.ts`; a comment here
+    // once claimed this case covered "the two `Plan:` lines" and it covered one.
     const err = await scrubCommand([], commandOptions({ dryRun: true, fail: true })).catch(
       (e: unknown) => e
     );
@@ -449,6 +465,32 @@ describe('cdkd scrub: an ABANDONED scan reaches the verdict (go-to-k/cdkd#3160)'
 
     // Nothing was written -- the note must not have come from a real run.
     expect(commandStateBackend.saveState).not.toHaveBeenCalled();
+  });
+
+  it('carries the note on the DIRTY summary arms too (a run that scrubbed something)', async () => {
+    // The other two `leafNote` render sites. Which arm a run reaches depends on
+    // `totalStacksScrubbed`, so a fixture where nothing is rewritten can only
+    // ever exercise two of the four. Two stacks, and only one of them abandons:
+    // the run is dirty AND carries the finding.
+    synthStacks.length = 0;
+    const clean = makeStackInfo('CleanStack') as { stackName: string; template: CloudFormationTemplate };
+    (clean.template.Resources!['Db']!.Properties as Record<string, unknown>)['MasterUsername'] =
+      'clean-marker';
+    synthStacks.push(clean, makeStackInfo('CrossAccount'));
+    abandonScan.spareMarker = 'clean-marker';
+
+    // The CLEAN stack still stores the PLAINTEXT, so scrubbing it rewrites a
+    // record; the other one stores the expression and only abandons.
+    commandStateBackend.getState.mockImplementation((stackName: string) => {
+      const state = makeState(stackName, false);
+      if (stackName !== 'CleanStack') state.resources['Db']!.properties['MasterUserPassword'] = NAME_EXPR;
+      return Promise.resolve({ state, etag: 'etag-1' });
+    });
+
+    await scrubCommand([], commandOptions({ dryRun: true, fail: true })).catch(() => undefined);
+    const plan = commandLogger.info.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(plan, 'the dry-run plan for a DIRTY run drops the note').toContain('ABANDONED');
+    expect(plan).toContain('would be scrubbed');
   });
 
   it('NEGATIVE CONTROL: the same stack without the abandoned scan exits clean', async () => {

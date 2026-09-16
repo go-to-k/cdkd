@@ -173,22 +173,39 @@ describe('scrub abandoned-scan origin (go-to-k/cdkd#3160)', () => {
     }
   });
 
-  it('separates VISIBILITY from the gate — only `count` increments', () => {
-    // The round-4 finding both the security and spec axes reached independently:
-    // excluding a template-shape failure also suppresses the FINDING for a live
-    // secret reference abandoned by it, so the exclusion has a cost in the
-    // issue's own harm direction. The resolution is that the excluded arm still
-    // WARNS and only the exit code is withheld — so a site that guarded the
-    // warn on `=== 'count'` would silently re-close that channel.
-    const increments = [...scrubSource.matchAll(/leafVerdict === 'count'\) unverifiableLeaves\+\+;/g)]
-      .length;
-    expect(increments, "the counter is no longer gated on the 'count' arm").toBe(4);
-
-    const speaks = [...scrubSource.matchAll(/if \(leafVerdict !== 'silent'\) \{/g)].length;
+  it('decides SILENCE on reference PRESENCE alone, never on fetchability', () => {
+    // Round 5's near-miss, pinned on the SOURCE because it is an ORDERING
+    // property of three tests and no single behavioural case exhibits an order.
+    // (The per-site visibility this replaces is covered behaviourally in
+    // `scrub-malformed-and-nameless.test.ts`, which asserts all four subjects
+    // on the non-gating arm -- a source grep there reds on a legitimate
+    // extract-a-helper refactor AND stays green if a site's `logger.warn` is
+    // deleted while its `if` survives.)
+    //
+    // An earlier cut asked `carriesFetchableDynamicReference` FIRST and
+    // returned `silent` on a miss, turning a gate-DOWNGRADE test into a
+    // universal silencer. The token pattern's inner class is `[^}]`, so a
+    // placeholder anywhere in a token fails that test -- including the dominant
+    // CDK spelling, where the reference is assembled by `Fn::Sub` over
+    // parameters that DO have defaults. go-to-k/cdkd#3160's own headline repro
+    // then printed nothing at all.
+    const body = scrubSource.match(
+      /function abandonedScanVerdict\([^)]*\): [^{]*\{([\s\S]*?)\n\}/
+    );
+    expect(body, 'abandonedScanVerdict was renamed or reshaped').not.toBeNull();
+    const lines = body![1]!
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+    const silent = lines.find((l) => l.includes("return 'silent'"));
+    expect(silent, "no `return 'silent'` arm").toBeDefined();
     expect(
-      speaks,
-      'a counting site stopped warning on the non-counting arm, so a leaf abandoned by a ' +
-        'template failure is invisible again — exit 0 and no line naming the record.'
-    ).toBe(4);
+      silent,
+      'the silence decision consults something other than `carriesDynamicReference`. Only ' +
+        '"did this bag hold a reference at all" may decide SILENCE -- fetchability and the ' +
+        'error class decide the EXIT CODE, and using either to silence hides the abandoned ' +
+        'scan entirely (go-to-k/cdkd#3178 round 5).'
+    ).toContain('!carriesDynamicReference(source)');
+    expect(silent, 'fetchability is deciding silence again').not.toContain('Fetchable');
   });
 });

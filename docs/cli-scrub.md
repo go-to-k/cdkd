@@ -320,7 +320,7 @@ cannot rewrite. Three shapes qualify, and all three are also reported in words:
   `N cross-stack read(s) in <stack> could NOT be verified`.
 
 - a **record whose `{{resolve:...}}` scan was ABANDONED part-way**:
-  `N record(s) in <stack> had a {{resolve:...}} scan ABANDONED because a
+  `N scan(s) in <stack> were ABANDONED mid-value because a {{resolve:...}}
   reference could not be resolved`.
 
   The resolver stops at the first `{{resolve:...}}` token it cannot resolve —
@@ -328,20 +328,27 @@ cannot rewrite. Three shapes qualify, and all three are also reported in words:
   `JSON_KEY`, a secret that is not JSON, or an AWS rejection such as
   `ParameterNotFound` / `AccessDeniedException` — and every later token in the
   SAME value is then never resolved, so it contributes no needle. A plaintext
-  sitting behind such a token therefore survives a scan that finds nothing.
-  cdkd cannot rewrite it (there is no needle to match) and does not refuse the
-  stack, so it is reported and counted instead, and each record is named in a
-  warning at default verbosity. Resolve the reference — restore the parameter
-  or secret — and re-run; the count going to zero is what certifies the record.
+  sitting behind such a token survives a scan that finds nothing. cdkd cannot
+  rewrite it (there is no needle to match) and does not refuse the stack, so it
+  is reported and counted instead. Restore the parameter or secret and re-run.
 
-  **A scan stopped by a TEMPLATE failure is warned but does NOT fail `--fail`.**
-  One throw aborts the whole properties bag, and some of those throws have
-  nothing to do with fetching a reference: an unresolvable `Ref` or
-  `Fn::GetAtt`, or a parameter with no `Default`. `scrub` resolves with template
-  DEFAULTS and takes no `--parameters`, so it cannot bind those — failing the
-  gate on them would red a CI build with no action available to clear it. You
-  still get a warning naming the record, because the leaf really was left
-  unscanned: fix the template reference and re-run to certify it.
+### A scan `--fail` warns about but does not count
+
+Not every abandoned scan raises the exit code. One failure aborts the whole
+properties bag, and some of those have nothing to do with fetching a reference:
+
+| What stopped the scan | `--fail` | Why |
+| --- | --- | --- |
+| The reference itself — deleted parameter, denied secret, missing `JSON_KEY` | exits `1` | Restoring the reference clears it. |
+| An unresolvable `Ref` / `Fn::GetAtt`, or a parameter with no `Default` | warns only | `scrub` resolves with template defaults and takes no `--parameters`, so it cannot bind these. A gate failure could not be cleared. |
+| A reference whose own argument still holds an unsubstituted `${...}` | warns only | The token was never fetchable — same reason. |
+
+**Every one of them is named in a warning at default verbosity**, because the
+record really was left unscanned either way. So a green `--dry-run --fail` does
+not by itself mean every record was examined: read the warnings. A record cdkd
+could not certify may still hold a plaintext from an older binary, and giving
+the parameter a `Default` — or resolving the reference — is what lets a re-run
+certify it. Where neither is possible, cdkd cannot certify that record at all.
 
 ## Refusals
 
