@@ -39,9 +39,9 @@ concurrency:
 jobs:
   inherit:
     runs-on: ubuntu-latest
-    # Measured over the 12 most recent successful runs: 3 3 3 3 3 4 4 5 5 5 6 6
-    # seconds -- median 4, max 6. The job is a handful of GitHub API calls with
-    # no checkout, so 5 minutes is all runner startup and API slack.
+    # Measured 2026-09-17 over the 12 most recent successful runs: median 5 s,
+    # max 9 s. The job is a handful of GitHub API calls with no checkout, so 5
+    # minutes is all runner startup and API slack.
     timeout-minutes: 5
     steps:
       - name: Copy linked issues' labels onto the PR

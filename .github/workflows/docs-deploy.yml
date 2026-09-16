@@ -48,10 +48,10 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # Measured over the 12 most recent successful runs: 61 61 61 62 62 63 67 68
-    # 69 70 70 75 seconds -- median 65, max 75. 15 minutes is ~12x the slowest;
-    # the spread is tight because the work is a fixed SSG build, and the slack
-    # is for install and for the docs corpus growing.
+    # Measured 2026-09-17 over the 12 most recent successful runs: median 65 s,
+    # max 98 s. 15 minutes is ~9x the slowest. The work is a fixed SSG build, so
+    # the median barely moves; the max is what drifts, and the slack is for
+    # install and for the docs corpus growing.
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
@@ -126,10 +126,10 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
-    # Only 2 successful runs in the 12-run window (the job is gated on a push to
-    # main): 8 and 9 seconds. 10 minutes is deliberately loose against that
-    # sample -- the step hands an already-built artifact to GitHub Pages, so the
-    # variable is Pages' own latency rather than anything in this repo.
+    # Measured 2026-09-17: ONE successful run in the 12-run window (the job is
+    # gated on a push to main), at 8 s. 10 minutes is deliberately loose against
+    # that sample -- the step hands an already-built artifact to GitHub Pages,
+    # so the variable is Pages' own latency rather than anything in this repo.
     timeout-minutes: 10
     permissions:
       pages: write

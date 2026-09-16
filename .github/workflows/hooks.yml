@@ -42,7 +42,19 @@ permissions: {}
 jobs:
   hook-suites:
     runs-on: macos-latest
-    timeout-minutes: 30
+    # RAISED from 30, which was the one bound in the repository this change's
+    # own standard condemned. Measured 2026-09-17 over the 12 most recent
+    # successful runs: median 1044 s, max 1290 s (21.5 min) -- 1.40x headroom
+    # against 30, tighter than anything else here and tighter than the 2.4x this
+    # PR calls its tightest. It is a macOS runner executing two bash suites, the
+    # slowest and most variable host in the matrix, so 45 (2.09x) is the value
+    # the sample supports.
+    #
+    # It predates this change and was not measured when it was written, which is
+    # the argument for the fence rather than an exception to it: a bound nobody
+    # re-derives drifts toward the work, and this one had drifted to the point
+    # of being likelier to fail a good run than to catch a bad one.
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:

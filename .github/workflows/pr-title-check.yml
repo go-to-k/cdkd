@@ -40,9 +40,9 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    # Measured over the 12 most recent successful runs: 3 3 3 3 3 3 4 5 5 6 6 6
-    # seconds -- median 3.5, max 6. One action call against the PR title; 5
-    # minutes is runner-startup slack.
+    # Measured 2026-09-17 over the 12 most recent successful runs: median 4 s,
+    # max 6 s. One action call against the PR title; 5 minutes is
+    # runner-startup slack.
     timeout-minutes: 5
     steps:
       - name: Check PR Title
@@ -66,10 +66,10 @@ jobs:
 
   prefix-scope:
     runs-on: ubuntu-latest
-    # Measured over the 12 most recent successful runs: 12 13 13 13 14 14 15 15
-    # 15 15 15 16 seconds -- median 14.5, max 16. 10 minutes is ~37x that; the
-    # job checks out the base and runs one TypeScript checker, and the slack is
-    # sized for install rather than for the check itself.
+    # Measured 2026-09-17 over the 12 most recent successful runs: median 15 s,
+    # max 17 s. 10 minutes is ~35x that; the job checks out the base and runs
+    # one TypeScript checker, and the slack is sized for install rather than for
+    # the check itself.
     timeout-minutes: 10
     # Narrower than the workflow-level block: this job only READS. Nothing from
     # the head is executed: the checkout is pinned to the BASE commit (see the

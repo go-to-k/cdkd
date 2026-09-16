@@ -82,8 +82,8 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    # Measured over the 6 most recent successful runs: 23 24 29 32 62 102
-    # seconds -- median 30.5, max 102. 15 minutes is ~9x the slowest, with the
+    # Measured 2026-09-17 over the 6 most recent successful runs: median 30.5 s,
+    # max 102 s. 15 minutes is ~9x the slowest, with the
     # slack sized for the campaign's own growth: the job walks sub-issues
     # through the GitHub API, so its duration scales with how many exist.
     timeout-minutes: 15

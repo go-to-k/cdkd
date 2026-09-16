@@ -16,12 +16,18 @@ permissions: {}
 jobs:
   check-build-test:
     runs-on: ubuntu-latest
-    # Measured over the 12 most recent successful runs: 558 585 591 678 680 684
-    # 697 703 716 721 722 746 seconds -- median 690.5, max 746 (~12.4 min). 30
-    # minutes is ~2.4x the slowest observed run, which absorbs a slow runner and
-    # ordinary growth while capping a runaway at 30 minutes rather than the
-    # Actions default of 360. This job is fork-reachable, so it is the one the
-    # bound matters most for.
+    # Measured 2026-09-17 over the 12 most recent successful runs: n=12, median
+    # 722 s, max 742 s (~12.4 min). 30 minutes is ~2.4x the slowest observed run,
+    # which absorbs a slow runner and ordinary growth while capping a runaway at
+    # 30 minutes rather than the Actions default of 360. This job is
+    # fork-reachable, so it is the one the bound matters most for.
+    #
+    # The DATE is not decoration: the window slides, and an undated figure here
+    # was measurably false the next day -- three of these fifteen samples moved
+    # within 24 hours of first being written down. Re-derive rather than trust:
+    # `gh run list --workflow=ci.yml --status=success --limit 12 --json
+    # databaseId`, then `gh api repos/go-to-k/cdkd/actions/runs/<id>/jobs` and
+    # difference `started_at` against `completed_at`.
     timeout-minutes: 30
     permissions:
       contents: read
@@ -439,10 +445,12 @@ jobs:
   # new entry is not, and a new test file that leaks fails this job.
   once-leak-detect:
     runs-on: ubuntu-latest
-    # Measured over the same 12 runs: 435 448 453 551 626 648 656 656 658 660
-    # 663 690 seconds -- median 652, max 690 (~11.5 min). Same bound as
-    # check-build-test for the same reason: it runs the same unit suite, so the
-    # two grow together and a shared value will not need re-deriving twice.
+    # Measured 2026-09-17 over the same 12 runs: median 671 s, max 716 s
+    # (~11.9 min) -- 2.5x headroom. Same bound as check-build-test for the same
+    # reason: it runs the same unit suite, so the two grow together and a shared
+    # value will not need re-deriving twice. These two are the tightest ratios
+    # in the repository, and deliberately so: the unit suite is the
+    # fastest-growing input here, so its bound is the one worth revisiting.
     timeout-minutes: 30
     permissions:
       contents: read
@@ -488,11 +496,17 @@ jobs:
   runtime-compat:
     runs-on: ubuntu-latest
     needs: check-build-test
-    # Measured over 33 matrix legs from the same 12 runs: 32-48 seconds, median
-    # 39. 10 minutes is ~12x the slowest leg -- deliberately loose, because the
-    # job is dominated by install and build rather than by anything that scales
-    # with the repo, and a tight bound here would fail on a slow registry
-    # without ever catching a runaway.
+    # Measured 2026-09-17 over 24 matrix legs from the same 12 runs (two legs
+    # each): median 40 s, max 49 s. 10 minutes is ~12x the slowest leg --
+    # deliberately loose, because the job is dominated by install and build
+    # rather than by anything that scales with the repo, and a tight bound here
+    # would fail on a slow registry without ever catching a runaway.
+    #
+    # An earlier revision said 33 legs, which a reviewer read as impossible for
+    # a 2-value matrix over 12 runs. It was not impossible and it was not a
+    # typo: the window at that moment straddled a matrix change and still held
+    # legs named (20) and (22). It is simply unreproducible now, which is the
+    # whole argument for the date above.
     timeout-minutes: 10
     permissions:
       contents: read
@@ -548,8 +562,8 @@ jobs:
   release-pr-not-stale:
     if: startsWith(github.head_ref, 'release-please--')
     runs-on: ubuntu-latest
-    # One successful run in the 12-run window (the job is gated on a
-    # release-please branch): 11 seconds. 10 minutes is loose against a
+    # Measured 2026-09-17: ONE successful run in the 12-run window (the job is
+    # gated on a release-please branch), at 11 s. 10 minutes is loose against a
     # one-point sample on purpose -- the work is a fetch plus two `git rev-list`
     # calls, and a bound derived tightly from n=1 would be a guess wearing a
     # measurement's clothes.
@@ -636,8 +650,9 @@ jobs:
     if: always()
     needs: [check-build-test, once-leak-detect, runtime-compat, release-pr-not-stale]
     runs-on: ubuntu-latest
-    # Measured over the same 12 runs: 2-4 seconds. The step is a shell loop over
-    # four strings, so 5 minutes is entirely runner-startup slack.
+    # Measured 2026-09-17 over the same 12 runs: median 2.5 s, max 4 s. The step
+    # is a shell loop over four strings, so 5 minutes is entirely runner-startup
+    # slack.
     timeout-minutes: 5
     permissions: {}
     env:
