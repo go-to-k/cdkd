@@ -63,18 +63,36 @@
  * WHAT THIS FILE CANNOT PIN ABOUT ITSELF. Several helpers here exist so that a
  * hostile workflow file's bytes cannot forge a line in a CI log: `safeName`,
  * `safeRender`, `readWorkflow`, `setDifference`, `renderOffences`. Each has its
- * own cases, and every mutation of their BODIES reds. Their WIRING does not:
+ * own cases, and mutating their BODIES reds — with the boundaries named beside
+ * each case, since a claim of "every mutation" was measured false once and is
+ * not worth making. Their WIRING did not red at all:
  * replacing a call with the raw expression it wraps — `readFileSync` instead of
  * `readWorkflow`, a bare list instead of `setDifference` — reds nothing,
  * measured.
  *
  * No ordinary case can close that, because the thing it would assert is the
  * thing being mutated. So the wiring is fenced by SHAPE instead: the block at
- * the end reads this file's own source and requires each raw primitive to occur
- * exactly where it should — one `readFileSync`, inside `readWorkflow`; one
- * offence-line template, inside `renderOffences`. Re-inlining a helper then
- * reds by name. It is the same instrument `scripts/check-source-control-bytes.ts`
- * uses on the tree, turned on one file.
+ * the end reads this file's own source and counts each raw PRIMITIVE — one
+ * `readFileSync`, one offence-line template, two `safeRender` maps, two
+ * `boundedList` caps. Re-inlining a helper, or adding a second reader under any
+ * spelling, then reds by name. Same instrument
+ * `scripts/check-source-control-bytes.ts` uses on the tree, turned on one file.
+ *
+ * WHERE THIS STOPS, stated because the alternative is pretending otherwise.
+ * Eleven renderers of one class — a hostile workflow file forging a line in the
+ * CI log — were found across five review rounds, each by a different ad-hoc
+ * search: reading the code, grepping every binding, running the suite against a
+ * hostile file and reading the output bytes. Every one is closed and the counts
+ * above make a twelfth of the SAME SHAPE red. What has no completeness argument
+ * is the search itself: a renderer that prints file-derived text through some
+ * construct none of those counts names would not be caught.
+ *
+ * That residual is accepted deliberately. The harm is a misleading line in the
+ * log of an already-failing run on a PUBLIC repository's CI — no secret, no
+ * write, no bypass of the fence's verdict, which is computed from the file and
+ * not from what it prints. Instance-hunting stopped here on that judgement
+ * rather than on exhaustion; the structural half is the counts, and they are
+ * what a future reader should extend if a new renderer is added.
  */
 import { describe, expect, it } from 'vite-plus/test';
 import { execFileSync } from 'node:child_process';
@@ -479,7 +497,14 @@ const safeName = (name: string): string =>
  * Any fork-controlled string, rendered so it cannot forge a second line or
  * erase the one above: flattened and clamped, with the clip marked.
  *
- * The same treatment as `excerpt`, hoisted to module scope because six
+ * NOT identical to `excerpt`, though they look it: `excerpt` clamps the raw
+ * slice and then flattens, marking the clip from the RAW extent, while this
+ * flattens first and marks from the flattened length. On whitespace-heavy input
+ * they disagree about whether a clip happened. The duplication is deliberate —
+ * `excerpt`'s marker needs the un-flattened end offset, and flattening 80 KB to
+ * take 120 characters is the cost its own comment cites.
+ *
+ * Hoisted to module scope because six
  * renderers of this one forgery have now been found and closed one at a time —
  * the excerpt, the root, the finding's file field, the test title, the
  * tracked-set difference, and Node's `ENOENT` — and each fix reached exactly
@@ -507,7 +532,7 @@ export const readWorkflow = (name: string): string => {
   try {
     return readFileSync(join(WORKFLOW_DIR, name), 'utf8');
   } catch (cause) {
-    const code = (cause as NodeJS.ErrnoException).code ?? 'unknown error';
+    const code = (cause as NodeJS.ErrnoException).code ?? 'no code';
     throw new Error(`could not read workflow ${safeName(name)}: ${code}`);
   }
 };
@@ -526,10 +551,14 @@ export const readWorkflow = (name: string): string => {
  *
  * KNOWN BOUND: `includes` collapses duplicates, so two identical names on one
  * side and one on the other compare equal where the `sort()` + `toEqual` this
- * replaced would have differed. Unreachable while both sides are basenames from
- * a flat directory, and stated rather than claimed away — the docstring used to
- * say the comparison "stays exact", which is true of the CONTENT and not of the
- * multiplicity.
+ * replaced would have differed. It costs nothing here because neither side can
+ * hold a duplicate — `readdirSync` of one directory yields distinct names, and
+ * the `git ls-files` side is reduced to basenames of paths that are themselves
+ * distinct. (An earlier wording said "both sides are basenames from a flat
+ * directory"; the tracked side recurses, so that reason was wrong even though
+ * the conclusion holds.) Stated rather than claimed away — the docstring used
+ * to say the comparison "stays exact", which is true of the CONTENT and not of
+ * the multiplicity.
  */
 export const setDifference = (
   found: readonly string[],
@@ -557,14 +586,16 @@ const MAX_RENDERED_OFFENCES = 20;
  * else the run printed. The overflow is reported as a count so nothing is
  * silently dropped.
  */
-export const renderOffences = (offences: readonly Offence[]): string[] => {
-  const shown = offences
-    .slice(0, MAX_RENDERED_OFFENCES)
-    .map((o) => `${o.file}:${o.line}: ${o.reason} — ${o.text}`);
-  return offences.length > MAX_RENDERED_OFFENCES
-    ? [...shown, `… and ${offences.length - MAX_RENDERED_OFFENCES} more`]
-    : shown;
-};
+export const boundedList = (lines: readonly string[]): string[] =>
+  lines.length > MAX_RENDERED_OFFENCES
+    ? [
+        ...lines.slice(0, MAX_RENDERED_OFFENCES),
+        `… and ${lines.length - MAX_RENDERED_OFFENCES} more`,
+      ]
+    : [...lines];
+
+export const renderOffences = (offences: readonly Offence[]): string[] =>
+  boundedList(offences.map((o) => `${o.file}:${o.line}: ${o.reason} — ${o.text}`));
 
 interface Offence {
   readonly file: string;
@@ -811,7 +842,15 @@ describe('workflow expression syntax', () => {
       // so an unsanitised body here erases the six sanitised renderers printing
       // beside it. Measured against the real file: a raw newline and a live
       // `ESC[1A ESC[2K`. Unclamped, one body can be the whole file.
-      expect(bodies.filter((b) => !isReadableExpression(b)).map(safeRender)).toEqual([]);
+      //
+      // BOUNDED IN COUNT as well as in width, through the same helper the
+      // per-file arm uses. Mapping alone left the count free, and this list
+      // aggregates the whole DIRECTORY — 1 MB of empty openers is ~105 k
+      // elements, worse than the arm that was bounded first. One of two lists,
+      // again.
+      expect(boundedList(bodies.filter((b) => !isReadableExpression(b)).map(safeRender))).toEqual(
+        [],
+      );
     });
   });
 
@@ -925,6 +964,13 @@ describe('workflow expression syntax', () => {
       // root instead accepts `format.x(github.sha)`, which Actions rejects as
       // `Unrecognized named-value` — over-acceptance, the fence going blind.
       expect(isReadableExpression(` ${fn}.x(github.sha) `)).toBe(false);
+    });
+
+    it.each(EXPECTED_LITERALS)('refuses `%s` as a dotted root', (literal) => {
+      // The literal test is on the WHOLE token too. Testing the root instead
+      // accepts `${{ true.foo }}`. The FUNCTION twin of this was pinned two
+      // rounds ago and the literal one was not — one of two, again.
+      expect(isReadableExpression(` ${literal}.foo `)).toBe(false);
     });
 
     it.each(EXPECTED_LITERALS)('accepts the `%s` literal', (literal) => {
@@ -1151,6 +1197,34 @@ describe('workflow expression syntax', () => {
         expect(safeRender('z'.repeat(400)).endsWith('…')).toBe(true);
       });
 
+      it('reports the SHIPPED spelling, with no spaces at all', () => {
+        // `${{}}` — the exact reintroduction spelling, and no case fed it:
+        // `reasonFor` always inserts spaces, so `indexOf('}}', at + 3)` could be
+        // widened to `at + 4` with nothing red.
+        const found = findExpressionOffences('x.yml', 'a: ${{}}');
+        expect(found).toHaveLength(1);
+        expect(found[0]!.reason).toContain('empty expression body');
+      });
+
+      it.each([
+        [119, false],
+        [120, false],
+        [121, true],
+      ])('safeRender marks a clip at %i characters: %s', (len, marked) => {
+        // `excerpt` got this table; `safeRender` did not, so its threshold was
+        // loose in one direction while its slice width was pinned.
+        expect(safeRender('z'.repeat(len)).endsWith('…')).toBe(marked);
+      });
+
+      it('renders exactly the cap without a remainder line', () => {
+        // At exactly MAX_RENDERED_OFFENCES the `>` could be `>=`, printing
+        // "… and 0 more". The cases either side used 50 and 2.
+        const at = Array.from({ length: 20 }, () => 'a: ${{ }}').join('\n');
+        const rendered = renderOffences(findExpressionOffences('x.yml', at));
+        expect(rendered).toHaveLength(20);
+        expect(rendered.some((line) => line.startsWith('…'))).toBe(false);
+      });
+
       it('bounds how many findings one file prints', () => {
         const many = Array.from({ length: 50 }, () => 'a: ${{ }}').join('\n');
         const rendered = renderOffences(findExpressionOffences('x.yml', many));
@@ -1330,8 +1404,11 @@ describe('workflow expression syntax', () => {
           .filter((h): h is string => h !== undefined),
       );
       expect(heads.size).toBeGreaterThanOrEqual(5);
+      // Through `safeRender` like every other list of file-derived text: the
+      // charset rules out forgery here, but not LENGTH — a 500 k-character root
+      // printed whole, where the same root is clamped to 60 on the offence path.
       expect(
-        [...heads].filter(
+        [...heads].map(safeRender).filter(
           (h) => !CONTEXT_HEADS.has(h) && !FUNCTION_HEADS.has(h) && !LITERAL_HEADS.has(h),
         ),
       ).toEqual([]);
@@ -1367,7 +1444,15 @@ describe('workflow expression syntax', () => {
       expect(offences).toHaveLength(1);
       expect(offences[0]?.reason).toContain('empty expression body');
       // The line the scanner names is the one a reader has to edit.
-      expect(mutated.split('\n')[offences[0]!.line - 1]).toContain('NOT interpolated with');
+      // `.includes` — a failing `toContain` prints the whole subject, and the
+      // subject is a line of a fork-controlled file. Reached: a fork's own
+      // unclosed opener above the anchor pairs with this probe's `}}`, so the
+      // single offence lands on the FORK's line, the assertion fails, and its
+      // ESC reaches the log. The neighbour twelve lines up was hardened on
+      // exactly this ground and these two were left — one of two readers again.
+      expect(mutated.split('\n')[offences[0]!.line - 1]?.includes('NOT interpolated with')).toBe(
+        true,
+      );
     });
 
     it('reports the SAME comment with a word inside the braces', () => {
@@ -1399,7 +1484,7 @@ describe('workflow expression syntax', () => {
       const mutated = mutate('          # a stray ${{ opener');
       const offences = findExpressionOffences('cfn-schema-refresh.yml', mutated);
       expect(offences).toHaveLength(1);
-      expect(mutated.split('\n')[offences[0]!.line - 1]).toContain('a stray');
+      expect(mutated.split('\n')[offences[0]!.line - 1]?.includes('a stray')).toBe(true);
     });
 
     it('reports an opener with nothing after it to close against', () => {
@@ -1455,7 +1540,12 @@ describe('workflow expression syntax', () => {
     const CODE = SUBJECT.split('\n')
       .filter((line) => {
         const t = line.trim();
-        return !t.startsWith('*') && !t.startsWith('//') && !t.startsWith('/*');
+        // `/*` is NOT dropped: a reader added on a line starting with it would
+        // be invisible to the counts below, which is a bypass rather than a
+        // false count. A block comment's opening line reaching the counts costs
+        // nothing — the needles are code shapes, and the file's prose is
+        // already indented under `*`.
+        return !t.startsWith('*') && !t.startsWith('//');
       })
       .join('\n');
 
@@ -1471,21 +1561,43 @@ describe('workflow expression syntax', () => {
       // Two readers is how the module-scope walk kept its raw read while the
       // per-file case got a guarded one — and the raw one runs FIRST, at
       // collection, so the guarded one was unreachable.
-      expect(countOf('readFileSync(join(WORKFLOW_DIR')).toBe(1);
-      expect(countOf('readWorkflow(name)')).toBe(2);
+      //
+      // The count is on the bare PRIMITIVE, not on one spelling of it. Pinning
+      // `readFileSync(join(WORKFLOW_DIR` caught a re-spelled read only when it
+      // REPLACED the guarded one; a reader ADDED as
+      // `readFileSync(`${WORKFLOW_DIR}/${n}`)` moved neither count and stayed
+      // green. Exactly ONE is legitimate — `readWorkflow`'s own; the fence's
+      // two reads of THIS file sit after the marker and are not in `SUBJECT`.
+      expect(countOf('readFileSync(')).toBe(1);
+      expect(countOf('readWorkflow(')).toBe(4);
     });
 
     it('renders the corpus bodies through safeRender', () => {
       // `bodies` is verbatim file text, printed by the corpus assertion on the
       // very run that reports a defect. Dropping the map reds nothing on its
       // own — the list is empty on a healthy tree — so it is pinned here.
-      expect(countOf('.map(safeRender)')).toBe(1);
+      // Two lists of file-derived text: the corpus bodies and the corpus heads.
+      expect(countOf('.map(safeRender)')).toBe(2);
+      // Both unbounded lists go through the same cap.
+      expect(countOf('boundedList(')).toBe(2);
+      // The two probe assertions that read a LINE of the mutated file. They
+      // must use `.includes`, because a failing `toContain` prints the whole
+      // subject — and reverting them redded nothing on a healthy tree, which is
+      // the same reason every other renderer needed counting rather than a case.
+      //
+      // Scoped to that one expression rather than banning `toContain` outright:
+      // twenty of its uses here read a reason or a message this file OWNS, and
+      // those are the assertions a reader wants a diff from.
+      expect(countOf("mutated.split('\\n')[offences[0]!.line - 1]?.includes(")).toBe(2);
     });
 
     it('formats an offence line in exactly one place', () => {
       // The template is what turns file/line/reason/text into output. Spelled
       // twice, one copy can lose the bound or the sanitiser.
-      expect(countOf('${o.file}:${o.line}: ${o.reason}')).toBe(1);
+      // The WHOLE template. The needle was a strict PREFIX of it, so dropping
+      // `— ${o.text}` left the count at 1 and the clamped excerpt silently
+      // stopped being printed, with no case reading a rendered line's text.
+      expect(countOf('`${o.file}:${o.line}: ${o.reason} — ${o.text}`')).toBe(1);
       expect(countOf('renderOffences(offences)')).toBe(1);
     });
 
