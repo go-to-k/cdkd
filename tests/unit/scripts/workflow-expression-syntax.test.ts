@@ -59,6 +59,22 @@
  * The token walk below settles both from one rule — operands and operators must
  * ALTERNATE — because prose is a run of adjacent operands while `{`, `}`, `:`
  * and `@` only ever appear inside a quoted string, which is one token.
+ *
+ * WHAT THIS FILE CANNOT PIN ABOUT ITSELF. Several helpers here exist so that a
+ * hostile workflow file's bytes cannot forge a line in a CI log: `safeName`,
+ * `safeRender`, `readWorkflow`, `setDifference`, `renderOffences`. Each has its
+ * own cases, and every mutation of their BODIES reds. Their WIRING does not:
+ * replacing a call with the raw expression it wraps — `readFileSync` instead of
+ * `readWorkflow`, a bare list instead of `setDifference` — reds nothing,
+ * measured.
+ *
+ * No ordinary case can close that, because the thing it would assert is the
+ * thing being mutated. So the wiring is fenced by SHAPE instead: the block at
+ * the end reads this file's own source and requires each raw primitive to occur
+ * exactly where it should — one `readFileSync`, inside `readWorkflow`; one
+ * offence-line template, inside `renderOffences`. Re-inlining a helper then
+ * reds by name. It is the same instrument `scripts/check-source-control-bytes.ts`
+ * uses on the tree, turned on one file.
  */
 import { describe, expect, it } from 'vite-plus/test';
 import { execFileSync } from 'node:child_process';
@@ -220,9 +236,12 @@ export const analyseExpression = (
    * ceiling. Vitest cannot preempt it either: a synchronous loop runs to
    * completion and the 5 s `testTimeout` only reports afterwards.
    *
-   * A BOOLEAN, after two rounds of being a Set. It was first a set of roots the
-   * caller supplied, then a set the walker filled — and in both shapes nothing
-   * ever read it, so it was a mode flag sized by attacker input.
+   * A BOOLEAN, after two rounds of being a Set — and the two rounds were dead
+   * in OPPOSITE ways. As `extraRoots` the walker DID read it (`extraRoots.has`
+   * opened the `known` disjunction); it died when the loop that populated it
+   * went away and every caller started passing an empty set. As `collect` it
+   * was populated and never read. Only the second was write-only, and an
+   * earlier version of this paragraph claimed both were.
    *
    * It does NOT make prose readable: `the same rule` still refuses, because
    * `same` then arrives where an operator is due.
@@ -457,36 +476,61 @@ const safeName = (name: string): string =>
   WORKFLOW_NAME.test(name) ? name : JSON.stringify(flatten(name).slice(0, 120));
 
 /**
- * The two listings' difference, COMPARED raw so the check stays exact and
- * RENDERED through `safeName` so a failure cannot forge a line.
+ * Any fork-controlled string, rendered so it cannot forge a second line or
+ * erase the one above: flattened and clamped, with the clip marked.
  *
- * Extracted rather than written inline because inline it could not be pinned:
- * the rendering only matters when the sets DISAGREE, and on a healthy tree they
- * never do — reverting it to a raw `toEqual` of both lists redded nothing. As a
- * function it has its own cases below.
- *
- * Not a hypothetical, either: `git ls-files` output is split on newlines, so a
- * newline-bearing path can never reconstruct, the sets ALWAYS mismatch, and the
- * assertion is guaranteed to fail and guaranteed to print. Two earlier fixes
- * closed this same shape in the finding and in the test title; this is the
- * third renderer.
+ * The same treatment as `excerpt`, hoisted to module scope because six
+ * renderers of this one forgery have now been found and closed one at a time —
+ * the excerpt, the root, the finding's file field, the test title, the
+ * tracked-set difference, and Node's `ENOENT` — and each fix reached exactly
+ * the field it was written for. Anything that prints a workflow's bytes or its
+ * name goes through this or through `safeName`.
  */
+const safeRender = (s: string): string => {
+  const flat = flatten(s);
+  return flat.length > 120 ? `${flat.slice(0, 120)}…` : flat;
+};
+
 /**
  * Read a workflow, naming it SAFELY if the read fails.
  *
  * Node puts the raw path in an `ENOENT`, which is this forgery one layer below
  * the fields the offence renders — reachable through a dangling symlink, which
- * git tracks and `readdirSync` lists. Extracted from the case for the same
- * reason `setDifference` is: inline, the failing arm could not be pinned.
+ * git tracks and `readdirSync` lists.
+ *
+ * The original error is NOT attached as `cause`: vitest prints a cause chain in
+ * its own `Caused by:` block, raw, so attaching it moved the forgery down two
+ * lines rather than closing it. The `code` is what a reader needs and is the
+ * only part that cannot carry a path.
  */
 export const readWorkflow = (name: string): string => {
   try {
     return readFileSync(join(WORKFLOW_DIR, name), 'utf8');
   } catch (cause) {
-    throw new Error(`could not read workflow ${safeName(name)}`, { cause });
+    const code = (cause as NodeJS.ErrnoException).code ?? 'unknown error';
+    throw new Error(`could not read workflow ${safeName(name)}: ${code}`);
   }
 };
 
+/**
+ * The two listings' difference, COMPARED raw so the check stays exact and
+ * RENDERED through `safeName` so a failure cannot forge a line.
+ *
+ * Extracted rather than written inline because inline it could not be pinned:
+ * the rendering only matters when the sets DISAGREE, and on a healthy tree they
+ * never do — reverting it to a raw `toEqual` of both lists redded nothing.
+ *
+ * Not a hypothetical, either: `git ls-files` output is split on newlines, so a
+ * newline-bearing path can never reconstruct, the sets ALWAYS mismatch, and the
+ * assertion is guaranteed to fail and guaranteed to print.
+ *
+ * KNOWN BOUND: `includes` collapses duplicates, so two identical names on one
+ * side and one on the other compare equal where the `sort()` + `toEqual` this
+ * replaced would have differed. Unreachable while both sides are basenames from
+ * a flat directory, and stated rather than claimed away — the docstring used to
+ * say the comparison "stays exact", which is true of the CONTENT and not of the
+ * multiplicity.
+ */
 export const setDifference = (
   found: readonly string[],
   tracked: readonly string[],
@@ -494,6 +538,33 @@ export const setDifference = (
   missing: tracked.filter((t) => !found.includes(t)).map(safeName),
   extra: found.filter((f) => !tracked.includes(f)).map(safeName),
 });
+
+/**
+ * Where the wiring fence stops reading. Everything BEFORE this string is the
+ * code that fence judges; the fence's own assertions sit after it, and must not
+ * be counted as uses of the things they name.
+ */
+const WIRING_FENCE_MARKER = 'the sanitising helpers are actually wired in';
+
+/** How many findings one file may print before the rest become a count. */
+const MAX_RENDERED_OFFENCES = 20;
+
+/**
+ * Findings as lines, BOUNDED in number as well as in width.
+ *
+ * Every field is already clamped, but the count was not: a 1 MB file of empty
+ * openers yields ~131 k findings and ~18 MB of output, which buries everything
+ * else the run printed. The overflow is reported as a count so nothing is
+ * silently dropped.
+ */
+export const renderOffences = (offences: readonly Offence[]): string[] => {
+  const shown = offences
+    .slice(0, MAX_RENDERED_OFFENCES)
+    .map((o) => `${o.file}:${o.line}: ${o.reason} — ${o.text}`);
+  return offences.length > MAX_RENDERED_OFFENCES
+    ? [...shown, `… and ${offences.length - MAX_RENDERED_OFFENCES} more`]
+    : shown;
+};
 
 interface Offence {
   readonly file: string;
@@ -661,7 +732,13 @@ const workflowFiles = readdirSync(WORKFLOW_DIR).filter((name) => /\.ya?ml$/.test
  * what an expression even is.
  */
 const bodies = workflowFiles.flatMap((name) => {
-  const source = readFileSync(join(WORKFLOW_DIR, name), 'utf8');
+  // `readWorkflow`, not a raw read. This is the UN-HARDENED TWIN the previous
+  // round left behind: it runs at COLLECTION time, before any case registers,
+  // so the guarded read one screen down was unreachable and a dangling symlink
+  // collapsed the suite to `(0 test)` with a forged path on the way out —
+  // forged AND the fence disabled. A fence applied to one of two readers is the
+  // shape this file keeps rediscovering.
+  const source = readWorkflow(name);
   const found: string[] = [];
   forEachExpression(source, (_at, close, body) => {
     if (close !== -1) found.push(body);
@@ -704,7 +781,11 @@ describe('workflow expression syntax', () => {
       const source = readWorkflow(name);
       const offences = findExpressionOffences(name, source);
       expect(
-        offences.map((o) => `${o.file}:${o.line}: ${o.reason} — ${o.text}`),
+        // The first 20 only. Each line is clamped, but the COUNT is not: a
+        // 1 MB file of empty openers is 131 k findings and ~18 MB of output,
+        // which buries the rest of the run. Twenty is enough to act on, and the
+        // total says how many more there are.
+        renderOffences(offences),
         'an expression Actions cannot read invalidates the ENTIRE workflow file, so the job simply stops being scheduled. A real YAML comment is refused too, deliberately: write "expression" in words there — the header says why',
       ).toEqual([]);
     },
@@ -725,7 +806,12 @@ describe('workflow expression syntax', () => {
     });
 
     it('every one of them is readable', () => {
-      expect(bodies.filter((b) => !isReadableExpression(b))).toEqual([]);
+      // RENDERED, not raw. `bodies` holds verbatim file bytes, and this
+      // assertion prints them on exactly the run that reports a real defect —
+      // so an unsanitised body here erases the six sanitised renderers printing
+      // beside it. Measured against the real file: a raw newline and a live
+      // `ESC[1A ESC[2K`. Unclamped, one body can be the whole file.
+      expect(bodies.filter((b) => !isReadableExpression(b)).map(safeRender)).toEqual([]);
     });
   });
 
@@ -835,6 +921,10 @@ describe('workflow expression syntax', () => {
       // invalidates the file. Seven of the twelve are ordinary English words, so
       // one set for both readmitted the prose class this arm exists to close.
       expect(isReadableExpression(` ${fn} `)).toBe(false);
+      // The membership test is on the WHOLE token, not its root. Testing the
+      // root instead accepts `format.x(github.sha)`, which Actions rejects as
+      // `Unrecognized named-value` — over-acceptance, the fence going blind.
+      expect(isReadableExpression(` ${fn}.x(github.sha) `)).toBe(false);
     });
 
     it.each(EXPECTED_LITERALS)('accepts the `%s` literal', (literal) => {
@@ -1033,14 +1123,65 @@ describe('workflow expression syntax', () => {
       it('names a workflow it cannot read without forging a line', () => {
         // The read's own failure path. Node's ENOENT carries the raw path, so
         // the rethrow is what keeps a hostile name from opening a second line.
-        expect(() => readWorkflow('evil\nci.yml:1: FORGED.yml')).toThrow(
-          /could not read workflow "evil ci\.yml:1: FORGED\.yml"/,
-        );
         try {
           readWorkflow('evil\nci.yml:1: FORGED.yml');
+          expect.unreachable('the read should have failed');
         } catch (error) {
-          expect((error as Error).message).not.toContain('\n');
+          const { message, cause } = error as Error;
+          expect(message).toContain('could not read workflow "evil ci.yml:1: FORGED.yml"');
+          expect(message).not.toContain('\n');
+          // The errno is kept because a reader needs it; the ERROR is not,
+          // because vitest prints a cause chain in its own `Caused by:` block,
+          // raw. Attaching it moved the forgery two lines down rather than
+          // closing it.
+          expect(message).toContain('ENOENT');
+          expect(cause).toBeUndefined();
         }
+      });
+
+      it('renders a corpus body safely', () => {
+        // `bodies` holds verbatim file bytes and the corpus assertion prints
+        // them on exactly the run that reports a real defect.
+        // The ESC goes; the printable `[1A` it introduced stays, which is the
+        // point — what makes the sequence dangerous is the escape, not the
+        // letters, and dropping legible text would make a finding unreadable.
+        const esc = String.fromCharCode(0x1b);
+        expect(safeRender(`prose\n${esc}[1A${esc}[2K here`)).toBe('prose [1A [2K here');
+        expect(safeRender('z'.repeat(400))).toHaveLength(121);
+        expect(safeRender('z'.repeat(400)).endsWith('…')).toBe(true);
+      });
+
+      it('bounds how many findings one file prints', () => {
+        const many = Array.from({ length: 50 }, () => 'a: ${{ }}').join('\n');
+        const rendered = renderOffences(findExpressionOffences('x.yml', many));
+        expect(rendered).toHaveLength(21);
+        expect(rendered.at(-1)).toBe('… and 30 more');
+      });
+
+      it('quotes the closing braces in the excerpt', () => {
+        // `close + 2` in both offence arms. Dropping the `+ 2` loses the `}}`
+        // from the quoted text and shifts the ellipsis boundary by two, and
+        // nothing read either arm's excerpt closely enough to notice.
+        const [empty] = findExpressionOffences('x.yml', 'a: ${{ }}');
+        expect(empty!.text).toBe('${{ }}');
+        const [prose] = findExpressionOffences('x.yml', 'a: ${{ prose here }}');
+        expect(prose!.text).toBe('${{ prose here }}');
+      });
+
+      it('collapses a RUN of unsafe characters to one space', () => {
+        // The `blank` latch, in the direction nothing tested: without it each
+        // unsafe character becomes its own space, so a body of newlines renders
+        // as a wall of them.
+        expect(safeRender('a\n\n\n\nb')).toBe('a b');
+        expect(safeRender('a \t \n b')).toBe('a b');
+      });
+
+      it('renders every finding when there are few', () => {
+        const rendered = renderOffences(findExpressionOffences('x.yml', 'a: ${{ }}\nb: ${{ }}'));
+        expect(rendered).toHaveLength(2);
+        // The overflow marker specifically — `and` alone also occurs inside a
+        // reason string, so matching on it asserted nothing.
+        expect(rendered.some((line) => /^… and \d+ more$/.test(line))).toBe(false);
       });
 
       it('renders a legitimate name unquoted', () => {
@@ -1204,11 +1345,13 @@ describe('workflow expression syntax', () => {
    * shipped it — inside the `run:` body of the fragment step, behind a `#`.
    */
   describe('probed by restoring the defect to the file it shipped in', () => {
-    const REAL = readFileSync(join(WORKFLOW_DIR, 'cfn-schema-refresh.yml'), 'utf8');
+    const REAL = readWorkflow('cfn-schema-refresh.yml');
     const ANCHOR = '          # Publish left this working tree on the branch it pushed, both on the';
 
     const mutate = (line: string): string => {
-      expect(REAL).toContain(ANCHOR);
+      // `.includes` rather than `toContain`: a failing `toContain` prints the
+      // WHOLE subject, which here is a fork-controlled file.
+      expect(REAL.includes(ANCHOR)).toBe(true);
       // A FUNCTION replacer, so a probe line carrying `$&` / `` $` `` / `$'` /
       // `$1` is inserted verbatim instead of being expanded by `String.replace`
       // — measured: `` $` `` expands to the whole pre-match text, which would
@@ -1269,8 +1412,87 @@ describe('workflow expression syntax', () => {
     });
 
     it('accepts the legitimate opener the refresh already carries in a run body', () => {
-      expect(REAL).toContain('${{ github.repository_owner }}');
+      expect(REAL.includes('${{ github.repository_owner }}')).toBe(true);
       expect(findExpressionOffences('cfn-schema-refresh.yml', REAL)).toEqual([]);
+    });
+  });
+
+  /**
+   * THE WIRING, fenced by shape.
+   *
+   * The sanitising helpers above all have cases, and every mutation of their
+   * bodies reds — but replacing a CALL with the raw expression it wraps redded
+   * nothing, measured, and that is exactly the mistake that has happened here
+   * twice: a fence applied to one of two readers, and to one of two lists.
+   *
+   * A case cannot assert "this test calls that helper" from inside the same
+   * file. It can assert that the raw primitive occurs ONCE and in the right
+   * place, which is the same protection reached from the other side.
+   */
+  describe('the sanitising helpers are actually wired in', () => {
+    /**
+     * The file UP TO this block. Counting the whole file would count these
+     * assertions' own needles — a fence that reads its own text measures
+     * itself, and the first cut of this block did exactly that.
+     */
+    const SUBJECT = ((): string => {
+      const parts = readFileSync(
+        join(import.meta.dirname, 'workflow-expression-syntax.test.ts'),
+        'utf8',
+      ).split(WIRING_FENCE_MARKER);
+      // The LAST occurrence, which is this block's own `describe` title. The
+      // first is the constant's declaration — splitting there cut the file in
+      // half and left the fence judging nothing, which its capacity case caught.
+      return parts.slice(0, -1).join(WIRING_FENCE_MARKER);
+    })();
+
+    /**
+     * CODE only. The needles below are spellings this file also DISCUSSES, so a
+     * doc comment naming one counted as a use — measured, the `it.each` needle
+     * matched its own explanatory paragraph. Comment lines are dropped whole;
+     * nothing here needs to see inside one.
+     */
+    const CODE = SUBJECT.split('\n')
+      .filter((line) => {
+        const t = line.trim();
+        return !t.startsWith('*') && !t.startsWith('//') && !t.startsWith('/*');
+      })
+      .join('\n');
+
+    const countOf = (needle: string): number => CODE.split(needle).length - 1;
+
+    it('found the code to look at', () => {
+      // The split must land BEFORE the fence and AFTER everything it judges.
+      expect(SUBJECT.length).toBeGreaterThan(20_000);
+      expect(SUBJECT).toContain('export const renderOffences');
+    });
+
+    it('reads a workflow file in exactly one place', () => {
+      // Two readers is how the module-scope walk kept its raw read while the
+      // per-file case got a guarded one — and the raw one runs FIRST, at
+      // collection, so the guarded one was unreachable.
+      expect(countOf('readFileSync(join(WORKFLOW_DIR')).toBe(1);
+      expect(countOf('readWorkflow(name)')).toBe(2);
+    });
+
+    it('renders the corpus bodies through safeRender', () => {
+      // `bodies` is verbatim file text, printed by the corpus assertion on the
+      // very run that reports a defect. Dropping the map reds nothing on its
+      // own — the list is empty on a healthy tree — so it is pinned here.
+      expect(countOf('.map(safeRender)')).toBe(1);
+    });
+
+    it('formats an offence line in exactly one place', () => {
+      // The template is what turns file/line/reason/text into output. Spelled
+      // twice, one copy can lose the bound or the sanitiser.
+      expect(countOf('${o.file}:${o.line}: ${o.reason}')).toBe(1);
+      expect(countOf('renderOffences(offences)')).toBe(1);
+    });
+
+    it('titles each per-file case through safeName', () => {
+      // `it.each` over the RAW list is how the title carried a raw name.
+      expect(countOf('it.each(workflowFiles)(')).toBe(0);
+      expect(countOf('workflowFiles.map((name) => [safeName(name), name])')).toBe(1);
     });
   });
 });
