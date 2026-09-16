@@ -1597,11 +1597,127 @@ gate_dequote_structural() {
             case "$d" in run) extra=1 ;; esac
             ;;
         esac
-        if [ "$extra" = 1 ] && [ -n "$rest" ] && _gate_struct_next "$rest"; then
-          _gate_struct_rewrite "$_GATE_STRUCT_TOK"
-          rest="$_GATE_STRUCT_REST"
-          out="$out $_GATE_DQ"
-          [ "$_GATE_DQ_CHANGED" = 1 ] && changed=1
+        # FLAGS MAY SIT BETWEEN THE GROUP WORD AND THE SECOND VERB TOKEN, and
+        # until go-to-k/cdkd#3242 this arm took the very next token whatever it
+        # was -- so for `gh pr -R <slug> "merge" 42` it rewrote `-R`, stopped,
+        # and the QUOTED verb was never dequoted. The left slot has consumed
+        # flags-with-values since go-to-k/cdkd#2333 (`_gate_is_value_flag`
+        # above), so the two slots disagreed about the same command shape;
+        # measured through the shipped hooks, marker stale:
+        #
+        #   gh pr "merge" 42 --squash                    verify-pr-gate rc=2
+        #   gh -R go-to-k/cdkd pr "merge" 42 --squash    verify-pr-gate rc=2
+        #   gh pr -R go-to-k/cdkd "merge" 42 --squash    verify-pr-gate rc=0
+        #
+        # and through `pr-body-item-number-gate`, which must never be silent,
+        # `gh issue -R <slug> "create" --body-file <bare #N>` went 2 -> 0.
+        # Found independently by two reviewers of go-to-k/cdkd#3242.
+        #
+        # BOUNDED, and the bound is the point. The walk is the same
+        # `_gate_struct_next` the loop above uses, sharing the SAME
+        # `GATE_STRUCT_MAXTOK` budget (see the note at the `break` below) so a
+        # pathological segment cannot spin -- a killed hook is a SILENT PASS,
+        # which is worse than one unmatched spelling.
+        #
+        # HITTING THE CAP HERE LEAVES A HALF-REWRITTEN SEGMENT, and that differs
+        # from the OUTER cap, which abandons the rewrite whole (`return 0`, the
+        # original text). Here the tokens already walked stay rewritten and the
+        # remainder is appended verbatim by the `GATE_STRUCT_SEG="$out $rest"`
+        # at the end. So this is NOT "today's behaviour for that segment", as an
+        # earlier revision of this comment claimed by copying the outer one.
+        # No difference in gate outcome has been measured -- the rewrite only
+        # ever dequotes structural POSITIONS, and a partially dequoted prefix
+        # matches the same verbs -- but the asymmetry is real and is written
+        # down rather than implied, because the outer comment's promise is the
+        # one a reader arrives with (go-to-k/cdkd#3242 round-4 review).
+        #
+        # A flag VALUE is copied VERBATIM and never classified, for the reason
+        # the `_gate_is_value_flag` arm above already states: reading it is
+        # what would let `--jq merge` decide a verb.
+        if [ "$extra" = 1 ]; then
+          __dq_pend=0
+          while [ -n "$rest" ] && _gate_struct_next "$rest"; do
+            __dq_tok="$_GATE_STRUCT_TOK"
+            _gate_struct_rewrite "$__dq_tok"
+            __dq_quoted="$_GATE_DQ_CHANGED"
+            rest="$_GATE_STRUCT_REST"
+            case "$_GATE_DQ" in
+              -*)
+                out="$out $_GATE_DQ"
+                [ "$_GATE_DQ_CHANGED" = 1 ] && changed=1
+                if _gate_is_value_flag "$_GATE_DQ"; then
+                  _gate_struct_next "$rest" || break
+                  out="$out $_GATE_STRUCT_TOK"; rest="$_GATE_STRUCT_REST"
+                  __dq_pend=0
+                else
+                  # A FLAG THAT ALREADY CARRIES ITS VALUE CONSUMES NOTHING, so
+                  # the token after it is the subcommand and must still be
+                  # dequoted. Without this test the narrowing below swallowed
+                  # the verb of the GLUED spelling -- `gh pr -Rgo-to-k/cdkd
+                  # "merge" 42` went back to nomatch, undoing half of what this
+                  # walk was added for. Value-carrying means `--name=value` or a
+                  # short cluster longer than `-X`; a bare `--name` / `-X` is
+                  # the only shape whose next token is genuinely ambiguous.
+                  case "$_GATE_DQ" in
+                    --*=*) __dq_pend=0 ;;
+                    --*)   __dq_pend=1 ;;
+                    -?)    __dq_pend=1 ;;
+                    -*)    __dq_pend=0 ;;
+                    *)     __dq_pend=1 ;;
+                  esac
+                fi
+                ;;
+              *)
+                # A QUOTED token straight after an UNENUMERATED flag is that
+                # flag's VALUE, not the subcommand -- emit it VERBATIM and keep
+                # looking. Without this test the walk dequoted an ARGUMENT and
+                # then took it as the verb, which is precisely the failure
+                # `_gate_is_value_flag` exists to prevent. Measured on the first
+                # revision of this walk, against origin/main which matched
+                # neither:
+                #
+                #   gh pr --search "merge" list           nomatch -> MATCH
+                #   gh pr -R o/r --json "merge" view 42   nomatch -> MATCH
+                #
+                # the second being a READ command arming ci-green, pr-review and
+                # the four integ gates, with `gate_pr_selector` answering 42.
+                # A BARE token stays the subcommand, so the pre-existing
+                # over-approximation (`list --label merge`) is unchanged -- this
+                # closes only the quoted half, which is the half the accepted
+                # false-refusal note promises is inert.
+                if [ "$__dq_pend" = 1 ] && [ "$__dq_quoted" = 1 ]; then
+                  out="$out $__dq_tok"
+                  __dq_pend=0
+                else
+                  out="$out $_GATE_DQ"
+                  [ "$_GATE_DQ_CHANGED" = 1 ] && changed=1
+                  break
+                fi
+                ;;
+            esac
+            # SHARE THE OUTER `n` BUDGET, never a fresh counter. A private
+            # `__dq_hops` gave this slot its OWN GATE_STRUCT_MAXTOK, so one
+            # segment could buy 2 x 24 `_gate_struct_next` full-string regexes
+            # instead of 24 -- and that walk is quadratic in the remaining
+            # string, so the cost lands on the LENGTH of the command. Measured
+            # through the real `pr-body-item-number-gate`, tip vs origin/main,
+            # `gh [-R "o/r" x23] pr [-R "o/r" x23] "merge" 42 <tail>`:
+            #
+            #   tail 150 KB   both slots   9.8 s   vs main 5.8 s
+            #   tail 200 KB   both slots  12.3 s   vs main 7.0 s
+            #
+            # i.e. the cheapest input that KILLS the hook fell from ~260 KB to
+            # ~155 KB, about 40%. A killed hook cannot emit exit 2, so it is a
+            # SILENT PASS that disarms every gate at once -- the exact class
+            # the GATE_STRUCT_MAXTOK header above records as a DoS that was
+            # re-opened once by raising this bound and then reverted. Sharing
+            # `n` restores origin/main's worst case exactly, and the left-slot
+            # columns of that measurement were already equal, which is what
+            # says the regex widening itself costs nothing and the walk was
+            # the whole delta (go-to-k/cdkd#3242 round-2 security review).
+            n=$((n + 1))
+            [ "$n" -gt "$GATE_STRUCT_MAXTOK" ] && break
+          done
         fi
         break
         ;;
@@ -2510,11 +2626,51 @@ GATE_FLAGS="([[:space:]]+-(${_GATE_WORD_CHAR:-}+|${_GATE_WORD_BLIND:-})([[:space
 # so the two halves of this file disagreed with each other. Same shape as
 # GATE_FLAGS, and like it its group count is nobody else's business.
 GATE_GH_C="${GATE_FLAGS:-}"
+# The SAME absorber one slot to the RIGHT: between a gh GROUP word (`pr`,
+# `issue`, `release`) and its VERB.
+#
+# WHY (go-to-k/cdkd#3242). `gh` accepts a flag in EITHER position and resolves
+# from it identically -- measured on gh 2.92.0 from a directory that is not a
+# repo, `gh pr -R go-to-k/cdkd view 3214` answered the cdkd PR. `GATE_GH_C`
+# covered only the LEFT slot, so moving the flag three words to the right made
+# every `gh <group> <verb>` constant match NOTHING. Measured through the shipped
+# hooks in this repo, same worktree, markers stale:
+#
+#   gh pr merge 3242 --squash                    verify-pr-gate            rc=2
+#   gh -R go-to-k/cdkd pr merge 3242 --squash    verify-pr-gate            rc=2
+#   gh pr -R go-to-k/cdkd merge 3242 --squash    verify-pr-gate            rc=0
+#   gh pr --repo <slug> / -R=<slug> / -R<slug>   verify-pr-gate            rc=0
+#   gh issue create --title t --body-file <#N>   pr-body-item-number-gate  rc=2
+#   gh issue -R <slug> create --body-file <#N>   pr-body-item-number-gate  rc=0
+#
+# i.e. a complete bypass of every gate keyed on `gh pr merge` (verify-pr,
+# ci-green, bughunt-clean, pr-review and the four integ gates) and of the bare
+# `#N` gate, which is the one gate .claude/rules/hooks.md says MUST block
+# because its residue lands on a THIRD PARTY's issue.
+#
+# It is the SAME constant, not a variant, and that is the point: the stopping
+# rule GATE_FLAGS relies on -- "a bare token in FIRST position IS the
+# subcommand" -- is exactly gh's grammar here too, so `gh pr list` and
+# `gh pr view 42` still match nothing while `gh pr -R <slug> merge 42` does.
+# A second spelling would be a second thing to keep in step; see
+# hooks-class-fences.md on why enumerating spellings has no termination proof.
+#
+# STRICT SUPERSET by construction: GATE_FLAGS is `(...)?`, so inserting it can
+# only ADD matches. Every cell the differential fence reports for this change is
+# therefore 0 -> 1, and a cell going the other way is a regression by default.
+#
+# The cost is the same one GATE_FLAGS already documents above: a wider FALSE
+# REFUSAL surface, because after a flag ANY token may occupy the verb slot.
+# `gh pr -R o/r list --label merge` now matches -- loud, one rephrase away --
+# while the alternative is the silent bypass measured above. Do NOT narrow this
+# to an enumeration of flag spellings; that is the failure mode the GATE_FLAGS
+# header exists for.
+GATE_GH_V="${GATE_FLAGS:-}"
 GATE_RE_GIT_COMMIT="^git${GATE_FLAGS:-}[[:space:]]+commit([[:space:]]|$)"
 GATE_RE_GIT_PUSH="^git${GATE_FLAGS:-}[[:space:]]+push([[:space:]]|$)"
-GATE_RE_GH_PR_CREATE="^gh${GATE_GH_C:-}[[:space:]]+pr[[:space:]]+create([[:space:]]|$)"
-GATE_RE_GH_PR_EDIT="^gh${GATE_GH_C:-}[[:space:]]+pr[[:space:]]+edit([[:space:]]|$)"
-GATE_RE_GH_PR_MERGE="^gh${GATE_GH_C:-}[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)"
+GATE_RE_GH_PR_CREATE="^gh${GATE_GH_C:-}[[:space:]]+pr${GATE_GH_V:-}[[:space:]]+create([[:space:]]|$)"
+GATE_RE_GH_PR_EDIT="^gh${GATE_GH_C:-}[[:space:]]+pr${GATE_GH_V:-}[[:space:]]+edit([[:space:]]|$)"
+GATE_RE_GH_PR_MERGE="^gh${GATE_GH_C:-}[[:space:]]+pr${GATE_GH_V:-}[[:space:]]+merge([[:space:]]|$)"
 
 # --- verbs cdkd gates that the sibling repos do not --------------------------
 GATE_RE_GIT_COMMIT_OR_PUSH="^git${GATE_FLAGS:-}[[:space:]]+(commit|push)([[:space:]]|$)"
@@ -2556,26 +2712,35 @@ GATE_GIT_GLOBAL="(-C[[:space:]]*${_GATE_GIT_GLOBAL_VALUE:-}|-c[[:space:]]*${_GAT
 # bodies and `--grep` arguments, which is why this one takes the strict prefix.
 GATE_RE_GIT_REBASE="^git([[:space:]]+${GATE_GIT_GLOBAL:-})*[[:space:]]+rebase([[:space:]]|$)"
 GATE_RE_GIT_CHECKOUT_RESTORE="^git${GATE_FLAGS:-}[[:space:]]+(checkout|restore)([[:space:]]|$)"
-GATE_RE_GH_PR_CREATE_OR_MERGE="^gh${GATE_GH_C:-}[[:space:]]+pr[[:space:]]+(create|merge)([[:space:]]|$)"
-# non-english-text-gate guards every way PR prose reaches GitHub.
-GATE_RE_GH_PR_MERGE_OR_EDIT="^gh${GATE_GH_C:-}[[:space:]]+pr[[:space:]]+(merge|edit)([[:space:]]|$)"
-GATE_RE_GH_PR_WRITE="^gh${GATE_GH_C:-}[[:space:]]+pr[[:space:]]+(create|edit|merge)([[:space:]]|$)"
+GATE_RE_GH_PR_CREATE_OR_MERGE="^gh${GATE_GH_C:-}[[:space:]]+pr${GATE_GH_V:-}[[:space:]]+(create|merge)([[:space:]]|$)"
+# GATE_RE_GH_PR_MERGE_OR_EDIT had ONE consumer, `non-english-text-gate`,
+# retired to CI by go-to-k/cdkd#2717 -- so this constant is read by no hook
+# today (`grep -l` over `.claude/hooks/*.sh` minus the suites: empty). The
+# sentence that stood here still named that gate as a live reader and was
+# stale from the moment it was retired; corrected in go-to-k/cdkd#3242's
+# review, where two reviewers independently caught it. Same disposition as
+# GATE_RE_GH_API_ISSUE_CREATE further down: an unread regex reads as a
+# supported trigger, so deleting it is legitimate -- left in place here only
+# because the family fence in command-match.test.sh exercises it, which is a
+# reason to keep the CASE, not a reason to keep an unread constant forever.
+GATE_RE_GH_PR_MERGE_OR_EDIT="^gh${GATE_GH_C:-}[[:space:]]+pr${GATE_GH_V:-}[[:space:]]+(merge|edit)([[:space:]]|$)"
+GATE_RE_GH_PR_WRITE="^gh${GATE_GH_C:-}[[:space:]]+pr${GATE_GH_V:-}[[:space:]]+(create|edit|merge)([[:space:]]|$)"
 # gh-label-validity-gate: the two commands that can carry --label / --add-label.
-GATE_RE_GH_LABEL_CARRIER="^gh${GATE_GH_C:-}[[:space:]]+(issue|pr)[[:space:]]+(create|edit)([[:space:]]|$)"
+GATE_RE_GH_LABEL_CARRIER="^gh${GATE_GH_C:-}[[:space:]]+(issue|pr)${GATE_GH_V:-}[[:space:]]+(create|edit)([[:space:]]|$)"
 GATE_RE_GH_API="^gh${GATE_GH_C:-}[[:space:]]+api([[:space:]]|$)"
 # pr-body-item-number-gate: everything that can post a body containing `#N`.
-GATE_RE_GH_BODY_CARRIER="^gh${GATE_GH_C:-}[[:space:]]+(pr[[:space:]]+(create|edit)|issue[[:space:]]+(create|comment)|api)([[:space:]]|$)"
+GATE_RE_GH_BODY_CARRIER="^gh${GATE_GH_C:-}[[:space:]]+(pr${GATE_GH_V:-}[[:space:]]+(create|edit)|issue${GATE_GH_V:-}[[:space:]]+(create|comment)|api)([[:space:]]|$)"
 # issue-dup-check-gate: the one verb that MINTS a new issue. `edit` and
 # `comment` are deliberately absent -- folding a finding into an issue that
 # already exists is the outcome this gate exists to steer toward, so gating it
 # would tax the cheap path and leave the expensive one untouched.
-GATE_RE_GH_ISSUE_CREATE="^gh${GATE_GH_C:-}[[:space:]]+issue[[:space:]]+create([[:space:]]|$)"
+GATE_RE_GH_ISSUE_CREATE="^gh${GATE_GH_C:-}[[:space:]]+issue${GATE_GH_V:-}[[:space:]]+create([[:space:]]|$)"
 # issue-classification-label-gate: the CLAIM site. `/work-issues` section 3
 # says most open bodies are still in the old packed shape and are upgraded to
 # the four-line shape when the issue is claimed, so `edit` -- not `create` -- is
 # where `Severity` first exists for the bulk of the backlog. `comment` stays
 # absent: a comment is not the issue's classification.
-GATE_RE_GH_ISSUE_EDIT="^gh${GATE_GH_C:-}[[:space:]]+issue[[:space:]]+edit([[:space:]]|$)"
+GATE_RE_GH_ISSUE_EDIT="^gh${GATE_GH_C:-}[[:space:]]+issue${GATE_GH_V:-}[[:space:]]+edit([[:space:]]|$)"
 # GATE_RE_GH_API_ISSUE_CREATE stood here -- the issue mint through the REST
 # verb, `gh api repos/<o>/<r>/issues`. Its only consumer was
 # issue-deferral-criteria-gate, retired by go-to-k/cdkd#2717, so it is removed
@@ -2586,7 +2751,14 @@ GATE_RE_GH_ISSUE_EDIT="^gh${GATE_GH_C:-}[[:space:]]+issue[[:space:]]+edit([[:spa
 # the path must NOT continue past `issues`, which separates a MINT from
 # `/issues/<n>/comments` and `/issues/<n>` -- is the part worth re-reading
 # there.
-# gh-body-english-gate: every gh verb that PUBLISHES prose. UNANCHORED, because
+# GATE_RE_GH_PROSE_CARRIER: every gh verb that PUBLISHES prose. Its consumer
+# `gh-body-english-gate` was retired to CI by go-to-k/cdkd#2717, so NOTHING
+# reads this constant today either -- and the AWK half of the paragraph below
+# is therefore describing a consumer that does not exist: measured in
+# go-to-k/cdkd#3242's review, no `GATE_RE_*` reaches AWK anywhere in the hook
+# set, and `cmd_last_cd_target` matches with bash `=~`. The AWK reasoning is
+# kept because it is a real constraint on the NEXT constant written for an
+# AWK consumer, not because one is live. UNANCHORED, because
 # that hook feeds the same ERE to `cmd_matches_verb` (which wraps it in `^(...)`)
 # and to `cmd_last_cd_target` (which needs the bare verb). The terminator is
 # spelled out rather than `\b`: cmd_last_cd_target feeds this to AWK, where
@@ -2598,7 +2770,45 @@ GATE_RE_GH_ISSUE_EDIT="^gh${GATE_GH_C:-}[[:space:]]+issue[[:space:]]+edit([[:spa
 # unquoted value shape -- so `gh --template "a b" issue create --body <text>`
 # reached gh with the gate never armed. That is the under-approximated TRIGGER
 # this issue is about, in the one hook that still had its own.
-GATE_RE_GH_PROSE_CARRIER="gh${GATE_GH_C:-}[[:space:]]+(pr[[:space:]]+(create|edit|comment|review)|issue[[:space:]]+(create|comment|edit)|release[[:space:]]+(create|edit)|api)([[:space:]]|\$|[|;&\`)])"
+GATE_RE_GH_PROSE_CARRIER="gh${GATE_GH_C:-}[[:space:]]+(pr${GATE_GH_V:-}[[:space:]]+(create|edit|comment|review)|issue${GATE_GH_V:-}[[:space:]]+(create|comment|edit)|release${GATE_GH_V:-}[[:space:]]+(create|edit)|api)([[:space:]]|\$|[|;&\`)])"
+# THE POSITIONAL-FAMILY SURVEY go-to-k/cdkd#3242 ASKED FOR ENDS HERE.
+#
+# TWO HOOK-LOCAL REGEXES SHARE THE DEFECT AND ARE NOT IN THIS FILE, which the
+# first version of this paragraph missed while claiming the audit was complete:
+# `main-tree-git-cwd-detector.sh`'s `GH_PR_MERGE_VERB` and
+# `post-merge-sync-reminder.sh`'s inline ERE each pin `pr[[:space:]]+merge` with
+# no absorber in the right slot. Measured against this library:
+#
+#                                   cwd-detector   sync-reminder
+#   gh pr merge 42 --squash         MATCH          MATCH
+#   gh -R o/r pr merge 42           nomatch        MATCH
+#   gh pr -R o/r merge 42           nomatch        nomatch
+#   gh pr --repo=o/r merge 42       nomatch        nomatch
+#
+# They are NOT fixed here and NOT a bypass: both are PostToolUse INFORMERS that
+# refuse nothing, so the cost is a missed reminder, and the cwd-detector's own
+# header already declares the LEFT-slot gap as accepted. They are also a
+# different MECHANISM -- hand-rolled EREs with a deliberately different
+# flag-VALUE contract, which the family fence's population (this file's
+# `GATE_RE_GH_*` assignments) cannot see -- so folding them in would mean either
+# a partial fix that still misses `-R <slug>`, or importing the full absorber
+# into two hooks that never asked for it. Filed instead; the issue carries this
+# table. After go-to-k/cdkd#2614 no BLOCKING hook parses a command outside the
+# shared matcher, and that is the claim that holds -- not "no hook does".
+#
+# The three constants below are the rest of the residue. Each pins a word
+# POSITION with no flag absorber in it --
+# `vp run --silent test` and `npx -y cdk deploy` match nothing -- which is the
+# same shape as the `gh <group> <flag> <verb>` hole that issue was filed for.
+# They are NOT widened with it, because no hook reads any of them: the only
+# consumer of GATE_RE_VP_RUN_TEST was `vp-run-test-path-gate`, deleted by
+# go-to-k/cdkd#2717, and `grep -l` for each of the three over
+# `.claude/hooks/*.sh` minus the suites answers EMPTY (re-run it rather than
+# trusting this line). So nothing is bypassed today and widening them would
+# change no gate's behaviour while adding surface. A gate that starts reading
+# one owes the same absorber treatment `GATE_GH_V` documents above -- and, per
+# the GATE_RE_GH_API_ISSUE_CREATE note further up, an unread regex reads as a
+# supported trigger, so deleting is the other legitimate answer.
 GATE_RE_VP_RUN_TEST='^vp[[:space:]]+run[[:space:]]+test([[:space:]]|$)'
 # Deploy/destroy-shaped verbs (integ + bug-hunt cleanup gates).
 GATE_RE_CDK_DEPLOY="^(npx[[:space:]]+)?cdk${GATE_FLAGS:-}[[:space:]]+deploy([[:space:]]|$)"
@@ -4353,7 +4563,7 @@ gate_refuse_unevaluable_marker() {
 # (`GATE_MARK_MAXSEG`, `GATE_SUBST_MARK`) into this file while the branch was in
 # review -- fence 0 caught the drift BY NAME, which is what it is for, and any
 # number in prose beside it would have been the second thing to fix.
-GATE_LIB_BASE_CONSTS="_GATE_DQ_CHANGED _GATE_GIT_GLOBAL_VALUE _GATE_WORD _GATE_WORD_BLIND _GATE_WORD_BLIND_BARE _GATE_WORD_BLIND_NOQUOTE _GATE_WORD_CHAR _GATE_WORD_CHAR_NOSQ _GATE_WORD_FIRST _GATE_WORD_LOOSE_FLAG _GATE_WORD_SPANSUF CMD_MATCH_PLACEHOLDER GATE_CHUNK_STOP GATE_CHUNK_STOP_DQ GATE_DQ_ACTIVE_GLOB GATE_EMBEDDING_TOKEN GATE_FLAGS GATE_GH_C GATE_GIT_GLOBAL GATE_LIB_BASE_CONSTS GATE_MARK_MAXSEG GATE_MARKER_ALIASES GATE_NOT_INERT_GLOB GATE_PATH_TOKEN GATE_PERL_WORD GATE_QUOTE_CLASS GATE_QUOTED_VALUE GATE_REDIR_TOKEN GATE_SEP_AMP GATE_SEP_PIPE GATE_SEP_SEMI GATE_SEP_SUBST GATE_SQ GATE_STRUCT_MAXSPAN GATE_STRUCT_MAXTOK GATE_STRUCT_MAXTOKLEN GATE_SUBST_MARK"
+GATE_LIB_BASE_CONSTS="_GATE_DQ_CHANGED _GATE_GIT_GLOBAL_VALUE _GATE_WORD _GATE_WORD_BLIND _GATE_WORD_BLIND_BARE _GATE_WORD_BLIND_NOQUOTE _GATE_WORD_CHAR _GATE_WORD_CHAR_NOSQ _GATE_WORD_FIRST _GATE_WORD_LOOSE_FLAG _GATE_WORD_SPANSUF CMD_MATCH_PLACEHOLDER GATE_CHUNK_STOP GATE_CHUNK_STOP_DQ GATE_DQ_ACTIVE_GLOB GATE_EMBEDDING_TOKEN GATE_FLAGS GATE_GH_C GATE_GH_V GATE_GIT_GLOBAL GATE_LIB_BASE_CONSTS GATE_MARK_MAXSEG GATE_MARKER_ALIASES GATE_NOT_INERT_GLOB GATE_PATH_TOKEN GATE_PERL_WORD GATE_QUOTE_CLASS GATE_QUOTED_VALUE GATE_REDIR_TOKEN GATE_SEP_AMP GATE_SEP_PIPE GATE_SEP_SEMI GATE_SEP_SUBST GATE_SQ GATE_STRUCT_MAXSPAN GATE_STRUCT_MAXTOK GATE_STRUCT_MAXTOKLEN GATE_SUBST_MARK"
 
 # gate_require_const NAME [NAME...]
 #

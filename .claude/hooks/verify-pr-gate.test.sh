@@ -232,6 +232,46 @@ run_case "cd <side> && gh pr merge from main cwd → side wins" 2 stale "$side_r
 run_case "gh -C <side> pr merge from main cwd → side wins" 2 stale "$side_repo" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh -C %s pr merge 42 --squash"}}' "$main_repo" "$side_repo")"
 
+# 9a-9f. A FLAG BETWEEN `pr` AND THE VERB (go-to-k/cdkd#3242).
+#
+# `gh` takes `-R` / `--repo` in either slot and resolves the repo from it
+# identically -- measured on gh 2.92.0 from a directory that is not a repo,
+# `gh pr -R go-to-k/cdkd view 3214` answered the cdkd PR. This gate saw only the
+# slot LEFT of `pr`, so moving the flag three words right dropped it entirely:
+# measured through the real hook in the cdkd worktree with the markers stale,
+# `gh pr merge 3242 --squash` gave rc=2 and `gh pr -R go-to-k/cdkd merge 3242
+# --squash` gave rc=0. Every one of these passes (rc=0) against the pre-#3242
+# library and blocks here; case 9 above is their unshifted control.
+#
+# EACH ASSERTS THE TARGET DIR TOO, not just the refusal. The flag value is an
+# owner/repo SLUG sitting exactly where `-C` puts a PATH, so a resolver that
+# started reading it would send `markgate verify` to a directory that is not
+# this worktree -- the go-to-k/cdkd#2027 wrong-tree class, which an exit code
+# alone cannot distinguish from the gate working.
+run_case "gh pr -R <slug> merge: gated, and the slug is not a target dir" 2 stale "$main_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr -R go-to-k/cdkd merge 42 --squash"}}' "$main_repo")"
+run_case "gh pr --repo <slug> merge: gated" 2 stale "$main_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr --repo go-to-k/cdkd merge 42 --squash"}}' "$main_repo")"
+run_case "gh pr -R=<slug> merge: gated" 2 stale "$main_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr -R=go-to-k/cdkd merge 42 --squash"}}' "$main_repo")"
+run_case "gh pr -R<slug> merge (glued): gated" 2 stale "$main_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr -Rgo-to-k/cdkd merge 42 --squash"}}' "$main_repo")"
+run_case "gh pr -R <slug> create: gated" 2 stale "$main_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr -R go-to-k/cdkd create --title x"}}' "$main_repo")"
+# ...and the cd-prefixed spelling still steers the marker store, so the two
+# resolutions compose rather than one disabling the other.
+run_case "cd <side> && gh pr -R <slug> merge: side still wins" 2 stale "$side_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"cd %s && gh pr -R go-to-k/cdkd merge 42"}}' "$main_repo" "$side_repo")"
+# POLARITY. The absorber lets ANY token follow the first flag, so the only thing
+# keeping read-only gh work out of this gate is that the verb alternation holds
+# `create|merge` alone. If that ever widens, these red.
+run_case "gh pr -R <slug> view passes through" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr -R go-to-k/cdkd view 42"}}' "$side_repo")"
+run_case "gh pr -R <slug> list passes through" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr -R go-to-k/cdkd list"}}' "$side_repo")"
+run_case "gh pr -R <slug> edit passes through (not this gate's verb)" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr -R go-to-k/cdkd edit 42"}}' "$side_repo")"
+
 # 10. Fresh marker in side worktree → pass.
 run_case "fresh marker in side worktree passes" 0 fresh "$side_repo" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr create"}}' "$side_repo")"

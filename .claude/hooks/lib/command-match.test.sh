@@ -304,6 +304,505 @@ want_match 1 "bare first token settles the subcommand: git log is not a commit" 
   'git log --grep commit' "$C"
 want_match 1 "gh verb inside a spaced repo value"     'gh --repo "a pr merge b" issue list' "$M"
 
+# =============================================================================
+# A FLAG BETWEEN THE gh GROUP WORD AND ITS VERB (go-to-k/cdkd#3242)
+# =============================================================================
+#
+# `gh` takes a global flag in EITHER slot and resolves from it identically --
+# measured on gh 2.92.0 from a directory that is not a repo, `gh pr -R
+# go-to-k/cdkd view 3214` answered the cdkd PR. `GATE_GH_C` covered only the
+# LEFT slot, so `gh pr -R <slug> merge <n>` matched NOTHING and no gate fired at
+# all: measured through the shipped hooks in this repo, `gh pr merge 3242
+# --squash` gave verify-pr-gate rc=2 and `gh pr -R go-to-k/cdkd merge 3242
+# --squash` gave rc=0, and `gh issue -R <slug> create --body-file <bare #N>` took
+# pr-body-item-number-gate from 2 to 0.
+#
+# THE FENCE IS A FAMILY FENCE, NOT A CASE PER GATE PER SPELLING, and the choice
+# is the same one hooks-class-fences.md makes for every other class here: a
+# hand-written case list is one spelling behind by construction, and the gates
+# are many while the defect is ONE position in ONE shared pattern. So:
+#
+#   part 1  derives the POPULATION from the library SOURCE -- every
+#           `GATE_RE_GH_*` constant -- and fails any one whose group word is not
+#           followed by the absorber. That is what catches the constant written
+#           NEXT month by someone copying a neighbour, which no dynamic case can.
+#   part 2  crosses that population's (group, verb) pairs with every flag
+#           spelling gh accepts and asserts each MATCHES.
+#   part 3  drives the OTHER direction over the same cross product: a widened
+#           absorber is exactly the change that makes a gate fire on commands it
+#           must ignore, so gh's READ verbs must still match nothing.
+#
+# A KNOWN BOUND, stated rather than detected. This fence's subject is the
+# ABSORBER -- whether a flag between the group word and the verb is tolerated --
+# and NOT the verb ALTERNATION of each constant. Four constants have no live
+# hook reader (`GATE_RE_GH_PR_EDIT`, `_PR_MERGE_OR_EDIT`, `_ISSUE_EDIT`,
+# `_ISSUE_CREATE`), so widening the VERB LIST of one of those is invisible to
+# every suite in this repo: nothing consumes the constant, and the cases here
+# vary the flag spelling rather than the verb set. That is a deliberate bound,
+# not an oversight -- building detection for a constant nobody reads would fence
+# a value with no consumer. **Wiring a reader to one of those four owes its own
+# case**, because the moment it has a consumer the verb list becomes a live
+# trigger and this block will not notice it changing (go-to-k/cdkd#3242 round-4
+# review).
+#
+# Per-gate cases still exist for the four gates measured live-defeated
+# (verify-pr, bughunt-clean, ci-green, pr-body-item-number) -- they pin that the
+# gate CONSULTS this pattern, which a library-level case cannot say.
+__ghv_start=$((pass + fail))
+
+# --- part 1: the population, read out of the library ------------------------
+#
+# Derived from the assignments themselves rather than from a list here, so a new
+# `GATE_RE_GH_*` constant is IN the population the moment it is written.
+#
+# NORMALISATION IS GENERIC, not a list of the two spellings in the tree today.
+# The first version rewrote the literals `(issue|pr)` and `(pr|issue)` only, and
+# a reviewer defeated it in one line: appending
+# `GATE_RE_GH_PROBE="^gh[[:space:]]+(pr|issue|release)[[:space:]]+create(...)"`
+# — a neighbour copied and extended — left the suite GREEN, because the group
+# word there is followed by `)` rather than by the space class. Any parenthesised
+# alternation whose members are ALL group words now collapses to one group word
+# first, in any order and any subset, so the scan sees the same shape however the
+# constant is spelled (go-to-k/cdkd#3242 test review).
+__ghv_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/command-match.sh"
+# gh's real command groups (gh 2.92.0 `gh --help`, the "core"/"actions"/
+# "additional" command lists), not the three this repo gates today. Deriving the
+# set from what cdkd uses is what let a `gist` / `label` constant sit outside the
+# fence; deriving it from gh means the fence covers a group the first time
+# someone writes a constant for it.
+__GHV_GROUPS="pr issue release repo run workflow cache secret variable label project ruleset org search gist codespace extension alias config auth attestation"
+__ghv_bad=""
+__ghv_seen=0
+while IFS= read -r __ghv_line; do
+  __ghv_name="${__ghv_line%%=*}"
+  __ghv_rhs="${__ghv_line#*=}"
+  __ghv_seen=$((__ghv_seen + 1))
+  # POSITIVE CHECK, not a blacklist of the two bad shapes. The first version
+  # asked only whether a group word was immediately followed by the space class
+  # or a `(`, which is closed to the spellings already in the tree -- measured
+  # in go-to-k/cdkd#3242's round-4 review, FOUR synthetic un-widened constants
+  # all passed it: `(pr|label)[[:space:]]+create` (an alternation carrying a
+  # word the normaliser does not know), `gist[[:space:]]+create` (a group word
+  # outside the hardcoded three), `pr +create` (a LITERAL space rather than the
+  # class), and `pr${GATE_NOPE:-}[[:space:]]+create` (a FAKE absorber). The
+  # failure message meanwhile claimed "not followed by ${GATE_GH_V", which no
+  # arm actually tested -- the message was true of the intent and false of the
+  # code.
+  #
+  # So the question is inverted: for EVERY gh group word this constant mentions,
+  # the literal `${GATE_GH_V:-}` must follow it. An unknown spelling now fails
+  # CLOSED (it is not followed by the absorber, so it is reported) instead of
+  # falling through the two shapes someone remembered.
+  #
+  # The group-word set is gh's REAL command groups, not the three cdkd happens
+  # to gate today, so the next `gh label` / `gh gist` / `gh repo` constant is
+  # inside the fence the moment it is written rather than after the next bypass.
+  # AN ALTERNATION OF GROUP WORDS IS ONE GROUP WORD. `(issue|pr)${GATE_GH_V:-}`
+  # puts the absorber after the closing paren, so the positive check below has
+  # to see through the alternation first. It collapses only when EVERY member is
+  # a known group word -- a mixed `(pr|bogus)` is left alone, so its bare `pr`
+  # is still found by the boundary grep and still owes the absorber, which is
+  # the conservative direction.
+  __ghv_alt=$(printf '%s' "$__GHV_GROUPS" | tr ' ' '|')
+  __ghv_rhs=$(printf '%s' "$__ghv_rhs" \
+    | sed -E "s/\\((${__ghv_alt})(\\|(${__ghv_alt}))*\\)/pr/g")
+  for __ghv_g in $__GHV_GROUPS; do
+    # Does the RHS mention this group word as a standalone token? `[[:<:]]`-style
+    # word boundaries are not portable to bash 3.2 here, so the boundary is
+    # spelled explicitly: a group word is preceded by a space class, a `(`, a
+    # `|` or the `+` of a preceding quantifier, and followed by something that
+    # is NOT an identifier character. A LITERAL SPACE is in the leading class as
+    # well as the regex punctuation: `^gh${GATE_GH_C:-} pr create` spells the
+    # separator as a real space rather than as `[[:space:]]+`, and without this
+    # the group word there is preceded by nothing the class knows -- the one of
+    # the round-4 probes that still escaped after the rewrite.
+    printf '%s' "$__ghv_rhs" | grep -qE "(\\+|\\(|\\||[[:space:]])${__ghv_g}([^A-Za-z0-9_]|\$)" || continue
+    # ...and if it does, the absorber must be the very next thing after it.
+    printf '%s' "$__ghv_rhs" | grep -qF "${__ghv_g}\${GATE_GH_V:-}" && continue
+    __ghv_bad="${__ghv_bad}\n  $__ghv_name (group word '$__ghv_g' is not followed by the literal \${GATE_GH_V:-})"
+  done
+done < <(grep -E '^GATE_RE_GH_[A-Z_]+=' "$__ghv_lib")
+
+if [ "$__ghv_seen" -lt 10 ]; then
+  # A floor on the POPULATION, not on the result: a grep that stops matching
+  # reports zero violations over zero constants, which reads exactly like a
+  # clean tree (hooks-class-fences.md, "a population derived from the DEFECT").
+  fail=$((fail + 1))
+  fail_log="${fail_log}FAIL gh sub-flag population: only $__ghv_seen GATE_RE_GH_* constants found in $__ghv_lib -- the scan collapsed, so the violation check below is vacuous\n"
+  printf 'FAIL gh sub-flag population: only %s GATE_RE_GH_* constants found\n' "$__ghv_seen"
+elif [ -n "$__ghv_bad" ]; then
+  fail=$((fail + 1))
+  fail_log="${fail_log}FAIL gh sub-flag absorber missing from:$(printf '%b' "$__ghv_bad")\n"
+  printf 'FAIL gh sub-flag absorber missing from:%b\n' "$__ghv_bad"
+else
+  pass=$((pass + 1))
+  printf 'ok   every one of %s GATE_RE_GH_* constants absorbs a flag between the group word and the verb\n' "$__ghv_seen"
+fi
+
+# --- part 2: the cross product, asserted to MATCH ---------------------------
+#
+# One (group, verb, constant) triple per constant that HAS a group word, crossed
+# with every flag spelling gh accepts in that slot. The spellings come from gh's
+# own option grammar (short, short-glued, short-with-=, long, long-with-=), plus
+# a repeated flag and a valueless one, because the absorber must not depend on
+# how many tokens a flag eats.
+__ghv_flags=(
+  "-R go-to-k/cdkd"
+  "-Rgo-to-k/cdkd"
+  "-R=go-to-k/cdkd"
+  "--repo go-to-k/cdkd"
+  "--repo=go-to-k/cdkd"
+  "-R go-to-k/cdkd --json number"
+  "--json number -R go-to-k/cdkd"
+)
+# group | verb | constant name.  Every gh verb the gates guard.
+__ghv_targets=(
+  "pr|merge|GATE_RE_GH_PR_MERGE"
+  "pr|merge|GATE_RE_GH_PR_CREATE_OR_MERGE"
+  "pr|merge|GATE_RE_GH_PR_MERGE_OR_EDIT"
+  "pr|merge|GATE_RE_GH_PR_WRITE"
+  "pr|create|GATE_RE_GH_PR_CREATE"
+  "pr|create|GATE_RE_GH_PR_CREATE_OR_MERGE"
+  "pr|create|GATE_RE_GH_LABEL_CARRIER"
+  "pr|create|GATE_RE_GH_BODY_CARRIER"
+  "pr|create|GATE_RE_GH_PROSE_CARRIER"
+  "pr|edit|GATE_RE_GH_PR_EDIT"
+  "pr|edit|GATE_RE_GH_BODY_CARRIER"
+  "issue|create|GATE_RE_GH_ISSUE_CREATE"
+  "issue|create|GATE_RE_GH_LABEL_CARRIER"
+  "issue|create|GATE_RE_GH_BODY_CARRIER"
+  "issue|edit|GATE_RE_GH_ISSUE_EDIT"
+  "issue|comment|GATE_RE_GH_BODY_CARRIER"
+  "release|create|GATE_RE_GH_PROSE_CARRIER"
+  # Round-2 additions: every constant was exercised, but several at ONE verb
+  # only, so a per-verb regression inside a multi-verb alternation had no case
+  # (go-to-k/cdkd#3242 test review, MINOR 5). Uniform substitution makes that
+  # low-risk and part 1 covers the structure, which is why these are cheap
+  # rather than load-bearing -- but "low-risk" is not "fenced".
+  "pr|edit|GATE_RE_GH_PR_MERGE_OR_EDIT"
+  "pr|edit|GATE_RE_GH_PR_WRITE"
+  "pr|edit|GATE_RE_GH_LABEL_CARRIER"
+  "pr|comment|GATE_RE_GH_PROSE_CARRIER"
+  "pr|review|GATE_RE_GH_PROSE_CARRIER"
+  "issue|create|GATE_RE_GH_PROSE_CARRIER"
+  "issue|comment|GATE_RE_GH_PROSE_CARRIER"
+  "issue|edit|GATE_RE_GH_PROSE_CARRIER"
+  "release|edit|GATE_RE_GH_PROSE_CARRIER"
+)
+# THE AXIS SIZES ARE CHECKED BEFORE THE LOOPS THAT READ THEM, and the position
+# is the fix rather than a tidy-up. They sat AFTER the cross-product loop, so
+# under `set -u` an emptied array aborted the whole file at the `for` line --
+# `__ghv_flags[@]: unbound variable`, rc=1, no tally, and these assertions never
+# ran. Under bash 5.x the mutant reddened for a stated reason; under bash 3.2,
+# the engine CI uses, it reddened by ACCIDENT and said nothing about an axis.
+# Measured in go-to-k/cdkd#3242's round-3 review.
+__ghv_axis_ok=1
+if [ "${#__ghv_targets[@]}" -ne 26 ]; then
+  fail=$((fail + 1)); __ghv_axis_ok=0
+  fail_log="${fail_log}FAIL gh sub-flag axis: __ghv_targets holds ${#__ghv_targets[@]} triples, expected exactly 26\n"
+  printf 'FAIL gh sub-flag axis: __ghv_targets holds %s triples, expected exactly 26\n' "${#__ghv_targets[@]}"
+fi
+if [ "${#__ghv_flags[@]}" -ne 7 ]; then
+  fail=$((fail + 1)); __ghv_axis_ok=0
+  fail_log="${fail_log}FAIL gh sub-flag axis: __ghv_flags holds ${#__ghv_flags[@]} spellings, expected exactly 7\n"
+  printf 'FAIL gh sub-flag axis: __ghv_flags holds %s spellings, expected exactly 7\n' "${#__ghv_flags[@]}"
+fi
+[ "$__ghv_axis_ok" = 1 ] && { pass=$((pass + 1)); printf 'ok   the gh sub-flag axes are 26 triples x 7 flag spellings\n'; }
+
+for __ghv_t in "${__ghv_targets[@]}"; do
+  __ghv_grp="${__ghv_t%%|*}"; __ghv_rest="${__ghv_t#*|}"
+  __ghv_vrb="${__ghv_rest%%|*}"; __ghv_cn="${__ghv_rest#*|}"
+  __ghv_re="${!__ghv_cn}"
+  for __ghv_f in "${__ghv_flags[@]}"; do
+    want_match 0 "gh $__ghv_grp <$__ghv_f> $__ghv_vrb -> ${__ghv_cn#GATE_RE_GH_}" \
+      "gh $__ghv_grp $__ghv_f $__ghv_vrb 42" "$__ghv_re"
+  done
+  # The CONTROL for the whole row: the same triple with the flag in the LEFT
+  # slot, which matched before this change. A row where both directions pass for
+  # the wrong reason (a pattern that matches everything) is caught by part 3.
+  want_match 0 "gh <-R slug> $__ghv_grp $__ghv_vrb -> ${__ghv_cn#GATE_RE_GH_} (pre-3242 control)" \
+    "gh -R go-to-k/cdkd $__ghv_grp $__ghv_vrb 42" "$__ghv_re"
+done
+
+# --- part 3: the other direction --------------------------------------------
+#
+# gh's READ verbs under the SAME flag spellings. These are the polarity control
+# for the widening: the absorber allows ANY token after the first flag, so the
+# only thing keeping `gh pr -R o/r list` out of the gates is that `list` is not
+# in the verb alternation. If a future edit widens the verb ALTERNATION -- "any
+# token may be the verb" -- every one of these reds.
+#
+# THAT IS A CLAIM ABOUT THE ALTERNATION AND NOT ABOUT THE ABSORBER, and an
+# earlier revision of this paragraph conflated the two. Every command here still
+# carries a real `-R`, so relaxing the absorber's SHAPE (dropping its
+# leading-dash requirement) leaves all of them green: measured in
+# go-to-k/cdkd#3242's round-4 review, that mutant reddened quoted-mention and
+# selector cases elsewhere in the file and nothing in this block. The shape is
+# pinned by the three BARE-token cases above instead.
+for __ghv_rv in list view diff checks status ready; do
+  for __ghv_f in "-R go-to-k/cdkd" "--repo=go-to-k/cdkd" "-R go-to-k/cdkd --json number"; do
+    want_match 1 "gh pr <$__ghv_f> $__ghv_rv is not a write verb" \
+      "gh pr $__ghv_f $__ghv_rv 42" "$GATE_RE_GH_PR_WRITE"
+  done
+done
+# A verb NAME that merely starts with a guarded verb must not match either --
+# the trailing `([[:space:]]|$)` is what stops it, and it is easy to drop while
+# editing the group-word half.
+want_match 1 "gh pr <-R slug> merged-at is not merge"  'gh pr -R go-to-k/cdkd merged-at 42' "$GATE_RE_GH_PR_MERGE"
+want_match 1 "gh pr <-R slug> created-by is not create" 'gh pr -R go-to-k/cdkd created-by 42' "$GATE_RE_GH_PR_CREATE"
+# And the quoted-mention guard, which the widening must not spend: a verb that
+# only ever appears inside an argument value is still not a command.
+want_match 1 "the verb inside a --body value stays inert" \
+  'gh pr -R go-to-k/cdkd comment 42 --body "then gh pr merge 3242"' "$GATE_RE_GH_PR_MERGE"
+want_match 1 "the verb inside a --title value stays inert" \
+  'gh pr -R go-to-k/cdkd list --search "gh pr merge"' "$GATE_RE_GH_PR_MERGE"
+
+# THE ACCEPTED FALSE REFUSALS, declared rather than discovered — and the first
+# version of this paragraph UNDERSTATED them, which is the part worth reading.
+#
+# It said "exactly one shape". That was measured on a 33-command corpus and it is
+# FALSE, because the right slot is structurally more permissive than the left:
+# `GATE_GH_V` sits between the group word and the VERB, so after the first flag
+# an arbitrary RUN of tokens may intervene before the alternation is tried, and
+# `_GATE_WORD_BLIND` is quote-blind enough to tile half a single-quoted span. In
+# the LEFT slot the equivalent needed the literal `pr merge` inside the value;
+# here only the VERB WORD is needed, anywhere later in the segment. So an
+# ordinary SINGLE-QUOTED body containing the word `merge` or `create` reaches the
+# gates. Measured through the shipped hooks (go-to-k/cdkd#3242 code review):
+#
+#   gh pr -R <slug> comment 3242 --body 'Ready to merge once CI is green'
+#      verify-pr-gate rc=2, ci-green-gate rc=2, pr-review-gate queried the PR
+#   gh pr -R <slug> create --title x --body 'ready to merge 5 after CI'
+#      ci-green-gate rc=2, and `gate_pr_selector` read PR *5* out of the PROSE
+#
+# The trade is KEPT, not narrowed, and this file already records the same trade
+# one slot left: `_GATE_WORD_LOOSE_FLAG` admits three false refusals because "a
+# false refusal is LOUD -- visible, diagnosable, one rephrase away -- while a
+# bypass is SILENT". Both halves hold here: the DOUBLE-quoted spelling of every
+# command below is inert (one case up), so the rephrase exists; and narrowing the
+# absorber to avoid these restores a total bypass of every merge gate.
+#
+# What changed is the HONESTY of the declaration, not the behaviour. Do not
+# re-narrow it to "one shape" from a corpus that happens not to contain a
+# single-quoted body -- and note it was measured too narrow a SECOND time:
+# the class is any BARE or SINGLE-QUOTED mid-span verb word after a
+# right-slot flag, not `--body` alone. A survey of ~70 realistic read and
+# comment shapes against origin/main found 9 newly refusing, including
+# `list --search merge`, `--label merge`, `--template create` and
+# `comment -b 'LGTM, merge it'`. Every double-quoted twin, a verb word at a
+# quote EDGE, `--json mergeable`, `--state merged` and a `--jq` program
+# containing the word all stay inert.
+want_match 0 "ACCEPTED false refusal: an unquoted verb as a later flag value" \
+  'gh pr -R go-to-k/cdkd list --label merge' "$GATE_RE_GH_PR_MERGE"
+want_match 0 "ACCEPTED false refusal: the verb word inside a SINGLE-quoted body" \
+  "gh pr -R go-to-k/cdkd comment 3242 --body 'Ready to merge once CI is green'" "$GATE_RE_GH_PR_MERGE"
+want_match 0 "ACCEPTED false refusal: a single-quoted body on a create" \
+  "gh pr -R go-to-k/cdkd create --title x --body 'ready to merge 5 after CI'" "$GATE_RE_GH_PR_MERGE"
+# ...and the CONTROL that keeps the rephrase real: the DOUBLE-quoted twin of the
+# line above is inert, so the advice "quote it with double quotes" is not a
+# guess. If this ever goes MATCH the accepted trade has silently widened.
+want_match 1 "the same body in DOUBLE quotes stays inert (the rephrase)" \
+  'gh pr -R go-to-k/cdkd comment 3242 --body "Ready to merge once CI is green"' "$GATE_RE_GH_PR_MERGE"
+# THE ISSUE GROUP TAKES THE SAME COST, and had no case: a bare flag value that
+# happens to be a gh verb arms the ISSUE constants from a READ command. Pinned
+# because `GATE_RE_GH_ISSUE_CREATE` is the mint gate's trigger, so this is the
+# accepted class landing on the group word the other cases do not cover.
+want_match 0 "ACCEPTED false refusal: a bare flag value on the ISSUE group" \
+  'gh issue -R go-to-k/cdkd list --label create' "$GATE_RE_GH_ISSUE_CREATE"
+# THE QUOTE EDGES bound the accepted class, and they are TIGHTER than any prose
+# written about them so far -- the reviewer's note said "a verb word at a quote
+# edge is inert", and the library's own note said "single-quoted bodies refuse".
+# Measured, the verb word must be STRICTLY INTERIOR: neither the first word of
+# the span nor the LAST. The last-word half is the one both descriptions missed,
+# and it falls straight out of the pattern: the verb alternation is followed by
+# `([[:space:]]|$)`, and the character after the final word of a span is the
+# closing QUOTE, which is neither. So the surface is narrower than declared, and
+# these three pin all three positions rather than restating a sentence.
+want_match 1 "a verb word FIRST in a quoted span stays inert" \
+  "gh pr -R go-to-k/cdkd list --search 'create'" "$GATE_RE_GH_PR_CREATE"
+want_match 1 "a verb word LAST in a quoted span stays inert too (no trailing space)" \
+  "gh pr -R go-to-k/cdkd list --search 'x create'" "$GATE_RE_GH_PR_CREATE"
+want_match 0 "...only a STRICTLY INTERIOR verb word is reached" \
+  "gh pr -R go-to-k/cdkd list --search 'x create y'" "$GATE_RE_GH_PR_CREATE"
+
+# A QUOTED VERB AFTER A BETWEEN-SLOT FLAG (go-to-k/cdkd#3242 review, found
+# independently by the security and code reviewers). `gate_dequote_structural`
+# took the token straight after the group word, so for `gh pr -R <slug> "merge"`
+# it rewrote `-R` and stopped, leaving the quoted verb undequoted while the LEFT
+# slot handled the same shape. Measured before the fix, through the real hooks:
+# `gh pr -R go-to-k/cdkd "merge" 42 --squash` gave verify-pr-gate rc=0 against
+# rc=2 for both `gh pr "merge" 42` and `gh -R … pr "merge" 42`, and
+# `gh issue -R <slug> "create" --body-file <bare #N>` took
+# pr-body-item-number-gate from 2 to 0.
+want_match 0 "quoted verb after a between-slot flag, double quotes" \
+  'gh pr -R go-to-k/cdkd "merge" 42 --squash' "$GATE_RE_GH_PR_MERGE"
+want_match 0 "quoted verb after a between-slot flag, single quotes" \
+  "gh pr -R go-to-k/cdkd 'merge' 42 --squash" "$GATE_RE_GH_PR_MERGE"
+want_match 0 "quoted verb after a glued between-slot flag" \
+  'gh pr -Rgo-to-k/cdkd "merge" 42' "$GATE_RE_GH_PR_MERGE"
+# THE BOUNDARY OF THE FIX, asserted rather than left implicit. A quoted verb is
+# reached only across flags the walk can classify: `-R` / `--repo` are in
+# `_gate_is_value_flag`, so their VALUE is consumed and the verb after it is
+# dequoted. `--json` is NOT in that list, so `number` reads as the first bare
+# token and the walk stops there, exactly as the LEFT slot does — this is the
+# already-enumerated residue "an unenumerated value-consuming global flag"
+# (`gate_dequote_structural`'s residue list), not a new hole, and widening that
+# list is the flag-enumeration treadmill hooks-class-fences.md says to refuse.
+# It is a case rather than a silence so that anyone who DOES widen the list reds
+# here and reads this note, per the lesson that a "deliberately not asserted"
+# gap hides its own second failure mode.
+#
+# FILED as go-to-k/cdkd#3284 with the rule that would close it without an
+# enumeration: measured on gh 2.92.0, an unknown `--x` / `-x` at the group level
+# consumes exactly one following token VERBATIM (`gh pr --json number "view" N`
+# resolves; `gh pr --web "view" N` errors `unknown flag`), so dropping the
+# `__dq_quoted` condition in `gate_dequote_structural`'s `*)` arm reaches
+# `--json url "merge"` while `--search "merge" list` stays unmatched. Not taken
+# here: that walk already produced two of this PR's own review blockers, and
+# verify.md 8-a says the structural fix does not go in late in a cascade.
+want_match 1 "residue: a quoted verb behind an unenumerated value flag is not reached" \
+  'gh pr -R go-to-k/cdkd --json number "merge" 42' "$GATE_RE_GH_PR_MERGE"
+# ...and the control proving the residue is about the FLAG LIST and not about
+# "two flags": two flags both in the list DO reach the quoted verb.
+want_match 0 "two enumerated value flags still reach the quoted verb" \
+  'gh pr -R go-to-k/cdkd --repo go-to-k/cdkd "merge" 42' "$GATE_RE_GH_PR_MERGE"
+want_match 0 "quoted group verb on issue create" \
+  'gh issue -R go-to-k/cdkd "create" --title t' "$GATE_RE_GH_ISSUE_CREATE"
+# POLARITY: dequoting the verb slot must not turn a quoted READ verb into a
+# write one. Without this the five above are satisfied by a walk that dequotes
+# every token and lets any of them fill the verb slot.
+want_match 1 "a quoted READ verb after a between-slot flag stays inert" \
+  'gh pr -R go-to-k/cdkd "list" --json number' "$GATE_RE_GH_PR_WRITE"
+
+# THE ABSORBER'S SHAPE, not just the verb ALTERNATION -- one per group word.
+#
+# `GATE_GH_V` requires the prefix to OPEN WITH A FLAG: a bare token in first
+# position is the subcommand, which is the whole stopping rule this change
+# leans on. Nothing pinned that. The read-verb cases above vary the VERB while
+# every command still carries a real `-R`, so relaxing the absorber to "any
+# token sequence" left them all green -- measured, that mutant reddened only
+# quoted-mention and selector cases elsewhere in the file, never the family
+# block's own subject.
+#
+# These three carry a BARE non-flag token where the flag would go, so they
+# discriminate the SHAPE: nomatch with the absorber as written, MATCH under the
+# relaxed mutant, on all three group words (go-to-k/cdkd#3242 round-4 review).
+want_match 1 "a BARE token before the verb is the subcommand, not a flag (pr)" \
+  'gh pr list merge 42' "$GATE_RE_GH_PR_MERGE"
+want_match 1 "...the same for the issue group" \
+  'gh issue list create x' "$GATE_RE_GH_ISSUE_CREATE"
+want_match 1 "...and for the release group" \
+  'gh release list create v1' "$GATE_RE_GH_PROSE_CARRIER"
+
+# THE DEQUOTE WALK SHARES ONE TOKEN BUDGET ACROSS BOTH SLOTS, fenced
+# DETERMINISTICALLY rather than by a clock (go-to-k/cdkd#3242 round-3 review).
+#
+# The round-2 walk took a PRIVATE `GATE_STRUCT_MAXTOK`, so a segment could buy
+# 24 `_gate_struct_next` full-string regexes per slot instead of 24 in total.
+# That walk is quadratic in the remaining string, so the cost lands on command
+# LENGTH: through the real pr-body-item-number-gate with both slots filled, a
+# 150 KB tail went 4.27 s on origin/main to 7.02 s, and the cheapest input that
+# KILLS the hook fell from ~260 KB to ~155 KB. A killed hook emits no exit 2 and
+# disarms every gate at once.
+#
+# A TIMING case was written for this first and REJECTED after a reviewer probed
+# it: reinstating the private budget left the suite green at 2-3 s against an
+# 8 s budget, because the doubling is worth only +1-2 s and machine noise
+# exceeds it. The reviewer's own proposed replacement -- k flags in the RIGHT
+# slot alone -- was then measured here and does not discriminate either: shared
+# and private are byte-identical verdicts for k=1..30, because one slot never
+# exceeds one budget. Both are recorded because each looks right.
+#
+# What DOES discriminate is filling BOTH slots, which is where the doubling
+# lives by construction: the outer walk spends the budget and the inner one then
+# either shares what is left (matching stops at half) or starts over (matching
+# continues to the full count). Measured across k=1..20:
+#
+#   shared `n`        MATCH to k=11, nomatch from k=12
+#   private budget    MATCH at every k through 20
+#
+# so the pair below straddles that boundary. `k` is DERIVED from
+# `GATE_STRUCT_MAXTOK` rather than written as 11/12, so retuning the cap moves
+# the fence with it instead of silently retiring it.
+__bud_k=$(( GATE_STRUCT_MAXTOK / 2 ))
+__bud_lo=""; __bud_hi=""
+for _i in $(seq 1 $((__bud_k - 1))); do __bud_lo="$__bud_lo -R o/r"; done
+for _i in $(seq 1 "$__bud_k"); do __bud_hi="$__bud_hi -R o/r"; done
+want_match 0 "both slots just inside the SHARED budget still reach the quoted verb" \
+  "gh$__bud_lo pr$__bud_lo \"merge\" 42" "$GATE_RE_GH_PR_MERGE"
+want_match 1 "both slots past the SHARED budget abandon the rewrite (a private budget would still match)" \
+  "gh$__bud_hi pr$__bud_hi \"merge\" 42" "$GATE_RE_GH_PR_MERGE"
+# The BARE verb is unaffected at any count -- it needs no dequoting -- which is
+# what says the pair above measures the WALK's budget and not the regex.
+want_match 0 "the bare verb is reached at the same count (the budget is the walk's, not the pattern's)" \
+  "gh$__bud_hi pr$__bud_hi merge 42" "$GATE_RE_GH_PR_MERGE"
+
+# THE QUOTED VALUE OF AN UNENUMERATED FLAG IS NOT THE VERB (go-to-k/cdkd#3242
+# round-2 security review). The first revision of the dequote walk rewrote every
+# token it stepped over, so a flag `_gate_is_value_flag` does not know -- `gh`
+# really does accept non-global flags in this slot; `gh pr --search x -R o/r
+# list` answers normally -- had its QUOTED value dequoted and then taken as the
+# subcommand. Measured against origin/main, which matched NEITHER:
+#
+#   gh pr --search "merge" list            nomatch -> MATCH
+#   gh pr -R o/r --json "merge" view 42    nomatch -> MATCH, selector 42
+#
+# The second is a READ command arming ci-green, pr-review and the four integ
+# gates. It also falsified the accepted-false-refusal note above, which promises
+# the DOUBLE-quoted rephrase is inert -- true for a body, false for a flag value
+# placed before the verb. The walk now emits such a token VERBATIM and keeps
+# looking, so only a BARE token becomes the verb.
+want_match 1 "a quoted flag value before the verb is not the verb" \
+  'gh pr --search "merge" list' "$GATE_RE_GH_PR_MERGE"
+want_match 1 "a quoted flag value before a READ verb does not arm the merge gates" \
+  'gh pr -R go-to-k/cdkd --json "merge" view 42' "$GATE_RE_GH_PR_MERGE"
+want_match 1 "the same, single-quoted" \
+  "gh pr -R go-to-k/cdkd --json 'merge' view 42" "$GATE_RE_GH_PR_MERGE"
+# CONTROLS. The narrowing must not cost the two shapes the walk exists for: an
+# ENUMERATED value flag still reaches its quoted verb, and the plain between-slot
+# spelling is untouched.
+want_match 0 "an ENUMERATED value flag still reaches the quoted verb" \
+  'gh pr -R go-to-k/cdkd "merge" 42' "$GATE_RE_GH_PR_MERGE"
+want_match 0 "the plain between-slot spelling is untouched" \
+  'gh pr -R go-to-k/cdkd merge 42' "$GATE_RE_GH_PR_MERGE"
+# ...and the BARE half is deliberately unchanged: it is the pre-existing
+# over-approximation already declared above, not something this narrowing claims.
+want_match 0 "a BARE flag value is still read as the subcommand (declared, unchanged)" \
+  'gh pr --search merge list' "$GATE_RE_GH_PR_MERGE"
+
+# BLOCK CARDINALITY GUARD. `CASE_FLOOR` below is a collapse detector set well
+# under the total and cannot see this block shrink; a `for` over an array that
+# stops expanding runs zero cases and reports a clean tally.
+#
+# THE EXPECTED COUNT IS LITERAL, and the first version of it was VACUOUS for the
+# textbook reason: it read `${#__ghv_targets[@]}` and `${#__ghv_flags[@]}`, the
+# very arrays whose collapse it claims to detect, so emptying either shrank both
+# sides of the comparison and the guard reported `ok ... ran all 41 cases`
+# (measured, go-to-k/cdkd#3242 test review — and under bash 3.2 it only reddened
+# by ACCIDENT, on `set -u` against an empty array). A floor whose expected value
+# is computed from the pool it guards is unfalsifiable; hooks-class-fences.md
+# says so about its own floors and this block ignored it.
+#
+# So the two axis SIZES are asserted as literals first, and the case count is a
+# literal product. Adding an axis member is meant to be a two-line edit here —
+# that is the cost of a floor that cannot be satisfied by its own collapse.
+__ghv_ran=$((pass + fail - __ghv_start))
+# 1 population lint + 1 axis assertion + 26*(7+1) cross product + 6*3 read verbs
+# + 2 verb-prefix + 2 quoted-mention + 8 accepted false refusals
+# + 19 quoted-verb / flag-value / bare-token / shared-budget.
+# (The prose said 4 and 13 while the literals said 8 and 19 -- the arithmetic was
+# right and the sentence was not, which is the cheapest kind of stale claim to
+# ship and the easiest to catch by reading the two against each other.)
+__ghv_want=$(( 1 + 1 + 26 * 8 + 18 + 2 + 2 + 8 + 19 ))
+if [ "$__ghv_ran" -ne "$__ghv_want" ]; then
+  fail=$((fail + 1))
+  fail_log="${fail_log}FAIL the gh sub-flag block ran $__ghv_ran cases, expected exactly $__ghv_want -- an axis stopped expanding, or one was added without updating the literal\n"
+  printf 'FAIL the gh sub-flag block ran %s cases, expected exactly %s\n' "$__ghv_ran" "$__ghv_want"
+else
+  pass=$((pass + 1))
+  printf 'ok   the gh sub-flag block ran all %s cases\n' "$__ghv_ran"
+fi
+
 # --- the spellings that used to bypass ---------------------------------------
 want_match 0 "bare git commit"              'git commit -m x' "$C"
 want_match 0 "git add -A && git commit"     'git add -A && git commit -m x' "$C"
@@ -1887,13 +2386,53 @@ lat_start=$(date +%s)
 gate_segments "$lat_cmd" >/dev/null 2>&1
 lat_end=$(date +%s)
 lat_secs=$((lat_end - lat_start))
+# THE BUDGET IS 4s AND THE MESSAGES SAID 8s, so a failure here printed
+# `took 6s, budget 8s` -- self-contradictory, and it reads as a broken check
+# rather than a slow one. The THRESHOLD is left alone (retuning another change's
+# fence is not this PR's business); only the text is made true. Worth knowing
+# while reading a red: standalone this payload measures 0-1s on both
+# `origin/main` and this branch under bash 3.2, so a 6s reading here is
+# contention INSIDE the suite process, not a cost of the command
+# (go-to-k/cdkd#3242 round-4).
 if [ "$lat_secs" -le 4 ]; then
   pass=$((pass + 1))
-  printf 'OK   latency: %s bytes through gate_segments in %ss (budget 8s)\n' "${#lat_cmd}" "$lat_secs"
+  printf 'OK   latency: %s bytes through gate_segments in %ss (budget 4s)\n' "${#lat_cmd}" "$lat_secs"
 else
   fail=$((fail + 1))
-  printf 'FAIL latency: %s bytes took %ss, budget 8s\n' "${#lat_cmd}" "$lat_secs"
-  fail_log="${fail_log}FAIL latency: ${#lat_cmd} bytes took ${lat_secs}s -- the PreToolUse timeout is 10s and a KILLED hook cannot emit exit 2, which disarms every gate at once\n"
+  printf 'FAIL latency: %s bytes took %ss, budget 4s\n' "${#lat_cmd}" "$lat_secs"
+  fail_log="${fail_log}FAIL latency: ${#lat_cmd} bytes took ${lat_secs}s against a 4s budget -- the PreToolUse timeout is 10s and a KILLED hook cannot emit exit 2, which disarms every gate at once; if the machine is loaded, re-measure this payload standalone before reading it as a cost\n"
+fi
+
+# BOTH GH FLAG SLOTS AT LENGTH (go-to-k/cdkd#3242 round-2 security review). The
+# existing case above pads the TOKEN COUNT; this one pads the TAIL, because the
+# dequote walk's `_gate_struct_next` ERE-matches the ENTIRE remaining string per
+# token, so its real cost scales with command LENGTH times the number of tokens
+# it walks. The round-2 revision gave the right slot its OWN
+# `GATE_STRUCT_MAXTOK` budget, which doubled that product and took the cheapest
+# hook-killing input from ~260 KB down to ~155 KB -- a SILENT PASS, since a
+# killed hook emits no exit 2 and every gate goes quiet together. Measured
+# through the real pr-body-item-number-gate at a 150 KB tail: origin/main 4.27s,
+# private budget 7.02s, shared budget 5.09s. The walk shares the outer `n` now.
+#
+# The budget is deliberately the same 8s as its sibling and NOT tighter: this
+# case runs on a machine that may be carrying peer suites, and a flaky timing
+# fence gets discharged by raising the number rather than by re-measuring. What
+# it must catch is the DOUBLING, which is well outside that band.
+__ds_f=""
+for _i in $(seq 1 23); do __ds_f="$__ds_f -R \"o/r\""; done
+__ds_tail=$(head -c $((150 * 1024)) < /dev/zero | tr '\0' 'x')
+__ds_cmd="gh$__ds_f pr$__ds_f \"merge\" 42 $__ds_tail"
+__ds_start=$(date +%s)
+gate_segments "$__ds_cmd" >/dev/null 2>&1
+__ds_end=$(date +%s)
+__ds_secs=$((__ds_end - __ds_start))
+if [ "$__ds_secs" -le 8 ]; then
+  pass=$((pass + 1))
+  printf 'OK   latency: both gh flag slots + %s bytes through gate_segments in %ss (budget 8s)\n' "${#__ds_cmd}" "$__ds_secs"
+else
+  fail=$((fail + 1))
+  printf 'FAIL latency: both gh flag slots + %s bytes took %ss, budget 8s\n' "${#__ds_cmd}" "$__ds_secs"
+  fail_log="${fail_log}FAIL latency: both gh flag slots + ${#__ds_cmd} bytes took ${__ds_secs}s -- the dequote walk is spending more than the outer GATE_STRUCT_MAXTOK budget; a killed hook cannot emit exit 2 and disarms every gate at once\n"
 fi
 
 # At the OBSERVED count, with no slack. It carried one case of slack until

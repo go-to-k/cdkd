@@ -97,6 +97,73 @@ run_case "gh pr create passes" one-fail "gh pr create --title x" 0
 run_case "quoted body in issue create" one-fail "gh issue create --body \"remember to gh pr merge 123 later\"" 0
 run_case "quoted body in echo" one-fail "echo \"next step: gh pr merge 123\"" 0
 
+# A FLAG BETWEEN `pr` AND THE VERB (go-to-k/cdkd#3242). `gh` resolves the repo
+# from either slot, and this gate saw only the left one, so the whole CI-green
+# requirement was dropped by moving `-R` three words to the right. These block
+# against the fixed library and pass (rc=0) against the pre-#3242 one, which is
+# what makes them cases rather than decoration. The FAMILY of the defect is
+# fenced in lib/command-match.test.sh; what these add is that THIS gate consults
+# that pattern, which a library-level case cannot say.
+run_case "flag between pr and merge, short" one-fail "gh pr -R go-to-k/cdkd merge 123 --squash" 2
+run_case "flag between pr and merge, long" one-fail "gh pr --repo go-to-k/cdkd merge 123 --squash" 2
+run_case "flag between pr and merge, glued" one-fail "gh pr -Rgo-to-k/cdkd merge 123 --squash" 2
+run_case "flag between pr and merge, =value" one-fail "gh pr --repo=go-to-k/cdkd merge 123 --squash" 2
+# POLARITY: a READ verb under the same spelling must still pass untouched.
+run_case "flag between pr and a read verb passes" one-fail "gh pr -R go-to-k/cdkd view 123" 0
+run_case "flag between pr and list passes" one-fail "gh pr --repo=go-to-k/cdkd list" 0
+
+# WHICH PR the gate asked about, not just that it refused. An exit code cannot
+# say: `gate_pr_selector` reads the number from the span AFTER the matched verb,
+# so a widened verb pattern that swallows one token too many or too few resolves
+# a DIFFERENT PR and judges an unrelated CI run (go-to-k/cdkd#2129 measured
+# exactly that -- `sleep 30 && gh -R … pr merge 2195` was judged as PR #30). The
+# shim above ignores its argv and therefore cannot see it, so this arm records
+# argv instead.
+ARGV_TRACE="$SHIM_DIR/argv-trace"
+mkdir -p "$SHIM_DIR/argv-bin"
+cat > "$SHIM_DIR/argv-bin/gh" <<'EOF_ARGV'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${ARGV_TRACE:?}"
+printf 'check\tfail\t1s\thttps://x\n'
+exit 1
+EOF_ARGV
+chmod +x "$SHIM_DIR/argv-bin/gh"
+
+want_pr_number() { # <name> <command> <expected number>
+  local name="$1" command="$2" want="$3" payload got
+  : > "$ARGV_TRACE"
+  payload=$(printf '{"tool_input":{"command":%s},"cwd":"%s"}' \
+    "$(printf '%s' "$command" | jq -Rs .)" "$REPO_ROOT")
+  printf '%s' "$payload" | ARGV_TRACE="$ARGV_TRACE" PATH="$SHIM_DIR/argv-bin:$PATH" \
+    bash "$HOOK" >/dev/null 2>&1
+  # The number the gate asked `gh pr checks` about.
+  got=$(sed -n 's/.*checks[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$ARGV_TRACE" | head -1)
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1))
+  else
+    fail=$((fail + 1))
+    fail_log="$fail_log
+  FAIL: $name (gate asked gh about PR '$got', expected '$want'; trace: $(tr '\n' '|' < "$ARGV_TRACE"))"
+  fi
+}
+
+want_pr_number "unshifted spelling resolves its own PR (control)" "gh pr merge 2195 --squash" 2195
+want_pr_number "left-slot flag resolves its own PR (control)" "gh -R go-to-k/cdkd pr merge 2195 --squash" 2195
+want_pr_number "flag between pr and merge resolves its own PR" "gh pr -R go-to-k/cdkd merge 2195 --squash" 2195
+want_pr_number "two flags between pr and merge resolve its own PR" "gh pr -R go-to-k/cdkd --json number merge 2195" 2195
+want_pr_number "glued flag between pr and merge resolves its own PR" "gh pr -Rgo-to-k/cdkd merge 2195 --squash" 2195
+# A DECOY NUMBER, which is what makes this block discriminate the go-to-k/cdkd#2129
+# class rather than merely observe it. Every row above carries exactly ONE number,
+# so a hook that gave up and took the first digits in the command would still
+# answer 2195 and pass: measured (go-to-k/cdkd#3242 test review) by rewriting the
+# hook's selector to `grep -oE '[0-9]+' | head -1`, the block stayed 33/33 green.
+# With an earlier number in the flag VALUE the same mutant asks gh about PR 30 --
+# an unrelated PR's CI deciding this merge, which is #2129 exactly.
+want_pr_number "a number in a between-slot flag value is not the PR" \
+  "gh pr -R go-to-k/cdkd --limit 30 merge 2195 --squash" 2195
+want_pr_number "a number in a LEFT-slot flag value is not the PR either" \
+  "gh -R go-to-k/cdkd --limit 30 pr merge 2195 --squash" 2195
+
 # --- The ADVICE the no-checks branch prints must itself discriminate (#2630) ---
 #
 # The retired text told the agent to poll `gh pr checks --json name,state`

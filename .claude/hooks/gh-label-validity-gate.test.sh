@@ -57,6 +57,17 @@ run_case "no --label flag passes"               0 'gh pr create --title t --body
 run_case "gh issue list passes"                 0 'gh issue list --limit 5'
 # A quoted MENTION is not an invocation — the shared matcher's job.
 run_case "quoted mention passes"                0 'echo "gh issue create --label nope"'
+# A FLAG BETWEEN THE GROUP WORD AND THE VERB (go-to-k/cdkd#3242). This gate is
+# the only live reader of `GATE_RE_GH_LABEL_CARRIER`, and that constant gained
+# the between-slot absorber with the rest of the family -- but nothing here
+# pinned it, so stripping the absorber from THIS constant reddened the family
+# fence in `lib/command-match.test.sh` and left this suite green. Both spellings
+# already behaved correctly; what was missing was the case saying so.
+run_case "unknown label with a flag between issue and create blocks" 2 'gh issue -R go-to-k/cdkd create --title t --label nope'
+run_case "unknown label with a flag between pr and create blocks"    2 'gh pr --repo=go-to-k/cdkd create --title t --label nope'
+run_case "known label with a flag between issue and create passes"   0 'gh issue -R go-to-k/cdkd create --title t --label bug'
+# POLARITY: a READ verb under the same spelling carries no label to validate.
+run_case "a flag between issue and a READ verb passes"               0 'gh issue -R go-to-k/cdkd list --label nope'
 
 printf '\npass: %s  fail: %s\n' "$pass" "$fail"
 if [ "$fail" -gt 0 ]; then printf '%s' "$fail_log"; exit 1; fi
