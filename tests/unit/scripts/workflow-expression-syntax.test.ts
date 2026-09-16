@@ -72,13 +72,24 @@
  *
  * No ordinary case can close that, because the thing it would assert is the
  * thing being mutated. So the wiring is fenced by SHAPE instead: the block at
- * the end reads this file's own source and counts each raw PRIMITIVE — one
- * `readFileSync`, one offence-line template, two `safeRender` maps, two
- * `boundedList` caps. Re-inlining a helper, or adding a second reader under a
- * different SPELLING of the same primitive, then reds by name. An aliased
- * import (`readFileSync as rfs`) still would not — the counts are textual, and
- * that is the bound on them. Same instrument
- * `scripts/check-source-control-bytes.ts` uses on the tree, turned on one file.
+ * the end reads this file's own source and counts the exact TEXT of each raw
+ * primitive — one `readFileSync(`, one offence-line template, two `safeRender`
+ * maps, three `boundedList` caps, two spellings of the probe-line read.
+ *
+ * WHAT THOSE COUNTS DO AND DO NOT CATCH, stated exactly, because two earlier
+ * versions of this paragraph overstated it and the second overstated it while
+ * correcting the first. They catch the mistakes that ACTUALLY HAPPENED here,
+ * every one of which was a subtraction: re-inlining a helper, applying a fix to
+ * one of two readers, one of two lists, one of two conjuncts. They do NOT catch
+ * an ADDITION written differently — `.at(i)` beside `[i]`, `readFileSync (join`
+ * with a space, an aliased import, a renderer added after the marker, or a raw
+ * second argument to an `expect`. All five were measured green.
+ *
+ * That is not a gap a textual count can close: any such count is satisfiable by
+ * a spelling it does not name, which is why chasing it was abandoned rather
+ * than iterated. The counts are a ratchet against regression, not a proof of
+ * absence. Same instrument `scripts/check-source-control-bytes.ts` uses on the
+ * tree, turned on one file, and with the same character.
  *
  * WHERE THIS STOPS, stated because the alternative is pretending otherwise.
  * Eleven renderers of one class — a hostile workflow file forging a line in the
@@ -890,9 +901,14 @@ describe('workflow expression syntax', () => {
       // every other case exercises `-`.
       'github.run_attempt > -1',
       'github.run_attempt > +1',
-      // The standalone `*` arm. NOT the `contains(...labels.*.name, ...)` case
-      // above, where `.*` is swallowed whole by the path token and this arm is
-      // never entered.
+      // The standalone `*` arm, reached where a filter follows a CALL. In
+      // `contains(...labels.*.name, ...)` above, `.*` is swallowed by the path
+      // token instead — so that case exercises a different route to the same
+      // verdict, and deleting `|\*` from the path alternative reds nothing.
+      // That is an EQUIVALENT mutation, not a coverage gap: with the
+      // alternative gone the standalone arm absorbs the filter and the answer
+      // is unchanged. Recorded because the comment here used to claim the case
+      // above proved the path alternative, which it does not.
       'fromJSON(steps.x.outputs.y).*.name',
       // A trailing empty argument — the permissiveness the docstring claims.
       // Spelled with a real root: `f(a,)` would be refused by the root check,
@@ -902,6 +918,21 @@ describe('workflow expression syntax', () => {
       // The call test tolerates space before the paren, so the bare-function
       // refusal must not fire here. Nothing pinned that tolerance.
       'always ()',
+      // THE OVER-REFUSAL DIRECTION, which is the one this file's header calls
+      // dangerous and the one that had the least coverage. Each of these dies
+      // if a single member is dropped from `TOKEN` or `INFIX` — and dropping
+      // one makes ORDINARY Actions read as prose, which reds CI on working
+      // code with a message blaming the author.
+      'github.run_number >= 2',
+      'github.run_number <= 2',
+      'github.run_number % 2',
+      'github.run_number / 2',
+      "format('{0}', 'it''s')",
+      // A leading `_` reaches the token regex only as a MEMBER name: no
+      // documented context starts with one, so the root check refuses
+      // `_private.value` — correctly, and that is its own reject case below.
+      'github.event._private',
+      'github.event.commits.*.message',
     ])('accepts %s', (body) => {
       expect(isReadableExpression(` ${body} `)).toBe(true);
     });
@@ -1001,6 +1032,7 @@ describe('workflow expression syntax', () => {
       ['one word', ' expression '],
       ['one word that reads like a context', ' opener '],
       ['a dotted path under an unknown root', ' expression.body '],
+      ['an underscore-led root, which no context is', ' _private.value '],
       ['a shell variable', ' ${GH_TOKEN} '],
       ['an unbalanced group', ' format(github.sha '],
       ['a trailing operator', ' github.ref == '],
@@ -1204,6 +1236,15 @@ describe('workflow expression syntax', () => {
         expect(safeRender(`prose\n${esc}[1A${esc}[2K here`)).toBe('prose [1A [2K here');
         expect(safeRender('z'.repeat(400))).toHaveLength(121);
         expect(safeRender('z'.repeat(400)).endsWith('…')).toBe(true);
+      });
+
+      it('reads a body written with no spaces at all', () => {
+        // `${{github.sha}}` — legal Actions, and every corpus body plus every
+        // other case has a leading space, so the body offset could be widened
+        // to `at + 4` with nothing red. The empty-body twin below is the same
+        // spelling of the same gap.
+        expect(findExpressionOffences('x.yml', 'a: ${{github.sha}}')).toEqual([]);
+        expect(findExpressionOffences('x.yml', 'a: ${{prose here}}')).toHaveLength(1);
       });
 
       it('reports the SHIPPED spelling, with no spaces at all', () => {
