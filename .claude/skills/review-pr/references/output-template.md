@@ -39,6 +39,10 @@ Dispatch this single reviewer (run via Agent tool in the main session):
   }
 ```
 
+**At `1-reviewer`, the ORCHESTRATOR still asks the `Closes` question itself**,
+exactly as in the `inline` block above — the dispatched code reviewer is
+explicitly told not to rule on it, so nothing else will.
+
 **If final tier is `3-axis`**, emit the same block three times in ONE
 parallel message, for `.claude/agents/pr-spec-reviewer.md` (add
 `- Design doc: <path>` if `docs/design/` has one for the issue, else
@@ -56,18 +60,26 @@ No reviewer dispatch — orchestrator should spot-check inline:
   - If the body declares `Closes #N`, read that issue and ask whether the
     `Closes` is EARNED — walk its acceptance items, INCLUDING any the thread
     added by comment. A partly-addressed issue takes `Refs` plus a comment
-    recording what landed and what did not. No reviewer is dispatched at this
-    tier, so nobody else asks this.
+    recording what landed and what did not. Unless the security add-on fired
+    no reviewer is dispatched at this tier, so nobody else asks this — and
+    the security reviewer refuses to rule on "earned".
 
 If the inline read surfaces a non-obvious bug class (cross-cutting state
 machine, race, security-sensitive logic), STOP and dispatch a code reviewer.
 ```
 
-`inline` is the most common tier, and until go-to-k/cdkd#3170 it was the one
-place the spec axis had NO owner: go-to-k/cdkd#3169 gave the `1-reviewer` code
-reviewer a secondary spec pass, and `3-axis` has the real one, but `inline`
-asked only "correct, complete, necessary?". The `Closes` line above is the one
-BEHAVIOUR change the references/ split carries — everything else in it is
+**The `Closes` question is the ORCHESTRATOR's at every tier below `3-axis`, and
+that is deliberate.** `inline` dispatches nobody. `1-reviewer` dispatches the
+code reviewer, whose own definition says in as many words *do NOT rule on
+whether a `Closes` is "earned"* — its spec pass is secondary and capped. So
+leaving the question to the dispatched reviewer makes the ladder
+NON-MONOTONIC: `inline+up→1-reviewer` would REMOVE a check, which no bias step
+may ever do. Ask it yourself at both tiers; only `3-axis` hands it to
+`pr-spec-reviewer`, which is the axis that can actually rule on it.
+
+Until go-to-k/cdkd#3170 the spec axis had no owner at `inline` at all — the
+block asked only "correct, complete, necessary?". That line is the one
+BEHAVIOUR change the references/ split carries; everything else in it is
 relocation.
 
 **ADDITIONALLY, if the security add-on trigger fired**, append (at ANY tier,

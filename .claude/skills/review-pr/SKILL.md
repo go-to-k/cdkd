@@ -67,7 +67,14 @@ can only accept edits which shrink it accumulates more of those.
 
    The **security reviewer is ADDITIVE, not a rung on the size ladder**:
    dispatch it at ANY tier, `inline` included, whenever a security /
-   process-launch surface is touched or the PR is a security fix.
+   process-launch surface is touched or the PR is a security fix — and **a
+   security blocker blocks the marker like any other, at every tier including
+   `inline`**. That second half is the one `inline` needs stated here: step 6,
+   where verdicts are synthesized, is read only at `1-reviewer` / `3-axis`, so
+   an `inline` run that dispatches the security reviewer would otherwise have
+   the dispatch rule and not the do-not-merge rule.
+   [references/bias-factors.md](references/bias-factors.md) is AUTHORITATIVE
+   for which paths trigger it; this summary is routing.
 
 4. **Apply the bias**: inline+up→1-reviewer; 1-reviewer+up→3-axis; 3-axis+up
    →3-axis (clamp); 3-axis+down→1-reviewer; 1-reviewer+down→inline;

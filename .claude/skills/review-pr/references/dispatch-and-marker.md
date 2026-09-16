@@ -9,7 +9,13 @@ Orchestrator: [../SKILL.md](../SKILL.md).
    the orchestrator dispatches the recommended reviewers via the Agent tool,
    waits for all, and synthesizes:
 
-   - Any **blocker** → the marker is NOT set; address the blockers and
+   The arms below are tried IN ORDER and the FIRST match wins. Without that
+   rule the first and third collide on exactly the case the third exists for:
+   a `spec (secondary)` finding raised at blocker severity by a reviewer
+   definition that forgot its cap.
+
+   - Any **blocker** not filtered by an arm below → the marker is NOT set;
+     address the blockers and
      re-run `/review-pr <N>` **from step 0**, on the PR's CURRENT stats —
      step 0 and not step 1, because a fix-round re-review IS the case step 0
      exists for: go-to-k/cdkd#2753's crossing happened on exactly this
@@ -31,16 +37,28 @@ Orchestrator: [../SKILL.md](../SKILL.md).
      from Clean. That gap is what go-to-k/cdkd#3169 recorded and could not fix: the
      clause did not fit inside the 23,000 B cap, and six measured attempts were
      all over it. Fitting here is the point of the split.
-   - A finding labelled **`spec (secondary)`** YIELDS to a primary
+   - A `spec (secondary)` finding **at `minor` or below** YIELDS to a primary
      `pr-spec-reviewer` verdict on the same question, and does not block on its
-     own. The code and security reviewers carry a deliberately shallow spec
-     pass and cannot tell whether the real spec axis was dispatched — nothing
-     in their inputs names the tier — so without this line a secondary blocker
-     blocks the marker even on a question the primary axis already cleared.
-     go-to-k/cdkd#3169 mitigates it agent-side by capping those arms at
-     `minor`, which works and is not the same as the PARENT knowing the rule: a
-     future reviewer definition that forgets the cap re-opens it silently.
-     Where no primary spec verdict exists, judge the finding on its own merits.
+     own. **A `blocker` NEVER yields, whatever its label.** The code and
+     security reviewers carry a deliberately shallow spec pass and cannot tell
+     whether the real spec axis was dispatched — nothing in their inputs names
+     the tier — so without this arm a secondary finding blocks the marker even
+     on a question the primary axis already cleared.
+
+     The yield is scoped to SEVERITY and not to the label, and that distinction
+     is load-bearing rather than pedantic. `pr-security-reviewer.md` tells that
+     reviewer to cap its secondary findings at `minor` **unless the finding is
+     independently a security defect** — so the label is explicitly allowed to
+     carry a `blocker`, and a label-keyed yield would dismiss exactly the
+     findings that must never be dismissed. Worked example, which is why this
+     paragraph exists: a PR closing a GHSA secret-leak issue draws a Clean from
+     `pr-spec-reviewer` on the design doc, while the security reviewer notices
+     off the same acceptance walk that the redaction is not inverted on the
+     rollback replay path, labels it `spec (secondary)` and raises it as a
+     blocker under that escape clause. Yielding there sets the marker over a
+     live exposure.
+
+     Where NO primary spec verdict exists, judge the finding on its own merits.
    - Every finding minor / nit / clean → set the marker bound to the PR's
      current HEAD sha:
 
