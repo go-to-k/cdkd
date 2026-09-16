@@ -464,8 +464,9 @@ describe('cdkd scrub resolves a cross-stack read (issue #2133)', () => {
     useProducerOutputs('abcdef' as unknown as Record<string, unknown>);
 
     let thrown: unknown;
+    let result: Awaited<ReturnType<typeof scrub>> | undefined;
     try {
-      await scrub(
+      result = await scrub(
         { MasterUserPassword: 'not-a-secret', MasterUsername: 'admin' },
         {
           outputs: {
@@ -499,6 +500,21 @@ describe('cdkd scrub resolves a cross-stack read (issue #2133)', () => {
     // same stack does not satisfy this.
     const warned = logLines.filter((l) => l.startsWith('warn ')).join('\n');
     expect(warned, 'the damaged producer record was tolerated silently').toContain(PRODUCER);
+
+    // THE REGRESSION GUARD, and the assertion that matters most here. At the
+    // merge base both damaged shapes were already non-clean — a string bag
+    // threw an escaping `TypeError`, an array bag resolved the plaintext and
+    // raised the producer-plaintext refusal. Guarding the read without
+    // RECORDING a finding would have converted both into
+    // `No plaintext secrets found`, exit 0, over a consumer record that still
+    // holds the imported plaintext. `--dry-run --fail` reads the exit code,
+    // not the warning above, so the warning alone does not close this.
+    expect(thrown, 'the run refused; this case needs it to COMPLETE so the count is readable')
+      .toBeUndefined();
+    expect(
+      result?.unverifiableReads,
+      'a damaged producer recorded no FINDING, so scrub can report this stack clean and exit 0'
+    ).toBeGreaterThan(0);
   });
 });
 

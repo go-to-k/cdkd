@@ -876,9 +876,16 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     if (scrubbed.unverifiableReads > 0) {
       totalStacksWithUnverifiableReads++;
       logger.warn(
+        // "cdkd declines them by design" is no longer true of every member of
+        // this count (review of go-to-k/cdkd#3206 round 5): a producer whose
+        // `outputs` map cannot be READ also lands here, and that one IS
+        // repairable — repair the record and re-run. The sentence therefore
+        // points at the per-read warnings for the reason rather than asserting
+        // one, since asserting the by-design reason over a repairable finding
+        // tells the operator there is nothing to do.
         `${scrubbed.unverifiableReads} cross-stack read(s) in ${stack.stackName} could NOT be ` +
-          `verified — cdkd declines them by design (see the warnings above), so this stack is ` +
-          `not reported clean.`
+          `verified (see the warnings above for which, and why) — so this stack is not ` +
+          `reported clean.`
       );
     }
     if (scrubbed.secretBearingKeys > 0) {
@@ -3791,6 +3798,26 @@ function makeCrossStackPrePass(deps: {
         const seenKey = `${producer.stack}\u0000${producer.region}`;
         if (!warnedDamagedProducers.has(seenKey)) {
           warnedDamagedProducers.add(seenKey);
+          // A FINDING, and this is a REGRESSION GUARD rather than an
+          // improvement (review round 5). At the merge base this site read
+          // `!outputs || !(producer.key in outputs)`, and BOTH damaged shapes
+          // were already non-clean: an ARRAY bag with `OutputName: '0'`
+          // satisfied `'0' in [...]`, returned the plaintext element, and threw
+          // `plaintextProducerCrossStackReadError` (exit 2); a STRING bag threw
+          // a raw `TypeError` that escaped on purpose, the pre-pass sitting
+          // outside the best-effort catch precisely so scrub cannot report
+          // success over a state file it could not examine.
+          //
+          // Guarding the read WITHOUT recording a finding would have turned
+          // both into `No plaintext secrets found`, exit 0, while the
+          // consumer's record still held the imported plaintext — the
+          // false-clean class this whole change exists to prevent,
+          // reintroduced by its own fix. `--dry-run --fail` reads the exit
+          // code, not the warning.
+          findings.unverifiable.push(
+            `the stored value of producer '${maskSecretsInText(producer.stack, secrets)}' ` +
+              `(${producer.region}), whose 'outputs' map cannot be read`
+          );
           // MASKED, like every neighbouring line in this function: a producer
           // STACK NAME is a needle whenever a stack is named after a value this
           // pass resolved, and this is the only line here that runs at WARN.
