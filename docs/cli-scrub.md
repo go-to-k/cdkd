@@ -299,6 +299,27 @@ Either way the message names the record and tells you not to run `cdkd deploy`
 or `cdkd destroy` against it — both read the same map, and an unreadable one is
 indistinguishable from an empty stack.
 
+**A record whose `outputs` map cannot be read exits `2` as well**, and it is
+decided separately: a record can be damaged in either container alone, so the
+message names the one that is actually broken. The reasoning is the same and
+the consequence is different. Scrub REBUILDS the outputs bag before saving it,
+and `Object.entries` walks a string as readily as a map — a six-character
+value comes back as a well-formed six-key map, a `null` one as `{}` — so a
+real run refuses rather than laundering the record. What is at stake is not
+the stack being re-created (the resource map is intact) but the shared exports
+index: `state.outputs` is what a redeploy republishes into
+`cdkd/_index/<region>/exports.json`, which every other stack's
+`Fn::ImportValue` resolves against.
+
+Under `--dry-run` scrub audits the resource half instead, warns that the
+outputs were never examined, and still exits `2` — otherwise every
+outputs-side counter is legitimately zero and the run would print
+`No plaintext secrets found` over a bag it replaced with an empty one.
+
+An **absent** `outputs` field is not a defect and is never refused: a record
+with no outputs is one cdkd writes on purpose, and scrub round-trips it
+without materializing `{}`.
+
 **What a real run can report as `1`.** `--fail` is documented as a
 `--dry-run` CI gate, but a real run exits non-zero too when it found a leak it
 cannot rewrite. Three shapes qualify, and all three are also reported in words:

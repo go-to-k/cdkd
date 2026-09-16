@@ -627,4 +627,114 @@ describe('cdkd scrub - refusals this PR adds (go-to-k/cdkd#2692, go-to-k/cdkd#30
       await expect(run(healthy())).resolves.toBeDefined();
     });
   });
+
+  /**
+   * The `outputs` container (issue go-to-k/cdkd#3192) — the SAME two arms as
+   * the `resources` block above, on a record whose resource map is perfectly
+   * readable, because the two containers are independent and a guard that
+   * needed both to be broken would never fire on the shape this closes.
+   *
+   * What a real run would do without the refusal, measured rather than
+   * reasoned: `redactUnaccountedOutputs` walks `Object.entries(stored)` and on
+   * a hit spreads the positioned bag, so `outputs: 'abcdef'` becomes
+   * `{"0":"a",…,"5":"f"}`; the `outputsChanged` JSON compare then reports a
+   * change, which is the whole of the `recordsChanged > 0 && !opts.dryRun`
+   * write gate. The damaged record is laundered into a well-formed one and the
+   * next deploy republishes those six fabricated keys into the shared exports
+   * index.
+   */
+  describe('a malformed `outputs` bag', () => {
+    /** A record whose RESOURCES are fine and whose outputs are not. */
+    function withOutputs(outputs: unknown): StackState {
+      const s = makeState({
+        Db: { physicalId: 'app-db', resourceType: 'AWS::RDS::DBInstance', properties: {} },
+      });
+      s.outputs = outputs as StackState['outputs'];
+      return s;
+    }
+
+    for (const [label, bag] of [
+      ['null', null],
+      ['a string', 'abcdef'],
+      ['a list', ['a', 'b']],
+      ['a number', 5],
+    ] as const) {
+      it(`is REFUSED on a real run when it is ${label}`, async () => {
+        let thrown: unknown;
+        try {
+          await run(withOutputs(bag));
+        } catch (err) {
+          thrown = err;
+        }
+        expect(thrown, `a ${label} outputs bag was not refused`).toBeInstanceOf(CdkdError);
+        expect((thrown as CdkdError).code).toBe('STATE_RESOURCES_MALFORMED');
+        // Exit 2, like its `resources` sibling and for the same reason: `1`
+        // means "--fail looked and found a leak — rotate the secret", which is
+        // the opposite remedy from "repair the record".
+        expect((thrown as unknown as { exitCode?: number }).exitCode).toBe(2);
+        // The message must name THIS container. Borrowing the resources text
+        // would tell the operator not to run `cdkd deploy` because their stack
+        // would be re-created — over a record whose resource map is intact.
+        expect((thrown as CdkdError).message).toContain(`'outputs'`);
+        expect((thrown as CdkdError).message).toContain('exports index');
+        // And nothing was written over the evidence.
+        expect(stateBackend.saveState).not.toHaveBeenCalled();
+      });
+    }
+
+    it('is REPAIRED under --dry-run, reported as a finding, and never written', async () => {
+      const result = await run(withOutputs('abcdef'), { dryRun: true });
+      // The finding reaches the caller. Without it every outputs-side counter
+      // is legitimately zero — the repaired bag is `{}`, so the
+      // secret-bearing-key scan and both redaction passes walk nothing — and
+      // the run lands on the clean-exit arm, printing `No plaintext secrets
+      // found` and exiting 0 over outputs it never read. That is the mode CI
+      // uses.
+      expect(
+        (result as unknown as { malformedOutputs?: true }).malformedOutputs,
+        'scrubStack did not report the outputs repair; --dry-run --fail would exit 0 over an ' +
+          'unread bag'
+      ).toBe(true);
+      // ...and it is reported SEPARATELY from the resources finding, so the
+      // audited-record error can name the container that is actually broken.
+      expect(
+        (result as unknown as { malformedResources?: true }).malformedResources
+      ).toBeUndefined();
+      expect(stateBackend.saveState).not.toHaveBeenCalled();
+      const warned = logger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain(`'outputs'`);
+      expect(warned).toContain('MyStack');
+    });
+
+    it('FLOOR: a populated, an EMPTY and an ABSENT bag all pass through, on both arms', () => {
+      // The other side of the fence. The ABSENT row is the one that would
+      // break real records: a deploy's failure-path save writes
+      // `outputs: currentState.outputs`, which `JSON.stringify` DROPS when
+      // undefined, so a record with no outputs is one cdkd writes on purpose —
+      // refusing it would make `cdkd scrub` unusable on ordinary state.
+      return Promise.all(
+        [{ DbEndpoint: 'a-stored-value' }, {}, undefined].flatMap((bag) => [
+          expect(run(withOutputs(bag))).resolves.toBeDefined(),
+          expect(run(withOutputs(bag), { dryRun: true })).resolves.toBeDefined(),
+        ])
+      );
+    });
+
+    it('FLOOR: an ABSENT bag is not MATERIALIZED by the dry-run arm either', async () => {
+      // `cdkd scrub` refuses to write `{}` over a record that simply has none,
+      // and the repair must not do it in memory on the way past — a later
+      // reader could not tell the two apart.
+      const s = withOutputs(undefined);
+      const result = await run(s, { dryRun: true });
+      expect((result as unknown as { malformedOutputs?: true }).malformedOutputs).toBeUndefined();
+      expect(s.outputs).toBeUndefined();
+    });
+
+    it('refuses on the outputs bag while the RESOURCES refusal stays silent', () => {
+      // The two guards are pinned apart: collapsing them into one condition is
+      // the obvious simplification and would make each fire on the other's
+      // record.
+      return expect(run(withOutputs('abcdef'))).rejects.toThrow(/'outputs'/);
+    });
+  });
 });

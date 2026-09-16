@@ -68,7 +68,10 @@ import {
   type ResourceState,
   type StackState,
 } from '../../types/state.js';
-import { refuseMalformedState } from '../../state/malformed-resources-bag.js';
+import {
+  refuseMalformedOutputs,
+  refuseMalformedState,
+} from '../../state/malformed-resources-bag.js';
 
 interface ImportOptions {
   app?: string;
@@ -552,6 +555,15 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
     const existingResult = await stateBackend.getState(stackInfo.stackName, targetRegion);
     const existingState = existingResult?.state ?? null;
     if (existingState) refuseMalformedState(existingState, stackInfo.stackName, targetRegion);
+    // The `outputs` bag takes the same answer and needs its own call — the one
+    // above reads `resources` only, and a record can be malformed in either
+    // container alone (go-to-k/cdkd#3192). This command CARRIES the bag into a
+    // save (`outputs: existingState?.outputs ?? {}` in the state literal
+    // below), so a `null` bag is laundered into a well-formed `{}` and the
+    // record stops looking damaged; a string one is carried into a record the
+    // exports index then republishes. AT THE LOAD, on the same line as the
+    // resources refusal, so neither can drift below a read.
+    if (existingState) refuseMalformedOutputs(existingState, stackInfo.stackName, targetRegion);
     const existingEtag = existingResult?.etag;
     const migrationPending = existingResult?.migrationPending ?? false;
 

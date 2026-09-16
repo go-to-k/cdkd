@@ -1,6 +1,7 @@
 import { CdkdError } from '../utils/error-handler.js';
 import { UNRENDERABLE, displaySafe, truncateCodePoints } from '../utils/display-safe.js';
 import { shellQuote } from './lock-contention-message.js';
+import { isReadableBag } from '../types/state.js';
 import type { StackState } from '../types/state.js';
 
 /** The error code every malformed-record refusal carries, whatever its class. */
@@ -21,39 +22,42 @@ export function hasReadableResources(state: StackState): boolean {
 }
 
 /**
+ * The same question for the `outputs` bag — and it is a SEPARATE predicate
+ * rather than a second argument to the one above because the ABSENCE rule
+ * differs, which is the split {@link isReadableBag}'s own note calls a
+ * per-container call.
+ *
+ * An absent `outputs` bag is an ordinary record, not a defect: `cdkd scrub`
+ * round-trips one deliberately rather than materializing `{}` over it, and the
+ * deploy's failure-path saves write `outputs: currentState.outputs`, which
+ * `JSON.stringify` drops when it is `undefined`. So `undefined` is EXEMPT here
+ * while it is a defect for `resources`. `null` is NOT exempt — it is a value a
+ * hand-edited record carries and every consumer either throws on it or
+ * launders it into `{}`.
+ *
+ * Both {@link repairMalformedOutputsForReadOnly} and
+ * {@link refuseMalformedOutputs} delegate to this, so the read-only and the
+ * write-capable halves cannot come to different verdicts about the same record.
+ */
+export function hasReadableOutputs(state: Pick<StackState, 'outputs'>): boolean {
+  return state.outputs === undefined || isReadableBag(state.outputs);
+}
+
+/**
  * The plain-object test itself, without the `resources` field bound to it.
  *
- * Exported because {@link hasReadableResources} is not the only caller any
- * more. Spelling the same test a second time at any of them is what this export
- * exists to prevent: the copies could then drift, and the one that drifted
- * would fabricate again while looking guarded.
+ * RE-EXPORTED, not defined here any more: it MOVED to `src/types/state.ts` with
+ * go-to-k/cdkd#3192, whose own doc carries the full rationale and the reason for
+ * the move (`importableOutputKeys` needs the predicate, and it sits in the layer
+ * this module imports FROM). Every importer of this module is unchanged — the
+ * same shape, and the same reason, as `DEFAULT_STATE_PREFIX` moving into
+ * `src/state/state-prefix.ts`.
  *
- * The consumers outside this module, DERIVED from
- * `grep -rn "isReadableBag" src/` rather than from recall — re-run that command
- * rather than trusting this list, which is the third enumeration in this
- * module's history to be written by reasoning and come out incomplete:
- *
- * - `src/cli/commands/state.ts` (3 call sites, all in `repairRenderedContainers`):
- *   `cdkd state show` and `cdkd state resources` walk FOUR more record
- *   containers with `Object.entries` — `outputs`, `skippedOutputs`, and each
- *   resource's `attributes` and `properties` — and a non-object in any of them
- *   fabricates rows exactly as the `resources` bag did (go-to-k/cdkd#3187).
- * - `src/analyzer/outputs-diff.ts` (1 call site, in `computeOutputsDiff`):
- *   `cdkd diff` walks the stored `outputs` bag to emit its `REMOVE` rows, and a
- *   string there invented one row per character (go-to-k/cdkd#3189). This one is
- *   CROSS-LAYER — the analyzer sits above the state layer, so the import is
- *   downward and carries no cycle, but it means an edit here reaches a layer the
- *   two `resources`-bag callers do not.
- *
- * What it does NOT decide is whether a given container is malformed. That is a
- * per-container call, because absence means different things: an absent
- * `resources` bag is a defect ({@link hasReadableResources} says so), while an
- * absent `skippedOutputs` is the normal pre-#2740 record. Each caller pairs
- * this predicate with its own absence rule.
+ * Enumerate the consumers with `grep -rn "isReadableBag" src/` rather than from
+ * a list here; four successive enumerations of them, written by reasoning, came
+ * out incomplete.
  */
-export function isReadableBag(container: unknown): boolean {
-  return typeof container === 'object' && container !== null && !Array.isArray(container);
-}
+export { isReadableBag };
 
 /**
  * The shared explanation, in the terms the reader needs: what is wrong, what
@@ -313,7 +317,7 @@ export function malformedResourcesWarning(stackName: string, region: string): st
  * exports index with it on the next write.
  */
 export function repairMalformedOutputsForReadOnly(state: StackState): boolean {
-  if (state.outputs === undefined || isReadableBag(state.outputs)) return false;
+  if (hasReadableOutputs(state)) return false;
   state.outputs = {};
   return true;
 }
@@ -374,4 +378,109 @@ export function malformedOutputsWarning(stackName: string, region: string): stri
 export function refuseMalformedState(state: StackState, stackName: string, region: string): void {
   if (hasReadableResources(state)) return;
   throw new CdkdError(malformedStateRefusalMessage(stackName, region), STATE_RESOURCES_MALFORMED);
+}
+
+/**
+ * The `outputs` half of {@link malformedStateRefusalMessage}, for the same
+ * reason that one is exported separately from the throw: `cdkd scrub`'s exit
+ * `1` is spoken for and it raises its own exit-2 class around this text.
+ *
+ * A DIFFERENT text from the `resources` refusal because the consequence of
+ * continuing differs, the same way the three warnings in this module differ. The
+ * `resources` message forbids `cdkd deploy` / `cdkd destroy` because an
+ * unreadable resource MAP is indistinguishable from an empty stack; the resource
+ * set is intact here. What is at stake instead is the SHARED exports index:
+ * `cdkd/_index/<region>/exports.json` is rebuilt from these bags, and a string
+ * bag published one fabricated export per character into the namespace every
+ * other stack's `Fn::ImportValue` binds against.
+ *
+ * Identifiers are sanitized and THEN shell-quoted and the command is emitted
+ * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
+ */
+export function malformedOutputsRefusalMessage(stackName: string, region: string): string {
+  const stack = safeIdentifier(stackName);
+  const reg = safeIdentifier(region);
+  return (
+    `State for ${shellQuote(stack)} (${shellQuote(reg)}) has no readable 'outputs' map — the ` +
+    `record is malformed or truncated. This command can WRITE state, so it refuses rather than ` +
+    `continuing: it REBUILDS the bag before saving, and 'Object.entries' walks a string or a ` +
+    `list as readily as a map, so a six-character value would be saved back as a well-formed ` +
+    `six-key map (a null one as an empty map). That replaces the only signal anything is wrong ` +
+    `with a legitimate-looking record, permanently — and the next deploy republishes it into ` +
+    `the shared exports index every other stack's Fn::ImportValue resolves against. Repair or ` +
+    `remove the record first. Inspect it with: cdkd state show ${shellQuote(stack)} ` +
+    `--stack-region ${shellQuote(reg)} --json`
+  );
+}
+
+/**
+ * The line `ExportIndexStore`'s rebuild emits for a producer record whose
+ * export set it could not read (issue go-to-k/cdkd#3192) — `outputs` not a
+ * plain object, or `exportNames` present and not an array.
+ *
+ * A THIRD outputs text rather than {@link malformedOutputsWarning} because the
+ * consequence is again different, which is the rule the two above already
+ * follow. That one describes a DIFF continuing with an empty left-hand side.
+ * This describes a record CONTRIBUTING NOTHING to a shared, region-wide index
+ * other stacks resolve against — so the symptom a reader will actually meet is
+ * a later `Fn::ImportValue` failing in a DIFFERENT stack, naming the consumer
+ * and not this record. Saying which producer dropped out is the whole value of
+ * the line.
+ *
+ * It says the rebuild CONTINUES, because it does: refusing would take every
+ * other producer in the region down with it, and the index is best-effort by
+ * design.
+ *
+ * Identifiers are sanitized and THEN shell-quoted and the command is emitted
+ * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
+ */
+export function malformedExportSourceWarning(stackName: string, region: string): string {
+  const stack = safeIdentifier(stackName);
+  const reg = safeIdentifier(region);
+  return (
+    `State for ${shellQuote(stack)} (${shellQuote(reg)}) has no readable 'outputs' map or ` +
+    `'exportNames' list — the record is malformed or truncated. It contributes NO exports to ` +
+    `this region's index, which is not the same as the stack exporting none: an ` +
+    `Fn::ImportValue of a name this stack really publishes will fail in the CONSUMER stack, ` +
+    `naming that stack rather than this record. Continuing with the other producers — ` +
+    `enumerating a string or a list here would instead publish one FABRICATED export per ` +
+    `character or element. See the stored values with: cdkd state show ${shellQuote(stack)} ` +
+    `--stack-region ${shellQuote(reg)} --json`
+  );
+}
+
+/**
+ * For a command that can WRITE state: refuse a record whose `outputs` bag
+ * cannot be read, instead of rebuilding it (issue go-to-k/cdkd#3192).
+ *
+ * The SIBLING of {@link refuseMalformedState}, and deliberately a second call
+ * rather than a widening of that one. A record can be malformed in either
+ * container alone, the two carry different consequences, and the refusal a user
+ * sees must name the container that is actually broken — a `resources` message
+ * printed over an intact resource map tells them not to run `cdkd deploy` for a
+ * reason that does not hold.
+ *
+ * Why REFUSE and not {@link repairMalformedOutputsForReadOnly}, which is the
+ * opposite answer for the same container one function up: repairing the bag and
+ * then saving it IS the laundering this is here to stop. Measured, not
+ * reasoned — `rewriteResourceReferences` turns `outputs: 'abcdef'` into
+ * `{"0":"a",…,"5":"f"}` and `cdkd orphan` saves that; `cdkd scrub`'s
+ * `redactUnaccountedOutputs` spreads the same string into a map and its
+ * `outputsChanged` compare then satisfies the `recordsChanged > 0` write gate;
+ * `cdkd import` carries a `null` bag through `?? {}`. Each one rewrites a
+ * damaged record into a well-formed one and the evidence is gone.
+ *
+ * CALL IT AT THE LOAD, beside {@link refuseMalformedState} and above the first
+ * expression that reads the bag — the placement rule
+ * {@link repairMalformedResourcesForReadOnly}'s note records, for the reason it
+ * records: a guard written at the rebuild leaves every earlier dereference in
+ * front of it.
+ */
+export function refuseMalformedOutputs(
+  state: Pick<StackState, 'outputs'>,
+  stackName: string,
+  region: string
+): void {
+  if (hasReadableOutputs(state)) return;
+  throw new CdkdError(malformedOutputsRefusalMessage(stackName, region), STATE_RESOURCES_MALFORMED);
 }

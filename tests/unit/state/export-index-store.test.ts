@@ -216,6 +216,80 @@ describe('ExportIndexStore', () => {
       expect(warnings()).toEqual([]);
     });
 
+    /**
+     * A producer record whose export set cannot be read (issue
+     * go-to-k/cdkd#3192). The shared index is the highest-blast-radius
+     * consumer of `state.outputs`: every stack's `Fn::ImportValue` resolves
+     * against `cdkd/_index/<region>/exports.json`, so a fabricated entry here
+     * binds a CONSUMER to a value no stack ever exported.
+     *
+     * Both cases assert the PUBLISHED body, not just the `lookup` answer —
+     * the index is persisted and read by later processes, so a fabricated key
+     * that never reached the PUT would still be a different (and much
+     * smaller) defect from the one measured.
+     *
+     * And both put a HEALTHY sibling in the same rebuild, which is the
+     * two-sided half: fail-closed must drop the damaged record ONLY. A guard
+     * that aborted the rebuild would take every other producer in the region
+     * down with it, which is why this site warns rather than refusing.
+     */
+    for (const [label, damaged] of [
+      ['a string outputs bag', { outputs: 'abcdef' as unknown as Record<string, unknown> }],
+      ['a list outputs bag', { outputs: ['a', 'b'] as unknown as Record<string, unknown> }],
+      [
+        'a non-array exportNames',
+        {
+          outputs: { VpcId: 'vpc-broken' },
+          exportNames: 'not-an-array' as unknown as string[],
+        },
+      ],
+    ] as const) {
+      it(`rebuild publishes NOTHING from a record with ${label}, and says so (#3192)`, async () => {
+        let savedBody = '';
+        const s3 = mockS3(async (cmd) => {
+          if (cmd.constructor.name === 'GetObjectCommand') throw s3ErrorWith('NoSuchKey', 404);
+          if (cmd.constructor.name === 'PutObjectCommand') {
+            savedBody = String((cmd.input as { Body: string }).Body);
+            return { ETag: '"new-etag"' };
+          }
+          throw new Error(`unexpected command ${cmd.constructor.name}`);
+        });
+        const backend = mockBackend([
+          { stackName: 'Broken', region: 'us-east-1', ...damaged },
+          {
+            stackName: 'Healthy',
+            region: 'us-east-1',
+            outputs: { Topic: 'topic-1' },
+            exportNames: ['Topic'],
+          },
+        ]);
+        const store = new ExportIndexStore(s3, 'b', 'cdkd', 'us-east-1', backend);
+
+        // The healthy sibling still publishes — the floor.
+        expect(await store.lookup('Topic')).toEqual({
+          value: 'topic-1',
+          producerStack: 'Healthy',
+          producerRegion: 'us-east-1',
+        });
+
+        const parsed = JSON.parse(savedBody) as ExportIndexFile;
+        // The PUBLISHED index holds exactly the healthy record's one export.
+        // Pre-fix, a six-character bag put SIX entries here, keyed `'0'`…`'5'`
+        // and valued with the record's own characters.
+        expect(Object.keys(parsed.exports)).toEqual(['Topic']);
+        expect(parsed.exports['0']).toBeUndefined();
+        expect(parsed.exports['VpcId']).toBeUndefined();
+
+        // ...and the damaged producer is NAMED. An empty contribution is
+        // indistinguishable from a stack that exports nothing, so without this
+        // the only symptom is an Fn::ImportValue failing later in a DIFFERENT
+        // stack, naming the consumer.
+        const said = warnings().join('\n');
+        expect(said, 'the damaged producer record was dropped silently').toContain('Broken');
+        expect(said).toContain('CONSUMER');
+      });
+    }
+
     it('rebuild WARNS when two stacks publish one export name, and keeps the later one (#2193)', async () => {
       const s3 = mockS3(async (cmd) => {
         if (cmd.constructor.name === 'GetObjectCommand') throw s3ErrorWith('NoSuchKey', 404);

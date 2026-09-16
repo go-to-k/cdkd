@@ -441,6 +441,21 @@ With `--recursive` each node of the tree carries its own record, so the warning
 names the stack it came from and a healthy parent can sit above a malformed
 child.
 
+### `exportNames`, which is a list rather than a map
+
+The record also carries `exportNames` — the `outputs` keys that are
+`Export.Name` aliases (state schema v9+). That one is a **list**, not a map, so
+it is none of the containers repaired above and takes its own rule.
+
+A non-array `exportNames` reads as an **empty export set**: the diff runs, and
+no stored key is reported as an export. It is deliberately not read as
+*unknown* — an absent `exportNames` means "not known" and falls back to the
+pre-v9 rule where every output key is importable, so taking that branch for a
+corrupt one would report every plain output name as an export. Nothing is
+warned about it: the rule lives in a predicate shared with the exports index,
+the deploy-time resolver and the `cdkd local` commands, which holds no stack
+name to put in a message.
+
 ## `--fail`
 
 `--fail` exits `1` when any change is detected, matching `cdk diff --fail`. An

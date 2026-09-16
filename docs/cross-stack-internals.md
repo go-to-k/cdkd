@@ -635,9 +635,36 @@ deploy of any stack, or the next `lookup()` miss-and-patch).
 | Index file corrupt (JSON parse) | `lookup()` errors | Auto-rebuild on first access |
 | Index stale (post-deploy update failed) | `lookup()` returns stale or missing entry | Fallback scan retrieves correct value, patches entry incrementally |
 | Index drift from out-of-band edit (`aws s3 cp` against `state.json` directly) | `lookup()` may return stale value | Next deploy of any affected stack repopulates correctly |
+| Producer record whose `outputs` map or `exportNames` list cannot be read | That producer contributes NO exports; every other producer in the region is indexed as usual, and a warning names the record | Repair or remove the record, then redeploy that stack |
 
 The drift case (out-of-band edits) is an accepted limitation;
 production cdkd usage does not modify `state.json` directly.
+
+### An unreadable producer record contributes nothing, and says so
+
+A state record is an unchecked cast, so a hand-edited or truncated one can
+hold a string, a list, a number, a boolean or `null` where the `outputs` map
+belongs — and `Object.entries` walks a string as readily as a map. Enumerating
+a six-character value would publish **six fabricated exports**, keyed `"0"` …
+`"5"` and valued with the record's own characters, into the region-wide
+`exports.json` that every stack's `Fn::ImportValue` resolves against. The same
+holds for a non-array `exportNames`.
+
+The rebuild therefore fails **closed** for such a record: it publishes nothing
+from it and carries on with the other producers. Refusing the rebuild outright
+would take every stack's `Fn::ImportValue` resolution in the region down over
+one damaged file, and the index is best-effort by design.
+
+Contributing nothing is indistinguishable from a stack that genuinely exports
+nothing, so the drop is never silent — a warning names the producer stack and
+region. Without it the only symptom would be an `Fn::ImportValue` failing
+later in a **different** stack, naming the consumer rather than the record that
+is actually broken.
+
+The record itself is left exactly as stored. The commands that would otherwise
+rewrite it — `cdkd orphan`, `cdkd import` and `cdkd scrub` — refuse it by name
+instead (see [`cdkd scrub`](cli-scrub.md#exit-codes)), so the evidence survives
+for whoever repairs it.
 
 ---
 

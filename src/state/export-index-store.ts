@@ -52,7 +52,8 @@ import { displaySafe } from '../utils/display-safe.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
 import type { S3StateBackend } from './s3-state-backend.js';
-import { importableOutputs } from '../types/state.js';
+import { hasReadableExportSet, importableOutputs } from '../types/state.js';
+import { malformedExportSourceWarning } from './malformed-resources-bag.js';
 
 /** Schema version for the exports index file. Separate from state.json's version. */
 export const EXPORT_INDEX_VERSION = 1;
@@ -637,6 +638,22 @@ export class ExportIndexStore {
     for (const { ref, state } of results) {
       if (!state || !state.outputs) continue;
       const region = ref.region ?? this.region;
+      // SAY SO when a record contributes nothing because its `outputs` bag or
+      // its `exportNames` field could not be read (issue go-to-k/cdkd#3192).
+      // `importableOutputs` fails CLOSED for both — an empty bag — which is the
+      // right answer here (`Object.entries('abcdef')` published one fabricated
+      // export per CHARACTER into the shared index every consumer's
+      // `Fn::ImportValue` binds against) but is INDISTINGUISHABLE from a stack
+      // that exports nothing, so a silent repair is its own defect: the next
+      // `Fn::ImportValue` miss would name the consumer, not the damaged
+      // producer record. NOT a refusal — this rebuild serves every stack in
+      // the region, and aborting it over one record would take the whole
+      // index's `Fn::ImportValue` resolution down. The record itself is left
+      // exactly as it is, for the write-capable commands to refuse by name.
+      if (!hasReadableExportSet(state)) {
+        this.logger.warn(malformedExportSourceWarning(ref.stackName, region));
+        continue;
+      }
       const stateModified = state.lastModified ?? 0;
       // The EXPORTS only (issue #2193), through the one predicate every
       // reader of the bag shares — a pre-v9 record still contributes every

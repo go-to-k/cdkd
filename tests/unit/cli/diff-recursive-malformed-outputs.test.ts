@@ -183,6 +183,85 @@ describe('cdkd diff over a malformed outputs bag (issue go-to-k/cdkd#3189)', () 
     expect(warnings()).toContain(`has no readable 'outputs' map`);
   });
 
+  /**
+   * The `exportNames` FIELD (issue go-to-k/cdkd#3192) — the tenth site of that
+   * class, and NOT an `outputs` bag at all, which is why the guard at this
+   * load does not reach it and the comment beside that guard says so.
+   *
+   * `importableOutputKeys` in `src/types/state.ts` called
+   * `state.exportNames.filter(...)` unconditionally, so a hand-edited
+   * non-array threw `TypeError: state.exportNames.filter is not a function` —
+   * a bare TypeError naming no stack, field or remedy, from `cdkd diff`, at
+   * base AND at go-to-k/cdkd#3194's head. It is guarded where it is READ
+   * rather than here, because that helper is also reached from the exports
+   * index, the deploy-time resolver and the local-command loader, none of
+   * which passes through this load.
+   *
+   * The fixture is the issue's own repro: a readable outputs bag, a broken
+   * `exportNames`, a template carrying a `Conditions` block and an output that
+   * cannot resolve — which is what routes the diff through
+   * `mergeNoChangeOutputs`, whose `previousExportNames` argument is the call
+   * that threw.
+   */
+  describe('a malformed `exportNames` (issue go-to-k/cdkd#3192)', () => {
+    /** Unresolvable output + a Conditions block, no resource change. */
+    function mergeReachingTemplate(): CloudFormationTemplate {
+      return {
+        Conditions: { Never: { 'Fn::Equals': ['a', 'b'] } },
+        Resources: { A: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } } },
+        Outputs: {
+          // `Fn::GetAtt` to a logical id the template does not declare: the
+          // resolver returns no value and the diff reports `resolutionFailed`,
+          // which is the branch that calls `mergeNoChangeOutputs`.
+          Endpoint: { Value: { 'Fn::GetAtt': ['Missing', 'Arn'] } },
+        },
+      } as unknown as CloudFormationTemplate;
+    }
+
+    for (const [label, names] of [
+      ['a string', 'abc'],
+      ['null', null],
+      ['a number', 5],
+      ['an object', { Good: true }],
+    ] as const) {
+      it(`does not die with a bare TypeError when exportNames is ${label}`, async () => {
+        const state = record({ Good: 'g' }, {
+          exportNames: names as unknown as string[],
+        });
+        // The assertion is that the command COMPLETES. Pre-fix this rejected
+        // with `state.exportNames.filter is not a function`, so a
+        // `rejects.toThrow()` would have been the passing shape — asserting a
+        // resolved value is what discriminates.
+        const node = await diff(state, mergeReachingTemplate());
+        expect(node).toBeDefined();
+        // ...and the corrupt set is read as EMPTY, never as UNKNOWN. Falling
+        // back to the pre-v9 every-key rule would make `Good` an export again,
+        // which is the binding issue #2193 exists to close.
+        expect(
+          node.outputChanges.filter((c) => c.isExport).map((c) => c.name),
+          'a corrupt exportNames was read as the legacy every-key rule'
+        ).toEqual([]);
+      });
+    }
+
+    it('FLOOR: a healthy exportNames still marks its key as an export', async () => {
+      // Without this the case above is one-sided — an implementation that
+      // returned `[]` for every record would satisfy it. The template declares
+      // the export, so the row is tagged from the RESOLVED side; the stored
+      // set is what the merge path reads.
+      const tpl = {
+        Resources: { A: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } } },
+        Outputs: {
+          Endpoint: { Value: 'https://endpoint', Export: { Name: 'S-Endpoint' } },
+        },
+      } as unknown as CloudFormationTemplate;
+      const node = await diff(record({}, { exportNames: [] }), tpl);
+      expect(node.outputChanges.filter((c) => c.isExport).map((c) => c.name)).toEqual([
+        'S-Endpoint',
+      ]);
+    });
+  });
+
   it('FLOOR: a healthy bag diffs exactly as before and says NOTHING', async () => {
     // The other side of the fence. A repair that fired on every record would
     // satisfy every assertion above while destroying the ordinary diff.

@@ -272,14 +272,16 @@ async function loadStateOrEmpty(
     // walks — so one call here dominates the bag, which is the placement rule
     // `src/state/malformed-resources-bag.ts`'s header records.
     //
-    // Scoped to the BAG, deliberately: the Outputs flow also reads
-    // `state.exportNames`, which this does NOT cover.
-    // `importableOutputKeys` (`src/types/state.ts`) calls
-    // `state.exportNames.filter(...)` on it, so a hand-edited non-array still
-    // throws a raw `TypeError` from the `mergeNoChangeOutputs` call below —
-    // unchanged by this guard and present at base. Tracked as
-    // go-to-k/cdkd#3192 with the rest of that class rather than widened into
-    // here, where the fix is a different container with its own semantics.
+    // Scoped to the BAG, deliberately, and still is: the Outputs flow also
+    // reads `state.exportNames`, which this call does not touch. That half is
+    // now guarded where it is READ rather than here —
+    // `importableOutputKeys` (`src/types/state.ts`) used to call
+    // `state.exportNames.filter(...)` unconditionally and threw a raw
+    // `TypeError` from the `mergeNoChangeOutputs` call below on a hand-edited
+    // non-array; it reads a non-array as an EMPTY export set now
+    // (go-to-k/cdkd#3192). A guard here could not have covered it in any case:
+    // that helper is reached from the exports index, the deploy-time resolver
+    // and the local-command loader, none of which passes through this load.
     //
     // Two warnings rather than one: they name different containers with
     // different consequences, and a record can be malformed in either alone.

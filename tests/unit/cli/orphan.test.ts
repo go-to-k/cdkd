@@ -301,6 +301,119 @@ describe('cdkd orphan (per-resource)', () => {
     expect(savedState.resources.Other.dependencies).not.toContain('Bucket');
   });
 
+  /**
+   * The `outputs` bag (issue go-to-k/cdkd#3192). `cdkd orphan` is the headline
+   * write path of that issue, and the harm was CONFIRMED by execution rather
+   * than argued: `rewriteResourceReferences` rebuilds the bag from
+   * `Object.entries(state.outputs ?? {})`, so `outputs: 'abcdef'` comes out as
+   * `{"0":"a",…,"5":"f"}` and a `null` one as `{}` — and this command SAVES
+   * that. The damaged record is the only signal anything is wrong; rewriting
+   * it into a well-formed one is permanent, and the next deploy republishes
+   * the fabricated keys into the shared exports index.
+   *
+   * The resource map is HEALTHY in every case here: the two containers are
+   * independent, and a guard that needed both broken would never fire on the
+   * shape this closes.
+   */
+  describe('a malformed `outputs` bag is refused, not laundered', () => {
+    function arrange(outputs: unknown): void {
+      mockSynthesize.mockResolvedValue({
+        stacks: [
+          {
+            stackName: 'MyStack',
+            displayName: 'MyStack',
+            template: templateWith({ Bucket: 'MyStack/Bucket', Other: 'MyStack/Other' }),
+            region: 'us-east-1',
+          },
+        ],
+      });
+      mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValue({
+        state: {
+          version: 9,
+          stackName: 'MyStack',
+          region: 'us-east-1',
+          resources: {
+            Bucket: { physicalId: 'b', resourceType: 'AWS::S3::Bucket', properties: {} },
+            Other: {
+              physicalId: 'o',
+              resourceType: 'AWS::S3::Bucket',
+              properties: {},
+              dependencies: ['Bucket'],
+            },
+          },
+          outputs,
+          lastModified: 0,
+        },
+        etag: '"e"',
+      });
+    }
+
+    for (const [label, bag] of [
+      ['a string', 'abcdef'],
+      ['null', null],
+      ['a list', ['a', 'b']],
+      ['a number', 5],
+    ] as const) {
+      it(`refuses ${label} and writes NOTHING`, async () => {
+        arrange(bag);
+        await expect(runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes'])).rejects.toThrow();
+        // The evidence survives — this is the whole point of refusing rather
+        // than repairing, and `saveState` is the expression that would destroy
+        // it.
+        expect(
+          mockSaveState,
+          'cdkd orphan saved over a record whose outputs bag it could not read; the damaged ' +
+            'record is gone and a well-formed fabrication is in its place'
+        ).not.toHaveBeenCalled();
+        const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+        expect(message).toContain(`'outputs'`);
+        // It must name THIS container, not borrow the resources refusal, whose
+        // sentence is about the stack being re-created on the next deploy.
+        expect(message).not.toContain(`'resources'`);
+      });
+    }
+
+    it('refuses BEFORE the lock is released without one being wasted on a doomed run', async () => {
+      // Placement: the refusal sits at the load, above the rewrite and above
+      // the confirmation prompt, so the user is never asked to confirm an
+      // operation that cannot proceed.
+      arrange('abcdef');
+      await expect(runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes'])).rejects.toThrow();
+      expect(readlineQuestion).not.toHaveBeenCalled();
+    });
+
+    it('FLOOR: a POPULATED outputs bag is still rewritten and saved', async () => {
+      // The other side of the fence, and the one that would be missed: a guard
+      // that refused everything satisfies every case above. The bag here holds
+      // a value the rewrite must carry through unchanged, so the assertion is
+      // about the SAVE happening AND the outputs surviving it — not merely
+      // that nothing threw.
+      arrange({ BucketName: 'b', 'Stack:Export': 'b' });
+      await runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes']);
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+      const [[, , savedState]] = mockSaveState.mock.calls;
+      expect(savedState.outputs).toEqual({ BucketName: 'b', 'Stack:Export': 'b' });
+      expect(savedState.resources.Bucket).toBeUndefined();
+    });
+
+    it('FLOOR: an EMPTY and an ABSENT outputs bag are both still saved', async () => {
+      // `{}` is a legitimate exports-nothing record, and an ABSENT bag is one
+      // cdkd writes on purpose — a deploy's failure-path save emits
+      // `outputs: currentState.outputs`, which `JSON.stringify` drops when
+      // undefined. Refusing either would make `cdkd orphan` unusable on
+      // ordinary state.
+      arrange({});
+      await runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes']);
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+
+      mockSaveState.mockClear();
+      arrange(undefined);
+      await runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes']);
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('skips lock + save on --dry-run', async () => {
     mockSynthesize.mockResolvedValue({
       stacks: [
