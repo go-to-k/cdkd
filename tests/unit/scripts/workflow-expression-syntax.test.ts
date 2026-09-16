@@ -15,11 +15,12 @@
  * One parse error invalidates the WHOLE file, so the daily schema-drift job
  * stopped being scheduled — the silent watch failure its own header says it
  * exists to prevent — and every push to every branch minted a zero-job failing
- * run. Nothing local caught it, and NOT for want of a workflow reader: seven
- * suites read these files (`cfn-schema-refresh-workflow`,
- * `backfill-umbrella-sync-workflow`, `workflow-registration`, `ci-ok-gate`,
- * `release-pr-staleness`, `release-please-v0`, `node-floor-sync`), and
- * `workflow-registration.test.ts` `readdirSync`s the whole directory and
+ * run. Nothing local caught it, and NOT for want of a workflow reader: many
+ * suites under `tests/unit/**` read these files — count them with
+ * `grep -rl '\.github/workflows' tests/unit` rather than trusting a number
+ * here, since two successive attempts at one in this comment were both wrong
+ * (2, then 7, against a measured 20+). One of them,
+ * `workflow-registration.test.ts`, `readdirSync`s the whole directory and
  * `yaml`-parses every file. They read STRUCTURE and named literals, and the
  * YAML is WELL-FORMED — the defect lives one layer further in, inside a scalar
  * every one of them parsed successfully.
@@ -99,13 +100,73 @@ const INFIX = new Set([
 ]);
 
 /**
+ * The documented roots of an Actions expression: every context, every built-in
+ * function, and the three literals. A bare identifier that is none of these is
+ * `Unrecognized named-value` to Actions, which invalidates the file exactly as
+ * an empty body does.
+ *
+ * This is what closes the ONE-WORD hole, and the hole matters more than its
+ * size suggests: `${{ expression }}` / `${{ opener }}` / `${{ context }}` is
+ * the likeliest wording of a REINTRODUCTION — a future editor writing the very
+ * sentence this fence exists because of, with one word between the braces
+ * instead of none. The alternation rule cannot reach it, because one token is
+ * not a run of adjacent operands.
+ *
+ * RESIDUAL, and it is why the refusal carries its own message: when GitHub adds
+ * a context or function, the first workflow to use it reds here. That is an
+ * over-refusal on working code — the failure mode this file's header is about —
+ * so the message names the remedy (add the root) rather than calling the body
+ * prose. Cost measured at zero: every body in the tree leads with `github`,
+ * `steps`, `secrets`, `cancelled`, `needs`, `matrix` or `join`, and a case
+ * below pins every corpus head against this set, so the list cannot silently
+ * stop matching.
+ */
+const KNOWN_HEADS = new Set([
+  // Contexts.
+  'github',
+  'env',
+  'vars',
+  'job',
+  'jobs',
+  'steps',
+  'runner',
+  'secrets',
+  'strategy',
+  'matrix',
+  'needs',
+  'inputs',
+  // Functions.
+  'contains',
+  'startsWith',
+  'endsWith',
+  'format',
+  'join',
+  'toJSON',
+  'fromJSON',
+  'hashFiles',
+  'success',
+  'always',
+  'cancelled',
+  'failure',
+  // Literals.
+  'true',
+  'false',
+  'null',
+]);
+
+/**
  * Whether `body` could be an Actions expression.
  *
- * DELIBERATELY PERMISSIVE where it is unsure — it accepts `(a,)` and `f(,b)`,
- * which no grammar does. That direction is the safe one for a fence: an
- * over-acceptance costs the coverage of a shape nobody writes, while an
- * over-refusal reds CI on working code with a message blaming the author, which
- * is the failure mode this file's header is about. What it must never do is
+ * DELIBERATELY PERMISSIVE where it is unsure — it accepts a TRAILING empty
+ * argument (`(a,)`, `f(a,)`), which no grammar does. A LEADING one (`f(,b)`,
+ * `(,a)`) is refused, by the same rule that refuses a body opening with an
+ * operator. That asymmetry is measured rather than designed, and it is stated
+ * because a bound claimed the other way round is the mistake round 2 caught
+ * here twice.
+ *
+ * Permissiveness is the safe direction for a fence: an over-acceptance costs
+ * the coverage of a shape nobody writes, while an over-refusal reds CI on
+ * working code with a message blaming the author. What it must never do is
  * accept two operands in a row, because that is what prose is.
  */
 export const isReadableExpression = (body: string): boolean => {
@@ -113,6 +174,11 @@ export const isReadableExpression = (body: string): boolean => {
   let at = 0;
   let expect: 'operand' | 'operator' = 'operand';
   let depth = 0;
+  // Whether the operand now due is a PROPERTY rather than a root. The path
+  // token swallows `a.b.c` whole, but a `.` after a `)` or `]` arrives on its
+  // own — `fromJSON(x).a`, `fromJSON(x).*.name` — and the identifier after it
+  // is a member name, which is not drawn from KNOWN_HEADS.
+  let afterDot = false;
   while (at < body.length) {
     TOKEN.lastIndex = at;
     const m = TOKEN.exec(body);
@@ -124,6 +190,15 @@ export const isReadableExpression = (body: string): boolean => {
     if (/^\s+$/.test(tok)) continue;
     if (expect === 'operand') {
       if (tok === '!') continue;
+      // Unary sign: `${{ -1 }}`, `${{ x > -1 }}`. Legal Actions (JSON numbers).
+      if (tok === '-' || tok === '+') continue;
+      // An object filter reached from a call or an index: `fromJSON(x).*.name`.
+      // Inside a path the `*` belongs to the path token; after a `)` or `]` it
+      // arrives on its own.
+      if (tok === '*') {
+        expect = 'operator';
+        continue;
+      }
       if (OPEN.has(tok)) {
         depth++;
         continue;
@@ -137,6 +212,14 @@ export const isReadableExpression = (body: string): boolean => {
         continue;
       }
       if (INFIX.has(tok)) return false;
+      // A bare identifier or dotted path in VALUE position: its ROOT has to be
+      // something Actions knows. Strings and numbers are exempt — they are
+      // literals, not named values — and so is a MEMBER name reached through a
+      // `.`, which names a property of whatever preceded it.
+      if (!afterDot && /^[A-Za-z_]/.test(tok) && !KNOWN_HEADS.has(tok.split('.')[0]!)) {
+        return false;
+      }
+      afterDot = false;
       expect = 'operator';
       continue;
     }
@@ -152,6 +235,7 @@ export const isReadableExpression = (body: string): boolean => {
       continue;
     }
     if (INFIX.has(tok)) {
+      afterDot = tok === '.';
       expect = 'operand';
       continue;
     }
@@ -177,7 +261,27 @@ interface Offence {
  */
 export const findExpressionOffences = (file: string, source: string): Offence[] => {
   const offences: Offence[] = [];
-  const lineOf = (index: number): number => source.slice(0, index).split('\n').length;
+  /**
+   * Line starts, computed ONCE. The obvious `source.slice(0, i).split('\n')`
+   * is O(offences x bytes): measured 15 s on a 256 KB file of repeated empty
+   * openers, which a fork PR could hand to CI. Unreachable on a tree that
+   * PASSES — a clean tree has no offences at all — so this is about the run
+   * that reports a real defect.
+   */
+  const lineStarts = [0];
+  for (let i = source.indexOf('\n'); i !== -1; i = source.indexOf('\n', i + 1)) {
+    lineStarts.push(i + 1);
+  }
+  const lineOf = (index: number): number => {
+    let lo = 0;
+    let hi = lineStarts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (lineStarts[mid]! <= index) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo + 1;
+  };
   for (let at = source.indexOf('${{'); at !== -1; at = source.indexOf('${{', at + 3)) {
     const close = source.indexOf('}}', at + 3);
     if (close === -1) {
@@ -202,11 +306,19 @@ export const findExpressionOffences = (file: string, source: string): Offence[] 
       continue;
     }
     if (!isReadableExpression(body)) {
+      // A body that is otherwise well-formed and only leads with an unknown
+      // root gets its own message. The two cases want opposite actions from the
+      // reader — rewrite the prose, or add a root GitHub has newly documented —
+      // and a single "this is prose" would be a false diagnosis for the second.
+      const head = /^\s*([A-Za-z_][A-Za-z0-9_-]*)/.exec(body)?.[1];
+      const unknownHead =
+        head !== undefined && !KNOWN_HEADS.has(head) && isReadableExpression(`github${body.slice(body.indexOf(head) + head.length)}`);
       offences.push({
         file,
         line: lineOf(at),
-        reason:
-          'expression body is prose, not an expression — inside a `run:` body this refuses the whole file the same way an empty one does',
+        reason: unknownHead
+          ? `expression body leads with \`${head}\`, which is no Actions context or function — Actions answers "Unrecognized named-value" and refuses the whole file. If GitHub has added it, add it to KNOWN_HEADS`
+          : 'expression body is prose, not an expression — inside a `run:` body this refuses the whole file the same way an empty one does',
         text: source.slice(at, close + 2),
       });
     }
@@ -215,6 +327,17 @@ export const findExpressionOffences = (file: string, source: string): Offence[] 
 };
 
 const workflowFiles = readdirSync(WORKFLOW_DIR).filter((name) => /\.ya?ml$/.test(name));
+
+/** Every expression body the repository actually writes. */
+const bodies = workflowFiles.flatMap((name) => {
+  const source = readFileSync(join(WORKFLOW_DIR, name), 'utf8');
+  const found: string[] = [];
+  for (let at = source.indexOf('${{'); at !== -1; at = source.indexOf('${{', at + 3)) {
+    const close = source.indexOf('}}', at + 3);
+    if (close !== -1) found.push(source.slice(at + 3, close));
+  }
+  return found;
+});
 
 describe('workflow expression syntax', () => {
   /**
@@ -253,16 +376,6 @@ describe('workflow expression syntax', () => {
    * tree's offence list is empty either way — only real bodies discriminate.
    */
   describe('accepts every expression the repository actually writes', () => {
-    const bodies = workflowFiles.flatMap((name) => {
-      const source = readFileSync(join(WORKFLOW_DIR, name), 'utf8');
-      const found: string[] = [];
-      for (let at = source.indexOf('${{'); at !== -1; at = source.indexOf('${{', at + 3)) {
-        const close = source.indexOf('}}', at + 3);
-        if (close !== -1) found.push(source.slice(at + 3, close));
-      }
-      return found;
-    });
-
     it('found a corpus worth checking', () => {
       // Measured 2026-09-16 at 86. Floored well under, since the number moves
       // with ordinary workflow edits; its job is to catch a collapse to zero,
@@ -290,6 +403,19 @@ describe('workflow expression syntax', () => {
       "github.event.issue.user.login == 'dependabot[bot]'",
       'matrix.node-version',
       "toJSON(fromJSON(steps.x.outputs.y)['a'])",
+      // A PARENTHESISED SUB-EXPRESSION. No body in the corpus opens a group in
+      // operand position, so without this case the arm that handles one had no
+      // coverage at all — deleting its `depth++` made the grammar REJECT every
+      // grouped condition while all 37 cases stayed green. That is exactly the
+      // over-refusal the header says this design exists to avoid.
+      "(github.event_name == 'push') && github.actor != 'dependabot[bot]'",
+      "!(github.ref == 'refs/heads/main')",
+      // Unary sign and a filter off a call result: legal Actions, and each the
+      // only killer of its arm.
+      'github.run_attempt > -1',
+      'fromJSON(steps.x.outputs.y).*.name',
+      // A trailing empty argument — the permissiveness the docstring claims.
+      'format(github.sha,)',
     ])('accepts %s', (body) => {
       expect(isReadableExpression(` ${body} `)).toBe(true);
     });
@@ -303,11 +429,42 @@ describe('workflow expression syntax', () => {
       ['prose, two words', ' github expressions '],
       ['prose, three words', ' the same rule '],
       ['prose, a quoted mention', ' NOT interpolated here '],
+      // ONE word. The alternation rule cannot see this one — it is not a run of
+      // adjacent operands — and it is the likeliest reintroduction wording, so
+      // it is the root check that has to catch it.
+      ['one word', ' expression '],
+      ['one word that reads like a context', ' opener '],
+      ['a dotted path under an unknown root', ' expression.body '],
       ['a shell variable', ' ${GH_TOKEN} '],
       ['an unbalanced group', ' format(github.sha '],
-      ['a trailing operator', " github.ref == "],
+      ['a trailing operator', ' github.ref == '],
+      // The two `depth === 0` guards, one each. The unbalanced-group case above
+      // only reaches the FINAL check.
+      ['a close before any open', ' ) ( github.sha '],
+      ['a close after an operand', ' github.sha ) ( github.ref '],
+      // A body that opens with an operator, and a doubled one.
+      ['a leading comma', ' , '],
+      ['a doubled operator', " github.ref && == 'main' "],
+      ['a leading empty argument', ' format(,github.sha) '],
     ])('rejects %s', (_label, body) => {
       expect(isReadableExpression(body)).toBe(false);
+    });
+
+    /**
+     * The root list is the one part of the grammar that can go stale on
+     * GitHub's schedule rather than on this repo's, so it is pinned against
+     * what the tree writes. A root that leaves the corpus is harmless; one that
+     * ENTERS it without being listed reds the per-file arms with a message
+     * naming the remedy, and this case says which root and why.
+     */
+    it('knows every root the corpus actually leads with', () => {
+      const heads = new Set(
+        bodies
+          .map((b) => /^\s*!?\s*\(?\s*([A-Za-z_][A-Za-z0-9_-]*)/.exec(b)?.[1])
+          .filter((h): h is string => h !== undefined),
+      );
+      expect(heads.size).toBeGreaterThanOrEqual(5);
+      expect([...heads].filter((h) => !KNOWN_HEADS.has(h))).toEqual([]);
     });
   });
 
@@ -323,7 +480,11 @@ describe('workflow expression syntax', () => {
 
     const mutate = (line: string): string => {
       expect(REAL).toContain(ANCHOR);
-      const mutated = REAL.replace(ANCHOR, `${line}\n${ANCHOR}`);
+      // A FUNCTION replacer, so a probe line carrying `$&` / `` $` `` / `$'` /
+      // `$1` is inserted verbatim instead of being expanded by `String.replace`
+      // — measured: `` $` `` expands to the whole pre-match text, which would
+      // silently probe something other than the line the case names.
+      const mutated = REAL.replace(ANCHOR, () => `${line}\n${ANCHOR}`);
       expect(mutated).not.toEqual(REAL);
       return mutated;
     };

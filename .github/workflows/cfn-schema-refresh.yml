@@ -206,7 +206,8 @@ jobs:
           # value is a jq-extracted JSON integer, so it is contained today —
           # this removes the CLASS rather than a live bug, and costs one line.
           # (In words rather than as the literal opener. Here it would be
-          # harmless — a YAML comment reaches no parser — but the same sentence
+          # harmless — the YAML parser discards a comment, and the EXPRESSION
+          # parser never sees one — but the same sentence
           # inside a `run:` body is PART OF THE STRING, and an empty expression
           # there invalidated this whole file once (go-to-k/cdkd#3195). Telling
           # the two apart by indentation is what failed, so the fence refuses
