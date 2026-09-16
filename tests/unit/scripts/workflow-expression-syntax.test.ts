@@ -117,18 +117,24 @@ const INFIX = new Set([
  * CONTEXTS AND FUNCTIONS ARE SEPARATE SETS, and collapsing them into one left
  * the hole half open. A function name is not a named VALUE: Actions answers
  * `Unrecognized named-value: 'format'` to `${{ format }}` and refuses the file
- * exactly as it does for the empty body. Six of the twelve — `format`, `join`,
- * `contains`, `always`, `success`, `failure` — are ordinary English words, so a
- * single set readmitted the very class this arm exists to close. A function
- * head therefore counts only when a `(` follows it.
+ * exactly as it does for the empty body. Seven of the twelve — `format`,
+ * `join`, `contains`, `always`, `success`, `failure`, `cancelled` — are
+ * ordinary English words, so a single set readmitted the very class this arm
+ * exists to close. A function head therefore counts only when a `(` follows it.
  *
  * RESIDUAL: when GitHub adds a context or function, the first workflow to use
  * it reds here. That is an over-refusal on working code — the failure mode this
  * file's header is about — so that case gets its own message naming the remedy
- * (add the root) instead of calling the body prose. The two are told apart by
- * SHAPE rather than by the word: a bare one-word body is prose, while a dotted
- * path, a call, or an identifier that is not the whole body is a plausible new
- * root. Cost measured at zero: every body in the tree leads with `github`,
+ * (add the root) instead of calling the body prose. THREE messages, not two: a
+ * root that is a known FUNCTION reached without a call gets its own, because
+ * naming it as a missing root prints a remedy that changes nothing — the root
+ * is already in the set — and the fence stays red under a true verdict and a
+ * false diagnosis.
+ *
+ * Prose and a missing root are told apart by SHAPE, not by the word: a bare
+ * one-word body is prose, and anything else is settled by re-reading the body
+ * with the unrecognised roots allowed. Cost measured at zero: every body in
+ * the tree leads with `github`,
  * `steps`, `secrets`, `cancelled`, `needs`, `matrix` or `join`, and cases below
  * pin the corpus heads AND every member of both sets, so neither can silently
  * stop matching.
@@ -173,7 +179,13 @@ const LITERAL_HEADS = new Set(['true', 'false', 'null']);
  */
 type Verdict =
   | { readonly ok: true }
-  | { readonly ok: false; readonly unknownRoot?: string; readonly rootAt?: number };
+  | {
+      readonly ok: false;
+      /** An identifier in value position that no root set knows. */
+      readonly unknownRoot?: string;
+      /** A root that IS a known function, reached without a call. */
+      readonly uncalledFunction?: string;
+    };
 
 /**
  * Whether `body` could be an Actions expression, and if not, which kind of not.
@@ -192,7 +204,18 @@ type Verdict =
  * working code with a message blaming the author. What it must never do is
  * accept two operands in a row, because that is what prose is.
  */
-export const analyseExpression = (body: string): Verdict => {
+export const analyseExpression = (
+  body: string,
+  /**
+   * Roots to treat as known for this read. The caller uses it to ask "would
+   * this body be an expression if THIS root existed?" — which settles a
+   * missing root against prose without any offset arithmetic, and without the
+   * single-occurrence bound a textual substitution had: `newctx.a == newctx.b`
+   * has the root twice, and replacing one left the other unknown, so an
+   * ordinary condition naming a new context reported as prose.
+   */
+  extraRoots: ReadonlySet<string> = new Set(),
+): Verdict => {
   TOKEN.lastIndex = 0;
   let at = 0;
   let expect: 'operand' | 'operator' = 'operand';
@@ -250,25 +273,30 @@ export const analyseExpression = (body: string): Verdict => {
       if (!wasAfterDot && /^[A-Za-z_]/.test(tok)) {
         const root = tok.split('.')[0]!;
         // A function is a name Actions only accepts when CALLED. Bare, it is an
-        // unrecognized named-value like any other word, and six of the twelve
-        // are ordinary English.
+        // unrecognized named-value like any other word, and SEVEN of the twelve
+        // are ordinary English (`format`, `join`, `contains`, `always`,
+        // `success`, `failure`, `cancelled`).
         const called = /^\s*\(/.test(body.slice(at));
         const known =
+          extraRoots.has(root) ||
           CONTEXT_HEADS.has(root) ||
           LITERAL_HEADS.has(tok) ||
           (FUNCTION_HEADS.has(tok) && called);
         if (!known) {
+          // A known FUNCTION reached without a call is its own case. Reporting
+          // it as an unknown root names a root that IS in the set, so the
+          // remedy it prints ("add it") changes nothing and the fence stays
+          // red — a true verdict under a false diagnosis. Covers both
+          // `${{ format }}` and `${{ always.foo }}`.
+          if (FUNCTION_HEADS.has(root)) return { ok: false, uncalledFunction: root };
           // A BARE one-word body is prose, full stop — no context is ever used
           // that way, and this is the headline reintroduction wording, where
           // saying "add the root" would permanently re-open the hole. Anything
-          // with more shape (a dotted path, a call, a word among others) MIGHT
-          // be a root GitHub has newly documented; the caller settles which by
-          // substituting a known root and re-reading the body.
-          const bareWord =
-            isFirst && !tok.includes('.') && !called && body.slice(at).trim() === '';
-          return bareWord
-            ? { ok: false }
-            : { ok: false, unknownRoot: root, rootAt: at - tok.length };
+          // with more shape (a dotted path, or a word among others) MIGHT be a
+          // root GitHub has newly documented; the caller settles which by
+          // re-reading the body with this root allowed.
+          const bareWord = isFirst && !tok.includes('.') && body.slice(at).trim() === '';
+          return bareWord ? { ok: false } : { ok: false, unknownRoot: root };
         }
       }
       expect = 'operator';
@@ -297,6 +325,69 @@ export const analyseExpression = (body: string): Verdict => {
 
 export const isReadableExpression = (body: string): boolean => analyseExpression(body).ok;
 
+/**
+ * Every `${{ … }}` in `source`, as (opener index, closer index, body).
+ *
+ * ONE walk, shared by the scanner and by the corpus the grammar cases are
+ * measured against. They were separate and DISAGREED: the corpus kept an
+ * earlier `at + 3` resume, so a workflow writing `format('${{', github.sha)`
+ * left the scanner clean while the corpus case redded on the manufactured body
+ * `', github.sha) ` — a false red on legal Actions, the direction this file's
+ * header calls dangerous.
+ *
+ * Resuming after the CLOSER is the reading Actions takes. An opener nested
+ * inside a swallowed body is not lost: either it sits in a quoted string, where
+ * it is literal text, or the body that swallowed it carries a `$` and a `{` and
+ * is itself refused.
+ */
+const forEachExpression = (
+  source: string,
+  visit: (at: number, close: number, body: string) => void,
+): void => {
+  let at = source.indexOf('${{');
+  while (at !== -1) {
+    const close = source.indexOf('}}', at + 3);
+    if (close === -1) {
+      // No later opener can find a closer either — `indexOf` is monotonic — so
+      // there is nothing after this worth scanning for.
+      visit(at, -1, '');
+      return;
+    }
+    visit(at, close, source.slice(at + 3, close));
+    at = source.indexOf('${{', close + 2);
+  }
+};
+
+/**
+ * Whitespace and every C0 control byte, collapsed to one space.
+ *
+ * Written as a CODEPOINT TEST with no escape sequence anywhere in it, because
+ * a backslash-u escape typed into this file is exactly how a raw NUL got into
+ * the source twice while writing this very helper — once inside the comment
+ * warning about it. grep and rg then classify the whole file as BINARY and
+ * skip it at exit 0, which is the class scripts/check-source-control-bytes.ts
+ * exists for.
+ *
+ * Wider than a whitespace class on purpose: that does not cover ESC, and raw
+ * ESC-bracket-1A ESC-bracket-2K reaching a terminal is cursor-up plus
+ * erase-line, which overwrites the line above the finding.
+ */
+const flatten = (s: string): string => {
+  let out = '';
+  let blank = false;
+  for (const ch of s) {
+    const code = ch.codePointAt(0)!;
+    if (code <= 0x20 || code === 0x7f) {
+      if (!blank) out += ' ';
+      blank = true;
+    } else {
+      out += ch;
+      blank = false;
+    }
+  }
+  return out;
+};
+
 interface Offence {
   readonly file: string;
   readonly line: number;
@@ -311,14 +402,21 @@ interface Offence {
  * simply gone. Reading the text is what lets a case say WHERE it is, which is
  * the whole difficulty of the class.
  */
-export const findExpressionOffences = (file: string, source: string): Offence[] => {
+export const findExpressionOffences = (rawFile: string, source: string): Offence[] => {
   const offences: Offence[] = [];
+  // The NAME is a forgery surface too, and it was the field left open when the
+  // excerpt was clamped: a file named with a newline under `.github/workflows/`
+  // rendered a second line reading as a finding against another file — the same
+  // defect one field over. Measured in a real vitest run.
+  const file = flatten(rawFile);
   /**
    * Line starts, computed ONCE. The obvious `source.slice(0, i).split('\n')`
-   * is O(offences x bytes): measured 15 s on a 256 KB file of repeated empty
-   * openers, which a fork PR could hand to CI. Unreachable on a tree that
-   * PASSES — a clean tree has no offences at all — so this is about the run
-   * that reports a real defect.
+   * is O(offences x bytes): measured 2026-09-16 at 15 s on a 256 KB file of
+   * repeated empty openers, which a fork PR could hand to CI. Unreachable on a
+   * tree that PASSES — a clean tree has no offences at all — so this is about
+   * the run that reports a real defect. The figure is a DATED measurement, not
+   * a pinned one: what a case can hold is the offence COUNT, which the
+   * dangling-opener and nested-opener cases below do.
    */
   const lineStarts = [0];
   for (let i = source.indexOf('\n'); i !== -1; i = source.indexOf('\n', i + 1)) {
@@ -335,39 +433,34 @@ export const findExpressionOffences = (file: string, source: string): Offence[] 
     return lo + 1;
   };
   /**
-   * A quoted excerpt, CLAMPED and single-line. The raw slice was both a
-   * forgery surface and a size bomb: a body carrying a newline rendered a
-   * second line reading as a finding against another file, and 20k openers
-   * sharing one trailing `}}` (80 KB in) produced 802 M characters, which made
-   * the assertion throw `Invalid string length` INSTEAD of reporting.
+   * A quoted excerpt, CLAMPED and single-line. The raw slice was both a forgery
+   * surface and a size bomb: a body carrying a newline rendered a second line
+   * reading as a finding against another file, and 20k openers sharing one
+   * trailing `}}` (80 KB in) produced 802 M characters (measured 2026-09-16),
+   * which made the assertion throw `Invalid string length` INSTEAD of
+   * reporting.
+   *
+   * The control-byte half of the class matters because a whitespace class does
+   * not cover ESC, and raw
+   * `ESC[1A ESC[2K` reaching a terminal is cursor-up plus erase-line, which
+   * overwrites the line above the finding.
    */
   const excerpt = (from: number, to: number): string => {
-    const raw = source.slice(from, Math.min(to, from + 120)).replace(/\s+/g, ' ');
+    const raw = flatten(source.slice(from, Math.min(to, from + 120)));
     return to > from + 120 ? `${raw}…` : raw;
   };
-  /**
-   * ONE forward pass. Resuming the opener search at `at + 3` made every opener
-   * re-scan to EOF for its `}}` — measured 4.7 s on 1.28 MB, doubling
-   * fourfold per doubling, so the quadratic had moved rather than left when
-   * `lineOf` was fixed. Resuming after the CLOSER is also the reading Actions
-   * takes, and an opener nested inside a swallowed body is still reported,
-   * because the body that swallowed it carries a `$` and a `{` and is refused.
-   */
-  let at = source.indexOf('${{');
-  while (at !== -1) {
-    const close = source.indexOf('}}', at + 3);
+  forEachExpression(source, (at, close, body) => {
     if (close === -1) {
-      // No later opener can find a closer either — `indexOf` is monotonic — so
-      // there is nothing after this worth scanning for.
       offences.push({
         file,
         line: lineOf(at),
         reason: 'expression opener is never closed',
-        text: excerpt(at, at + 60),
+        // The same 120 as every other arm: clipping at 60 made a truncated
+        // excerpt read as complete, since the ellipsis can only appear past 120.
+        text: excerpt(at, at + 120),
       });
-      break;
+      return;
     }
-    const body = source.slice(at + 3, close);
     if (body.trim() === '') {
       offences.push({
         file,
@@ -377,23 +470,34 @@ export const findExpressionOffences = (file: string, source: string): Offence[] 
           'empty expression body — inside a `run:` body Actions answers "An expression was expected" and refuses the whole file',
         text: excerpt(at, close + 2),
       });
-      at = source.indexOf('${{', close + 2);
-      continue;
+      return;
     }
     const verdict = analyseExpression(body);
     if (!verdict.ok) {
-      // Does the body read as an expression once the unrecognised root is
-      // swapped for a known one? If yes it is shaped like a real reference and
-      // the root is the only thing missing; if no, the shape is prose and
-      // naming the root would send the reader after the wrong thing. Called at
-      // most once — a second unknown root lands on the prose arm, which is the
-      // safe direction.
-      const plausibleRoot =
-        verdict.unknownRoot !== undefined &&
-        verdict.rootAt !== undefined &&
-        analyseExpression(
-          `${body.slice(0, verdict.rootAt)}github${body.slice(verdict.rootAt + verdict.unknownRoot.length)}`,
-        ).ok;
+      // Does the body read as an expression once the unrecognised roots are
+      // allowed? If yes it is shaped like a real reference and the roots are
+      // the only thing missing; if no, the shape is prose and naming a root
+      // would send the reader after the wrong thing.
+      //
+      // ITERATED, because a body can name more than one. Two narrower versions
+      // were each wrong on an ordinary condition: substituting the single
+      // occurrence at a recorded offset failed `newctx.a == newctx.b` (same
+      // root twice), and allowing one root failed `newa.foo && newb.bar`. Each
+      // pass either finishes or names a root not yet allowed, so the set grows
+      // strictly and the loop terminates; the cap is belt-and-braces and the
+      // calls are sequential, never nested.
+      const allowed = new Set<string>();
+      let probe = verdict;
+      let plausibleRoot = false;
+      for (let round = 0; probe.unknownRoot !== undefined && round < 10; round++) {
+        allowed.add(probe.unknownRoot);
+        const next = analyseExpression(body, allowed);
+        if (next.ok) {
+          plausibleRoot = true;
+          break;
+        }
+        probe = next;
+      }
       // The two refusals want OPPOSITE actions from the reader — rewrite the
       // prose, or add a root GitHub has newly documented — so a single message
       // would be a false diagnosis for one of them. The walker decides which,
@@ -401,30 +505,38 @@ export const findExpressionOffences = (file: string, source: string): Offence[] 
       // token instead told the bare one-word case — the headline
       // reintroduction wording — to add `expression` to the root set, which
       // would have permanently re-opened the hole this arm closes.
+      // Clamped for the same reason the excerpt is — the charset rules out
+      // forgery, but a 200 k root would otherwise mean a 200 KB reason.
+      const named = (verdict.unknownRoot ?? verdict.uncalledFunction ?? '').slice(0, 60);
       offences.push({
         file,
         line: lineOf(at),
-        reason: plausibleRoot
-          ? `expression body names \`${verdict.unknownRoot}\`, which is no Actions context or function — Actions answers "Unrecognized named-value" and refuses the whole file. If GitHub has added it, add it to CONTEXT_HEADS or FUNCTION_HEADS`
-          : 'expression body is prose, not an expression — inside a `run:` body this refuses the whole file the same way an empty one does',
+        reason:
+          verdict.uncalledFunction !== undefined
+            ? `expression body names \`${named}\`, an Actions FUNCTION, which is a value only when called — bare it is "Unrecognized named-value" and refuses the whole file. Write \`${named}(…)\`, or if this is prose in a comment, say it in words`
+            : plausibleRoot
+              ? `expression body names \`${named}\`, which is no Actions context or function — Actions answers "Unrecognized named-value" and refuses the whole file. If GitHub has added it, add it to CONTEXT_HEADS or FUNCTION_HEADS`
+              : 'expression body is prose, not an expression — inside a `run:` body this refuses the whole file the same way an empty one does',
         text: excerpt(at, close + 2),
       });
     }
-    at = source.indexOf('${{', close + 2);
-  }
+  });
   return offences;
 };
 
 const workflowFiles = readdirSync(WORKFLOW_DIR).filter((name) => /\.ya?ml$/.test(name));
 
-/** Every expression body the repository actually writes. */
+/**
+ * Every expression body the repository actually writes, through the SAME walk
+ * the scanner uses — two walks with different resume points disagreed about
+ * what an expression even is.
+ */
 const bodies = workflowFiles.flatMap((name) => {
   const source = readFileSync(join(WORKFLOW_DIR, name), 'utf8');
   const found: string[] = [];
-  for (let at = source.indexOf('${{'); at !== -1; at = source.indexOf('${{', at + 3)) {
-    const close = source.indexOf('}}', at + 3);
-    if (close !== -1) found.push(source.slice(at + 3, close));
-  }
+  forEachExpression(source, (_at, close, body) => {
+    if (close !== -1) found.push(body);
+  });
   return found;
 });
 
@@ -577,7 +689,7 @@ describe('workflow expression syntax', () => {
     it.each(EXPECTED_FUNCTIONS)('accepts `%s` called and refuses it bare', (fn) => {
       expect(isReadableExpression(` ${fn}(github.sha) `)).toBe(true);
       // The blocker: bare, a function name is `Unrecognized named-value` and
-      // invalidates the file. Six of the twelve are ordinary English words, so
+      // invalidates the file. Seven of the twelve are ordinary English words, so
       // one set for both readmitted the prose class this arm exists to close.
       expect(isReadableExpression(` ${fn} `)).toBe(false);
     });
@@ -628,14 +740,16 @@ describe('workflow expression syntax', () => {
     });
 
     /**
-     * The two REFUSAL MESSAGES, which are the only user-facing strings this
+     * The THREE REFUSAL MESSAGES, which are the only user-facing strings this
      * fence emits and had zero coverage: forcing the unknown-root branch off
      * redded none of the cases, because every grammar case calls the predicate
      * directly and never reaches a message.
      *
-     * They must not be swapped, and the headline case is the trap — telling the
-     * author of `${{ expression }}` to add `expression` to the root set would
-     * permanently re-open the hole the root check closes.
+     * They must not be swapped, and each swap has a cost of its own. Telling
+     * the author of `${{ expression }}` to add `expression` to the root set
+     * would permanently re-open the hole the root check closes; telling the
+     * author of `${{ always.foo }}` to add `always` names a root that is
+     * already there, so the remedy changes nothing and the fence stays red.
      */
     describe('refusal messages', () => {
       const reasonFor = (body: string): string => {
@@ -644,24 +758,74 @@ describe('workflow expression syntax', () => {
         return found[0]!.reason;
       };
 
-      it.each([' expression ', ' opener ', ' context ', ' format ', ' the same rule '])(
+      it.each([' expression ', ' opener ', ' context ', ' the same rule '])(
         'calls %s prose, not a missing root',
         (body) => {
           expect(reasonFor(body)).toContain('prose, not an expression');
         },
       );
 
-      it.each([' newcontext.foo ', ' newfn(github.sha) ', " github.ref == 'x' && newcontext.foo "])(
-        'calls %s a missing root, not prose',
+      it.each([
+        ' newcontext.foo ',
+        ' newfn(github.sha) ',
+        " github.ref == 'x' && newcontext.foo ",
+        // The SAME new root twice. Settling it by substituting one occurrence
+        // left the other unknown, so an ordinary condition naming a new
+        // context reported as prose — and a condition is where a new context
+        // is most likely to appear twice.
+        ' newctx.a == newctx.b ',
+        ' newa.foo && newb.bar ',
+        // `bareWord`'s two remaining conjuncts, one each: not the first token,
+        // and not the whole body. Neither redded anything before — and both
+        // mutants send a reader to rewrite working syntax.
+        ' github.ref == newcontext ',
+        " newcontext == 'x' ",
+      ])('calls %s a missing root, not prose', (body) => {
+        const reason = reasonFor(body);
+        expect(reason).toContain('Unrecognized named-value');
+        expect(reason).toContain('CONTEXT_HEADS');
+      });
+
+      it.each([' format ', ' always.foo ', ' cancelled.x '])(
+        'calls %s an uncalled function, naming neither prose nor a missing root',
         (body) => {
           const reason = reasonFor(body);
-          expect(reason).toContain('Unrecognized named-value');
-          expect(reason).toContain('CONTEXT_HEADS');
+          expect(reason).toContain('an Actions FUNCTION');
+          expect(reason).not.toContain('add it to CONTEXT_HEADS');
+          expect(reason).not.toContain('prose, not an expression');
         },
       );
 
       it('names the token it actually refused, not the first one', () => {
         expect(reasonFor(" github.ref == 'x' && newcontext.foo ")).toContain('`newcontext`');
+      });
+
+      it('flattens a file name carrying a newline', () => {
+        // The excerpt clamp closed this one field over; the NAME was still raw,
+        // so a file named with a newline rendered a second line reading as a
+        // finding against another file.
+        const [offence] = findExpressionOffences('evil\nci.yml:1: FORGED.yml', 'a: ${{ prose x }}');
+        expect(offence!.file).not.toContain('\n');
+      });
+
+      it('clamps a very long root in the reason', () => {
+        const root = 'n'.repeat(200_000);
+        const [offence] = findExpressionOffences('x.yml', `a: \${{ ${root}.foo }}`);
+        expect(offence!.reason.length).toBeLessThan(500);
+      });
+
+      it('reports ONE dangling opener, not one per opener after it', () => {
+        // `indexOf` is monotonic, so once no closer exists none does for any
+        // later opener either — the short-circuit the scanner relies on.
+        const found = findExpressionOffences('x.yml', 'a: ${{ one\nb: ${{ two\n');
+        expect(found).toHaveLength(1);
+      });
+
+      it('pairs an opener with the NEXT closer, not with a nested opener', () => {
+        // Resuming the scan at `at + 3` instead of after the closer reported
+        // the inner opener as a second offence against the same closer.
+        const found = findExpressionOffences('x.yml', 'a: ${{ prose ${{ nested }} tail }}');
+        expect(found).toHaveLength(1);
       });
 
       /**
