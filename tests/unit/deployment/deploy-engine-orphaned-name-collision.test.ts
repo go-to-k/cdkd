@@ -64,11 +64,17 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
   let createError: Error;
   let providerHasImport: boolean;
 
-  const collisionError = (physicalId: string | undefined) =>
+  // `logicalId` is a parameter, not the closed-over `LOGICAL`, because
+  // `isNameCollisionErrorFrom` is ANCHORED on it (issue go-to-k/cdkd#3208): a
+  // link naming another resource cannot classify this one. Hardcoding `LOGICAL`
+  // here while `attempt()` handed the engine a DIFFERENT id manufactured a
+  // mismatch production cannot produce — both sides come from one
+  // `change.logicalId` — and the anchor then correctly refused the error.
+  const collisionError = (physicalId: string | undefined, logicalId: string = LOGICAL) =>
     new ProvisioningError(
-      `Failed to create IAM role ${LOGICAL}: Role with name ${physicalId ?? '?'} already exists.`,
+      `Failed to create IAM role ${logicalId}: Role with name ${physicalId ?? '?'} already exists.`,
       TYPE,
-      LOGICAL,
+      logicalId,
       physicalId
     );
 
@@ -132,8 +138,10 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
     physicalIdOverride?: string,
     logicalIdOverride?: string
   ): Promise<string[]> {
-    if (physicalIdOverride !== undefined) createError = collisionError(physicalIdOverride);
     const id = logicalIdOverride ?? LOGICAL;
+    if (physicalIdOverride !== undefined || logicalIdOverride !== undefined) {
+      createError = collisionError(physicalIdOverride ?? `${STACK}-${LOGICAL}`, id);
+    }
     const engine = makeEngine();
     const change: ResourceChange = {
       logicalId: id,

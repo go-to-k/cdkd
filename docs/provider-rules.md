@@ -968,9 +968,10 @@ Three rules, each of which has a failure mode behind it:
   tokens -- so do not write a provider whose correctness depends on that
   duration; see the DERIVATION note in `createAccessPoint`.
 - **Wrap the rethrow when you decline to adopt.** `DeployEngine`'s replacement
-  path classifies a failed create with `isNameCollisionError`, which tests the
-  TOP-LEVEL message for `already exists` / `AlreadyExists` -- exactly what the
-  raw AWS conflict carries. Rethrowing it bare makes the engine read a TOKEN
+  path classifies a failed create by testing the TOP-LEVEL message for
+  `already exists` / `AlreadyExists` -- exactly what the raw AWS conflict
+  carries -- and by checking the error chain for a duplicate-name exception
+  name. Rethrowing it bare makes the engine read a TOKEN
   collision as a physical-NAME collision, and under `--replace` fall back to
   delete-first: deleting the OLD resource and re-creating with the same
   still-unreleased token. Wrap it, keep the AWS error as `cause`.

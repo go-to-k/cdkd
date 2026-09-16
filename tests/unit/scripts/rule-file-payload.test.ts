@@ -338,6 +338,8 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['providers.md', 92],
   // literal list: EXACT. One path — the satellite is about `rollback-executor.ts`
   // and nothing else, which is what keeps it off `secret-redaction.ts`'s payload.
+  // literal list: EXACT. The three files that consult the collision predicates.
+  ['name-collision-classification.md', 3],
   ['rollback-replay-create.md', 1],
   ['session-report.md', 1], // literal list: EXACT, see below
   ['state-schema.md', 5],
@@ -386,7 +388,9 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // describes. Every `src/provisioning/**` path lost those bytes; none of
   // them but the custom-resource provider needed them.
   ['src/provisioning/region-check.ts', 63_500, 102_000],
-  ['src/deployment/deploy-engine.ts', 43_000, 61_000],
+  // Band re-derived at the go-to-k/cdkd#3208 split: the new satellite globs this
+  // path, so it ADDS here what it removed from layout-deployment.md. Measured 62,512.
+  ['src/deployment/deploy-engine.ts', 55_000, 66_500],
   // The one path that loads `no-change-outputs-merge.md` (go-to-k/cdkd#3110);
   // without this row the satellite would sit under no budget at all. Payload
   // is layout-deployment.md + architecture.md + code-layout.md + the satellite.
@@ -403,7 +407,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // size of the smallest satellite on the path (`rollback-replay-create.md`,
   // 4,158 B) so a satellite going dark cannot be absorbed silently — the
   // hazard the s3-bucket row documents.
-  ['src/deployment/rollback-executor.ts', 54_500, 66_000], // measured 62,112
+  ['src/deployment/rollback-executor.ts', 59_500, 71_500], // measured 67,441 (go-to-k/cdkd#3208 satellite)
   // The path family that loads `abort-capture.md` (go-to-k/cdkd#3126): payload
   // is testing.md + the satellite. Sized so the satellite cannot quietly grow
   // into a second testing.md while the parent sits at its own cap.
@@ -1264,8 +1268,17 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 // Neither branch's figure is the merged one. That is the whole reason this
 // count is asserted rather than described: two correct increments compose to a
 // number neither author wrote.
-const CORPUS_FILE_COUNT = 59; // BOTH lanes added one, and each set this to 58 independently --
-                              //  a keep-either resolution silently drops the other satellite.
+const CORPUS_FILE_COUNT = 60; // THREE lanes each added one satellite and each set this from the
+                              //  count it saw, so 58 / 59 / 59 were all written independently and
+                              //  none of them is the merged figure -- exactly what the note above
+                              //  warns about. MEASURED on the merged tree: 60 files in
+                              //  `.claude/rules/`. A keep-either resolution here silently drops a
+                              //  satellite, which is how this constant goes wrong.
+                              // + name-collision-classification.md (go-to-k/cdkd#3208): the
+                              //  isNameCollisionErrorFrom entry took
+                              //  `src/deployment/secret-redaction.ts` 1,544 B over its 102,000 B cap,
+                              //  so BOTH collision predicates moved to a satellite globbed at the
+                              //  three files that consult them, with a one-line pointer left behind.
                               // + rollback-replay-create.md (go-to-k/cdkd#3199): the replay-CREATE's
                               //  Cloud Control fallback-name fill took
                               //  `src/deployment/secret-redaction.ts` 1,721 B over its 102,000 B
@@ -1463,15 +1476,18 @@ const CORPUS_FILE_COUNT = 59; // BOTH lanes added one, and each set this to 58 i
                               //  than against main, and a pointer always costs the index file
                               //  something. Measured on the tree that ships this line. That
                               //  makes 45.
-const CORPUS_BYTES_MIN = 1_046_000; // RE-DERIVED UPWARD 1_006_000 -> 1_046_000 (2026-09-16,
-                                    // go-to-k/cdkd#3192): the "discriminates the deletion of the
-                                    // LARGEST satellite" case went RED, which is the mechanical
-                                    // occasion this constant's own note below promises. Measured
-                                    // 1,080,007 B on a tree REBASED onto origin/main, so this is
-                                    // the merge rather than a stale branch -- 34,007 B of slack,
-                                    // the ~34 KB margin every previous setting used, and under
-                                    // hooks.md's 73,606 B so the case it failed now passes with
-                                    // room. Previously: RE-DERIVED UPWARD 966_000 -> 1_006_000 (2026-09-13, issue
+const CORPUS_BYTES_MIN = 1_046_000; // RE-DERIVED UPWARD 1_006_000 -> 1_046_000 (2026-09-16).
+                                    // TWO lanes hit the same mechanical occasion within hours and
+                                    // independently landed on the SAME value from DIFFERENT
+                                    // measurements -- go-to-k/cdkd#3192 measured 1,080,007 B
+                                    // rebased onto main, go-to-k/cdkd#3208 measured 1,079,761 B at
+                                    // -155 B of margin. The agreement is luck, not confirmation:
+                                    // unlike CORPUS_FILE_COUNT above, this constant is a FLOOR, so
+                                    // two lanes raising it to the same number compose correctly
+                                    // where two lanes incrementing a count do not. Kept as one
+                                    // note rather than either side's, since both provenances are
+                                    // true and a reader needs to know the figure was reached twice.
+                                    // Previously: RE-DERIVED UPWARD 966_000 -> 1_006_000 (2026-09-13, issue
                                     // go-to-k/cdkd#3003's PR): the "discriminates the deletion of
                                     // the LARGEST satellite" case went RED IN CI, which is the
                                     // mechanical occasion this constant's own note below promises.

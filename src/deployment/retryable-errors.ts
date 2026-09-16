@@ -1401,6 +1401,163 @@ export function isNameCollisionError(message: string): boolean {
 }
 
 /**
+ * SDK exception NAMES that mean, on their own, "a resource with this NAME
+ * already exists" — nothing else (issue
+ * [#3208](https://github.com/go-to-k/cdkd/issues/3208)).
+ *
+ * This list is the NARROW exception to the paragraph above, not a reversal of
+ * it. That paragraph refuses name-based classification because a name like
+ * `ResourceConflictException` is AMBIGUOUS — Lambda raises it for a function in
+ * a PENDING state too, so crediting it would delete a live function under
+ * `--replace`. Every name here is the opposite: the service declares it for the
+ * duplicate-name condition and for nothing else, so there is no second reading
+ * to be wrong about. A name may join this list only on that test.
+ *
+ * It exists because ELBv2 states the condition in prose that the message
+ * matcher above cannot see, and must not be widened to see. MEASURED against
+ * the real API (us-east-1, 2026-09-16, `@aws-sdk/client-elastic-load-balancing-v2`
+ * 3.1126.0), creating a second target group under a live name:
+ *
+ *   name    = 'DuplicateTargetGroupNameException'
+ *   message = "A target group with the same name 'x' exists, but with
+ *              different settings"
+ *   cause   = none
+ *
+ * The message carries no code and never says "already exists", so
+ * `isNameCollisionError` misses it — and the consequence is not cosmetic: the
+ * `--replace` delete-first fallback and the rollback executor's
+ * delete-new-first arm both gate on that predicate, so BOTH recovery paths went
+ * inert and a create-only change to a cdkd-named target group could not be
+ * deployed at all. Widening the prose matcher to a bare `exists` was rejected:
+ * it is substring-matched against every service's text, and the direction of a
+ * false positive here is a DELETE.
+ *
+ * The SET is complete rather than illustrative: `Duplicate*NameException` over
+ * every installed `@aws-sdk/client-*` model yields exactly these three, all
+ * ELBv2. Two ELBv2 siblings are deliberately EXCLUDED, and the reasons are the
+ * membership test in action — `DuplicateListenerException` reports a listener
+ * already bound to that PORT, which is not a name, and
+ * `DuplicateTagKeysException` reports repeated keys WITHIN one request, which
+ * is not an existence condition at all. Crediting either would hand a
+ * destructive path a collision that no delete can clear.
+ */
+export const NAME_COLLISION_ERROR_NAMES: ReadonlySet<string> = new Set([
+  // MEASURED live; see the block above.
+  'DuplicateTargetGroupNameException',
+  // Declared by the same client's model for the same condition
+  // (`CreateLoadBalancer` / `CreateTrustStore`). Not reproduced live — an ALB
+  // and a trust store cost minutes and dollars to collide on purpose — so they
+  // are included on the model's word. That is the safe direction: a name the
+  // service never raises is INERT, while omitting one that it does raise
+  // re-opens exactly the defect this closes.
+  'DuplicateLoadBalancerNameException',
+  'DuplicateTrustStoreNameException',
+]);
+
+/**
+ * {@link isNameCollisionError}, but reading the ERROR rather than a rendered
+ * message — which is the only way to see an exception NAME (issue #3208).
+ *
+ * Providers wrap an AWS failure as `Failed to create X: ${err.message}`, so the
+ * name is dropped before any caller could match it. This walks the bounded
+ * `cause` chain (the same {@link MAX_CAUSE_CHAIN_DEPTH} as every other
+ * classifier in this file), checking each link's `name` against
+ * {@link NAME_COLLISION_ERROR_NAMES} and each link's `message` through
+ * {@link isNameCollisionError}. A provider is required to thread the caught
+ * value as `cause` (`scripts/check-provider-error-cause.ts` enforces it across
+ * `src/provisioning/providers/**`), which is what makes the walk reach the SDK
+ * error at all.
+ *
+ * Prefer this at any site holding the error object. The string form stays for
+ * callers that genuinely have only text, and its behaviour is unchanged — this
+ * is strictly additive, so nothing that matched before stops matching.
+ */
+/**
+ * `String(value)` that cannot itself throw — a thrown `Object.create(null)` has
+ * no `toString`. Preserves the call sites' pre-#3208 `String(createError)` arm
+ * for a non-`Error` throw, which reading `.message` alone would have dropped.
+ */
+function stringifyForMatch(value: unknown): string {
+  try {
+    return String(value);
+  } catch {
+    return '';
+  }
+}
+
+export function isNameCollisionErrorFrom(error: unknown, logicalId: string): boolean {
+  // Hoisted, not left to fall out of the loop: a string skips the object body,
+  // so reading it after the walk made a top-level string work while a string
+  // `cause` at depth >= 1 stayed invisible — an asymmetry with no reason.
+  if (typeof error === 'string') return isNameCollisionError(error);
+
+  let current: unknown = error;
+  for (let depth = 0; depth < MAX_CAUSE_CHAIN_DEPTH && current != null; depth++) {
+    const link = current as {
+      name?: unknown;
+      message?: unknown;
+      logicalId?: unknown;
+      cause?: unknown;
+    };
+
+    // The ANCHOR runs FIRST at every depth, ahead of both reads — the same
+    // ordering, and for the same reason, as `isUpdateUnsupportedError`: a
+    // rejection that NAMES ANOTHER RESOURCE must not classify this one by any
+    // route, and ordering a read ahead of it would leave that property resting
+    // on whichever wrapper happens to quote no AWS text.
+    //
+    // It is a GENERAL fence, not a fix for one measured chain. An earlier
+    // revision of this comment justified it with a specific nested-stack path —
+    // a child's `ProvisioningError` reaching the parent's chain — and review
+    // measured that FALSE: `NestedStackProvider` throws a fresh `Error` with no
+    // `cause` at all (zero `cause:` in that file), so a child provider error
+    // does not reach the parent's chain today. The justification was wrong; the
+    // fence is not. What it buys is that ANY chained sub-resource error — from
+    // that provider if it ever threads a cause, or from any other wrapper — is
+    // refused, and the cost of being wrong here is a DELETE at two of the four
+    // call sites.
+    //
+    // RESIDUAL, stated because the sibling states it and the cost is WORSE
+    // here: the anchor compares logical IDS, so a CHILD resource whose logical
+    // id EQUALS the parent `AWS::CloudFormation::Stack`'s passes at every link
+    // and that child's rejection classifies the parent. Reachable via CDK's
+    // `overrideLogicalId`. For `isUpdateUnsupportedError` that costs a
+    // replacement; here it costs the `--replace` delete-first destroying the
+    // live child stack. Not a trust boundary — one operator authors both
+    // templates — but do not read the anchor as total.
+    if (typeof link.logicalId === 'string' && link.logicalId !== logicalId) return false;
+
+    if (typeof link.name === 'string' && NAME_COLLISION_ERROR_NAMES.has(link.name)) return true;
+
+    // The MESSAGE is read at depth 0 ONLY. Reading prose down the chain is a
+    // far larger widening than #3208 asked for, it buys nothing here (the
+    // measured ELBv2 error has no cause at all), and it is the read this file
+    // already refuses to make unconditionally — see `retryClassificationText`,
+    // which gates it behind an explicit marker for a merely RETRY decision.
+    // Here the verdict is a delete.
+    //
+    // The `instanceof Error` half is what makes this genuinely IDENTICAL to the
+    // call sites' pre-#3208 `err instanceof Error ? err.message : String(err)`.
+    // Review caught the first revision reading `.message` off ANY object: a
+    // thrown `{ message: 'X already exists' }` used to stringify to
+    // `[object Object]` and NOT match, and would have started matching — a
+    // widening in the DELETE direction, under a comment claiming the opposite.
+    // The `typeof` check stays too: a non-string `message` on a real `Error`
+    // would otherwise reach `includes` and throw.
+    if (depth === 0) {
+      const text =
+        error instanceof Error && typeof link.message === 'string'
+          ? link.message
+          : stringifyForMatch(error);
+      if (isNameCollisionError(text)) return true;
+    }
+
+    current = link.cause;
+  }
+  return false;
+}
+
+/**
  * Match a same-name re-creation cooldown — an AWS service still holding a
  * resource's name while its asynchronous delete finishes. Every recognised
  * spelling lives in {@link NAME_COOLDOWN_ERROR_MESSAGE_PATTERNS}; add new ones

@@ -44,6 +44,7 @@ const CAPTURE_FIXTURES = [
   'local-invoke-dotnet',
   'local-invoke-java',
   'local-invoke-layers',
+  'elbv2-same-name-replacement',
   'local-invoke-provided',
   'local-invoke-python',
   'local-invoke-ruby',

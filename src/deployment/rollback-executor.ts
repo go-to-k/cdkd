@@ -95,7 +95,7 @@ import { withRetry } from './retry.js';
 // it is not in the no-import leaf `secret-redaction.ts`.
 import { maskingRetryLogger } from './masking-retry-logger.js';
 import {
-  isNameCollisionError,
+  isNameCollisionErrorFrom,
   isNameCooldownError,
   isRecreateRetryableError,
   markNonRetryable,
@@ -2596,7 +2596,12 @@ async function replaySingle(
           );
         } catch (createError) {
           const msg = createError instanceof Error ? createError.message : String(createError);
-          const nameCollision = isNameCollisionError(msg);
+          // Reads the ERROR, not the rendered message (issue go-to-k/cdkd#3208):
+          // ELBv2 states the collision in prose this predicate cannot see, and
+          // the exception NAME that does say it is dropped by the provider wrap.
+          // Without it this arm went inert for those types, exactly like the
+          // deploy engine's --replace twin.
+          const nameCollision = isNameCollisionErrorFrom(createError, op.logicalId);
           if (!nameCollision) throw createError;
           if (rollbackRetainsNewResource(current)) {
             // Issue #2598: the ONE arm where honouring `Retain` cannot also
