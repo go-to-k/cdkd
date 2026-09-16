@@ -6,6 +6,7 @@ import {
   isExportAliasCollision,
 } from '../deployment/outputs-export-alias.js';
 import { stripControlChars } from '../utils/regexp.js';
+import { isReadableBag } from '../state/malformed-resources-bag.js';
 import {
   bagHoldsSecretExpression,
   isSecretBearingReferenceString as isSecretDynamicReference,
@@ -863,7 +864,31 @@ export function computeOutputsDiff(
   } = {}
 ): OutputChange[] {
   const changes: OutputChange[] = [];
-  const currentBag = current ?? {};
+  // `isReadableBag`, NOT the `?? {}` that stood here (go-to-k/cdkd#3189). The
+  // parameter's TYPE says a bag, but its only production argument is
+  // `StackState.outputs` read out of an unchecked cast — `parseStateBody`
+  // validates the root object and the schema version and nothing inside — so a
+  // hand-edited or truncated record reached the two walks below holding a
+  // string or a list, which `Object.entries` enumerates as readily as a map:
+  // `'abcdef'` produced six REMOVE rows named `"0"`..`"5"`, each printing a
+  // character of the record as its `old:` side, and `--fail` exited 1 on them.
+  //
+  // SECOND line of defence, not the fix: the fix is at the LOAD, in
+  // `diff-recursive.ts`'s `loadStateOrEmpty`, which is what WARNS and what
+  // covers the lookups this function's caller makes against the same bag one
+  // call earlier. This one keeps the fabrication out of a direct caller that
+  // never passed through that load. It reads the SHARED predicate rather than
+  // re-spelling the plain-object test, so the two cannot drift.
+  // `current !== undefined` is NOT redundant, and reads as if it were —
+  // `isReadableBag(undefined)` is already false, so it changes no VERDICT. It is
+  // there for the TYPE: `isReadableBag` returns `boolean` rather than a type
+  // predicate (deliberately — it is shared with callers that pass `unknown`), so
+  // without this conjunct the true branch is still `... | undefined` and the
+  // assignment needs an `as` cast. Deleting it therefore does not simplify the
+  // line, it re-introduces the cast (review of go-to-k/cdkd#3194, which read it
+  // as dead code).
+  const currentBag: Record<string, unknown> =
+    current !== undefined && isReadableBag(current) ? current : {};
 
   // Pass 1: is this a pre-GHSA record? See the "Withholding" note above.
   const legacyRecord =

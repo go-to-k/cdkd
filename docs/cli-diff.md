@@ -398,6 +398,49 @@ logical ID it never passed a validator. The `--json` payload is deliberately
 left byte-faithful — it is a machine interface, and mutating a name a consumer
 matches on would be worse than the display concern it would avoid.
 
+## When the state record is malformed
+
+A state record is read as JSON and used as typed data without a field-by-field
+shape check, so a hand-edited or truncated one can hold anything where a map
+belongs. `cdkd diff` never writes state, so it **repairs** the two containers it
+walks rather than refusing, and warns once per repaired container per stack:
+
+| Container | Read as | What the preview then shows |
+| --- | --- | --- |
+| `resources` | empty | Every resource the template declares previews as a `CREATE` |
+| `outputs` | empty | Every output this diff resolves previews as an `ADD`, and no stored key previews as a `REMOVE` |
+
+"Unreadable" here is anything that is not a JSON object: a string, a list, a
+number, a boolean or `null`. A healthy container is untouched and nothing is
+said about it, and an empty `{}` is a healthy container — a stack can
+legitimately hold no resources or publish no outputs.
+
+An **absent** `outputs` field is the one exception: it reads as empty and says
+nothing, because a record with no outputs is one cdkd writes and
+[`cdkd scrub`](cli-scrub.md) preserves. An absent `resources` map is a defect
+and does warn — a stack always has a resource map, even an empty one.
+
+Reading it as empty is the safe answer for a preview, and the warning is what
+keeps it honest. Without the repair the walk over each container takes a string
+or a list as readily as a map: a planted `"abcdef"` in `resources` renders six
+resources that do not exist, and in `outputs` it produces one `REMOVE` row per
+character, each printing a character of the record as its previous value — rows
+`--fail` would exit `1` on.
+
+Both warnings point at
+`cdkd state show <stack> --stack-region <region> --json`, which emits the record
+as stored, so the evidence survives the repair. The `resources` warning
+additionally tells you not to run `cdkd deploy` or `cdkd destroy` against the
+record: those read the same map, and an unreadable one is indistinguishable
+from an empty stack, so a deploy would re-create every resource and a destroy
+would delete none of them. The `outputs` warning carries no such advice —
+the resource set is still readable, and what an unreadable outputs bag costs is
+this preview's Outputs section.
+
+With `--recursive` each node of the tree carries its own record, so the warning
+names the stack it came from and a healthy parent can sit above a malformed
+child.
+
 ## `--fail`
 
 `--fail` exits `1` when any change is detected, matching `cdk diff --fail`. An

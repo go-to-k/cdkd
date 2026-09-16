@@ -36,7 +36,9 @@ import { findActionableSilentDrops } from '../../provisioning/property-coverage.
 import { wouldReturnToSdkProvider } from '../../provisioning/provider-registry.js';
 import { NESTED_STACK_RESOURCE_TYPE } from './retire-cfn-stack.js';
 import {
+  malformedOutputsWarning,
   malformedResourcesWarning,
+  repairMalformedOutputsForReadOnly,
   repairMalformedResourcesForReadOnly,
 } from '../../state/malformed-resources-bag.js';
 
@@ -262,6 +264,27 @@ async function loadStateOrEmpty(
   if (result) {
     if (repairMalformedResourcesForReadOnly(result.state)) {
       logger.warn(malformedResourcesWarning(stackName, region));
+    }
+    // The SAME treatment for the `outputs` BAG (go-to-k/cdkd#3189). Every
+    // consumer of that bag below this line takes it from
+    // `currentState.outputs` — the resolver's stored-key lookups,
+    // `mergeNoChangeOutputs`'s `persisted`, and `computeOutputsDiff`'s two
+    // walks — so one call here dominates the bag, which is the placement rule
+    // `src/state/malformed-resources-bag.ts`'s header records.
+    //
+    // Scoped to the BAG, deliberately: the Outputs flow also reads
+    // `state.exportNames`, which this does NOT cover.
+    // `importableOutputKeys` (`src/types/state.ts`) calls
+    // `state.exportNames.filter(...)` on it, so a hand-edited non-array still
+    // throws a raw `TypeError` from the `mergeNoChangeOutputs` call below —
+    // unchanged by this guard and present at base. Tracked as
+    // go-to-k/cdkd#3192 with the rest of that class rather than widened into
+    // here, where the fix is a different container with its own semantics.
+    //
+    // Two warnings rather than one: they name different containers with
+    // different consequences, and a record can be malformed in either alone.
+    if (repairMalformedOutputsForReadOnly(result.state)) {
+      logger.warn(malformedOutputsWarning(stackName, region));
     }
     return result.state;
   }
