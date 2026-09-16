@@ -48,10 +48,9 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # Measured 2026-09-17 over the 12 most recent successful runs: median 65 s,
-    # max 98 s. 15 minutes is ~9x the slowest. The work is a fixed SSG build, so
-    # the median barely moves; the max is what drifts, and the slack is for
-    # install and for the docs corpus growing.
+    # Same range as every other bound here (see `ci.yml`): n=50, median 62 s,
+    # max 76 s -- 11.8x headroom. The work is a fixed SSG build, so the median
+    # barely moves; the slack is for install and for the docs corpus growing.
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
@@ -126,10 +125,10 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
-    # Measured 2026-09-17: ONE successful run in the 12-run window (the job is
-    # gated on a push to main), at 8 s. 10 minutes is deliberately loose against
-    # that sample -- the step hands an already-built artifact to GitHub Pages,
-    # so the variable is Pages' own latency rather than anything in this repo.
+    # Same range: n=8 (the job is gated on a push to main), median 9 s, max
+    # 15 s. 10 minutes is deliberately loose -- the step hands an already-built
+    # artifact to GitHub Pages, so the variable is Pages' own latency rather
+    # than anything in this repo.
     timeout-minutes: 10
     permissions:
       pages: write

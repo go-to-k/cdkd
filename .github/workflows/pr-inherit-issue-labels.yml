@@ -39,7 +39,7 @@ concurrency:
 jobs:
   inherit:
     runs-on: ubuntu-latest
-    # Measured 2026-09-17 over the 12 most recent successful runs: median 5 s,
+    # Same range as every other bound here (see `ci.yml`): n=50, median 4 s,
     # max 9 s. The job is a handful of GitHub API calls with no checkout, so 5
     # minutes is all runner startup and API slack.
     timeout-minutes: 5

@@ -43,18 +43,25 @@ jobs:
   hook-suites:
     runs-on: macos-latest
     # RAISED from 30, which was the one bound in the repository this change's
-    # own standard condemned. Measured 2026-09-17 over the 12 most recent
-    # successful runs: median 1044 s, max 1290 s (21.5 min) -- 1.40x headroom
-    # against 30, tighter than anything else here and tighter than the 2.4x this
-    # PR calls its tightest. It is a macOS runner executing two bash suites, the
-    # slowest and most variable host in the matrix, so 45 (2.09x) is the value
-    # the sample supports.
+    # own standard condemned. Same closed range as every other bound here (see
+    # `ci.yml`): n=49, median 1040 s, max 1587 s -- 26.5 minutes, against a
+    # 30-minute bound. That is 1.1x, i.e. a real run had come within four
+    # minutes of being killed.
     #
-    # It predates this change and was not measured when it was written, which is
-    # the argument for the fence rather than an exception to it: a bound nobody
-    # re-derives drifts toward the work, and this one had drifted to the point
-    # of being likelier to fail a good run than to catch a bad one.
-    timeout-minutes: 45
+    # 45 was this PR's first answer and it was wrong for the same reason the
+    # original 30 was: it came from a 12-run sample whose max was 1290 s, and a
+    # small sample understates a tail. At n=49 the max is 1587 s and 45 gives
+    # only 1.7x. 60 gives 2.3x, in line with the two `ci.yml` unit-suite jobs,
+    # on the slowest and most variable host in the matrix -- a macOS runner
+    # executing two bash suites.
+    #
+    # The bound predates this change and was never measured when written, which
+    # is the argument for the fence rather than an exception to it: a bound
+    # nobody re-derives drifts toward the work. Making the suite FASTER is the
+    # better answer and is filed separately -- this job runs fork-authored bash
+    # on a 10x-billed runner, so its ceiling is the one worth lowering, not
+    # raising, once the suite allows it.
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:

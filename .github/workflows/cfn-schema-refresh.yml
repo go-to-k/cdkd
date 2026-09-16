@@ -103,8 +103,8 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    # Measured 2026-09-17 over the 11 most recent successful runs: median 72 s,
-    # max 80 s. 20 minutes is ~15x that, and loose
+    # Same range as every other bound here (see `ci.yml`): n=7, median 33 s,
+    # max 80 s. 20 minutes is 15x that, and loose
     # on purpose: this is the one job whose duration is bounded by AWS rather
     # than by the repo (a bundle download plus per-type `DescribeType` calls,
     # each with its own retry schedule), so the observed spread understates what

@@ -68,23 +68,44 @@
  * `::error::` the runner interprets. The sibling fence in this directory
  * (`workflow-expression-syntax.test.ts`, go-to-k/cdkd#3195) found ELEVEN
  * renderers of that one forgery and closed them one at a time over five review
- * rounds. The lesson taken from it here is the shape, not the helpers: there is
- * exactly ONE place a finding is constructed, so sanitising there leaves no
- * renderer that can be forgotten. The harm is bounded either way — a misleading
+ * rounds. The lesson taken from it here is the shape, not the helpers: findings
+ * are built in ONE place, `report`, so sanitising there leaves no renderer that
+ * can be forgotten. Round 2 proved how easily that is lost -- the independent
+ * twins added in round 1 re-read the directory and built their own strings, and
+ * an unguarded `parseYaml` in them printed a fork's YAML verbatim through
+ * vitest's own error output, at column 0 where the runner interprets `::error::`.
+ * That is the SAME lesson one layer over, inside the fix for it. The twins now
+ * take a directory and emit only sanitised, capped labels, and each has a case
+ * that reds when it is gutted. The harm is bounded either way — a misleading
  * line in the log of an already-failing run, no secret and no write — but the
  * cost of closing it at one site is two function calls.
  *
- * TWO ARMS ARE NOT KILLED BY ANY CASE HERE, named rather than papered over.
+ * TWO ARMS SURVIVE MUTATION, named rather than papered over, and neither is a
+ * gap a case could close.
+ *
  * The `typeof timeout !== 'number'` half of the numeric guard is redundant at
  * RUNTIME — `Number.isInteger` does not coerce, so it already rejects a string —
  * and is load-bearing only for the COMPILER, which needs it to narrow `unknown`
  * before the comparison below. Deleting it is caught by `vp run typecheck:test`
- * (TS18046, twice) and by nothing in this file, because vitest's
- * `typecheck.include` covers `*.test-d.ts` alone and so this file's own
- * "Type Errors" line is vacuous. The `.sort()` on the file list is killed by
- * nothing at all: `readdirSync` returns sorted order on APFS, so the ordering
- * case below cannot tell a sorted list from an unsorted one on a developer
- * machine — it is kept because ext4, which CI runs on, returns hash order.
+ * (TS18046, twice) and by nothing here, because vitest's `typecheck.include`
+ * covers `*.test-d.ts` alone and so this file's own "Type Errors" line is
+ * vacuous. A different gate kills it; no case in this file can.
+ *
+ * `findingsForAddedFile`'s filter is EQUIVALENT while the real tree is clean:
+ * every synthetic case adds one bad file to a copy of a directory that reports
+ * nothing, so filtering to that file and not filtering produce the same list.
+ * It earns its place only in the failing case it is written for — when the real
+ * tree regresses, it keeps a synthetic case pointing at its own subject instead
+ * of at an innocent workflow. That is a diagnostic property, and a diagnostic
+ * property cannot be fenced by a green suite.
+ *
+ * What this ISN'T is the list of arms nothing kills. Round 2 shipped seven
+ * mutations that all reddened and a reviewer then measured FIFTEEN OF EIGHTEEN
+ * arms surviving, because seven probes covered exactly the arms their author
+ * thought of. The current table is 40 arms with 38 killed, and the two above are
+ * the residue. Re-derive it rather than trusting this paragraph: the arms are
+ * the branches of `auditWorkflowHardening`, `flatten`, `safeName`, `safeJson`,
+ * `render`, `boundedList` and both twins.
  *
  * The probes at the bottom come in two kinds, and the split is deliberate per
  * `.claude/rules/testing.md` ("a checker must also prove it FAILS — against
@@ -113,7 +134,9 @@ const ACTIONS_DEFAULT_TIMEOUT_MINUTES = 360;
 
 /**
  * Magnitudes, not exact counts. Eleven workflows and twenty-one jobs exist as
- * of 2026-09-17; these sit below that so that ADDING a workflow does not fail
+ * of 2026-09-16 (UTC, as the Actions API reports it — an earlier revision
+ * stamped these JST, a day ahead of the query that produces them); these sit
+ * below that so that ADDING a workflow does not fail
  * an unrelated PR, while a directory that silently stops matching — the failure
  * they exist for — still does. Both are pinned by the empty-directory case
  * below; without that, either could be set to zero and nothing would notice.
@@ -163,14 +186,35 @@ const isMapping = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
 /**
+ * `JSON.stringify` for a value that came out of a fork's YAML.
+ *
+ * YAML anchors can build a CIRCULAR structure (`jobs: {a: &x {timeout-minutes:
+ * *x}}`), and `JSON.stringify` then THROWS — out of the audit entirely, past
+ * `report`, so the value reaches vitest's error output unsanitised and the
+ * header's "every unreadable input is a finding" is false for exactly the input
+ * a hostile fork would choose. Falling back to the type name keeps the finding.
+ */
+const safeJson = (value: unknown): string => {
+  try {
+    return JSON.stringify(value) ?? typeof value;
+  } catch {
+    return typeof value;
+  }
+};
+
+/**
  * Collapse everything that could move a cursor, break a line, or reorder the
  * text around it into single spaces.
  *
- * Written as a codepoint test with NO escape sequence anywhere on purpose: an
- * earlier version of this helper in the sibling fence was authored twice with a
- * literal control byte in its own source, which `grep` then classified as a
- * binary file and skipped at exit 0 — the `check-source-control-bytes.ts`
- * class. A numeric comparison cannot make that mistake.
+ * Written so that NO escape sequence ENCODES A CONTROL CHARACTER: an earlier
+ * version of this helper in the sibling fence was authored twice with a literal
+ * control byte in its own source, which `grep` then classified as a binary file
+ * and skipped at exit 0 — the `check-source-control-bytes.ts` class. Numeric
+ * comparisons cannot make that mistake. The `/\s/` test is an escape sequence
+ * and is deliberately kept: it is the ONLY row that catches NBSP, U+2028 and
+ * U+FEFF, which no numeric range below covers. An earlier draft of this
+ * paragraph claimed the file had no escape sequence at all, which was false of
+ * the line directly beneath it.
  */
 const flatten = (text: string): string => {
   let out = '';
@@ -202,7 +246,7 @@ const flatten = (text: string): string => {
 };
 
 /** Flatten and clamp any fork-controlled string, marking the clip. */
-const safeText = (text: string): string => {
+export const safeText = (text: string): string => {
   const flat = flatten(text);
   return flat.length > MAX_FIELD_LENGTH ? `${flat.slice(0, MAX_FIELD_LENGTH)}…` : flat;
 };
@@ -218,8 +262,8 @@ const safeText = (text: string): string => {
  * anything else is quoted, so it can only ever be read as one field.
  */
 const WORKFLOW_NAME = /^[A-Za-z0-9._-]+\.ya?ml$/;
-const safeName = (name: string): string =>
-  WORKFLOW_NAME.test(name) ? name : JSON.stringify(safeText(name));
+export const safeName = (name: string): string =>
+  WORKFLOW_NAME.test(name) ? safeText(name) : JSON.stringify(safeText(name));
 
 /**
  * Walk a workflow directory and report every job that does not declare a usable
@@ -231,10 +275,11 @@ const safeName = (name: string): string =>
  * reason — an audit that can only be run against one path cannot be shown to
  * fail.
  */
+export const workflowNamesIn = (entries: readonly string[]): string[] =>
+  entries.filter((name) => /\.ya?ml$/.test(name)).sort();
+
 export const auditWorkflowHardening = (dir: string): Audit => {
-  const names = readdirSync(dir)
-    .filter((name) => /\.ya?ml$/.test(name))
-    .sort();
+  const names = workflowNamesIn(readdirSync(dir));
   const findings: Finding[] = [];
   let jobs = 0;
 
@@ -279,7 +324,7 @@ export const auditWorkflowHardening = (dir: string): Audit => {
     if (!('permissions' in document)) {
       report('no-top-level-permissions', workflow);
     } else if (!isMapping(document['permissions'])) {
-      report('permissions-not-a-mapping', workflow, undefined, JSON.stringify(document['permissions']));
+      report('permissions-not-a-mapping', workflow, undefined, safeJson(document['permissions']));
     }
 
     const jobsNode = document['jobs'];
@@ -303,7 +348,7 @@ export const auditWorkflowHardening = (dir: string): Audit => {
 
       const timeout = node['timeout-minutes'];
       if (typeof timeout !== 'number' || !Number.isInteger(timeout) || timeout < 1) {
-        report('timeout-not-a-positive-integer', workflow, job, JSON.stringify(timeout));
+        report('timeout-not-a-positive-integer', workflow, job, safeJson(timeout));
         continue;
       }
 
@@ -322,24 +367,30 @@ export const auditWorkflowHardening = (dir: string): Audit => {
 };
 
 /**
+ * Cap any list of fork-derived lines. Shared by `render` and by both twins —
+ * round 2 capped the findings and left the twins unbounded, which is the same
+ * omission one layer over (measured: 3000 entries, nothing truncated).
+ */
+const boundedList = (lines: readonly string[]): string[] =>
+  lines.length > MAX_RENDERED_FINDINGS
+    ? [...lines.slice(0, MAX_RENDERED_FINDINGS), `… and ${lines.length - MAX_RENDERED_FINDINGS} more`]
+    : [...lines];
+
+/**
  * Render findings for an assertion message — one line each, capped.
  *
  * Interpolation here is unguarded BY CONTRACT: `report` sanitised every field.
  * The cap is the second half of that contract — a fork workflow with a thousand
  * jobs would otherwise render a thousand lines.
  */
-const render = (findings: readonly Finding[]): string[] => {
-  const lines = findings
-    .slice(0, MAX_RENDERED_FINDINGS)
-    .map(
+const render = (findings: readonly Finding[]): string[] =>
+  boundedList(
+    findings.map(
       (f) =>
         `${f.workflow}${f.job === undefined ? '' : ` / ${f.job}`}: ${f.kind}` +
         `${f.detail === undefined ? '' : ` (${f.detail})`}`,
-    );
-  return findings.length > MAX_RENDERED_FINDINGS
-    ? [...lines, `… and ${findings.length - MAX_RENDERED_FINDINGS} more`]
-    : lines;
-};
+    ),
+  );
 
 /**
  * Copy the real workflow directory somewhere writable, hand it to `mutate`, and
@@ -368,7 +419,10 @@ const auditMutatedCopy = (mutate: (dir: string) => void): Audit => {
  */
 const findingsForAddedFile = (name: string, body: string): string[] => {
   const audit = auditMutatedCopy((dir) => writeFileSync(join(dir, name), body));
-  return render(audit.findings.filter((f) => f.workflow.includes(name.replace(/\..*$/, ''))));
+  // The WHOLE name, not a prefix. An earlier cut cut at the first dot, so
+  // `ci.yml_ but actually.yml` filtered on `ci` and also matched every real
+  // `ci.yml` finding — a filter that selects more than its subject.
+  return render(audit.findings.filter((f) => f.workflow.includes(name) || f.workflow.includes(safeText(name))));
 };
 
 /**
@@ -395,6 +449,83 @@ const deleteUniqueLine = (dir: string, workflow: string, needle: string): void =
   writeFileSync(path, lines.filter((line) => line.trim() !== needle).join('\n'));
 };
 
+/**
+ * Run `read` against a scratch copy of the real directory that `mutate` has
+ * broken, and return whatever `read` produced.
+ *
+ * `auditMutatedCopy` is the same shape specialised to the audit; this one
+ * exists so the TWINS can be pointed at a broken tree too. A twin that is never
+ * run against a tree it should reject is a twin that can be gutted silently —
+ * measured in round 2, where both were inline and `return []` stayed green.
+ */
+const withMutatedCopy = <T,>(mutate: (dir: string) => void, read: (dir: string) => T): T => {
+  const scratch = mkdtempSync(join(tmpdir(), 'cdkd-workflow-hardening-twin-'));
+  try {
+    cpSync(WORKFLOW_DIR, scratch, { recursive: true });
+    mutate(scratch);
+    return read(scratch);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+};
+
+/**
+ * The independent twins.
+ *
+ * They re-read and re-parse rather than consulting `auditWorkflowHardening`, so
+ * a bug that makes the audit report nothing does not silence them. What they do
+ * NOT re-implement is the sanitising: every label they emit goes through
+ * `safeName` / `safeText` and the list is capped, because in round 2 these two
+ * were inline, interpolated the fork-controlled job key and file name raw, and
+ * parsed OUTSIDE a `try` — so an unparseable workflow from a fork threw a
+ * `YAMLParseError` whose message quotes that fork's source verbatim, printed by
+ * vitest at column 0 where the Actions runner interprets a workflow command.
+ * Independence is worth having; independence of the sanitiser is not.
+ */
+const independentlyUnboundedJobs = (dir: string): string[] => {
+  const out: string[] = [];
+  for (const workflow of workflowNamesIn(readdirSync(dir))) {
+    let document: unknown;
+    try {
+      document = parseYaml(readFileSync(join(dir, workflow), 'utf8'));
+    } catch {
+      // The message is NOT rendered: it is the fork's own source. That it
+      // failed to parse is the whole fact this twin needs.
+      out.push(`${safeName(workflow)}: did not parse`);
+      continue;
+    }
+    if (!isMapping(document) || !isMapping(document['jobs'])) {
+      out.push(`${safeName(workflow)}: no jobs mapping`);
+      continue;
+    }
+    for (const [job, node] of Object.entries(document['jobs'])) {
+      const timeout = isMapping(node) ? node['timeout-minutes'] : undefined;
+      const ok =
+        typeof timeout === 'number' &&
+        Number.isInteger(timeout) &&
+        timeout >= 1 &&
+        timeout < ACTIONS_DEFAULT_TIMEOUT_MINUTES;
+      if (!ok) out.push(`${safeName(workflow)} / ${safeText(job)}: ${safeJson(timeout)}`);
+    }
+  }
+  return boundedList(out);
+};
+
+const independentlyUndeclaredPermissions = (dir: string): string[] => {
+  const out: string[] = [];
+  for (const workflow of workflowNamesIn(readdirSync(dir))) {
+    let document: unknown;
+    try {
+      document = parseYaml(readFileSync(join(dir, workflow), 'utf8'));
+    } catch {
+      out.push(`${safeName(workflow)}: did not parse`);
+      continue;
+    }
+    if (!isMapping(document) || !isMapping(document['permissions'])) out.push(safeName(workflow));
+  }
+  return boundedList(out);
+};
+
 const REAL = auditWorkflowHardening(WORKFLOW_DIR);
 
 describe('every workflow job is bounded and every workflow declares its permissions', () => {
@@ -408,43 +539,24 @@ describe('every workflow job is bounded and every workflow declares its permissi
   });
 
   it('every job carries an integer timeout strictly below the Actions default', () => {
-    // An independent twin: it re-reads the parsed YAML rather than trusting the
-    // audit's verdict about it, and it fails with the job names rather than
-    // with a finding list. It guards every access explicitly — an earlier
-    // revision cast `document['jobs']` and would have died with a bare
-    // TypeError on a workflow the audit reports cleanly, asserting a DIFFERENT
-    // property than the one it claimed.
-    const unbounded: string[] = [];
-    for (const workflow of readdirSync(WORKFLOW_DIR).filter((n) => /\.ya?ml$/.test(n))) {
-      const document: unknown = parseYaml(readFileSync(join(WORKFLOW_DIR, workflow), 'utf8'));
-      if (!isMapping(document) || !isMapping(document['jobs'])) {
-        unbounded.push(`${workflow}: not a workflow with a jobs mapping`);
-        continue;
-      }
-      for (const [job, node] of Object.entries(document['jobs'])) {
-        const timeout = isMapping(node) ? node['timeout-minutes'] : undefined;
-        const ok =
-          typeof timeout === 'number' &&
-          Number.isInteger(timeout) &&
-          timeout >= 1 &&
-          timeout < ACTIONS_DEFAULT_TIMEOUT_MINUTES;
-        if (!ok) unbounded.push(`${workflow} / ${job}: ${JSON.stringify(timeout)}`);
-      }
-    }
-    expect(unbounded).toEqual([]);
+    expect(independentlyUnboundedJobs(WORKFLOW_DIR)).toEqual([]);
   });
 
   it('every workflow declares a permissions MAPPING, not merely the key', () => {
-    // The twin of the case above for the other half. `{}` must pass: it is the
-    // strictest declaration, and six workflows use it.
-    const undeclared: string[] = [];
-    for (const workflow of readdirSync(WORKFLOW_DIR).filter((n) => /\.ya?ml$/.test(n))) {
-      const document: unknown = parseYaml(readFileSync(join(WORKFLOW_DIR, workflow), 'utf8'));
-      if (!isMapping(document) || !isMapping(document['permissions'])) {
-        undeclared.push(workflow);
-      }
-    }
-    expect(undeclared).toEqual([]);
+    expect(independentlyUndeclaredPermissions(WORKFLOW_DIR)).toEqual([]);
+  });
+
+  it('the twins report on a broken tree, so a green twin means something', () => {
+    // Without this, gutting either twin to `return []` is invisible — measured
+    // green in round 2, when both were inline in the cases above and nothing
+    // exercised them against a tree that should fail.
+    expect(withMutatedCopy(
+      (dir) => {
+        deleteUniqueLine(dir, 'ci.yml', 'timeout-minutes: 5');
+        deleteUniqueLine(dir, 'hooks.yml', 'permissions: {}');
+      },
+      (dir) => [independentlyUnboundedJobs(dir), independentlyUndeclaredPermissions(dir)],
+    )).toEqual([['ci.yml / ci-ok: undefined'], ['hooks.yml']]);
   });
 });
 
@@ -684,6 +796,143 @@ describe('a finding cannot forge a line in the log', () => {
       `name: X\npermissions: ${long}\njobs:\n  a:\n    timeout-minutes: 5\n`,
     );
     expect(clamped[0]?.length).toBeLessThan(MAX_FIELD_LENGTH + 60);
+  });
+});
+
+describe('flatten covers every row it claims', () => {
+  // Round 2 measured that FIVE of the seven rows were unfenced: the only
+  // hostile fixture contained 0x0a and 0x20, so deleting the C1 range or any
+  // bidi row stayed green while the comment beside them claimed "every bidi
+  // control, not only the overrides". Codepoints are built with
+  // `String.fromCodePoint` rather than written as escapes, so no literal
+  // control character enters this file's own bytes.
+  it.each([
+    ['NEL, the C1 line break', 0x85],
+    ['the arabic letter mark', 0x61c],
+    ['the left-to-right mark', 0x200e],
+    ['the right-to-left override', 0x202e],
+    ['the left-to-right isolate', 0x2066],
+    ['a C0 control that is not whitespace', 0x01],
+    ['a line separator above 0x20', 0x2028],
+  ])('%s is collapsed', (_what, code) => {
+    const hostile = `a${String.fromCodePoint(code)}b`;
+    expect(safeText(hostile)).toBe('a b');
+  });
+
+  it('a run of unsafe characters collapses to a single space', () => {
+    const hostile = `a${String.fromCodePoint(0x202e)}${String.fromCodePoint(0x0a)}  b`;
+    expect(safeText(hostile)).toBe('a b');
+  });
+});
+
+describe('the caps are literals, not whatever the constants say', () => {
+  // Round 2 measured that widening MAX_FIELD_LENGTH to 499 and
+  // MAX_RENDERED_FINDINGS to 39 both stayed green, because the assertions were
+  // written in terms of the constants. A bound that moves with the thing it
+  // bounds is not a bound.
+  it('a field is clamped to 120 characters plus the clip marker', () => {
+    expect(safeText('x'.repeat(500))).toHaveLength(121);
+    // A long name still MATCHES `WORKFLOW_NAME`, so it takes the passing
+    // branch — which is exactly the branch that returned its input raw until
+    // round 2, letting a 304-character name through while the constant beside
+    // it was documented as "the longest string a rendered finding may carry".
+    expect(safeName(`${'x'.repeat(500)}.yml`)).toHaveLength(121);
+    // The quoting branch adds the two quotes on top of the same clamp.
+    expect(safeName(`${'x'.repeat(500)} not a workflow`)).toHaveLength(123);
+  });
+
+  it('at most 21 lines are rendered, whatever the finding count', () => {
+    const many = Array.from({ length: 40 }, (_, i) => `  job${i}:\n    runs-on: x\n`).join('');
+    const audit = auditMutatedCopy((dir) =>
+      writeFileSync(join(dir, 'zz-many.yml'), `name: X\npermissions: {}\njobs:\n${many}`),
+    );
+    expect(audit.findings).toHaveLength(40);
+    expect(render(audit.findings)).toHaveLength(21);
+    expect(render(audit.findings).at(-1)).toBe('… and 20 more');
+  });
+
+  it('the twins sanitise what they emit, not just the audit', () => {
+    // The twins re-read and re-parse independently, so they need their OWN
+    // sanitising case: a mutation replacing their `safeName`/`safeText`/
+    // `safeJson` calls with raw interpolation survived every other case here
+    // (measured). That is the round-2 defect exactly — the twins were the
+    // renderer nobody was watching.
+    const hostile = `a${String.fromCodePoint(0x0a)}  ci.yml / check-build-test: FORGED`;
+    const lines = withMutatedCopy(
+      (dir) =>
+        writeFileSync(
+          join(dir, 'zz-twin.yml'),
+          `name: X\npermissions: {}\njobs:\n  ${JSON.stringify(hostile)}:\n    runs-on: x\n`,
+        ),
+      (dir) => independentlyUnboundedJobs(dir),
+    );
+    const forged = lines.filter((l) => l.includes('FORGED'));
+    expect(forged).toHaveLength(1);
+    expect(forged[0]).not.toContain(String.fromCodePoint(0x0a));
+    expect(forged[0]?.startsWith('zz-twin.yml / a ')).toBe(true);
+  });
+
+  it('the twins are capped too', () => {
+    const many = Array.from({ length: 40 }, (_, i) => `  job${i}:\n    runs-on: x\n`).join('');
+    const lines = withMutatedCopy(
+      (dir) => writeFileSync(join(dir, 'zz-many.yml'), `name: X\npermissions: {}\njobs:\n${many}`),
+      (dir) => independentlyUnboundedJobs(dir),
+    );
+    expect(lines).toHaveLength(21);
+  });
+});
+
+describe('the file list is filtered and ordered deterministically', () => {
+  // Through the pure helper rather than the filesystem: `readdirSync` already
+  // returns sorted order on APFS, so no directory this test could build would
+  // tell a deleted `.sort()` from a kept one on a developer machine. CI runs on
+  // ext4, which returns hash order, so the sort is load-bearing there.
+  it('sorts regardless of input order', () => {
+    expect(workflowNamesIn(['b.yml', 'a.yml', 'c.yaml'])).toEqual(['a.yml', 'b.yml', 'c.yaml']);
+  });
+
+  it('keeps both YAML spellings and drops everything else', () => {
+    expect(workflowNamesIn(['a.yml', 'b.yaml', 'c.txt', 'd.yml.bak', 'e.json'])).toEqual([
+      'a.yml',
+      'b.yaml',
+    ]);
+  });
+});
+
+describe('a hostile workflow cannot escape the audit', () => {
+  it('a circular YAML anchor is a finding, not a thrown TypeError', () => {
+    // `JSON.stringify` throws on a circular structure, and a YAML anchor can
+    // build one. Before `safeJson` that threw OUT of the audit, past `report`,
+    // so V8's message — which embeds fork-controlled property names — reached
+    // vitest unsanitised and the header's "every unreadable input is a finding"
+    // was false for exactly the input a hostile fork would pick.
+    expect(
+      findingsForAddedFile(
+        'zz-cycle.yml',
+        'name: X\npermissions: {}\njobs:\n  a: &x\n    timeout-minutes: *x\n',
+      ),
+    ).toEqual(['zz-cycle.yml / a: timeout-not-a-positive-integer (object)']);
+  });
+
+  it.each([
+    ['a scalar', 'name: X\npermissions: {}\njobs: hello\n'],
+    ['a sequence', 'name: X\npermissions: {}\njobs:\n  - a\n'],
+  ])('a jobs node that is %s is reported', (_what, body) => {
+    // The `!isMapping(jobsNode)` half, which the empty-mapping case cannot
+    // reach — round 2 measured it surviving deletion.
+    expect(findingsForAddedFile('zz-jobsnode.yml', body)).toEqual(['zz-jobsnode.yml: no-jobs']);
+  });
+
+  it('a file name carrying a bidi override is quoted and clamped', () => {
+    // `safeName`'s quoting branch: `JSON.stringify` does NOT escape bidi
+    // controls and does not clamp, so the `safeText` inside it is what makes
+    // this safe — round 2 measured that dropping it stayed green.
+    const name = `zz${String.fromCodePoint(0x202e)}${'n'.repeat(200)}.yml`;
+    const lines = findingsForAddedFile(name, 'name: X\npermissions: {}\njobs:\n  a:\n    runs-on: x\n');
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.startsWith('"')).toBe(true);
+    expect(lines[0]).not.toContain(String.fromCodePoint(0x202e));
+    expect(lines[0]?.length).toBeLessThan(140);
   });
 });
 
