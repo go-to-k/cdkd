@@ -185,13 +185,20 @@ strict, each differently):
 - **WARN and keep the pre-refusal behavior** — `EC2Provider`'s Route
   multi-destination guard (issue #1566). `updateRoute` DELETES the route before
   re-creating it, so a throw on the re-create would strand a deleted route with
-  no template-side remedy; and because nothing on `UpdateContext` distinguishes
-  the callers (it carries no `replayingState`), it
-  cannot tell a template update from the state-borne replay that
+  no template-side remedy; and when #1566 shipped, nothing on `UpdateContext`
+  distinguished the callers, so it
+  could not tell a template update from the state-borne replay that
   `rollback-executor.ts` / `drift --revert` drive. So the downgrade is
   UNCONDITIONAL on that path and the pre-fix precedence still applies — the
   narrowing becomes ANNOUNCED rather than silent, while the refusal stands on
   the create path, where the value is always template-borne.
+  **Issue [#3141](https://github.com/go-to-k/cdkd/issues/3141) supplied the
+  discriminator this arm lacked**: `UpdateContext.replayingState`, set by the
+  rollback executor's two revert arms. It does NOT cover `drift --revert`,
+  whose bag is an AWS readback and which sets `desiredFromAwsReadback` instead,
+  so the EC2 arm's unconditional downgrade is not automatically narrowable —
+  ask, per site, what each of the THREE callers means by the value before
+  reaching for the flag.
   **A warn arm that NARROWS must also say what it sent** (issue #1591): the
   same guard left the engine recording every declared destination key while
   AWS holds exactly one, so `readCurrentState` could never match and the

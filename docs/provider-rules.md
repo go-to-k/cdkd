@@ -246,12 +246,16 @@ implementation. Three details are worth copying:
     from their own `update()` (ACM certificate, IAM managed policy, IAM role,
     Lambda permission, SNS subscription). Those internal re-creates CANNOT
     receive a `CreateContext` — `update()`'s own context is an `UpdateContext`,
-    which carries no `replayingState` — and the
+    and none of the five builds one from it — and the
     `properties` they forward ARE a state record during a rollback replay. So
     the refusal would fire on a replay with no way to detect it. None of those
     providers has a pre-flight refusal today (they validate required fields
     only, which correctly stays a hard error), so there is no live gap; this is
     a constraint on the NEXT provider, not a description of the current tree.
+    Since issue [#3141](https://github.com/go-to-k/cdkd/issues/3141)
+    `UpdateContext` carries its own `replayingState` — set by the rollback
+    executor's two revert arms — so the next provider CAN build a
+    `CreateContext` from it instead of relying on the constraint.
 
   - **Retire what your create materialized before the error leaves.** A create
     shaped `<one API call that materializes the resource>` then `<a wait for it

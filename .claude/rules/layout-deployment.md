@@ -171,10 +171,12 @@ Index of every area: [code-layout.md](code-layout.md).
     [rollback-replay-create.md](rollback-replay-create.md).
   - The providers that re-create inside their own `update()` (ACM
     certificate / IAM managed policy / IAM role / Lambda permission / SNS
-    subscription) forward a STATE record on a replay but CANNOT receive a
-    `CreateContext` (update's context carries no `replayingState`) — the
-    constraint lands on providers: one with a create-side pre-flight refusal
-    must not re-create inside `update()`.
+    subscription) forward a STATE record on a replay and still receive no
+    `CreateContext` — the constraint lands on providers: one with a create-side
+    pre-flight refusal must not re-create inside `update()`. Since issue
+    [#3141](https://github.com/go-to-k/cdkd/issues/3141) `UpdateContext` carries
+    its OWN `replayingState` (set by both revert arms below), so such a provider
+    could now build one — a route that opened, not a constraint that lifted.
   - When the deploy RETAINED the old resource (verdict:
     `CompletedOperation.oldResourceRetained`, #2603, NOT re-derived from
     `previousState.updateReplacePolicy`): re-adopt it

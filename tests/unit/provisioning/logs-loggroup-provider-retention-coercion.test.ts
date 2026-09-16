@@ -183,6 +183,12 @@ const CREATE_MATRIX: ReadonlyArray<{
  *
  * `readback` marks a row driven with `UpdateContext.desiredFromAwsReadback`,
  * the bag `cdkd drift --revert` hands `update()`.
+ *
+ * `replay` marks a row driven with `UpdateContext.replayingState` (issue
+ * [#3141]), the bag the rollback executor's two revert arms hand `update()`.
+ * The two flags are SEPARATE and a row may set only one — that is the point of
+ * the `'0'` pair below, which REFUSES on a readback bag and DELETES on a replay
+ * one, so a change collapsing the two reds a row.
  */
 const UPDATE_MATRIX: ReadonlyArray<{
   readonly value: unknown;
@@ -190,6 +196,7 @@ const UPDATE_MATRIX: ReadonlyArray<{
   readonly expect: RetentionOutcome;
   readonly before: string;
   readonly readback?: true;
+  readonly replay?: true;
 }> = [
   // --- no real change -----------------------------------------------------
   { value: 30, previous: 30, expect: NONE, before: 'no call' },
@@ -307,6 +314,40 @@ const UPDATE_MATRIX: ReadonlyArray<{
   // it is TRUTHY, so the falsy test above does not reach it.
   { value: ABSENT, previous: '   ', expect: NONE, before: 'DeleteRetentionPolicy' },
   { value: '', previous: '   ', expect: NONE, before: 'DeleteRetentionPolicy' },
+  // --- the ROLLBACK REPLAY bag (issue #3141) -------------------------------
+  // `previousState.properties` is a cdkd STATE record the user cannot edit
+  // from the template, so every refusal above downgrades to what the binary
+  // that WROTE the record actually did. `before` is what #2699 shipped and
+  // #3141 corrects: a REFUSED revert leaves the resource at the FAILED
+  // deploy's retention.
+  //
+  // The falsy family, which the pre-#2699 create SKIPPED and the pre-#2699
+  // update DELETED: "no retention" is what the record meant, so the delete arm
+  // is where they land again.
+  { value: 0, previous: 30, expect: DELETE, before: 'refused (#2699)', replay: true },
+  { value: '0', previous: 30, expect: DELETE, before: 'refused (#2699)', replay: true },
+  { value: false, previous: 30, expect: DELETE, before: 'refused (#2699)', replay: true },
+  { value: null, previous: 30, expect: DELETE, before: 'refused (#2699)', replay: true },
+  // Everything else the grammar rejects and the OLD reader could not use
+  // either: same delete arm, same reason.
+  { value: 'abc', previous: 30, expect: DELETE, before: 'refused (#2521)', replay: true },
+  { value: -1, previous: 30, expect: DELETE, before: 'refused (#2521)', replay: true },
+  { value: NaN, previous: 30, expect: DELETE, before: 'refused (#2521)', replay: true },
+  { value: '30.5', previous: 30, expect: DELETE, before: 'refused (#2698)', replay: true },
+  // The OTHER downgrade arm, and the reason the replay is not simply "delete
+  // everything refused": the pre-#2698 `Number()` reader read these as a
+  // POSITIVE INTEGER, forwarded it, and CloudWatch Logs accepted it — so the
+  // record certifies a live retention and the revert RESTORES it. Deleting
+  // here would drop a compliance setting the failed deploy had not touched.
+  { value: '0x1e', previous: 60, expect: PUT(30), before: 'refused (#2698)', replay: true },
+  { value: '30.0', previous: 60, expect: PUT(30), before: 'refused (#2698)', replay: true },
+  // The same legacy reading against a previous side that ALREADY equals it:
+  // restored value == recorded value, so the coerced gate issues nothing.
+  { value: '0x1e', previous: 30, expect: NONE, before: 'refused (#2698)', replay: true },
+  // NEGATIVE CONTROL: the flag licenses the downgrade and NOTHING else. An
+  // ordinary usable value on a replay bag still Puts exactly as on a template
+  // one, so a change that made `replayingState` skip the send would red this.
+  { value: 30, previous: 60, expect: PUT(30), before: 'Put(30)', replay: true },
 ];
 
 describe('LogsLogGroupProvider RetentionInDays coercion (#2521)', () => {
@@ -325,7 +366,8 @@ describe('LogsLogGroupProvider RetentionInDays coercion (#2521)', () => {
   const runRow = async (
     value: unknown,
     previous: unknown | typeof ABSENT,
-    readback = false
+    readback = false,
+    replay = false
   ): Promise<RetentionOutcome> => {
     vi.clearAllMocks();
     mockSend.mockResolvedValue({});
@@ -346,10 +388,17 @@ describe('LogsLogGroupProvider RetentionInDays coercion (#2521)', () => {
           RESOURCE_TYPE,
           props,
           prev,
-          // `undefined` on the ordinary rows, so the flag's ABSENCE is what
+          // `undefined` on the ordinary rows, so the flags' ABSENCE is what
           // most of the table runs under — a row cannot pass by a default the
-          // production callers do not set.
-          readback ? { desiredFromAwsReadback: true } : undefined
+          // production callers do not set. At most ONE flag is ever set: the
+          // two describe different bags and no production caller sets both
+          // (`drift --revert` sets the readback one, the rollback executor's
+          // revert arms the replay one).
+          readback
+            ? { desiredFromAwsReadback: true }
+            : replay
+              ? { replayingState: true }
+              : undefined
         )
         .catch((e: Error) => {
           threw = e;
@@ -407,9 +456,25 @@ describe('LogsLogGroupProvider RetentionInDays coercion (#2521)', () => {
           {}
         );
       expect(tally(CREATE_MATRIX)).toEqual({ put: 4, none: 3, refuse: 18 });
-      expect(tally(UPDATE_MATRIX)).toEqual({ none: 19, put: 7, delete: 7, refuse: 28 });
+      expect(tally(UPDATE_MATRIX)).toEqual({ none: 20, put: 10, delete: 15, refuse: 28 });
       expect(CREATE_MATRIX.length).toBe(25);
-      expect(UPDATE_MATRIX.length).toBe(61);
+      expect(UPDATE_MATRIX.length).toBe(73);
+      // The three BAGS, counted separately (issue #3141). A per-class tally
+      // cannot see a bag going empty — the replay rows' outcomes duplicate
+      // classes the template rows already populate, so deleting every one of
+      // them leaves the tally above satisfiable by editing two numbers, while
+      // this floor names the bag that vanished.
+      const byBag = UPDATE_MATRIX.reduce<Record<string, number>>(
+        (acc, r) => {
+          const bag = r.readback === true ? 'readback' : r.replay === true ? 'replay' : 'template';
+          return { ...acc, [bag]: (acc[bag] ?? 0) + 1 };
+        },
+        { template: 0, readback: 0, replay: 0 }
+      );
+      expect(byBag).toEqual({ template: 56, readback: 5, replay: 12 });
+      // No row sets BOTH flags: they describe different bags and no production
+      // caller produces one carrying each.
+      expect(UPDATE_MATRIX.filter((r) => r.readback === true && r.replay === true)).toEqual([]);
     });
 
     // NOT `JSON.stringify`: it is the very non-injectivity these rows exist to
@@ -426,12 +491,13 @@ describe('LogsLogGroupProvider RetentionInDays coercion (#2521)', () => {
       // left all 69 tests green, because that row is the arm's only witness.
       // So the witnesses are named. Each pair below reds exactly one mutation
       // and nothing else does; losing the row loses the mutation silently.
-      const has = (value: unknown, previous: unknown, readback = false): boolean =>
+      const has = (value: unknown, previous: unknown, readback = false, replay = false): boolean =>
         UPDATE_MATRIX.some(
           (r) =>
             Object.is(r.value, value) &&
             Object.is(r.previous, previous) &&
-            (r.readback === true) === readback
+            (r.readback === true) === readback &&
+            (r.replay === true) === replay
         );
       // The gate's `Object.is` arm: `Infinity` renders `'null'`, which the
       // stringify arm excludes, so reference identity is all that recognises
@@ -469,6 +535,26 @@ describe('LogsLogGroupProvider RetentionInDays coercion (#2521)', () => {
       // no longer pins the truthiness test on its own).
       expect(has(ABSENT, false), "that clause's falsy-previous control was lost").toBe(true);
       expect(has(ABSENT, ''), "the empty-string previous control was lost").toBe(true);
+      // The REPLAY downgrade's two arms (issue #3141), each with the only row
+      // that discriminates it, plus the controls that keep it from widening.
+      //
+      // The delete arm: the headline case, a record spelling the retention
+      // falsy. Refused before #3141, so the rollback could not complete.
+      expect(has(0, 30, false, true), 'the replay delete arm lost its witness').toBe(true);
+      // The legacy-reading arm: a spelling the WRITING binary read as a
+      // positive integer and applied. Deleting this row loses the only
+      // evidence that the revert RESTORES rather than removes, and the arm
+      // could be dropped with nothing red.
+      expect(has('0x1e', 60, false, true), 'the replay restore arm lost its witness').toBe(true);
+      // The flag SEPARATION: `'0'` over `30` refuses on a readback bag and
+      // deletes on a replay one, so a change that merged the two flags — or
+      // that read `replayingState` where `desiredFromAwsReadback` belongs —
+      // reds one of this pair whichever direction it went.
+      expect(has('0', 30, true), 'the readback string-zero control was lost').toBe(true);
+      expect(has('0', 30, false, true), 'the replay string-zero witness was lost').toBe(true);
+      // The negative control: an ordinary usable value still Puts on a replay
+      // bag, so the downgrade cannot be widened into "skip the send".
+      expect(has(30, 60, false, true), 'the replay negative control was lost').toBe(true);
     });
 
     for (const row of CREATE_MATRIX) {
@@ -478,9 +564,11 @@ describe('LogsLogGroupProvider RetentionInDays coercion (#2521)', () => {
     }
 
     for (const row of UPDATE_MATRIX) {
-      const bag = row.readback ? ' [readback]' : '';
+      const bag = row.readback ? ' [readback]' : row.replay ? ' [replay]' : '';
       it(`update: ${label(row.value)} over ${label(row.previous)}${bag} -> ${row.expect.call} (was: ${row.before})`, async () => {
-        expect(await runRow(row.value, row.previous, row.readback === true)).toEqual(row.expect);
+        expect(
+          await runRow(row.value, row.previous, row.readback === true, row.replay === true)
+        ).toEqual(row.expect);
       });
     }
   });
@@ -699,6 +787,72 @@ describe('LogsLogGroupProvider RetentionInDays coercion (#2521)', () => {
   });
 
   describe('update', () => {
+    it('ANNOUNCES both replay outcomes on the UPDATE path (PR #3246 review gap)', async () => {
+      // The `UPDATE_MATRIX` replay rows assert the WIRE outcome only, and the
+      // warn spy is read by the two CREATE-path cases alone. Measured by the
+      // review probe: silencing BOTH `logger.warn` calls in the update arm
+      // left this file green at 118/118 — so a rollback could DELETE a live
+      // retention policy, or restore a legacy reading, with no user-visible
+      // line. That is the silent-drop class this file's own header records as
+      // closed on create and it was still open on update. One case per arm,
+      // each wanting the announcement the wire assertion cannot see.
+      const previous = { LogGroupName: PHYSICAL_ID, RetentionInDays: 30 };
+
+      // Arm 1 — the falsy family reads as the record's "no retention": a
+      // DeleteRetentionPolicy goes out, and the warning must say so.
+      vi.clearAllMocks();
+      mockSend.mockResolvedValue({});
+      await provider.update(
+        'Lg',
+        PHYSICAL_ID,
+        RESOURCE_TYPE,
+        { LogGroupName: PHYSICAL_ID, RetentionInDays: 0 },
+        previous,
+        { replayingState: true }
+      );
+      expect(sent(DeleteRetentionPolicyCommand)).toBeDefined();
+      let warnings = warnSpy.mock.calls.map((c) => String(c[0]));
+      expect(warnings, 'the replay REMOVAL was silent').toHaveLength(1);
+      expect(warnings[0]).toMatch(REFUSAL_PREFIX);
+      expect(warnings[0]).toContain('REMOVED');
+      expect(warnings[0]).toContain('aws logs put-retention-policy');
+      expect(warnings[0]).not.toContain('RESTORED');
+
+      // Arm 2 — a spelling the record-writing cdkd forwarded as a positive
+      // integer is restored, and the warning names the reading.
+      vi.clearAllMocks();
+      mockSend.mockResolvedValue({});
+      await provider.update(
+        'Lg',
+        PHYSICAL_ID,
+        RESOURCE_TYPE,
+        { LogGroupName: PHYSICAL_ID, RetentionInDays: '0x1e' },
+        { LogGroupName: PHYSICAL_ID, RetentionInDays: 60 },
+        { replayingState: true }
+      );
+      expect(sent(PutRetentionPolicyCommand)?.input.retentionInDays).toBe(30);
+      warnings = warnSpy.mock.calls.map((c) => String(c[0]));
+      expect(warnings, 'the replay RESTORE was silent').toHaveLength(1);
+      expect(warnings[0]).toContain('RESTORED as 30 days');
+      expect(warnings[0]).not.toContain('REMOVED');
+
+      // SILENCE CONTROL: a usable value on the same replay bag announces
+      // nothing, so the two assertions above pin the downgrade and not the
+      // path.
+      vi.clearAllMocks();
+      mockSend.mockResolvedValue({});
+      await provider.update(
+        'Lg',
+        PHYSICAL_ID,
+        RESOURCE_TYPE,
+        { LogGroupName: PHYSICAL_ID, RetentionInDays: 30 },
+        { LogGroupName: PHYSICAL_ID, RetentionInDays: 60 },
+        { replayingState: true }
+      );
+      expect(sent(PutRetentionPolicyCommand)?.input.retentionInDays).toBe(30);
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
     it('issues NO call when the two sides differ only in SPELLING', async () => {
       // The import shape: `cdkd import --migrate-from-cloudformation` persists
       // the CFn template's `'30'`, and the next deploy's template says `30`.
