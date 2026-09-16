@@ -311,7 +311,7 @@ describe('security-surface entry list', () => {
     const hook = hookEntries();
     expect(
       skillEntries(),
-      'pr-review-gate.sh UP_PATH_REGEX and review-pr/SKILL.md disagree; the hook ' +
+      'pr-review-gate.sh UP_PATH_REGEX and review-pr/references/bias-factors.md disagree; the hook ' +
         'comment declares the skill list its source of truth, so a PR would get a ' +
         'different tier from the gate than from the skill. The comparison is ' +
         'order- and duplicate-sensitive: the two copies must be the same LIST.',

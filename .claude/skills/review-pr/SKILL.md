@@ -61,8 +61,13 @@ can only accept edits which shrink it accumulates more of those.
    [references/bias-factors.md](references/bias-factors.md), read at this step.
    Up-bias (security / process-launch surface, `src/provisioning/providers/**`,
    more than one fix-back round, a recent defect in the code being edited),
-   down-bias (pure inert docs, test-only), and the ADDITIVE security reviewer,
-   which is not a rung on the size ladder. Both fire → up wins.
+   down-bias (pure inert docs, test-only) — only when ALL paths fall in those
+   buckets, and **agent-instruction files are NOT docs**, which is the arm a
+   `.claude/**`-only diff gets wrong. Both fire → up wins.
+
+   The **security reviewer is ADDITIVE, not a rung on the size ladder**:
+   dispatch it at ANY tier, `inline` included, whenever a security /
+   process-launch surface is touched or the PR is a security fix.
 
 4. **Apply the bias**: inline+up→1-reviewer; 1-reviewer+up→3-axis; 3-axis+up
    →3-axis (clamp); 3-axis+down→1-reviewer; 1-reviewer+down→inline;

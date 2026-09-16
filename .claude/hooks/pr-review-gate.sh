@@ -313,7 +313,7 @@ if [ -z "$loc" ] || [ -z "$fc" ]; then
 fi
 
 # Subtract auto-generated LOC before computing the tier — mirrors
-# /review-pr SKILL.md step 1 (added there after PR #404). Generated
+# /review-pr references/pr-stats.md, step 1 (added after PR #404). Generated
 # artifacts under docs/_generated/** and lockfiles inflate LOC without
 # adding reviewer surface (reviewers audit the script that produced
 # them, not the output line-by-line). Without this the hook and the
@@ -333,11 +333,14 @@ loc=$((loc - autogen_excl))
 if [ "$loc" -lt 0 ]; then loc=0; fi
 
 # --- Compute final tier per the /review-pr heuristic. ------------------
-# Reference: .claude/skills/review-pr/SKILL.md (steps 2-4). Logic
+# Reference: .claude/skills/review-pr/SKILL.md step 2 (the base-tier
+# table) and references/bias-factors.md (the triggers). Logic
 # duplicated here in Bash for hook-time evaluation; the duplication
 # is intentional and documented — the skill is the source of truth
-# for output formatting and dispatch prompts, the hook only needs
-# the final tier name. Keep these two in sync when editing.
+# for output formatting (references/output-template.md) and dispatch
+# prompts, the hook only needs the final tier name. Keep these in
+# sync when editing; the security-surface list is fenced against this
+# file by tests/unit/scripts/security-surface-list-sync.test.ts.
 
 # Base tier from (loc, fc):
 #   loc < 300 OR fc < 5            -> inline

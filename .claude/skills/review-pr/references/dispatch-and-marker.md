@@ -28,10 +28,19 @@ Orchestrator: [../SKILL.md](../SKILL.md).
      deliberately whether the PR should declare what it closes before merging.
      It has its own arm because it falls silently into the bucket below
      otherwise — at the one place a verdict is consumed it is indistinguishable
-     from Clean, and the agent's report is the only thing that currently keeps
-     it out. That gap is what go-to-k/cdkd#3169 recorded and could not fix: the
+     from Clean. That gap is what go-to-k/cdkd#3169 recorded and could not fix: the
      clause did not fit inside the 23,000 B cap, and six measured attempts were
      all over it. Fitting here is the point of the split.
+   - A finding labelled **`spec (secondary)`** YIELDS to a primary
+     `pr-spec-reviewer` verdict on the same question, and does not block on its
+     own. The code and security reviewers carry a deliberately shallow spec
+     pass and cannot tell whether the real spec axis was dispatched — nothing
+     in their inputs names the tier — so without this line a secondary blocker
+     blocks the marker even on a question the primary axis already cleared.
+     go-to-k/cdkd#3169 mitigates it agent-side by capping those arms at
+     `minor`, which works and is not the same as the PARENT knowing the rule: a
+     future reviewer definition that forgets the cap re-opens it silently.
+     Where no primary spec verdict exists, judge the finding on its own merits.
    - Every finding minor / nit / clean → set the marker bound to the PR's
      current HEAD sha:
 
@@ -59,8 +68,10 @@ Orchestrator: [../SKILL.md](../SKILL.md).
    **Security add-on dispatch**: when the trigger fired, dispatch
    `pr-security-reviewer` in the same parallel batch and fold its findings in
    — a security blocker blocks the marker like any other. This applies at
-   EVERY tier, `inline` included (a skill-level requirement, not yet a hard
-   gate).
+   every tier this file is reached at. The `inline` case is NOT here, because
+   this file is only read at `1-reviewer` / `3-axis` — SKILL.md step 3 carries
+   the ANY-tier rule, and `references/output-template.md` carries the block
+   `inline` appends. A skill-level requirement, not yet a hard gate.
 
    **NEVER set the marker without dispatching the reviewers first** — the
    gate exists so an un-reviewed large PR cannot reach main.
