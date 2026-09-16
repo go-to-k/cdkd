@@ -128,7 +128,7 @@ const MAX_LINE_BYTES = 4_000;
  * collide on this fence; the cost is that one lane may spend headroom another
  * lane freed. Only ever lower it.
  */
-const LEGACY_LONG_LINE_BUDGET = 7; // RATCHET: 24 -> 7, re-measured after the 2026-09-04 compression
+const LEGACY_LONG_LINE_BUDGET = 6; // RATCHET: 24 -> 7 -> 6 (go-to-k/cdkd#3245 broke layout-cli.md's 5,543 B `state` line into paragraphs)
 
 /**
  * Hard ceiling on any single line. Measured 2026-08-25: the worst line in the
@@ -273,6 +273,8 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['gate-sibling-repos.md', 8], // literal list: EXACT, see below
   ['proxy-support.md', 3], // literal list: EXACT, see below
   ['layout-analyzer.md', 12],
+  ['layout-cli-diff.md', 2], // literal list: EXACT, see below -- `diff.ts` + `diff-recursive.ts`
+  ['layout-cli-state.md', 5], // literal list: EXACT, see below -- state.ts, state-list-tree.ts, orphan.ts, cdk-path.ts, orphan-rewriter.ts
   ['layout-cli-import-export.md', 3], // literal list: EXACT, see below
   ['layout-cli.md', 48],
   // 5 -> 6 (issue #2748): added `src/deployment/intrinsic-function-resolver.ts`.
@@ -413,6 +415,8 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // into a second testing.md while the parent sits at its own cap.
   ['tests/integration/local-invoke/verify.sh', 50_000, 58_000], // measured 55,012
   ['src/cli/commands/deploy.ts', 41_000, 63_000],
+  ['src/cli/commands/diff-recursive.ts', 40_000, 62_000], // measured 52,270 -- go-to-k/cdkd#3245: the path that reaches layout-cli-diff.md
+  ['src/cli/commands/orphan.ts', 38_000, 60_000],        // measured 52,923 -- go-to-k/cdkd#3245: the path that reaches layout-cli-state.md
   ['src/local/docker-runner.ts', 41_500, 67_000],
   ['src/analyzer/dag-builder.ts', 26_000, 35_000],
   ['scripts/gen-nested-key-coverage.ts', 52_000, 90_000],
@@ -431,7 +435,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // is asserted below rather than left as a claim -- and the number beside each
   // is its measured payload rounded out by roughly a tenth in each direction.
   ['src/deployment/secret-redaction.ts', 70_000, 102_000],   // measured 101,095; 101_000 -> 102_000 at the layout-misc split: +256 B on every `src/**/*.ts` path from code-layout.md's three new index rows. (101,842 when the row was written; 101_000 was go-to-k/cdkd#2310's re-derivation after the payload shrank below it)
-  ['src/cli/commands/scrub.ts', 88_000, 119_000],            // measured 118,249; 118_000 -> 119_000 at the layout-misc split: +256 B on every `src/**/*.ts` path from code-layout.md's three new index rows (see below)
+  ['src/cli/commands/scrub.ts', 88_000, 119_000],            // measured 109,757 (go-to-k/cdkd#3245 moved the diff and state entries out of layout-cli.md; was 118,982 with ~18 B of headroom). 118_000 -> 119_000 at the layout-misc split
   // 110,000 -> 118,000 (issue go-to-k/cdkd#2274). This path loads BOTH
   // `layout-deployment-secrets.md` and the new `layout-scrub.md` satellite, so the
   // split that satellite performed did not reduce THIS path -- it reduced every
@@ -470,13 +474,13 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // this PR removes.
   ['src/provisioning/providers/custom-resource-provider.ts', 225_000, 287_000],
   ['src/cli/commands/drift.ts', 87_000, 110_000],            // measured 104,268
-  ['src/cli/commands/import.ts', 63_000, 81_000],            // measured 80,013; 80_000 -> 81_000 at the layout-misc split: +256 B on every `src/**/*.ts` path from code-layout.md's three new index rows
+  ['src/cli/commands/import.ts', 63_000, 81_000],            // measured 71,568 (go-to-k/cdkd#3245; was 80,793). 80_000 -> 81_000 at the layout-misc split
   ['src/utils/ip-protocol.ts', 83_000, 103_000],             // measured  95,005
   ['src/provisioning/cloud-control-provider.ts', 67_500, 105_000], // measured 94,925
   // The representative path for provisioning-sticky-routing.md, whose single
   // glob is exactly this file (go-to-k/cdkd#2719). Without a budgeted path the
   // satellite would be bounded by nothing but the per-file cap.
-  ['src/provisioning/provider-registry.ts', 62_000, 105_000], // measured 87,763
+  ['src/provisioning/provider-registry.ts', 62_000, 106_000], // measured 87,763; 105_000 -> 106_000 (go-to-k/cdkd#3245): +126 B on every `src/**` path from code-layout.md's new layout-cli-diff index row, measured 105,074
   // 55_000 -> 57_000 (both rows): `code-layout.md` gained an index row for
   // `layout-scrub.md` (issue #2274), and that file is in EVERY payload, so a
   // cap with 100 B of headroom fails for a reason unrelated to the path it
@@ -499,7 +503,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // RE-DERIVED at the layout-misc split: 57,323 -> 43,895. The old band was
   // calibrated with the grab-bag's synthesis and assets notes counted in, so
   // its floor was satisfied by 13 KB describing other layers.
-  ['src/state/s3-state-backend.ts', 38_000, 48_000],         // measured 43,895
+  ['src/state/s3-state-backend.ts', 38_000, 49_000],          // measured 43,895; 48_000 -> 49_000 (go-to-k/cdkd#3245): the same +126 B index row, measured 48,069
   // The representative path for state-version-purge.md, whose two-file glob
   // (the purge and its replication-gap detector, issue
   // go-to-k/cdkd#2447) matches nothing else. Without this row the satellite
@@ -524,7 +528,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // size of `layout-state-types.md` to land unseen. 48_000 keeps ~4 KB, which
   // is ~16 index rows at the 256 B this branch's four rows cost, and still
   // binds. The FLOOR is what catches a glob narrowing.
-  ['src/types/state.ts', 38_000, 48_000],                    // measured 43,895; RE-DERIVED at the layout-misc split, see the s3-state-backend row
+  ['src/types/state.ts', 38_000, 49_000],                     // measured 43,895; RE-DERIVED at the layout-misc split, see the s3-state-backend row; 48_000 -> 49_000 (go-to-k/cdkd#3245) for the same index row
   ['src/synthesis/synthesizer.ts', 21_000, 28_000], // measured 24,121; RE-DERIVED at the layout-misc split (was 30_000/40_000; the 39,197 beside it was stale, the real figure 39,346)
   // 62_000 -> 68_000: payload is `testing.md` alone, which reached 61,358 B, so
   // the cap had 642 B of headroom and the next edit to that file would have
@@ -715,7 +719,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // proxy-support.md's glob names three literal files (issue #2388); without a
   // row here the satellite would sit under no budget, which is the state the
   // 2026-08-25 review probe showed a rule file can reach unnoticed.
-  ['src/utils/aws-client-defaults.ts', 46_000, 58_000],  // measured  52,845
+  ['src/utils/aws-client-defaults.ts', 46_000, 59_000],       // measured  52,845; 58_000 -> 59_000 (go-to-k/cdkd#3245): the same +126 B index row, measured 58,098. go-to-k/cdkd#3223 raises this row to the same value for its own reason
   // The representative path for own-keys.md (go-to-k/cdkd#3121): payload is
   // layout-utils.md + architecture.md + code-layout.md + the satellite, which
   // split out because layout-utils.md sat 118 B under the row above's cap.
@@ -1268,12 +1272,28 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 // Neither branch's figure is the merged one. That is the whole reason this
 // count is asserted rather than described: two correct increments compose to a
 // number neither author wrote.
-const CORPUS_FILE_COUNT = 60; // THREE lanes each added one satellite and each set this from the
+const CORPUS_FILE_COUNT = 62; // THREE lanes each added one satellite and each set this from the
                               //  count it saw, so 58 / 59 / 59 were all written independently and
                               //  none of them is the merged figure -- exactly what the note above
                               //  warns about. MEASURED on the merged tree: 60 files in
                               //  `.claude/rules/`. A keep-either resolution here silently drops a
                               //  satellite, which is how this constant goes wrong.
+                              // + layout-cli-diff.md AND layout-cli-state.md (go-to-k/cdkd#3245):
+                              //  `layout-cli.md` globs all of `src/cli/**`, so every CLI path paid
+                              //  for every command's bullet and `src/cli/commands/scrub.ts` had run
+                              //  down to ~18 B of headroom -- #3243 shipped a new refusal and
+                              //  recorded NOTHING here because its 669 B note reddened two paths.
+                              //  The `diff-recursive.ts` bullet (3,533 B) and the `state` paragraph
+                              //  (5,543 B) + the `state-list-tree.ts` bullet moved to satellites
+                              //  globbed at the files they describe, with one-line pointers left
+                              //  behind. Breaking the `state` line is also what took
+                              //  LEGACY_LONG_LINE_BUDGET 7 -> 6.
+                              //  NEXT LANE: `layout-cli.md`'s `events.ts` entry (3,856 B) is the
+                              //  same shape and the same move is available. Two more lines over
+                              //  4,000 B sit in `layout-cli-import-export.md` (:17 and :36), which
+                              //  is where the ratchet drops next. Each new satellite costs ~126 B
+                              //  on EVERY `src/**` path via its `code-layout.md` index row, which
+                              //  is why this lane took two splits and not four.
                               // + name-collision-classification.md (go-to-k/cdkd#3208): the
                               //  isNameCollisionErrorFrom entry took
                               //  `src/deployment/secret-redaction.ts` 1,544 B over its 102,000 B cap,
