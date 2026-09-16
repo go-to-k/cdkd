@@ -134,7 +134,7 @@ import { withRetry, type RetryLogger } from './retry.js';
 import { maskingRetryLogger } from './masking-retry-logger.js';
 import {
   isMarkedNonRetryable,
-  isNameCollisionError,
+  isNameCollisionErrorFrom,
   isRecreateRetryableError,
   isUpdateUnsupportedError,
   markNonRetryable,
@@ -6101,14 +6101,18 @@ export class DeployEngine {
               // with a working one-command escape hatch CFn lacks —
               // instead of the raw AlreadyExists (issue #960 follow-up).
               //
-              // NOTE: the detection is a message HEURISTIC — an "already
+              // NOTE: the detection is a HEURISTIC — an "already
               // exists" raised by something other than the replaced
               // resource's own name (e.g. an externally-owned sibling)
               // also matches. The blast radius is bounded: delete-first
               // only fires under the explicit --replace opt-in, targets
               // only the state-recorded old physicalId, and the stateful
               // guard has already run.
-              const nameCollision = isNameCollisionError(createMsg);
+              // Reads the ERROR, not the rendered message: ELBv2 states the
+              // collision in prose the message matcher cannot see and must not
+              // be widened to see, and the name is dropped by the provider wrap
+              // (issue go-to-k/cdkd#3208).
+              const nameCollision = isNameCollisionErrorFrom(createError, logicalId);
               if (!nameCollision) throw createError;
               // Retain pins the old resource (and its name) in place, so a
               // same-name replacement can never proceed under any flag.
@@ -6901,13 +6905,11 @@ export class DeployEngine {
                     { cause: createError instanceof Error ? createError : undefined }
                   );
                 }
-                const createMsg =
-                  createError instanceof Error ? createError.message : String(createError);
-                // Same message HEURISTIC, and the same bounded blast radius, as
+                // Same HEURISTIC, and the same bounded blast radius, as
                 // the property-driven create-first path's: a false positive
                 // only rewrites the error text — nothing destructive follows
                 // either branch here, because this arm never deletes.
-                if (!isNameCollisionError(createMsg)) throw createError;
+                if (!isNameCollisionErrorFrom(createError, logicalId)) throw createError;
                 const nameOrigin = this.replacementNameOrigin(
                   logicalId,
                   currentResource.physicalId
@@ -7587,7 +7589,7 @@ export class DeployEngine {
     if (!(error instanceof ProvisioningError)) return undefined;
     const physicalId = error.physicalId;
     if (!physicalId) return undefined;
-    if (!isNameCollisionError(error.message)) return undefined;
+    if (!isNameCollisionErrorFrom(error, logicalId)) return undefined;
     const stackName = getCurrentStackName();
     if (!looksLikeCdkdGeneratedName(physicalId, logicalId, stackName)) return undefined;
     // Implied by the guard above — it returns `false` for a falsy stack name —

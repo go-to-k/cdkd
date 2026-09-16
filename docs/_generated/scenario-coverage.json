@@ -952,6 +952,11 @@
       ]
     },
     {
+      "name": "elbv2-same-name-replacement",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "emr-cluster",
       "annotated": true,
       "scenarios": [
@@ -2874,6 +2879,7 @@
     "ecr-scanning",
     "ecs-schedule-targets",
     "efs-immutable-replacement",
+    "elbv2-same-name-replacement",
     "eventbridge-api-destination",
     "eventbridge-input-transformer",
     "eventbridge-pipes",
