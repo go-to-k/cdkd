@@ -328,6 +328,115 @@ describe('parseRollbackJournal refuses a malformed operation (issue #3140)', () 
     );
   });
 
+  it.each([
+    ['a string', 'x', 'string'],
+    ['a number', 7, 'number'],
+    ['null', null, 'null'],
+    ['an array', [], 'array'],
+  ])('refuses a previousState that is %s (issue go-to-k/cdkd#3149)', (_label, prev, k) => {
+    // A non-object `previousState` loses the whole desired bag, and every arm
+    // coalesces (`desiredProps ?? {}`), so the provider is handed an EMPTY
+    // desired bag over a LIVE resource: no handling makes that correct.
+    expect(messageOf(journalWith([{ ...op, previousState: prev }]))).toContain(
+      `segments[0].operations[0].previousState must be an object when present (got ${k}).`
+    );
+  });
+
+  it('refuses the nested fields the executor dereferences, each TYPE-when-present', () => {
+    const withPrev = (over: Record<string, unknown>): string =>
+      journalWith([{ ...op, previousState: { physicalId: 'p', resourceType: 'T', ...over } }]);
+    expect(messageOf(withPrev({ physicalId: 7 }))).toContain(
+      'previousState.physicalId must be a string when present (got number).'
+    );
+    expect(messageOf(withPrev({ resourceType: null }))).toContain(
+      'previousState.resourceType must be a string when present (got null).'
+    );
+    // A STRING bag would be handed to the provider verbatim.
+    expect(messageOf(withPrev({ properties: 'abc' }))).toContain(
+      'previousState.properties must be an object when present (got string).'
+    );
+    expect(messageOf(withPrev({ properties: [] }))).toContain(
+      'previousState.properties must be an object when present (got array).'
+    );
+    expect(messageOf(withPrev({ properties: null }))).toContain(
+      'previousState.properties must be an object when present (got null).'
+    );
+    expect(messageOf(journalWith([op], [{ ...op, attemptedProperties: 'abc' }]))).toContain(
+      'segments[0].failedOperations[0].attemptedProperties must be an object when present (got string).'
+    );
+    // An ARRAY is the shape `?? current.properties` would pass through as
+    // truthy, handing a provider a list where a bag belongs.
+    expect(messageOf(journalWith([op], [{ ...op, attemptedProperties: [] }]))).toContain(
+      'segments[0].failedOperations[0].attemptedProperties must be an object when present (got array).'
+    );
+    expect(messageOf(journalWith([op], [{ ...op, attemptedProperties: null }]))).toContain(
+      'segments[0].failedOperations[0].attemptedProperties must be an object when present (got null).'
+    );
+    // `properties` is the completed-op twin, same provider argument position.
+    for (const [bad, k] of [
+      ['abc', 'string'],
+      [[], 'array'],
+      [null, 'null'],
+    ] as const) {
+      expect(messageOf(journalWith([{ ...op, properties: bad }]))).toContain(
+        `segments[0].operations[0].properties must be an object when present (got ${k}).`
+      );
+    }
+    // `oldResourceRetained` selects the readopt arm through `??`, so a truthy
+    // non-boolean skips the re-create and re-points state at the old id.
+    expect(messageOf(journalWith([{ ...op, oldResourceRetained: 'no' }]))).toContain(
+      'oldResourceRetained must be a boolean when present (got string).'
+    );
+  });
+
+  it('TOLERATES what the state boundary tolerates: an absent nested field, and any provisionedBy', () => {
+    // `previousState` is forwarded verbatim from the state record, which
+    // `parseStateBody` deliberately does not validate (`s3-state-backend.ts`,
+    // the placement decision go-to-k/cdkd#2947 recorded and go-to-k/cdkd#3018
+    // owns the consequences of). Requiring PRESENCE here, or refusing the
+    // `provisionedBy` enum, would refuse a journal cdkd itself wrote from a
+    // record the read boundary accepts. An unrecognised `provisionedBy`
+    // routes to the SDK provider (`=== 'cc-api'` is the only test any
+    // consumer makes) and is then written into state.json BY the rollback --
+    // not, as an earlier draft of this comment said, "already held" there.
+    // Nothing throws and nothing is mis-provisioned.
+    const parsed = parseRollbackJournal(
+      journalWith([
+        { ...op, previousState: {} },
+        { ...op, previousState: { physicalId: 'p' } },
+        { ...op, provisionedBy: 'not-a-route' },
+        { ...op, provisionedBy: 7 },
+        // The sibling fields no check names. `updateReplacePolicy` is read at
+        // `rollback-executor.ts`'s `?? prev.updateReplacePolicy === 'Retain'`,
+        // so a future tightening there would be silent without this row.
+        { ...op, previousState: { updateReplacePolicy: 9, attributes: 'x' } },
+      ]),
+      'S'
+    );
+    const ops = parsed.segments[0]!.operations as unknown as Record<string, unknown>[];
+    expect(ops).toHaveLength(5);
+    // FORWARDED verbatim, not merely accepted. This pins a DECISION -- the
+    // parser is a validator, not a normaliser -- rather than the tolerance
+    // argument, which is about lockout and which normalising would not
+    // break. Keeping it honest about what it costs: today a journal's
+    // `provisionedBy` WINS over the state record's at
+    // `rollback-executor.ts`'s `op.provisionedBy ?? current.provisionedBy`,
+    // so a planted value beats a `cc-api` record and routes to the SDK. A
+    // later change that wants to normalise here must decide that precedence
+    // at the same time, which is exactly why this is pinned rather than left
+    // to be discovered.
+    expect(ops.map((o) => o['provisionedBy'])).toEqual([
+      undefined,
+      undefined,
+      'not-a-route',
+      7,
+      undefined,
+    ]);
+    expect(ops[0]!['previousState']).toEqual({});
+    expect(ops[1]!['previousState']).toEqual({ physicalId: 'p' });
+    expect(ops[4]!['previousState']).toEqual({ updateReplacePolicy: 9, attributes: 'x' });
+  });
+
   it('refuses a segment that is not an object and an operations that is not an array', () => {
     const seg = (segments: unknown): string =>
       JSON.stringify({ journalVersion: 1, stackName: 'S', region: 'us-east-1', segments });
