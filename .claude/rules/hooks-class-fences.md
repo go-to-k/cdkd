@@ -108,9 +108,21 @@ the argv separates them. Measured by rewriting each hook's `markgate verify <gat
 `integ-destroy-gate` 20/20, `integ-broad-gate` 24/24 — all green. Concretely,
 swapping `verify verify-pr` for `verify check` in verify-pr-gate makes it pass
 whenever `/check` alone is fresh, merging a PR whose `/verify-pr` checklist
-never ran. `verify-pr-gate` is deliberately NOT in that list: issue 2199 gave
-its suite an argv trace and a gate-name case of its own, so on a pristine clone
-it is 23/0 clean and 22/1 mutated. An earlier draft led with its stale 22/22.
+never ran. **`verify-pr-gate` belongs in that green-under-mutant list too**, and
+the sentence that used to exempt it was WRONG — worth reading, because it was
+wrong in the direction that RETIRES a fence. It said issue 2199's argv trace and
+gate-name case made that hook's own suite catch the mutant, "23/0 clean and 22/1
+mutated". Re-measured 2026-09-16 (go-to-k/cdkd#3209) by rewriting
+`verify verify-pr` to `verify check` in the hook: the suite is **green, every
+case** — on that branch and at 43/43 on `origin/main` — because the refusal path calls
+`markgate status verify-pr`, a later case reaches it, and the suite's
+`grep -qE '(^| )verify-pr( |$)'` over the accumulated argv trace is satisfied by
+the `status` call. Only `markgate-gate-name-class.test.sh` reds. The tallies are
+DELETED rather than re-derived (`/work-issues` verify.md 8-g); run
+`bash .claude/hooks/verify-pr-gate.test.sh` for today's case count. An earlier
+draft led with a stale `22/22` — the same failure one size smaller, and the
+reason a per-suite exemption in a CLASS fence has to be re-measured, never
+inherited.
 
 **The population is derived from BEHAVIOUR, not from the hook text**, and that is
 the part worth copying. All three textual predicates were tried and all three are

@@ -599,7 +599,9 @@ Why each needs it:
 
 - `pr-review` — bound to the PR's `headRefOid`, so a new push invalidates it.
 - `verify-pr` — bound to the LOCAL HEAD, because this gate also guards
-  `gh pr create`, where there is no PR to ask yet. Added by issue
+  `gh pr create`, where there is no PR to ask yet. Required only when the
+  target is THIS repo (go-to-k/cdkd#3209 — see "Working on a sibling repo"
+  below; every cdkd worktree still owes it). Added by issue
   [#2686](https://github.com/go-to-k/cdkd/issues/2686): the parent has no
   `include:` of its own, so once set in a worktree it never stales by itself —
   it is only MASKED by a stale child, and `/check` + `/check-docs` un-mask it.
@@ -1004,6 +1006,19 @@ applied to it — expected, not a bug in the target** (cdk-real-drift's
 **When it happens: complete the TARGET repo's own checklist and set its
 markers legitimately, then retry. Never route around the block, and do not
 "fix" the target repo to match cdkd.**
+
+**That remedy is SUFFICIENT for `verify-pr` only since go-to-k/cdkd#3209.** The
+gate also compared `<target top>/.markgate-verify-pr-sha`, a cdkd-only sentinel
+`/verify-pr` writes here and neither sibling has ever written, so a mirror PR in
+cdk-local or cdk-real-drift was refused for a FILE FORMAT rather than a marker —
+unclearable by any checklist, while `work-issues/references/retro.md` 10-c
+MANDATES a cdkd session open exactly those PRs. It is now required only when the
+target IS this repo (canonicalised `--git-common-dir` equal to the hook file's,
+so every cdkd worktree still owes it); a foreign target clears on `markgate
+verify verify-pr` in its own tree. So set the TARGET's own markers — writing
+cdkd's sentinel into a sibling is not the remedy, it is the "do not fix the
+target repo to match cdkd" half of the rule above, and the hand-written
+attestation go-to-k/cdkd#3209 exists to replace.
 
 **Do not port cdkd's stricter gates down to a sibling, or a sibling's
 exemptions up into cdkd.** The obvious convergence — give cdkd the
