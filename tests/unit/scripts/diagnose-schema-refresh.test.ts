@@ -3329,9 +3329,10 @@ describe('renderChangelogFragment', () => {
     // it while the addition half's longer EXPLANATIONS survived (measured).
     expect(fragment).toContain('the pre-flight REFUSAL goes with the withdrawn key');
     expect(fragment, 'an absence outlived a consequence').not.toContain('createOnlyDrops');
-    // Both halves keep a note. An interleaved give-up was tried for this and
-    // reverted: measured on this very case it kept 1 addition note against 4
-    // withdrawal ones, where the position tiebreak keeps 2 and 2.
+    // Both halves keep a note. An interleaved give-up was tried and reverted:
+    // over a fully saturated cycle the position tiebreak keeps 3 addition
+    // notes and 2 withdrawal ones, the interleave 1 and 4 -- five either way,
+    // favouring opposite halves.
     expect(fragment, 'the addition half was wiped').toContain('ONE-WAY');
     expect(fragment, 'the withdrawal half was wiped').toContain(
       'still carries another actionable drop'

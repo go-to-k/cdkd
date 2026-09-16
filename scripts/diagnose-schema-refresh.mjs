@@ -3223,10 +3223,13 @@ export function renderChangelogFragment({
   // so a reader knows to read the pull request rather than assuming the entry
   // is complete.
   // Descending priority, position breaking ties. Interleaving the two halves
-  // within a tier was tried and REVERTED: measured on the saturated cycle it
-  // kept 1 addition note against 4 withdrawal ones, where the position
-  // tiebreak keeps 2 and 2 — so the asymmetry the tiers removed does not
-  // reappear here, and the extra machinery bought a worse balance.
+  // within a tier was tried and REVERTED, on a measurement taken over a FULLY
+  // saturated cycle (every one of the twelve sentence slots populated): the
+  // position tiebreak keeps 3 addition notes and 2 withdrawal ones, the
+  // interleave 1 and 4. Both keep five; neither is balanced, they favour
+  // opposite halves — so the simpler one, already pinned by the case below,
+  // stays. Reachable only in theory: two of those twelve slots cannot fire
+  // against the shipped tables at all.
   const order = sentences
     .map((_, index) => index)
     .filter((index) => index > 0)
