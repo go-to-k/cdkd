@@ -229,9 +229,14 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // its own 5s/10s/20s grid, ~35s per resource; and `isTerminalDeleteFailure`
   // in `dynamodb-delete-budget.ts`, which reads the verdict INVERTED -- a match
   // makes a delete failure non-terminal and skips
-  // `compensateRemovedDeletionProtection`. Both delete-side readers are inert
-  // for these wordings, which no delete carries, but the inverted one is the
-  // reader a future entry is likeliest to get wrong.
+  // `compensateRemovedDeletionProtection`. That inverted reader is genuinely
+  // inert here -- it classifies only the two DynamoDB providers' throws, and
+  // `DeleteTable` has no EC2 or security-group surface -- but it is the reader
+  // a future entry is likeliest to get wrong. The `destroy-runner.ts` loop is
+  // type-generic, so the claim there is narrower: no delete OBSERVED here
+  // carries these wordings. A Cloud Control DELETE of a capacity provider that
+  // re-validates its operator role could carry one, and would then spend up to
+  // ~35s of retry backoff if the rejection persisted through every attempt.
   'One or more security group IDs are invalid',
   // CodeDeploy DeploymentGroup: the Cloud Control CreateResource references a
   // same-stack service IAM role, but cdkd's fast path issues the create before

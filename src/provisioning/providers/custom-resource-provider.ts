@@ -1977,11 +1977,13 @@ export class CustomResourceProvider implements ResourceProvider {
    *    documents the drop-`cause` class in this very directory; a top-level-only
    *    read would silently un-retry a wrapped propagation denial.
    *
-   * **Nearly every pattern in that union is an AUTHORIZATION or
-   * REQUEST-VALIDATION rejection, and that is what makes replaying an `Invoke`
-   * safe here.** Such a rejection is decided at the API front door, before any
-   * execution environment is engaged, so the handler provably did not run and a
-   * replay cannot re-deliver work — the hazard `disableOuterRetry` exists for.
+   * **Replaying an `Invoke` is safe here because every rejection this admits
+   * is decided before the handler can run, so the handler provably did not run.**
+   * Nearly every pattern in the union is an AUTHORIZATION or
+   * REQUEST-VALIDATION rejection, decided at the API front door, before any
+   * execution environment is engaged -- the commonest way to satisfy that, but
+   * not the only one (see below). Either way a replay cannot re-deliver work —
+   * the hazard `disableOuterRetry` exists for.
    *
    * The union is shared, so it can acquire a member that is NOT front-door, and
    * one already has: the Lambda CapacityProvider operator-role rejection added
