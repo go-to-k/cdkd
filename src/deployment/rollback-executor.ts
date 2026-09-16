@@ -60,6 +60,7 @@ import type { Logger } from '../types/config.js';
 import type { ProviderRegistry } from '../provisioning/provider-registry.js';
 import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
 import { STATEFUL_TYPES } from '../provisioning/stateful-types.js';
+import { applyDefaultNameForFallback } from '../provisioning/resource-name.js';
 import {
   ATOMIC_FINAL_SNAPSHOT_TYPES,
   buildFinalSnapshotIdentifier,
@@ -2428,9 +2429,76 @@ async function replaySingle(
         // Route the re-create via the OLD resource's recorded layer and the
         // new resource's delete via ITS layer (they can differ — e.g. a
         // --recreate-via-cc-api migration).
-        const { provider: createProvider } = ctx.providerRegistry.getProviderFor({
-          resourceType: op.resourceType,
-          provisionedBy: prev.provisionedBy,
+        const { provider: createProvider, provisionedBy: createProvisionedBy } =
+          ctx.providerRegistry.getProviderFor({
+            resourceType: op.resourceType,
+            provisionedBy: prev.provisionedBy,
+          });
+        // The bag the two replay-CREATEs below hand the provider (issue #3199).
+        //
+        // `resolvedPrevProps` is the RECORDED bag, which `propertiesToRecord`
+        // fills from the template's resolved properties — so it never carries a
+        // name cdkd GENERATED, by the same invariant the deploy engine's Cloud
+        // Control UPDATE path relies on. A Cloud Control CREATE, however, is
+        // exactly where that name is required: `preparePropertiesForCcApi`
+        // fills it at all three of the engine's create sites, and these two
+        // replay sites are the FOURTH. Without it the replay re-creates under
+        // an AWS-random name, so the restored resource silently stops matching
+        // the name the forward path mints for it.
+        //
+        // The shape that reaches this is WIDER than "a deploy that added an
+        // explicit name": the arm is selected by a CHANGED PHYSICAL ID, so for
+        // any table type whose physical id is NOT its name, an ordinary
+        // create-only edit elsewhere gets here with a nameless recorded bag —
+        // `AWS::ElasticLoadBalancingV2::TargetGroup` (id `TargetGroupArn`,
+        // create-only `Port` / `VpcId` / ...), its `LoadBalancer` sibling
+        // (`Scheme` / `Type`) and `AWS::WAFv2::WebACL` (`Scope`) all do.
+        //
+        // A type whose Cloud Control handler REJECTS a nameless create fails
+        // the replay outright instead, which on the delete-new-first arm below
+        // leaves the resource absent from AWS AND from state. No such type is
+        // in `FALLBACK_NAME_RULES` yet — `AWS::Lambda::CapacityProvider` is the
+        // known one and its entry arrives with go-to-k/cdkd#3182 — so today
+        // this fix is about the silent-divergence half.
+        //
+        // Gated on the ROUTING DECISION rather than `prev.provisionedBy`: the
+        // recorded hint is absent on a pre-v7 record, the registry may route a
+        // type with no SDK provider to Cloud Control regardless, and the sticky
+        // rule's `sdk-coverage` exemption can return an SDK provider for a
+        // `cc-api` hint — so the decision is the only reading that matches what
+        // the create will actually call. An SDK-routed create is left alone:
+        // its provider mints the name itself, which is what
+        // `FALLBACK_NAME_RULES` mirrors.
+        //
+        // The OUTER SPREAD is load-bearing, not redundant:
+        // `applyDefaultNameForFallback` returns its argument BY IDENTITY when
+        // the type has no rule or the name is already set, so removing it would
+        // hand `resolvedPrevProps` to the provider by reference and give up the
+        // fresh copy the pre-#3199 `{ ...resolvedPrevProps }` guaranteed.
+        //
+        // Applied ONLY to the bag handed to `create()`, never to
+        // `resolvedPrevProps` itself: that value also feeds
+        // `recordNestedStackParameterExpressions` and the record rebuild below,
+        // and writing a generated name back into the RECORD would break the
+        // very invariant this comment opens with. That the name cannot reach
+        // the record is conditional on a FACT ABOUT ROUTING, not on this call:
+        // the rebuild honours `createResult.effectiveProperties` (#1682), and
+        // every `provisionedBy: 'cc-api'` route returns `CloudControlProvider`,
+        // which never reports one. A future CC-routed provider that did would
+        // put the generated name into `properties` — fenced by the
+        // record-leak case in
+        // `tests/unit/deployment/rollback-executor-replay-fallback-name.test.ts`.
+        //
+        // KNOWN BOUND: the engine's `preparePropertiesForCcApi` prefers an SDK
+        // provider's `preparePropertiesForFallback` hook and falls back to
+        // `applyDefaultNameForFallback`; this call skips the hook. No provider
+        // implements it today (grep: the interface declaration and the engine's
+        // dispatch are the only hits), so the two agree — but the first
+        // implementor makes rollback mint a different name than deploy.
+        const replayCreateProps = (): Record<string, unknown> => ({
+          ...(createProvisionedBy === 'cc-api'
+            ? applyDefaultNameForFallback(op.logicalId, op.resourceType, resolvedPrevProps)
+            : resolvedPrevProps),
         });
         // LAZY, for the same reason the readopt arm resolves inside its `else`
         // (review of issue #2598): `getProviderFor` THROWS for a type this
@@ -2476,6 +2544,19 @@ async function replaySingle(
         // "already exists" that need not name THIS resource), so this is a
         // stated property of the path rather than a defect being introduced
         // here.
+        //
+        // Issue #3199 WIDENED which ops can reach that class, without changing
+        // the class itself. Before it, a `FALLBACK_NAME_RULES` type replayed
+        // from a nameless recorded bag asked for no name at all, so AWS minted
+        // a random one and a collision was impossible here. The replay now asks
+        // for the deterministic `<stack>-<logicalId>`, so it CAN collide — with
+        // the live new resource (the ordinary case for a replacement that did
+        // not change the name, where deleting it is exactly right and mirrors
+        // what the forward replacement did), or with a not-yet-released old
+        // name or a squatter on a predictable name (the accepted bad tail
+        // above). That is the deliberate trade: the pre-#3199 behaviour could
+        // not collide only because it was restoring the resource under the
+        // WRONG NAME.
         let deletedNewFirst = false;
         // Typed as the full provider contract (issue #1682): the narrower
         // local shape this used to declare hid `effectiveProperties`, so the
@@ -2500,7 +2581,7 @@ async function replaySingle(
                 createProvider.create(
                   op.logicalId,
                   op.resourceType,
-                  { ...resolvedPrevProps },
+                  replayCreateProps(),
                   replayingStateCreateContext(secrets)
                 )
               ),
@@ -2654,7 +2735,7 @@ async function replaySingle(
                   createProvider.create(
                     op.logicalId,
                     op.resourceType,
-                    { ...resolvedPrevProps },
+                    replayCreateProps(),
                     replayingStateCreateContext(secrets)
                   )
                 ),
