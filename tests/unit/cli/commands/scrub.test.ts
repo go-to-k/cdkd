@@ -347,6 +347,7 @@ describe('cdkd scrub - scrubStack', () => {
       secretsFound: 0,
       secretBearingKeys: 0,
       unverifiableReads: 0,
+      unverifiableProducerRecords: 0,
       unverifiableLeaves: 0,
       // Issue #2667 review: an export name is an outputs-bag KEY, so every
       // message naming one is masked through the stack's own secrets bag

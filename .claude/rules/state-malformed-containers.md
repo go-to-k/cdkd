@@ -91,3 +91,26 @@ cannot drift below the read it protects. That is the round-1 defect of #3018
 and a presence-only check stays green through it. It also pins the premise of
 every exclusion, so a file that starts reading a container it did not read
 before fails the fence instead of quietly joining the wrong side.
+
+## The `exportNames` FIELD takes its own rule
+
+Not a container, so none of the guards above touch it — `importableOutputKeys`
+in `src/types/state.ts` owns it, and that function's JSDoc is the authority.
+Recorded here because a lane reading this file is in the class:
+
+- A non-array, or an array with **nothing usable in it**, reads as an EMPTY
+  export set. Never as an ABSENT one: absent means "not known" and falls back
+  to the pre-v9 rule where every output key is importable, so routing a corrupt
+  field there republishes every plain output name as an export — the shadowing
+  schema v9 exists to close (issue
+  [#2193](https://github.com/go-to-k/cdkd/issues/2193)).
+- `some(isString)`, not `every`: `[]` is the legitimate "exports nothing", and
+  `['Real', 0]` still has a name to publish.
+- `hasReadableExportSet` answers the question the empty list cannot — damaged
+  versus genuinely exporting nothing — for the callers that must SAY which.
+  `cdkd diff` warns with `malformedExportNamesWarning`; the exports-index
+  rebuild warns with `malformedExportSourceWarning`.
+
+Failing closed inside a pure predicate is right — it serves five commands and
+holds no stack identity — but a LOUD wrong answer becoming a QUIET one is its
+own regression, which is why the two callers that DO hold the identity say so.

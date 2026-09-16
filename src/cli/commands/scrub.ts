@@ -617,6 +617,16 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
    * resource map was fine.
    */
   const malformedOutputRecords: string[] = [];
+  /**
+   * Stacks whose scrub met a PRODUCER record with an unreadable `outputs` map
+   * (go-to-k/cdkd#3192 review round 5).
+   *
+   * Its own list rather than a counter because the refusal NAMES the stacks,
+   * and its own list rather than a share of `malformedOutputRecords` because
+   * those name records THIS run was scrubbing while these name records it only
+   * READ — different remedy, different sentence.
+   */
+  const damagedProducerStacks: string[] = [];
   // Stacks this run could not scrub at all, one entry per stack (issue #2109
   // review). A refusal is per-REFERENCE evidence but is raised for the whole
   // STACK, and without a boundary here one refused stack in a `--all` run
@@ -873,6 +883,9 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
           `abandoned scan can hide several unexamined leaves.`
       );
     }
+    if (scrubbed.unverifiableProducerRecords > 0) {
+      damagedProducerStacks.push(stack.stackName);
+    }
     if (scrubbed.unverifiableReads > 0) {
       totalStacksWithUnverifiableReads++;
       logger.warn(
@@ -1089,6 +1102,14 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     if (malformedRecords.length > 0 || malformedOutputRecords.length > 0) {
       throw malformedRecordsAuditedError(malformedRecords, malformedOutputRecords);
     }
+    // UNGATED by `--fail`, and above it for the same rank reason the refusals
+    // here already are: exit 2 is "cdkd could not finish", exit 1 is "cdkd
+    // looked and found something". Both damaged shapes exited 2 unconditionally
+    // before the bag was guarded, so gating this would be the regression the
+    // guard was supposed to prevent (go-to-k/cdkd#3192 review round 5).
+    if (damagedProducerStacks.length > 0) {
+      throw damagedProducerRecordsError(damagedProducerStacks);
+    }
     if (options.fail) throw new ScrubNeededError();
     return;
   }
@@ -1142,6 +1163,12 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   // pins that the dry-run copy is the one that fires.
   if (malformedRecords.length > 0 || malformedOutputRecords.length > 0) {
     throw malformedRecordsAuditedError(malformedRecords, malformedOutputRecords);
+  }
+  // The real-run copy, and unlike the line above it this one IS reachable:
+  // nothing about a damaged PRODUCER record is `--dry-run`-only. Ungated by
+  // `--fail` and above it, for the reason the dry-run copy states.
+  if (damagedProducerStacks.length > 0) {
+    throw damagedProducerRecordsError(damagedProducerStacks);
   }
   // `totalStacksWithUnverifiableReads` joins the key-only leak here for the
   // reason stated on that counter: a real run cannot fix either one, so exiting
@@ -2102,6 +2129,34 @@ export function orderScrubTargets<
  * under `--fail` via the SILENT `ScrubNeededError`, whose suppression would
  * also swallow this text.
  */
+/**
+ * A producer record this run could not classify (go-to-k/cdkd#3192 review).
+ *
+ * `ScrubRefusalError`, so it carries scrub's exit **2** — and UNGATED by
+ * `--fail`, which is the whole point. Before the `outputs` bag was guarded,
+ * both damaged shapes already exited 2 unconditionally: the ARRAY shape
+ * resolved its element and raised `plaintextProducerCrossStackReadError`, the
+ * STRING shape threw a `TypeError` the pre-pass deliberately does not catch.
+ * Routing them into `unverifiableReads` alone made a plain `cdkd scrub` exit
+ * 0 — and the `--fail` path exit 1, which `docs/cli-reference.md` teaches as
+ * the opposite remedy (1 = rotate the secret, 2 = repair and re-run).
+ *
+ * Names are rendered through `displayIdent` for the reason
+ * {@link malformedRecordsAuditedError} gives: a stack name reaching a
+ * comma-joined list needs a boundary it cannot close from inside.
+ */
+function damagedProducerRecordsError(stackNames: readonly string[]): ScrubRefusalError {
+  const names = stackNames.map((n) => displayIdent(n)).join(', ');
+  return new ScrubRefusalError(
+    `${stackNames.length} stack(s) import a value from a PRODUCER whose state record has no ` +
+      `readable 'outputs' map, so this run could not tell whether that producer still holds ` +
+      `the plaintext: ${names}. Those stacks were scrubbed for everything else and are NOT ` +
+      `reported clean. Repair the producer record and scrub it first, then re-run. See the ` +
+      `warnings above for which producer.`,
+    'SCRUB_PRODUCER_RECORD_UNREADABLE'
+  );
+}
+
 function malformedRecordsAuditedError(
   stackNames: readonly string[],
   // No DEFAULT: the function is module-private, both call sites pass both
@@ -2983,6 +3038,22 @@ interface CrossStackPrePassFindings {
    * than a stack refusal: see {@link makeCrossStackPrePass}.
    */
   unverifiable: string[];
+  /**
+   * The SUBSET of {@link unverifiable} caused by a PRODUCER record whose own
+   * `outputs` map could not be read (go-to-k/cdkd#3192 review).
+   *
+   * A separate list because the two halves of `unverifiable` earn DIFFERENT
+   * EXIT CODES, and folding them lost one. A by-design refusal is a FINDING:
+   * exit 1, and only under `--fail`, per issue #2133. A damaged producer
+   * record exited **2 unconditionally** before this class was guarded — the
+   * array shape through `plaintextProducerCrossStackReadError`, the string
+   * shape through an escaping `TypeError` — because it means "cdkd could not
+   * finish", not "cdkd looked and found something". Counting it only in
+   * `unverifiable` made a plain `cdkd scrub` exit 0 over a consumer record
+   * still holding the imported plaintext, and made even the `--fail` path exit
+   * 1, which `docs/cli-reference.md` teaches as the opposite remedy.
+   */
+  damagedProducerRecords: string[];
 }
 
 /**
@@ -3842,10 +3913,16 @@ function makeCrossStackPrePass(deps: {
           // false-clean class this whole change exists to prevent,
           // reintroduced by its own fix. `--dry-run --fail` reads the exit
           // code, not the warning.
-          findings.unverifiable.push(
+          const detail =
             `the stored value of producer '${maskSecretsInText(producer.stack, secrets)}' ` +
-              `(${producer.region}), whose 'outputs' map cannot be read`
-          );
+            `(${producer.region}), whose 'outputs' map cannot be read`;
+          findings.unverifiable.push(detail);
+          // ...and into the EXIT-CODE list as well. `unverifiable` alone gates
+          // the clean-verdict line and `--fail`; this second list is what
+          // restores the UNCONDITIONAL exit 2 the merge base gave this shape,
+          // for the reason its own declaration records. Both, not either: the
+          // summary must still name the stack, and the run must still refuse.
+          findings.damagedProducerRecords.push(detail);
           // MASKED, like every neighbouring line in this function: a producer
           // STACK NAME is a needle whenever a stack is named after a value this
           // pass resolved, and this is the only line here that runs at WARN.
@@ -4219,6 +4296,17 @@ export interface ScrubStackResult {
    */
   unverifiableReads: number;
   /**
+   * The SUBSET of {@link ScrubStackResult.unverifiableReads} caused by a
+   * PRODUCER record whose `outputs` map could not be read
+   * (go-to-k/cdkd#3192 review).
+   *
+   * Carried separately because it earns a different EXIT CODE: **2,
+   * unconditionally**, where the by-design half earns 1 and only under
+   * `--fail`. See {@link CrossStackPrePassFindings.damagedProducerRecords} for
+   * why, and `docs/cli-reference.md` for what the two codes mean to a CI gate.
+   */
+  unverifiableProducerRecords: number;
+  /**
    * Leaves whose `{{resolve:...}}` scan was ABANDONED mid-token because one
    * reference failed to RESOLVE (issue go-to-k/cdkd#3160). A FINDING like
    * {@link ScrubStackResult.unverifiableReads}, not a refusal: the rest of the
@@ -4327,7 +4415,10 @@ export async function scrubStack(
   // Filled by the cross-stack pre-pass; read by the return sites below. Hoisted
   // beside the secret maps for the same reason they are: the value is needed
   // after a throw could have happened.
-  const prePassFindings: CrossStackPrePassFindings = { unverifiable: [] };
+  const prePassFindings: CrossStackPrePassFindings = {
+    unverifiable: [],
+    damagedProducerRecords: [],
+  };
   /**
    * Leaves whose dynamic-reference scan was ABANDONED mid-token (issue
    * go-to-k/cdkd#3160). A counted finding, not a refusal — see
@@ -4369,6 +4460,7 @@ export async function scrubStack(
         secretsFound: 0,
         secretBearingKeys: 0,
         unverifiableReads: 0,
+        unverifiableProducerRecords: 0,
         unverifiableLeaves: 0,
         // No record, so nothing was resolved and the bag is empty — every name
         // tests as 'safe'. Bound to the same map the other two sites use so
@@ -5287,6 +5379,7 @@ export async function scrubStack(
         secretsFound: 0,
         secretBearingKeys: secretBearingKeys.length,
         unverifiableReads: prePassFindings.unverifiable.length,
+        unverifiableProducerRecords: prePassFindings.damagedProducerRecords.length,
         unverifiableLeaves,
         ...(malformedResources ? { malformedResources } : {}),
         ...(malformedOutputs ? { malformedOutputs } : {}),
@@ -5512,6 +5605,7 @@ export async function scrubStack(
       secretsFound: totalSecrets,
       secretBearingKeys: secretBearingKeys.length,
       unverifiableReads: prePassFindings.unverifiable.length,
+      unverifiableProducerRecords: prePassFindings.damagedProducerRecords.length,
       unverifiableLeaves,
       ...(malformedResources ? { malformedResources } : {}),
       ...(malformedOutputs ? { malformedOutputs } : {}),

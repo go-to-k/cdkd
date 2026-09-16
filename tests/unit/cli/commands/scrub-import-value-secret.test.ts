@@ -398,7 +398,7 @@ describe('cdkd scrub resolves a cross-stack read (issue #2133)', () => {
    * A FOREIGN producer whose own `outputs` bag is not an object, and the
    * REACHABILITY finding that came with it (review of go-to-k/cdkd#3206).
    *
-   * `producerStoredValue` in `src/cli/commands/scrub.ts` classifies a
+   * `storedProducerValue` in `src/cli/commands/scrub.ts` classifies a
    * producer's stored value and used to ask `producer.key in outputs`, which
    * on a string is a bare `TypeError` that escapes (the enclosing `try` ends
    * at the `catch` that logs a failed re-read). That is a real #3018-class
@@ -453,7 +453,7 @@ describe('cdkd scrub resolves a cross-stack read (issue #2133)', () => {
     // `Fn::GetStackOutput` bypasses `importableOutputKeys`, and the output is
     // named `'0'` ON PURPOSE: that is an INDEX of the planted string, so
     // `Object.hasOwn('abcdef', '0')` is true, the resolver returns `'a'`, the
-    // read is RECORDED, and `producerStoredValue` is entered with a bag it
+    // read is RECORDED, and `storedProducerValue` is entered with a bag it
     // cannot walk. Pre-guard this aborted with
     // `Cannot use 'in' operator to search for '0' in abcdef`.
     const FABRICATED_KEY = '0';
@@ -492,7 +492,7 @@ describe('cdkd scrub resolves a cross-stack read (issue #2133)', () => {
     const message = thrown instanceof Error ? thrown.message : String(thrown);
     expect(
       message,
-      'producerStoredValue walked a foreign bag it cannot walk'
+      'storedProducerValue walked a foreign bag it cannot walk'
     ).not.toMatch(/in' operator|is not a function|Cannot read properties/);
 
     // ...and the damaged producer is NAMED at default verbosity rather than
@@ -4024,6 +4024,7 @@ describe('cdkd scrub names WHICH arm declined a cross-stack read (issue #2163)',
       secretsFound: 0,
       secretBearingKeys: 0,
       unverifiableReads: 0,
+      unverifiableProducerRecords: 0,
       unverifiableLeaves: 0,
       // The post-scrub bag `scrubStack` reports for the exports-index step
       // (issue #2667). Present and EMPTY here: this fixture's state record

@@ -3,7 +3,12 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { CloudFormationTemplate, TemplateResource } from '../../types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../types/state.js';
-import { STATE_SCHEMA_VERSION_CURRENT, importableOutputKeys } from '../../types/state.js';
+import {
+  STATE_SCHEMA_VERSION_CURRENT,
+  hasReadableExportSet,
+  importableOutputKeys,
+  isReadableBag,
+} from '../../types/state.js';
 import {
   isSecretBearingReferenceString,
   keptWholeReasonText,
@@ -36,6 +41,7 @@ import { findActionableSilentDrops } from '../../provisioning/property-coverage.
 import { wouldReturnToSdkProvider } from '../../provisioning/provider-registry.js';
 import { NESTED_STACK_RESOURCE_TYPE } from './retire-cfn-stack.js';
 import {
+  malformedExportNamesWarning,
   malformedOutputsWarning,
   malformedResourcesWarning,
   repairMalformedOutputsForReadOnly,
@@ -287,6 +293,25 @@ async function loadStateOrEmpty(
     // different consequences, and a record can be malformed in either alone.
     if (repairMalformedOutputsForReadOnly(result.state)) {
       logger.warn(malformedOutputsWarning(stackName, region));
+    }
+    // The `exportNames` FIELD, said out loud (go-to-k/cdkd#3192 review). The
+    // predicate fails closed wherever it is read, which is right — it serves
+    // five commands and holds no stack identity — but a LOUD wrong answer
+    // (the raw `TypeError` this replaced) becoming a QUIET one is its own
+    // regression, and this load is the one place that can name the record.
+    //
+    // AFTER the bag repair, deliberately: `hasReadableExportSet` also requires
+    // a readable `outputs`, so asking it first would blame `exportNames` for a
+    // damaged BAG. By here the bag is `{}` — readable — so a false verdict
+    // isolates the field, and a record damaged in both containers gets one
+    // accurate line about each rather than two about the same thing.
+    // The `isReadableBag` conjunct is what keeps this about `exportNames`.
+    // `hasReadableExportSet` requires a readable BAG too, and the repair above
+    // exempts an ABSENT one — a record cdkd itself writes — so without this a
+    // perfectly ordinary no-outputs record drew a line blaming its
+    // `exportNames`. Measured: it reds the absent-bag floor one describe up.
+    if (isReadableBag(result.state.outputs) && !hasReadableExportSet(result.state)) {
+      logger.warn(malformedExportNamesWarning(stackName, region));
     }
     return result.state;
   }

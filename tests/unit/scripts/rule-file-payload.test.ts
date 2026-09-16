@@ -1463,7 +1463,15 @@ const CORPUS_FILE_COUNT = 59; // BOTH lanes added one, and each set this to 58 i
                               //  than against main, and a pointer always costs the index file
                               //  something. Measured on the tree that ships this line. That
                               //  makes 45.
-const CORPUS_BYTES_MIN = 1_006_000; // RE-DERIVED UPWARD 966_000 -> 1_006_000 (2026-09-13, issue
+const CORPUS_BYTES_MIN = 1_046_000; // RE-DERIVED UPWARD 1_006_000 -> 1_046_000 (2026-09-16,
+                                    // go-to-k/cdkd#3192): the "discriminates the deletion of the
+                                    // LARGEST satellite" case went RED, which is the mechanical
+                                    // occasion this constant's own note below promises. Measured
+                                    // 1,080,007 B on a tree REBASED onto origin/main, so this is
+                                    // the merge rather than a stale branch -- 34,007 B of slack,
+                                    // the ~34 KB margin every previous setting used, and under
+                                    // hooks.md's 73,606 B so the case it failed now passes with
+                                    // room. Previously: RE-DERIVED UPWARD 966_000 -> 1_006_000 (2026-09-13, issue
                                     // go-to-k/cdkd#3003's PR): the "discriminates the deletion of
                                     // the LARGEST satellite" case went RED IN CI, which is the
                                     // mechanical occasion this constant's own note below promises.

@@ -460,6 +460,44 @@ export function malformedExportSourceWarning(stackName: string, region: string):
 }
 
 /**
+ * The line a READ-ONLY command emits when a record's `exportNames` FIELD could
+ * not be used (go-to-k/cdkd#3192 review) — present and not an array, or an
+ * array with no usable name in it.
+ *
+ * Why a message at all, when the predicate already fails closed: before this
+ * class was guarded, `cdkd diff` over such a record died with
+ * `TypeError: state.exportNames.filter is not a function`. Failing closed
+ * inside `importableOutputKeys` is right — it is a pure predicate reached from
+ * five commands and holds no stack identity — but silently replacing a LOUD
+ * wrong answer with a QUIET one is its own regression, and `cdkd diff` is
+ * exactly the caller that DOES hold the identity. Without this it warned about
+ * a damaged `outputs` bag on one line and said nothing about the damaged
+ * `exportNames` on the same record.
+ *
+ * Deliberately NOT {@link malformedOutputsWarning}'s text: that one is about
+ * the BAG, and the consequence differs. An unusable export SET does not lose
+ * the comparison's left-hand side — every stored key is still diffed — it
+ * makes the preview report no key as an export, so a row that would carry
+ * `[export]` renders without it.
+ *
+ * Identifiers are sanitized and THEN shell-quoted and the command is emitted
+ * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
+ */
+export function malformedExportNamesWarning(stackName: string, region: string): string {
+  const stack = safeIdentifier(stackName);
+  const reg = safeIdentifier(region);
+  return (
+    `State for ${shellQuote(stack)} (${shellQuote(reg)}) has an unusable 'exportNames' list — ` +
+    `the record is malformed or truncated. It is read as an EMPTY export set, which is not the ` +
+    `same as the record holding one: no stored key is reported as an export, so a row that ` +
+    `should carry an '[export]' tag renders without it. Reading it as UNKNOWN instead would be ` +
+    `worse — that falls back to the pre-v9 rule where every output name is importable. See the ` +
+    `stored value with: cdkd state show ${shellQuote(stack)} --stack-region ${shellQuote(reg)} ` +
+    `--json`
+  );
+}
+
+/**
  * For a command that can WRITE state: refuse a record whose `outputs` bag
  * cannot be read, instead of rebuilding it (issue go-to-k/cdkd#3192).
  *

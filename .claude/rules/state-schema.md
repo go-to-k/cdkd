@@ -71,10 +71,7 @@ namespace is separate, and it refuses a second producer of one name).
 All four readers now go through ONE predicate, `importableOutputKeys(state)`
 in `src/types/state.ts`: `exportNames` when the record carries it, intersected
 with the bag; every key when it does not. It FAILS CLOSED on a hand-edited
-record (#3192): a non-object `outputs` or a non-array `exportNames` answers
-`[]`, never the legacy every-key branch, which would re-open the shadowing
-above. `hasReadableExportSet` beside it distinguishes damaged from
-exports-nothing for the one caller that must say which. The discriminator is the FIELD, not
+record. The discriminator is the FIELD, not
 `version` — `undefined` means NOT KNOWN (a pre-v9 record, or a v9 partial save
 that carried a pre-v9 bag forward) and keeps the legacy rule so no existing
 cross-stack reference breaks on upgrade; `[]` means KNOWN to export nothing.

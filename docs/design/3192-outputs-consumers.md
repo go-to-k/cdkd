@@ -12,8 +12,14 @@ a named residual in §4.
 `StackState` is read out of an unchecked cast — `parseStateBody` validates the
 root object and the schema version and nothing inside — so a hand-edited or
 truncated record reaches every consumer with `outputs` holding a string, a
-list, a number, a boolean or `null`. `Object.entries` walks a string as
-readily as a map, and `in` throws on both.
+list, a number, a boolean or `null`. `Object.entries` walks a string or a list
+as readily as a map, so either fabricates entries.
+
+The membership tests are not a backstop, and it is worth being exact because a
+later reader could take one for a guard already in place. `in` throws on a
+string, a number and `null` — but ANSWERS on a list (`0 in [1,2]` is `true`) —
+and `Object.hasOwn` throws on nothing at all (`Object.hasOwn('abcdef', '0')`
+is `true`). Only the plain-object test catches every shape.
 
 Issue [#3018](https://github.com/go-to-k/cdkd/issues/3018) settled the rule for
 the `resources` bag: a command that can WRITE state refuses, a read-only one
@@ -41,7 +47,7 @@ each site and why.
 | The carried bag in the saved state literal, guarded at the `cdkd import` load | `cdkd import` | REFUSE |
 | `importableOutputKeys` / `importableOutputs` | shared predicate | FAIL CLOSED, silently |
 | The exports-index rebuild | any command that touches the index | FAIL CLOSED, warning |
-| `producerStoredValue`, the cross-stack pre-pass's read of a FOREIGN producer | `cdkd scrub` | NO VERDICT + warning (§6) |
+| `storedProducerValue`, the cross-stack pre-pass's read of a FOREIGN producer | `cdkd scrub` | NO VERDICT + warning (§6) |
 | `loadStateOrEmpty` | `cdkd diff` | REPAIR + WARN (shipped with #3189) |
 | The render entry | `cdkd state show` / `state resources` | REPAIR + WARN (shipped with [#3187](https://github.com/go-to-k/cdkd/issues/3187)) |
 
@@ -143,7 +149,7 @@ signal than silence.
 ## 6. A seventh site, found by review rather than by the grep
 
 `cdkd scrub`'s cross-stack pre-pass re-reads a PRODUCER's record to classify
-its stored value (`producerStoredValue`). That bag belongs to another stack, so
+its stored value (`storedProducerValue`). That bag belongs to another stack, so
 the load guard of §2 never covers it, and the classifier asked
 `producer.key in outputs` — a bare `TypeError` on a string, escaping the
 `try` that only wraps the fetch.

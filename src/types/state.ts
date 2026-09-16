@@ -720,8 +720,13 @@ export function shouldRetainResource(
  * `parseStateBody` validates the root object and the schema version and
  * nothing inside, so a hand-edited or truncated record reaches a consumer with
  * `resources` / `outputs` / `attributes` / `properties` holding a string, a
- * list, a number or `null` — and `Object.entries` walks a string or a list as
- * readily as a map, `in` throws on both. Widened past `null` / `undefined` for
+ * list, a number or `null`. `Object.entries` walks a string or a list as
+ * readily as a map, so either FABRICATES entries. `in` and `Object.hasOwn`
+ * behave differently per shape and neither is a guard: `in` THROWS on a
+ * string, a number and `null`, but ANSWERS on a list (`0 in [1,2]` and
+ * `'length' in [1,2]` are both `true`), and `Object.hasOwn` throws on nothing
+ * at all — `Object.hasOwn('abcdef', '0')` is `true`. Do not read a nearby `in`
+ * as already catching the list case. Widened past `null` / `undefined` for
  * exactly that reason: `[]`, `5` and `"ab"` all survive `Object.entries` and
  * yield a bag that is empty or, for the string, absurd.
  *
