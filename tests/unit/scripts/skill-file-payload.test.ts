@@ -400,8 +400,29 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // additions are charged to it in full, and the same assertion pins it from
     // below so the raise buys no room.
     //
-    // Cap headroom, in size order: triage.md 6 B, verify.md 39 B,
-    // implement.md 60 B. All three open with a compression pass, not an
+    // The go-to-k/cdkd#3234 run's retro (2026-09-16) then landed ONE lesson,
+    // in implement.md 5-f' -- a narrow probe VALUE input and an assertion's
+    // EXEMPTION are one defect, and a class TRANSCRIBED to stay INDEPENDENT of
+    // its subject needs a behaviour pair fence (PR go-to-k/cdkd#3275 exempted
+    // `\t`, then `\n`, both stripped by the sink it was asserting about). It is
+    // funded ENTIRELY in-file, which is what the entry above says a lane
+    // touching this file must now do: the VALUE-input clause it subsumes was
+    // merged into it, 5-e's independence sentence moved into it (5-e's ladder
+    // is "all three" accordingly), 5-c's mechanics list became a pointer at the
+    // CLAUDE.md that states them verbatim, and two near-duplicate method
+    // restatements in 5-f' were dropped. implement.md 29,940 -> 29,975 (+35),
+    // no other file touched, reconciling 200,814 -> 200,849. The RUNNER-UP
+    // changed hands by 14 B: implement.md is now runner-up, verify.md third.
+    // Neither cap moved and the floor below still clears `corpus - runnerUp`.
+    //
+    // A SECOND lesson from that run had nowhere to land and is NOT here:
+    // `.claude/rules/testing.md` is at its `tests/**` payload cap exactly, so
+    // the mutation-probe rule it would carry (a guard no probe can red is not
+    // thereby dead -- say which of equivalent / unreachable / defensive it is)
+    // is a checklist row on go-to-k/cdkd#2940 instead, with its measured cost.
+    //
+    // Cap headroom, in size order: triage.md 6 B, implement.md 25 B,
+    // verify.md 39 B. All three open with a compression pass, not an
     // addition.
     //
     // go-to-k/cdkd#2341's third lesson is deliberately NOT here. It targets
@@ -410,9 +431,9 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // a narrative. It stays on that issue as a stated residual behind
     // go-to-k/cdkd#2424's stage split, which is the structural answer this
     // record has now predicted twice.
-    corpusBytes: 200_814,
+    corpusBytes: 200_849,
     largest: { file: 'triage.md', bytes: 29_994 },
-    runnerUp: { file: 'verify.md', bytes: 29_961 },
+    runnerUp: { file: 'implement.md', bytes: 29_975 },
   },
 };
 

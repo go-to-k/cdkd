@@ -161,8 +161,7 @@ named, grep the shape across the repo. Rules, each bought by a measured miss:
 ### 5-c. The fix itself
 
 Do the fix in the lane's tree, matching the existing pattern. CLAUDE.md owns
-the mechanics — ESM `.js` imports, `vp run build` after every source change,
-a unit test under `tests/unit/**` with the AWS SDK `vi.mock`ed; make that test
+the mechanics (ESM imports, the rebuild, the mocked unit test); make that test
 **fail without the fix and pass with it**. **Check whether the artifact
 already has a test harness** — `.claude/hooks/` carries per-hook `*.test.sh`
 suites run by `run-tests.sh`, not visible from `tests/unit/**`.
@@ -254,9 +253,8 @@ probe, enumerate the arms reaching that line and state per arm what implies it
 (go-to-k/cdkd#3088: "the other conjuncts imply it" held under neither ruleset,
 one arm found per review round); (3)
 **did the command run where you think it did?** (appendix, "Bash cwd silent
-reset" — absolute paths, and a property the wrong tree cannot fake). Plus one
-fixture shape: **an expected value must be an INDEPENDENT variable from the one
-under test.** Only after all four does "the fence is weak" remain.
+reset" — absolute paths, and a property the wrong tree cannot fake). Only after
+all three does "the fence is weak" remain.
 
 **A RED probe is void as easily as a green one** — the multi-copy anchor above
 is one way, and an edit that does not COMPILE is another: it fails the suite at
@@ -315,22 +313,25 @@ real tree:**
   it found a real unfiled bug, go-to-k/cdkd#2111); and, for GENERATED input,
   the UPSTREAM form not the generator's output (go-to-k/cdkd#2788's
   `/properties/X` prefix is one the generator strips, so the probe "proving"
-  discrimination used a shape no fixture holds). It governs a probe's VALUE
-  input too — ask what property of it the defect depends on (a
-  mask-before-stringify fix stayed green under its own mutation until the
-  secret was a JSON document, not a scalar).
+  discrimination used a shape no fixture holds).
+- **A narrow VALUE input and an assertion's EXEMPTION are one defect: the
+  enumeration the property replaced, each exempt case an unproved claim about
+  the SUBJECT that the TEST's shape justified** (go-to-k/cdkd#3275 exempted
+  `\t`, then `\n` on the same reasoning; the sink strips both, so the assertion
+  twice admitted the shape it exists to catch). Assert the subject's whole
+  class, per message not a join. **An expected value must be an INDEPENDENT
+  variable from the one under test** — so where that class is TRANSCRIBED
+  rather than imported, fence the pair by behaviour.
 - **Delete the thing the fence REQUIRES and watch it fail.** An OR of
   whole-file substrings is satisfied by any one; a population derived from the
   DEFECT itself drops the subject out instead of failing (a gate-parity test
   selecting gates by their own condition stayed green with two gates disarmed).
   A population derived from an OPTIONAL language feature (a type annotation, an
   explicit return type, `implements`) is derivable-around for free — derive
-  from a relation the write CANNOT omit, and ask what this would look like had
-  the author not written the optional part.
+  from a relation the write CANNOT omit.
 - **Watch the FLOOR for the same collapse** — a floor naming only the file
   the defect lives in is satisfied BY the collapse; a floor computed from the
-  pool it guards is unfalsifiable (emptying the pool left it green). Write
-  the expected count as a LITERAL from a source the fence does not read. **A
+  pool it guards is unfalsifiable (emptying the pool left it green). **A
   RELATION also needs a floor on the COMPARAND** — walk floors count what you
   ITERATED, and a set-vs-set claim is vacuously TRUE when the other operand
   parses empty (go-to-k/cdkd#2788: 134 fixtures compared nothing under two

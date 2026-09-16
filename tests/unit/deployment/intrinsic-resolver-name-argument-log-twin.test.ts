@@ -45,6 +45,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { StateError } from '../../../src/utils/error-handler.js';
 import { isThrottlingError } from '../../../src/deployment/retryable-errors.js';
+import { displaySafe } from '../../../src/utils/display-safe.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { ExportIndexStore } from '../../../src/state/export-index-store.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -2228,5 +2229,37 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
     expect(error.message).toContain("stack 'us-east-1-app-***'");
     expect(error.message).toContain('(us-east-1)');
     expectNowhere(`us-east-1-app-${PIN}`, error.message);
+  });
+
+  it('PAIR FENCE: the transcribed sink class still matches displaySafe', () => {
+    // `sanitizingBackend`'s `shown` and THE INVARIANT's assertion both spell the
+    // sink's class as `/[^ -~]/`. That is a TRANSCRIPTION of
+    // `sanitizeAsciiOnly` in `src/utils/display-safe.ts`, deliberately not an
+    // import: an expected value must stay an INDEPENDENT variable from the one
+    // under test, or the property asserts only that the subject agrees with
+    // itself. The cost of independence is silent drift -- widen `displaySafe`'s
+    // class and both copies keep passing while no longer describing the sink --
+    // so the two are paired here by BEHAVIOUR rather than by sharing a regex.
+    //
+    // Probed in an INTERIOR position: `sanitizeAsciiOnly` ends in `.trim()`, so
+    // a character at either end is removed for a second reason and cannot tell
+    // the class apart from the trim.
+    const TRANSCRIBED = /[^ -~]/;
+    let checked = 0;
+    for (let cp = 0; cp <= 0x2fff; cp++) {
+      const ch = String.fromCodePoint(cp);
+      const probe = `a${ch}b`;
+      expect(
+        displaySafe(probe, { asciiOnly: true }) === probe,
+        `U+${cp.toString(16).toUpperCase().padStart(4, '0')}`
+      ).toBe(!TRANSCRIBED.test(ch));
+      checked++;
+    }
+    // Floor against an early exit or a `continue` that skips the range -- NOT
+    // against deleting the assertion above, which no counter in the same loop
+    // can see. Probed by widening `sanitizeAsciiOnly` to `/[^\t -~]/`: this
+    // case reds at `U+0009`, the character round 4 of PR go-to-k/cdkd#3275
+    // exempted here on the belief that the sink kept it.
+    expect(checked).toBe(0x3000);
   });
 });
