@@ -498,7 +498,7 @@ Index of every area: [code-layout.md](code-layout.md).
     (5s/8s/8s, since it passes `initialDelayMs` and leaves `maxDelayMs` at the
     8s default), and `describe-type.ts`'s throttle-only retry.
   - Dense-grid rationale: cdkd creates an IAM entity and consumes it ~1-3s
-    later, so propagation resolves in single-digit seconds — the generic
+    later, so propagation usually resolves within seconds — the generic
     4s/8s steps overshoot (measured: ~10.2s of a 25.9s deploy burned in
     backoff) while throttling genuinely wants exponential backoff. The dense
     budget is deliberately >= the generic one; the class is re-evaluated per

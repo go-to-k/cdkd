@@ -7,7 +7,7 @@
  * Kept as its own array — and composed back into the full transient table
  * below — so there is exactly ONE list per pattern (no parallel classifier to
  * drift). It exists because this class has a materially different RECOVERY
- * SHAPE from the other transient errors: it resolves in single-digit seconds,
+ * SHAPE from the other transient errors: it usually resolves within seconds,
  * so `withRetry` polls it on a dense sub-second schedule instead of the
  * generic 1s/2s/4s/8s exponential backoff (which is right for throttling and
  * for long resource-state transitions, and wrong here — see
@@ -152,6 +152,23 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // can hit this. CloudFormation tolerates it via deployment latency; cdkd
   // retries. See issue #805.
   'Caught ServiceAccessDeniedException',
+  // Lambda CapacityProvider (Lambda Managed Instances): the Cloud Control
+  // CreateResource references a same-stack operator IAM role, which CDK's
+  // `lambda.CapacityProvider` creates in the SAME stack, and cdkd issues the
+  // create seconds after the role's CREATE. The handler rejects a role that has
+  // not propagated with "The operator role is invalid or doesn't have
+  // sufficient permissions. Verify the role and permissions and try again."
+  // (InvalidRequest, HTTP 400, SDK Attempt Count: 1), so it was SINGLE-SHOT:
+  // no pattern here matched it ('does not have required permissions' is a
+  // different sentence). Issue #3174: the first deploy of its fixture failed
+  // this way, and a probe against a fresh role got this message 8s after the
+  // role's policy was attached and a SUCCESS at 23s (one sample, 2026-09-15),
+  // inside the dense grid's ~47.75s of backoff. Anchored on the handler's
+  // full "operator role" sentence so a genuinely missing permission only burns
+  // the bounded retries before surfacing, and no other service's authorization
+  // failure false-positives into the retry loop. CloudFormation tolerates it
+  // via deployment latency; cdkd retries.
+  "The operator role is invalid or doesn't have sufficient permissions",
   // CodeDeploy DeploymentGroup: the Cloud Control CreateResource references a
   // same-stack service IAM role, but cdkd's fast path issues the create before
   // IAM finishes propagating the just-created role's trust policy, so AWS
@@ -1313,7 +1330,7 @@ export function retryClassificationText(error: unknown): string {
  * This does NOT decide retryability — every pattern it matches is already in
  * {@link RETRYABLE_ERROR_MESSAGE_PATTERNS}. It only selects the retry CADENCE:
  * `withRetry` polls this class densely (sub-second initial delay, low cap)
- * because IAM propagation resolves in single-digit seconds, whereas the
+ * because IAM propagation usually resolves within seconds, whereas the
  * generic exponential schedule is tuned for throttling and long resource-state
  * transitions.
  *
