@@ -45,6 +45,7 @@ import { withRetry } from './retry.js';
 import {
   dynamicReferenceTokens,
   maskSecretsInText,
+  maskSecretsInError,
   recordSecretExpression,
   forgetSecretExpression,
   isRecordedSecretExpression,
@@ -3437,10 +3438,12 @@ export class IntrinsicFunctionResolver {
         // merely forwards
         // ([#3171](https://github.com/go-to-k/cdkd/issues/3171)); a name this
         // resolver hands to another module unmasked, where that module quotes
-        // it back ([#3234](https://github.com/go-to-k/cdkd/issues/3234) —
-        // `resolveGetStackOutput`'s uncaught state read; the `Fn::ImportValue`
-        // sibling catches and masks the same shape); and a PRODUCER's own
-        // output key, whose bound `describeAvailableOutputs`' docstring owns.
+        // it back — `resolveGetStackOutput`'s state read was that, and
+        // [#3234](https://github.com/go-to-k/cdkd/issues/3234) closed it by
+        // masking at the hand-over frame, while the `Fn::ImportValue` sibling
+        // still masks its caught message with the BAGS alone and so keeps the
+        // positional half of the class open; and a PRODUCER's own output key,
+        // whose bound `describeAvailableOutputs`' docstring owns.
         // Four review rounds on PR go-to-k/cdkd#3176 each found one more that
         // a tally here had missed, and `.claude/rules/layout-deployment-secrets.md`
         // records five rounds on go-to-k/cdkd#2803 refuting the same shape of
@@ -8027,6 +8030,12 @@ export class IntrinsicFunctionResolver {
       return await fetch;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      // Both halves are the spelling THIS line prints below, so the pair and
+      // the rendering cannot disagree about what "masked" means.
+      const cfnNameMask = this.positionalNameMask([
+        [stackName, this.maskSecretsForLog(stackName, context)],
+        [region, this.maskSecretsForLog(loggedRegionText, context)],
+      ]);
       this.logger.warn(
         // MASKED, the exact twin of `lookupCfnExport`'s own line (issue #2133
         // review), and this one prints at DEFAULT verbosity too. `stackName`
@@ -8038,9 +8047,17 @@ export class IntrinsicFunctionResolver {
         `Fn::GetStackOutput: CloudFormation DescribeStacks fallback failed for stack ` +
           // `message` masked too since issue #2827 — `DescribeStacks` quotes
           // the stack name back, and `region` is itself a resolved value.
+          //
+          // The AWS text goes through the POSITIONAL pass first (issue #3234):
+          // this frame hands `stackName` to `DescribeStacks` raw, and
+          // `maskSecretsForLog` over the returned sentence finds no twin for it
+          // and falls to the needle pass, whose substring arm cannot see a
+          // sub-floor secret assembled into the name. Same class, reached from
+          // the same caller as the state read below (this is its own method,
+          // not the same frame); the two share `positionalNameMask`.
           `'${this.maskSecretsForLog(stackName, context)}' ` +
           `(${this.maskSecretsForLog(loggedRegionText, context)}): ` +
-          `${this.maskSecretsForLog(message, context)}. ` +
+          `${this.maskSecretsForLog(cfnNameMask ? cfnNameMask(message) : message, context)}. ` +
           `Grant cloudformation:DescribeStacks to resolve outputs from CloudFormation-managed ` +
           `stacks, or pass --no-cfn-fallback to disable the fallback.`
       );
@@ -8351,9 +8368,37 @@ export class IntrinsicFunctionResolver {
     // state bucket from the role ARN's account ID, build an ephemeral
     // S3StateBackend pointed at it with the assumed credentials, then
     // read the producer's state.
-    const stateData = roleArn
-      ? await this.getCrossAccountStackState(roleArn, stackName, region, context)
-      : await this.getSameAccountStackState(stackName, region, context);
+    //
+    // MASKED AT THIS BOUNDARY (issue
+    // [#3234](https://github.com/go-to-k/cdkd/issues/3234)), and it has to be
+    // HERE rather than at the throw: the reads take the RAW `stackName` and
+    // `region` because those are state-KEY segments, and `S3StateBackend` — a
+    // module that holds no secrets bag — quotes them back through
+    // `displaySafe`, an ASCII sanitizer rather than a masker. This frame is the
+    // last one holding both the raw names and their masked spellings, so it is
+    // the only place the substitution can be exact.
+    //
+    // The `Fn::ImportValue` sibling catches its own read, but masks the caught
+    // message with the BAGS alone (`maskSecretsForLog` over a composed AWS
+    // sentence finds no twin and falls to the needle pass). That closes the
+    // 4+ character class there and leaves the POSITIONAL half open — the same
+    // gap in the same shape. Do not read it as the pattern this site is
+    // catching up to.
+    let stateData: Awaited<ReturnType<S3StateBackend['getState']>>;
+    try {
+      stateData = roleArn
+        ? await this.getCrossAccountStackState(roleArn, stackName, region, context)
+        : await this.getSameAccountStackState(stackName, region, context);
+    } catch (error) {
+      this.maskStateReadError(
+        error,
+        [
+          [stackName, loggedStackName],
+          [region, loggedRegion],
+        ],
+        context
+      );
+    }
     if (!stateData) {
       // CloudFormation fallback (issue #1697): the producer may be a
       // CloudFormation-managed stack (deployed via `cdk deploy` / raw CFn)
@@ -8540,6 +8585,183 @@ export class IntrinsicFunctionResolver {
       sourceRegion: producerRegion,
       outputName,
     });
+  }
+
+  /**
+   * A text transform replacing each RAW name this frame handed to another
+   * module with the masked spelling it holds for it (issue
+   * [#3234](https://github.com/go-to-k/cdkd/issues/3234)), or `undefined` when
+   * no pair carries a mask.
+   *
+   * This is what the BAGS structurally cannot do. A bag masks by VALUE, and a
+   * plaintext shorter than `MIN_NEEDLE_LENGTH` matches only as the WHOLE text,
+   * so a 1-3 character secret an `Fn::Sub` assembled into a longer name is
+   * invisible to it — while this frame knows the exact spans.
+   *
+   * A pair that DOES carry a mask contributes its raw spelling AND the spelling
+   * the reader will actually see. `S3StateBackend` prints names through
+   * `displaySafe(..., { asciiOnly: true })`, which REPLACES every non-printable
+   * character with a space and then trims, so a secret carrying one is a
+   * DIFFERENT string by the time it is quoted back and matching the raw form
+   * alone would miss it while reporting success — the one-string-space rule
+   * `outputs-export-alias.ts` states for its own scan: the text that was tested
+   * and the text that is printed must be the same text. The CloudFormation
+   * fallback does NOT sanitize (it rethrows the SDK's message as it is), so the
+   * second spelling is inert at that call site and costs one comparison.
+   *
+   * NO MINIMUM LENGTH beyond non-empty, deliberately. A one-character masked
+   * name rewrites every occurrence of that character in the sentence
+   * (`a` -> `***` turns `us-east-1` into `us-e***st-1`), which is unreadable
+   * but SAFE — the direction this function must never get wrong is printing
+   * too little, not too much, and a floor here would be a floor on masking.
+   *
+   * `raw !== ''` is DEFENSIVE, and it is NOT the guard that handles a name
+   * whose sanitized form is empty — that one inspects `shown`, below, and its
+   * own comment says why. What this clause is not is redundant against
+   * `raw !== masked`: `rememberLogTwin` has no empty-key guard and
+   * `splitLogTwins` registers every piece it produces, so `registeredLogTwin`
+   * can answer `***` for the empty string and make `maskSecretsForLog('')`
+   * differ from `''`. Neither call site can reach it — both refuse an empty
+   * name upstream — so it fences nothing measured today.
+   *
+   * LONGEST KEY FIRST — over every key, raw and sanitized alike, which is what
+   * the comparator sees — so a key that contains another is rewritten as itself
+   * rather than having the inner one replaced underneath it. **That ordering
+   * is DEFENSIVE and this suite does not distinguish it** — measured: reversing
+   * the comparator leaves every case green. The reason is that no case here
+   * builds two raws that NEST: the one case with two surviving pairs masks a
+   * stack name and a region that share no substring, and everywhere else one
+   * pair is dropped for carrying no mask. It earns its place on the shape that
+   * DOES diverge — a shorter raw whose mask is not a prefix of the longer's
+   * (`q7` -> `***` beside `q7x` -> `***` turns `q7x` into `***x` shortest-first,
+   * leaking the `x`) — which needs two separately recorded secrets, one of them
+   * masked WHOLE, and is not constructed here. Recorded as measured rather than
+   * claimed fenced.
+   */
+  private positionalNameMask(
+    pairs: readonly (readonly [string, string])[]
+  ): ((text: string) => string) | undefined {
+    const substitutions = pairs
+      // DROP AN UNMASKED PAIR FIRST, and the order is the whole correctness
+      // argument rather than a tidying. Expanding first and filtering after
+      // tests the tuple that came out of the expansion, so for a pair carrying
+      // NO mask (`masked === raw`) the `[raw, raw]` entry is dropped while
+      // `[shown, raw]` survives — a transform that rewrites the SANITIZED
+      // spelling back into the RAW one. That un-does the `displaySafe` the
+      // printing module applied on purpose (issue #3003), re-opening the
+      // padded-name spoof `display-safe.ts` documents and putting a live
+      // escape sequence back on the terminal, and it corrupts unrelated text
+      // besides (`production` -> `prod uction` for a name `prod `). Measured,
+      // and a leading space is enough to reach it — no non-ASCII needed,
+      // because `trim()` is part of the transform.
+      .filter(([raw, masked]) => raw !== '' && raw !== masked)
+      .flatMap(([raw, masked]) => {
+        // THE INVARIANT, and the only thing to check when touching this: a
+        // substitution's REPLACEMENT must be at least as sanitized and at
+        // least as masked as its KEY. Three review rounds each broke it a
+        // different way and each was fixed by enumerating one more shape, so
+        // it is stated once here and enforced at construction instead.
+        //
+        // PER ENTRY, and deliberately not a claim about the COMPOSITION. Each
+        // replacement is masked against its OWN twin only, so one pair's
+        // secret can survive as a literal inside another's replacement — the
+        // longer key runs first and the shorter one no longer matches there.
+        // Measured, and the twin's SPAN is what decides it, so the spelling
+        // matters: stack `us-qq-1x` twinned `us-qq***x` beside region
+        // `us-qq-1` twinned `us-***-1` leaves the region's `qq` inside the
+        // stack entry's replacement. Twin the stack as `us-***-1x` instead —
+        // the reading where both names mask the shared secret — and nothing
+        // survives, which is why naming the span is part of the claim. That is
+        // the `q7`/`q7x` residual recorded at the
+        // sort, one composition over, and it is not a regression: every step
+        // replaces text with a value at least as masked, so the result is
+        // never weaker than the sentence the sink printed. Closing it means
+        // feeding each replacement through the other entries' masks here.
+        //
+        // The raw key is what a sink that did NOT sanitize prints, so it takes
+        // the twin as it is. The sanitized key is what a sink that DID prints,
+        // and its replacement is sanitized to match — the twin keeps the
+        // template's literal parts VERBATIM (only the secret span becomes
+        // `***`), so an unsanitized replacement there puts the control
+        // characters the printer had just removed back into the message, in
+        // the top-level text neither `formatError` nor the logger sanitizes.
+        const shown = displaySafe(raw, { asciiOnly: true });
+        if (shown === raw) return [[raw, masked] as const];
+        // Empty after sanitizing: substituting `''` splices the replacement
+        // between every character, so that key contributes nothing. The
+        // `shownMask` half of that test is UNREACHABLE and kept as the other
+        // side of one rule rather than as a live case — `masked !== raw` is
+        // already guaranteed above, so masking fired and the text contains
+        // `***`, which `displaySafe` preserves.
+        const shownMask = displaySafe(masked, { asciiOnly: true });
+        return shown === '' || shownMask === ''
+          ? [[raw, masked] as const]
+          : ([
+              [raw, masked],
+              [shown, shownMask],
+            ] as const);
+      })
+      .sort(([a], [b]) => b.length - a.length);
+    if (substitutions.length === 0) return undefined;
+    return (text: string): string => {
+      let out = text;
+      for (const [raw, masked] of substitutions) out = out.split(raw).join(masked);
+      return out;
+    };
+  }
+
+  /**
+   * Mask a failure raised by a module this resolver handed RAW names to (issue
+   * [#3234](https://github.com/go-to-k/cdkd/issues/3234)).
+   *
+   * Returns a masked CLONE of the whole cause chain, not a new wrapper, and
+   * that is the point: `formatError` renders `Caused by: <cause>`, so masking
+   * only a fresh top-level message leaves the original message one link down
+   * and prints it anyway. The clone keeps the class, every own descriptor
+   * (`markNonRetryable`'s non-enumerable symbol, `$metadata`, `Code`, `name`)
+   * and the chain shape, so every reader that classifies this error still
+   * does — see `maskSecretsInError`'s own doc.
+   *
+   * `pairs` are (raw, masked-log-text) for the names this frame handed over;
+   * {@link positionalNameMask} turns them into the transform and owns why.
+   */
+  private maskStateReadError(
+    error: unknown,
+    pairs: readonly (readonly [string, string])[],
+    context?: ResolverContext
+  ): never {
+    const extraMask = this.positionalNameMask(pairs);
+    // The SAME two bags in the SAME order as `maskSecretsForLog`, for the same
+    // reason (issue #1903 round 2): on a nested-stack child the parent's
+    // decrypted parameter plaintext lives in the inherited bag alone until a
+    // `{Ref: <Param>}` resolution copies it across.
+    //
+    // `extraMask` rides the FIRST pass only. It is not idempotent against
+    // itself in general — a masked spelling could in principle contain another
+    // pair's raw text — and re-running it over text the first pass already
+    // rewrote is how a second substitution would corrupt the first. One pass
+    // is also all it needs: `maskSecretsInError` walks the whole chain, so a
+    // single call reaches every link.
+    let masked: unknown = error;
+    let positional = extraMask;
+    for (const bag of [context?.inheritedSecrets, context?.recordedSecretValues]) {
+      if (!bag || bag.size === 0) continue;
+      masked = maskSecretsInError(masked, bag, positional);
+      positional = undefined;
+    }
+    // FAIL CLOSED when both bags are empty. An earlier revision deleted this
+    // arm, reasoning that a pair carries a mask only when `maskSecretsForLog`
+    // changed the name, which needs a twin or a bag, and a twin's spans come
+    // from a recorded secret — so `extraMask` should imply a non-empty bag.
+    // That argument is TRUE today and rests on things nothing fences: that
+    // `inheritedSecrets` is attached only when it is non-empty, and that every
+    // twin source also writes a bag entry. The cost of being wrong is not a
+    // worse message but the RAW name rethrown in the clear, so the arm stays
+    // and the invariant is the reason it is unreachable, not the reason it is
+    // absent. `maskSecretsInError` with an empty bag and a transform is
+    // exactly the shape its widened early return admits.
+    if (positional) masked = maskSecretsInError(masked, new Map(), positional);
+    throw masked;
   }
 
   /**

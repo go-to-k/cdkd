@@ -6822,11 +6822,36 @@ export function errorCauseChain(root: Error): Error[] {
  * Returns the ORIGINAL object by identity when NOTHING ANYWHERE IN THE CHAIN
  * changed, so a non-secret failure keeps referential equality and the common
  * path allocates nothing.
+ *
+ * `extraMask` is an OPTIONAL text transform run on every link's `message` and
+ * `stack` BEFORE the bag pass, for the class the bag structurally cannot reach
+ * (issue [#3234](https://github.com/go-to-k/cdkd/issues/3234)): a name masked
+ * BY POSITION rather than by value. A bag masks a sub-`MIN_NEEDLE_LENGTH`
+ * plaintext only as the WHOLE text, so a 1-3 character secret EMBEDDED in a
+ * longer name that another module quoted back is invisible here — while the
+ * caller that resolved the name holds both it and its masked log text and can
+ * substitute one for the other exactly. BEFORE rather than after, because the
+ * substitution matches the RAW name: a bag pass that had already rewritten part
+ * of it would leave nothing for the transform to find.
+ *
+ * It is a pure `(text) => text` so this module stays a no-import LEAF. With
+ * `extraMask` supplied the empty-bag short-circuit no longer applies — an empty
+ * bag plus a positional transform still has work to do.
+ *
+ * THE BOUND, unchanged by `extraMask`: a thrown value that is not an `Error`
+ * is handed back BY IDENTITY and masked by neither pass. A caller whose
+ * callees can reject with a non-`Error` owes that case its own handling.
  */
-export function maskSecretsInError<T>(error: T, secrets: RecordedSecretValues): T {
-  if (secrets.size === 0 || !(error instanceof Error)) return error;
+export function maskSecretsInError<T>(
+  error: T,
+  secrets: RecordedSecretValues,
+  extraMask?: (text: string) => string
+): T {
+  if (!(error instanceof Error) || (secrets.size === 0 && !extraMask)) return error;
+  const maskText = (text: string): string =>
+    maskSecretsInText(extraMask ? extraMask(text) : text, secrets);
   const chain = errorCauseChain(error);
-  const maskedMessages = chain.map((link) => maskSecretsInText(link.message, secrets));
+  const maskedMessages = chain.map((link) => maskText(link.message));
   if (maskedMessages.every((masked, i) => masked === chain[i]!.message)) return error;
 
   const clones = new Map<Error, Error>();
@@ -6856,7 +6881,7 @@ export function maskSecretsInError<T>(error: T, secrets: RecordedSecretValues): 
     const originalStack: unknown = (original as { stack?: unknown }).stack;
     if (typeof originalStack === 'string') {
       Object.defineProperty(clone, 'stack', {
-        value: maskSecretsInText(originalStack, secrets),
+        value: maskText(originalStack),
         writable: true,
         enumerable: false,
         configurable: true,
