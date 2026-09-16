@@ -84,7 +84,8 @@ function mockBackend(
   stacks: Array<{
     stackName: string;
     region: string;
-    outputs?: Record<string, unknown>;
+    /** Set to a non-object to plant a damaged record; OMIT the key for `{}`. */
+    outputs?: Record<string, unknown> | null;
     /** Omitted = a pre-v9 record (issue #2193): every output key importable. */
     exportNames?: string[];
     /** State record's lastModified; rebuild keeps the newer on a collision (#2194). */
@@ -104,7 +105,13 @@ function mockBackend(
           stackName: found.stackName,
           region: found.region,
           resources: {},
-          outputs: found.outputs ?? {},
+          // `'outputs' in found`, NOT `found.outputs ?? {}` (review of
+          // go-to-k/cdkd#3206). The `??` COERCED a planted `null` bag into a
+          // healthy `{}`, so a null-bag case could not exist here at all — it
+          // would have tested an empty record while reading as a damaged one,
+          // the fixture-decides-the-outcome trap. A row that omits the key
+          // still gets `{}`; a row that sets it gets exactly what it set.
+          outputs: ('outputs' in found ? found.outputs : {}) as Record<string, unknown>,
           ...(found.exportNames !== undefined && { exportNames: found.exportNames }),
           lastModified: found.lastModified ?? 1234,
         },
@@ -236,6 +243,14 @@ describe('ExportIndexStore', () => {
     for (const [label, damaged] of [
       ['a string outputs bag', { outputs: 'abcdef' as unknown as Record<string, unknown> }],
       ['a list outputs bag', { outputs: ['a', 'b'] as unknown as Record<string, unknown> }],
+      // FALSY, and the row three reviewers found missing (review of
+      // go-to-k/cdkd#3206). The three original rows are all TRUTHY, so the
+      // pre-existing `!state.outputs` skip above the guard dominated it for
+      // every falsy shape and this table could not see that — `null` was
+      // dropped with no warning, which is the exact defect the warning exists
+      // to close, at the shape the rest of this PR tests first.
+      ['a null outputs bag', { outputs: null as unknown as Record<string, unknown> }],
+      ['a zero outputs bag', { outputs: 0 as unknown as Record<string, unknown> }],
       [
         'a non-array exportNames',
         {
@@ -289,6 +304,38 @@ describe('ExportIndexStore', () => {
         expect(said).toContain('CONSUMER');
       });
     }
+
+    it('FLOOR: a record with NO outputs contributes nothing and stays SILENT (#3192)', async () => {
+      // The other side of the split the review forced. `absent` must keep the
+      // silent skip — a record with no `outputs` is one cdkd writes on purpose
+      // (the deploy's failure-path saves emit `outputs: currentState.outputs`,
+      // which `JSON.stringify` drops when undefined), so warning here would
+      // fire on ordinary state on every rebuild. Without this case, "let every
+      // falsy shape through to the guard" would be satisfied by warning on
+      // absence too.
+      const s3 = mockS3(async (cmd) => {
+        if (cmd.constructor.name === 'GetObjectCommand') throw s3ErrorWith('NoSuchKey', 404);
+        if (cmd.constructor.name === 'PutObjectCommand') return { ETag: '"new-etag"' };
+        throw new Error(`unexpected command ${cmd.constructor.name}`);
+      });
+      const backend = mockBackend([
+        // `outputs` OMITTED — the helper gives it `{}`, which is what an
+        // absent bag reads as on the load path.
+        { stackName: 'NoOutputs', region: 'us-east-1' },
+        {
+          stackName: 'Healthy',
+          region: 'us-east-1',
+          outputs: { Topic: 'topic-1' },
+          exportNames: ['Topic'],
+        },
+      ]);
+      const store = new ExportIndexStore(s3, 'b', 'cdkd', 'us-east-1', backend);
+
+      expect(await store.lookup('Topic')).toBeDefined();
+      expect(warnings().join('\n'), 'an ordinary no-outputs record was warned about').not.toContain(
+        'NoOutputs'
+      );
+    });
 
     it('rebuild WARNS when two stacks publish one export name, and keeps the later one (#2193)', async () => {
       const s3 = mockS3(async (cmd) => {

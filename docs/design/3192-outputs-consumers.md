@@ -95,5 +95,26 @@ lives in a file whose edit pulls a real-AWS integration gate into the change:
 | The deploy engine's persisted-outputs carry | `integ-destroy` and `integ-broad` |
 
 Their `Fn::ImportValue` halves are already covered for free, because those go
-through `importableOutputKeys`. What remains is tracked separately so each can
-be taken with the gate run it needs.
+through `importableOutputKeys`. What remains is tracked by
+[#3207](https://github.com/go-to-k/cdkd/issues/3207), which names each site and
+the gate it drags, so it can be taken when a session is free to spend the runs.
+
+A fifth site joins them there and is NOT in the table above, because
+go-to-k/cdkd#3192's own grep did not name it: the resolver's
+`Fn::GetStackOutput` arm reads the bag through a local variable, so the
+`Object.(entries|keys|values)` filter that built the issue's site list skipped
+it. `Object.hasOwn('abcdef', '0')` is true, so it resolves a fabricated
+cross-stack value into a consumer's template.
+
+## 5. One residual inside the shipped guard
+
+`hasReadableExportSet` answers TRUE for `exportNames: [0]` over a bag holding a
+`"0"` key, while `importableOutputKeys` answers `[]` — so the exports-index
+rebuild drops that producer with no warning, the same silent
+contribute-nothing shape the warning exists to close, one level down.
+
+It is left as-is deliberately. Closing it means making "readable" mean "yields
+at least one key", which is false: `exportNames: []` is a legitimate record
+that exports nothing, and a predicate that cannot tell those apart would warn
+on every such stack. The cost is bounded to a missing warning on a
+hand-edited record; nothing is fabricated, because the key list is still empty.

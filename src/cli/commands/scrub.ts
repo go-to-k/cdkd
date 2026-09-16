@@ -2089,7 +2089,12 @@ export function orderScrubTargets<
  */
 function malformedRecordsAuditedError(
   stackNames: readonly string[],
-  outputStackNames: readonly string[] = []
+  // No DEFAULT: the function is module-private, both call sites pass both
+  // lists, and a default is the only way to reach `parts.length === 0` — which
+  // renders a message with a leading space and no subject (review of
+  // go-to-k/cdkd#3206). Requiring the argument makes that unreachable at the
+  // type level rather than by inspection.
+  outputStackNames: readonly string[]
 ): ScrubRefusalError {
   // One sentence per CONTAINER, and only for a container that actually has
   // names (issue go-to-k/cdkd#3192). A record can be malformed in either alone,

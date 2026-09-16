@@ -636,7 +636,16 @@ export class ExportIndexStore {
     // review). `listStacks` order is otherwise arbitrary.
     const survivorModifiedAt = new Map<string, number>();
     for (const { ref, state } of results) {
-      if (!state || !state.outputs) continue;
+      if (!state) continue;
+      // ABSENT is the only SILENT skip, and splitting it off the truthiness
+      // test above is the whole point (review of go-to-k/cdkd#3206). A record
+      // with no `outputs` is one cdkd writes on purpose, so it must stay
+      // quiet; but `!state.outputs` also swallows every FALSY damaged shape —
+      // `null`, `''`, `0`, `false` — and `null` is the very shape this issue
+      // measured laundering to `{}` elsewhere. Dropped there, the record never
+      // reached the warning below, so the producer went unnamed and the only
+      // symptom was an `Fn::ImportValue` failing later in a DIFFERENT stack.
+      if (state.outputs === undefined) continue;
       const region = ref.region ?? this.region;
       // SAY SO when a record contributes nothing because its `outputs` bag or
       // its `exportNames` field could not be read (issue go-to-k/cdkd#3192).

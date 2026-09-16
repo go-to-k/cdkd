@@ -321,6 +321,19 @@ describe('the malformed-outputs REFUSAL text (issue go-to-k/cdkd#3192)', () => {
     const controlOnly = String.fromCharCode(0x00, 0x01);
     expect(malformedOutputsRefusalMessage(controlOnly, 'us-east-1')).toContain(UNRENDERABLE);
   });
+
+  it('CAPS a multi-kilobyte name so the remedy command stays on screen', () => {
+    // The cap is inherited from the shared `safeIdentifier`, and inheritance is
+    // exactly what stops being true when someone inlines a helper — so each
+    // new message gets its own case (review of go-to-k/cdkd#3206). A stack name
+    // can arrive from an S3 key, so this is reachable rather than theoretical.
+    // Asserted as a DISTANCE, not `endsWith`: the template satisfies an
+    // endsWith check with or without a cap.
+    const long = malformedOutputsRefusalMessage('q'.repeat(5000), 'us-east-1');
+    expect(long).toContain(`${'q'.repeat(128)}...`);
+    expect(long).toContain('cdkd state show');
+    expect(long.length).toBeLessThan(1500);
+  });
 });
 
 describe('the malformed export-SOURCE warning (issue go-to-k/cdkd#3192)', () => {
@@ -355,6 +368,16 @@ describe('the malformed export-SOURCE warning (issue go-to-k/cdkd#3192)', () => 
     expect(w).not.toContain(`${evil} --stack-region`);
     expect(w.split('\n')).toHaveLength(1);
     expect(malformedExportSourceWarning(String.fromCharCode(0x00), 'r')).toContain(UNRENDERABLE);
+  });
+
+  it('CAPS a multi-kilobyte producer name too', () => {
+    // Same reason as the refusal's own cap case, and this one matters more:
+    // the producer name here comes off an S3 KEY during a rebuild, with no
+    // user in the loop to have typed it.
+    const long = malformedExportSourceWarning('q'.repeat(5000), 'us-east-1');
+    expect(long).toContain(`${'q'.repeat(128)}...`);
+    expect(long).toContain('cdkd state show');
+    expect(long.length).toBeLessThan(1500);
   });
 });
 
@@ -670,6 +693,25 @@ describe('the user-facing text', () => {
       branch.indexOf('malformedRecords.length > 0'),
       'the finding is raised BELOW `options.fail`, so ScrubNeededError (exit 1, silent) fires ' +
         'first and reports "scrub found a leak" for a record scrub could not read.'
+    ).toBeLessThan(branch.indexOf('if (options.fail)'));
+
+    // The `outputs` half gets BOTH assertions too (review of
+    // go-to-k/cdkd#3206). Its first cut asserted only that the identifier
+    // appeared SOMEWHERE IN THE FILE, and the reviewer measured the cost:
+    // splitting the throw so the outputs arm sat BELOW `if (options.fail)`
+    // left 107 of 107 cases green while re-introducing #3018's round-1 defect
+    // for the new container — `--dry-run --fail` over an unreadable outputs
+    // bag exiting 1 through the SILENT ScrubNeededError, with the
+    // audited-record message never printed.
+    expect(
+      branch,
+      'the malformed-OUTPUTS finding is not raised inside the --dry-run branch, so it never ' +
+        'runs: that branch returns.'
+    ).toContain('malformedOutputRecords.length > 0');
+    expect(
+      branch.indexOf('malformedOutputRecords.length > 0'),
+      'the outputs finding is raised BELOW `options.fail`, so ScrubNeededError (exit 1, silent) ' +
+        'fires first and reports "scrub found a leak" for outputs scrub could not read.'
     ).toBeLessThan(branch.indexOf('if (options.fail)'));
   });
 });
@@ -1047,8 +1089,13 @@ describe('write-capable commands refuse; read-only ones repair', () => {
    * that only checks the call exists stays green through exactly that move.
    */
   const FIRST_OUTPUTS_USE: Record<string, string> = {
-    // The secret-bearing-key scan; both redaction passes and the save follow.
-    'src/cli/commands/scrub.ts': 'Object.keys(state.outputs',
+    // The `isOutputSuppressed(...)` read in the Export.Name resolve loop —
+    // TIGHTENED from `Object.keys(state.outputs` (review of
+    // go-to-k/cdkd#3206), which sits ~5,500 stripped characters LATER, so a
+    // guard moved between the two would have kept this fence green while the
+    // bag was already read. Both are inside `scrubStack`; the earlier one is
+    // the dominance question.
+    'src/cli/commands/scrub.ts': 'state.outputs ?? {}',
     // The state literal that carries the bag into `saveState`.
     'src/cli/commands/import.ts': 'existingState?.outputs',
     // `rewriteResourceReferences`, which rebuilds the bag from
