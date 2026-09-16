@@ -8609,6 +8609,12 @@ export class IntrinsicFunctionResolver {
    * fallback does NOT sanitize (it rethrows the SDK's message as it is), so the
    * second spelling is inert at that call site and costs one comparison.
    *
+   * NO MINIMUM LENGTH beyond non-empty, deliberately. A one-character masked
+   * name rewrites every occurrence of that character in the sentence
+   * (`a` -> `***` turns `us-east-1` into `us-e***st-1`), which is unreadable
+   * but SAFE — the direction this function must never get wrong is printing
+   * too little, not too much, and a floor here would be a floor on masking.
+   *
    * `raw !== ''` is DEFENSIVE, and it is NOT the guard that handles a name
    * whose sanitized form is empty — that one inspects `shown`, below, and its
    * own comment says why. What this clause is not is redundant against
@@ -8659,9 +8665,14 @@ export class IntrinsicFunctionResolver {
         // PER ENTRY, and deliberately not a claim about the COMPOSITION. Each
         // replacement is masked against its OWN twin only, so one pair's
         // secret can survive as a literal inside another's replacement — the
-        // longer key runs first and the shorter one no longer matches there
-        // (measured: `us-qq-1x` / `us-qq-1` leaves the region's `qq` inside the
-        // stack entry's twin). That is the `q7`/`q7x` residual recorded at the
+        // longer key runs first and the shorter one no longer matches there.
+        // Measured, and the twin's SPAN is what decides it, so the spelling
+        // matters: stack `us-qq-1x` twinned `us-qq***x` beside region
+        // `us-qq-1` twinned `us-***-1` leaves the region's `qq` inside the
+        // stack entry's replacement. Twin the stack as `us-***-1x` instead —
+        // the reading where both names mask the shared secret — and nothing
+        // survives, which is why naming the span is part of the claim. That is
+        // the `q7`/`q7x` residual recorded at the
         // sort, one composition over, and it is not a regression: every step
         // replaces text with a value at least as masked, so the result is
         // never weaker than the sentence the sink printed. Closing it means

@@ -2130,20 +2130,32 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
     // parts verbatim and so can carry a control character of its own; that is
     // `maskSecretsForLog`'s pre-existing behaviour at a different site, not
     // something this catch owns.
+    // Interior, trailing, TAB and NEWLINE — the last two because the sink
+    // strips them exactly as it strips `\x01`, so a whitelist for either is a
+    // hole. `plain-${P}` carries no offending character on purpose: it is the
+    // `shown === raw` single-entry branch, where the pair must still mask.
     const ctl = String.fromCharCode(1);
-    for (const name of [`pro${ctl}d-\${P}`, `svc-\${P}${ctl}`, 'pro\td-${P}', 'plain-${P}']) {
+    for (const name of [
+      `pro${ctl}d-\${P}`,
+      `svc-\${P}${ctl}`,
+      'pro\td-${P}',
+      'pro\nd-${P}',
+      'plain-${P}',
+    ]) {
       const raw = name.replace('${P}', PIN);
       const error = await errorOf(
         producer(sub(name)),
         makeContext({ stateBackend: sanitizingBackend(raw) })
       );
-      const chain = chainMessages(error).join('\n');
-      // `\n` is the JOIN above, nothing the sink produced. TAB is deliberately
-      // NOT whitelisted: the sink's class is `/[^ -~]/`, which strips it too,
-      // so admitting `\t` would let a name carrying one restore it and still
-      // pass — the exact shape this case exists to catch.
-      expect(chain, `for ${JSON.stringify(name)}`).not.toMatch(/[^\n -~]/);
-      expect(chain).not.toContain(PIN);
+      // PER MESSAGE, so the assertion carries NO whitelist at all. Joining and
+      // then exempting the separator reopens the hole for exactly that
+      // character: the sink's class is `/[^ -~]/`, which strips `\n` as
+      // readily as `\t`, so a `\n`-bearing name added later would slip through
+      // an exemption defending the join. The class here is the sink's own.
+      for (const message of chainMessages(error)) {
+        expect(message, `for ${JSON.stringify(name)}`).not.toMatch(/[^ -~]/);
+        expect(message).not.toContain(PIN);
+      }
     }
   });
 
