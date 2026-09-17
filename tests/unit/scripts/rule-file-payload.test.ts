@@ -1633,10 +1633,16 @@ const CORPUS_BYTES_MIN = 1_098_000; // RE-DERIVED UPWARD 1_046_000 -> 1_098_000 
                                     // resolution rule for a FLOOR under conflict: take the HIGHER
                                     // of the two, since the lower one silently un-calibrates the
                                     // margin the higher lane measured. Re-measured on the MERGE at
-                                    // 66 files / 1,137,418 B, so the floor now holds 39,418 B of
-                                    // slack and `corpus - hooks.md` is 1,061,673 B -- 36,327 B
-                                    // under the floor, so the largest-satellite case still
-                                    // discriminates. The 1,124,030 B this lane's branch recorded as
+                                    // 66 files / 1,138,596 B (2026-09-17, against origin/main
+                                    // 55f4dc7b9), so the floor holds 40,596 B of slack and
+                                    // `corpus - hooks.md` is 1,062,851 B -- 35,149 B under the
+                                    // floor, so the largest-satellite case still discriminates.
+                                    // That figure moved TWICE inside one review round: a peer
+                                    // merged 409 B into `layout-cli.md` mid-session, and this
+                                    // lane's own satellite then grew. Hence it is written as a
+                                    // DATED measurement of the merge rather than as a fact about
+                                    // the corpus -- re-derive, never quote.
+                                    // The 1,124,030 B this lane's branch recorded as
                                     // "projected onto origin/main" reproduced against NEITHER tree
                                     // and is retired rather than carried: project by measuring the
                                     // merge, never by adding deltas.
