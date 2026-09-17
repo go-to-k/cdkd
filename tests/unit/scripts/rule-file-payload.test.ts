@@ -220,6 +220,14 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['asset-bucket-region.md', 4], // literal list: EXACT, see below
   ['assets.md', 51],
   ['cli-internals.md', 48],
+  // Exactly one path by design (go-to-k/cdkd#3236). The content describes
+  // `CloudControlProvider.waitForOperation`, but it is globbed at
+  // `retryable-errors.ts` — where the WRONG fix (a transport pattern in
+  // `RETRYABLE_ERROR_MESSAGE_PATTERNS`, i.e. go-to-k/cdkd#2039's
+  // duplicate-create) would be typed. Globbing it at the provider instead
+  // would take `src/provisioning/cloud-control-provider.ts` past its cap, and
+  // that reader already has the mechanism in the module's own JSDoc. EXACT.
+  ['cloud-control-wait.md', 1],
   ['code-layout.md', 261],
   ['delete-outcome.md', 5], // literal list: EXACT, see below
   // 5 -> 8 (issue go-to-k/cdkd#2623): the argv-redaction rule gained three
@@ -419,6 +427,18 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // 4,158 B) so a satellite going dark cannot be absorbed silently — the
   // hazard the s3-bucket row documents.
   ['src/deployment/rollback-executor.ts', 59_500, 71_500], // measured 67,441 (go-to-k/cdkd#3208 satellite)
+  // The one path that loads `cloud-control-wait.md` (go-to-k/cdkd#3236);
+  // without this row the satellite would sit under no budget at all. Payload is
+  // layout-deployment.md + architecture.md + code-layout.md + the satellite,
+  // PLUS name-collision-classification.md (go-to-k/cdkd#3208), whose literal
+  // path list names this file too — NOT layout-deployment-secrets.md or
+  // delete-outcome.md, neither of which does.
+  //
+  // Same calibration as the two rows above: the floor sits ~12% under the
+  // measurement, and the cap's slack (4,565 B) is kept BELOW the size of the
+  // smallest satellite on the path (`name-collision-classification.md`,
+  // 7,805 B) so a satellite going dark cannot be absorbed silently.
+  ['src/deployment/retryable-errors.ts', 60_500, 73_500], // measured 68,935
   // The path family that loads `abort-capture.md` (go-to-k/cdkd#3126): payload
   // is testing.md + the satellite. Sized so the satellite cannot quietly grow
   // into a second testing.md while the parent sits at its own cap.
@@ -1324,14 +1344,30 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 // Neither branch's figure is the merged one. That is the whole reason this
 // count is asserted rather than described: two correct increments compose to a
 // number neither author wrote.
-const CORPUS_FILE_COUNT = 64; // SIX lanes each added one satellite and each set this from the
-                              //  count it saw, so 58 / 59 / 59 / 60 / 62 / 63 were all written
-                              //  independently and none of them is the merged figure -- exactly
-                              //  what the note above warns about. MEASURED on the merged tree: 64
-                              //  files in `.claude/rules/`. A keep-either resolution here silently
-                              //  drops a satellite, which is how this constant goes wrong -- and
-                              //  so does adding a satellite without adding its `+` entry below,
-                              //  which is how the next lane loses the ability to reconcile.
+const CORPUS_FILE_COUNT = 65; // + cloud-control-wait.md (go-to-k/cdkd#3236): the `waitForOperation`
+                              //  poll fence took `src/provisioning/cloud-control-provider.ts` over
+                              //  its cap from inside layout-provisioning.md, so it moved to a
+                              //  satellite globbed at `src/deployment/retryable-errors.ts` alone --
+                              //  the file where the WRONG fix would be typed. Indexed from
+                              //  name-collision-classification.md, a SIBLING satellite globbed at
+                              //  the same file: pointers in layout-provisioning.md and then
+                              //  layout-deployment.md were each refused by this very fence as
+                              //  parallel lanes spent those paths' headroom (layout-deployment.md
+                              //  is loaded by secret-redaction.ts, which had 33 bytes left and the
+                              //  shortest usable pointer is 45), so the cost lands only on the path
+                              //  that wants the text. An earlier revision of this comment named
+                              //  layout-deployment.md, which the tree contradicts.
+                              // Was 64: SEVEN lanes each added one satellite and each set this from
+                              //  the count it saw, so 58 / 59 / 59 / 60 / 62 / 63 / 64 were all
+                              //  written independently and none is the merged figure -- exactly what
+                              //  the note above warns about. This lane alone wrote FOUR (60, 61, 63,
+                              //  then 64 on main) as go-to-k/cdkd#3208, two `layout-cli-*`
+                              //  satellites and a seventh landed first. MEASURED on the merged tree:
+                              //  65 files in `.claude/rules/` (64 on origin/main plus this lane's).
+                              //  A keep-EITHER resolution here silently drops a satellite, which is
+                              //  how this constant goes wrong -- and so does adding a satellite
+                              //  without adding its `+` entry below, which is how the next lane
+                              //  loses the ability to reconcile.
                               // + layout-cli-diff.md AND layout-cli-state.md (go-to-k/cdkd#3245):
                               //  `layout-cli.md` globs all of `src/cli/**`, so every CLI path paid
                               //  for every command's bullet and `src/cli/commands/scrub.ts` had run
@@ -1353,6 +1389,8 @@ const CORPUS_FILE_COUNT = 64; // SIX lanes each added one satellite and each set
                               //  `src/deployment/secret-redaction.ts` 1,544 B over its 102,000 B cap,
                               //  so BOTH collision predicates moved to a satellite globbed at the
                               //  three files that consult them, with a one-line pointer left behind.
+                              // Was 59: BOTH lanes added one, and each set this to 58 independently --
+                              //  a keep-either resolution silently drops the other satellite.
                               // + rollback-replay-create.md (go-to-k/cdkd#3199): the replay-CREATE's
                               //  Cloud Control fallback-name fill took
                               //  `src/deployment/secret-redaction.ts` 1,721 B over its 102,000 B
@@ -1562,7 +1600,19 @@ const CORPUS_FILE_COUNT = 64; // SIX lanes each added one satellite and each set
                               //  than against main, and a pointer always costs the index file
                               //  something. Measured on the tree that ships this line. That
                               //  makes 45.
-const CORPUS_BYTES_MIN = 1_046_000; // RE-DERIVED UPWARD 1_006_000 -> 1_046_000 (2026-09-16).
+const CORPUS_BYTES_MIN = 1_098_000; // RE-DERIVED UPWARD 1_046_000 -> 1_098_000 (2026-09-17,
+                                    // go-to-k/cdkd#3236's PR): the "discriminates the deletion of
+                                    // the LARGEST satellite" case went RED on the rebase, which is
+                                    // the mechanical occasion this note promises. Measured
+                                    // 1,131,957 B on the MERGE with main (the branch alone measures
+                                    // less), leaving 33,957 B of slack -- the same ~34 KB margin
+                                    // every previous setting used, and well under `hooks.md`'s
+                                    // 75,745 B, so the case that failed passes with room.
+                                    //
+                                    // The ledger's own growth figure is why the margin is not made
+                                    // larger: main grew ~41 KB in 22 h, so a wider slack buys days
+                                    // and costs the guard its ability to see a single file emptied.
+                                    // Previously: RE-DERIVED UPWARD 1_006_000 -> 1_046_000 (2026-09-16).
                                     // TWO lanes hit the same mechanical occasion within hours and
                                     // independently landed on the SAME value from DIFFERENT
                                     // measurements -- go-to-k/cdkd#3192 measured 1,080,007 B

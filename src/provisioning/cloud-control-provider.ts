@@ -5,6 +5,7 @@ import {
   DeleteResourceCommand,
   GetResourceCommand,
   GetResourceRequestStatusCommand,
+  type GetResourceRequestStatusCommandOutput,
   type ProgressEvent,
 } from '@aws-sdk/client-cloudcontrol';
 import { DescribeTableCommand } from '@aws-sdk/client-dynamodb';
@@ -34,12 +35,21 @@ import {
 } from './ec2-termination-protection.js';
 import { getLogger } from '../utils/logger.js';
 import { ProvisioningError } from '../utils/error-handler.js';
-import { markNonRetryable } from '../deployment/retryable-errors.js';
+import {
+  isThrottlingError,
+  isTransientServerError,
+  markNonRetryable,
+  markRedactedCause,
+} from '../deployment/retryable-errors.js';
+// The same sanitize-and-shell-quote treatment `replacement-protection-advice.ts`
+// gives the physical id it pastes into a command (issue #2669), for the request
+// token `abandonWait` pastes into its `aws cloudcontrol` resume line.
+import { shellQuote } from '../state/lock-contention-message.js';
 // Safe from `cloud-control-provider.ts` despite the dense engine -> executor ->
 // registry -> provider ring: `delete-outcome.ts` is a documented LEAF whose only
 // imports are types, so a new edge INTO it cannot close a cycle.
 import { withIndeterminateGuard } from '../deployment/delete-outcome.js';
-import { describeAwsFailure } from '../utils/aws-failure-text.js';
+import { describeAwsFailure, redactedAwsFailureSummary } from '../utils/aws-failure-text.js';
 import { displaySafe } from '../utils/display-safe.js';
 import { JsonPatchGenerator } from './json-patch-generator.js';
 import { getTopLevelWriteOnlyProperties } from './write-only-properties.js';
@@ -49,6 +59,7 @@ import { assertRegionMatch, type DeleteContext, type RegionCheckPhase } from './
 import { ccProtectionProperty, type CcProtectionEntry } from './cc-protection-properties.js';
 import { isNonProvisionable } from './unsupported-types.js';
 import { slowCcOperationTimeoutMs } from './slow-cc-operation-timeouts.js';
+import { isWaitAbandonedError, markWaitAbandoned } from './wait-abandoned.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -152,6 +163,369 @@ export class CloudControlOperationFailedError extends ProvisioningError {
     this.name = 'CloudControlOperationFailedError';
     Object.setPrototypeOf(this, CloudControlOperationFailedError.prototype);
   }
+}
+
+/**
+ * Thrown when cdkd STOPPED WAITING on a Cloud Control operation it had already
+ * submitted — never when the operation itself reported a verdict (issue
+ * [#3236](https://github.com/go-to-k/cdkd/issues/3236)).
+ *
+ * Deliberately NOT a subclass of {@link CloudControlOperationFailedError}, and
+ * the distinction is load-bearing in three places that key off that class:
+ * `cleanupFailedCreateRemnant`'s first guard, `delete()`'s structured
+ * `ErrorCode: NotFound` absorption, and `isUpdateUnsupportedError`'s chain
+ * walk. All three ask "what did the handler report", and the answer here is
+ * NOTHING — the handler was still running when cdkd lost sight of it. In
+ * particular the remnant cleanup must not fire: it deletes by
+ * `error.physicalId`, and an identifier seen on an IN_PROGRESS event names a
+ * resource whose create may be about to SUCCEED.
+ *
+ * Carries {@link requestToken} because that token is the only handle on an
+ * operation cdkd has no state record for, and Cloud Control keeps a request's
+ * status queryable by it well after the operation settles. Before this class
+ * the token lived only in `waitForOperation`'s parameter list, so a poll that
+ * threw discarded it and the resource — which AWS went on to create — became
+ * invisible to state, to rollback and to `cdkd destroy`.
+ *
+ * **The protection is the MARKER, not the wording** — `markWaitAbandoned` in
+ * the constructor below, which four already-deleted classifiers test before
+ * their substring match (`src/provisioning/wait-abandoned.ts` names them;
+ * `.claude/rules/cloud-control-wait.md` carries the whole contract). An
+ * earlier revision of this comment said the wording was the protection, and
+ * that is exactly what review disproved: the message interpolates the LOGICAL
+ * ID and the last-seen IDENTIFIER, both user- or template-chosen, so a
+ * resource named `PageNotFound` satisfies every needle no matter how carefully
+ * the template is worded.
+ *
+ * The wording constraint is still KEPT as a second layer — the message avoids
+ * the phrases where it can, the same discipline `src/deployment/delete-outcome.ts`
+ * and `src/provisioning/nested-stack-messages.ts` carry, and
+ * `tests/unit/provisioning/cloud-control-wait-abandoned.test.ts` asserts it
+ * over the RENDERED message (cause text and identifier clause included) rather
+ * than over the template. But it is belt to the marker's braces. Do not reword
+ * this comment back into a claim that it suffices.
+ */
+export class CloudControlWaitAbandonedError extends ProvisioningError {
+  public readonly requestToken: string;
+  public readonly ccOperation: 'CREATE' | 'UPDATE' | 'DELETE';
+  /**
+   * The `Identifier` from the last progress event cdkd managed to read, when
+   * one carried it. Cloud Control populates it on IN_PROGRESS events once the
+   * handler has materialized the resource, so on a CREATE this is frequently
+   * the physical id of the very resource that is about to go untracked — worth
+   * printing, and deliberately NOT worth acting on (see the remnant-cleanup
+   * note above).
+   */
+  public readonly lastSeenIdentifier: string | undefined;
+
+  constructor(
+    message: string,
+    resourceType: string,
+    logicalId: string,
+    requestToken: string,
+    ccOperation: 'CREATE' | 'UPDATE' | 'DELETE',
+    lastSeenIdentifier: string | undefined,
+    cause?: Error
+  ) {
+    // `physicalId` is DERIVED here rather than taken as a second positional
+    // parameter: the two must always agree, and two adjacent
+    // `string | undefined` arguments that must agree is a call site waiting to
+    // pass one and forget the other.
+    super(message, resourceType, logicalId, lastSeenIdentifier, cause);
+    this.requestToken = requestToken;
+    this.ccOperation = ccOperation;
+    this.lastSeenIdentifier = lastSeenIdentifier;
+    this.name = 'CloudControlWaitAbandonedError';
+    Object.setPrototypeOf(this, CloudControlWaitAbandonedError.prototype);
+    // Marked in the CONSTRUCTOR, not at the throw sites: every instance of this
+    // class is an abandoned wait, and the marker is what the THREE foreign
+    // already-deleted classifiers read (`deploy-engine.ts` x2,
+    // `destroy-runner.ts`) — they cannot see this class. Marking per-throw is
+    // one forgotten call from re-opening the state-drop, which is the reason
+    // `ResourceUpdateNotSupportedError` marks in its constructor too.
+    markWaitAbandoned(this);
+  }
+}
+
+/**
+ * Node / undici socket-level failure codes, i.e. the request never reached
+ * Cloud Control or its response never came back.
+ *
+ * Mirrors `@smithy/service-error-classification`'s own
+ * `NODEJS_TIMEOUT_ERROR_CODES` (`ECONNRESET` / `ECONNREFUSED` / `EPIPE` /
+ * `ETIMEDOUT`), widened by the DNS and route shapes a dropped VPN also
+ * produces. The SDK already retries every one of these under STANDARD mode —
+ * three attempts, sub-second — so an error that reaches cdkd here is one the
+ * SDK's own budget did not outlast, not one it declined to retry.
+ */
+const POLL_TRANSPORT_ERROR_CODES: ReadonlySet<string> = new Set([
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ECONNABORTED',
+  'EPIPE',
+  'ETIMEDOUT',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'ENETDOWN',
+  'EPROTO',
+]);
+
+/** SDK error names for a request that timed out or was aborted in transit. */
+const POLL_TRANSPORT_ERROR_NAMES: ReadonlySet<string> = new Set([
+  'TimeoutError',
+  'RequestTimeout',
+  'RequestTimeoutException',
+  'RequestAbortedException',
+]);
+
+/**
+ * Matches one of {@link POLL_TRANSPORT_ERROR_CODES} as a whole word inside a
+ * message that lost its `code` property.
+ *
+ * DERIVED from the set rather than hand-spelled, so the two can never disagree
+ * about which codes count — and so the pattern cannot be wrong about a code's
+ * LENGTH, which a hand-written `E[A-Z]{3,10}` was: it is eleven characters
+ * after the `E` in `ECONNREFUSED`, the exact code the issue reported, so the
+ * arm silently matched nothing for the case it was added for.
+ */
+const POLL_TRANSPORT_CODE_IN_MESSAGE = new RegExp(
+  `\\b(?:${[...POLL_TRANSPORT_ERROR_CODES].join('|')})\\b`
+);
+
+/**
+ * The `.cause` walk depth. It is `retryable-errors.ts`'s `MAX_CAUSE_CHAIN_DEPTH`
+ * VALUE, and equality is the requirement rather than a coincidence: a transport
+ * code this predicate finds at a depth `isThrottlingError` /
+ * `isMarkedNonRetryable` / `isRetryableTransientError` structurally cannot
+ * reach means two classifiers answering differently about one chain, which is
+ * the divergence this area keeps collapsing. A literal because that constant is
+ * module-private there, and `tests/unit/provisioning/cloud-control-wait-abandoned.test.ts`
+ * pins the pair by building a chain one hop deeper than the bound and asserting
+ * BOTH refuse it -- a claim an earlier revision made with no such case behind
+ * it, which is exactly the shape a fence audit greps for.
+ *
+ * cdkd wraps errors (`ProvisioningError` keeps the raw one as `cause`), so the
+ * socket error is routinely one or two hops down; the bound also keeps a cyclic
+ * chain from hanging the classifier.
+ */
+const POLL_CAUSE_CHAIN_DEPTH = 5;
+
+/**
+ * The ONE name whose message must be withheld from a non-`debug` line, and the
+ * enumeration behind why it is exactly one.
+ *
+ * `@smithy/property-provider` exports a family of three -- `ProviderError`, and
+ * its subclasses `CredentialsProviderError` and `TokenProviderError` -- plus
+ * `@smithy/credential-provider-imds`'s `InstanceMetadataV1FallbackError`, the
+ * only subclass OF `CredentialsProviderError` in the installed tree. (All four
+ * set `name`; the qualifier is what makes the sentence true, and an earlier
+ * revision read "the only subclass that overrides `name`", which is false of
+ * the three siblings.) Each was read rather than reasoned about, because the
+ * answers differ and go BOTH ways:
+ *
+ *  - `CredentialsProviderError` is the one that leaks.
+ *    `@aws-sdk/credential-provider-process` wraps EVERY exec failure in it, so
+ *    its message interpolates the helper's ARGV and its stderr. Measured
+ *    through a real client: `Command failed: /bin/sh -c 'echo "vault: token
+ *    hvs.<...> rejected" >&2; exit 1'` followed by that stderr. An aws-vault /
+ *    saml2aws setup whose credentials expire mid-wait would persist a token.
+ *  - `TokenProviderError` must NOT be reduced. Its message IS the remedy --
+ *    `Token is expired. To refresh this SSO session run 'aws sso login' with
+ *    the corresponding profile.` -- so reducing it to a wire name would delete
+ *    the fix instruction. A round-9 revision of this predicate matched the
+ *    whole `*ProviderError` suffix and did exactly that.
+ *
+ *    The benefit is NOT realized on THIS path today, and saying otherwise was
+ *    the claim review measured false: `@aws-sdk/credential-provider-sso`
+ *    catches every token failure and rethrows it as a
+ *    `CredentialsProviderError`, so the shape cannot escape a SigV4 client and
+ *    an SSO expiry reaches here already reduced. The carve-out is a rule about
+ *    the FAMILY, kept because the rewrap is upstream behaviour that can change
+ *    and because the reduction is wrong for this class on any path that does
+ *    surface it -- not a user-visible improvement this PR delivers.
+ *  - `ProviderError` (the base) and `InstanceMetadataV1FallbackError` carry
+ *    connectivity and CONFIG wording respectively -- the IMDS one interpolates
+ *    three fixed literals naming config keys, with no argv, stderr, profile
+ *    value or identity in it. Both are more useful raw.
+ *
+ * So string EQUALITY is right here, and it is right by enumeration rather than
+ * by assumption. Re-check this list when the SDK major moves; do not widen it
+ * to a suffix.
+ *
+ * The specific mechanism to re-check is `ProviderError.from()`, which does
+ * `Object.assign(new this(...), error)` -- that copies a SOURCE error's own
+ * `name` over the class field and would defeat string equality outright. It
+ * has ZERO call sites anywhere in `node_modules` today, which is the only
+ * reason equality is safe rather than merely correct-looking.
+ */
+const CREDENTIAL_LEAK_ERROR_NAME = 'CredentialsProviderError';
+
+/** What one poll failure may say on each of the two channels. */
+interface PollFailureText {
+  /**
+   * Safe for a user-facing OR PERSISTED line. `''` when there is nothing to
+   * say -- an absent cause, or a message that is empty once sanitized -- so a
+   * caller renders no clause at all rather than a colon promising a reason.
+   */
+  readonly display: string;
+  /**
+   * The full text, for `logger.debug` ONLY. `''` when nothing was withheld, so
+   * a caller can skip a line that would only repeat `display`.
+   */
+  readonly detail: string;
+  /**
+   * Whether the caller should `markRedactedCause` the error it builds. True
+   * only when a reduction happened AND the chain will carry the withheld text
+   * -- `aws-failure-text.ts` states that precondition and says stamping
+   * without it is worse than not stamping at all.
+   */
+  readonly marker: boolean;
+}
+
+/**
+ * Decide what a `GetResourceRequestStatus` failure may say outside `--verbose`.
+ *
+ * ONE function because there are TWO readers and they must not disagree about
+ * one error: `abandonWait`, whose message is persisted verbatim into
+ * `deployments/{runId}.jsonl`, and the re-poll `logger.warn`, which runs at
+ * DEFAULT verbosity. They were separate, and the gap was reachable rather than
+ * theoretical -- `POLL_TRANSPORT_CODE_IN_MESSAGE` matches a socket code
+ * ANYWHERE in the message, so a `credential_process` stderr that happens to
+ * contain `ETIMEDOUT` classifies as transient, and the warn printed the helper
+ * argv and stderr on every re-poll while the abandonment that eventually
+ * followed reduced them.
+ *
+ * The authorship test is NOT `describeAwsFailure`'s. That one keys on the mere
+ * PRESENCE of `$metadata`, and `@smithy/core`'s retry middleware stamps
+ * `$metadata = {attempts, totalRetryDelay}` onto EVERY error it gives up on --
+ * socket errors included. Measured against a real client pointed at a closed
+ * port:
+ *
+ *     name 'Error', code 'ECONNREFUSED', $fault undefined,
+ *     message 'connect ECONNREFUSED 127.0.0.1:1',
+ *     $metadata { attempts: 3, totalRetryDelay: 58 }
+ *
+ * so reducing on it DELETES `connect ECONNREFUSED ...` -- the exact wording
+ * issue [#3236](https://github.com/go-to-k/cdkd/issues/3236) was reported with
+ * -- and leaves the bare token `Error.`, a socket error's `name` being `Error`.
+ * The discriminator here is a real SERVICE signal instead: `$fault`, or a
+ * NUMERIC `$metadata.httpStatusCode`, which a transport failure never carries
+ * and a service rejection always does.
+ *
+ * Credential resolution carries NEITHER signal, which is why
+ * {@link CREDENTIAL_LEAK_ERROR_NAME} is a third arm. That is measured, not
+ * read off the middleware table -- review round 8 argued from middleware
+ * priorities that identity is resolved inside the retry middleware, and a real
+ * `CloudControlClient` whose credential provider throws answers
+ * `{name:'CredentialsProviderError', $fault: undefined, $metadata: undefined}`.
+ * The mechanism, confirmed afterwards: identity is resolved by
+ * `httpAuthSchemeMiddleware` at step `serialize`, which WRAPS retry's
+ * `finalizeRequest`, and retry's own catch CREATES `$metadata` when it is
+ * absent -- so an escaping error with none PROVES it never entered retry. Do
+ * not "correct" this back.
+ *
+ * Retiring the divergence with the shared helper is
+ * [#3297](https://github.com/go-to-k/cdkd/issues/3297).
+ */
+function describePollFailure(error: unknown): PollFailureText {
+  if (error === undefined) return { display: '', detail: '', marker: false };
+
+  if (!(error instanceof Error)) {
+    // A non-`Error` rejection is WITHHELD but still REPORTED.
+    // `isTransientPollFailure` duck-types `code` / `name` / `message` off any
+    // object, so such a throw IS admitted and spends the grace -- and an
+    // earlier revision then rendered an abandonment stating no reason at all.
+    // `summary` names the TYPE and never the value. `detail` is
+    // `String(value)`, which for a plain object is `[object Object]` -- so for
+    // this shape the value reaches NEITHER channel, and that is a measured cost
+    // rather than an oversight: a shape with no class to fall back on is the
+    // one with the fewest guarantees about what is inside it. No marker either:
+    // nothing is threaded as `cause`, the precondition's other half.
+    const other = describeAwsFailure(error);
+    return { display: other.summary, detail: other.detail, marker: false };
+  }
+
+  const serviceAuthored =
+    (error as { $fault?: unknown }).$fault !== undefined ||
+    typeof (error as { $metadata?: { httpStatusCode?: unknown } }).$metadata?.httpStatusCode ===
+      'number' ||
+    error.name === CREDENTIAL_LEAK_ERROR_NAME;
+
+  if (!serviceAuthored) {
+    // Transport wording is KEPT -- it names a host, never a caller -- and
+    // nothing is withheld, so there is no `debug` line to emit and no marker.
+    return { display: error.message, detail: '', marker: false };
+  }
+
+  // An EMPTY message reduces to NOTHING, not to a pointer at nothing:
+  // `asSdkError` normalizes a non-`Error` rejection that crosses the retry
+  // middleware into `Object.assign(new Error(), obj)`, and rendering that
+  // through the summary builder yields `Error. Re-run with --verbose for AWS's
+  // own message.` -- an instruction to go and read an empty string.
+  if (error.message === '') return { display: '', detail: '', marker: false };
+
+  // `redactedAwsFailureSummary` rather than `describeAwsFailure(...).summary`:
+  // that helper applies its OWN authorship test, so for the credential case the
+  // two disagree and it hands back the RAW message. Where they disagree, THIS
+  // predicate wins.
+  return {
+    display: redactedAwsFailureSummary(error),
+    detail: error.message,
+    marker: true,
+  };
+}
+
+/**
+ * True when a `GetResourceRequestStatus` call failed for a reason that says
+ * nothing about the OPERATION — the poll could not be delivered or answered,
+ * so re-polling the same token is the correct response.
+ *
+ * Fail-CLOSED: an unmodelled shape answers false, so the wait is not RETRIED.
+ * It is still ABANDONED rather than aborted bare — the caller carries the
+ * request token out on that arm too, since losing the handle is issue #3236's
+ * defect whatever the trigger. The safe direction here is about retrying, not
+ * about reporting: the errors this must NOT absorb are the ones a retry can
+ * only re-derive —
+ * `RequestTokenNotFoundException` (the token is genuinely gone),
+ * `AccessDeniedException`, `ValidationException`.
+ *
+ * Throttles and transient 5xx are in scope alongside transport, and not as a
+ * generalization for its own sake: they are the same defect with a different
+ * trigger, and the throttle case is the WORSE of the two today. The abort
+ * is retryable by BOTH routes the classifier offers — `isThrottlingError`'s
+ * chain walk over the threaded cause, and (before the cause is reduced to its
+ * wire code) AWS's own `Rate exceeded` wording against
+ * `RETRYABLE_ERROR_MESSAGE_PATTERNS` — so the deploy engine's outer `withRetry`
+ * re-invokes `create()` and duplicates a resource that is already being created
+ * (go-to-k/cdkd#2039), where the transport case merely loses track of one.
+ * Measured, not assumed: `isRetryableTransientError` answers true for a
+ * throttle and false for `connect ECONNREFUSED ...`.
+ *
+ * The message arm exists for a wrapper that dropped `.code` while keeping the
+ * text. It is scoped by its SOURCE — the only input is an error thrown by the
+ * SDK out of `cloudControlClient.send`, never template- or user-authored text
+ * — so an `E`-prefixed token there denotes a socket error rather than
+ * something a user happened to type.
+ */
+export function isTransientPollFailure(error: unknown): boolean {
+  if (isThrottlingError(error) || isTransientServerError(error)) return true;
+
+  let current: unknown = error;
+  for (let depth = 0; depth < POLL_CAUSE_CHAIN_DEPTH && current != null; depth++) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === 'string' && POLL_TRANSPORT_ERROR_CODES.has(code)) return true;
+
+    const name = (current as { name?: unknown }).name;
+    if (typeof name === 'string' && POLL_TRANSPORT_ERROR_NAMES.has(name)) return true;
+
+    const message = (current as { message?: unknown }).message;
+    if (typeof message === 'string' && POLL_TRANSPORT_CODE_IN_MESSAGE.test(message)) return true;
+
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
 }
 
 /**
@@ -386,6 +760,34 @@ export class CloudControlProvider implements ResourceProvider {
   private readonly INITIAL_POLL_INTERVAL_MS = 1_000;
   // Maximum poll interval (10 seconds)
   private readonly MAX_POLL_INTERVAL_MS = 10_000;
+  /**
+   * How long an UNBROKEN run of transient poll failures is tolerated before
+   * `waitForOperation` gives up and throws {@link CloudControlWaitAbandonedError}
+   * (issue #3236). Reset by any poll that gets an answer, so it measures one
+   * outage rather than a session's total flakiness.
+   *
+   * It is a SECOND bound INSIDE the existing wall-clock budget, never an
+   * extension of one: the `while` condition below still holds, so re-polling
+   * can only consume time the wait already had. `slow-cc-operation-timeouts.ts`
+   * couples that budget to the two outer per-resource deadlines deliberately,
+   * and a separate attempt budget able to outlive it would break the coupling.
+   *
+   * Two minutes because the failures that reach this loop have already
+   * outlasted the SDK's own three STANDARD-mode attempts, so the population is
+   * outages of seconds to minutes — a VPN reconnect, a DHCP renew, a throttle
+   * that needs more than the SDK's sub-second backoff. Waiting the FULL budget
+   * instead (up to 60 min for a slow type) would buy nothing the resume hint
+   * does not: past this point the operation is equally unreachable, and the
+   * user gets the same request token thirteen to fifty-eight minutes sooner.
+   */
+  private readonly POLL_TRANSIENT_GRACE_MS = 2 * 60 * 1000;
+  /**
+   * The grace `disableCcProtection`'s wait takes instead (issue
+   * go-to-k/cdkd#3253 item 1). Its call site carries the reasoning; the short
+   * version is that the flip is best-effort and swallowed, so a long wait there
+   * is dead wall clock on a destroy that is failing anyway.
+   */
+  private readonly PROTECTION_FLIP_TRANSIENT_GRACE_MS = 10_000;
 
   constructor() {
     const awsClients = getAwsClients();
@@ -558,14 +960,61 @@ export class CloudControlProvider implements ResourceProvider {
       // is a false "removed" line over an occupied name.
       if (cleanupResult?.outcome === 'skipped') {
         this.logger.warn(
-          `Skipped deleting the remnant ${error.physicalId} left by the failed CREATE of ${logicalId}: ` +
-            `${cleanupResult.reason} — a retry may fail with AlreadyExists until it is removed manually`
+          `Skipped deleting the remnant ${error.physicalId} left by the failed CREATE of ${logicalId} ` +
+            `(a retry may fail with AlreadyExists until it is removed manually): ${displaySafe(cleanupResult.reason)}`
         );
         return;
       }
       this.logger.debug(`Removed failed-create remnant ${error.physicalId} for ${logicalId}`);
     } catch (cleanupError) {
+      // Deliberately the RAW message, and deliberately NOT the guarded
+      // `describePollFailure(...).display` that `disableCcProtection`'s twin
+      // catch takes. Two reasons, both measured after a round-10 review
+      // proposed converting this site as well:
+      //
+      //  - the bare `String()` arm is UNREACHABLE here. Every throw into this
+      //    catch comes from `this.delete(...)` above, which wraps whatever it
+      //    caught into a `ProvisioningError` — always an `Error`. The flip's
+      //    catch differs because its `UpdateResource` SEND is inside it, so a
+      //    non-`Error` rejection reaches that one raw. A case written against
+      //    this site stayed green under the bare form; that is why.
+      //  - reducing the text here would be a NO-OP today and a decision-changer
+      //    the moment the wrapper stops being cdkd-authored. Measured: applying
+      //    the conversion leaves the whole provisioning suite green, because
+      //    every error leaving `this.delete()` is a cdkd-authored
+      //    `ProvisioningError` carrying no `$fault` and no numeric
+      //    `httpStatusCode`, so `describePollFailure` hands back the raw
+      //    message anyway. The risk is real but LATENT: `message` feeds
+      //    `isNotFoundMessage` five lines down, which matches service PROSE
+      //    ("No Deployment Group found for name: ..."), so on any future path
+      //    where an AWS-authored error reaches this catch the reduction would
+      //    silently stop that classifier recognising the shapes it exists for.
+      //    An earlier revision of this comment stated that as a live risk,
+      //    which review measured false.
       const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+      // Ahead of `isNotFoundMessage`, and NOT a duplicate of the four
+      // already-deleted guards elsewhere — this one matches with a
+      // case-INSENSITIVE regex, so it has a failure mode they do not. Since
+      // issue go-to-k/cdkd#3236 the cleanup delete can abandon its own wait,
+      // and that message interpolates the transport cause: a
+      // `getaddrinfo ENOTFOUND cloudcontrolapi...` contains `NOTFOUND`, which
+      // `/not\s*found/i` matches (measured). The arm would then log "was
+      // already gone; nothing to clean up" and SUPPRESS the
+      // "remove it manually / a retry may fail with AlreadyExists" warning —
+      // over a remnant still occupying the name, which is the one thing the
+      // caller's retry is about to trip over.
+      if (isWaitAbandonedError(cleanupError)) {
+        // The clause goes BEFORE the interpolated message, not after it: that
+        // message ends with the abandonment's pasteable `aws cloudcontrol` line
+        // and `displaySafe`'s default mode flattens its newline to a space, so
+        // appending cdkd prose puts text after a command on one line — the rule
+        // `buildResumeCommand` establishes, one level out.
+        this.logger.warn(
+          `Could not confirm whether the remnant ${error.physicalId} left by the failed CREATE of ${logicalId} was removed ` +
+            `(a retry may fail with AlreadyExists until it is removed manually): ${displaySafe(message)}`
+        );
+        return;
+      }
       // A not-found on the remnant delete means the remnant is ALREADY gone —
       // the failed CREATE never actually materialized it, or it vanished
       // before the delete landed. delete() absorbs the structured
@@ -577,9 +1026,25 @@ export class CloudControlProvider implements ResourceProvider {
         );
         return;
       }
+      // `displaySafe` for the same reason its siblings in this function carry
+      // it: the message is an AWS failure, not cdkd-authored text, and
+      // `ConsoleLogger.formatMessage` sanitizes EXTRA ARGS only. All THREE warn
+      // arms in this function take the same treatment — sanitize the
+      // interpolated value, and put cdkd's own clause before it rather than
+      // after. An earlier revision did two of the three and miscounted them.
+      //
+      // Only THIS arm's call is load-bearing, and the asymmetry is measured
+      // rather than assumed: deleting `displaySafe` from the ABANDONED arm or
+      // the SKIPPED arm leaves the whole suite green, because the first
+      // receives text `abandonWait` has already sanitized and the second
+      // receives a provider-authored skip reason. This arm is the only one
+      // interpolating a raw caught message, and it is the one the fence in
+      // `cloud-control-wait-abandoned.test.ts` pins. The other two stay: what
+      // arrives sanitized today is an upstream property, not one this function
+      // controls.
       this.logger.warn(
-        `Failed to delete the remnant ${error.physicalId} left by the failed CREATE of ${logicalId}: ${message} — ` +
-          `a retry may fail with AlreadyExists until it is removed manually`
+        `Failed to delete the remnant ${error.physicalId} left by the failed CREATE of ${logicalId} ` +
+          `(a retry may fail with AlreadyExists until it is removed manually): ${displaySafe(message)}`
       );
     }
   }
@@ -1001,12 +1466,31 @@ export class CloudControlProvider implements ResourceProvider {
           error instanceof CloudControlOperationFailedError &&
           error.ccOperation === 'DELETE' &&
           error.ccErrorCode === 'NotFound';
+        // An ABANDONED wait is the one shape here that says the OPPOSITE of
+        // already-gone: cdkd stopped watching a delete that may still be
+        // running (issue #3236). The heuristics below are message SUBSTRING
+        // tests over a message that interpolates the LOGICAL ID, so a resource
+        // named `PageNotFound` — or any name containing `not found` /
+        // `does not exist` — would satisfy them and this arm would drop the
+        // state row over a live resource. Measured: it did.
+        //
+        // Structural, not a wording rule, because the wording cannot be made
+        // safe: the interpolated inputs are the user's. This is also the one
+        // consumer of those phrases with no `isMarkedNonRetryable` guard in
+        // front of it, and a DELETE abandonment is deliberately unmarked so
+        // the destroy runner can re-issue the delete.
+        // Through the SHARED predicate, not a local `instanceof`: this is one
+        // of FOUR classifiers that must refuse an abandoned wait, and the
+        // other three (`deploy-engine.ts` x2, `destroy-runner.ts`) cannot see
+        // the class. One spelling means they cannot disagree about what an
+        // abandoned wait is — the divergence this area keeps collapsing.
         if (
-          notFoundErrorCode ||
-          err.name === 'ResourceNotFoundException' ||
-          err.message?.includes('does not exist') ||
-          err.message?.includes('not found') ||
-          err.message?.includes('NotFound')
+          !isWaitAbandonedError(error) &&
+          (notFoundErrorCode ||
+            err.name === 'ResourceNotFoundException' ||
+            err.message?.includes('does not exist') ||
+            err.message?.includes('not found') ||
+            err.message?.includes('NotFound'))
         ) {
           // Through the SAME helper as the pre-flight above (issue #2301
           // review), not a second hand-rolled comparison. Two comparisons of
@@ -1125,7 +1609,15 @@ export class CloudControlProvider implements ResourceProvider {
       this.logger.debug(
         `Could not resolve the Cloud Control client region before the ${phase} region check ` +
           `for ${logicalId} (${resourceType}): ` +
-          `${error instanceof Error ? error.message : String(error)}`
+          // `.detail` is right on a `debug` line, and it is the guarded
+          // stringification: a bare `String(value)` throws on a
+          // null-prototype object, and this catch exists so the region check
+          // can produce its own refusal rather than letting a raw SDK error
+          // surface.
+          // `displaySafe` for consistency with the other two detail lines on
+          // this path: `debug` is lower-exposure than the persisted message,
+          // not exposure-free, and this text comes from the SDK.
+          `${displaySafe(describeAwsFailure(error).detail)}`
       );
       clientRegion = undefined;
     }
@@ -1433,18 +1925,86 @@ export class CloudControlProvider implements ResourceProvider {
         );
         return;
       }
+      // A SHORT transient grace, not the poll's usual two minutes (issue
+      // go-to-k/cdkd#3253 item 1). This flip is best-effort by construction —
+      // the catch below swallows every failure and proceeds — so waiting out a
+      // network outage here buys nothing: the `DeleteResource` that follows
+      // surfaces the real error if the protection is still on, and under the
+      // same outage that delete fails too. Spending the full grace would add
+      // two minutes of dead wall clock per protected resource to a destroy
+      // that is going to fail anyway.
+      //
+      // Not ZERO, which would abandon on the FIRST failure and lose the cheap
+      // recovery the fence exists for: a one-second blip mid-flip is exactly
+      // the case re-polling handles, and ten seconds covers it at the 1s ->
+      // 1.5s -> 2.25s -> 3.4s schedule (8.125s of sleep across five re-polls,
+      // giving up at ~13.2s of wall clock).
+      //
+      // The TRADEOFF this buys, stated because the paragraph above does not
+      // cover it: for an outage of roughly 13s to 120s the old behaviour
+      // recovered — the flip re-polled, the link came back, the delete
+      // succeeded — and now the flip is abandoned and `delete()` issues its
+      // `DeleteResource` while the link is still down. That delete gets ONE
+      // attempt on this path and `isRetryableTransientError` answers false for
+      // a socket error, so it fails hard and the user re-runs. Accepted
+      // deliberately: the destroy runner's own retry plus the idempotent `add`
+      // patch recover on that re-run, the cost is a retry rather than data
+      // loss, and the alternative charges every `--remove-protection` destroy
+      // two minutes per protected resource to serve that one band. Every
+      // UNPROTECTED sibling in the same destroy keeps the full grace.
       await this.waitForOperation(
         response.ProgressEvent.RequestToken,
         logicalId,
         'UPDATE',
-        resourceType
+        resourceType,
+        this.PROTECTION_FLIP_TRANSIENT_GRACE_MS
       );
       this.logger.debug(`Disabled ${protectionProperty} on ${logicalId}`);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      // `displaySafe` for the same reason the poll warn above carries it: this
+      // message is not fully cdkd-controlled. An abandonment arrives
+      // pre-sanitized, but a NON-transient `UpdateResource` failure does not —
+      // an `AccessDeniedException` here quotes
+      // `User: arn:aws:sts::<acct>:assumed-role/<role>/<session>` — and
+      // `ConsoleLogger.formatMessage` sanitizes EXTRA ARGS only, never the
+      // message string.
+      // `describePollFailure(...).display` rather than a bare
+      // `String(error)`: this catch exists to SWALLOW so the delete can
+      // proceed, and `String(value)` throws on a null-prototype object — an
+      // out-throw here would abort a `--remove-protection` delete from the one
+      // place built to let it continue. It also reduces a credential failure,
+      // which the raw read did not: this line is default-verbosity.
+      const described = describePollFailure(error);
+      // Sanitize BEFORE testing for emptiness, and render NO clause when the
+      // result is empty -- the same shape `abandonWait` uses, for the same
+      // reachable case: `asSdkError` normalizes a non-`Error` rejection into an
+      // `Error` with `message: ''`, and this catch encloses the
+      // `UpdateResource` SEND, so one arrives here. Without the guard the line
+      // ends `proceeding with delete: ` -- a colon promising a reason and then
+      // giving none.
+      const safeMessage = displaySafe(described.display);
+      // `proceeding with delete` goes BEFORE the interpolated message, not
+      // after it: an abandonment reaches this catch (the flip's own 10s grace),
+      // and its message ends with the pasteable `aws cloudcontrol` line, whose
+      // newline `displaySafe` flattens — so appending cdkd prose puts a second
+      // clause after a command an operator may paste. Same rule as the two
+      // remnant warns and as `buildResumeCommand` itself.
       this.logger.warn(
-        `Could not disable ${protectionProperty} on ${logicalId} (${resourceType}): ${message}; proceeding with delete`
+        `Could not disable ${protectionProperty} on ${logicalId} (${resourceType}), proceeding with delete${safeMessage === '' ? '' : `: ${safeMessage}`}`
       );
+      // The DETAIL half of the split, and it is REQUIRED rather than tidy: the
+      // warn above now carries a REDUCED text, and a reduction with nothing
+      // behind it is a DELETION. An `AccessDeniedException` here is the case
+      // that matters -- the wire name says "authorization", and the sentence
+      // that says WHICH action and WHICH principal is the one an operator needs
+      // to fix their policy. `logger.debug` is where it belongs: this line
+      // quotes the caller's own assumed-role ARN.
+      const detail = described.detail;
+      if (detail !== '') {
+        this.logger.debug(
+          `Could not disable ${protectionProperty} on ${logicalId}, underlying failure: ${displaySafe(detail)}`
+        );
+      }
     }
   }
 
@@ -1478,17 +2038,53 @@ export class CloudControlProvider implements ResourceProvider {
   }
 
   /**
-   * Wait for an asynchronous operation to complete
+   * Wait for an asynchronous operation to complete.
+   *
+   * Reached from FOUR call sites — `create()`, `update()`, `delete()` and
+   * `disableCcProtection()` — so everything here is CREATE / UPDATE / DELETE
+   * behavior at once.
+   *
+   * The poll is fenced against its own transport (issue #3236). Before that,
+   * a `GetResourceRequestStatus` that failed for ANY reason propagated out of
+   * this loop, out of `create()`, and took the `RequestToken` — which lives
+   * only in this parameter list — with it. The Cloud Control operation keeps
+   * running server-side regardless, so a CREATE that AWS went on to complete
+   * left a live resource with no state record: invisible to rollback, to
+   * `cdkd destroy`, and to `cleanupFailedCreateRemnant` (whose first guard
+   * admits only a `CloudControlOperationFailedError`, which a transport
+   * failure never is). Reported against a `AWS::RDS::DBInstance` whose CREATE
+   * outlived a dropped VPN; the untracked instance then blocked the deletion
+   * of five tracked resources that depended on it.
+   *
+   * Re-polling is IDEMPOTENT in a way replaying the create is not, which is
+   * what makes this the right layer for the fix: `GetResourceRequestStatus`
+   * invokes no resource handler and the token is unchanged across attempts, so
+   * the duplicate-create hazard of go-to-k/cdkd#2039 is structurally absent.
+   * The complementary half is {@link CloudControlWaitAbandonedError}, for the
+   * outage that outlives the grace or the budget.
    */
   private async waitForOperation(
     requestToken: string,
     logicalId: string,
     operation: 'CREATE' | 'UPDATE' | 'DELETE',
-    resourceType: string
+    resourceType: string,
+    /**
+     * Per-call override of {@link POLL_TRANSIENT_GRACE_MS}. Only
+     * `disableCcProtection` passes one; every provisioning call site takes the
+     * default, and a new one should have to say why it does not.
+     */
+    transientGraceMs: number = this.POLL_TRANSIENT_GRACE_MS
   ): Promise<ProgressEvent> {
     const startTime = Date.now();
     let attempts = 0;
     let pollInterval = this.INITIAL_POLL_INTERVAL_MS;
+    // Hoisted out of the loop body deliberately: the identifier is re-bound per
+    // pass, so without this the one fact worth reporting about an abandoned
+    // wait — what the operation had already named — would be discarded with
+    // the iteration that read it.
+    let lastSeenIdentifier: string | undefined;
+    let transientOutageStartedAt: number | undefined;
+    let lastTransientError: unknown;
 
     // Known-slow types (OpenSearch domains, RDS / Redshift / ElastiCache
     // clusters) legitimately exceed the flat 15-min poll cap on CREATE /
@@ -1504,11 +2100,115 @@ export class CloudControlProvider implements ResourceProvider {
     while (Date.now() - startTime < maxWaitMs) {
       attempts++;
 
-      const statusResponse = await this.cloudControlClient.send(
-        new GetResourceRequestStatusCommand({
-          RequestToken: requestToken,
-        })
-      );
+      // Annotated rather than inferred. The rationale is NARROWER than an
+      // earlier revision claimed ("no compile error"): measured, a
+      // falling-through catch is a compile error EITHER way -- `TS2454 used
+      // before being assigned` with the annotation, `TS18048 possibly
+      // undefined` without it. What the annotation buys is that the error
+      // names the ASSIGNMENT rather than a downstream property read, and that
+      // the binding is not an evolving `any` a future edit can widen silently.
+      let statusResponse: GetResourceRequestStatusCommandOutput;
+      try {
+        statusResponse = await this.cloudControlClient.send(
+          new GetResourceRequestStatusCommand({
+            RequestToken: requestToken,
+          })
+        );
+      } catch (error) {
+        // Scoped to the `send` expression ALONE, on purpose: the loop's own
+        // deliberate throws below — the missing progress event, the FAILED
+        // event, CANCEL_COMPLETE — are all raised AFTER this resolves, so no
+        // widening of this `try` could swallow one of them.
+        // A NON-transient poll failure carries the token out too (round-4
+        // review). `isTransientPollFailure` fails CLOSED, which is right for
+        // deciding whether to RE-POLL — an `AccessDeniedException` on
+        // `GetResourceRequestStatus` can only be re-derived, so spinning on it
+        // is pointless. But aborting bare discarded the `RequestToken`, which
+        // is issue #3236's whole defect arriving from a permissions error
+        // instead of a socket error: a least-privilege role granted
+        // `cloudcontrol:CreateResource` but not the status read submits a
+        // CREATE, cannot watch it, and AWS goes on to complete it.
+        //
+        // So: do not retry, but do not lose the handle either. The grace arm
+        // and the deadline arm both already carry it; this was the one exit
+        // that did not.
+        if (!isTransientPollFailure(error)) {
+          throw await this.abandonWait(
+            requestToken,
+            logicalId,
+            operation,
+            resourceType,
+            lastSeenIdentifier,
+            'cdkd could not read the operation status and the failure is not retryable',
+            error
+          );
+        }
+
+        transientOutageStartedAt ??= Date.now();
+        lastTransientError = error;
+        const outageMs = Date.now() - transientOutageStartedAt;
+        if (outageMs >= transientGraceMs) {
+          throw await this.abandonWait(
+            requestToken,
+            logicalId,
+            operation,
+            resourceType,
+            lastSeenIdentifier,
+            `cdkd could not reach Cloud Control API for ${Math.round(outageMs / 1000)}s`,
+            error
+          );
+        }
+
+        // `displaySafe` because the cause text is not fully cdkd-controlled —
+        // an `AWS_ENDPOINT_URL_CLOUDCONTROL` / profile `endpoint_url` lands in
+        // `getaddrinfo ENOTFOUND <host>` — and `ConsoleLogger.formatMessage`
+        // sanitises EXTRA ARGS only, never the message string.
+        //
+        // "MAY still be running", not "is": the poll failed, so cdkd does not
+        // know. The thrown error hedges for the same reason, and an
+        // unconditional claim here would contradict it at default verbosity.
+        //
+        // Sanitize BEFORE testing for emptiness, and render NO clause when the
+        // result is empty -- `abandonWait`'s shape, for the same reachable
+        // case: `asSdkError` normalizes a non-`Error` rejection into an `Error`
+        // with `message: ''`, which would otherwise render `(attempt 3):  — `.
+        const safePollText = displaySafe(describePollFailure(error).display);
+        this.logger.warn(
+          `${operation} ${logicalId}: could not read the Cloud Control operation status ` +
+            // `describePollFailure(...).display`, the SAME decision the
+            // abandonment makes, for two reasons.
+            //
+            // It must not be `.detail`: that field's contract is `logger.debug`
+            // ONLY, and this line runs at DEFAULT verbosity. The gap was
+            // reachable — `POLL_TRANSPORT_CODE_IN_MESSAGE` matches a socket
+            // code ANYWHERE in the message, so a `credential_process` stderr
+            // containing `ETIMEDOUT` classifies transient and this warn printed
+            // the helper's argv and stderr on every re-poll, while the
+            // abandonment that eventually followed reduced them.
+            //
+            // And it must not be an inline
+            // `error instanceof Error ? error.message : String(error)`: the
+            // bare `String(value)` THROWS on a null-prototype object or a
+            // hostile `toString`. Measured — a duck-typed `Object.create(null)`
+            // rejection replaced the whole abandonment with `TypeError: Cannot
+            // convert object to primitive value`, INSIDE the poll loop, so it
+            // fired before the grace could expire and took the `RequestToken`
+            // with it: #3236's own defect re-entering through the line that
+            // reports it.
+            `(attempt ${attempts})${safePollText === '' ? '' : `: ${safePollText}`} — ` +
+            `the operation may still be running in AWS; re-polling the same request token in ${pollInterval}ms`
+        );
+        await this.sleep(pollInterval);
+        pollInterval = Math.min(Math.ceil(pollInterval * 1.5), this.MAX_POLL_INTERVAL_MS);
+        continue;
+      }
+
+      // An answered poll ends the outage: the grace measures ONE unbroken run
+      // of failures, so a flaky link that answers every other attempt keeps
+      // the full wall-clock budget instead of being killed by an accumulated
+      // total it never actually spent unreachable.
+      transientOutageStartedAt = undefined;
+      lastTransientError = undefined;
 
       const progressEvent = statusResponse.ProgressEvent;
 
@@ -1518,6 +2218,10 @@ export class CloudControlProvider implements ResourceProvider {
           'Unknown',
           logicalId
         );
+      }
+
+      if (progressEvent.Identifier) {
+        lastSeenIdentifier = progressEvent.Identifier;
       }
 
       this.logger.debug(
@@ -1572,17 +2276,215 @@ export class CloudControlProvider implements ResourceProvider {
       }
     }
 
-    throw new ProvisioningError(
+    // The deadline loses the token exactly as a transport failure did (issue
+    // #3236): the operation is STILL RUNNING when cdkd stops waiting, so this
+    // arm has always had the same untracked-resource consequence as the one
+    // above and now takes the same error.
+    //
+    // The `<OP> timeout for <id> after <n>s` wording is KEPT, and the reason is
+    // that nothing depends on it rather than that something does — an earlier
+    // revision of this comment claimed `tests/integration/opensearch-domain-getatt`
+    // and the retry classifiers read it, and both halves are false (that
+    // fixture contains no `timeout` match, and `isRetryableTransientError`
+    // measured FALSE for `CREATE timeout for X after 900s`). It is kept
+    // because it is the wording users have been reading, and changing it would
+    // be churn.
+    throw await this.abandonWait(
+      requestToken,
+      logicalId,
+      operation,
+      resourceType,
+      lastSeenIdentifier,
       `${operation} timeout for ${logicalId} after ${maxWaitMs / 1000}s`,
-      'Unknown',
-      logicalId
+      // Passed RAW, not `instanceof Error ? … : undefined`. `abandonWait` has
+      // its own non-`Error` arm, which WITHHOLDS the value and still reports
+      // that something arrived; filtering here re-created, on this arm alone,
+      // the "abandonment stating no reason at all" that arm exists to remove.
+      // Reachable: an answered poll clears this, so it is set exactly when the
+      // last attempt failed transiently inside the grace and the wall clock
+      // then expired — and `isTransientPollFailure` duck-types `code` / `name`
+      // / `message` off any object, so a non-`Error` throw does reach here.
+      lastTransientError
     );
+  }
+
+  /**
+   * Build the {@link CloudControlWaitAbandonedError} for a wait cdkd is giving
+   * up on while the operation is, as far as cdkd knows, still running (issue
+   * [#3236](https://github.com/go-to-k/cdkd/issues/3236)).
+   *
+   * Returns rather than throws so every call site reads `throw await
+   * this.abandonWait(...)` — the `throw` stays visible at the site, which is
+   * what keeps the control flow legible to the compiler and to a reader.
+   *
+   * CREATE is marked non-retryable and the other two are not, and the
+   * asymmetry is the whole point rather than an oversight:
+   *
+   *  - **CREATE** — a replay issues a SECOND `CreateResource` for a resource
+   *    the first call is already creating, which is go-to-k/cdkd#2039's
+   *    duplicate-create. It must be refused, and the marker is what refuses
+   *    it — but by a different mechanism than an earlier revision of this
+   *    comment claimed. That one said the message interpolates AWS's own
+   *    `Rate exceeded`, which `RETRYABLE_ERROR_MESSAGE_PATTERNS` matches; a
+   *    real `ThrottlingException` carries `$fault`, so its cause is REDUCED to
+   *    the wire code and the message no longer contains that wording.
+   *    Re-measured at this head: without the marker `isRetryableTransientError`
+   *    still answers TRUE, via `isThrottlingError`'s CHAIN walk over the
+   *    threaded cause rather than via the message. The marker stays
+   *    load-bearing; only the route changed.
+   *  - **DELETE** — a replay issues a second `DeleteResource`, which is
+   *    idempotent: if the first delete landed, the retry meets the
+   *    already-gone signal `delete()` absorbs. Retrying is strictly better
+   *    than surfacing a failure over a resource that may be gone.
+   *  - **UPDATE** — a replay re-derives and re-sends the same patch, the
+   *    behavior every other UPDATE failure already gets.
+   */
+  private async abandonWait(
+    requestToken: string,
+    logicalId: string,
+    operation: 'CREATE' | 'UPDATE' | 'DELETE',
+    resourceType: string,
+    lastSeenIdentifier: string | undefined,
+    reason: string,
+    cause: unknown
+  ): Promise<CloudControlWaitAbandonedError> {
+    // WHAT the cause text may say. The decision is `describePollFailure`'s
+    // (module-level, above), shared with the re-poll warn so one poll failure
+    // cannot be reduced on one line and rendered raw on the other.
+    //
+    // This message is PERSISTED verbatim into `deployments/{runId}.jsonl` by
+    // `extractDeploymentEventError`, a store restricted to error-plus-metadata
+    // that outlives the run, so it is the STRICTER of the two readers and the
+    // reason the helper exists at all.
+    const described = describePollFailure(cause);
+
+    // Sanitize BEFORE testing for emptiness, never after: `displaySafe` maps
+    // C0 / C1 / bidi to a space and then TRIMS, so a whitespace-only or
+    // control-only message renders `''` — and a guard keyed on the RAW value
+    // lets exactly that case back through as the dangling `(<reason>: ).` this
+    // guard exists to remove.
+    const safeDisplay = displaySafe(described.display);
+    const causeText = safeDisplay === '' ? '' : `: ${safeDisplay}`;
+
+    if (described.detail !== '') {
+      this.logger.debug(
+        `${operation} ${logicalId}: the abandoned operation's underlying failure was: ${displaySafe(described.detail)}`
+      );
+    }
+
+    // `asciiOnly` because this clause renders on the SAME line as the pasteable
+    // command: the denylist mode leaves bidi marks and zero-width joiners,
+    // which can visually reorder a command an operator is about to paste. The
+    // identifier can be template-chosen (GlobalTable, ASG).
+    const identifierClause =
+      lastSeenIdentifier === undefined
+        ? ''
+        : ` The last status cdkd read named the resource ${displaySafe(lastSeenIdentifier, { asciiOnly: true })}.`;
+
+    // Worded per operation. Saying "cdkd has NO state record" unconditionally
+    // is false for DELETE and UPDATE, whose resources DO have a record that the
+    // failure preserves — only the OPERATION is unrecorded there.
+    const consequence =
+      operation === 'CREATE'
+        ? 'cdkd has NO state record for it, so any resource it creates is untracked by rollback and by cdkd destroy'
+        : operation === 'DELETE'
+          ? 'the resource may or may not have been removed; its state record is kept so a re-run can finish the delete'
+          : 'its state record still holds the PREVIOUS properties, so the record may no longer describe the live resource';
+
+    const error = new CloudControlWaitAbandonedError(
+      `${operation} of ${logicalId} was accepted by Cloud Control API, but cdkd stopped waiting for it ` +
+        // The identifier clause goes BEFORE the command, never after it: glued
+        // on afterwards it rendered on the SAME line as the pasteable command,
+        // so a template-chosen identifier sat inside what reads as a shell
+        // line while taking only sanitize — one of the three steps
+        // `replacement-protection-advice.ts` requires, with no quote and no
+        // suppress. Putting it ahead means the command is the last thing on
+        // its line and nothing user-chosen follows it.
+        `(${reason}${causeText}). The operation may still be running in AWS, and ${consequence}.` +
+        `${identifierClause} Check what it did with:\n  ${await this.buildResumeCommand(requestToken)}`,
+      resourceType,
+      logicalId,
+      requestToken,
+      operation,
+      lastSeenIdentifier,
+      cause instanceof Error ? cause : undefined
+    );
+
+    // `markRedactedCause` ONLY when the chain actually carries the text that
+    // was withheld — `aws-failure-text.ts` states that precondition and says
+    // stamping without it is worse than not stamping at all. So it is gated on
+    // BOTH the reduction having happened and a real `Error` having been
+    // threaded as `cause`. It exists because the retry classifiers match by
+    // substring, and reducing `AccessDeniedException` to its wire code removes
+    // the `not authorized to perform` wording the IAM-propagation grid keys on;
+    // the marker is the opt-in `retryable-errors.ts` provides for exactly that.
+    // `describePollFailure` already folds in the precondition
+    // `aws-failure-text.ts` states: stamp ONLY when the chain carries the text
+    // that was withheld. So `marker` is false for an absent cause, for a
+    // non-`Error` (nothing is threaded as `cause`), and for a `$fault`-bearing
+    // `Error` whose `message` is `''` — which `asSdkError` can hand up, and
+    // which would opt the classifier into reading a chain with no text in it.
+    if (described.marker) markRedactedCause(error);
+
+    return operation === 'CREATE' ? markNonRetryable(error) : error;
+  }
+
+  /**
+   * The `aws cloudcontrol get-resource-request-status` line an abandoned wait
+   * hands the user — the only way back to an operation cdkd has no record of.
+   *
+   * SANITIZE-then-QUOTE-then-SUPPRESS, the full convention
+   * `replacement-protection-advice.ts` applies (issue
+   * [#2669](https://github.com/go-to-k/cdkd/issues/2669)) — quoting ALONE is
+   * not it, and the gap is not theoretical here. The region comes from
+   * `config.region()`, i.e. `--region` / `AWS_REGION` / a profile's `region =`
+   * line, so it is USER text: `AWS_REGION=$'us-east-1\nrm -rf x'` is inert once
+   * `shellQuote` wraps it, and still renders a two-line "recovery command" on
+   * the terminal and into `deployments/{runId}.jsonl` — the forgery
+   * `lock-contention-message.ts` says quoting does not cover. So each part is
+   * `displaySafe`d first and DROPPED when sanitizing changed it: the region
+   * flag is simply omitted (absent is already legal — the user supplies their
+   * own), and a changed TOKEN suppresses the whole command, since a command
+   * naming the wrong operation is worse than none.
+   *
+   * The region is best-effort in a second sense: `config.region` is a resolver
+   * that can throw (no credentials, no configured region), and a wait that
+   * already failed must not fail a second time inside its own error message.
+   */
+  private async buildResumeCommand(requestToken: string): Promise<string> {
+    const safeToken = displaySafe(requestToken, { asciiOnly: true });
+    // The `!safeToken` arm matches `replacement-protection-advice.ts`'s
+    // convention verbatim rather than being narrowed to the change test alone.
+    // Unreachable today -- every call site guards a falsy token before the wait
+    // starts -- but a seam that diverges from the convention it copied is how
+    // the next copy loses the arm that IS reachable.
+    if (!safeToken || safeToken !== requestToken) {
+      return '(cdkd cannot render a safe resume command for this request token — see the Cloud Control console)';
+    }
+
+    let region: string | undefined;
+    try {
+      region = (await this.cloudControlClient.config.region())?.trim();
+    } catch {
+      region = undefined;
+    }
+    const safeRegion =
+      region === undefined || region === '' || displaySafe(region, { asciiOnly: true }) !== region
+        ? undefined
+        : region;
+    const regionFlag = safeRegion === undefined ? '' : ` --region ${shellQuote(safeRegion)}`;
+    return `aws cloudcontrol get-resource-request-status --request-token ${shellQuote(safeToken)}${regionFlag}`;
   }
 
   /**
    * Parse resource model JSON string.
    *
-   * On a parse failure this logs the error plus the model's SHAPE — never its
+   * On a parse failure the WARN line logs the error's CLASS plus the model's
+   * SHAPE. The `debug` line beside it DOES carry the raw parser message, echo
+   * included, and naming that carve-out is the point (issue
+   * [#3290](https://github.com/go-to-k/cdkd/issues/3290)): an unqualified
+   * promise that a sibling line falsifies is exactly what that issue was filed
+   * for. What follows is about the WARN line — never its
    * body (issue #1908, a GHSA-p5qg-v9gv-hc7w residual). The model is an AWS
    * readback, and a read handler cannot return write-only properties (the #809
    * premise), so the common secret shapes are absent — but a `{{resolve:...}}`
@@ -1600,11 +2502,22 @@ export class CloudControlProvider implements ResourceProvider {
     try {
       return JSON.parse(resourceModel) as Record<string, unknown>;
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      // The error's CLASS, never its message (issue go-to-k/cdkd#3290). The
+      // comment above promises this line carries the model's SHAPE and not its
+      // body, and `JSON.parse`'s own message breaks that promise: V8 ECHOES the
+      // input around the failure point. Measured on Node 24 —
+      // `JSON.parse('{"pw": hunter2SuperSecretValue}')` answers
+      // `Unexpected token 'h', "{"pw": hunter2Sup"... is not valid JSON`, so
+      // roughly thirty characters of the model reach a WARN line, i.e. default
+      // verbosity. `describeAwsFailure` is the same instrument `abandonWait`
+      // uses, and the `Model shape:` clause below already carries the
+      // diagnosis this line exists for — WHICH document failed to parse.
+      const described = describeAwsFailure(error);
       this.logger.warn(
-        `Failed to parse resource model: ${errorMessage}\n` +
+        `Failed to parse resource model: ${described.redacted ? described.summary : error instanceof Error ? error.name : 'Error'}\n` +
           `Model shape: ${resourceModel.length} chars, ${describeJsonKeys(resourceModel)}`
       );
+      this.logger.debug(`Resource model parse failure detail: ${displaySafe(described.detail)}`);
       return {};
     }
   }

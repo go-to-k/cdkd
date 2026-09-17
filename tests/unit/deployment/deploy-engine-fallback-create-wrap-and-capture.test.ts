@@ -27,6 +27,8 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
+import { markWaitAbandoned } from '../../../src/provisioning/wait-abandoned.js';
+import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 
 /** What the engine's outer `ProvisioningError` carries as its `cause`. */
 type InnerError = Error & { code?: string; cause?: unknown };
@@ -296,6 +298,41 @@ describe('the UPDATE-not-supported replacement fallback: create-failure wrap + o
       // The claims the wording exists to avoid.
       expect(err!.message).not.toContain('replacement removed');
       expect(err!.message).not.toContain('already deleted');
+    });
+
+    it('REFUSES to read an abandoned wait as "already gone", so no replacement is created beside it (#3236)', async () => {
+      // The worst of the four already-deleted classifiers to get wrong. This
+      // arm does not merely drop a state row on a true verdict — it proceeds to
+      // CREATE the replacement beside an old resource whose delete may still be
+      // running, and it carried NO typed guard at all before go-to-k/cdkd#3249.
+      //
+      // A DELETE abandonment is deliberately left RETRYABLE so the delete can
+      // be re-issued, so it clears `isMarkedNonRetryable`; the only thing
+      // standing between it and this arm's bare `NotFound` substring is
+      // `isWaitAbandonedError`. Built through the MARKER rather than the class
+      // because this file mocks the provider module — and that is the better
+      // subject anyway, since the production guard reads the predicate.
+      const abandoned = markWaitAbandoned(
+        new Error(
+          'DELETE of HandlePageNotFound was accepted by Cloud Control API, but cdkd stopped waiting for it'
+        )
+      );
+      // Non-vacuity, both halves: the message really carries this arm's needle,
+      // and the error really is retryable — i.e. no pre-existing guard covers it.
+      expect(abandoned.message).toContain('NotFound');
+      expect(isMarkedNonRetryable(abandoned)).toBe(false);
+      deleteRejection = () => abandoned;
+
+      const err = await invokeExpectingFailure(makeEngine());
+
+      expect(err).not.toBeNull();
+      // The delete was attempted, so this arm was really taken...
+      expect(deleteCalls).toEqual(['old-pid']);
+      // ...and the failure is the ABANDONMENT, re-thrown. The wrong behaviour
+      // is the create proceeding and the failure being about the CREATE.
+      expect(err!.message).toContain('stopped waiting for it');
+      expect(err!.message).not.toContain('is now gone');
+      expect(replProvider.create).not.toHaveBeenCalled();
     });
 
     it('puts no resolved-secret plaintext on the failure, wherever the mask runs', async () => {

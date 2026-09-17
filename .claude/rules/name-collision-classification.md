@@ -8,6 +8,13 @@ paths:
 
 # Name-collision classification
 
+Sibling rule on this same file: [cloud-control-wait.md](cloud-control-wait.md)
+— why a Cloud Control poll failure must NEVER be answered by a new entry in the
+pattern table below (issue
+[#3236](https://github.com/go-to-k/cdkd/issues/3236)). Indexed from here rather
+than from `layout-deployment.md` because that file is loaded by
+`secret-redaction.ts`, which had 33 bytes of payload headroom.
+
 Pointed at from [layout-deployment.md](layout-deployment.md). Split out under
 issue [#3208](https://github.com/go-to-k/cdkd/issues/3208) for the reason
 [delete-outcome.md](delete-outcome.md) and

@@ -26,6 +26,7 @@ This document summarizes common issues when using cdkd and their solutions.
   - ["has DeletionPolicy: Snapshot, but ..." refusal on delete](#has-deletionpolicy-snapshot-but-refusal-on-delete)
   - ["OpenTableFormatInput.IcebergInput.IcebergTableInput cannot be deployed" on a Glue table](#opentableformatinput-iceberginput-icebergtableinput-cannot-be-deployed-on-a-glue-table)
   - [deleting a Cognito `Policies` sub-key changes nothing on the pool](#deleting-a-cognito-policies-sub-key-changes-nothing-on-the-pool)
+  - ["cdkd stopped waiting for it" — a network outage during a Cloud Control operation](#cdkd-stopped-waiting-for-it-a-network-outage-during-a-cloud-control-operation)
 - [Asset Publishing Issues](#asset-publishing-issues)
   - ["Asset publishing failed"](#asset-publishing-failed)
   - [Lambda Deployment Fails](#lambda-deployment-fails)
@@ -949,6 +950,61 @@ The AWS defaults, if that is what you are after, are
 `AllowedFirstAuthFactors: [PASSWORD]` for `SignInPolicy` and `MinimumLength: 8`
 with every character-class requirement enabled plus
 `TemporaryPasswordValidityDays: 7` for `PasswordPolicy`.
+
+---
+
+### "cdkd stopped waiting for it" — a network outage during a Cloud Control operation
+
+**Symptoms:**
+
+Your connection drops mid-deploy (a VPN reconnecting is the usual cause) while
+a Cloud-Control-routed resource is being created, updated or deleted, and the
+operation ends with:
+
+```text
+CREATE of Dbwriter9B286E50 was accepted by Cloud Control API, but cdkd stopped
+waiting for it (cdkd could not reach Cloud Control API for 121s: connect
+ECONNREFUSED 100.72.0.178:443). The operation may still be running in AWS, and
+cdkd has NO state record for it, so any resource it creates is untracked by
+rollback and by cdkd destroy. Check what it did with:
+  aws cloudcontrol get-resource-request-status --request-token <token> --region ap-northeast-1
+```
+
+**Cause:**
+
+A Cloud Control operation runs asynchronously: cdkd submits it, receives a
+request token, and polls that token for the verdict. The operation itself keeps
+running in AWS whether or not cdkd can reach the API. Short blips are absorbed —
+the AWS SDK retries a few times, and cdkd re-polls the same token for up to two
+more minutes on top (ten seconds for the deletion-protection flip a
+`cdkd destroy --remove-protection` does first, which is best-effort and which
+the delete itself reports on) — but an outage longer than that leaves cdkd with no way to
+learn the outcome, and no physical id to record.
+
+**Solution:**
+
+Run the command the error prints. Its `OperationStatus` tells you what happened:
+
+- `SUCCESS` — AWS created (or updated, or deleted) the resource and cdkd has no
+  record of it. The response's `Identifier` names it. Adopt it with
+  [`cdkd import`](import.md) so the next deploy and `cdkd destroy` can see it,
+  or delete it in AWS if you do not want it.
+- `FAILED` — nothing to adopt; re-run `cdkd deploy`.
+- `IN_PROGRESS` — still running. Re-run the command until it settles, then
+  follow one of the two cases above.
+
+A `RequestTokenNotFoundException` means the request has aged out of Cloud
+Control's status history; fall back to looking for the resource in the console
+or via the service's own API, then `cdkd import` or delete it.
+
+A DELETE or an UPDATE reports the same way with a different consequence: the
+resource still has a state record, so re-running `cdkd destroy` (or
+`cdkd deploy`) finishes the job once the network is back. Only a CREATE can
+leave a resource cdkd has no record of.
+
+If the same deploy also reported `Failed to save partial state before rollback`
+or `Failed to write rollback journal`, the outage took those too — see
+[Reverting a failed `--no-rollback` / interrupted deploy](#reverting-a-failed-no-rollback-interrupted-deploy-cdkd-rollback).
 
 ---
 
