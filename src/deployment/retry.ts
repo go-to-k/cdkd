@@ -18,6 +18,7 @@ import {
   retryClassificationText,
 } from './retryable-errors.js';
 import { displaySafe, UNRENDERABLE } from '../utils/display-safe.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 
 export interface RetryLogger {
   debug(message: string): void;
@@ -347,7 +348,12 @@ export async function withRetry<T>(
       return await operation();
     } catch (error) {
       lastError = error;
-      const message = error instanceof Error ? error.message : String(error);
+      // `.detail` IS that ternary minus the throw. `withRetry` wraps
+      // `provider.delete`, so this catch is on the destroy path one hop in --
+      // the FOURTH out-throw found there, after three passes each called the
+      // path complete (go-to-k/cdkd#3348). Byte-identical, so every
+      // message-based classifier below reads exactly what it read before.
+      const message = describeAwsFailure(error).detail;
       // What the MESSAGE-based classifiers below read, and deliberately not
       // `message` (issue #2302). A wrapper on a thrown path may now WITHHOLD
       // AWS's wording -- it lands in the persisted `deployments/{runId}.jsonl`
