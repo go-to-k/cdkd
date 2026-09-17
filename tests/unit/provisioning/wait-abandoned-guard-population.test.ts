@@ -251,23 +251,53 @@ interface Site {
  * cannot see that. Measured — a first cut asserted over the site's expression
  * text and stayed green while `guarded` read the whole file.
  */
+/**
+ * One file's sites, keyed by `<absolute path>\0<source text>` (issue
+ * go-to-k/cdkd#3347).
+ *
+ * The self-probe below re-enters `collectSites` once per governed site with a
+ * ONE-file override, so the tree is scanned once per probe plus once at
+ * describe scope while only that one file's text differs between runs. Parsing
+ * is what that costs — `candidateExpressions` builds a `SourceFile` per file
+ * and `callsGuard` another per candidate — and all but one file's worth of it
+ * is repeated work on byte-identical input. Unmemoized, each probe ran ~5.5 s
+ * under the default worker count against Vitest's 5000 ms default, i.e. it
+ * failed a correct tree on a loaded machine.
+ *
+ * THE SOURCE IS IN THE KEY, not just the path, and that is the whole safety
+ * property: keyed on the path alone the cache would serve the UNMUTATED scan
+ * back to every probe, the blanked guard would score GUARDED, and each
+ * SELF-PROBE would pass with exactly the regression it exists to catch. A
+ * parse REFUSAL is never cached — `candidateExpressions` throws before the
+ * write below — so an unparseable file refuses on every call, not just the
+ * first.
+ */
+const sitesByFileAndSource = new Map<string, Site[]>();
+
+function scanFile(file: string, source: string): Site[] {
+  const key = `${file}\u0000${source}`;
+  const cached = sitesByFileAndSource.get(key);
+  if (cached) return cached;
+  const needleBearing = candidateExpressions(source, file).filter(
+    (e) => ALREADY_DELETED_NEEDLES.filter((n) => e.text.includes(n)).length >= 2
+  );
+  const sites = innermost(needleBearing).map(({ text, line }) => ({
+    file: file.slice(SRC_ROOT.length + 1),
+    line,
+    needles: ALREADY_DELETED_NEEDLES.filter((n) => text.includes(n)).length,
+    guarded: callsGuard(text),
+    text,
+  }));
+  sitesByFileAndSource.set(key, sites);
+  return sites;
+}
+
 function collectSites(sourceOverrides?: ReadonlyMap<string, string>): Site[] {
   const sites: Site[] = [];
   for (const file of tsFiles(SRC_ROOT)) {
     const source = sourceOverrides?.get(file) ?? readFileSync(file, 'utf8');
     if (source.trim().length === 0) continue;
-    const needleBearing = candidateExpressions(source, file).filter(
-      (e) => ALREADY_DELETED_NEEDLES.filter((n) => e.text.includes(n)).length >= 2
-    );
-    for (const { text, line } of innermost(needleBearing)) {
-      sites.push({
-        file: file.slice(SRC_ROOT.length + 1),
-        line,
-        needles: ALREADY_DELETED_NEEDLES.filter((n) => text.includes(n)).length,
-        guarded: callsGuard(text),
-        text,
-      });
-    }
+    sites.push(...scanFile(file, source));
   }
   return sites;
 }
@@ -438,7 +468,14 @@ describe('every already-deleted classifier refuses an abandoned wait (#3236)', (
       // that pairing holds for all four sites today (measured, one suite each)
       // but nothing asserts it, so a FIFTH site added with no behavioural test
       // would be fenced for presence only.
-    }
+    },
+    // An explicit bound, kept even though the memo above removed the cost that
+    // made this case slow (issue go-to-k/cdkd#3347). The two are not
+    // alternatives: the memo is why the probe is fast, this is why a machine
+    // slow enough to miss Vitest's 5000 ms default reports a HANG rather than
+    // failing a correct tree. Generous on purpose — its job is not to police
+    // latency.
+    30_000
   );
 
   it.each([
