@@ -51,13 +51,12 @@ jobs:
     # other job in it; `timeout-minutes` bounds neither. `disarm`'s run-level
     # 235 s was a job that took 11 s.
     #
-    # Every figure here is now one MEASURED AT JOB LEVEL BY THIS BRANCH. Review
-    # reported larger job-level maxima for `disarm` and `release-please` from a
-    # wider window; they could not be re-derived here (secondary rate limit) and
-    # so are not quoted. A weaker lower bound that was verified beats a stronger
-    # one that was not -- which is the whole lesson of the paragraph above, and
-    # no bound turns on the difference: the smallest ratio among the three is
-    # 15 minutes against 46 s.
+    # Every figure here is one MEASURED AT JOB LEVEL BY THIS BRANCH, and each is
+    # a LOWER BOUND: "observed at least X". Review briefly reported larger maxima
+    # for `disarm` and `release-please`; re-derivation from the reviewer's own
+    # wider data then matched these values, so nothing larger is quoted. The
+    # general rule stands regardless -- a weaker lower bound that was verified
+    # beats a stronger one that was not.
     #
     # Samples come from the closed range 2026-09-09..2026-09-15, UTC:
     #

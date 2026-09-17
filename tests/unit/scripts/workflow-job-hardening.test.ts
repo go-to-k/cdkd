@@ -9,7 +9,8 @@
  *
  * * A job with no `timeout-minutes` runs on the Actions default of **360
  *   minutes**. `ci.yml`'s `check-build-test` is reachable from a FORK through
- *   `pull_request`, and is observed at at least 823 s — so the gap between what
+ *   `pull_request`, and is observed at at least 823 s, so the gap between
+ *   what
  *   the job needs and what it was allowed is a factor of about 26. "Longest
  *   measured run" is the framing this file now avoids — see the lower-bound
  *   note below.
@@ -23,8 +24,10 @@
  *   and the 6-hour ceiling.
  * * A workflow with no `permissions:` block takes the repository's
  *   `default_workflow_permissions` SETTING. That setting is `read` today, so
- *   the two workflows that lacked a block (`ci.yml`, `hooks.yml`) were
- *   effectively no wider than the nine that had one — but a setting is changed
+ *   the two workflows that lacked a block (`ci.yml`, `hooks.yml`) were no
+ *   wider than a workflow-level `read` — though wider than the four that pair
+ *   `{}` with a narrow per-job grant, since the default grants EVERY scope at
+ *   read. But a setting is changed
  *   from the web UI, by a person, at a moment unrelated to this repo's review,
  *   and it widens every job that inherited it at once.
  *
@@ -1332,11 +1335,14 @@ describe('the twins are exercised against hostile trees, not only clean ones', (
   const twinLines = (name: string, body: string): { jobs: string[]; perms: string[] } =>
     withMutatedCopy(
       (dir) => writeFileSync(join(dir, name), body),
+      // The WHOLE name. This filter cut at the first dot for three rounds —
+      // the exact prefix bug `findingsForAddedFile` names and fixed, duplicated
+      // here and left behind, which is the "one copy at a time" staleness this
+      // file complains about elsewhere. Inert while every fixture is `zz-`
+      // prefixed, and a defect the moment one is not.
       (dir) => ({
-        jobs: independentlyUnboundedJobs(dir).filter((l) => l.includes(name.split('.')[0] ?? '')),
-        perms: independentlyUndeclaredPermissions(dir).filter((l) =>
-          l.includes(name.split('.')[0] ?? ''),
-        ),
+        jobs: independentlyUnboundedJobs(dir).filter((l) => l.includes(name)),
+        perms: independentlyUndeclaredPermissions(dir).filter((l) => l.includes(name)),
       }),
     );
 

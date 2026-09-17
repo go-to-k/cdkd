@@ -47,8 +47,11 @@ jobs:
     # least 1587 s (26.5 minutes) over 49 successful runs in the shared range,
     # against that 30-minute bound: a real run came within 3.5 minutes of being
     # killed, and nobody would have noticed, because a timeout kill reads as a
-    # flake, gets re-run, and passes. Review re-derived the same 1587 s over five
-    # weeks (n=355), so the week is not an artefact.
+    # flake, gets re-run, and passes. Review re-derived the same 1587 s max over
+    # a five-week window, so the week this figure comes from is not an artefact.
+    # (No count for that window is quoted: two reviewers' tallies differed by one
+    # and neither could be re-derived here under a rate limit. The max is the
+    # load-bearing part and both agree on it.)
     #
     # 45 was an intermediate answer and shared the error described in `ci.yml`:
     # it was computed as a multiple of a sample max. 60 is chosen the way every
@@ -56,13 +59,18 @@ jobs:
     # the 360-minute default. A macOS runner executing two bash suites is the
     # slowest and most variable host in the matrix.
     #
-    # THE TRADE-OFF IS REAL HERE AND NOWHERE ELSE, so it is stated rather than
-    # waved past. Every other bound in this directory can be chosen generously
-    # at no cost. This one cannot: `hook-suites` is `pull_request`-triggered on
-    # `.claude/hooks/**`, checks out the PR ref and runs
-    # `bash .claude/hooks/run-tests.sh` — the ONE job in the repo that executes
-    # fork-authored shell — so raising the cap also lengthens the window a
-    # runaway gets on exactly that job.
+    # THE TRADE-OFF IS SHARPEST HERE, so it is stated rather than waved past.
+    # `hook-suites` is `pull_request`-triggered on `.claude/hooks/**`, checks out
+    # the PR ref and runs `bash .claude/hooks/run-tests.sh` -- the only job in
+    # the repo that executes fork-authored SHELL -- so raising the cap also
+    # lengthens the window a runaway gets on exactly that job.
+    #
+    # Not "and nowhere else", which an earlier version of this sentence claimed:
+    # `check-build-test` and `docs-deploy`/`build` are `pull_request`-triggered
+    # too and run fork-supplied code, and `ci.yml`'s own comment calls the first
+    # of those the job its cap matters most for. Two unqualified superlatives
+    # about the same property cannot both be true. What is specific to this job
+    # is the SHELL, and that is the claim kept.
     #
     # 60 is still the right call, because the two risks are not symmetric. The
     # cost of 60 over 45 is fifteen extra minutes of bounded compute in an abuse
