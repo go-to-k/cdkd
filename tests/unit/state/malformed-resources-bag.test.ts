@@ -2737,6 +2737,32 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
     // arm, where the bare form IS correct because a region-less record is a v1
     // one and is not region-partitioned.
     expect(text).toContain("'cdkd state orphan S --stack-region us-east-1'");
+
+    // The other two arms of the same remedy, neither of which any test reached
+    // before (security review of go-to-k/cdkd#3318, round 3 — it found the
+    // `''` arm live and UNFENCED, and the arm the JSDoc defends unreachable).
+    //
+    // `''` is what `pickStackRegion` actually yields for a v1-legacy record --
+    // it returns `Promise<string>`, never `undefined` -- so this is the input
+    // the shipped path supplies, and it must produce the BARE command. A
+    // placeholder here selects no record whatever the operator fills in, and
+    // `'<unrenderable>'` additionally collides with the wrapping quotes.
+    const legacy = malformedOrphanResourcePropertiesRefusalMessage('S', '', ['R']);
+    expect(legacy).toContain("'cdkd state orphan S'");
+    expect(legacy).not.toContain('--stack-region');
+    expect(legacy).not.toContain('unrenderable');
+
+    // `undefined` takes the same arm: the two spellings must not diverge,
+    // because which one arrives depends on a caller this module does not own.
+    const legacyUndef = malformedOrphanResourcePropertiesRefusalMessage('S', undefined, ['R']);
+    expect(legacyUndef).toContain("'cdkd state orphan S'");
+    expect(legacyUndef).not.toContain('--stack-region');
+
+    // No trusted stack at all degrades the whole command to a template, where
+    // the `<region>` placeholder IS right -- it reads as a hole to fill rather
+    // than a command to run.
+    const noStack = malformedOrphanResourcePropertiesRefusalMessage(undefined, undefined, ['R']);
+    expect(noStack).toContain("'cdkd state orphan <stack> --stack-region <region>'");
     expect(text).toContain('only while the CDK app STILL DECLARES');
     expect(text).toContain('a resource the app no longer declares has none');
     expect(text).toContain('No state was written');

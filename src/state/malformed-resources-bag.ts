@@ -1084,7 +1084,6 @@ function stackClause(stackName: string | undefined, region: string | undefined):
   return `State for ${shellQuote(safeIdentifier(stackName))}${where}`;
 }
 
-/** The remedy command {@link stackClause}'s message ends on. */
 /**
  * The DESTRUCTIVE remedy, built the way {@link inspectCommand} builds the
  * read-only one, and the region clause follows the SAME rule for two reasons
@@ -1102,13 +1101,32 @@ function stackClause(stackName: string | undefined, region: string | undefined):
  *
  * With no trusted STACK the whole thing degrades to a template, as the inspect
  * command does — there is nothing to substitute.
+ *
+ * **It diverges from {@link malformedDestroyResourcesRefusalMessage}, which
+ * keeps `cdkd state orphan` a template on purpose, and the difference is where
+ * the identity comes from.** That builder is reached with the RECORD's own
+ * stackName / region, so substituting would aim a destructive command using
+ * values the record supplied. This one is reached only with the caller's
+ * synthesized stack and `pickStackRegion`'s answer, so substituting is safe and
+ * omitting the region is the wider action. Two opposite precedents in one
+ * module; neither is the general rule.
  */
 function dropRecordCommand(stackName: string | undefined, region: string | undefined): string {
-  if (stackName === undefined) return 'cdkd state orphan <stack> --stack-region <region>';
-  const flag = region === undefined ? '' : ` --stack-region ${shellQuote(safeIdentifier(region))}`;
+  if (stackName === undefined || stackName === '') {
+    return 'cdkd state orphan <stack> --stack-region <region>';
+  }
+  // The `=== ''` arms duplicate the caller's normalisation deliberately: this
+  // helper is module-private but its two siblings are reached from builders
+  // that do NOT normalise, so a fourth caller added later inherits the floor
+  // rather than the defect.
+  const flag =
+    region === undefined || region === ''
+      ? ''
+      : ` --stack-region ${shellQuote(safeIdentifier(region))}`;
   return `cdkd state orphan ${shellQuote(safeIdentifier(stackName))}${flag}`;
 }
 
+/** The remedy command {@link stackClause}'s message ends on. */
 function inspectCommand(stackName: string | undefined, region: string | undefined): string {
   if (stackName === undefined) {
     // A TEMPLATE rather than a command, and it says so: substituting anything
@@ -1477,10 +1495,22 @@ export function malformedResourcePropertiesRefusalMessage(
  * own unvalidated self-report. See {@link stackClause}.
  */
 export function malformedOrphanResourcePropertiesRefusalMessage(
-  stackName: string | undefined,
-  region: string | undefined,
+  rawStackName: string | undefined,
+  rawRegion: string | undefined,
   logicalIds: readonly string[]
 ): string {
+  // NORMALISE ONCE, here, rather than in each of the three helpers below.
+  // `pickStackRegion` returns `Promise<string>` and yields `''` -- never
+  // `undefined` -- for a v1-legacy record, and an empty string is not an
+  // identity: `displaySafe('')` is `<unrenderable>`, so every helper that
+  // treats "absent" as `undefined` renders a placeholder that names no record
+  // AND collides with its own wrapping quotes. Hoisting protects
+  // `stackClause`, `inspectCommand` and `dropRecordCommand` together; guarding
+  // inside one of them fixes a third of the message (measured -- the first cut
+  // did exactly that, and the remaining two still rendered
+  // `('<unrenderable>')` and `--stack-region '<unrenderable>'`).
+  const stackName = rawStackName === '' ? undefined : rawStackName;
+  const region = rawRegion === '' ? undefined : rawRegion;
   return (
     `${namedPropertyBagsClause(stackName, region, logicalIds)} 'cdkd orphan' REWRITES and SAVES ` +
     `every record it keeps, so it refuses rather than continuing — under '--dry-run' too, ` +
