@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ECS::Service",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-17",
   "properties": [
     "AvailabilityZoneRebalancing",
     "CapacityProviderStrategy",
@@ -165,7 +165,9 @@
       "CanaryConfiguration",
       "CanaryPercent",
       "DeploymentCircuitBreaker",
+      "EarlySuccessCriteria",
       "Enable",
+      "HealthyPercent",
       "HookDetails",
       "HookTargetArn",
       "LifecycleHooks",
@@ -176,6 +178,7 @@
       "ResetOnHealthyTask",
       "RoleArn",
       "Rollback",
+      "SourceServiceRevisionCleanup",
       "StepBakeTimeInMinutes",
       "StepPercent",
       "Strategy",
@@ -314,6 +317,10 @@
       "DeploymentCircuitBreaker.ThresholdConfiguration",
       "DeploymentCircuitBreaker.ThresholdConfiguration.Type",
       "DeploymentCircuitBreaker.ThresholdConfiguration.Value",
+      "EarlySuccessCriteria",
+      "EarlySuccessCriteria.Enable",
+      "EarlySuccessCriteria.HealthyPercent",
+      "EarlySuccessCriteria.SourceServiceRevisionCleanup",
       "LifecycleHooks",
       "LifecycleHooks.HookDetails",
       "LifecycleHooks.HookTargetArn",
@@ -366,6 +373,11 @@
     "TimeoutConfiguration": {
       "PerRequestTimeoutSeconds": "scalar",
       "IdleTimeoutSeconds": "scalar"
+    },
+    "DeploymentEarlySuccessCriteria": {
+      "SourceServiceRevisionCleanup": "scalar",
+      "HealthyPercent": "scalar",
+      "Enable": "scalar"
     },
     "ServiceConnectTlsCertificateAuthority": {
       "AwsPcaAuthorityArn": "scalar"
@@ -534,6 +546,7 @@
       "CanaryConfiguration": "object",
       "BakeTimeInMinutes": "scalar",
       "LifecycleHooks": "array",
+      "EarlySuccessCriteria": "object",
       "Alarms": "object",
       "Strategy": "scalar",
       "DeploymentCircuitBreaker": "object",

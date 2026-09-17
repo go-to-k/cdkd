@@ -249,12 +249,12 @@
       "attributes": [
         {
           "name": "ApiId",
-          "status": "allow-listed",
-          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+          "status": "gap"
         },
         {
           "name": "Arn",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         },
         {
           "name": "GraphQLDns",
@@ -278,7 +278,7 @@
         }
       ],
       "gaps": [
-        "Arn",
+        "ApiId",
         "GraphQLDns",
         "GraphQLEndpointArn",
         "GraphQLUrl",

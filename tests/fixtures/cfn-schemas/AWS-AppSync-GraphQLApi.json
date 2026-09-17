@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::AppSync::GraphQLApi",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-17",
   "properties": [
     "AdditionalAuthenticationProviders",
     "ApiId",
@@ -39,7 +39,7 @@
   ],
   "createOnlyProperties": [],
   "primaryIdentifier": [
-    "ApiId"
+    "Arn"
   ],
   "nestedProperties": {
     "AdditionalAuthenticationProviders": [
