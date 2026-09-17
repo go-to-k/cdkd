@@ -1,8 +1,8 @@
 {
   "summary": {
     "targetCount": 24,
-    "nestedKeyCount": 1218,
-    "sameSpelling": 1127,
+    "nestedKeyCount": 1222,
+    "sameSpelling": 1131,
     "providerHandled": 70,
     "allowListed": 21,
     "caseDivergence": 0,
@@ -3156,7 +3156,7 @@
       "sdkClientPackage": "@aws-sdk/client-ecs",
       "keyStyle": "lower-first",
       "freshObjectMapper": true,
-      "nestedKeyCount": 114,
+      "nestedKeyCount": 118,
       "entries": [
         {
           "resourceType": "AWS::ECS::Service",
@@ -3282,6 +3282,34 @@
           "nestedKey": "DeploymentConfiguration.DeploymentCircuitBreaker.ThresholdConfiguration.Value",
           "topLevelProperty": "DeploymentConfiguration",
           "terminalKey": "Value",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "DeploymentConfiguration.EarlySuccessCriteria",
+          "topLevelProperty": "DeploymentConfiguration",
+          "terminalKey": "EarlySuccessCriteria",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "DeploymentConfiguration.EarlySuccessCriteria.Enable",
+          "topLevelProperty": "DeploymentConfiguration",
+          "terminalKey": "Enable",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "DeploymentConfiguration.EarlySuccessCriteria.HealthyPercent",
+          "topLevelProperty": "DeploymentConfiguration",
+          "terminalKey": "HealthyPercent",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "DeploymentConfiguration.EarlySuccessCriteria.SourceServiceRevisionCleanup",
+          "topLevelProperty": "DeploymentConfiguration",
+          "terminalKey": "SourceServiceRevisionCleanup",
           "bucket": "same-spelling"
         },
         {
