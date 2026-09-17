@@ -1049,6 +1049,28 @@ cdkd's sentinel into a sibling is not the remedy, it is the "do not fix the
 target repo to match cdkd" half of the rule above, and the hand-written
 attestation go-to-k/cdkd#3209 exists to replace.
 
+**The relaxation now also asks what gh would resolve in the TARGET CHECKOUT,
+not only what the command says** (go-to-k/cdkd#3235). gh picks a base repo from
+that checkout's git remotes, and that channel leaves NOTHING in the command
+text: measured on gh 2.92.0, a cdk-local checkout carrying
+`upstream = go-to-k/cdkd` answers **cdkd** for a plain `gh pr merge 42`, so
+cdk-local's own fresh marker would clear the merge of a CDKD pull request. The
+gate resolves the same answer from `git config` alone -- never by running `gh`,
+and never by running anything FROM the target (PR 1970, above) -- and requires
+it to equal that checkout's own `origin`. It is a COMPARISON, not a presence
+test: refusing any checkout carrying a `gh-resolved` key would refuse a sibling
+that ran `gh repo set-default` on ITSELF, which is what gh tells a multi-remote
+checkout to do. When it refuses, the remedy is a REMOTE one (drop the stray
+remote, or `gh repo set-default <that checkout's own slug>`) and the block says
+so -- re-spelling the command changes nothing. gh's order is
+upstream > github > origin > the rest alphabetically, with a `gh-resolved` key
+on the first remote that has one winning outright; all of it is a checked-in
+matrix in `verify-pr-gate.test.sh`, re-measurable against live gh with
+`VPG_REMEASURE_GH=1`. The same slug answer RETIRES the second-clone bound: two
+checkouts whose `origin` is the same repository are treated as the same
+repository even with different git common dirs, so a second clone of cdkd owes
+the binding again.
+
 **Do not port cdkd's stricter gates down to a sibling, or a sibling's
 exemptions up into cdkd.** The obvious convergence — give cdkd the
 docs/tooling exemption — is demonstrably wrong: a `.claude/hooks/**`-only PR

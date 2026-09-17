@@ -54,6 +54,18 @@ install_hook() {
   mkdir -p "$dest/lib" || { echo "install_hook: mkdir failed for $dest" >&2; exit 1; }
   cp "$HOOK_REAL" "$dest/verify-pr-gate.sh" || { echo "install_hook: cp hook failed" >&2; exit 1; }
   cp "$LIB_REAL" "$dest/lib/command-match.sh" || { echo "install_hook: cp lib failed" >&2; exit 1; }
+  # HOOK_BASH shim (go-to-k/cdkd#2715, which lists the suites still missing it).
+  # Running this SUITE under bash 3.2 does NOT run the HOOK under 3.2: the hook
+  # is `#!/usr/bin/env bash`, so it takes whatever is first on PATH, and the
+  # suite then advertises 3.2 coverage of ITSELF. `run-tests.sh` exports
+  # `HOOK_BASH` beside each shell for exactly this. Rewriting the INSTALLED
+  # copy's shebang is the single point that covers every invocation below,
+  # since each one runs a copy this function produced.
+  if [ -n "${HOOK_BASH:-}" ]; then
+    { printf '#!%s\n' "$HOOK_BASH"; tail -n +2 "$dest/verify-pr-gate.sh"; } > "$dest/.hook.shim" \
+      || { echo "install_hook: shebang rewrite failed" >&2; exit 1; }
+    mv "$dest/.hook.shim" "$dest/verify-pr-gate.sh" || { echo "install_hook: shim mv failed" >&2; exit 1; }
+  fi
   chmod +x "$dest/verify-pr-gate.sh" || { echo "install_hook: chmod failed" >&2; exit 1; }
   printf '%s\n' "$dest/verify-pr-gate.sh"
 }
@@ -967,6 +979,194 @@ else
   fail=$((fail + 1))
   fail_log+="FAIL relative invocation: gh -C gave $rel_a, cd && gave $rel_b (want 0 and 0)\n"
   printf 'FAIL relative invocation (%s / %s)\n' "$rel_a" "$rel_b"
+fi
+
+# ---------------------------------------------------------------------------
+# go-to-k/cdkd#3235: gh resolves a base repo from the TARGET CHECKOUT's remotes,
+# and that channel puts nothing in the command text. Every row below is a
+# FOREIGN checkout carrying a plain `gh pr create --title x` -- so the ONLY
+# thing that can move the verdict is the remote configuration.
+#
+# THE ORACLE IS CHECKED IN, and it is gh's ANSWER, not this gate's. Column 4 is
+# what `gh repo view --json nameWithOwner` printed in that configuration,
+# measured 2026-09-18 on gh 2.92.0 against live repos. Column 5 is the verdict
+# this gate owes given that answer. Keeping gh's answer in the file is what
+# makes the table re-checkable: `VPG_REMEASURE_GH=1 bash
+# .claude/hooks/verify-pr-gate.test.sh` rebuilds every row and DIFFS real gh
+# against column 4, so a gh release that changes the resolution order fails
+# here by name instead of silently invalidating the gate. That mode needs
+# network + `gh auth`, which is why it is opt-in and why the ordinary offline
+# run is the enforcement (a check that SKIPS when its oracle is unreachable is
+# a vacuous pass -- .claude/rules/testing.md).
+#
+# Rows: name | remotes (name=url,...) | extra git config (k=v,...) | gh answer | expect
+GH_MATRIX='
+origin_only|origin=https://github.com/go-to-k/cdk-local.git||go-to-k/cdk-local|relax
+origin_upstream|origin=https://github.com/go-to-k/cdk-local.git,upstream=https://github.com/go-to-k/cdkd.git||go-to-k/cdkd|block
+upstream_added_first|upstream=https://github.com/go-to-k/cdkd.git,origin=https://github.com/go-to-k/cdk-local.git||go-to-k/cdkd|block
+origin_github|origin=https://github.com/go-to-k/cdk-local.git,github=https://github.com/go-to-k/cdk-real-drift.git||go-to-k/cdk-real-drift|block
+all_three|origin=https://github.com/go-to-k/cdk-local.git,github=https://github.com/go-to-k/cdk-real-drift.git,upstream=https://github.com/go-to-k/cdkd.git||go-to-k/cdkd|block
+resolved_base_on_origin|origin=https://github.com/go-to-k/cdk-local.git,upstream=https://github.com/go-to-k/cdkd.git|remote.origin.gh-resolved=base|go-to-k/cdk-local|relax
+resolved_slug_on_origin|origin=https://github.com/go-to-k/cdk-local.git|remote.origin.gh-resolved=go-to-k/cdk-real-drift|go-to-k/cdk-real-drift|block
+resolved_base_on_upstream|origin=https://github.com/go-to-k/cdk-local.git,upstream=https://github.com/go-to-k/cdkd.git|remote.upstream.gh-resolved=base|go-to-k/cdkd|block
+resolved_on_both|origin=https://github.com/go-to-k/cdk-local.git,upstream=https://github.com/go-to-k/cdkd.git|remote.origin.gh-resolved=base,remote.upstream.gh-resolved=go-to-k/cdk-real-drift|go-to-k/cdk-real-drift|block
+resolved_full_url|origin=https://github.com/go-to-k/cdk-local.git|remote.origin.gh-resolved=https://github.com/go-to-k/cdk-real-drift|go-to-k/cdk-real-drift|block
+resolved_junk|origin=https://github.com/go-to-k/cdk-local.git|remote.origin.gh-resolved=not a slug|ERROR|block
+single_odd_name|zed=https://github.com/go-to-k/cdk-real-drift.git||go-to-k/cdk-real-drift|relax
+zed_and_origin|zed=https://github.com/go-to-k/cdk-real-drift.git,origin=https://github.com/go-to-k/cdk-local.git||go-to-k/cdk-local|relax
+tail_is_alphabetical|zzz=https://github.com/go-to-k/cdk-real-drift.git,aaa=https://github.com/go-to-k/cdkd.git||go-to-k/cdkd|block
+ssh_scp_form|origin=git@github.com:go-to-k/cdk-local.git||go-to-k/cdk-local|relax
+upper_cased_slug|origin=https://github.com/GO-TO-K/CDK-Local.git||go-to-k/cdk-local|relax
+case_differs_across_sources|origin=https://github.com/GO-TO-K/CDK-Local.git|remote.origin.gh-resolved=go-to-k/cdk-local|go-to-k/cdk-local|relax
+non_github_only|origin=https://gitlab.com/foo/bar.git||ERROR|block
+mixed_host|origin=https://gitlab.com/foo/bar.git,upstream=https://github.com/go-to-k/cdkd.git||go-to-k/cdkd|block
+'
+
+# Build one matrix row's repo. Prints its path.
+gh_matrix_repo() { # $1 = name, $2 = remotes spec, $3 = config spec
+  local dir="$TMPDIR/ghm-$1" spec pair k v
+  rm -rf "$dir"
+  git init -q -b feature/z "$dir"
+  git -C "$dir" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  touch "$dir/.markgate.yml"
+  rm -f "$dir/.markgate-verify-pr-sha"
+  if [ -n "$2" ]; then
+    spec="$2"
+    while [ -n "$spec" ]; do
+      pair="${spec%%,*}"
+      git -C "$dir" remote add "${pair%%=*}" "${pair#*=}"
+      [ "$pair" = "$spec" ] && break
+      spec="${spec#*,}"
+    done
+  fi
+  if [ -n "$3" ]; then
+    spec="$3"
+    while [ -n "$spec" ]; do
+      pair="${spec%%,*}"
+      k="${pair%%=*}"; v="${pair#*=}"
+      git -C "$dir" config "$k" "$v"
+      [ "$pair" = "$spec" ] && break
+      spec="${spec#*,}"
+    done
+  fi
+  printf '%s' "$dir"
+}
+
+# The subject must be FOREIGN to every row, so these run the copy installed in
+# `side_repo` (the same choice every other foreign case makes).
+matrix_rows=0
+while IFS='|' read -r m_name m_remotes m_config m_gh m_expect; do
+  [ -n "$m_name" ] || continue
+  matrix_rows=$((matrix_rows + 1))
+  m_dir=$(gh_matrix_repo "$m_name" "$m_remotes" "$m_config")
+  m_payload='{"cwd":"'"$m_dir"'","tool_input":{"command":"gh pr create --title x"}}'
+  # `relax` = the foreign-target pass that go-to-k/cdkd#3209 enables (exit 0 on a
+  # fresh marker with NO sentinel); `block` = the relaxation retracted, so the
+  # cdkd-only binding is required again and the fixture cannot satisfy it.
+  if [ "$m_expect" = "relax" ]; then m_want=0; else m_want=2; fi
+  run_case "remotes/$m_name -> $m_expect (gh: $m_gh)" "$m_want" fresh "" "$m_payload"
+done <<EOF
+$GH_MATRIX
+EOF
+
+# A floor, so a mangled heredoc or an `IFS` slip cannot report a green over an
+# empty table -- the "checker must prove it sees its input" rule.
+if [ "$matrix_rows" -ge 19 ]; then
+  pass=$((pass + 1)); printf 'OK   gh-resolution matrix parsed %s rows\n' "$matrix_rows"
+else
+  fail=$((fail + 1))
+  fail_log+="FAIL gh-resolution matrix parsed only $matrix_rows rows (want >= 19)\n"
+  printf 'FAIL gh-resolution matrix row count (%s)\n' "$matrix_rows"
+fi
+
+# The refusal must name BOTH slugs. Without this a gate that blocked every
+# foreign target for any reason would satisfy every `block` row above.
+blk_dir=$(gh_matrix_repo msgcheck "origin=https://github.com/go-to-k/cdk-local.git,upstream=https://github.com/go-to-k/cdkd.git" "")
+blk_msg=$(printf '{"cwd":"%s","tool_input":{"command":"gh pr create --title x"}}' "$blk_dir" \
+  | MARKGATE_MOCK_VERDICT=fresh "$HOOK" 2>&1 >/dev/null)
+if printf '%s' "$blk_msg" | grep -q 'go-to-k/cdkd' \
+  && printf '%s' "$blk_msg" | grep -q 'go-to-k/cdk-local' \
+  && printf '%s' "$blk_msg" | grep -q 'remote' \
+  && ! printf '%s' "$blk_msg" | grep -q 'no .-R. / .--repo.'; then
+  pass=$((pass + 1)); printf 'OK   the remotes refusal names both slugs and the remote remedy\n'
+else
+  fail=$((fail + 1))
+  fail_log+="FAIL remotes refusal message: $blk_msg\n"
+  printf 'FAIL remotes refusal message\n'
+fi
+
+# ---------------------------------------------------------------------------
+# go-to-k/cdkd#3235 also RETIRES the second-clone bound. A second CLONE of a repo
+# has a different git common dir, so the identity test answers FOREIGN and the
+# relaxed path drops the go-to-k/cdkd#2686 binding in a checkout that IS the
+# hook's repo. The slug comparison overrides that.
+#
+# Both halves live in throwaway repos that carry a REMOTE, which is what the
+# rest of this suite deliberately does not have -- so these cases cannot pass by
+# inheriting any other fixture's state.
+clone_a="$TMPDIR/clone-a"
+git init -q -b feature/z "$clone_a"
+git -C "$clone_a" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+touch "$clone_a/.markgate.yml"
+git -C "$clone_a" remote add origin https://github.com/go-to-k/cdkd.git
+HOOK_CLONE="$(install_hook "$clone_a")"
+require_hook "$HOOK_CLONE"
+
+# A SECOND CLONE of the hook's own repo: same `origin`, different common dir.
+clone_b="$TMPDIR/clone-b"
+git init -q -b feature/z "$clone_b"
+git -C "$clone_b" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+touch "$clone_b/.markgate.yml"
+git -C "$clone_b" remote add origin https://github.com/go-to-k/cdkd.git
+rm -f "$clone_b/.markgate-verify-pr-sha"
+clone_b_payload='{"cwd":"'"$clone_b"'","tool_input":{"command":"gh pr create --title x"}}'
+run_case "second CLONE of the hook's repo still OWES the binding" 2 fresh "" \
+  "$clone_b_payload" "$HOOK_CLONE"
+
+# The CONTROL, without which the case above passes for any gate that blocks
+# every remote-carrying checkout: a genuinely different repo, same shape.
+clone_c="$TMPDIR/clone-c"
+git init -q -b feature/z "$clone_c"
+git -C "$clone_c" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+touch "$clone_c/.markgate.yml"
+git -C "$clone_c" remote add origin https://github.com/go-to-k/cdk-local.git
+rm -f "$clone_c/.markgate-verify-pr-sha"
+clone_c_payload='{"cwd":"'"$clone_c"'","tool_input":{"command":"gh pr create --title x"}}'
+run_case "a genuine SIBLING repo still takes the relaxed path" 0 fresh "" \
+  "$clone_c_payload" "$HOOK_CLONE"
+
+# And the retirement must name the BINDING, not the remote comparison -- a
+# second clone's problem is the missing sentinel, and sending it to
+# `gh repo set-default` would be the wrong instruction.
+clone_msg=$(printf '%s' "$clone_b_payload" | MARKGATE_MOCK_VERDICT=fresh "$HOOK_CLONE" 2>&1 >/dev/null)
+if printf '%s' "$clone_msg" | grep -q 'bound to a different commit' \
+  && ! printf '%s' "$clone_msg" | grep -q 'gh repo set-default'; then
+  pass=$((pass + 1)); printf 'OK   the second-clone refusal names the binding, not the remotes remedy\n'
+else
+  fail=$((fail + 1))
+  fail_log+="FAIL second-clone refusal message: $clone_msg\n"
+  printf 'FAIL second-clone refusal message\n'
+fi
+
+# OPT-IN DIFFERENTIAL. Re-measures column 4 against real gh. Not part of the
+# offline run; `run-tests.sh` never sets it.
+if [ -n "${VPG_REMEASURE_GH:-}" ]; then
+  printf '\n-- VPG_REMEASURE_GH: diffing column 4 against live gh --\n'
+  while IFS='|' read -r m_name m_remotes m_config m_gh m_expect; do
+    [ -n "$m_name" ] || continue
+    m_dir=$(gh_matrix_repo "remeasure-$m_name" "$m_remotes" "$m_config")
+    live=$(cd "$m_dir" && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) || live="ERROR"
+    [ -n "$live" ] || live="ERROR"
+    if [ "$live" = "$m_gh" ]; then
+      pass=$((pass + 1)); printf 'OK   live gh agrees for %s (%s)\n' "$m_name" "$live"
+    else
+      fail=$((fail + 1))
+      fail_log+="FAIL live gh for $m_name: recorded '$m_gh', gh said '$live'\n"
+      printf 'FAIL live gh for %s: recorded %s, got %s\n' "$m_name" "$m_gh" "$live"
+    fi
+  done <<EOF
+$GH_MATRIX
+EOF
 fi
 
 unset MARKGATE_MOCK_VERDICT

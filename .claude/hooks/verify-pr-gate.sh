@@ -199,12 +199,12 @@ fi
 #     very hole the binding closes here. That is the sibling repo's own design,
 #     and `.claude/rules/hooks.md` forbids porting cdkd's stricter gate down to
 #     fix it.
-#   - A second CLONE of cdkd (a clone, not a worktree) is foreign by this test
-#     and takes the relaxed path. Not hypothetical -- a separate checkout for
-#     drafting a security fix is an ordinary thing to have. Its marker must
-#     still be fresh, so what it loses is only the lane-N-inherits-lane-N-1
-#     protection: the same bound as the row above, in a checkout that has its
-#     own `/verify-pr`.
+#   - A second CLONE of cdkd (a clone, not a worktree) is foreign BY THIS TEST.
+#     RETIRED as a bound by go-to-k/cdkd#3235, and the retirement lives further
+#     down rather than here: this test still answers FOREIGN for it, and the
+#     slug comparison beside the relaxation decisions overrides that when both
+#     checkouts' own `origin` is the same repository. Read the two together --
+#     this function alone no longer decides the question.
 #   - "FAIL CLOSED" covers an UNRESOLVABLE identity, not a RESOLVABLE WRONG one.
 #     If this file is reached through a symlinked `.claude` (or `.claude/hooks`)
 #     whose physical location sits inside a DIFFERENT repository, `git -C` follows
@@ -362,11 +362,15 @@ fi
 #       on the SELECTOR POSITION instead of on every token: filed as
 #       go-to-k/cdkd#3256.
 #   (b) A repo reaching gh through a channel that is not the segment's literal
-#       argv at all -- an `upstream` remote in the target checkout
-#       (go-to-k/cdkd#3235), a `GH_REPO` / `GH_HOST` assembled at run time, a
-#       `gh alias` expanding to a `-R`. NO reading of the command text closes
-#       this class, positional or otherwise; only asking what gh itself would
-#       resolve does, which is go-to-k/cdkd#3235's subject.
+#       argv at all -- an `upstream` remote in the target checkout, a `GH_REPO`
+#       / `GH_HOST` assembled at run time, a `gh alias` expanding to a `-R`. NO
+#       reading of the command text closes this class, positional or otherwise;
+#       only asking what gh itself would resolve does. The REMOTES member is
+#       closed by go-to-k/cdkd#3235's comparison below -- which is a different
+#       instrument, not a wider version of this predicate. The run-time-assembled
+#       variable and the alias remain open, and a comparison cannot see them
+#       either: they steer gh at INVOCATION time, from state this hook is not
+#       given.
 #
 # FAILURE DIRECTION: a miss is the only dangerous one. Refusing to relax falls
 # back to the binding requirement, which was UNCONDITIONAL before
@@ -399,16 +403,14 @@ fi
 # in that checkout, with NOTHING in the command text for this guard to read.
 # Removing the upstream remote returns the answer to go-to-k/cdk-local.
 #
-# NOT answered here, deliberately. The honest guard is a remote-slug COMPARISON
-# -- resolve what gh would resolve in the target and require it to equal the
-# target's own repo -- and that is a structural fix at the end of a cascade,
-# which `.claude/skills/work-issues/references/verify.md` 8-a says to FILE
-# rather than take late. A presence test is not a substitute: refusing any
-# `gh-resolved` holding a slug would refuse a sibling that ran
-# `gh repo set-default` on ITSELF, which is what gh tells a multi-remote
-# checkout to do, and that re-breaks the flow this change exists to enable.
-# Filed as go-to-k/cdkd#3235, which would also retire the second-clone bound
-# above.
+# ANSWERED, by go-to-k/cdkd#3235: `__vpg_target_repo_is_its_own` below resolves
+# what gh would resolve in the target and requires it to equal that checkout's
+# own `origin`. It is a COMPARISON and not a presence test for the reason this
+# comment already gave -- refusing any `gh-resolved` holding a slug would refuse
+# a sibling that ran `gh repo set-default` on ITSELF, which is what gh tells a
+# multi-remote checkout to do. This paragraph is kept rather than deleted
+# because the MEASUREMENT above is what the fix is calibrated against, and the
+# next author reading it needs to know it is now closed rather than open.
 #
 # KNOWN BOUND on the ENVIRONMENT tests: `[ -z "${GH_REPO:-}" ]` reads this
 # process's env, and the `*GH_REPO*` text test reads the command as WRITTEN.
@@ -422,6 +424,11 @@ fi
 # say what to do instead of sending the reader to a sentinel a sibling cannot
 # write. Empty on success.
 __vpg_retract=""
+# `command` (the text named a repo) or `remotes` (the target checkout's own
+# remotes resolve elsewhere). The two have DIFFERENT remedies, and printing the
+# command-shape one for a remote-config retraction sends the reader to re-spell
+# a command that was already correct.
+__vpg_retract_kind="command"
 __vpg_names_no_other_repo() {
   local cmd="$1" seg tok noq argv
   __vpg_retract=""
@@ -514,7 +521,308 @@ EOF
   return 0
 }
 
+# ---------------------------------------------------------------------------
+# THE OTHER HALF: what gh resolves from the TARGET CHECKOUT's own remotes.
+#
+# `__vpg_names_no_other_repo` above answers "does the COMMAND name another
+# repo". gh does not only read the command. It resolves a base repo from the
+# target checkout's git config, and that channel leaves NOTHING in the command
+# text -- so a cdk-local checkout carrying `upstream = go-to-k/cdkd` takes the
+# relaxed path on a plain `gh pr merge 42 --squash`, and cdk-local's own fresh
+# marker clears the merge of a CDKD pull request. That is the same 2 -> 0 shape
+# the `-R` round found, arriving through a channel no reading of the command
+# closes (go-to-k/cdkd#3235).
+#
+# THE TEST IS A COMPARISON, NOT A PRESENCE TEST, and the difference is the whole
+# reason this shape was chosen. Refusing any checkout that carries a
+# `gh-resolved` key, or any second remote, would refuse a sibling that ran
+# `gh repo set-default` on ITSELF -- which is exactly what gh tells a
+# multi-remote checkout to do -- and that re-breaks the sibling flow
+# go-to-k/cdkd#3209 exists to enable. So: resolve what gh would resolve, resolve
+# what the checkout's own identity is, and require them EQUAL.
+#
+# IT READS `git config` ONLY. It does NOT run `gh` in the target, and it does
+# not run anything FROM the target: `.claude/rules/hooks.md` records why
+# delegation was abandoned in PR 1970 (arbitrary code execution from a directory
+# the command itself names), and a live `gh` call inside a PreToolUse hook is a
+# network round trip on every merge. Reading `git config` in the target is the
+# same class of read `__vpg_common_dir` already does.
+#
+# GH'S ORDER, MEASURED 2026-09-18 on gh 2.92.0 against live repos rather than
+# read off its source. Thirteen configurations in round one, seven more in
+# round two; the ones that decided the implementation:
+#   - `origin` = cdk-local, `upstream` = cdkd, NO `gh-resolved` -> **cdkd**.
+#     `upstream` outranks `origin`, and the ORDER THE REMOTES WERE ADDED does
+#     not matter (adding upstream first gave the same answer).
+#   - `origin` + `github` -> **github's**. So the rank is upstream > github >
+#     origin > everything else, not merely "upstream first".
+#   - `zzz` = drift added BEFORE `aaa` = cdkd, no origin -> **cdkd**. Within the
+#     unranked tail the tie-break is ALPHABETICAL, not config order. A first
+#     implementation took the first remote git printed and this is the case that
+#     refuted it.
+#   - `gh-resolved` on BOTH origin (`base`) and upstream (a slug) -> **upstream's
+#     slug**. The key does not win by being first in the config; gh walks its own
+#     rank order and takes the first remote that HAS one.
+#   - `gh-resolved` holding a full URL -> accepted and parsed. Holding junk ->
+#     gh itself ERRORS ("expected the \"[HOST/]OWNER/REPO\" format"), so refusing
+#     is agreeing with gh, not guessing.
+#   - `origin` spelled `GO-TO-K/CDK-Local` -> gh answers `go-to-k/cdk-local`.
+#     gh normalises case through the API and this hook cannot, so the comparison
+#     is CASE-INSENSITIVE. A case-sensitive compare would refuse a correct
+#     checkout for its URL's capitalisation.
+#   - a LINKED WORKTREE resolves exactly as its parent (remote config lives in
+#     the common dir), which is what makes `git -C "$target_dir"` the right
+#     place to ask.
+#   - `origin` = gitlab, `upstream` = github -> gh filters non-GitHub remotes
+#     out entirely and answers the GitHub one.
+#
+# FAIL CLOSED, in the two directions that matter. An unresolvable gh answer and
+# an unresolvable OWN identity both keep the binding requirement -- matching
+# `__vpg_common_dir`'s rule that an unresolvable identity never relaxes. In
+# particular a checkout whose `origin` exists but is not a readable GitHub
+# remote has no identity this can compare, so it refuses rather than falling
+# back to whatever single GitHub remote happens to be there.
+#
+# KNOWN BOUND, stated rather than chased: a genuine FORK checkout (`origin` =
+# `<you>/cdk-local`, `upstream` = `go-to-k/cdk-local`) compares unequal and is
+# refused, though the files really are cdk-local's. That is the guard's declared
+# failure direction -- an over-refusal falls back to the binding, never below
+# `origin/main` -- and it does not touch the prescribed flow: the sibling
+# checkouts this session works in have `origin` pointing straight at
+# `go-to-k/<repo>`, so the comparison passes with no `gh-resolved` key at all.
+# `gh repo set-default <the checkout's own slug>` clears it for a non-fork
+# multi-remote checkout, which is the case the presence test would have broken.
+
+# `owner/repo`, lowercased, from a GitHub remote URL. Returns 1 for a URL on any
+# other host, and for anything this cannot split -- both of which are refusals
+# upstream, never a fallback.
+__vpg_slug_from_url() {
+  local u="$1" rest host owner repo
+  case "$u" in
+    *://*)
+      rest="${u#*://}"
+      # Strip userinfo only when the `@` is in the AUTHORITY, not in the path:
+      # an unguarded `${rest#*@}` eats `github.com/owner/re` out of a path that
+      # happens to contain one.
+      case "${rest%%/*}" in *@*) rest="${rest#*@}" ;; esac
+      host="${rest%%/*}"
+      host="${host%%:*}"
+      case "$rest" in */*) rest="${rest#*/}" ;; *) return 1 ;; esac
+      ;;
+    *:*)
+      # scp-like `git@github.com:owner/repo.git`
+      host="${u%%:*}"
+      host="${host#*@}"
+      rest="${u#*:}"
+      ;;
+    *) return 1 ;;
+  esac
+  # bash 3.2 has no `${var,,}`; `tr` is the portable spelling the rest of this
+  # hook family uses.
+  [ "$(printf '%s' "$host" | tr 'A-Z' 'a-z')" = "github.com" ] || return 1
+  rest="${rest#/}"
+  rest="${rest%/}"
+  rest="${rest%.git}"
+  owner="${rest%%/*}"
+  repo="${rest#*/}"
+  case "$owner" in '' | */*) return 1 ;; esac
+  case "$repo" in '' | */*) return 1 ;; esac
+  printf '%s/%s' "$owner" "$repo" | tr 'A-Z' 'a-z'
+  printf '\n'
+}
+
+# A `remote.<name>.gh-resolved` value -> a slug. `base` means "this remote's own
+# repo", so the remote's slug is passed in as $2. A full URL and the
+# `HOST/OWNER/REPO` form are both accepted because gh accepts both (measured).
+__vpg_slug_from_resolved() {
+  local v="$1" own="$2" rest
+  if [ "$v" = "base" ]; then
+    printf '%s\n' "$own"
+    return 0
+  fi
+  case "$v" in
+    *://* | *@*:*)
+      __vpg_slug_from_url "$v"
+      return
+      ;;
+  esac
+  rest="${v%/}"
+  case "$rest" in
+    */*/*)
+      # HOST/OWNER/REPO -- drop the host segment.
+      rest="${rest#*/}"
+      ;;
+  esac
+  case "$rest" in
+    */*) ;;
+    *) return 1 ;;
+  esac
+  case "${rest%%/*}" in '') return 1 ;; esac
+  case "${rest#*/}" in '' | */*) return 1 ;; esac
+  printf '%s' "$rest" | tr 'A-Z' 'a-z'
+  printf '\n'
+}
+
+# Every GitHub remote of $1, as `name<TAB>slug`. Non-GitHub remotes are dropped,
+# which is what gh does before it ranks anything.
+__vpg_remote_list() {
+  local dir="$1" line key url name slug
+  git -C "$dir" config --get-regexp '^remote\..*\.url$' 2>/dev/null | while IFS= read -r line; do
+    key="${line%% *}"
+    url="${line#* }"
+    [ "$key" != "$line" ] || continue
+    name="${key#remote.}"
+    name="${name%.url}"
+    [ -n "$name" ] || continue
+    slug=$(__vpg_slug_from_url "$url") || continue
+    printf '%s\t%s\n' "$name" "$slug"
+  done
+}
+
+# The same remotes in GH'S OWN ORDER: upstream, github, origin, then the rest
+# alphabetically. Both sort keys are measured (see the block comment).
+__vpg_ranked_remotes() {
+  local name slug rank tab
+  tab=$(printf '\t')
+  while IFS="$tab" read -r name slug; do
+    [ -n "$name" ] || continue
+    case "$name" in
+      upstream) rank=0 ;;
+      github) rank=1 ;;
+      origin) rank=2 ;;
+      *) rank=3 ;;
+    esac
+    printf '%d\t%s\t%s\n' "$rank" "$name" "$slug"
+  done <<EOF
+$(__vpg_remote_list "$1")
+EOF
+}
+
+# The sort is the whole point of the function above and was missing from its
+# first revision -- which left CONFIG ORDER deciding, so `origin` + `upstream`
+# relaxed while the same two remotes added in the other order blocked. Both
+# spellings are matrix rows for that reason. `LC_ALL=C` so the tie-break is
+# byte order rather than the caller's locale.
+__vpg_ranked_remotes_sorted() {
+  local tab
+  tab=$(printf '\t')
+  __vpg_ranked_remotes "$1" | LC_ALL=C sort -t"$tab" -k1,1n -k2,2
+}
+
+# What gh would pick as the base repo in $1. Returns 1 when gh could not pick
+# one either (no GitHub remote), or when a `gh-resolved` value is unreadable --
+# the case gh reports as an error rather than resolving.
+__vpg_gh_base_slug() {
+  local dir="$1" rank name slug rv out first="" tab
+  tab=$(printf '\t')
+  while IFS="$tab" read -r rank name slug; do
+    [ -n "$name" ] || continue
+    [ -n "$first" ] || first="$slug"
+    rv=$(git -C "$dir" config --get "remote.$name.gh-resolved" 2>/dev/null) || rv=""
+    if [ -n "$rv" ]; then
+      out=$(__vpg_slug_from_resolved "$rv" "$slug") || return 1
+      printf '%s\n' "$out"
+      return 0
+    fi
+  done <<EOF
+$(__vpg_ranked_remotes_sorted "$dir")
+EOF
+  [ -n "$first" ] || return 1
+  printf '%s\n' "$first"
+}
+
+# The checkout's OWN identity: its `origin`. That is the comparand because the
+# marker being relaxed digests THIS WORKTREE'S FILES, and the files are whatever
+# `origin` holds -- adding an `upstream` changes what gh acts on and changes
+# nothing about what the marker attests to.
+#
+# With no `origin` at all, a checkout carrying exactly ONE GitHub remote is
+# unambiguous and that remote is its identity (measured: gh resolves it too). An
+# `origin` that EXISTS but is not a readable GitHub remote is refused rather
+# than skipped -- skipping it would let a lone `upstream` stand in for an
+# identity the checkout does not have.
+__vpg_own_slug() {
+  local dir="$1" name slug count=0 only="" tab
+  tab=$(printf '\t')
+  while IFS="$tab" read -r name slug; do
+    [ -n "$name" ] || continue
+    if [ "$name" = "origin" ]; then
+      printf '%s\n' "$slug"
+      return 0
+    fi
+    count=$((count + 1))
+    only="$slug"
+  done <<EOF
+$(__vpg_remote_list "$dir")
+EOF
+  if git -C "$dir" config --get remote.origin.url >/dev/null 2>&1; then
+    return 1
+  fi
+  [ "$count" -eq 1 ] || return 1
+  printf '%s\n' "$only"
+}
+
+# Sets `__vpg_retract` like its command-text sibling, and `__vpg_retract_kind`
+# so the remedy printed at the bottom matches the reason -- the command-shape
+# advice ("no -R, name the PR by number") clears nothing here.
+__vpg_target_repo_is_its_own() {
+  local dir="$1" resolved own
+  # NO REMOTES AT ALL is not the same as "we could not read them", and only the
+  # first is safe to wave through. gh answers `no git remotes found` for it, so
+  # the command cannot act on ANY repository and there is nothing to compare --
+  # while a checkout that HAS remotes none of which this parsed as GitHub is the
+  # case where gh may understand a URL form this does not (an `insteadOf`
+  # rewrite, an ssh host alias), which is the dangerous direction and refuses
+  # below. The test is "did git report any remote", never "did our parser
+  # return nothing".
+  if ! git -C "$dir" config --get-regexp '^remote\..*\.url$' >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! resolved=$(__vpg_gh_base_slug "$dir"); then
+    __vpg_retract="the target checkout has remotes, but none this gate can read as a GitHub repository, so it cannot tell which repo gh would act on"
+    __vpg_retract_kind="remotes"
+    return 1
+  fi
+  if ! own=$(__vpg_own_slug "$dir"); then
+    __vpg_retract="the target checkout has no unambiguous \`origin\` to identify it, so this gate cannot tell whether gh would act on the repo the marker attests to"
+    __vpg_retract_kind="remotes"
+    return 1
+  fi
+  if [ "$resolved" != "$own" ]; then
+    __vpg_retract="gh would act on $resolved there, while that checkout's own \`origin\` is $own"
+    __vpg_retract_kind="remotes"
+    return 1
+  fi
+  return 0
+}
+
+# RETIRES THE SECOND-CLONE KNOWN BOUND recorded above `__vpg_common_dir`. That
+# test asks "same git common dir", so a second CLONE of cdkd -- an ordinary
+# thing to have, e.g. a separate checkout for drafting a security fix -- answers
+# FOREIGN and takes the relaxed path, dropping the go-to-k/cdkd#2686 binding in
+# a checkout that is cdkd. The common dir was only ever a PROXY for repo
+# identity; now that the slug is available, ask the real question: two checkouts
+# whose own `origin` is the same repository are the same repository.
+#
+# It only ever makes the gate STRICTER (foreign -> same, which ADDS the binding
+# requirement), never looser, so it cannot open a path. Both slugs must resolve
+# and be equal -- an empty `__hook_slug` (the throwaway fixtures, a vendored
+# copy in a repo with no remotes) leaves the common-dir answer standing rather
+# than matching an empty string against an empty string.
+if [ "$target_is_foreign" -eq 1 ]; then
+  __hook_slug=$(__vpg_own_slug "$__hook_dir") || __hook_slug=""
+  __target_slug=$(__vpg_own_slug "$target_dir") || __target_slug=""
+  if [ -n "$__hook_slug" ] && [ "$__hook_slug" = "$__target_slug" ]; then
+    target_is_foreign=0
+  fi
+fi
+
+# The command-text test runs FIRST: it is pure string work, while the one below
+# shells out to `git config`. Both must pass; either one failing retracts.
 if [ "$target_is_foreign" -eq 1 ] && ! __vpg_names_no_other_repo "$cmd"; then
+  target_is_foreign=0
+fi
+if [ "$target_is_foreign" -eq 1 ] && ! __vpg_target_repo_is_its_own "$target_dir"; then
   target_is_foreign=0
 fi
 
@@ -676,11 +984,19 @@ reason=$("${markgate[@]}" status verify-pr 2>/dev/null \
 # can reach it: a fresh marker (where it is the whole story) and a STALE one
 # (where it is the second reason, and clearing the marker will not fix it).
 __vpg_print_override_guidance() {
-  printf "Re-run it from the target repository's own checkout, with literal arguments:\n" >&2
-  printf "  - no \`-R\` / \`--repo\` and no short-flag cluster carrying \`R\`\n" >&2
-  printf "  - no \`GH_REPO\` in the environment or on the command line\n" >&2
-  printf "  - the PR named by NUMBER, not by URL\n" >&2
-  printf "  - no unexpanded \$VARIABLE in the gh command\n\n" >&2
+  if [ "$__vpg_retract_kind" = "remotes" ]; then
+    # Nothing about the COMMAND is wrong here, so none of the advice below
+    # applies: re-spelling it changes no part of what gh resolves.
+    printf "Nothing in the command is wrong -- gh resolves the repository from that\ncheckout's git remotes, so re-spelling the command changes nothing. Point the\ncheckout at itself, then re-run:\n" >&2
+    printf "  - \`git -C <checkout> remote -v\` to see what it carries, and drop a stray\n    remote that points at another repository; or\n" >&2
+    printf "  - \`gh repo set-default <that checkout's own slug>\` from inside it, which is\n    what gh itself prescribes for a multi-remote checkout.\n\n" >&2
+  else
+    printf "Re-run it from the target repository's own checkout, with literal arguments:\n" >&2
+    printf "  - no \`-R\` / \`--repo\` and no short-flag cluster carrying \`R\`\n" >&2
+    printf "  - no \`GH_REPO\` in the environment or on the command line\n" >&2
+    printf "  - the PR named by NUMBER, not by URL\n" >&2
+    printf "  - no unexpanded \$VARIABLE in the gh command\n\n" >&2
+  fi
   printf "Do NOT write cdkd's \`.markgate-verify-pr-sha\` into the sibling; that file is\ncdkd's own device and the sibling does not define it.\n\n" >&2
 }
 
@@ -692,8 +1008,13 @@ if [ "$status" -eq 0 ] && [ -n "$__vpg_retract" ]; then
   # cdkd") -- yet without this branch the reader is sent to `/verify-pr` and to
   # that sentinel. With `GH_REPO` exported in a shell profile EVERY sibling PR
   # lands here, so this is not a corner.
-  printf "Blocked by verify-pr-gate: this command targets %s, which is NOT this repo,\nand it also names a repository of its own -- %s.\n\n" \
-    "$target_top" "$__vpg_retract" >&2
+  if [ "$__vpg_retract_kind" = "remotes" ]; then
+    printf "Blocked by verify-pr-gate: this command targets %s, which is NOT this repo,\nand gh would not act on that checkout's own repository -- %s.\n\n" \
+      "$target_top" "$__vpg_retract" >&2
+  else
+    printf "Blocked by verify-pr-gate: this command targets %s, which is NOT this repo,\nand it also names a repository of its own -- %s.\n\n" \
+      "$target_top" "$__vpg_retract" >&2
+  fi
   printf "A cdkd session may open or merge a PR in a sibling repo on that repo's OWN\n\`verify-pr\` marker. It may not do so with a command that could be acting on a\nTHIRD repo, because then the marker attests to something else entirely.\n\n" >&2
   __vpg_print_override_guidance
 elif [ "$status" -eq 0 ]; then
