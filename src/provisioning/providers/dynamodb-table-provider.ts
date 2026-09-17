@@ -226,6 +226,21 @@ function hasUsableDeclaredCapacity(entry: Record<string, unknown> | undefined): 
 const PROVISIONED_CAPACITY_MEMBERS = ['ReadCapacityUnits', 'WriteCapacityUnits'] as const;
 
 /**
+ * The two `OnDemandThroughput` members, named once for the same reason
+ * {@link PROVISIONED_CAPACITY_MEMBERS} is (issue
+ * [#3265](https://github.com/go-to-k/cdkd/issues/3265)). CloudFormation's
+ * `OnDemandThroughput` block carries the same two members at the TABLE level
+ * and inside every `GlobalSecondaryIndexes[]` entry, and all FOUR send sites
+ * read them through
+ * {@link DynamoDBTableProvider.coerceOnDemandCeilingsForSend}.
+ *
+ * Both are `Long` in the SDK model and BOTH ARE OPTIONAL — the property that
+ * makes this block's drop decision differ from its `ProvisionedThroughput`
+ * sibling's. See {@link DynamoDBTableProvider.warnUnusableOnDemandCeiling}.
+ */
+const ON_DEMAND_CEILING_MEMBERS = ['MaxReadRequestUnits', 'MaxWriteRequestUnits'] as const;
+
+/**
  * The capacity both TABLE-level forwarders substitute for a member the
  * template does not declare at all — `create()`'s `CreateTable` and the
  * BillingMode flip's `UpdateTable`. It is the pre-issue-#3147 `?? 5`, kept
@@ -851,14 +866,20 @@ function reverseMapSecondaryIndex(
  *    in PR review round 6; the carve-out is gone because the divergence is.
  *  - `ProvisionedThroughput` / `OnDemandThroughput` keep TRUTHINESS, which is
  *    still what their write path does: `applyGsiUpdates` gates on
- *    `gsi.ProvisionedThroughput` alone, `OnDemandThroughput` is forwarded
- *    verbatim on every path, and the `ProvisionedThroughput` coercion issue
- *    [#3255](https://github.com/go-to-k/cdkd/issues/3255) added to ALL FOUR
+ *    `gsi.ProvisionedThroughput` / `gsi.OnDemandThroughput` alone, and NEITHER
+ *    block's Integer coercion — `ProvisionedThroughput`'s from issue
+ *    [#3255](https://github.com/go-to-k/cdkd/issues/3255), across ALL FOUR
  *    per-index send sites (`create()`'s mapper plus `applyGsiUpdates`'
- *    adopted-repair, `Create` and same-name `Update` actions) never
- *    SUPPRESSES the block — it rewrites members inside a block that is sent
- *    either way, so "would cdkd send this block" is unchanged by it, even
- *    where both members were dropped and an empty block goes out. Widening
+ *    adopted-repair, `Create` and same-name `Update` actions);
+ *    `OnDemandThroughput`'s from issue
+ *    [#3265](https://github.com/go-to-k/cdkd/issues/3265), across its own four
+ *    (the two TABLE-level forwards plus `create()`'s mapper and
+ *    `applyGsiUpdates`' `Create` action) — ever SUPPRESSES the block: each
+ *    rewrites members inside a block that is sent either way, so "would cdkd
+ *    send this block" is unchanged by them, even where both members were
+ *    dropped and an empty block goes out. That is the reason
+ *    {@link DynamoDBTableProvider.coerceOnDemandCeilingsForSend} drops a
+ *    MEMBER and never the block. Widening
  *    `isSendableWarmThroughput` over them would be wrong twice over — it reads
  *    members those blocks do not have (`ReadUnitsPerSecond` vs
  *    `ReadCapacityUnits`), so every declared capacity would read as undeclared.
@@ -1168,10 +1189,18 @@ export class DynamoDBTableProvider implements ResourceProvider {
 
       // On-demand throughput caps (PAY_PER_REQUEST tables). Rides directly
       // on CreateTable — unlike PITR / TTL it is NOT a post-ACTIVE control-
-      // plane call. Pass it through verbatim when present; AWS validates the
-      // PAY_PER_REQUEST-only constraint.
+      // plane call. AWS validates the PAY_PER_REQUEST-only constraint.
+      //
+      // COERCED, not forwarded verbatim (issue #3265): both members are `Long`
+      // in the SDK model, so a CFn-legal `MaxReadRequestUnits: '100'` used to
+      // reach AWS as a STRING and fail the create, while a `' 100 '` / `'0x64'`
+      // CloudFormation refuses the template for was forwarded unchanged.
       if (properties['OnDemandThroughput']) {
-        createParams.OnDemandThroughput = properties['OnDemandThroughput'] as OnDemandThroughput;
+        createParams.OnDemandThroughput = this.coerceOnDemandCeilingsForSend(
+          `AWS::DynamoDB::Table ${logicalId}`,
+          properties['OnDemandThroughput'],
+          maskSecrets
+        );
       }
 
       // Warm throughput — pre-warmed read/write capacity. Like
@@ -2086,15 +2115,45 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // plane API like PITR / TTL). Fire only when the value changed so a
       // no-op update doesn't issue a redundant UpdateTable; AWS validates
       // the PAY_PER_REQUEST-only constraint.
+      // The detector compares the RAW declared block against the RAW recorded
+      // one, deliberately. Coercing both sides was proposed by the
+      // go-to-k/cdkd#3291 review, to stop a later `'100'` -> `100` template
+      // correction issuing an `UpdateTable` carrying the value AWS already
+      // holds. It is NOT done here, because both spellings of it are worse:
+      // coercing the PREVIOUS side warns about a cdkd STATE record the user
+      // cannot edit, and comparing through a silent pure coercion instead makes
+      // a still-malformed template compare EQUAL, so the provider is never
+      // called and the warning that tells the user what to fix STOPS -- the
+      // concealment `.claude/rules/provider-diff-record-folds.md` refuses.
+      // The redundant call is also bounded: it needs a template EDIT, fires
+      // once, and DynamoDB's answer to a same-value ceiling is unmeasured. The
+      // real fix is the `effectiveProperties` + `canonicalizeDesiredProperties`
+      // pair that would stop state recording the declared spelling at all, and
+      // that is go-to-k/cdkd#3286, which owns this whole class.
       if (
         JSON.stringify(properties['OnDemandThroughput']) !==
         JSON.stringify(previousProperties['OnDemandThroughput'])
       ) {
+        // A pure REMOVAL (new absent, previous present) fires the detector and
+        // then sends nothing, so the live ceiling SURVIVES -- the same shape the
+        // `WarmThroughput` branch below states for itself. It is called out here
+        // because this change makes it conspicuous: the drop warning now teaches
+        // `-1` as the removal spelling, so a reader could reasonably expect
+        // deleting the block to remove the maximum too, and it does not. Raised
+        // by the go-to-k/cdkd#3291 review; pre-existing, not introduced here.
         if (properties['OnDemandThroughput']) {
           await this.dynamoDBClient.send(
             new UpdateTableCommand({
               TableName: physicalId,
-              OnDemandThroughput: properties['OnDemandThroughput'] as OnDemandThroughput,
+              // COERCED, not forwarded verbatim (issue #3265), through the same
+              // reader `create()` uses — the change DETECTOR above compares the
+              // declared block against the recorded one, both raw, which is
+              // what keeps it symmetric; this is only what goes on the wire.
+              OnDemandThroughput: this.coerceOnDemandCeilingsForSend(
+                `AWS::DynamoDB::Table ${logicalId}`,
+                properties['OnDemandThroughput'],
+                maskSecrets
+              ),
             })
           );
           // UpdateTable is async; wait for ACTIVE so later branches (SSE /
@@ -3834,7 +3893,19 @@ export class DynamoDBTableProvider implements ResourceProvider {
                   ),
                 }
               : {}),
-            ...(gsi.OnDemandThroughput ? { OnDemandThroughput: gsi.OnDemandThroughput } : {}),
+            // COERCED, not forwarded verbatim (issue #3265) — the per-index
+            // twin of the table-level forward, through the same reader, so a
+            // GSI added by a later update cannot answer differently from the
+            // same GSI created with the table.
+            ...(gsi.OnDemandThroughput
+              ? {
+                  OnDemandThroughput: this.coerceOnDemandCeilingsForSend(
+                    this.indexScopeAt(name, physicalId, maskSecrets),
+                    gsi.OnDemandThroughput,
+                    maskSecrets
+                  ),
+                }
+              : {}),
             // A declared per-index WarmThroughput rides the Create action
             // (issue #1768): `CreateGlobalSecondaryIndexAction` accepts it, and
             // without it the property was silently dropped for every index
@@ -4077,16 +4148,20 @@ export class DynamoDBTableProvider implements ResourceProvider {
   }
 
   /**
-   * One `CreateTable` index entry with BOTH of its throughput blocks coerced —
-   * `WarmThroughput` (PR review round 6) and `ProvisionedThroughput` (issue
-   * [#3255](https://github.com/go-to-k/cdkd/issues/3255)).
+   * One `CreateTable` index entry with ALL THREE of its throughput blocks
+   * coerced — `WarmThroughput` (PR review round 6), `ProvisionedThroughput`
+   * (issue [#3255](https://github.com/go-to-k/cdkd/issues/3255)) and
+   * `OnDemandThroughput` (issue
+   * [#3265](https://github.com/go-to-k/cdkd/issues/3265)).
    *
    * `create()` forwards the declared `GlobalSecondaryIndexes` array to
    * `CreateTable`, so it is a SEND SITE for the same per-index values the
    * update path coerces. `WarmThroughput` was the one the round-5 sweep
    * missed; `ProvisionedThroughput` was missed by round 6 AND by issue #3147's
-   * own enumeration, because this forwarder is a CAST rather than a call, so
-   * neither sweep's grep could see it. The BillingMode flip's per-index reader
+   * own enumeration; `OnDemandThroughput` was missed a THIRD time, by #3265's
+   * own three-site grep — all for one reason, that this forwarder is a CAST
+   * rather than a call, so no sweep's grep could see it. The
+   * BillingMode flip's per-index reader
    * ({@link readCapacityNumber}) has been on the grammar since #3147, so until
    * now create and flip disagreed about the same property: a CFn-legal
    * `ReadCapacityUnits: '7'` reached `CreateTable` as a STRING in a `number`
@@ -4098,11 +4173,12 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * and a provider that edits it in place would change what state reports cdkd
    * sent.
    *
-   * An entry that is not a plain object, and one declaring NEITHER throughput
-   * block, is returned UNCHANGED — identity included. An entry that DOES
-   * declare one is rebuilt whenever that block's coercion changes anything;
-   * the `WarmThroughput` half rebuilds even for an already-numeric value,
-   * which is pre-existing behaviour and costs one spread per declared block.
+   * An entry that is not a plain object, and one declaring NONE of the three
+   * throughput blocks, is returned UNCHANGED — identity included. An entry that
+   * DOES declare one is rebuilt whenever that block's coercion changes
+   * anything; the `WarmThroughput` half rebuilds even for an already-numeric
+   * value, which is pre-existing behaviour and costs one spread per declared
+   * block.
    */
   private coerceIndexThroughputForCreate(
     logicalId: string,
@@ -4113,12 +4189,20 @@ export class DynamoDBTableProvider implements ResourceProvider {
     const bag = entry as unknown as Record<string, unknown>;
     const declaredWarm = bag['WarmThroughput'];
     const declaredCapacity = bag['ProvisionedThroughput'];
-    // Nothing either half could rewrite: return the entry untouched, identity
-    // included. An entry that DOES declare a capacity block still reaches the
-    // scope below even when every member is already an integer — building the
-    // scope is what lets the member loop announce a drop, and it is one
-    // template-string concatenation per declared block.
-    if (declaredWarm === undefined && !isPlainCapacityBlock(declaredCapacity)) return entry;
+    const declaredOnDemand = bag['OnDemandThroughput'];
+    // Nothing any of the three halves could rewrite: return the entry
+    // untouched, identity included. An entry that DOES declare a capacity or
+    // ceiling block still reaches the scope below even when every member is
+    // already an integer — building the scope is what lets the member loop
+    // announce a drop, and it is one template-string concatenation per declared
+    // block.
+    if (
+      declaredWarm === undefined &&
+      !isPlainCapacityBlock(declaredCapacity) &&
+      !isPlainCapacityBlock(declaredOnDemand)
+    ) {
+      return entry;
+    }
     const scope = this.indexScope(entry.IndexName, logicalId, maskSecrets);
     let out: GlobalSecondaryIndex = entry;
     if (declaredWarm !== undefined) {
@@ -4141,6 +4225,18 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // outcome. The SDK type is `Required`-shaped for a happy-path caller, not
       // a claim about what an invalid template may spell.
       out = { ...out, ProvisionedThroughput: capacity as unknown as ProvisionedThroughput };
+    }
+    // The FOURTH `OnDemandThroughput` send site (issue #3265), and the one its
+    // own grep could not see: this forwarder is a CAST of the whole
+    // `GlobalSecondaryIndexes` array, so the value never appears as a named
+    // `OnDemandThroughput` expression here. Rebuilt only when the coercion
+    // CHANGED something — the reader returns the declared block by identity
+    // otherwise — so an already-numeric ceiling costs no spread.
+    if (isPlainCapacityBlock(declaredOnDemand)) {
+      const onDemand = this.coerceOnDemandCeilingsForSend(scope, declaredOnDemand, maskSecrets);
+      if ((onDemand as unknown) !== declaredOnDemand) {
+        out = { ...out, OnDemandThroughput: onDemand };
+      }
     }
     return out;
   }
@@ -4184,9 +4280,14 @@ export class DynamoDBTableProvider implements ResourceProvider {
    *    the template had declared it, with no later call to correct it. Only
    *    the TABLE level defaults.
    *  - **A block that is not a plain object is forwarded VERBATIM**, the
-   *    fail-OPEN direction this file takes everywhere: an unresolved intrinsic
-   *    or a mis-nested template value is AWS's to reject by name, and that is
-   *    also the pre-existing behaviour of this forwarder.
+   *    fail-OPEN direction this file takes everywhere: a STRING, a NUMBER or an
+   *    ARRAY block is AWS's to reject by name, and that is also the pre-existing
+   *    behaviour of this forwarder. An unresolved intrinsic (`{Ref: 'X'}`) is
+   *    NOT an example of it — that IS a plain object, so it takes the member
+   *    loop and survives through the preserve-unknown-member rule below. Same
+   *    destination, different route; corrected by the review of issue
+   *    [#3265](https://github.com/go-to-k/cdkd/issues/3265), which found the
+   *    wrong example here and at {@link coerceOnDemandCeilingsForSend}.
    *
    * A member name the grammar does not know is preserved untouched, for the
    * same fail-open reason — a misspelled `ReadCapacityUnit` reaches AWS and is
@@ -4215,6 +4316,228 @@ export class DynamoDBTableProvider implements ResourceProvider {
       }
     }
     return rewritten;
+  }
+
+  /**
+   * One `OnDemandThroughput` block for the wire, with each DECLARED member read
+   * through CloudFormation's DynamoDB Integer grammar (issue
+   * [#3265](https://github.com/go-to-k/cdkd/issues/3265)).
+   *
+   * Called from ALL FOUR send sites, which is the whole point — the block was
+   * forwarded VERBATIM at every one of them, so a CFn-legal
+   * `MaxReadRequestUnits: '100'` reached AWS as the STRING `"100"` in a `Long`
+   * field and the request failed, while a `' 100 '` / `'0x64'` / `'1e2'`
+   * CloudFormation refuses the template for was forwarded unchanged. The sites:
+   *
+   *  1. `create()`'s TABLE-level `CreateTable.OnDemandThroughput`;
+   *  2. `create()`'s PER-INDEX `CreateTable.GlobalSecondaryIndexes[]` forward,
+   *     through {@link coerceIndexThroughputForCreate} — a CAST of the whole
+   *     entry array rather than a named `OnDemandThroughput` expression, which
+   *     is why issue #3265's own grep enumerated three sites and not four (the
+   *     same blind spot that hid this forwarder from issue #3147's sweep and
+   *     from #3255's round 6, one property over);
+   *  3. `update()`'s TABLE-level `UpdateTable.OnDemandThroughput`;
+   *  4. `applyGsiUpdates`' per-index `Create` action.
+   *
+   * FOUR and not six: `UpdateGlobalSecondaryIndexAction` declares
+   * `OnDemandThroughput` too, and neither the adopted-index repair nor the
+   * same-name `Update` arm ever sets it — so a ceiling EDIT on a live index is
+   * silently discarded today. That is a MISSING SEND rather than a grammar
+   * defect, so it is not routed here; issue
+   * [#3287](https://github.com/go-to-k/cdkd/issues/3287) holds it, and it will
+   * read through this function when it lands.
+   *
+   * THREE decisions, each with a plausible alternative:
+   *
+   *  - **A rejected spelling drops the MEMBER, never the BLOCK.** The same
+   *    DECISION {@link coerceIndexCapacityBlock} and {@link tableCapacityForSend}
+   *    already take one property over, so this file's capacity and ceiling
+   *    families answer identically about one template value; it keeps a sibling
+   *    member the template spelled LEGALLY; and it leaves `indexDeclares`'
+   *    TRUTHINESS gate ("would cdkd SEND this block") true without
+   *    qualification, so the #1767 drift-side predicate needs no new arm. An
+   *    all-rejected block therefore goes out EMPTY, as the capacity sibling's
+   *    does. ("The same decision", NOT the same SIGNATURE — the capacity
+   *    sibling answers `undefined` for "nothing to rewrite" while this one
+   *    returns the declared block by IDENTITY. The review of this issue caught
+   *    an earlier "byte for byte the shape" here, which was false and is the
+   *    kind of claim that invites a caller to swap one for the other.)
+   *  - **What a rejected spelling COSTS differs from the capacity sibling's,
+   *    and it is stated at {@link warnUnusableOnDemandCeiling} rather than
+   *    assumed.** Both `OnDemandThroughput` members are SDK-optional, so
+   *    DynamoDB does not necessarily reject a request that omits one — which is
+   *    why the announcement cannot reuse the capacity wording, which promises
+   *    AWS will name the member. **It is NOT a promise of success either**, and
+   *    an earlier revision made it one: the outcome is per PATH (create leaves
+   *    no maximum, update KEEPS the live one since only `-1` removes it) and an
+   *    ALL-rejected block is documented invalid at every one of the four send
+   *    positions ("you must specify `MaxReadRequestUnits`,
+   *    `MaxWriteRequestUnits`, or both"), so that request should FAIL. cdkd has
+   *    not measured the empty-block send against live DynamoDB; the message
+   *    under-claims accordingly.
+   *  - **A block that is not a plain object is forwarded VERBATIM**, the
+   *    fail-OPEN direction this file takes everywhere: a STRING, a NUMBER or an
+   *    ARRAY `OnDemandThroughput` is AWS's to reject by name, and that is the
+   *    pre-existing behaviour of every one of these forwarders. Note what this
+   *    arm does NOT cover: an unresolved intrinsic (`{Ref: 'X'}`) IS a plain
+   *    object, so it takes the member loop instead and survives through the
+   *    preserve-unknown-member rule below — same destination, different route.
+   *    {@link isPlainCapacityBlock}'s own doc is the authority; the review of
+   *    this issue found that example wrong here and at
+   *    {@link coerceIndexCapacityBlock}.
+   *
+   * A member name the grammar does not know is preserved untouched, for the
+   * same fail-open reason. Returns the DECLARED object by IDENTITY when nothing
+   * needs rewriting, so a numeric template rebuilds nothing and
+   * {@link coerceIndexThroughputForCreate} can tell "unchanged" from "rewritten"
+   * without a structural compare.
+   *
+   * **Known residual, deliberately not closed here.** Wherever the call
+   * SUCCEEDS, state records the spelling the TEMPLATE declared while AWS holds
+   * a different ceiling (none on a create, the previous one on an update) — the
+   * permanent phantom-drift class
+   * `.claude/rules/provider-property-fidelity.md` covers, which
+   * {@link coerceIndexCapacityBlock} escapes only because ITS drop makes AWS
+   * fail. Closing it needs `effectiveProperties` AND its
+   * `canonicalizeDesiredProperties` twin (the rule requires the pair; shipping
+   * the first alone re-issues a no-op `UpdateTable` on every later deploy), and
+   * this provider implements neither today. Tracked as issue
+   * [#3286](https://github.com/go-to-k/cdkd/issues/3286); the warning names the
+   * residual so a user is not left to discover it from a `cdkd drift` line. The
+   * `AWS::DynamoDB::GlobalTable` sibling answers the SAME way for the same
+   * spelling — `collectTableOnDemandCeilings` coerces through
+   * `coerceCfnInteger` and a rejected ceiling is reported and LEFT UNSENT, with
+   * AWS untouched and no substituted value (its 5/5 FALLBACK is its PROVISIONED
+   * capacity answer, not its ceiling one) — so the two types do not diverge.
+   */
+  private coerceOnDemandCeilingsForSend(
+    scope: string,
+    declared: unknown,
+    // REQUIRED, deliberately, with no identity default. A default here makes the
+    // argument optional at every call site, and dropping it degrades BOTH masking
+    // layers at once -- the leaf pass (`maskLeafValue(raw, maskSecrets)`) and the
+    // built `warn` sink derive from this one parameter -- so a resolved secret
+    // ceiling would print in plaintext to a provider-own `logger.warn`, which by
+    // the issue #2176 contract reaches NO engine sink. Nothing else catches that:
+    // it typechecks, `audit:provider-secret-mask:check` accepts anything DECLARED
+    // `SecretMasker`, and a test passing no context cannot tell a defaulted
+    // identity from an explicit one. Required makes the TYPECHECKER the fence at
+    // every current and future call site. Issue #2007: a masker that fences
+    // nothing is worse than none, because its presence stops the next author
+    // looking. Found by the go-to-k/cdkd#3291 security review.
+    maskSecrets: SecretMasker
+  ): OnDemandThroughput {
+    if (!isPlainCapacityBlock(declared)) return declared as OnDemandThroughput;
+    const block = declared;
+    let rewritten: Record<string, unknown> | undefined;
+    for (const member of ON_DEMAND_CEILING_MEMBERS) {
+      if (!(member in block)) continue;
+      const coerced = coerceCfnInteger(block[member]);
+      // Already the exact integer cdkd would send: leave the key alone.
+      if (coerced === block[member]) continue;
+      rewritten ??= { ...block };
+      if (coerced === undefined) {
+        this.warnUnusableOnDemandCeiling(scope, member, block[member], maskSecrets);
+        delete rewritten[member];
+      } else {
+        rewritten[member] = coerced;
+      }
+    }
+    return (rewritten ?? block) as unknown as OnDemandThroughput;
+  }
+
+  /**
+   * Announce an `OnDemandThroughput` member a forwarder DROPPED (issue
+   * [#3265](https://github.com/go-to-k/cdkd/issues/3265)).
+   *
+   * A SEPARATE sentence from {@link warnUnusableProvisionedCapacity}, and the
+   * difference is the load-bearing part rather than a wording preference: that
+   * one can promise "DynamoDB will reject the request naming this member",
+   * because both `ProvisionedThroughput` members are REQUIRED wherever the
+   * block is declared. Both `OnDemandThroughput` members are OPTIONAL, so the
+   * same promise would send the user looking for a failure that may never come.
+   *
+   * What it says instead is PER PATH, because the outcome genuinely differs and
+   * an earlier revision of this message asserted ONE outcome for all of them —
+   * wrongly in both directions (the review of this issue):
+   *
+   *  - on a CREATE the table comes up with no maximum for the dropped half;
+   *  - on an UPDATE DynamoDB KEEPS whatever maximum the table already carries.
+   *    Omitting a member is NOT "no maximum" there — `-1` is AWS's documented
+   *    way to REMOVE one (`OnDemandThroughput`'s own SDK model doc), so a
+   *    dropped member silently leaves the live ceiling in force;
+   *  - when NO member survived, the block {@link coerceOnDemandCeilingsForSend}
+   *    sends is EMPTY. AWS's model says at all four of this provider's send
+   *    positions that "if you use this parameter, you must specify
+   *    `MaxReadRequestUnits`, `MaxWriteRequestUnits`, or both", which reads
+   *    like a LOUD failure — and it is NOT enforced.
+   *
+   *    MEASURED us-east-1 2026-09-17, on the go-to-k/cdkd#3291 review's
+   *    request: `CreateTable` with `OnDemandThroughput: {}` and
+   *    `BillingMode: PAY_PER_REQUEST` is ACCEPTED, the table reaches ACTIVE,
+   *    and `DescribeTable` reports NO `OnDemandThroughput` at all. So the
+   *    all-rejected case is the SILENT one, not the loud one: the deploy goes
+   *    green with no ceiling applied.
+   *
+   *    That matters because it is a REGRESSION IN LOUDNESS introduced by this
+   *    very change. Before it, a `' 100 '` reached AWS as a string in a Long
+   *    field and the request FAILED, certainly. After it, the value is dropped
+   *    and the deploy succeeds. The warning is therefore the ONLY signal a user
+   *    gets for the all-rejected case, which is why it is emitted per member
+   *    and why its text was corrected to say so rather than to promise a
+   *    failure that does not come.
+   *
+   * The caller cannot tell the three cases apart from inside the member loop,
+   * so the message names all three rather than asserting the one it cannot
+   * know.
+   *
+   * And it names the residual: where the request does succeed, state keeps the
+   * spelling the template declared and `cdkd drift` reports it until the
+   * template is corrected. `-1` is called out because a user who meant the
+   * removal must not read "spell it as a decimal integer" as excluding it.
+   *
+   * The CloudFormation clause is HEDGED ("is expected to"), and deliberately.
+   * The live A/B that settled this grammar was run on
+   * `ProvisionedThroughput.ReadCapacityUnits`, not on `MaxReadRequestUnits`.
+   * Both are Integer members of the same type validated at the same properties
+   * layer, so the extrapolation is sound and is what issue #3265 reasons from --
+   * but it IS an extrapolation, and a user-facing string asserting it flatly
+   * about an unmeasured property would be the kind of claim nothing downstream
+   * re-checks. Measure it and the hedge can go. Raised by the
+   * go-to-k/cdkd#3291 spec review.
+   */
+  private warnUnusableOnDemandCeiling(
+    scope: string,
+    member: string,
+    raw: unknown,
+    // REQUIRED for the reason `coerceOnDemandCeilingsForSend` states above: this
+    // is the sink the leaked value would reach.
+    maskSecrets: SecretMasker
+  ): void {
+    // ONE masked sink (issue #1997) — BUILT, not an inline wrap, with the raw
+    // declared member masked leaf by leaf first, for the reason
+    // `warnUnusableProvisionedCapacity` states: the member arrives RESOLVED, so
+    // a `{{resolve:secretsmanager:...}}` scalar is plaintext here and
+    // `JSON.stringify` escaping it would put it past a message-level mask.
+    const warn = (message: string): void => this.logger.warn(maskSecrets(message));
+    warn(
+      `${scope}: OnDemandThroughput.${member} ${JSON.stringify(
+        maskLeafValue(raw, maskSecrets)
+      )} is not an Integer CloudFormation accepts ` +
+        `(an optional sign and decimal digits only — no surrounding whitespace, hex, exponent ` +
+        `or decimal point), so it was NOT sent and NO ceiling was substituted for it. ` +
+        `Both OnDemandThroughput members are OPTIONAL to DynamoDB, so — unlike a ` +
+        `ProvisionedThroughput member — AWS does not necessarily reject the request, and what ` +
+        `happens next depends on the path: a CREATE gets no maximum for this half; an UPDATE ` +
+        `KEEPS whatever maximum the table already carries, since only an explicit -1 removes ` +
+        `one; and if NEITHER member was usable the block is sent EMPTY, which AWS ACCEPTS ` +
+        `(measured us-east-1 2026-09-17) and stores as no maximum at all, so the deploy ` +
+        `SUCCEEDS with no ceiling applied. cdkd's state keeps the value the template ` +
+        `declared and \`cdkd drift\` reports the difference until the template is corrected; ` +
+        `CloudFormation is expected to refuse the same template at properties validation. ` +
+        `Check for an unresolved intrinsic, or spell the value as a decimal integer ` +
+        `(\`-1\` removes an existing maximum).`
+    );
   }
 
   /**

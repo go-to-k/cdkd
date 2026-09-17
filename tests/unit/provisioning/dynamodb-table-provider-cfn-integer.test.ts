@@ -1100,4 +1100,642 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
       });
     });
   });
+
+  describe('the OnDemandThroughput ceilings at all FOUR send sites (#3265)', () => {
+    /**
+     * `OnDemandThroughput` was forwarded VERBATIM at every site while every
+     * sibling capacity property had moved onto CloudFormation's Integer
+     * grammar. Both members are `Long` in the SDK model, so a CFn-legal
+     * `MaxReadRequestUnits: '100'` reached AWS as the STRING `"100"` and the
+     * request failed, while a `' 100 '` / `'0x64'` / `'1e2'` CloudFormation
+     * refuses the template for was forwarded unchanged.
+     *
+     * The issue enumerated THREE sites from its own grep. There are FOUR: the
+     * per-index `CreateTable` forward goes through a CAST of the whole
+     * `GlobalSecondaryIndexes` array, so the value never appears as a named
+     * `OnDemandThroughput` expression — the same blind spot that hid the
+     * `ProvisionedThroughput` twin from #3147's enumeration and from #3255's
+     * round 6. Each site is driven INDEPENDENTLY below, through the real
+     * `create()` / `update()`.
+     *
+     * Every assertion uses `toBe` / `toEqual` on the SENT value, which
+     * discriminates `100` from `'100'`: a case reading it through `Number(...)`
+     * would pass against the unfixed provider.
+     */
+    const ON_DEMAND = 'OnDemandThroughput.MaxReadRequestUnits';
+
+    const runOnDemandCreate = async (
+      properties: Record<string, unknown>
+    ): Promise<CreateTableCommand | undefined> => {
+      primeGeneric();
+      await provider.create('L', RESOURCE_TYPE, {
+        TableName: TABLE_NAME,
+        KeySchema: KEY_SCHEMA,
+        AttributeDefinitions: ATTRIBUTE_DEFINITIONS,
+        BillingMode: 'PAY_PER_REQUEST',
+        ...properties,
+      });
+      return findCalls(CreateTableCommand)[0];
+    };
+
+    /**
+     * One row per template spelling for a TABLE-level ceiling member. `sent`
+     * ABSENT means the member is DROPPED from the block — and, unlike its
+     * `ProvisionedThroughput` sibling, the request then SUCCEEDS with no
+     * maximum applied, which is why the announcement says something different.
+     *
+     * `before` records what the pre-#3265 verbatim forward put on the wire, so
+     * a row also says what the fix changed. Every ACCEPTED string row is one
+     * that used to reach a `Long` field as a string.
+     */
+    const CEILING_MATRIX: ReadonlyArray<{
+      readonly value: unknown;
+      readonly sent: unknown;
+      readonly warned: boolean;
+      readonly before: string;
+    }> = [
+      // --- CloudFormation ACCEPTS: now COERCED, previously forwarded raw -----
+      { value: '100', sent: 100, warned: false, before: "the string '100'" },
+      { value: '+8', sent: 8, warned: false, before: "the string '+8'" },
+      // Decimal, not octal — CloudFormation reads `"010"` as 10 and so does this.
+      { value: '010', sent: 10, warned: false, before: "the string '010'" },
+      // `-1` is DynamoDB's documented "remove the existing maximum" sentinel,
+      // so the grammar's optional SIGN is load-bearing here in a way it is not
+      // for a capacity member, where AWS refuses anything below 1.
+      { value: '-1', sent: -1, warned: false, before: "the string '-1'" },
+      { value: 100, sent: 100, warned: false, before: '100' },
+      // --- ABSENT stays ABSENT, SILENTLY: this block has no default at all ---
+      { value: ABSENT, sent: ABSENT, warned: false, before: 'absent' },
+      // --- CloudFormation REJECTS: dropped and named ------------------------
+      { value: ' 100 ', sent: ABSENT, warned: true, before: "the string ' 100 '" },
+      { value: '100 ', sent: ABSENT, warned: true, before: "the string '100 '" },
+      { value: '', sent: ABSENT, warned: true, before: "the string ''" },
+      { value: '0x64', sent: ABSENT, warned: true, before: "the string '0x64'" },
+      { value: '1e2', sent: ABSENT, warned: true, before: "the string '1e2'" },
+      { value: '6.5', sent: ABSENT, warned: true, before: "the string '6.5'" },
+      { value: 'abc', sent: ABSENT, warned: true, before: "the string 'abc'" },
+      { value: 6.5, sent: ABSENT, warned: true, before: '6.5' },
+      { value: true, sent: ABSENT, warned: true, before: 'true' },
+      { value: null, sent: ABSENT, warned: true, before: 'null' },
+      { value: { Ref: 'Unset' }, sent: ABSENT, warned: true, before: '{"Ref":"Unset"}' },
+    ];
+
+    it('keeps its per-outcome row counts', () => {
+      // The floor, as LITERALS and per OUTCOME: re-classifying a row is the
+      // cheapest way to neutralise the table below, and it moves a number here.
+      const dropped = CEILING_MATRIX.filter((r) => r.sent === ABSENT && r.warned);
+      const forwarded = CEILING_MATRIX.filter((r) => r.sent !== ABSENT);
+      expect(CEILING_MATRIX.length).toBe(17);
+      expect(dropped.length).toBe(11);
+      expect(forwarded.length).toBe(5);
+      // Every dropped row warns and no forwarded row does — the announcement is
+      // the whole licence for dropping, so the two must not come apart.
+      expect(forwarded.every((r) => !r.warned)).toBe(true);
+      // Both directions, not just one: `dropped` is SELECTED on `r.warned`, so
+      // without this the "every dropped row warns" half is never actually
+      // asserted (the sibling matrix above states it explicitly).
+      expect(
+        CEILING_MATRIX.filter((r) => r.sent === ABSENT && r.value !== ABSENT).every((r) => r.warned)
+      ).toBe(true);
+      // Exactly ONE row is absent-and-silent: the template that declares no
+      // member. Without it the table could not tell "dropped" from "never
+      // declared", and this block substitutes nothing for either.
+      expect(CEILING_MATRIX.filter((r) => r.sent === ABSENT && !r.warned).length).toBe(1);
+      // FOUR accepted rows are STRINGS, and the fix is a coercion: a table of
+      // numbers alone would stay green against the unfixed verbatim forward.
+      expect(forwarded.filter((r) => typeof r.value === 'string').length).toBe(4);
+      // The removal sentinel is an ACCEPTED row, not a rejected one — the row
+      // that keeps a "refuse anything below 1" tightening from landing here.
+      expect(CEILING_MATRIX.some((r) => r.value === '-1' && r.sent === -1)).toBe(true);
+    });
+
+    for (const row of CEILING_MATRIX) {
+      it(`site 1 create (table): MaxReadRequestUnits ${label(row.value)} -> ${label(row.sent)} (was: ${row.before})`, async () => {
+        const create = await runOnDemandCreate({
+          OnDemandThroughput: {
+            ...(row.value === ABSENT ? {} : { MaxReadRequestUnits: row.value }),
+            MaxWriteRequestUnits: 3,
+          },
+        });
+
+        const sent = create?.input.OnDemandThroughput as Record<string, unknown> | undefined;
+        if (row.sent === ABSENT) {
+          expect(sent && 'MaxReadRequestUnits' in sent).toBe(false);
+        } else {
+          expect(sent?.['MaxReadRequestUnits']).toBe(row.sent);
+        }
+        // The WRITE member is the control in every row: dropping or rewriting
+        // BOTH members would otherwise look identical, and dropping the whole
+        // BLOCK would pass a member-only assertion.
+        expect(sent?.['MaxWriteRequestUnits']).toBe(3);
+        expect(warnings().includes(ON_DEMAND)).toBe(row.warned);
+      });
+    }
+
+    it('site 1 create (table): drops the MEMBER and keeps its legal sibling', async () => {
+      // The decision, pinned: dropping the BLOCK would discard a ceiling the
+      // template spelled legally, and would make `indexDeclares`' truthiness
+      // gate stop describing what cdkd sends.
+      const create = await runOnDemandCreate({
+        OnDemandThroughput: { MaxReadRequestUnits: '0x64', MaxWriteRequestUnits: '11' },
+      });
+      expect(create?.input.OnDemandThroughput).toEqual({ MaxWriteRequestUnits: 11 });
+      expect(warnings()).toContain(ON_DEMAND);
+      expect(warnings()).not.toContain('OnDemandThroughput.MaxWriteRequestUnits');
+    });
+
+    it('site 1 create (table): sends an EMPTY block, naming both, when NEITHER member is usable', async () => {
+      const create = await runOnDemandCreate({
+        OnDemandThroughput: { MaxReadRequestUnits: ' 1 ', MaxWriteRequestUnits: 'abc' },
+      });
+      expect(create?.input.OnDemandThroughput).toEqual({});
+      expect(warnings()).toContain(ON_DEMAND);
+      expect(warnings()).toContain('OnDemandThroughput.MaxWriteRequestUnits');
+    });
+
+    it('site 1 create (table): preserves an UNRESOLVED INTRINSIC, which is a plain OBJECT', async () => {
+      // NOT the non-object arm, though it reads like one and was labelled that
+      // way until the review of this issue: `{Ref: 'Unset'}` satisfies
+      // `isPlainCapacityBlock`, so it takes the MEMBER LOOP, finds neither
+      // ceiling member, and survives through the preserve-unknown-member rule.
+      // Same destination, different route — and the mislabel is what left the
+      // real guard below with no case at all.
+      const create = await runOnDemandCreate({ OnDemandThroughput: { Ref: 'Unset' } });
+      expect(create?.input.OnDemandThroughput).toEqual({ Ref: 'Unset' });
+      expect(warnings()).not.toContain('OnDemandThroughput.');
+    });
+
+    for (const block of ['100', 42, [{ MaxReadRequestUnits: 1 }]] as const) {
+      it(`site 1 create (table): forwards a genuinely NON-OBJECT block (${JSON.stringify(block)}) verbatim`, async () => {
+        // The `!isPlainCapacityBlock(declared)` early return, which had ZERO
+        // coverage until the review of this issue measured it: replacing that
+        // line with a `throw` left all 124 cases green. It is not decoration —
+        // sites 1/3/4 gate on TRUTHINESS alone, so a string / number / array
+        // reaches the helper, and without the guard `member in block` throws a
+        // TypeError and takes the whole deploy down from a coercion path.
+        const create = await runOnDemandCreate({ OnDemandThroughput: block });
+        expect(create?.input.OnDemandThroughput).toEqual(block);
+        expect(warnings()).not.toContain('OnDemandThroughput.');
+      });
+    }
+
+    it('site 1 create (table): MASKS a secret-bearing ceiling value BEFORE stringifying it', async () => {
+      // The member arrives RESOLVED, so a `{{resolve:secretsmanager:...}}`
+      // scalar is PLAINTEXT here, and the raw value goes through
+      // `maskLeafValue` BEFORE `JSON.stringify`.
+      //
+      // The SECRET has to carry a character `JSON.stringify` ESCAPES, or the
+      // case is vacuous — which is exactly how the first version of it shipped:
+      // with a plain `s3cr3t`, swapping `maskLeafValue(raw, maskSecrets)` for a
+      // bare `raw` left all 133 cases green, because the message-level mask in
+      // the `warn` sink still matched the literal. A masker matches by literal
+      // occurrence, so once stringify turns `s3c"r3t` into `s3c\"r3t` the
+      // plaintext no longer OCCURS and only the leaf pass can reach it. That is
+      // the escaping half of the #2176 rule, and every Secrets Manager JSON
+      // document is in this population.
+      const SECRET = 's3c"r3t';
+      primeGeneric();
+      await provider.create(
+        'L',
+        RESOURCE_TYPE,
+        {
+          TableName: TABLE_NAME,
+          KeySchema: KEY_SCHEMA,
+          AttributeDefinitions: ATTRIBUTE_DEFINITIONS,
+          BillingMode: 'PAY_PER_REQUEST',
+          OnDemandThroughput: { MaxReadRequestUnits: SECRET, MaxWriteRequestUnits: 3 },
+        },
+        // A LITERAL replace, which is what the real `maskSecretsInText` does —
+        // a regex spelled here would be a different function from the one in
+        // production and could match the escaped form by accident.
+        { maskSecrets: (text: string) => text.split(SECRET).join('<redacted>') }
+      );
+
+      const text = warnings();
+      expect(text).toContain(ON_DEMAND);
+      expect(text).toContain('<redacted>');
+      // `s3c`, not the whole secret: the LEAK shape is the ESCAPED spelling
+      // `s3c\"r3t`, which a `not.toContain(SECRET)` would miss entirely.
+      expect(text).not.toContain('s3c');
+    });
+
+    it('the ProvisionedThroughput twin masks its leaf the same way (sibling of the case above)', async () => {
+      // Same hole, one property over: `dynamodb-table-provider-cfn-integer`'s
+      // #3255 masking case uses a plain `s3cr3t`, so it too survives dropping
+      // `maskLeafValue` — it fences the SCOPE (an index name, masked directly
+      // with no stringify) and not the stringified MEMBER. Added here rather
+      // than filed because it is the same file, the same sink and the same
+      // measurement that produced the case above.
+      const SECRET = 'r3ad"cap';
+      primeGeneric();
+      await provider.create(
+        'L',
+        RESOURCE_TYPE,
+        {
+          TableName: TABLE_NAME,
+          KeySchema: KEY_SCHEMA,
+          AttributeDefinitions: ATTRIBUTE_DEFINITIONS,
+          BillingMode: 'PROVISIONED',
+          ProvisionedThroughput: { ReadCapacityUnits: SECRET, WriteCapacityUnits: 5 },
+        },
+        { maskSecrets: (text: string) => text.split(SECRET).join('<redacted>') }
+      );
+
+      const text = warnings();
+      expect(text).toContain('ProvisionedThroughput.ReadCapacityUnits');
+      expect(text).toContain('<redacted>');
+      expect(text).not.toContain('r3ad');
+    });
+
+    it('site 1 create (table): leaves an already-numeric block untouched, by IDENTITY', async () => {
+      // The identity-return contract `coerceIndexThroughputForCreate` reads to
+      // decide whether to rebuild an entry. Unfenced until the review of this
+      // issue: making the rebuild unconditional left all 124 cases green.
+      const block = { MaxReadRequestUnits: 100, MaxWriteRequestUnits: 3 };
+      const create = await runOnDemandCreate({ OnDemandThroughput: block });
+      expect(create?.input.OnDemandThroughput).toBe(block);
+      expect(warnings()).not.toContain('OnDemandThroughput.');
+    });
+
+    it('site 1 create (table): announces the OPTIONALITY, NOT the capacity sentence', async () => {
+      // The one thing this announcement may not borrow from
+      // `warnUnusableProvisionedCapacity`: that sentence promises DynamoDB will
+      // reject the request naming the member, which is true only because both
+      // capacity members are REQUIRED.
+      await runOnDemandCreate({ OnDemandThroughput: { MaxReadRequestUnits: ' 100 ' } });
+      const text = warnings();
+      expect(text).toContain('NO ceiling was substituted for it');
+      expect(text).toContain('OPTIONAL');
+      expect(text).toContain('cdkd drift');
+      expect(text).not.toContain('will reject the request naming this one');
+    });
+
+    it('site 1 create (table): does NOT promise success either, and splits the outcome per PATH', async () => {
+      // The review of this issue found the first revision asserting ONE
+      // outcome ("the request SUCCEEDS with no maximum applied for this half")
+      // for all four sites, wrong in two independent ways:
+      //
+      //  - on an UPDATE, omitting a member does not clear the ceiling — AWS
+      //    documents `-1` as the way to REMOVE one, so the LIVE maximum stays;
+      //  - when NEITHER member survives the block goes out EMPTY. AWS's model
+      //    requires `MaxReadRequestUnits`, `MaxWriteRequestUnits`, or both at
+      //    every one of the four send positions, which reads like a loud
+      //    rejection -- and is NOT enforced.
+      //
+      // MEASURED us-east-1 2026-09-17 (go-to-k/cdkd#3291 review): `CreateTable`
+      // with `OnDemandThroughput: {}` is ACCEPTED, the table reaches ACTIVE and
+      // `DescribeTable` reports no `OnDemandThroughput` at all. An earlier
+      // revision of this case pinned the OPPOSITE ("expect that request to
+      // fail"), which the measurement refuted -- so the all-rejected path is
+      // the SILENT one and this warning is the user's only signal for it.
+      await runOnDemandCreate({ OnDemandThroughput: { MaxReadRequestUnits: ' 100 ' } });
+      const text = warnings();
+      expect(text).toContain('an UPDATE KEEPS whatever maximum the table already carries');
+      expect(text).toContain('only an explicit -1 removes one');
+      expect(text).toContain('the block is sent EMPTY, which AWS ACCEPTS');
+      expect(text).toContain('the deploy SUCCEEDS with no ceiling applied');
+      // The refuted claim must not come back.
+      expect(text).not.toContain('expect that request to fail');
+      expect(text).not.toContain('AWS documents as invalid');
+    });
+
+    it('site 2 create (per-index): coerces the ceiling of a GSI entry, and names the INDEX', async () => {
+      // The site the issue's own grep could not see. A sibling index is the
+      // control: a per-entry rebuild that leaked across entries, or a scope
+      // built from a hardcoded literal, would be invisible to a one-index case.
+      const create = await runOnDemandCreate({
+        GlobalSecondaryIndexes: [
+          {
+            IndexName: 'bad-index',
+            KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+            Projection: { ProjectionType: 'ALL' },
+            OnDemandThroughput: { MaxReadRequestUnits: ' 100 ', MaxWriteRequestUnits: '7' },
+          },
+          {
+            IndexName: 'good-index',
+            KeySchema: [{ AttributeName: 'sk', KeyType: 'HASH' }],
+            Projection: { ProjectionType: 'ALL' },
+            OnDemandThroughput: { MaxReadRequestUnits: '9', MaxWriteRequestUnits: 4 },
+          },
+        ],
+      });
+
+      const sentFor = (name: string): unknown =>
+        (create?.input.GlobalSecondaryIndexes ?? []).find((g) => g.IndexName === name)
+          ?.OnDemandThroughput;
+      expect(sentFor('bad-index')).toEqual({ MaxWriteRequestUnits: 7 });
+      expect(sentFor('good-index')).toEqual({ MaxReadRequestUnits: 9, MaxWriteRequestUnits: 4 });
+      expect(warnings()).toContain('bad-index');
+      expect(warnings()).not.toContain('good-index');
+    });
+
+    it('site 2 create (per-index): leaves an entry declaring NO throughput block untouched', async () => {
+      // The identity guard: the entry bag belongs to the caller (the resolved
+      // template the engine also records into state), so an entry with nothing
+      // to rewrite must come back as itself.
+      const entry = {
+        IndexName: 'gsi1',
+        KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+        Projection: { ProjectionType: 'ALL' },
+      };
+      const create = await runOnDemandCreate({ GlobalSecondaryIndexes: [entry] });
+      expect(create?.input.GlobalSecondaryIndexes?.[0]).toBe(entry);
+    });
+
+    it("site 2 create (per-index): does not mutate the caller's entry", async () => {
+      const entry = {
+        IndexName: 'gsi1',
+        KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+        Projection: { ProjectionType: 'ALL' },
+        OnDemandThroughput: { MaxReadRequestUnits: '100', MaxWriteRequestUnits: ' 7 ' },
+      };
+      const create = await runOnDemandCreate({ GlobalSecondaryIndexes: [entry] });
+      expect(entry.OnDemandThroughput).toEqual({
+        MaxReadRequestUnits: '100',
+        MaxWriteRequestUnits: ' 7 ',
+      });
+      expect(create?.input.GlobalSecondaryIndexes?.[0]?.OnDemandThroughput).toEqual({
+        MaxReadRequestUnits: 100,
+      });
+    });
+
+    it('site 3 update (table): coerces a quoted ceiling on the UpdateTable', async () => {
+      primeGeneric({ billingMode: 'PAY_PER_REQUEST' });
+      await provider.update(
+        'L',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          TableName: TABLE_NAME,
+          BillingMode: 'PAY_PER_REQUEST',
+          OnDemandThroughput: { MaxReadRequestUnits: '100', MaxWriteRequestUnits: ' 7 ' },
+        },
+        {
+          TableName: TABLE_NAME,
+          BillingMode: 'PAY_PER_REQUEST',
+          OnDemandThroughput: { MaxReadRequestUnits: 50, MaxWriteRequestUnits: 7 },
+        }
+      );
+
+      const call = findCalls(UpdateTableCommand).find((c) => c.input.OnDemandThroughput);
+      // The change DETECTOR compares the declared block against the recorded
+      // one, both raw, which is what makes the op fire at all; only the wire
+      // value is coerced.
+      expect(call?.input.OnDemandThroughput).toEqual({ MaxReadRequestUnits: 100 });
+      expect(warnings()).toContain('OnDemandThroughput.MaxWriteRequestUnits');
+    });
+
+    it('site 3 update (table): sends the EMPTY block when NEITHER member is usable', async () => {
+      // The riskiest shape of the drop-the-MEMBER decision, and the one AWS's
+      // model calls invalid ("you must specify MaxReadRequestUnits,
+      // MaxWriteRequestUnits, or both"). Pinned so the behaviour is a DECISION
+      // on the record rather than an accident: cdkd still issues the call and
+      // lets DynamoDB answer, exactly as the `ProvisionedThroughput` sibling
+      // does, and the warning tells the user to expect that failure.
+      primeGeneric({ billingMode: 'PAY_PER_REQUEST' });
+      await provider.update(
+        'L',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          TableName: TABLE_NAME,
+          BillingMode: 'PAY_PER_REQUEST',
+          OnDemandThroughput: { MaxReadRequestUnits: ' 1 ', MaxWriteRequestUnits: '0x64' },
+        },
+        {
+          TableName: TABLE_NAME,
+          BillingMode: 'PAY_PER_REQUEST',
+          OnDemandThroughput: { MaxReadRequestUnits: 50, MaxWriteRequestUnits: 7 },
+        }
+      );
+
+      const call = findCalls(UpdateTableCommand).find(
+        (c) => c.input.OnDemandThroughput !== undefined
+      );
+      expect(call?.input.OnDemandThroughput).toEqual({});
+      expect(warnings()).toContain(ON_DEMAND);
+      expect(warnings()).toContain('OnDemandThroughput.MaxWriteRequestUnits');
+    });
+
+    it('site 3 update (table): the change DETECTOR reads RAW, so a re-spelled ceiling still fires', async () => {
+      // The interaction the coercion must not disturb. `'100'` and `100` are
+      // the SAME ceiling once coerced, but the detector compares the declared
+      // block against the RECORDED one, both raw — so the op fires, and what
+      // reaches AWS is the coerced number. Moving the detector onto the coerced
+      // values would silently stop re-sending a ceiling AWS may have lost.
+      primeGeneric({ billingMode: 'PAY_PER_REQUEST' });
+      await provider.update(
+        'L',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          TableName: TABLE_NAME,
+          BillingMode: 'PAY_PER_REQUEST',
+          OnDemandThroughput: { MaxReadRequestUnits: '100' },
+        },
+        {
+          TableName: TABLE_NAME,
+          BillingMode: 'PAY_PER_REQUEST',
+          OnDemandThroughput: { MaxReadRequestUnits: 100 },
+        }
+      );
+
+      const call = findCalls(UpdateTableCommand).find(
+        (c) => c.input.OnDemandThroughput !== undefined
+      );
+      expect(call?.input.OnDemandThroughput).toEqual({ MaxReadRequestUnits: 100 });
+      expect(warnings()).not.toContain('OnDemandThroughput.');
+    });
+
+    // Shared by the two go-to-k/cdkd#3287 arms below. PROVISIONED, because the
+    // op has to be fired by a CAPACITY change: a ceiling-only edit fires no op
+    // at all (that IS go-to-k/cdkd#3287), so an op list built from one would be
+    // EMPTY and `every(...)` vacuously true -- passing exactly as well for an
+    // arm that never ran. Both cases shipped in that state and were measured so
+    // by the go-to-k/cdkd#3291 test review (probe D2).
+    const gsiUpdateOps = async (
+      desiredIndexes: unknown[],
+      previousIndexes: unknown[],
+      live?: { indexes?: unknown[] }
+    ) => {
+      primeGeneric({
+        billingMode: 'PROVISIONED',
+        ...(live?.indexes ? { indexes: live.indexes } : {}),
+      });
+      await provider.update(
+        'L',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          TableName: TABLE_NAME,
+          BillingMode: 'PROVISIONED',
+          ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+          GlobalSecondaryIndexes: desiredIndexes,
+        },
+        {
+          TableName: TABLE_NAME,
+          BillingMode: 'PROVISIONED',
+          ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+          GlobalSecondaryIndexes: previousIndexes,
+        }
+      );
+      return findCalls(UpdateTableCommand)
+        .flatMap((c) => c.input.GlobalSecondaryIndexUpdates ?? [])
+        .map((op) => op.Update)
+        .filter((a): a is NonNullable<typeof a> => a !== undefined);
+    };
+
+    it('the SAME-NAME update action carries no ceiling (go-to-k/cdkd#3287, arm 1)', async () => {
+      // NOT an endorsement -- a ceiling edit on a LIVE index is silently lost
+      // today, which is what go-to-k/cdkd#3287 exists to fix. It is pinned
+      // because the fix must route through `coerceOnDemandCeilingsForSend` like
+      // the other four sites: without a case here, wiring the member UNCOERCED
+      // reds nothing and re-opens exactly the defect this PR closes.
+      const updates = await gsiUpdateOps(
+        [{ ...cfnGsi('gsi1', '9', '4'), OnDemandThroughput: { MaxReadRequestUnits: '200' } }],
+        [cfnGsi('gsi1', '3', '3')]
+      );
+      expect(updates.length).toBeGreaterThan(0);
+      expect(updates[0]?.ProvisionedThroughput).toEqual({
+        ReadCapacityUnits: 9,
+        WriteCapacityUnits: 4,
+      });
+      // When go-to-k/cdkd#3287 lands, this flips to asserting a COERCED 200.
+      expect(updates.every((a) => a.OnDemandThroughput === undefined)).toBe(true);
+    });
+
+    it('a ceiling-only edit under PAY_PER_REQUEST fires NO op (go-to-k/cdkd#3287, the shape the two arms above cannot see)', async () => {
+      // THE RESIDUAL the go-to-k/cdkd#3291 test re-review measured (probe P3).
+      // The two arms above force an op to exist with a CAPACITY change, which
+      // is what makes them non-vacuous -- but it also means they only watch an
+      // UNGATED go-to-k/cdkd#3287 fix. A fix gated to the on-demand shape
+      // (`if (!gsi.ProvisionedThroughput && gsi.OnDemandThroughput)`) wires
+      // nothing on a PROVISIONED fixture, so it left all 9247 cases green.
+      //
+      // This case watches that shape directly: TODAY a ceiling-only edit on a
+      // live index under PAY_PER_REQUEST emits NO GSI op at all -- which IS
+      // go-to-k/cdkd#3287 -- so the count is pinned at ZERO. A gated fix makes
+      // an op appear and reds this, which is the point; it then flips to
+      // asserting the op carries a COERCED 200 rather than the declared '200'.
+      primeGeneric({ billingMode: 'PAY_PER_REQUEST', indexes: [LIVE_GSI('gsi1')] });
+      const desired = {
+        IndexName: 'gsi1',
+        KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+        Projection: { ProjectionType: 'ALL' },
+      };
+      await provider.update(
+        'L',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          TableName: TABLE_NAME,
+          BillingMode: 'PAY_PER_REQUEST',
+          GlobalSecondaryIndexes: [
+            { ...desired, OnDemandThroughput: { MaxReadRequestUnits: '200' } },
+          ],
+        },
+        {
+          TableName: TABLE_NAME,
+          BillingMode: 'PAY_PER_REQUEST',
+          GlobalSecondaryIndexes: [
+            { ...desired, OnDemandThroughput: { MaxReadRequestUnits: 50 } },
+          ],
+        }
+      );
+      const ops = findCalls(UpdateTableCommand).flatMap(
+        (c) => c.input.GlobalSecondaryIndexUpdates ?? []
+      );
+      expect(ops).toEqual([]);
+    });
+
+    it('the ADOPTED-REPAIR update action carries no ceiling either (go-to-k/cdkd#3287, arm 2)', async () => {
+      // THE SECOND ARM, which the case above cannot reach: here the index is
+      // LIVE but ABSENT from the recorded previous side, so its Create is
+      // skipped and the difference repaired by an Update built at a different
+      // site. Wiring the member uncoerced into THIS arm left the whole suite
+      // green, so a future go-to-k/cdkd#3287 fix touching only it would have
+      // landed silently.
+      const adopted = await gsiUpdateOps(
+        [{ ...cfnGsi('gsi1', '9', '4'), OnDemandThroughput: { MaxReadRequestUnits: '200' } }],
+        [],
+        {
+          indexes: [
+            {
+              IndexName: 'gsi1',
+              IndexStatus: 'ACTIVE',
+              ProvisionedThroughput: { ReadCapacityUnits: 3, WriteCapacityUnits: 3 },
+            },
+          ],
+        }
+      );
+      expect(warnings()).toContain('already exists in AWS');
+      expect(adopted.length).toBeGreaterThan(0);
+      expect(adopted.every((a) => a.OnDemandThroughput === undefined)).toBe(true);
+    });
+
+    it('site 4 update (GSI Create action): coerces the ceiling of a newly added index', async () => {
+      // The per-index twin of site 3 — with only the create path coerced, ONE
+      // template would succeed on a fresh create and be rejected by AWS when
+      // the same index was added by a later update.
+      primeGeneric({ billingMode: 'PAY_PER_REQUEST' });
+      await provider.update(
+        'L',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          TableName: TABLE_NAME,
+          BillingMode: 'PAY_PER_REQUEST',
+          GlobalSecondaryIndexes: [
+            {
+              IndexName: 'gsi2',
+              KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+              Projection: { ProjectionType: 'ALL' },
+              OnDemandThroughput: { MaxReadRequestUnits: '100', MaxWriteRequestUnits: '0x7' },
+            },
+          ],
+        },
+        { TableName: TABLE_NAME, BillingMode: 'PAY_PER_REQUEST', GlobalSecondaryIndexes: [] }
+      );
+
+      const actions = findCalls(UpdateTableCommand).flatMap(
+        (c) => c.input.GlobalSecondaryIndexUpdates ?? []
+      );
+      const created = actions.find((op) => op.Create)?.Create;
+      expect(created?.OnDemandThroughput).toEqual({ MaxReadRequestUnits: 100 });
+      expect(warnings()).toContain('OnDemandThroughput.MaxWriteRequestUnits');
+      expect(warnings()).toContain('gsi2');
+    });
+
+    it('site 4 update (GSI Create action): survives a NUMERIC IndexName with a masker in play', async () => {
+      // `indexScopeAt`'s guard, exercised through the NEW eager scope this
+      // change adds: `IndexName: 2024` is an unchecked cast off the template,
+      // and the real masker's `String.prototype.replace` THROWS on a number.
+      primeGeneric({ billingMode: 'PAY_PER_REQUEST' });
+      await expect(
+        provider.update(
+          'L',
+          TABLE_NAME,
+          RESOURCE_TYPE,
+          {
+            TableName: TABLE_NAME,
+            BillingMode: 'PAY_PER_REQUEST',
+            GlobalSecondaryIndexes: [
+              {
+                IndexName: 2024,
+                KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+                Projection: { ProjectionType: 'ALL' },
+                OnDemandThroughput: { MaxReadRequestUnits: ' 100 ' },
+              },
+            ],
+          },
+          { TableName: TABLE_NAME, BillingMode: 'PAY_PER_REQUEST', GlobalSecondaryIndexes: [] },
+          // A non-empty secret bag is what makes the masker a real
+          // `String.replace` call rather than the identity default.
+          { maskSecrets: (text: string) => text.replace(/s3cr3t/g, '<redacted>') }
+        )
+      ).resolves.not.toThrow();
+      expect(warnings()).toContain('<unnamed>');
+      expect(warnings()).toContain(ON_DEMAND);
+    });
+  });
 });
