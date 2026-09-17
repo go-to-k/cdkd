@@ -56,6 +56,7 @@ import {
   recordCrossStackExpression,
   isSecretExpressionByVerdictOrSpelling,
   recordResolvedPair,
+  recordIntrinsicLeafResolution,
   isSingleDynamicReferenceToken,
   inheritedParameterExpression,
   clearRecoverableMaskedOutputs,
@@ -66,6 +67,8 @@ import {
   errorCauseChain,
   MIN_NEEDLE_LENGTH,
   SECRET_MASK,
+  type DynamicReferenceSubstitution,
+  type IntrinsicLeafResolution,
   type RecordedSecretValues,
 } from './secret-redaction.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
@@ -836,6 +839,18 @@ function withoutProducerRegions(context: ResolverContext | undefined): ResolverC
 interface LogTwin {
   readonly result: string;
   readonly twin: string;
+}
+
+/**
+ * A dynamic-reference pass over one string: its {@link LogTwin}, every token
+ * it REPLACED with the verdict that replacement took, and whether it replaced
+ * every token it met (issue [#3156](https://github.com/go-to-k/cdkd/issues/3156)).
+ * `resolveJoin` / `resolveSub` assemble these into the object's
+ * `IntrinsicLeafResolution`.
+ */
+interface DynamicReferencePass extends LogTwin {
+  readonly substitutions: readonly DynamicReferenceSubstitution[];
+  readonly complete: boolean;
 }
 
 /**
@@ -3816,14 +3831,17 @@ export class IntrinsicFunctionResolver {
       return await this.resolveGetAtt(obj['Fn::GetAtt'] as [string, unknown] | string, context);
     }
 
+    // Both pass the intrinsic OBJECT itself, the key its resolution record is
+    // stored under for this pass (issue #3156).
     if ('Fn::Join' in obj) {
-      return await this.resolveJoin(obj['Fn::Join'] as [string, unknown], context);
+      return await this.resolveJoin(obj['Fn::Join'] as [string, unknown], context, obj);
     }
 
     if ('Fn::Sub' in obj) {
       return await this.resolveSub(
         obj['Fn::Sub'] as string | [string, Record<string, unknown>],
-        context
+        context,
+        obj
       );
     }
 
@@ -6539,7 +6557,8 @@ export class IntrinsicFunctionResolver {
    */
   private async resolveJoin(
     joinArgs: [string, unknown],
-    context: ResolverContext
+    context: ResolverContext,
+    source: object
   ): Promise<string> {
     const [delimiter, rawValues] = joinArgs;
 
@@ -6576,11 +6595,22 @@ export class IntrinsicFunctionResolver {
     // parts resolve concurrently, and a product checked as soon as it settled
     // would miss a secret a sibling part records later in the same Join.
     const literalList = Array.isArray(rawValues);
+    // Each part also returns its `input` text and its own pass's evidence
+    // (issue #3156), read only after the drain and in part order, so the
+    // record does not depend on which part settled first.
     const resolvedParts = await allSettledKeepingFirstRejection(
       values.map(
         async (
           v
-        ): Promise<LogTwin & { readonly product: boolean; readonly raw?: { value: unknown } }> => {
+        ): Promise<
+          LogTwin & {
+            readonly product: boolean;
+            readonly raw?: { value: unknown };
+            readonly input: string;
+            readonly substitutions: readonly DynamicReferenceSubstitution[];
+            readonly complete: boolean;
+          }
+        > => {
           if (typeof v === 'string') {
             // An element of a list an intrinsic returned can still spell a
             // reference after that intrinsic resolved it (a resolved value that
@@ -6596,12 +6626,27 @@ export class IntrinsicFunctionResolver {
                   this.logTwinOfProduct({ result: v, twin: v }, context).twin,
                   context
                 )
-              : { result: v, twin: v };
-            return { ...part, product: !literalList };
+              : { result: v, twin: v, substitutions: [], complete: true };
+            return {
+              result: part.result,
+              twin: part.twin,
+              product: !literalList,
+              input: v,
+              substitutions: part.substitutions,
+              complete: part.complete,
+            };
           }
           const raw = await this.resolveValue(v, context);
           const resolved = String(raw);
-          return { result: resolved, twin: resolved, product: true, raw: { value: raw } };
+          return {
+            result: resolved,
+            twin: resolved,
+            product: true,
+            raw: { value: raw },
+            input: resolved,
+            substitutions: [],
+            complete: true,
+          };
         }
       ),
       (pending) => this.warnAbandonedParts(pending)
@@ -6618,13 +6663,24 @@ export class IntrinsicFunctionResolver {
 
     let result = parts.map((part) => part.result).join(delimiter);
     let twin = parts.map((part) => part.twin).join(delimiter);
+    const substitutions = resolvedParts.flatMap((part) => part.substitutions);
+    let complete = resolvedParts.every((part) => part.complete);
     // Resolve any dynamic references in the joined result (secret refs are
     // left unresolved per-reference when skipDynamicReferences is set). The
     // CDK `secretValueFromJson` shape completes its token only HERE, so this
     // substitution is the write the twin most needs to see.
     if (result.includes('{{resolve:')) {
-      ({ result, twin } = await this.resolveDynamicReferencesWithLogTwin(result, twin, context));
+      const joined = await this.resolveDynamicReferencesWithLogTwin(result, twin, context);
+      ({ result, twin } = joined);
+      substitutions.push(...joined.substitutions);
+      complete &&= joined.complete;
     }
+    this.recordLeafResolution(context, source, {
+      input: resolvedParts.map((part) => part.input).join(delimiter),
+      output: result,
+      substitutions,
+      complete,
+    });
     this.rememberLogTwin(context, result, twin);
     this.logger.debug(
       `Resolved Fn::Join: ${this.maskSecretsForLog(this.logTwinText(result, twin, context), context)}`
@@ -6782,7 +6838,8 @@ export class IntrinsicFunctionResolver {
    */
   private async resolveSub(
     subArgs: string | [string, Record<string, unknown>],
-    context: ResolverContext
+    context: ResolverContext,
+    source: object
   ): Promise<string> {
     let template: string;
     // Resolved INTO A FRESH OBJECT, never back into the caller's map (issue
@@ -6818,6 +6875,13 @@ export class IntrinsicFunctionResolver {
     // with no entry here (an intrinsic) is a resolution product, masked whole
     // at the replacement below when it is a recorded secret.
     const variableTwins: Record<string, string> = Object.create(null) as Record<string, string>;
+    // Each STRING variable's own dynamic-reference pass (issue #3156), keyed
+    // like the two maps above. Read per placeholder USE below, so a variable
+    // the template never names contributes nothing to the object's record.
+    const variablePasses: Record<string, DynamicReferencePass> = Object.create(null) as Record<
+      string,
+      DynamicReferencePass
+    >;
 
     if (Array.isArray(subArgs)) {
       const [templateString, variableMap] = subArgs;
@@ -6850,9 +6914,10 @@ export class IntrinsicFunctionResolver {
           // and a refusal must abort this walk too.
           const resolved = val.includes('{{resolve:')
             ? await this.resolveDynamicReferencesWithLogTwin(val, val, context)
-            : { result: val, twin: val };
+            : { result: val, twin: val, substitutions: [], complete: true };
           variables[key] = resolved.result;
           variableTwins[key] = resolved.twin;
+          variablePasses[key] = resolved;
         } else {
           // Same sequential-walk defect as the object bag (issue
           // go-to-k/cdkd#3218), found beside it: `Fn::Sub: ["...", {A: {Ref:
@@ -6881,7 +6946,14 @@ export class IntrinsicFunctionResolver {
     // `twin` is the replacement's LOG TWIN (issue #3100); an entry no secret
     // can reach (an escape, an empty `${}`, a pseudo parameter, a kept
     // placeholder) carries its replacement as its own twin.
-    const replacements: Array<{ match: string; replacement: string; twin: string }> = [];
+    // `pass` is set only for a STRING variable: its own dynamic-reference pass
+    // (issue #3156).
+    const replacements: Array<{
+      match: string;
+      replacement: string;
+      twin: string;
+      pass?: DynamicReferencePass;
+    }> = [];
     // Match BOTH the literal-escape form `${!X}` and the variable form `${X}`.
     // The CloudFormation rule: a `${` immediately followed by `!` is an escape —
     // it renders as the literal text `${X}` with NO variable substitution. We
@@ -6910,6 +6982,7 @@ export class IntrinsicFunctionResolver {
       let replacement: string;
       // Set only by the arms that RESOLVED something (issue #3100).
       let twinReplacement: string | undefined;
+      let pass: DynamicReferencePass | undefined;
 
       // Check explicit variables first
       if (varNameStr in variables) {
@@ -6918,6 +6991,7 @@ export class IntrinsicFunctionResolver {
           varNameStr in variableTwins
             ? variableTwins[varNameStr]
             : this.productLogTwin(variables[varNameStr], context);
+        if (varNameStr in variablePasses) pass = variablePasses[varNameStr];
       } else {
         // Check if it's a pseudo parameter
         const pseudoValue = await this.resolvePseudoParameter(varNameStr, context);
@@ -7003,7 +7077,12 @@ export class IntrinsicFunctionResolver {
         }
       }
 
-      replacements.push({ match: match[0], replacement, twin: twinReplacement ?? replacement });
+      replacements.push({
+        match: match[0],
+        replacement,
+        twin: twinReplacement ?? replacement,
+        ...(pass ? { pass } : {}),
+      });
     }
 
     // Apply all replacements in a SINGLE left-to-right pass over the same
@@ -7028,11 +7107,25 @@ export class IntrinsicFunctionResolver {
       return entry ? entry.twin : whole;
     });
 
+    // The record (issue #3156). `input` is the substituted template, the text
+    // the final pass below starts from; the replacements a USED string
+    // variable made count ahead of that pass's own. A variable replacement
+    // leaves its plaintext rather than its token in `input`, so the object
+    // records one substitution and an `input` spelling that token only when
+    // the variables replaced nothing and the final pass replaced exactly one.
+    const input = result;
+    const substitutions = replacements.flatMap((entry) => entry.pass?.substitutions ?? []);
+    let complete = replacements.every((entry) => entry.pass?.complete ?? true);
+
     // Resolve any dynamic references in the substituted result (secret refs are
     // left unresolved per-reference when skipDynamicReferences is set).
     if (result.includes('{{resolve:')) {
-      ({ result, twin } = await this.resolveDynamicReferencesWithLogTwin(result, twin, context));
+      const substituted = await this.resolveDynamicReferencesWithLogTwin(result, twin, context);
+      ({ result, twin } = substituted);
+      substitutions.push(...substituted.substitutions);
+      complete &&= substituted.complete;
     }
+    this.recordLeafResolution(context, source, { input, output: result, substitutions, complete });
     this.rememberLogTwin(context, result, twin);
     this.logger.debug(
       `Resolved Fn::Sub: ${this.maskSecretsForLog(this.logTwinText(result, twin, context), context)}`
@@ -10021,7 +10114,11 @@ export class IntrinsicFunctionResolver {
    * not the bag holds pairs. Where the middle RE-WRAPS it (an `Fn::Join` around
    * the `Ref`) the middle registers its own twin, and the hand-off still drops
    * a bag holding no pairs (it passes `inheritedSecrets` only when `size` is
-   * nonzero). Both are issue #3156.
+   * nonzero). What reaches a grandchild instead is the parent's WHOLE-VALUE
+   * entry: the middle's `{ Ref }` copies it into the middle's bag, which is then
+   * non-empty and handed down. Issue #3156 made the carry record that entry for
+   * the intrinsic frames it used to refuse; a frame it still refuses (listed on
+   * `recordNestedStackParameterExpressions`) keeps both gaps.
    *
    * The registry is keyed by VALUE, and `splitLogTwins`' unaligned arm
    * registers every piece, public ones included. So a child `Fn::Base64` over a
@@ -10070,6 +10167,22 @@ export class IntrinsicFunctionResolver {
     const registered = this.registeredLogTwin(part.result, context);
     if (registered === undefined || registered === part.twin) return part;
     return { result: part.result, twin: part.twin === part.result ? registered : SECRET_MASK };
+  }
+
+  /**
+   * Record the `Fn::Join` / `Fn::Sub` object `source`'s own resolution under
+   * the pass bag the nested-stack carry reads (issue
+   * [#3156](https://github.com/go-to-k/cdkd/issues/3156)). The key is the
+   * object `resolveValue` dispatched on, and a context with no bag has no pass
+   * to scope it to.
+   */
+  private recordLeafResolution(
+    context: ResolverContext,
+    source: object,
+    resolution: IntrinsicLeafResolution
+  ): void {
+    if (context.recordedSecretValues === undefined) return;
+    recordIntrinsicLeafResolution(context.recordedSecretValues, source, resolution);
   }
 
   /**
@@ -10266,11 +10379,16 @@ export class IntrinsicFunctionResolver {
     // lines only: `logTwin` stays the token itself, so the twin this method
     // registers for its result is the one it registered before.
     inherited?: { tokenLogText: string; nameLogText: (name: string) => string }
-  ): Promise<LogTwin> {
+  ): Promise<DynamicReferencePass> {
     // Match all {{resolve:...}} patterns
     const pattern = /\{\{resolve:([^}]+)\}\}/g;
     let result = value;
     let twin = logTwin;
+    // Issue #3156: every replacement below, in order, with its own verdict;
+    // `complete` drops at each arm that leaves a token in place, the recovery
+    // arm included.
+    const substitutions: DynamicReferenceSubstitution[] = [];
+    let complete = true;
     let match: RegExpExecArray | null;
 
     // Collect all matches first (to avoid issues with modifying string during iteration)
@@ -10347,6 +10465,7 @@ export class IntrinsicFunctionResolver {
         // through to the lookup below, which asks for the type WITHOUT decrypting.
         // (GHSA fix + issue #1901.)
         if (isKnownSecret && context?.skipDynamicReferences) {
+          complete = false;
           continue;
         }
 
@@ -10457,6 +10576,16 @@ export class IntrinsicFunctionResolver {
           // otherwise splice the matched expression back into itself.
           result = result.replace(fullMatch, () => foreign.result);
           twin = twin.replace(fullMatch, () => foreign.twin);
+          // ONE logical replacement, carrying the verdict the sibling's own
+          // replacement took. A sibling that left its token, or replaced other
+          // than exactly this one, makes the pass incomplete.
+          const [delegated] = foreign.substitutions;
+          substitutions.push({
+            token: fullMatch,
+            value: foreign.result,
+            secret: foreign.substitutions.length === 1 && delegated!.secret,
+          });
+          if (!foreign.complete || foreign.substitutions.length !== 1) complete = false;
           continue;
         }
 
@@ -10517,6 +10646,7 @@ export class IntrinsicFunctionResolver {
           twin = twin.replace(fullMatch, () =>
             cached.secret && cached.value ? SECRET_MASK : cached.value
           );
+          substitutions.push({ token: fullMatch, value: cached.value, secret: cached.secret });
           continue;
         }
 
@@ -10576,6 +10706,7 @@ export class IntrinsicFunctionResolver {
               // unresolved, exactly as the secretsmanager skip above does — now
               // that the type is known, later passes short-circuit before the
               // lookup.
+              complete = false;
               continue;
             }
           }
@@ -10641,6 +10772,7 @@ export class IntrinsicFunctionResolver {
               context
             )
           );
+          complete = false;
           continue;
         }
 
@@ -10690,6 +10822,7 @@ export class IntrinsicFunctionResolver {
         // STRING is unsafe here.
         result = result.replace(fullMatch, () => resolved);
         twin = twin.replace(fullMatch, () => (isSecret && resolved ? SECRET_MASK : resolved));
+        substitutions.push({ token: fullMatch, value: resolved, secret: isSecret });
       } catch (err) {
         // No bag means the caller did not opt in: keep the pre-#3181 abort.
         if (context?.abandonedResolutions === undefined) throw err;
@@ -10742,7 +10875,9 @@ export class IntrinsicFunctionResolver {
             return out;
           })
         );
-        // Leave the token in BOTH strings, unreplaced and still paired.
+        // Leave the token in BOTH strings, unreplaced and still paired -- and
+        // so the pass is not complete (issue #3156).
+        complete = false;
         continue;
       }
     }
@@ -10754,7 +10889,7 @@ export class IntrinsicFunctionResolver {
     // (`Fn::Select`, `Fn::If`, `Fn::ImportValue`, ...) still masks where the
     // substitution wrote. A per-caller registration missed each route in turn.
     if (context) this.rememberLogTwin(context, result, twin);
-    return { result, twin };
+    return { result, twin, substitutions, complete };
   }
 
   /**

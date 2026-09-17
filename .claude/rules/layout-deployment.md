@@ -332,8 +332,8 @@ Index of every area: [code-layout.md](code-layout.md).
   into the context's `recordedSecretValues` at the moment a `{Ref: <Param>}`
   resolves to a value carrying that plaintext — whole-value at any length, or
   a substring at/above `MIN_NEEDLE_LENGTH`, mirroring
-  `redactSecretsForState`'s two arms. A sub-floor LITERAL frame arrives as
-  a whole value (#2745), by name to its own frame (#3079). **RECORDED AT RESOLUTION TIME, NOT
+  `redactSecretsForState`'s two arms. A sub-floor frame (literal #2745, intrinsic
+  #3156) arrives whole, by name to its own frame (#3079). **RECORDED AT RESOLUTION TIME, NOT
   PRE-SEEDED** (issue #2087): pre-loading every child resource's map spliced
   the expression into an UNRELATED resource's literal that merely contained
   the plaintext as a substring (`my-production-bucket` vs secret

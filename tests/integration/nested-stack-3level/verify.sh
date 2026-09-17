@@ -40,6 +40,20 @@
 #           live values the plaintext, the tree diff-clean, and every state
 #           version swept.
 #
+#   #3156 - a 2-character secret in each intrinsic frame the sub-floor carry
+#           used to REFUSE, on a SEPARATE branch (root -> Framed ->
+#           FramedGrandchild) whose middle owns nothing but its nested-stack
+#           row: `MidPinSsm` spells an `ssm` SecureString token with the
+#           account `Ref` inside it, `MidPinOut` a secretsmanager token with
+#           the region `Ref` OUTSIDE it. The middle hands each down PASS-THROUGH
+#           (`{Ref}`) and RE-WRAPPED (`m-` + the `Ref`). The root row, the
+#           middle row and every grandchild leaf must hold the framed
+#           EXPRESSION, the grandchild's parameter and `Ref` debug lines must
+#           be present and masked whole, and no line may carry a framed
+#           plaintext (its `Fn::Join` lines included). Before the fix the root
+#           row kept `MidPinOut` in plaintext, and the middle row and the
+#           grandchild kept both.
+#
 # Run via: /run-integ nested-stack-3level
 #         or: bash tests/integration/nested-stack-3level/verify.sh
 
@@ -94,8 +108,10 @@ STACK="CdkdNestedStack3LevelExample"
 CHILD="${STACK}~Child"
 GRANDCHILD="${STACK}~Child~Grandchild"
 GREATGRANDCHILD="${STACK}~Child~Grandchild~GreatGrandchild"
+FRAMED="${STACK}~Framed"
+FRAMED_GC="${STACK}~Framed~FramedGrandchild"
 CHANGED_VALUE="cdkd-3level-ggc-CHANGED"
-LEVELS=("${STACK}" "${CHILD}" "${GRANDCHILD}" "${GREATGRANDCHILD}")
+LEVELS=("${STACK}" "${CHILD}" "${GRANDCHILD}" "${GREATGRANDCHILD}" "${FRAMED}" "${FRAMED_GC}")
 
 # The #3094 secret. Created OUT OF BAND (cdkd never manages it); the name is
 # kept in sync with `lib/nested-stack-3level.ts`. The plaintext is UNUSUAL on
@@ -105,6 +121,28 @@ SECRET_NAME="cdkd-3level-secret-${ACCOUNT_ID}"
 HANDOFF_PW_VALUE="h4ndoff-3level-pl4intext-3094"
 HANDOFF_EXPR_A="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:handoff::}}"
 HANDOFF_EXPR_B="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:handoff:AWSCURRENT:}}"
+
+# The #3156 arm. Two 2-character secrets, each in a frame kept in sync with
+# `lib/nested-stack-3level.ts`: the `pin` key of the secret above, and an
+# out-of-band SecureString parameter. Their bare values are ungreppable, so
+# every scan greps the FRAMED plaintext instead.
+PIN_SSM_PARAM_NAME="cdkd-3level-pinssm-${ACCOUNT_ID}"
+PIN_SSM_VALUE="Jx"
+PIN_OUT_VALUE="Zq"
+PIN_SSM_FRAMED="pin3156s:${PIN_SSM_VALUE}"
+PIN_OUT_FRAMED="pin3156o:${PIN_OUT_VALUE}@${AWS_REGION}"
+PIN_SSM_EXPR="pin3156s:{{resolve:ssm:${PIN_SSM_PARAM_NAME}}}"
+PIN_OUT_EXPR="pin3156o:{{resolve:secretsmanager:${SECRET_NAME}:SecretString:pin}}@${AWS_REGION}"
+for v in "${PIN_SSM_VALUE}" "${PIN_OUT_VALUE}"; do
+  if [[ -z "${v}" || ${#v} -ge 4 ]]; then
+    echo "FAIL: premise: a #3156 secret must be 1-3 characters, or the needle mask covers it and the arm tests nothing" >&2
+    exit 1
+  fi
+done
+if [[ "${PIN_SSM_VALUE}" == "${PIN_OUT_VALUE}" ]]; then
+  echo "FAIL: premise: the two #3156 secrets must differ, or one frame's entry masks the other and that half is vacuous" >&2
+  exit 1
+fi
 
 # Collected physical ids (filled during the post-deploy state read) so the
 # post-destroy sweep can confirm each one is gone on AWS.
@@ -118,6 +156,7 @@ cleanup() {
   ${CDKD} destroy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1 || true
   aws secretsmanager delete-secret --secret-id "${SECRET_NAME}" \
     --force-delete-without-recovery --region "${AWS_REGION}" >/dev/null 2>&1 || true
+  aws ssm delete-parameter --name "${PIN_SSM_PARAM_NAME}" --region "${AWS_REGION}" >/dev/null 2>&1 || true
   # NONCURRENT-only here: this runs from the failure / INT / TERM traps, where
   # a live state.json may be the only record of standing resources. The
   # success path below does the full sweep once the cascade is asserted.
@@ -163,7 +202,7 @@ created=0
 create_err=""
 for attempt in 1 2 3 4 5 6; do
   if create_err=$(aws secretsmanager create-secret --name "${SECRET_NAME}" \
-       --secret-string "{\"handoff\":\"${HANDOFF_PW_VALUE}\"}" \
+       --secret-string "{\"handoff\":\"${HANDOFF_PW_VALUE}\",\"pin\":\"${PIN_OUT_VALUE}\"}" \
        --region "${AWS_REGION}" 2>&1 >/dev/null); then
     created=1
     break
@@ -172,6 +211,16 @@ for attempt in 1 2 3 4 5 6; do
 done
 if [[ ${created} -ne 1 ]]; then
   echo "FAIL: could not create the out-of-band secret ${SECRET_NAME} after 6 attempts; last error: ${create_err}" >&2
+  exit 1
+fi
+# The #3156 arm's SecureString. A plain `String` would be public config the
+# resolver keeps resolved, and the `ssm` half of the arm would test nothing.
+aws ssm put-parameter --name "${PIN_SSM_PARAM_NAME}" --type SecureString \
+  --value "${PIN_SSM_VALUE}" --overwrite --region "${AWS_REGION}" >/dev/null
+PIN_SSM_TYPE=$(aws ssm get-parameter --name "${PIN_SSM_PARAM_NAME}" --region "${AWS_REGION}" \
+  --query 'Parameter.Type' --output text)
+if [[ "${PIN_SSM_TYPE}" != "SecureString" ]]; then
+  echo "FAIL: premise: ${PIN_SSM_PARAM_NAME} is a ${PIN_SSM_TYPE}, not a SecureString" >&2
   exit 1
 fi
 
@@ -189,10 +238,13 @@ echo "==> Step 1: deploy ${STACK} (root -> Child -> Grandchild -> GreatGrandchil
 # deploy still leaves its output in the log (scanned first) instead of
 # aborting with nothing to read.
 scan_output() { # scan_output <label> <text> -- FAIL (without echoing) on the plaintext
-  if grep -qF "${HANDOFF_PW_VALUE}" <<<"$2"; then
-    echo "FAIL: $1 printed the secret plaintext" >&2
-    exit 1
-  fi
+  local plaintext
+  for plaintext in "${HANDOFF_PW_VALUE}" "${PIN_SSM_FRAMED}" "${PIN_OUT_FRAMED}"; do
+    if grep -qF "${plaintext}" <<<"$2"; then
+      echo "FAIL: $1 printed a secret plaintext" >&2
+      exit 1
+    fi
+  done
 }
 set +e
 DEPLOY_OUT=$(${CDKD} deploy ${STACK} \
@@ -202,6 +254,27 @@ DEPLOY_OUT=$(${CDKD} deploy ${STACK} \
 DEPLOY_RC=$?
 set -e
 scan_output "cdkd deploy --verbose" "${DEPLOY_OUT}"
+# #3156: masked_whole <text> <prefix> -- 0 when some line holds <prefix> and
+# EVERY line holding it ends in exactly `<prefix>***`; 1 when one does not; 2
+# when none holds it. Prints nothing: a line that is not masked whole may
+# carry a bare 2-character secret, which the framed-value scan above cannot
+# see. Every such line is checked BEFORE the output is echoed below.
+masked_whole() {
+  awk -v p="$2" 'index($0, p) { n++; if (substr($0, length($0) - length(p) - 2) != p "***") bad = 1 }
+    END { exit n == 0 ? 2 : (bad ? 1 : 0) }' <<<"$1"
+}
+GC_LINE_PREFIXES=()
+for name in GcSsmPass GcSsmWrap GcOutPass GcOutWrap; do
+  GC_LINE_PREFIXES+=("Parameter ${name}: using user-provided value " "Resolved Ref to parameter: ${name} -> ")
+done
+for prefix in "${GC_LINE_PREFIXES[@]}"; do
+  rc=0
+  masked_whole "${DEPLOY_OUT}" "${prefix}" || rc=$?
+  if [[ ${rc} -eq 1 ]]; then
+    echo "FAIL: #3156: a '${prefix}...' line is not masked whole (output withheld: it may carry the secret)" >&2
+    exit 1
+  fi
+done
 echo "${DEPLOY_OUT}"
 if [[ ${DEPLOY_RC} -ne 0 ]]; then
   echo "FAIL: cdkd deploy exited ${DEPLOY_RC}" >&2
@@ -212,6 +285,22 @@ if ! grep -qF "${STACK}" <<<"${DEPLOY_OUT}"; then
   exit 1
 fi
 echo "  OK: the deploy's --verbose output carries no plaintext"
+
+# #3156: the grandchild's lines per framed parameter, PRESENT and masked whole
+# -- the whole-value entry the root's carry records reaches the grandchild
+# through the middle's bag. Presence is what keeps the scan above from passing
+# on a grandchild that stopped logging them. Its `Fn::Join` lines are masked
+# whole too, so they name nothing this arm could anchor a presence check on;
+# the negative scan above is what covers their text.
+for prefix in "${GC_LINE_PREFIXES[@]}"; do
+  rc=0
+  masked_whole "${DEPLOY_OUT}" "${prefix}" || rc=$?
+  if [[ ${rc} -ne 0 ]]; then
+    echo "FAIL: #3156: no '${prefix}***' line in the deploy's --verbose output (masked_whole rc=${rc})" >&2
+    exit 1
+  fi
+done
+echo "  OK: #3156: the grandchild's parameter and Ref lines are present and masked whole"
 
 # --------------------------------------------------------------------
 # Step 2: one state file per level with correct parentStack/parentLogicalId.
@@ -262,20 +351,22 @@ assert_level "${STACK}"           "null"            "null"
 assert_level "${CHILD}"           "${STACK}"        "Child"
 assert_level "${GRANDCHILD}"      "${CHILD}"        "Grandchild"
 assert_level "${GREATGRANDCHILD}" "${GRANDCHILD}"   "GreatGrandchild"
+assert_level "${FRAMED}"          "${STACK}"        "Framed"
+assert_level "${FRAMED_GC}"       "${FRAMED}"       "FramedGrandchild"
 
-# Sanity: we should have collected 6 SSM params (RootRef, Child.Param,
+# Sanity: we should have collected 10 SSM params (RootRef, Child.Param,
 # Grandchild.Param, Grandchild.SecretA, Grandchild.SecretB,
-# GreatGrandchild.Param) and 2 SNS topics (RootTopic, Grandchild.Topic)
-# across the tree.
-if [[ ${#SSM_PARAM_NAMES[@]} -ne 6 ]]; then
-  echo "FAIL: expected 6 SSM parameters across the tree, found ${#SSM_PARAM_NAMES[@]}: ${SSM_PARAM_NAMES[*]}"
+# GreatGrandchild.Param, and the #3156 grandchild's four consumers) and 2 SNS
+# topics (RootTopic, Grandchild.Topic) across the tree.
+if [[ ${#SSM_PARAM_NAMES[@]} -ne 10 ]]; then
+  echo "FAIL: expected 10 SSM parameters across the tree, found ${#SSM_PARAM_NAMES[@]}: ${SSM_PARAM_NAMES[*]}"
   exit 1
 fi
 if [[ ${#SNS_TOPIC_ARNS[@]} -ne 2 ]]; then
   echo "FAIL: expected 2 SNS topics across the tree, found ${#SNS_TOPIC_ARNS[@]}: ${SNS_TOPIC_ARNS[*]}"
   exit 1
 fi
-echo "  OK: 4 state files, 6 SSM params + 2 SNS topics collected across all levels"
+echo "  OK: 6 state files, 10 SSM params + 2 SNS topics collected across all levels"
 
 # --------------------------------------------------------------------
 # Step 3: every level's REAL AWS resource exists.
@@ -321,10 +412,12 @@ jq_of() { # jq_of <json> <expr> -> raw value
   echo "$1" | jq -r "$2"
 }
 assert_eq() { # assert_eq <label> <actual> <expected> (values MASKED on mismatch)
+  # LENGTHS only: the #3156 secrets are two characters, so any prefix of a
+  # mismatched value can be the whole plaintext.
   if [[ "$2" != "$3" ]]; then
     echo "FAIL: $1" >&2
-    echo "      expected: ${3:0:2}***(len=${#3})" >&2
-    echo "      actual:   ${2:0:2}***(len=${#2})" >&2
+    echo "      expected: ***(len=${#3})" >&2
+    echo "      actual:   ***(len=${#2})" >&2
     exit 1
   fi
   echo "  OK: $1"
@@ -376,12 +469,85 @@ assert_eq "live SecretB holds the resolved plaintext" \
 # (#3102 review, the gone-probe shape one layer over).
 for lvl in "${LEVELS[@]}"; do
   lvl_json=$(fetch_state "${lvl}") || { echo "FAIL: could not fetch the state file of '${lvl}' for the plaintext scan" >&2; exit 1; }
-  if grep -qF "${HANDOFF_PW_VALUE}" <<<"${lvl_json}"; then
-    echo "FAIL: state.json of '${lvl}' carries the secret plaintext" >&2
-    exit 1
-  fi
+  for plaintext in "${HANDOFF_PW_VALUE}" "${PIN_SSM_FRAMED}" "${PIN_OUT_FRAMED}"; do
+    if grep -qF "${plaintext}" <<<"${lvl_json}"; then
+      echo "FAIL: state.json of '${lvl}' carries a secret plaintext" >&2
+      exit 1
+    fi
+  done
 done
 echo "  OK: no level's state.json carries the plaintext"
+
+# --------------------------------------------------------------------
+# Step 3c (#3156): each refused frame is carried, root row -> middle row ->
+# grandchild leaf, pass-through and re-wrapped.
+# --------------------------------------------------------------------
+echo ""
+echo "==> Step 3c: #3156 -- sub-floor secrets in the intrinsic frames the carry used to refuse"
+# `cdkd deploy` re-synthesized `cdk.out`, so these read what Step 1 deployed.
+ROOT_TEMPLATE="cdk.out/${STACK}.template.json"
+[[ -f "${ROOT_TEMPLATE}" ]] || { echo "FAIL: premise: ${ROOT_TEMPLATE} is missing after the deploy" >&2; exit 1; }
+# PREMISES, from the synthesized templates: the two spellings are the refused
+# ones, and the middle's nested-stack row spells no reference of its own, so
+# its bag holds nothing the root's carry did not hand it.
+assert_eq "premise: the root's Framed row passes down exactly MidPinSsm and MidPinOut" \
+  "$(jq -c '.Resources.Framed.Properties.Parameters | keys' "${ROOT_TEMPLATE}")" '["MidPinOut","MidPinSsm"]'
+assert_eq "premise: MidPinSsm is an Fn::Join whose ONE token spells ssm: with the account Ref inside it" \
+  "$(jq -c '.Resources.Framed.Properties.Parameters.MidPinSsm' "${ROOT_TEMPLATE}")" \
+  '{"Fn::Join":["",["pin3156s:{{resolve:ssm:cdkd-3level-pinssm-",{"Ref":"AWS::AccountId"},"}}"]]}'
+assert_eq "premise: MidPinOut is an Fn::Join whose token is followed by a region Ref OUTSIDE it" \
+  "$(jq -c '.Resources.Framed.Properties.Parameters.MidPinOut' "${ROOT_TEMPLATE}")" \
+  '{"Fn::Join":["",["pin3156o:{{resolve:secretsmanager:cdkd-3level-secret-",{"Ref":"AWS::AccountId"},":SecretString:pin}}@",{"Ref":"AWS::Region"}]]}'
+FRAMED_TEMPLATE="cdk.out/$(jq -r '.Resources.Framed.Metadata["aws:asset:path"] // empty' "${ROOT_TEMPLATE}")"
+[[ -f "${FRAMED_TEMPLATE}" ]] || { echo "FAIL: premise: the Framed nested template was not found (${FRAMED_TEMPLATE})" >&2; exit 1; }
+assert_eq "premise: the middle stack owns only its nested-stack row (and CDK metadata)" \
+  "$(jq -c '[.Resources | to_entries[] | select(.value.Type != "AWS::CDK::Metadata") | .key]' "${FRAMED_TEMPLATE}")" \
+  '["FramedGrandchild"]'
+# Its row's Parameters are EXACTLY the four hand-offs, each a `Ref` to a
+# middle parameter or `m-` joined to one: nothing else in the middle can put a
+# pair into that row's bag.
+assert_eq "premise: the middle's nested-stack row passes down only Refs to its own parameters, bare or m- joined" \
+  "$(jq -c '.Resources.FramedGrandchild.Properties.Parameters' "${FRAMED_TEMPLATE}")" \
+  '{"GcSsmPass":{"Ref":"MidPinSsm"},"GcSsmWrap":{"Fn::Join":["",["m-",{"Ref":"MidPinSsm"}]]},"GcOutPass":{"Ref":"MidPinOut"},"GcOutWrap":{"Fn::Join":["",["m-",{"Ref":"MidPinOut"}]]}}'
+# ...and its only OTHER property is CDK's asset `TemplateURL`, in its exact
+# shape up to the content hash -- the engine resolves the whole row into that
+# bag, so any other property could hold a reference of its own. CDK renders the
+# asset bucket with the account folded in when the stack's env names one (the
+# `cdkd deploy` synth) and through `Fn::Sub` otherwise; both are pinned.
+assert_eq "premise: the middle's nested-stack row carries nothing but Parameters and CDK's asset TemplateURL" \
+  "$(jq --arg region "${AWS_REGION}" --arg account "${ACCOUNT_ID}" '(.Resources.FramedGrandchild.Properties | keys == ["Parameters", "TemplateURL"]) and (.Resources.FramedGrandchild.Properties.TemplateURL["Fn::Join"] as $j | ($j | length == 2) and $j[0] == "" and ($j[1][0:2] == ["https://s3.\($region).", {"Ref": "AWS::URLSuffix"}]) and ((($j[1] | length == 3) and ($j[1][2] | type == "string" and test("^/cdk-hnb659fds-assets-\($account)-\($region)/[0-9a-f]{64}\\.json$"))) or (($j[1] | length == 5) and $j[1][2] == "/" and $j[1][3] == {"Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-\($region)"} and ($j[1][4] | type == "string" and test("^/[0-9a-f]{64}\\.json$")))))' "${FRAMED_TEMPLATE}")" "true"
+FRAMED_JSON=$(fetch_state "${FRAMED}")
+FRAMED_GC_JSON=$(fetch_state "${FRAMED_GC}")
+# The ROOT's row: the ssm frame the frame arm already positioned, and the
+# outside-the-token frame only the carry's entry positions.
+assert_eq "root row keeps MidPinSsm as its framed expression" \
+  "$(jq_of "${ROOT_JSON}" '.resources.Framed.properties.Parameters.MidPinSsm')" "${PIN_SSM_EXPR}"
+assert_eq "root row keeps MidPinOut (Ref outside the token) as its framed expression" \
+  "$(jq_of "${ROOT_JSON}" '.resources.Framed.properties.Parameters.MidPinOut')" "${PIN_OUT_EXPR}"
+# The MIDDLE's row, pass-through and re-wrapped.
+assert_eq "middle row keeps GcSsmPass ({Ref}) as the framed expression" \
+  "$(jq_of "${FRAMED_JSON}" '.resources.FramedGrandchild.properties.Parameters.GcSsmPass')" "${PIN_SSM_EXPR}"
+assert_eq "middle row keeps GcSsmWrap (m- + {Ref}) as the framed expression" \
+  "$(jq_of "${FRAMED_JSON}" '.resources.FramedGrandchild.properties.Parameters.GcSsmWrap')" "m-${PIN_SSM_EXPR}"
+assert_eq "middle row keeps GcOutPass ({Ref}) as the framed expression" \
+  "$(jq_of "${FRAMED_JSON}" '.resources.FramedGrandchild.properties.Parameters.GcOutPass')" "${PIN_OUT_EXPR}"
+assert_eq "middle row keeps GcOutWrap (m- + {Ref}) as the framed expression" \
+  "$(jq_of "${FRAMED_JSON}" '.resources.FramedGrandchild.properties.Parameters.GcOutWrap')" "m-${PIN_OUT_EXPR}"
+# The GRANDCHILD's leaves, and the live values they resolved to.
+for name in SsmPass SsmWrap OutPass OutWrap; do
+  case "${name}" in
+    SsmPass) expr="${PIN_SSM_EXPR}"; plain="${PIN_SSM_FRAMED}" ;;
+    SsmWrap) expr="m-${PIN_SSM_EXPR}"; plain="m-${PIN_SSM_FRAMED}" ;;
+    OutPass) expr="${PIN_OUT_EXPR}"; plain="${PIN_OUT_FRAMED}" ;;
+    OutWrap) expr="m-${PIN_OUT_EXPR}"; plain="m-${PIN_OUT_FRAMED}" ;;
+  esac
+  assert_eq "grandchild Framed${name} persists gc- + the framed expression" \
+    "$(jq_of "${FRAMED_GC_JSON}" ".resources.Framed${name}.properties.Value")" "gc-${expr}"
+  live_name="$(jq_of "${FRAMED_GC_JSON}" ".resources.Framed${name}.physicalId")"
+  assert_eq "live Framed${name} holds gc- + the resolved framed value" \
+    "$(aws ssm get-parameter --name "${live_name}" --region "${AWS_REGION}" --query 'Parameter.Value' --output text)" \
+    "gc-${plain}"
+done
 
 # --------------------------------------------------------------------
 # Step 4: recursive diff against the just-deployed tree must be clean.
@@ -399,7 +565,7 @@ if echo "${CLEAN_OUT}" | grep -qE "\[~\]|\[\+\]|\[-\]"; then
   echo "FAIL: recursive diff of a freshly-deployed tree printed change markers"
   exit 1
 fi
-echo "  OK: clean recursive diff across all 4 levels (the #3094 chain included: by construction a leaf holding the OTHER spelling reports a change here -- the control run stopped at Step 3b, so this half is unmeasured)"
+echo "  OK: clean recursive diff across every level (the #3094 chain and the #3156 branch included: by construction a leaf holding the OTHER spelling reports a change here -- the control run stopped at Step 3b, so this half is unmeasured)"
 
 # Changed deep value -> '--recursive --fail' must exit 1 and surface the
 # great-grandchild under its own Nested stack header (deepest-level diff).
@@ -436,7 +602,7 @@ echo "${TREE_OUT}"
 # Root row appears unindented; each deeper level renders with a box-drawing
 # branch prefix. Assert the full ~-joined name shows at each level AND that the
 # tree nesting (box-drawing chars) is present.
-for lvl in "${STACK}" "${CHILD}" "${GRANDCHILD}" "${GREATGRANDCHILD}"; do
+for lvl in "${LEVELS[@]}"; do
   if ! echo "${TREE_OUT}" | grep -qF "${lvl}"; then
     echo "FAIL: 'state list --tree' did not render level '${lvl}'"
     exit 1
@@ -463,7 +629,7 @@ echo "==> Step 6: cdkd destroy (cascade)"
 ${CDKD} destroy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force
 
 # 6a: no state file for ANY level remains.
-for lvl in "${STACK}" "${CHILD}" "${GRANDCHILD}" "${GREATGRANDCHILD}"; do
+for lvl in "${LEVELS[@]}"; do
   assert_gone "state file for '${lvl}' still present after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "cdkd/${lvl}/${AWS_REGION}/state.json"
   echo "  OK: state gone: ${lvl}"
 done
@@ -490,7 +656,12 @@ if ! aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" --region "$
 fi
 aws secretsmanager delete-secret --secret-id "${SECRET_NAME}" \
   --force-delete-without-recovery --region "${AWS_REGION}" >/dev/null
-echo "  OK: out-of-band secret left intact by destroy, removed by the fixture"
+if ! aws ssm get-parameter --name "${PIN_SSM_PARAM_NAME}" --region "${AWS_REGION}" >/dev/null 2>&1; then
+  echo "FAIL: destroy removed the out-of-band SecureString '${PIN_SSM_PARAM_NAME}', which cdkd does not manage" >&2
+  exit 1
+fi
+aws ssm delete-parameter --name "${PIN_SSM_PARAM_NAME}" --region "${AWS_REGION}" >/dev/null
+echo "  OK: out-of-band secret and SecureString left intact by destroy, removed by the fixture"
 
 # --- Teardown + VERSION sweep, ON THE SUCCESS PATH (issue #2096) -----------
 # 6a's head-object is on the CURRENT object; the bucket is VERSIONED, so every
@@ -506,4 +677,4 @@ for lvl in "${LEVELS[@]}"; do
 done
 
 echo ""
-echo "==> PASS: 4-level nested-stack deploy / parent-link / state-tree / destroy-cascade verified, the #3094 secret chain per leaf, zero surviving state versions"
+echo "==> PASS: 4-level nested-stack deploy / parent-link / state-tree / destroy-cascade verified, the #3094 secret chain per leaf, the #3156 framed carries, zero surviving state versions"

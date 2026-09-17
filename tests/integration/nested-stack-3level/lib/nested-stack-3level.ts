@@ -161,6 +161,61 @@ class ChildNestedStack extends cdk.NestedStack {
 }
 
 /**
+ * THE #3156 ARM, depth 2: the grandchild of the `Framed` branch. Consumes each
+ * of the four parameters the middle hands down in its own SSM parameter,
+ * through an `Fn::Join` (`gc-` + the `Ref`), so its three debug lines per
+ * parameter -- `Parameter`, `Resolved Ref to parameter`, `Resolved Fn::Join`
+ * -- are all emitted.
+ */
+class FramedGrandchildNestedStack extends cdk.NestedStack {
+  constructor(scope: Construct, id: string, props?: cdk.NestedStackProps) {
+    super(scope, id, props);
+
+    (this.nestedStackResource as cdk.CfnResource).overrideLogicalId('FramedGrandchild');
+
+    for (const name of ['SsmPass', 'SsmWrap', 'OutPass', 'OutWrap'] as const) {
+      const parameter = new cdk.CfnParameter(this, `Gc${name}`, { type: 'String' });
+      parameter.overrideLogicalId(`Gc${name}`);
+      const consumer = new ssm.StringParameter(this, `Framed${name}`, {
+        stringValue: `gc-${parameter.valueAsString}`,
+        description: `cdkd nested-stack-3level integ - #3156 grandchild consumer of Gc${name}`,
+      });
+      (consumer.node.defaultChild as ssm.CfnParameter).overrideLogicalId(`Framed${name}`);
+    }
+  }
+}
+
+/**
+ * THE #3156 ARM, depth 1: the middle stack. Receives the two framed secrets as
+ * `MidPinSsm` / `MidPinOut` and hands each down TWICE: PASS-THROUGH
+ * (`{Ref}` straight into the grandchild's `Parameters`) and RE-WRAP
+ * (`m-` + the `Ref`). Owns nothing else, so the bag of its nested-stack row
+ * holds only what the root's carry hands it -- the isolation the issue asks
+ * for, which `Child`'s row (holding the #3094 pairs) could not give.
+ */
+class FramedNestedStack extends cdk.NestedStack {
+  constructor(scope: Construct, id: string, props?: cdk.NestedStackProps) {
+    super(scope, id, props);
+
+    (this.nestedStackResource as cdk.CfnResource).overrideLogicalId('Framed');
+
+    const pinSsm = new cdk.CfnParameter(this, 'MidPinSsm', { type: 'String' });
+    pinSsm.overrideLogicalId('MidPinSsm');
+    const pinOut = new cdk.CfnParameter(this, 'MidPinOut', { type: 'String' });
+    pinOut.overrideLogicalId('MidPinOut');
+
+    new FramedGrandchildNestedStack(this, 'FramedGrandchild', {
+      parameters: {
+        GcSsmPass: pinSsm.valueAsString,
+        GcSsmWrap: cdk.Fn.join('', ['m-', pinSsm.valueAsString]),
+        GcOutPass: pinOut.valueAsString,
+        GcOutWrap: cdk.Fn.join('', ['m-', pinOut.valueAsString]),
+      },
+    });
+  }
+}
+
+/**
  * Top-level root (depth = 0). Owns:
  *
  *  - 1 SNS Topic — the source of the DOWNWARD reference. Its `topicName` is
@@ -200,6 +255,31 @@ export class NestedStack3Level extends cdk.Stack {
       parameters: {
         HandoffSecretA: `{{resolve:secretsmanager:${secretName}:SecretString:handoff::}}`,
         HandoffSecretB: `{{resolve:secretsmanager:${secretName}:SecretString:handoff:AWSCURRENT:}}`,
+      },
+    });
+
+    // THE #3156 ARM, depth 0: two 2-character secrets in the two intrinsic
+    // frames the sub-floor carry refused before the issue -- an `ssm` token
+    // (a SecureString verify.sh creates) with the account `Ref` inside it, and
+    // a secretsmanager token followed by a region `Ref` OUTSIDE it -- on their
+    // own nested-stack row. Names kept in sync with verify.sh. `cdk.Aws`
+    // pseudo parameters, never `Stack.of(this).account`: under `cdkd deploy`
+    // the stack's env resolves the account, which CDK then folds into the
+    // literal text -- a plain string frame, not the intrinsic one this arm is
+    // for (measured: verify.sh's premise caught exactly that).
+    new FramedNestedStack(this, 'Framed', {
+      parameters: {
+        MidPinSsm: cdk.Fn.join('', [
+          'pin3156s:{{resolve:ssm:cdkd-3level-pinssm-',
+          cdk.Aws.ACCOUNT_ID,
+          '}}',
+        ]),
+        MidPinOut: cdk.Fn.join('', [
+          'pin3156o:{{resolve:secretsmanager:cdkd-3level-secret-',
+          cdk.Aws.ACCOUNT_ID,
+          ':SecretString:pin}}@',
+          cdk.Aws.REGION,
+        ]),
       },
     });
 
