@@ -208,4 +208,46 @@ describe('scrub abandoned-scan origin (go-to-k/cdkd#3160)', () => {
     ).toContain('!carriesDynamicReference(source)');
     expect(silent, 'fetchability is deciding silence again').not.toContain('Fetchable');
   });
+
+  it('applies the SAME silence rule to the per-unit verdict', () => {
+    // `abandonedUnitVerdict` (issue go-to-k/cdkd#3181) is the twin of the
+    // function above, and since that PR it is the one on the PRIMARY path:
+    // every opted-in pass reaches it, and the function above now runs only
+    // when the resolve threw for a reason the recovery does not catch. So the
+    // round-5 near-miss this file exists for is live again on a new function,
+    // and was unfenced -- measured: flipping its first two lines to
+    // `if (!entry.carriedFetchableReference) return 'silent'` reds nothing.
+    //
+    // Same assertion, on the twin's own evidence source: the booleans are
+    // per-unit rather than per-bag, but which QUESTION may decide silence is
+    // unchanged.
+    const body = scrubSource.match(
+      /function abandonedUnitVerdict\([^)]*\): [^{]*\{([\s\S]*?)\n\}/
+    );
+    expect(body, 'abandonedUnitVerdict was renamed or reshaped').not.toBeNull();
+    const lines = body![1]!
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+    // EVERY silent arm, not `find`'s first. A second silence condition added
+    // later is exactly the regression this file exists to catch, and a
+    // first-match read would not see it.
+    const silentArms = lines.filter((l) => l.includes("return 'silent'"));
+    expect(silentArms, "no `return 'silent'` arm in abandonedUnitVerdict").not.toHaveLength(0);
+    expect(
+      silentArms,
+      'abandonedUnitVerdict grew a SECOND silence arm. Only "did this unit hold a reference at ' +
+        'all" may decide silence; a second condition is how the go-to-k/cdkd#3178 round-5 ' +
+        'near-miss returns.'
+    ).toHaveLength(1);
+    const silent = silentArms[0];
+    expect(
+      silent,
+      'the per-unit silence decision consults something other than whether the unit carried a ' +
+        'reference. Only "did THIS unit hold a reference at all" may decide SILENCE — ' +
+        'fetchability and the error class decide the EXIT CODE, and silencing on either hides ' +
+        'the abandoned unit entirely (go-to-k/cdkd#3178 round 5, on the go-to-k/cdkd#3181 twin).'
+    ).toContain('!entry.carriedDynamicReference');
+    expect(silent, 'fetchability is deciding silence again').not.toContain('Fetchable');
+  });
 });

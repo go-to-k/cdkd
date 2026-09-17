@@ -23,13 +23,21 @@ import { dirname, join } from 'node:path';
  * `src/deployment/intrinsic-function-resolver.ts`, which
  * `.claude/hooks/integ-broad-gate.sh`'s `CROSS_CUTTING_REGEX` arms on ANY
  * touch — it has no hunk filter — so typing it turns a no-real-AWS change into
- * one needing a broad-set integ run. The fix therefore stays on the CONSUMER
- * side and matches the resolver's message, which makes scrub a consumer of a
+ * one needing a broad-set integ run. The fix therefore stayed on the CONSUMER
+ * side and matched the resolver's message, which made scrub a consumer of a
  * string another module owns. `.claude/rules/testing.md` is explicit about
  * that shape: a reword on the producing side makes the consumer silently stop
  * matching, and a zero match is indistinguishable from "the condition did not
- * occur" — here, indistinguishable from a clean scrub. So the two are pinned
- * to each other, and a reword fails HERE rather than going quiet in the field.
+ * occur" — here, indistinguishable from a clean scrub.
+ *
+ * SINCE go-to-k/cdkd#3181 THE MARKER LIST LIVES BESIDE THE THROWS, exported
+ * from the resolver and IMPORTED by scrub, because the resolver grew the same
+ * partition internally and two spellings of one predicate is what issue #1936
+ * forbids. That paid the broad-integ cost this file was written to avoid, and
+ * it makes the fence STRONGER rather than redundant: it no longer checks that
+ * two hand-copies agree, it checks that the ONE definition still matches the
+ * THROW literals beside it — the half that was always the real risk, since a
+ * reworded throw leaves any number of agreeing copies equally stale.
  *
  * THE POPULATION IS DERIVED, AND ITS BOUNDARY IS ASSERTED IN BOTH DIRECTIONS.
  * An earlier cut keyed on `PARAMETER_NAME is required` alone and asserted that
@@ -64,6 +72,31 @@ function namelessRequiredThrows(resolver: string): string[] {
 }
 
 describe('scrub keys on the resolver nameless-dynamic-reference messages', () => {
+  it('DYNAMIC_REFERENCE_PREFIX is the prefix the throws actually carry', () => {
+    // The marker set was fenced against the throws; the PREFIX was not, and
+    // since go-to-k/cdkd#3181 TWO predicates require it — scrub's
+    // `isNamelessDynamicReferenceFailure` and the resolver's own
+    // `isDeliberateResolutionRefusal`, which decides whether the per-unit
+    // recovery re-raises. Reword the throws to `Dynamic ref: ` and both go
+    // silent together: scrub reports CLEAN over a nameless reference, and the
+    // recovery downgrades a refusal to a skipped unit. Neither fails loudly.
+    const resolver = readFileSync(RESOLVER, 'utf8');
+    const declared = resolver.match(
+      /const DYNAMIC_REFERENCE_PREFIX = '([^']*)'/
+    )?.[1];
+    expect(declared, 'the resolver no longer declares DYNAMIC_REFERENCE_PREFIX').toBeDefined();
+
+    const throws = namelessRequiredThrows(resolver);
+    expect(throws.length).toBeGreaterThanOrEqual(2);
+    const missingPrefix = throws.filter((message) => !message.includes(declared as string));
+    expect(
+      missingPrefix,
+      `the resolver raises ${missingPrefix.length} nameless throw(s) that do NOT carry ` +
+        `'${declared}': ${JSON.stringify(missingPrefix)}. Both predicates that gate on this ` +
+        `prefix would stop matching them, silently.`
+    ).toHaveLength(0);
+  });
+
   it('every nameless-required throw in the resolver is matched by a marker', () => {
     const resolver = readFileSync(RESOLVER, 'utf8');
     const throws = namelessRequiredThrows(resolver);
@@ -98,16 +131,21 @@ describe('scrub keys on the resolver nameless-dynamic-reference messages', () =>
     // the loop was a TAUTOLOGY for every possible input and could not detect a
     // re-widening at all. The only thing that CAN detect it is reading scrub's
     // own declared array and comparing it to this file's hand-copy.
-    const scrub = readFileSync(SCRUB, 'utf8');
-    const block = scrub.match(
+    // Read from the RESOLVER since go-to-k/cdkd#3181 moved the declaration
+    // beside the throws; scrub imports it. The `scrub still consumes it` case
+    // below is what keeps that import from being dropped silently.
+    const resolver = readFileSync(RESOLVER, 'utf8');
+    const block = resolver.match(
       /const NAMELESS_DYNAMIC_REFERENCE_MARKERS = \[([\s\S]*?)\] as const;/
     );
-    expect(block, 'scrub no longer declares NAMELESS_DYNAMIC_REFERENCE_MARKERS as an array').not
-      .toBeNull();
+    expect(
+      block,
+      'the resolver no longer declares NAMELESS_DYNAMIC_REFERENCE_MARKERS as an array'
+    ).not.toBeNull();
     const declared = [...(block?.[1] ?? '').matchAll(/'([^']*)'/g)].map((m) => m[1] as string);
     expect(
       [...declared].sort(),
-      `scrub declares ${JSON.stringify(declared)} but this fence pins ${JSON.stringify([...MARKERS])}. ` +
+      `the resolver declares ${JSON.stringify(declared)} but this fence pins ${JSON.stringify([...MARKERS])}. ` +
         `If the set GREW, check the new entry is a structurally-broken reference and not a ` +
         `RESOLUTION failure: scrub resolves with template defaults and no --parameters, so ` +
         `refusing on a resolution failure refuses HEALTHY stacks (measured — widening to the ` +
@@ -145,16 +183,36 @@ describe('scrub keys on the resolver nameless-dynamic-reference messages', () =>
     }
   });
 
-  it('scrub declares every marker', () => {
+  it('scrub still CONSUMES the marker list, wherever it is declared', () => {
+    // The declaration moved to the resolver (go-to-k/cdkd#3181), so asserting
+    // scrub spells each literal would now fail on correct code. What still
+    // has to hold is that scrub READS the shared list: drop the import and the
+    // matching failure falls back through the typed-refusal test into a debug
+    // line and the run reports CLEAN again — the original #2692 disclosure.
+    //
+    // Asserted as an IMPORT from the resolver, not a bare mention: a local
+    // re-declaration under the same name would satisfy a substring check while
+    // re-creating exactly the two-copies drift the move removed.
     const scrub = readFileSync(SCRUB, 'utf8');
-    for (const marker of MARKERS) {
-      expect(
-        scrub.includes(`'${marker}'`),
-        `src/cli/commands/scrub.ts no longer declares the marker '${marker}'. With it gone the ` +
-          `matching failure falls back through the typed-refusal test into a debug line and the ` +
-          `run reports CLEAN again.`
-      ).toBe(true);
-    }
+    const importsFromResolver = /import \{[^}]*\bisNamelessDynamicReferenceError\b[^}]*\} from '[^']*intrinsic-function-resolver\.js';/s.test(
+      scrub
+    );
+    expect(
+      importsFromResolver,
+      `src/cli/commands/scrub.ts no longer imports isNamelessDynamicReferenceError from the ` +
+        `resolver. Either it stopped consulting the markers — and a nameless reference reports ` +
+        `CLEAN again — or it re-spelled the predicate locally, which is the drift ` +
+        `go-to-k/cdkd#3181 removed by moving BOTH the list and the conjunction over it beside ` +
+        `the throws.`
+    ).toBe(true);
+    expect(
+      scrub.includes('const NAMELESS_DYNAMIC_REFERENCE_MARKERS = ['),
+      'scrub re-declared its own marker list beside the imported predicate.'
+    ).toBe(false);
+    expect(
+      /NAMELESS_DYNAMIC_REFERENCE_MARKERS\.some/.test(scrub),
+      'scrub re-spelled the marker CONJUNCTION locally; it must delegate to the resolver arm.'
+    ).toBe(false);
   });
 
   it('each marker is specific enough to be worth matching on', () => {
