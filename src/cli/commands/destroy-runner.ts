@@ -33,6 +33,7 @@ import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { slowCcOperationTimeoutMs } from '../../provisioning/slow-cc-operation-timeouts.js';
 import { shouldRetainResource, type ResourceState, type StackState } from '../../types/state.js';
+import { refuseMalformedOutputsForDestroy } from '../../state/malformed-resources-bag.js';
 import type { ResourceDeleteResult } from '../../types/resource.js';
 import {
   extractDeploymentEventError,
@@ -489,6 +490,29 @@ export async function runDestroyForStack(
   // the caller's baseRegion only for legacy `version: 1` records that never
   // recorded one.
   const regionForState = state.region ?? ctx.baseRegion;
+  // AT THE TOP OF THE DESTROY, and REFUSE rather than repair (issue #3207).
+  //
+  // `parseStateBody` validates the root object and the schema version and
+  // nothing inside, so a hand-edited or truncated record reaches this function
+  // with `outputs` holding a string, a list, a number, a boolean or `null`. The
+  // only thing this runner does with the bag is the strong-reference decision
+  // below (`Object.keys(state.outputs).length > 0`), and BOTH answers are
+  // fabricated on such a record — a string invents six export names, a `null`
+  // reads as "exports nothing" and SKIPS the cross-stack scan entirely. Reading
+  // the bag as empty, which is the read-only repair, IS that second answer, so
+  // there is no repair available here: see
+  // `malformedDestroyOutputsRefusalMessage`.
+  //
+  // Here rather than beside the decision so no later read of `state` in this
+  // function can be reached with an unreadable bag — the placement rule
+  // `repairMalformedResourcesForReadOnly`'s note records. It dominates all
+  // THREE callers (`cdkd destroy`, `cdkd state destroy`, and
+  // `NestedStackProvider.delete`'s child destroy), none of which reads the bag
+  // before handing the record over.
+  //
+  // The `resources` bag is a separate container with a separate absence rule
+  // and is NOT guarded here — tracked by go-to-k/cdkd#3161.
+  refuseMalformedOutputsForDestroy(state, stackName, regionForState);
   if (resourceCount === 0 && orphanCount === 0) {
     // Issue #2171: this used to delete the state record with NO lock at all,
     // sitting well above the acquire further down. A record reads as empty for

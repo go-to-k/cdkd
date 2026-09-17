@@ -433,9 +433,11 @@ as stored, so the evidence survives the repair. The `resources` warning
 additionally tells you not to run `cdkd deploy` or `cdkd destroy` against the
 record: those read the same map, and an unreadable one is indistinguishable
 from an empty stack, so a deploy would re-create every resource and a destroy
-would delete none of them. The `outputs` warning carries no such advice —
-the resource set is still readable, and what an unreadable outputs bag costs is
-this preview's Outputs section.
+would delete none of them. The `outputs` warning costs this preview's Outputs
+section, and it costs more than the preview: `cdkd deploy` and `cdkd destroy`
+refuse a record whose `outputs` map is unreadable rather than deciding from it,
+so a diff that previews cleanly is followed by a refusal. See
+[when `outputs` is not an object](state-management.md#when-outputs-is-not-an-object).
 
 With `--recursive` each node of the tree carries its own record, so the warning
 names the stack it came from and a healthy parent can sit above a malformed

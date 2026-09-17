@@ -36,6 +36,7 @@ import {
   CrossAccountSecretRefusalError,
   DynamicReferenceRegionAmbiguousError,
   IntrinsicResolutionRefusalError,
+  MalformedProducerRecordRefusalError,
 } from '../utils/error-handler.js';
 import { drainDeadlines, withSharedDrainBudget } from './drain-budget.js';
 import { markNonRetryable, isThrottlingError } from './retryable-errors.js';
@@ -74,6 +75,7 @@ import {
   type StateOutputReadEntry,
 } from '../types/state.js';
 import { S3StateBackend } from '../state/s3-state-backend.js';
+import { hasReadableOutputs } from '../state/malformed-resources-bag.js';
 import type { ExportIndexStore } from '../state/export-index-store.js';
 import { parseWebACLArn } from '../provisioning/providers/wafv2-provider.js';
 import { isSettledInstanceState } from '../provisioning/ec2-instance-state.js';
@@ -8458,6 +8460,45 @@ export class IntrinsicFunctionResolver {
       );
     }
 
+    // The producer's record is UNCHECKED data — `parseStateBody` validates the
+    // root object and the schema version and nothing inside — so `outputs` can
+    // hold a string, a list, a number, a boolean or `null` (issue #3207).
+    //
+    // THIS ARM IS THE ONE READER OF THAT BAG THAT RE-APPLIES RATHER THAN
+    // DISPLAYS, which is why it REFUSES where `importableOutputKeys` fails
+    // closed for the `Fn::ImportValue` sibling above. `Object.hasOwn('abcdef',
+    // '0')` is TRUE, so an `OutputName: '0'` against a six-character bag passed
+    // the membership test below and resolved the single CHARACTER `'a'` — a
+    // value this deploy then SENDS to AWS as a live resource's property. The
+    // `describeAvailableOutputs(Object.keys(outputs))` tail in that same
+    // refusal echoed the fabricated keys back as the producer's outputs.
+    //
+    // Through the SHARED predicate, so the ABSENCE rule is the one every other
+    // consumer of this bag uses: an absent bag is an ORDINARY record (the
+    // deploy's failure-path saves write `outputs: currentState.outputs`, which
+    // `JSON.stringify` drops when undefined) and falls through to the ordinary
+    // not-found refusal below.
+    //
+    // `MalformedProducerRecordRefusalError`, an
+    // `IntrinsicResolutionRefusalError` SUBCLASS, so an enclosing `Fn::Sub`
+    // re-raises it instead of laundering it into a literal `${...}` shipped to
+    // AWS (issue #1740) while `cdkd scrub`'s pre-pass can still tell it from
+    // its siblings — the class's own JSDoc carries why that distinction has to
+    // exist. `markNonRetryable` because the input is a persisted state record,
+    // which no retry can change.
+    if (!hasReadableOutputs(stateData.state)) {
+      throw markNonRetryable(
+        new MalformedProducerRecordRefusalError(
+          `Fn::GetStackOutput: the state record of producer stack '${loggedStackName}' ` +
+            `(${loggedRegion}) has no readable 'outputs' map — the record is malformed or ` +
+            `truncated. cdkd refuses to resolve from it rather than reading it as a map: ` +
+            `'Object.hasOwn' answers TRUE for '0' on a string and for an index on a list, so ` +
+            `continuing would resolve ONE CHARACTER or element of the record as this ` +
+            `reference's value and this deploy would send it to AWS. Inspect the producer's ` +
+            `record with 'cdkd state show' --json, repair or remove it, then re-run.`
+        )
+      );
+    }
     const outputs = stateData.state.outputs ?? {};
     // `Object.hasOwn` for the same reason as the CloudFormation-sourced arm
     // above (issue #2767); the sibling `Fn::ImportValue` path was already safe

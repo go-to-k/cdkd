@@ -331,6 +331,46 @@ export class CrossAccountSecretRefusalError extends IntrinsicResolutionRefusalEr
 }
 
 /**
+ * An `Fn::GetStackOutput` whose PRODUCER's state record has no readable
+ * `outputs` map (issue [#3207](https://github.com/go-to-k/cdkd/issues/3207)).
+ *
+ * A SUBCLASS for the same reason {@link CrossAccountSecretRefusalError} is
+ * one, and with the same two independent properties.
+ * `instanceof IntrinsicResolutionRefusalError` stays true, so `resolveSub`'s
+ * catch re-raises it rather than laundering the reference into a literal
+ * `${...}` shipped to AWS; and the one consumer that must treat it
+ * DIFFERENTLY from its user-fixable siblings matches on THIS class.
+ *
+ * That consumer is `cdkd scrub`'s cross-stack pre-pass, and the distinction it
+ * needs is neither of the two the base class already carries. A sibling
+ * refusal makes scrub REFUSE the stack, on the sound argument that the user
+ * can fix the cause and re-run. Here the cause is ANOTHER STACK's record,
+ * which the user may not own — so refusing would strand THIS stack's own
+ * plaintext in `state.json` over a file they cannot repair. Issue
+ * [#3192](https://github.com/go-to-k/cdkd/issues/3192) settled that trade one
+ * layer down, for the classifier this refusal now runs ahead of
+ * (`docs/design/3192-outputs-consumers.md` §6), and the same answer has to
+ * hold here or closing the resolver would silently reverse it: scrub records
+ * an unverifiable FINDING, scrubs the rest of the stack, does not report it
+ * clean, and exits 2.
+ *
+ * It is NOT `CrossAccountSecretRefusalError`, whose subclass identity means
+ * PERMANENT — "no re-run can change this". A damaged record IS repairable;
+ * what it is not is repairable by everyone who meets it.
+ *
+ * `code` is distinct for the reason the sibling's note gives: a consumer
+ * keying on `INTRINSIC_RESOLUTION_REFUSAL` would capture every sibling, and
+ * one keying on message text breaks the moment the wording improves.
+ */
+export class MalformedProducerRecordRefusalError extends IntrinsicResolutionRefusalError {
+  constructor(message: string, cause?: Error) {
+    super(message, cause, 'INTRINSIC_RESOLUTION_REFUSAL_MALFORMED_PRODUCER_RECORD');
+    this.name = 'MalformedProducerRecordRefusalError';
+    Object.setPrototypeOf(this, MalformedProducerRecordRefusalError.prototype);
+  }
+}
+
+/**
  * A `{{resolve:...}}` reference whose REGION cannot be established (issue
  * [#2134](https://github.com/go-to-k/cdkd/issues/2134)): it names no region,
  * and the stack it sits in is on record as reading across a region boundary.

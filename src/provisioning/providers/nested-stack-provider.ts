@@ -11,6 +11,7 @@ import type {
 import { DeployEngine } from '../../deployment/deploy-engine.js';
 import { getCurrentResourceSecrets } from '../../deployment/resource-secrets-scope.js';
 import { runDestroyForStack } from '../../cli/commands/destroy-runner.js';
+import { refuseMalformedNestedChildOutputs } from '../../state/malformed-resources-bag.js';
 import {
   withNestedStackContext,
   getCurrentNestedStackContext,
@@ -678,6 +679,20 @@ export class NestedStackProvider implements ResourceProvider {
         `Child stack state '${childStackName}' not found after deploy — NestedStackProvider invariant violated.`
       );
     }
+    // AT THE LOAD, above the rebuild it protects (issue #3207). The child's
+    // record is UNCHECKED data — `parseStateBody` validates the root object and
+    // the schema version and nothing inside — so `outputs` can hold a string, a
+    // list, a number, a boolean or `null`, and `Object.entries` walks the first
+    // two as readily as a map. Both reads below would then fabricate: a
+    // six-character bag becomes six `Outputs.<n>` attributes, which the parent's
+    // deploy PERSISTS into the parent's own record and every `Fn::GetAtt`
+    // against this nested stack resolves into live AWS calls.
+    //
+    // REFUSE rather than repair even though this file calls no `saveState`:
+    // what it returns is written by its CALLER, so repairing would put a
+    // well-formed fabricated attribute set into the parent's record with
+    // nothing left to say the child was damaged.
+    refuseMalformedNestedChildOutputs(childStateData.state, childStackName, childRegion);
     const attributes = this.buildOutputsAttributes(childStateData.state.outputs ?? {});
     const noEchoAttributeNames: string[] = [];
     for (const [outputKey, persisted] of Object.entries(childStateData.state.outputs ?? {})) {

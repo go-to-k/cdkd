@@ -135,6 +135,31 @@ stack's resource listing carries no per-attribute values; where cdkd cannot
 recover one it warns and drops the value rather than substituting a wrong one.
 What each command can recover differs, so check its own page.
 
+#### When a state record's `outputs` map is malformed
+
+A state record is used as typed data without a field-by-field shape check, so a
+hand-edited or truncated one can hold a string, a list, a number, a boolean or
+`null` where the `outputs` map belongs — and enumerating a string yields one
+entry per **character**. `--from-state` used to hand a six-character value to
+the local run as six outputs. A `Fn::GetStackOutput` against such a record
+behaved differently by shape, because the reader tested `!got.state.outputs`
+before `outputName in got.state.outputs`. A **falsy** bag — `null`, `0`, `false`
+or `''` — short-circuited on the first test and returned an ordinary miss, so
+the reference simply went unresolved with nothing said about the record. A
+truthy non-object — a non-empty string, a non-zero number or `true` — reached
+the `in`, which throws on all three, and surfaced as an opaque state-read error
+naming nothing either. A **list** answered the membership test, so an output
+named like an index resolved a fabricated element.
+
+`cdkd local` reads such a bag as **empty** and warns, naming the stack and
+region. It does not refuse: these commands write no state record, so there is
+nothing to damage further, and a local invoke over one damaged record is still
+worth running. What the warning buys is the distinction an empty map cannot
+make on its own — "this record could not be read" versus "this stack publishes
+no outputs". Repair the record (or run [`cdkd state
+show`](cli-state.md) with `--json` to see what is stored) before trusting a
+substitution that came back absent.
+
 ### `--stack-region`: choosing between records
 
 Only meaningful alongside `--from-state` or `--from-cfn-stack`. Pass it when the

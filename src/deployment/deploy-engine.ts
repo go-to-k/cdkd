@@ -23,6 +23,7 @@ import {
 } from '../utils/error-handler.js';
 import { displaySafe } from '../utils/display-safe.js';
 import { shellQuote } from '../state/lock-contention-message.js';
+import { refuseMalformedOutputs } from '../state/malformed-resources-bag.js';
 import {
   isStatefulRecreateTargetForReplace,
   renderStatefulReason,
@@ -2772,6 +2773,26 @@ export class DeployEngine {
         lastModified: Date.now(),
       };
       const currentEtag = currentStateData?.etag;
+      // AT THE LOAD, and REFUSE rather than repair (issue #3207). `deploy` is
+      // the most write-capable consumer of this bag there is: the no-change
+      // merge path below carries `currentState.outputs ?? {}` into
+      // `persistedOutputs` and SAVES it, five failure-path saves write
+      // `outputs: currentState.outputs` verbatim, and the next success
+      // republishes the result into `cdkd/_index/<region>/exports.json` — the
+      // namespace every other stack's `Fn::ImportValue` binds against. So a
+      // string bag is rebuilt into a well-formed map of one fabricated export
+      // per CHARACTER and the only signal the record was damaged is gone
+      // permanently: the laundering go-to-k/cdkd#3192 exists to stop.
+      //
+      // Here rather than at the twelve later reads because every one of them is
+      // dominated by this point, which is the placement rule
+      // `repairMalformedResourcesForReadOnly`'s own note records: a per-walk
+      // `?? {}` is inert for this class, since each flow dereferences the
+      // container a line earlier.
+      //
+      // The `resources` bag is NOT guarded here — that is a separate container
+      // with a separate absence rule, tracked by go-to-k/cdkd#3161.
+      refuseMalformedOutputs(currentState, stackName, this.stackRegion);
       // Set when we loaded a `version: 1` legacy record. The next save
       // migrates it to the new key.
       const migrationPending = currentStateData?.migrationPending ?? false;

@@ -15,6 +15,7 @@ import {
   CdkdError,
   CrossAccountSecretRefusalError,
   DynamicReferenceRegionAmbiguousError,
+  MalformedProducerRecordRefusalError,
 } from '../../utils/error-handler.js';
 import {
   Synthesizer,
@@ -3744,6 +3745,38 @@ function makeCrossStackPrePass(deps: {
     err instanceof Error &&
     errorCauseChain(err).some((link) => link instanceof CrossAccountSecretRefusalError);
 
+  /**
+   * Is this a refusal over ANOTHER STACK's damaged record (issue
+   * go-to-k/cdkd#3207)?
+   *
+   * A SECOND predicate rather than a widening of {@link isByDesignRefusal},
+   * because the two classify the same `err` into DIFFERENT sentences and
+   * different exit-code lists, and only one of them can honestly say "no
+   * re-run can change it".
+   *
+   * Why this arm has to exist at all. Before go-to-k/cdkd#3207 the deploy-side
+   * resolver RESOLVED an `Fn::GetStackOutput` against a non-object producer
+   * bag — `Object.hasOwn('abcdef', '0')` is `true` — so a damaged producer
+   * reached {@link storedProducerValue}, whose own guard records the finding
+   * this arm now records. Closing the resolver is correct (that value is
+   * APPLIED to a live system by a deploy) but it moves the refusal UP: without
+   * this branch the read lands on `unresolvableCrossStackReadError` below and
+   * refuses the whole stack, so a consumer's own plaintext would stay in
+   * `state.json` over a producer record its owner may not be able to repair —
+   * exactly the trade `docs/design/3192-outputs-consumers.md` §6 decided
+   * against, silently reversed by the fix one layer up.
+   *
+   * SAME two lists as the classifier's arm, deliberately: `unverifiable` gates
+   * the clean verdict, and `damagedProducerRecords` carries the UNCONDITIONAL
+   * exit 2 that shape had before either guard existed.
+   *
+   * CAUSE CHAIN, not a bare `instanceof`, for the reason
+   * {@link isByDesignRefusal}'s note gives — `resolver.resolve` wraps.
+   */
+  const isMalformedProducerRefusal = (err: unknown): boolean =>
+    err instanceof Error &&
+    errorCauseChain(err).some((link) => link instanceof MalformedProducerRecordRefusalError);
+
   return async function resolveCrossStackReads(bag, context, origin, opts): Promise<void> {
     const canRefuse = opts?.canRefuse ?? true;
     // The needle set this pass MASKS its messages against. It is no longer part
@@ -3880,6 +3913,21 @@ function makeCrossStackPrePass(deps: {
       // be tolerated without being named. An ABSENT bag, or one that simply
       // does not carry the key, is ORDINARY — a stale index entry, a producer
       // that never published that name — and stays unmentioned.
+      //
+      // WHAT REACHES THIS ARM CHANGED IN go-to-k/cdkd#3207, and the honest
+      // statement is that inside `cdkd scrub` it is now DEFENCE IN DEPTH. The
+      // route that made it reachable was the resolver's `Fn::GetStackOutput`
+      // arm answering from a non-object bag (`Object.hasOwn('abcdef', '0')` is
+      // `true`), and that arm now REFUSES — caught by
+      // `isMalformedProducerRefusal` above, which records the SAME two
+      // findings this arm does. Scrub's other route, the `Fn::ImportValue`
+      // state scan, needs `importableOutputKeys` to have answered off the same
+      // record, which requires a READABLE bag. So what is left here is the two
+      // reads DISAGREEING — this classifier re-reads the producer's record
+      // separately from the resolver — and that is worth keeping rather than
+      // deleting on the strength of an enumeration. The `exportIndex` arm that
+      // resolves WITHOUT reading the producer's record reaches it in principle
+      // too, but scrub deliberately supplies no index.
       if (outputs !== undefined && !isReadableBag(outputs)) {
         // ONCE PER PRODUCER RECORD, not per reference: a consumer template
         // with three `Fn::GetStackOutput` reads of one damaged producer emitted
@@ -4003,6 +4051,29 @@ function makeCrossStackPrePass(deps: {
             `Scrub of ${stackName} cannot verify ${detail} — cdkd declines this read by design, ` +
               `so no re-run can change it. The rest of the stack is still scrubbed; this stack ` +
               `is NOT reported clean.`
+          );
+          return;
+        }
+        // AFTER the by-design branch and BEFORE the refusal, which is the only
+        // position that preserves both classifications: the two classes are
+        // disjoint (neither subclass extends the other), so the order between
+        // them is stable, while falling through to the refusal is what
+        // go-to-k/cdkd#3207 must not do. See {@link isMalformedProducerRefusal}.
+        if (isMalformedProducerRefusal(err)) {
+          const detail = `${where}: ${maskSecretsInText(
+            err instanceof Error ? err.message : String(err),
+            secrets
+          )}`;
+          findings.unverifiable.push(detail);
+          // Both lists, for the reason the classifier's arm states: the first
+          // gates the clean verdict and `--fail`, the second restores the
+          // UNCONDITIONAL exit 2 this shape carried before it was guarded.
+          findings.damagedProducerRecords.push(detail);
+          logger.warn(
+            `Scrub of ${stackName} cannot verify ${detail} — the PRODUCER's state record is ` +
+              `malformed or truncated, so this run cannot tell whether that producer still ` +
+              `holds the plaintext. The rest of the stack is still scrubbed; this stack is NOT ` +
+              `reported clean. Repair the producer's record and scrub it first, then re-run.`
           );
           return;
         }

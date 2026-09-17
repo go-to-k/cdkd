@@ -662,9 +662,38 @@ later in a **different** stack, naming the consumer rather than the record that
 is actually broken.
 
 The record itself is left exactly as stored. The commands that would otherwise
-rewrite it — `cdkd orphan`, `cdkd import` and `cdkd scrub` — refuse it by name
-instead (see [`cdkd scrub`](cli-scrub.md#exit-codes)), so the evidence survives
-for whoever repairs it.
+rewrite the `outputs` map — `cdkd deploy`, `cdkd orphan`, `cdkd import` and
+`cdkd scrub` — refuse it by name instead, and so does `cdkd destroy`, which
+would otherwise delete the record on the strength of it (see
+[`cdkd scrub`](cli-scrub.md#exit-codes)), so the evidence survives for whoever
+repairs it. A non-array `exportNames` is refused by none of them: it reads as an
+empty export set, which costs the bindings that field carried and nothing else.
+
+### `Fn::GetStackOutput` refuses such a producer; `Fn::ImportValue` never reached it
+
+The two intrinsics fail differently here, and the asymmetry is the point.
+
+`Fn::ImportValue` binds through the export-set predicate above, which answers
+"this record exports nothing" for an unreadable bag — so the reference simply
+does not resolve, exactly as it would against a producer that publishes no such
+name.
+
+`Fn::GetStackOutput` consults no such predicate. It asks the producer's bag
+directly, and `Object.hasOwn("abcdef", "0")` is **true**, so an
+`OutputName: "0"` against a six-character record used to resolve the single
+character `a` — a value the deploy then sent to AWS as a live resource's
+property — while the "output not found" error beside it listed `0, 1, 2, 3, 4,
+5` back to the operator as the producer's available outputs. It now **refuses
+the reference**, naming the producer's record as malformed, and the refusal
+propagates out of an enclosing `Fn::Sub` rather than degrading into a literal
+`${...}`.
+
+`cdkd scrub` is the one consumer that does not treat that refusal as fatal: a
+consumer stack importing from a damaged producer is still scrubbed for
+everything else, the unverifiable read is counted, and the run exits `2`
+rather than reporting the stack clean. Refusing the whole stack there would
+strand the consumer's own plaintext over a record its owner may not be able to
+repair.
 
 ---
 

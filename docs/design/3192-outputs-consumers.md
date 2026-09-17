@@ -5,9 +5,12 @@ unlisted: true
 
 # Design: refuse versus repair, per consumer of a non-object `outputs` bag
 
-Tracking issue:
-[#3192](https://github.com/go-to-k/cdkd/issues/3192). Status: **Shipped**, with
-a named residual in §4.
+Tracking issues:
+[#3192](https://github.com/go-to-k/cdkd/issues/3192) and, for the six
+gate-scoped consumers §4 once held as a residual,
+[#3207](https://github.com/go-to-k/cdkd/issues/3207). Status: **Shipped**, no
+residual — §4 records the per-site calls #3207 made and the three that do not
+follow §1's rule mechanically.
 
 `StackState` is read out of an unchecked cast — `parseStateBody` validates the
 root object and the schema version and nothing inside — so a hand-edited or
@@ -93,33 +96,75 @@ the walk, so a per-walk guard is inert. `exportNames` has the opposite shape:
 `exportNamesCarriedFrom` beside it tests `=== undefined` and copies — so
 guarding there dominates every consumer.
 
-## 4. Residual: the consumers in a real-AWS gate scope
+## 4. The consumers in a real-AWS gate scope — CLOSED by #3207
 
 These sites read the bag without going through the predicate above, and each
-lives in a file whose edit pulls a real-AWS integration gate into the change:
+lives in a file whose edit pulls a real-AWS integration gate into the change.
+They were scoped out of #3192 for that reason alone, not because they took a
+different answer. [#3207](https://github.com/go-to-k/cdkd/issues/3207) closed
+every row:
 
-| Site | Gate its file is in |
-| --- | --- |
-| The nested-stack provider's child-outputs read | `integ-destroy` |
-| The intrinsic resolver's `Fn::GetStackOutput` arm | `integ-broad` |
-| The local-command loader's `Fn::GetStackOutput` `in` test | `integ-local` |
-| The local state provider's coercion walk | `integ-local` |
-| The deploy engine's persisted-outputs carry | `integ-destroy` and `integ-broad` |
-| `cdkd state destroy`'s strong-reference check | `integ-destroy` and `integ-broad` |
+| Site | Gate its file is in | Disposition |
+| --- | --- | --- |
+| The nested-stack provider's child-outputs read | `integ-destroy` | REFUSE |
+| The intrinsic resolver's `Fn::GetStackOutput` arm | `integ-broad` | REFUSE the reference |
+| The local-command loader's `Fn::GetStackOutput` `in` test | `integ-local` | REPAIR + WARN |
+| The local state provider's coercion walk | `integ-local` | REPAIR + WARN |
+| The deploy engine's persisted-outputs carry | `integ-destroy` and `integ-broad` | REFUSE |
+| `cdkd destroy` / `state destroy`'s strong-reference check | `integ-destroy` and `integ-broad` | REFUSE |
 
 Their `Fn::ImportValue` halves are already covered for free, because those go
-through `importableOutputKeys`. Every row is tracked by
-[#3207](https://github.com/go-to-k/cdkd/issues/3207), which names each site and
-the gate it drags, so they can be taken when a session is free to spend the
-runs. That issue is the count-bearing list; this table is a summary of it.
+through `importableOutputKeys`.
+
+**Three of the six do not follow §1's rule mechanically**, and the reasons are
+what the table cannot carry.
+
+The **nested-stack provider** calls no `saveState` at all, so the
+write-capable test does not apply to it directly — but what it RETURNS becomes
+the parent's `ResourceState.attributes`, which the parent's deploy persists.
+Write-capable through a caller is the same hazard as writing directly, and
+repairing would put a well-formed fabricated attribute set into the parent's
+record with nothing left to say the child was damaged.
+
+The **destroy path** does not rebuild the bag either — its incremental
+preserve-writes CLEAR `outputs`. What it does with the bag is DECIDE, and
+there repairing is unsafe rather than merely lossy: reading an unreadable bag
+as empty IS the "this stack exports nothing" verdict that skips the
+strong-reference check, which is the protection the refusal exists to keep.
+
+The **resolver's `Fn::GetStackOutput` arm** refuses rather than failing closed
+the way `importableOutputKeys` does for its `Fn::ImportValue` sibling, because
+it is the one reader in this class that RE-APPLIES rather than displays. It
+raises `MalformedProducerRecordRefusalError`, an
+`IntrinsicResolutionRefusalError` subclass, for two independent reasons: the
+base class is what `resolveSub` re-raises on, so the refusal cannot be
+laundered into a literal `${...}` shipped to AWS; and `cdkd scrub`'s
+cross-stack pre-pass has to tell it from its user-fixable siblings. A sibling
+refusal makes scrub refuse the whole consumer stack, which here would strand
+that stack's own plaintext over a record its owner may not be able to repair —
+the trade §6 already decided, one layer down. Scrub therefore records the same
+unverifiable FINDING it recorded when the read used to reach §6's classifier,
+scrubs the rest of the stack, and exits 2.
+
+A consequence of closing the resolver, stated rather than left implicit: §6's
+classifier is now DEFENCE IN DEPTH inside `cdkd scrub` rather than the arm a
+damaged producer reaches. What still reaches it is the two reads DISAGREEING —
+the classifier re-reads the producer's record separately from the resolver —
+and, for a caller that supplies an exports index, the `Fn::ImportValue` index
+arm, which resolves from the index without reading the producer's record at
+all. `cdkd scrub` deliberately supplies no index.
 
 The resolver's `Fn::GetStackOutput` row was NOT in go-to-k/cdkd#3192's own site
 list, and the reason is worth keeping: that list came from a grep filtered to
 lines carrying `Object.(entries|keys|values)`, and this site reads the bag
 into a local variable one line earlier. `Object.hasOwn('abcdef', '0')` is true,
-so it resolves a fabricated cross-stack value into a consumer's template — and
-it is also the route by which a damaged producer record reaches `cdkd scrub`'s
-own classifier (§6).
+so it resolved a fabricated cross-stack value into a consumer's template — and
+it was also the route by which a damaged producer record reached `cdkd scrub`'s
+own classifier (§6). The deploy engine's row was missed by a DIFFERENT filter:
+an alternation over `(state|childStateData\.state|loaded\.state|got\.state)\.outputs`
+that did not allow for the capital `S` in `currentState.outputs`. Two
+enumerations, two filters, each written by reasoning about the shape or the
+names the code would use rather than derived from a broad grep.
 
 ## 5. A non-string export set is damaged, not "exports nothing"
 

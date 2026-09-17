@@ -309,6 +309,7 @@ async function scrub(
   secretsFound: number;
   secretBearingKeys: number;
   unverifiableReads: number;
+  unverifiableProducerRecords: number;
 }> {
   return await scrubStack(
     makeStackInfo(properties, extra) as never,
@@ -515,6 +516,22 @@ describe('cdkd scrub resolves a cross-stack read (issue #2133)', () => {
       result?.unverifiableReads,
       'a damaged producer recorded no FINDING, so scrub can report this stack clean and exit 0'
     ).toBeGreaterThan(0);
+    // ...and into the EXIT-CODE list too. `unverifiableReads` alone gates the
+    // clean verdict and `--fail`; this second count is what carries the
+    // UNCONDITIONAL exit 2 both damaged shapes had before either guard existed.
+    //
+    // Which SITE supplies it moved in go-to-k/cdkd#3207: the resolver's
+    // `Fn::GetStackOutput` arm now REFUSES a non-object producer bag rather
+    // than answering `'a'` from it, so the read never reaches
+    // `storedProducerValue`'s classifier and the pre-pass's
+    // `isMalformedProducerRefusal` branch records the same two findings
+    // instead. Asserting the COUNT rather than the site is deliberate: the
+    // user-visible contract is what this pins, and it held across the move.
+    expect(
+      result?.unverifiableProducerRecords,
+      'the damaged producer recorded no EXIT-CODE finding, so `cdkd scrub` exits 0 over a ' +
+        'consumer record that still holds the imported plaintext'
+    ).toBeGreaterThan(0);
   });
 
   it('an ARRAY producer bag is non-clean too — the shape that used to raise exit 2', async () => {
@@ -553,6 +570,45 @@ describe('cdkd scrub resolves a cross-stack read (issue #2133)', () => {
       'an array producer bag reported nothing, so a shape that exited 2 at the merge base now ' +
         'exits 0 over a consumer record still holding the imported plaintext'
     ).toBeGreaterThan(0);
+    expect(
+      result.unverifiableProducerRecords,
+      'the array shape recorded no EXIT-CODE finding, so it exits 0 rather than 2'
+    ).toBeGreaterThan(0);
+  });
+
+  it('SCRUBS the rest of the stack — it does not refuse over a foreign damaged record', async () => {
+    // The half go-to-k/cdkd#3207 had to preserve, and the one a fix at the
+    // resolver silently reverses if the pre-pass is not taught the new class.
+    // `docs/design/3192-outputs-consumers.md` §6 decided it: refusing the whole
+    // stack would strand THIS stack's own plaintext over a record its owner may
+    // not be able to repair, so scrub scrubs what it can, counts the
+    // unverifiable read, and exits non-zero.
+    consumerState = makeConsumerState(
+      { MasterUserPassword: PLAINTEXT, MasterUsername: 'admin' },
+      { DbUrl: PLAINTEXT }
+    );
+    useProducerOutputs('abcdef' as unknown as Record<string, unknown>);
+
+    const result = await scrub(
+      { MasterUserPassword: SECRET_EXPR, MasterUsername: 'admin' },
+      {
+        outputs: {
+          DbUrl: { Value: { 'Fn::GetStackOutput': { StackName: PRODUCER, OutputName: '0' } } },
+        },
+        appStacks: [
+          makeProducerStackInfo({ '0': { Value: SECRET_EXPR, Export: { Name: EXPORT_NAME } } }),
+        ],
+      }
+    );
+
+    // The DISCRIMINATOR: the run COMPLETED and a record was written. A refusal
+    // would have thrown above, saved nothing, and left the consumer's own
+    // plaintext in place.
+    expect(result.unverifiableReads).toBeGreaterThan(0);
+    expect(
+      stateBackend.saveState,
+      "scrub refused instead of scrubbing, so this stack's own plaintext survives"
+    ).toHaveBeenCalled();
   });
 });
 

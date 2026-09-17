@@ -24,7 +24,19 @@ Two per-container triples, plus every message text:
 | Container | Predicate | Write-capable | Read-only |
 | --- | --- | --- | --- |
 | `resources` (issue [#3018](https://github.com/go-to-k/cdkd/issues/3018)) | `hasReadableResources` | `refuseMalformedState` | `repairMalformedResourcesForReadOnly` |
-| `outputs` (issues [#3189](https://github.com/go-to-k/cdkd/issues/3189), [#3192](https://github.com/go-to-k/cdkd/issues/3192)) | `hasReadableOutputs` | `refuseMalformedOutputs` | `repairMalformedOutputsForReadOnly` |
+| `outputs` (issues [#3189](https://github.com/go-to-k/cdkd/issues/3189), [#3192](https://github.com/go-to-k/cdkd/issues/3192), [#3207](https://github.com/go-to-k/cdkd/issues/3207)) | `hasReadableOutputs` | `refuseMalformedOutputs` + two siblings | `repairMalformedOutputsForReadOnly` |
+
+**The `outputs` container has THREE refusal entry points, one predicate.**
+Issue #3207 added `refuseMalformedOutputsForDestroy` and
+`refuseMalformedNestedChildOutputs` beside `refuseMalformedOutputs`, and the
+split is about the MESSAGE, never the verdict: all three delegate to
+`hasReadableOutputs`, so no two can disagree about whether a record is damaged.
+A destroy CLEARS the bag rather than rebuilding it, and a nested child's damage
+is written into the PARENT's record — the shared sentence would state a
+mechanism that does not happen at either site. Enumerate them with
+`grep -n "^export function refuseMalformed.*Outputs" src/state/malformed-resources-bag.ts`;
+`tests/unit/state/malformed-resources-bag.test.ts` derives the same list and
+fails when this one goes stale.
 
 Each function's own JSDoc is the authority for WHY; what follows is what a
 later edit must not undo.
@@ -81,6 +93,31 @@ run still exits non-zero.
 `cdkd rollback` takes NO outputs guard, and that is a decision rather than a
 gap: `grep -n outputs src/cli/commands/rollback.ts` returns nothing, so there
 is nothing to launder.
+
+**Three sites decided by issue
+[#3207](https://github.com/go-to-k/cdkd/issues/3207) do NOT follow the rule
+mechanically**, and reading it as "does this file call `saveState`" gets each
+one wrong. `docs/design/3192-outputs-consumers.md` §4 is the authority:
+
+- `nested-stack-provider.ts` calls no `saveState` and still REFUSES — what it
+  returns becomes the parent's `ResourceState.attributes`, persisted by the
+  parent's deploy. Write-capable THROUGH A CALLER is the same hazard.
+- `destroy-runner.ts` never rebuilds the bag either; it DECIDES from it. There
+  the read-only repair is the unsafe answer, not the lossy one — reading an
+  unreadable bag as empty IS the "exports nothing" verdict that skips the
+  strong-reference check.
+- the resolver's `Fn::GetStackOutput` arm REFUSES the reference rather than
+  failing closed like its `Fn::ImportValue` sibling, because it is the one
+  reader in the class that RE-APPLIES. It raises
+  `MalformedProducerRecordRefusalError` (an `IntrinsicResolutionRefusalError`
+  SUBCLASS) so `resolveSub` cannot launder it AND so `cdkd scrub`'s pre-pass
+  can record an unverifiable finding instead of refusing the whole consumer
+  stack over a record its owner may not be able to repair.
+
+The two `cdkd local` readers REPAIR and WARN, and the premise is narrower than
+"never writes": a `cdkd local` run CAN write the DERIVED exports-index key,
+which is separately fail-closed by `hasReadableExportSet`. Nothing on that path
+can launder a RECORD, which is what makes repair safe there.
 
 ## The fence
 

@@ -1,4 +1,5 @@
 import { CdkdError } from '../utils/error-handler.js';
+import { markNonRetryable } from '../deployment/retryable-errors.js';
 import { UNRENDERABLE, displaySafe, truncateCodePoints } from '../utils/display-safe.js';
 import { shellQuote } from './lock-contention-message.js';
 import { isReadableBag } from '../types/state.js';
@@ -531,4 +532,186 @@ export function refuseMalformedOutputs(
 ): void {
   if (hasReadableOutputs(state)) return;
   throw new CdkdError(malformedOutputsRefusalMessage(stackName, region), STATE_RESOURCES_MALFORMED);
+}
+
+/**
+ * The DESTROY refusal text (issue
+ * [#3207](https://github.com/go-to-k/cdkd/issues/3207)).
+ *
+ * A FOURTH outputs text rather than {@link malformedOutputsRefusalMessage},
+ * for the reason every text in this module is its own: that one says the
+ * command "REBUILDS the bag before saving", which is FALSE here. A destroy
+ * never rebuilds the bag — its incremental preserve-writes CLEAR `outputs`
+ * outright. What it does with the bag instead is DECIDE, and the decision is
+ * the strong-reference pre-flight: `state.outputs && Object.keys(...).length >
+ * 0` asks "might this stack be a producer?", and only a positive answer runs
+ * the cross-stack scan that refuses to delete an exporter while an importer
+ * exists.
+ *
+ * Both directions of that question are wrong on a damaged bag, which is why
+ * repairing is not available here. A STRING or a LIST answers YES for the
+ * wrong reason — `Object.keys('abcdef')` is six fabricated names — and a
+ * `null`, a number or a boolean answers NO, so the scan is SKIPPED and the
+ * destroy deletes a producer other stacks still `Fn::ImportValue` from.
+ * Reading the bag as empty (the read-only repair) IS that second answer, so
+ * the only answer that fabricates nothing and skips no protection is to stop.
+ *
+ * Identifiers are sanitized and THEN shell-quoted and the command is emitted
+ * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
+ */
+export function malformedDestroyOutputsRefusalMessage(stackName: string, region: string): string {
+  const stack = safeIdentifier(stackName);
+  const reg = safeIdentifier(region);
+  return (
+    `State for ${shellQuote(stack)} (${shellQuote(reg)}) has no readable 'outputs' map — the ` +
+    `record is malformed or truncated. This command DELETES state, so it refuses rather than ` +
+    `continuing: it reads this bag to decide whether the stack might export anything, and that ` +
+    `decision gates the cross-stack check that refuses to delete a producer another stack still ` +
+    `imports from. A string or a list invents one export name per character or element; a null, ` +
+    `a number or a boolean reads as 'exports nothing' and SKIPS the check entirely, deleting the ` +
+    `record while consumers still resolve against it. Repair or remove the record first. ` +
+    `Inspect it with: cdkd state show ${shellQuote(stack)} --stack-region ${shellQuote(reg)} --json`
+  );
+}
+
+/**
+ * For `cdkd destroy` / `cdkd state destroy`: refuse a record whose `outputs`
+ * bag cannot be read (issue
+ * [#3207](https://github.com/go-to-k/cdkd/issues/3207)).
+ *
+ * A SEPARATE call from {@link refuseMalformedOutputs} rather than a flag on
+ * it, for the same reason {@link refuseMalformedOutputs} is separate from
+ * {@link refuseMalformedState}: the refusal a user sees must describe what
+ * THIS command would have done with the bag, and the two consequences are
+ * different — see {@link malformedDestroyOutputsRefusalMessage}.
+ *
+ * CALL IT AT THE TOP OF THE DESTROY, above the strong-reference decision it
+ * protects. The placement rule is
+ * {@link repairMalformedResourcesForReadOnly}'s and applies unchanged.
+ */
+export function refuseMalformedOutputsForDestroy(
+  state: Pick<StackState, 'outputs'>,
+  stackName: string,
+  region: string
+): void {
+  if (hasReadableOutputs(state)) return;
+  // `markNonRetryable` because this decides from a PERSISTED record: a retry
+  // cannot change the bag, and the message interpolates a template-derived
+  // child name that a SUBSTRING-matching classifier reads as transient
+  // (`does not exist` and `DependencyViolation` are live patterns). Issue #1838.
+  throw markNonRetryable(
+    new CdkdError(
+      malformedDestroyOutputsRefusalMessage(stackName, region),
+      STATE_RESOURCES_MALFORMED
+    )
+  );
+}
+
+/**
+ * The NESTED-STACK refusal text (issue
+ * [#3207](https://github.com/go-to-k/cdkd/issues/3207)).
+ *
+ * A FIFTH text, and the one whose damaged record and saved record are
+ * DIFFERENT stacks. `NestedStackProvider.readChildOutputsAsAttributes` reads
+ * the CHILD's persisted bag and rebuilds it into the PARENT's
+ * `Outputs.<Key>` attributes; the parent's deploy then persists those
+ * attributes into the parent's own record, where every `Fn::GetAtt` against
+ * the nested stack resolves them — into live AWS calls. So a six-character
+ * child bag becomes six fabricated parent attributes, and
+ * {@link malformedOutputsRefusalMessage}'s "saved back as a well-formed
+ * six-key map ... republished into the shared exports index" would name the
+ * wrong record and the wrong blast radius.
+ *
+ * Identifiers are sanitized and THEN shell-quoted and the command is emitted
+ * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
+ */
+export function malformedNestedChildOutputsRefusalMessage(
+  childStackName: string,
+  region: string
+): string {
+  const stack = safeIdentifier(childStackName);
+  const reg = safeIdentifier(region);
+  return (
+    `State for nested stack child ${shellQuote(stack)} (${shellQuote(reg)}) has no readable ` +
+    `'outputs' map — the record is malformed or truncated. The parent's 'Outputs.<Key>' ` +
+    `attributes are REBUILT from this bag and persisted into the PARENT's record, and ` +
+    `'Object.entries' walks a string or a list as readily as a map — so a six-character value ` +
+    `would become six fabricated parent attributes that every Fn::GetAtt against this nested ` +
+    `stack then resolves into live AWS calls. The deploy refuses rather than fabricating them. ` +
+    `Repair or remove the child's record first. Inspect it with: cdkd state show ` +
+    `${shellQuote(stack)} --stack-region ${shellQuote(reg)} --json`
+  );
+}
+
+/**
+ * For the nested-stack provider: refuse a CHILD record whose `outputs` bag
+ * cannot be read (issue [#3207](https://github.com/go-to-k/cdkd/issues/3207)).
+ *
+ * The provider itself calls no `saveState`, and that is why this is a refusal
+ * rather than a repair anyway: what it returns becomes the parent's
+ * `ResourceState.attributes`, which the parent's deploy engine persists. Being
+ * write-capable THROUGH A CALLER is the same hazard as writing directly, and
+ * repairing here would put a well-formed fabricated attribute set into the
+ * parent's record with nothing left to say the child was damaged.
+ */
+export function refuseMalformedNestedChildOutputs(
+  state: Pick<StackState, 'outputs'>,
+  childStackName: string,
+  region: string
+): void {
+  if (hasReadableOutputs(state)) return;
+  // `markNonRetryable` because this decides from a PERSISTED record: a retry
+  // cannot change the bag, and the message interpolates a template-derived
+  // child name that a SUBSTRING-matching classifier reads as transient
+  // (`does not exist` and `DependencyViolation` are live patterns). Issue #1838.
+  throw markNonRetryable(
+    new CdkdError(
+      malformedNestedChildOutputsRefusalMessage(childStackName, region),
+      STATE_RESOURCES_MALFORMED
+    )
+  );
+}
+
+/**
+ * The warning the `cdkd local *` commands emit for a record whose `outputs`
+ * bag they had to read as EMPTY (issue
+ * [#3207](https://github.com/go-to-k/cdkd/issues/3207)).
+ *
+ * A SIXTH text, and the only one on this container for a READ-ONLY caller
+ * other than {@link malformedOutputsWarning}. It is not that one because the
+ * consequence differs the same way every text in this module differs: that one
+ * describes a DIFF continuing with an empty left-hand side and reporting every
+ * resolved output as an `ADD`. A local run reports no rows at all — it
+ * SUBSTITUTES, so the visible effect is an environment variable or a
+ * `Fn::GetStackOutput` / `Fn::ImportValue` reference that resolves to nothing
+ * and is dropped with a per-key warning, which is what "the record holds no
+ * outputs" also looks like.
+ *
+ * TWO call sites share it, deliberately: `S3LocalStateProvider.load` reading
+ * the TARGET stack's record, and `buildCrossStackResolver`'s
+ * `Fn::GetStackOutput` arm reading a PRODUCER's. The record named is whichever
+ * one is damaged, and the consequence is identical — which is why one text is
+ * right here and a second spelling would only drift.
+ *
+ * Read-only is a property of these callers rather than of the command:
+ * `cdkd local` writes no `state.json`. It CAN write one DERIVED key —
+ * `ExportIndexStore.load` rebuilds and PUTs `cdkd/_index/<region>/exports.json`
+ * on a miss — and that write is already fail-closed and warned about by
+ * `hasReadableExportSet` / {@link malformedExportSourceWarning}, so nothing
+ * here can launder a record.
+ *
+ * Identifiers are sanitized and THEN shell-quoted and the command is emitted
+ * LAST and UNWRAPPED, for the reasons {@link safeIdentifier}'s note gives.
+ */
+export function malformedLocalOutputsWarning(stackName: string, region: string): string {
+  const stack = safeIdentifier(stackName);
+  const reg = safeIdentifier(region);
+  return (
+    `State for ${shellQuote(stack)} (${shellQuote(reg)}) has no readable 'outputs' map — the ` +
+    `record is malformed or truncated. 'Object.entries' walks a string or a list as readily as ` +
+    `a map, so reading it would hand this local run one FABRICATED output per character or ` +
+    `element. Continuing with it EMPTY: every reference to an output of this record resolves to ` +
+    `nothing and is dropped, which is not the same as the record holding none. See the stored ` +
+    `value with: cdkd state show ${shellQuote(stack)} --stack-region ${shellQuote(reg)} --json`
+  );
 }
