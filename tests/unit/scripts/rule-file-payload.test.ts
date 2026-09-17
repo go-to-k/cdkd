@@ -372,6 +372,65 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   // `src/deployment/secret-redaction.ts` and `src/cli/commands/scrub.ts` paths,
   // both within a few dozen bytes of their caps, do not pay for it. EXACT.
   ['no-change-outputs-merge.md', 1],
+  // Five literal paths (go-to-k/cdkd#3298), so this is EXACT like the other
+  // wildcard-free lists: the module that RAISES the refusals
+  // (`intrinsic-function-resolver.ts`), the one that DEFINES the class and its
+  // subclass (`error-handler.ts`), `secret-region-classification.ts`, whose
+  // go-to-k/cdkd#2692 note weighs the same base-class-vs-subclass choice from
+  // the OVER-refusal side, and the two consumers that BRANCH (`scrub.ts` on the
+  // `CrossAccountSecretRefusalError` subclass, `drift.ts` on the base class
+  // since go-to-k/cdkd#2482).
+  //
+  // `retryable-errors.ts` DEFINES `markNonRetryable` and was in this list until
+  // go-to-k/cdkd#3236 made it a budgeted row of its own; it is NOT here now, and
+  // restoring it puts that row 3,901 B over its cap. An earlier revision of this
+  // comment said "five literal paths" while enumerating SIX modules including
+  // that one -- a count restated beside a list rather than derived from it, the
+  // same defect this file's own header warns about. The satellite's header
+  // carries the full reason and the mitigation.
+  //
+  // `deploy-engine.ts` is deliberately NOT here, and the reason is a COST, not
+  // a judgement that it does not care: its budgeted row leaves 3,858 B of cap
+  // headroom (62,642 against 66,500) and this satellite is
+  // 7,888 B, so adding the path would put that row OVER. What makes the
+  // omission safe is that all three things the moved text says about that module
+  // -- the re-wrap with `cause` threaded, so the non-retryable marker survives
+  // -- are written at the throw site in `deploy-engine.ts` itself, and
+  // `layout-deployment.md` carries the `markNonRetryable` / `isMarkedNonRetryable`
+  // cause-walk summary (including that this class stays UNMARKED) on every
+  // `src/deployment/**` path. An earlier revision of this comment said "~400 B UNDER its cap",
+  // which was the wrong figure AND the wrong direction: it had been read off a
+  // mutated copy of the satellite during a probe. Review caught it, in the file
+  // whose own header is about exactly that class of stale number.
+  //
+  // RESIDUAL, measured by the round-3 security review rather than assumed: the
+  // EXACT arm is selected by `literal`, which asks whether ANY glob contains a
+  // wildcard -- so it catches a path being DROPPED, and does not survive the five
+  // literals being REPLACED by one wildcard that happens to reach at least five
+  // files. Measured swaps that stay green across EVERY row, reach floor,
+  // dead-glob and always-on case: `src/local/*.ts` (reach 57), `scripts/*.ts`
+  // (54), `src/assets/*.ts` (7). Each takes this file dark on ALL FIVE paths --
+  // not merely the modules that RAISE and DEFINE the class, but the BRANCHING
+  // consumers too, including `scrub.ts`, whose miss is the one that prints
+  // `No plaintext secrets found` and exits 0 over surviving plaintext. No
+  // payload cap reds any of them, because every affected row gains less than
+  // its headroom. (`src/cli/commands/*.ts` reaches 42 and is the swap under
+  // which both consumers happen to survive, which is why an earlier revision
+  // of this note picked it and understated the hazard.) Widening the glob
+  // BROADLY -- to `src/**/*.ts` -- is a different move and the payload caps do
+  // catch it. Not fixed here: the `literal` predicate is shared by 30
+  // wildcard-free rows and narrowing it is its own change.
+  // 6 -> 5: `src/deployment/retryable-errors.ts` was DROPPED from the glob, and
+  // the file's own header says why at length. Short version, since this fence
+  // demands the reason be stated here: go-to-k/cdkd#3236 made that file a
+  // budgeted row with `cloud-control-wait.md` globbed at it ALONE, leaving
+  // 3,987 B of headroom, so adding this satellite put the row 3,901 B over its
+  // cap. It DEFINES `markNonRetryable`, so it is not that the code stopped
+  // caring -- `layout-deployment.md` carries the `markNonRetryable` /
+  // `isMarkedNonRetryable` cause-walk summary on every `src/deployment/**`
+  // path, which is the same mitigation `deploy-engine.ts` has relied on since
+  // this satellite was written.
+  ['intrinsic-refusals.md', 5], // literal list: EXACT, see below
   // Every fixture's verify.sh (go-to-k/cdkd#3126); measured 257, the same
   // population integ-verify-capture-shape.test.ts floors at 250.
   ['abort-capture.md', 250],
@@ -418,7 +477,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // satellite to land unnoticed, which is the hazard the s3-bucket-provider row
   // above was re-derived to close.
   ['docs/cli-deploy.md', 4_800, 7_000],
-  ['src/provisioning/providers/s3-bucket-provider.ts', 210_000, 265_000], // measured 239,539; the cap was 300_000, whose 60,639 B of slack silently absorbed a whole 59 KB satellite in a review probe
+  ['src/provisioning/providers/s3-bucket-provider.ts', 210_000, 265_000], // measured 255,786 on 2026-09-17 (239,539 at the 2026-08-25 split); the cap was 300_000, whose 60,639 B of slack silently absorbed a whole 59 KB satellite in a review probe
   // A provisioning path OUTSIDE `providers/**`, and it is the row that makes
   // the provider half of this table bind at all. Review probe, 2026-08-25:
   // widening all seven `provider-*.md` from `src/provisioning/providers/**`
@@ -439,7 +498,20 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // The one path that loads `no-change-outputs-merge.md` (go-to-k/cdkd#3110);
   // without this row the satellite would sit under no budget at all. Payload
   // is layout-deployment.md + architecture.md + code-layout.md + the satellite.
-  ['src/deployment/no-change-outputs-merge.ts', 50_000, 62_000], // measured 56,993
+  // FLOOR RAISED 50_000 -> 50_100 by go-to-k/cdkd#3295. An earlier revision of
+  // this comment said it "restored a property this change had broken by 13 B";
+  // the round-3 test review measured that FALSE and it is corrected here rather
+  // than quietly. Pre-PR this row was 57,044 against a 50_000 floor, so
+  // `code-layout.md` (3,350 B) going dark left 53,694 and was NEVER caught --
+  // the margin was twice the file. The split cut the payload to 53,369, which
+  // brings the dark case to 50,019, i.e. within 19 B of the old floor; 50_100
+  // is what converts that near-miss into a detector. So this raise CREATES
+  // coverage rather than restoring it, and the coverage is not incidental: the
+  // round-3 probe found this row is the SOLE detector of a `code-layout.md`
+  // narrowing over the whole `src/deployment/**` subtree. 3,269 B of ordinary
+  // compression room is left, and 81 B of growth room before the detector
+  // lapses -- thin, and LOUD when spent, because `DARK_DETECTORS` asserts it.
+  ['src/deployment/no-change-outputs-merge.ts', 50_100, 62_000], // measured 53,369 (57,044 before go-to-k/cdkd#3298; the 56,993 this row carried was an older, undated figure)
   // The one path that loads `rollback-replay-create.md` (go-to-k/cdkd#3199);
   // without this row the satellite would sit under no budget at all. Payload is
   // layout-deployment.md + architecture.md + code-layout.md + delete-outcome.md
@@ -464,14 +536,41 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // measurement, and the cap's slack (4,565 B) is kept BELOW the size of the
   // smallest satellite on the path (`name-collision-classification.md`,
   // 7,805 B) so a satellite going dark cannot be absorbed silently.
-  ['src/deployment/retryable-errors.ts', 60_500, 73_500], // measured 68,935
+  ['src/deployment/retryable-errors.ts', 60_500, 73_500], // measured 69,513
   // The path family that loads `abort-capture.md` (go-to-k/cdkd#3126): payload
   // is testing.md + the satellite. Sized so the satellite cannot quietly grow
   // into a second testing.md while the parent sits at its own cap.
   ['tests/integration/local-invoke/verify.sh', 50_000, 58_000], // measured 55,012
-  ['src/cli/commands/deploy.ts', 41_000, 63_000],
-  ['src/cli/commands/diff-recursive.ts', 40_000, 62_000], // measured 52,270 -- go-to-k/cdkd#3245: the path that reaches layout-cli-diff.md
-  ['src/cli/commands/orphan.ts', 38_000, 60_000],        // measured 52,923 -- go-to-k/cdkd#3245: the path that reaches layout-cli-state.md
+  // FLOOR RE-DERIVED 41_000 -> 40_200 by go-to-k/cdkd#3298, the same
+  // deliberate-drop case as the `synthesizer.ts` row below and for the same
+  // cause: the `Fn::Sub` refusal bullet left `architecture.md`, so every
+  // `src/**/*.ts` payload fell 3,671 B. At 41_000 this row would have kept 1,574
+  // B, and a floor that tight fires on the NEXT compression of the always-on
+  // pair with a message blaming a glob narrowing that did not happen.
+  //
+  // 40_200 rather than this table's ~12% convention (37,465), and the reason is
+  // a PROBE that refuted the first attempt. That attempt used 37_000 and argued
+  // the lost coverage was "already owned by `REACH_FLOORS['code-layout.md']`".
+  // A test review measured that false: narrowing `code-layout.md` to drop
+  // `src/cli/**` leaves it clear of the 261 floor, and the suite stayed GREEN at
+  // 37_000 while 41_000 red it. TWO figures were reported, because two review
+  // axes measured two different narrowings and the difference is the point: a
+  // MINIMAL drop of `src/cli/**` costs 53 of the glob's 338 files and leaves
+  // 285, while the probe actually run replaced the glob with a per-directory
+  // list and so also dropped `src/index.ts` and `src/version.ts`, leaving 283.
+  // Either way a reach floor with ~77 files of slack cannot see it.
+  //
+  // So this floor keeps the job itself, and `DARK_DETECTORS` now ASSERTS that
+  // rather than this comment claiming it: `code-layout.md` going dark leaves
+  // 39,224, which 40_200 rejects with 976 B of growth room, and 2,374 B (5.6%)
+  // of compression room is left. An earlier revision of this comment put the
+  // floor at 38_900 and said dark "leaves 38,815" -- both figures were taken
+  // before the satellite reached final size, and at 38_900 the row detected
+  // NOTHING. Three review axes each caught it independently; the executable
+  // case is what stops the fourth recurrence.
+  ['src/cli/commands/deploy.ts', 40_200, 63_000], // payload asserted live by the band + DARK_DETECTORS
+  ['src/cli/commands/diff-recursive.ts', 40_000, 62_000], // measured 56,669 (52,270 at go-to-k/cdkd#3245) -- the path that reaches layout-cli-diff.md
+  ['src/cli/commands/orphan.ts', 38_000, 60_000],        // measured 56,284 (52,923 at go-to-k/cdkd#3245) -- the path that reaches layout-cli-state.md
   // The one path that loads `state-malformed-resources-gated.md`
   // (go-to-k/cdkd#3161); without this row the satellite would sit under no
   // budget at all. Payload is layout-cli.md + cli-internals.md +
@@ -523,8 +622,25 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // a sample. These rows put every rule file under at least one budget -- which
   // is asserted below rather than left as a claim -- and the number beside each
   // is its measured payload rounded out by roughly a tenth in each direction.
-  ['src/deployment/secret-redaction.ts', 70_000, 102_000],   // measured 101,095; 101_000 -> 102_000 at the layout-misc split: +256 B on every `src/**/*.ts` path from code-layout.md's three new index rows. (101,842 when the row was written; 101_000 was go-to-k/cdkd#2310's re-derivation after the payload shrank below it)
-  ['src/cli/commands/scrub.ts', 88_000, 119_000],            // measured 109,757 (go-to-k/cdkd#3245 moved the diff and state entries out of layout-cli.md; was 118,982 with ~18 B of headroom). 118_000 -> 119_000 at the layout-misc split
+  ['src/deployment/secret-redaction.ts', 70_000, 102_000],   // measured 98,286 on 2026-09-17 (101,967 before go-to-k/cdkd#3295; the 101,095 this row carried was an older, undated figure); 101_000 -> 102_000 at the layout-misc split: +256 B on every `src/**/*.ts` path from code-layout.md's three new index rows. (101,842 when the row was written; 101_000 was go-to-k/cdkd#2310's re-derivation after the payload shrank below it)
+  // go-to-k/cdkd#3295: one of the TWO BUDGETED rows the `intrinsic-refusals.md`
+  // split moves UPWARD rather than down. This path is named by the satellite's
+  // globs, so it GAINS the whole file (7,888 B) exactly as it loses the bullet
+  // from `architecture.md` (3,671 B including the pointer left behind) -- net
+  // +4,217, the satellite's frontmatter, title and orientation paragraph. That
+  // is the split working: the modules that raise, define and branch on the
+  // class keep the text and every other `src/**/*.ts` path stops paying for it.
+  // THREE of the satellite's five paths are NOT budgeted rows
+  // (`intrinsic-function-resolver.ts`, `error-handler.ts`,
+  // `secret-region-classification.ts`), so they take the same +4,217 with no
+  // row here to show it -- said out loud because "every other path stops
+  // paying" is true only of the paths OUTSIDE that glob list. An earlier
+  // revision read "four of six" and listed `retryable-errors.ts` among the
+  // unbudgeted: it was dropped from the glob entirely at the second rebase, and
+  // it IS a budgeted row (go-to-k/cdkd#3236 added one). Wrong in both halves,
+  // which is what a count restated beside a list rather than derived from it
+  // does.
+  ['src/cli/commands/scrub.ts', 88_000, 119_000],            // measured 114,514 (was 109,757 at go-to-k/cdkd#3245, which moved the diff and state entries out of layout-cli.md; was 118,982 with ~18 B of headroom before that). 118_000 -> 119_000 at the layout-misc split
   // 110,000 -> 118,000 (issue go-to-k/cdkd#2274). This path loads BOTH
   // `layout-deployment-secrets.md` and the new `layout-scrub.md` satellite, so the
   // split that satellite performed did not reduce THIS path -- it reduced every
@@ -562,14 +678,51 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // if you ever need to restate it, and do not add a test that reads a constant
   // this PR removes.
   ['src/provisioning/providers/custom-resource-provider.ts', 225_000, 287_000],
-  ['src/cli/commands/drift.ts', 87_000, 110_000],            // measured 104,268
-  ['src/cli/commands/import.ts', 63_000, 81_000],            // measured 71,568 (go-to-k/cdkd#3245; was 80,793). 80_000 -> 81_000 at the layout-misc split
-  ['src/utils/ip-protocol.ts', 83_000, 103_000],             // measured  95,005
-  ['src/provisioning/cloud-control-provider.ts', 67_500, 105_000], // measured 94,925
+  // The OTHER budgeted row go-to-k/cdkd#3295 moves upward, for the reason on
+  // the `scrub.ts` row above: `drift.ts` branches on the BASE class
+  // `IntrinsicResolutionRefusalError` (since go-to-k/cdkd#2482), where
+  // `scrub.ts` branches on the subclass, so it is in the satellite's glob list
+  // and nets +4,217.
+  // FLOOR RAISED 87_000 -> 93_500 by go-to-k/cdkd#3298, repairing a property
+  // this change itself removed -- the mirror of the `no-change-outputs-merge.ts`
+  // row above, and on a SECRET path, which is why it is called out rather than
+  // folded in. This row GAINS the satellite (it is in its glob list) while
+  // `architecture.md` shrank 3,671 B, so `architecture.md` going dark used to
+  // leave 83,300 -- under the 87_000 floor, which red it -- and would now leave
+  // 91,188, clearing anything at the old convention (~12% of the payload is
+  // 88,142, BELOW the dark figure, which is why this floor has to be raised at
+  // all).
+  //
+  // 93_500 rather than a value hugging 91,188, and the difference is the whole
+  // point. A floor set just above the dark figure is not a detector, it is a
+  // coincidence: the quantity that matters is how far the payload can GROW
+  // before `architecture.md` dark clears the floor again. 93_500 buys 2,312 B
+  // of that, while still leaving 6,661 B (6.7%) of shrink room, so both sides
+  // are ordinary-editing sized.
+  //
+  // THREE floors in this table were set by hugging and are recorded rather than
+  // raised, because they already sit at the ~12% convention and raising them
+  // would refuse ordinary edits: `no-change-outputs-merge.ts` (81 B of growth),
+  // `deploy.ts` (976 B) and `asset-publisher.ts` (354 B). What changed at
+  // go-to-k/cdkd#3298 is that exhausting any of those margins is now LOUD --
+  // `DARK_DETECTORS` asserts the property on every run, so a detector that
+  // stops detecting reds instead of going quietly inert. That is what makes a
+  // thin margin tolerable here; before that case existed it was not.
+  //
+  // "On a SECRET path" is about THIS row only: `scrub.ts`, the other secret
+  // path in the glob list, does not catch `architecture.md` dark at all
+  // (105,541 against a floor of 88,000), and did not before this change either.
+  // `REACH_FLOORS['architecture.md']` (261) cannot substitute: a `code-layout.md`
+  // narrowing costing 53 files clears a floor with ~77 of slack, and
+  // `architecture.md` carries the identical glob and the identical floor.
+  ['src/cli/commands/drift.ts', 93_500, 110_000],            // payload asserted live by the band + DARK_DETECTORS; no figure restated here (see the satellite's note on self-invalidating byte counts)
+  ['src/cli/commands/import.ts', 63_000, 81_000],            // measured 68,425 (71,568 at go-to-k/cdkd#3245; 80,793 before it). 80_000 -> 81_000 at the layout-misc split
+  ['src/utils/ip-protocol.ts', 83_000, 103_000],             // measured 94,084 (95,005 when the row was written)
+  ['src/provisioning/cloud-control-provider.ts', 67_500, 105_000], // measured 100,083 on 2026-09-17 (94,925 when the row was written)
   // The representative path for provisioning-sticky-routing.md, whose single
   // glob is exactly this file (go-to-k/cdkd#2719). Without a budgeted path the
   // satellite would be bounded by nothing but the per-file cap.
-  ['src/provisioning/provider-registry.ts', 62_000, 106_000], // measured 87,763; 105_000 -> 106_000 (go-to-k/cdkd#3245): +126 B on every `src/**` path from code-layout.md's new layout-cli-diff index row, measured 105,074
+  ['src/provisioning/provider-registry.ts', 62_000, 106_000], // measured 101,550 on 2026-09-17. 105_000 -> 106_000 (go-to-k/cdkd#3245): +283 B on every `src/**` path from code-layout.md's two new index rows (layout-cli-diff and layout-cli-state; an earlier revision said +126 B and one row, which the round-4 code review measured: code-layout.md went 3,067 -> 3,350 there), measured 105,231 at that change
   // 55_000 -> 57_000 (both rows): `code-layout.md` gained an index row for
   // `layout-scrub.md` (issue #2274), and that file is in EVERY payload, so a
   // cap with 100 B of headroom fails for a reason unrelated to the path it
@@ -600,13 +753,13 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // family index. Fund one by cutting what your own change made stale, never by
   // widening a band you did not calibrate. (The 49_000 standing here now is
   // go-to-k/cdkd#3245's, for its own index row.)
-  ['src/state/s3-state-backend.ts', 38_000, 49_000],          // measured 43,895; 48_000 -> 49_000 (go-to-k/cdkd#3245): the same +126 B index row, measured 48,069
+  ['src/state/s3-state-backend.ts', 38_000, 49_000],          // measured 44,489; 48_000 -> 49_000 (go-to-k/cdkd#3245): the same +283 B of index rows (TWO landed at that change, not one), measured 48,226
   // The representative path for state-version-purge.md, whose two-file glob
   // (the purge and its replication-gap detector, issue
   // go-to-k/cdkd#2447) matches nothing else. Without this row the satellite
   // sits under no budget at all: the `src/state/s3-state-backend.ts` row above
   // does NOT match it, which is the whole reason it was split out.
-  ['src/state/s3-noncurrent-version-purge.ts', 43_000, 56_000], // measured 49,744; RE-DERIVED at the layout-misc split (was 53_000/64_000 at 61,168; the old CAP left 14 KB of slack, enough for a whole satellite to land unseen)
+  ['src/state/s3-noncurrent-version-purge.ts', 43_000, 56_000], // measured 50,394 on 2026-09-17 (49,744 at the layout-misc split); RE-DERIVED there (was 53_000/64_000 at 61,168; the old CAP left 14 KB of slack, enough for a whole satellite to land unseen)
   // The representative path for state-malformed-containers.md, whose single
   // literal glob matches nothing else. Split out of layout-state-types.md
   // under issue go-to-k/cdkd#3192, when the `outputs`-container guards pushed
@@ -614,7 +767,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // the satellite sits under no budget at all -- neither the
   // `src/state/s3-state-backend.ts` row nor the `src/types/state.ts` one
   // matches it, which is the point of the split.
-  ['src/state/malformed-resources-bag.ts', 46_000, 57_000], // measured 52,721
+  ['src/state/malformed-resources-bag.ts', 46_000, 57_000], // measured 53,151; go-to-k/cdkd#3276 grew state-malformed-containers.md by 2,370 B, so this row RISES despite the split. It is also why this path cannot join intrinsic-refusals.md's `paths:` -- 53,151 + 7,888 = 61,039, over the 57,000 cap by 4,039
   // Ceiling was 57_000 -> 58_000 by go-to-k/cdkd#2717, calibrated against a
   // 57,019 B payload with 96 B of headroom, where a single `code-layout.md`
   // index row was enough to breach it. That reasoning stands and is why the
@@ -625,8 +778,65 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // size of `layout-state-types.md` to land unseen. 48_000 keeps ~4 KB, which
   // is ~16 index rows at the 256 B this branch's four rows cost, and still
   // binds. The FLOOR is what catches a glob narrowing.
-  ['src/types/state.ts', 38_000, 49_000],                     // measured 43,895; RE-DERIVED at the layout-misc split, see the s3-state-backend row; 48_000 -> 49_000 (go-to-k/cdkd#3245) for the same index row
-  ['src/synthesis/synthesizer.ts', 21_000, 28_000], // measured 24,121; RE-DERIVED at the layout-misc split (was 30_000/40_000; the 39,197 beside it was stale, the real figure 39,346)
+  ['src/types/state.ts', 38_000, 49_000],                     // measured 44,545 on 2026-09-17 (43,895 at the layout-misc split), see the s3-state-backend row; 48_000 -> 49_000 (go-to-k/cdkd#3245) for the same index row
+  // BAND RE-DERIVED by go-to-k/cdkd#3295, and the FLOOR half is the
+  // deliberate-drop case the assertion's own message prescribes ("If the drop is
+  // deliberate, lower this floor in the same commit and say what moved where").
+  // WHAT MOVED WHERE: `architecture.md`'s 3,966 B `Fn::Sub` refusal bullet moved
+  // VERBATIM to `intrinsic-refusals.md`, globbed at the five modules that raise /
+  // define / weigh / branch on the class (one of them defining
+  // `markNonRetryable`, which the resolver calls at its throw sites). This path is not one of them
+  // and correctly loses the text -- synthesis runs the CDK app and emits the
+  // Cloud Assembly, and resolves no intrinsic (the resolver runs in
+  // `src/deployment/`), so nothing here under-loads. It is the ONLY row the move
+  // takes under its floor.
+  //
+  // 21_000 -> 19_100, and 19_100 is DERIVED rather than a percentage. This path
+  // loads four files (layout-synthesis 5,217 + synthesis 3,335 + architecture
+  // 8,973 + code-layout 3,350 = 20,875), and 19_100 is the first round hundred
+  // above BOTH failure modes this floor can own: the smallest going DARK leaves
+  // 17,540, and the smallest GUTTED to `SUBSTANTIVE_MIN_BYTES` leaves 19,040.
+  // The gutting half is the one the bare-12% figure (18,370) would have missed,
+  // and is otherwise derived for only one other MULTI-FILE row in this table
+  // (`tests/setup.ts`; `.github/workflows/pr-content-checks.yml` happens to have
+  // it, and the six single-rule-file rows have it trivially) --
+  // repo-wide it is go-to-k/cdkd#2810's open gap, not this row's. The cost is
+  // stated rather than discovered: only 1,775 B of legitimate SHRINK room is
+  // left, so a compression pass on `architecture.md` or `code-layout.md` larger
+  // than that reds this row and must re-derive it in the same commit. That is
+  // the prescribed move, not a defect.
+  //
+  // CAP 28_000 -> 22_375 in the same pass: at 28_000 the slack was 7,125 B,
+  // room for `intrinsic-refusals.md` (7,888) or `layout-synthesis.md` (5,217) to
+  // land here whole and unnoticed -- the hazard the `s3-bucket-provider` row
+  // above records.
+  //
+  // 22_375, and BOTH earlier attempts named the wrong population. The first
+  // (23_500) bounded the slack by the smallest file already ON this path
+  // (`synthesis.md`, 3,335 B), when the thing being excluded is a file that
+  // ARRIVES. The second (22_600) bounded it by the smallest file in the CORPUS
+  // (`own-keys.md`, 1,798 B) -- better, and still wrong, because an arriving file
+  // can be NEW. Each was probed by a review round: `own-keys.md` given a
+  // `src/synthesis/**/*.ts` glob lands this path at 22,673 B and was GREEN at
+  // 23_500; the same file resized to 1,600 B was GREEN at 22_600, whole suite.
+  //
+  // The real bound is a CONSTANT IN THIS FILE, which is why no measurement of
+  // the corpus could find it: `SUBSTANTIVE_MIN_BYTES` (1_500) is asserted on
+  // EVERY rule file, so the smallest one that can ever exist is 1,501 B. A cap
+  // of 22_375 leaves exactly 1,500 B, so 20,875 + 1,501 = 22,376 exceeds it and
+  // no legal rule file can ARRIVE on this path unseen. Arrival ALONE is closed;
+  // arrival plus a COMPRESSION is not, and the round-4 test review measured it:
+  // shrink the payload 1,775 B (inside the floor) and land `layout-build.md`
+  // (2,864 B) and the row sits at 21,984, inside both bounds. A band cannot
+  // close that without also refusing ordinary editing.
+  //
+  // The cost is the one thing left to state: 1,500 B of growth room, against
+  // 1,775 B of shrink room at the floor, so this row binds within ~1.5 KB in
+  // both directions and a lane moving more than that across `architecture.md` /
+  // `code-layout.md` / `synthesis.md` / `layout-synthesis.md` re-derives the
+  // band in the same commit. That is the prescribed move for a row this tight,
+  // not a defect in it.
+  ['src/synthesis/synthesizer.ts', 19_100, 22_375], // measured 20,875 on 2026-09-17 (24,556 before go-to-k/cdkd#3295)
   // 62_000 -> 68_000: payload is `testing.md` alone, which reached 61,358 B, so
   // the cap had 642 B of headroom and the next edit to that file would have
   // failed this row for a reason unrelated to itself -- the same argument that
@@ -802,9 +1012,19 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // was covered only by prose, in the `region-check.ts` row's claim to speak
   // for "the 20-odd shared helpers" -- it does not, because that row's payload
   // is 52,459 B lighter.
-  ['src/provisioning/masked-retry-logger.ts', 94_500, 148_000], // measured 126,979
-  ['src/analyzer/drift-protocol-normalize.ts', 71_000, 85_000],  // measured  81,242
-  ['src/assets/asset-publisher.ts', 24_000, 32_000],             // measured 28,142; RE-DERIVED at the layout-misc split (was 32_000/42_000 at 40,238, a floor 13 KB of which described synthesis / state / types)
+  ['src/provisioning/masked-retry-logger.ts', 94_500, 148_000], // measured 143,928 on 2026-09-17 (126,979 at the 2026-08-25 split)
+  ['src/analyzer/drift-protocol-normalize.ts', 71_000, 85_000],  // measured 79,313 (81,242 when the row was written)
+  // FLOOR RE-DERIVED DOWNWARD 24_000 -> 21_900 by go-to-k/cdkd#3295, for the
+  // reason spelled out on the `deploy.ts` row above: 24_000 would have left 896
+  // B, the tightest floor margin among the `src/**` rows, on a path dominated by
+  // the two always-on files the split just shrank. (`vite.config.ts` at 364 B and
+  // `docs/cli-deploy.md` at 583 B are tighter still; both are single-rule-file
+  // rows this change does not move.) 24,896 x 0.88 = 21,908.
+  //
+  // Unlike the `deploy.ts` row, this one keeps the dark-detection job at its new
+  // value without being held there: `code-layout.md` going dark leaves 21,546,
+  // which 21_900 rejects.
+  ['src/assets/asset-publisher.ts', 21_900, 32_000],             // measured 24,896 on 2026-09-17 (28,142 at the layout-misc split); RE-DERIVED there (was 32_000/42_000 at 40,238, a floor 13 KB of which described synthesis / state / types)
   // Ceiling 48_000 -> 49_000 by go-to-k/cdkd#2717. The growth is in
   // `code-layout.md`, the family INDEX, which gained one table row because the
   // repo gained an area (the CI checks that replaced retired PreToolUse gates,
@@ -812,7 +1032,15 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // what the satellite convention rests on, so this path's payload grows by a
   // row every time a satellite is added -- the ceiling tracks that, and the
   // FLOOR is what still catches a glob narrowing.
-  ['src/assets/asset-storage.ts', 30_000, 39_000],               // measured 34,668 (asset-bucket-region.md, issue #2240); RE-DERIVED at the layout-misc split
+  // FLOOR RE-DERIVED DOWNWARD 30_000 -> 27_600 by go-to-k/cdkd#3295, same cause
+  // and same convention as the two rows above (31,422 x 0.88 = 27,651).
+  //
+  // This row DOES give up seeing `code-layout.md` go dark (28,072 clears 27_600),
+  // and the owner is named rather than assumed: the `asset-publisher.ts` row
+  // above is on the same `src/assets/**` globs and still reds. A narrowing that
+  // dropped only this one file would slip both -- contrived, and recorded here
+  // rather than argued away.
+  ['src/assets/asset-storage.ts', 27_600, 39_000],               // measured 31,422 on 2026-09-17 (34,668 at the layout-misc split; asset-bucket-region.md, issue #2240); RE-DERIVED there
   // proxy-support.md's glob names three literal files (issue #2388); without a
   // row here the satellite would sit under no budget, which is the state the
   // 2026-08-25 review probe showed a rule file can reach unnoticed.
@@ -836,7 +1064,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // reproducible. An unreproducible provenance is worse than the slack it
   // buys: the next lane reads the number, cannot re-derive it, and has no way
   // to tell an honest band from an inherited one.
-  ['src/utils/caller-credentials.ts', 42_000, 56_000], // measured 54,229
+  ['src/utils/caller-credentials.ts', 42_000, 56_000], // measured 50,558 (54,229 before go-to-k/cdkd#3298 took 3,671 B off every `src/**/*.ts` path)
   // The representative path for local-engine-role-leak.md
   // (go-to-k/cdkd#3130 / go-to-k/cdkd#3240): without a row the satellite would
   // sit under no budget. It SPLIT OUT of local-caller-identity.md rather than
@@ -851,12 +1079,12 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // because review kept correcting what it records -- the fourth channel,
   // the reason no warning fires on it, and what an opt-out on the
   // `--from-state` sites actually does (403, not a different record).
-  ['src/cli/commands/local-start-service.ts', 30_000, 54_000], // measured 52,053
+  ['src/cli/commands/local-start-service.ts', 30_000, 54_000], // measured 48,791 (52,053 before go-to-k/cdkd#3298)
   // The representative path for own-keys.md (go-to-k/cdkd#3121): payload is
   // layout-utils.md + architecture.md + code-layout.md + the satellite, which
   // split out because layout-utils.md sat 118 B under the row above's cap.
-  ['src/utils/own-keys.ts', 42_000, 52_000], // measured 49,437
-  ['src/utils/logger.ts', 38_000, 50_000],                       // measured  43,397
+  ['src/utils/own-keys.ts', 42_000, 52_000], // measured 46,183 (49,437 at go-to-k/cdkd#3121)
+  ['src/utils/logger.ts', 38_000, 50_000],                       // measured 44,385 (43,397 when the row was written)
   // The row the split changes most, and the clearest illustration of what the
   // grab-bag was doing: editing `vite.config.ts` used to load 19,581 B of rule
   // text, all but its own 84 B bullet describing src layers it is not part of.
@@ -1404,7 +1632,7 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 // Neither branch's figure is the merged one. That is the whole reason this
 // count is asserted rather than described: two correct increments compose to a
 // number neither author wrote.
-const CORPUS_FILE_COUNT = 69; // + state-malformed-properties-orphan.md (go-to-k/cdkd#3318): the
+const CORPUS_FILE_COUNT = 70; // + state-malformed-properties-orphan.md (go-to-k/cdkd#3318): the
                               //  `properties` container's THIRD reader, `cdkd orphan`, which runs
                               //  no diff and so is described by neither section of
                               //  `state-malformed-properties.md`. Listing `src/cli/commands/orphan.ts`
@@ -1444,6 +1672,23 @@ const CORPUS_FILE_COUNT = 69; // + state-malformed-properties-orphan.md (go-to-k
                               //  left behind. The defining module is deliberately NOT in that
                               //  glob -- it had ~300 B of headroom, the same call the
                               //  `state-malformed-containers.md` row records for scrub and import.
+                              // + intrinsic-refusals.md (go-to-k/cdkd#3298): `architecture.md`'s
+                              //  3,966 B `Fn::Sub` refusal bullet is mechanism about a handful of modules while its
+                              //  glob is `src/**/*.ts`, so every `src/` touch in the repo paid for it. Moved
+                              //  VERBATIM to a satellite globbed at the five files that raise, define, weigh or
+                              //  branch on the class, with a one-line pointer left behind. NO `code-layout.md`
+                              //  index row: that index is the `layout-*` family's, and a row there would put
+                              //  ~140 B back on every `src/**` path -- the cost this split is paying down.
+                              //  (go-to-k/cdkd#3245 landed TWO such rows for 283 B, so one is ~140, not the
+                              //  ~126 an earlier revision of this comment carried.)
+                              //  Reachability comes from the pointer in `architecture.md`, which CLAUDE.md
+                              //  links, the shape `own-keys.md` and `no-change-outputs-merge.md` already use.
+                              //  66 -> 67, MEASURED on the merged tree (`ls .claude/rules/*.md | wc -l`), not
+                              //  inherited: this lane branched from a 63-file base and go-to-k/cdkd#3191 /
+                              //  go-to-k/cdkd#3236 landed 64 -> 66 underneath it, so 63 + 1 would have been
+                              //  the keep-either answer the block below warns about. THIRD rebase:
+                              //  main reached 69 while this branch sat at 67, so the merged count is
+                              //  70, MEASURED again rather than incremented from either side.
                               // + cloud-control-wait.md (go-to-k/cdkd#3236): the `waitForOperation`
                               //  poll fence took `src/provisioning/cloud-control-provider.ts` over
                               //  its cap from inside layout-provisioning.md, so it moved to a
@@ -3087,6 +3332,112 @@ describe('.claude/rules payload fence', () => {
         `${(satellite as { bytes: number }).bytes} B -- a second satellite could land on this ` +
         'path unnoticed. Lower the cap.'
     ).toBeLessThan((satellite as { bytes: number }).bytes);
+  });
+
+  it('every claimed dark-detector actually detects', () => {
+    // WHY THIS EXISTS. Several `PAYLOAD_BUDGETS` floors are held ABOVE the ~12%
+    // convention for one stated reason: "this row is what notices <file> going
+    // dark on this path". Until now that claim lived only in a COMMENT, and the
+    // band assertion cannot see it -- it checks `payload ∈ [floor, cap]` and is
+    // green whether or not the detector works. So the claim rotted exactly the
+    // way this file's header warns a derived figure does, and it rotted TWICE
+    // inside the single PR that added this case (go-to-k/cdkd#3298): both the
+    // `drift.ts` and `deploy.ts` floors were computed from a payload taken
+    // BEFORE the satellite and the pointer reached their final size, and each
+    // shipped ~400-1,200 B too low, i.e. detecting nothing. Three review axes
+    // each re-measured it by hand.
+    //
+    // A number that nothing re-derives is a number that will be wrong again, so
+    // the claim is now EXECUTABLE: each row below asserts that removing the
+    // named file from the path's payload lands strictly UNDER the row's floor.
+    // Adding text anywhere on these paths raises the payload, which raises the
+    // dark residue, which reds this case the moment the floor stops covering it
+    // -- when the margin is SPENT rather than when someone re-reads a comment.
+    //
+    // The PATH's payload is matched by GLOB (never by naming the rule files on
+    // it), for the reason the `tests/setup.ts` case gives: a future satellite
+    // split out of a matching file would otherwise re-subsume the floor while
+    // this stayed green. The DARK FILE is named literally, because which file
+    // a floor was bought to watch is exactly the claim under test; a renamed
+    // one fails loudly below rather than being silently re-matched.
+    const DARK_DETECTORS: ReadonlyArray<readonly [string, string]> = [
+      // Sole detector of `architecture.md` narrowing off `src/cli` -- the
+      // property go-to-k/cdkd#3298 removed by shrinking that file, and the
+      // reason this floor is 93_500 rather than the ~12% 88,142.
+      ['src/cli/commands/drift.ts', 'architecture.md'],
+      // Sole detector of `code-layout.md` going dark on this path; the reason
+      // the floor is held at 40_200 rather than the ~12% 37,465.
+      ['src/cli/commands/deploy.ts', 'code-layout.md'],
+      // Sole detector of `code-layout.md` going dark over the whole
+      // `src/deployment/**` subtree (measured by the go-to-k/cdkd#3298 review).
+      ['src/deployment/no-change-outputs-merge.ts', 'code-layout.md'],
+      // The smallest file on the synthesis path; its floor's own derivation.
+      ['src/synthesis/synthesizer.ts', 'synthesis.md'],
+      // `asset-publisher.ts` catches `code-layout.md`; its sibling
+      // `asset-storage.ts` deliberately does NOT (28,072 against a 27,600
+      // floor), a loss go-to-k/cdkd#3298 disclosed rather than papered over --
+      // which is why that pair is one row here and not two.
+      ['src/assets/asset-publisher.ts', 'code-layout.md'],
+    ];
+
+    // POPULATION FENCE, and it is not decoration: every lookup below fails
+    // LOUDLY (a missing row or a renamed file pushes a failure), but an entry
+    // simply DELETED takes its own check with it and leaves `failures` empty,
+    // so the case passes while detecting less. That is precisely the shape this
+    // file pins everywhere else -- `CORPUS_FILE_COUNT`, `PAYLOAD_BUDGETS.length`,
+    // `REACH_FLOORS['intrinsic-refusals.md']` are all EXACT for the same reason
+    // -- and it is the repo's own "a checker must prove it sees its input" rule
+    // (.claude/rules/testing.md). Deleting a premium floor's detector must not
+    // read the same as never having claimed one.
+    expect(
+      DARK_DETECTORS.map(([touched, dark]) => `${touched} || ${dark}`).sort(),
+      'DARK_DETECTORS changed. Each entry is the stated justification for a floor held ABOVE ' +
+        'this table\'s ~12% convention, so removing one silently un-pays for that premium. ' +
+        'Add or remove deliberately, and say in the commit which floor stopped needing a detector.'
+    ).toEqual(
+      [
+        'src/assets/asset-publisher.ts || code-layout.md',
+        'src/cli/commands/deploy.ts || code-layout.md',
+        'src/cli/commands/drift.ts || architecture.md',
+        'src/deployment/no-change-outputs-merge.ts || code-layout.md',
+        'src/synthesis/synthesizer.ts || synthesis.md',
+      ].sort()
+    );
+
+    const failures: string[] = [];
+    for (const [touched, darkFile] of DARK_DETECTORS) {
+      const row = PAYLOAD_BUDGETS.find(([path]) => path === touched);
+      if (!row) {
+        failures.push(`\`${touched}\`: no PAYLOAD_BUDGETS row -- the detector it claimed is gone`);
+        continue;
+      }
+      const [, floor] = row;
+      const matched = matchingRules(ruleFiles, touched);
+      const dark = matched.find((r) => r.name === darkFile);
+      if (!dark) {
+        failures.push(
+          `\`${touched}\`: \`${darkFile}\` no longer matches it, so this row detects nothing. ` +
+            'Either the glob was narrowed (which is the regression) or the detector moved.'
+        );
+        continue;
+      }
+      const live = matched.reduce((sum, r) => sum + r.bytes, 0);
+      const residue = live - dark.bytes;
+      if (residue >= floor) {
+        failures.push(
+          `\`${touched}\`: \`${darkFile}\` (${dark.bytes} B) going dark leaves ${residue} B, ` +
+            `which the ${floor} B floor does NOT reject (payload ${live} B). Raise the floor ` +
+            `above ${residue}, or say in the commit why this detector is no longer wanted.`
+        );
+      }
+    }
+
+    expect(
+      failures,
+      'A floor held above the ~12% convention is paid for by a detector. These rows charge the ' +
+        'premium and detect nothing:\n' +
+        failures.join('\n')
+    ).toEqual([]);
   });
 
   it('every payload budget is a band, so no row can be satisfied by crossing', () => {
