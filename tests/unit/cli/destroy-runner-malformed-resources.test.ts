@@ -68,7 +68,10 @@ vi.mock('../../../src/utils/live-renderer.js', () => {
 });
 
 import { runDestroyForStack } from '../../../src/cli/commands/destroy-runner.js';
-import { STATE_RESOURCES_MALFORMED } from '../../../src/state/malformed-resources-bag.js';
+import {
+  STATE_RESOURCES_MALFORMED,
+  repairMalformedResourcesForReadOnly,
+} from '../../../src/state/malformed-resources-bag.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 
@@ -102,6 +105,7 @@ function makeCtx() {
   return {
     deleteState,
     acquireLock,
+    releaseLock,
     listStacks,
     getProviderFor,
     ctx: {
@@ -255,6 +259,17 @@ describe('runDestroyForStack refuses a malformed `resources` bag (go-to-k/cdkd#3
       h.deleteState,
       'the re-read record counted 0 through an unreadable bag and the state was deleted anyway'
     ).not.toHaveBeenCalled();
+    // This refusal fires with the lock HELD — unlike the entry guard, which is
+    // a pre-flight. Moving it a few lines up, outside the `try` whose `finally`
+    // releases, strands the lock for its full TTL with every other assertion
+    // here still green.
+    expect(
+      h.releaseLock,
+      'the re-read refusal escaped the try/finally, so it strands the stack lock'
+    ).toHaveBeenCalledWith(STACK, REGION);
+    // ...and it really did take the lock, so the assertion above is not
+    // satisfied by a path that never acquired one.
+    expect(h.acquireLock).toHaveBeenCalled();
   });
 
   it('still deletes when the re-read record is genuinely empty — the control for the case above', async () => {
@@ -266,6 +281,81 @@ describe('runDestroyForStack refuses a malformed `resources` bag (go-to-k/cdkd#3
     const result = await runDestroyForStack(STACK, stateWithResources({}), h.ctx);
     expect(result.skippedEmpty).toBe(true);
     expect(h.deleteState).toHaveBeenCalledWith(STACK, REGION);
+  });
+
+  /**
+   * The two halves of the measurement, JOINED — the case above deploys a
+   * literal `{}` and could be read as merely restating the control. This one
+   * takes an actually-malformed `[]` record, applies the READ-ONLY REPAIR the
+   * class offers elsewhere, and drives the RESULT through the runner. That is
+   * what a "just repair it" implementation would have done, and it reaches
+   * `deleteState`.
+   */
+  it('MEASUREMENT: a `[]` record put through the read-only repair reaches deleteState', async () => {
+    const h = makeCtx();
+    const repaired = stateWithResources([]);
+    expect(
+      repairMalformedResourcesForReadOnly(repaired),
+      'the repair declined this record, so the measurement below is about something else'
+    ).toBe(true);
+    expect(repaired.resources).toEqual({});
+    const result = await runDestroyForStack(STACK, repaired, h.ctx);
+    expect(result.skippedEmpty).toBe(true);
+    expect(
+      h.deleteState,
+      'repairing a `[]` record no longer reaches the fast path, so the refuse-not-repair ' +
+        'contract rests on nothing measured'
+    ).toHaveBeenCalledWith(STACK, REGION);
+  });
+
+  /**
+   * PRECEDENCE. A record can be malformed in BOTH containers, both refusals
+   * carry the same code, and only the TEXT tells them apart — so a reorder of
+   * the two guards is invisible without this. `resources` wins here because
+   * it is the container the fast path acts on.
+   */
+  it('names `resources` when BOTH containers are malformed', async () => {
+    const h = makeCtx();
+    const state = stateWithResources([]);
+    state.outputs = 'abcdef' as unknown as StackState['outputs'];
+    const err = (await runDestroyForStack(STACK, state, h.ctx).catch(
+      (e: unknown) => e
+    )) as CdkdError;
+    expect(err.code).toBe(STATE_RESOURCES_MALFORMED);
+    expect(err.message).toContain(`'resources'`);
+    expect(
+      err.message,
+      'the outputs guard now runs first, so a record broken in both reports the wrong container'
+    ).not.toContain('SKIPS the check');
+    expect(h.deleteState).not.toHaveBeenCalled();
+  });
+
+  it('still names `outputs` when only that container is malformed', async () => {
+    // The control for the case above: without it, a guard that always reported
+    // `resources` would satisfy the precedence assertion.
+    const h = makeCtx();
+    const state = stateWithResources({});
+    state.outputs = 'abcdef' as unknown as StackState['outputs'];
+    const err = (await runDestroyForStack(STACK, state, h.ctx).catch(
+      (e: unknown) => e
+    )) as CdkdError;
+    expect(err.code).toBe(STATE_RESOURCES_MALFORMED);
+    expect(err.message).toContain('SKIPS the check');
+  });
+
+  /**
+   * A legacy `version: 1` record records no region, so the hoisted
+   * `regionForState` falls back to the caller's `baseRegion` — and that value
+   * is what the refusal NAMES. Without this case the fallback arm is unread.
+   */
+  it('names the caller`s baseRegion for a legacy record that carries none', async () => {
+    const h = makeCtx();
+    const state = stateWithResources([]);
+    delete (state as Partial<StackState>).region;
+    const err = (await runDestroyForStack(STACK, state, h.ctx).catch(
+      (e: unknown) => e
+    )) as CdkdError;
+    expect(err.message).toContain(REGION);
   });
 
   it('lets a POPULATED bag through to the ordinary delete path', async () => {

@@ -624,10 +624,19 @@ damaging one:
 
 `cdkd destroy` and `cdkd state destroy` refuse before the per-stack
 confirmation prompt and before the lock (`STATE_RESOURCES_MALFORMED`, exit `1`),
-naming the record and the region. The refusal sits inside `runDestroyForStack`,
-so every route into a destroy inherits it — including a nested **child** record
-reached through its parent's destroy — and it runs again on the record the fast
-path re-reads under the lock, which is a second object the first check never saw.
+naming the record and the region. Every route into a destroy inherits it —
+including a nested **child** record reached through its parent's destroy — and
+it runs again on the record the fast path re-reads under the lock, which is a
+second object the first check never saw.
+
+A malformed **child** record fails the parent's destroy rather than passing
+silently: the child's delete is one resource in the parent's graph, so the
+parent finishes its other deletes, ends with errors, and **keeps** its own state
+trimmed to what is left. Repair the child's record and re-run; the parent's
+destroy is idempotent over what it already removed.
+
+Under `--all` the refusal ends the run — one malformed record stops the stacks
+not yet reached. Those are untouched, so a re-run after the repair proceeds.
 
 Reading the map as empty — the repair `cdkd diff` and `cdkd state show` apply —
 **is** the first row above, so there is no safe repair here. A legitimately
@@ -636,12 +645,25 @@ the container's shape, never by its size, since both count zero.
 
 Refusing does not leave you with no way to tear the stack down, because
 proceeding never tore anything down either — the list of what to delete is
-precisely what is unreadable. If what you want is the record gone with the live
-resources left standing, that is what the refusal points at:
+precisely what is unreadable. A `[]`, a number or a boolean names no resource
+at all; a string names one logical id per character, and each of those entries
+is a single character carrying neither a resource type nor a physical id, so
+every delete fails. If what you want is the record gone with the live resources
+left standing, that is what the refusal points at:
 
 ```bash
 cdkd state orphan <stack> --stack-region <region>
 ```
+
+Drop `--stack-region` for a legacy record that carries no region of its own —
+with the flag, nothing matches it.
+
+The refusal prints that as a template rather than a ready-to-paste command, and
+it withholds the target entirely when the stack name or region does not render
+exactly. Both are deliberate: `cdkd state orphan` deletes a record, the region
+in the message is read from the damaged record's own body, and a name that
+needed sanitizing can render identically to a healthy one. Identify the record
+with `cdkd state list --long`, which prints the keys as stored.
 
 To act on the resources instead, inspect the record with `cdkd state show
 <stack> --stack-region <region> --json`, repair it, and re-run the destroy. An

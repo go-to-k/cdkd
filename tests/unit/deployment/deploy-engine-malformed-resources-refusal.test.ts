@@ -24,7 +24,10 @@ import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
-import { STATE_RESOURCES_MALFORMED } from '../../../src/state/malformed-resources-bag.js';
+import {
+  STATE_RESOURCES_MALFORMED,
+  repairMalformedResourcesForReadOnly,
+} from '../../../src/state/malformed-resources-bag.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 
@@ -212,6 +215,39 @@ describe('DeployEngine refuses an unreadable root resources bag (go-to-k/cdkd#31
     expect(provisioned).toEqual([]);
   });
 
+  /**
+   * PRECEDENCE, and it is the OPPOSITE of the destroy's — deliberately. Both
+   * refusals carry the same code and differ only in TEXT, so a reorder is
+   * invisible without a case. `deploy` refuses `outputs` first because that
+   * guard predates this one and dominates the same reads; `destroy` refuses
+   * `resources` first because that is the container its fast path acts on.
+   */
+  it('names `outputs` when BOTH containers are malformed — the opposite order to destroy', async () => {
+    const state = makeState([]);
+    state.outputs = 'abcdef' as unknown as StackState['outputs'];
+    stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+    const err = (await makeEngine()
+      .deploy(STACK, template)
+      .catch((e: unknown) => e)) as CdkdError;
+    expect(err.code).toBe(STATE_RESOURCES_MALFORMED);
+    expect(err.message).toContain(`'outputs'`);
+    expect(
+      err.message,
+      'the resources guard now runs first, so a record broken in both reports the wrong container'
+    ).not.toContain('re-provisions a stack that already exists');
+    expect(provisioned).toEqual([]);
+  });
+
+  it('still names `resources` when only that container is malformed', async () => {
+    // The control: without it, a guard that always reported `outputs` would
+    // satisfy the precedence assertion above.
+    stateBackend.getState.mockResolvedValue({ state: makeState([]), etag: 'etag-old' });
+    const err = (await makeEngine()
+      .deploy(STACK, template)
+      .catch((e: unknown) => e)) as CdkdError;
+    expect(err.message).toContain('re-provisions a stack that already exists');
+  });
+
   it('marks the refusal non-retryable — a nested child deploy runs inside the parent withRetry', async () => {
     stateBackend.getState.mockResolvedValue({ state: makeState([]), etag: 'etag-old' });
     const err = await makeEngine()
@@ -279,6 +315,32 @@ describe('DeployEngine refuses an unreadable root resources bag (go-to-k/cdkd#31
       provisioned,
       'the repaired-to-empty shape no longer plans a CREATE, so this measurement no longer ' +
         'shows what repairing would cost'
+    ).toEqual(['create']);
+  });
+
+  /**
+   * The two halves of the measurement, JOINED — the case above deploys a
+   * literal `{}` and could be read as merely restating the control. This one
+   * takes an actually-malformed `[]` record, applies the READ-ONLY REPAIR the
+   * class offers elsewhere, and deploys the RESULT. That is what a "just
+   * repair it" implementation would have done, and it CREATES the resource.
+   */
+  it('MEASUREMENT: a `[]` record put through the read-only repair still CREATEs', async () => {
+    const repaired = makeState([]);
+    expect(
+      repairMalformedResourcesForReadOnly(repaired),
+      'the repair declined this record, so the measurement below is about something else'
+    ).toBe(true);
+    expect(repaired.resources).toEqual({});
+    stateBackend.getState.mockResolvedValue({ state: repaired, etag: 'etag-old' });
+    const result = await makeEngine()
+      .deploy(STACK, template)
+      .catch((e: unknown) => e);
+    expect(result).not.toBeInstanceOf(CdkdError);
+    expect(
+      provisioned,
+      'repairing a `[]` record no longer plans a CREATE, so the refuse-not-repair contract ' +
+        'rests on nothing measured'
     ).toEqual(['create']);
   });
 

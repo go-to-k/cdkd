@@ -876,7 +876,8 @@ genuinely has none. A string enumerates one fabricated logical id per character.
 | `cdkd orphan`, `cdkd import`, `cdkd rollback` | **Refuse** (`STATE_RESOURCES_MALFORMED`, exit `1`) — each carries the bag into a save |
 | `cdkd scrub` | **Refuses** on a real run (exit `2`); audits and reports under `--dry-run` |
 | `cdkd diff` | **Repairs** in memory and warns — it never writes state; see [`cdkd diff`](cli-diff.md#when-the-state-record-is-malformed) |
-| `cdkd state show` / `state resources` | **Repairs** in memory and warns; `--json` still emits the stored value — see [`cdkd state`](cli-state.md#when-resources-is-not-an-object) |
+| `cdkd state show` | **Repairs** in memory and warns; `--json` still emits the stored value — see [`cdkd state`](cli-state.md#when-resources-is-not-an-object) |
+| `cdkd state resources` | **Repairs** in memory and warns; `--json` emits `[]`, because that mode is the resource array cdkd derived rather than a view of the stored value |
 
 The destroy row is the one where *repairing* would be unsafe rather than
 merely lossy. Read as empty, the count comes back zero, the empty-stack fast

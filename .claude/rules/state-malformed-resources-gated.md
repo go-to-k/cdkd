@@ -82,8 +82,10 @@ Both guards sit at the state LOAD, above the first read.
   fast path sits immediately below. `regionForState` was hoisted above it so the
   refusal can name the record.
 - `deploy-engine.ts`: beside `refuseMalformedOutputs`, above the
-  `Object.keys(currentState.resources)` debug line and the twelve reads behind
-  it. **Not** at `DiffCalculator.calculateDiff`, although that is the chokepoint
+  `Object.keys(currentState.resources)` debug line and every read of the bag
+  behind it (five between the guard and `calculateDiff`, seventeen over the
+  rest of the method — measured 2026-09-17; re-derive rather than trusting
+  either figure). **Not** at `DiffCalculator.calculateDiff`, although that is the chokepoint
   both diff callers share: the engine's load dominates it, and `cdkd diff` keeps
   its repair-and-warn half at its own load, so the preview the deploy refusal
   points at still works.
@@ -99,10 +101,16 @@ logical ids.
 The objection #3161 raises against refusing `cdkd destroy` at all — that it
 leaves the user no supported way to tear the stack down — does not survive the
 measurement: proceeding tears nothing down either, since the list of what to
-delete is exactly what is unreadable. The only thing a forced run does is delete
-the record, and `cdkd state orphan <stack> --stack-region <region>` is the
-supported command for that, leaving the live resources standing. The destroy
-refusal NAMES it, which the four sibling refusals do not.
+delete is exactly what is unreadable — and that is per-shape rather than a
+slogan. `[]` / a number / a boolean name no resource at all; a STRING names one
+fabricated logical id per character whose entry is a single character, so
+`resourceType` and `physicalId` are both `undefined`, every `provider.delete`
+throws, and no live resource can be addressed. So a forced run deletes
+`state.json` and nothing else on the first three shapes, and on a string fails
+every delete and PRESERVES the record (`errorCount > 0`). The only outcome
+worth offering is the record's removal, and `cdkd state orphan` is the
+supported command for it, leaving the live resources standing. The destroy
+refusal NAMES it, which the sibling refusals do not.
 
 That pointer is load-bearing, so its premise is fenced rather than assumed:
 `stateOrphanCommand` in `src/cli/commands/state.ts` reads `state.resources`
@@ -110,3 +118,34 @@ nowhere (it lists S3 keys and deletes), and the fence asserts that over that
 function's own body. `docs/cli-destroy.md` was corrected in the same pass — it
 told the reader to `aws s3 rm` the key because "no cdkd command will delete it
 for you", which was already false.
+
+**The remedy is a TEMPLATE, not a substituted command, and the asymmetry with
+the `cdkd state show` line in the same message is the decision.** `state
+orphan` DELETES a record; `state show` reads one. The `region` the destroy
+refusal is handed is `state.region ?? ctx.baseRegion`, and `state.region` is
+record-BODY content `getState` does not check against the key it loaded from —
+measured 2026-09-17 against the shipped binary, a record planted at
+`.../us-east-1/state.json` carrying `"region": "eu-west-1"` rendered a
+pasteable `cdkd state orphan <stack> --stack-region eu-west-1`, aiming a
+destructive command at a different region's record for the same stack. That is
+`stackClause`'s misdirection class one field over. Substituting into the
+read-only `state show` remedy is `malformedStateDetail`'s pre-existing
+behaviour and is left alone; what a later edit must not do is make the
+destructive one pasteable again. Fenced by a POSITION case (no occurrence of
+the region at or after the orphan command), with the region's presence in the
+message asserted first so the bound is not an absence test.
+
+**A template is not enough on its own**, and this is the half a later edit is
+most likely to drop. The name a reader would type into it comes from the clause
+ABOVE, and `safeIdentifier` composes `displaySafe`, which TRIMS — so a record
+keyed `"prod-api "` opens the message as `State for 'prod-api' (...)`,
+byte-identical to a HEALTHY sibling. An operator orphaning "the record the line
+above names" would delete the intact one. So the remedy sentence is GATED on
+both identifiers rendering EXACTLY (compared against the raw values); when
+either does not, the text names no removal target at all and sends the reader
+to `cdkd state list --long`. Same call `buildForceUnlockCommand` makes when a
+value would render misleadingly.
+
+The divergence itself — the runner also LOCKS, SAVES and DELETES against the
+body region, and reports `✓ State deleted` when nothing is there — is
+go-to-k/cdkd#3328, not this rule.

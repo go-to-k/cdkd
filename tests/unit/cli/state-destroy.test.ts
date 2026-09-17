@@ -86,6 +86,8 @@ vi.mock('node:readline/promises', () => ({
 }));
 
 import { createStateCommand } from '../../../src/cli/commands/state.js';
+import { CdkdError } from '../../../src/utils/error-handler.js';
+import { STATE_RESOURCES_MALFORMED } from '../../../src/state/malformed-resources-bag.js';
 
 function makeStackState(stackName: string, region?: string): StackState {
   return {
@@ -271,6 +273,46 @@ describe('cdkd state destroy', () => {
     // --all implies skipConfirmation downstream (the user already accepted
     // the batch prompt).
     expect(mockRunDestroyForStack.mock.calls[0]?.[2].skipConfirmation).toBe(true);
+  });
+
+  /**
+   * A per-stack refusal ENDS the `--all` run (issue go-to-k/cdkd#3161): there
+   * is no per-stack catch around the dispatch, so the first stack whose record
+   * cannot be read stops the ones not yet reached.
+   *
+   * Fenced rather than merely true, because it is what a reader of the
+   * `--all` docs needs and because a later lane adding a per-stack catch would
+   * change it silently in either direction. The stacks not reached are
+   * UNTOUCHED, which is what makes the behaviour acceptable — a re-run after
+   * the repair proceeds — and that is the half this asserts.
+   */
+  it('--all stops at the first stack whose record is refused', async () => {
+    mockListStacks.mockResolvedValue([
+      { stackName: 'A', region: 'us-east-1' },
+      { stackName: 'B', region: 'us-east-1' },
+    ]);
+    mockGetState.mockImplementation(async (name: string) => ({
+      state: makeStackState(name, 'us-east-1'),
+      etag: '"x"',
+    }));
+    mockRunDestroyForStack.mockImplementation(async (name: string) => {
+      if (name === 'A') throw new CdkdError('refused', STATE_RESOURCES_MALFORMED);
+      return { errorCount: 0, deletedCount: 0, retainedCount: 0, skippedCount: 0 };
+    });
+
+    // The command's own error handler converts the refusal into a non-zero
+    // exit, which the suite's `process.exit` spy turns into this throw — so the
+    // assertion is on the EXIT, and the refusal's own text is asserted through
+    // the error channel rather than through the rejection.
+    await expect(runStateDestroy(['destroy', '--all', '-y'])).rejects.toThrow('process.exit-mock');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(errorSpy.mock.calls.flat().join(' ')).toContain('refused');
+
+    expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
+    expect(
+      mockRunDestroyForStack.mock.calls[0]?.[0],
+      'the sorted order changed; this case is no longer asserting that B went unreached'
+    ).toBe('A');
   });
 
   it('--all + user declines the batch prompt: nothing dispatched', async () => {

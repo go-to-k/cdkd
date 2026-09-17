@@ -11,7 +11,10 @@ import type {
 import { DeployEngine } from '../../deployment/deploy-engine.js';
 import { getCurrentResourceSecrets } from '../../deployment/resource-secrets-scope.js';
 import { runDestroyForStack } from '../../cli/commands/destroy-runner.js';
-import { refuseMalformedNestedChildOutputs } from '../../state/malformed-resources-bag.js';
+import {
+  refuseMalformedNestedChildOutputs,
+  refuseMalformedResourcesForDestroy,
+} from '../../state/malformed-resources-bag.js';
 import {
   withNestedStackContext,
   getCurrentNestedStackContext,
@@ -323,6 +326,15 @@ export class NestedStackProvider implements ResourceProvider {
       return;
     }
 
+    // ABOVE the count, for the reason `runDestroyForStack`'s own guard is
+    // (issue go-to-k/cdkd#3161). That runner refuses an unreadable `resources`
+    // bag, but this line reads the CHILD's bag one call EARLIER — so a child
+    // record holding `null` or no `resources` at all still died here on the
+    // bare `TypeError` the guard exists to remove, and a `[]` / number /
+    // boolean logged `0 resource(s)` before the runner got to say otherwise.
+    // Same helper, so the child's refusal reads identically to a top-level
+    // one.
+    refuseMalformedResourcesForDestroy(childStateData.state, childStackName, childRegion);
     const resourceCount = Object.keys(childStateData.state.resources).length;
     this.logger.info(
       `Destroying nested stack ${childStackName} (logicalId=${logicalId}, ${resourceCount} resource(s))`

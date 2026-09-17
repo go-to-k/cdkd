@@ -55,26 +55,6 @@ function code(relPath: string): string {
     .replace(/(^|[^:])\/\/.*$/gm, '$1');
 }
 
-/**
- * {@link code}, with every `import` statement blanked to spaces of the same
- * length so all other offsets are unchanged.
- *
- * Every DOMINANCE assertion below reads this rather than `code()`. A guard's
- * name appears in its file TWICE — once in the `import` at the top, once at the
- * call — and `indexOf` finds the import, several thousand characters above any
- * dereference. So a dominance bound taken over raw source is satisfied by the
- * import line whatever the call does, which is the vacuity these cases exist to
- * refuse. `lastIndexOf` is not the answer either: a file may legitimately guard
- * at TWO points, and `destroy-runner.ts` does (its empty-state fast path
- * re-reads the record under the lock and guards that second record too).
- *
- * `[^;]*` crosses newlines and cannot leave the statement, because an import
- * clause holds no `;` of its own.
- */
-function importlessCode(relPath: string): string {
-  return code(relPath).replace(/^import\b[^;]*;/gm, (m) => ' '.repeat(m.length));
-}
-
 function state(resources: unknown): StackState {
   return {
     version: 10,
@@ -92,6 +72,7 @@ const UNREADABLE: ReadonlyArray<readonly [string, unknown]> = [
   ['absent', undefined],
   ['an array', []],
   ['a number', 5],
+  ['a boolean', true],
   ['a string', 'ab'],
 ];
 
@@ -590,6 +571,81 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
     expect(m).toContain('cdkd state orphan');
     // Not the generic write-capable text, whose harm is the SAVE.
     expect(m).not.toContain('saving over a record');
+  });
+
+  /**
+   * The `cdkd state orphan` remedy is a TEMPLATE, never a substituted command,
+   * and this is the case that keeps it one.
+   *
+   * `state orphan` DELETES a record. The `region` the destroy refusal is handed
+   * is `state.region ?? ctx.baseRegion`, and `state.region` is RECORD-BODY
+   * content `getState` does not check against the key it loaded from —
+   * measured 2026-09-17: a record planted at `.../us-east-1/state.json`
+   * carrying `"region": "eu-west-1"` rendered a pasteable
+   * `cdkd state orphan <stack> --stack-region eu-west-1`, aiming a destructive
+   * command at a DIFFERENT region's record for the same stack. That is
+   * `stackClause`'s misdirection class, one field over; the divergence itself
+   * is go-to-k/cdkd#3328.
+   *
+   * The asymmetry with the `cdkd state show` line in the same message is
+   * deliberate: that one READS, and substituting into it is
+   * `malformedStateDetail`'s pre-existing behaviour.
+   */
+  it('spells the DESTRUCTIVE remedy as a template, so a record-supplied region cannot aim it', () => {
+    const PLANTED = 'zz-planted-1';
+    const m = malformedDestroyResourcesRefusalMessage('MyStack', PLANTED);
+    expect(m).toContain('cdkd state orphan <stack> --stack-region <region>');
+    // Non-vacuity first: the region really is in the message, so the bound
+    // below is a POSITION test rather than an absence test.
+    expect(m).toContain(PLANTED);
+    const orphanAt = m.indexOf('cdkd state orphan');
+    expect(orphanAt, 'the orphan remedy is gone; this case is asserting nothing').toBeGreaterThan(
+      -1
+    );
+    // The discriminating half. The planted region may appear in the prose and
+    // in the read-only `state show` remedy, but nothing at or after the
+    // destructive command may carry it — `lastIndexOf` is what makes that a
+    // bound on EVERY occurrence rather than on the first.
+    expect(
+      m.lastIndexOf(PLANTED),
+      'a record-supplied region was substituted into, or after, the destructive remedy'
+    ).toBeLessThan(orphanAt);
+  });
+
+  /**
+   * The template alone is not enough, because the name a reader types into it
+   * comes from the clause ABOVE — and `safeIdentifier` composes `displaySafe`,
+   * which TRIMS. A record keyed `'prod-api '` opens the message as
+   * `State for 'prod-api' (...)`, byte-identical to a HEALTHY sibling, so an
+   * operator orphaning "the record the line above names" deletes the intact
+   * one. The remedy is therefore GATED on both identifiers rendering EXACTLY.
+   */
+  const INEXACT: ReadonlyArray<readonly [string, string, string]> = [
+    ['a TRIMMED stack name', 'prod-api ', 'us-east-1'],
+    ['a stack name with a stripped character', 'pro\u0000d', 'us-east-1'],
+    ['a TRUNCATED stack name', `${'q'.repeat(400)}`, 'us-east-1'],
+    ['a TRIMMED region', 'prod-api', ' us-east-1'],
+  ];
+
+  for (const [label, stack, region] of INEXACT) {
+    it(`withholds the removal target for ${label}`, () => {
+      const m = malformedDestroyResourcesRefusalMessage(stack, region);
+      expect(
+        m,
+        'a record whose identity does not render exactly still got a removal target, so the ' +
+          'operator can be sent to a healthy same-rendering record'
+      ).not.toContain('cdkd state orphan');
+      expect(m).toContain('does NOT render exactly');
+      expect(m).toContain('cdkd state list --long');
+    });
+  }
+
+  it('keeps the removal target for an EXACT identity — the control for the gate', () => {
+    // Without this, a gate that withheld unconditionally would satisfy every
+    // case above while making the remedy unreachable.
+    const m = malformedDestroyResourcesRefusalMessage('prod-api', 'us-east-1');
+    expect(m).toContain('cdkd state orphan <stack> --stack-region <region>');
+    expect(m).not.toContain('does NOT render exactly');
   });
 
   it('the DEPLOY refusal names the RE-CREATE, and holds under --dry-run', () => {
@@ -1303,9 +1359,9 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     const resources = exported.filter(
       (n) => !outputs.includes(n) && !properties.includes(n)
     );
-    expect(outputs.sort()).toEqual(
-      ['refuseMalformedOutputs(', 'refuseMalformedOutputsForDestroy(', 'refuseMalformedNestedChildOutputs('].sort()
-    );
+    // Derived from REFUSAL_SPELLINGS rather than re-spelled: a second hard-coded
+    // copy of that triple is what drifts when a fourth outputs refusal lands.
+    expect(outputs.sort()).toEqual([...REFUSAL_SPELLINGS].sort());
     expect(properties).toEqual(['refuseMalformedResourceProperties(']);
     expect(
       [...resources].sort(),
@@ -1427,19 +1483,19 @@ describe('write-capable commands refuse; read-only ones repair', () => {
       // only checks the refusal exists would not have caught it, and moving
       // any of these calls below its file's first bag dereference reds
       // nothing without this.
-      // The FIRST CALL of any present spelling — read from the import-less
-      // source, so the `import` line at the top of the file cannot satisfy the
-      // bound on its own. `importlessCode`'s own note carries why that matters
-      // and why `lastIndexOf` is not the answer instead.
+      // The FIRST occurrence of any PRESENT spelling. Every spelling ends in
+      // `(`, which an `import` clause cannot contain, so the `import` line at
+      // the top of the file is not a candidate and no import-stripping pass is
+      // needed — a round of this fence added one and it changed not a single
+      // index on any file here (measured, review of go-to-k/cdkd#3161).
       //
-      // Taken over the spellings actually present, and the presence half is the
-      // point: `indexOf` answers `-1` for an absent one, which is less than
-      // every dereference index, so a fence reading a fixed pair would pass
-      // VACUOUSLY on a file refusing through a third — and go-to-k/cdkd#3161
-      // added two such files.
-      const body = importlessCode(file);
+      // Taken over the spellings actually present, and THAT is the half that
+      // was vacuous: `indexOf` answers `-1` for an absent one, `-1` is less
+      // than every dereference index, so a fence reading a FIXED pair passed
+      // over nothing on a file refusing through a third spelling — and
+      // go-to-k/cdkd#3161 added two such files.
       const positions = [...RESOURCES_REFUSAL_SPELLINGS, 'hasReadableResources(']
-        .map((call) => body.indexOf(call))
+        .map((call) => src.indexOf(call))
         .filter((at) => at > -1);
       expect(
         positions.length,
@@ -1449,7 +1505,7 @@ describe('write-capable commands refuse; read-only ones repair', () => {
       ).toBeGreaterThan(0);
       const refusalAt = Math.max(...positions);
       const derefAt = FIRST_DEREF[file]!;
-      const derefIndex = body.indexOf(derefAt);
+      const derefIndex = src.indexOf(derefAt);
       expect(
         derefIndex,
         `${file} no longer contains its first bag dereference \`${derefAt}\`; this fence's ` +
@@ -1730,9 +1786,8 @@ describe('write-capable commands refuse; read-only ones repair', () => {
       // dereference index, so a fence reading a fixed pair would pass
       // VACUOUSLY on a file refusing through a third spelling. go-to-k/cdkd#3207
       // added exactly such a file.
-      const body = importlessCode(file);
       const positions = [...REFUSAL_SPELLINGS, 'hasReadableOutputs(']
-        .map((call) => body.indexOf(call))
+        .map((call) => src.indexOf(call))
         .filter((at) => at > -1);
       expect(
         positions.length,
@@ -1741,7 +1796,7 @@ describe('write-capable commands refuse; read-only ones repair', () => {
       ).toBeGreaterThan(0);
       const refusalAt = Math.max(...positions);
       const derefAt = FIRST_OUTPUTS_USE[file]!;
-      const derefIndex = body.indexOf(derefAt);
+      const derefIndex = src.indexOf(derefAt);
       expect(
         derefIndex,
         `${file} no longer contains its first outputs use \`${derefAt}\`; this fence's anchor ` +

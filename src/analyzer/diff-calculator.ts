@@ -202,8 +202,9 @@ export class DiffCalculator {
     // (go-to-k/cdkd#3161), and `diff-recursive.ts` repairs the root bag and
     // warns before it. So this method is still reachable ONLY with a readable
     // root bag, and a guard for that class here would be a second spelling of
-    // a decision made one layer up, where it also dominates the twelve reads
-    // between the two.
+    // a decision made one layer up, where it also dominates every read of the
+    // bag between the two (five, measured 2026-09-17 over comment-stripped
+    // source; re-derive rather than trusting this figure).
     refuseMalformedResourceProperties(currentState, undefined, undefined);
 
     const currentResources = currentState.resources;

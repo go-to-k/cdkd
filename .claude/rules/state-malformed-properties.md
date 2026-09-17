@@ -28,7 +28,8 @@ any more: issue [#3161](https://github.com/go-to-k/cdkd/issues/3161) gave
 and `diff-recursive.ts` repairs the root bag before it. So this method is
 reachable only with a readable root bag, and a second root guard written HERE
 would be a duplicate of a decision made one layer up — where it also dominates
-the twelve reads in between.
+every read of the bag in between (five, measured 2026-09-17; re-derive rather
+than trusting the figure).
 
 An ABSENT `properties` map is a defect, unlike an absent `outputs` bag, and the
 asymmetry is measurable rather than stylistic: every writer in `src/` assigns an
