@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vite-plus/test';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -62,7 +62,9 @@ function blockLine(prefix: string): string {
   const block = stepFourBlock();
   // Continuation lines are joined: the `ondisk=` invocation is wrapped with a
   // trailing backslash, and a pathspec on the second line must not be missed.
-  const joined = block.replace(/\\\n\s*/g, ' ');
+  // `[^\S\n]*` rather than `\s*`, which crosses newlines and would merge two
+  // LOGICAL lines whenever a continuation is followed by a blank one.
+  const joined = block.replace(/\\\n[^\S\n]*/g, ' ');
   const line = joined.split('\n').find((l) => l.trim().startsWith(prefix));
   expect(line, `no line starting with \`${prefix}\` in the step-4 block`).toBeDefined();
   return (line as string).trim();
@@ -97,8 +99,16 @@ function lsFilesPathspecs(): string[] {
   return quotedTokens(line.slice(start, end));
 }
 
-/** Run one extracted line with `$log` bound to a fixture, and echo its value. */
-function runExtraction(logContents: string): string {
+/**
+ * Run a snippet with `$log` bound to a fixture file.
+ *
+ * The path travels as an ARGV element, never interpolated into the script.
+ * `JSON.stringify` is JSON quoting, not shell quoting — inside bash double
+ * quotes a `$` or a backtick in the path would still expand. `mkdtemp` under a
+ * `TMPDIR` containing either is unlikely rather than impossible, and this is
+ * the one place a fence gets to be careless about a path it did not choose.
+ */
+function runSnippet(snippet: string, logContents: string): { out: string; status: number } {
   const dir = mkdtempSync(join(tmpdir(), 'cdkd-step4-'));
   try {
     const log = join(dir, 'suite.log');
@@ -106,11 +116,44 @@ function runExtraction(logContents: string): string {
     // `bash`, not the ambient shell: the block is documented for a bash/zsh
     // paste, and pinning the interpreter keeps this from measuring whichever
     // shell happens to run the suite.
-    const script = `log=${JSON.stringify(log)}\n${blockLine('collected=')}\nprintf '%s' "$collected"\n`;
-    return execFileSync('bash', ['-c', script], { encoding: 'utf-8' });
+    const res = spawnSync('bash', ['-c', `log="$1"\n${snippet}`, '_', log], {
+      encoding: 'utf-8',
+      cwd: repoRoot,
+    });
+    return { out: `${res.stdout ?? ''}${res.stderr ?? ''}`, status: res.status ?? -1 };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/** Run the `collected=` line alone and echo its value. */
+function runExtraction(logContents: string): string {
+  return runSnippet(`${blockLine('collected=')}\nprintf '%s' "$collected"`, logContents).out;
+}
+
+/**
+ * Run the WHOLE block body from `rc=` onwards, with `rc` supplied.
+ *
+ * Structural assertions cannot see an `exit 1` turned into an `exit 0` — the
+ * false PASS this block's docstring exists to prevent — so the exits are
+ * exercised rather than pattern-matched. The `vp test run` line is replaced:
+ * this fence is about the VERDICT logic, and running the real suite inside a
+ * unit test is not on.
+ */
+function runBlockVerdict(logContents: string, rc: number): { out: string; status: number } {
+  const body = stepFourBlock()
+    .replace(/\\\n[^\S\n]*/g, ' ')
+    .split('\n')
+    // Drop the subshell wrapper, the mktemp/echo preamble and the real run;
+    // keep every verdict line from the `runs=` header check onwards.
+    .filter((l) => {
+      const t = l.trim();
+      if (t === '(' || t === ')' || t.startsWith('#')) return false;
+      if (t.startsWith('log=') || t.startsWith('echo "log:') || t.startsWith('vp test run')) return false;
+      return t.length > 0;
+    })
+    .join('\n');
+  return runSnippet(`rc=${rc}\n${body}`, logContents);
 }
 
 const ESC = '\u001b';
@@ -124,6 +167,32 @@ const ESC = '\u001b';
 const COLOURED_SUMMARY =
   `${ESC}[2m Test Files ${ESC}[22m ${ESC}[1m${ESC}[32m1065 passed${ESC}[39m` +
   `${ESC}[22m${ESC}[90m (1065)${ESC}[39m\n`;
+
+/**
+ * vitest's own label padding: `padSummaryTitle(str) = dim(str.padStart(11) + ' ')`.
+ * Reproducing it rather than hand-spacing is what keeps the display-grep cases
+ * honest — the six literal spaces the block matches on come from HERE.
+ */
+const pad = (label: string): string => `${ESC}[2m${label.padStart(11)} ${ESC}[22m`;
+
+/**
+ * A whole coloured summary, degraded exactly as the founding incident was:
+ * a self-consistent `N passed (N)` over the files that survived, beside the
+ * `Errors` line that explains the shortfall.
+ */
+const COLOURED_DEGRADED_SUMMARY =
+  `${pad('Test Files')} ${ESC}[1m${ESC}[32m916 passed${ESC}[39m${ESC}[22m${ESC}[90m (916)${ESC}[39m\n` +
+  `${pad('Tests')} ${ESC}[1m${ESC}[32m24822 passed${ESC}[39m${ESC}[22m${ESC}[90m (24830)${ESC}[39m\n` +
+  `${pad('Type Errors')} ${ESC}[1m${ESC}[32mno errors${ESC}[39m\n` +
+  `${pad('Errors')} ${ESC}[1m${ESC}[31m24 errors${ESC}[39m\n`;
+
+/** A full plain summary, as a redirected local run writes it. */
+const FULL_PLAIN_SUMMARY =
+  ` RUN  v4.1.11 ${''}\n` +
+  ' Test Files  1065 passed (1065)\n' +
+  '      Tests  25043 passed | 1 skipped (25044)\n' +
+  'Type Errors  no errors\n' +
+  '   Duration  9999ms\n';
 
 describe('/check step 4 — the collected-count block', () => {
   it('still carries both derivation lines', () => {
@@ -220,14 +289,77 @@ describe('/check step 4 — the collected-count block', () => {
     expect(runExtraction(two)).toBe('1065');
   });
 
+  it('takes the Test Files total, not the Tests total, from a full summary', () => {
+    // Without `grep 'Test Files'` the extraction binds the `Tests` line's
+    // `(25044)` instead. Every other fixture here is a `Test Files`-only log,
+    // so nothing else in this file can see that mutation.
+    expect(runExtraction(FULL_PLAIN_SUMMARY)).toBe('1065');
+  });
+
+  it('prints all four summary lines from a COLOURED degraded run', () => {
+    // The line round 1 actually fixed, and the one nothing was asserting:
+    // reverting the display grep to `^ +Errors ` passed every other case here.
+    // vitest pads the label INSIDE the dim escape, so `      Tests ` survives
+    // colouring while the tighter `Tests +[0-9]` matches nothing — measured,
+    // and the reason neither alternative may be "tightened".
+    const { out } = runSnippet(
+      `${blockLine('grep -E "Test Files')}`,
+      COLOURED_DEGRADED_SUMMARY
+    );
+    const lines = out.trimEnd().split('\n');
+    expect(lines).toHaveLength(4);
+    expect(out).toContain('24 errors');
+  });
+
+  it('EXITS 1 on a degraded run and names the worker remedy', () => {
+    // End-to-end: a structural assertion cannot see `exit 1` become `exit 0`.
+    const { out, status } = runBlockVerdict(
+      ` RUN  v4.1.11 ${repoRoot}\n` +
+        COLOURED_DEGRADED_SUMMARY +
+        '[vitest-pool]: Failed to start forks worker for test files foo.test.ts\n',
+      1
+    );
+    expect(status).toBe(1);
+    expect(out).toContain('SUITE FAILED rc=1');
+    // The remedy must live on THIS arm: vitest exits non-zero whenever it
+    // prints an `Errors` line, so the founding incident never reaches the
+    // count check below it.
+    expect(out).toContain('--maxWorkers=4');
+  });
+
+  it('EXITS 0 on a green run that collected the whole tree', () => {
+    const { out, status } = runBlockVerdict(
+      ` RUN  v4.1.11 ${repoRoot}\n Test Files  99999 passed (99999)\n`,
+      0
+    );
+    expect(status).toBe(0);
+    expect(out).not.toContain('COLLECTED');
+    expect(out).not.toContain('SUITE FAILED');
+  });
+
+  it('EXITS 1 when a run exits 0 having collected too few files', () => {
+    // The count check's remaining job once the rc check precedes it: a stray
+    // filter or a narrowed `include`. It must NOT offer the worker remedy here.
+    const { out, status } = runBlockVerdict(
+      ` RUN  v4.1.11 ${repoRoot}\n Test Files  3 passed (3)\n`,
+      0
+    );
+    expect(status).toBe(1);
+    expect(out).toContain('COLLECTED 3 of');
+    expect(out).not.toContain('--maxWorkers=4');
+  });
+
   it('counts the tracked tests the block claims to count', () => {
     const fromBlock = execFileSync('bash', ['-c', `${blockLine('ondisk=')}\nprintf '%s' "$ondisk"`], {
       cwd: repoRoot,
       encoding: 'utf-8',
     });
+    // Scoped to the two roots the block's pathspecs cover. An unscoped count
+    // is BROADER than the block, so a tracked `scripts/x.test.ts` — which
+    // vitest would not collect — would red this while the block stayed right.
     const direct = execFileSync(
       'bash',
-      ['-c', `git ls-files | grep -cE '\\.(test|test-d)\\.ts$'`],
+      ['-c', `git ls-files | grep -E '^(tests|src)/' | grep -cE '\\.(test|test-d)\\.ts$'`],
       { cwd: repoRoot, encoding: 'utf-8' }
     ).trim();
     // Not a pinned number: an independent derivation of the same set, so the

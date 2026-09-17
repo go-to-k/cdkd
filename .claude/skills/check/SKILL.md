@@ -135,21 +135,38 @@ Run these sequentially and report results:
      # `Errors` is a DIFFERENT line from `Type Errors` (that one covers
      # *.test-d.ts alone), and it is where a dead pool worker reports. Without
      # it the grep reproduces three reassuring lines and hides the count that
-     # explains the rc. Matched by CONTENT, never by indentation: under a
-     # coloured summary the line STARTS with an escape, the class `ci.yml`'s
-     # test-ran guard already failed a green run on. `[0-9]+ error` is also
-     # what keeps `Type Errors  no errors` from arriving twice.
+     # explains the rc.
+     #
+     # Every alternative here is chosen against the COLOURED bytes, which is
+     # the class `ci.yml`'s test-ran guard already failed a green run on.
+     # vitest pads the label (`str.padStart(11) + ' '`) INSIDE the dim escape,
+     # so `      Tests ` survives colouring while the tighter `Tests +[0-9]`
+     # does NOT -- an escape sits between the label and the count. Same for
+     # `Errors`: the `.*` is what crosses that escape, and `Errors +[0-9]+`
+     # matches nothing. Measured both ways; do not "tighten" either one.
      grep -E "Test Files|      Tests |Type Errors|Errors.*[0-9]+ error" "$log"
-     # rc FIRST. A crashed or filtered run prints no `(N)` to compare, so
-     # judging the count before the verdict would report "collected none" for a
-     # run whose real problem is the rc.
-     [ "$rc" = 0 ] || { echo "SUITE FAILED rc=$rc; log: $log"; exit 1; }
-     # The file count's only external reference is the tree: a degraded run
-     # prints a self-consistent `N passed (N)` over the files that SURVIVED.
-     # Unanchored, and the LAST `(N)` on the line -- the coloured summary ends
-     # in `\e[39m`, not in `)`, so a `$` anchor extracts nothing and the
-     # comparison below then false-FAILS a green suite. `tail -1` because a
-     # multi-line value makes `[` a syntax error rather than a verdict.
+     # rc FIRST, and the LOST-WORKER remedy belongs on THIS arm rather than on
+     # the count arm below. vitest sets a non-zero exit for an unhandled error
+     # and prints the `Errors` line only when there is one, so the founding
+     # incident -- `Test Files 916 passed (916)` beside `Errors 148`, every one
+     # `[vitest-pool]: Failed to start forks worker` -- ALWAYS lands here. An
+     # earlier revision put that remedy below and left it unreachable.
+     if [ "$rc" != 0 ]; then
+       echo "SUITE FAILED rc=$rc; log: $log"
+       grep -qE 'Failed to start .* worker' "$log" \
+         && echo "  workers died before their files ran, so the passing counts above cover only what survived -- re-run with --maxWorkers=4"
+       exit 1
+     fi
+     # Only a run that exited 0 reaches here, so this is NOT the lost-worker
+     # case. What it still catches is a run that collected fewer files than the
+     # tree holds -- a stray filter left on the command line, or a narrowed
+     # `include` -- which `Test Files N passed (N)` cannot report, being
+     # self-consistent over whatever it did collect.
+     #
+     # Unanchored, and the LAST `(N)` on the line: the coloured summary ends in
+     # `\e[39m`, not in `)`, so a `$` anchor extracts nothing and the comparison
+     # below then false-FAILS a green suite. `tail -1` because a multi-line
+     # value makes `[` a syntax error rather than a verdict.
      collected=$(grep 'Test Files' "$log" | grep -oE '\([0-9]+\)' | tail -1 | tr -d '()')
      # `:(glob)` on every pathspec: git's bare `**` demands an intervening `/`
      # while vitest's does not, so a depth-1 `tests/foo.test.ts` would be
@@ -159,7 +176,7 @@ Run these sequentially and report results:
      # `-ge`, not `=`: an UNTRACKED new test file is collected but not listed,
      # which is legitimate and must not red. The direction that matters is
      # collected < tracked.
-     [ "${collected:-0}" -ge "$ondisk" ] || { echo "COLLECTED ${collected:-none} of $ondisk tracked test files over a run that exited 0 -- attests to nothing. Lost pool workers: re-run with --maxWorkers=4. A filter left on the command line, or a test deleted but not committed, reads the same here; the log says which. log: $log"; exit 1; }
+     [ "${collected:-0}" -ge "$ondisk" ] || { echo "COLLECTED ${collected:-none} of $ondisk tracked test files over a run that exited 0 -- attests to nothing. Usually a filter left on the command line or a narrowed include; a test deleted but not committed reads the same here. log: $log"; exit 1; }
    )
    ```
 
