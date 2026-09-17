@@ -177,7 +177,17 @@ export interface StateImportEntry {
    * by `(stackName, region)` since schema v2).
    */
   sourceRegion: string;
-  /** The CloudFormation Output `Export.Name` that was imported. */
+  /**
+   * The CloudFormation Output `Export.Name` that was imported.
+   *
+   * REDACTED at persist (issue
+   * [#3289](https://github.com/go-to-k/cdkd/issues/3289)): this value is
+   * TEMPLATE-derived, so an `Fn::Sub` assembling it around a resolved secret
+   * used to persist that plaintext. It may therefore hold an unresolved
+   * `{{resolve:...}}` expression, or `***` for the mask-only needle class.
+   * `sourceStack` / `sourceRegion` above are NOT redacted — they come from the
+   * producer's own record, not from this template.
+   */
   exportName: string;
 }
 
@@ -201,7 +211,15 @@ export interface StateImportEntry {
  * consumer set is rarely large in practice).
  */
 export interface StateOutputReadEntry {
-  /** The producer stack whose Output `Name` was read. */
+  /**
+   * The producer stack whose Output `Name` was read.
+   *
+   * REDACTED at persist (issue
+   * [#3289](https://github.com/go-to-k/cdkd/issues/3289)), and this field is
+   * ALSO the literal key `findDownstreamConsumers` matches on — so a reader
+   * comparing it must handle a value that cannot match any live stack name,
+   * rather than silently failing to match. It reports such an entry instead.
+   */
   sourceStack: string;
   /**
    * The producer's region. Required so the enumeration's
@@ -209,7 +227,13 @@ export interface StateOutputReadEntry {
    * cross-region `Fn::GetStackOutput` references.
    */
   sourceRegion: string;
-  /** The CloudFormation Output `Name` (template `Outputs.<Name>`) that was read. */
+  /**
+   * The CloudFormation Output `Name` (template `Outputs.<Name>`) that was read.
+   * REDACTED at persist, like `sourceStack` (issue
+   * [#3289](https://github.com/go-to-k/cdkd/issues/3289)); `sourceRegion` above
+   * is not, being gate-constrained before it can be recorded and read
+   * structurally by `producerRegionsFromState`.
+   */
   outputName: string;
 }
 

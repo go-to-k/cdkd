@@ -28,13 +28,13 @@ interface StackState {
 interface StateImportEntry {
   sourceStack: string;   // The producer stack whose Output was imported
   sourceRegion: string;  // The producer's region (load-bearing for state-key lookup)
-  exportName: string;    // The CloudFormation Output's Export.Name
+  exportName: string;    // Export.Name. REDACTED #3289 -> may hold a {{resolve:}} expression
 }
 
 interface StateOutputReadEntry {
-  sourceStack: string;   // The producer stack whose Output was read via Fn::GetStackOutput
+  sourceStack: string;   // Producer stack. REDACTED #3289 -- so a MATCH on it must handle an expression
   sourceRegion: string;  // The producer's region (load-bearing for state-key lookup)
-  outputName: string;    // The producer's template Outputs.<Name> (NOT Export.Name — Fn::GetStackOutput does not require an Export)
+  outputName: string;    // Outputs.<Name>, NOT Export.Name. REDACTED #3289 (docs/design/3289-*.md: why 3 of 6)
 }
 
 interface ResourceState {
@@ -248,10 +248,9 @@ successful **same-account** resolution into the consumer's bag, and
 the deploy engine persists the bag to `state.outputReads` at save
 time (omitted from JSON when empty so the on-the-wire shape stays
 identical to v7 for no-`Fn::GetStackOutput` stacks). Consumed by
-`findDownstreamConsumers` (in `src/cli/commands/recreate-downstream-consumers.ts`)
-to name `Fn::GetStackOutput` consumers in the `--recreate-via-cc-api` /
-`--recreate-via-sdk-provider` warn block — alongside the existing v4
-`imports[]` walk for `Fn::ImportValue` consumers.
+`findDownstreamConsumers` (`src/cli/commands/recreate-downstream-consumers.ts`)
+to name `Fn::GetStackOutput` consumers in the recreate warn block, alongside
+the v4 `imports[]` walk for `Fn::ImportValue`.
 
 Unlike `imports`, `outputReads` is **informational only**: there is
 NO destroy-time refusal for `Fn::GetStackOutput` references. The

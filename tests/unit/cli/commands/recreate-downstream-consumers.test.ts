@@ -217,6 +217,161 @@ describe('findDownstreamConsumers (#650)', () => {
     expect(out.every((c) => c.consumerStack === 'StackB')).toBe(true);
   });
 
+  describe('a REDACTED producer name is reported, not dropped (#3289)', () => {
+    // `outputReads[].sourceStack` is template-derived, so a name assembled
+    // around a resolved secret is persisted as its `{{resolve:...}}`
+    // expression. The literal `===` below can never match it. Dropping the
+    // entry would remove a consumer from a DATA-LOSS confirmation prompt,
+    // which is the failure this reports its way out of.
+    const REDACTED = 'prod-{{resolve:secretsmanager:db:SecretString:pw::}}';
+
+    it('flags the row and keeps the ordinary match unflagged', async () => {
+      const backend = mockBackend(
+        [{ stackName: 'StackB', region: 'us-east-1' }],
+        new Map([
+          [
+            'StackB|us-east-1',
+            st('StackB', 'us-east-1', undefined, [
+              { sourceStack: REDACTED, sourceRegion: 'us-east-1', outputName: 'Opaque' },
+              { sourceStack: 'Producer', sourceRegion: 'us-east-1', outputName: 'Plain' },
+            ]),
+          ],
+        ])
+      );
+      const out = await findDownstreamConsumers({
+        producerStack: 'Producer',
+        producerRegion: 'us-east-1',
+        stateBackend: backend,
+        baseRegion: 'us-east-1',
+      });
+      expect(out.map((c) => [c.exportName, c.producerUnresolvable === true])).toEqual([
+        ['Opaque', true],
+        ['Plain', false],
+      ]);
+    });
+
+    it('also flags a MASK-ONLY name, which carries no expression at all', async () => {
+      // The mask-only needle class (a custom resource's `NoEcho` response
+      // Data) has no expression behind it, so the redaction writes `***`.
+      // Testing `{{resolve:` alone let such a name fail BOTH the literal match
+      // and the unresolvable test — the silent drop, back again, in the shape
+      // an operator is least likely to notice.
+      const backend = mockBackend(
+        [{ stackName: 'StackB', region: 'us-east-1' }],
+        new Map([
+          [
+            'StackB|us-east-1',
+            st('StackB', 'us-east-1', undefined, [
+              { sourceStack: 'prod-***', sourceRegion: 'us-east-1', outputName: 'Masked' },
+            ]),
+          ],
+        ])
+      );
+      const out = await findDownstreamConsumers({
+        producerStack: 'Producer',
+        producerRegion: 'us-east-1',
+        stateBackend: backend,
+        baseRegion: 'us-east-1',
+      });
+      expect(out.map((c) => [c.exportName, c.producerUnresolvable === true])).toEqual([
+        ['Masked', true],
+      ]);
+    });
+
+    it('still narrows by REGION, so an unresolvable name elsewhere is not reported', async () => {
+      // Without the region conjunct every recreate in the account would carry
+      // every such consumer, which is noise rather than a warning.
+      const backend = mockBackend(
+        [{ stackName: 'StackB', region: 'eu-west-1' }],
+        new Map([
+          [
+            'StackB|eu-west-1',
+            st('StackB', 'eu-west-1', undefined, [
+              { sourceStack: REDACTED, sourceRegion: 'eu-west-1', outputName: 'Opaque' },
+            ]),
+          ],
+        ])
+      );
+      const out = await findDownstreamConsumers({
+        producerStack: 'Producer',
+        producerRegion: 'us-east-1',
+        stateBackend: backend,
+        baseRegion: 'us-east-1',
+      });
+      expect(out).toEqual([]);
+    });
+
+    it('renders the row as CANNOT NAME rather than as a match', async () => {
+      const rendered = renderDownstreamConsumers('Producer', [
+        {
+          consumerStack: 'StackB',
+          consumerRegion: 'us-east-1',
+          exportName: 'Opaque',
+          intrinsic: 'GetStackOutput',
+          producerUnresolvable: true,
+        },
+      ]);
+      expect(rendered).toContain('CANNOT NAME');
+      expect(rendered).toContain('It may or may not be this stack.');
+      // The CAUSE is stated generically on purpose. An earlier wording said the
+      // name "was assembled from a secret reference, so it is stored
+      // unresolved", which is false for the mask-only class the `***` arm was
+      // added for -- there the cause is a custom resource's `NoEcho` response
+      // and the stored form is a mask, not a reference. A data-loss prompt is
+      // the wrong place to name a cause that is right half the time.
+      expect(rendered).not.toContain('assembled from a secret reference');
+    });
+
+    it('prints a redacted NAME as its expression, never as the plaintext', () => {
+      // `exportName` on a flagged row comes from `outputReads[].outputName`,
+      // which is itself redacted — so when BOTH names were assembled from one
+      // secret, the rendered line carries a `{{resolve:...}}`. That is not a
+      // leak and must not be "fixed": the expression IS the safe form, and it
+      // tells the operator which reference cdkd could not resolve.
+      //
+      // An earlier version of this case asserted the line contains no
+      // `{{resolve:`, which is a protection the renderer does not perform and
+      // passed only because the fixture used a literal name. The property that
+      // is actually true, and worth fencing, is that the PLAINTEXT never
+      // appears.
+      const EXPR = '{{resolve:secretsmanager:prod/db:SecretString:password::}}';
+      const rendered = renderDownstreamConsumers('Producer', [
+        {
+          consumerStack: 'StackB',
+          consumerRegion: 'us-east-1',
+          exportName: `Endpoint-${EXPR}`,
+          intrinsic: 'GetStackOutput',
+          producerUnresolvable: true,
+        },
+      ]);
+      expect(rendered).toContain(EXPR);
+    });
+
+    it('PASSES ITS INPUT THROUGH -- it is not a masking boundary', () => {
+      // Stated as a positive fact rather than fenced as a protection, because
+      // it is not one. An earlier version asserted the rendered line contains
+      // no plaintext, over a fixture whose input held none: unfalsifiable by
+      // construction, AND a claim the renderer does not enforce -- it prints
+      // `exportName` verbatim. A record written before the persist redaction
+      // still carries a plaintext `outputName`, and that reaches this prompt.
+      //
+      // Redaction happens at PERSIST. Moving a mask here would only cover rows
+      // this function happens to render, which is the per-sink approach the
+      // secret-redaction module records as the thing that keeps leaving the
+      // next sink open.
+      const rendered = renderDownstreamConsumers('Producer', [
+        {
+          consumerStack: 'StackB',
+          consumerRegion: 'us-east-1',
+          exportName: 'Endpoint-a-plaintext-from-an-older-record',
+          intrinsic: 'GetStackOutput',
+          producerUnresolvable: true,
+        },
+      ]);
+      expect(rendered).toContain('Endpoint-a-plaintext-from-an-older-record');
+    });
+  });
+
   it('soft-fails on listStacks error (deploy must not abort on transient S3 list failure)', async () => {
     const backend = {
       listStacks: vi.fn(async () => {
