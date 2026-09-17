@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vite-plus/test';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -29,17 +29,25 @@ import { dirname, join } from 'node:path';
  * needed an executor and not another proofread. Same precedent as
  * `work-issues-launch-mode.test.ts`.
  *
- * Three properties, in increasing order of what they prove:
+ * Four properties, in increasing order of what they prove:
  *
- *   1. the block still CONTAINS the two derivation lines, so deleting either
- *      one reds rather than quietly restoring an unchecked count;
+ *   1. the block still CONTAINS the two derivation lines and computes `rc`
+ *      from the run itself, so deleting either one — or severing `rc` from the
+ *      suite with a `|| true` — reds rather than quietly restoring an
+ *      unchecked count;
  *   2. its `git ls-files` pathspecs describe the same SET as vitest's own
  *      `include` + `typecheck.include`, so adding a glob to `vite.config.ts`
  *      without adding it here cannot silently lower the floor;
  *   3. the extraction line is RUN, against the real summary shapes — plain,
- *      ANSI-coloured, degraded and absent.
+ *      ANSI-coloured, degraded, failing, absent and two-project;
+ *   4. the VERDICT body is run end-to-end and its exit statuses asserted, so
+ *      an `exit 1` turned into an `exit 0` cannot pass. Structural assertions
+ *      cannot see that, and it is the false PASS this block exists to stop.
  */
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+// `realpathSync`, because the block asserts its RUN root against `pwd -P`.
+// A checkout reached through a symlink otherwise sends every verdict case down
+// the WRONG PROJECT arm, which reds for a reason that is not the code's.
+const repoRoot = realpathSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..'));
 const skillPath = join(repoRoot, '.claude', 'skills', 'check', 'SKILL.md');
 const viteConfigPath = join(repoRoot, 'vite.config.ts');
 
@@ -120,6 +128,9 @@ function runSnippet(snippet: string, logContents: string): { out: string; status
       encoding: 'utf-8',
       cwd: repoRoot,
     });
+    // Surface a spawn failure as itself. Without this a missing `bash` arrives
+    // as `expected '' to be '1065'`, which reads as a defect in the block.
+    if (res.error) throw res.error;
     return { out: `${res.stdout ?? ''}${res.stderr ?? ''}`, status: res.status ?? -1 };
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -140,8 +151,8 @@ function runExtraction(logContents: string): string {
  * this fence is about the VERDICT logic, and running the real suite inside a
  * unit test is not on.
  */
-function runBlockVerdict(logContents: string, rc: number): { out: string; status: number } {
-  const body = stepFourBlock()
+function reconstructedVerdictBody(): string {
+  return stepFourBlock()
     .replace(/\\\n[^\S\n]*/g, ' ')
     .split('\n')
     // Drop the subshell wrapper, the mktemp/echo preamble and the real run;
@@ -153,7 +164,10 @@ function runBlockVerdict(logContents: string, rc: number): { out: string; status
       return t.length > 0;
     })
     .join('\n');
-  return runSnippet(`rc=${rc}\n${body}`, logContents);
+}
+
+function runBlockVerdict(logContents: string, rc: number): { out: string; status: number } {
+  return runSnippet(`rc=${rc}\n${reconstructedVerdictBody()}`, logContents);
 }
 
 const ESC = '\u001b';
@@ -188,7 +202,7 @@ const COLOURED_DEGRADED_SUMMARY =
 
 /** A full plain summary, as a redirected local run writes it. */
 const FULL_PLAIN_SUMMARY =
-  ` RUN  v4.1.11 ${''}\n` +
+  ' RUN  v4.1.11 /somewhere\n' +
   ' Test Files  1065 passed (1065)\n' +
   '      Tests  25043 passed | 1 skipped (25044)\n' +
   'Type Errors  no errors\n' +
@@ -202,6 +216,26 @@ describe('/check step 4 — the collected-count block', () => {
     // The comparison itself. Without this, dropping the `exit 1` leaves the two
     // assignments in place and the floor enforcing nothing.
     expect(block).toMatch(/\[\s*"\$\{collected:-0\}"\s+-ge\s+"\$ondisk"\s*\]/);
+  });
+
+  it('computes rc FROM the run, on the run’s own line', () => {
+    // rc PROVENANCE, which no behavioural case can see because the verdict
+    // helper injects its own rc. Measured: rewriting the run as
+    // `vp test run > "$log" 2>&1 || true; rc=$?` makes rc permanently 0, kills
+    // the whole SUITE FAILED arm as dead code, and leaves this suite green —
+    // the founding incident restored, silently. `| tee "$log"` is caught only
+    // incidentally, by the block-finder keying on `vp test run >`.
+    expect(stepFourBlock()).toContain('vp test run > "$log" 2>&1; rc=$?');
+  });
+
+  it('reconstructs a verdict body that does NOT re-run the suite', () => {
+    // The line filter drops the run by PREFIX, so `CI=1 vp test run ...` or
+    // `time vp test run ...` would escape it — and the escaped line's own
+    // `rc=$?` overwrites the injected one, so the verdict cases below would
+    // silently measure a real suite run instead of the fixture.
+    const body = reconstructedVerdictBody();
+    expect(body).not.toContain('vp test run');
+    expect(body).toContain('if [ "$rc"');
   });
 
   it('checks the suite rc BEFORE the count', () => {
@@ -325,6 +359,41 @@ describe('/check step 4 — the collected-count block', () => {
     // prints an `Errors` line, so the founding incident never reaches the
     // count check below it.
     expect(out).toContain('--maxWorkers=4');
+  });
+
+  it('does NOT offer the worker remedy for an ordinary failing run', () => {
+    // The GATE, which nothing bound: deleting `grep -qE ... &&` makes the
+    // remedy unconditional, and every other case here still passes. That is
+    // round 2's misdiagnosis pointed the other way — a genuine assertion
+    // failure told to re-run with fewer workers.
+    const { out, status } = runBlockVerdict(
+      ` RUN  v4.1.11 ${repoRoot}\n Test Files  1 failed | 1068 passed (1069)\n`,
+      1
+    );
+    expect(status).toBe(1);
+    expect(out).toContain('SUITE FAILED rc=1');
+    expect(out).not.toContain('--maxWorkers=4');
+  });
+
+  it('REFUSES a log whose RUN root is another project', () => {
+    // Executed by the verdict body since round 3, asserted by nothing: the
+    // `WRONG PROJECT` line could be deleted and the suite stayed green.
+    const { out, status } = runBlockVerdict(
+      ' RUN  v4.1.11 /somewhere/else\n Test Files  1069 passed (1069)\n',
+      0
+    );
+    expect(status).toBe(1);
+    expect(out).toContain('WRONG PROJECT');
+  });
+
+  it('REFUSES a log carrying two RUN headers', () => {
+    // Same: weakening `[ "$runs" = 1 ]` to `-ge 0` left the suite green.
+    const { out, status } = runBlockVerdict(
+      ` RUN  v4.1.11 ${repoRoot}\n RUN  v4.1.11 ${repoRoot}\n Test Files  1069 passed (1069)\n`,
+      0
+    );
+    expect(status).toBe(1);
+    expect(out).toContain('expected 1 RUN header, found 2');
   });
 
   it('EXITS 0 on a green run that collected the whole tree', () => {

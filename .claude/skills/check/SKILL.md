@@ -149,11 +149,17 @@ Run these sequentially and report results:
      # the count arm below. vitest sets a non-zero exit for an unhandled error
      # and prints the `Errors` line only when there is one, so the founding
      # incident -- `Test Files 916 passed (916)` beside `Errors 148`, every one
-     # `[vitest-pool]: Failed to start forks worker` -- ALWAYS lands here. An
-     # earlier revision put that remedy below and left it unreachable.
+     # `[vitest-pool]: Failed to start forks worker` -- ALWAYS lands here.
+     #
+     # The predicate is anchored on vitest's OWN prefix rather than a loose
+     # `Failed to start .* worker`: cdkd throws
+     # `Failed to start metadata-endpoints sidecar: ...` (src/local/ecs-network.ts)
+     # and the docker argv it interpolates can carry `worker`, so the wide form
+     # offers a pool remedy for an ordinary test failure -- the misdiagnosis
+     # this arm exists to end, pointed the other way.
      if [ "$rc" != 0 ]; then
        echo "SUITE FAILED rc=$rc; log: $log"
-       grep -qE 'Failed to start .* worker' "$log" \
+       grep -qE '\[vitest-pool\]: Failed to start' "$log" \
          && echo "  workers died before their files ran, so the passing counts above cover only what survived -- re-run with --maxWorkers=4"
        exit 1
      fi
