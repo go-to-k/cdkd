@@ -1208,7 +1208,8 @@
     {
       "flag": "--strict-getatt",
       "integs": [
-        "getatt-fallback-guard"
+        "getatt-fallback-guard",
+        "sns-subscription-update"
       ]
     },
     {
