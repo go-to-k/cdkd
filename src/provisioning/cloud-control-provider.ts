@@ -900,12 +900,20 @@ export class CloudControlProvider implements ResourceProvider {
       // catch takes. Two reasons, both measured after a round-10 review
       // proposed converting this site as well:
       //
-      //  - the bare `String()` arm is UNREACHABLE here. Every throw into this
-      //    catch comes from `this.delete(...)` above, which wraps whatever it
-      //    caught into a `ProvisioningError` — always an `Error`. The flip's
-      //    catch differs because its `UpdateResource` SEND is inside it, so a
-      //    non-`Error` rejection reaches that one raw. A case written against
-      //    this site stayed green under the bare form; that is why.
+      //  - the bare `String()` arm is UNREACHABLE here, and the proof has TWO
+      //    parts rather than the one an earlier revision of this comment gave.
+      //    (a) Everything inside `delete()`'s own `handleError` try is wrapped
+      //    into a `ProvisioningError` — always an `Error`. (b) `delete()` also
+      //    has three awaits OUTSIDE that try — `asgProvider.delete`,
+      //    `disableInstanceApiTermination` and `disableCcProtection` — and a
+      //    non-`Error` CAN escape those; what makes them unreachable from HERE
+      //    is that all three are gated on `context?.removeProtection === true`,
+      //    and this site's call passes NO context at all. So the gate is
+      //    load-bearing: give this call a context with `removeProtection` and
+      //    the arm becomes live. The flip's own catch differs for the mirror
+      //    reason — its `UpdateResource` SEND is inside it, so a non-`Error`
+      //    rejection reaches that one raw. A case written against this site
+      //    stayed green under the bare form; that is why.
       //  - reducing the text here would be a NO-OP today and a decision-changer
       //    the moment the wrapper stops being cdkd-authored. Measured: applying
       //    the conversion leaves the whole provisioning suite green, because
@@ -2571,7 +2579,7 @@ export class CloudControlProvider implements ResourceProvider {
           // Best-effort: a failed Describe shouldn't fail the deploy.
           // The resolver's nested-path walk is the second line of defence.
           this.logger.debug(
-            `Failed to enrich RDS DBCluster ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+            `Failed to enrich RDS DBCluster ${physicalId}: ${describeAwsFailure(error).detail}`
           );
         }
         break;
@@ -2618,7 +2626,7 @@ export class CloudControlProvider implements ResourceProvider {
         } catch (error) {
           // Best-effort: a failed Describe shouldn't fail the deploy.
           this.logger.debug(
-            `Failed to enrich RDS DBInstance ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+            `Failed to enrich RDS DBInstance ${physicalId}: ${describeAwsFailure(error).detail}`
           );
         }
         break;
@@ -2642,7 +2650,7 @@ export class CloudControlProvider implements ResourceProvider {
           } catch (error) {
             // Best-effort: don't fail the operation if DescribeTable fails
             this.logger.debug(
-              `Failed to get DynamoDB StreamArn for ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+              `Failed to get DynamoDB StreamArn for ${physicalId}: ${describeAwsFailure(error).detail}`
             );
           }
         }
@@ -2666,7 +2674,7 @@ export class CloudControlProvider implements ResourceProvider {
           } catch (error) {
             // Best-effort: don't fail the operation if GetRestApi fails
             this.logger.debug(
-              `Failed to get RestApi RootResourceId for ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+              `Failed to get RestApi RootResourceId for ${physicalId}: ${describeAwsFailure(error).detail}`
             );
           }
         }
@@ -2695,7 +2703,7 @@ export class CloudControlProvider implements ResourceProvider {
           } catch (error) {
             // Best-effort: don't fail the operation
             this.logger.debug(
-              `Failed to get CloudFront OAI S3CanonicalUserId for ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+              `Failed to get CloudFront OAI S3CanonicalUserId for ${physicalId}: ${describeAwsFailure(error).detail}`
             );
           }
         }
@@ -2739,7 +2747,7 @@ export class CloudControlProvider implements ResourceProvider {
             }
           } catch (error) {
             this.logger.debug(
-              `Failed to construct KMS Key Arn for ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+              `Failed to construct KMS Key Arn for ${physicalId}: ${describeAwsFailure(error).detail}`
             );
           }
         }
@@ -2777,7 +2785,7 @@ export class CloudControlProvider implements ResourceProvider {
             }
           } catch (error) {
             this.logger.debug(
-              `Failed to construct ECR Repository Arn: ${error instanceof Error ? error.message : String(error)}`
+              `Failed to construct ECR Repository Arn: ${describeAwsFailure(error).detail}`
             );
           }
         }
@@ -2859,7 +2867,7 @@ export class CloudControlProvider implements ResourceProvider {
             }
           } catch (error) {
             this.logger.debug(
-              `Failed to construct Kinesis Stream Arn for ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+              `Failed to construct Kinesis Stream Arn for ${physicalId}: ${describeAwsFailure(error).detail}`
             );
           }
         }
@@ -2886,7 +2894,7 @@ export class CloudControlProvider implements ResourceProvider {
             }
           } catch (error) {
             this.logger.debug(
-              `Failed to get Lambda URL config for ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+              `Failed to get Lambda URL config for ${physicalId}: ${describeAwsFailure(error).detail}`
             );
           }
         }
@@ -2935,7 +2943,7 @@ export class CloudControlProvider implements ResourceProvider {
             );
           } catch (error) {
             this.logger.debug(
-              `Failed to enrich Events Connection ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+              `Failed to enrich Events Connection ${physicalId}: ${describeAwsFailure(error).detail}`
             );
           }
         }
@@ -2969,7 +2977,7 @@ export class CloudControlProvider implements ResourceProvider {
             );
           } catch (error) {
             this.logger.debug(
-              `Failed to enrich Events ApiDestination ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+              `Failed to enrich Events ApiDestination ${physicalId}: ${describeAwsFailure(error).detail}`
             );
           }
         }
@@ -3050,7 +3058,7 @@ export class CloudControlProvider implements ResourceProvider {
           }
         } catch (error) {
           this.logger.debug(
-            `Failed to enrich ElastiCache ReplicationGroup ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+            `Failed to enrich ElastiCache ReplicationGroup ${physicalId}: ${describeAwsFailure(error).detail}`
           );
         }
         break;
@@ -3087,7 +3095,7 @@ export class CloudControlProvider implements ResourceProvider {
           }
         } catch (error) {
           this.logger.debug(
-            `Failed to enrich Redshift Cluster ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+            `Failed to enrich Redshift Cluster ${physicalId}: ${describeAwsFailure(error).detail}`
           );
         }
         break;
@@ -3136,7 +3144,7 @@ export class CloudControlProvider implements ResourceProvider {
           }
         } catch (error) {
           this.logger.debug(
-            `Failed to enrich OpenSearch Domain ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+            `Failed to enrich OpenSearch Domain ${physicalId}: ${describeAwsFailure(error).detail}`
           );
         }
         break;
@@ -3418,7 +3426,7 @@ export class CloudControlProvider implements ResourceProvider {
       return parsed as Record<string, unknown>;
     } catch (error) {
       this.logger.debug(
-        `Failed to read CC model for ${resourceType} ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to read CC model for ${resourceType} ${physicalId}: ${describeAwsFailure(error).detail}`
       );
       return undefined;
     }
