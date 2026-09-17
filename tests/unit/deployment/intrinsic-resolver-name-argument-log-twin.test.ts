@@ -45,6 +45,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { StateError } from '../../../src/utils/error-handler.js';
 import { isThrottlingError } from '../../../src/deployment/retryable-errors.js';
+import { displaySafe } from '../../../src/utils/display-safe.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { ExportIndexStore } from '../../../src/state/export-index-store.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -1895,6 +1896,43 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
  * classifiers working, since the clone carries every own descriptor.
  */
 describe('issue #3234: the Fn::GetStackOutput state read', () => {
+  /**
+   * The sink's character class, TRANSCRIBED from `sanitizeAsciiOnly` in
+   * `src/utils/display-safe.ts` rather than imported: an expected value must
+   * stay an INDEPENDENT variable from the one under test, or the property
+   * asserts only that the subject agrees with itself.
+   *
+   * ONE constant, used by the fake sink, by THE INVARIANT and by the PAIR
+   * FENCE below. Three separate literals is what the fence was written to stop
+   * and then reintroduced: the fence pairs whatever class IT holds, so a copy
+   * it does not read can be narrowed back — which is exactly PR
+   * go-to-k/cdkd#3275's round-4 defect — while the fence stays green.
+   */
+  const SINK_CLASS = /[^ -~]/;
+  /** What the sink replaces a rejected character WITH, and the trim it ends in. */
+  const SINK_REPLACEMENT = ' ';
+  /**
+   * `SINK_CLASS` with its POSITIONAL flags stripped. No reader in this block
+   * wants a POSITION: two ask "does this text contain a rejected character"
+   * and the fake sink replaces EVERY one (re-appending its own `g`). `g` and
+   * `y` are part of neither question, while both silently change the answer:
+   *
+   *   - `g` makes `.test` advance `lastIndex`, so over single-character probes
+   *     it reports every OTHER rejected character as ACCEPTED (measured:
+   *     `true false true false`).
+   *   - `y` anchors at `lastIndex`, so `String.match` -- which is what
+   *     `expect().not.toMatch` calls -- returns `null` for any message whose
+   *     rejected character is not at index 0. THE INVARIANT then passes for
+   *     every message, and the fake sink sanitizes nothing (measured).
+   *
+   * Both fail in the safe-looking direction, and nothing requires `SINK_CLASS`
+   * to stay bare -- so no reader here may assume it is.
+   */
+  const SINK_CLASS_FLAGS = SINK_CLASS.flags.replace(/[gy]/g, '');
+  const SINK_CLASS_ANYWHERE = new RegExp(SINK_CLASS.source, SINK_CLASS_FLAGS);
+  /** `SINK_CLASS.test`, made position-independent. */
+  const rejects = (ch: string): boolean => SINK_CLASS_ANYWHERE.test(ch);
+
   /** The realistic failure: cdkd's own wrapper over an AWS rejection, both quoting the key. */
   function rejectingBackend(stackName: string, region = 'us-east-1'): S3StateBackend {
     return {
@@ -1936,7 +1974,21 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
    * than the one the resolver resolved.
    */
   function sanitizingBackend(stackName: string, region = 'us-east-1'): S3StateBackend {
-    const shown = (t: string): string => t.replace(/[^ -~]/g, ' ').trim();
+    // `SINK_CLASS.flags`, not just its source: copying the pattern alone would
+    // silently drop a `u` or `i` added later, leaving this reader on the old
+    // semantics while the other two took the new one -- the copies-diverge
+    // defect this constant exists to close, one level down. DEFENSIVE and
+    // recorded as such: adding `u` to `SINK_CLASS` leaves this suite green
+    // either way (measured), so no case here distinguishes it.
+    //
+    // The POSITIONAL flags are stripped first (`SINK_CLASS_FLAGS`, whose doc
+    // carries the two measurements): `new RegExp(re, 'gg')` throws
+    // `SyntaxError: Invalid flags supplied`, and a `y` would make this sink
+    // replace only a rejected character sitting at index 0 -- so it would
+    // sanitize nothing for the realistic message and the case would still read
+    // as exercising the sink.
+    const shown = (t: string): string =>
+      t.replace(new RegExp(SINK_CLASS.source, `${SINK_CLASS_FLAGS}g`), SINK_REPLACEMENT).trim();
     return {
       listStacks: vi.fn(async () => []),
       getState: vi.fn(async () => {
@@ -2151,9 +2203,14 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
       // then exempting the separator reopens the hole for exactly that
       // character: the sink's class is `/[^ -~]/`, which strips `\n` as
       // readily as `\t`, so a `\n`-bearing name added later would slip through
-      // an exemption defending the join. The class here is the sink's own.
+      // an exemption defending the join. The class here is the sink's own,
+      // through the SHARED constant, so the PAIR FENCE below watches this line
+      // rather than a copy of it -- via `SINK_CLASS_ANYWHERE`, since a `y` on
+      // the constant would make `toMatch`'s `String.match` answer `null` for
+      // every message whose rejected character is not at index 0, and this
+      // assertion would pass universally (measured).
       for (const message of chainMessages(error)) {
-        expect(message, `for ${JSON.stringify(name)}`).not.toMatch(/[^ -~]/);
+        expect(message, `for ${JSON.stringify(name)}`).not.toMatch(SINK_CLASS_ANYWHERE);
         expect(message).not.toContain(PIN);
       }
     }
@@ -2228,5 +2285,147 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
     expect(error.message).toContain("stack 'us-east-1-app-***'");
     expect(error.message).toContain('(us-east-1)');
     expectNowhere(`us-east-1-app-${PIN}`, error.message);
+  });
+
+  it('PAIR FENCE: the transcribed sink class still matches displaySafe', () => {
+    // `sanitizingBackend`'s `shown` and THE INVARIANT's assertion both read
+    // `SINK_CLASS`. That constant is a TRANSCRIPTION of
+    // `sanitizeAsciiOnly` in `src/utils/display-safe.ts`, deliberately not an
+    // import: an expected value must stay an INDEPENDENT variable from the one
+    // under test, or the property asserts only that the subject agrees with
+    // itself. The cost of independence is silent drift -- widen `displaySafe`'s
+    // class and the transcription keeps passing while no longer describing the
+    // sink -- so the two are paired here by BEHAVIOUR rather than by sharing a
+    // regex with `src/`.
+    //
+    // It pairs `SINK_CLASS`, the ONE constant the fake sink and THE INVARIANT
+    // both use. A fence holding its own copy pairs only that copy: the two in
+    // use could then be narrowed back with this green, which is the defect it
+    // exists to stop rather than a variant of it.
+    //
+    // It lives beside those two rather than in `display-safe.ts`'s own suite
+    // because the subject here is the TRANSCRIPTION, which is local to this
+    // file; `tests/unit/utils/display-safe.test.ts` owns the sink's behaviour
+    // on its own terms.
+    // The VALUE, never `sanitized === probe`: identity is blind wherever the
+    // sink maps a character to ITSELF, and asserting the value is what pins
+    // the replacement character at all.
+    //
+    // One narrowing is deliberately NOT chased. `/[^!-~]/` also rejects
+    // `U+0020` and replaces it WITH `U+0020`, so it is an EQUIVALENT MUTANT,
+    // not a gap: measured over all 1,114,112 code points in four positions
+    // (interior, both ends, alone), the two classes differ on ZERO inputs.
+    // No assertion can separate them and none should try.
+    //
+    // Asserting the value pins all THREE facts the fake sink transcribes --
+    // the class, the replacement character, and the trim -- where the previous
+    // shape pinned only the class. Other cases here depend on the other two
+    // (the `'prod '` control on the trim; the replacement is pinned HERE and
+    // nowhere else, since the masking cases substitute whatever the sink
+    // produced and stay green whatever it is), so
+    // leaving them unpaired left those reading a sink that could have moved.
+    //
+    // EVERY code point, not a prefix of them. The earlier bound stopped at
+    // U+2FFF with no reason given, which left `U+FEFF` and everything above
+    // U+3000 free to be exempted -- an "allow BOM" or "allow CJK" edit to
+    // `sanitizeAsciiOnly` would have left this green. The sweep collects
+    // rather than asserting per iteration, so the full range costs a fraction
+    // of a second; `expect` per code point does not.
+    const mismatches: string[] = [];
+    let checked = 0;
+    for (let cp = 0; cp <= 0x10ffff; cp++) {
+      const ch = String.fromCodePoint(cp);
+      const probe = `a${ch}b`;
+      // An astral code point is TWO UTF-16 units and the class carries no `u`
+      // flag, so the sink replaces each half — two spaces, not one. A lone
+      // surrogate is one unit and takes one.
+      const expected = rejects(ch)
+        ? `a${SINK_REPLACEMENT.repeat(ch.length)}b`
+        : probe;
+      if (displaySafe(probe, { asciiOnly: true }) !== expected) {
+        mismatches.push(`U+${cp.toString(16).toUpperCase().padStart(4, '0')}`);
+      }
+      checked++;
+    }
+    expect(mismatches.slice(0, 20)).toEqual([]);
+    // The TRIM, which an interior probe cannot reach: a rejected character at
+    // either end is removed for a second reason, so the sweep above cannot
+    // tell the class apart from the trim there.
+    // Two separate facts, and the first version conflated them by feeding the
+    // REPLACEMENT in as input, where the class never fires: that asserted
+    // plain whitespace trimming and would have reddened for the wrong reason
+    // had the replacement changed in step everywhere.
+    expect(displaySafe(' x ', { asciiOnly: true })).toBe('x');
+    // And the COMPOSITION: a REJECTED character at an edge becomes the
+    // replacement and is then trimmed away, which is exactly why an edge
+    // position cannot tell the class apart from the trim.
+    //
+    // The edge character is DERIVED rather than hand-picked, because picking
+    // one by hand is what has now gone vacuous twice in a row here: the
+    // replacement itself (the class never fires on it), then `U+00A0`, which
+    // is ECMAScript `WhiteSpace` -- so native `.trim()` removes it unaided and
+    // the case passed with the class deleted entirely. A hand-picked constant
+    // cannot state the two properties this case needs, so it states them:
+    // REJECTED by the class, and not already trimmable.
+    //
+    // Three conditions, all three in the PREDICATE rather than in the bound,
+    // because a bound cannot enforce what it only gestures at. Twice now:
+    // first a scan starting at U+0021 "to skip the C0 controls, whose
+    // rendering in a failure message is its own hazard" selected U+007F, which
+    // is DEL -- a control, with exactly that hazard; then a hand-rolled
+    // `cp <= 0x1f || (0x7f..0x9f)` was called RENDERABLE while admitting
+    // U+00AD, U+200B and U+202E, the last being the Trojan-Source bidi
+    // override `src/utils/display-safe.ts` names as a rendering hazard in its
+    // own docstring. The predicate uses the Unicode classes the repo already
+    // spells for this question: `src/utils/display-safe.ts:33-35` states them
+    // in prose and `src/deployment/outputs-export-alias.ts:313`
+    // (`SECRET_SCAN_INVISIBLES`) is the live regex, which carries one MORE
+    // (`\p{Me}`) and the `g` this use has no need of. Five rather than six is
+    // deliberate and inert: `\p{Me}` adds 13 code points, all at or above
+    // U+0488, so the pick is unchanged under five classes AND under six
+    // (measured 2026-09-17, Node 24.19.0 / Unicode 17.0 -- the count is
+    // Unicode-version-dependent, so it is dated rather than stated flat).
+    //
+    // The range really is only a termination bound now: it starts at 0 --
+    // measured, the pick is U+00A1 either way -- and stops at the BMP because
+    // a qualifying character certainly exists below it. The sweep above is
+    // what covers the whole domain.
+    //
+    // The `throw` keeps the bound honest: if a future class accepts everything
+    // in this range, the case REFUSES rather than silently fencing the trim
+    // alone -- which is what both hand-picked spellings did.
+    // Named `..._CLASS`: `display-safe.ts` EXPORTS an `UNRENDERABLE` string
+    // constant and this file already imports from that module, so the bare
+    // name would silently SHADOW that import the day someone adds it -- this
+    // binding is block-scoped and wins, leaving the next reader unable to tell
+    // which `UNRENDERABLE` a line means. Nothing breaks: review measured the
+    // collision (rename back, add the import) at 1 passed, no type error, no
+    // lint diagnostic, which is precisely why the name is the only guard.
+    const UNRENDERABLE_CLASS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/u;
+    // The `u` is LOAD-BEARING and therefore asserted, not assumed. Without it
+    // `\p{...}` is not a property escape at all -- it reads as the literal
+    // letters -- so the class matches almost nothing, the loop picks U+0000,
+    // and the assertion below STILL PASSES because the sink replaces NUL like
+    // any other rejected character. That silently restores the
+    // control-character-as-edge hazard this predicate was rewritten twice to
+    // remove, which is the same flag-drift `SINK_CLASS_FLAGS` above is guarded
+    // against. U+200B is the probe -- spelled as an ESCAPE, since a literal
+    // zero-width character in source is invisible to the next reader.
+    expect(UNRENDERABLE_CLASS.test('\u200B')).toBe(true);
+    const edge = (() => {
+      for (let cp = 0; cp <= 0xffff; cp++) {
+        const ch = String.fromCodePoint(cp);
+        if (rejects(ch) && ch.trim() !== '' && !UNRENDERABLE_CLASS.test(ch)) return ch;
+      }
+      throw new Error('no rejected, non-trimmable, renderable character exists -- this case cannot fence anything');
+    })();
+    expect(displaySafe(`${edge}x${edge}`, { asciiOnly: true })).toBe('x');
+    // Floor against an early exit or a `continue` that skips the range -- NOT
+    // against deleting the assertions above, which no counter in the same loop
+    // can see. Probed by widening `sanitizeAsciiOnly` to `/[^\t -~]/`: this
+    // case reds at `U+0009`, the character round 4 of PR go-to-k/cdkd#3275
+    // exempted here to defend the JOIN it performed — an exemption that only
+    // holds if the sink keeps the character, which it does not.
+    expect(checked).toBe(0x110000);
   });
 });

@@ -2252,6 +2252,57 @@ const FALSIFIED_CLAIMS: readonly {
     re: /every caller wrap(s|ping) the purge in/i,
   },
   {
+    // VERBATIM from `ecd6da1f7:src/deployment/intrinsic-function-resolver.ts`,
+    // line 3443. PROVENANCE, re-derived from `git log -S` after two rounds of
+    // review each found this prose wrong in a different way:
+    //
+    //   - "sibling catches and masks the same shape" is the spelling that
+    //     reached MAIN, authored on go-to-k/cdkd#3176's branch (`b6faf7b5d`)
+    //     and squashed in as `7630e6155:3442`. go-to-k/cdkd#3275 INHERITED it;
+    //     it did not ship it.
+    //   - "sibling already masks the same shape at its own catch" was added by
+    //     go-to-k/cdkd#3275's own `ecd6da1f7:8364` and never reached main --
+    //     the squash `5cb4230f7` carries neither.
+    //   - `ecd6da1f7` therefore holds BOTH (one inherited, one new), and
+    //     `de512a6d4` holds NEITHER: it is the review commit that removed them.
+    //
+    // Round 3 blocked this entry for quoting a sentence that never existed.
+    // Round 4 fixed the quote and replaced it with a false ATTRIBUTION -- the
+    // same defect class, in the fence whose subject IS false claims, twice.
+    // What produced both: the spellings were read through a shell loop whose
+    // `"$c:src/..."` zsh-expanded as the `:s` history modifier, so every
+    // per-commit probe silently returned nothing. Brace the expansion
+    // (`"${c}:${P}"`) before believing a per-commit grep.
+    //
+    // Both real spellings WRAP mid-claim, and `Fn::ImportValue` ends the line
+    // ABOVE in each. This fence tests one LINE at a time, so any pattern
+    // reaching across that seam can never fire -- the same line-wrap defeat the
+    // `fixtures` entry below documents at length, walked into one entry later.
+    retired: 'sibling catches and masks the same shape', // falsified sample
+    why:
+      'FALSE: that catch masks the caught message with the BAGS alone — `maskSecretsForLog` over a ' +
+      'composed AWS sentence finds no registered twin and falls to the needle pass, whose substring ' +
+      'arm has a four-character floor — so the POSITIONAL half of the class is open there too. ' +
+      'go-to-k/cdkd#3176 shipped THIS sentence to main as a residual-list note, and ' +
+      'go-to-k/cdkd#3275 inherited it and then stated the same claim AGAIN at its own catch ' +
+      '("this site was simply missed") as the reason that site was catching up; that PR\'s review ' +
+      'removed both. The sibling is an INSTANCE of the gap, not the pattern to copy.',
+    // DERIVED FROM THE PROPOSITION, not from either wording in front of me
+    // (`.claude/skills/work-issues/references/verify.md` §8-g). The claim is
+    // "some sibling already covers this class"; every spelling of it puts a
+    // covering verb immediately before `the same <shape|class>` on ONE line,
+    // while the SUBJECT is what wraps away. So the subject is deliberately not
+    // in the pattern.
+    //
+    // `case` is excluded from the noun list: `src/deployment/recreate-targets
+    // .ts:1057`'s "general soft-fail covers the same case." is an unrelated
+    // TRUE sentence, and the only hit the wider list took across the scanned
+    // corpus. Measured at this commit: 0 non-fence hits, while the pattern
+    // still matches both shipped spellings, the reflow above, and a reworded
+    // restoration ("twin covers the same class").
+    re: /\b(mask|redact|cover|handle)(s|es)? the same (shape|class)\b/i,
+  },
+  {
     retired: 'not reached — no fixture in the swept set has one today; tracked', // falsified sample
     why:
       'FALSE since nested-stack-secret joined the swept set: it builds a real cdk.NestedStack and ' +
