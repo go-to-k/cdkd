@@ -268,3 +268,84 @@ describe('cdkd local Fn::GetStackOutput over a malformed producer bag (go-to-k/c
     dispose();
   });
 });
+
+describe('a caller-supplied warned-set spans several resolvers (go-to-k/cdkd#3293)', () => {
+  const warnLines = (): number =>
+    mocks.warnMock.mock.calls.filter((c) => String(c[0]).includes("no readable 'outputs' map"))
+      .length;
+
+  async function twoResolvers(shared?: Set<string>) {
+    // Reset INSIDE the helper: the counter below is a per-case total, and the
+    // file-level `beforeEach` runs before the case, not before this call.
+    for (const m of Object.values(mocks)) m.mockReset();
+    mocks.resolveStateBucketWithDefaultMock.mockResolvedValue('test-bucket');
+    mocks.verifyBucketExistsMock.mockResolvedValue(undefined);
+    mocks.listStacksMock.mockResolvedValue([]);
+    mocks.getStateMock.mockResolvedValue({
+      state: { stackName: 'Producer', resources: {}, outputs: 'abcdef' },
+      etag: 'e',
+    });
+    const opts = {
+      statePrefix: 'cdkd',
+      ...(shared !== undefined && { warnedMalformedProducers: shared }),
+    };
+    const a = await buildCrossStackResolver('us-east-1', opts);
+    const b = await buildCrossStackResolver('us-east-1', opts);
+    if (!a || !b) throw new Error('expected both resolver builds to succeed');
+    await a.resolver.resolveGetStackOutput('Producer', 'us-east-1', '0');
+    await b.resolver.resolveGetStackOutput('Producer', 'us-east-1', '0');
+    a.dispose();
+    b.dispose();
+  }
+
+  it('names one damaged record ONCE across two resolvers when the set is shared', async () => {
+    // `local invoke-agentcore` is the boot that builds two — one for the
+    // `fromS3` bucket intrinsic, one for the container env — so a producer read
+    // by both was reported as two damaged records.
+    await twoResolvers(new Set<string>());
+    expect(warnLines(), 'the paragraph was repeated once per resolver').toBe(1);
+  });
+
+  it('still keeps its own set when the caller supplies none', async () => {
+    // The other direction, and the reason the option is optional: `local
+    // invoke` and `local run-task` each build exactly one, and must not start
+    // sharing state through a module-global.
+    await twoResolvers(undefined);
+    expect(warnLines(), 'two independent resolvers silently shared a set').toBe(2);
+  });
+});
+
+describe('two records a SEPARATOR would collide are both named (go-to-k/cdkd#3308)', () => {
+  const warnLines = (): number =>
+    mocks.warnMock.mock.calls.filter((c) => String(c[0]).includes("no readable 'outputs' map"))
+      .length;
+
+  it('warns twice, which is the behaviour the key encoding buys', () => {
+    // The case issue go-to-k/cdkd#3308 actually asks for, and the one the unit
+    // fence on `producerRecordKey` cannot give: it proves the HELPER is
+    // injective, not that the reader USES it. Both a NUL and a printable
+    // separator collide this pair, so this reds on either spelling.
+    const NUL = String.fromCharCode(0);
+    return (async (): Promise<void> => {
+      for (const m of Object.values(mocks)) m.mockReset();
+      mocks.resolveStateBucketWithDefaultMock.mockResolvedValue('test-bucket');
+      mocks.verifyBucketExistsMock.mockResolvedValue(undefined);
+      mocks.listStacksMock.mockResolvedValue([]);
+      mocks.getStateMock.mockImplementation(async (stack: string, region: string) => ({
+        state: { stackName: stack, region, resources: {}, outputs: 'abcdef' },
+        etag: 'e',
+      }));
+      const { resolver, dispose } = await makeResolver();
+      // Same shared set, two DISTINCT records whose halves straddle the
+      // separator in opposite places.
+      expect(
+        await resolver.resolveGetStackOutput(`Evil${NUL}us-east-1`, 'ap-northeast-1', '0')
+      ).toBeUndefined();
+      expect(
+        await resolver.resolveGetStackOutput('Evil', `us-east-1${NUL}ap-northeast-1`, '0')
+      ).toBeUndefined();
+      expect(warnLines(), 'one of the two damaged records went unreported').toBe(2);
+      dispose();
+    })();
+  });
+});

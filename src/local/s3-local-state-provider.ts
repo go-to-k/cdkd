@@ -62,6 +62,17 @@ export class S3LocalStateProvider implements LocalStateProvider {
   // `dispose` can close every resolver this provider handed out.
   private readonly disposers: Array<() => void> = [];
 
+  /**
+   * Producer records the malformed-outputs warning has already named, shared by
+   * every resolver this provider builds (issue
+   * [#3293](https://github.com/go-to-k/cdkd/issues/3293)).
+   *
+   * Lives here rather than in each resolver's closure because this object is
+   * the one thing that spans a whole `cdkd local` run — see the note at the
+   * `buildCrossStackResolver` call for why that is the honest scope.
+   */
+  private readonly warnedMalformedProducers = new Set<string>();
+
   constructor(opts: S3LocalStateProviderOptions) {
     this.opts = opts;
   }
@@ -130,6 +141,18 @@ export class S3LocalStateProvider implements LocalStateProvider {
       ...(this.opts.stateBucket !== undefined && { stateBucket: this.opts.stateBucket }),
       ...(this.opts.region !== undefined && { region: this.opts.region }),
       ...(this.opts.profile !== undefined && { profile: this.opts.profile }),
+      // Issue go-to-k/cdkd#3293. The malformed-outputs warning is once per
+      // damaged RECORD, and until this the set lived in the resolver's own
+      // closure — so a boot that builds SEVERAL resolvers named one record once
+      // PER RESOLVER. `local invoke-agentcore` is that boot: it builds one for
+      // the `fromS3` bundle's bucket intrinsic and another for the container
+      // env, so a producer read by both was reported as two damaged records.
+      //
+      // The PROVIDER is the right owner, not the call sites: it already
+      // outlives every resolver it hands out (it owns their disposers), so a
+      // caller building two needs no change and cannot forget to thread it.
+      // Per INSTANCE and not module-global — a second provider is a second run.
+      warnedMalformedProducers: this.warnedMalformedProducers,
     };
     const built = await buildCrossStackResolverImpl(consumerRegion, buildOpts);
     if (!built) return undefined;

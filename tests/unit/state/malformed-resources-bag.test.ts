@@ -28,6 +28,7 @@ import {
   repairMalformedResourcesForReadOnly,
   unreadableResourcePropertyBags,
   type RenderedStateContainer,
+  producerRecordKey,
 } from '../../../src/state/malformed-resources-bag.js';
 import { IDENT_MAX_CODE_POINTS, UNRENDERABLE } from '../../../src/utils/display-safe.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
@@ -2087,5 +2088,71 @@ describe('the properties-container guards dominate their reads (issue go-to-k/cd
         `records from \`state.orphans[].state\`, which the load never walked, so a torn one ` +
         `reaches calculateDiff and ABORTS cdkd diff with the deploy's refusal.`
     ).toBeGreaterThan(spliceAt);
+  });
+});
+
+describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3308', () => {
+  const NUL = String.fromCharCode(0);
+
+  it('two DISTINCT records cannot share a key, which a separator cannot promise', () => {
+    // The exact pair a NUL SEPARATOR collides, measured before the fix. A stack
+    // name is read out of an S3 key and is as attacker-chosen as the `outputs`
+    // bag, so it can carry the separator itself — whichever record is warned
+    // about second was then silently not warned about at all.
+    const a = producerRecordKey(`Evil${NUL}us-east-1`, 'ap-northeast-1');
+    const b = producerRecordKey('Evil', `us-east-1${NUL}ap-northeast-1`);
+    expect(a).not.toBe(b);
+    // The control, and it has to build the naive key to mean anything. An
+    // earlier revision asserted `expect(X).toBe(X)` — a tautology that proved
+    // the pair collides under NOTHING, so the case above could have been
+    // satisfied by any key at all.
+    const naive = (s: string, r: string): string => `${s}${NUL}${r}`;
+    expect(
+      naive(`Evil${NUL}us-east-1`, 'ap-northeast-1'),
+      'precondition: this pair is one a SEPARATOR collides'
+    ).toBe(naive('Evil', `us-east-1${NUL}ap-northeast-1`));
+  });
+
+  it('a PRINTABLE separator is refused too, not just the NUL one', () => {
+    // Issue go-to-k/cdkd#3308 asks for a case that fails on every separator
+    // spelling, and the first revision of this fence did not deliver it:
+    // `producerRecordKey = `${s}:${r}`` passed all of it. `:` is not a
+    // hypothetical — `secret-redaction.ts` documents it as occurring in real
+    // export names — so the encoded key has to beat that spelling as well.
+    for (const sep of [':', '@', '|', '/', ' ']) {
+      const naive = (s: string, r: string): string => `${s}${sep}${r}`;
+      const a: [string, string] = [`Evil${sep}us-east-1`, 'ap-northeast-1'];
+      const b: [string, string] = ['Evil', `us-east-1${sep}ap-northeast-1`];
+      expect(naive(...a), `precondition: ${sep} collides this pair`).toBe(naive(...b));
+      expect(
+        producerRecordKey(...a),
+        `the encoded key collided under the ${sep} spelling`
+      ).not.toBe(producerRecordKey(...b));
+    }
+  });
+
+  it('the SAME record produces the same key, or the dedup stops deduping', () => {
+    expect(producerRecordKey('Producer', 'us-east-1')).toBe(
+      producerRecordKey('Producer', 'us-east-1')
+    );
+    // And a genuinely different record still differs — the other direction,
+    // without which "never collides" is satisfied by a key that is always
+    // unique and therefore never dedups.
+    expect(producerRecordKey('Producer', 'us-east-1')).not.toBe(
+      producerRecordKey('Producer', 'us-west-2')
+    );
+  });
+
+  it('ONE spelling: both warned-set sites call this helper', () => {
+    // A second spelling is the failure this helper exists to prevent, and
+    // nothing else watches it — the two sites are in different files and a
+    // reviewer comparing them by eye is what the first round relied on.
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+    for (const rel of ['src/cli/commands/scrub.ts', 'src/cli/commands/local-state-loader.ts']) {
+      const src = readFileSync(join(root, rel), 'utf-8');
+      expect(src, `${rel} should build its warned-set key through the shared helper`).toContain(
+        'producerRecordKey('
+      );
+    }
   });
 });

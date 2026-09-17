@@ -17,12 +17,13 @@ import type { StackState } from '../../../src/types/state.js';
 
 const mocks = vi.hoisted(() => ({
   loadStateForStackMock: vi.fn(),
+  buildCrossStackResolverMock: vi.fn(),
   warnMock: vi.fn(),
 }));
 
 vi.mock('../../../src/cli/commands/local-state-loader.js', () => ({
   loadStateForStack: mocks.loadStateForStackMock,
-  buildCrossStackResolver: vi.fn(),
+  buildCrossStackResolver: mocks.buildCrossStackResolverMock,
 }));
 vi.mock('../../../src/utils/logger.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/utils/logger.js')>();
@@ -121,5 +122,40 @@ describe('S3LocalStateProvider repairs a malformed outputs bag (go-to-k/cdkd#320
     mocks.loadStateForStackMock.mockResolvedValue(undefined);
     expect(await load()).toBeUndefined();
     expect(warned()).toBe('');
+  });
+});
+
+describe('the provider shares ONE warned-set across every resolver it builds (#3293)', () => {
+  it('passes the same Set instance to each build', async () => {
+    // The WIRING, which the loader's own suite cannot see: it proves the option
+    // works when threaded, not that anything threads it. Without this, removing
+    // the `warnedMalformedProducers:` line from the provider leaves the loader
+    // fence green and `local invoke-agentcore` back to two warnings per record.
+    mocks.buildCrossStackResolverMock.mockReset();
+    mocks.buildCrossStackResolverMock.mockResolvedValue({
+      resolver: {},
+      dispose: (): void => {},
+    });
+    const provider = new S3LocalStateProvider({ statePrefix: 'cdkd' });
+    await provider.buildCrossStackResolver(REGION);
+    await provider.buildCrossStackResolver(REGION);
+
+    expect(mocks.buildCrossStackResolverMock).toHaveBeenCalledTimes(2);
+    const [first, second] = mocks.buildCrossStackResolverMock.mock.calls.map(
+      (c) => (c[1] as { warnedMalformedProducers?: Set<string> }).warnedMalformedProducers
+    );
+    expect(first, 'the provider supplied no warned-set at all').toBeInstanceOf(Set);
+    expect(second, 'the second build got a DIFFERENT set — no sharing').toBe(first);
+
+    // Per INSTANCE, not module-global: a second provider is a second run, and
+    // must not inherit the first's suppressions.
+    const other = new S3LocalStateProvider({ statePrefix: 'cdkd' });
+    await other.buildCrossStackResolver(REGION);
+    const third = (
+      mocks.buildCrossStackResolverMock.mock.calls[2]?.[1] as {
+        warnedMalformedProducers?: Set<string>;
+      }
+    ).warnedMalformedProducers;
+    expect(third, 'a second provider shared the first one’s set').not.toBe(first);
   });
 });
