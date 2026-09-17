@@ -1,6 +1,14 @@
 import { STSClient, AssumeRoleCommand } from '@aws-sdk/client-sts';
 import { getLogger } from './logger.js';
-import { awsClientDefaults } from './aws-client-defaults.js';
+import {
+  awsClientDefaults,
+  getAssumedRoleCredentials,
+  setAssumedRoleCredentials,
+  setPreAssumeEnvCredentials,
+  SECOND_ROLE_PUBLISH_REFUSAL,
+} from './aws-client-defaults.js';
+import { readEnvCredentials } from './caller-credentials.js';
+import { displaySafe } from './display-safe.js';
 
 /**
  * Temporary AWS credentials produced by `sts:AssumeRole`. Shape mirrors the
@@ -94,8 +102,8 @@ export function parseIamRoleArn(roleArn: string): { partition: string; accountId
  * reading the producer account's cdkd state bucket.
  *
  * **Why a dedicated helper (instead of reusing `applyRoleArnIfSet`).** The
- * `--role-arn` flag writes assumed credentials into the process's `AWS_*`
- * env vars so EVERY subsequent SDK client picks them up. That is the right
+ * `--role-arn` flag publishes its assumed credentials process-wide, so
+ * EVERY subsequent SDK client picks them up. That is the right
  * behavior for the CLI-wide flag, but the wrong behavior for cross-account
  * `Fn::GetStackOutput`: the producer's role should authorize ONLY the S3
  * state read, not the consumer's provisioning calls (which still run under
@@ -230,16 +238,57 @@ export async function assumeRoleForCrossAccountStateRead(roleArn: string): Promi
  * into `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`
  * for the rest of the process.
  *
- * **Why env vars, not threaded credentials.** cdkd constructs ~13
- * independent `AwsClients` instances across deploy / destroy / state /
- * import / etc. paths (each with its own region, sometimes — e.g. the
- * state-bucket client lives in a different region from the provisioning
- * clients). Threading a `credentials` object through every site is high
- * churn for an opt-in flag. AWS SDK v3 reads the standard `AWS_*` env
- * vars at the top of its default credentials chain, so writing into them
- * once at the command's entry makes every later `new XxxClient()` pick
- * up the assumed-role credentials automatically without touching the
- * client construction sites.
+ * **Why not threaded credentials.** cdkd constructs ~13 independent
+ * `AwsClients` instances across deploy / destroy / state / import / etc.
+ * paths (each with its own region, sometimes — e.g. the state-bucket
+ * client lives in a different region from the provisioning clients).
+ * Threading a `credentials` object through every site is high churn for
+ * an opt-in flag, so the assumed credentials are published ONCE, at the
+ * command's entry, through two channels that between them reach every
+ * consumer:
+ *
+ * 1. `setAssumedRoleCredentials` (`src/utils/aws-client-defaults.ts`) —
+ *    every SDK client under `src/**` is required to spread
+ *    `awsClientDefaults(...)` FIRST, so all of them receive the role as an
+ *    EXPLICIT `credentials` value, which outranks a `profile` on the same
+ *    config. That helper's header carries the full reasoning.
+ * 2. The `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`
+ *    env vars — for the consumers channel 1 cannot reach: cdk-local's own
+ *    SDK clients and the CDK app subprocess, which inherit this process's
+ *    environment.
+ *
+ * **Why channel 1 exists, and why `AWS_PROFILE` is nonetheless LEFT ALONE.**
+ * Channel 2 used to be the whole mechanism, and it is silently inert
+ * whenever a profile is selected: `@aws-sdk/credential-provider-node`
+ * skips the env-var provider once `AWS_PROFILE` is set, so
+ * `--profile ci --role-arn <r>` assumed the role, reported it assumed,
+ * and then ran every call as `ci` — potentially in a different account
+ * (issue [#3130](https://github.com/go-to-k/cdkd/issues/3130)). Deleting
+ * `AWS_PROFILE` would not have fixed that on its own (cdkd also passes
+ * `profile` as an explicit client-config key, which outranks the
+ * environment), and it costs something real: `AWS_PROFILE` is the only
+ * region source `Synthesizer.resolveSdkDefaultRegion` has when the user
+ * exported a profile rather than passing `--profile`, so clearing it would
+ * silently drop the CDK app's `CDK_DEFAULT_REGION` and synthesize an
+ * env-agnostic stack for a different region than the profile named.
+ *
+ * **The one consumer channel 2 must NOT reach.** `cdkd local *` copies the
+ * same three environment variables into the emulated Lambda / AgentCore
+ * container, so the role reached the USER'S OWN CODE — which is what
+ * `--assume-role` is for, and never what `--role-arn` asked for. Channel 1's
+ * `ignoreAssumedRole` opt-out cannot express that here, because the value is
+ * not a client config but three variables whose original contents the
+ * overwrite below destroys. So the caller's own triple is SNAPSHOTTED first
+ * (`setPreAssumeEnvCredentials`), and the local surface's forwarding sites
+ * restore it — or, when the caller had none, strip the role's.
+ * `src/utils/caller-credentials.ts` owns that decision and its reasoning.
+ *
+ * So the split is by ROLE, not by channel: `--role-arn` decides the
+ * IDENTITY (channel 1, every client under `src/**`), and the profile keeps
+ * the two jobs an assumed role cannot do — answering the `AssumeRole`
+ * below, and supplying shared-config settings such as the region. The
+ * bound that leaves: with both in play, a client built OUTSIDE `src/**`
+ * still resolves the profile, because channel 2 stays inert for it.
  *
  * **What the assumed role must carry.** Unlike `cdk deploy`, cdkd does
  * NOT route through CloudFormation. There is no cfn-exec-role to
@@ -253,10 +302,21 @@ export async function assumeRoleForCrossAccountStateRead(roleArn: string): Promi
  * `AdministratorAccess`. CDK CLI's `cdk-hnb659fds-deploy-role-*` is NOT
  * sufficient — that role only carries CFn + asset-publish permissions.
  *
+ * **Once per process, enforced at both ends.** Every command handler calls this
+ * exactly once, at its entry, and a second call cannot quietly work: the
+ * `AssumeRole` hop below opts out of the published role (so it is answered by
+ * the identity the user started with, never by role A assuming role B — a chain
+ * AWS caps at one hour and refuses unless B's trust policy names A), and
+ * `setAssumedRoleCredentials` then REFUSES the second publish outright. Both
+ * are needed: the opt-out alone would let two identities coexist, and the
+ * refusal alone would leave the hop chaining.
+ *
  * Default session duration is 1 hour. For longer-running deploys, the
  * caller should re-issue the cdkd command (the in-flight credentials
  * stay valid until expiry, but a re-run is the simplest recovery for
- * the rare case where a deploy outlives them).
+ * the rare case where a deploy outlives them). Nothing refreshes them —
+ * `AssumedRoleCredentials.expiration` is carried for the log line, not acted
+ * on; that field's doc in `aws-client-defaults.ts` records the bound.
  */
 export async function applyRoleArnIfSet(opts: {
   roleArn: string | undefined;
@@ -265,11 +325,43 @@ export async function applyRoleArnIfSet(opts: {
   const roleArn = opts.roleArn || process.env['CDKD_ROLE_ARN'];
   if (!roleArn) return;
 
-  const logger = getLogger().child('role-arn');
-  logger.debug(`Assuming role ${roleArn}...`);
+  // BEFORE the hop, not after it. `setAssumedRoleCredentials` refuses a second
+  // publish too, but by the time that refusal fires this function has already
+  // issued a real `sts:AssumeRole`, SNAPSHOTTED role A's triple as if it were
+  // "the caller's own identity" — the value the `cdkd local` surface hands an
+  // emulated workload — and overwritten `process.env` with role B's. Every
+  // channel is corrupted before the guard trips, so the later refusal protects
+  // only the bag. The two together are belt-and-braces on one invariant, with
+  // this end deciding that NOTHING happens at all.
+  //
+  // The text is SHARED with the publish-side refusal rather than re-spelled:
+  // one invariant must not grow two explanations that can drift apart.
+  if (getAssumedRoleCredentials() !== undefined) {
+    throw new Error(SECOND_ROLE_PUBLISH_REFUSAL);
+  }
 
+  const logger = getLogger().child('role-arn');
+  // `roleArn` is user-controlled text (a CLI argument or `CDKD_ROLE_ARN`) on its
+  // way to a terminal, and this line fires BEFORE any validation of it — the
+  // same class the warning below withholds the profile name for. `asciiOnly`
+  // because an ARN has a known charset, so a legitimate one renders unchanged.
+  const displayRoleArn = displaySafe(roleArn, { asciiOnly: true });
+  logger.debug(`Assuming role ${displayRoleArn}...`);
+
+  // `ignoreAssumedRole` because this hop must be answered by the identity the
+  // user STARTED with — a profile, the environment, an instance role — not by a
+  // role this same function published earlier in the process, which would CHAIN
+  // (role A assuming role B): AWS caps a chained session at one hour and
+  // refuses it outright unless B's trust policy names A.
+  //
+  // The guard at the top of this function now makes that state unreachable, so
+  // this is the inner of three fences rather than the one doing the work. It is
+  // kept because it is the only one that would still hold if a role were ever
+  // published by something other than this function, and because it is inert on
+  // the reachable path: with no role published yet, the opt-out changes nothing
+  // the helper returns.
   const sts = new STSClient({
-    ...awsClientDefaults(),
+    ...awsClientDefaults({ ignoreAssumedRole: true }),
     ...(opts.region && { region: opts.region }),
   });
   try {
@@ -281,18 +373,57 @@ export async function applyRoleArnIfSet(opts: {
       })
     );
     if (!response.Credentials) {
-      throw new Error(`AssumeRole returned no credentials for role ${roleArn}`);
+      throw new Error(`AssumeRole returned no credentials for role ${displayRoleArn}`);
     }
     const { AccessKeyId, SecretAccessKey, SessionToken, Expiration } = response.Credentials;
     if (!AccessKeyId || !SecretAccessKey || !SessionToken) {
-      throw new Error(`AssumeRole response missing credentials fields for role ${roleArn}`);
+      throw new Error(`AssumeRole response missing credentials fields for role ${displayRoleArn}`);
     }
+    // Channel 2's carve-out (see this function's header): `cdkd local *` copies
+    // this triple into the emulated container. Snapshot what it held BEFORE the
+    // overwrite below —
+    // after it, the caller's own identity is unrecoverable, and it is the only
+    // identity the local surface may hand to a workload cdkd merely emulates.
+    // `undefined` when the caller resolves through SSO / IMDS / a container
+    // role; `src/utils/caller-credentials.ts` turns that into "strip the triple"
+    // rather than "inherit the role". See that module's header.
+    setPreAssumeEnvCredentials(readEnvCredentials());
     process.env['AWS_ACCESS_KEY_ID'] = AccessKeyId;
     process.env['AWS_SECRET_ACCESS_KEY'] = SecretAccessKey;
     process.env['AWS_SESSION_TOKEN'] = SessionToken;
+    // Channel 1 (see this function's header): every SDK client under `src/**`
+    // now receives these as an explicit `credentials` value, which beats a
+    // `profile` passed on the same client config.
+    setAssumedRoleCredentials({
+      accessKeyId: AccessKeyId,
+      secretAccessKey: SecretAccessKey,
+      sessionToken: SessionToken,
+      ...(Expiration && { expiration: Expiration }),
+    });
     logger.info(
-      `Assumed role ${roleArn} (session expires ${Expiration?.toISOString() ?? 'unknown'})`
+      `Assumed role ${displayRoleArn} (session expires ${Expiration?.toISOString() ?? 'unknown'})`
     );
+    // An empty `AWS_PROFILE` selects no profile — the SDK ignores it — so
+    // warning on one would describe a conflict that does not exist. Matches
+    // the `!== ''` guard `awsClientDefaults` already applies.
+    const selectedProfile = process.env['AWS_PROFILE'];
+    if (selectedProfile !== undefined && selectedProfile !== '') {
+      // The one part of the combination cdkd CANNOT reconcile, said out loud so
+      // the silent case of issue #3130 cannot come back in a narrower form: a
+      // program cdkd launches inherits this environment, where a selected
+      // profile still outranks the credential triple above. The profile NAME is
+      // deliberately not interpolated — it is user-controlled text on its way
+      // to a terminal — and neither is the flag, since the role may have come
+      // from `CDKD_ROLE_ARN`.
+      logger.warn(
+        'AWS_PROFILE is set and a role has been assumed. The AWS calls cdkd makes to ' +
+          'deploy and read state run as the role. The profile still decides the region, ' +
+          'it is what your CDK app resolves during synthesis, and — when you passed ' +
+          '`--profile` rather than exporting it — it is the identity a `cdkd local` ' +
+          'emulated function or task is given. See ' +
+          'https://github.com/go-to-k/cdkd/blob/main/docs/cli-reference.md'
+      );
+    }
   } finally {
     sts.destroy();
   }

@@ -58,7 +58,7 @@ source) are supported.
 | `--output <path>` | `cdk.out` | Output directory for synthesis. |
 | `-c`, `--context <key=value...>` | — | Set CDK context values. Repeatable. |
 | `--profile <profile>` | — | AWS profile. |
-| `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for cdkd's own AWS API calls (state reads, STS, ECR). Distinct from `--assume-role`, which targets the agent's credentials. |
+| `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for cdkd's own AWS API calls (state reads, STS, ECR). Distinct from `--assume-role`, which targets the agent's credentials. With `--from-cfn-stack`, pass the `--profile` flag too: with no profile selected, that stack read goes through the local emulation engine and resolves as the role, and any decrypted parameter it pulls lands in the container. |
 | `-y`, `--yes` | off | Answer interactive prompts with the recommended response. |
 | `--verbose` | off | Verbose logging (on stderr). |
 

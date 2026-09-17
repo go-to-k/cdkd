@@ -53,6 +53,17 @@ export interface ResolveEcsSecretsOptions {
    * Hook for tests: supply pre-built SDK clients. Production callers
    * leave both unset and let the resolver construct + destroy its own
    * clients.
+   *
+   * **A SEAM PAST THE IDENTITY OPT-OUT, and the reason it is test-only.** The
+   * `ignoreAssumedRole: true` below is what keeps the resolved plaintext on the
+   * CALLER's identity rather than a `--role-arn` assumed for cdkd's own calls
+   * (issue [#3130](https://github.com/go-to-k/cdkd/issues/3130)). An injected
+   * client carries whatever identity its builder chose, and it is INVISIBLE to
+   * `tests/unit/local/local-surface-role-identity.test.ts` — that fence reads
+   * construction sites in `src/**`, and an injected client is constructed
+   * somewhere else. So a production caller must never pass either: the whole
+   * point is that the secret values injected into the user's emulated task are
+   * readable by the principal the user named, and nothing more privileged.
    */
   secretsManagerClient?: SecretsManagerClient;
   ssmClient?: SSMClient;
@@ -70,15 +81,33 @@ export async function resolveEcsSecrets(
   if (entries.length === 0) return [];
   const logger = getLogger().child('ecs-secrets');
 
+  // `ignoreAssumedRole` because these two reads become the CONTAINER's
+  // environment: the resolved plaintext is injected into the user's emulated
+  // task. A `--role-arn` assumed for cdkd's own calls is typically the more
+  // privileged identity, so letting it answer here would read secrets the
+  // caller's own principal cannot — and hand them to local code (issue
+  // [#3130](https://github.com/go-to-k/cdkd/issues/3130) review round 2).
+  // Nothing else is threaded: `AWS_PROFILE` is left in the environment, so
+  // opting out of the published role restores the CALLER's identity — the
+  // profile when one is selected, and otherwise the caller's own pre-assume
+  // chain. Never the role. An earlier revision of this comment said the
+  // no-profile case resolved "the assumed role's own credentials", which was
+  // the round-5 defect stated as intent: `ignoreAssumedRole` returned `{}` and
+  // the SDK chain's first link read back the triple `applyRoleArnIfSet` had
+  // just overwritten. Reading that sentence as a specification is how a
+  // "simplification" reintroduces it.
   const secretsClient =
     options.secretsManagerClient ??
     new SecretsManagerClient({
-      ...awsClientDefaults(),
+      ...awsClientDefaults({ ignoreAssumedRole: true }),
       ...(options.region && { region: options.region }),
     });
   const ssmClient =
     options.ssmClient ??
-    new SSMClient({ ...awsClientDefaults(), ...(options.region && { region: options.region }) });
+    new SSMClient({
+      ...awsClientDefaults({ ignoreAssumedRole: true }),
+      ...(options.region && { region: options.region }),
+    });
   const ownsSecretsClient = options.secretsManagerClient === undefined;
   const ownsSsmClient = options.ssmClient === undefined;
 

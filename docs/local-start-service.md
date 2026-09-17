@@ -60,7 +60,7 @@ Docker is required — see [Local Execution](local-emulation.md#requirements).
 | `-c`, `--context <key=value...>` | — | Set CDK context values. Repeatable. |
 | `--region <region>` | `AWS_REGION`, the stack's region, then the profile's | **Deprecated**, hidden from `--help`, and still honored: it overrides `AWS_REGION` and the profile, and prints a removal warning. Prefer `AWS_REGION` or your profile. |
 | `--profile <profile>` | — | AWS profile. Its credentials are forwarded to the sidecar and to the containers. |
-| `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for cdkd's own AWS API calls. |
+| `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume. **Not safe to combine with this command without a profile selected** — the role also fetches the ECS task secrets that are injected as plaintext into your container. See the `--role-arn` section of [CLI Reference](cli-reference.md). |
 | `-y`, `--yes` | off | Answer interactive prompts with the recommended response. |
 | `--verbose` | off | Verbose logging. |
 

@@ -461,6 +461,9 @@ export function pickFreePort(): Promise<number> {
  * AgentCore local-invoke path to keep decrypted `--from-cfn-stack`
  * SecureString SSM values off the argv).
  */
+// cdkd-local-env-identity: a list of KEY NAMES whose values must travel off the
+// docker argv — it supplies no identity and reads no credential source, so
+// whichever identity the caller decided on upstream is what it routes.
 export const SENSITIVE_ENV_KEYS: ReadonlySet<string> = new Set([
   'AWS_ACCESS_KEY_ID',
   'AWS_SECRET_ACCESS_KEY',

@@ -255,9 +255,22 @@ CDKD_ROLE_ARN=arn:aws:iam::123456789012:role/cdkd-deploy cdkd deploy
 ```
 
 cdkd does an `STS AssumeRole` once at command start (1-hour session, session
-name `cdkd-<unix-ms>`) and writes the resulting temporary credentials into
-`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`, so every
-later AWS SDK client picks them up via the standard default credentials chain.
+name `cdkd-<unix-ms>`) and hands the resulting temporary credentials to every
+AWS SDK client it builds afterwards, so the role is the identity behind every
+call cdkd makes.
+
+It also exports them as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` /
+`AWS_SESSION_TOKEN`, which is how a program cdkd *starts* — your CDK app during
+synthesis, the local-emulation engine behind `cdkd local *` — picks the role up.
+**That second channel works only while no profile is selected.** The AWS SDK
+skips its environment-variable credentials entirely once `AWS_PROFILE` is set,
+and cdkd leaves your profile in place on purpose (it is where the region and the
+rest of your shared config come from). So with `--profile` — or an exported
+`AWS_PROFILE` — those variables are inert for anything cdkd launches, and a
+subprocess runs as the profile. Everything cdkd itself does still runs as the
+role; the split is spelled out under
+[`--profile` vs `--role-arn`](#profile-vs-role-arn) below, and cdkd warns
+about it at the start of the run.
 
 ### What the assumed role needs
 
@@ -300,14 +313,148 @@ valid until expiry, so a re-run is the simplest recovery path.
 
 `--profile` selects which entry from `~/.aws/credentials` or `~/.aws/config`
 provides the **base** credentials; `--role-arn` then assumes a role from those
-base credentials.
+base credentials. They combine, and the division of labour is fixed:
 
-> **Do not combine them today.** cdkd hands the assumed-role credentials to the
-> AWS SDK through the `AWS_*` environment variables, and the SDK skips those
-> whenever a profile is selected — so with both flags set the role is assumed
-> and then ignored, and every later call runs as the profile's own principal.
-> For a cross-account deploy, make the base credentials the default ones (no
-> `--profile`) and pass `--role-arn` alone.
+| Flag | What it decides |
+| --- | --- |
+| `--profile` (or `AWS_PROFILE`) | Which credentials answer the `AssumeRole` call, and which shared-config settings — the region above all — apply |
+| `--role-arn` (or `CDKD_ROLE_ARN`) | Which identity every AWS call after that runs as |
+
+```bash
+# `ci` authenticates the AssumeRole; the role in 222222222222 does the work.
+cdkd deploy --profile ci --role-arn arn:aws:iam::222222222222:role/cdkd-deploy
+```
+
+So the role **wins** for credential purposes: once it is assumed, the profile no
+longer selects the principal for any call cdkd makes, and neither does an
+`AWS_PROFILE` you exported without passing the flag. What the profile still
+needs is `sts:AssumeRole` on the target role, and the role's trust policy has to
+allow the profile's principal.
+
+One bound is worth knowing when you combine them, and cdkd warns about it at the
+start of the run. A profile stays selected in the environment, because it is also
+where the region and the rest of your shared config come from — and the AWS SDK
+prefers a selected profile over exported credentials. cdkd's own calls are
+unaffected (they carry the role explicitly), but your CDK app resolves the
+profile when cdkd runs it during synthesis. Pass the region explicitly if you
+want to drop `--profile` and rely on `--role-arn` alone.
+
+**Your CDK app therefore sees two accounts at once, and they can differ.** cdkd
+resolves `CDK_DEFAULT_ACCOUNT` with its own `sts:GetCallerIdentity`, which
+carries the role — so an env-agnostic stack (`env` unset, or
+`account: process.env.CDK_DEFAULT_ACCOUNT`) synthesizes for the **role's**
+account, which is where it will be deployed and is what you want. But a context
+lookup the app performs itself — `Vpc.fromLookup`, `HostedZone.fromLookup`,
+`StringParameter.valueFromLookup` — runs on the app's own SDK chain, which
+resolves the **profile**. Same-account use is unaffected. Cross-account, a
+lookup either fails or silently answers from the wrong account, and the fix is
+to drop `--profile` (pass `--region` and let `--role-arn` supply the identity
+alone) or to hard-code `env` on the stack rather than looking it up.
+
+The emulated function or task a `cdkd local *` command runs is a deliberate
+exception, on **four** of the eight commands: `local invoke`, `local start-api`,
+`local run-task` and `local invoke-agentcore`. On those, everything **cdkd**
+resolves *for* the workload stays on your own identity — the credentials it is
+given, any role it assumes on the container's behalf (`--assume-role` /
+`--assume-task-role`), the ECS task secrets read into its environment, and the
+`${AWS::AccountId}` substituted into it — so `--role-arn` cannot quietly hand
+your local code more permission than you asked for. That holds however you
+selected a profile, including not selecting one: cdkd captures your own
+credentials before it assumes the role, and puts them back on the container's
+environment afterwards. What cdkd does for *itself* still uses the role,
+including reading state and pulling the container image (which leaves an ECR
+login for the role's account in your Docker config).
+
+Read "what cdkd resolves" strictly — the next section is what it excludes.
+
+### What the local emulation engine resolves does NOT get that treatment
+
+The guarantee above is about what **cdkd** resolves. A `cdkd local` command also
+hands work to the local emulation engine, and the engine builds its own AWS
+clients from the region and the `--profile` flag alone. It never sees the
+opt-out cdkd applies to its own clients, so **anything the engine resolves for
+your workload, while `--role-arn` is set and no profile is selected, it resolves
+as the role.**
+
+That is the rule to reason from; the table below is what has been measured
+against it, not the set of everything it covers.
+
+| What reaches the role | On | Prevented by |
+| --- | --- | --- |
+| The **credential triple** is copied into the container, so your code runs as the role | `start-alb` (its Lambda front-door containers), `start-cloudfront` (Function URL and Lambda@Edge containers), `start-agentcore` | the `--profile` **flag** only |
+| The ECS task **secrets** are fetched with the role and injected as plaintext into the container's environment | `start-service`, `start-alb` | the `--profile` flag, or an exported `AWS_PROFILE` |
+| `${AWS::AccountId}` resolves to the **role's** account, and is substituted into the container's environment variables, its secret references and its image URIs | `start-service`, `start-alb`, `start-agentcore` | the `--profile` flag, or an exported `AWS_PROFILE` |
+| **`--from-cfn-stack`** reads the stack — including `GetParameters` with decryption, whose plaintext lands in the container's environment | **all eight commands** — the four the guarantee covers included | the `--profile` flag, or an exported `AWS_PROFILE` |
+
+The last row is the one to read twice: the four commands the guarantee covers
+are covered for what **cdkd** resolves, and `--from-cfn-stack` is the engine
+resolving. `--from-state` is cdkd's own equivalent and is not affected.
+
+Two more things worth knowing. `start-service`'s own ECS workload containers are
+not in the first row — they receive credentials through the metadata sidecar,
+which is seeded from `--profile` alone, so the triple never reaches them. And
+the mitigations are not uniform: everywhere else in this section `--profile` and
+an exported `AWS_PROFILE` behave the same, but the credential-triple row reads
+the **flag** specifically and an exported `AWS_PROFILE` leaves it open.
+
+cdkd emits no warning for any of this. On the first three rows the code path
+that warns is one the engine does not take at all. On the last row, over the
+four commands the guarantee covers, it does run — but it only warns when a
+profile is selected, which is exactly the case that row is already mitigated in.
+
+So when you pass `--role-arn` to any `cdkd local` command, pass the `--profile`
+flag with it, or do not give it a role whose permissions you would not hand to
+the code running in the container.
+
+One case has nothing to put back. If your own credentials come from AWS IAM
+Identity Center (SSO), an EC2 instance role, or an ECS container role, there is
+no `AWS_ACCESS_KEY_ID` in your shell for cdkd to capture. Rather than let the
+container inherit the assumed role, cdkd forwards **no** credentials at all —
+the container falls back to whatever its own SDK chain finds, which for a plain
+`cdkd local invoke` is nothing, and the handler's first AWS call fails with
+`Could not load credentials from any providers`. Pass `--profile <name>` to give
+the emulated function an identity (cdkd resolves the profile and mounts it for
+the container), or `--assume-role <arn>` to run it as its deployed execution
+role. A missing credential you can see beats a privileged one you cannot.
+
+### If you were already combining them, three things move
+
+cdkd used to publish an assumed role through the `AWS_*` environment variables
+alone, which the SDK ignores whenever a profile is selected — so
+`--profile` together with `--role-arn` ran every call as the *profile*. Now the
+role wins, and for anyone who had that combination in a script, three things
+change on the first run after upgrading. All three are the same correction seen
+from different places: cdkd genuinely runs as the role now.
+
+**1. The default state bucket follows the role's account.** cdkd derives
+`cdkd-state-<accountId>` from the identity it runs as, so with both flags the
+account is the **role's**. Your stacks' state is in the profile account's bucket
+and cdkd will no longer find it — a deploy would create the stack again in the
+role's account and leave the original resources behind. Copy the state into the
+role account's bucket before the first run. Pointing `--state-bucket` back at
+the profile account's bucket does **not** work: cdkd sends
+`ExpectedBucketOwner` on every state call, so a bucket owned by a different
+account is rejected.
+
+**2. Cross-account `Fn::GetStackOutput` assumes the producer role AS the role.**
+The `RoleArn` hop that reads another account's state used to be answered by the
+profile's principal; it is now answered by the `--role-arn` role. The producer
+role's trust policy has to name the **`--role-arn` role**, not your profile's
+principal. Until it does, the first deploy that resolves such a reference fails
+with `AssumeRole into <producer-role> failed: AccessDenied` — which names the
+producer role and not the changed principal, so it is worth checking the trust
+policy before you go looking elsewhere.
+[Cross-Stack References](cross-stack-references.md) covers the feature;
+[the cross-account section of the internals page](cross-stack-internals.md)
+carries the policy documents.
+
+**3. `CDK_DEFAULT_ACCOUNT` becomes the role's account.** An env-agnostic stack
+now synthesizes for the account it is actually deployed into, which is the
+point — but the CDK app's own context lookups still resolve your profile, so a
+cross-account run can synthesize for one account while `Vpc.fromLookup` reads
+another. The paragraph under
+[`--profile` vs `--role-arn`](#profile-vs-role-arn) has the detail and the two
+ways out.
 
 ## Exit codes
 

@@ -38,7 +38,7 @@ export const commonOptions = [
   new Option('--profile <profile>', 'AWS profile'),
   new Option(
     '--role-arn <arn>',
-    'IAM role ARN to assume for AWS API calls (env: CDKD_ROLE_ARN); the role needs the actions for the resource types you deploy plus the bookkeeping actions cdkd itself issues, because cdkd makes raw service API calls and does not route through CloudFormation, so CDK CLI deploy-roles will NOT work. Do not combine with --profile: the SDK then ignores the assumed role'
+    'IAM role ARN to assume for AWS API calls (env: CDKD_ROLE_ARN); the role needs the actions for the resource types you deploy plus the bookkeeping actions cdkd itself issues, because cdkd makes raw service API calls and does not route through CloudFormation, so CDK CLI deploy-roles will NOT work. Combines with --profile: the profile supplies the base credentials the role is assumed FROM, and the role is what every later AWS call runs as'
   ),
   new Option(
     '-y, --yes',

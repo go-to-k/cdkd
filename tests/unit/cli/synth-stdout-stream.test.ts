@@ -71,6 +71,7 @@ vi.mock('@aws-sdk/client-sts', async (importOriginal) => ({
 
 import { createSynthCommand } from '../../../src/cli/commands/synth.js';
 import { getLogger, releaseStdoutForPayload } from '../../../src/utils/logger.js';
+import { resetAwsClientDefaults } from '../../../src/utils/aws-client-defaults.js';
 
 const TEMPLATE = {
   Resources: {
@@ -172,6 +173,10 @@ describe('synth keeps stdout to the template payload (issue #2410)', () => {
   });
 
   afterEach(() => {
+    // This file drives the REAL `applyRoleArnIfSet`, which publishes the
+    // assumed credentials process-wide. Without this, they persist into every
+    // later case in the file and decide which identity its clients resolve.
+    resetAwsClientDefaults();
     for (const [k, v] of Object.entries(envBefore)) {
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;

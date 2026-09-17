@@ -429,7 +429,13 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
 async function resolvePlaceholderAccount(arn: string, region: string | undefined): Promise<string> {
   if (!arn.includes(TASK_ROLE_ACCOUNT_PLACEHOLDER)) return arn;
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient({ ...awsClientDefaults(), ...(region && { region }) });
+  // `ignoreAssumedRole` -- this resolves the account filled into a task-role ARN that is then assumed FOR the container,
+  // so it must be the caller's own identity, never a `--role-arn` assumed
+  // for cdkd's own calls. See that option's JSDoc.
+  const sts = new STSClient({
+    ...awsClientDefaults({ ignoreAssumedRole: true }),
+    ...(region && { region }),
+  });
   try {
     const identity = await sts.send(new GetCallerIdentityCommand({}));
     const account = identity.Account;
@@ -454,7 +460,13 @@ async function assumeTaskRole(
   region: string | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
   const { STSClient, AssumeRoleCommand } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient({ ...awsClientDefaults(), ...(region && { region }) });
+  // `ignoreAssumedRole` -- this resolves the task role's credentials, served to the container by the metadata sidecar,
+  // so it must be the caller's own identity, never a `--role-arn` assumed
+  // for cdkd's own calls. See that option's JSDoc.
+  const sts = new STSClient({
+    ...awsClientDefaults({ ignoreAssumedRole: true }),
+    ...(region && { region }),
+  });
   try {
     const response = await sts.send(
       new AssumeRoleCommand({
@@ -683,7 +695,13 @@ function pickCandidateStack(
 
 async function resolveCallerAccountId(region: string | undefined): Promise<string | undefined> {
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient({ ...awsClientDefaults(), ...(region && { region }) });
+  // `ignoreAssumedRole` -- this resolves the `${AWS::AccountId}` the emulated task sees,
+  // so it must be the caller's own identity, never a `--role-arn` assumed
+  // for cdkd's own calls. See that option's JSDoc.
+  const sts = new STSClient({
+    ...awsClientDefaults({ ignoreAssumedRole: true }),
+    ...(region && { region }),
+  });
   try {
     const identity = await sts.send(new GetCallerIdentityCommand({}));
     return identity.Account;

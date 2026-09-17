@@ -120,7 +120,7 @@ affected variables with `--env-vars`.
 | `--container-host <ip>` | `127.0.0.1` | Host IP the published container and front-door ports bind to. Must be a numeric IP. |
 | `--region <region>` | `AWS_REGION` / stack / profile | **Deprecated**, hidden from `--help`, and still honored: it overrides `AWS_REGION` and the profile, and prints a removal warning. Prefer `AWS_REGION` or your profile. |
 | `--profile <profile>` | — | AWS profile. |
-| `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for AWS API calls. |
+| `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume. **Not safe to combine with this command without the `--profile` flag** — the role's credentials also reach the Lambda front-door containers, and the ECS task secrets are fetched with it. An exported `AWS_PROFILE` covers only the secrets. See the `--role-arn` section of [CLI Reference](cli-reference.md). |
 | `-y`, `--yes` | off | Answer interactive prompts with the recommended response. |
 | `--verbose` | off | Verbose logging. |
 

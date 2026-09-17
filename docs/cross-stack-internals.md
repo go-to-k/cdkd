@@ -500,9 +500,13 @@ When `RoleArn` is set, cdkd's resolver:
   real-world benefit on long-since-migrated accounts.
 - **Assumed credentials are scoped to the state read.** The consumer's
   normal provisioning credentials are untouched — unlike the CLI-wide
-  `--role-arn` flag, which writes assumed creds into `AWS_*` env vars
-  for every later SDK client. Cross-account `Fn::GetStackOutput` is a
-  narrow read-only operation.
+  `--role-arn` flag, which publishes its assumed credentials to
+  `awsClientDefaults()` as an explicit `credentials` value that every
+  later SDK client under `src/**` receives (and, for the subprocesses
+  that helper cannot reach, into the `AWS_*` env vars). Cross-account
+  `Fn::GetStackOutput` is a narrow read-only operation, and the
+  spread-defaults-first order is what keeps this client's own explicit
+  credentials winning over that publication.
 
 #### IAM permissions
 
@@ -532,9 +536,15 @@ A minimal producer-side policy:
 }
 ```
 
-The role's trust policy must allow the consumer account's principal
-(or a specific consumer role) to `sts:AssumeRole`. Standard cross-account
-trust-policy setup applies.
+The role's trust policy must allow whichever principal the consumer-side cdkd
+run is issuing calls as, to `sts:AssumeRole`. Standard cross-account
+trust-policy setup applies, with one thing to get right: that principal is the
+`--role-arn` / `CDKD_ROLE_ARN` role when the consumer run passes one, and the
+consumer account's own principal (or a specific consumer role) otherwise. This
+hop is built from `awsClientDefaults()` like every other client, so it inherits
+the assumed role rather than the profile that answered the original
+`AssumeRole`. A trust policy still naming the profile's principal fails here
+with `AccessDenied`.
 
 #### A redacted secret output is refused, not resolved
 

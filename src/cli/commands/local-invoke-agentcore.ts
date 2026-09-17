@@ -105,6 +105,10 @@ import {
   type ProfileCredentialsFile,
 } from './local-profile-credentials-file.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import {
+  applyCallerIdentityCredentials,
+  callerEnvCredentials,
+} from '../../utils/caller-credentials.js';
 
 interface LocalInvokeAgentCoreOptions {
   app?: string;
@@ -1115,8 +1119,19 @@ export async function buildSigV4HeadersIfRequested(
  *
  * Throws a {@link CdkdError} when none are available — `--sigv4` cannot
  * proceed without credentials, unlike the unsigned path.
+ *
+ * EXPORTED as a test seam, like the pure helpers this file already exports. It
+ * is the only `reads-caller` site the env-channel fence
+ * (`tests/unit/local/local-surface-env-identity.test.ts`) knows about, and that
+ * fence sees the SITE, not the BEHAVIOUR — it cannot tell
+ * `callerEnvCredentials()` from a `process.env` read that happens to compile.
+ * What this function decides is who the emulated agent sees as its INVOKER, so
+ * the arm that matters is not reachable from any other entry point: the command
+ * handler builds a container around it. Kept in ONE block with the precedence
+ * contract above deliberately — as two, a reader or a tool taking only the
+ * adjacent block gets the seam rationale and loses the precedence.
  */
-async function resolveHostCredentialsForSigV4(
+export async function resolveHostCredentialsForSigV4(
   options: LocalInvokeAgentCoreOptions,
   resolved: ResolvedAgentCoreRuntime,
   loaded: LocalStateRecord | undefined,
@@ -1145,14 +1160,19 @@ async function resolveHostCredentialsForSigV4(
       };
     }
   }
-  const accessKeyId = process.env['AWS_ACCESS_KEY_ID'];
-  const secretAccessKey = process.env['AWS_SECRET_ACCESS_KEY'];
-  if (accessKeyId && secretAccessKey) {
-    const sessionToken = process.env['AWS_SESSION_TOKEN'];
+  // Issue #3130: the CALLER's own shell credentials, not whatever
+  // `applyRoleArnIfSet` left in `process.env`. `--role-arn` overwrites the
+  // triple with cdkd's deploy role, and this signature is what the emulated
+  // agent sees as its INVOKER — so reading the environment directly signed
+  // `/invocations` as the deploy role on a `--sigv4` run that named no
+  // `--profile`. When the caller had no static credentials, this is `undefined`
+  // and the refusal below fires, naming the three ways to supply one.
+  const shellCredentials = callerEnvCredentials();
+  if (shellCredentials) {
     return {
-      accessKeyId,
-      secretAccessKey,
-      ...(sessionToken && { sessionToken }),
+      accessKeyId: shellCredentials.accessKeyId,
+      secretAccessKey: shellCredentials.secretAccessKey,
+      ...(shellCredentials.sessionToken && { sessionToken: shellCredentials.sessionToken }),
     };
   }
   throw new CdkdError(
@@ -1609,7 +1629,10 @@ async function resolveCallerAccountId(
 ): Promise<string | undefined> {
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
   const sts = new STSClient({
-    ...awsClientDefaults({ profile }),
+    // `ignoreAssumedRole` -- this resolves the `${AWS::AccountId}` the emulated agent sees,
+    // so it must be the caller's own identity, never a `--role-arn` assumed
+    // for cdkd's own calls. See that option's JSDoc.
+    ...awsClientDefaults({ profile, ignoreAssumedRole: true }),
     ...(region && { region }),
     ...(profile && { profile }),
   });
@@ -1653,6 +1676,9 @@ export async function applyAgentCoreCredentialEnv(
     );
     try {
       const creds = await assumeAgentCoreExecutionRole(args.assumeRoleArn, stsRegion);
+      // cdkd-local-env-identity: `--assume-role`'s own STS hop — the flag whose
+      // entire job is to choose the emulated agent's identity. Its STS client
+      // opts out of the `--role-arn` role, so the hop is answered by the caller.
       dockerEnv['AWS_ACCESS_KEY_ID'] = creds.accessKeyId;
       dockerEnv['AWS_SECRET_ACCESS_KEY'] = creds.secretAccessKey;
       dockerEnv['AWS_SESSION_TOKEN'] = creds.sessionToken;
@@ -1838,8 +1864,11 @@ export function platformToArchitecture(platform: string): 'x86_64' | 'arm64' {
  * open here after the same gap was closed in `local-invoke.ts` — made ONE command
  * yield two different container regions for the same shell: `cn-north-1` with
  * `--assume-role`, `CN-NORTH-1` without.
+ *
+ * Exported for unit-test isolation (`local-container-caller-identity.test.ts`),
+ * which drives the `--role-arn` cases without the image + docker pipeline.
  */
-function forwardAwsEnv(env: Record<string, string>): void {
+export function forwardAwsEnv(env: Record<string, string>): void {
   const passThrough = [
     'AWS_ACCESS_KEY_ID',
     'AWS_SECRET_ACCESS_KEY',
@@ -1853,6 +1882,12 @@ function forwardAwsEnv(env: Record<string, string>): void {
     if (value === undefined) continue;
     env[key] = regionKeys.has(key) ? canonicalizeRegion(value) : value;
   }
+  // Issue #3130: `applyRoleArnIfSet` OVERWRITES the three credential variables
+  // above with a `--role-arn` assumed role's, so the copy that just ran would
+  // hand the emulated agent cdkd's deploy role. Put the caller's own identity
+  // back (or strip the triple when there was none to restore). A no-op when no
+  // role was assumed.
+  applyCallerIdentityCredentials(env);
 }
 
 async function assumeAgentCoreExecutionRole(
@@ -1860,7 +1895,13 @@ async function assumeAgentCoreExecutionRole(
   region: string | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
   const { STSClient, AssumeRoleCommand } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient({ ...awsClientDefaults(), ...(region && { region }) });
+  // `ignoreAssumedRole` -- this resolves the execution role's credentials, injected into the container,
+  // so it must be the caller's own identity, never a `--role-arn` assumed
+  // for cdkd's own calls. See that option's JSDoc.
+  const sts = new STSClient({
+    ...awsClientDefaults({ ignoreAssumedRole: true }),
+    ...(region && { region }),
+  });
   try {
     const response = await sts.send(
       new AssumeRoleCommand({

@@ -297,6 +297,15 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   // Four literal paths (go-to-k/cdkd#3121): the helper module and the three
   // analyzer-side drift canonicalizers that rebuild by its rule.
   ['own-keys.md', 4], // literal list: EXACT, see below
+  // Five literal paths (go-to-k/cdkd#3130): the helper module, the role-arn
+  // module that snapshots the caller's triple, and the three `cdkd local`
+  // command files that copy it into a container.
+  ['local-caller-identity.md', 5], // literal list: EXACT, see below
+  ['local-engine-role-leak.md', 6], // literal list: EXACT -- the state-source
+  //  shim, the four `local start-*` commands cdkd's restore does not cover,
+  //  and `local-run-task.ts`, which the restore DOES cover but channel 4
+  //  (`--from-cfn-stack`) reaches anyway -- the one channel the covered /
+  //  uncovered split does not bound
   ['layout-scripts.md', 38],
   // Its `paths:` frontmatter lists 16 globs: 3 checker globs (two are wildcards,
   // covering the six checkers between them), the shared subject module, the
@@ -503,6 +512,14 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // RE-DERIVED at the layout-misc split: 57,323 -> 43,895. The old band was
   // calibrated with the grab-bag's synthesis and assets notes counted in, so
   // its floor was satisfied by 13 KB describing other layers.
+  // go-to-k/cdkd#3130 raised this row and then put it back: its cost was a
+  // `code-layout.md` index row for `local-caller-identity.md`, which every
+  // `src/**/*.ts` path pays for, and the row was DROPPED instead -- the
+  // precedent `layout-deployment-secrets.md` set. A satellite earns its entry
+  // point from the pointers inside the rule files that load it, not from the
+  // family index. Fund one by cutting what your own change made stale, never by
+  // widening a band you did not calibrate. (The 49_000 standing here now is
+  // go-to-k/cdkd#3245's, for its own index row.)
   ['src/state/s3-state-backend.ts', 38_000, 49_000],          // measured 43,895; 48_000 -> 49_000 (go-to-k/cdkd#3245): the same +126 B index row, measured 48,069
   // The representative path for state-version-purge.md, whose two-file glob
   // (the purge and its replication-gap detector, issue
@@ -719,7 +736,42 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // proxy-support.md's glob names three literal files (issue #2388); without a
   // row here the satellite would sit under no budget, which is the state the
   // 2026-08-25 review probe showed a rule file can reach unnoticed.
-  ['src/utils/aws-client-defaults.ts', 46_000, 59_000],       // measured  52,845; 58_000 -> 59_000 (go-to-k/cdkd#3245): the same +126 B index row, measured 58,098. go-to-k/cdkd#3223 raises this row to the same value for its own reason
+  // measured 58,930 at go-to-k/cdkd#3223's head -- 70 B under the cap, the
+  // tightest row in this list. The two older figures on this line were each
+  // true when written and neither is now: 52,845 predates the
+  // layout-cli-diff split, and go-to-k/cdkd#3245's 58,098 predates
+  // go-to-k/cdkd#3223's two pointers to `local-engine-role-leak.md`
+  // (layout-utils.md's bullet and proxy-support.md's clause). Re-measure
+  // before trusting any of them, and expect this row to need a re-derivation
+  // the next time either file grows.
+  ['src/utils/aws-client-defaults.ts', 46_000, 59_000],
+  // The representative path for local-caller-identity.md (go-to-k/cdkd#3130):
+  // payload is layout-utils.md + architecture.md + code-layout.md + the
+  // satellite. Without this row the satellite would sit under no budget, the
+  // state the 2026-08-25 review probe showed a rule file can reach unnoticed.
+  // Back to 56_000. It was raised to 58_000 against a measured 56,023 while the
+  // residual still lived in `local-caller-identity.md`; splitting that residual
+  // out into `local-engine-role-leak.md` took 1,784 B off this path, so the
+  // raise stopped being earned and the recorded derivation stopped being
+  // reproducible. An unreproducible provenance is worse than the slack it
+  // buys: the next lane reads the number, cannot re-derive it, and has no way
+  // to tell an honest band from an inherited one.
+  ['src/utils/caller-credentials.ts', 42_000, 56_000], // measured 54,229
+  // The representative path for local-engine-role-leak.md
+  // (go-to-k/cdkd#3130 / go-to-k/cdkd#3240): without a row the satellite would
+  // sit under no budget. It SPLIT OUT of local-caller-identity.md rather than
+  // growing it, because the residual it records kept growing under review --
+  // two commands over one channel became four over four, the last reaching the
+  // commands the sibling file DOES cover -- and its glob names the `start-*`
+  // commands plus the state-source shim, which that file's glob does not.
+  // Ceiling RE-DERIVED 52_000 -> 54_000 against a measured 52,063 (52,053
+  // after a later rebase shrank `architecture.md` by 10 B on main). Both this
+  // row and the satellite it budgets were created by go-to-k/cdkd#3130, so
+  // this is funding an addition from the band you own. The satellite grew
+  // because review kept correcting what it records -- the fourth channel,
+  // the reason no warning fires on it, and what an opt-out on the
+  // `--from-state` sites actually does (403, not a different record).
+  ['src/cli/commands/local-start-service.ts', 30_000, 54_000], // measured 52,053
   // The representative path for own-keys.md (go-to-k/cdkd#3121): payload is
   // layout-utils.md + architecture.md + code-layout.md + the satellite, which
   // split out because layout-utils.md sat 118 B under the row above's cap.
@@ -1272,12 +1324,14 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 // Neither branch's figure is the merged one. That is the whole reason this
 // count is asserted rather than described: two correct increments compose to a
 // number neither author wrote.
-const CORPUS_FILE_COUNT = 62; // THREE lanes each added one satellite and each set this from the
-                              //  count it saw, so 58 / 59 / 59 were all written independently and
-                              //  none of them is the merged figure -- exactly what the note above
-                              //  warns about. MEASURED on the merged tree: 60 files in
-                              //  `.claude/rules/`. A keep-either resolution here silently drops a
-                              //  satellite, which is how this constant goes wrong.
+const CORPUS_FILE_COUNT = 64; // SIX lanes each added one satellite and each set this from the
+                              //  count it saw, so 58 / 59 / 59 / 60 / 62 / 63 were all written
+                              //  independently and none of them is the merged figure -- exactly
+                              //  what the note above warns about. MEASURED on the merged tree: 64
+                              //  files in `.claude/rules/`. A keep-either resolution here silently
+                              //  drops a satellite, which is how this constant goes wrong -- and
+                              //  so does adding a satellite without adding its `+` entry below,
+                              //  which is how the next lane loses the ability to reconcile.
                               // + layout-cli-diff.md AND layout-cli-state.md (go-to-k/cdkd#3245):
                               //  `layout-cli.md` globs all of `src/cli/**`, so every CLI path paid
                               //  for every command's bullet and `src/cli/commands/scrub.ts` had run
@@ -1310,6 +1364,18 @@ const CORPUS_FILE_COUNT = 62; // THREE lanes each added one satellite and each s
                               //  1,715 B past its 48,000 B path cap, so the module's own notes got
                               //  a satellite globbed at that one file, with one-line pointers left
                               //  in layout-state-types.md and state-schema.md.
+                              // + local-engine-role-leak.md (go-to-k/cdkd#3130 /
+                              //  go-to-k/cdkd#3240): SPLIT OUT of local-caller-identity.md rather
+                              //  than growing it. Review kept correcting what its Residual records
+                              //  -- two commands over one channel became four over four, the last
+                              //  reaching the commands the sibling file DOES cover -- and its glob
+                              //  names the `start-*` commands plus the state-source shim, which
+                              //  that file's glob does not. The payload budget said so first.
+                              // + local-caller-identity.md (go-to-k/cdkd#3130): the env-channel half
+                              //  of the `--role-arn` identity split. layout-utils.md had no room for
+                              //  it at all -- the `aws-client-defaults.ts` path sat 28 B under its
+                              //  cap -- so the notes went straight to a satellite and both
+                              //  layout-utils.md and proxy-support.md keep a one-line pointer.
                               // Was 57: + own-keys.md (go-to-k/cdkd#3121): layout-utils.md sat 118 B under
                               //  the `aws-client-defaults.ts` path cap, so the own-key rule got
                               //  its own satellite with a one-line pointer left behind.

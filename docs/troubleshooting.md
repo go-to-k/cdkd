@@ -1502,8 +1502,13 @@ On the role named in the error — not on a CDK bootstrap role:
 ```
 
 For the cross-account `Fn::GetStackOutput` case, the trust policy belongs on
-the **producer** account's role and must allow the consumer's principal — see
-[Cross-Stack References](cross-stack-references.md).
+the **producer** account's role and must allow whichever principal the consumer
+run issues calls as — see
+[Cross-Stack References](cross-stack-references.md). When that run passes
+`--role-arn` (or sets `CDKD_ROLE_ARN`), the principal is the **assumed role**,
+not the profile that answered the original `AssumeRole`: cdkd runs every call
+as the role, this hop included. So a trust policy written against the profile's
+principal produces exactly this error, naming the producer role.
 
 ### "The state machine IAM Role is not authorized to access the Log Destination"
 

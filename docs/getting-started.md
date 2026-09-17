@@ -45,7 +45,8 @@ cdkd deploy --no-wait
 cdkd destroy
 
 # Deploy through a dedicated role instead of your own credentials (CI,
-# cross-account). Not combinable with --profile — see the CLI reference
+# cross-account). Combine with --profile to pick the base credentials it is
+# assumed from — see the CLI reference
 cdkd deploy --role-arn arn:aws:iam::123456789012:role/cdkd-deploy
 ```
 
