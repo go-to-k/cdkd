@@ -77,7 +77,10 @@ const TAB = '\t';
  * other case is `<<-` at all, which is why the strip had nowhere to fail) and
  * the tree-invariant helper, where the first recurrence lived.
  */
-const MAX_RELATIVE_GROWTH = 1.5;
+// Bounds chosen from measurement, not taste: under six competing busy loops a
+// correct implementation reached 1.54 relative and a 1.33 reference exponent,
+// while the quadratic implementations this replaced measure 5.70 and 1.71.
+const MAX_RELATIVE_GROWTH = 1.8;
 
 /** This process's CPU time for one call, in milliseconds. */
 const cpuMs = (run: () => void) => {
@@ -113,23 +116,26 @@ const LINEAR_REFERENCE = (n: number) => `${Array.from({ length: n }, (_, k) => `
  * The reference's OWN growth, as an exponent over a 4x spread (1.0 is linear).
  * Dividing by the reference cancels work the two share, so a regression in
  * shared code would cancel itself out; this is what notices that. Measured:
- * 0.82 quiet and 0.86 under six competing busy loops, against 1.71 with a
- * quadratic line-index build.
+ * 0.82 quiet and up to 1.33 under six competing busy loops, against 1.71 with a
+ * quadratic line-index build; the verdict is the median of three.
  */
-const MAX_REFERENCE_EXPONENT = 1.25;
+const MAX_REFERENCE_EXPONENT = 1.4;
 const referenceExponent = (): number => {
   const n = 8_000;
   const spread = 4;
   const small = LINEAR_REFERENCE(n);
   const large = LINEAR_REFERENCE(spread * n);
   classifyWcTrim(small);
-  let a = Infinity;
-  let b = Infinity;
-  for (let run = 0; run < 3; run++) {
-    a = Math.min(a, cpuMs(() => classifyWcTrim(small)));
-    b = Math.min(b, cpuMs(() => classifyWcTrim(large)));
-  }
-  return Math.log(b / Math.max(a, 1)) / Math.log(spread);
+  const exponents = [0, 1, 2].map(() => {
+    let a = Infinity;
+    let b = Infinity;
+    for (let run = 0; run < 3; run++) {
+      a = Math.min(a, cpuMs(() => classifyWcTrim(small)));
+      b = Math.min(b, cpuMs(() => classifyWcTrim(large)));
+    }
+    return Math.log(b / Math.max(a, 1)) / Math.log(spread);
+  });
+  return exponents.sort((x, y) => x - y)[1]!;
 };
 let referenceRatio: number | undefined;
 const relativeGrowth = (measure: (text: string) => void, make: (n: number) => string, n: number): number => {
