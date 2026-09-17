@@ -73,6 +73,24 @@ describe('SNSSubscriptionProvider', () => {
       expect(result.attributes).not.toHaveProperty('Arn');
     });
 
+    it('records NOTHING when the response is the literal "pending confirmation"', async () => {
+      // Review round 1. `Subscribe` can answer this for an unconfirmed
+      // subscription; `ReturnSubscriptionArn: true` is meant to prevent it, but
+      // `delete()` special-cases BOTH spellings, so this file does not treat it
+      // as unreachable. UNCACHED it reaches `guardedPhysicalIdFallback`, which
+      // THROWS for an `*Arn` without an `arn:` prefix — loud. CACHED it would
+      // be served silently, because a cache hit short-circuits that guard and
+      // this type has no `REF_RETURNS_ARN_FROM_STATE` entry. The shape test is
+      // what keeps the loud behaviour.
+      for (const literal of ['pending confirmation', 'PendingConfirmation']) {
+        mockSend.mockResolvedValueOnce({ SubscriptionArn: literal });
+        const result = await provider.create('L', 'AWS::SNS::Subscription', props);
+        expect(result.physicalId, literal).toBe(literal);
+        expect(result.attributes, literal).toEqual({});
+        expect(result.attributes, literal).not.toHaveProperty('Arn');
+      }
+    });
+
     it('records NOTHING on import, where the id can be PendingConfirmation', async () => {
       // NEGATIVE TWO. An imported id is taken from the user verbatim and may be
       // the literal `PendingConfirmation` that `delete()` special-cases. A
@@ -90,6 +108,10 @@ describe('SNSSubscriptionProvider', () => {
       });
       expect(imported?.physicalId).toBe('PendingConfirmation');
       expect(imported?.attributes).toEqual({});
+      // `toEqual({})` alone is VACUOUS — `{ Arn: undefined }` satisfies it
+      // (measured in review). The companion is what discriminates, and the
+      // create-negative above already carried it.
+      expect(imported?.attributes).not.toHaveProperty('Arn');
     });
 
     it('carries the cached ARN through a replacement, since update delegates to create', async () => {

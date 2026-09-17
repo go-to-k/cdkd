@@ -207,16 +207,35 @@ export class SNSSubscriptionProvider implements ResourceProvider {
 
       return {
         physicalId: subscriptionArn,
-        // Cache the ARN AWS RETURNED, or cache nothing — never the `||`
-        // fallback a line above (issue
-        // [#3329](https://github.com/go-to-k/cdkd/issues/3329)). That fallback
-        // is ARN-SHAPED, so it passes the resolver's `guardedPhysicalIdFallback`
-        // guard while being fabricated: caching it would put a value nothing
-        // downstream can tell from a real ARN into state, which is strictly
-        // worse than the fallback it replaces. `definedAttributes` drops the
-        // key when the response carried none, leaving the previous behaviour
-        // (resolve through the physical id) for that path alone.
-        attributes: definedAttributes({ Arn: response.SubscriptionArn }),
+        // Cache an ARN, or cache nothing (issue
+        // [#3329](https://github.com/go-to-k/cdkd/issues/3329)). TWO values
+        // reaching this line are not ARNs, and both are refused by the SHAPE
+        // test rather than by reasoning about which is reachable:
+        //
+        //  - the `||` fallback a line above, a constructed
+        //    `<topicArn>:<logicalId>`. It IS `arn:`-prefixed, so the shape test
+        //    admits it — it is excluded by reading `response.SubscriptionArn`
+        //    here rather than `subscriptionArn`. Caching a fabricated ARN puts
+        //    a value in state nothing downstream can tell from a real one,
+        //    which is worse than the fallback it would replace.
+        //  - the literal `pending confirmation`, which `Subscribe` can answer
+        //    for an unconfirmed subscription. `ReturnSubscriptionArn: true`
+        //    above is meant to prevent it, but this file does not treat that as
+        //    a guarantee: `delete()` special-cases BOTH that spelling and
+        //    `PendingConfirmation`. Uncached it reaches
+        //    `guardedPhysicalIdFallback`, which THROWS for an `*Arn` without an
+        //    `arn:` prefix — loud. Cached, the resolver's cache hit
+        //    short-circuits that guard and `rejectPlaceholderArnAttribute`
+        //    returns early (this type has no `REF_RETURNS_ARN_FROM_STATE`
+        //    entry), so it would be served SILENTLY under an `*Arn` name. That
+        //    is the same hazard the `import` arm refuses on, and review round 1
+        //    found this arm had not applied it.
+        //
+        // `definedAttributes` drops the key when the test fails, leaving the
+        // previous behaviour — resolve through the physical id — for that path.
+        attributes: definedAttributes({
+          Arn: response.SubscriptionArn?.startsWith('arn:') ? response.SubscriptionArn : undefined,
+        }),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;

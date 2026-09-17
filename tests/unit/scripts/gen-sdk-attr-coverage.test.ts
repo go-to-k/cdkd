@@ -41,6 +41,14 @@ const CACHED_ARN_PAIRS = [
   // pair classifies nothing) and on a re-added carve-out alike, neither of
   // which `findGaps(report)).toEqual([])` can see.
   ['AWS::AppSync::GraphQLApi', 'Arn'],
+  // Issue 3329, and added for the same third shape the pair above exists for.
+  // `findGaps(report)).toEqual([])` sees this type only if it comes BACK as a
+  // gap; it is blind to the row being DELETED from the matrix — which is what a
+  // schema refresh dropping `Arn` from the type's fixture would do, leaving
+  // both that fence and the empty-allow-list assertion green. Requiring
+  // `cached` is what makes "deleting the allow-list entry VERIFIES the caching"
+  // true in both directions.
+  ['AWS::SNS::Subscription', 'Arn'],
 ] as const;
 
 describe('collectStoredAttributeKeys', () => {
