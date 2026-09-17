@@ -2283,9 +2283,10 @@ const FALSIFIED_CLAIMS: readonly {
       'FALSE: that catch masks the caught message with the BAGS alone — `maskSecretsForLog` over a ' +
       'composed AWS sentence finds no registered twin and falls to the needle pass, whose substring ' +
       'arm has a four-character floor — so the POSITIONAL half of the class is open there too. ' +
-      'go-to-k/cdkd#3176 shipped this sentence to main, go-to-k/cdkd#3275 inherited it as the reason ' +
-      'its own site was "catching up", and that PR\'s review removed it; the sibling is an INSTANCE ' +
-      'of the gap, not the pattern to copy.',
+      'go-to-k/cdkd#3176 shipped THIS sentence to main as a residual-list note, and ' +
+      'go-to-k/cdkd#3275 inherited it and then stated the same claim AGAIN at its own catch ' +
+      '("this site was simply missed") as the reason that site was catching up; that PR\'s review ' +
+      'removed both. The sibling is an INSTANCE of the gap, not the pattern to copy.',
     // DERIVED FROM THE PROPOSITION, not from either wording in front of me
     // (`.claude/skills/work-issues/references/verify.md` §8-g). The claim is
     // "some sibling already covers this class"; every spelling of it puts a

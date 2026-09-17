@@ -1912,9 +1912,10 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
   /** What the sink replaces a rejected character WITH, and the trim it ends in. */
   const SINK_REPLACEMENT = ' ';
   /**
-   * `SINK_CLASS` with its POSITIONAL flags stripped. Every reader in this block
-   * asks one question -- "does this text contain a rejected character" -- and
-   * neither `g` nor `y` is part of it, while both silently change the answer:
+   * `SINK_CLASS` with its POSITIONAL flags stripped. No reader in this block
+   * wants a POSITION: two ask "does this text contain a rejected character"
+   * and the fake sink replaces EVERY one (re-appending its own `g`). `g` and
+   * `y` are part of neither question, while both silently change the answer:
    *
    *   - `g` makes `.test` advance `lastIndex`, so over single-character probes
    *     it reports every OTHER rejected character as ACCEPTED (measured:
@@ -2367,20 +2368,29 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
     // cannot state the two properties this case needs, so it states them:
     // REJECTED by the class, and not already trimmable.
     //
-    // The scan is deliberately BOUNDED and the bound is inert: it starts at
-    // U+0021 to skip the C0 controls, whose rendering in a failure message is
-    // its own hazard, and stops at the BMP because a rejected, non-trimmable
-    // character certainly exists below it -- the sweep above is what covers the
-    // whole domain. The `throw` is the guard that keeps the bound honest: if a
-    // future class accepts everything in this range, this case refuses to pass
-    // rather than silently fencing the trim alone (which is what the two
-    // hand-picked spellings did).
+    // Three conditions, all three in the PREDICATE rather than in the bound,
+    // because a bound cannot enforce what it only gestures at: an earlier
+    // version started the scan at U+0021 "to skip the C0 controls, whose
+    // rendering in a failure message is its own hazard" and then selected
+    // U+007F, which is DEL -- a control, with exactly that hazard. So the
+    // character must be REJECTED by the class, NOT already trimmable, and
+    // RENDERABLE. The range is then only a termination bound: it stops at the
+    // BMP because a qualifying character certainly exists below it, and the
+    // sweep above is what covers the whole domain.
+    //
+    // The `throw` keeps the bound honest: if a future class accepts everything
+    // in this range, the case REFUSES rather than silently fencing the trim
+    // alone -- which is what both hand-picked spellings did.
+    const isControl = (ch: string): boolean => {
+      const cp = ch.codePointAt(0)!;
+      return cp <= 0x1f || (cp >= 0x7f && cp <= 0x9f);
+    };
     const edge = (() => {
       for (let cp = 0x21; cp <= 0xffff; cp++) {
         const ch = String.fromCodePoint(cp);
-        if (rejects(ch) && ch.trim() !== '') return ch;
+        if (rejects(ch) && ch.trim() !== '' && !isControl(ch)) return ch;
       }
-      throw new Error('no rejected, non-trimmable character exists -- this case cannot fence anything');
+      throw new Error('no rejected, non-trimmable, renderable character exists -- this case cannot fence anything');
     })();
     expect(displaySafe(`${edge}x${edge}`, { asciiOnly: true })).toBe('x');
     // Floor against an early exit or a `continue` that skips the range -- NOT
