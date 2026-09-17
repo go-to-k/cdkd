@@ -2381,8 +2381,10 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
     // in prose and `src/deployment/outputs-export-alias.ts:313`
     // (`SECRET_SCAN_INVISIBLES`) is the live regex, which carries one MORE
     // (`\p{Me}`) and the `g` this use has no need of. Five rather than six is
-    // deliberate and inert: measured, `\p{Me}` adds 13 code points, all at or
-    // above U+0488, so the pick is unchanged.
+    // deliberate and inert: `\p{Me}` adds 13 code points, all at or above
+    // U+0488, so the pick is unchanged under five classes AND under six
+    // (measured 2026-09-17, Node 24.19.0 / Unicode 17.0 -- the count is
+    // Unicode-version-dependent, so it is dated rather than stated flat).
     //
     // The range really is only a termination bound now: it starts at 0 --
     // measured, the pick is U+00A1 either way -- and stops at the BMP because
@@ -2394,7 +2396,11 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
     // alone -- which is what both hand-picked spellings did.
     // Named `..._CLASS`: `display-safe.ts` EXPORTS an `UNRENDERABLE` string
     // constant and this file already imports from that module, so the bare
-    // name would be silently shadowed the day someone adds it to that import.
+    // name would silently SHADOW that import the day someone adds it -- this
+    // binding is block-scoped and wins, leaving the next reader unable to tell
+    // which `UNRENDERABLE` a line means. Nothing breaks: review measured the
+    // collision (rename back, add the import) at 1 passed, no type error, no
+    // lint diagnostic, which is precisely why the name is the only guard.
     const UNRENDERABLE_CLASS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/u;
     // The `u` is LOAD-BEARING and therefore asserted, not assumed. Without it
     // `\p{...}` is not a property escape at all -- it reads as the literal
