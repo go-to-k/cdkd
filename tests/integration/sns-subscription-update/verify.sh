@@ -275,9 +275,17 @@ assert_exactly_one_subscription() { # usage: assert_exactly_one_subscription "<p
 
 # --- Phase 1: create --------------------------------------------------------
 echo "==> Phase 1: deploy (standalone subscription, RawMessageDelivery=false)"
+# `--strict-getatt` is what makes the Output assertion below DISCRIMINATING
+# rather than confirmatory (issue 3329). Without it the Output resolves through
+# `guardedPhysicalIdFallback` too — this type's physical id IS the subscription
+# ARN — so it would pass with the attribute never recorded. The flag fails the
+# deploy on ANY fallback regardless of shape, so a pre-change binary hard-fails
+# here. Safe for this stack: the only other `Fn::GetAtt` is `Queue.Arn`, which
+# `docs/_generated/sdk-attr-coverage.md` records as cached.
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
+  --strict-getatt \
   --yes
 
 assert_exactly_one_subscription "phase 1"
@@ -365,6 +373,8 @@ fi
 OUT_ARN_2=$(state_output SubscriptionArn)
 if [ "${OUT_ARN_2}" != "${SUB_ARN_2}" ]; then
   echo "FAIL: phase 2: Output SubscriptionArn is '${OUT_ARN_2}', expected '${SUB_ARN_2}'" >&2
+  echo "    => the Output kept the pre-replacement ARN, so a consumer stack would read" >&2
+  echo "       a subscription that no longer exists." >&2
   exit 1
 fi
 echo "    OK: replaced ${SUB_ARN_1} -> ${SUB_ARN_2}, RawMessageDelivery=true, state in sync"
