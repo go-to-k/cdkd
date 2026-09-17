@@ -131,6 +131,22 @@ function safeIdentifier(value: string, maxCodePoints = IDENT_CAP_DEFAULT): strin
   return truncated ? `${text}...` : text;
 }
 
+/**
+ * The DIAGNOSIS sentence itself, with no identity and no remedy in it.
+ *
+ * ONE spelling, for the reason {@link malformedStateDetail} gives for existing
+ * at all: two copies of a diagnosis are what drift. It is extracted because
+ * {@link malformedDestroyResourcesRefusalMessage} needs the same sentence
+ * under an identity it does NOT trust, where the detail's substituted
+ * `cdkd state show` command must not appear — a difference in the COMMAND, not
+ * in the diagnosis.
+ */
+const MALFORMED_RESOURCES_DIAGNOSIS =
+  `has no readable 'resources' map — the record is malformed or truncated. Both 'cdkd deploy' ` +
+  `and 'cdkd destroy' REFUSE such a record rather than acting on it: they read the same map, ` +
+  `an unreadable one is indistinguishable from an empty stack, and acting on that reading ` +
+  `would make a deploy re-CREATE every resource and a destroy delete none of them.`;
+
 function malformedStateDetail(
   stackName: string,
   region: string,
@@ -139,11 +155,8 @@ function malformedStateDetail(
   const stack = safeIdentifier(stackName, maxCodePoints);
   const reg = safeIdentifier(region, maxCodePoints);
   return (
-    `State for ${shellQuote(stack)} (${shellQuote(reg)}) has no readable 'resources' map — the ` +
-    `record is malformed or truncated. Both 'cdkd deploy' and 'cdkd destroy' REFUSE such a ` +
-    `record rather than acting on it: they read the same map, an unreadable one is ` +
-    `indistinguishable from an empty stack, and acting on that reading would make a deploy ` +
-    `re-CREATE every resource and a destroy delete none of them. Inspect it with: ` +
+    `State for ${shellQuote(stack)} (${shellQuote(reg)}) ${MALFORMED_RESOURCES_DIAGNOSIS} ` +
+    `Inspect it with: ` +
     `cdkd state show ${shellQuote(stack)} --stack-region ${shellQuote(reg)} --json`
   );
 }
@@ -337,11 +350,7 @@ export function malformedDestroyResourcesRefusalMessage(stackName: string, regio
   // no-identity form instead.
   const detail = exact
     ? malformedStateDetail(stackName, region, cap)
-    : `${stackClause(undefined, undefined)} has no readable 'resources' map — the record is ` +
-      `malformed or truncated. Both 'cdkd deploy' and 'cdkd destroy' REFUSE such a record ` +
-      `rather than acting on it: they read the same map, an unreadable one is ` +
-      `indistinguishable from an empty stack, and acting on that reading would make a deploy ` +
-      `re-CREATE every resource and a destroy delete none of them.`;
+    : `${stackClause(undefined, undefined)} ${MALFORMED_RESOURCES_DIAGNOSIS}`;
   const remedy = exact
     ? `To drop the record deliberately and leave the live resources standing, run ` +
       `'cdkd state orphan' against the stack and the region THE RECORD'S S3 KEY holds — ` +
