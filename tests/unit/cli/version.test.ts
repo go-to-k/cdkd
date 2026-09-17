@@ -93,7 +93,32 @@ describe('cdkd --version', () => {
       const output = execFileSync('node', [cliPath, '--version'], {
         encoding: 'utf-8',
       }).trim();
-      expect(output).toBe(version);
+
+      // A MISMATCH here is almost always a STALE `dist/`, not a broken version
+      // bake: a rebase crossing a `chore(release)` commit moves package.json's
+      // version while `dist/` keeps the pre-rebase one. The bare diff then
+      // reads as a defect the rebase introduced, and the reader hunts the
+      // wrong thing (measured 2026-09-17 on the go-to-k/cdkd#3318 lane:
+      // `expected '0.290.19' to be '0.290.21'` after rebasing onto 0.290.21).
+      //
+      // `/work-issues` references/gates-and-pr.md §7 ALREADY says rebuild
+      // before re-running the suite after a rebase, and this run violated it
+      // anyway — so the escalation is mechanical rather than one more
+      // sentence. Same pattern as `requireBuiltCli()` above: fail with the
+      // CAUSE. The mtime comparison is the discriminator, not decoration — it
+      // separates "you did not rebuild" from "the version baking is broken",
+      // which the version strings alone cannot.
+      const distOlderThanPkg = statSync(cliPath).mtimeMs < statSync(pkgPath).mtimeMs;
+      expect(
+        output,
+        distOlderThanPkg
+          ? 'dist/cli.js is OLDER than package.json, so this is a STALE BUILD, not a ' +
+            'version-baking defect — run `vp run build`, then re-run the suite. A rebase ' +
+            'crossing a `chore(release)` commit produces exactly this.'
+          : 'the built CLI reports a version package.json does not carry, and dist/ is ' +
+            'NEWER than package.json — so a rebuild will not fix it; the version is ' +
+            'baked in by the build, so look there.'
+      ).toBe(version);
     },
     CLI_SPAWN_TIMEOUT_MS,
   );

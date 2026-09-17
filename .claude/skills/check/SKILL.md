@@ -93,14 +93,23 @@ Run these sequentially and report results:
    nothing sits between the caller and the verdict (the cached `vp run test`
    historically replayed without executing and could exit 0 having run
    NOTHING; both gone since `cache: false`, but the direct spelling stays the
-   rule). Read the summary line, not just the exit code — a run reporting no
-   `Test Files` count did not run.
+   rule). Read the summary line, not just the exit code — and read its NUMBER,
+   not its colour. **`Test Files N passed (N)` is self-consistent over a suite
+   that LOST files before they ran**, so it cannot report its own shortfall:
+   measured 2026-09-17 with several sessions loading the host,
+   `Test Files 916 passed (916)` beside `Errors 148`, every one
+   `[vitest-pool]: Failed to start forks worker`, against the 1065 the same
+   tree collected once the host was quiet. The count's only external reference
+   is the tree, so the block below DERIVES it rather than pinning a threshold
+   that would drift (it also subsumes "no `Test Files` line at all": the
+   extraction comes back empty and the comparison fails).
+   `vp test run --maxWorkers=4` cleared it.
 
    **And check WHICH PROJECT the summary belongs to — the summary line cannot
    tell you.** Measured 2026-09-02 with several sessions running suites at
    once: three consecutive `vp test run` invocations from cdkd's worktree
-   printed a **cdk-local worktree's** suite (246 files, not cdkd's 856), with
-   `pwd` correct throughout. The tells: the `RUN <root>` header far above the
+   printed a **cdk-local worktree's** suite (246 files, a fraction of cdkd's),
+   with `pwd` correct throughout. The tells: the `RUN <root>` header far above the
    summary, and a stray `vp run: cdk-local#test` line at the end. **The
    MECHANISM is unconfirmed — do not repeat a guess as fact** (ruled out:
    workspace links, an unpinned `vp`). Acting on the wrong summary sets the
@@ -123,7 +132,19 @@ Run these sequentially and report results:
      [ "$runs" = 1 ] || { echo "expected 1 RUN header, found $runs -- attests to nothing; log: $log"; exit 1; }
      run_root=$(grep -m1 -oE "RUN  v[0-9.]+ .*" "$log" | sed 's/^RUN  v[0-9.]* //')
      [ "$run_root" = "$(pwd -P)" ] || { echo "WRONG PROJECT ($run_root) -- attests to nothing; log: $log"; exit 1; }
-     grep -E "Test Files|      Tests |Type Errors" "$log"
+     # `Errors` is a DIFFERENT line from `Type Errors` (that one covers
+     # *.test-d.ts alone), and it is where a dead pool worker reports. Without
+     # it the grep reproduces three reassuring lines and hides the count that
+     # explains the rc.
+     grep -E "Test Files|      Tests |Type Errors|^ +Errors " "$log"
+     collected=$(grep -oE 'Test Files .*\([0-9]+\)$' "$log" | grep -oE '[0-9]+\)$' | tr -d ')')
+     ondisk=$(git ls-files 'tests/**/*.test.ts' 'src/**/*.test.ts' \
+       'tests/**/*.test-d.ts' 'src/**/*.test-d.ts' | wc -l | tr -d ' ')
+     # `-ge`, not `=`: an UNTRACKED new test file is collected but not listed,
+     # which is legitimate and must not red. The direction that matters is
+     # collected < tracked, which is the lost-worker case. A test deleted but
+     # not committed is the one false FAIL, and it says so.
+     [ "${collected:-0}" -ge "$ondisk" ] || { echo "COLLECTED ${collected:-none} of $ondisk tracked test files -- attests to nothing; re-run with --maxWorkers=4; log: $log"; exit 1; }
      [ "$rc" = 0 ] || { echo "SUITE FAILED rc=$rc; log: $log"; exit 1; }
    )
    ```
