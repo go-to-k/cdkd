@@ -281,10 +281,10 @@ ses-identity	2026-08-10T10:50:49Z	PASS	180	verify.sh	upstream SES CC 403 resolve
 sg-circular-dependency	2026-08-18T04:47:12Z	PASS	150	verify.sh	final run on the merge base (rebased onto 8e33f535); #1791 healing + ambiguity arms; 19 del 0 err 0 orph
 sns-event-source	2026-08-22T19:12:07Z	PASS		verify.sh	issue 2176 masking sweep; rc 0, destroy 0 errors, orphans clean
 sns-inline-subscription	2026-08-26T08:41:59Z	PASS	90	verify.sh	issue 2178 masker-threading sweep (sns-topic subscribeInline); 0 err, 0 orphans
-sns-pending-subscription	2026-07-30T12:40:16Z	PASS	22	verify.sh	issue #1301 re-run after review fixes, clean
+sns-pending-subscription	2026-09-17T17:36:20Z	PASS	163	verify.sh	issue 3329 gate pair: confirms Subscribe with ReturnSubscriptionArn=true returns a REAL ARN even for a pending-confirmation subscription (the premise the create-path shape gate rests on); delete-path pending skip fired, destroy 2 deleted 0 errors, 0 orphans
 sns-sqs-event	2026-08-19T18:36:23Z	PASS	91	verify.sh	issue 1997 maskSecrets adoption; sns-topic delivery-status + throw arms exercised; clean destroy, 0 orphans
 sns-subscription-filter	2026-08-10T05:38:11Z	PASS	39	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
-sns-subscription-update	2026-08-20T11:53:45Z	PASS	70	verify.sh	#1967 new fixture, 4 phases. First real-AWS coverage of SNSSubscriptionProvider.update at all: phase 2 proves the internal replacement ran (SubscriptionArn changed, exactly one subscription, state in sync); phase 3 corrupts the physicalId so Unsubscribe throws and asserts cdkd ABORTS -- deploy exit 1, no Subscribe issued, old subscription untouched. Destroy clean, 0 orphans
+sns-subscription-update	2026-09-17T17:34:54Z	PASS	372	verify.sh	issue 3329: fixture armed with a Fn::GetAtt Arn Output + attributes.Arn assertions, phase 1 under --strict-getatt; both followed the phase-2 replacement (GUID changed). destroy 3 deleted 0 errors, 0 orphans (only deployments/ history remains, by design)
 sqs-cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
 sqs-esm-max-concurrency	2026-08-10T04:23:28Z	PASS	76	verify.sh	0810 sweep b2; lambda-eventsource re-verify, 5 del 0 err, 0 orph
 ssm-secure-dynamic-ref	2026-09-08T07:50:29Z	PASS	194	verify.sh	sibling span-arm fixture, re-run on the #2516 branch after its rebase onto main at 5cc82973 and the m1 copy change; 0 errors, 0 orphans, 0 surviving state versions
