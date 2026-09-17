@@ -1583,6 +1583,74 @@ describe('probeStatefulRecreateTargetsAsync — AWS::Logs::LogGroup arm (#2558)'
     expect(logger.warn).not.toHaveBeenCalled();
   });
 
+  it('refuses the not-found inference when the record DIVERGED from its key (go-to-k/cdkd#3328)', async () => {
+    // The case the mismatch arm below can no longer reach from `deploy.ts`:
+    // `getState` now normalizes a record's `region` to its key's, so
+    // `expectedRegion` equals the client region by construction and that
+    // compare always passes. Before the normalization a divergent body WAS the
+    // mismatch and the guard fired; this arm is what keeps the data guard on
+    // rather than letting a not-found clear it.
+    const notFound = new ResourceNotFoundException({
+      message: 'The specified log group does not exist.',
+      $metadata: {},
+    });
+    const regionProbe = vi.fn(() => Promise.resolve('us-east-1'));
+    const client = {
+      send: vi.fn(() => {
+        throw notFound;
+      }),
+      // AGREES with `expectedRegion` — that is the point: the compare is
+      // satisfied and the record is still untrustworthy. A `vi.fn` because the
+      // SKIP is the second half of the arm and needs its own observable: an
+      // earlier cut asserted `config.region` was DEFINED, which holds whether
+      // or not it was called.
+      config: { region: regionProbe },
+    } as unknown as CloudWatchLogsClient;
+    const logger = silentLogger();
+    const out = await probeStatefulRecreateTargetsAsync(
+      [logGroupTarget()],
+      {
+        s3: forbiddenS3Client(),
+        cloudWatchLogs: client,
+        expectedRegion: 'us-east-1',
+        expectedRegionDiverged: true,
+      },
+      logger
+    );
+    expect(out[0]!.statefulReason).toBe('has-log-events');
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    const warned = logger.warn.mock.calls[0]![0] as string;
+    expect(warned).toContain('not the one its S3 key holds');
+    // The client's region round trip is SKIPPED — the compare could only pass,
+    // so spending it would say nothing. This is the arm's SECOND use of the
+    // flag, and it was unfenced until this assertion: a probe reverting
+    // `expectedRegionDiverged ? undefined : foldRegion(...)` was green.
+    expect(regionProbe).not.toHaveBeenCalled();
+  });
+
+  it('does NOT refuse on the same inputs without the divergence flag (the control)', async () => {
+    // Without this the case above is satisfied by a guard that refuses every
+    // not-found, which is the pre-#648 behaviour it must not be.
+    const notFound = new ResourceNotFoundException({
+      message: 'The specified log group does not exist.',
+      $metadata: {},
+    });
+    const client = {
+      send: vi.fn(() => {
+        throw notFound;
+      }),
+      config: { region: () => Promise.resolve('us-east-1') },
+    } as unknown as CloudWatchLogsClient;
+    const logger = silentLogger();
+    const out = await probeStatefulRecreateTargetsAsync(
+      [logGroupTarget()],
+      { s3: forbiddenS3Client(), cloudWatchLogs: client, expectedRegion: 'us-east-1' },
+      logger
+    );
+    expect(out[0]!.statefulReason).toBeNull();
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
   it('refuses the not-found inference when the client is in the WRONG region', async () => {
     // `region-check.ts`'s whole purpose: a `ResourceNotFoundException` from a
     // client pointed elsewhere says nothing about the recorded resource. The

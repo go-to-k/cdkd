@@ -2,8 +2,12 @@ import { readFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Command } from 'commander';
-import { displaySafe } from '../../utils/display-safe.js';
-import { UNRENDERABLE } from '../../state/lock-contention-message.js';
+import {
+  displaySafe,
+  truncateCodePoints,
+  STACK_REF_MAX_CODE_POINTS,
+} from '../../utils/display-safe.js';
+import { UNRENDERABLE, shellQuote } from '../../state/lock-contention-message.js';
 import { hasReadableResources } from '../../state/malformed-resources-bag.js';
 import {
   CreateChangeSetCommand,
@@ -2577,7 +2581,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
     );
 
     logger.info(
-      `Migrating cdkd stack '${resolvedStackName}' (${targetRegion}) → CloudFormation stack '${cfnStackName}'`
+      `Migrating cdkd stack '${resolvedStackName}' (${safeSegment(targetRegion)}) → CloudFormation stack '${cfnStackName}'`
     );
 
     // Refuse if a CFn stack with that name already exists. CFn IMPORT's
@@ -2590,7 +2594,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
     const stateData = await stateBackend.getState(resolvedStackName, targetRegion);
     if (!stateData) {
       throw new Error(
-        `No cdkd state found for stack '${resolvedStackName}' (${targetRegion}). ` +
+        `No cdkd state found for stack '${resolvedStackName}' (${safeSegment(targetRegion)}). ` +
           `Nothing to migrate.`
       );
     }
@@ -2916,7 +2920,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
             : ` AWS resources are unchanged on import.`;
         const ok = await confirmPrompt(
           `Create CloudFormation stack '${cfnStackName}' by importing ${phase1Imports.length} ` +
-            `resource(s) from cdkd state '${resolvedStackName}' (${targetRegion})?` +
+            `resource(s) from cdkd state '${resolvedStackName}' (${safeSegment(targetRegion)})?` +
             phase2Note +
             recreateNote +
             unchangedClaim +
@@ -3079,7 +3083,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
                 `       aws cloudformation create-change-set --stack-name ${cfnStackName} \\\n` +
                 `         --change-set-name cdkd-phase2-retry --change-set-type UPDATE \\\n` +
                 `         --template-body file://<full-template.json>\n` +
-                `  4. Once phase 2 succeeds, run: cdkd state orphan ${resolvedStackName}\n` +
+                `  4. Once phase 2 succeeds, run: ${orphanCommandFor(resolvedStackName, targetRegion)}\n` +
                 `     to clean up cdkd's stale state record.`
             );
           }
@@ -3142,7 +3146,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
               `       aws cloudformation create-change-set --stack-name ${cfnStackName} \\\n` +
               `         --change-set-name cdkd-phase2-retry --change-set-type UPDATE \\\n` +
               `         --template-body file://<full-template.json>\n` +
-              `  3. Once phase 2 succeeds, run: cdkd state orphan ${resolvedStackName}\n` +
+              `  3. Once phase 2 succeeds, run: ${orphanCommandFor(resolvedStackName, targetRegion)}\n` +
               `     to clean up cdkd's stale state record.`
           );
         }
@@ -3153,7 +3157,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
       // The lock is still held; we release it inside the outer `finally`.
       await stateBackend.deleteState(resolvedStackName, targetRegion);
       logger.info(
-        `cdkd state for '${resolvedStackName}' (${targetRegion}) removed. ` +
+        `cdkd state for '${resolvedStackName}' (${safeSegment(targetRegion)}) removed. ` +
           `Manage the stack with 'cdk deploy' or 'aws cloudformation' from here on.`
       );
 
@@ -3207,7 +3211,9 @@ async function pickStackRegion(
   if (flag) {
     const found = refs.find((r) => r.region === flag);
     if (!found) {
-      const seen = refs.map((r) => r.region ?? '(legacy)').join(', ');
+      // Each element is an S3 KEY SEGMENT `listStacks` split out, so it is
+      // bucket-plantable in its own right (go-to-k/cdkd#3328 round 7).
+      const seen = refs.map((r) => safeSegment(r.region ?? '(legacy)')).join(', ');
       throw new Error(
         `No state found for stack '${stackName}' in region '${flag}'. Available regions: ${seen}.`
       );
@@ -3221,7 +3227,7 @@ async function pickStackRegion(
   if (refs.length === 1) {
     return refs[0]!.region ?? synthRegion ?? '';
   }
-  const regions = refs.map((r) => r.region ?? '(legacy)').join(', ');
+  const regions = refs.map((r) => safeSegment(r.region ?? '(legacy)')).join(', ');
   throw new Error(
     `Stack '${stackName}' has state in multiple regions: ${regions}. ` +
       `Re-run with --stack-region <region> to disambiguate.`
@@ -3368,9 +3374,107 @@ export interface CdkdStateStackTree {
  * Module-scoped rather than local to the walker: the first cut of this change
  * guarded the walker's two refusals and left the root one, which is the shape
  * the issue is about.
+ *
+ * The parameter is `unknown`, not `string | undefined`, because a record-body
+ * value is only TYPED as a string: the region-mismatch refusal below has
+ * rendered `{"toString": null}` since issue #2947, and `getState`'s
+ * `divergentBodyRegion` (#3328) is declared honestly as `unknown`.
+ * `displaySafe` has always accepted `unknown` and coerces totally, so this
+ * widens the signature to what the function already did.
+ *
+ * CAPPED as well as sanitized, since go-to-k/cdkd#3328 review round 2. Every
+ * value reaching here is a state-record field or an S3 key segment, so a
+ * planted multi-kilobyte one — or an ARRAY, which `String` comma-joins with no
+ * bound — pushes the rest of the refusal off the reader's screen. The bound is
+ * the STATE-RECORD grammar rather than `IDENT_MAX_CODE_POINTS` because a
+ * legitimate multi-level nested-child stack name runs past 255 code points,
+ * and this function renders those; `truncateCodePoints` so a cut never lands
+ * inside a surrogate pair.
  */
-function safeSegment(value: string | undefined): string {
-  return displaySafe(value, { asciiOnly: true }) || UNRENDERABLE;
+function safeSegment(value: unknown): string {
+  const safe = displaySafe(value, { asciiOnly: true });
+  if (!safe) return UNRENDERABLE;
+  const { text, truncated } = truncateCodePoints(safe, STACK_REF_MAX_CODE_POINTS);
+  // `displayIdent`'s marker shape, not a bare `[cut]`: it states the COUNT and
+  // is separated by a space, so it reads as an annotation rather than as
+  // content. `[` and `]` survive the ASCII allowlist, so a planted name ENDING
+  // in `[cut]` would otherwise render identically to a truncated one. `safe` is
+  // ASCII here, so `.length` counts characters.
+  return truncated ? `${text} [cut: ${safe.length - text.length} more characters withheld]` : text;
+}
+
+/**
+ * The free-form counterpart of {@link safeSegment}: an AWS error message, not
+ * an identifier.
+ *
+ * **Its BEHAVIOUR is identical today, and the separation is about the CALLER's
+ * contract rather than about the transformation** — stated plainly because an
+ * earlier revision of this comment claimed a "tighter cap" for identifiers that
+ * does not exist, and a false distinction is worse than none. What differs is
+ * what a caller may DO with the result: `safeSegment`'s callers compare it
+ * against the raw value to decide whether an identity renders EXACTLY
+ * ({@link orphanCommandFor}), which is meaningless for a sentence; and
+ * `display-safe.ts` says its identifier helpers are not for free-form text, so
+ * routing a message through the one named `Segment` invites the next reader to
+ * give it the identifier grammar's cap. Both sanitize with the ASCII allowlist
+ * and bound the length, because both are untrusted text bound for a terminal.
+ */
+function safeDetail(value: unknown): string {
+  // `displaySafe` directly, NOT `String(value)` first: `String` is not total —
+  // a JSON-derived `{"toString": null}` makes it throw (issue #2947), and a
+  // display helper that throws takes the whole render with it. The `Error`
+  // extraction stays, because an `Error`'s own `toString` is not its message.
+  const safe = displaySafe(value instanceof Error ? value.message : value, { asciiOnly: true });
+  if (!safe) return UNRENDERABLE;
+  const { text, truncated } = truncateCodePoints(safe, STACK_REF_MAX_CODE_POINTS);
+  return truncated ? `${text} [cut: ${safe.length - text.length} more characters withheld]` : text;
+}
+
+/**
+ * A `cdkd state orphan` line for a record-derived stack name — PASTEABLE only
+ * when that name renders EXACTLY, and a template otherwise (issue
+ * [#3328](https://github.com/go-to-k/cdkd/issues/3328), review round 3).
+ *
+ * Three messages in this file suggested that command with a name minted from
+ * `Object.keys(state.resources)` (`walkCdkdStateStackTree` builds
+ * `` `${parent}~${logicalId}` ``), i.e. body content anyone able to write one
+ * state key chooses. Two rendered it RAW, so a newline or a CSI sequence in a
+ * logical id forged whole lines around a DELETE command; the third sanitized
+ * but did not shell-quote, so `'`, `;`, `|` and `` ` `` survived into a line an
+ * operator pastes into a shell.
+ *
+ * Both halves of `malformed-resources-bag.ts`'s rule, and for its reasons:
+ * sanitize THEN shell-quote, and gate the substituted form on the identity
+ * rendering exactly — `displaySafe` TRIMS, so a name ending in a space renders
+ * byte-identically to a healthy sibling, and `state orphan` DELETES a record.
+ * Every caller emits the result LAST and unwrapped so the quoting composes; that
+ * is an instruction to the CALLER and must not leak into the message it builds.
+ *
+ * `region` is REQUIRED even though the flag is optional on the command: omitting
+ * `--stack-region` makes `state orphan` drop the record for that name in EVERY
+ * region, which is wider than any of these messages describes. A helper whose
+ * job is to make a destructive suggestion safe should not have an arm that
+ * widens one.
+ */
+function orphanCommandFor(stackName: unknown, region: unknown): string {
+  const shownStack = safeSegment(stackName);
+  // Compared against the RAW values, and `typeof`-guarded first so a non-string
+  // — which `safeSegment` renders but no comparison can match — fails CLOSED.
+  const exact =
+    typeof stackName === 'string' &&
+    shownStack === stackName &&
+    typeof region === 'string' &&
+    safeSegment(region) === region;
+  if (!exact) {
+    // Names no target: the identity above it may not be this record's. List the
+    // records AS STORED and act on the one whose key matches.
+    return (
+      `cdkd state orphan <stack> --stack-region <region> — spelled out because this record's ` +
+      `name or region does NOT render exactly, so another record may render identically; ` +
+      `list them as stored with 'cdkd state list --long' and act on the one whose key matches`
+    );
+  }
+  return `cdkd state orphan ${shellQuote(shownStack)} --stack-region ${shellQuote(safeSegment(region))}`;
 }
 
 /**
@@ -3498,8 +3602,8 @@ async function walkCdkdStateStackTree(
           `Parent stack '${safeSegment(stackName)}' lists '${safeSegment(logicalId)}' as an ` +
           `${NESTED_STACK_RESOURCE_TYPE} row but no child state file exists at ` +
           `'cdkd/${safeSegment(childStackName)}/${safeSegment(region)}/state.json'. The cdkd state tree is ` +
-          `inconsistent — re-deploy the parent stack to refresh, or run ` +
-          `'cdkd state orphan ${safeSegment(stackName)}' and re-import.`
+          `inconsistent — re-deploy the parent stack to refresh, or drop the parent's record ` +
+          `and re-import with: ${orphanCommandFor(stackName, region)}`
       );
     }
     // Sanity-check the child's recorded region against the walker's
@@ -3510,10 +3614,28 @@ async function walkCdkdStateStackTree(
     // fast in either case so the orchestrator does not silently
     // proceed against a parent ↔ child pair whose AWS-side identity
     // we cannot guarantee.
-    if (childResult.state.region !== undefined && childResult.state.region !== region) {
+    //
+    // READ FROM THE REPORT, NOT FROM THE RECORD, since issue
+    // go-to-k/cdkd#3328: `getState` now normalizes a region-scoped record's
+    // `region` to the key's, so `childResult.state.region` can no longer
+    // disagree and this check tested against it would be vacuous. The
+    // divergence is handed over separately, on the SAME predicate this check
+    // always applied — a body region that is present and is not the walk's.
+    // The value is body content, which is why it was already rendered through
+    // `safeSegment` and still is.
+    //
+    // One shape stops being refused here and it is recorded rather than
+    // implied: a child read from the LEGACY key (no region in the key) whose
+    // body carries `null` / `''`. That branch is deliberately not normalized —
+    // `tryGetLegacy` hands a body naming no region to any region (#2550) — so
+    // nothing is reported for it. It is unreachable in practice: nested-child
+    // records are region-scoped by construction (schema v6, long past the v2
+    // key layout), so no cdkd version ever wrote a `<parent>~<child>` legacy
+    // key.
+    if (childResult.divergentBodyRegion !== undefined) {
       throw new Error(
         `cdkd state region mismatch: nested-child '${safeSegment(childStackName)}' has ` +
-          `state.region='${safeSegment(childResult.state.region)}' but its parent '${safeSegment(stackName)}' ` +
+          `state.region='${safeSegment(childResult.divergentBodyRegion)}' but its parent '${safeSegment(stackName)}' ` +
           `is being walked against region='${safeSegment(region)}'. AWS does not support ` +
           `cross-region nested stacks; the state tree appears corrupt — ` +
           `re-deploy the parent stack to refresh.`
@@ -3606,7 +3728,13 @@ export function cdkd2cfnStackName(cdkdStackName: string): string {
   const cfnName = cdkdStackName.replace(/~/g, '-');
   if (!/^[a-zA-Z][-a-zA-Z0-9]*$/.test(cfnName)) {
     throw new Error(
-      `cdkd stack name '${cdkdStackName}' maps to CFn stack name '${cfnName}', which violates ` +
+      // SANITIZED, like every other rendering of a record-derived name in this
+      // file (go-to-k/cdkd#3328 round 5): `walkCdkdStateStackTree` mints a
+      // child's name from the record's own `resources` keys, and this refusal
+      // is the FIRST thing a hostile one reaches — a newline in it forges lines
+      // around whatever follows.
+      `cdkd stack name '${safeSegment(cdkdStackName)}' maps to CFn stack name ` +
+        `'${safeSegment(cfnName)}', which violates ` +
         `the CloudFormation stack-name constraint [a-zA-Z][-a-zA-Z0-9]* (must start with a ` +
         `letter; no '_', '.', '/', or other special characters). Supply an explicit name via ` +
         `--cfn-stack-name (root) or --cfn-child-stack-name '<cdkdName>=<cfnName>' (nested child).`
@@ -3654,7 +3782,7 @@ export function parseCfnChildStackNameOverrides(values: string[] | undefined): M
     }
     if (out.has(cdkdName)) {
       throw new Error(
-        `--cfn-child-stack-name: duplicate override for cdkd stack '${cdkdName}'. ` +
+        `--cfn-child-stack-name: duplicate override for cdkd stack '${safeSegment(cdkdName)}'. ` +
           `Pass it once with the final CFn name.`
       );
     }
@@ -3784,8 +3912,12 @@ export function buildPerStackImportNodes(
 ): Map<string, PerStackImportNode> {
   if (tree.stackName !== rootStackName) {
     throw new Error(
-      `buildPerStackImportNodes: tree root '${tree.stackName}' does not match ` +
-        `expected root stack name '${rootStackName}'.`
+      // The last raw rendering of a record-derived name in this file
+      // (go-to-k/cdkd#3328 round 5): `walkCdkdStateStackTree` mints every
+      // non-root node's name from the record's own `resources` keys, so an
+      // internal-consistency message is no exception to the rule.
+      `buildPerStackImportNodes: tree root '${safeSegment(tree.stackName)}' does not match ` +
+        `expected root stack name '${safeSegment(rootStackName)}'.`
     );
   }
   const out = new Map<string, PerStackImportNode>();
@@ -3809,12 +3941,12 @@ export function buildPerStackImportNodes(
       const childTemplatePath = nodeNestedTemplatePaths[childLogicalId];
       if (!childTemplatePath) {
         throw new Error(
-          `cdkd export: nested-stack child '${childLogicalId}' under parent ` +
-            `'${node.stackName}' has cdkd state but no Metadata['aws:asset:path'] ` +
-            `in the parent template's '${childLogicalId}' row. The synth output ` +
+          `cdkd export: nested-stack child '${safeSegment(childLogicalId)}' under parent ` +
+            `'${safeSegment(node.stackName)}' has cdkd state but no Metadata['aws:asset:path'] ` +
+            `in the parent template's '${safeSegment(childLogicalId)}' row. The synth output ` +
             `and the cdkd state tree are out of sync — re-deploy the parent stack ` +
-            `to refresh, or remove the cdkd state for the orphaned child via ` +
-            `'cdkd state orphan ${childNode.stackName}'.`
+            `to refresh, or remove the cdkd state for the orphaned child with ` +
+            `${orphanCommandFor(childNode.stackName, childNode.region)}`
         );
       }
       const { template: childTemplate, format: childFormat } = readNestedChildTemplateFile(
@@ -3957,7 +4089,7 @@ export async function buildImportPlan(
           resourceType,
           reason:
             `template has AWS::CloudFormation::Stack row '${logicalId}' but cdkd state has no ` +
-            `matching nested-stack entry on parent '${parentStackName}'. ` +
+            `matching nested-stack entry on parent '${safeSegment(parentStackName)}'. ` +
             `Re-deploy or re-import the parent stack to refresh state.`,
         });
         continue;
@@ -5067,7 +5199,7 @@ export function reportDriftBaselineGaps(
       `cdkd state schema is v${state.version} (pre-observedProperties). cdkd drift ` +
         `cannot reliably compare against AWS for this stack; the next \`cdk deploy\` ` +
         `after migration may surface spurious changes if AWS has drifted from the ` +
-        `template. Run \`cdkd state refresh-observed ${state.stackName}\` (or any ` +
+        `template. Run \`cdkd state refresh-observed ${safeSegment(state.stackName)}\` (or any ` +
         `redeploy) before export to capture an AWS-current baseline.`
     );
     return;
@@ -5085,7 +5217,7 @@ export function reportDriftBaselineGaps(
       `${refreshable.length} of ${entries.length} resource(s) in cdkd state lack an ` +
         `AWS-current baseline (observedProperties). cdkd drift may produce false positives ` +
         `for them; the next \`cdk deploy\` after migration may surface unexpected changes. ` +
-        `Run \`cdkd state refresh-observed ${state.stackName}\` to capture a baseline before ` +
+        `Run \`cdkd state refresh-observed ${safeSegment(state.stackName)}\` to capture a baseline before ` +
         `export, then \`cdkd drift\` to verify the stack matches AWS.`
     );
     for (const [logicalId] of refreshable.slice(0, 10)) {
@@ -5876,7 +6008,7 @@ export async function buildResolvedParametersPerStack(args: {
     const node = nodeByName.get(ref.stackName);
     if (!node) {
       throw new Error(
-        `buildResolvedParametersPerStack: tree node '${ref.stackName}' has no per-stack ` +
+        `buildResolvedParametersPerStack: tree node '${safeSegment(ref.stackName)}' has no per-stack ` +
           `template/state entry. This is a cdkd bug.`
       );
     }
@@ -5884,15 +6016,15 @@ export async function buildResolvedParametersPerStack(args: {
     const parentStackName = node.state.parentStack;
     if (!parentLogicalId || !parentStackName) {
       throw new Error(
-        `buildResolvedParametersPerStack: child '${node.cdkdName}' state is missing ` +
+        `buildResolvedParametersPerStack: child '${safeSegment(node.cdkdName)}' state is missing ` +
           `parentLogicalId / parentStack (v6 fields). Re-deploy or re-import the parent stack.`
       );
     }
     const parentNode = nodeByName.get(parentStackName);
     if (!parentNode) {
       throw new Error(
-        `buildResolvedParametersPerStack: child '${node.cdkdName}' references parent ` +
-          `'${parentStackName}' which is not in the per-stack node list — tree shape is inconsistent.`
+        `buildResolvedParametersPerStack: child '${safeSegment(node.cdkdName)}' references parent ` +
+          `'${safeSegment(parentStackName)}' which is not in the per-stack node list — tree shape is inconsistent.`
       );
     }
     // The parent's resolved Parameter VALUES are the lookup table for any
@@ -6110,7 +6242,7 @@ export async function runPerStackImportLoop(args: {
   for (const n of leafFirst) {
     if (!nodesByCdkdName.has(n.stackName)) {
       throw new Error(
-        `runPerStackImportLoop: missing per-stack template for '${n.stackName}' — ` +
+        `runPerStackImportLoop: missing per-stack template for '${safeSegment(n.stackName)}' — ` +
           `tree node has cdkd state but no synth template was loaded. This is a cdkd bug.`
       );
     }
@@ -6150,7 +6282,13 @@ export async function runPerStackImportLoop(args: {
     if (plan.blocked.length > 0) {
       const lines = groupBlockedReasons(plan.blocked);
       throw new Error(
-        `Stack '${meta.cdkdStackName}' has ` +
+        // SANITIZED: `meta.cdkdStackName` is `walkCdkdStateStackTree`'s minted
+        // name carried one alias over, and this throw fires BEFORE
+        // `cfnStackNameOf`, so that refusal does not backstop it. The message
+        // is MULTI-LINE (`groupBlockedReasons` emits `  - <id> (<type>): ...`
+        // rows), so a planted newline forges a blocked-resource row
+        // (go-to-k/cdkd#3328 round 6).
+        `Stack '${safeSegment(meta.cdkdStackName)}' has ` +
           `${new Set(plan.blocked.map((b) => b.logicalId)).size} resource(s) that block ` +
           `migration:\n${lines.join('\n')}`
       );
@@ -6181,7 +6319,7 @@ export async function runPerStackImportLoop(args: {
   );
   for (const plan of perStackPlans) {
     logger.info(
-      `  [${plan.cdkdName}] → CFn stack '${plan.cfnName}': ` +
+      `  [${safeSegment(plan.cdkdName)}] → CFn stack '${safeSegment(plan.cfnName)}': ` +
         `${plan.phase1Imports.length} leaf import(s)` +
         (plan.nestedStackRows.length > 0
           ? `, ${plan.nestedStackRows.length} nested-child adoption(s)`
@@ -6238,7 +6376,7 @@ export async function runPerStackImportLoop(args: {
         : '';
     const ok = await confirmPrompt(
       `Create ${perStackPlans.length} CloudFormation stack(s) by importing the cdkd ` +
-        `nested-stack tree rooted at '${rootStackName}' (${rootRegion}) — ` +
+        `nested-stack tree rooted at '${rootStackName}' (${safeSegment(rootRegion)}) — ` +
         `leaf-first, per-stack IMPORT loop (#464 design §4.3).` +
         phase2Note +
         recreateNote +
@@ -6325,7 +6463,7 @@ export async function runPerStackImportLoop(args: {
       );
     for (const [cdkdName, skipped] of sessionIntrinsicSkipped) {
       logger.warn(
-        `  Child '${cdkdName}': could not resolve intrinsic-valued Parameter(s) ` +
+        `  Child '${safeSegment(cdkdName)}': could not resolve intrinsic-valued Parameter(s) ` +
           `${skipped.join(', ')} at IMPORT time. The child template's Parameter Default ` +
           `values must cover these — otherwise CFn will reject the IMPORT.`
       );
@@ -6335,7 +6473,7 @@ export async function runPerStackImportLoop(args: {
       for (let i = 0; i < perStackPlans.length; i++) {
         const plan = perStackPlans[i]!;
         logger.info(
-          `[${i + 1}/${perStackPlans.length}] Importing cdkd stack '${plan.cdkdName}' → ` +
+          `[${i + 1}/${perStackPlans.length}] Importing cdkd stack '${safeSegment(plan.cdkdName)}' → ` +
             `CFn stack '${plan.cfnName}' (${plan.phase1Imports.length} leaf, ` +
             `${plan.nestedStackRows.length} nested-child adoption)`
         );
@@ -6373,7 +6511,7 @@ export async function runPerStackImportLoop(args: {
         if (injectedDeletion > 0) {
           logger.info(
             `  Injected DeletionPolicy: Delete on ${injectedDeletion} resource(s) in ` +
-              `'${plan.cdkdName}' (required by CFn IMPORT; matches CDK/CFn default).`
+              `'${safeSegment(plan.cdkdName)}' (required by CFn IMPORT; matches CDK/CFn default).`
           );
         }
 
@@ -6390,14 +6528,19 @@ export async function runPerStackImportLoop(args: {
         } catch (err) {
           const importedSummary =
             importedStacks.length > 0
-              ? importedStacks.map((s) => `${s.cdkdStackName} → ${s.cfnStackName}`).join(', ')
+              ? importedStacks
+                  .map((s) => `${safeSegment(s.cdkdStackName)} → ${safeSegment(s.cfnStackName)}`)
+                  .join(', ')
               : '(none)';
           const remainingSummary = perStackPlans
             .slice(i)
-            .map((p) => p.cdkdName)
+            // SANITIZED per element, before the join: the summary is
+            // interpolated into a throw and every element is a minted,
+            // record-derived name (go-to-k/cdkd#3328 round 7).
+            .map((p) => safeSegment(p.cdkdName))
             .join(', ');
           throw new Error(
-            `Phase 1A IMPORT changeset failed for cdkd stack '${plan.cdkdName}' (CFn name ` +
+            `Phase 1A IMPORT changeset failed for cdkd stack '${safeSegment(plan.cdkdName)}' (CFn name ` +
               `'${plan.cfnName}'). Stacks imported successfully so far: ${importedSummary}. ` +
               `Stacks not yet imported (cdkd state preserved): ${remainingSummary}. ` +
               `After resolving the underlying cause, re-run 'cdkd export ${rootStackName}' — ` +
@@ -6494,8 +6637,8 @@ export async function runPerStackImportLoop(args: {
               // the guard is defence in depth against that backstop moving, not
               // against a hypothetical future edit.
               throw new Error(
-                `runPerStackImportLoop: nested-stack child '${row.childStackName}' has no ` +
-                  `recorded CFn ARN when processing parent '${plan.cdkdName}'. Leaf-first ` +
+                `runPerStackImportLoop: nested-stack child '${safeSegment(row.childStackName)}' has no ` +
+                  `recorded CFn ARN when processing parent '${safeSegment(plan.cdkdName)}'. Leaf-first ` +
                   `iteration order should have IMPORTed the child first — this is a cdkd bug.`
               );
             }
@@ -6542,7 +6685,7 @@ export async function runPerStackImportLoop(args: {
               // A miss can only arise if `plan.template` is mutated between
               // plan-build and this read, which the orchestrator never does.
               throw new Error(
-                `runPerStackImportLoop: parent template for '${plan.cdkdName}' has no ` +
+                `runPerStackImportLoop: parent template for '${safeSegment(plan.cdkdName)}' has no ` +
                   `resource '${row.logicalId}'. State and template are out of sync.`
               );
             }
@@ -6586,11 +6729,13 @@ export async function runPerStackImportLoop(args: {
             // tree so the user can recover.
             const importedSummary =
               importedStacks.length > 0
-                ? importedStacks.map((s) => `${s.cdkdStackName} → ${s.cfnStackName}`).join(', ')
+                ? importedStacks
+                    .map((s) => `${safeSegment(s.cdkdStackName)} → ${safeSegment(s.cfnStackName)}`)
+                    .join(', ')
                 : '(none)';
             throw new Error(
               `Phase 1B (nested-child adoption) IMPORT changeset failed for parent ` +
-                `'${plan.cdkdName}' (CFn name '${plan.cfnName}'). The parent CFn stack ` +
+                `'${safeSegment(plan.cdkdName)}' (CFn name '${safeSegment(plan.cfnName)}'). The parent CFn stack ` +
                 `exists with its ${plan.phase1Imports.length} leaf resource(s); ` +
                 `${plan.nestedStackRows.length} nested-child adoption(s) did NOT complete. ` +
                 `Stacks IMPORTed so far (each is a standalone CFn stack): ${importedSummary}. ` +
@@ -6630,7 +6775,7 @@ export async function runPerStackImportLoop(args: {
             if (!handler) {
               throw new Error(
                 `No pre-delete handler registered for ${entry.resourceType} ` +
-                  `(${entry.logicalId}) in stack '${plan.cdkdName}'. This is a cdkd bug — the ` +
+                  `(${entry.logicalId}) in stack '${safeSegment(plan.cdkdName)}'. This is a cdkd bug — the ` +
                   `resource is in IMPORT_UNSUPPORTED_RECREATABLE_TYPES but lacks a ` +
                   `PRE_DELETE_HANDLERS entry.`
               );
@@ -6695,7 +6840,11 @@ export async function runPerStackImportLoop(args: {
       for (const node of leafFirst) {
         try {
           await deps.stateBackend.deleteState(node.stackName, node.region);
-          logger.info(`cdkd state for '${node.stackName}' (${node.region}) removed.`);
+          // Same record-derived pair as the warn below, and the same rule: a
+          // planted newline in a logical id forges a line here too.
+          logger.info(
+            `cdkd state for '${safeSegment(node.stackName)}' (${safeSegment(node.region)}) removed.`
+          );
         } catch (err) {
           stateDeletionFailures.push({
             stackName: node.stackName,
@@ -6703,9 +6852,15 @@ export async function runPerStackImportLoop(args: {
             reason: err instanceof Error ? err.message : String(err),
           });
           logger.warn(
-            `Failed to delete cdkd state for '${node.stackName}' (${node.region}): ` +
-              `${err instanceof Error ? err.message : String(err)}. ` +
-              `The stack IS CFn-managed; clean up with 'cdkd state orphan ${node.stackName}'.`
+            `Failed to delete cdkd state for '${safeSegment(node.stackName)}' ` +
+              `(${safeSegment(node.region)}): ` +
+              // `safeDetail`, not `safeSegment`: an SDK message is FREE-FORM
+              // text, which `display-safe.ts` says takes `displaySafe` directly
+              // (the identifier helper's contract is a record field or a key
+              // segment).
+              `${safeDetail(err)}. ` +
+              `The stack IS CFn-managed; clean up with: ` +
+              `${orphanCommandFor(node.stackName, node.region)}`
           );
         }
       }
@@ -6715,13 +6870,24 @@ export async function runPerStackImportLoop(args: {
         // non-zero exit code (the migration succeeded AWS-side but
         // partial state remains under cdkd).
         const lines = stateDeletionFailures
-          .map((f) => `  - cdkd/${f.stackName}/${f.region}/state.json: ${f.reason}`)
+          .map(
+            (f) =>
+              // The SAME record-derived values the warn above sanitizes, in a
+              // MULTI-LINE block: a planted newline forges extra `  - cdkd/...`
+              // rows naming a healthy stack, and the sentence below tells the
+              // operator to orphan every record listed (review round 4).
+              `  - cdkd/${safeSegment(f.stackName)}/${safeSegment(f.region)}/state.json: ` +
+              `${safeDetail(f.reason)}`
+          )
           .join('\n');
         throw new Error(
           `${stateDeletionFailures.length} cdkd state record(s) could not be deleted after a ` +
             `successful per-stack IMPORT loop. Every stack in the tree IS CFn-managed (the ` +
             `migration succeeded AWS-side); orphan state remains under:\n${lines}\n` +
-            `Recover with 'cdkd state orphan <stack>' per record.`
+            // The FULL template: omitting `--stack-region` drops the record for
+            // that name in EVERY region, which is wider than this list
+            // describes and is the widening `orphanCommandFor` refuses to emit.
+            `Recover with 'cdkd state orphan <stack> --stack-region <region>' per record.`
         );
       }
 
@@ -6734,7 +6900,7 @@ export async function runPerStackImportLoop(args: {
       // the needed Parameter Default values (CFn rejects the IMPORT otherwise).
       if (sessionIntrinsicSkipped.size > 0) {
         const detail = [...sessionIntrinsicSkipped.entries()]
-          .map(([cdkdName, params]) => `${cdkdName} (${params.join(', ')})`)
+          .map(([cdkdName, params]) => `${safeSegment(cdkdName)} (${params.join(', ')})`)
           .join('; ');
         logger.warn(
           `${sessionIntrinsicSkipped.size} stack(s) had intrinsic-valued Parameter(s) that cdkd ` +
@@ -6761,8 +6927,8 @@ export async function runPerStackImportLoop(args: {
       const lock = acquiredChildLocks[i]!;
       await deps.lockManager.releaseLock(lock.stackName, lock.region).catch((err) => {
         logger.warn(
-          `Failed to release lock for '${lock.stackName}' (${lock.region}): ` +
-            `${err instanceof Error ? err.message : String(err)}`
+          `Failed to release lock for '${safeSegment(lock.stackName)}' ` +
+            `(${safeSegment(lock.region)}): ${safeDetail(err)}`
         );
       });
     }

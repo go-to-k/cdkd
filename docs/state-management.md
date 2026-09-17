@@ -44,6 +44,33 @@ The same `stackName` deployed to two different regions has two independent
 state files; changing `env.region` no longer silently overwrites the prior
 region's record.
 
+**The key is what decides a record's region, not the `region` field inside
+it.** cdkd writes the two to agree — every save stamps the key's region into
+the body — so on a record cdkd wrote there is nothing to choose between. When
+they *do* disagree, cdkd uses the key's region and prints a warning that the
+record was not written by cdkd; the operation then acts on the region you
+pointed it at. The warning names the kind of value the body held (`a string`,
+`a number`) rather than the value itself, since a region a record supplies can
+be chosen by anyone able to write that key; run with `--verbose` to see it. A
+body with no `region` at all is read as belonging to its key's region, the
+same way a legacy (`version: 1`) record with no region is readable from any
+region.
+
+**A destroy is the one operation that refuses on such a record**, and only
+when it still lists resources. Reading a record is safe under either answer,
+but DELETING is not: if the key is the dishonest half, every delete would be
+issued where the resources are not, come back not-found — which a destroy
+reads as "already deleted" — and the run would report success, remove the
+record, and leave your resources standing with nothing naming them. cdkd
+cannot tell which half is honest, so `cdkd destroy` / `cdkd state destroy`
+stop and say so — as does a `cdkd deploy` that removes a nested stack, which
+destroys the child's resources through the same path. A record with no
+resources is not refused: there is nothing to strand, so cleaning one up still
+works. To act on the refusal, destroy
+against the region the resources are really in, or correct the record's
+`region` field to match the key it is stored under; `cdkd state orphan` still
+drops the record and leaves the live resources standing.
+
 ```
 s3://{STATE_BUCKET}/{STATE_PREFIX}/
   └── {StackName}/

@@ -38,6 +38,42 @@ mechanism that does not happen at either site. Enumerate them with
 `tests/unit/state/malformed-resources-bag.test.ts` derives the same list and
 fails when this one goes stale.
 
+## One refusal in this module is NOT about a container
+
+`refuseDivergentRecordRegionForDestroy` / `divergentRecordRegionRefusalMessage`
+(issue [#3328](https://github.com/go-to-k/cdkd/issues/3328)) refuse a DESTROY
+over a record whose body `region` disagreed with the key it was read from while
+it still lists resources. Same family — a record cdkd cannot trust, refused at
+the destroy, above the count — but the subject is a FIELD, not a container, so
+it is outside the table above and outside `hasReadable*`.
+
+It lives here rather than in a module of its own because every message in this
+one composes `safeIdentifier`, whose privacy is a recorded decision
+(go-to-k/cdkd#3206 considered exporting it and declined) — a new module would
+have had to spell that sanitize + cap + `UNRENDERABLE` triple a second time,
+which is the drift this corpus fences everywhere else. The one piece it does
+share outward is `describeRegionValueKind`, homed in `src/types/state.ts` for
+`isReadableBag`'s reason: `S3StateBackend` produces the divergence and this
+module renders it, and modules importing the latter `vi.mock` the former
+wholesale.
+
+**The trigger is the CONJUNCTION and a later edit must not widen it**:
+divergent AND resource-bearing. A resource-less record is deliberately NOT
+refused — it is the measured repro on that issue and the `cdkd state destroy`
+recovery path the read-side decision protects, and refusing it would strand
+exactly the record the recovery commands exist to remove. It fails CLOSED on a
+bag it cannot COUNT (unreachable on the destroy path, where the `resources`
+guard refuses first — but the function is exported, and a known divergence plus
+an unknowable count must not resolve to "proceed").
+
+**It carries the EXACT-rendering gate, for the same reason
+`malformedDestroyResourcesRefusalMessage` does** — it ends on a DELETING
+command, and `safeIdentifier` TRIMS, so a record keyed `'prod-api '` opened
+byte-identically to a healthy sibling until round 2 of that issue added the
+withhold arm. A message in this module that names a target AND offers a
+destructive remedy needs both halves: the template, and the gate on the clause
+above it.
+
 Two sets live with their READERS: `resources`' gate-scoped pair (#3161) in
 [state-malformed-resources-gated.md](state-malformed-resources-gated.md); the
 ENTRY-level `properties` set (#3191, #3318) in

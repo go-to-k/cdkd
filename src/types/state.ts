@@ -786,6 +786,45 @@ export function isReadableBag(container: unknown): boolean {
 }
 
 /**
+ * What KIND of value a record's `region` field holds, as a bounded token safe
+ * to print at default verbosity (issue
+ * [#3328](https://github.com/go-to-k/cdkd/issues/3328)).
+ *
+ * The VALUE is never safe there: a body region is chosen by anyone able to
+ * write that key, and a line reading `body region 'eu-west-1'` hands an
+ * operator a region to aim a destructive re-run at — the misdirection half of
+ * that issue. Its kind is the answer to "what is wrong with this record"
+ * without being the answer to "which region should I use", and the result is
+ * one of TEN fixed strings (`null`, `an array`, and an article plus each of
+ * `typeof`'s eight), so no input can forge a line through it.
+ *
+ * `probeLegacyState` reaches the same JUDGEMENT one field over and does NOT
+ * call this — it renders a bare `typeof` into a sentence a unit case pins
+ * verbatim (`'region' is number, not a string`). Two spellings of a bounded
+ * token, deliberately not collapsed: the two are not interchangeable strings,
+ * and changing that one is a message change with its own fence.
+ *
+ * `null` and arrays are named rather than left as `object`, the way
+ * `parseStateBody` names its own refused roots — `typeof null` is `'object'`,
+ * which would report the two most likely hand-edit shapes as the same thing.
+ * The article is computed because `a object` reads as a defect in the very
+ * diagnostic the reader is being asked to trust.
+ *
+ * HOME: this module rather than beside either caller, for the reason
+ * {@link isReadableBag}'s note gives — `src/state/s3-state-backend.ts`
+ * (`adoptKeyRegion`, which produces the divergence) and
+ * `src/state/malformed-resources-bag.ts` (the destroy refusal that renders it)
+ * both need it, and the second is imported by modules that `vi.mock` the
+ * first wholesale.
+ */
+export function describeRegionValueKind(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'an array';
+  const type = typeof value;
+  return `${/^[aeiou]/.test(type) ? 'an' : 'a'} ${type}`;
+}
+
+/**
  * The keys of `state.outputs` an `Fn::ImportValue` may bind to (issue
  * [#2193](https://github.com/go-to-k/cdkd/issues/2193)) — THE predicate
  * behind "what does this stack export". Four readers used to answer that

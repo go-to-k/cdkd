@@ -357,6 +357,14 @@ export class NestedStackProvider implements ResourceProvider {
         providerRegistry: ctx.providerRegistry,
         baseAwsClients: ctx.awsClients,
         baseRegion: childRegion,
+        // `getState` adopted the KEY's region into the child record above, so
+        // this is the only place the divergence is still visible; the runner
+        // refuses on it when the child still lists resources (issue #3328).
+        // A cascading destroy is the case that most needs it: the parent has
+        // already confirmed, and nothing else asks about this child.
+        ...(childStateData.divergentBodyRegion !== undefined && {
+          divergentBodyRegion: childStateData.divergentBodyRegion,
+        }),
         stateBucket: ctx.stateBucket,
         // Parent has already confirmed the cascading destroy — children
         // are not separately confirmable per design §7.

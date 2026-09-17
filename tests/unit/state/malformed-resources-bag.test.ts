@@ -632,14 +632,21 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
    * and this is the case that keeps it one.
    *
    * `state orphan` DELETES a record. The `region` the destroy refusal is handed
-   * is `state.region ?? ctx.baseRegion`, and `state.region` is RECORD-BODY
-   * content `getState` does not check against the key it loaded from —
+   * is `state.region ?? ctx.baseRegion`, which WAS record-BODY content
+   * `getState` did not check against the key it loaded from —
    * measured 2026-09-17: a record planted at `.../us-east-1/state.json`
    * carrying `"region": "eu-west-1"` rendered a pasteable
    * `cdkd state orphan <stack> --stack-region eu-west-1`, aiming a destructive
    * command at a DIFFERENT region's record for the same stack. That is
-   * `stackClause`'s misdirection class, one field over; the divergence itself
-   * is go-to-k/cdkd#3328.
+   * `stackClause`'s misdirection class, one field over.
+   *
+   * go-to-k/cdkd#3328 fixed the divergence itself — `getState` normalizes a
+   * region-scoped record's `region` to its KEY's and warns — so that operand
+   * is now the key's region. THIS CASE IS NOT THEREBY OBSOLETE, which is why
+   * it keeps its own parameter: the key's region is an S3 key SEGMENT anyone
+   * able to write the bucket can choose, and a legacy record still falls
+   * through to `ctx.baseRegion`. The builder takes a region it does not own
+   * either way, and the bound below is a claim about the BUILDER.
    *
    * The asymmetry with the `cdkd state show` line in the same message is
    * deliberate: that one READS, and substituting into it is

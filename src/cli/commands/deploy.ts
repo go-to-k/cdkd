@@ -853,6 +853,15 @@ async function deployCommand(
               // sound when the client is pointing where the state says the
               // resource is.
               expectedRegion: stateForRecreateCheck?.state.region,
+              // The record's body named a region that is not its key's, so
+              // that comparand cannot decide anything: `getState` normalized
+              // the record to the key's region, which is what the clients are
+              // built for, so the compare above would pass by construction
+              // (issue #3328 review round 2). The probe must stay conservative
+              // instead of reading a not-found as "empty".
+              ...(stateForRecreateCheck?.divergentBodyRegion !== undefined && {
+                expectedRegionDiverged: true,
+              }),
             },
             forceStatefulRecreation: options.forceStatefulRecreation ?? false,
           });

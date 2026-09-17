@@ -9,7 +9,7 @@ import {
   truncateCodePoints,
 } from '../utils/display-safe.js';
 import { shellQuote } from './lock-contention-message.js';
-import { isReadableBag } from '../types/state.js';
+import { describeRegionValueKind, isReadableBag } from '../types/state.js';
 import type { StackState } from '../types/state.js';
 
 /**
@@ -276,18 +276,26 @@ export function malformedStateRefusalMessage(stackName: string, region: string):
  * **That remedy is a TEMPLATE, not a substituted command, and the asymmetry
  * with the `cdkd state show` line above it is the point.** `state orphan`
  * DELETES a record; `state show` reads one. The `region` this function is
- * handed comes from `destroy-runner.ts`'s
- * `state.region ?? ctx.baseRegion`, and `state.region` is RECORD-BODY content
- * that `getState` does not check against the key it loaded from — measured
- * 2026-09-17: a record planted at `.../us-east-1/state.json` carrying
- * `"region": "eu-west-1"` rendered a pasteable
- * `cdkd state orphan <stack> --stack-region eu-west-1`, aiming a destructive
- * command at a DIFFERENT region's record for the same stack. That is the
- * misdirection class {@link stackClause} records for stack names, one field
- * over. Substituting into the read-only `state show` line is the pre-existing
- * behaviour of {@link malformedStateDetail} and is left alone; what this lane
- * must not add is a destructive one. The divergence itself — the runner also
- * LOCKS and DELETES against the body region — is go-to-k/cdkd#3328.
+ * handed comes from `destroy-runner.ts`'s `state.region ?? ctx.baseRegion` —
+ * which WAS record-body content `getState` did not check against the key it
+ * loaded from, measured 2026-09-17: a record planted at
+ * `.../us-east-1/state.json` carrying `"region": "eu-west-1"` rendered a
+ * pasteable `cdkd state orphan <stack> --stack-region eu-west-1`, aiming a
+ * destructive command at a DIFFERENT region's record for the same stack. That
+ * is the misdirection class {@link stackClause} records for stack names, one
+ * field over. Substituting into the read-only `state show` line is the
+ * pre-existing behaviour of {@link malformedStateDetail} and is left alone;
+ * what this lane must not add is a destructive one.
+ *
+ * **go-to-k/cdkd#3328 closed the BODY half of that, and the template stays
+ * anyway** — the measurement above is now history, not a live repro.
+ * `S3StateBackend.getState` normalizes a region-scoped record's `region` to
+ * its KEY's and warns on a body that disagreed, so `state.region` reaching
+ * this function is the key's region. But the key is an S3 KEY SEGMENT, which
+ * is bucket-plantable in its own right (`cdkd/<stack>/<anything>/state.json`
+ * lists as a region), and a legacy record still falls through to
+ * `ctx.baseRegion`. So the value is still not this process's own, and a
+ * DELETING command built from it is still the thing not to hand over.
  *
  * **A template is not enough on its own, because the name the reader would
  * type into it comes from the clause ABOVE.** `safeIdentifier` composes
@@ -312,9 +320,16 @@ export function malformedStateRefusalMessage(stackName: string, region: string):
  * "with the stack and region this message NAMES", which is the attacker's
  * region (review round 2 of go-to-k/cdkd#3332: templating had removed the
  * paste, not the aim). The arm therefore points at the record's S3 KEY, which
- * `getState` resolved and a record body cannot forge, and says outright that
- * the region printed above is body-derived and need not match it. The
- * divergence is go-to-k/cdkd#3328.
+ * `getState` resolved and a record body cannot forge.
+ *
+ * Since go-to-k/cdkd#3328 the printed region IS that key's — `getState`
+ * normalizes a region-scoped record's `region` to the key's region and warns
+ * on a body that disagreed — so the arm no longer has to warn the reader that
+ * the two may differ, and its text no longer does. It still says WHERE the
+ * region comes from and still sends the reader to `cdkd state list --long` to
+ * confirm the key, because a key segment is itself bucket-plantable and
+ * because a LEGACY record has no key region at all, in which case the value
+ * printed is the CLI's own and `--stack-region` must be omitted.
  *
  * **The cap this arm measures against is `STACK_REF_MAX_CODE_POINTS`, not the
  * 128 every other text in this module uses**, and it is threaded rather than
@@ -355,7 +370,7 @@ export function malformedDestroyResourcesRefusalMessage(stackName: string, regio
     ? `To drop the record deliberately and leave the live resources standing, run ` +
       `'cdkd state orphan' against the stack and the region THE RECORD'S S3 KEY holds — ` +
       `spelled out rather than pasteable, because that command DELETES a record and the region ` +
-      `printed above is read from the record's own BODY, which need not match its key. ` +
+      `printed above is the one cdkd was pointed at, not a value cdkd owns. ` +
       `Confirm the key with 'cdkd state list --long' — a legacy record shows none, and for one ` +
       `of those the flag must be OMITTED or it selects nothing — then: ` +
       `cdkd state orphan <stack> --stack-region <region>`
@@ -405,6 +420,170 @@ export function refuseMalformedResourcesForDestroy(
     new CdkdError(
       malformedDestroyResourcesRefusalMessage(stackName, region),
       STATE_RESOURCES_MALFORMED
+    )
+  );
+}
+
+/** The code a destroy refusal over a body/key region divergence carries. */
+export const STATE_REGION_DIVERGED = 'STATE_REGION_DIVERGED';
+
+/**
+ * The DESTROY refusal text for a record whose BODY names a different region
+ * than the KEY it was read from, while it still lists resources (issue
+ * [#3328](https://github.com/go-to-k/cdkd/issues/3328), review round 1).
+ *
+ * **This is the one case where adopting the key is not enough, and it is a
+ * consequence of adopting it rather than an argument against.**
+ * `S3StateBackend.getState` replaces the body's `region` with the key's, which
+ * is right for the key math, the lock and the record's own identity — cdkd
+ * stamps the key's region into every body it writes, so a divergence means
+ * another writer. But WHERE THE RESOURCES ARE is a different question, and a
+ * divergent record is the one shape that gives two answers to it. cdkd cannot
+ * tell which half is honest:
+ *
+ * - the BODY lies (a planted field, the misdirection this issue is about) —
+ *   the resources are in the key's region and acting there is correct;
+ * - the KEY lies (an `aws s3 cp` between region prefixes, a restore, a
+ *   third-party writer) — the resources are in the body's region, and acting
+ *   in the key's finds NOTHING.
+ *
+ * The second one is not a wash, it is silent data loss: `destroy-runner.ts`
+ * reads a `*NotFound` from a provider as ALREADY DELETED (`deletedCount++`,
+ * the row dropped from the record), so a whole stack of live resources would
+ * be reported destroyed and `deleteState` would then remove the only record
+ * naming them. `assertRegionMatch` — the guard that exists to stop exactly
+ * that inference — cannot fire, because after normalization
+ * `DeleteContext.expectedRegion` and the client region are the same value by
+ * construction.
+ *
+ * So the refusal is narrow by design and its trigger is the CONJUNCTION:
+ * divergent AND at least one resource. **A resource-less record is
+ * deliberately NOT refused** — there is nothing to orphan, and that is the
+ * issue's own measured repro plus the `cdkd state destroy` recovery path the
+ * read-side decision exists to protect. The read path still refuses NOTHING:
+ * `cdkd state show`, `cdkd state list` and `cdkd state orphan` all keep
+ * working on the very record this refuses to DELETE FROM, which is what keeps
+ * it fixable.
+ *
+ * The remedy is a TEMPLATE, never a substituted command, for the reason
+ * {@link malformedDestroyResourcesRefusalMessage} records — the region reaching
+ * this builder is an S3 key SEGMENT, which anyone able to write the bucket
+ * chooses. (NOT "because cdkd does not know which region belongs in the flag",
+ * which an earlier revision said and which is false for this flag:
+ * `--stack-region` on `state orphan` selects the RECORD, and the key's region
+ * is exactly that.) The body's region is not printed at all — its KIND is, the
+ * bounded token {@link describeRegionValueKind} produces, for the reason
+ * `getState`'s warn gives.
+ *
+ * And the target-naming half is GATED on both identifiers rendering EXACTLY,
+ * the second half of that sibling's rule: a template is not enough on its own,
+ * because the name the reader types into it comes from the clause ABOVE.
+ */
+export function divergentRecordRegionRefusalMessage(
+  stackName: string,
+  keyRegion: string,
+  divergentBodyRegion: unknown,
+  /** `undefined` when the bag could not be READ — see the refusal's fail-closed arm. */
+  resourceCount: number | undefined
+): string {
+  // EXACTNESS, and it is the same gate {@link malformedDestroyResourcesRefusalMessage}
+  // carries three functions up, for the reason its note gives: `safeIdentifier`
+  // composes `displaySafe`, which TRIMS and truncates, so a record keyed
+  // `'prod-api '` opens this message byte-identically to a HEALTHY sibling —
+  // and an operator who then orphans "the record the line above names" deletes
+  // the intact one. This message ends on a DELETING command, so it owes the
+  // same withhold arm; round 2 of go-to-k/cdkd#3328 found it shipping without
+  // one. Compared against the RAW values, at the STATE-RECORD grammar's cap so
+  // an ordinary multi-level nested child does not take the withhold arm.
+  const cap = STACK_REF_MAX_CODE_POINTS;
+  const exact =
+    safeIdentifier(stackName, cap) === stackName && safeIdentifier(keyRegion, cap) === keyRegion;
+  const lists =
+    resourceCount === undefined
+      ? 'its resources map cannot be read'
+      : `it still lists ${resourceCount} resource${resourceCount === 1 ? '' : 's'}`;
+  // The KIND only, never the value — the withholding rule `getState`'s warn
+  // takes. `null` / `''` / `0` are reported as divergent too (the read side
+  // treats only absent and equal as agreement), and for those the kind IS the
+  // whole answer, so the wording must not promise `--verbose` a value it has
+  // nothing to show for.
+  const kind = describeRegionValueKind(divergentBodyRegion);
+  const opening = exact
+    ? `cdkd will not destroy stack ${shellQuote(safeIdentifier(stackName, cap))} ` +
+      `(${shellQuote(safeIdentifier(keyRegion, cap))}): the state record read from that ` +
+      `region's key carries a 'region' of its own (${kind}) that is not the key's, and ${lists}`
+    : `cdkd will not destroy the state record this command loaded: it carries a 'region' of its ` +
+      `own (${kind}) that is not the region of the key it was read from, and ${lists}`;
+  // The withhold SENTENCE lives here, not in the opening, so the shared tail's
+  // "— so cdkd cannot tell which region…" still attaches to the divergence it
+  // explains. Chained to the opening it produced two `— so` clauses with
+  // different causes (review round 3).
+  const remedy = exact
+    ? `Re-run with --verbose to see what the record's region field holds, then either destroy ` +
+      `against the region the resources are really in, or repair that field to match the key it ` +
+      `is stored under and re-run. To drop the record and leave the live resources standing, ` +
+      `spelled out rather than pasteable because that command DELETES a record: ` +
+      `cdkd state orphan <stack> --stack-region <region>`
+    : `This record's stack name or region does NOT render exactly — what any surrounding output ` +
+      `shows is a sanitized form, and another record may render identically — so this message ` +
+      `names no target and offers no command against one. List the records as stored with ` +
+      `'cdkd state list --long', which prints a name needing sanitizing in quoted form, and act ` +
+      `on the one whose key matches. Inspect it with: ${inspectCommand(undefined, undefined)}`;
+  // The tail says "those resources" only when the opening counted some; on the
+  // unreadable-bag arm it has no antecedent, so that arm gets its own wording.
+  const cannotTell =
+    resourceCount === undefined
+      ? `— so cdkd can neither count what it would delete nor tell which region it is in`
+      : `— so cdkd cannot tell which region those resources are in`;
+  return (
+    `${opening} ${cannotTell}. cdkd stamps the ` +
+    `key's region into every record it writes, so this record was not written by cdkd. ` +
+    `Destroying against the key's region would issue every delete there; if the record's own ` +
+    `region is the honest half, each delete comes back not-found, which this command reads as ` +
+    `ALREADY DELETED — it would report success, remove the record, and leave every resource ` +
+    `standing in the other region with nothing naming it. ${remedy}`
+  );
+}
+
+/**
+ * Refuse a destroy over a record whose body region diverged from its key's,
+ * while it still lists resources — see
+ * {@link divergentRecordRegionRefusalMessage} for why the conjunction is the
+ * trigger and why a resource-less record is not refused.
+ *
+ * CALL IT AT THE TOP OF THE DESTROY, **above the `resourceCount` fast path**,
+ * for the placement reason {@link refuseMalformedResourcesForDestroy} gives —
+ * and BELOW that call, because this one reads the bag's SIZE and only that
+ * guard proves the bag can be read at all.
+ *
+ * `divergentBodyRegion` is `S3StateBackend.getState`'s report, `undefined` on
+ * every record that agreed with its key — which is every record cdkd wrote.
+ */
+export function refuseDivergentRecordRegionForDestroy(
+  state: StackState,
+  stackName: string,
+  keyRegion: string,
+  divergentBodyRegion: unknown
+): void {
+  if (divergentBodyRegion === undefined) return;
+  // FAIL CLOSED on a bag this cannot count. On the destroy path
+  // `refuseMalformedResourcesForDestroy` has already refused such a record, so
+  // this arm is unreachable there — but the guard is exported, and for a second
+  // caller "a known divergence plus an unknowable resource count" must not
+  // resolve to "proceed". An unreadable bag is the OTHER refusal's verdict;
+  // what this one owes is to not silently answer zero.
+  // `undefined` IS the unreadable answer, carried straight into the message —
+  // an earlier cut computed a `0` here that nothing rendered.
+  const resourceCount = isReadableBag(state.resources)
+    ? Object.keys(state.resources).length
+    : undefined;
+  if (resourceCount === 0) return;
+  // `markNonRetryable` for the reason the sibling refusals carry it: the
+  // verdict comes from a PERSISTED record, so no retry can change it.
+  throw markNonRetryable(
+    new CdkdError(
+      divergentRecordRegionRefusalMessage(stackName, keyRegion, divergentBodyRegion, resourceCount),
+      STATE_REGION_DIVERGED
     )
   );
 }
@@ -1104,10 +1283,12 @@ function stackClause(stackName: string | undefined, region: string | undefined):
  *
  * **It diverges from {@link malformedDestroyResourcesRefusalMessage}, which
  * keeps `cdkd state orphan` a template on purpose, and the difference is where
- * the identity comes from.** That builder is reached with a record-derived
- * REGION (`state.region ?? ctx.baseRegion` in `destroy-runner.ts`) -- its stack
- * name is the caller's, so the region alone is what would aim a destructive
- * command using a value the record supplied. This one is reached only with the caller's
+ * the identity comes from.** That builder is reached with a REGION cdkd read
+ * off the state bucket (`state.region ?? ctx.baseRegion` in
+ * `destroy-runner.ts`; since go-to-k/cdkd#3328 the first operand is the S3
+ * KEY's region rather than the record body's, which is a key SEGMENT and so
+ * still plantable) -- its stack name is the caller's, so the region alone is
+ * what would aim a destructive command using a value cdkd does not own. This one is reached only with the caller's
  * synthesized stack and `pickStackRegion`'s answer, so substituting is safe and
  * omitting the region is the wider action. Two opposite precedents in one
  * module; neither is the general rule.

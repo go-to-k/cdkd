@@ -2270,9 +2270,29 @@ function createStateOrphanCommand(): Command {
  *   state record. AWS resources are left intact.
  *
  * Region scoping: when a stack name has multiple state records spread across
- * regions (PR 1 territory), `--region` selects one. With the current single-
- * region-per-name layout the flag still works — it sets the AWS clients'
- * region and refuses to proceed if the loaded state.region disagrees.
+ * regions (PR 1 territory), `--stack-region` selects one — it picks WHICH
+ * record is loaded, because the region is part of the S3 key.
+ *
+ * What it does with a record whose BODY names a different region than that key
+ * is two things, neither of which this comment described until issue
+ * [#3328](https://github.com/go-to-k/cdkd/issues/3328) — it claimed a refusal
+ * on `state.region` that had never existed anywhere in the command, while the
+ * measured behaviour was the opposite: a planted record at
+ * `.../us-east-1/state.json` carrying `"region": "eu-west-1"` locked, saved
+ * and deleted against `eu-west-1` and reported `✓ State deleted` while the
+ * us-east-1 key survived.
+ *
+ * 1. `S3StateBackend.getState` normalizes the loaded record's `region` to the
+ *    KEY's and WARNS, so this command — which hands `stateResult.state`
+ *    straight to `runDestroyForStack` — acts on the region it was pointed at.
+ *    The read itself refuses NOTHING; `adoptKeyRegion` carries why, and it is
+ *    what keeps `state show` / `state list` / `state orphan` working on such a
+ *    record.
+ * 2. The DESTROY refuses it when the record still lists resources
+ *    (`refuseDivergentRecordRegionForDestroy`, reached through
+ *    `runDestroyForStack`), because which region those resources are in is
+ *    exactly what the divergence makes undecidable. A resource-less record is
+ *    not refused, so cleaning one up still works.
  */
 async function stateDestroyCommand(
   stackArgs: string[],
@@ -2616,6 +2636,13 @@ async function stateDestroyCommand(
                 providerRegistry,
                 baseAwsClients: setup.awsClients,
                 baseRegion: setup.region,
+                // `getState` adopted the KEY's region into the record above, so
+                // this is the only place the divergence is still visible; the
+                // runner refuses on it when the record still lists resources
+                // (issue #3328).
+                ...(stateResult.divergentBodyRegion !== undefined && {
+                  divergentBodyRegion: stateResult.divergentBodyRegion,
+                }),
                 ...(options.profile && { profile: options.profile }),
                 stateBucket: setup.bucket,
                 statePrefix: options.statePrefix,
