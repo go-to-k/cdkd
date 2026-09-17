@@ -90,6 +90,7 @@ import {
   malformedOutputsWarning,
   malformedResourcesWarning,
   malformedStateRefusalMessage,
+  producerRecordKey,
   repairMalformedOutputsForReadOnly,
   repairMalformedResourcesForReadOnly,
 } from '../../state/malformed-resources-bag.js';
@@ -3988,7 +3989,9 @@ function makeCrossStackPrePass(deps: {
           );
           return undefined;
         }
-        const seenKey = `${producer.stack}\u0000${producer.region}`;
+        // ONE spelling, shared with `local-state-loader.ts`'s sibling Set — see
+        // {@link producerRecordKey} for why it ENCODES rather than separates.
+        const seenKey = producerRecordKey(producer.stack, producer.region);
         if (!warnedDamagedProducers.has(seenKey)) {
           warnedDamagedProducers.add(seenKey);
           // A FINDING, and this is a REGRESSION GUARD rather than an

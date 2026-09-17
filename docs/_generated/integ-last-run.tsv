@@ -181,7 +181,7 @@ local-invoke-container	2026-09-14T19:52:02Z	PASS	34	verify.sh	rc ok, orph clean,
 local-invoke-dotnet	2026-09-14T23:03:15Z	PASS	26	verify.sh	rc ok, orph clean, HOST_ARCHITECTURE pinned (#2287): 3/3 consecutive native runs green, 20-35 s (was 29-102 s under emulation with 2 faults in 4)
 local-invoke-from-cfn-stack	2026-09-14T19:16:04Z	PASS	133	verify.sh	rc ok, orph clean, #3126 capture sweep
 local-invoke-from-cfn-stack-multi-stack	2026-09-14T19:21:53Z	PASS	128	verify.sh	rc ok, orph clean, #3126 capture sweep; a prior run was killed by the host mid-deploy, its 2 CFn stacks deleted by hand
-local-invoke-from-state	2026-09-17T06:52:19Z	PASS	200	verify.sh	go-to-k/cdkd#3130 lane, run on the FINAL tree; Created 7 / 7 del 0 err, state.json gone, docker sweep empty. Earlier runs in this lane were invalidated by review fixes landing in local-scope files -- this gate is digest-bound, so a comment or an export keyword stales it
+local-invoke-from-state	2026-09-17T10:05:59Z	PASS	425	verify.sh	rc 0, 7 deleted 0 errors, 0 orphans, docker sweep empty; sets integ-local + integ-destroy for the #3308/#3293 warned-set change
 local-invoke-java	2026-09-14T23:03:42Z	PASS	27	verify.sh	rc ok, orph clean, HOST_ARCHITECTURE pinned (#2287): 3/3 consecutive native runs green, 21-27 s (was 24-95 s under emulation with 1 fault in 3)
 local-invoke-layers	2026-09-14T19:54:43Z	PASS	48	verify.sh	rc ok, orph clean, #3126 capture sweep (v2 helper re-run)
 local-invoke-provided	2026-09-14T19:53:55Z	PASS	57	verify.sh	rc ok, orph clean, #3126 capture sweep (v2 helper re-run)

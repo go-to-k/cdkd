@@ -35,6 +35,7 @@ import { importableOutputKeys, type StackState } from '../../types/state.js';
 import {
   hasReadableOutputs,
   malformedLocalOutputsWarning,
+  producerRecordKey,
 } from '../../state/malformed-resources-bag.js';
 import type { CrossStackResolver } from '../../local/state-resolver.js';
 
@@ -436,6 +437,23 @@ export interface BuildCrossStackResolverOptions {
   profile?: string;
   /** Logger prefix surfaced on every warn line. Defaults to `--from-state`. */
   logPrefix?: string;
+  /**
+   * Producer records already named by the malformed-outputs warning, shared
+   * across every resolver ONE command run builds (issue
+   * [#3293](https://github.com/go-to-k/cdkd/issues/3293)).
+   *
+   * Omit it and the resolver keeps its own, which is right for a caller that
+   * builds exactly one — `local invoke` and `local run-task` both do. It exists
+   * for `local invoke-agentcore`, where a single boot builds TWO
+   * (`resolveFromS3BucketIntrinsic`, then `buildContainerEnv`), so a producer
+   * read by both was named twice for one damaged record. The dedup's scope was
+   * the RESOLVER; the honest scope is the RUN.
+   *
+   * Passed in rather than made module-global on purpose: a module-global
+   * warned-set is the shape that breaks the moment anything runs two commands
+   * in one process, and it would make the suppression outlive a reload.
+   */
+  warnedMalformedProducers?: Set<string>;
 }
 
 /**
@@ -484,10 +502,14 @@ export async function buildCrossStackResolver(
    * Keyed by RECORD and not by stack, because `resolveGetStackOutput` tries
    * the exact region spelling and then folds across others: those are
    * DISTINCT state records that can be damaged independently, so each still
-   * deserves its own line. The closure — not `readOutput` — is the only scope
-   * that outlives a single reference.
+   * deserves its own line.
+   *
+   * The CALLER may supply one, which is what lets a boot that builds several
+   * resolvers dedup across all of them (issue go-to-k/cdkd#3293). Falling back
+   * to a fresh Set keeps every existing caller unchanged: the closure is then
+   * the only scope that outlives a single reference, which is what it was.
    */
-  const warnedMalformedProducers = new Set<string>();
+  const warnedMalformedProducers = opts.warnedMalformedProducers ?? new Set<string>();
 
   let stateBucket: string;
   try {
@@ -682,19 +704,9 @@ export async function buildCrossStackResolver(
           // The miss is returned unconditionally; only the LINE is deduped.
           // Suppressing the return as well would make the second reference
           // RESOLVE where the first did not.
-          // `\u0000` and not a printable separator, the spelling `scrub.ts`'s
-          // sibling Set already uses: the stack half is template-controlled, so
-          // a PRINTABLE separator lets two distinct records collide into one key
-          // and DROP the second record's warning — silence, in the one class
-          // this change exists to make loud.
-          //
-          // It narrows the collision rather than closing it, and the honest
-          // statement is that a planted key can carry a NUL too — this repo
-          // already plants one (`scrub-malformed-and-nameless.test.ts`). Closing
-          // it needs a length-prefixed or JSON-encoded key at BOTH sites, which
-          // is go-to-k/cdkd#3308; matching the sibling is what is worth doing
-          // here, since two spellings of one rule is the worse failure.
-          const recordKey = `${producerStack}\u0000${recordRegion}`;
+          // ONE spelling, shared with `scrub.ts`'s sibling Set — see
+          // {@link producerRecordKey} for why it ENCODES rather than separates.
+          const recordKey = producerRecordKey(producerStack, recordRegion);
           if (!warnedMalformedProducers.has(recordKey)) {
             warnedMalformedProducers.add(recordKey);
             logger.warn(`${prefix}: ${malformedLocalOutputsWarning(producerStack, recordRegion)}`);
