@@ -414,6 +414,192 @@ describe('cdkd orphan (per-resource)', () => {
     });
   });
 
+  /**
+   * Issue [go-to-k/cdkd#3318](https://github.com/go-to-k/cdkd/issues/3318): the
+   * per-ENTRY `properties` container, which neither refusal above covers.
+   *
+   * `rewriteResourceReferences` passes each bag through `rewriteValue`, whose
+   * first line returns a non-object VERBATIM, and re-assigns the result through
+   * a bare cast — so the record `cdkd orphan` saves still carries the map it
+   * could not read, and the command reports success over it.
+   */
+  describe('an unreadable per-resource `properties` bag is refused (go-to-k/cdkd#3318)', () => {
+    /** `Bucket` is the orphan target; `Other` is the record that SURVIVES. */
+    function arrange(otherProperties: unknown): void {
+      mockSynthesize.mockResolvedValue({
+        stacks: [
+          {
+            stackName: 'MyStack',
+            displayName: 'MyStack',
+            template: templateWith({ Bucket: 'MyStack/Bucket', Other: 'MyStack/Other' }),
+            region: 'us-east-1',
+          },
+        ],
+      });
+      mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValue({
+        state: {
+          version: 10,
+          stackName: 'MyStack',
+          region: 'us-east-1',
+          resources: {
+            Bucket: { physicalId: 'b', resourceType: 'AWS::S3::Bucket', properties: {} },
+            Other: {
+              physicalId: 'o',
+              resourceType: 'AWS::S3::Bucket',
+              ...(otherProperties === undefined ? {} : { properties: otherProperties }),
+              dependencies: ['Bucket'],
+            },
+          },
+          outputs: {},
+          lastModified: 0,
+        },
+        etag: '"e"',
+      });
+    }
+
+    // Fenced ONE SHAPE AT A TIME. Measured 2026-09-17 through the real
+    // `rewriteResourceReferences`: `absent` is saved back absent (dropped by
+    // `JSON.stringify`), `null` / `[]` / `5` / `"abcdef"` come back byte for
+    // byte, and a POPULATED list is the one unreadable shape `rewriteValue`
+    // walks — its `{Ref: Bucket}` was rewritten to the physical id and the run
+    // reported a rewrite into a container that is still not a map.
+    for (const [label, bag] of [
+      ['absent', undefined],
+      ['null', null],
+      ['an empty list', []],
+      ['a populated list', [{ Ref: 'Bucket' }]],
+      ['a number', 5],
+      ['a string', 'abcdef'],
+      ['a boolean', true],
+    ] as const) {
+      it(`refuses ${label} and writes NOTHING`, async () => {
+        arrange(bag);
+        await expect(runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes'])).rejects.toThrow();
+        expect(
+          mockSaveState,
+          'cdkd orphan saved a record whose `properties` map it could not read; the next ' +
+            'cdkd deploy refuses on it and a cdkd diff in between previews a replacement'
+        ).not.toHaveBeenCalled();
+        const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+        // It names the SURVIVING damaged record, and the container.
+        expect(message).toContain('Other');
+        expect(message).toContain(`'properties'`);
+        // Not the two sibling containers' texts: a `resources` refusal over an
+        // intact resource map tells the operator their stack would be
+        // re-created, which does not hold.
+        expect(message).not.toContain(`no readable 'resources' map`);
+        expect(message).not.toContain(`no readable 'outputs' map`);
+        // And it is THIS command's text, not the deploy sibling's: `cdkd
+        // orphan` computes no diff, so "a DELETE and re-create of resources
+        // the template did not change" would describe a verdict it never
+        // reached. The positive half names the mechanism that IS true here.
+        expect(message).toContain('carried through VERBATIM');
+        expect(message).toContain('orphan the damaged record ITSELF');
+        expect(message).not.toContain('a DELETE and re-create of resources');
+      });
+    }
+
+    it('names the CALLER identity, never the planted one in the record body', async () => {
+      // `parseStateBody` validates neither `stackName` nor `region`, and an
+      // attacker holding `s3:PutObject` on one stack's key can plant another
+      // stack's name. The refusal ends on a pasteable `cdkd state show`, so a
+      // record-derived identity would aim it at a healthy record while the
+      // damaged one goes unnamed. `cdkd orphan` resolves both from the
+      // synthesized app and from `pickStackRegion`.
+      // `arrange` supplies the synth + listStacks doubles; the record itself is
+      // replaced below so its self-report diverges from the caller's identity.
+      arrange('abcdef');
+      mockGetState.mockResolvedValue({
+        state: {
+          version: 10,
+          stackName: 'prod-payments',
+          region: 'eu-west-1',
+          resources: {
+            Bucket: { physicalId: 'b', resourceType: 'AWS::S3::Bucket', properties: {} },
+            Other: { physicalId: 'o', resourceType: 'AWS::S3::Bucket', properties: 'abcdef' },
+          },
+          outputs: {},
+          lastModified: 0,
+        },
+        etag: '"e"',
+      });
+      await expect(runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes'])).rejects.toThrow();
+      const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+      expect(message).toContain('State for MyStack (us-east-1)');
+      expect(message).toContain('cdkd state show MyStack --stack-region us-east-1 --json');
+      expect(message, 'the refusal aims its remedy at the stack the RECORD names').not.toContain(
+        'prod-payments'
+      );
+      expect(message).not.toContain('eu-west-1');
+    });
+
+    it('refuses under --dry-run too, where the audit table would otherwise look fine', async () => {
+      // The guard sits at the load, above the `if (options.dryRun)` return. A
+      // plausible rewrite plan followed by a refusal the moment the flag comes
+      // off is the worst arm of all.
+      arrange('abcdef');
+      await expect(
+        runOrphan(['MyStack/Bucket', '--app', 'noop', '--dry-run'])
+      ).rejects.toThrow();
+      expect(mockSaveState).not.toHaveBeenCalled();
+    });
+
+    it('--force does NOT bypass it', async () => {
+      // `--force`'s contract is "use a possibly-wrong value rather than
+      // stranding me" for an unresolvable ATTRIBUTE. It buys nothing here: the
+      // save would still leave a record `cdkd deploy` refuses, and the real way
+      // out is one line down.
+      arrange('abcdef');
+      await expect(
+        runOrphan(['MyStack/Bucket', '--app', 'noop', '--force'])
+      ).rejects.toThrow();
+      expect(mockSaveState).not.toHaveBeenCalled();
+    });
+
+    it('refuses before the confirmation prompt, so no doomed run is confirmed', async () => {
+      arrange('abcdef');
+      await expect(runOrphan(['MyStack/Bucket', '--app', 'noop'])).rejects.toThrow();
+      expect(readlineQuestion).not.toHaveBeenCalled();
+    });
+
+    it('RECOVERY: orphaning the DAMAGED record itself still works and repairs the record', async () => {
+      // The decision the guard turns on. `cdkd orphan` is the per-resource way
+      // out of a torn record, and the save cannot persist a record it is
+      // deleting — so the refusal is scoped to the SURVIVORS. A guard that
+      // ignored the orphan set would close the one command that repairs this.
+      arrange('abcdef');
+      await runOrphan(['MyStack/Other', '--app', 'noop', '--yes']);
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+      const [[, , savedState]] = mockSaveState.mock.calls;
+      expect(savedState.resources.Other, 'the torn record survived the orphan').toBeUndefined();
+      // And what is left is readable, which is the whole point: the record the
+      // save writes is one the next cdkd deploy accepts.
+      expect(savedState.resources.Bucket.properties).toEqual({});
+    });
+
+    it('FLOOR: a POPULATED properties bag is still rewritten and saved', async () => {
+      // The other side of the fence: a guard that refused everything satisfies
+      // every case above. `Other` references the orphan, so the assertion is
+      // about the rewrite LANDING, not merely about nothing throwing.
+      arrange({ Name: { Ref: 'Bucket' } });
+      await runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes']);
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+      const [[, , savedState]] = mockSaveState.mock.calls;
+      expect(savedState.resources.Other.properties).toEqual({ Name: 'b' });
+      expect(savedState.resources.Bucket).toBeUndefined();
+    });
+
+    it('FLOOR: an EMPTY properties bag is a legitimate record and is saved', async () => {
+      // `{}` is what `cdkd import` writes for a resource declaring nothing
+      // (`Properties ?? {}`). Refusing it would make the command unusable on
+      // ordinary state.
+      arrange({});
+      await runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes']);
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('skips lock + save on --dry-run', async () => {
     mockSynthesize.mockResolvedValue({
       stacks: [

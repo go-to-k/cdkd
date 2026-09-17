@@ -251,6 +251,14 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   // breached a budget rather than informed a lane — the same call the
   // `state-malformed-containers.md` note above records for scrub and import.
   ['state-malformed-properties.md', 2], // literal list: EXACT, see below
+  // ONE literal path (issue go-to-k/cdkd#3318): `src/cli/commands/orphan.ts`.
+  // The `properties` container's THIRD reader, and the fourth time this class
+  // has paid for a satellite rather than a cap: adding orphan.ts to
+  // `state-malformed-properties.md`'s glob projected that path to 62,848 B
+  // against its 60,000 B cap, because it already loads five rule files. The
+  // orphan half is ~4 KB and belongs to one command, so it globs that command
+  // alone and leaves a pointer behind.
+  ['state-malformed-properties-orphan.md', 1], // literal list: EXACT, see below
   // ONE literal path (issue go-to-k/cdkd#3161): `src/cli/commands/destroy-runner.ts`.
   // The `deploy` twin is DESCRIBED in that satellite and deliberately NOT in
   // its glob — `src/deployment/deploy-engine.ts` sits ~200 B under its own
@@ -1396,7 +1404,19 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 // Neither branch's figure is the merged one. That is the whole reason this
 // count is asserted rather than described: two correct increments compose to a
 // number neither author wrote.
-const CORPUS_FILE_COUNT = 68; // + sdk-attr-coverage-critic.md (go-to-k/cdkd#3324): the
+const CORPUS_FILE_COUNT = 69; // + state-malformed-properties-orphan.md (go-to-k/cdkd#3318): the
+                              //  `properties` container's THIRD reader, `cdkd orphan`, which runs
+                              //  no diff and so is described by neither section of
+                              //  `state-malformed-properties.md`. Listing `src/cli/commands/orphan.ts`
+                              //  in THAT file's glob projected the path to 62,848 B against its
+                              //  60,000 B cap (it already loads five rule files), so the ~4 KB
+                              //  orphan half globs that one command and a pointer stays behind.
+                              //  Fourth time this class has bought a satellite rather than a cap.
+                              //  67 -> 69 rather than -> 68: this branch and go-to-k/cdkd#3324 each
+                              //  added ONE satellite off the same 67, which is the compose-to-a-
+                              //  number-neither-author-wrote case the note above describes, met for
+                              //  real at the rebase.
+                              // + sdk-attr-coverage-critic.md (go-to-k/cdkd#3324): the
                               //  `gen-sdk-attr-coverage` entry moved out of `layout-scripts.md`
                               //  because `scripts/refresh-cfn-schemas.mjs` — which loads that file
                               //  whole — sat 5 B under its 90,000 B payload cap, so CORRECTING one

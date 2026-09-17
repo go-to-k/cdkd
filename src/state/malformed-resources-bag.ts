@@ -1360,6 +1360,126 @@ export function malformedResourcePropertiesRefusalMessage(
 }
 
 /**
+ * The `cdkd orphan` refusal text for the per-entry `properties` container
+ * (issue [#3318](https://github.com/go-to-k/cdkd/issues/3318)).
+ *
+ * A SECOND `properties` refusal beside
+ * {@link malformedResourcePropertiesRefusalMessage}, for the reason every
+ * split in this module is its own: that text describes the DIFF's verdict —
+ * "a DELETE and re-create of resources the template did not change" — which
+ * `cdkd orphan` never computes. It runs no diff at all.
+ *
+ * **And the harm here is NOT the laundering the module's other write-capable
+ * refusals describe.** Measured 2026-09-17 through the real
+ * `rewriteResourceReferences` over an `AWS::S3::Bucket` record: `rewriteValue`
+ * returns a non-object verbatim, so a stored `"abcdef"` comes back as
+ * `"abcdef"`, a `5` as `5`, a `null` as `null`, and an ABSENT bag stays absent
+ * once `JSON.stringify` drops it. Nothing is fabricated and no evidence is
+ * replaced — so {@link malformedOutputsRefusalMessage}'s "saved back as a
+ * well-formed six-key map" sentence, true one container over, would be FALSE
+ * here and must not be borrowed.
+ *
+ * What IS at stake is the command's own job. `cdkd orphan` exists to leave the
+ * record deployable: it rewrites every surviving sibling's `Ref` /
+ * `Fn::GetAtt` / `Fn::Sub` reference to an orphan so the next deploy neither
+ * re-creates the orphan nor fails on a stale reference. Over a map it cannot
+ * read it cannot do that and cannot say it did not. A scalar bag presents no
+ * reference to find, so the `--force`-less hard fail on unresolvable
+ * references can never fire for one; a LIST bag is the one unreadable shape
+ * `rewriteValue` DOES walk (measured: a stored `[{"Ref":"<orphan>"}]` came
+ * back as `["<physicalId>"]` with one row in the audit table), so its rewrites
+ * are reported into a container that is still not a map. Either way the
+ * command takes a lock, saves, and reports success over a record left in
+ * exactly the state `cdkd deploy` REFUSES
+ * ({@link malformedResourcePropertiesRefusalMessage}) and `cdkd diff` previews
+ * as a replacement — one command after the evidence was last in cdkd's hands.
+ *
+ * **The refusal is SCOPED to the records the save would KEEP, and that is what
+ * answers the recovery-path objection rather than a flag.**
+ * {@link refuseMalformedResourcePropertiesForOrphan} is handed the ids being
+ * removed and never names one, so orphaning the DAMAGED record itself — the
+ * per-resource way out of exactly this state — still works and actually
+ * repairs the record. Compare `malformedDestroyResourcesRefusalMessage`, which
+ * has to point at a different COMMAND for its way out because a destroy keeps
+ * every record it reads.
+ *
+ * It must be true under `--dry-run` as well, and it is: the guard sits at the
+ * load, far above the `if (options.dryRun)` return. Refusing there is
+ * {@link malformedResourcePropertiesRefusalMessage}'s call for the same
+ * reason — a plausible rewrite audit table followed by a refusal the moment
+ * the flag comes off is the worst arm of all.
+ *
+ * `stackName` / `region` are the CALLER's resolved identity — the synthesized
+ * stack name and the region `pickStackRegion` settled on, never the record's
+ * own unvalidated self-report. See {@link stackClause}.
+ */
+export function malformedOrphanResourcePropertiesRefusalMessage(
+  stackName: string | undefined,
+  region: string | undefined,
+  logicalIds: readonly string[]
+): string {
+  return (
+    `${namedPropertyBagsClause(stackName, region, logicalIds)} 'cdkd orphan' REWRITES and SAVES ` +
+    `every record it keeps, so it refuses rather than continuing — under '--dry-run' too, ` +
+    `because the rewrite audit table a dry run prints is the wrong one. It is not that the save ` +
+    `would fabricate a map: an unreadable bag is carried through VERBATIM. It is that this ` +
+    `command exists to leave the record deployable by rewriting every reference to an orphaned ` +
+    `resource, and a map it cannot read hides whichever references it holds — a string or a ` +
+    `number presents none to find, and a list is walked, so its rewrites are recorded into a ` +
+    `container that is still not a map. Continuing would take a lock, report success, and leave ` +
+    `a record 'cdkd deploy' then REFUSES. Nothing was written. Repair or remove the record ` +
+    `first — or orphan the damaged record ITSELF, which is still allowed: this refusal names ` +
+    `only records that would SURVIVE the save, so 'cdkd orphan <its construct path>' removes it ` +
+    `and leaves the live AWS resource standing. Inspect the record with: ` +
+    `${inspectCommand(stackName, region)}`
+  );
+}
+
+/**
+ * For `cdkd orphan`: refuse a record whose SURVIVING resource entries carry a
+ * `properties` bag that cannot be read (issue
+ * [#3318](https://github.com/go-to-k/cdkd/issues/3318)).
+ *
+ * A separate call from {@link refuseMalformedResourceProperties} rather than a
+ * flag on it, for the reason {@link refuseMalformedOutputsForDestroy} is
+ * separate from {@link refuseMalformedOutputs}: the refusal a user sees must
+ * describe what THIS command would have done with the bag, and
+ * {@link malformedOrphanResourcePropertiesRefusalMessage} records how far the
+ * two consequences diverge.
+ *
+ * `removedLogicalIds` is the orphan set — the ids this run is dropping from
+ * `state.resources`. They are EXCLUDED from the verdict because the save
+ * cannot persist a record it is deleting, and because refusing on one would
+ * break the recovery path the refusal is otherwise meant to preserve.
+ *
+ * CALL IT AT THE LOAD, beside {@link refuseMalformedState} and
+ * {@link refuseMalformedOutputs}, above `rewriteResourceReferences` — the
+ * placement rule {@link repairMalformedResourcesForReadOnly}'s note records.
+ * The orphan set is resolved from the synthesized template before the state is
+ * loaded, so nothing forces this call any lower.
+ */
+export function refuseMalformedResourcePropertiesForOrphan(
+  state: StackState,
+  removedLogicalIds: readonly string[],
+  stackName: string | undefined,
+  region: string | undefined
+): void {
+  const removed = new Set(removedLogicalIds);
+  const unreadable = unreadableResourcePropertyBags(state).filter((id) => !removed.has(id));
+  if (unreadable.length === 0) return;
+  // NOT `markNonRetryable`, and for the reason {@link refuseMalformedState}
+  // states for the same command: `cdkd orphan` raises this from its own top
+  // level — `rewriteResourceReferences` is called from nowhere else — so there
+  // is no `withRetry` for the marker to fence. Named in
+  // `tests/unit/state/malformed-resources-bag.test.ts`'s UNMARKED table beside
+  // its sibling, so a NINTH refusal still cannot join them silently.
+  throw new CdkdError(
+    malformedOrphanResourcePropertiesRefusalMessage(stackName, region, unreadable),
+    STATE_RESOURCES_MALFORMED
+  );
+}
+
+/**
  * The warning a caller of {@link repairMalformedResourcePropertiesForReadOnly}
  * emits.
  */

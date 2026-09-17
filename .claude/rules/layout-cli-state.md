@@ -62,6 +62,8 @@ The `aws:cdk:path` index in `src/cli/cdk-path.ts` excludes `AWS::CDK::Metadata` 
 
 Unresolvable references hard-fail with a one-shot list of every site. `--force` falls back to the orphan's `state.attributes` cache, logging a per-case warning, before leaving the original intrinsic untouched if the cache also lacks the attr. `--dry-run` prints the rewrite audit table without acquiring a lock or saving state.
 
+It is WRITE-CAPABLE, so it refuses a record it could not read rather than repairing one — three containers, three calls at the load: `refuseMalformedState` (the root bag), `refuseMalformedOutputs`, and, since issue [#3318](https://github.com/go-to-k/cdkd/issues/3318), `refuseMalformedResourcePropertiesForOrphan` for the per-ENTRY `properties` map the rewrite used to carry into the save untouched. The last one is SCOPED to the records the save keeps, which is what leaves `cdkd orphan <the damaged resource>` working as the per-resource way out; the reasoning is in [state-malformed-properties-orphan.md](state-malformed-properties-orphan.md), which loads with this file.
+
 The implementation lives in `src/analyzer/orphan-rewriter.ts` — the recursion structure mirrors `IntrinsicFunctionResolver` but in the inverse direction: only orphan references are substituted, every other intrinsic is left alone — and in `src/cli/cdk-path.ts`, the shared `aws:cdk:path` index also used by `cdkd import`.
 
 The pre-PR `cdkd orphan <stack>` whole-stack behavior is gone: the command hard-fails with a redirect message pointing at `cdkd state orphan <stack>` instead of silently routing.

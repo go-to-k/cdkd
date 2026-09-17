@@ -7,14 +7,23 @@ paths:
 
 # The `properties` container (issue [#3191](https://github.com/go-to-k/cdkd/issues/3191))
 
-The third per-container triple in `src/state/malformed-resources-bag.ts`, split
+The third per-container set in `src/state/malformed-resources-bag.ts`, split
 out of [state-malformed-containers.md](state-malformed-containers.md) because
-its readers are the two files above rather than the module that defines it —
+its readers are the files above rather than the module that defines it —
 and that file's `paths:` glob had ~300 B of headroom left under its payload cap.
 
 | Predicate | Write-capable | Read-only |
 | --- | --- | --- |
-| `unreadableResourcePropertyBags` | `refuseMalformedResourceProperties` | `repairMalformedResourcePropertiesForReadOnly` |
+| `unreadableResourcePropertyBags` | `refuseMalformedResourceProperties` (`cdkd deploy`), `refuseMalformedResourcePropertiesForOrphan` (`cdkd orphan`) | `repairMalformedResourcePropertiesForReadOnly` |
+
+**TWO write-capable entry points, ONE predicate** — the split the `outputs`
+half already made under issue #3207, and for the same reason: it is about the
+MESSAGE and the SCOPE, never about the verdict. Both delegate to
+`unreadableResourcePropertyBags`, so no two callers can disagree about whether
+a record is damaged. Enumerate them with
+`grep -n "^export function refuseMalformed.*ResourceProperties" src/state/malformed-resources-bag.ts`;
+`tests/unit/state/malformed-resources-bag.test.ts` derives the same list and
+fails when this one goes stale.
 
 ## It is one level DOWN, and its predicate returns IDS
 
@@ -104,3 +113,14 @@ refusal.
 Both are fenced for DOMINANCE, not presence, in
 `tests/unit/state/malformed-resources-bag.test.ts`, alongside an assertion that
 the write-side file holds no read-only repair helper.
+
+## The THIRD reader is `cdkd orphan`, and it has its own file
+
+Issue [#3318](https://github.com/go-to-k/cdkd/issues/3318) added a second
+write-capable entry point for a command that runs no diff at all, so
+`calculateDiff` is not on its path and neither section above describes it:
+[state-malformed-properties-orphan.md](state-malformed-properties-orphan.md),
+whose `paths:` glob is `src/cli/commands/orphan.ts` alone. Read it before
+touching `refuseMalformedResourcePropertiesForOrphan` — in particular before
+"simplifying" its orphan-set parameter away, which is what keeps the recovery
+path open.
