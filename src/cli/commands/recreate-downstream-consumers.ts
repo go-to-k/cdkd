@@ -63,6 +63,35 @@ export interface DownstreamConsumer {
    * (schema v8, issue #668).
    */
   intrinsic: 'ImportValue' | 'GetStackOutput';
+  /**
+   * Set when this row is reported because its producer name could NOT be
+   * compared, rather than because it matched (issue
+   * [#3289](https://github.com/go-to-k/cdkd/issues/3289)).
+   *
+   * `outputReads[].sourceStack` is TEMPLATE-DERIVED, so a name an `Fn::Sub`
+   * assembled around a resolved secret is persisted as the unresolved
+   * `{{resolve:...}}` expression. The match below is a literal `===` against a
+   * real deployed stack name, so such an entry can never match — and the
+   * caller renders this list into a DATA-LOSS confirmation prompt, where a
+   * consumer silently vanishing is a worse failure than one named imprecisely.
+   *
+   * So it is reported, flagged, and the renderer says cdkd could not tell. The
+   * row does NOT assert that this consumer reads the producer being recreated;
+   * it asserts that cdkd cannot rule it out.
+   */
+  producerUnresolvable?: true;
+}
+
+/**
+ * Does this persisted producer name carry an unresolved dynamic reference?
+ *
+ * A redacted `sourceStack` holds the expression verbatim, so the test is the
+ * presence of a `{{resolve:` opener rather than a shape test on the whole
+ * value: the name can EMBED one (`prod-{{resolve:...}}`), which is exactly the
+ * `Fn::Sub` case that made it secret-bearing.
+ */
+function producerNameIsUnresolved(sourceStack: string): boolean {
+  return sourceStack.includes('{{resolve:');
 }
 
 /**
@@ -131,6 +160,24 @@ export async function findDownstreamConsumers(input: {
         const outputReads = got.state.outputReads;
         if (outputReads && outputReads.length > 0) {
           for (const entry of outputReads) {
+            // Issue #3289: a REDACTED producer name cannot be compared, and
+            // the region still can — so an entry is reported when the region
+            // matches and the name is unresolvable, rather than dropped. The
+            // region narrowing matters: without it every recreate in the
+            // account would carry every such consumer.
+            if (
+              entry.sourceRegion === input.producerRegion &&
+              producerNameIsUnresolved(entry.sourceStack)
+            ) {
+              out.push({
+                consumerStack: ref.stackName,
+                consumerRegion: region,
+                exportName: entry.outputName,
+                intrinsic: 'GetStackOutput',
+                producerUnresolvable: true,
+              });
+              continue;
+            }
             if (
               entry.sourceStack === input.producerStack &&
               entry.sourceRegion === input.producerRegion
@@ -181,6 +228,20 @@ export function renderDownstreamConsumers(
     `  Downstream consumers of ${producerStack}'s outputs (will need re-deploy after this run):`,
   ];
   for (const c of consumers) {
+    // Issue #3289. A flagged row is a "cannot rule this out", not a match, and
+    // the line says so in its own words rather than by a symbol — this text is
+    // read once, under a data-loss prompt, by someone deciding whether to
+    // proceed. It names the CAUSE too, because the remedy (stop assembling a
+    // stack name out of a secret) is not guessable from the symptom.
+    if (c.producerUnresolvable === true) {
+      lines.push(
+        `    - ${c.consumerStack} (${c.consumerRegion}) reads ${c.exportName} via ` +
+          `Fn::${c.intrinsic} from a producer cdkd CANNOT NAME: that stack name was ` +
+          `assembled from a secret reference, so it is stored unresolved and cannot be ` +
+          `compared. It may or may not be this stack.`
+      );
+      continue;
+    }
     lines.push(
       `    - ${c.consumerStack} (${c.consumerRegion}) reads ${c.exportName} via Fn::${c.intrinsic}`
     );

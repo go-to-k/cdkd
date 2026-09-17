@@ -2247,12 +2247,110 @@ export class DeployEngine {
         ),
       };
     });
+    const crossStackReads = this.redactCrossStackReads(state);
     return {
       ...state,
       resources,
       outputs: this.redactOutputs(state.outputs),
       ...(orphans === undefined ? {} : { orphans }),
+      ...crossStackReads,
     };
+  }
+
+  /**
+   * Redact the TEMPLATE-DERIVED names in `state.imports` / `state.outputReads`
+   * (issue [#3289](https://github.com/go-to-k/cdkd/issues/3289)).
+   *
+   * Both lists rode the `...state` spread unredacted, so a reference whose name
+   * an `Fn::Sub` assembled around a resolved secret persisted that secret in
+   * plaintext, durably. The fields are NOT symmetric and the issue as filed
+   * named the wrong ones, so the provenance of each is stated here rather than
+   * left to be re-derived:
+   *
+   * - `imports[].exportName` IS template-derived (`resolveValue` on the
+   *   `Fn::ImportValue` argument), so it leaks. Its `sourceStack` /
+   *   `sourceRegion` are NOT: `recordImport` takes them from the exports index
+   *   entry or the state scan, i.e. from the producer's own record.
+   * - `outputReads[]` has TWO leaking fields: `outputName` AND `sourceStack`,
+   *   both `resolveValue` on `Fn::GetStackOutput` arguments. `sourceRegion` is
+   *   template-derived too but passes `isClientSafeRegion` before it can be
+   *   recorded, and it is read STRUCTURALLY (`producerRegionsFromState` keys a
+   *   secret-region decision on it), so it is deliberately left alone.
+   *
+   * REDACTION HAPPENS HERE, at the persist choke point, and must not move to
+   * record time: `crossStackReadsForPartialSave` / `unionCrossStackReads` dedup
+   * on `${sourceStack}\0${region}\0${name}`, so changing a value mid-run makes
+   * the union write BOTH spellings, and its first-seen-wins merge would keep
+   * whichever arrived first.
+   *
+   * `outputReads[].sourceStack` is both a leak and the literal match key
+   * `findDownstreamConsumers` compares against, so redacting it necessarily
+   * stops that match. That reader reports rather than drops — see
+   * `recreate-downstream-consumers.ts`; a consumer vanishing from a DATA-LOSS
+   * prompt is a worse failure than one it cannot name precisely.
+   *
+   * The union bag is every secret THIS deploy resolved, because a
+   * cross-stack reference can sit in a resource property (recorded per logical
+   * id) or in an Output (recorded in the outputs pass), and the entry carries
+   * no logical id to narrow it by.
+   */
+  private redactCrossStackReads(state: StackState): Pick<StackState, 'imports' | 'outputReads'> {
+    if (state.imports === undefined && state.outputReads === undefined) return {};
+    const secrets = this.allRecordedSecrets();
+    if (secrets.size === 0) {
+      return {
+        ...(state.imports === undefined ? {} : { imports: state.imports }),
+        ...(state.outputReads === undefined ? {} : { outputReads: state.outputReads }),
+      };
+    }
+    // Field-by-field rather than handing the whole entry to
+    // `redactSecretsForState`: the walk would also rewrite `sourceRegion` and
+    // `imports[].sourceStack`, which are not template-derived and are read as
+    // match keys. Each field is a bare string, so the value scan is the only
+    // arm that can apply and a source bag would buy nothing.
+    const redact = (value: string): string => redactSecretsForState(value, secrets);
+    return {
+      ...(state.imports === undefined
+        ? {}
+        : {
+            imports: state.imports.map((entry) => ({
+              ...entry,
+              exportName: redact(entry.exportName),
+            })),
+          }),
+      ...(state.outputReads === undefined
+        ? {}
+        : {
+            outputReads: state.outputReads.map((entry) => ({
+              ...entry,
+              sourceStack: redact(entry.sourceStack),
+              outputName: redact(entry.outputName),
+            })),
+          }),
+    };
+  }
+
+  /**
+   * Every secret this deploy resolved, in one bag.
+   *
+   * `perResourceSecrets` is keyed by logical id and `outputSecrets` holds the
+   * outputs pass, which is the right scoping for a RECORD (a resource's own
+   * secrets redact that resource). A cross-stack read entry carries no logical
+   * id, so it has nothing to be scoped BY — the reference may have sat in any
+   * resource's property or in an Output.
+   *
+   * Over-redaction here is the safe direction and is bounded the same way the
+   * value scan always is: `MIN_NEEDLE_LENGTH` keeps a short plaintext from
+   * matching a substring, and an export name that genuinely equals another
+   * resource's secret is a name that should not be persisted either.
+   */
+  private allRecordedSecrets(): RecordedSecretValues {
+    const all: RecordedSecretValues = new Map();
+    for (const bag of this.perResourceSecrets.values()) {
+      for (const [plaintext, expression] of bag) all.set(plaintext, expression);
+    }
+    for (const [plaintext, expression] of this.outputSecrets) all.set(plaintext, expression);
+    return all;
   }
 
   /**

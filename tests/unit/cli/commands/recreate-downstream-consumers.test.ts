@@ -217,6 +217,80 @@ describe('findDownstreamConsumers (#650)', () => {
     expect(out.every((c) => c.consumerStack === 'StackB')).toBe(true);
   });
 
+  describe('a REDACTED producer name is reported, not dropped (#3289)', () => {
+    // `outputReads[].sourceStack` is template-derived, so a name assembled
+    // around a resolved secret is persisted as its `{{resolve:...}}`
+    // expression. The literal `===` below can never match it. Dropping the
+    // entry would remove a consumer from a DATA-LOSS confirmation prompt,
+    // which is the failure this reports its way out of.
+    const REDACTED = 'prod-{{resolve:secretsmanager:db:SecretString:pw::}}';
+
+    it('flags the row and keeps the ordinary match unflagged', async () => {
+      const backend = mockBackend(
+        [{ stackName: 'StackB', region: 'us-east-1' }],
+        new Map([
+          [
+            'StackB|us-east-1',
+            st('StackB', 'us-east-1', undefined, [
+              { sourceStack: REDACTED, sourceRegion: 'us-east-1', outputName: 'Opaque' },
+              { sourceStack: 'Producer', sourceRegion: 'us-east-1', outputName: 'Plain' },
+            ]),
+          ],
+        ])
+      );
+      const out = await findDownstreamConsumers({
+        producerStack: 'Producer',
+        producerRegion: 'us-east-1',
+        stateBackend: backend,
+        baseRegion: 'us-east-1',
+      });
+      expect(out.map((c) => [c.exportName, c.producerUnresolvable === true])).toEqual([
+        ['Opaque', true],
+        ['Plain', false],
+      ]);
+    });
+
+    it('still narrows by REGION, so an unresolvable name elsewhere is not reported', async () => {
+      // Without the region conjunct every recreate in the account would carry
+      // every such consumer, which is noise rather than a warning.
+      const backend = mockBackend(
+        [{ stackName: 'StackB', region: 'eu-west-1' }],
+        new Map([
+          [
+            'StackB|eu-west-1',
+            st('StackB', 'eu-west-1', undefined, [
+              { sourceStack: REDACTED, sourceRegion: 'eu-west-1', outputName: 'Opaque' },
+            ]),
+          ],
+        ])
+      );
+      const out = await findDownstreamConsumers({
+        producerStack: 'Producer',
+        producerRegion: 'us-east-1',
+        stateBackend: backend,
+        baseRegion: 'us-east-1',
+      });
+      expect(out).toEqual([]);
+    });
+
+    it('renders the row as CANNOT NAME rather than as a match', async () => {
+      const rendered = renderDownstreamConsumers('Producer', [
+        {
+          consumerStack: 'StackB',
+          consumerRegion: 'us-east-1',
+          exportName: 'Opaque',
+          intrinsic: 'GetStackOutput',
+          producerUnresolvable: true,
+        },
+      ]);
+      expect(rendered).toContain('CANNOT NAME');
+      expect(rendered).toContain('It may or may not be this stack.');
+      // The rendered line must not leak the expression it could not resolve
+      // back into the prompt as if it were a producer name.
+      expect(rendered).not.toContain('{{resolve:');
+    });
+  });
+
   it('soft-fails on listStacks error (deploy must not abort on transient S3 list failure)', async () => {
     const backend = {
       listStacks: vi.fn(async () => {

@@ -89,10 +89,35 @@ const SUCCESS_PATH_WRITES: readonly string[] = [
 ];
 
 /**
- * The helper's own returns use SHORTHAND (`{ imports }`), which carries no
- * `key:` and so is invisible to this scan by construction — the scan is looking
- * for a site that writes a VALUE into these fields, and the helper is the one
- * place entitled to produce that value.
+ * The REDACTION writer (issue
+ * [#3289](https://github.com/go-to-k/cdkd/issues/3289)). A second kind of
+ * entitled site, and named here rather than hidden: `redactCrossStackReads`
+ * rewrites the TEMPLATE-DERIVED names inside entries that already exist, so it
+ * cannot erase a producer region the way a wholesale write can — it maps over
+ * whatever list it was handed and changes `exportName` / `outputName` /
+ * `outputReads[].sourceStack` only.
+ *
+ * It would have been ONE line to make these shorthand (`return { imports }`)
+ * and disappear from this scan the way the partial-save helper does. That was
+ * deliberately not done: the helper's invisibility is a blind spot this file
+ * documents, and a second resident of it is a second thing nobody is watching.
+ * Listing the spellings keeps an edit to the redaction re-opening this test.
+ */
+const REDACTION_WRITES: readonly string[] = [
+  // In FILE order. These sit ABOVE the success-path writes (see ENTITLED_WRITES),
+  // which is the order the two lists are concatenated in.
+  '...(state.imports === undefined ? {} : { imports: state.imports }),',
+  '...(state.outputReads === undefined ? {} : { outputReads: state.outputReads }),',
+  'imports: state.imports.map((entry) => ({',
+  'outputReads: state.outputReads.map((entry) => ({',
+];
+
+/**
+ * The partial-save helper's own returns use SHORTHAND (`{ imports }`), which
+ * carries no `key:` and so is invisible to this scan by construction — the scan
+ * is looking for a site that writes a VALUE into these fields, and the helper is
+ * one of the two places entitled to produce that value (the other is the
+ * redaction above).
  */
 
 interface Writer {
@@ -121,8 +146,17 @@ function collectWriters(): Writer[] {
   return scanWriters(readFileSync(`${REPO_ROOT}${SOURCE}`, 'utf8'));
 }
 
+/**
+ * FILE ORDER, which the assertion below compares positionally: the redaction
+ * lives in `redactStateForPersist` (~2300) and every success-path write is
+ * further down (~2870 onwards), so redaction comes FIRST. Stated from a
+ * measurement rather than from where the change was written — the first draft
+ * of this line said the opposite and the positional compare caught it.
+ */
+const ENTITLED_WRITES: readonly string[] = [...REDACTION_WRITES, ...SUCCESS_PATH_WRITES];
+
 describe('every cross-stack-read writer in deploy-engine.ts is accounted for (#2057)', () => {
-  it('finds ONLY the success-path writes — every other save spreads the helper', () => {
+  it('finds ONLY the entitled writes — every other save spreads the helper', () => {
     const writers = collectWriters();
     expect(
       writers.map((w) => `${SOURCE}:${w.line}  ${w.text}`),
@@ -130,9 +164,11 @@ describe('every cross-stack-read writer in deploy-engine.ts is accounted for (#2
         'path must spread `crossStackReadsForPartialSave(currentState, ' +
         'this.recordedImports, this.recordedOutputReads)` instead — see that ' +
         "helper's doc for why a wholesale write erases a producer region the " +
-        'previous record carried'
+        'previous record carried. The only other entitled writer is ' +
+        '`redactCrossStackReads` (#3289), which rewrites names INSIDE existing ' +
+        'entries and is listed in REDACTION_WRITES'
     ).toEqual(
-      SUCCESS_PATH_WRITES.map(
+      ENTITLED_WRITES.map(
         (text) => `${SOURCE}:${writers.find((w) => w.text === text)?.line ?? 'MISSING'}  ${text}`
       )
     );

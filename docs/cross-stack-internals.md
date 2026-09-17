@@ -297,7 +297,10 @@ this lane was open (once undercounting the saves, once overcounting the
 post-rollback ones), so the live rule is enforced by
 `tests/unit/deployment/deploy-engine-cross-stack-read-writers.test.ts`, which
 scans `deploy-engine.ts` for direct `imports:` / `outputReads:` writes and
-fails on any that is not the allow-listed success-path one. A union never
+fails on any that is not allow-listed. Two kinds are: the success-path save,
+and — since issue [#3289](https://github.com/go-to-k/cdkd/issues/3289) — the
+REDACTION that rewrites the template-derived names inside entries that already
+exist, which cannot drop an entry or erase a producer region. A union never
 drops, so a stack that stops reading cross-stack keeps a stale entry until its
 next successful deploy -- refusing a destroy that would in fact be safe. That
 direction is deliberate: a refusal names the consumer and is overridable, while
