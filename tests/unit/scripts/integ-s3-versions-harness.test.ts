@@ -2252,14 +2252,27 @@ const FALSIFIED_CLAIMS: readonly {
     re: /every caller wrap(s|ping) the purge in/i,
   },
   {
-    // VERBATIM, from the second of the two spellings go-to-k/cdkd#3275 actually
-    // shipped (`ecd6da1f7`: "sibling already masks the same shape at its own
-    // catch"; `de512a6d4`: "sibling catches and masks the same shape"). The
-    // first version of this entry quoted NEITHER -- it was a hand-written
-    // reflow onto one line, with `Fn::ImportValue` moved in front of `sibling`,
-    // and `re` was written to match THAT. Executed over the scanned corpus
-    // against both real spellings it scored ZERO, so the liveness test below
-    // certified a string that never existed in the tree.
+    // VERBATIM from `ecd6da1f7:src/deployment/intrinsic-function-resolver.ts`,
+    // line 3443. PROVENANCE, re-derived from `git log -S` after two rounds of
+    // review each found this prose wrong in a different way:
+    //
+    //   - "sibling catches and masks the same shape" is the spelling that
+    //     reached MAIN, authored on go-to-k/cdkd#3176's branch (`b6faf7b5d`)
+    //     and squashed in as `7630e6155:3442`. go-to-k/cdkd#3275 INHERITED it;
+    //     it did not ship it.
+    //   - "sibling already masks the same shape at its own catch" was added by
+    //     go-to-k/cdkd#3275's own `ecd6da1f7:8364` and never reached main --
+    //     the squash `5cb4230f7` carries neither.
+    //   - `ecd6da1f7` therefore holds BOTH (one inherited, one new), and
+    //     `de512a6d4` holds NEITHER: it is the review commit that removed them.
+    //
+    // Round 3 blocked this entry for quoting a sentence that never existed.
+    // Round 4 fixed the quote and replaced it with a false ATTRIBUTION -- the
+    // same defect class, in the fence whose subject IS false claims, twice.
+    // What produced both: the spellings were read through a shell loop whose
+    // `"$c:src/..."` zsh-expanded as the `:s` history modifier, so every
+    // per-commit probe silently returned nothing. Brace the expansion
+    // (`"${c}:${P}"`) before believing a per-commit grep.
     //
     // Both real spellings WRAP mid-claim, and `Fn::ImportValue` ends the line
     // ABOVE in each. This fence tests one LINE at a time, so any pattern
@@ -2270,8 +2283,9 @@ const FALSIFIED_CLAIMS: readonly {
       'FALSE: that catch masks the caught message with the BAGS alone — `maskSecretsForLog` over a ' +
       'composed AWS sentence finds no registered twin and falls to the needle pass, whose substring ' +
       'arm has a four-character floor — so the POSITIONAL half of the class is open there too. ' +
-      'go-to-k/cdkd#3275 shipped this sentence as the reason its own site was "catching up", and ' +
-      'review corrected it; the sibling is an INSTANCE of the gap, not the pattern to copy.',
+      'go-to-k/cdkd#3176 shipped this sentence to main, go-to-k/cdkd#3275 inherited it as the reason ' +
+      'its own site was "catching up", and that PR\'s review removed it; the sibling is an INSTANCE ' +
+      'of the gap, not the pattern to copy.',
     // DERIVED FROM THE PROPOSITION, not from either wording in front of me
     // (`.claude/skills/work-issues/references/verify.md` §8-g). The claim is
     // "some sibling already covers this class"; every spelling of it puts a

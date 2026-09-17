@@ -1912,13 +1912,25 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
   /** What the sink replaces a rejected character WITH, and the trim it ends in. */
   const SINK_REPLACEMENT = ' ';
   /**
-   * `SINK_CLASS.test`, made STATELESS. `RegExp.prototype.test` advances
-   * `lastIndex` on a `g` pattern, so on single-character probes a global
-   * `SINK_CLASS` would report every OTHER rejected character as accepted --
-   * silently, and in the safe-looking direction for both loops below. Nothing
-   * requires `SINK_CLASS` to stay non-global, so neither loop may assume it.
+   * `SINK_CLASS` with its POSITIONAL flags stripped. Every reader in this block
+   * asks one question -- "does this text contain a rejected character" -- and
+   * neither `g` nor `y` is part of it, while both silently change the answer:
+   *
+   *   - `g` makes `.test` advance `lastIndex`, so over single-character probes
+   *     it reports every OTHER rejected character as ACCEPTED (measured:
+   *     `true false true false`).
+   *   - `y` anchors at `lastIndex`, so `String.match` -- which is what
+   *     `expect().not.toMatch` calls -- returns `null` for any message whose
+   *     rejected character is not at index 0. THE INVARIANT then passes for
+   *     every message, and the fake sink sanitizes nothing (measured).
+   *
+   * Both fail in the safe-looking direction, and nothing requires `SINK_CLASS`
+   * to stay bare -- so no reader here may assume it is.
    */
-  const rejects = (ch: string): boolean => new RegExp(SINK_CLASS.source, SINK_CLASS.flags.replace('g', '')).test(ch);
+  const SINK_CLASS_FLAGS = SINK_CLASS.flags.replace(/[gy]/g, '');
+  const SINK_CLASS_ANYWHERE = new RegExp(SINK_CLASS.source, SINK_CLASS_FLAGS);
+  /** `SINK_CLASS.test`, made position-independent. */
+  const rejects = (ch: string): boolean => SINK_CLASS_ANYWHERE.test(ch);
 
   /** The realistic failure: cdkd's own wrapper over an AWS rejection, both quoting the key. */
   function rejectingBackend(stackName: string, region = 'us-east-1'): S3StateBackend {
@@ -1968,12 +1980,14 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
     // recorded as such: adding `u` to `SINK_CLASS` leaves this suite green
     // either way (measured), so no case here distinguishes it.
     //
-    // `g` is STRIPPED before it is appended: `new RegExp(re, 'gg')` throws
-    // `SyntaxError: Invalid flags supplied` (measured), so the defensive copy
-    // would itself break on the one edit -- adding `g` to the shared constant
-    // -- that no other reader here would even notice.
+    // The POSITIONAL flags are stripped first (`SINK_CLASS_FLAGS`, whose doc
+    // carries the two measurements): `new RegExp(re, 'gg')` throws
+    // `SyntaxError: Invalid flags supplied`, and a `y` would make this sink
+    // replace only a rejected character sitting at index 0 -- so it would
+    // sanitize nothing for the realistic message and the case would still read
+    // as exercising the sink.
     const shown = (t: string): string =>
-      t.replace(new RegExp(SINK_CLASS, `${SINK_CLASS.flags.replace('g', '')}g`), SINK_REPLACEMENT).trim();
+      t.replace(new RegExp(SINK_CLASS.source, `${SINK_CLASS_FLAGS}g`), SINK_REPLACEMENT).trim();
     return {
       listStacks: vi.fn(async () => []),
       getState: vi.fn(async () => {
@@ -2190,9 +2204,12 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
       // readily as `\t`, so a `\n`-bearing name added later would slip through
       // an exemption defending the join. The class here is the sink's own,
       // through the SHARED constant, so the PAIR FENCE below watches this line
-      // rather than a copy of it.
+      // rather than a copy of it -- via `SINK_CLASS_ANYWHERE`, since a `y` on
+      // the constant would make `toMatch`'s `String.match` answer `null` for
+      // every message whose rejected character is not at index 0, and this
+      // assertion would pass universally (measured).
       for (const message of chainMessages(error)) {
-        expect(message, `for ${JSON.stringify(name)}`).not.toMatch(SINK_CLASS);
+        expect(message, `for ${JSON.stringify(name)}`).not.toMatch(SINK_CLASS_ANYWHERE);
         expect(message).not.toContain(PIN);
       }
     }
@@ -2349,6 +2366,15 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
     // the case passed with the class deleted entirely. A hand-picked constant
     // cannot state the two properties this case needs, so it states them:
     // REJECTED by the class, and not already trimmable.
+    //
+    // The scan is deliberately BOUNDED and the bound is inert: it starts at
+    // U+0021 to skip the C0 controls, whose rendering in a failure message is
+    // its own hazard, and stops at the BMP because a rejected, non-trimmable
+    // character certainly exists below it -- the sweep above is what covers the
+    // whole domain. The `throw` is the guard that keeps the bound honest: if a
+    // future class accepts everything in this range, this case refuses to pass
+    // rather than silently fencing the trim alone (which is what the two
+    // hand-picked spellings did).
     const edge = (() => {
       for (let cp = 0x21; cp <= 0xffff; cp++) {
         const ch = String.fromCodePoint(cp);
