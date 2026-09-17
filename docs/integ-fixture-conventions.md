@@ -1194,7 +1194,7 @@ only where bash would run it:
 
 | Counted as a `wc` command | Not counted |
 | --- | --- |
-| fed by a pipe, a here-string (`wc -l <<<"${X}"`) or a file redirect (`wc -l <"${F}"`), including one written first (`</dev/null wc -l`) | text in quotes, a comment, or a heredoc whose delimiter is quoted |
+| fed by a pipe, a here-string (`wc -l <<<"${X}"`) or a file redirect (`wc -l <"${F}"`), including one written first (`</dev/null wc -l`), or reading a file named as its argument (`wc -l "${F}"`) | text in quotes, a comment, or a heredoc whose delimiter is quoted |
 | by name or by path (`/usr/bin/wc`), quoted or escaped (`"wc"`) | a redirection target (`>wc`) or `wc` joined to more text (`wc"x"`) |
 | inside `$(...)`, backticks, `<(...)` / `>(...)`, a `${...}` default, or a `$(...)` in a heredoc whose delimiter is unquoted | a name inside `(( ... ))` / `$(( ... ))`, an array `ARR=( ... )`, or an operand of `[[ ... ]]` |
 | after `if` / `then` / `do` / `!` / `{`, a `NAME=value` prefix, or `command` / `exec` / `env` / `nohup` / `time` / `coproc` and their options | after `command -v` / `-V`, or as the name in `wc() {` / `function wc {` |
@@ -1207,15 +1207,15 @@ sits only in a trailing comment.
 It is not a full bash parser. A `wc` reached through a variable (`${WC} -l`),
 `eval`, an alias, or as an argument of another command (`xargs wc`,
 `find -exec wc`) is not seen, so do not write one: the test also fails on any
-`wc` word in a fixture that is neither a counted invocation nor comment text —
-including the word inside a quoted string such as an error message, so reword
-that text or move it into a comment.
+`wc` word in a fixture that is neither a counted invocation, comment text, nor
+text in a heredoc whose delimiter is quoted — including the word inside a quoted
+string such as an error message, so reword that text or move it into a comment.
 The classifier's header names the remaining bounds — a `case` pattern's `)`, a
 substitution inside arithmetic, undecoded `$'...'` escapes, and a heredoc inside
 a substitution in `wc`'s own arguments — none of which occurs in the tree.
 
 A site that genuinely must stay untrimmed takes
-`# allow-untrimmed-wc: <reason>` (the colon is required) as a real comment, trailing on the `wc`'s line
+`# allow-untrimmed-wc: <reason>` (the colon is required, and the reason is at least 10 characters) as a real comment, trailing on the `wc`'s line
 or on its own line directly above; the test pins how many are in use. The
 per-shape floors match counts taken by hand, and a bash case runs each input
 form — piped, here-string, file redirect, backslash-continued — through a

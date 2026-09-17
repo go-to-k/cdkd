@@ -92,14 +92,16 @@
  *    substitution in `wc`'s OWN arguments is read as code by the stage scan, so
  *    a quote in that body can hide a correct trim (this errs toward flagging).
  *    None of these exists in the tree, and the unit test keeps it so: every
- *    `wc` word in a tracked integ shell file must be a counted invocation or
- *    comment text.
+ *    `wc` word in a tracked integ shell file must be a counted invocation,
+ *    comment text, or text in a heredoc whose delimiter is quoted.
  *
  * ESCAPE HATCH
  *
  * `# allow-untrimmed-wc: <reason>` as a real comment — trailing on the `wc`'s
- * own line, or a full-line comment directly above it — with a reason of real
- * length. The unit test pins how many are in use.
+ * own line, or a full-line comment directly above it — with a reason of at
+ * least MIN_ALLOW_REASON_LENGTH (10) characters. A comment naming the marker in
+ * any other shape is reported as malformed. The unit test pins how many are in
+ * use.
  */
 
 /** How the `wc` stage receives its input. */
@@ -113,6 +115,8 @@ export interface WcInvocation {
   line: number;
   /** 0-based index in the file where the `wc` word starts. */
   offset: number;
+  /** 0-based index just past the `wc` word (`"wc"` and `/usr/bin/wc` included). */
+  wordEnd: number;
   /** The `wc ...` stage text, up to (not including) what ended it. */
   stage: string;
   inputForm: WcInputForm;
@@ -131,6 +135,8 @@ export interface WcTrimClassification {
   malformedAllowMarkers: number[];
   /** 0-based index of every real comment's `#`, for the unit test's tree invariant. */
   commentOffsets: number[];
+  /** `[start, end)` of every heredoc body that is data (quoted or escaped delimiter). */
+  dataHeredocBodies: Array<[number, number]>;
 }
 
 export const ALLOW_MARKER = 'allow-untrimmed-wc';
@@ -139,8 +145,11 @@ export const ALLOW_MARKER = 'allow-untrimmed-wc';
 export const MIN_ALLOW_REASON_LENGTH = 10;
 
 const ALLOW_RE = new RegExp(`^#\\s*${ALLOW_MARKER}\\s*:\\s*(.*)$`);
-/** The marker word with anything else after it — no colon — which is reported as malformed. */
-const ALLOW_WORD_RE = new RegExp(`^#\\s*${ALLOW_MARKER}(?![A-Za-z0-9_-])`);
+/**
+ * The marker word anywhere else in a comment — no colon, `## ...`, `# TODO ...` —
+ * which is reported as malformed rather than silently ignored.
+ */
+const ALLOW_WORD_RE = new RegExp(`(^|[^A-Za-z0-9_-])${ALLOW_MARKER}(?![A-Za-z0-9_-])`);
 
 /**
  * Reserved words after which the next word is still a command. Only an
@@ -557,6 +566,7 @@ export function classifyWcTrim(content: string): WcTrimClassification {
   const invocations: Array<Omit<WcInvocation, 'allowed'>> = [];
   const comments = new Map<number, CommentInfo>();
   const commentOffsets: number[] = [];
+  const dataHeredocBodies: Array<[number, number]> = [];
 
   const newCode = (kind: CodeFrame['kind']): CodeFrame => ({
     kind,
@@ -698,6 +708,7 @@ export function classifyWcTrim(content: string): WcTrimClassification {
       invocations.push({
         line: w.line,
         offset: w.start,
+        wordEnd: end,
         stage: src.slice(w.start, stageEnd).trim(),
         inputForm: form === 'here-string' || form === 'redirect' ? form : (f.leadInput ?? form),
         trim: trimAfter(src, w.start, stageEnd, terminator, f.kind === 'bt', pending),
@@ -724,9 +735,11 @@ export function classifyWcTrim(content: string): WcTrimClassification {
         stack.push({ kind: 'hd', delimiter: h.delimiter, stripTabs: h.stripTabs });
         return pos;
       }
+      const bodyStart = pos;
       for (;;) {
         if (pos >= src.length) {
           pending.length = 0;
+          dataHeredocBodies.push([bodyStart, src.length]);
           return pos;
         }
         const nl = src.indexOf('\n', pos);
@@ -737,6 +750,7 @@ export function classifyWcTrim(content: string): WcTrimClassification {
         lineStart = pos;
         if (text === h.delimiter) break;
       }
+      dataHeredocBodies.push([bodyStart, pos]);
     }
     return pos;
   };
@@ -1149,5 +1163,6 @@ export function classifyWcTrim(content: string): WcTrimClassification {
     violations: withAllowed.filter((i) => i.trim === null && !i.allowed),
     malformedAllowMarkers,
     commentOffsets,
+    dataHeredocBodies,
   };
 }

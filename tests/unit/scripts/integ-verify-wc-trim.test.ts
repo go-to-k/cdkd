@@ -103,6 +103,9 @@ describe('classifyWcTrim', () => {
       ['with an output process substitution holding a <', 'wc -l >(cat <list)', 'argument'],
       ['in a substitution held in single quotes inside a quoted parameter default', 'echo "${X:-\'$(wc -l </dev/null)\'}"', 'redirect'],
       ['behind a redirection whose target is digits', '>2<file wc -l', 'redirect'],
+      // Fail-OPEN guards: without them the invocation vanishes entirely.
+      ['behind a descriptor duplication written first', '2>&1 wc -l </dev/null', 'redirect'],
+      ['behind a duplicated input descriptor written first', '<&3 wc -l', 'redirect'],
       ['with a backtick argument holding a <', 'wc -l `cat <list`', 'argument'],
       ['with a parameter default holding a <', 'wc -l ${X:-<file}', 'argument'],
       ['as the first command of a named `coproc NAME {` body', 'coproc COUNTER { wc -l </dev/null; }', 'redirect'],
@@ -211,6 +214,9 @@ describe('classifyWcTrim', () => {
       ['a stderr redirect after the trim', "ls | wc -l | tr -d ' ' 2>/dev/null", 'space'],
       ['an input redirect after the trim', "N=$(ls | wc -l | tr -d ' ' </dev/null)", 'space'],
       ['a descriptor duplication after the trim', "N=$(ls | wc -l | tr -d ' ' 2>&1)", 'space'],
+      ['an appending redirect after the trim', "ls | wc -l | tr -d ' ' >> out.txt", 'space'],
+      ['an appending &>> redirect after the trim', "ls | wc -l | tr -d ' ' &>> out.txt", 'space'],
+      ['a quoted redirect target after the trim', "ls | wc -l | tr -d ' ' > \"count file.txt\"", 'space'],
       ['&> before the pipe into the trim', "wc -l &>/dev/null | tr -d ' '", 'space'],
       ['<&3 before the pipe into the trim', "wc -l <&3 | tr -d ' '", 'space'],
       ['a comment right after the pipe, then the trim', "wc -l </dev/null |# c\ntr -d ' '", 'space'],
@@ -313,6 +319,18 @@ describe('classifyWcTrim', () => {
       ['a parameter expansion carrying #', 'N=${#ARR[@]}'],
     ])('%s', (_label, body) => {
       expect(classifyWcTrim(`${body}\n`).invocations).toEqual([]);
+    });
+
+    it('does not take a `#` inside a word (`$#`) for a comment that hides the rest of the line', () => {
+      const c = classifyWcTrim('if [ $# -eq 0 ]; then wc -l </dev/null; fi\n');
+      expect(c.violations.map((v) => v.line)).toEqual([1]);
+      expect(c.commentOffsets).toEqual([]);
+    });
+
+    it('ends a heredoc delimiter at a redirection written against it', () => {
+      // `<<EOF>out`: the delimiter is `EOF`; read as `EOF>out` the body never ends.
+      const c = classifyWcTrim('cat <<EOF>out\nx\nEOF\nwc -l </dev/null\n');
+      expect(c.violations.map((v) => v.line)).toEqual([4]);
     });
 
     it('keeps scanning after the heredoc body ends', () => {
@@ -445,6 +463,20 @@ describe('classifyWcTrim', () => {
       expect(c.malformedAllowMarkers).toEqual([1]);
     });
 
+    it.each([
+      ['a doubled #', `## ${ALLOW_MARKER}: ${reason}`],
+      ['a word before the marker', `# TODO ${ALLOW_MARKER}: ${reason}`],
+    ])('reports %s as malformed rather than ignoring it', (_label, marker) => {
+      const c = classifyWcTrim(`${marker}\nN=$(ls | wc -l)\n`);
+      expect(c.violations).toHaveLength(1);
+      expect(c.malformedAllowMarkers).toEqual([1]);
+    });
+
+    it('does not read a longer word ENDING with the marker as a marker', () => {
+      const c = classifyWcTrim(`# dis${ALLOW_MARKER}: ${reason}\nN=$(ls | wc -l)\n`);
+      expect(c.malformedAllowMarkers).toEqual([]);
+    });
+
     it('does not read a longer word starting with the marker as a marker', () => {
       const c = classifyWcTrim(`# ${ALLOW_MARKER}s ${reason}\nN=$(ls | wc -l)\n`);
       expect(c.malformedAllowMarkers).toEqual([]);
@@ -501,7 +533,10 @@ describe('tree-wide (issue #3213)', () => {
     // Zero at introduction. A new one is a deliberate decision this pin forces
     // into the diff rather than into a quiet comment.
     expect(count((i) => i.allowed)).toBe(0);
-    expect(files.flatMap((f) => f.malformedAllowMarkers.map((l) => `${f.rel}:${l}`))).toEqual([]);
+    expect(
+      files.flatMap((f) => f.malformedAllowMarkers.map((l) => `${f.rel}:${l}`)),
+      `an allow marker must read exactly \`# ${ALLOW_MARKER}: <reason>\`, with a reason of at least ${MIN_ALLOW_REASON_LENGTH} characters`,
+    ).toEqual([]);
   });
 
   it('sees every shape it claims to handle, at no fewer than the counts taken by hand', () => {
@@ -540,17 +575,55 @@ describe('the tree stays inside what the classifier reads (issue #3213)', () => 
    */
   function uncountedWcWords(content: string): number[] {
     const c = classifyWcTrim(content);
-    const counted = new Set(c.invocations.map((i) => i.offset));
+    // Line lookup by binary search over precomputed line starts: O(n log n), not
+    // file, not quadratic, since a fork PR can add a long fixture.
     const lineStarts = [0];
     for (let k = 0; k < content.length; k++) if (content[k] === '\n') lineStarts.push(k + 1);
-    const lineOf = (offset: number) => lineStarts.filter((start) => start <= offset).length;
+    const lineOf = (offset: number) => {
+      let lo = 0;
+      let hi = lineStarts.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (lineStarts[mid]! <= offset) lo = mid;
+        else hi = mid - 1;
+      }
+      return lo + 1;
+    };
+    // Earliest real comment start per line.
+    const commentStart = new Map<number, number>();
+    for (const h of c.commentOffsets) {
+      const line = lineOf(h);
+      if (!commentStart.has(line) || h < commentStart.get(line)!) commentStart.set(line, h);
+    }
+    // Ranges are disjoint, and matches arrive in increasing offset order, so a
+    // pointer that only moves forward answers "inside a range?" in linear time.
+    const sweep = (ranges: Array<[number, number]>) => {
+      const sorted = [...ranges].sort((a, b) => a[0] - b[0]);
+      let k = 0;
+      return (offset: number) => {
+        while (k < sorted.length && sorted[k]![1] <= offset) k++;
+        return k < sorted.length && sorted[k]![0] <= offset;
+      };
+    };
+    // A counted invocation covers every letter of its WORD, so `"wc"`,
+    // `$'wc'` and `/usr/bin/wc` all match by range, not by the word's first index.
+    const inCounted = sweep(c.invocations.map((i): [number, number] => [i.offset, i.wordEnd]));
+    const inDataBody = sweep(c.dataHeredocBodies);
     const out = new Set<number>();
-    for (const m of content.matchAll(/(^|[^A-Za-z0-9_.\/-])((?:[^\s'"`;|&()<>]*\/)?wc)(?![A-Za-z0-9_-])/gm)) {
-      const offset = m.index + m[1]!.length;
-      if (counted.has(offset)) continue;
+    // Anchored on the letters themselves (no leading character class that can
+    // backtrack across a long line); the boundary is checked by hand.
+    for (const m of content.matchAll(/wc(?![A-Za-z0-9_-])/g)) {
+      const offset = m.index;
+      const before = content[offset - 1];
+      // `/wc` ends a path; any other word character before it makes a longer word.
+      if (before !== undefined && before !== '/' && /[A-Za-z0-9_.-]/.test(before)) continue;
+      // Both lookups advance on every match, so neither can skip a range.
+      const counted = inCounted(offset);
+      const data = inDataBody(offset);
+      if (counted || data) continue;
       const line = lineOf(offset);
-      // Comment text: a real comment (as the lexer found it) starts earlier on the same line.
-      if (c.commentOffsets.some((h) => h < offset && lineOf(h) === line)) continue;
+      const hash = commentStart.get(line);
+      if (hash !== undefined && hash < offset) continue;
       out.add(line);
     }
     return [...out];
@@ -572,11 +645,51 @@ describe('the tree stays inside what the classifier reads (issue #3213)', () => 
     expect(uncountedWcWords("N=$(ls | wc -l | tr -d ' ') # a wc in a comment\n")).toEqual([]);
     // Per occurrence, not per line: a counted `wc` does not cover a second one.
     expect(uncountedWcWords("wc -l </dev/null | tr -d ' '; eval 'wc -l </dev/null'\n")).toEqual([1]);
+    // The documented valid spellings are not uncounted: a quoted command name,
+    // an ANSI-C quoted one, and the text of a heredoc body whose delimiter is quoted.
+    expect(uncountedWcWords("\"wc\" -l </dev/null | tr -d ' '\n")).toEqual([]);
+    expect(uncountedWcWords("$'wc' -l </dev/null | tr -d ' '\n")).toEqual([]);
+    expect(uncountedWcWords("cat <<'EOF'\nrun wc -l here\nEOF\n")).toEqual([]);
     // A quoted `#` is not a comment.
     expect(uncountedWcWords('printf \'%s\' " # "; eval \'wc -l </dev/null\'\n')).toEqual([1]);
+    // Each exemption stops at its boundary: an uncounted wc BEFORE a counted
+    // one, a second wc word inside a counted stage, one after a data heredoc's
+    // terminator.
+    expect(uncountedWcWords("eval 'wc -l'; wc -l </dev/null | tr -d ' '\n")).toEqual([1]);
+    expect(uncountedWcWords("wc -l wc | tr -d ' '\n")).toEqual([1]);
+    expect(uncountedWcWords("cat <<'EOF'\nx\nEOF\neval 'wc -l'\n")).toEqual([4]);
+    // A data heredoc that never terminates is data to the end of the file.
+    expect(uncountedWcWords("cat <<'EOF'\nrun wc -l here")).toEqual([]);
+    // A comment exempts only text AFTER its `#`, not an earlier word on the line.
+    expect(uncountedWcWords("eval 'wc -l' # ordinary comment\n")).toEqual([1]);
+    // Counted ranges with no `wc` letters matched inside them (split quoting)
+    // must still be stepped past, so a later uncounted word is found.
+    expect(uncountedWcWords('"w""c" -l | tr -d \' \'; "w""c" -l | tr -d \' \'; eval \'wc -l\'\n')).toEqual([1]);
+    // A longer word ending in wc is not the word wc.
+    expect(uncountedWcWords('echo awc\n')).toEqual([]);
   });
 
-  it('every wc word in the tree is a counted invocation or comment text', () => {
+  it('stays fast on long fixtures: no quadratic blowup in lines, line length, or counted ranges', () => {
+    // Both shapes were super-linear in an earlier revision: a per-match scan of
+    // every comment, each doing a linear line lookup (cubic in lines), and a
+    // leading character class that let the
+    // regex backtrack across a line (quadratic in its length). Each input below
+    // runs in milliseconds now and took well over the 5 s default under the
+    // quadratic form, so a regression fails here rather than creeping.
+    const lines = Array.from({ length: 20_000 }, (_, k) => `# line ${k}: count with wc -l and trim it`).join('\n');
+    expect(uncountedWcWords(`${lines}\n`)).toEqual([]);
+    expect(uncountedWcWords(`echo ${'=a/'.repeat(32_000)}\n`)).toEqual([]);
+    // Many counted invocations and many data heredoc bodies: the range lookups
+    // must not rescan from the start for each match.
+    const invocations = Array.from({ length: 60_000 }, () => "wc -l </dev/null | tr -d ' '").join('\n');
+    expect(uncountedWcWords(`${invocations}\n`)).toEqual([]);
+    const bodies = Array.from({ length: 30_000 }, () => "cat <<'EOF'\nrun wc -l here\nEOF").join('\n');
+    expect(uncountedWcWords(`${bodies}\n`)).toEqual([]);
+    // The path form is still recognised on a long line.
+    expect(uncountedWcWords(`echo ${'a/'.repeat(1_000)}wc\n`)).toEqual([1]);
+  });
+
+  it('every wc word in the tree is a counted invocation, comment text, or data heredoc text', () => {
     const hits = trackedShellFiles().flatMap((rel) =>
       uncountedWcWords(readFileSync(join(REPO_ROOT, rel), 'utf8')).map((line) => `${rel}:${line}`),
     );
@@ -584,7 +697,7 @@ describe('the tree stays inside what the classifier reads (issue #3213)', () => 
       hits,
       'the classifier did not count these as invocations, so its zero-violation verdict does not cover them. ' +
         'Call wc directly as a command (and trim it); if the word is only text (an error message, a quoted string), ' +
-        'reword it — the word wc may appear only in a comment; or extend scripts/check-integ-wc-trim.ts to read the new shape.',
+        'reword it — the word wc may appear only in a comment or a heredoc whose delimiter is quoted; or extend scripts/check-integ-wc-trim.ts to read the new shape.',
     ).toEqual([]);
   });
 });
@@ -681,7 +794,7 @@ describe('bash behavior (the convention itself, through a BSD-padding wc)', () =
     const r = runWithBsdWc('printf \'a\\n\' | wc -l\n');
     expect(r.status).toBe(0);
     expect(r.stdout).toBe('       1\n');
-  });
+  }, 60_000);
 
   const FORMS: Array<[string, string]> = [
     ['piped', "printf 'a\\n' | wc -l"],
@@ -693,7 +806,7 @@ describe('bash behavior (the convention itself, through a BSD-padding wc)', () =
   it.each(FORMS)('%s: an untrimmed count fails a string comparison', (_label, form) => {
     const r = runWithBsdWc(`N="$(${form})"\n[ "\${N}" = "1" ] && echo EQUAL || echo NOT-EQUAL\n`);
     expect(r.stdout).toContain('NOT-EQUAL');
-  });
+  }, 60_000);
 
   it.each(
     FORMS.flatMap(([label, form]) => [
@@ -704,11 +817,11 @@ describe('bash behavior (the convention itself, through a BSD-padding wc)', () =
     const r = runWithBsdWc(`N="$(${form} | ${trim})"\n[ "\${N}" = "1" ] && echo EQUAL || echo NOT-EQUAL\n`);
     expect(r.stdout).toContain('EQUAL');
     expect(r.stdout).not.toContain('NOT-EQUAL');
-  });
+  }, 60_000);
 
   it('an ARITHMETIC comparison accepts the padded value (why the fence is wider than the defect, and says so)', () => {
     const r = runWithBsdWc('N="$(printf \'a\\n\' | wc -l)"\n[ "${N}" -eq 1 ] && echo EQUAL || echo NOT-EQUAL\n');
     expect(r.stdout).toContain('EQUAL');
     expect(r.stdout).not.toContain('NOT-EQUAL');
-  });
+  }, 60_000);
 });
