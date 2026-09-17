@@ -142,6 +142,7 @@ import { AwsClients, setAwsClients, resetAwsClients } from '../../../src/utils/a
 import {
   IntrinsicFunctionResolver,
   resetAccountInfoCache,
+  type AbandonedResolution,
   type ResolverContext,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
 import type { ExportIndexStore } from '../../../src/state/export-index-store.js';
@@ -412,6 +413,54 @@ describe('cross-stack reads re-resolve a REDACTED value (issue #1934)', () => {
 
       expect(result).toBe(PRODUCER_REGION_PASSWORD);
       expect(secretSends[0]?.ctorRegion).toBe(PRODUCER_REGION);
+    });
+
+    it('does not abandon a sibling KEY of a producer bag when one key cannot be fetched', async () => {
+      // The FOURTH walk of the go-to-k/cdkd#3181 / go-to-k/cdkd#3218 shape:
+      // `reresolveCrossStackValue`'s producer-bag walk is a bare sequential
+      // `for … await` over object keys with no per-key `try`. I filed
+      // go-to-k/cdkd#3294 on that shape alone, then traced it: `walk`'s ONLY
+      // call is `resolveDynamicReferences`, so once a caller passes a bag that
+      // function throws only for a deliberate REFUSAL — which must abort — and
+      // a per-key `try` here would catch nothing else.
+      //
+      // This case is the measurement behind that reasoning rather than the
+      // reasoning itself: key `A` cannot be fetched (no SSM response primed,
+      // which the fake surfaces as an ordinary Error), and key `B` must still
+      // resolve. If the walk ever abandons siblings again — because someone
+      // adds a second call to it that can throw for a fetchable reason — this
+      // reds.
+      const resolver = new IntrinsicFunctionResolver(CONSUMER_REGION);
+      const abandonedResolutions: AbandonedResolution[] = [];
+
+      const result = (await resolver.resolve(
+        { 'Fn::ImportValue': 'Conn' },
+        buildContext({
+          abandonedResolutions,
+          stateBackend: mockBackend([
+            {
+              stackName: 'Producer',
+              region: PRODUCER_REGION,
+              outputs: {
+                // An object-valued output: `state.outputs` is NOT coerced to
+                // string, so a bag like this is a real persisted shape.
+                Conn: {
+                  A: '{{resolve:ssm-secure:/deleted/param}}',
+                  B: SECRET_EXPRESSION,
+                },
+              },
+            },
+          ]),
+        })
+      )) as Record<string, unknown>;
+
+      expect(
+        result['B'],
+        "the sibling key was abandoned: key 'A' could not be fetched and the producer-bag walk " +
+          "stopped there, so 'B' was never resolved and its plaintext recorded no needle."
+      ).toBe(PRODUCER_REGION_PASSWORD);
+      // ...and the unfetchable key is REPORTED rather than swallowed.
+      expect(abandonedResolutions.length).toBeGreaterThan(0);
     });
 
     it('returns an ORDINARY imported value BY IDENTITY, with no lookup at all', async () => {
