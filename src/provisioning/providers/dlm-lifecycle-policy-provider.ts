@@ -14,6 +14,7 @@ import {
   type Exclusions,
 } from '@aws-sdk/client-dlm';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
@@ -314,7 +315,7 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
         arn = await this.fetchPolicyArn(response.PolicyId);
       } catch (err) {
         this.logger.warn(
-          `Created DLM Lifecycle Policy ${response.PolicyId} but could not fetch its ARN: ${err instanceof Error ? err.message : String(err)}`
+          `Created DLM Lifecycle Policy ${response.PolicyId} but could not fetch its ARN: ${describeAwsFailure(err).detail}`
         );
       }
 

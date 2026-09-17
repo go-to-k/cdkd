@@ -61,6 +61,7 @@ import {
   type UpdateApiKeyCommandInput,
 } from '@aws-sdk/client-appsync';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { parse as graphqlParse, print as graphqlPrint } from 'graphql';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
@@ -378,7 +379,7 @@ export class AppSyncProvider implements ResourceProvider {
     } catch (error) {
       this.logger.warn(
         `Created ${logicalId} (${physicalId}) but could not build its ARN attribute: ` +
-          `${error instanceof Error ? error.message : String(error)}. ` +
+          `${describeAwsFailure(error).detail}. ` +
           `Ref will resolve to the compound physical id until the next update.`
       );
       return undefined;
@@ -431,7 +432,7 @@ export class AppSyncProvider implements ResourceProvider {
         if (!omitArnOnFailure) throw error;
         this.logger.warn(
           `Imported ${resourceType} (${physicalId}) but its ARN attribute was NOT ` +
-            `recorded: ${error instanceof Error ? error.message : String(error)}. ` +
+            `recorded: ${describeAwsFailure(error).detail}. ` +
             `Ref will resolve to the compound physical id, and Fn::GetAtt on the ARN ` +
             `will fail, until the resource's next update heals the record.`
         );
@@ -478,7 +479,7 @@ export class AppSyncProvider implements ResourceProvider {
     } catch (error) {
       this.logger.warn(
         `Updated ${resourceType} (${physicalId}) but could not rebuild its ARN attribute: ` +
-          `${error instanceof Error ? error.message : String(error)}. ` +
+          `${describeAwsFailure(error).detail}. ` +
           `The previously recorded attributes are kept.`
       );
     }
@@ -539,7 +540,7 @@ export class AppSyncProvider implements ResourceProvider {
     } catch (error) {
       this.logger.warn(
         `Imported ${resourceType} (${physicalId}) but could not build its ARN attribute: ` +
-          `${error instanceof Error ? error.message : String(error)}. ` +
+          `${describeAwsFailure(error).detail}. ` +
           `Ref will resolve to the compound physical id, and Fn::GetAtt on the ARN will ` +
           `fail, until the resource's next update heals the record.`
       );
@@ -1521,7 +1522,15 @@ export class AppSyncProvider implements ResourceProvider {
     } catch (error) {
       // `requireConfigArray` throws a plain Error; convert it so it cannot
       // escape untyped into the deploy engine's retry loop.
-      const message = error instanceof Error ? error.message : String(error);
+      // `.detail` keeps the text byte-identical to the ternary it replaced,
+      // minus that ternary's throw. There is NO substring test here -- unlike
+      // the other twelve sites this sweep converted: `message` goes to
+      // `options.onUnusable(...)` or into the throw below, which
+      // `extractDeploymentEventError` persists (one of the ten such sites; the
+      // disclosure question is go-to-k/cdkd#2319's). And per the comment above,
+      // the value is cdkd-authored, not AWS's -- so the `.summary` hazard that
+      // applies elsewhere does not arise. Kept for the out-throw alone.
+      const message = describeAwsFailure(error).detail;
       if (options?.onUnusable) {
         options.onUnusable(message);
         return undefined;
@@ -1730,7 +1739,7 @@ export class AppSyncProvider implements ResourceProvider {
       if (!isUpdate && !replayingState) throw error;
       this.logger.warn(
         `AppSync GraphqlApi ${logicalId}: ${
-          error instanceof Error ? error.message : String(error)
+          describeAwsFailure(error).detail
         } — leaving the live environment variables untouched`
       );
       return;
@@ -2439,7 +2448,7 @@ export class AppSyncProvider implements ResourceProvider {
         } catch (rollbackError) {
           this.logger.warn(
             `Failed to roll back partially-created GraphQL API ${createdApiId}: ${
-              rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+              describeAwsFailure(rollbackError).detail
             }`
           );
         }
@@ -3103,7 +3112,7 @@ export class AppSyncProvider implements ResourceProvider {
     } catch (err) {
       this.logger.debug(
         `Failed to parse ${source} SDL via graphql-js (falling back to raw): ${
-          err instanceof Error ? err.message : String(err)
+          describeAwsFailure(err).detail
         }`
       );
       return sdl;
@@ -3278,9 +3287,7 @@ export class AppSyncProvider implements ResourceProvider {
       // removed" drift that `--revert` would then act on.
       this.logger.warn(
         `Could not read AppSync GraphqlApi ${physicalId} environment variables ` +
-          `(drift on that property will not be reported): ${
-            err instanceof Error ? err.message : String(err)
-          }`
+          `(drift on that property will not be reported): ${describeAwsFailure(err).detail}`
       );
     }
 

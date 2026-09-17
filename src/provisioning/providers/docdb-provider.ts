@@ -17,6 +17,7 @@ import {
   RemoveTagsFromResourceCommand,
 } from '@aws-sdk/client-docdb';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
@@ -578,7 +579,7 @@ export class DocDBProvider implements ResourceProvider {
         } catch (disableError) {
           if (!this.isNotFoundError(disableError, 'DBClusterNotFoundFault')) {
             this.logger.debug(
-              `Could not disable deletion protection for ${physicalId}: ${disableError instanceof Error ? disableError.message : String(disableError)}`
+              `Could not disable deletion protection for ${physicalId}: ${describeAwsFailure(disableError).detail}`
             );
           }
         }
@@ -1190,7 +1191,7 @@ export class DocDBProvider implements ResourceProvider {
       result['Tags'] = tags;
     } catch (err) {
       this.logger.debug(
-        `DocDB ListTagsForResource(${arn}) failed: ${err instanceof Error ? err.message : String(err)}`
+        `DocDB ListTagsForResource(${arn}) failed: ${describeAwsFailure(err).detail}`
       );
     }
   }

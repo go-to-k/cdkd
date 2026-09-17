@@ -7,6 +7,7 @@ import {
   NotFoundException,
 } from '@aws-sdk/client-sns';
 import { getLogger } from '../../utils/logger.js';
+import { safeStringify } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markNonRetryable } from '../../deployment/retryable-errors.js';
@@ -246,7 +247,7 @@ export class SNSSubscriptionProvider implements ResourceProvider {
     } catch (error) {
       deleteThrew = true;
       this.logger.warn(
-        `Failed to delete old subscription ${physicalId} during update: ${String(error)}`
+        `Failed to delete old subscription ${physicalId} during update: ${safeStringify(error)}`
       );
     }
 

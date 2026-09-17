@@ -21,6 +21,7 @@ import {
   NoSuchEntityException,
 } from '@aws-sdk/client-iam';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -179,7 +180,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
           );
         } catch (cleanupError) {
           this.logger.warn(
-            `Failed to clean up partially-created managed policy ${logicalId} (${policyArn}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required: detach principals (aws iam list-entities-for-policy --policy-arn ${policyArn}), delete versions (aws iam list-policy-versions --policy-arn ${policyArn} then aws iam delete-policy-version), then aws iam delete-policy --policy-arn ${policyArn}`
+            `Failed to clean up partially-created managed policy ${logicalId} (${policyArn}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required: detach principals (aws iam list-entities-for-policy --policy-arn ${policyArn}), delete versions (aws iam list-policy-versions --policy-arn ${policyArn} then aws iam delete-policy-version), then aws iam delete-policy --policy-arn ${policyArn}`
           );
         }
         throw innerError;
@@ -269,9 +270,9 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
           );
         }
       } catch (error) {
-        orphanReason = `old managed policy ${physicalId} could not be deleted: ${String(error)}`;
+        orphanReason = `old managed policy ${physicalId} could not be deleted: ${safeStringify(error)}`;
         this.logger.warn(
-          `Failed to delete old managed policy ${physicalId} during replacement: ${String(error)}. ` +
+          `Failed to delete old managed policy ${physicalId} during replacement: ${safeStringify(error)}. ` +
             `The old policy may be orphaned and require manual cleanup.`
         );
       }

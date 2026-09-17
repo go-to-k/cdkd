@@ -19,6 +19,7 @@ import {
   type InsightSelector,
 } from '@aws-sdk/client-cloudtrail';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -547,7 +548,7 @@ export class CloudTrailProvider implements ResourceProvider {
         } catch (error) {
           eventSelectorsUnusable = true;
           this.logger.warn(
-            `${error instanceof Error ? error.message : String(error)} The trail's ` +
+            `${describeAwsFailure(error).detail} The trail's ` +
               `existing event selectors are left untouched for this update rather ` +
               `than reset to the AWS default.`
           );
@@ -592,7 +593,10 @@ export class CloudTrailProvider implements ResourceProvider {
           // Caught by review; the wording was read out of
           // `@aws-sdk/client-cloudtrail`'s `InvalidEventSelectorsException`
           // doc rather than guessed.
-          const message = error instanceof Error ? error.message : String(error);
+          // `.detail`, never `.summary`: the classifier below matches AWS's OWN
+          // wording, which `.summary` replaces with the wire name alone. Same text as
+          // the `instanceof Error ?` ternary it replaced, minus that ternary's throw.
+          const message = describeAwsFailure(error).detail;
           if (!isRemoval || !/advanced[\s-]*event[\s-]*selector/i.test(message)) throw error;
           this.logger.warn(
             `CloudTrail Trail ${logicalId}: skipping the EventSelectors reset — the ` +
@@ -935,7 +939,7 @@ export class CloudTrailProvider implements ResourceProvider {
         tags = normalizeAwsTagsToCfn(tagsResp.ResourceTagList?.[0]?.TagsList);
       } catch (err) {
         this.logger.debug(
-          `CloudTrail ListTags(${trail.TrailARN}) failed: ${err instanceof Error ? err.message : String(err)}`
+          `CloudTrail ListTags(${trail.TrailARN}) failed: ${describeAwsFailure(err).detail}`
         );
       }
     }

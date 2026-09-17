@@ -35,6 +35,7 @@ import {
   DeleteUserPermissionsBoundaryCommand,
 } from '@aws-sdk/client-iam';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -361,7 +362,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
           );
         } catch (cleanupError) {
           this.logger.warn(
-            `Failed to clean up partially-created IAM user ${logicalId} (${userName}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: remove from groups, detach managed policies, delete inline policies, delete login profile (aws iam delete-login-profile --user-name ${userName}), remove permissions boundary (aws iam delete-user-permissions-boundary --user-name ${userName}), then aws iam delete-user --user-name ${userName}`
+            `Failed to clean up partially-created IAM user ${logicalId} (${userName}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: remove from groups, detach managed policies, delete inline policies, delete login profile (aws iam delete-login-profile --user-name ${userName}), remove permissions boundary (aws iam delete-user-permissions-boundary --user-name ${userName}), then aws iam delete-user --user-name ${userName}`
           );
         }
         throw innerError;
@@ -956,7 +957,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
           );
         } catch (cleanupError) {
           this.logger.warn(
-            `Failed to clean up partially-created IAM group ${logicalId} (${groupName}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: detach managed policies + delete inline policies, then aws iam delete-group --group-name ${groupName}`
+            `Failed to clean up partially-created IAM group ${logicalId} (${groupName}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: detach managed policies + delete inline policies, then aws iam delete-group --group-name ${groupName}`
           );
         }
         throw innerError;

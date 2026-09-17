@@ -75,6 +75,12 @@ export const UNRENDERABLE = '<unrenderable>';
  * `Symbol.toStringTag`, a key `JSON.parse` cannot produce — so it cannot
  * throw for any JSON-derived value. Every value `String` already handled
  * renders exactly as before; only the throwing ones change.
+ *
+ * `safeStringify` in `aws-failure-text.ts` guards the SAME coercion and is not
+ * the same helper: it answers a failed conversion with a sentence rather than
+ * `[object Object]`, because its output is a persisted failure reason an
+ * operator reads rather than terminal output, and it sanitises nothing. This
+ * one stays the answer on any path that RENDERS or LOGS the value.
  */
 function toDisplayText(value: unknown): string {
   if (value === undefined || value === null) return '';

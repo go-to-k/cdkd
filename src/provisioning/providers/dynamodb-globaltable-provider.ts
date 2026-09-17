@@ -45,6 +45,7 @@ import {
   DeregisterScalableTargetCommand,
 } from '@aws-sdk/client-application-auto-scaling';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
@@ -1185,7 +1186,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         } catch (autoScalingErr) {
           warn(
             `Auto-scaling registration failed for ${tableName}: ` +
-              `${autoScalingErr instanceof Error ? autoScalingErr.message : String(autoScalingErr)}. ` +
+              `${describeAwsFailure(autoScalingErr).detail}. ` +
               `The table was created successfully; re-run the deploy to register the ` +
               `scaling targets.`
           );
@@ -1235,10 +1236,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             );
             await this.waitForReplicaGone(tableName, region, logicalId);
           } catch (replicaCleanupErr) {
-            const msg =
-              replicaCleanupErr instanceof Error
-                ? replicaCleanupErr.message
-                : String(replicaCleanupErr);
+            const msg = describeAwsFailure(replicaCleanupErr).detail;
             warn(
               `Partial-create cleanup: failed to drop replica ${region} on ${tableName}: ${msg}. ` +
                 `Run: aws dynamodb update-table --table-name ${tableName} ` +
@@ -1248,7 +1246,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         }
         await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: tableName }));
       } catch (cleanupErr) {
-        const cleanupMsg = cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
+        const cleanupMsg = describeAwsFailure(cleanupErr).detail;
         warn(
           `Partial-create cleanup failed for ${tableName}: ${cleanupMsg}. ` +
             `Run: aws dynamodb delete-table --table-name ${tableName} ` +
@@ -3634,7 +3632,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       await this.applyTagDiffOnClient(regionalClient, replicaArn, oldTags, newTags);
     } catch (tagErr) {
       warn(
-        `Could not apply Tags diff to cross-region replica ${region} of ${physicalIdForLogs}: ${tagErr instanceof Error ? tagErr.message : String(tagErr)}. The replica's Tags state will surface as drift until the next successful deploy.`
+        `Could not apply Tags diff to cross-region replica ${region} of ${physicalIdForLogs}: ${describeAwsFailure(tagErr).detail}. The replica's Tags state will surface as drift until the next successful deploy.`
       );
     }
   }
@@ -3874,7 +3872,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           if (isInterruptedWaitError(err)) throw err;
           warn(
             `Could not register auto-scaling target on ${tableName} (${dimension}): ` +
-              `${err instanceof Error ? err.message : String(err)}. ` +
+              `${describeAwsFailure(err).detail}. ` +
               `Run: aws application-autoscaling register-scalable-target ` +
               `--service-namespace dynamodb --resource-id ${resourceId} ` +
               `--scalable-dimension ${dimension} --min-capacity ${minCapacity} ` +
@@ -3962,7 +3960,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           if (isInterruptedWaitError(err)) throw err;
           warn(
             `Could not put auto-scaling policy on ${tableName} (${dimension}): ` +
-              `${err instanceof Error ? err.message : String(err)}. ` +
+              `${describeAwsFailure(err).detail}. ` +
               `Run: aws application-autoscaling put-scaling-policy ` +
               `--policy-name ${policyName} --service-namespace dynamodb ` +
               `--resource-id ${resourceId} --scalable-dimension ${dimension} ` +
@@ -4033,7 +4031,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         if (!isObjectNotFound(err)) {
           warn(
             `Could not delete auto-scaling policy on ${tableName} (${dimension}): ` +
-              `${err instanceof Error ? err.message : String(err)}. ` +
+              `${describeAwsFailure(err).detail}. ` +
               `Run: aws application-autoscaling delete-scaling-policy ` +
               `--policy-name ${policyName} --service-namespace dynamodb ` +
               `--resource-id ${resourceId} --scalable-dimension ${dimension}`
@@ -4075,7 +4073,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         if (!isObjectNotFound(err)) {
           warn(
             `Could not deregister auto-scaling target on ${tableName} (${dimension}): ` +
-              `${err instanceof Error ? err.message : String(err)}. ` +
+              `${describeAwsFailure(err).detail}. ` +
               `Run: aws application-autoscaling deregister-scalable-target ` +
               `--service-namespace dynamodb --resource-id ${resourceId} ` +
               `--scalable-dimension ${dimension}`
@@ -4190,7 +4188,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         } catch (err) {
           this.logger.debug(
             `Could not probe existing auto-scaling targets on ${tableName} in ${region}: ` +
-              `${err instanceof Error ? err.message : String(err)} — re-asserting every target instead.`
+              `${describeAwsFailure(err).detail} — re-asserting every target instead.`
           );
           return null;
         }
@@ -4570,7 +4568,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           observedProtectionOn = before.Table?.DeletionProtectionEnabled === true;
         } catch (observeError) {
           this.logger.debug(
-            `Could not read DeletionProtectionEnabled on ${physicalId} before disabling it: ${observeError instanceof Error ? observeError.message : String(observeError)}`
+            `Could not read DeletionProtectionEnabled on ${physicalId} before disabling it: ${describeAwsFailure(observeError).detail}`
           );
         }
         await this.dynamoDBClient.send(
@@ -4600,13 +4598,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           );
         } catch (waitErr) {
           this.logger.debug(
-            `Could not wait for table ${physicalId} ACTIVE after protection flip: ${waitErr instanceof Error ? waitErr.message : String(waitErr)}`
+            `Could not wait for table ${physicalId} ACTIVE after protection flip: ${describeAwsFailure(waitErr).detail}`
           );
         }
       } catch (flipError) {
         if (!(flipError instanceof ResourceNotFoundException)) {
           this.logger.debug(
-            `Could not disable DeletionProtectionEnabled on ${physicalId}: ${flipError instanceof Error ? flipError.message : String(flipError)}`
+            `Could not disable DeletionProtectionEnabled on ${physicalId}: ${describeAwsFailure(flipError).detail}`
           );
         }
       }
@@ -4776,10 +4774,18 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // describe failure that did not happen. That is the exact double-wrap the
       // comment below already claims was fixed for the replica case.
       if (isInterruptedWaitError(describeErr)) throw describeErr;
+      // `.detail` below is deliberate, against `aws-failure-text.ts`'s note
+      // that `detail` is for `logger.debug` only: this arm THROWS the text, so
+      // it reaches the durable events store. It stays `.detail` because
+      // `destroy-runner.ts` substring-matches the same message for
+      // already-deleted detection, which `.summary` would delete. The
+      // disclosure half of that trade belongs to issue go-to-k/cdkd#2319, which
+      // owns every thrown site interpolating an AWS failure into a persisted
+      // error, rather than to go-to-k/cdkd#3341.
       if (!(describeErr instanceof ResourceNotFoundException)) {
         const cause = describeErr instanceof Error ? describeErr : undefined;
         throw new ProvisioningError(
-          `Failed to describe DynamoDB GlobalTable ${logicalId} before delete: ${describeErr instanceof Error ? describeErr.message : String(describeErr)}`,
+          `Failed to describe DynamoDB GlobalTable ${logicalId} before delete: ${describeAwsFailure(describeErr).detail}`,
           resourceType,
           logicalId,
           physicalId,
@@ -5175,7 +5181,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
                 entry['Tags'] = [];
               } else {
                 this.logger.warn(
-                  `Could not fetch tags for DynamoDB GlobalTable ${tableNameForSubs} in ${regionLabel}: ${tagErr instanceof Error ? tagErr.message : String(tagErr)}`
+                  `Could not fetch tags for DynamoDB GlobalTable ${tableNameForSubs} in ${regionLabel}: ${describeAwsFailure(tagErr).detail}`
                 );
                 entry['Tags'] = [];
               }
@@ -5450,7 +5456,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // on a momentary state.
       } catch (ttlErr) {
         this.logger.debug(
-          `Could not read TimeToLive for ${tableNameForSubs}: ${ttlErr instanceof Error ? ttlErr.message : String(ttlErr)}`
+          `Could not read TimeToLive for ${tableNameForSubs}: ${describeAwsFailure(ttlErr).detail}`
         );
       }
 
@@ -5503,7 +5509,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       }
     } catch (err) {
       this.logger.debug(
-        `Could not read ContributorInsights for ${tableName} in ${regionLabel}: ${err instanceof Error ? err.message : String(err)}`
+        `Could not read ContributorInsights for ${tableName} in ${regionLabel}: ${describeAwsFailure(err).detail}`
       );
     }
 
@@ -5522,7 +5528,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       }
     } catch (err) {
       this.logger.debug(
-        `Could not read PointInTimeRecovery for ${tableName} in ${regionLabel}: ${err instanceof Error ? err.message : String(err)}`
+        `Could not read PointInTimeRecovery for ${tableName} in ${regionLabel}: ${describeAwsFailure(err).detail}`
       );
     }
 
@@ -5546,7 +5552,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       }
     } catch (err) {
       this.logger.debug(
-        `Could not read KinesisStreamingDestination for ${tableName} in ${regionLabel}: ${err instanceof Error ? err.message : String(err)}`
+        `Could not read KinesisStreamingDestination for ${tableName} in ${regionLabel}: ${describeAwsFailure(err).detail}`
       );
     }
 
@@ -5674,7 +5680,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       };
     } catch (err) {
       this.logger.debug(
-        `Could not read application-autoscaling settings for ${resourceId} (${scalableDimension}): ${err instanceof Error ? err.message : String(err)}`
+        `Could not read application-autoscaling settings for ${resourceId} (${scalableDimension}): ${describeAwsFailure(err).detail}`
       );
       return null;
     }

@@ -81,6 +81,7 @@
  */
 
 import { INDEX_SETTLE_POLL_INTERVAL_MS } from '../dynamodb-index-busy-delete.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ElapsedBudget, monotonicNowMs } from '../../utils/elapsed-budget.js';
 import { isInterruptedWaitError } from '../interrupt-watch.js';
 import {
@@ -814,7 +815,7 @@ export async function compensateRemovedDeletionProtection(
     );
     return 'restored';
   } catch (reEnableError) {
-    const detail = reEnableError instanceof Error ? reEnableError.message : String(reEnableError);
+    const detail = describeAwsFailure(reEnableError).detail;
     if (isResourceNotFoundError(reEnableError)) {
       // Issue #2224: the ERROR line below asserts "that table is LIVE with its
       // deletion protection still off", and on this arm cdkd does not know

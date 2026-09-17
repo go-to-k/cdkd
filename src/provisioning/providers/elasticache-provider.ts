@@ -17,6 +17,7 @@ import {
   type IpDiscovery,
 } from '@aws-sdk/client-elasticache';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
 import { generateResourceName } from '../resource-name.js';
@@ -964,7 +965,7 @@ export class ElastiCacheProvider implements ResourceProvider {
       result['Tags'] = tags;
     } catch (err) {
       this.logger.debug(
-        `ElastiCache ListTagsForResource(${arn}) failed: ${err instanceof Error ? err.message : String(err)}`
+        `ElastiCache ListTagsForResource(${arn}) failed: ${describeAwsFailure(err).detail}`
       );
     }
   }

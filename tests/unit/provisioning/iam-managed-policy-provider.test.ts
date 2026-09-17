@@ -255,6 +255,42 @@ describe('IAMManagedPolicyProvider', () => {
     // Issue #1819: the old policy survives when its delete fails, and before
     // the outcome channel that was a bare logger.warn with the deploy exiting 0
     // and the policy out of state.
+    // The case below cannot tell `safeStringify(err)` from
+    // `describeAwsFailure(err).detail`: its fixture puts the wire code in the
+    // MESSAGE, where both spellings find it. `reason` is PERSISTED as the row's
+    // `outcome: 'partial'` text, so its wording may not move -- and a real AWS
+    // failure carries the code as `name`, which only `String(err)` renders.
+    //
+    // The spy is what reaches that path: this provider's delete wraps every
+    // failure into a `ProvisioningError`, so in production the dropped prefix
+    // is `ProvisioningError: ` rather than AWS's own code. The PROPERTY is the
+    // same either way -- a persisted reason does not change wording -- and the
+    // spy states it in the form where the two spellings visibly differ.
+    it('persists the unwrapped delete failure verbatim, name included', async () => {
+      const newArn = 'arn:aws:iam::123456789012:policy/new/MyManagedPolicy';
+      mockSend.mockResolvedValueOnce({ Policy: { Arn: newArn, PolicyName: 'MyManagedPolicy' } });
+      vi.spyOn(provider, 'delete').mockRejectedValue(
+        Object.assign(new Error('Cannot delete a policy attached to entities.'), {
+          name: 'DeleteConflict',
+          $metadata: { httpStatusCode: 409 },
+        })
+      );
+
+      const result = await provider.update(
+        'MyManagedPolicy',
+        ARN,
+        'AWS::IAM::ManagedPolicy',
+        { PolicyDocument: POLICY_DOC, Path: '/new/' },
+        { PolicyDocument: POLICY_DOC, Path: '/' }
+      );
+
+      expect(result.outcome).toBe('partial');
+      expect(result.reason).toBe(
+        `old managed policy ${ARN} could not be deleted: DeleteConflict: ` +
+          'Cannot delete a policy attached to entities.'
+      );
+    });
+
     it('reports partial when the old policy cannot be deleted', async () => {
       const newArn = 'arn:aws:iam::123456789012:policy/new/MyManagedPolicy';
       mockSend.mockResolvedValueOnce({ Policy: { Arn: newArn, PolicyName: 'MyManagedPolicy' } });

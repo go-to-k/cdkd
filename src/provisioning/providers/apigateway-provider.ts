@@ -28,6 +28,7 @@ import {
   NotFoundException,
 } from '@aws-sdk/client-api-gateway';
 import type { CacheClusterSize, CanarySettings } from '@aws-sdk/client-api-gateway';
+import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
@@ -456,7 +457,10 @@ export class ApiGatewayProvider implements ResourceProvider {
         await this.apiGatewayClient.send(new UpdateAccountCommand({ patchOperations }));
         return;
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        // `.detail`, never `.summary`: the substring test below is what keeps this
+        // degradation alive, and it matches AWS's OWN wording. Byte-identical to
+        // the ternary it replaced, minus that ternary's throw.
+        const message = describeAwsFailure(error).detail;
         const isIamPropagationError =
           message.toLowerCase().includes('not authorized') ||
           message.toLowerCase().includes('does not have required permissions') ||
@@ -823,9 +827,9 @@ export class ApiGatewayProvider implements ResourceProvider {
       try {
         await this.deleteResource(logicalId, physicalId, resourceType, previousProperties);
       } catch (error) {
-        orphanReason = `old API Gateway Resource ${physicalId} could not be deleted: ${String(error)}`;
+        orphanReason = `old API Gateway Resource ${physicalId} could not be deleted: ${safeStringify(error)}`;
         this.logger.warn(
-          `Failed to delete old API Gateway Resource ${physicalId} during replacement: ${String(error)}. ` +
+          `Failed to delete old API Gateway Resource ${physicalId} during replacement: ${safeStringify(error)}. ` +
             `The old resource may be orphaned and require manual cleanup.`
         );
       }
@@ -1185,7 +1189,7 @@ export class ApiGatewayProvider implements ResourceProvider {
             await this.apiGatewayClient.send(new DeleteStageCommand({ restApiId, stageName }));
           } catch (cleanupError) {
             this.logger.warn(
-              `Failed to clean up stage ${stageName} after a post-create patch failure: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`
+              `Failed to clean up stage ${stageName} after a post-create patch failure: ${describeAwsFailure(cleanupError).detail}`
             );
           }
           throw patchError;
@@ -1877,7 +1881,7 @@ export class ApiGatewayProvider implements ResourceProvider {
           );
         } catch (cleanupError) {
           this.logger.warn(
-            `Failed to clean up partially-created API Gateway Method ${logicalId} (${restApiId}/${resourceId}/${httpMethod}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws apigateway delete-method --rest-api-id ${restApiId} --resource-id ${resourceId} --http-method ${httpMethod}`
+            `Failed to clean up partially-created API Gateway Method ${logicalId} (${restApiId}/${resourceId}/${httpMethod}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: aws apigateway delete-method --rest-api-id ${restApiId} --resource-id ${resourceId} --http-method ${httpMethod}`
           );
         }
         throw innerError;

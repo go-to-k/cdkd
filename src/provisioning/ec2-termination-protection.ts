@@ -1,4 +1,5 @@
 import { ModifyInstanceAttributeCommand, type EC2Client } from '@aws-sdk/client-ec2';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 
 /** Minimal logger surface used here (avoids coupling to the full Logger type). */
 type DebugLogger = { debug(message: string): void };
@@ -46,7 +47,7 @@ export async function disableInstanceApiTermination(
     logger.debug(`Disabled DisableApiTermination on EC2 Instance ${instanceId} before deletion`);
   } catch (flipError) {
     logger.debug(
-      `Could not disable DisableApiTermination on ${instanceId}: ${flipError instanceof Error ? flipError.message : String(flipError)}`
+      `Could not disable DisableApiTermination on ${instanceId}: ${describeAwsFailure(flipError).detail}`
     );
   }
 }

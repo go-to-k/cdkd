@@ -35,6 +35,7 @@ import {
   type ServiceTypeOption,
 } from '@aws-sdk/client-servicediscovery';
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getLogger } from '../../utils/logger.js';
 import { withRetry, type RetryLogger } from '../../deployment/retry.js';
 import { isInterruptedWaitError, startInterruptWatch } from '../interrupt-watch.js';
@@ -781,7 +782,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
         // ones whose payload IS built from `properties`. If this call ever
         // grows a template-derived member, mask it.
         this.logger.debug(
-          `GetNamespace(${namespaceId}) after create failed: ${err instanceof Error ? err.message : String(err)}`
+          `GetNamespace(${namespaceId}) after create failed: ${describeAwsFailure(err).detail}`
         );
       }
       if (!arn) {
@@ -1327,7 +1328,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       if (resp.Namespace?.Arn) return resp.Namespace.Arn;
     } catch (err) {
       this.logger.debug(
-        `GetNamespace(${namespaceId}) failed while resolving ARN: ${err instanceof Error ? err.message : String(err)}`
+        `GetNamespace(${namespaceId}) failed while resolving ARN: ${describeAwsFailure(err).detail}`
       );
     }
     return this.buildNamespaceArn(namespaceId);
@@ -1658,7 +1659,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       result['ServiceAttributes'] = attrsResp.ServiceAttributes?.Attributes ?? {};
     } catch (err) {
       this.logger.debug(
-        `ServiceDiscovery GetServiceAttributes(${physicalId}) failed: ${err instanceof Error ? err.message : String(err)}`
+        `ServiceDiscovery GetServiceAttributes(${physicalId}) failed: ${describeAwsFailure(err).detail}`
       );
     }
 
@@ -1696,7 +1697,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       result['Tags'] = tags;
     } catch (err) {
       this.logger.debug(
-        `ServiceDiscovery ListTagsForResource(${arn}) failed: ${err instanceof Error ? err.message : String(err)}`
+        `ServiceDiscovery ListTagsForResource(${arn}) failed: ${describeAwsFailure(err).detail}`
       );
     }
   }

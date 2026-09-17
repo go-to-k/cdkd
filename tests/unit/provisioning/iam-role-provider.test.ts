@@ -393,6 +393,53 @@ describe('IAMRoleProvider', () => {
       expect(result.reason).toContain('DeleteConflict');
     });
 
+    // `reason` here is PERSISTED as the row's `outcome: 'partial'` text, so the
+    // rule for this site is that its wording does not move. The case above
+    // cannot enforce that: it drives the failure through `this.delete`, which
+    // wraps into a `ProvisioningError` whose `name` is that class -- so
+    // `String(err)` and `err.message` differ only by a redundant class prefix
+    // and the two spellings look interchangeable.
+    //
+    // They are not, on the path where `delete` throws WITHOUT wrapping. There
+    // `String(err)` carries the thrown value's own `name` and `err.message`
+    // does not, so a sweep converting this site to
+    // `describeAwsFailure(err).detail` -- which IS `err.message` -- silently
+    // shortens a persisted reason. That sweep happened; nothing was red. This
+    // is the case that would have caught it.
+    //
+    // The spy is what reaches that path: `IAMRoleProvider.delete` wraps every
+    // failure into a `ProvisioningError`, so in production the dropped prefix
+    // is `ProvisioningError: ` rather than AWS's own code. The PROPERTY is the
+    // same either way -- a persisted reason does not change wording -- and the
+    // spy states it in the form where the two spellings visibly differ.
+    it('persists the unwrapped failure verbatim, name included', async () => {
+      mockSend.mockResolvedValueOnce({
+        Role: { RoleName: 'new-role', Arn: 'arn:aws:iam::0:role/new-role', RoleId: 'r2' },
+      });
+      const awsShaped = Object.assign(
+        new Error('Cannot delete entity, must detach all policies first.'),
+        { name: 'DeleteConflict', $metadata: { httpStatusCode: 409 } }
+      );
+      vi.spyOn(provider, 'delete').mockRejectedValue(awsShaped);
+
+      const result = await provider.update(
+        'L',
+        'old-role',
+        'AWS::IAM::Role',
+        { RoleName: 'new-role', AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] } },
+        { RoleName: 'old-role', AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] } }
+      );
+
+      expect(result.outcome).toBe('partial');
+      // Byte-for-byte what `String(error)` produced before this sweep. Asserted
+      // whole rather than by fragments: the defect was a MISSING prefix, and a
+      // `toContain` on the message alone passes with it missing.
+      expect(result.reason).toBe(
+        'old role old-role could not be deleted: DeleteConflict: Cannot delete ' +
+          'entity, must detach all policies first.'
+      );
+    });
+
     // The #1778 SKIP class: non-throwing, so it sails past the catch that would
     // otherwise have reported it.
     it('reports partial when the inner delete SKIPS rather than throws', async () => {

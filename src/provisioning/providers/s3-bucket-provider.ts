@@ -6008,7 +6008,15 @@ export class S3BucketProvider implements ResourceProvider {
       }
       return {
         kind: 'indeterminate',
-        reason: probeError instanceof Error ? probeError.message : String(probeError),
+        // Becomes `BucketRegionProbe.reason`, read by TWO callers rather than
+        // logged here, so the `.summary` hazard is invisible at every end.
+        // Both are `logger.debug` today; the persisted guard path reads the
+        // sibling `errorName`. The count is load-bearing and is stated on the
+        // type itself (`assertStateBucketRegion` plus the us-east-1 create
+        // partial-cleanup arm): a previous fix that believed there was only one
+        // left the second printing the identical string to the identical sink,
+        // and an earlier revision of THIS comment re-introduced "one".
+        reason: describeAwsFailure(probeError).detail,
         errorName: probeError instanceof Error ? probeError.name : typeof probeError,
       };
     }
@@ -6558,7 +6566,7 @@ export class S3BucketProvider implements ResourceProvider {
             // and was the last reader in this file still interpolating an AWS
             // message into a warn.
             this.logger.debug(
-              `DeleteBucket cleanup failed for S3 bucket ${logicalId} (${bucketName}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`
+              `DeleteBucket cleanup failed for S3 bucket ${logicalId} (${bucketName}): ${describeAwsFailure(cleanupError).detail}`
             );
             // Routed through the caller's masker (security review of issue
             // #3136): `bucketName` is a RESOLVED property value, so a
@@ -7961,7 +7969,10 @@ export class S3BucketProvider implements ResourceProvider {
         this.logger.debug(`Successfully deleted S3 bucket ${logicalId}`);
         return;
       } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
+        // `.detail`, never `.summary`: the substring test below is what keeps this
+        // degradation alive, and it matches AWS's OWN wording. Byte-identical to
+        // the ternary it replaced, minus that ternary's throw.
+        const msg = describeAwsFailure(error).detail;
         if (msg.includes('not empty') || msg.includes('BucketNotEmpty')) {
           if (!allowAutoEmpty) {
             throw new Error(

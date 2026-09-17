@@ -13,6 +13,7 @@ import {
   type Tag,
 } from '@aws-sdk/client-eventbridge';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -314,7 +315,7 @@ export class EventBridgeRuleProvider implements ResourceProvider {
           );
         } catch (cleanupError) {
           this.logger.warn(
-            `Failed to clean up partially-created EventBridge rule ${logicalId} (${ruleName}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws events list-targets-by-rule --rule ${ruleName}${eventBusName ? ` --event-bus-name ${eventBusName}` : ''} | jq -r '.Targets[].Id' | xargs aws events remove-targets --rule ${ruleName}${eventBusName ? ` --event-bus-name ${eventBusName}` : ''} --ids; aws events delete-rule --name ${ruleName}${eventBusName ? ` --event-bus-name ${eventBusName}` : ''}`
+            `Failed to clean up partially-created EventBridge rule ${logicalId} (${ruleName}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: aws events list-targets-by-rule --rule ${ruleName}${eventBusName ? ` --event-bus-name ${eventBusName}` : ''} | jq -r '.Targets[].Id' | xargs aws events remove-targets --rule ${ruleName}${eventBusName ? ` --event-bus-name ${eventBusName}` : ''} --ids; aws events delete-rule --name ${ruleName}${eventBusName ? ` --event-bus-name ${eventBusName}` : ''}`
           );
         }
         throw innerError;

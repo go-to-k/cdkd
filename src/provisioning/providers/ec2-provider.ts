@@ -82,6 +82,7 @@ import {
   type Instance,
 } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import {
   CdkdError,
@@ -1001,7 +1002,7 @@ export class EC2Provider implements ResourceProvider {
           );
         } catch (cleanupError) {
           this.logger.warn(
-            `Failed to clean up partially-created VPC ${logicalId} (${vpcId}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws ec2 delete-vpc --vpc-id ${vpcId}`
+            `Failed to clean up partially-created VPC ${logicalId} (${vpcId}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: aws ec2 delete-vpc --vpc-id ${vpcId}`
           );
         }
         throw innerError;
@@ -1139,7 +1140,14 @@ export class EC2Provider implements ResourceProvider {
           this.logger.debug(`VPC ${physicalId} does not exist, skipping deletion`);
           return;
         }
-        const msg = error instanceof Error ? error.message : String(error);
+        // `.detail`, never `.summary`: the substring test below is what keeps this
+        // degradation alive, and it matches AWS's OWN wording. Byte-identical to
+        // the ternary it replaced, minus that ternary's throw.
+        // It ALSO reaches a thrown `ProvisioningError` further down, which
+        // `extractDeploymentEventError` persists -- one of the ten such sites in
+        // this sweep. The disclosure question for all of them is
+        // go-to-k/cdkd#2319's.
+        const msg = describeAwsFailure(error).detail;
         if (
           (msg.includes('DependencyViolation') || msg.includes('has dependencies')) &&
           attempt < maxAttempts
@@ -1296,7 +1304,7 @@ export class EC2Provider implements ResourceProvider {
           );
         } catch (cleanupError) {
           this.logger.warn(
-            `Failed to clean up partially-created Subnet ${logicalId} (${subnetId}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws ec2 delete-subnet --subnet-id ${subnetId}`
+            `Failed to clean up partially-created Subnet ${logicalId} (${subnetId}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: aws ec2 delete-subnet --subnet-id ${subnetId}`
           );
         }
         throw innerError;
@@ -1423,7 +1431,7 @@ export class EC2Provider implements ResourceProvider {
         if (resp.Subnets?.[0]?.MapPublicIpOnLaunch === expected) return;
       } catch (error) {
         this.logger.debug(
-          `MapPublicIpOnLaunch read-back for ${subnetId} failed (attempt ${attempt}/${maxAttempts}): ${error instanceof Error ? error.message : String(error)}`
+          `MapPublicIpOnLaunch read-back for ${subnetId} failed (attempt ${attempt}/${maxAttempts}): ${describeAwsFailure(error).detail}`
         );
         return;
       }
@@ -1469,7 +1477,14 @@ export class EC2Provider implements ResourceProvider {
           this.logger.debug(`Subnet ${physicalId} does not exist, skipping deletion`);
           return;
         }
-        const msg = error instanceof Error ? error.message : String(error);
+        // `.detail`, never `.summary`: the substring test below is what keeps this
+        // degradation alive, and it matches AWS's OWN wording. Byte-identical to
+        // the ternary it replaced, minus that ternary's throw.
+        // It ALSO reaches a thrown `ProvisioningError` further down, which
+        // `extractDeploymentEventError` persists -- one of the ten such sites in
+        // this sweep. The disclosure question for all of them is
+        // go-to-k/cdkd#2319's.
+        const msg = describeAwsFailure(error).detail;
         const isDependencyError =
           msg.includes('has dependencies') || msg.includes('DependencyViolation');
         if (isDependencyError && attempt < maxAttempts) {
@@ -1520,7 +1535,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (err) {
       this.logger.debug(
         `cleanupSubnetLambdaEnis: DescribeNetworkInterfaces failed for ${subnetId}: ${
-          err instanceof Error ? err.message : String(err)
+          describeAwsFailure(err).detail
         }`
       );
       return;
@@ -1538,7 +1553,7 @@ export class EC2Provider implements ResourceProvider {
         } catch (err) {
           this.logger.debug(
             `cleanupSubnetLambdaEnis: ENI ${eni.id} (status=${eni.status}) not yet deletable: ${
-              err instanceof Error ? err.message : String(err)
+              describeAwsFailure(err).detail
             }`
           );
         }
@@ -2309,7 +2324,7 @@ export class EC2Provider implements ResourceProvider {
       // which is worse.
       this.logger.warn(
         `Wait for NatGateway ${physicalId} deletion did not complete cleanly: ${
-          error instanceof Error ? error.message : String(error)
+          describeAwsFailure(error).detail
         } — proceeding with downstream delete steps`
       );
     }
@@ -2909,7 +2924,7 @@ export class EC2Provider implements ResourceProvider {
           );
         } catch (cleanupError) {
           this.logger.warn(
-            `Failed to clean up partially-created SecurityGroup ${logicalId} (${groupId}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws ec2 delete-security-group --group-id ${groupId}`
+            `Failed to clean up partially-created SecurityGroup ${logicalId} (${groupId}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: aws ec2 delete-security-group --group-id ${groupId}`
           );
         }
         throw innerError;
@@ -3118,7 +3133,14 @@ export class EC2Provider implements ResourceProvider {
           this.logger.debug(`SecurityGroup ${physicalId} does not exist, skipping deletion`);
           return;
         }
-        const msg = error instanceof Error ? error.message : String(error);
+        // `.detail`, never `.summary`: the substring test below is what keeps this
+        // degradation alive, and it matches AWS's OWN wording. Byte-identical to
+        // the ternary it replaced, minus that ternary's throw.
+        // It ALSO reaches a thrown `ProvisioningError` further down, which
+        // `extractDeploymentEventError` persists -- one of the ten such sites in
+        // this sweep. The disclosure question for all of them is
+        // go-to-k/cdkd#2319's.
+        const msg = describeAwsFailure(error).detail;
         if (msg.includes('dependent object') && attempt < maxAttempts) {
           // Same side-channel as deleteSubnet: clean up Lambda-managed
           // ENIs that still reference this SG, then sleep and retry.
@@ -3165,7 +3187,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (err) {
       this.logger.debug(
         `cleanupSecurityGroupLambdaEnis: DescribeNetworkInterfaces failed for ${groupId}: ${
-          err instanceof Error ? err.message : String(err)
+          describeAwsFailure(err).detail
         }`
       );
       return;
@@ -3183,7 +3205,7 @@ export class EC2Provider implements ResourceProvider {
         } catch (err) {
           this.logger.debug(
             `cleanupSecurityGroupLambdaEnis: ENI ${eni.id} (status=${eni.status}) not yet deletable: ${
-              err instanceof Error ? err.message : String(err)
+              describeAwsFailure(err).detail
             }`
           );
         }
@@ -3265,7 +3287,7 @@ export class EC2Provider implements ResourceProvider {
           continue;
         }
         this.logger.debug(
-          `DescribeSecurityGroups for SecurityGroup ${groupId} failed (${errorClass}); omitting the VpcId attribute: ${error instanceof Error ? error.message : String(error)}`
+          `DescribeSecurityGroups for SecurityGroup ${groupId} failed (${errorClass}); omitting the VpcId attribute: ${describeAwsFailure(error).detail}`
         );
         return undefined;
       }
@@ -3514,7 +3536,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       this.logger.debug(
         `SecurityGroupIngress ${logicalId}: could not look up the existing rule id on ${groupId} ` +
-          `(${error instanceof Error ? error.message : String(error)}) — not recording an Id attribute`
+          `(${describeAwsFailure(error).detail}) — not recording an Id attribute`
       );
       return undefined;
     }
@@ -3912,7 +3934,7 @@ export class EC2Provider implements ResourceProvider {
           );
         } catch (cleanupError) {
           this.logger.warn(
-            `Failed to terminate partially-created EC2 Instance ${logicalId} (${instanceId}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. THE INSTANCE IS STILL RUNNING AND BILLING. Manual termination required: aws ec2 terminate-instances --instance-ids ${instanceId}`
+            `Failed to terminate partially-created EC2 Instance ${logicalId} (${instanceId}): ${describeAwsFailure(cleanupError).detail}. THE INSTANCE IS STILL RUNNING AND BILLING. Manual termination required: aws ec2 terminate-instances --instance-ids ${instanceId}`
           );
         }
         throw innerError;
@@ -4030,7 +4052,15 @@ export class EC2Provider implements ResourceProvider {
         associated = true;
         break;
       } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
+        // `.detail`, never `.summary`: this value feeds the `includes` tests
+        // below, so it must stay AWS's own wording. `.detail` is byte-identical
+        // to the old expression for an `Error` and the guarded stringification
+        // otherwise, while `.summary` reduces an AWS-authored failure to
+        // `<name>. Re-run with --verbose...` and would blind them. (An earlier
+        // revision of this comment warned against `.display`, which is not a
+        // member of `AwsFailureText` at all -- inert guidance pointing away
+        // from the real sibling.)
+        const msg = describeAwsFailure(error).detail;
         // Already associated (a concurrent RunInstances-side bind landed
         // between our describe and this associate) is success, not failure.
         if (msg.includes('IncorrectState') || msg.includes('already associated')) {
@@ -4098,7 +4128,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (err) {
       this.logger.debug(
         `DescribeIamInstanceProfileAssociations failed for ${instanceId}: ` +
-          `${err instanceof Error ? err.message : String(err)}`
+          `${describeAwsFailure(err).detail}`
       );
       return false;
     }
@@ -4328,7 +4358,14 @@ export class EC2Provider implements ResourceProvider {
           );
           return;
         }
-        const msg = error instanceof Error ? error.message : String(error);
+        // `.detail`, never `.summary`: the substring test below is what keeps this
+        // degradation alive, and it matches AWS's OWN wording. Byte-identical to
+        // the ternary it replaced, minus that ternary's throw.
+        // It ALSO reaches a thrown `ProvisioningError` further down, which
+        // `extractDeploymentEventError` persists -- one of the ten such sites in
+        // this sweep. The disclosure question for all of them is
+        // go-to-k/cdkd#2319's.
+        const msg = describeAwsFailure(error).detail;
         if (
           removeProtection &&
           isTerminationProtectionPropagationError(msg) &&
@@ -5126,7 +5163,7 @@ export class EC2Provider implements ResourceProvider {
         this.logger.debug(`Applied ${tags.length} tag(s) to ${logicalId}`);
       } catch (error) {
         this.logger.warn(
-          `Failed to apply tags to ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
+          `Failed to apply tags to ${logicalId}: ${describeAwsFailure(error).detail}`
         );
       }
     }
@@ -5176,7 +5213,7 @@ export class EC2Provider implements ResourceProvider {
         this.logger.debug(`Removed ${tagsToRemove.length} tag(s) from ${resourceId}`);
       } catch (error) {
         this.logger.warn(
-          `Failed to remove tags from ${resourceId}: ${error instanceof Error ? error.message : String(error)}`
+          `Failed to remove tags from ${resourceId}: ${describeAwsFailure(error).detail}`
         );
       }
     }
@@ -5191,7 +5228,7 @@ export class EC2Provider implements ResourceProvider {
         this.logger.debug(`Added/updated ${tagsToAdd.length} tag(s) on ${resourceId}`);
       } catch (error) {
         this.logger.warn(
-          `Failed to add tags on ${resourceId}: ${error instanceof Error ? error.message : String(error)}`
+          `Failed to add tags on ${resourceId}: ${describeAwsFailure(error).detail}`
         );
       }
     }
@@ -5265,7 +5302,7 @@ export class EC2Provider implements ResourceProvider {
         }
         attempt += 1;
         const sleepMs = Math.min(delay, totalBudgetMs - elapsed);
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeAwsFailure(error).detail;
         this.logger.debug(
           `${opts.description}: dependency still mapped (attempt ${attempt}, retrying in ${sleepMs}ms): ${message}`
         );
@@ -5948,7 +5985,7 @@ export class EC2Provider implements ResourceProvider {
         }
       } catch (error) {
         this.logger.warn(
-          `Could not backfill IamInstanceProfile for ${physicalId} during the --no-wait capture (${error instanceof Error ? error.message : String(error)}); the field is omitted from the observed snapshot`
+          `Could not backfill IamInstanceProfile for ${physicalId} during the --no-wait capture (${describeAwsFailure(error).detail}); the field is omitted from the observed snapshot`
         );
       }
     }
@@ -5976,7 +6013,7 @@ export class EC2Provider implements ResourceProvider {
         // gap), fall back to the partial shape. The DeleteOnTermination
         // field is still surfaced from the DescribeInstances response.
         this.logger.debug(
-          `DescribeVolumes(${volumeIds.join(',')}) failed: ${err instanceof Error ? err.message : String(err)}`
+          `DescribeVolumes(${volumeIds.join(',')}) failed: ${describeAwsFailure(err).detail}`
         );
         volumesById = new Map();
       }
@@ -6035,7 +6072,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (err) {
       this.logger.debug(
         `DescribeInstanceAttribute(disableApiTermination, ${physicalId}) failed: ${
-          err instanceof Error ? err.message : String(err)
+          describeAwsFailure(err).detail
         }`
       );
     }
@@ -6058,7 +6095,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (err) {
       this.logger.debug(
         `DescribeInstanceCreditSpecifications(${physicalId}) failed: ${
-          err instanceof Error ? err.message : String(err)
+          describeAwsFailure(err).detail
         }`
       );
     }

@@ -36,6 +36,7 @@ import {
   type Tag,
 } from '@aws-sdk/client-fsx';
 import { createHash } from 'node:crypto';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -469,7 +470,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
         } catch (cleanupError) {
           this.logger.warn(
             `Failed to roll back partially-created FSx FileSystem ${fileSystemId}: ${
-              cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+              describeAwsFailure(cleanupError).detail
             } — delete it manually to stop billing`
           );
         }
@@ -933,7 +934,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
         } catch (describeError) {
           this.logger.debug(
             `Post-update attribute refresh for ${physicalId} failed (returning without attributes): ${
-              describeError instanceof Error ? describeError.message : String(describeError)
+              describeAwsFailure(describeError).detail
             }`
           );
         }
@@ -1320,7 +1321,10 @@ export class FSxFileSystemProvider implements ResourceProvider {
       return response.FileSystems?.[0];
     } catch (error) {
       const name = error instanceof Error ? error.name : '';
-      const msg = error instanceof Error ? error.message : String(error);
+      // `.detail`, never `.summary`: the substring test below is what keeps this
+      // degradation alive, and it matches AWS's OWN wording. Byte-identical to
+      // the ternary it replaced, minus that ternary's throw.
+      const msg = describeAwsFailure(error).detail;
       const transient =
         name === 'ThrottlingException' ||
         name === 'ServiceLimitExceeded' ||

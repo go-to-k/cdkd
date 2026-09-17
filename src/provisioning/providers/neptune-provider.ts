@@ -17,6 +17,7 @@ import {
   RemoveTagsFromResourceCommand,
 } from '@aws-sdk/client-neptune';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
@@ -591,7 +592,7 @@ export class NeptuneProvider implements ResourceProvider {
         } catch (disableError) {
           if (!this.isNotFoundError(disableError, 'DBClusterNotFoundFault')) {
             this.logger.debug(
-              `Could not disable deletion protection for ${physicalId}: ${disableError instanceof Error ? disableError.message : String(disableError)}`
+              `Could not disable deletion protection for ${physicalId}: ${describeAwsFailure(disableError).detail}`
             );
           }
         }
@@ -820,7 +821,7 @@ export class NeptuneProvider implements ResourceProvider {
         } catch (disableError) {
           if (!this.isNotFoundError(disableError, 'DBInstanceNotFoundFault')) {
             this.logger.debug(
-              `Could not disable deletion protection for ${physicalId}: ${disableError instanceof Error ? disableError.message : String(disableError)}`
+              `Could not disable deletion protection for ${physicalId}: ${describeAwsFailure(disableError).detail}`
             );
           }
         }
@@ -1245,7 +1246,7 @@ export class NeptuneProvider implements ResourceProvider {
       result['Tags'] = tags;
     } catch (err) {
       this.logger.debug(
-        `Neptune ListTagsForResource(${arn}) failed: ${err instanceof Error ? err.message : String(err)}`
+        `Neptune ListTagsForResource(${arn}) failed: ${describeAwsFailure(err).detail}`
       );
     }
   }

@@ -6,6 +6,7 @@ import {
   NoSuchBucket,
 } from '@aws-sdk/client-s3';
 import { GetCloudFrontOriginAccessIdentityCommand } from '@aws-sdk/client-cloudfront';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -450,7 +451,7 @@ export class S3BucketPolicyProvider implements ResourceProvider {
     } catch (err) {
       this.logger.debug(
         `Could not resolve CloudFront OAI ${oaiId} canonical user id for bucket-policy drift normalization: ${
-          err instanceof Error ? err.message : String(err)
+          describeAwsFailure(err).detail
         } — leaving the principal unchanged.`
       );
       canonical = null;

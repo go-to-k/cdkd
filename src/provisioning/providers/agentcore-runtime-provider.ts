@@ -24,6 +24,7 @@ import {
   ResourceNotFoundException,
 } from '@aws-sdk/client-bedrock-agentcore-control';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { pascalToCamelCaseKeys, camelToPascalCaseKeys } from './agentcore-case-convert.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -529,7 +530,7 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
     } catch (err) {
       this.logger.debug(
         `Could not enrich imported BedrockAgentCore Runtime ${physicalId} attributes ` +
-          `(${err instanceof Error ? err.message : String(err)}); ` +
+          `(${describeAwsFailure(err).detail}); ` +
           `recording AgentRuntimeId only (Fn::GetAtt resolves live via getAttribute)`
       );
       return {

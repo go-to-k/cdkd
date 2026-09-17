@@ -22,6 +22,7 @@ import {
   NoSuchEntityException,
 } from '@aws-sdk/client-iam';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -201,7 +202,7 @@ export class IAMRoleProvider implements ResourceProvider {
           );
         } catch (cleanupError) {
           this.logger.warn(
-            `Failed to clean up partially-created IAM role ${logicalId} (${roleName}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: detach managed policies (aws iam list-attached-role-policies --role-name ${roleName} then aws iam detach-role-policy --role-name ${roleName} --policy-arn <arn>), delete inline policies (aws iam list-role-policies --role-name ${roleName} then aws iam delete-role-policy --role-name ${roleName} --policy-name <name>), then aws iam delete-role --role-name ${roleName}`
+            `Failed to clean up partially-created IAM role ${logicalId} (${roleName}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: detach managed policies (aws iam list-attached-role-policies --role-name ${roleName} then aws iam detach-role-policy --role-name ${roleName} --policy-arn <arn>), delete inline policies (aws iam list-role-policies --role-name ${roleName} then aws iam delete-role-policy --role-name ${roleName} --policy-name <name>), then aws iam delete-role --role-name ${roleName}`
           );
         }
         throw innerError;
@@ -284,9 +285,9 @@ export class IAMRoleProvider implements ResourceProvider {
           );
         }
       } catch (error) {
-        orphanReason = `old role ${physicalId} could not be deleted: ${String(error)}`;
+        orphanReason = `old role ${physicalId} could not be deleted: ${safeStringify(error)}`;
         this.logger.warn(
-          `Failed to delete old role ${physicalId} during replacement: ${String(error)}. ` +
+          `Failed to delete old role ${physicalId} during replacement: ${safeStringify(error)}. ` +
             `The old role may be orphaned and require manual cleanup.`
         );
       }

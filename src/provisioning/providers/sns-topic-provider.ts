@@ -17,6 +17,7 @@ import {
   type Tag,
 } from '@aws-sdk/client-sns';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { stringifyValue } from '../../utils/stringify.js';
@@ -261,7 +262,7 @@ export class SNSTopicProvider implements ResourceProvider {
           );
         } catch (cleanupError) {
           warn(
-            `Failed to clean up partially-created SNS topic ${logicalId} (${topicArn}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws sns delete-topic --topic-arn ${topicArn}`
+            `Failed to clean up partially-created SNS topic ${logicalId} (${topicArn}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: aws sns delete-topic --topic-arn ${topicArn}`
           );
         }
         throw innerError;

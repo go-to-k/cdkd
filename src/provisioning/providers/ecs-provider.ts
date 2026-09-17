@@ -82,6 +82,7 @@ import {
   type ThresholdConfiguration,
 } from '@aws-sdk/client-ecs';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -1011,7 +1012,7 @@ export class ECSProvider implements ResourceProvider {
           );
         } catch (cleanupError) {
           this.logger.warn(
-            `Failed to clean up partially-created ECS service ${logicalId} (${service.serviceArn}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws ecs delete-service${clusterArg} --service ${service.serviceArn} --force`
+            `Failed to clean up partially-created ECS service ${logicalId} (${service.serviceArn}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: aws ecs delete-service${clusterArg} --service ${service.serviceArn} --force`
           );
         }
         // The SDK waiter's bare "Waiter has timed out" explains nothing.

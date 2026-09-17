@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vite-plus/test';
-import { describeAwsFailure } from '../../../src/utils/aws-failure-text.js';
+import { describeAwsFailure, safeStringify } from '../../../src/utils/aws-failure-text.js';
 import { CdkdError, ProvisioningError } from '../../../src/utils/error-handler.js';
 
 /**
@@ -210,5 +210,62 @@ describe('describeAwsFailure: what must pass through UNTOUCHED (issue #2302)', (
     );
     expect(failure.summary).not.toContain(ARN);
     expect(failure.detail).toBe(`denied for ${ARN}`);
+  });
+});
+
+describe('safeStringify: the guarded 1:1 replacement for a bare String(x)', () => {
+  // WHY this exists rather than `describeAwsFailure(x).detail`. The sweep that
+  // converted `src/provisioning/**` to `.detail` reached nine BARE `String(x)`
+  // sites and substituted `.detail` there too, on a "byte-identical" claim that
+  // holds only for the TERNARY form. It is false for the bare one, and four of
+  // the nine build a persisted `outcome: 'partial'` orphanReason.
+  it('keeps the wire code that `.detail` drops, which is the whole reason for the split', () => {
+    const awsFailure = awsShaped('$metadata');
+
+    // The discriminator an operator reads first is the NAME, and only
+    // `String()` carries it.
+    expect(safeStringify(awsFailure)).toBe(`AccessDenied: ${AWS_TEXT}`);
+    expect(describeAwsFailure(awsFailure).detail).toBe(AWS_TEXT);
+    expect(describeAwsFailure(awsFailure).detail).not.toContain('AccessDenied');
+  });
+
+  it('agrees with String() for every value String() can convert', () => {
+    // One assertion per shape: the conversions differ from each other, so a
+    // single `Error` case cannot tell a real pass-through from a hardcode.
+    for (const value of [
+      new Error('boom'),
+      Object.assign(new Error('boom'), { name: 'ThrottlingException' }),
+      new Error(''),
+      'a bare string',
+      42,
+      0,
+      null,
+      undefined,
+      true,
+      { toString: () => 'a custom toString' },
+      ['a', 'b'],
+      Symbol('s'),
+    ]) {
+      expect(safeStringify(value)).toBe(String(value));
+    }
+  });
+
+  it('returns a sentence instead of throwing for the shapes String() throws on', () => {
+    // The point of the guard: every call site is INSIDE a catch, so a throw
+    // here replaces the failure being reported -- which is the defect the
+    // whole sweep exists to remove. Both shapes measured to throw under
+    // `String()`.
+    for (const hostile of [
+      Object.create(null) as object,
+      { toString: null },
+      {
+        toString() {
+          throw new Error('hostile toString');
+        },
+      },
+    ]) {
+      expect(() => String(hostile)).toThrow();
+      expect(safeStringify(hostile)).toBe('a value that could not be converted to text');
+    }
   });
 });

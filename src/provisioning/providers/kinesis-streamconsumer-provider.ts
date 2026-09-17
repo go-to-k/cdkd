@@ -9,6 +9,7 @@ import {
   ResourceNotFoundException,
 } from '@aws-sdk/client-kinesis';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import {
   CdkdError,
   ProvisioningError,
@@ -247,7 +248,7 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
       // Best-effort attribute refresh — do not fail the update path on
       // a transient read error.
       this.logger.debug(
-        `DescribeStreamConsumer(${physicalId}) failed: ${err instanceof Error ? err.message : String(err)}`
+        `DescribeStreamConsumer(${physicalId}) failed: ${describeAwsFailure(err).detail}`
       );
     }
 
@@ -384,7 +385,7 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
       if (err instanceof ResourceNotFoundException) return undefined;
       // Best-effort: log and emit empty placeholder.
       this.logger.debug(
-        `ListTagsForResource(${physicalId}) failed: ${err instanceof Error ? err.message : String(err)}`
+        `ListTagsForResource(${physicalId}) failed: ${describeAwsFailure(err).detail}`
       );
       result['Tags'] = [];
     }

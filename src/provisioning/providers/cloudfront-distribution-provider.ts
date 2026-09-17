@@ -15,6 +15,7 @@ import {
   type Tag,
 } from '@aws-sdk/client-cloudfront';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { acquireIdempotencyToken } from './idempotency-token.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
@@ -691,7 +692,7 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       }
     } catch (error) {
       this.logger.debug(
-        `Tag read for CloudFront Distribution ${physicalId} failed during drift read: ${error instanceof Error ? error.message : String(error)}`
+        `Tag read for CloudFront Distribution ${physicalId} failed during drift read: ${describeAwsFailure(error).detail}`
       );
     }
 
@@ -876,7 +877,7 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
           // bounds the loop either way.
           if (error instanceof NoSuchDistribution) throw error;
           this.logger.debug(
-            `Distribution ${distributionId} status read failed (${error instanceof Error ? error.message : String(error)}); retrying`
+            `Distribution ${distributionId} status read failed (${describeAwsFailure(error).detail}); retrying`
           );
         }
 

@@ -40,6 +40,7 @@ import {
   ResourceNotFoundException,
 } from '@aws-sdk/client-bedrock-agentcore-control';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { pascalToCamelCaseKeys, camelToPascalCaseKeys } from './agentcore-case-convert.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -413,7 +414,7 @@ export class AgentCoreEvaluatorProvider implements ResourceProvider {
       // Tags are best-effort for drift purposes; a tagging read failure
       // should not fail the whole drift snapshot.
       this.logger.debug(
-        `Failed to read tags for evaluator ${physicalId}: ${err instanceof Error ? err.message : String(err)}`
+        `Failed to read tags for evaluator ${physicalId}: ${describeAwsFailure(err).detail}`
       );
     }
 

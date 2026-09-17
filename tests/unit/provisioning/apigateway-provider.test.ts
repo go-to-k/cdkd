@@ -322,6 +322,45 @@ describe('ApiGatewayProvider', () => {
         expect(mockSend).toHaveBeenCalledTimes(2);
       });
 
+      // The case below cannot tell `safeStringify(err)` from
+      // `describeAwsFailure(err).detail`: its fixture puts everything in the
+      // MESSAGE, where both spellings find it. `reason` is PERSISTED as the
+      // row's `outcome: 'partial'` text, so its wording may not move -- and a
+      // real AWS failure carries its code as `name`, which only `String(err)`
+      // renders.
+      //
+      // The spy is what reaches that path: this provider's delete wraps every
+      // failure into a `ProvisioningError`, so in production the dropped prefix
+      // is `ProvisioningError: ` rather than AWS's own code. The PROPERTY is the
+      // same either way -- a persisted reason does not change wording -- and the
+      // spy states it in the form where the two spellings visibly differ.
+      it('persists the unwrapped delete failure verbatim, name included', async () => {
+        mockSend.mockResolvedValueOnce({ id: 'new-id' });
+        vi.spyOn(
+          provider as unknown as { deleteResource: (...args: unknown[]) => Promise<void> },
+          'deleteResource'
+        ).mockRejectedValue(
+          Object.assign(new Error('Resource is still referenced by a Method'), {
+            name: 'ConflictException',
+            $metadata: { httpStatusCode: 409 },
+          })
+        );
+
+        const result = await provider.update(
+          'MyResource',
+          'old-id',
+          resourceType,
+          { RestApiId: 'api-id', ParentId: 'parent-id', PathPart: 'orders' },
+          { RestApiId: 'api-id', ParentId: 'parent-id', PathPart: 'users' }
+        );
+
+        expect(result.outcome).toBe('partial');
+        expect(result.reason).toBe(
+          'old API Gateway Resource old-id could not be deleted: ConflictException: ' +
+            'Resource is still referenced by a Method'
+        );
+      });
+
       it('should still return new resource if old resource deletion fails during replacement', async () => {
         // CreateResource succeeds
         mockSend.mockResolvedValueOnce({ id: 'new-id' });

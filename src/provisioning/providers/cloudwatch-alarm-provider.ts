@@ -12,6 +12,7 @@ import {
   type PutMetricAlarmCommandInput,
 } from '@aws-sdk/client-cloudwatch';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -269,7 +270,7 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
       }
     } catch (error) {
       this.logger.debug(
-        `Failed to describe alarm ${alarmName}, constructing ARN from config: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to describe alarm ${alarmName}, constructing ARN from config: ${describeAwsFailure(error).detail}`
       );
     }
     // Fallback: construct ARN from client config. The PARTITION is derived
@@ -571,7 +572,7 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
         result['Tags'] = tags;
       } catch (err) {
         this.logger.debug(
-          `CloudWatch ListTagsForResource(${alarm.AlarmArn}) failed: ${err instanceof Error ? err.message : String(err)}`
+          `CloudWatch ListTagsForResource(${alarm.AlarmArn}) failed: ${describeAwsFailure(err).detail}`
         );
       }
     }

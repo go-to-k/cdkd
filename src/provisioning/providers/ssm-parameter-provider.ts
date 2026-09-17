@@ -11,6 +11,7 @@ import {
   type ParameterType,
 } from '@aws-sdk/client-ssm';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { getAccountInfo } from '../../deployment/intrinsic-function-resolver.js';
 import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
@@ -189,7 +190,7 @@ export class SSMParameterProvider implements ResourceProvider {
       this.logger.warn(
         mask(
           `Could not build the Arn attribute for SSM parameter ${name}: ` +
-            `${error instanceof Error ? error.message : String(error)}. The parameter itself is ` +
+            `${describeAwsFailure(error).detail}. The parameter itself is ` +
             `unaffected; the Arn is NOT recorded, so an Fn::GetAtt on it will fail until a later ` +
             `deploy records it.`
         )
@@ -385,7 +386,7 @@ export class SSMParameterProvider implements ResourceProvider {
               'parameter name cannot be reproduced safely on a command line, and a command ' +
               'naming the sanitized form would delete a DIFFERENT parameter.';
           warn(
-            `Failed to clean up partially-created SSM parameter ${logicalId} (${name}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. ${manualStep}`
+            `Failed to clean up partially-created SSM parameter ${logicalId} (${name}): ${describeAwsFailure(cleanupError).detail}. ${manualStep}`
           );
         }
         throw innerError;

@@ -18,6 +18,7 @@ import {
   type RepositoryTriggerEventEnum,
 } from '@aws-sdk/client-codecommit';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import AdmZip from 'adm-zip';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -786,7 +787,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     } catch (cleanupError) {
       this.logger.warn(
         `Failed to clean up CodeCommit Repository ${repositoryName} after a post-create failure: ` +
-          `${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`
+          `${describeAwsFailure(cleanupError).detail}`
       );
     }
   }
