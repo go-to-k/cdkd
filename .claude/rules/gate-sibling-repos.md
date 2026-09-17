@@ -109,28 +109,55 @@ in REACHABILITY and in whether an alias exists:
 | `integ-local` | YES -- cdk-local's whole runtime is `src/local/**` / `src/cli/commands/local-*.ts`; demonstrated live | `github.com/go-to-k/cdk-local` -> `integ` (the key is HOST-qualified -- copy this shape) |
 | `integ-destroy` | not today -- neither sibling has `src/provisioning/**`, `src/deployment/**` or `src/analyzer/**` | none: neither sibling has a destroy path, so their `integ` never exercised a delete |
 | `integ-broad` | not today -- same paths | none: the marker is bound to a broad-set real-AWS sentinel with no sibling counterpart |
-| `integ-schema-migration` | not today, but by a WEAKER guarantee than the others -- see below | none: neither sibling ships a schema whose bump this marker could attest to |
+| `integ-schema-migration` | **YES since go-to-k/cdkd#3351** -- cdk-local has the same file at the same path with byte-identical spelling; only the gate's broken regexes were keeping it out | none, and one is no longer needed: a FOREIGN target resolving to `none` now PASSES (see below) |
 
 **The `integ-schema-migration` row earned a correction, and the correction is
 the interesting part.** An earlier revision of this table said "neither sibling
 has `src/types/state.ts`". That is FALSE: `/Users/goto/pc/github/cdk-local/src/types/state.ts`
 exists, is 15 KB, and carries `STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 7`.
-The gate's FILE-path scope check therefore matches cdk-local exactly. What keeps
-it inert is only the second half of its activation test -- the diff-content
-regexes -- and both score 0 against that file for incidental spelling reasons:
+The gate's FILE-path scope check therefore matches cdk-local exactly. What KEPT
+it inert, until go-to-k/cdkd#3351 corrected them, was only the second half of
+its activation test -- the diff-content regexes -- which scored 0 against that
+file for incidental spelling reasons. Both are HISTORY now; they are written out
+because the reasoning below turns on them:
 
-- `version:\s*\d+(\s*\|\s*\d+)+` misses because the union is spelled
+- `version:\s*\d+(\s*\|\s*\d+)+` missed because the union is spelled
   `export type StateSchemaVersion = 1 | 2 | ...` (an `=`, not a `version:` key),
   and the record field is `version: StateSchemaVersion`, a type name rather than
   numeric literals.
-- `STATE_SCHEMA_VERSION\s*=\s*\d+` misses because the constants are
+- `STATE_SCHEMA_VERSION\s*=\s*\d+` missed because the constants are
   `STATE_SCHEMA_VERSION_CURRENT` / `_LEGACY`, so `_CURRENT` intervenes before
   the `=`.
 
-So the conclusion "not reachable today" still holds, but it rests on a rename
-away from flipping rather than on the file being absent -- a materially weaker
-guarantee than the other two rows, which is why this row is annotated rather
-than lumped in with them. Re-measure it rather than trusting this paragraph.
+Neither shape has ever existed in cdkd's `src/types/state.ts` either, which is
+the part the paragraph below turns on: the patterns were not describing
+cdk-local badly, they were describing `CLAUDE.md` instead of any source file.
+
+**That conclusion has since FLIPPED, and the instruction one line up -- re-measure
+rather than trust the paragraph -- is what flipped it** (go-to-k/cdkd#3351). The
+"weaker guarantee" was the whole story: both regexes were describing
+`CLAUDE.md`'s flattened `interface StackState` snippet rather than the file they
+grep, so they matched nothing in EITHER repo, and the row read "not reachable"
+for cdk-local only because the gate was equally inert for cdkd. Correcting them
+made the sibling path live on the first try.
+
+The remedy is NOT an alias row. There is nothing in cdk-local for one to point
+at -- its `integ` gate is Docker local-execution and attests to no state round
+trip -- so a row could only have recorded "no equivalent", which is what `none`
+already means. Instead the gate takes the go-to-k/cdkd#3209 precedent: a
+requirement only cdkd DEFINES is required only where it is defined, so a target
+that is provably a different repository AND resolves to `none` now exits 0.
+cdk-local's schema is cdk-local's own contract to gate.
+
+Two properties keep that from being a bypass, and both are fenced:
+`gate_target_is_foreign` answers "not foreign" for an UNRESOLVABLE identity, so
+an unreadable target keeps the refusal; and its allowlist half withdraws the
+relaxation when the command can name another repo, because
+`gh pr merge <N> --repo go-to-k/cdkd` from a sibling checkout resolves a CDKD
+pull request while the target directory is still the sibling. The residue is
+deliberate and fail-closed: a foreign repo whose `.markgate.yml` exists but does
+not PARSE resolves to `canonical`, not `none`, and still takes the unclearable
+refusal -- an unparsable config cannot say what it declares.
 
 "Not reachable today" is in every case a property of the siblings' current file
 layout, not of the gate, so it is not a reason to leave the shape in place.

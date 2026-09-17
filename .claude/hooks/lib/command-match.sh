@@ -4691,6 +4691,217 @@ gate_refuse_unevaluable_marker() {
 }
 
 # =============================================================================
+# Repo identity: is the command's TARGET this hook's own repo?
+# (extracted from verify-pr-gate.sh by go-to-k/cdkd#3351; the measurements
+# quoted here were taken for go-to-k/cdkd#3209, which wrote it)
+# =============================================================================
+#
+# A gate may carry a requirement that only THIS repo defines -- a sentinel file
+# it writes, a markgate gate name it declares. Applied to a sibling checkout
+# such a requirement is unclearable by any legitimate action, which is the
+# failure go-to-k/cdkd#2236 catalogues. These helpers answer "is the target
+# provably NOT this repo", so a caller can take a relaxed path there and its
+# strict path everywhere else.
+#
+# WHY `BASH_SOURCE` IS RIGHT FOR THIS AND WAS WRONG FOR THE MARKER LOOKUP:
+# go-to-k/cdkd#559 moved the marker STORE to the payload cwd, because a marker
+# is per-worktree state and the question is "which tree is this command acting
+# on". Identity asks the opposite question -- "which repo do these hook FILES
+# belong to" -- and the only honest answer is where the file being executed
+# lives. Reading the cwd here would classify by where the SHELL stands.
+#
+# gate_git_common_dir <dir>
+#   Canonical `--git-common-dir` for <dir>, or rc 1. `--path-format=absolute`
+#   is load-bearing, not tidiness: the bare form prints a path relative to the
+#   directory `-C` named, so the `cd` below would resolve it against THIS
+#   process's cwd instead. Measured 2026-09-16 -- a main checkout answers
+#   `.git`, and `-C <repo>/.claude` answers `../.git`; a linked worktree happens
+#   to answer absolutely, which is exactly how this would have looked correct in
+#   the tree it was written in.
+#
+#   The `cd` + `pwd -P` canonicalisation is DEFENSIVE AND UNFENCED, and saying
+#   why it is there is not the same as having measured that it does anything:
+#   the usual reason given, that macOS resolves `/var` to `/private/var`, was
+#   checked and is NOT one. Measured 2026-09-16 on git 2.49, the flag above
+#   already prints `/private/var/...` for a main checkout, a linked worktree and
+#   a relative `GIT_DIR`, and deleting this line changed no verdict. It stays
+#   because a path git DID return unresolved would compare unequal to itself in
+#   the RELAXING direction; do not cite a measurement for it.
+gate_git_common_dir() {
+  local __d
+  __d=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+  [ -n "$__d" ] || return 1
+  __d=$(cd "$__d" 2>/dev/null && pwd -P) || return 1
+  [ -n "$__d" ] || return 1
+  printf '%s\n' "$__d"
+}
+
+# Set by gate_cmd_names_no_other_repo to the REASON it refused, so a caller's
+# message can say what stopped the relaxation. Deliberately assigned EMPTY at
+# column 0: `gate_require_const`'s membership rule is "interpolated outside a
+# comment AND assigned at column 0 with a NON-EMPTY value", so an empty
+# initialiser keeps this out of GATE_LIB_BASE_CONSTS -- same class as
+# GATE_MISSING_CONSTS. Listing it there would make gate_require_const refuse on
+# every command.
+GATE_FOREIGN_RETRACT=""
+
+# gate_cmd_names_no_other_repo <command> <verb-ere>
+#   rc 0 when the command PROVABLY names no repo other than the one its target
+#   directory is in; rc 1 otherwise, with GATE_FOREIGN_RETRACT set.
+#
+# THE FIRST FIX WAS A DENYLIST AND IT IS WHY THIS ONE IS NOT. A regex for
+# `-R` / `--repo` over `strip_noncommand_spans` output closed two spellings and
+# one review round produced five more that gh honours and it did not see:
+# `GH_REPO=<slug> gh ...` and `export GH_REPO=...` (the assignment is stripped
+# before the segment is read, and it need not even be in this segment),
+# `gh pr merge https://github.com/<owner>/<repo>/pull/<N>` (a URL selector needs
+# no flag at all), `gh pr merge N "--repo" <slug>` and `--re"po"` (stripping a
+# quoted span deletes the flag NAME with it). Enumerating spellings has no
+# termination proof; REFUSE the construct rather than model it.
+#
+# So this is an ALLOWLIST: relax only when the command provably names no other
+# repo, and treat every shape it cannot read as naming one.
+#
+#   - the hook's own environment carries no `GH_REPO` (a hook inherits the
+#     session's, and gh honours it over the local repo);
+#   - the RAW command text contains no `GH_REPO` anywhere -- raw, because
+#     `env "GH_REPO=x" gh ...` hides it from the stripper, and whole-command,
+#     because `export GH_REPO=x; gh ...` puts it in a different segment;
+#   - every TOKEN of every matched segment is LITERALLY READABLE
+#     (`gate_word_is_literal`): a `$VAR`, a substitution, a brace expansion, a
+#     backslash or an unbalanced quote is a shape this cannot model, so it stops
+#     the relaxation instead of passing through it;
+#   - and no token NAMES A REPO. Two shapes, both tested on the token with its
+#     QUOTE CHARACTERS REMOVED (`$noq`): `--repo*`, and `-R*` or a combined
+#     short-flag CLUSTER containing `R` (`-[!-]*R*`). gh's `-R` is an ordinary
+#     cobra short flag, so it clusters: measured 2026-09-16,
+#     `gh pr view -cR go-to-k/cdkd 3214` and the glued `-cRgo-to-k/cdkd` BOTH
+#     resolve the cdkd PR from a non-repo directory, and `-sdR <slug>` /
+#     `-sR<slug>` are the same shape on `pr merge`. A prefix-only `-R*` test let
+#     every one of those through. `-tRelease` -- a `--title` short flag whose
+#     VALUE begins with `R` -- is refused by that cluster pattern. Deliberate:
+#     over-refusal falls back to the caller's STRICT path, which is the
+#     direction this whole guard errs in.
+#     `$noq` is the ONLY form tested because it SUBSUMES the other two: deleting
+#     quote characters can expose a prefix but never hide one. Measured -- `$noq`
+#     alone keeps the suite green, `gate_unquote`'s output alone loses the
+#     `--re"po"` case (the library's unquote is not a shell and leaves
+#     `--re"po`), and the RAW token alone loses that and `"--repo"` as well.
+#   - and no token is a URL / PR SELECTOR: the token's FIRST whitespace-delimited
+#     word carries `://` or `/pull/<digits>`. gh resolves the repo from such a
+#     selector with no flag at all.
+#   - and the arguments do not arrive from stdin (`xargs`), where the command
+#     text cannot name the target repo at all.
+gate_cmd_names_no_other_repo() {
+  local cmd="$1" verb_ere="$2" seg tok noq argv
+  GATE_FOREIGN_RETRACT=""
+
+  if [ -n "${GH_REPO:-}" ]; then
+    GATE_FOREIGN_RETRACT="GH_REPO is set in this session's environment"
+    return 1
+  fi
+  case "$cmd" in
+    *GH_REPO*)
+      GATE_FOREIGN_RETRACT="the command carries a GH_REPO assignment"
+      return 1
+      ;;
+  esac
+
+  while IFS= read -r seg; do
+    [ -n "$seg" ] || continue
+    while IFS= read -r tok; do
+      [ -n "$tok" ] || continue
+      noq=${tok//\"/}
+      noq=${noq//\'/}
+      case "$noq" in
+        gh) break ;;
+        xargs)
+          GATE_FOREIGN_RETRACT="the gh command's arguments arrive from stdin through xargs, so the command text cannot name the target repo"
+          return 1
+          ;;
+      esac
+    done <<EOF
+$(gate_argv "$seg" 2>/dev/null)
+EOF
+  done < <(gate_segments_raw "$cmd")
+
+  while IFS= read -r seg; do
+    gate_verb_span "$seg" "$verb_ere" >/dev/null 2>&1 || continue
+
+    if ! argv=$(gate_argv "$seg"); then
+      GATE_FOREIGN_RETRACT="the gh command cannot be split into words (an unbalanced quote?)"
+      return 1
+    fi
+    while IFS= read -r tok; do
+      [ -n "$tok" ] || continue
+      if ! gate_word_is_literal "$tok"; then
+        GATE_FOREIGN_RETRACT="the gh command carries an argument this gate cannot read literally ($tok)"
+        return 1
+      fi
+
+      noq=${tok//\"/}
+      noq=${noq//\'/}
+      case "$noq" in
+        -R* | --repo* | -[!-]*R*)
+          GATE_FOREIGN_RETRACT="the gh command carries a repo override ($tok)"
+          return 1
+          ;;
+      esac
+
+      case "${noq%%[[:space:]]*}" in
+        *://* | */pull/[0-9]*)
+          GATE_FOREIGN_RETRACT="the gh command names a pull request by URL ($tok)"
+          return 1
+          ;;
+      esac
+    done <<EOF
+$argv
+EOF
+  done < <(gate_segments "$cmd")
+  return 0
+}
+
+# gate_target_is_foreign <hook-dir> <target-dir> <command> <verb-ere>
+#   rc 0 when the target is PROVABLY a different repository from the one these
+#   hook files live in AND the command names no other repo; rc 1 otherwise.
+#
+# CALL IT BEFORE THE HOOK `cd`s TO THE TARGET. <hook-dir> is relative in
+# production (`${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/...`), so resolving it
+# from inside the target directory makes the hook's "own" repo the TARGET and
+# every target then classifies as this repo -- the relaxation silently inverts.
+#
+# Pass <target-dir>, NEVER the payload cwd. They differ exactly for the two
+# spellings CLAUDE.md prescribes -- `gh -C <path> pr ...` and
+# `cd <path> && gh pr ...` -- and reading the cwd here would classify by where
+# the SHELL stands instead of where the command runs: a `gh -C <own repo>`
+# issued from a sibling checkout would take the relaxed path.
+#
+# FAIL CLOSED: if EITHER common dir cannot be resolved, the answer is "not
+# foreign", so the caller keeps its strict path. An unresolvable identity never
+# relaxes.
+#
+# KNOWN BOUND, stated rather than chased: "fail closed" covers an UNRESOLVABLE
+# identity, not a RESOLVABLE WRONG one. If the hook file is reached through a
+# symlinked `.claude` (or `.claude/hooks`) whose physical location sits inside a
+# DIFFERENT repository, `git -C` follows the symlink, the hook's "own" repo
+# becomes that other one, and every genuine target classifies foreign. Not this
+# repo's shape (both are real directories in the main tree and in every
+# worktree), and it needs write access to the checkout, which is already game
+# over.
+gate_target_is_foreign() {
+  local hook_dir="$1" target_dir="$2" cmd="$3" verb_ere="$4"
+  local hook_common target_common
+  GATE_FOREIGN_RETRACT=""
+
+  hook_common=$(gate_git_common_dir "$hook_dir") || return 1
+  target_common=$(gate_git_common_dir "$target_dir") || return 1
+  [ "$hook_common" != "$target_common" ] || return 1
+
+  gate_cmd_names_no_other_repo "$cmd" "$verb_ere" || return 1
+  return 0
+}
+
+# =============================================================================
 # Constant liveness (go-to-k/cdkd#2729)
 # =============================================================================
 #

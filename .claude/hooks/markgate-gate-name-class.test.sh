@@ -269,14 +269,20 @@ drive() {
 +++ b/src/a.ts
 @@ -1 +1 @@
 +// x"
+  # The two declarations a real bump edits, spelled as `src/types/state.ts`
+  # actually spells them (go-to-k/cdkd#3351). This fixture previously used
+  # `version: 1 | 2 | ... | 8;` and `STATE_SCHEMA_VERSION = 8`, neither of which
+  # has ever appeared in that file -- so this fence drove the schema gate with a
+  # shape only the gate's equally-fictional regexes could match, and would have
+  # gone on reporting the gate reachable after the regexes were corrected.
   [ "$key" = prmerge-schema ] && diff_body="diff --git a/src/types/state.ts b/src/types/state.ts
 --- a/src/types/state.ts
 +++ b/src/types/state.ts
 @@ -1,4 +1,4 @@
--  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
-+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
--export const STATE_SCHEMA_VERSION = 8;
-+export const STATE_SCHEMA_VERSION = 9;"
+-export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
++export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
+-export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 8;
++export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 9;"
   GH_FILES="$(scope_env_for "$key")" GH_JSON="$(json_for "$key")" GH_DIFF="$diff_body" \
     bash -c 'payload="$1"; printf "%s" "$payload" | "$2"' _ "$(payload_for "$key")" "$(hook_path_for "$hook")" \
     >/dev/null 2>&1

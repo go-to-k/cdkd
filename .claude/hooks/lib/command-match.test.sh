@@ -3214,6 +3214,89 @@ if [ "$__gmc_count" -ne 15 ]; then
 else
   pass=$((pass + 1)); printf 'ok   gate_missing_const block ran all %s cases\n' "$__gmc_count"
 fi
+# =============================================================================
+# gate_target_is_foreign (go-to-k/cdkd#3351)
+# =============================================================================
+#
+# Extracted from verify-pr-gate.sh so integ-schema-migration-gate could reuse it
+# rather than grow a second copy -- `.claude/rules/hooks.md` records that
+# hand-copied gate parsers reintroduced one hole at 24 sites.
+#
+# THE FIRST CASE IS THE POINT OF FENCING IT HERE. "target IS this repo, so the
+# strict path applies" is UNCONSTRUCTIBLE from either consuming gate's suite:
+# both build throwaway `git init` fixtures, which are foreign by construction,
+# and the real cdkd checkout always declares `integ-schema-migration`, so the
+# schema gate can never reach a non-foreign `mode = none`. A green suite over
+# there therefore says nothing about the arm that keeps cdkd itself gated.
+__gtf_start=$((pass + fail))
+# THIS FILE IS ONE LEVEL DEEPER THAN THE GATE SUITES. They live in
+# `.claude/hooks/`, so their `dirname/../..` is the repo root; this one lives in
+# `.claude/hooks/lib/`, where the same spelling lands on `.claude`. Copying it
+# made BOTH paths unresolvable, `gate_git_common_dir` failed on each, and the
+# fail-closed `return 1` satisfied the "NOT foreign" case for entirely the wrong
+# reason -- it went green while measuring nothing. Only the `-> foreign` case
+# reds on that, which is why the two are kept as a PAIR.
+__gtf_hooks_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+__gtf_repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+__gtf_tmp="$(mktemp -d)"
+git init -q "$__gtf_tmp/foreign" 2>/dev/null
+
+# Guard the fixture itself: if either path stops resolving to a git repo, every
+# case below degrades into the vacuous pass described above.
+if ! git -C "$__gtf_repo_dir" rev-parse --git-dir >/dev/null 2>&1 \
+  || [ ! -d "$__gtf_hooks_dir" ]; then
+  fail=$((fail + 1))
+  fail_log="${fail_log}FAIL gate_target_is_foreign fixture: repo=$__gtf_repo_dir hooks=$__gtf_hooks_dir did not resolve -- the cases below would pass vacuously\n"
+  printf 'FAIL gate_target_is_foreign fixture did not resolve\n'
+fi
+
+__gtf() { # name, want-rc, hook_dir, target_dir, command
+  local name="$1" want="$2" got
+  GH_REPO="" gate_target_is_foreign "$3" "$4" "$5" "$GATE_RE_GH_PR_MERGE"
+  got=$?
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %s\n' "$name"
+  else
+    fail=$((fail + 1))
+    fail_log="${fail_log}FAIL $name (want rc $want, got $got)\n"
+    printf 'FAIL %s (want rc %s, got %s)\n' "$name" "$want" "$got"
+  fi
+}
+
+__gtf "target IS this repo -> NOT foreign (the strict path is kept)" 1 \
+  "$__gtf_hooks_dir" "$__gtf_repo_dir" "gh pr merge 1 --squash"
+__gtf "a different repo -> foreign" 0 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/foreign" "gh pr merge 1 --squash"
+# FAIL CLOSED: an identity that cannot be resolved is never foreign, so the
+# caller keeps whatever it does for its own repo.
+__gtf "target is not a git repo -> NOT foreign (fail closed)" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp" "gh pr merge 1 --squash"
+__gtf "hook dir is not a git repo -> NOT foreign (fail closed)" 1 \
+  "$__gtf_tmp" "$__gtf_tmp/foreign" "gh pr merge 1 --squash"
+# The ALLOWLIST half: a foreign target stops being foreign the moment the
+# command can name some OTHER repo, because then the target directory no longer
+# says which repo the merge lands on.
+__gtf "foreign + --repo -> NOT foreign (the command names another repo)" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/foreign" "gh pr merge 1 --repo go-to-k/cdkd"
+__gtf "foreign + clustered -R -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/foreign" "gh pr merge 1 -sdR go-to-k/cdkd"
+__gtf "foreign + a PR URL selector -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/foreign" "gh pr merge https://github.com/go-to-k/cdkd/pull/1"
+__gtf "foreign + an unreadable argument -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/foreign" 'gh pr merge "$N" --squash'
+
+rm -rf "$__gtf_tmp"
+
+# Equality, not a floor, for the reason every other block here uses equality:
+# a floor goes green when a case is deleted.
+__gtf_ran=$((pass + fail - __gtf_start))
+if [ "$__gtf_ran" -ne 8 ]; then
+  fail=$((fail + 1))
+  fail_log="${fail_log}FAIL gate_target_is_foreign block ran $__gtf_ran cases, expected exactly 8 -- a case vanished, or one was added without bumping the count\n"
+else
+  pass=$((pass + 1)); printf 'ok   gate_target_is_foreign block ran all %s cases\n' "$__gtf_ran"
+fi
+
 __gmc_tail_start=$((pass + fail))
 
 # THE TWO MESSAGES THIS HELPER EMITS, held to the same shape rule as the hook
