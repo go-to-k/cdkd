@@ -1369,25 +1369,66 @@ describe('collectFixtureDeltas collects identifier changes (issue 3327 wiring)',
     expect(collect(fx(['ApiId']), fx(['ApiId'])).identifierChanges).toEqual([]);
   });
 
-  it('reads the working-tree fixture ONCE per file', () => {
-    // The first cut called `currentOf` a second time for this comparison: two
-    // filesystem reads per fixture, and a TOCTOU window where the property
-    // comparison and the identifier comparison could see different bytes.
+  it('reads the working-tree fixture ONCE per file, on the path that USED to read twice', () => {
+    // The fixture matters and the first version of this case got it wrong: it
+    // used one with no writable removal, so it never reached the routing
+    // question further down the loop — the very reader that was still calling
+    // `currentOf` again. Measured at that commit, this shape returned 2.
+    //
+    // `B` is writable, declared by nobody, and present in the committed side
+    // only: that makes it a REMOVED silent drop, which is what takes the loop
+    // into the `silentDropGone` branch.
     let calls = 0;
-    collect(fx(['ApiId']), '', () => {
-      calls += 1;
-      return fx(['Arn']);
+    const committed = JSON.stringify({
+      resourceType: 'AWS::Sdk::Thing',
+      properties: ['A', 'B'],
+      readOnlyProperties: [],
+      createOnlyProperties: [],
+      primaryIdentifier: ['ApiId'],
     });
+    const current = JSON.stringify({
+      resourceType: 'AWS::Sdk::Thing',
+      properties: ['A'],
+      readOnlyProperties: [],
+      createOnlyProperties: [],
+      primaryIdentifier: ['Arn'],
+    });
+    const result = collect(committed, '', () => {
+      calls += 1;
+      return current;
+    });
+    // The branch really was entered — otherwise this case is the old vacuous
+    // one wearing a better title.
+    expect(result.silentDropRemoved.length).toBeGreaterThan(0);
     expect(calls).toBe(1);
   });
 
   it('counts an unparseable working-tree side as unreadable, and reports NO identifier change', () => {
-    // The claim the first cut's comment made and did not keep: the comparison
-    // sat OUTSIDE the try, so a throwing or malformed second read escaped the
-    // collector uncaught instead of landing here.
     const result = collect(fx(['ApiId']), '{ not json');
     expect(result.unreadable).toEqual(['AWS-Sdk-Thing.json']);
     expect(result.identifierChanges).toEqual([]);
+  });
+
+  it('does not ESCAPE when the working-tree read fails on a LATER call', () => {
+    // The actual round-1 defect, which the case above cannot reach: its
+    // `currentOf` is constant, so the FIRST read already throws inside the
+    // `try`. The bug needed a reader that succeeds once and fails after —
+    // measured against that commit, both arms below escaped the collector
+    // uncaught (`Error: boom on call 2`, `SyntaxError`) instead of landing in
+    // `unreadable`. With one hoisted read there is no second call to fail, so
+    // these now assert the ABSENCE of a second read as much as the handling.
+    for (const [label, second] of [
+      ['throws', () => { throw new Error('boom on call 2'); }],
+      ['returns malformed JSON', () => '{ not json'],
+    ] as [string, () => string][]) {
+      let calls = 0;
+      const currentOf = (): string => {
+        calls += 1;
+        return calls === 1 ? fx(['Arn']) : second();
+      };
+      expect(() => collect(fx(['ApiId']), '', currentOf), `escaped: ${label}`).not.toThrow();
+      expect(calls, `a second read happened: ${label}`).toBe(1);
+    }
   });
 });
 
@@ -2569,8 +2610,12 @@ describe('the module’s own doc comments', () => {
     const src = readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.d.mts'), 'utf8');
     expect(orphansIn(src), 'a docblock is not attached to a declaration').toEqual([]);
     // BOUND, stated rather than implied: `orphansIn` matches ` */` EXACTLY, so
-    // it examines only the 7 top-level docblocks here and not the 5 INDENTED
+    // it examines only the TOP-LEVEL docblocks here and not the INDENTED
     // interface-member ones (`SdkLagRow.matched`, `DiagnosisInput`'s members),
+    // NO COUNTS — they said 7 and 5, were 16 and more by the time review
+    // measured them, and nothing recomputes a figure written into a comment.
+    // The bound is about WHICH blocks the predicate sees, which does not depend
+    // on how many there are,
     // where the same class — a member inserted between a docblock and its
     // symbol — is equally reachable. Widening the predicate to indented blocks
     // is a change to the shared `.mjs` arm too, so it is not made here.
@@ -4821,6 +4866,21 @@ describe('the decision labels and the count cannot disagree', () => {
     ['failed checks only', { removed: [], divergences: [], failedChecks: ['property-coverage'] }],
     ['unparsed checker only', { removed: [], divergences: [], nestedKeyUnparsed: true }],
     ['unreadable only', { removed: [], divergences: [], unreadable: ['AWS-S3-Bucket.json'] }],
+    // The seventh term (go-to-k/cdkd#3327). Added here as well as to the
+    // all-kinds case because this list is what makes the labels FENCED: review
+    // measured that with no entry, dropping `D()` from the new section left
+    // every committed case green. That is the same omission this block's own
+    // comment records happening to the standing-tolerance class.
+    [
+      'identifier changes only',
+      {
+        removed: [],
+        divergences: [],
+        identifierChanges: [
+          { resourceType: 'AWS::AppSync::GraphQLApi', before: ['ApiId'], after: ['Arn'] },
+        ],
+      },
+    ],
     [
       'every kind at once',
       {
@@ -4829,6 +4889,10 @@ describe('the decision labels and the count cannot disagree', () => {
         failedChecks: ['property-coverage', 'audit:sdk-attr-coverage:check'],
         nestedKeyUnparsed: true,
         unreadable: ['AWS-S3-Bucket.json'],
+        identifierChanges: [
+          { resourceType: 'AWS::AppSync::GraphQLApi', before: ['ApiId'], after: ['Arn'] },
+          { resourceType: 'AWS::SQS::Queue', before: ['QueueUrl'], after: ['Arn'] },
+        ],
       },
     ],
     // The pending-bump section is COUNTED (one label per bump, not per

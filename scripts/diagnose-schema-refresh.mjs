@@ -2465,15 +2465,24 @@ export function collectFixtureDeltas({
     let resourceType;
     /** @type {{before: string[], after: string[]} | undefined} */
     let identifierChange;
+    /** @type {string} */
+    let current;
     try {
-      // READ ONCE. `currentOf` hits the filesystem, so calling it twice per
-      // fixture doubles the reads AND opens a TOCTOU window the single-read
-      // version did not have — the two comparisons could see different bytes.
-      // (Review of go-to-k/cdkd#3349: the identifier comparison was added
-      // outside this `try` with a comment claiming it was inside. It was not,
-      // and a `currentOf` that threw on the second call escaped this function
-      // uncaught instead of landing in `unreadable`.)
-      const current = currentOf(file);
+      // ONE read per fixture, for EVERY consumer in this loop — the two
+      // comparisons here and the routing question further down, which used to
+      // call `currentOf` again. `currentOf` hits the filesystem, so a second
+      // call is both a second read and a TOCTOU window: the answers could be
+      // computed from different bytes.
+      //
+      // Two review rounds on go-to-k/cdkd#3349 landed here. The first added the
+      // identifier comparison OUTSIDE this `try` with a comment claiming it was
+      // inside — a `currentOf` throwing on its second call escaped the function
+      // uncaught instead of landing in `unreadable`. The second found the fix
+      // still left the third reader calling `currentOf` again, so the comment
+      // saying READ ONCE was false in a new way. Hoisting the binding is what
+      // makes the claim structural rather than a promise: there is one call,
+      // and a reader added later has a `current` to reach for.
+      current = currentOf(file);
       delta = comparePropertySets(committed, current);
       identifierChange = comparePrimaryIdentifier(committed, current);
       // The filename stem converted back, never the raw stem: it is hyphenated
@@ -2565,7 +2574,10 @@ export function collectFixtureDeltas({
       // the resource still takes the Cloud Control route.
       let retainsOtherDrops = false;
       try {
-        const after = JSON.parse(currentOf(file));
+        // The SAME text the comparisons above parsed — see the hoist note at
+        // the top of the loop. Re-reading here was the second call that made
+        // "read once" untrue.
+        const after = JSON.parse(current);
         const afterReadOnly = new Set(
           Array.isArray(after.readOnlyProperties) ? after.readOnlyProperties : []
         );
