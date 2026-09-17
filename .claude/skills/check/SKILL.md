@@ -135,17 +135,31 @@ Run these sequentially and report results:
      # `Errors` is a DIFFERENT line from `Type Errors` (that one covers
      # *.test-d.ts alone), and it is where a dead pool worker reports. Without
      # it the grep reproduces three reassuring lines and hides the count that
-     # explains the rc.
-     grep -E "Test Files|      Tests |Type Errors|^ +Errors " "$log"
-     collected=$(grep -oE 'Test Files .*\([0-9]+\)$' "$log" | grep -oE '[0-9]+\)$' | tr -d ')')
-     ondisk=$(git ls-files 'tests/**/*.test.ts' 'src/**/*.test.ts' \
-       'tests/**/*.test-d.ts' 'src/**/*.test-d.ts' | wc -l | tr -d ' ')
+     # explains the rc. Matched by CONTENT, never by indentation: under a
+     # coloured summary the line STARTS with an escape, the class `ci.yml`'s
+     # test-ran guard already failed a green run on. `[0-9]+ error` is also
+     # what keeps `Type Errors  no errors` from arriving twice.
+     grep -E "Test Files|      Tests |Type Errors|Errors.*[0-9]+ error" "$log"
+     # rc FIRST. A crashed or filtered run prints no `(N)` to compare, so
+     # judging the count before the verdict would report "collected none" for a
+     # run whose real problem is the rc.
+     [ "$rc" = 0 ] || { echo "SUITE FAILED rc=$rc; log: $log"; exit 1; }
+     # The file count's only external reference is the tree: a degraded run
+     # prints a self-consistent `N passed (N)` over the files that SURVIVED.
+     # Unanchored, and the LAST `(N)` on the line -- the coloured summary ends
+     # in `\e[39m`, not in `)`, so a `$` anchor extracts nothing and the
+     # comparison below then false-FAILS a green suite. `tail -1` because a
+     # multi-line value makes `[` a syntax error rather than a verdict.
+     collected=$(grep 'Test Files' "$log" | grep -oE '\([0-9]+\)' | tail -1 | tr -d '()')
+     # `:(glob)` on every pathspec: git's bare `**` demands an intervening `/`
+     # while vitest's does not, so a depth-1 `tests/foo.test.ts` would be
+     # collected and not listed, weakening the floor by one, silently.
+     ondisk=$(git ls-files ':(glob)tests/**/*.test.ts' ':(glob)src/**/*.test.ts' \
+       ':(glob)tests/**/*.test-d.ts' ':(glob)src/**/*.test-d.ts' | wc -l | tr -d ' ')
      # `-ge`, not `=`: an UNTRACKED new test file is collected but not listed,
      # which is legitimate and must not red. The direction that matters is
-     # collected < tracked, which is the lost-worker case. A test deleted but
-     # not committed is the one false FAIL, and it says so.
-     [ "${collected:-0}" -ge "$ondisk" ] || { echo "COLLECTED ${collected:-none} of $ondisk tracked test files -- attests to nothing; re-run with --maxWorkers=4; log: $log"; exit 1; }
-     [ "$rc" = 0 ] || { echo "SUITE FAILED rc=$rc; log: $log"; exit 1; }
+     # collected < tracked.
+     [ "${collected:-0}" -ge "$ondisk" ] || { echo "COLLECTED ${collected:-none} of $ondisk tracked test files over a run that exited 0 -- attests to nothing. Lost pool workers: re-run with --maxWorkers=4. A filter left on the command line, or a test deleted but not committed, reads the same here; the log says which. log: $log"; exit 1; }
    )
    ```
 

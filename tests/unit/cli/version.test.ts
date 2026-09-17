@@ -57,6 +57,53 @@ function requireBuiltCli(): void {
   ).toBe(false);
 }
 
+/**
+ * The message an `expect(output).toBe(version)` mismatch carries.
+ *
+ * A mismatch here is almost always a STALE `dist/`, not a broken version bake:
+ * a rebase crossing a `chore(release)` commit moves package.json's version
+ * while `dist/` keeps the pre-rebase one. The bare diff then reads as a defect
+ * the rebase introduced and the reader hunts the wrong thing — measured
+ * 2026-09-17 on the go-to-k/cdkd#3318 lane: `expected '0.290.19' to be
+ * '0.290.21'` after rebasing onto 0.290.21.
+ *
+ * `/work-issues` references/gates-and-pr.md §7 ALREADY says rebuild before
+ * re-running the suite after a rebase, and that run violated it anyway — so
+ * the escalation is mechanical rather than one more sentence. Same pattern as
+ * `requireBuiltCli()` above: fail with the CAUSE.
+ *
+ * EXTRACTED rather than inlined, because a ternary inside the assertion is
+ * evaluated only on an already-red run — so no assertion would ever cover
+ * either arm, and the two live probes taken when this landed could not settle
+ * the TIE at all: the "older" probe edits package.json, which sets its mtime to
+ * now, so it selects the stale arm by construction and a hardcoded `true`
+ * produces byte-identical output. Equal mtimes are routine on a
+ * one-second-granularity filesystem and are exactly what a `<` comparison folds
+ * silently into "newer", which is why the tie gets its own arm and its own case
+ * rather than a boolean.
+ */
+function versionMismatchHint(distMtimeMs: number, pkgMtimeMs: number): string {
+  if (distMtimeMs < pkgMtimeMs) {
+    return (
+      'dist/cli.js is OLDER than package.json, so this is a STALE BUILD, not a ' +
+      'version-baking defect — run `vp run build`, then re-run the suite. A rebase ' +
+      'crossing a `chore(release)` commit produces exactly this.'
+    );
+  }
+  if (distMtimeMs === pkgMtimeMs) {
+    return (
+      'dist/cli.js and package.json share an mtime, so which one is stale cannot be ' +
+      'read off the filesystem — run `vp run build` to rule out a stale build first, ' +
+      'and only then look at how the version is baked in.'
+    );
+  }
+  return (
+    'the built CLI reports a version package.json does not carry, and dist/cli.js is ' +
+    'NEWER than package.json — so a rebuild will not fix it; the version is baked in ' +
+    'by the build, so look there.'
+  );
+}
+
 // Spawning the built CLI can exceed vitest's default 5s timeout on slower
 // machines under load — same class as gen-handled-property-wiring's
 // SPAWN_TIMEOUT_MS, though this spawn is lighter so the budget is half.
@@ -84,6 +131,33 @@ const CLI_SPAWN_TIMEOUT_MS = 30_000;
 // `stubbedCommandTree` test below is the fence for the wiring itself.
 const ENTRY_CHUNK_MAX_BYTES = 64 * 1024;
 
+// Deliberately NOT under `skipIf(skipUnbuilt)`: this fences the DIAGNOSIS, not
+// the built CLI, so it must keep running in the fresh worktree where `dist/` is
+// absent — which is also the state a reader hitting a stale build starts from.
+describe('versionMismatchHint', () => {
+  it('names a stale build when dist/ predates package.json', () => {
+    const msg = versionMismatchHint(1_000, 2_000);
+    expect(msg).toContain('STALE BUILD');
+    expect(msg).toContain('vp run build');
+  });
+
+  // The arm neither live probe could reach. `<=` collapsing the tie into the
+  // stale arm, or `<` folding it into the newer one, both red here — which is
+  // the whole reason the selection was lifted out of a ternary.
+  it('refuses to guess when the two share an mtime', () => {
+    const msg = versionMismatchHint(2_000, 2_000);
+    expect(msg).toContain('share an mtime');
+    expect(msg).not.toContain('STALE BUILD');
+    expect(msg).not.toContain('NEWER');
+  });
+
+  it('points at the build rather than a rebuild when dist/ is newer', () => {
+    const msg = versionMismatchHint(3_000, 2_000);
+    expect(msg).toContain('NEWER');
+    expect(msg).not.toContain('STALE BUILD');
+  });
+});
+
 describe('cdkd --version', () => {
   it.skipIf(skipUnbuilt)(
     'reports the version baked in from package.json',
@@ -94,30 +168,13 @@ describe('cdkd --version', () => {
         encoding: 'utf-8',
       }).trim();
 
-      // A MISMATCH here is almost always a STALE `dist/`, not a broken version
-      // bake: a rebase crossing a `chore(release)` commit moves package.json's
-      // version while `dist/` keeps the pre-rebase one. The bare diff then
-      // reads as a defect the rebase introduced, and the reader hunts the
-      // wrong thing (measured 2026-09-17 on the go-to-k/cdkd#3318 lane:
-      // `expected '0.290.19' to be '0.290.21'` after rebasing onto 0.290.21).
-      //
-      // `/work-issues` references/gates-and-pr.md §7 ALREADY says rebuild
-      // before re-running the suite after a rebase, and this run violated it
-      // anyway — so the escalation is mechanical rather than one more
-      // sentence. Same pattern as `requireBuiltCli()` above: fail with the
-      // CAUSE. The mtime comparison is the discriminator, not decoration — it
-      // separates "you did not rebuild" from "the version baking is broken",
-      // which the version strings alone cannot.
-      const distOlderThanPkg = statSync(cliPath).mtimeMs < statSync(pkgPath).mtimeMs;
+      // The mtimes are the discriminator, not decoration: they separate "you
+      // did not rebuild" from "the version baking is broken", which the two
+      // version strings alone cannot. `versionMismatchHint`'s doc carries the
+      // incident and why the arm selection lives in a testable function.
       expect(
         output,
-        distOlderThanPkg
-          ? 'dist/cli.js is OLDER than package.json, so this is a STALE BUILD, not a ' +
-            'version-baking defect — run `vp run build`, then re-run the suite. A rebase ' +
-            'crossing a `chore(release)` commit produces exactly this.'
-          : 'the built CLI reports a version package.json does not carry, and dist/ is ' +
-            'NEWER than package.json — so a rebuild will not fix it; the version is ' +
-            'baked in by the build, so look there.'
+        versionMismatchHint(statSync(cliPath).mtimeMs, statSync(pkgPath).mtimeMs)
       ).toBe(version);
     },
     CLI_SPAWN_TIMEOUT_MS,
