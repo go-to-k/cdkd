@@ -55,7 +55,7 @@ state-source flags — see [State sources](#state-sources).
 | `-c`, `--context <key=value>` | — | Context value passed to synthesis. Repeatable. |
 | `--region <region>` | `AWS_REGION` / stack / profile | **Deprecated**, hidden from `--help`, and still honored: it overrides `AWS_REGION` and the profile, and prints a removal warning. Prefer `AWS_REGION` or your profile. |
 | `--profile <profile>` | — | AWS profile. |
-| `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for AWS API calls. |
+| `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume. **Not safe to combine with this command without the `--profile` flag** — the role's credentials also reach the Function URL and Lambda@Edge containers, so your code runs as it. An exported `AWS_PROFILE` does not prevent this. See the `--role-arn` section of [CLI Reference](cli-reference.md). |
 | `-y`, `--yes` | off | Answer interactive prompts with the recommended response. |
 | `--verbose` | off | Verbose logging. |
 

@@ -169,6 +169,13 @@ async function createNetworkAndSidecar(args: {
   ];
   const sidecarEnv: Record<string, string> = {};
   if (credentials) {
+    // cdkd-local-env-identity: `options.taskCredentials`, which has exactly two
+    // sources and never `process.env` — `--assume-task-role`'s own STS hop, or
+    // `resolveProfileCredentials(profile)`, which asks for the profile through
+    // `ignoreAssumedRole: true`. So a `--role-arn` assumed role reaches neither
+    // arm. Both are identities the user named for the task on purpose. Stated
+    // as two because a third arm added later must be judged rather than
+    // inherit this verdict.
     sidecarEnv['AWS_ACCESS_KEY_ID'] = credentials.accessKeyId;
     sidecarEnv['AWS_SECRET_ACCESS_KEY'] = credentials.secretAccessKey;
     if (credentials.sessionToken) {

@@ -77,6 +77,7 @@ import { createLocalStartAlbCommand } from './local-start-alb.js';
 import { createLocalStartCloudFrontCommand } from './local-start-cloudfront.js';
 import { setEmbedConfig } from 'cdk-local';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { applyCallerIdentityCredentials } from '../../utils/caller-credentials.js';
 
 /**
  * cdkd's branding for cdk-local's embed-config. cdkd re-exports cdk-local's
@@ -1251,7 +1252,13 @@ export async function resolvePseudoParametersForInvoke(
   let accountId: string | undefined;
   try {
     const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-    const sts = new STSClient({ ...awsClientDefaults(), ...(region && { region }) });
+    // `ignoreAssumedRole` -- this resolves the `${AWS::AccountId}` the emulated function sees,
+    // so it must be the caller's own identity, never a `--role-arn` assumed
+    // for cdkd's own calls. See that option's JSDoc.
+    const sts = new STSClient({
+      ...awsClientDefaults({ ignoreAssumedRole: true }),
+      ...(region && { region }),
+    });
     try {
       const identity = await sts.send(new GetCallerIdentityCommand({}));
       accountId = identity.Account;
@@ -1424,6 +1431,9 @@ export async function applyLambdaCredentialEnv(
     );
     try {
       const creds = await assumeLambdaExecutionRole(args.assumeRoleArn, stsRegion);
+      // cdkd-local-env-identity: `--assume-role`'s own STS hop — the flag whose
+      // entire job is to choose the emulated function's identity. Its STS client
+      // opts out of the `--role-arn` role, so the hop is answered by the caller.
       dockerEnv['AWS_ACCESS_KEY_ID'] = creds.accessKeyId;
       dockerEnv['AWS_SECRET_ACCESS_KEY'] = creds.secretAccessKey;
       dockerEnv['AWS_SESSION_TOKEN'] = creds.sessionToken;
@@ -1476,7 +1486,13 @@ async function assumeLambdaExecutionRole(
   region: string | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
   const { STSClient, AssumeRoleCommand } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient({ ...awsClientDefaults(), ...(region && { region }) });
+  // `ignoreAssumedRole` -- this resolves the execution role's credentials, injected into the container,
+  // so it must be the caller's own identity, never a `--role-arn` assumed
+  // for cdkd's own calls. See that option's JSDoc.
+  const sts = new STSClient({
+    ...awsClientDefaults({ ignoreAssumedRole: true }),
+    ...(region && { region }),
+  });
   try {
     const response = await sts.send(
       new AssumeRoleCommand({
@@ -1516,8 +1532,11 @@ async function assumeLambdaExecutionRole(
  * COMMERCIAL partition). Folding only inside `applyLambdaCredentialEnv`'s
  * assume-role arm made ONE command yield two different container regions for the
  * same shell — `cn-north-1` with `--assume-role`, `CN-NORTH-1` without.
+ *
+ * Exported for unit-test isolation (`local-container-caller-identity.test.ts`),
+ * which drives the `--role-arn` cases without the synth + docker pipeline.
  */
-function forwardAwsEnv(env: Record<string, string>): void {
+export function forwardAwsEnv(env: Record<string, string>): void {
   const passThrough = [
     'AWS_ACCESS_KEY_ID',
     'AWS_SECRET_ACCESS_KEY',
@@ -1531,6 +1550,13 @@ function forwardAwsEnv(env: Record<string, string>): void {
     if (value === undefined) continue;
     env[key] = regionKeys.has(key) ? canonicalizeRegion(value) : value;
   }
+  // Issue #3130: `applyRoleArnIfSet` OVERWRITES the three credential variables
+  // above with a `--role-arn` assumed role's, so the copy that just ran would
+  // hand the emulated handler cdkd's deploy role. Put the caller's own identity
+  // back (or strip the triple when there was none to restore). A no-op when no
+  // role was assumed, so the ordinary path is unchanged. Applied INSIDE the
+  // copy rather than at each call site so a site added later inherits it.
+  applyCallerIdentityCredentials(env);
 }
 
 /**
@@ -1570,6 +1596,11 @@ export function applyProfileCredentialsOverlay(
 ): void {
   if (!profileCreds) return;
   if (assumeRoleActive) return;
+  // cdkd-local-env-identity: `--profile`, resolved by `resolveProfileCredentials`
+  // through `awsClientDefaults({ ignoreAssumedRole: true })` — the caller's own
+  // chain, never the `--role-arn` role. Runs AFTER the caller-identity restore
+  // in `forwardAwsEnv` and deliberately outranks it: both are the caller, and
+  // the flag is the more specific of the two.
   env['AWS_ACCESS_KEY_ID'] = profileCreds.accessKeyId;
   env['AWS_SECRET_ACCESS_KEY'] = profileCreds.secretAccessKey;
   if (profileCreds.sessionToken) {

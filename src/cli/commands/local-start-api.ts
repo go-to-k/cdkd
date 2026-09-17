@@ -126,6 +126,7 @@ import {
   type ProfileCredentialsFile,
 } from './local-profile-credentials-file.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { applyCallerIdentityCredentials } from '../../utils/caller-credentials.js';
 
 interface LocalStartApiOptions {
   app?: string;
@@ -991,6 +992,11 @@ async function localStartApiCommand(
       const spec = initialMaterial.specs.get(id);
       if (!spec) continue;
       spec.env['AWS_ENDPOINT_URL_APIGATEWAYMANAGEMENTAPI'] = mgmtEndpoint;
+      // cdkd-local-env-identity: AWS's own documentation-example key, a
+      // PLACEHOLDER so the SDK will instantiate against the local management
+      // endpoint. It is not an identity at all and names no real principal, and
+      // the guard keeps it from displacing whatever the caller's own identity
+      // put there.
       if (!spec.env['AWS_ACCESS_KEY_ID']) {
         spec.env['AWS_ACCESS_KEY_ID'] = 'AKIAIOSFODNN7EXAMPLE';
         spec.env['AWS_SECRET_ACCESS_KEY'] = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
@@ -1819,6 +1825,9 @@ async function buildContainerSpec(args: {
   });
   if (roleArn) {
     const creds = await assumeLambdaExecutionRole(roleArn, stsRegion);
+    // cdkd-local-env-identity: `--assume-role`'s own STS hop — the flag whose
+    // entire job is to choose this Lambda's identity. Its STS client opts out
+    // of the `--role-arn` role, so the hop is answered by the caller.
     dockerEnv['AWS_ACCESS_KEY_ID'] = creds.accessKeyId;
     dockerEnv['AWS_SECRET_ACCESS_KEY'] = creds.secretAccessKey;
     dockerEnv['AWS_SESSION_TOKEN'] = creds.sessionToken;
@@ -1840,6 +1849,12 @@ async function buildContainerSpec(args: {
     // triple is overlaid. Existing precedence: assume-role > profile >
     // forwarded process env.
     if (profileCredentials) {
+      // cdkd-local-env-identity: `--profile`, resolved by
+      // `resolveProfileCredentials` through
+      // `awsClientDefaults({ ignoreAssumedRole: true })` — the caller's own
+      // chain, never the `--role-arn` role. Runs AFTER the caller-identity
+      // restore in `forwardAwsEnv` and deliberately outranks it: both are the
+      // caller, and the flag is the more specific of the two.
       dockerEnv['AWS_ACCESS_KEY_ID'] = profileCredentials.accessKeyId;
       dockerEnv['AWS_SECRET_ACCESS_KEY'] = profileCredentials.secretAccessKey;
       if (profileCredentials.sessionToken) {
@@ -2576,8 +2591,11 @@ function readEnvOverridesFile(filePath: string | undefined): EnvOverrideFile | u
  * Forward the developer's AWS credentials into the container so the
  * handler's AWS SDK calls can authenticate. Used when --assume-role is
  * NOT set for that Lambda — SAM-compatible default.
+ *
+ * Exported for unit-test isolation (`local-container-caller-identity.test.ts`),
+ * which drives the `--role-arn` cases without booting the API server.
  */
-function forwardAwsEnv(env: Record<string, string>): void {
+export function forwardAwsEnv(env: Record<string, string>): void {
   const passThrough = [
     'AWS_ACCESS_KEY_ID',
     'AWS_SECRET_ACCESS_KEY',
@@ -2589,6 +2607,12 @@ function forwardAwsEnv(env: Record<string, string>): void {
     const value = process.env[key];
     if (value !== undefined) env[key] = value;
   }
+  // Issue #3130: `applyRoleArnIfSet` OVERWRITES the three credential variables
+  // above with a `--role-arn` assumed role's, so the copy that just ran would
+  // hand every emulated handler cdkd's deploy role. Put the caller's own
+  // identity back (or strip the triple when there was none to restore). A no-op
+  // when no role was assumed.
+  applyCallerIdentityCredentials(env);
 }
 
 /**
@@ -2627,7 +2651,16 @@ export async function resolveProfileCredentials(
   profile: string
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken?: string }> {
   const { STSClient } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient({ ...awsClientDefaults({ profile }), profile });
+  // `ignoreAssumedRole` because the question here is "what does THIS profile
+  // resolve to", and the answer is forwarded INTO the user's container. A
+  // `--role-arn` assumed for cdkd's own calls would otherwise capture it and
+  // run the emulated function as the deploy role (issue
+  // [#3130](https://github.com/go-to-k/cdkd/issues/3130) review). The flag for
+  // the function's identity is `--assume-role`, which still wins over this.
+  const sts = new STSClient({
+    ...awsClientDefaults({ profile, ignoreAssumedRole: true }),
+    profile,
+  });
   try {
     const credsProvider = sts.config.credentials;
     const creds = typeof credsProvider === 'function' ? await credsProvider() : credsProvider;
@@ -2659,7 +2692,13 @@ async function assumeLambdaExecutionRole(
   region: string | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
   const { STSClient, AssumeRoleCommand } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient({ ...awsClientDefaults(), ...(region && { region }) });
+  // `ignoreAssumedRole` -- this resolves the execution role's credentials, injected into the container,
+  // so it must be the caller's own identity, never a `--role-arn` assumed
+  // for cdkd's own calls. See that option's JSDoc.
+  const sts = new STSClient({
+    ...awsClientDefaults({ ignoreAssumedRole: true }),
+    ...(region && { region }),
+  });
   try {
     const response = await sts.send(
       new AssumeRoleCommand({
@@ -3124,7 +3163,13 @@ export async function resolvePseudoParametersForStartApi(
   let accountId: string | undefined;
   try {
     const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-    const sts = new STSClient({ ...awsClientDefaults(), ...(region && { region }) });
+    // `ignoreAssumedRole` -- this resolves the `${AWS::AccountId}` the emulated function sees,
+    // so it must be the caller's own identity, never a `--role-arn` assumed
+    // for cdkd's own calls. See that option's JSDoc.
+    const sts = new STSClient({
+      ...awsClientDefaults({ ignoreAssumedRole: true }),
+      ...(region && { region }),
+    });
     try {
       const identity = await sts.send(new GetCallerIdentityCommand({}));
       accountId = identity.Account;

@@ -135,6 +135,7 @@ import {
   releaseStdoutForPayload,
   reserveStdoutForPayload,
 } from '../../../src/utils/logger.js';
+import { resetAwsClientDefaults } from '../../../src/utils/aws-client-defaults.js';
 
 const CHATTER = 'Bundling asset AgentStack/EchoAgent/Code/Stage...';
 /** A non-ECR image tag, so `resolveAgentCoreImage` takes the plain `pullImage` arm. */
@@ -314,6 +315,10 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
   });
 
   afterEach(() => {
+    // This file drives the REAL `applyRoleArnIfSet`, which publishes the
+    // assumed credentials process-wide. Without this, they persist into every
+    // later case in the file and decide which identity its clients resolve.
+    resetAwsClientDefaults();
     process.exitCode = exitCodeBefore;
     for (const [k, v] of Object.entries(envBefore)) {
       if (v === undefined) delete process.env[k];

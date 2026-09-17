@@ -127,7 +127,9 @@ export class AwsClients {
   } {
     // `awsClientDefaults()` FIRST, so an explicit `credentials` below still
     // wins — see the spread-order note in `aws-client-defaults.ts`. It returns
-    // `{}` unless a proxy variable is set, so the unproxied path is unchanged.
+    // `{}` with no proxy set and no `--role-arn` assumed, so that path is
+    // unchanged; once a role IS assumed it returns the role's credentials,
+    // which is what makes the `profile` spread below non-credential-bearing.
     return {
       ...awsClientDefaults({ profile: this.config.profile }),
       ...(this.config.region && { region: this.config.region }),
@@ -188,8 +190,11 @@ export class AwsClients {
    * falls back to the default chain. The same is true of any library caller
    * that constructs `AwsClients` directly and therefore never runs the CLI's
    * `preAction` hook. `--role-arn` needs nothing carried at all —
-   * `applyRoleArnIfSet` exports `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` /
-   * `AWS_SESSION_TOKEN` into the process environment.
+   * `applyRoleArnIfSet` publishes the assumed credentials through
+   * `setAssumedRoleCredentials`, so {@link clientOptions}'s
+   * `awsClientDefaults(...)` spread hands them to every client this instance
+   * builds, and a `profile` beside them selects non-credential settings only
+   * (issue [#3130](https://github.com/go-to-k/cdkd/issues/3130)).
    *
    * The `credentials` object is CLONED rather than aliased: the returned bag is
    * handed to every derived sibling, and sharing one mutable object would let a

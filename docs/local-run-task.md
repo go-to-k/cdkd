@@ -50,7 +50,7 @@ alongside each container image; see
 | `--output <path>` | `cdk.out` | Output directory for synthesis. |
 | `-c`, `--context <key=value...>` | — | Set CDK context values. Repeatable. |
 | `--profile <profile>` | — | AWS profile. Its credentials are forwarded to the sidecar and to the containers. |
-| `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for cdkd's own AWS API calls. Needs the permissions cdkd would otherwise call with — see [`--role-arn`](cli-reference.md#role-arn). |
+| `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for cdkd's own AWS API calls. Needs the permissions cdkd would otherwise call with — see [`--role-arn`](cli-reference.md#role-arn). With `--from-cfn-stack`, pass the `--profile` flag too: with no profile selected, that stack read goes through the local emulation engine and resolves as the role, and any decrypted parameter it pulls lands in the container. |
 | `-y`, `--yes` | off | Answer interactive prompts with the recommended response. |
 | `--verbose` | off | Verbose logging. |
 

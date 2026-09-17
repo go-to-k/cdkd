@@ -111,6 +111,7 @@ vi.mock('../../../src/local/rie-client.js', async (importOriginal) => {
 
 import { createLocalCommand } from '../../../src/cli/commands/local-invoke.js';
 import { getLogger, releaseStdoutForPayload } from '../../../src/utils/logger.js';
+import { resetAwsClientDefaults } from '../../../src/utils/aws-client-defaults.js';
 
 const CHATTER = 'Bundling asset LocalStack/EchoHandler/Code/Stage...';
 const PAYLOAD = '{"statusCode":200,"body":"lane2410-local-invoke-response"}';
@@ -239,6 +240,10 @@ describe('local invoke keeps stdout to the response payload (issue #2410)', () =
   });
 
   afterEach(() => {
+    // This file drives the REAL `applyRoleArnIfSet`, which publishes the
+    // assumed credentials process-wide. Without this, they persist into every
+    // later case in the file and decide which identity its clients resolve.
+    resetAwsClientDefaults();
     rmSync(codeDir, { recursive: true, force: true });
     for (const [k, v] of Object.entries(envBefore)) {
       if (v === undefined) delete process.env[k];

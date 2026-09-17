@@ -55,7 +55,7 @@ cdkd local start-api --from-state --stage prod  # resolve env vars from deployed
 | `--strict-sigv4` | off | Deny requests whose `AWS_IAM` SigV4 signature cannot be verified. See [`--strict-sigv4`](#strict-sigv4). |
 | `--verbose` | off | Verbose logging. |
 | `--profile <profile>` | — | AWS profile for cdkd's own AWS calls and for the credentials handed to containers. |
-| `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for cdkd's own AWS API calls, such as state and CloudFormation reads. |
+| `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for cdkd's own AWS API calls, such as state and CloudFormation reads. With `--from-cfn-stack`, pass the `--profile` flag too: with no profile selected, that stack read goes through the local emulation engine and resolves as the role, and any decrypted parameter it pulls lands in the container. |
 | `-y`, `--yes` | off | Answer interactive prompts with the recommended response. |
 | `-a`, `--app <command>` | `cdk.json` / `CDKD_APP` | CDK app command, or a pre-synthesized cloud assembly directory — see [Local Execution](local-emulation.md#common-flags). |
 | `--output <path>` | `cdk.out` | Output directory for synthesis. |

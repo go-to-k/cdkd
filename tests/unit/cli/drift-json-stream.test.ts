@@ -172,6 +172,7 @@ vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
 import { createDriftCommand } from '../../../src/cli/commands/drift.js';
 import { resetAccountInfoCache } from '../../../src/deployment/intrinsic-function-resolver.js';
 import { getLogger, releaseStdoutForPayload } from '../../../src/utils/logger.js';
+import { resetAwsClientDefaults } from '../../../src/utils/aws-client-defaults.js';
 
 interface Streams {
   /** Everything a pipe reading fd 1 would receive, in order. */
@@ -300,6 +301,10 @@ beforeEach(() => {
   setStdinIsTty(true);
 });
 afterEach(() => {
+  // This file drives the REAL `applyRoleArnIfSet`, which publishes the
+  // assumed credentials process-wide. Without this, they persist into every
+  // later case in the file and decide which identity its clients resolve.
+  resetAwsClientDefaults();
   setStdinIsTty(originalIsTTY);
 });
 

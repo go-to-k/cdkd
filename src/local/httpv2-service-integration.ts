@@ -142,32 +142,38 @@ async function getClient(service: string, region: string): Promise<unknown> {
   switch (service) {
     case 'sqs': {
       const mod = await import('@aws-sdk/client-sqs');
-      client = new mod.SQSClient({ ...awsClientDefaults(), region });
+      // `ignoreAssumedRole` on every client below: these calls are made ON
+      // BEHALF of the emulated API, so they must carry the caller's own
+      // identity rather than a `--role-arn` assumed for cdkd's own calls.
+      client = new mod.SQSClient({ ...awsClientDefaults({ ignoreAssumedRole: true }), region });
       break;
     }
     case 'sns': {
       const mod = await import('@aws-sdk/client-sns');
-      client = new mod.SNSClient({ ...awsClientDefaults(), region });
+      client = new mod.SNSClient({ ...awsClientDefaults({ ignoreAssumedRole: true }), region });
       break;
     }
     case 'eventbridge': {
       const mod = await import('@aws-sdk/client-eventbridge');
-      client = new mod.EventBridgeClient({ ...awsClientDefaults(), region });
+      client = new mod.EventBridgeClient({
+        ...awsClientDefaults({ ignoreAssumedRole: true }),
+        region,
+      });
       break;
     }
     case 'kinesis': {
       const mod = await import('@aws-sdk/client-kinesis');
-      client = new mod.KinesisClient({ ...awsClientDefaults(), region });
+      client = new mod.KinesisClient({ ...awsClientDefaults({ ignoreAssumedRole: true }), region });
       break;
     }
     case 'sfn': {
       const mod = await import('@aws-sdk/client-sfn');
-      client = new mod.SFNClient({ ...awsClientDefaults(), region });
+      client = new mod.SFNClient({ ...awsClientDefaults({ ignoreAssumedRole: true }), region });
       break;
     }
     case 'ssm': {
       const mod = await import('@aws-sdk/client-ssm');
-      client = new mod.SSMClient({ ...awsClientDefaults(), region });
+      client = new mod.SSMClient({ ...awsClientDefaults({ ignoreAssumedRole: true }), region });
       break;
     }
     default:

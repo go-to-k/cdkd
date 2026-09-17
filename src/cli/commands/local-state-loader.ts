@@ -129,6 +129,14 @@ export async function loadStateForStack(
     return undefined;
   }
 
+  // `AwsClients` spreads `awsClientDefaults` internally and exposes no
+  // `ignoreAssumedRole` knob, so an annotation is the only verdict this shape
+  // can carry. The container's own credentials are decided elsewhere — by
+  // `resolveProfileCredentials` and the restored caller env, which opt out.
+  //
+  // cdkd-local-role-identity: this bag reads CDKD's OWN state record, in the
+  // account the role deploys into, so a `--role-arn` correctly answers it.
+  // Nothing it resolves becomes an identity the emulated workload holds.
   const awsClients = new AwsClients({
     ...(clientRegion !== undefined && { region: clientRegion }),
     ...(opts.profile !== undefined && { profile: opts.profile }),
@@ -358,6 +366,12 @@ export async function loadBootstrapContainerRepo(
   // BLANK `--region ''` counts as absent for the same reason.
   const clientRegion = canonicalizeRegion(opts.region) || undefined;
 
+  // See `loadStateForStack`'s bag for why an annotation rather than
+  // `ignoreAssumedRole` is this shape's only available verdict.
+  //
+  // cdkd-local-role-identity: the bootstrap marker is cdkd's own bookkeeping
+  // object in cdkd's own state bucket, so a `--role-arn` correctly answers this
+  // read. It yields asset bucket / ECR repo NAMES, never an identity.
   const awsClients = new AwsClients({
     ...(clientRegion !== undefined && { region: clientRegion }),
     ...(opts.profile !== undefined && { profile: opts.profile }),
@@ -508,6 +522,13 @@ export async function buildCrossStackResolver(
   // stays absent, and a blank `--region ''` counts as absent.
   const clientRegion = canonicalizeRegion(opts.region) || undefined;
 
+  // See `loadStateForStack`'s bag for why an annotation rather than
+  // `ignoreAssumedRole` is this shape's only available verdict.
+  //
+  // cdkd-local-role-identity: the cross-stack resolver reads OTHER cdkd stacks'
+  // state records — cdkd's own bookkeeping, in the account the role deploys
+  // into — so a `--role-arn` correctly answers it. It yields resolved Output
+  // VALUES, not an identity the container can act as.
   const awsClients = new AwsClients({
     ...(clientRegion !== undefined && { region: clientRegion }),
     ...(opts.profile !== undefined && { profile: opts.profile }),

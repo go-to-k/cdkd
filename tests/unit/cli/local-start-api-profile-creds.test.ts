@@ -1,5 +1,9 @@
-import { describe, expect, it, vi, beforeEach } from 'vite-plus/test';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { resolveProfileCredentials } from '../../../src/cli/commands/local-start-api.js';
+import {
+  resetAwsClientDefaults,
+  setAssumedRoleCredentials,
+} from '../../../src/utils/aws-client-defaults.js';
 
 // Issue #654: `--profile <p>` should resolve to a concrete credential set
 // for forwarding to Lambda containers. The helper drives the SDK's default
@@ -27,6 +31,11 @@ describe('resolveProfileCredentials (issue #654)', () => {
     credsProviderMock.mockReset();
     stsDestroyMock.mockReset();
     stsCtorMock.mockReset();
+    resetAwsClientDefaults();
+  });
+
+  afterEach(() => {
+    resetAwsClientDefaults();
   });
 
   it('resolves a profile to {accessKeyId, secretAccessKey, sessionToken}', async () => {
@@ -41,7 +50,9 @@ describe('resolveProfileCredentials (issue #654)', () => {
       secretAccessKey: 'SECRET-TEMP',
       sessionToken: 'SESSION-TEMP',
     });
-    // STSClient constructed with the profile threaded through.
+    // STSClient constructed with the profile threaded through, and with NO
+    // `credentials` key -- see the assumed-role case below for why that
+    // absence is the load-bearing half.
     expect(stsCtorMock).toHaveBeenCalledWith({ profile: 'dev-sso' });
     // Destroy called for cleanup.
     expect(stsDestroyMock).toHaveBeenCalledOnce();
@@ -88,5 +99,31 @@ describe('resolveProfileCredentials (issue #654)', () => {
     );
     // STS destroyed on rejection too.
     expect(stsDestroyMock).toHaveBeenCalledOnce();
+  });
+
+  it('is NOT captured by a CLI-wide --role-arn (issue 3130 review round 2)', async () => {
+    // This helper's answer is forwarded INTO the user's Lambda / ECS
+    // container -- as env vars and as a shared-credentials file written under
+    // the profile's own name. If a `--role-arn` assumed for cdkd's own calls
+    // answered here, local code would silently run as the deploy role, which
+    // is normally the more privileged identity. The observable is the absence
+    // of `credentials` on the client config: without the opt-out the published
+    // bag lands there and outranks `profile`.
+    setAssumedRoleCredentials({
+      accessKeyId: 'ASIADEPLOYROLEKEY0000',
+      secretAccessKey: 'deploysecret',
+      sessionToken: 'deploytoken',
+    });
+    credsProviderMock.mockResolvedValue({
+      accessKeyId: 'AKIA-PROFILE',
+      secretAccessKey: 'SECRET-PROFILE',
+    });
+
+    const creds = await resolveProfileCredentials('dev-sso');
+
+    expect(creds.accessKeyId).toBe('AKIA-PROFILE');
+    const config = stsCtorMock.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(config).not.toHaveProperty('credentials');
+    expect(config).toMatchObject({ profile: 'dev-sso' });
   });
 });

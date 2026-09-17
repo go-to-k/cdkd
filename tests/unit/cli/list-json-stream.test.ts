@@ -64,6 +64,7 @@ vi.mock('@aws-sdk/client-sts', () => ({
 
 import { createListCommand } from '../../../src/cli/commands/list.js';
 import { getLogger, releaseStdoutForPayload } from '../../../src/utils/logger.js';
+import { resetAwsClientDefaults } from '../../../src/utils/aws-client-defaults.js';
 
 function makeStack(overrides: Partial<StackInfo> & { stackName: string }): StackInfo {
   return {
@@ -150,6 +151,10 @@ describe('list keeps stdout to the payload in every mode (issues #2280, #2410)',
   });
 
   afterEach(() => {
+    // This file drives the REAL `applyRoleArnIfSet`, which publishes the
+    // assumed credentials process-wide. Without this, they persist into every
+    // later case in the file and decide which identity its clients resolve.
+    resetAwsClientDefaults();
     for (const [k, v] of Object.entries(envBefore)) {
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;

@@ -281,6 +281,10 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   let callerAccount = CALLER_IDENTITY_CACHE.get(callerIdentityKey);
   if (callerAccount === undefined) {
     const sts = new STSClient({
+      // cdkd-local-role-identity: pulling the image is cdkd's OWN call, not the
+      // emulated workload's, so a `--role-arn` correctly answers it. Nothing
+      // resolved here reaches the container as an identity; the ECR login token
+      // it leaves in the host docker config is the role's.
       ...awsClientDefaults(),
       ...(callerRegion && { region: callerRegion }),
     });
@@ -349,6 +353,10 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   // When `assumed` is set, the ECR client uses those temporary
   // credentials; otherwise the default credential chain.
   const ecr = new ECRClient({
+    // cdkd-local-role-identity: pulling the image is cdkd's OWN call, not the
+    // emulated workload's, so a `--role-arn` correctly answers it. Nothing
+    // resolved here reaches the container as an identity; the ECR login token
+    // it leaves in the host docker config is the role's.
     ...awsClientDefaults(),
     region: parsed.region,
     ...(assumed && { credentials: assumed }),
@@ -386,6 +394,10 @@ async function assumeRoleForEcr(
 ): Promise<TempCredentials> {
   logger.debug(`Assuming role ${roleArn} for ECR pull...`);
   const sts = new STSClient({
+    // cdkd-local-role-identity: pulling the image is cdkd's OWN call, not the
+    // emulated workload's, so a `--role-arn` correctly answers it. Nothing
+    // resolved here reaches the container as an identity; the ECR login token
+    // it leaves in the host docker config is the role's.
     ...awsClientDefaults(),
     ...(callerRegion && { region: callerRegion }),
   });
