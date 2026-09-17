@@ -250,9 +250,8 @@ test untouched);
 licenses ADDING a case per arm / ruleset / caller — never a fence change,
 never DELETING a guard as "implied": before dropping a conjunct on a green
 probe, enumerate the arms reaching that line and state per arm what implies it
-(go-to-k/cdkd#3088: "the other conjuncts imply it" held under neither ruleset,
-one arm found per review round); (3)
-**did the command run where you think it did?** (appendix, "Bash cwd silent
+(go-to-k/cdkd#3088: "the other conjuncts imply it" held under neither ruleset);
+(3) **did the command run where you think it did?** (appendix, "Bash cwd silent
 reset" — absolute paths, and a property the wrong tree cannot fake). Only after
 all three does "the fence is weak" remain.
 
@@ -312,16 +311,16 @@ real tree:**
   several — probe each (`||` matched while four sites used `??`, and widening
   it found a real unfiled bug, go-to-k/cdkd#2111); and, for GENERATED input,
   the UPSTREAM form not the generator's output (go-to-k/cdkd#2788's
-  `/properties/X` prefix is one the generator strips, so the probe "proving"
-  discrimination used a shape no fixture holds).
-- **A narrow VALUE input and an assertion's EXEMPTION are one defect: the
-  enumeration the property replaced, each exempt case an unproved claim about
-  the SUBJECT that the TEST's shape justified** (go-to-k/cdkd#3275 exempted
-  `\t`, then `\n` on the same reasoning; the sink strips both, so the assertion
-  twice admitted the shape it exists to catch). Assert the subject's whole
-  class, per message not a join. **An expected value must be an INDEPENDENT
-  variable from the one under test** — so where that class is TRANSCRIBED
-  rather than imported, fence the pair by behaviour.
+  `/properties/X` prefix is one the generator strips, so the probe used a shape
+  no fixture holds).
+- **A narrow VALUE input and an assertion's EXEMPTION are one defect — each
+  exempt case an unproved claim about the SUBJECT that the TEST's shape
+  justified** (go-to-k/cdkd#3275 exempted `\t`, then `\n`; the sink strips
+  both). Assert its whole class, per message not a join, as a VALUE:
+  `x === input` is blind where the subject maps a value to itself. **Expected
+  values must be INDEPENDENT of the one tested**, so a TRANSCRIBED
+  class needs a behaviour fence: whole domain (a bound is an exemption), every
+  fact copied, and the copy IN USE — one holding its own passes itself.
 - **Delete the thing the fence REQUIRES and watch it fail.** An OR of
   whole-file substrings is satisfied by any one; a population derived from the
   DEFECT itself drops the subject out instead of failing (a gate-parity test
@@ -331,7 +330,8 @@ real tree:**
   from a relation the write CANNOT omit.
 - **Watch the FLOOR for the same collapse** — a floor naming only the file
   the defect lives in is satisfied BY the collapse; a floor computed from the
-  pool it guards is unfalsifiable (emptying the pool left it green). **A
+  pool it guards is unfalsifiable (emptying the pool left it green), so the
+  expected count is a LITERAL from a source the fence does not read. **A
   RELATION also needs a floor on the COMPARAND** — walk floors count what you
   ITERATED, and a set-vs-set claim is vacuously TRUE when the other operand
   parses empty (go-to-k/cdkd#2788: 134 fixtures compared nothing under two

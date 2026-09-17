@@ -1896,6 +1896,22 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
  * classifiers working, since the clone carries every own descriptor.
  */
 describe('issue #3234: the Fn::GetStackOutput state read', () => {
+  /**
+   * The sink's character class, TRANSCRIBED from `sanitizeAsciiOnly` in
+   * `src/utils/display-safe.ts` rather than imported: an expected value must
+   * stay an INDEPENDENT variable from the one under test, or the property
+   * asserts only that the subject agrees with itself.
+   *
+   * ONE constant, used by the fake sink, by THE INVARIANT and by the PAIR
+   * FENCE below. Three separate literals is what the fence was written to stop
+   * and then reintroduced: the fence pairs whatever class IT holds, so a copy
+   * it does not read can be narrowed back — which is exactly PR
+   * go-to-k/cdkd#3275's round-4 defect — while the fence stays green.
+   */
+  const SINK_CLASS = /[^ -~]/;
+  /** What the sink replaces a rejected character WITH, and the trim it ends in. */
+  const SINK_REPLACEMENT = ' ';
+
   /** The realistic failure: cdkd's own wrapper over an AWS rejection, both quoting the key. */
   function rejectingBackend(stackName: string, region = 'us-east-1'): S3StateBackend {
     return {
@@ -1937,7 +1953,8 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
    * than the one the resolver resolved.
    */
   function sanitizingBackend(stackName: string, region = 'us-east-1'): S3StateBackend {
-    const shown = (t: string): string => t.replace(/[^ -~]/g, ' ').trim();
+    const shown = (t: string): string =>
+      t.replace(new RegExp(SINK_CLASS.source, 'g'), SINK_REPLACEMENT).trim();
     return {
       listStacks: vi.fn(async () => []),
       getState: vi.fn(async () => {
@@ -2152,9 +2169,11 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
       // then exempting the separator reopens the hole for exactly that
       // character: the sink's class is `/[^ -~]/`, which strips `\n` as
       // readily as `\t`, so a `\n`-bearing name added later would slip through
-      // an exemption defending the join. The class here is the sink's own.
+      // an exemption defending the join. The class here is the sink's own,
+      // through the SHARED constant, so the PAIR FENCE below watches this line
+      // rather than a copy of it.
       for (const message of chainMessages(error)) {
-        expect(message, `for ${JSON.stringify(name)}`).not.toMatch(/[^ -~]/);
+        expect(message, `for ${JSON.stringify(name)}`).not.toMatch(SINK_CLASS);
         expect(message).not.toContain(PIN);
       }
     }
@@ -2238,28 +2257,68 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
     // import: an expected value must stay an INDEPENDENT variable from the one
     // under test, or the property asserts only that the subject agrees with
     // itself. The cost of independence is silent drift -- widen `displaySafe`'s
-    // class and both copies keep passing while no longer describing the sink --
-    // so the two are paired here by BEHAVIOUR rather than by sharing a regex.
+    // class and the transcription keeps passing while no longer describing the
+    // sink -- so the two are paired here by BEHAVIOUR rather than by sharing a
+    // regex with `src/`.
     //
-    // Probed in an INTERIOR position: `sanitizeAsciiOnly` ends in `.trim()`, so
-    // a character at either end is removed for a second reason and cannot tell
-    // the class apart from the trim.
-    const TRANSCRIBED = /[^ -~]/;
+    // It pairs `SINK_CLASS`, the ONE constant the fake sink and THE INVARIANT
+    // both use. A fence holding its own copy pairs only that copy: the two in
+    // use could then be narrowed back with this green, which is the defect it
+    // exists to stop rather than a variant of it.
+    //
+    // It lives beside those two rather than in `display-safe.ts`'s own suite
+    // because the subject here is the TRANSCRIPTION, which is local to this
+    // file; `tests/unit/utils/display-safe.test.ts` owns the sink's behaviour
+    // on its own terms.
+    // The VALUE, never `sanitized === probe`: identity is blind wherever the
+    // sink maps a character to ITSELF, and asserting the value is what pins
+    // the replacement character at all.
+    //
+    // One narrowing is deliberately NOT chased. `/[^!-~]/` also rejects
+    // `U+0020` and replaces it WITH `U+0020`, so it is an EQUIVALENT MUTANT,
+    // not a gap: measured over all 1,114,112 code points in four positions
+    // (interior, both ends, alone), the two classes differ on ZERO inputs.
+    // No assertion can separate them and none should try.
+    //
+    // Asserting the value pins all THREE facts the fake sink transcribes --
+    // the class, the replacement character, and the trim -- where the previous
+    // shape pinned only the class. Other cases here depend on the other two
+    // (`svc-x y7` on the replacement, the `'prod '` control on the trim), so
+    // leaving them unpaired left those reading a sink that could have moved.
+    //
+    // EVERY code point, not a prefix of them. The earlier bound stopped at
+    // U+2FFF with no reason given, which left `U+FEFF` and everything above
+    // U+3000 free to be exempted -- an "allow BOM" or "allow CJK" edit to
+    // `sanitizeAsciiOnly` would have left this green. The sweep collects
+    // rather than asserting per iteration, so the full range costs a fraction
+    // of a second; `expect` per code point does not.
+    const mismatches: string[] = [];
     let checked = 0;
-    for (let cp = 0; cp <= 0x2fff; cp++) {
+    for (let cp = 0; cp <= 0x10ffff; cp++) {
       const ch = String.fromCodePoint(cp);
       const probe = `a${ch}b`;
-      expect(
-        displaySafe(probe, { asciiOnly: true }) === probe,
-        `U+${cp.toString(16).toUpperCase().padStart(4, '0')}`
-      ).toBe(!TRANSCRIBED.test(ch));
+      // An astral code point is TWO UTF-16 units and the class carries no `u`
+      // flag, so the sink replaces each half — two spaces, not one. A lone
+      // surrogate is one unit and takes one.
+      const expected = SINK_CLASS.test(ch)
+        ? `a${SINK_REPLACEMENT.repeat(ch.length)}b`
+        : probe;
+      if (displaySafe(probe, { asciiOnly: true }) !== expected) {
+        mismatches.push(`U+${cp.toString(16).toUpperCase().padStart(4, '0')}`);
+      }
       checked++;
     }
+    expect(mismatches.slice(0, 20)).toEqual([]);
+    // The TRIM, which an interior probe cannot reach: a rejected character at
+    // either end is removed for a second reason, so the sweep above cannot
+    // tell the class apart from the trim there.
+    expect(displaySafe(` ${SINK_REPLACEMENT}x `, { asciiOnly: true })).toBe('x');
     // Floor against an early exit or a `continue` that skips the range -- NOT
-    // against deleting the assertion above, which no counter in the same loop
+    // against deleting the assertions above, which no counter in the same loop
     // can see. Probed by widening `sanitizeAsciiOnly` to `/[^\t -~]/`: this
     // case reds at `U+0009`, the character round 4 of PR go-to-k/cdkd#3275
-    // exempted here on the belief that the sink kept it.
-    expect(checked).toBe(0x3000);
+    // exempted here to defend the JOIN it performed — an exemption that only
+    // holds if the sink keeps the character, which it does not.
+    expect(checked).toBe(0x110000);
   });
 });

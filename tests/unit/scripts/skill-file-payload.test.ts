@@ -410,10 +410,22 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // merged into it, 5-e's independence sentence moved into it (5-e's ladder
     // is "all three" accordingly), 5-c's mechanics list became a pointer at the
     // CLAUDE.md that states them verbatim, and two near-duplicate method
-    // restatements in 5-f' were dropped. implement.md 29,940 -> 29,975 (+35),
-    // no other file touched, reconciling 200,814 -> 200,849. The RUNNER-UP
-    // changed hands by 14 B: implement.md is now runner-up, verify.md third.
-    // Neither cap moved and the floor below still clears `corpus - runnerUp`.
+    // restatements in 5-f' were dropped.
+    //
+    // Its own review then found the fence held a THIRD copy of the transcribed
+    // class, so it paired only itself and the two copies IN USE could be
+    // narrowed back with it green -- the defect it was written to stop. The
+    // fix hoists one `SINK_CLASS` those three share, asserts the VALUE rather
+    // than `sanitized === probe` (identity is blind where the sink maps a
+    // character to itself), pins the replacement character and the trim, and
+    // sweeps every code point instead of stopping at U+2FFF. The rule text
+    // carries those three requirements, funded in-file again: one 5-e example
+    // and two clauses of the new bullet itself. implement.md 29,940 -> 29,998
+    // (+58), no other file touched, reconciling 200,814 -> 200,872.
+    //
+    // implement.md is now the LARGEST, with 2 B of cap left; triage.md is
+    // runner-up. Neither cap moved and the floor below still clears
+    // `corpus - runnerUp` by 322 B, which is now the binding direction.
     //
     // A SECOND lesson from that run had nowhere to land and is NOT here:
     // `.claude/rules/testing.md` is at its `tests/**` payload cap exactly, so
@@ -421,7 +433,7 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // thereby dead -- say which of equivalent / unreachable / defensive it is)
     // is a checklist row on go-to-k/cdkd#2940 instead, with its measured cost.
     //
-    // Cap headroom, in size order: triage.md 6 B, implement.md 25 B,
+    // Cap headroom, in size order: implement.md 2 B, triage.md 6 B,
     // verify.md 39 B. All three open with a compression pass, not an
     // addition.
     //
@@ -431,9 +443,9 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // a narrative. It stays on that issue as a stated residual behind
     // go-to-k/cdkd#2424's stage split, which is the structural answer this
     // record has now predicted twice.
-    corpusBytes: 200_849,
-    largest: { file: 'triage.md', bytes: 29_994 },
-    runnerUp: { file: 'implement.md', bytes: 29_975 },
+    corpusBytes: 200_872,
+    largest: { file: 'implement.md', bytes: 29_998 },
+    runnerUp: { file: 'triage.md', bytes: 29_994 },
   },
 };
 
