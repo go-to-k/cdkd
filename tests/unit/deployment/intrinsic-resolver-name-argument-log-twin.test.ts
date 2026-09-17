@@ -2377,8 +2377,12 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
     // U+00AD, U+200B and U+202E, the last being the Trojan-Source bidi
     // override `src/utils/display-safe.ts` names as a rendering hazard in its
     // own docstring. The predicate uses the Unicode classes the repo already
-    // spells for this question (`src/deployment/outputs-export-alias.ts`),
-    // so the word and the code mean the same thing.
+    // spells for this question: `src/utils/display-safe.ts:33-35` states them
+    // in prose and `src/deployment/outputs-export-alias.ts:313`
+    // (`SECRET_SCAN_INVISIBLES`) is the live regex, which carries one MORE
+    // (`\p{Me}`) and the `g` this use has no need of. Five rather than six is
+    // deliberate and inert: measured, `\p{Me}` adds 13 code points, all at or
+    // above U+0488, so the pick is unchanged.
     //
     // The range really is only a termination bound now: it starts at 0 --
     // measured, the pick is U+00A1 either way -- and stops at the BMP because
@@ -2388,11 +2392,24 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
     // The `throw` keeps the bound honest: if a future class accepts everything
     // in this range, the case REFUSES rather than silently fencing the trim
     // alone -- which is what both hand-picked spellings did.
-    const UNRENDERABLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/u;
+    // Named `..._CLASS`: `display-safe.ts` EXPORTS an `UNRENDERABLE` string
+    // constant and this file already imports from that module, so the bare
+    // name would be silently shadowed the day someone adds it to that import.
+    const UNRENDERABLE_CLASS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/u;
+    // The `u` is LOAD-BEARING and therefore asserted, not assumed. Without it
+    // `\p{...}` is not a property escape at all -- it reads as the literal
+    // letters -- so the class matches almost nothing, the loop picks U+0000,
+    // and the assertion below STILL PASSES because the sink replaces NUL like
+    // any other rejected character. That silently restores the
+    // control-character-as-edge hazard this predicate was rewritten twice to
+    // remove, which is the same flag-drift `SINK_CLASS_FLAGS` above is guarded
+    // against. U+200B is the probe -- spelled as an ESCAPE, since a literal
+    // zero-width character in source is invisible to the next reader.
+    expect(UNRENDERABLE_CLASS.test('\u200B')).toBe(true);
     const edge = (() => {
       for (let cp = 0; cp <= 0xffff; cp++) {
         const ch = String.fromCodePoint(cp);
-        if (rejects(ch) && ch.trim() !== '' && !UNRENDERABLE.test(ch)) return ch;
+        if (rejects(ch) && ch.trim() !== '' && !UNRENDERABLE_CLASS.test(ch)) return ch;
       }
       throw new Error('no rejected, non-trimmable, renderable character exists -- this case cannot fence anything');
     })();
