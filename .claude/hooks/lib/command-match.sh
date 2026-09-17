@@ -4457,22 +4457,33 @@ gate_slug_from_url() {
   # Measured relaxing before this (go-to-k/cdkd#3351 round 2): `.../cdkd.git/`,
   # `.../cdkd.git?x=1` and `.../cdkd.git ` each failed to compare equal and the
   # gate exited 0 on the real v10 bump.
+  # BOUND THE INPUT FIRST. The strip loops below are char-at-a-time, so each
+  # `${url%?}` copies the string and the pass is QUADRATIC: review measured
+  # 40,000 trailing spaces on one URL taking 38.9 s, and a PreToolUse hook that
+  # outruns its 10 s budget is KILLED -- which disarms every gate at once, the
+  # worst outcome available here. No real git URL is anywhere near this long, so
+  # refusing is free, and a refusal means "unreadable", which the caller turns
+  # into "not foreign".
+  [ "${#url}" -le 512 ] || return 1
+
+  # ORDER IS LOAD-BEARING, and having it backwards was a round-4 blocker. gh
+  # parses the URL -- which DECODES the path -- and only then trims `.git` and
+  # an empty tail. Stripping first means anything this pass removes can be
+  # smuggled past it percent-encoded: `.../cdkd%2Egit` survived as
+  # `github.com/go-to-k/cdkd.git`, compared unequal, and the gate exited 0 on
+  # the real v10-bump PR while `gh repo view` there answered go-to-k/cdkd. One
+  # encoded byte reopened the round-2 second-clone blocker.
+  #
+  # So: query/fragment off the RAW string (gh drops those before decoding too),
+  # then split host from path, then DECODE, and only then normalise.
+  url="${url%%\?*}"
+  url="${url%%#*}"
   while :; do
     case "$url" in
       *[[:space:]]) url="${url%?}" ;;
       *) break ;;
     esac
   done
-  url="${url%%\?*}"
-  url="${url%%#*}"
-  while :; do
-    case "$url" in
-      */) url="${url%/}" ;;
-      *) break ;;
-    esac
-  done
-  url="${url%.git}"
-  url="${url%/}"
 
   case "$url" in
     *://*)
@@ -4501,52 +4512,62 @@ gate_slug_from_url() {
   esac
 
   path="${path#/}"
-  # Collapse repeated separators and FOLD CASE. GitHub treats host, owner and
-  # repo case-insensitively and resolves `GitHub.com/GO-TO-K/CDKD` to the same
-  # repository -- measured relaxing the gate on the real v10 bump before this.
-  # `tr`, not `${x,,}`: bash 3.2 has no case-modifying expansion and
-  # `run-tests.sh` runs every suite under it. Folding can only make two spellings
-  # compare EQUAL, and equal means "same repo, refuse to relax" -- the safe
-  # direction on a forge where case happens to matter.
+
+  # DECODE FIRST (go-to-k/cdkd#3351 round 4). Everything below removes
+  # characters, so a decode placed after it lets an encoded `.`, `/` or space
+  # survive into the slug. gh decodes the path before trimming, and this now
+  # matches that order.
+  #
+  # `%` -> `\x` + `printf %b` is the bash 3.2 decode. A path already carrying a
+  # backslash would be eaten by it, so that is REFUSED rather than guessed --
+  # and a refusal means "unreadable", which the caller reads as "not foreign".
+  case "$path" in
+    *\\*) return 1 ;;
+    *%*) path=$(printf '%b' "${path//%/\\x}") ;;
+  esac
+  # A decode that produced a newline or a NUL is not something to compare; a
+  # space is not legal in a repo path either.
+  # `$'\n'`, never `$(printf '\n')`: command substitution STRIPS trailing
+  # newlines, so that spelling yields an EMPTY string, the pattern collapses to
+  # `**`, and EVERY path is refused -- measured, it refused the plain
+  # `https://github.com/go-to-k/cdkd.git`. A guard that refuses everything reads
+  # as fail-closed and is really just broken.
+  case "$path" in
+    *$'\n'*|*" "*|*$'\t'*) return 1 ;;
+  esac
+
+  # NOW normalise: collapse repeated separators, drop the `.git` suffix and any
+  # empty tail -- the same trims gh applies after parsing.
   while :; do
     case "$path" in
       *//*) path="$(printf '%s' "$path" | sed 's|//*|/|g')" ;;
       *) break ;;
     esac
   done
-  # PERCENT-DECODE before folding: gh parses the URL and decodes the path, so
-  # `go%2Dto%2Dk` is `go-to-k` to gh and was a working remote that this gate
-  # read as a different repository (measured). `%` -> `\x` + `printf %b` is the
-  # bash 3.2 decode; a literal backslash already in the path would be eaten by
-  # it, so the decode is REFUSED rather than guessed when one is present -- and
-  # a refusal here means "unreadable", which the caller turns into "not
-  # foreign".
-  case "$path" in
-    *\\*) return 1 ;;
-    *%*) path=$(printf '%b' "${path//%/\\x}") ;;
-  esac
-  host=$(printf '%s' "$host" | tr 'A-Z' 'a-z')
-  path=$(printf '%s' "$path" | tr 'A-Z' 'a-z')
+  while :; do
+    case "$path" in
+      */) path="${path%/}" ;;
+      *) break ;;
+    esac
+  done
+  path="${path%.git}"
+  path="${path%/}"
+
   # The WHOLE path, not its last two segments. Collapsing to `<owner>/<name>`
-  # is the same conflation the host fix targets, one level up: it keys
-  # `github.com/o/r/sub/deep` as `github.com/sub/deep`, and it makes the GitLab
-  # subgroups `gitlab.com/a/x/repo` and `gitlab.com/b/x/repo` IDENTICAL. Inert
-  # today (no non-flat-forge row exists), but the whole point of this key is
-  # that two different repositories can never share one.
-  #
-  # The "at least two segments" test is STRUCTURAL. It used to be spelled
-  # `[ "$owner" != "$name" ]`, which refuses any repo whose name equals its
-  # owner -- measured: `https://github.com/prettier/prettier.git` returned 1,
-  # and the caller then printed "origin remote missing or not host-qualified",
-  # which is simply false for that remote. Fail-closed, so never a hazard, but a
-  # wrong diagnosis sends the next reader hunting the wrong thing.
+  # keys `github.com/o/r/sub/deep` as `github.com/sub/deep` and makes the GitLab
+  # subgroups `gitlab.com/a/x/repo` and `gitlab.com/b/x/repo` IDENTICAL.
   case "$path" in
     */*) ;;
     *) return 1 ;;
   esac
-  case "$path" in
-    *//*|*" "*) return 1 ;;
-  esac
+
+  # Case-fold LAST, over the final spelling. GitHub treats host, owner and repo
+  # case-insensitively. Folding can only make two spellings compare EQUAL, and
+  # equal means "same repo, refuse to relax" -- the safe direction on a forge
+  # where case happens to matter.
+  host=$(printf '%s' "$host" | tr 'A-Z' 'a-z')
+  path=$(printf '%s' "$path" | tr 'A-Z' 'a-z')
+
   printf '%s/%s' "$host" "$path"
 }
 
@@ -5047,7 +5068,7 @@ gate_target_is_foreign() {
   #
   # It also preserves go-to-k/cdkd#3209, whose foreign fixtures carry ZERO
   # remotes rather than unparsable ones -- the distinction the `continue` lost.
-  local slug name url_line
+  local slug name url_line __gtf_seen
   if ! hook_slug=$(gate_repo_slug "$hook_dir"); then
     GATE_FOREIGN_RETRACT="this gate's own repository could not be identified (no usable \`origin\` remote), so it cannot tell whether the target is a different one"
     return 1
@@ -5068,8 +5089,21 @@ gate_target_is_foreign() {
   # It also costs one `git` spawn for the whole walk instead of three per
   # remote (measured 22.6 ms each, i.e. 4.5 s of the hook's 10 s budget at 200
   # remotes -- and a hook killed by that budget disarms every gate at once).
+  # BOUND THE WALK. `gate_slug_from_url` forks two `tr` subshells per line, so
+  # the cost is linear in remotes and a checkout with enough of them outruns the
+  # hook's 10 s PreToolUse budget -- measured at 1000 remotes / 9.7 s, and a
+  # KILLED hook is silent, which lets the merge proceed. Past the cap the answer
+  # is "not foreign", the fail-closed direction, so the only thing refused is a
+  # checkout nobody has in practice. An earlier revision of this comment claimed
+  # a "flat 42 ms" cost; that was measured with ONE remote and is false.
+  __gtf_seen=0
   while IFS= read -r url_line; do
     [ -n "$url_line" ] || continue
+    __gtf_seen=$((__gtf_seen + 1))
+    if [ "$__gtf_seen" -gt 200 ]; then
+      GATE_FOREIGN_RETRACT="the target checkout declares more remotes than this gate will examine, so it cannot rule out that one names the same repository"
+      return 1
+    fi
     # `<name>\t<url> (fetch|push)`.
     name="${url_line%%	*}"
     url_line="${url_line#*	}"
@@ -5097,7 +5131,10 @@ EOF
     url_line="${url_line#*	}"
     [ -n "$url_line" ] && [ "$url_line" != "base" ] || continue
     url_line=$(printf '%s' "$url_line" | tr 'A-Z' 'a-z')
-    if [ "$url_line" = "${hook_slug#*/}" ]; then
+    # gh's `ghrepo.FromFullName` accepts `OWNER/REPO` *and* `HOST/OWNER/REPO`,
+    # so both spellings are compared (go-to-k/cdkd#3351 round 4: the 3-part form
+    # matched nothing and the gate exited 0).
+    if [ "$url_line" = "${hook_slug#*/}" ] || [ "$url_line" = "$hook_slug" ]; then
       GATE_FOREIGN_RETRACT="the target checkout has \`gh repo set-default\` pointing a remote at ${hook_slug#*/}, so gh resolves this gate's own repository from there"
       return 1
     fi

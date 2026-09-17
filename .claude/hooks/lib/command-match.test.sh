@@ -3438,6 +3438,45 @@ git -C "$__gtf_tmp/ghbase" config remote.origin.gh-resolved base 2>/dev/null
 __gtf "gh-resolved = base -> foreign (it names no override)" 0 \
   "$__gtf_hooks_dir" "$__gtf_tmp/ghbase" "gh pr merge 1 --squash"
 
+# --- Round 4: percent-encoding smuggles past the trims, and gh's 3-part form --
+#
+# Every character the normaliser strips can be delivered ENCODED. gh decodes the
+# path FIRST and trims after, so a decode placed after the trims lets the
+# stripped byte survive: `.../cdkd%2Egit` normalised to `...cdkd.git`, compared
+# unequal, and the gate exited 0 on the real v10-bump PR. One encoded byte
+# reopened the round-2 second-clone blocker, which is why the ORDER is fenced
+# here rather than the individual spellings.
+__gtf_enc=0
+for __gtf_u in \
+  "${__gtf_slug%.git}%2Egit" \
+  "${__gtf_slug%.git}%2F" \
+  "${__gtf_slug}%2f"; do
+  __gtf_enc=$((__gtf_enc + 1))
+  git init -q "$__gtf_tmp/enc$__gtf_enc" 2>/dev/null
+  git -C "$__gtf_tmp/enc$__gtf_enc" remote add origin "$__gtf_u" 2>/dev/null
+  __gtf "a PERCENT-ENCODED trim ($__gtf_u) -> NOT foreign" 1 \
+    "$__gtf_hooks_dir" "$__gtf_tmp/enc$__gtf_enc" "gh pr merge 1 --squash"
+done
+
+# gh's `ghrepo.FromFullName` accepts HOST/OWNER/REPO as well as OWNER/REPO.
+git init -q "$__gtf_tmp/ghres3" 2>/dev/null
+git -C "$__gtf_tmp/ghres3" remote add origin https://github.com/go-to-k/cdk-local.git 2>/dev/null
+git -C "$__gtf_tmp/ghres3" config remote.origin.gh-resolved "${__gtf_hook_slug:-github.com/go-to-k/cdkd}" 2>/dev/null
+__gtf "a 3-PART gh-resolved -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/ghres3" "gh pr merge 1 --squash"
+
+# A checkout with more remotes than the walk will examine must FAIL CLOSED
+# rather than run past the hook's 10 s budget -- a killed hook is silent, and
+# silence lets the merge through.
+git init -q "$__gtf_tmp/manyremotes" 2>/dev/null
+__gtf_n=0
+while [ "$__gtf_n" -lt 205 ]; do
+  git -C "$__gtf_tmp/manyremotes" remote add "zz$__gtf_n" "https://example.com/filler/r$__gtf_n" 2>/dev/null
+  __gtf_n=$((__gtf_n + 1))
+done
+__gtf "more remotes than the walk examines -> NOT foreign (fail closed)" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/manyremotes" "gh pr merge 1 --squash"
+
 # THE FENCE FOR THE STRUCTURAL FIX. A remote that exists but does not normalise
 # must refuse -- that, not the list of shapes above, is what makes the class
 # terminate. Deleting the refusal reds THIS case and none of the others.
@@ -3463,9 +3502,9 @@ rm -rf "$__gtf_tmp"
 # Equality, not a floor, for the reason every other block here uses equality:
 # a floor goes green when a case is deleted.
 __gtf_ran=$((pass + fail - __gtf_start))
-if [ "$__gtf_ran" -ne 29 ]; then
+if [ "$__gtf_ran" -ne 34 ]; then
   fail=$((fail + 1))
-  fail_log="${fail_log}FAIL gate_target_is_foreign block ran $__gtf_ran cases, expected exactly 29 -- a case vanished, or one was added without bumping the count\n"
+  fail_log="${fail_log}FAIL gate_target_is_foreign block ran $__gtf_ran cases, expected exactly 34 -- a case vanished, or one was added without bumping the count\n"
 else
   pass=$((pass + 1)); printf 'ok   gate_target_is_foreign block ran all %s cases\n' "$__gtf_ran"
 fi
