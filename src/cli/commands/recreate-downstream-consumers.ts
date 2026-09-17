@@ -241,8 +241,12 @@ export function renderDownstreamConsumers(
     // Issue #3289. A flagged row is a "cannot rule this out", not a match, and
     // the line says so in its own words rather than by a symbol — this text is
     // read once, under a data-loss prompt, by someone deciding whether to
-    // proceed. It names the CAUSE too, because the remedy (stop assembling a
-    // stack name out of a secret) is not guessable from the symptom.
+    // proceed. It says the name carried a SECRET rather than naming a cause:
+    // the two classes have different ones — an `Fn::Sub` around a resolved
+    // reference, or a custom resource's `NoEcho` response — and a prompt is
+    // the wrong place for a cause that is right half the time. The case below
+    // fences the narrow wording out; this comment used to restate it two lines
+    // above that fence.
     if (c.producerUnresolvable === true) {
       lines.push(
         `    - ${c.consumerStack} (${c.consumerRegion}) reads ${c.exportName} via ` +

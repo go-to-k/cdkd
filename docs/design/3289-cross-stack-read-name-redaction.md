@@ -43,27 +43,40 @@ An earlier revision of this file said a plaintext entry an older binary
 persisted "out-ranks" this run's redacted one. That is wrong, and the three
 cases behave differently enough that guessing was never going to land:
 
-| `previous` (persisted) | does this deploy re-resolve the reference? | outcome |
-|---|---|---|
-| plaintext, older binary | yes, and the secret's VALUE is unchanged | keys MATCH (both sides normalize to the same string), union dedups, the persist redaction rewrites it — **self-repairs** |
-| plaintext, older binary | yes, but the secret has since ROTATED | this run's needle is the NEW value, so the old name normalizes to itself: keys disagree, the union keeps both, and only the new one is redacted — **the OLD plaintext survives beside a redacted twin** |
-| redacted | yes | keys agree only BECAUSE of `normalizeName`; without it the two spellings key differently, both survive, and the persist redaction makes them byte-identical **duplicates** |
-| plaintext, older binary | **no** — the resource is unchanged, or the reference is gone | this run holds no needle for it — **the plaintext survives** |
+Rows are NAMED, not numbered. An earlier revision inserted a row and left the
+pointers below on their old ordinals, which inverted them — it called the row
+this change CLOSES an open residual and dropped the one that still leaks. A
+name cannot drift out from under a reference that way.
 
-Row 2 is why `crossStackReadsForPartialSave` takes a `normalizeName`: the
-identity key is computed on the REDACTED spelling while the entry is STORED
+| case | `previous` (persisted) | does this deploy re-resolve it? | outcome |
+|---|---|---|---|
+| **SAME-VALUE** | plaintext, older binary | yes, value unchanged | keys MATCH (both sides normalize to the same string), union dedups, the persist redaction rewrites it — **self-repairs** |
+| **ROTATED** | plaintext, older binary | yes, but the secret has since rotated | this run's needle is the NEW value, so the old name normalizes to itself: keys disagree, the union keeps both, and only the new one is redacted — **the OLD plaintext survives beside a redacted twin** |
+| **DUPLICATE** | redacted | yes | keys agree only BECAUSE of `normalizeName`; without it the two spellings key differently, both survive, and the persist redaction makes them byte-identical duplicates |
+| **NEVER-AGAIN** | plaintext, older binary | **no** — the resource is unchanged, or the reference is gone | this run holds no needle for it — **the plaintext survives** |
+
+**DUPLICATE** is why `crossStackReadsForPartialSave` takes a `normalizeName`:
+the identity key is computed on the REDACTED spelling while the entry is STORED
 verbatim, the same compare-normalized / store-verbatim split the function
 already makes for the region. A duplicate row is not cosmetic — it doubles an
-entry in the destroy refusal and in the recreate prompt.
+entry in the destroy refusal and in the recreate prompt. That case is CLOSED by
+this change; it is listed because removing the normalizer re-opens it.
 
-Rows 3 and 4 are the real residual, and they are what `cdkd scrub` is owed for
-(go-to-k/cdkd#3337). The population is narrower than "everything written before
-this fix" — a record whose reference is re-resolved to the SAME value repairs
-itself — but it is wider than "never re-resolved again": a rotated secret leaves
-its old plaintext behind, and scrub cannot reach that one either, since scrub's
-needles are also the CURRENT value. Closing the rotation case needs something
-that recognises a stale plaintext without holding it, which is a different
-instrument from the value scan; it is stated as open rather than designed here.
+**ROTATED** and **NEVER-AGAIN** are the real residual, and they are what
+`cdkd scrub` is owed for (go-to-k/cdkd#3337). The population is narrower than
+"everything written before this fix" — SAME-VALUE repairs itself — but wider
+than "never re-resolved again", which is what an earlier draft of this file and
+of that issue both said. ROTATED is the harder of the two: scrub cannot reach
+it either, since scrub derives its needles by re-resolving the live template and
+therefore holds the CURRENT value, not the stale one on disk. Closing it needs
+something that recognises a value that WAS a secret without holding it, which
+the value scan structurally cannot do; stated as open rather than designed here.
+
+One narrowing in the safe direction, measured in review: the union runs only on
+the NON-terminal-success saves. An ordinary successful deploy replaces both
+lists wholesale, which drops a stale entry outright — so ROTATED and
+NEVER-AGAIN persist through the no-change save and the failure saves, and a
+clean deploy of the same stack clears them.
 
 ## The needle bag is the UNION of this deploy's secrets
 
