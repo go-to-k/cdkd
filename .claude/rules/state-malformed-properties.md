@@ -22,7 +22,14 @@ Per ENTRY, not on the record root, so the message can name which resource
 records are damaged. It SKIPS an entry that is not a readable object and
 returns `[]` for an unreadable `resources` bag, which makes its verdict
 order-independent with respect to the other two guards — a caller owes all
-three, and taking only this one leaves the root unchecked.
+three, and taking only this one leaves the root unchecked. Neither caller does
+any more: issue [#3161](https://github.com/go-to-k/cdkd/issues/3161) gave
+`deploy-engine.ts` a root-bag refusal at its state LOAD, above `calculateDiff`,
+and `diff-recursive.ts` repairs the root bag before it. So this method is
+reachable only with a readable root bag, and a second root guard written HERE
+would be a duplicate of a decision made one layer up — where it also dominates
+every read of the bag in between (five, measured 2026-09-17; re-derive rather
+than trusting the figure).
 
 An ABSENT `properties` map is a defect, unlike an absent `outputs` bag, and the
 asymmetry is measurable rather than stylistic: every writer in `src/` assigns an

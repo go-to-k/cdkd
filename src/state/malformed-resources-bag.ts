@@ -2,6 +2,7 @@ import { CdkdError } from '../utils/error-handler.js';
 import { markNonRetryable } from '../deployment/retryable-errors.js';
 import {
   IDENT_MAX_CODE_POINTS,
+  STACK_REF_MAX_CODE_POINTS,
   UNRENDERABLE,
   displayIdent,
   displaySafe,
@@ -10,6 +11,12 @@ import {
 import { shellQuote } from './lock-contention-message.js';
 import { isReadableBag } from '../types/state.js';
 import type { StackState } from '../types/state.js';
+
+/**
+ * The identifier cap every message here uses unless a caller says otherwise.
+ * See {@link safeIdentifier} for why it is a parameter at all.
+ */
+const IDENT_CAP_DEFAULT = 128;
 
 /** The error code every malformed-record refusal carries, whatever its class. */
 export const STATE_RESOURCES_MALFORMED = 'STATE_RESOURCES_MALFORMED';
@@ -101,28 +108,56 @@ export { isReadableBag };
  * `shellQuote` composition every message in THIS module needs and that one
  * must not have.
  */
-function safeIdentifier(value: string): string {
+function safeIdentifier(value: string, maxCodePoints = IDENT_CAP_DEFAULT): string {
   // CAPPED as well as sanitized. A stack name can arrive from an S3 key, so a
   // planted multi-kilobyte one would push the trailing remedy command off the
   // reader's screen -- the message would be technically correct and useless.
   // `truncateCodePoints` rather than `slice`, so the cut never lands inside a
   // surrogate pair; `displaySafe` rather than `displayIdent`, because the
   // latter JSON-quotes and that would compose badly with `shellQuote` below.
+  //
+  // The cap is a PARAMETER because one caller's verdict turns on it:
+  // `malformedDestroyResourcesRefusalMessage` withholds its remedy unless the
+  // identity renders EXACTLY, and at 128 an ordinary multi-level CDK nested
+  // child (`<root>~<...NestedStackResource><hash>~<...>`, measured past 150
+  // code points) truncates -- so a HEALTHY record took the fallback arm. That
+  // site passes `STACK_REF_MAX_CODE_POINTS`, which is the grammar a cdkd
+  // state-record reference is legitimate up to and the same bound
+  // `isPasteableIdent` uses. Still bounded, so a planted multi-kilobyte name
+  // is truncated there too and lands in the withhold arm.
   const safe = displaySafe(value, { asciiOnly: true });
   if (!safe) return UNRENDERABLE;
-  const { text, truncated } = truncateCodePoints(safe, 128);
+  const { text, truncated } = truncateCodePoints(safe, maxCodePoints);
   return truncated ? `${text}...` : text;
 }
 
-function malformedStateDetail(stackName: string, region: string): string {
-  const stack = safeIdentifier(stackName);
-  const reg = safeIdentifier(region);
+/**
+ * The DIAGNOSIS sentence itself, with no identity and no remedy in it.
+ *
+ * ONE spelling, for the reason {@link malformedStateDetail} gives for existing
+ * at all: two copies of a diagnosis are what drift. It is extracted because
+ * {@link malformedDestroyResourcesRefusalMessage} needs the same sentence
+ * under an identity it does NOT trust, where the detail's substituted
+ * `cdkd state show` command must not appear — a difference in the COMMAND, not
+ * in the diagnosis.
+ */
+const MALFORMED_RESOURCES_DIAGNOSIS =
+  `has no readable 'resources' map — the record is malformed or truncated. Both 'cdkd deploy' ` +
+  `and 'cdkd destroy' REFUSE such a record rather than acting on it: they read the same map, ` +
+  `an unreadable one is indistinguishable from an empty stack, and acting on that reading ` +
+  `would make a deploy re-CREATE every resource and a destroy delete none of them.`;
+
+function malformedStateDetail(
+  stackName: string,
+  region: string,
+  maxCodePoints = IDENT_CAP_DEFAULT
+): string {
+  const stack = safeIdentifier(stackName, maxCodePoints);
+  const reg = safeIdentifier(region, maxCodePoints);
   return (
-    `State for ${shellQuote(stack)} (${shellQuote(reg)}) has no readable 'resources' map — the ` +
-    `record is malformed or truncated. Do NOT run 'cdkd deploy' or 'cdkd destroy' against it: ` +
-    `both read the same map, and an unreadable one is indistinguishable from an empty stack, ` +
-    `so deploy would re-CREATE every resource and destroy would delete none of them. Inspect ` +
-    `it with: cdkd state show ${shellQuote(stack)} --stack-region ${shellQuote(reg)} --json`
+    `State for ${shellQuote(stack)} (${shellQuote(reg)}) ${MALFORMED_RESOURCES_DIAGNOSIS} ` +
+    `Inspect it with: ` +
+    `cdkd state show ${shellQuote(stack)} --stack-region ${shellQuote(reg)} --json`
   );
 }
 
@@ -185,6 +220,273 @@ export function malformedStateRefusalMessage(stackName: string, region: string):
     `rather than continuing: saving over a record whose resource map could not be read would ` +
     `replace the evidence with a well-formed empty one and lose it permanently. Repair or ` +
     `remove the record first.`
+  );
+}
+
+/**
+ * The DESTROY refusal text for the `resources` bag (issue
+ * [#3161](https://github.com/go-to-k/cdkd/issues/3161)).
+ *
+ * A SECOND `resources` refusal beside {@link malformedStateRefusalMessage},
+ * for the reason every split in this module is its own: that text says saving
+ * over the record "would replace the evidence with a well-formed empty one",
+ * which is not what a destroy does. A destroy DELETES the record, and it does
+ * so down a path the other four refusing commands never take.
+ *
+ * What the runner does with the bag is COUNT it —
+ * `Object.keys(state.resources).length` — and route on the count. The count is
+ * the list of what to delete, so an unreadable bag counts ZERO and the run
+ * takes the EMPTY-STACK FAST PATH, which deletes `state.json` outright. Every
+ * resource the record named stays live in AWS, now unreferenced, and the
+ * destroy reports success.
+ *
+ * **Reading the bag as EMPTY — the read-only repair — IS that outcome rather
+ * than an alternative to it**, which is why no repair is available here.
+ * Measured rather than reasoned: `[]`, `5` and `true` all enumerate no keys,
+ * so they already ARE the repaired-to-`{}` shape, and each one reaches the
+ * fast path today. The same measurement
+ * {@link refuseMalformedResourceProperties} records one container down.
+ *
+ * It NAMES `cdkd state orphan`, which the sibling refusals do not, and
+ * that answers the objection go-to-k/cdkd#3161 raises against refusing at all
+ * — that a cleanup command refusing leaves the user with no supported way to
+ * tear the stack down. Proceeding would not tear anything down either, and
+ * that is per-shape rather than a slogan: `[]` / a number / a boolean name no
+ * resource at all, while a STRING names one fabricated logical id per
+ * character whose ENTRY is a single character — so `resourceType` and
+ * `physicalId` are both `undefined` and `ProviderRegistry.getProviderFor`
+ * throws before any provider is selected, which means no AWS delete is issued
+ * and no live resource can be addressed. (Measured 2026-09-17 against the real
+ * registry: `Cannot read properties of undefined (reading 'startsWith')`, out
+ * of the `isCustomResource` test — a routing failure, NOT a `provider.delete`
+ * rejection, which an earlier revision of this note claimed.) What a forced
+ * run would do is therefore bounded by the record: on the first three shapes
+ * it deletes `state.json` and nothing else, and on a string every fabricated
+ * id fails and `errorCount > 0` keeps a record — but keeps it LAUNDERED, since
+ * the preserve-write spreads the bag (`{ ...state.resources }`) and `'ab'`
+ * comes back as a well-formed `{"0":"a","1":"b"}`. So "it preserves the
+ * evidence" would be the wrong defence of proceeding; the string shape reaches
+ * the same laundering by another route, which strengthens the refusal rather
+ * than weakening it (review round 2 of go-to-k/cdkd#3332). The only outcome
+ * worth offering is the record's removal, and `cdkd state orphan` is the
+ * supported command for it, leaving the live resources in place. It reads
+ * `state.resources` nowhere, which is what makes the pointer true and is
+ * fenced in `tests/unit/state/malformed-resources-bag.test.ts`.
+ *
+ * **That remedy is a TEMPLATE, not a substituted command, and the asymmetry
+ * with the `cdkd state show` line above it is the point.** `state orphan`
+ * DELETES a record; `state show` reads one. The `region` this function is
+ * handed comes from `destroy-runner.ts`'s
+ * `state.region ?? ctx.baseRegion`, and `state.region` is RECORD-BODY content
+ * that `getState` does not check against the key it loaded from — measured
+ * 2026-09-17: a record planted at `.../us-east-1/state.json` carrying
+ * `"region": "eu-west-1"` rendered a pasteable
+ * `cdkd state orphan <stack> --stack-region eu-west-1`, aiming a destructive
+ * command at a DIFFERENT region's record for the same stack. That is the
+ * misdirection class {@link stackClause} records for stack names, one field
+ * over. Substituting into the read-only `state show` line is the pre-existing
+ * behaviour of {@link malformedStateDetail} and is left alone; what this lane
+ * must not add is a destructive one. The divergence itself — the runner also
+ * LOCKS and DELETES against the body region — is go-to-k/cdkd#3328.
+ *
+ * **A template is not enough on its own, because the name the reader would
+ * type into it comes from the clause ABOVE.** `safeIdentifier` composes
+ * `displaySafe` with a cap, and `displaySafe` TRIMS — so a planted
+ * `resources["..."]` record keyed `"prod-api "` opens this message as
+ * `State for 'prod-api' (...)`, byte-identical to a HEALTHY sibling spelled
+ * `prod-api`. An operator who then orphans "the record the line above names"
+ * deletes the intact one. That is exactly the identity failure `displayIdent`
+ * exists for and {@link namedPropertyBagsClause} applies to logical ids. So
+ * the remedy sentence is GATED on the identity rendering EXACTLY: when it does
+ * not, the text names no removal target at all and opens on
+ * {@link stackClause}'s no-identity form, ending on
+ * {@link inspectCommand}'s TEMPLATE rather than on a command built from the
+ * very identity it just called untrustworthy. The same call
+ * `buildForceUnlockCommand` makes when a value would render misleadingly.
+ *
+ * **Rendering exactly is not the same as being TRUE, and the EXACT arm must
+ * not claim it is.** `exact` answers a question about this message's own text;
+ * it says nothing about PROVENANCE. A planted `"region": "eu-west-1"` on a
+ * `.../us-east-1/` key is an ordinary region string, so it renders exactly and
+ * the arm fires — and an earlier revision then said to run `cdkd state orphan`
+ * "with the stack and region this message NAMES", which is the attacker's
+ * region (review round 2 of go-to-k/cdkd#3332: templating had removed the
+ * paste, not the aim). The arm therefore points at the record's S3 KEY, which
+ * `getState` resolved and a record body cannot forge, and says outright that
+ * the region printed above is body-derived and need not match it. The
+ * divergence is go-to-k/cdkd#3328.
+ *
+ * **The cap this arm measures against is `STACK_REF_MAX_CODE_POINTS`, not the
+ * 128 every other text in this module uses**, and it is threaded rather than
+ * hard-coded because the VERDICT turns on it. At 128 an ordinary multi-level
+ * CDK nested child (`<root>~<...NestedStackResource><hash>~<...>`, measured
+ * past 150 code points) truncates, fails `exact`, and takes the withhold arm
+ * on a HEALTHY record — which is fail-safe but makes the fallback the common
+ * path for exactly the nested destroys this lane added a guard to (review
+ * round 2 of go-to-k/cdkd#3332). The bound is still a bound: a planted
+ * multi-kilobyte name is truncated at 1152 and lands in the withhold arm.
+ *
+ * Identifiers are sanitized and THEN shell-quoted, for the reasons
+ * {@link safeIdentifier}'s note gives.
+ */
+export function malformedDestroyResourcesRefusalMessage(stackName: string, region: string): string {
+  // EXACTNESS, not merely printability: `safeIdentifier` may trim, substitute
+  // or truncate, and each of those can render a planted identifier as a
+  // healthy one. Compared against the RAW value, so any divergence at all
+  // suppresses the target-naming half.
+  // The cap is the STATE-RECORD grammar, not the 128 every other text here
+  // uses: this arm's VERDICT turns on it, and at 128 an ordinary multi-level
+  // nested child truncates and a healthy record takes the withhold arm.
+  const cap = STACK_REF_MAX_CODE_POINTS;
+  const exact =
+    safeIdentifier(stackName, cap) === stackName && safeIdentifier(region, cap) === region;
+  // The DIAGNOSIS half. On the exact arm it is the shared detail, whose
+  // pasteable `cdkd state show` is sound because the identity renders
+  // faithfully. On the withhold arm it must NOT be: a message that has just
+  // said "another record may render identically" cannot then hand over a
+  // command built from that rendering — following it would READ the healthy
+  // sibling, return a clean record, and raise the operator's confidence right
+  // before the destructive step. So that arm takes the module's own
+  // no-identity form instead.
+  const detail = exact
+    ? malformedStateDetail(stackName, region, cap)
+    : `${stackClause(undefined, undefined)} ${MALFORMED_RESOURCES_DIAGNOSIS}`;
+  const remedy = exact
+    ? `To drop the record deliberately and leave the live resources standing, run ` +
+      `'cdkd state orphan' against the stack and the region THE RECORD'S S3 KEY holds — ` +
+      `spelled out rather than pasteable, because that command DELETES a record and the region ` +
+      `printed above is read from the record's own BODY, which need not match its key. ` +
+      `Confirm the key with 'cdkd state list --long' — a legacy record shows none, and for one ` +
+      `of those the flag must be OMITTED or it selects nothing — then: ` +
+      `cdkd state orphan <stack> --stack-region <region>`
+    : `This record's stack name or region does NOT render exactly — what is printed above is a ` +
+      `sanitized form, and another record may render identically — so this message names no ` +
+      `target and offers no command against one. List the records as stored with ` +
+      `'cdkd state list --long', which prints a name needing sanitizing in quoted form, and act ` +
+      `on the one whose key matches. Inspect it with: ${inspectCommand(undefined, undefined)}`;
+  return (
+    `${detail} This command DELETES state, so it refuses ` +
+    `rather than continuing: the resource map IS the list of what to delete, so an unreadable ` +
+    `one counts as ZERO resources and the run takes the empty-stack fast path, which removes ` +
+    `state.json and reports success while every resource the record named is still live in AWS ` +
+    `and no longer referenced by anything. Reading the bag as EMPTY is that same outcome rather ` +
+    `than an alternative to it, so there is no repair available here. Repair or remove the ` +
+    `record first. ${remedy}`
+  );
+}
+
+/**
+ * For `cdkd destroy` / `cdkd state destroy`: refuse a record whose `resources`
+ * bag cannot be read (issue
+ * [#3161](https://github.com/go-to-k/cdkd/issues/3161)).
+ *
+ * The `resources` twin of {@link refuseMalformedOutputsForDestroy}, and a
+ * SEPARATE call from it for the reason that one is separate from
+ * {@link refuseMalformedOutputs}: a record can be malformed in either
+ * container alone and the refusal must name the one that is broken.
+ *
+ * CALL IT AT THE TOP OF THE DESTROY, **above the `resourceCount` read**. The
+ * placement rule is {@link repairMalformedResourcesForReadOnly}'s and it is
+ * not decoration here: the empty-stack fast path sits immediately below that
+ * read and DELETES the record, so a guard written anywhere below it refuses a
+ * record that is already gone.
+ */
+export function refuseMalformedResourcesForDestroy(
+  state: StackState,
+  stackName: string,
+  region: string
+): void {
+  if (hasReadableResources(state)) return;
+  // `markNonRetryable` for the reason `refuseMalformedOutputsForDestroy`
+  // carries it: the verdict comes from a PERSISTED record, so no retry can
+  // change it, while the message interpolates caller-derived identifiers a
+  // SUBSTRING-matching retry classifier can read as transient. Issue #1838.
+  throw markNonRetryable(
+    new CdkdError(
+      malformedDestroyResourcesRefusalMessage(stackName, region),
+      STATE_RESOURCES_MALFORMED
+    )
+  );
+}
+
+/**
+ * The DEPLOY refusal text for the `resources` bag (issue
+ * [#3161](https://github.com/go-to-k/cdkd/issues/3161)).
+ *
+ * A THIRD `resources` text, and not {@link malformedStateRefusalMessage}'s for
+ * the same reason the destroy one is not: that text describes the SAVE as the
+ * harm, and here the save is the last thing that happens rather than the
+ * first. An unreadable map reads as zero RECORDED resources, so the change
+ * calculation plans every resource the template declares as a CREATE and the
+ * deploy re-provisions the whole stack against live AWS — colliding on every
+ * deterministic name and duplicating the rest — before saving a well-formed
+ * record over the only evidence anything was wrong. An operator told their
+ * record would be "replaced with a well-formed empty one" would not know that
+ * running anyway duplicates their stack.
+ *
+ * **It must be true under `cdkd deploy --dry-run` as well**, which it is: the
+ * guard sits at the state LOAD, above the diff and above the `if
+ * (this.options.dryRun)` return, so a dry run reaches it. Refusing there is
+ * the decision {@link malformedResourcePropertiesRefusalMessage} records for
+ * the sibling container, for the same reason — the repaired PREVIEW is
+ * available one command over from `cdkd diff`, which repairs this bag and
+ * warns, so refusing here costs nothing that is not already offered, while a
+ * plausible `--dry-run` plan followed by a refusal the moment the flag comes
+ * off would be the worst arm of all.
+ *
+ * Identifiers are sanitized and THEN shell-quoted and the command is emitted
+ * LAST, for the reasons {@link safeIdentifier}'s note gives.
+ */
+export function malformedDeployResourcesRefusalMessage(stackName: string, region: string): string {
+  return (
+    `${malformedStateDetail(stackName, region)} 'cdkd deploy' can WRITE state and AWS ` +
+    `resources, so it refuses rather than continuing — under '--dry-run' too, because the plan ` +
+    `a dry run would print is the wrong one: an unreadable map reads as ZERO recorded ` +
+    `resources, so every resource the template declares is planned as a CREATE and the deploy ` +
+    `re-provisions a stack that already exists, colliding on each deterministic name and ` +
+    `duplicating the rest, then saves a well-formed record over the only evidence anything was ` +
+    `wrong. Reading the bag as EMPTY produces that same plan rather than avoiding it. Nothing ` +
+    `was provisioned and no state was written FOR THIS STACK. Repair or remove the record ` +
+    `first; 'cdkd diff' previews the stack with this map read as EMPTY and warns that it did.`
+  );
+}
+
+/**
+ * For `cdkd deploy`: refuse a record whose `resources` bag cannot be read
+ * (issue [#3161](https://github.com/go-to-k/cdkd/issues/3161)).
+ *
+ * The gap go-to-k/cdkd#3317's review named and left: that lane closed the
+ * per-entry `properties` container at `DiffCalculator.calculateDiff`, and
+ * {@link unreadableResourcePropertyBags} deliberately returns `[]` for a
+ * record whose ROOT bag is unreadable — so `"resources": "abcdef"` reached the
+ * deploy diff, enumerated two fabricated logical ids, and re-created the
+ * stack. {@link refuseMalformedState}'s callers are `import.ts`, `orphan.ts`
+ * and `rollback.ts`, none of which is on this path.
+ *
+ * CALL IT AT THE LOAD, beside {@link refuseMalformedOutputs} — the placement
+ * rule {@link repairMalformedResourcesForReadOnly}'s note records. Not at
+ * `calculateDiff`: the engine's own load dominates that call AND the twelve
+ * reads between them — five, measured 2026-09-17 over comment-stripped source;
+ * re-derive rather than trusting the figure — the first of which
+ * (`Object.keys(currentState.resources)` in a debug line) is where a `null`
+ * bag raised the bare `TypeError` #3018 exists to remove.
+ */
+export function refuseMalformedResourcesForDeploy(
+  state: StackState,
+  stackName: string,
+  region: string
+): void {
+  if (hasReadableResources(state)) return;
+  // `markNonRetryable` for the reason `refuseMalformedResourceProperties`
+  // carries it: a nested child's deploy runs inside the parent's
+  // `withRetry(provider.create)`, the verdict comes from a persisted record no
+  // retry can change, and the message interpolates identifiers a
+  // SUBSTRING-matching classifier can read as transient. Issue #1838.
+  throw markNonRetryable(
+    new CdkdError(
+      malformedDeployResourcesRefusalMessage(stackName, region),
+      STATE_RESOURCES_MALFORMED
+    )
   );
 }
 
@@ -398,6 +700,14 @@ export function malformedOutputsWarning(stackName: string, region: string): stri
  */
 export function refuseMalformedState(state: StackState, stackName: string, region: string): void {
   if (hasReadableResources(state)) return;
+  // NOT `markNonRetryable`, and that is the DECISION rather than the omission
+  // it reads as: this is the only refusal in the module without the marker,
+  // because its callers — `cdkd import`, `cdkd orphan`, `cdkd rollback` — each
+  // raise it from the command's own top level, outside any `withRetry`. The
+  // marker would fence nothing there. Revisit if a retrying caller is added;
+  // `tests/unit/state/malformed-resources-bag.test.ts` names this exemption so
+  // a seventh refusal cannot join it silently (review round 2 of
+  // go-to-k/cdkd#3332).
   throw new CdkdError(malformedStateRefusalMessage(stackName, region), STATE_RESOURCES_MALFORMED);
 }
 
@@ -541,7 +851,18 @@ export function refuseMalformedOutputs(
   region: string
 ): void {
   if (hasReadableOutputs(state)) return;
-  throw new CdkdError(malformedOutputsRefusalMessage(stackName, region), STATE_RESOURCES_MALFORMED);
+  // `markNonRetryable` for the reason its three siblings carry it, which holds
+  // here identically and was simply missed: `cdkd deploy` is one of this
+  // function's callers, a nested child's deploy runs inside the parent's
+  // `withRetry(provider.create)`, the verdict comes from a PERSISTED record no
+  // retry can change, and the message interpolates a caller-supplied stack name
+  // a SUBSTRING-matching classifier can read as transient. Without it a child
+  // whose `outputs` bag was damaged burned the full retry schedule while one
+  // whose `resources` bag was damaged did not (review of go-to-k/cdkd#3161).
+  // Issue #1838.
+  throw markNonRetryable(
+    new CdkdError(malformedOutputsRefusalMessage(stackName, region), STATE_RESOURCES_MALFORMED)
+  );
 }
 
 /**

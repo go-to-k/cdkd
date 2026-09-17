@@ -362,6 +362,36 @@ CloudFormation-parity completion semantics — a smoke-test gate, a
 production-leaning promotion step — can bake `--full-wait` into its deploy
 invocation as a standing setting.
 
+## A malformed `resources` map refuses the deploy
+
+A state record is used as typed data without a field-by-field shape check, so a
+hand-edited or truncated one can hold a string, a list, a number, a boolean or
+`null` where the `resources` map belongs.
+
+That map is what cdkd compares your template against to decide what already
+exists. A `[]`, a number or a boolean enumerates **no logical ids**, so every
+resource the template declares plans as a `CREATE` — cdkd re-provisions a stack
+that is already standing, colliding on every deterministic name and duplicating
+the rest — and then saves a well-formed record over the only signal anything
+was wrong. A string enumerates one fabricated logical id per character instead.
+
+`cdkd deploy` refuses such a record at the load
+(`STATE_RESOURCES_MALFORMED`, exit `1`). Nothing is provisioned and no state is
+written for that stack. `--dry-run` refuses too: the plan a dry run prints comes
+from the same comparison, so it would show the re-creation as though your
+template asked for it.
+
+Reading the map as empty is not a safe alternative — it produces that same plan
+— which is why cdkd does not offer one here. `cdkd diff` does repair it and warn,
+because it provisions nothing; that is where to go to see the rest of the stack.
+
+An **absent** `resources` field is a defect and is refused: a stack always has a
+resource map, even an empty one. An empty `{}` is healthy and deploys normally
+(it is what a first-ever deploy reads). Inspect the record with `cdkd state show
+<stack> --stack-region <region> --json`, repair or remove it, then re-run. Full
+table in
+[State Management](state-management.md#when-resources-is-not-an-object).
+
 ## A malformed `outputs` map refuses the deploy
 
 A state record is used as typed data without a field-by-field shape check, so a

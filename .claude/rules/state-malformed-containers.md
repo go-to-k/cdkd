@@ -23,7 +23,7 @@ Two per-container triples, plus every message text:
 
 | Container | Predicate | Write-capable | Read-only |
 | --- | --- | --- | --- |
-| `resources` (issue [#3018](https://github.com/go-to-k/cdkd/issues/3018)) | `hasReadableResources` | `refuseMalformedState` | `repairMalformedResourcesForReadOnly` |
+| `resources` (issues [#3018](https://github.com/go-to-k/cdkd/issues/3018), [#3161](https://github.com/go-to-k/cdkd/issues/3161)) | `hasReadableResources` | `refuseMalformedState` +2 | `repairMalformedResourcesForReadOnly` |
 | `outputs` (issues [#3189](https://github.com/go-to-k/cdkd/issues/3189), [#3192](https://github.com/go-to-k/cdkd/issues/3192), [#3207](https://github.com/go-to-k/cdkd/issues/3207)) | `hasReadableOutputs` | `refuseMalformedOutputs` + two siblings | `repairMalformedOutputsForReadOnly` |
 
 **The `outputs` container has THREE refusal entry points, one predicate.**
@@ -38,8 +38,10 @@ mechanism that does not happen at either site. Enumerate them with
 `tests/unit/state/malformed-resources-bag.test.ts` derives the same list and
 fails when this one goes stale.
 
-A THIRD triple, over each ENTRY's `properties` map (#3191), lives with its
-readers: [state-malformed-properties.md](state-malformed-properties.md).
+Two sets live with their READERS: `resources`' gate-scoped pair (#3161) in
+[state-malformed-resources-gated.md](state-malformed-resources-gated.md); the
+ENTRY-level `properties` triple (#3191) in
+[state-malformed-properties.md](state-malformed-properties.md).
 
 Each function's own JSDoc is the authority for WHY; what follows is what a
 later edit must not undo.

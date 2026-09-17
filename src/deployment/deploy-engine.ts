@@ -23,7 +23,10 @@ import {
 } from '../utils/error-handler.js';
 import { displaySafe } from '../utils/display-safe.js';
 import { shellQuote } from '../state/lock-contention-message.js';
-import { refuseMalformedOutputs } from '../state/malformed-resources-bag.js';
+import {
+  refuseMalformedOutputs,
+  refuseMalformedResourcesForDeploy,
+} from '../state/malformed-resources-bag.js';
 import {
   isStatefulRecreateTargetForReplace,
   renderStatefulReason,
@@ -2790,10 +2793,26 @@ export class DeployEngine {
       // `repairMalformedResourcesForReadOnly`'s own note records: a per-walk
       // `?? {}` is inert for this class, since each flow dereferences the
       // container a line earlier.
-      //
-      // The `resources` bag is NOT guarded here — that is a separate container
-      // with a separate absence rule, tracked by go-to-k/cdkd#3161.
       refuseMalformedOutputs(currentState, stackName, this.stackRegion);
+      // And the `resources` bag, a SEPARATE container with a separate absence
+      // rule, refused separately so the message names the one that is broken
+      // (issue go-to-k/cdkd#3161).
+      //
+      // The gap go-to-k/cdkd#3317 measured and left: it closed the per-ENTRY
+      // `properties` map at `DiffCalculator.calculateDiff`, and that
+      // predicate returns `[]` for a record whose ROOT bag is itself
+      // unreadable — so `"resources": "abcdef"` still reached the diff and
+      // enumerated two fabricated logical ids, while a `[]` or a `5`
+      // enumerated none and planned every template resource as a CREATE,
+      // re-provisioning a stack that already exists.
+      //
+      // HERE rather than at `calculateDiff`, although that is the chokepoint
+      // both diff callers share: this load DOMINATES the call and the reads
+      // between them, the first of which is the `Object.keys(...)` debug line
+      // immediately below — where a `null` bag raised the bare `TypeError`
+      // go-to-k/cdkd#3018 exists to remove. `cdkd diff` keeps its repair-and-warn
+      // half at its own load, so the preview this refusal points at still works.
+      refuseMalformedResourcesForDeploy(currentState, stackName, this.stackRegion);
       // Set when we loaded a `version: 1` legacy record. The next save
       // migrates it to the new key.
       const migrationPending = currentStateData?.migrationPending ?? false;

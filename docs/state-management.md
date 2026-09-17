@@ -859,6 +859,47 @@ unresolved output is dropped from the block entirely rather than printed as
 `cdkd state show <stack>`, which renders any non-scalar through
 `JSON.stringify` and so preserves the distinction.
 
+#### When `resources` is not an object
+
+`resources` is the map of logical id to resource record, and it is unchecked in
+the same way: a hand-edited or truncated record can hold a string, a list, a
+number, a boolean or `null` there. `Object.keys` answers three different ways
+over those, and the middle answer is the dangerous one — a `[]`, a number or a
+boolean enumerates **no keys**, which is indistinguishable from a stack that
+genuinely has none. A string enumerates one fabricated logical id per character.
+
+| Command | Answer |
+| --- | --- |
+| `cdkd deploy` | **Refuses** at the load (`STATE_RESOURCES_MALFORMED`, exit `1`) — a map read as empty makes every resource the template declares plan as a `CREATE`, so the deploy re-provisions a stack that already exists, then saves a well-formed record over the evidence |
+| `cdkd deploy --dry-run` | **Refuses**, identically — the plan a dry run prints comes from the same comparison |
+| `cdkd destroy` / `cdkd state destroy` | **Refuses** before the prompt and before the lock (`STATE_RESOURCES_MALFORMED`, exit `1`) — the map is the list of what to delete, so an unreadable one counted as zero resources and the run removed `state.json` down the empty-stack fast path |
+| `cdkd orphan`, `cdkd import`, `cdkd rollback` | **Refuse** (`STATE_RESOURCES_MALFORMED`, exit `1`) — each carries the bag into a save |
+| `cdkd scrub` | **Refuses** on a real run (exit `2`); audits and reports under `--dry-run` |
+| `cdkd diff` | **Repairs** in memory and warns — it never writes state; see [`cdkd diff`](cli-diff.md#when-the-state-record-is-malformed) |
+| `cdkd state show` | **Repairs** in memory and warns; `--json` still emits the stored value — see [`cdkd state`](cli-state.md#when-resources-is-not-an-object) |
+| `cdkd state resources` | **Repairs** in memory and warns; `--json` emits `[]`, because that mode is the resource array cdkd derived rather than a view of the stored value |
+
+The destroy row is the one where *repairing* would be unsafe rather than
+merely lossy. Read as empty, the count comes back zero, the empty-stack fast
+path removes `state.json` with no confirmation, and the destroy reports
+**success having deleted nothing** — every resource the record named left live
+in AWS with nothing to say what they were. So reading the map as empty is not
+the safe alternative here; it **is** that outcome. An empty `{}` and an unreadable `[]`
+both count zero, so the two are separated by the container's shape, never by
+its size, and a legitimately empty stack still takes the fast path exactly as
+before.
+
+Refusing a cleanup command does not leave you stuck, because proceeding would
+not have torn anything down either — the list of what to delete is precisely
+what is unreadable. If what you want is the record gone with the live resources
+left standing, that is `cdkd state orphan <stack> --stack-region <region>`,
+which the refusal names. To act on the resources instead, repair the record and
+re-run.
+
+An **absent** `resources` field is a defect, unlike an absent `outputs` — a
+stack always has a resource map, even an empty one — and is refused the same
+way. An empty `{}` is healthy.
+
 #### When `outputs` is not an object
 
 A state record is parsed as JSON and used as typed data without a

