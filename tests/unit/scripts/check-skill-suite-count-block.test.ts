@@ -160,7 +160,11 @@ function reconstructedVerdictBody(): string {
     .filter((l) => {
       const t = l.trim();
       if (t === '(' || t === ')' || t.startsWith('#')) return false;
-      if (t.startsWith('log=') || t.startsWith('echo "log:') || t.startsWith('vp test run')) return false;
+      // `includes`, not `startsWith`: `CI=1 vp test run ...` or
+      // `time vp test run ...` would escape a prefix test, and the escaped
+      // line's own `rc=$?` overwrites the injected one. The case below still
+      // asserts the invariant; this makes it hold by construction too.
+      if (t.startsWith('log=') || t.startsWith('echo "log:') || t.includes('vp test run')) return false;
       return t.length > 0;
     })
     .join('\n');
@@ -358,6 +362,24 @@ describe('/check step 4 — the collected-count block', () => {
     // The remedy must live on THIS arm: vitest exits non-zero whenever it
     // prints an `Errors` line, so the founding incident never reaches the
     // count check below it.
+    expect(out).toContain('--maxWorkers=4');
+  });
+
+  it.each([
+    ['[vitest-pool]: Failed to start forks worker for test files a.test.ts'],
+    ['[vitest-pool]: Timeout starting threads runner.'],
+    ['[vitest-pool]: Worker vmThreads emitted error.'],
+    ['[vitest-pool-runner]: Timeout waiting for worker to respond'],
+  ])('offers the worker remedy for the whole pool family: %s', (poolLine) => {
+    // WIDTH, which nothing pinned: re-narrowing the predicate to one message
+    // and one pool (`Failed to start forks worker`) left every other case
+    // green, so a `pool: 'threads'` config would silently lose the remedy.
+    // All four are vitest's own, and all four are what a loaded host yields.
+    const { out, status } = runBlockVerdict(
+      ` RUN  v4.1.11 ${repoRoot}\n Test Files  916 passed (916)\n${poolLine}\n`,
+      1
+    );
+    expect(status).toBe(1);
     expect(out).toContain('--maxWorkers=4');
   });
 

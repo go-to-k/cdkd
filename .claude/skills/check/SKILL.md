@@ -151,16 +151,21 @@ Run these sequentially and report results:
      # incident -- `Test Files 916 passed (916)` beside `Errors 148`, every one
      # `[vitest-pool]: Failed to start forks worker` -- ALWAYS lands here.
      #
-     # The predicate is anchored on vitest's OWN prefix rather than a loose
-     # `Failed to start .* worker`: cdkd throws
-     # `Failed to start metadata-endpoints sidecar: ...` (src/local/ecs-network.ts)
-     # and the docker argv it interpolates can carry `worker`, so the wide form
-     # offers a pool remedy for an ordinary test failure -- the misdiagnosis
-     # this arm exists to end, pointed the other way.
+     # The predicate is the pool's own PREFIX, and both halves of that are
+     # measured rather than chosen. Anchoring on `[vitest-pool]` is what keeps
+     # cdkd's `Failed to start metadata-endpoints sidecar: ...`
+     # (src/local/ecs-network.ts, which interpolates a docker argv that can
+     # carry `worker`) from claiming an ordinary test failure was a pool
+     # problem. Matching the whole prefix rather than one message is what
+     # covers the REST of the family, which a host under load produces just as
+     # readily: `Failed to start <pool> worker`, `Timeout starting <pool>
+     # runner`, `Worker <pool> emitted error`, `Timeout terminating <pool>
+     # worker`, and `[vitest-pool-runner]: Timeout waiting for worker to
+     # respond`. `--maxWorkers=4` is the remedy for all of them.
      if [ "$rc" != 0 ]; then
        echo "SUITE FAILED rc=$rc; log: $log"
-       grep -qE '\[vitest-pool\]: Failed to start' "$log" \
-         && echo "  workers died before their files ran, so the passing counts above cover only what survived -- re-run with --maxWorkers=4"
+       grep -qE '\[vitest-pool(-runner)?\]: ' "$log" \
+         && echo "  the pool lost workers before their files ran, so the passing counts above cover only what survived -- re-run with --maxWorkers=4"
        exit 1
      fi
      # Only a run that exited 0 reaches here, so this is NOT the lost-worker
