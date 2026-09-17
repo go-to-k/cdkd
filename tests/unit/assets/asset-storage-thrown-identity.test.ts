@@ -279,6 +279,64 @@ describe('asset-bucket region refusal: caller identity must not reach the THROWN
     expect(debugText()).toContain(CALLER_ARN);
   });
 
+  it('keeps a TRANSPORT failure\'s wording, which the retry stamp used to delete (issue #3297)', async () => {
+    // The headline of go-to-k/cdkd#3297, and it was UNFENCED at this call site
+    // until this case: every fixture above sets BOTH `$fault` and a numeric
+    // `httpStatusCode`, so none of them can exhibit the shape whose verdict the
+    // fix changes.
+    //
+    // `@smithy/core`'s retry middleware stamps `$metadata = {attempts,
+    // totalRetryDelay}` onto every error it gives up on, socket errors
+    // included, and CREATES the object when absent. Under the old
+    // presence-keyed predicate that made a plain `ECONNREFUSED` "AWS-authored",
+    // so it was reduced to its `name` -- which for a socket error is the bare
+    // token `Error`, leaving the persisted refusal with no diagnosis at all.
+    const socketFailure = Object.assign(new Error('connect ECONNREFUSED 10.0.0.1:443'), {
+      code: 'ECONNREFUSED',
+      $metadata: { attempts: 3, totalRetryDelay: 58 },
+    });
+    primeFailingProbe(socketFailure);
+
+    const thrown = await captureRefusal();
+
+    // The host and the code SURVIVE -- this is the whole deliverable.
+    expect(thrown.message).toContain('connect ECONNREFUSED 10.0.0.1:443');
+    // ...and it is not the bare token the old predicate produced.
+    expect(thrown.message).not.toContain('--verbose');
+    // Nothing was withheld, so nothing is declared and no debug line repeats it.
+    expect(hasRedactedCause(thrown)).toBe(false);
+    expect(debugText()).not.toContain('GetBucketLocation failed for asset bucket');
+  });
+
+  it('WITHHOLDS a credential-resolution failure, which used to pass through verbatim (issue #3297)', async () => {
+    // The inverse delta, and the leak this fix closes rather than opens.
+    // Credential resolution runs OUTSIDE the retry middleware that stamps
+    // `$metadata`, so a `CredentialsProviderError` carried NO marker at all and
+    // the old predicate let its message through verbatim -- into the thrown
+    // `CdkdError` and from there into the durable `deployments/{runId}.jsonl`.
+    // With `credential_process` that message interpolates the helper's ARGV and
+    // its stderr.
+    const credFailure = Object.assign(
+      new Error("Command failed: /bin/sh -c 'vault read aws'\nvault: token hvs.SECRET rejected"),
+      { name: 'CredentialsProviderError' }
+    );
+    primeFailingProbe(credFailure);
+
+    const thrown = await captureRefusal();
+
+    expect(thrown.message).toContain('CredentialsProviderError');
+    expect(thrown.message).not.toContain('hvs.SECRET');
+    expect(thrown.message).not.toContain('/bin/sh');
+    // Withheld, not deleted: `--verbose` still recovers what the operator needs
+    // to fix their credential helper...
+    expect(debugText()).toContain('hvs.SECRET');
+    // ...and NOWHERE at default level. Without this pairing a regression that
+    // echoed the argv to `warn` would satisfy every assertion above -- the
+    // shape the sibling cases in this file already guard against.
+    expect(defaultLevelText()).not.toContain('hvs.SECRET');
+    expect(defaultLevelText()).not.toContain('/bin/sh');
+  });
+
   it('NEGATIVE CONTROL: a NON-AWS probe failure is neither redacted nor echoed to debug', async () => {
     // The `failure.redacted` gate, which a mutation forcing the debug line ON
     // left green until this case existed. A probe that fails with a plain

@@ -49,7 +49,7 @@ import { shellQuote } from '../state/lock-contention-message.js';
 // registry -> provider ring: `delete-outcome.ts` is a documented LEAF whose only
 // imports are types, so a new edge INTO it cannot close a cycle.
 import { withIndeterminateGuard } from '../deployment/delete-outcome.js';
-import { describeAwsFailure, redactedAwsFailureSummary } from '../utils/aws-failure-text.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { displaySafe } from '../utils/display-safe.js';
 import { JsonPatchGenerator } from './json-patch-generator.js';
 import { getTopLevelWriteOnlyProperties } from './write-only-properties.js';
@@ -312,56 +312,6 @@ const POLL_TRANSPORT_CODE_IN_MESSAGE = new RegExp(
  */
 const POLL_CAUSE_CHAIN_DEPTH = 5;
 
-/**
- * The ONE name whose message must be withheld from a non-`debug` line, and the
- * enumeration behind why it is exactly one.
- *
- * `@smithy/property-provider` exports a family of three -- `ProviderError`, and
- * its subclasses `CredentialsProviderError` and `TokenProviderError` -- plus
- * `@smithy/credential-provider-imds`'s `InstanceMetadataV1FallbackError`, the
- * only subclass OF `CredentialsProviderError` in the installed tree. (All four
- * set `name`; the qualifier is what makes the sentence true, and an earlier
- * revision read "the only subclass that overrides `name`", which is false of
- * the three siblings.) Each was read rather than reasoned about, because the
- * answers differ and go BOTH ways:
- *
- *  - `CredentialsProviderError` is the one that leaks.
- *    `@aws-sdk/credential-provider-process` wraps EVERY exec failure in it, so
- *    its message interpolates the helper's ARGV and its stderr. Measured
- *    through a real client: `Command failed: /bin/sh -c 'echo "vault: token
- *    hvs.<...> rejected" >&2; exit 1'` followed by that stderr. An aws-vault /
- *    saml2aws setup whose credentials expire mid-wait would persist a token.
- *  - `TokenProviderError` must NOT be reduced. Its message IS the remedy --
- *    `Token is expired. To refresh this SSO session run 'aws sso login' with
- *    the corresponding profile.` -- so reducing it to a wire name would delete
- *    the fix instruction. A round-9 revision of this predicate matched the
- *    whole `*ProviderError` suffix and did exactly that.
- *
- *    The benefit is NOT realized on THIS path today, and saying otherwise was
- *    the claim review measured false: `@aws-sdk/credential-provider-sso`
- *    catches every token failure and rethrows it as a
- *    `CredentialsProviderError`, so the shape cannot escape a SigV4 client and
- *    an SSO expiry reaches here already reduced. The carve-out is a rule about
- *    the FAMILY, kept because the rewrap is upstream behaviour that can change
- *    and because the reduction is wrong for this class on any path that does
- *    surface it -- not a user-visible improvement this PR delivers.
- *  - `ProviderError` (the base) and `InstanceMetadataV1FallbackError` carry
- *    connectivity and CONFIG wording respectively -- the IMDS one interpolates
- *    three fixed literals naming config keys, with no argv, stderr, profile
- *    value or identity in it. Both are more useful raw.
- *
- * So string EQUALITY is right here, and it is right by enumeration rather than
- * by assumption. Re-check this list when the SDK major moves; do not widen it
- * to a suffix.
- *
- * The specific mechanism to re-check is `ProviderError.from()`, which does
- * `Object.assign(new this(...), error)` -- that copies a SOURCE error's own
- * `name` over the class field and would defeat string equality outright. It
- * has ZERO call sites anywhere in `node_modules` today, which is the only
- * reason equality is safe rather than merely correct-looking.
- */
-const CREDENTIAL_LEAK_ERROR_NAME = 'CredentialsProviderError';
-
 /** What one poll failure may say on each of the two channels. */
 interface PollFailureText {
   /**
@@ -397,37 +347,15 @@ interface PollFailureText {
  * argv and stderr on every re-poll while the abandonment that eventually
  * followed reduced them.
  *
- * The authorship test is NOT `describeAwsFailure`'s. That one keys on the mere
- * PRESENCE of `$metadata`, and `@smithy/core`'s retry middleware stamps
- * `$metadata = {attempts, totalRetryDelay}` onto EVERY error it gives up on --
- * socket errors included. Measured against a real client pointed at a closed
- * port:
- *
- *     name 'Error', code 'ECONNREFUSED', $fault undefined,
- *     message 'connect ECONNREFUSED 127.0.0.1:1',
- *     $metadata { attempts: 3, totalRetryDelay: 58 }
- *
- * so reducing on it DELETES `connect ECONNREFUSED ...` -- the exact wording
- * issue [#3236](https://github.com/go-to-k/cdkd/issues/3236) was reported with
- * -- and leaves the bare token `Error.`, a socket error's `name` being `Error`.
- * The discriminator here is a real SERVICE signal instead: `$fault`, or a
- * NUMERIC `$metadata.httpStatusCode`, which a transport failure never carries
- * and a service rejection always does.
- *
- * Credential resolution carries NEITHER signal, which is why
- * {@link CREDENTIAL_LEAK_ERROR_NAME} is a third arm. That is measured, not
- * read off the middleware table -- review round 8 argued from middleware
- * priorities that identity is resolved inside the retry middleware, and a real
- * `CloudControlClient` whose credential provider throws answers
- * `{name:'CredentialsProviderError', $fault: undefined, $metadata: undefined}`.
- * The mechanism, confirmed afterwards: identity is resolved by
- * `httpAuthSchemeMiddleware` at step `serialize`, which WRAPS retry's
- * `finalizeRequest`, and retry's own catch CREATES `$metadata` when it is
- * absent -- so an escaping error with none PROVES it never entered retry. Do
- * not "correct" this back.
- *
- * Retiring the divergence with the shared helper is
- * [#3297](https://github.com/go-to-k/cdkd/issues/3297).
+ * The authorship decision is `describeAwsFailure`'s, not a local copy. It was
+ * one for a while: this module fixed the `$metadata`-presence defect before the
+ * shared helper could, and carried its own three-arm predicate with a comment
+ * saying why. Issue [#3297](https://github.com/go-to-k/cdkd/issues/3297) fixed
+ * the helper and deleted the duplicate, so one error can no longer be
+ * classified two ways. The measurements behind those arms -- what smithy stamps
+ * and on what, why credential resolution carries neither signal, and which
+ * `*ProviderError` siblings are deliberately left raw -- live with the
+ * predicate now, in `aws-failure-text.ts`.
  */
 function describePollFailure(error: unknown): PollFailureText {
   if (error === undefined) return { display: '', detail: '', marker: false };
@@ -447,13 +375,14 @@ function describePollFailure(error: unknown): PollFailureText {
     return { display: other.summary, detail: other.detail, marker: false };
   }
 
-  const serviceAuthored =
-    (error as { $fault?: unknown }).$fault !== undefined ||
-    typeof (error as { $metadata?: { httpStatusCode?: unknown } }).$metadata?.httpStatusCode ===
-      'number' ||
-    error.name === CREDENTIAL_LEAK_ERROR_NAME;
+  // `describeAwsFailure`'s OWN authorship test, not a local copy of it. The two
+  // were the same three arms spelled twice, because this module fixed the
+  // predicate before the shared helper did; issue
+  // [#3297](https://github.com/go-to-k/cdkd/issues/3297) fixed the helper and
+  // deleted the duplicate, so one error can no longer be classified two ways.
+  const described = describeAwsFailure(error);
 
-  if (!serviceAuthored) {
+  if (!described.redacted) {
     // Transport wording is KEPT -- it names a host, never a caller -- and
     // nothing is withheld, so there is no `debug` line to emit and no marker.
     return { display: error.message, detail: '', marker: false };
@@ -466,13 +395,12 @@ function describePollFailure(error: unknown): PollFailureText {
   // own message.` -- an instruction to go and read an empty string.
   if (error.message === '') return { display: '', detail: '', marker: false };
 
-  // `redactedAwsFailureSummary` rather than `describeAwsFailure(...).summary`:
-  // that helper applies its OWN authorship test, so for the credential case the
-  // two disagree and it hands back the RAW message. Where they disagree, THIS
-  // predicate wins.
+  // `described.summary` now, not a hand-built one: the helper's authorship test
+  // IS this function's, so the two can no longer disagree about the credential
+  // case and there is nothing left for a local spelling to win.
   return {
-    display: redactedAwsFailureSummary(error),
-    detail: error.message,
+    display: described.summary,
+    detail: described.detail,
     marker: true,
   };
 }
