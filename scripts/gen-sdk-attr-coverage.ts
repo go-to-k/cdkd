@@ -53,11 +53,38 @@
  * while a type COMPLETELY ABSENT from both the provider's cached keys and
  * `constructAttribute` — the #1179 shape — is flagged.
  *
+ * WHY `primaryIdentifier` IS NOT CONSULTED HERE
+ * ---------------------------------------------
+ * From the #1694 capture until issue [#3324](https://github.com/go-to-k/cdkd/issues/3324)
+ * this critic FILTERED OUT any read-only attribute named by the schema's
+ * `primaryIdentifier`, on the reasoning that the physical id IS that value, so
+ * `guardedPhysicalIdFallback` resolves it with nothing cached. That reasoning
+ * holds for a CLOUD-CONTROL-routed resource, where the physical id is the CC
+ * identifier by construction — which is why `gen-enrichment-coverage.ts`, whose
+ * subject IS the CC path, still auto-classifies on it. It does NOT hold here:
+ * every type this critic classifies has an SDK PROVIDER that mints its own
+ * physical id, and that id is frequently something else — a bare `apiId` where
+ * the schema names `Arn`, or a `|`-joined composite where the schema names one
+ * property (`AWS::AppSync::DataSource`, `AWS::EC2::Route`,
+ * `AWS::EC2::SecurityGroupIngress`, whose provider comment says outright that
+ * the composite "is NOT the CFn identifier"). The proxy therefore excused
+ * attributes the fallback cannot produce, and — the way it actually surfaced —
+ * a schema refresh flipping `AWS::AppSync::GraphQLApi`'s `primaryIdentifier`
+ * from `ApiId` to `Arn` silently DROPPED `Arn` from this audit, retiring a live
+ * guard with no diff anyone would read as a decision.
+ *
+ * So the question asked per attribute is now only the decidable one: is it
+ * cached by the provider, built by `constructAttribute`, or explicitly
+ * allow-listed. A type whose physical id genuinely IS the ARN gets an
+ * `SDK_ATTR_ALLOW_LIST` entry naming the `create()` line that mints it, which
+ * is a claim about CDKD's code that goes stale loudly, rather than about AWS's
+ * schema, which can change under the repo overnight.
+ *
  * OFFLINE-ONLY (NO AWS)
  * ---------------------
  * Reads:
- *   - tests/fixtures/cfn-schemas/*.json — per-type `readOnlyProperties` +
- *     `primaryIdentifier` (refreshed by `node scripts/refresh-cfn-schemas.mjs`).
+ *   - tests/fixtures/cfn-schemas/*.json — per-type `readOnlyProperties`
+ *     (refreshed by `node scripts/refresh-cfn-schemas.mjs`).
  *   - src/provisioning/providers/*.ts — each SDK provider's `handledProperties`
  *     (which types it serves) + the attribute-object keys its create/update
  *     records, parsed via the TypeScript Compiler API.
@@ -68,8 +95,8 @@
  *
  * CLASSIFICATION (per SDK-backed type with a cached schema)
  * ---------------------------------------------------------
- *   - no-arn-attr    — the type has no `Arn`/`Url` read-only attribute (minus
- *                      primaryIdentifier) to worry about.
+ *   - no-arn-attr    — the type has no `Arn`/`Url` read-only attribute to worry
+ *                      about.
  *   - covered        — every `Arn`/`Url` read-only attribute is cached by the
  *                      provider OR the type is handled by `constructAttribute`
  *                      OR allow-listed.
@@ -134,17 +161,55 @@ export const SDK_ATTR_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Map<
   string,
   AllowListEntry
 >([
-  // `AWS::SNS::Subscription` USED to be listed here with the rationale
-  // "Arn == physicalId, so guardedPhysicalIdFallback resolves it". That entry
-  // was RETIRED by the issue-1800 fixture re-capture, and the retirement is the
-  // mechanism working as designed rather than a regression: the type's fixture
-  // predated the #1694 `primaryIdentifier` capture, and once the re-capture
-  // gave it `primaryIdentifier: ['Arn']`, `classifyType` filters the attribute
-  // out BEFORE consulting this list — which is exactly the "auto-classify those
-  // as not-a-gap instead of requiring a hand-written entry per type" behavior
-  // `extractPrimaryIdentifier` exists for. The staleness fence in
-  // `gen-sdk-attr-coverage.test.ts` is what surfaced it.
-  //
+  [
+    'AWS::SNS::Subscription',
+    {
+      // The one type whose physical id genuinely IS the ARN the schema names:
+      // `SNSSubscriptionProvider.create` records the `Subscribe` response's
+      // `SubscriptionArn` as the physical id (`sns-subscription-provider.ts`),
+      // so `guardedPhysicalIdFallback` returns an ARN-shaped value for
+      // `Fn::GetAtt ...Arn` with nothing cached.
+      //
+      // Three bounds on that, stated because an over-claimed carve-out is what
+      // this critic exists to prevent. The create path has a `|| ` fallback to
+      // a CONSTRUCTED `<topicArn>:<logicalId>` when the response carries no
+      // ARN — ARN-SHAPED, so the guard passes it while the value is
+      // fabricated. An `import` can record a non-ARN id
+      // (`PendingConfirmation`), where the guard REFUSES rather than resolves.
+      // And `--strict-getatt` throws on a fallback regardless of shape. The
+      // last two are LOUD (a refusal and a throw), so neither can mislead;
+      // bound 1 is the SILENT one, and it is near-unreachable because
+      // `Subscribe` is issued with `ReturnSubscriptionArn: true`. Bound 2 is
+      // NOT near-unreachable — the provider's own note names
+      // `cdkd import --resource <id>=PendingConfirmation` as a real shape —
+      // it is simply loud when reached. None is a gap; the honest reading of
+      // this entry is "the fallback is the right answer on the create path",
+      // not "every record of this type resolves".
+      //
+      // Caching `Arn` in the provider would retire this entry outright and is
+      // the shape #1190 / #1824 / `ApiGatewayV2.ExecuteApiArn` took; it is a
+      // `src/**` change with its own gates, so it is issue
+      // [#3329](https://github.com/go-to-k/cdkd/issues/3329) rather than part
+      // of a docs-and-scripts PR. Deleting this entry is the step that VERIFIES
+      // that fix — `classifyType` reads `cachedKeys` first, so an entry left
+      // behind goes inert while still reporting the type as a carve-out.
+      //
+      // This entry existed before the #1694 `primaryIdentifier` capture, was
+      // RETIRED by the issue-1800 re-capture (which let `classifyType` filter
+      // the attribute out before reaching this list), and is RESTORED by issue
+      // #3324, which removed that filter: the schema field it rested on
+      // describes the CLOUD CONTROL identifier, not the id this provider mints,
+      // and AWS can change it — it did, for `AWS::AppSync::GraphQLApi`, silently
+      // retiring that type's `Arn` row. An entry naming a `create()` line goes
+      // stale loudly instead; the fence in `gen-sdk-attr-coverage.test.ts` fails
+      // the moment the provider starts caching `Arn` under its CFn name.
+      //
+      // NOT a `knownGap`: nothing is unresolvable here.
+      attributes: ['Arn'],
+      rationale:
+        'physicalId IS the subscription ARN (sns-subscription-provider.ts); the create path resolves through guardedPhysicalIdFallback',
+    },
+  ],
   // `AWS::RDS::DBSubnetGroup` (`DBSubnetGroupArn`) and `AWS::SSM::Parameter`
   // (`Arn`) were the two KNOWN GAP entries the issue-1800 re-capture added, and
   // both were RETIRED by their fix in issue 1824: `RDSProvider` now records the
@@ -182,16 +247,17 @@ export const SDK_ATTR_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Map<
   // this list carries no known gap at all — a ratchet that only holds while
   // nobody weakens it to admit their own case.
   //
-  // The list is deliberately EMPTY. That is a green state, not a broken one —
-  // `UPDATE_WRAP_ALLOW_LIST` in `gen-update-wrap-coverage.ts` reached the same
-  // place once its gaps were fixed. Adding an entry back is a decision that
-  // needs a rationale and, for a real gap, a tracking issue.
+  // The list carries exactly ONE entry, and it is a NOT-A-BUG rather than a
+  // known gap — measured, not asserted: with the `primaryIdentifier` filter
+  // removed (issue #3324), the critic over the real tree reports that
+  // single finding and nothing else, every other previously-filtered attribute
+  // being already `cached` or `construct-attribute`. Adding a second entry is a
+  // decision that needs a rationale and, for a real gap, a tracking issue.
 ]);
 
 interface SchemaFixture {
   resourceType: string;
   readOnlyProperties: string[];
-  primaryIdentifier?: string[];
 }
 
 const sanitizeFixtureName = (type: string): string => type.replace(/::/g, '-');
@@ -207,7 +273,6 @@ export function loadAllFixtures(fixtureDir: string = FIXTURE_DIR): SchemaFixture
     out.push({
       resourceType: parsed.resourceType,
       readOnlyProperties: Array.isArray(parsed.readOnlyProperties) ? parsed.readOnlyProperties : [],
-      primaryIdentifier: Array.isArray(parsed.primaryIdentifier) ? parsed.primaryIdentifier : undefined,
     });
   }
   return out.sort((a, b) => a.resourceType.localeCompare(b.resourceType));
@@ -219,9 +284,20 @@ export function loadAllFixtures(fixtureDir: string = FIXTURE_DIR): SchemaFixture
  * `{ Arn }`) plus every element-access assignment key (`obj['Key'] = ...`) in
  * the file. Scoped to the whole file rather than just create/update because a
  * provider may build attributes via a `buildAttributes()` helper (issue #1179).
- * Over-collection is harmless: the classifier only intersects this set with a
- * type's `Arn`/`Url` read-only names, and camelCase SDK-input keys / property
- * names never collide with a PascalCase CFn `*Arn` name.
+ * Over-collection is harmless in the usual case: the classifier only intersects
+ * this set with a type's `Arn`/`Url` read-only names, and a camelCase SDK-input
+ * key cannot collide with a PascalCase CFn `*Arn` name.
+ *
+ * What that does NOT say — and an earlier revision did, wrongly — is that an
+ * SDK-input key is always camelCase. Some are PascalCase
+ * (`sns-subscription-provider.ts` writes `SubscriptionRoleArn` into a `Subscribe`
+ * ATTRIBUTES bag), so a PascalCase name can be collected off an input rather
+ * than off a recorded attribute, and it would vouch for a same-spelled CFn
+ * read-only name. Inert today — no such collision exists in the tree — and it
+ * biases toward `covered`, i.e. a false NEGATIVE, so it is a bound to state
+ * rather than a hazard to the critic's blocking verdicts. Issue
+ * [#3324](https://github.com/go-to-k/cdkd/issues/3324) widened the population
+ * this rides on by 20 types, which is why it is written down here.
  *
  * A `case 'AgentRuntimeArn':` label in `getAttribute` is NOT collected (it is a
  * comparison expression, not an object key or an assignment LHS) — which is
@@ -310,6 +386,31 @@ export function collectConstructAttributeTypes(source: string, fileName = 'resol
   return types;
 }
 
+/**
+ * The remedy every gap-reporting surface states, defined ONCE.
+ *
+ * There are three surfaces — the matrix's own "Latent gaps" section, the
+ * `--check` failure on stderr, and `diagnose-schema-refresh.mjs`'s
+ * `CHECK_GUIDANCE` entry rendered into the schema-refresh PR body — and issue
+ * [#3324](https://github.com/go-to-k/cdkd/issues/3324) review round 3 found
+ * that correcting the wording had reached ONE of them. The two here now share
+ * a constant so they cannot drift apart; the third lives in another script
+ * (a `.mjs`, no import path), and
+ * `tests/unit/scripts/diagnose-schema-refresh.test.ts` fences it against this
+ * one by the phrase that discriminates the correction.
+ *
+ * The allow-list is stated LAST and as the conditional answer on purpose: it
+ * is the only one of the three that silences the check rather than fixing what
+ * the check found.
+ */
+export const GAP_REMEDY =
+  'Cache the attribute under its exact CFn name in the provider create/update\n' +
+  '(via the returned `attributes` map), or add a `constructAttribute` handler.\n' +
+  'An `SDK_ATTR_ALLOW_LIST` entry (in scripts/gen-sdk-attr-coverage.ts) is the\n' +
+  'third option and deliberately the least cheap: it needs a rationale naming\n' +
+  'the `create()` line that already mints the value and, for a REAL gap, a\n' +
+  'tracking issue.';
+
 /** A read-only attribute whose absence would HARD-FAIL the resolver's guard. */
 const isArnOrUrlAttr = (name: string): boolean => name.endsWith('Arn') || name.endsWith('Url');
 
@@ -331,22 +432,25 @@ export interface TypeClassification {
 /**
  * Classify one SDK-backed type's `Arn`/`Url` read-only attributes. Pure +
  * exported so unit tests can drive it with synthetic inputs.
+ *
+ * Takes NO `primaryIdentifier`: that field describes the Cloud Control
+ * identifier, and every type reaching this classifier has an SDK provider that
+ * mints its own physical id, often a different value or a `|`-joined composite.
+ * See the header section "WHY `primaryIdentifier` IS NOT CONSULTED HERE".
  */
 export function classifyType(
   resourceType: string,
   readOnlyProperties: readonly string[],
-  primaryIdentifier: readonly string[],
   cachedKeys: ReadonlySet<string>,
   constructAttributeTypes: ReadonlySet<string>,
   allowList: ReadonlyMap<string, AllowListEntry> = SDK_ATTR_ALLOW_LIST
 ): TypeClassification {
-  const primaryIds = new Set(primaryIdentifier);
   const allow = allowList.get(resourceType);
   const allowedAttrs = new Set(allow?.attributes ?? []);
   const constructCovered = constructAttributeTypes.has(resourceType);
 
   const arnProps = [...readOnlyProperties]
-    .filter((p) => isArnOrUrlAttr(p) && !primaryIds.has(p))
+    .filter(isArnOrUrlAttr)
     .sort((a, b) => a.localeCompare(b));
 
   const arnAttributes: AttributeClassification[] = [];
@@ -402,7 +506,6 @@ export function buildReport(
       classifyType(
         f.resourceType,
         f.readOnlyProperties,
-        f.primaryIdentifier ?? [],
         cachedKeysByType.get(f.resourceType) ?? new Set<string>(),
         constructAttributeTypes,
         allowList
@@ -435,7 +538,11 @@ export function findGaps(report: SdkAttrCoverageReport): readonly TypeClassifica
   return report.types.filter((t) => t.bucket === 'gap');
 }
 
-function renderMarkdown(report: SdkAttrCoverageReport): string {
+// Exported for its own test: the "Latent gaps" section only renders when the
+// tree HAS a gap, which it does not, so nothing exercised this surface or the
+// remedy it prints — one of the three remedy surfaces was under test (review
+// round 5). A synthetic report drives it now.
+export function renderMarkdown(report: SdkAttrCoverageReport): string {
   const lines: string[] = [];
   lines.push('---');
   lines.push('title: "SDK attribute coverage matrix"');
@@ -472,11 +579,7 @@ function renderMarkdown(report: SdkAttrCoverageReport): string {
   if (gapTypes.length > 0) {
     lines.push('## Latent gaps (UNRESOLVABLE Arn/Url readOnly) — BLOCKS CI');
     lines.push('');
-    lines.push(
-      'Cache the attribute under its exact CFn name in the provider create/update ' +
-        '(via the returned `attributes` map), add a `constructAttribute` handler, OR ' +
-        'add an `SDK_ATTR_ALLOW_LIST` entry with a rationale.'
-    );
+    lines.push(GAP_REMEDY.replace(/\n/g, ' '));
     lines.push('');
     lines.push('| Resource type | Unresolvable Arn/Url attributes |');
     lines.push('| --- | --- |');
@@ -559,10 +662,7 @@ function main(): void {
         'sdk-attr-coverage: FAIL — SDK provider read-only Arn/Url attribute gap(s) detected.\n' +
           'Each attribute below is neither cached by the provider create/update (under its\n' +
           'exact CFn readOnlyProperties name) nor handled by constructAttribute, so\n' +
-          'Fn::GetAtt would HARD-FAIL at deploy (the #1179 class). Record the attribute\n' +
-          'under its CFn name in the provider (via the returned `attributes` map), add a\n' +
-          'constructAttribute handler, OR add an SDK_ATTR_ALLOW_LIST entry with a\n' +
-          'rationale in scripts/gen-sdk-attr-coverage.ts.\n\n'
+          `Fn::GetAtt would HARD-FAIL at deploy (the #1179 class).\n${GAP_REMEDY}\n\n`
       );
       for (const t of gaps) process.stderr.write(`  ${t.resourceType}: ${t.gaps.join(', ')}\n`);
       process.exit(1);

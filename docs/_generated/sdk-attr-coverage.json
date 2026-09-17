@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 134,
-    "covered": 43,
-    "noArnAttr": 91,
+    "covered": 63,
+    "noArnAttr": 71,
     "gap": 0,
     "knownGap": 0
   },
@@ -92,8 +92,13 @@
     },
     {
       "resourceType": "AWS::AppSync::DataSource",
-      "bucket": "no-arn-attr",
-      "arnAttributes": [],
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "DataSourceArn",
+          "status": "cached"
+        }
+      ],
       "gaps": []
     },
     {
@@ -127,8 +132,13 @@
     },
     {
       "resourceType": "AWS::AppSync::Resolver",
-      "bucket": "no-arn-attr",
-      "arnAttributes": [],
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "ResolverArn",
+          "status": "cached"
+        }
+      ],
       "gaps": []
     },
     {
@@ -139,20 +149,35 @@
     },
     {
       "resourceType": "AWS::BedrockAgentCore::Browser",
-      "bucket": "no-arn-attr",
-      "arnAttributes": [],
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "BrowserArn",
+          "status": "cached"
+        }
+      ],
       "gaps": []
     },
     {
       "resourceType": "AWS::BedrockAgentCore::CodeInterpreter",
-      "bucket": "no-arn-attr",
-      "arnAttributes": [],
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "CodeInterpreterArn",
+          "status": "cached"
+        }
+      ],
       "gaps": []
     },
     {
       "resourceType": "AWS::BedrockAgentCore::Evaluator",
-      "bucket": "no-arn-attr",
-      "arnAttributes": [],
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "EvaluatorArn",
+          "status": "cached"
+        }
+      ],
       "gaps": []
     },
     {
@@ -174,8 +199,13 @@
     },
     {
       "resourceType": "AWS::CertificateManager::Certificate",
-      "bucket": "no-arn-attr",
-      "arnAttributes": [],
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "CertificateArn",
+          "status": "cached"
+        }
+      ],
       "gaps": []
     },
     {
@@ -446,14 +476,24 @@
     },
     {
       "resourceType": "AWS::ECS::Service",
-      "bucket": "no-arn-attr",
-      "arnAttributes": [],
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "ServiceArn",
+          "status": "cached"
+        }
+      ],
       "gaps": []
     },
     {
       "resourceType": "AWS::ECS::TaskDefinition",
-      "bucket": "no-arn-attr",
-      "arnAttributes": [],
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "TaskDefinitionArn",
+          "status": "cached"
+        }
+      ],
       "gaps": []
     },
     {
@@ -498,20 +538,35 @@
     },
     {
       "resourceType": "AWS::ElasticLoadBalancingV2::Listener",
-      "bucket": "no-arn-attr",
-      "arnAttributes": [],
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "ListenerArn",
+          "status": "cached"
+        }
+      ],
       "gaps": []
     },
     {
       "resourceType": "AWS::ElasticLoadBalancingV2::LoadBalancer",
-      "bucket": "no-arn-attr",
-      "arnAttributes": [],
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "LoadBalancerArn",
+          "status": "cached"
+        }
+      ],
       "gaps": []
     },
     {
       "resourceType": "AWS::ElasticLoadBalancingV2::TargetGroup",
-      "bucket": "no-arn-attr",
-      "arnAttributes": [],
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "TargetGroupArn",
+          "status": "cached"
+        }
+      ],
       "gaps": []
     },
     {
@@ -545,8 +600,13 @@
     },
     {
       "resourceType": "AWS::Events::Rule",
-      "bucket": "no-arn-attr",
-      "arnAttributes": [],
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
       "gaps": []
     },
     {
@@ -633,8 +693,13 @@
     },
     {
       "resourceType": "AWS::IAM::ManagedPolicy",
-      "bucket": "no-arn-attr",
-      "arnAttributes": [],
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "PolicyArn",
+          "status": "cached"
+        }
+      ],
       "gaps": []
     },
     {
@@ -746,14 +811,24 @@
     },
     {
       "resourceType": "AWS::Lambda::LayerVersion",
-      "bucket": "no-arn-attr",
-      "arnAttributes": [],
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "LayerVersionArn",
+          "status": "cached"
+        }
+      ],
       "gaps": []
     },
     {
       "resourceType": "AWS::Lambda::MicrovmImage",
-      "bucket": "no-arn-attr",
-      "arnAttributes": [],
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "ImageArn",
+          "status": "cached"
+        }
+      ],
       "gaps": []
     },
     {
@@ -766,6 +841,10 @@
       "resourceType": "AWS::Lambda::Url",
       "bucket": "covered",
       "arnAttributes": [
+        {
+          "name": "FunctionArn",
+          "status": "cached"
+        },
         {
           "name": "FunctionUrl",
           "status": "cached"
@@ -848,8 +927,13 @@
     },
     {
       "resourceType": "AWS::RDS::DBProxyTargetGroup",
-      "bucket": "no-arn-attr",
-      "arnAttributes": [],
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "TargetGroupArn",
+          "status": "cached"
+        }
+      ],
       "gaps": []
     },
     {
@@ -923,8 +1007,13 @@
     },
     {
       "resourceType": "AWS::S3Vectors::VectorBucket",
-      "bucket": "no-arn-attr",
-      "arnAttributes": [],
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "VectorBucketArn",
+          "status": "cached"
+        }
+      ],
       "gaps": []
     },
     {
@@ -990,14 +1079,25 @@
     },
     {
       "resourceType": "AWS::SNS::Subscription",
-      "bucket": "no-arn-attr",
-      "arnAttributes": [],
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "allow-listed",
+          "rationale": "physicalId IS the subscription ARN (sns-subscription-provider.ts); the create path resolves through guardedPhysicalIdFallback"
+        }
+      ],
       "gaps": []
     },
     {
       "resourceType": "AWS::SNS::Topic",
-      "bucket": "no-arn-attr",
-      "arnAttributes": [],
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "TopicArn",
+          "status": "cached"
+        }
+      ],
       "gaps": []
     },
     {
@@ -1012,6 +1112,10 @@
       "arnAttributes": [
         {
           "name": "Arn",
+          "status": "cached"
+        },
+        {
+          "name": "QueueUrl",
           "status": "cached"
         }
       ],
@@ -1036,8 +1140,13 @@
     },
     {
       "resourceType": "AWS::StepFunctions::StateMachine",
-      "bucket": "no-arn-attr",
-      "arnAttributes": [],
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
       "gaps": []
     },
     {

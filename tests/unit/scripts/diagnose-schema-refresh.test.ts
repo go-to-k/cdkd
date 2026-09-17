@@ -41,6 +41,9 @@ import {
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// The remedy constant the sibling surfaces share; this suite is where the
+// three-surface sync is bound, because the `.mjs` guidance cannot import it.
+import { GAP_REMEDY } from '../../../scripts/gen-sdk-attr-coverage.js';
 import {
   comparePropertySets,
   findDeclarationCandidates,
@@ -1075,6 +1078,83 @@ describe('the failed-checks verdict', () => {
     expect(md).toContain('audit:sdk-attr-coverage:check');
     expect(md).toContain('audit:enrichment-coverage:check');
     expect(md).toContain('enrichResourceAttributes');
+    // The sdk-attr remedy names only answers that EXIST, and says the schema
+    // field is not one of them. Until go-to-k/cdkd#3324 this guidance offered
+    // "check whether its `primaryIdentifier` already covers it" — advice that
+    // check can no longer act on, rendered into a PR body a maintainer works
+    // from.
+    //
+    // The NEGATIVE is the load-bearing half, and a first cut had only the
+    // positives (review round 3). Three presence asserts watch the new text
+    // EXISTING; the feared shape is the retired sentence coming BACK as a
+    // caveat beside it, which passes every one of them — measured. So the
+    // retired advice is bounded by name here. The pattern is narrower than
+    // `primaryIdentifier`, which the CURRENT text contains and must keep
+    // containing.
+    // WHITESPACE-NORMALISED, and that is the whole finding of review round 4:
+    // `CHECK_GUIDANCE` entries are array ELEMENTS joined with newlines, and the
+    // retired sentence broke between `already` and `covers`, so a pattern
+    // authored against the source spelling matched NOTHING in the rendered
+    // output. The first cut of this negative was written by reading the array
+    // and never executed against a render carrying the feared shape — which is
+    // the same step every earlier round of this PR stopped one short of.
+    // WHAT THIS BOUNDS, stated at the width of the probes and no wider — the
+    // recurring defect in this PR was a comment generalising past its
+    // evidence. Three spellings were run through the real renderer and red it:
+    // the retired lines verbatim as a CAVEAT beside the current text, the same
+    // lines replacing the whole remedy, and the `already`-less paraphrase
+    // "`primaryIdentifier` covers it before caching anything". It is a RATCHET
+    // against that sentence coming back, NOT a semantic check: a sufficiently
+    // different paraphrase of the same bad advice passes, and no regex here
+    // will change that.
+    expect(md.replace(/\s+/g, ' ')).not.toMatch(/primaryIdentifier`? (already )?covers/i);
+    // The other half of that comment's claim, previously unwatched: the current
+    // text must KEEP naming the field, since the whole point is saying it is
+    // not an answer. Without this, deleting the paragraph satisfies the
+    // negative above.
+    expect(CHECK_GUIDANCE['audit:sdk-attr-coverage:check'].join(' ')).toContain('primaryIdentifier');
+    expect(md).toContain('NOT an answer here');
+    expect(md).toContain('CLOUD CONTROL identifier');
+    // The three answers that DO exist, so the same commit's rewording of the
+    // allow-list option is watched too rather than only its deletion.
+    expect(md).toContain('constructAttribute');
+    expect(md).toContain('deliberately the least cheap');
+
+    // CROSS-SCRIPT SYNC. The same remedy is stated on three surfaces: this one
+    // (rendered into the schema-refresh PR body), the coverage matrix's own
+    // gap section, and the `--check` stderr. The latter two share
+    // `GAP_REMEDY`; this one cannot import it (a `.mjs` reading a `.ts`), so
+    // the binding is here. Review round 3 found the previous correction had
+    // reached ONE of the three — this is what stops that recurring, and it is
+    // an EQUALITY on the discriminating clause rather than a loose overlap,
+    // since two surfaces drifting in wording is exactly the failure.
+    // CONTAINMENT of the whole normalised constant, not a list of phrases.
+    // Round 5 measured why: three independent `toContain`s let the constant be
+    // INVERTED ("...deliberately the least cheap: add one whenever caching is
+    // inconvenient, no rationale required") while every watched phrase
+    // survived, and the suite stayed green. Nothing related the two texts. A
+    // relation over the full string cannot be satisfied that way, and it is
+    // what the round-3 comment claimed while the code did something weaker.
+    // EQUALITY over a STRUCTURALLY located block. Two weaker relations were
+    // measured inert before this one, both while their comment claimed
+    // symmetry:
+    //   - containment of the whole constant in the whole render: shortening
+    //     `GAP_REMEDY` at a sentence boundary left every case green (round 6);
+    //   - equality anchored on the constant's FIRST line: shortening it from
+    //     the front merely slid the anchor, and the probe passed again.
+    // So the block is found by its place in the entry — the lines between the
+    // closing ``` of the command fence and the next blank line — and compared
+    // whole. A line added, dropped or reworded on EITHER side now reaches here.
+    const guidance = CHECK_GUIDANCE['audit:sdk-attr-coverage:check'];
+    const fenceEnd = guidance.lastIndexOf('```');
+    expect(fenceEnd, 'the sdk-attr guidance no longer carries its command fence').toBeGreaterThan(0);
+    const blockStart = fenceEnd + 2; // the fence's closing line, then one blank
+    const blockEnd = guidance.indexOf('', blockStart);
+    expect(
+      guidance.slice(blockStart, blockEnd === -1 ? undefined : blockEnd),
+      'the refresh guidance and GAP_REMEDY no longer state the same remedy line for line ' +
+        '(a line added, dropped or reworded on EITHER side reaches here)'
+    ).toEqual(GAP_REMEDY.split('\n'));
   });
 
   it('names a check it has no guidance for rather than staying silent', () => {
@@ -1220,7 +1300,15 @@ describe('the read-only additions section', () => {
     // A new read-only `*Arn`/`*Url` on a type that had none fails
     // `audit:sdk-attr-coverage:check`, and that is reachable ONLY through a
     // read-only addition — so "nothing to do" was a verdict a blocking critic
-    // contradicts. 92 of the 134 audited types have no Arn attribute today.
+    // contradicts, and many audited types have no Arn attribute at all.
+    //
+    // NO COUNT HERE, deliberately. This sentence carried one for three
+    // revisions and it was wrong in each: 92 went stale on main before
+    // go-to-k/cdkd#3324 moved 20 more types into the audit, and the corrected
+    // "71 (was 92)" did not even compose. The argument needs "many", not a
+    // figure, and the live number is in `docs/_generated/sdk-attr-coverage.json`
+    // (`summary.noArnAttr`), regenerated on every run — which is where to read
+    // it rather than from a comment nothing re-checks.
     const md = renderDiagnosis({
       removed: [],
       writableAdded: [],
