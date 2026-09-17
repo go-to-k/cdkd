@@ -3538,6 +3538,15 @@ __gsu "fragment tail"      github.com/go-to-k/cdkd https://github.com/go-to-k/cd
 __gsu "trailing space"     github.com/go-to-k/cdkd "https://github.com/go-to-k/cdkd.git "
 __gsu "doubled slash"      github.com/go-to-k/cdkd https://github.com//go-to-k//cdkd.git
 __gsu "user@host"          github.com/go-to-k/cdkd https://u@github.com/go-to-k/cdkd.git
+# TWO `@`s: Go's net/url -- what gh parses remotes with -- takes userinfo at the
+# LAST one. A shortest-match strip left `b@github.com` in the host, compared
+# unequal, and the gate exited 0 on the real v10-bump PR. The second spelling is
+# an ACCIDENT class, not only an attack: an email as the HTTPS username.
+__gsu "two @ (last wins)"  github.com/go-to-k/cdkd https://a@b@github.com/go-to-k/cdkd.git
+__gsu "email as username"  github.com/go-to-k/cdkd https://alice@example.com@github.com/go-to-k/cdkd.git
+__gsu "scp-like two @"     github.com/go-to-k/cdkd user@corp.com@github.com:go-to-k/cdkd.git
+__gsu "empty userinfo @@"  github.com/go-to-k/cdkd https://@@github.com/go-to-k/cdkd.git
+__gsu "user:pass@"         github.com/go-to-k/cdkd https://u:p@github.com/go-to-k/cdkd.git
 __gsu "port"               github.com/go-to-k/cdkd https://github.com:443/go-to-k/cdkd.git
 __gsu "deep path kept whole" gitlab.com/a/x/repo https://gitlab.com/a/x/repo.git
 # REFUSALS: a local path names no forge, and a single-segment path is not a repo.
@@ -3546,9 +3555,9 @@ __gsu "no host refuses"      '' cdkd:cdkd
 __gsu "single segment refuses" '' https://github.com/cdkd
 __gsu "empty refuses"        '' ''
 __gsu_ran=$((pass + fail - __gsu_start))
-if [ "$__gsu_ran" -ne 17 ]; then
+if [ "$__gsu_ran" -ne 22 ]; then
   fail=$((fail + 1))
-  fail_log="${fail_log}FAIL gate_slug_from_url block ran $__gsu_ran cases, expected exactly 17\n"
+  fail_log="${fail_log}FAIL gate_slug_from_url block ran $__gsu_ran cases, expected exactly 22\n"
 else
   pass=$((pass + 1)); printf 'ok   gate_slug_from_url block ran all %s cases\n' "$__gsu_ran"
 fi

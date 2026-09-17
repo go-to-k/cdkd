@@ -4502,7 +4502,13 @@ gate_slug_from_url() {
       ;;
   esac
 
-  host="${host#*@}"          # strip any user@
+  # `##*@`, the LONGEST match, because Go's `net/url` -- what gh parses remotes
+  # with -- takes userinfo at the LAST `@` in the authority. The shortest-match
+  # `#*@` left everything after the first one in the host, so a URL with two
+  # `@`s produced a slug that compared unequal and the gate exited 0 on the real
+  # v10-bump PR. Not only an attack: `https://alice@example.com@github.com/o/r`
+  # -- an email as the HTTPS username -- is a spelling people really have.
+  host="${host##*@}"         # strip userinfo, at the LAST @ as gh does
   host="${host%%:*}"         # strip any :port
   case "$host" in
     ""|*/*|*" "*) return 1 ;;
@@ -5100,8 +5106,11 @@ gate_target_is_foreign() {
   while IFS= read -r url_line; do
     [ -n "$url_line" ] || continue
     __gtf_seen=$((__gtf_seen + 1))
+    # 200 LINES, and `git remote -v` prints a fetch AND a push line per remote,
+    # so the real bound is ~100 remotes. Stated as lines because that is what is
+    # counted; an earlier comment said "remotes" and overstated it by 2x.
     if [ "$__gtf_seen" -gt 200 ]; then
-      GATE_FOREIGN_RETRACT="the target checkout declares more remotes than this gate will examine, so it cannot rule out that one names the same repository"
+      GATE_FOREIGN_RETRACT="the target checkout declares more remote URLs than this gate will examine, so it cannot rule out that one names the same repository"
       return 1
     fi
     # `<name>\t<url> (fetch|push)`.
