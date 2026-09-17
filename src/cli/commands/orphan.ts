@@ -253,10 +253,14 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
       // this command SAVES still carries the map it could not read.
       //
       // SCOPED TO THE SURVIVORS by handing it `orphanLogicalIds`. A record this
-      // run is dropping cannot be persisted, and refusing on one would close the
-      // per-resource way out of exactly this state — `cdkd orphan` over the
-      // damaged record removes it and repairs the rest. AT THE LOAD, above the
-      // rewrite walk and above the `--dry-run` return.
+      // run is dropping cannot be persisted, and refusing on one would close a
+      // way out of exactly this state — `cdkd orphan` over the damaged record
+      // removes it and repairs the rest. That way out is CONDITIONAL and the
+      // refusal says so: `orphanLogicalIds` comes from the SYNTHESIZED
+      // template's `aws:cdk:path` index, so a record the app no longer declares
+      // can never be exempted, and the message leads with the two remedies that
+      // need no CDK app. AT THE LOAD, above the rewrite walk and above the
+      // `--dry-run` return.
       refuseMalformedResourcePropertiesForOrphan(
         state,
         orphanLogicalIds,

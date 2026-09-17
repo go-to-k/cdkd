@@ -1169,12 +1169,19 @@ export function unreadableResourcePropertyBags(state: StackState): readonly stri
  *
  * Deliberately NOT folded into {@link refuseMalformedState}, for the reason
  * {@link unreadableResourcePropertyBags} gives: that predicate answers a
- * question about the record ROOT, and its four callers (`cdkd scrub`,
- * `import`, `orphan`, `rollback`) have made no decision about this one. Three
- * of them do not compare properties at all, and `cdkd rollback` replays a
- * journal rather than diffing, so an unrelated broken bag would stop the
- * command documented as the way to UNWIND a stack whose state is already
- * suspect. This rule is OPT-IN, taken by the flow that COMPARES the bag.
+ * question about the record ROOT, and its callers have each had to make their
+ * own decision about this one. `cdkd rollback` replays a journal rather than
+ * diffing, so an unrelated broken bag would stop the command documented as the
+ * way to UNWIND a stack whose state is already suspect; `cdkd scrub` and
+ * `cdkd import` do not compare properties at all.
+ *
+ * **The rule is OPT-IN PER CALLER, not "whoever COMPARES the bag"**, and an
+ * earlier revision of this sentence said the latter — which go-to-k/cdkd#3318
+ * falsified within two lanes. `cdkd orphan` compares nothing and still opts in
+ * through {@link refuseMalformedResourcePropertiesForOrphan}, because it SAVES
+ * the bag; what each caller owes is an answer to "what would I do with a map I
+ * cannot read", and comparison is only one way to owe one. Do not read this
+ * paragraph as licence to delete a call from a caller that does not diff.
  */
 export function refuseMalformedResourceProperties(
   state: StackState,
@@ -1379,6 +1386,14 @@ export function malformedResourcePropertiesRefusalMessage(
  * well-formed six-key map" sentence, true one container over, would be FALSE
  * here and must not be borrowed.
  *
+ * What it DOES share is {@link namedPropertyBagsClause}, which carries a
+ * diff-shaped sentence of its own ("a create-only property among them is a
+ * REPLACEMENT of the live resource"). That is not a contradiction and is not
+ * an oversight: the shared clause describes what the RECORD is, and the reason
+ * an operator must care is precisely that a later `cdkd deploy` / `cdkd diff`
+ * reaches that verdict. What this text must not do — and what its fence pins —
+ * is claim that verdict as its OWN, since `cdkd orphan` computes no diff.
+ *
  * What IS at stake is the command's own job. `cdkd orphan` exists to leave the
  * record deployable: it rewrites every surviving sibling's `Ref` /
  * `Fn::GetAtt` / `Fn::Sub` reference to an orphan so the next deploy neither
@@ -1394,14 +1409,38 @@ export function malformedResourcePropertiesRefusalMessage(
  * ({@link malformedResourcePropertiesRefusalMessage}) and `cdkd diff` previews
  * as a replacement — one command after the evidence was last in cdkd's hands.
  *
- * **The refusal is SCOPED to the records the save would KEEP, and that is what
- * answers the recovery-path objection rather than a flag.**
+ * **The refusal is SCOPED to the records the save would KEEP, so orphaning the
+ * DAMAGED record itself still works** —
  * {@link refuseMalformedResourcePropertiesForOrphan} is handed the ids being
- * removed and never names one, so orphaning the DAMAGED record itself — the
- * per-resource way out of exactly this state — still works and actually
- * repairs the record. Compare `malformedDestroyResourcesRefusalMessage`, which
- * has to point at a different COMMAND for its way out because a destroy keeps
- * every record it reads.
+ * removed and never names one. Compare
+ * `malformedDestroyResourcesRefusalMessage`, which has to point at a different
+ * COMMAND for its way out because a destroy keeps every record it reads.
+ *
+ * **But that in-command way out is CONDITIONAL, and the text must say so.**
+ * `cdkd orphan` addresses resources only through the `aws:cdk:path` index of
+ * the SYNTHESIZED template (`resolveConstructPaths` →
+ * `buildCdkPathIndex`), so an id the CDK app no longer declares — a record
+ * left behind when the construct was deleted, or one a hand edit invented —
+ * can never enter the orphan set for ANY invocation. The exemption therefore
+ * cannot reach it, and an earlier revision of this text nonetheless told the
+ * operator to "orphan the damaged record ITSELF" unconditionally: an
+ * instruction that dies on `Construct path '...' not found in template`, which
+ * is the misstating-the-remedy class this module's own notes record (security
+ * review of go-to-k/cdkd#3318). The remedy is now stated with its condition and
+ * the two unconditional ways out beside it — hand repair, and
+ * `cdkd state orphan <stack>`, which needs no CDK app and drops the whole
+ * record with the live resources left standing.
+ *
+ * So the recovery-path objection is answered for the common case by the
+ * exemption and for the rest by naming commands that do not depend on the
+ * template. What this does NOT claim is that `cdkd orphan` stays usable on a
+ * stack holding a template-less torn record: it does not, exactly as
+ * `cdkd deploy` does not (go-to-k/cdkd#3191). A state-keyed escape hatch
+ * (`--orphan-logical-id`, addressing a record by its state key rather than by
+ * a construct path) was considered in the same review and DECLINED: it is a new
+ * mutating CLI surface whose only job is to route around a record the operator
+ * must repair or drop anyway, and `cdkd state orphan <stack>` already removes
+ * such a record with no CDK app and no new flag.
  *
  * It must be true under `--dry-run` as well, and it is: the guard sits at the
  * load, far above the `if (options.dryRun)` return. Refusing there is
@@ -1426,12 +1465,14 @@ export function malformedOrphanResourcePropertiesRefusalMessage(
     `command exists to leave the record deployable by rewriting every reference to an orphaned ` +
     `resource, and a map it cannot read hides whichever references it holds — a string or a ` +
     `number presents none to find, and a list is walked, so its rewrites are recorded into a ` +
-    `container that is still not a map. Continuing would take a lock, report success, and leave ` +
-    `a record 'cdkd deploy' then REFUSES. Nothing was written. Repair or remove the record ` +
-    `first — or orphan the damaged record ITSELF, which is still allowed: this refusal names ` +
-    `only records that would SURVIVE the save, so 'cdkd orphan <its construct path>' removes it ` +
-    `and leaves the live AWS resource standing. Inspect the record with: ` +
-    `${inspectCommand(stackName, region)}`
+    `container that is still not a map. Continuing would rewrite, save, and report success over ` +
+    `a record 'cdkd deploy' then REFUSES. No state was written. Two ways out need no CDK app: ` +
+    `repair the record by hand, or drop it whole with 'cdkd state orphan <stack>', which leaves ` +
+    `the live AWS resources standing. A third works only while the CDK app STILL DECLARES the ` +
+    `named resource — this refusal covers just the records that would SURVIVE the save, so ` +
+    `'cdkd orphan <its construct path>' removes it and repairs the rest; construct paths come ` +
+    `from the synthesized template, so a resource the app no longer declares has none and must ` +
+    `take one of the first two. Inspect the record with: ${inspectCommand(stackName, region)}`
   );
 }
 
@@ -1451,6 +1492,18 @@ export function malformedOrphanResourcePropertiesRefusalMessage(
  * `state.resources`. They are EXCLUDED from the verdict because the save
  * cannot persist a record it is deleting, and because refusing on one would
  * break the recovery path the refusal is otherwise meant to preserve.
+ *
+ * **It covers `state.resources` ONLY, and the save keeps more than that.**
+ * `rewriteResourceReferences` spreads `carriedState`, so `state.orphans[]` —
+ * rollback-orphaned records each holding a whole `ResourceState`
+ * (go-to-k/cdkd#2934) — rides through untouched, and
+ * {@link unreadableResourcePropertyBags} never walks it. A torn bag parked
+ * there is therefore still saved, and `computeStackDiff` splices those records
+ * into `state.resources` on the next preview. Stated rather than implied,
+ * because "the records the save would KEEP" reads wider than what this scans:
+ * the gap is go-to-k/cdkd#3344, filed rather than folded in because the remedy
+ * differs — an entry in that container has no construct path, so the message's
+ * third way out is meaningless for it.
  *
  * CALL IT AT THE LOAD, beside {@link refuseMalformedState} and
  * {@link refuseMalformedOutputs}, above `rewriteResourceReferences` — the

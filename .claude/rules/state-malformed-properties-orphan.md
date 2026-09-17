@@ -24,29 +24,13 @@ question about the record ROOT only, and `unreadableResourcePropertyBags`
 deliberately returns `[]` for a record whose root bag is unreadable — so the
 per-entry container was unguarded on a path that SAVES.
 
-## The harm is NOT laundering, and the refusal's text must not claim it is
-
-Measured 2026-09-17 through the real rewriter, over an `AWS::S3::Bucket`
-record: a stored `"abcdef"` came back `"abcdef"`, a `5` as `5`, a `null` as
-`null`, an `[]` as `[]`, and an ABSENT bag stayed absent once `JSON.stringify`
-dropped it. Nothing is fabricated and no evidence is replaced — so
-`malformedOutputsRefusalMessage`'s "saved back as a well-formed six-key map",
-true one container over, is FALSE here. So is
-`malformedResourcePropertiesRefusalMessage`'s "a DELETE and re-create of
-resources the template did not change", which is a DIFF verdict this command
-never computes. Borrowing either is the defect class the module's per-text
-split exists to avoid.
-
-What is at stake is the command's own job. `cdkd orphan` exists to leave the
-record deployable by rewriting every surviving sibling's `Ref` / `Fn::GetAtt` /
-`Fn::Sub` reference to an orphan, and an unreadable map hides whichever it
-holds: a scalar bag presents no reference to find, so the `--force`-less hard
-fail on unresolvable references can never fire for one. A LIST bag is the one
-unreadable shape `rewriteValue` DOES walk — a stored `[{"Ref":"<orphan>"}]`
-came back `["<physicalId>"]` with a row in the audit table — so its rewrites
-are reported into a container that is still not a map. Either way the command
-took a lock, saved, and reported success over a record `cdkd deploy` then
-REFUSES and a `cdkd diff` in between previews as a replacement.
+**The harm is NOT the laundering the module's other write-capable refusals
+describe**, so neither of their texts is true here and neither may be borrowed —
+the per-shape measurement and what IS at stake instead (the command's own job:
+an unreadable map hides whichever references to the orphan it holds) are in
+`malformedOrphanResourcePropertiesRefusalMessage`'s JSDoc, which
+`state-malformed-containers.md` makes the authority for WHY. Read it before
+rewording that text.
 
 ## SCOPED to the survivors, which is what keeps the recovery path open
 
@@ -66,10 +50,40 @@ with a flag. Contrast `malformedDestroyResourcesRefusalMessage`, which has to
 point at a different COMMAND for its way out, because a destroy keeps every
 record it reads.
 
-There is deliberately **no `--force` bypass**, and that is not a contradiction
-of the flag's "use a possibly-wrong value rather than stranding me" contract:
-forcing would still leave a record `cdkd deploy` refuses, so it buys nothing
-the scoped exemption does not already give, at the cost of a lock and a write.
+**The exemption is CONDITIONAL, and the message must never state it
+otherwise.** `orphanLogicalIds` is built from `buildCdkPathIndex(template)` —
+the SYNTHESIZED `aws:cdk:path` index — so a logical id the CDK app no longer
+declares cannot enter the orphan set for ANY invocation, and the exemption
+cannot reach it. The first revision of the refusal nonetheless told the
+operator to "orphan the damaged record ITSELF" unconditionally, an instruction
+that dies on `Construct path '...' not found in template`; the security review
+of #3318 called it the misstating-the-remedy class. The text now leads with the
+two TEMPLATE-FREE ways out — hand repair, and `cdkd state orphan <stack>` —
+and states the condition on the third. Do not simplify that back into one
+sentence.
+
+For such a record `cdkd orphan` is genuinely unusable until it is repaired or
+dropped, exactly as `cdkd deploy` is
+([#3191](https://github.com/go-to-k/cdkd/issues/3191)). A state-keyed escape
+(`--orphan-logical-id`) was considered in the same review and DECLINED: a new
+mutating CLI surface whose only job is to route around a record the operator
+must repair or drop anyway, where `cdkd state orphan` already does it.
+
+There is deliberately **no `--force` bypass** either, and that is not a
+contradiction of the flag's "use a possibly-wrong value rather than stranding
+me" contract: forcing would still leave a record `cdkd deploy` refuses, so it
+buys nothing the scoped exemption does not already give, at the cost of a lock
+and a write.
+
+**It scans `state.resources` ONLY, and the save keeps more.**
+`rewriteResourceReferences` spreads `carriedState`, so `state.orphans[]` —
+rollback-orphaned records each holding a whole `ResourceState`
+([#2934](https://github.com/go-to-k/cdkd/issues/2934)) — rides through
+uninspected, and a torn bag parked there is still saved. That gap is
+[#3344](https://github.com/go-to-k/cdkd/issues/3344), filed rather than folded
+in because an entry there has no construct path, so the third remedy above is
+meaningless for it. The sibling `attributes` container on the same loop is
+[#3345](https://github.com/go-to-k/cdkd/issues/3345).
 
 ## Placement, and the `--dry-run` arm
 

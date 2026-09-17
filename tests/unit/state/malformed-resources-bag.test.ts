@@ -2720,10 +2720,45 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
     );
   });
 
-  it('offers the in-command way out and says nothing was written', () => {
+  it('offers TWO template-free ways out, and states the condition on the third', () => {
+    // The security review of go-to-k/cdkd#3318 found the first revision naming
+    // only `cdkd orphan <its construct path>`, unconditionally. Construct paths
+    // come from the SYNTHESIZED template, so a record the CDK app no longer
+    // declares has none: that instruction dies on `Construct path '...' not
+    // found in template`, and the operator is left with a refusal whose only
+    // remedy is impossible. A refusal that misstates the next step is the class
+    // this module's own notes record.
     const text = malformedOrphanResourcePropertiesRefusalMessage('S', 'us-east-1', ['A']);
-    expect(text).toContain('orphan the damaged record ITSELF');
-    expect(text).toContain('Nothing was written');
+    expect(text).toContain('repair the record by hand');
+    expect(text).toContain("'cdkd state orphan <stack>'");
+    expect(text).toContain('only while the CDK app STILL DECLARES');
+    expect(text).toContain('a resource the app no longer declares has none');
+    expect(text).toContain('No state was written');
+  });
+
+  it('does not claim a lock would be taken — one is already held when it raises', () => {
+    // On a NON-dry run `src/cli/commands/orphan.ts` acquires the lock BEFORE
+    // `getState`, so by the time this text renders a lock exists and the
+    // command's own `finally` releases it (pinned in
+    // `tests/unit/cli/orphan.test.ts`). The first revision said "Continuing
+    // would take a lock", which tells the operator no lock was involved (code
+    // review of go-to-k/cdkd#3318). Under `--dry-run` no lock is taken at all,
+    // which the sentence is also true for — it simply promises nothing.
+    const text = malformedOrphanResourcePropertiesRefusalMessage('S', 'us-east-1', ['A']);
+    expect(text).not.toContain('take a lock');
+    expect(text).toContain('Continuing would rewrite, save, and report success');
+  });
+
+  it('names every surviving damaged record up to the cap, with a count', () => {
+    // The `and N more` path through the SHARED clause, reached through THIS
+    // builder: the loop below covers sanitizing and truncation but not the
+    // multi-id rendering, and the orphan block's other cases are all N=1.
+    const ids = Array.from({ length: 7 }, (_, i) => `Torn${i}`);
+    const text = malformedOrphanResourcePropertiesRefusalMessage('S', 'us-east-1', ids);
+    expect(text).toContain('holds 7 resource record(s)');
+    expect(text).toContain('Torn4');
+    expect(text).not.toContain('Torn5');
+    expect(text).toContain('and 2 more');
   });
 });
 
@@ -2890,13 +2925,61 @@ describe('the properties-container guards dominate their reads (issue go-to-k/cd
         `into the saved record already ran — go-to-k/cdkd#3018's round-1 defect.`
     ).toBeLessThan(derefIndex);
     // It must sit at statement position: a refusal behind an `if` runs on the
-    // caller's terms rather than on the record's. In particular it must NOT be
-    // gated on `!options.dryRun` — the dry run prints a rewrite audit table
-    // the refusal says is the wrong one.
+    // caller's terms rather than on the record's.
+    //
+    // The regex ALONE does not say that, and the first revision of this fence
+    // claimed it did — `/\n\s*refuseMalformed.../` matches equally when the
+    // call sits on its own line INSIDE `if (!options.dryRun) {`, which is
+    // precisely the gating it was written to refuse (code review of
+    // go-to-k/cdkd#3318). It is kept as the cheap half and paired with the
+    // dominance compare below, which the `if` form cannot satisfy.
     expect(
       src,
       `${ORPHAN}'s refusal is no longer an unconditional statement.`
     ).toMatch(/\n\s*refuseMalformedResourcePropertiesForOrphan\(/);
+    // NOT WRAPPED IN A DRY-RUN CONDITIONAL. The dominance compare below is NOT
+    // what catches that: an `if (!options.dryRun) { refuse... }` still sits
+    // above the dry-run return, so it satisfies the compare while skipping the
+    // refusal for exactly the mode the text says it covers (measured as a probe
+    // on this fence's first revision, which claimed the compare caught it).
+    //
+    // The 200-character window is a CHEAP tripwire, not the guarantee: it
+    // reaches back over part of the comment block above the call, so a wrapper
+    // placed around comment AND call sits outside it. The real discriminator is
+    // the runtime `--dry-run` case in `tests/unit/cli/orphan.test.ts`, which
+    // asserts the refusal text and cannot survive any gating at all.
+    expect(
+      src.slice(Math.max(0, refusalAt - 200), refusalAt),
+      `${ORPHAN}'s refusal is gated on a dry-run test. 'cdkd orphan --dry-run' would then print ` +
+        `a rewrite audit table the real run refuses — the worst arm of all.`
+    ).not.toContain('dryRun');
+    // DOMINANCE over the dry-run return: a guard written BELOW it never runs
+    // for a dry run at all.
+    const dryRunAt = src.indexOf('if (options.dryRun)');
+    expect(
+      dryRunAt,
+      `${ORPHAN} no longer contains its \`if (options.dryRun)\` return; this fence's anchor is stale.`
+    ).toBeGreaterThan(-1);
+    expect(
+      refusalAt,
+      `${ORPHAN} refuses BELOW its dry-run return, so 'cdkd orphan --dry-run' prints a plan over ` +
+        `a record the real run refuses — the worst arm of all.`
+    ).toBeLessThan(dryRunAt);
+    // (a) A read added ABOVE the guard. Anchoring on the FIRST
+    // `rewriteResourceReferences(` only says the guard precedes THAT one; the
+    // calculator fence one describe up carries the same arm for the same
+    // reason. There is one call site today, so this is a floor against a
+    // second appearing above the guard rather than a live discriminator.
+    const everyRewrite = [...src.matchAll(/rewriteResourceReferences\(/g)].map((m) => m.index ?? -1);
+    expect(
+      everyRewrite.length,
+      `${ORPHAN} no longer calls rewriteResourceReferences; this fence reads nothing.`
+    ).toBeGreaterThanOrEqual(1);
+    expect(
+      Math.min(...everyRewrite),
+      `${ORPHAN} carries the record into a rewrite BEFORE the refusal. A call added above the ` +
+        `guard is the same defect one line earlier.`
+    ).toBeGreaterThan(refusalAt);
     // SCOPED to the survivors. Without the orphan set the guard refuses the
     // one command that repairs the record — `cdkd orphan` over the damaged
     // resource itself — which is the recovery path #3202 requires it to keep.
