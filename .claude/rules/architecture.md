@@ -16,30 +16,26 @@ cdkd has a 7-layer system architecture:
 ┌─────────────────────────────────────────────┐
 │ 2. Synthesis Layer (src/synthesis/)         │ → CDK app subprocess execution
 └────────────────┬────────────────────────────┘   Cloud Assembly parsing, context providers
-                 ▼
                  ▼  (per stack, pipelined)
 ┌─────────────────────────────────────────────┐
-│ 3. Assets Layer (src/assets/)              │ → Asset publish to S3/ECR
+│ 3. Assets Layer (src/assets/)               │ → Asset publish to S3/ECR
 └────────────────┬────────────────────────────┘
                  ▼
 ┌─────────────────────────────────────────────┐
-│ 4. Analysis Layer (src/analyzer/)          │ → Dependency analysis (DAG building)
+│ 4. Analysis Layer (src/analyzer/)           │ → Dependency analysis (DAG building)
 └────────────────┬────────────────────────────┘   Template parsing
                  ▼
 ┌─────────────────────────────────────────────┐
-│ 5. State Layer                             │ → S3-based state management
-                 │    (src/state/)            │    Optimistic locking
-                 └────────────┬───────────────┘
-                              ▼
-                 ┌────────────────────────────┐
-                 │ 6. Deployment Layer        │ → Deployment orchestration
-                 │    (src/deployment/)       │    Parallel execution, diff detection
-                 └────────────┬───────────────┘
-                              ▼
-                 ┌────────────────────────────┐
-                 │ 7. Provisioning Layer      │ → Resource create/update/delete
-                 │    (src/provisioning/)     │    SDK Providers + CC API fallback
-                 └────────────────────────────┘
+│ 5. State Layer (src/state/)                 │ → S3 state, optimistic locking
+└────────────────┬────────────────────────────┘
+                 ▼
+┌─────────────────────────────────────────────┐
+│ 6. Deployment Layer (src/deployment/)       │ → Orchestration, parallel exec, diff
+└────────────────┬────────────────────────────┘
+                 ▼
+┌─────────────────────────────────────────────┐
+│ 7. Provisioning Layer (src/provisioning/)   │ → Resource create/update/delete
+└─────────────────────────────────────────────┘   SDK Providers + CC API fallback
 ```
 
 ## Key Architectural Decisions

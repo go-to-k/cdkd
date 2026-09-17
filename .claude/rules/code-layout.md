@@ -1,24 +1,25 @@
 ---
-description: Index of cdkd's directory layout - one row per area, pointing at the per-area detail file
+description: Index of cdkd's directory layout - one row per area, pointing at its detail file
 paths:
   - 'src/**/*.ts'
 ---
 
 # Key Files and Directories
 
-Per-area detail lives in the satellite files below. Each one is loaded only when a file matching its `paths:` glob enters context, so touching one area no longer pays for every other area's notes.
+Per-area detail lives in the satellites below; each loads only when a file its
+`paths:` glob matches enters context.
 
 | area | detail file | covers |
 | --- | --- | --- |
-| `src/cli/**` | [layout-cli.md](layout-cli.md) | CLI command tree, config + stack matching, `cdkd state`, events, gc, rollback |
+| `src/cli/**` | [layout-cli.md](layout-cli.md) | CLI command tree, config + stack matching, events, gc, rollback |
 | `src/cli/commands/diff{,-recursive}.ts` | [layout-cli-diff.md](layout-cli-diff.md) | `cdkd diff`, its nested-stack walk and renderers |
 | `src/cli/commands/state{,-list-tree}.ts`, `orphan.ts` | [layout-cli-state.md](layout-cli-state.md) | `cdkd state` subcommands, `cdkd orphan` |
 | `src/cli/commands/{import,export}.ts`, `src/cli/yaml-cfn.ts` | [layout-cli-import-export.md](layout-cli-import-export.md) | `cdkd import` modes + upstream parity, `cdkd export`, CFn migration |
-| `src/cli/commands/drift.ts`, `src/analyzer/drift-*.ts`, `src/utils/ip-protocol.ts` | [layout-drift.md](layout-drift.md) | `cdkd drift` and every normalizer it compares through |
-| `src/deployment/**` | [layout-deployment.md](layout-deployment.md) | DeployEngine, WorkGraph, DAG executor, retry, rollback executor |
-| `src/deployment/secret-redaction.ts` and siblings | [layout-deployment-secrets.md](layout-deployment-secrets.md) | dynamic-reference secret redaction, masking retry loggers, the mask-only channel |
-| `src/cli/commands/scrub.ts` | [layout-scrub.md](layout-scrub.md) | `cdkd scrub` — the state secret-hygiene command |
-| `src/provisioning/**` | [layout-provisioning.md](layout-provisioning.md) | provider registry, shared provider helpers, pre-flight rejection tables |
+| `src/cli/commands/drift.ts`, `src/analyzer/drift-*.ts`, `src/utils/ip-protocol.ts` | [layout-drift.md](layout-drift.md) | `cdkd drift` and the normalizers it compares through |
+| `src/deployment/**` | [layout-deployment.md](layout-deployment.md) | DeployEngine, WorkGraph, DAG executor, retry, rollback |
+| `src/deployment/secret-redaction.ts` and siblings | [layout-deployment-secrets.md](layout-deployment-secrets.md) | secret redaction, masking retry loggers, the mask-only channel |
+| `src/cli/commands/scrub.ts` | [layout-scrub.md](layout-scrub.md) | `cdkd scrub` — state secret hygiene |
+| `src/provisioning/**` | [layout-provisioning.md](layout-provisioning.md) | provider registry, shared helpers, pre-flight rejection tables |
 | `src/local/**` | [layout-local.md](layout-local.md) | `cdkd local invoke` / `start-api` / `run-task` / `start-service` |
 | `src/utils/**` | [layout-utils.md](layout-utils.md) | logger, colors, `displaySafe`, shared helpers |
 | `src/analyzer/**` | [layout-analyzer.md](layout-analyzer.md) | DAG builder, template parser, Outputs diff |
@@ -26,10 +27,10 @@ Per-area detail lives in the satellite files below. Each one is loaded only when
 | `src/assets/**` | [layout-assets.md](layout-assets.md) | S3 / ECR publishing, asset storage |
 | `src/state/**`, `src/types/**` | [layout-state-types.md](layout-state-types.md) | state backend, locks, shared types |
 | `src/version.ts`, `vite.config.ts` | [layout-build.md](layout-build.md) | version injection, Vite+ config |
-| `scripts/**`, `docs/_generated/**` | [layout-scripts.md](layout-scripts.md) | coverage generators, their generated docs, CI critics |
+| `scripts/**`, `docs/_generated/**` | [layout-scripts.md](layout-scripts.md) | coverage generators, generated docs, CI critics |
 | `scripts/check-{pr,issue}-*.ts` | [layout-ci-checks.md](layout-ci-checks.md) | CI checks replacing retired gates |
-| `scripts/refresh-cfn-schemas.mjs` + chain | [layout-schema-refresh.md](layout-schema-refresh.md) | CFn schema refresh, diagnosis, backfill campaign |
+| `scripts/refresh-cfn-schemas.mjs` + chain | [layout-schema-refresh.md](layout-schema-refresh.md) | CFn schema refresh, diagnosis, backfill |
 | `.github/workflows/pr-content-checks.yml` | [layout-ci-pr-content.md](layout-ci-pr-content.md) | PR-content checks: diff scans + auto-close form |
-| `docs/**` | [docs-page-template.md](docs-page-template.md) | page shape and voice for the public cdkd.dev site |
+| `docs/**` | [docs-page-template.md](docs-page-template.md) | page shape and voice for cdkd.dev |
 
-Provider contract, Custom Resources, and "Adding a New SDK Provider": [providers.md](providers.md).
+Provider contract, Custom Resources, "Adding a New SDK Provider": [providers.md](providers.md).
