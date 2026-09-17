@@ -47,7 +47,7 @@ function trackedShellFiles(): string[] {
     encoding: 'utf8',
     timeout: 30_000,
   });
-  if (r.status !== 0) throw new Error(`git ls-files failed: ${r.stderr}`);
+  if (r.status !== 0) throw new Error(`git ls-files failed: ${r.error?.message ?? r.stderr}`);
   tracked = r.stdout.split('\0').filter(Boolean);
   return tracked;
 }
@@ -439,9 +439,15 @@ describe('classifyWcTrim', () => {
       expect(classifyWcTrim(`${body}\n`).violations.map((v) => v.line)).toEqual([2]);
     });
 
-    it('refuses a marker with no colon before its reason', () => {
+    it('refuses a marker with no colon before its reason, and reports it as malformed', () => {
       const c = classifyWcTrim(`# ${ALLOW_MARKER} ${reason}\nN=$(ls | wc -l)\n`);
       expect(c.violations).toHaveLength(1);
+      expect(c.malformedAllowMarkers).toEqual([1]);
+    });
+
+    it('does not read a longer word starting with the marker as a marker', () => {
+      const c = classifyWcTrim(`# ${ALLOW_MARKER}s ${reason}\nN=$(ls | wc -l)\n`);
+      expect(c.malformedAllowMarkers).toEqual([]);
     });
 
     it('does not let a marker above a backslash-wrapped statement exempt the wc two lines below', () => {
@@ -639,7 +645,7 @@ describe('bash behavior (the convention itself, through a BSD-padding wc)', () =
    * defect — which is exactly why it ships. The CONTROL case proves the padding.
    */
   /** The host's own `wc`, resolved from PATH before the shim shadows it (not a fixed /usr/bin path). */
-  const HOST_WC = spawnSync('sh', ['-c', 'command -v wc'], { encoding: 'utf8', timeout: 30_000 }).stdout.trim();
+  const HOST_WC = (spawnSync('sh', ['-c', 'command -v wc'], { encoding: 'utf8', timeout: 30_000 }).stdout ?? '').trim();
 
   function runWithBsdWc(body: string) {
     const dir = mkdtempSync(join(tmpdir(), 'cdkd-3213-'));
@@ -666,6 +672,10 @@ describe('bash behavior (the convention itself, through a BSD-padding wc)', () =
       rmSync(dir, { recursive: true, force: true });
     }
   }
+
+  it('PREMISE: the host has an absolute-path wc the shim can call', () => {
+    expect(HOST_WC, 'no wc on PATH (or a relative PATH entry): the shim cannot re-emit a count').toMatch(/^\/[^']*$/);
+  });
 
   it('CONTROL: the shim really pads, so the cases below are not vacuous', () => {
     const r = runWithBsdWc('printf \'a\\n\' | wc -l\n');

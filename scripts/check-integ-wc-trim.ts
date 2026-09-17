@@ -139,6 +139,8 @@ export const ALLOW_MARKER = 'allow-untrimmed-wc';
 export const MIN_ALLOW_REASON_LENGTH = 10;
 
 const ALLOW_RE = new RegExp(`^#\\s*${ALLOW_MARKER}\\s*:\\s*(.*)$`);
+/** The marker word with anything else after it — no colon — which is reported as malformed. */
+const ALLOW_WORD_RE = new RegExp(`^#\\s*${ALLOW_MARKER}(?![A-Za-z0-9_-])`);
 
 /**
  * Reserved words after which the next word is still a command. Only an
@@ -325,7 +327,7 @@ function trimAfter(
   // arguments of `tr`; step over each with its target before the end check.
   for (;;) {
     const r = /^(\d*(?:>>|>\||<>|>|<)|&>>|&>)(&(?:\d+|-))?/.exec(src.slice(i));
-    if (!r || (r[1] === '' && !r[2])) break;
+    if (!r) break;
     i += r[0].length;
     if (!r[2]) {
       skipBlanks();
@@ -1125,7 +1127,7 @@ export function classifyWcTrim(content: string): WcTrimClassification {
   const markerState = (info: CommentInfo | undefined): 'valid' | 'malformed' | 'absent' => {
     if (!info) return 'absent';
     const m = ALLOW_RE.exec(info.text);
-    if (!m) return 'absent';
+    if (!m) return ALLOW_WORD_RE.test(info.text) ? 'malformed' : 'absent';
     return m[1]!.trim().length >= MIN_ALLOW_REASON_LENGTH ? 'valid' : 'malformed';
   };
   const malformedAllowMarkers = [...comments.entries()]
