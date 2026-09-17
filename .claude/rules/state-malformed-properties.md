@@ -48,6 +48,17 @@ Only the refusal closes it. The cost is stated rather than argued away: a
 deploy over ONE torn record aborts the whole run, and that is the right trade
 against replacing a resource nobody asked to replace.
 
+**`cdkd deploy --dry-run` refuses too, and that is decided rather than
+incidental.** Provisioning is gated BELOW `calculateDiff`, so a dry run reaches
+the guard. The "a preview beats an abort" argument does not transfer to it,
+because `cdkd diff` already satisfies that argument one command over: a user
+who wants the repaired preview has it, with the warning. Repairing here would
+need a mode threaded into the shared chokepoint whose whole value is that both
+callers reach it unconditionally, and it would create the worst arm of all — a
+plausible `--dry-run` plan followed by a refusal the moment the flag comes off.
+The refusal's TEXT has to be true on both arms; the first revision asserted "it
+would DELETE and re-create resources", which a dry run would not.
+
 `cdkd diff` still repairs and warns, and the WRITE is what makes the difference
 rather than the shape — it provisions nothing, so it cannot launder the
 evidence, and a preview of the rest of the stack beats an abort. Its warning

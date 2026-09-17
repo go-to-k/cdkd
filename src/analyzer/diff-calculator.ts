@@ -191,6 +191,21 @@ export class DiffCalculator {
     // aim its pasteable remedy at that record instead (review of #3191).
     // `stackClause` in `src/state/malformed-resources-bag.ts` carries the
     // full reasoning and the shape a later lane threads a TRUSTED pair into.
+    //
+    // WHAT THIS DOES NOT GUARD, stated because everything above reads as "the
+    // deploy diff is now covered" and it is only covered ONE LEVEL DOWN.
+    // `unreadableResourcePropertyBags` walks ENTRIES, so it returns `[]` when
+    // the ROOT `resources` bag is itself unreadable — its own doc ends "What a
+    // caller must not do is take only this one", and the deploy path takes
+    // only this one: `deploy-engine.ts` calls `refuseMalformedOutputs` and no
+    // `resources` guard, and `refuseMalformedState`'s callers are `import.ts`,
+    // `orphan.ts` and `rollback.ts` alone. So a record spelling
+    // `"resources": "abcdef"` still arrives here, enumerates two fabricated
+    // logical ids, and re-CREATEs the whole stack. That is PRE-EXISTING and
+    // outside this lane's gate scope — `deploy-engine.ts` arms `integ-broad`
+    // and `integ-destroy`, and the remedy needs a contract decision this lane
+    // does not make. It is go-to-k/cdkd#3161, which covers the deploy mirror
+    // alongside the destroy one and proposes refusing outright.
     refuseMalformedResourceProperties(currentState, undefined, undefined);
 
     const currentResources = currentState.resources;

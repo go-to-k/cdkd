@@ -157,14 +157,14 @@ describe('DeployEngine refuses an unreadable properties map (go-to-k/cdkd#3191)'
     Resources: { ParamA: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } } },
   };
 
-  function makeEngine(): DeployEngine {
+  function makeEngine(dryRun = false): DeployEngine {
     return new DeployEngine(
       stateBackend as never,
       lockManager as never,
       dagBuilder as never,
       new DiffCalculator(),
       makeProviderRegistry() as never,
-      { dryRun: false },
+      { dryRun },
       REGION,
       exportIndexStore as never
     );
@@ -202,6 +202,47 @@ describe('DeployEngine refuses an unreadable properties map (go-to-k/cdkd#3191)'
       expect(lockManager.releaseLock).toHaveBeenCalledWith(STACK, REGION);
     });
   }
+
+  it('refuses under --dry-run too, and says so in terms that are TRUE there', async () => {
+    // Provisioning is gated AFTER the diff, so a dry run reaches the guard and
+    // aborts. That is the DECIDED behaviour — the repair-and-warn half belongs
+    // to `cdkd diff`, and `malformedResourcePropertiesRefusalMessage`'s doc
+    // carries the reasoning — but the first revision's wording asserted "it
+    // would DELETE and re-create resources", which is false on this arm. A
+    // refusal that misstates what was about to happen is the same defect class
+    // as one naming the wrong record.
+    stateBackend.getState.mockResolvedValue({ state: makeState('abcdef'), etag: 'etag-old' });
+    const err = (await makeEngine(true)
+      .deploy(STACK, template)
+      .catch((e: unknown) => e)) as CdkdError;
+
+    expect(err).toBeInstanceOf(CdkdError);
+    expect(err.code).toBe(STATE_RESOURCES_MALFORMED);
+    // Scoped to the dry run explicitly, rather than left to be read as a
+    // statement about a real deploy.
+    expect(err.message).toContain("under '--dry-run' too");
+    expect(err.message).toContain('the plan a dry run would print');
+    // It names the command that DOES produce a usable preview, which is what
+    // makes refusing here cost the user nothing.
+    expect(err.message).toContain("'cdkd diff' previews the rest of the stack");
+    expect(provisioned).toEqual([]);
+    expect(stateBackend.saveState).not.toHaveBeenCalled();
+    expect(lockManager.releaseLock).toHaveBeenCalledWith(STACK, REGION);
+  });
+
+  it('completes a --dry-run when the map is readable', async () => {
+    // The control for the arm above: without it, a guard that refused every
+    // dry run regardless of the record would satisfy every assertion there.
+    stateBackend.getState.mockResolvedValue({
+      state: makeState({ Value: 'x' }),
+      etag: 'etag-old',
+    });
+    const result = await makeEngine(true)
+      .deploy(STACK, template)
+      .catch((e: unknown) => e);
+    expect(result).not.toBeInstanceOf(CdkdError);
+    expect(provisioned).toEqual([]);
+  });
 
   it('deploys normally when the map is readable', async () => {
     // The non-firing side at the ENGINE, not just at the calculator: a guard

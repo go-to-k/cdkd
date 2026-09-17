@@ -938,7 +938,8 @@ act on. A string map adds one fabricated change per character on top.
 
 | Command | Answer |
 | --- | --- |
-| `cdkd deploy` | **Refuses** before any resource is touched (`STATE_RESOURCES_MALFORMED`, exit `1`), naming the resource records it could not read |
+| `cdkd deploy` | **Refuses** before any resource is created, updated or deleted (`STATE_RESOURCES_MALFORMED`, exit `1`), naming the resource records it could not read |
+| `cdkd deploy --dry-run` | **Refuses**, identically — the plan a dry run prints comes from the same comparison, so it would show the replacement as though the template asked for it |
 | `cdkd diff` | **Repairs** those maps to empty in memory and warns, naming the same records — it writes nothing, and a preview of the rest of the stack is worth more than an abort |
 
 Reading the map as empty is **not** the safe answer here, which is why deploy

@@ -396,15 +396,21 @@ resource**. For a create-only property (an S3 `BucketName`, a DynamoDB
 `TableName`) that is a **replacement**: the live resource would be deleted and
 re-created from a record nobody asked cdkd to act on.
 
-`cdkd deploy` refuses such a record before touching any resource
-(`STATE_RESOURCES_MALFORMED`, exit `1`), naming the resource records it could
-not read — up to five, then a count.
+`cdkd deploy` refuses such a record before creating, updating or deleting any
+resource (`STATE_RESOURCES_MALFORMED`, exit `1`), naming the resource records it
+could not read — up to five, then a count. Nothing is provisioned and no state
+is written for that stack.
+
+`--dry-run` refuses too, and for the same reason: the plan a dry run would print
+is built from the same comparison, so it would show the replacement as though it
+were what your template asked for.
 
 Reading the map as empty instead is not a safe alternative and cdkd does not
 offer one: an empty map declares nothing either, so it produces the identical
 replacement. Only a refusal avoids it. `cdkd diff` does repair those maps and
 warn, because it provisions nothing — its preview of such a record is wrong in
-exactly that direction, and its warning says so.
+exactly that direction, and its warning says so, which is where to go when you
+want to see the rest of the stack.
 
 An **absent** `properties` map is a defect and is refused; an empty `{}` is
 healthy, since a resource can legitimately declare no properties. Inspect the

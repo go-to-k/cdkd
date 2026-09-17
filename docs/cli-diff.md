@@ -403,7 +403,8 @@ matches on would be worse than the display concern it would avoid.
 A state record is read as JSON and used as typed data without a field-by-field
 shape check, so a hand-edited or truncated one can hold anything where a map
 belongs. `cdkd diff` never writes state, so it **repairs** the two containers it
-walks rather than refusing, and warns once per repaired container per stack:
+walks rather than refusing, and warns about each container it repaired — once
+per stack, except for the `properties` case noted below, which can warn twice:
 
 | Container | Read as | What the preview then shows |
 | --- | --- | --- |
