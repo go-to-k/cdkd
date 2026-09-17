@@ -2252,6 +2252,16 @@ const FALSIFIED_CLAIMS: readonly {
     re: /every caller wrap(s|ping) the purge in/i,
   },
   {
+    retired: 'the Fn::ImportValue sibling already masks the same shape at its own catch', // falsified sample
+    why:
+      'FALSE: that catch masks the caught message with the BAGS alone — `maskSecretsForLog` over a ' +
+      'composed AWS sentence finds no registered twin and falls to the needle pass, whose substring ' +
+      'arm has a four-character floor — so the POSITIONAL half of the class is open there too. ' +
+      'go-to-k/cdkd#3275 shipped this sentence as the reason its own site was "catching up", and ' +
+      'review corrected it; the sibling is an INSTANCE of the gap, not the pattern to copy.',
+    re: /Fn::ImportValue`? sibling already masks/i,
+  },
+  {
     retired: 'not reached — no fixture in the swept set has one today; tracked', // falsified sample
     why:
       'FALSE since nested-stack-secret joined the swept set: it builds a real cdk.NestedStack and ' +

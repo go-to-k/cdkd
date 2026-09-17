@@ -316,9 +316,9 @@ real tree:**
 - **A narrow VALUE input and an assertion's EXEMPTION are one defect — each
   exempt case an unproved claim about the SUBJECT that the TEST's shape
   justified** (go-to-k/cdkd#3275 exempted `\t`, then `\n`; the sink strips
-  both). Assert its whole class, per message not a join, as a VALUE:
-  `x === input` is blind where the subject maps a value to itself. **Expected
-  values must be INDEPENDENT of the one tested**, so a TRANSCRIBED
+  both). Assert the SUBJECT's whole class, per message not a join, as a VALUE:
+  `x === input` is blind where it maps a value to itself. **Expected values
+  must be INDEPENDENT of the one tested**, so a TRANSCRIBED
   class needs a behaviour fence: whole domain (a bound is an exemption), every
   fact copied, and the copy IN USE — one holding its own passes itself.
 - **Delete the thing the fence REQUIRES and watch it fail.** An OR of

@@ -421,11 +421,11 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // sweeps every code point instead of stopping at U+2FFF. The rule text
     // carries those three requirements, funded in-file again: one 5-e example
     // and two clauses of the new bullet itself. implement.md 29,940 -> 29,998
-    // (+58), no other file touched, reconciling 200,814 -> 200,872.
+    // (+59), no other file touched, reconciling 200,814 -> 200,873.
     //
-    // implement.md is now the LARGEST, with 2 B of cap left; triage.md is
+    // implement.md is now the LARGEST, with 1 B of cap left; triage.md is
     // runner-up. Neither cap moved and the floor below still clears
-    // `corpus - runnerUp` by 322 B, which is now the binding direction.
+    // `corpus - runnerUp` by 321 B, which is now the binding direction.
     //
     // A SECOND lesson from that run had nowhere to land and is NOT here:
     // `.claude/rules/testing.md` is at its `tests/**` payload cap exactly, so
@@ -433,7 +433,7 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // thereby dead -- say which of equivalent / unreachable / defensive it is)
     // is a checklist row on go-to-k/cdkd#2940 instead, with its measured cost.
     //
-    // Cap headroom, in size order: implement.md 2 B, triage.md 6 B,
+    // Cap headroom, in size order: implement.md 1 B, triage.md 6 B,
     // verify.md 39 B. All three open with a compression pass, not an
     // addition.
     //
@@ -443,8 +443,8 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // a narrative. It stays on that issue as a stated residual behind
     // go-to-k/cdkd#2424's stage split, which is the structural answer this
     // record has now predicted twice.
-    corpusBytes: 200_872,
-    largest: { file: 'implement.md', bytes: 29_998 },
+    corpusBytes: 200_873,
+    largest: { file: 'implement.md', bytes: 29_999 },
     runnerUp: { file: 'triage.md', bytes: 29_994 },
   },
 };

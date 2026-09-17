@@ -1953,8 +1953,14 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
    * than the one the resolver resolved.
    */
   function sanitizingBackend(stackName: string, region = 'us-east-1'): S3StateBackend {
+    // `SINK_CLASS.flags`, not just its source: copying the pattern alone would
+    // silently drop a `u` or `i` added later, leaving this reader on the old
+    // semantics while the other two took the new one -- the copies-diverge
+    // defect this constant exists to close, one level down. DEFENSIVE and
+    // recorded as such: adding `u` to `SINK_CLASS` leaves this suite green
+    // either way (measured), so no case here distinguishes it.
     const shown = (t: string): string =>
-      t.replace(new RegExp(SINK_CLASS.source, 'g'), SINK_REPLACEMENT).trim();
+      t.replace(new RegExp(SINK_CLASS, `${SINK_CLASS.flags}g`), SINK_REPLACEMENT).trim();
     return {
       listStacks: vi.fn(async () => []),
       getState: vi.fn(async () => {
@@ -2251,8 +2257,8 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
   });
 
   it('PAIR FENCE: the transcribed sink class still matches displaySafe', () => {
-    // `sanitizingBackend`'s `shown` and THE INVARIANT's assertion both spell the
-    // sink's class as `/[^ -~]/`. That is a TRANSCRIPTION of
+    // `sanitizingBackend`'s `shown` and THE INVARIANT's assertion both read
+    // `SINK_CLASS`. That constant is a TRANSCRIPTION of
     // `sanitizeAsciiOnly` in `src/utils/display-safe.ts`, deliberately not an
     // import: an expected value must stay an INDEPENDENT variable from the one
     // under test, or the property asserts only that the subject agrees with
@@ -2283,7 +2289,9 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
     // Asserting the value pins all THREE facts the fake sink transcribes --
     // the class, the replacement character, and the trim -- where the previous
     // shape pinned only the class. Other cases here depend on the other two
-    // (`svc-x y7` on the replacement, the `'prod '` control on the trim), so
+    // (the `'prod '` control on the trim; the replacement is pinned HERE and
+    // nowhere else, since the masking cases substitute whatever the sink
+    // produced and stay green whatever it is), so
     // leaving them unpaired left those reading a sink that could have moved.
     //
     // EVERY code point, not a prefix of them. The earlier bound stopped at
@@ -2312,7 +2320,17 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
     // The TRIM, which an interior probe cannot reach: a rejected character at
     // either end is removed for a second reason, so the sweep above cannot
     // tell the class apart from the trim there.
-    expect(displaySafe(` ${SINK_REPLACEMENT}x `, { asciiOnly: true })).toBe('x');
+    // Two separate facts, and the first version conflated them by feeding the
+    // REPLACEMENT in as input, where the class never fires: that asserted
+    // plain whitespace trimming and would have reddened for the wrong reason
+    // had the replacement changed in step everywhere.
+    expect(displaySafe(' x ', { asciiOnly: true })).toBe('x');
+    // And the COMPOSITION: a REJECTED character at an edge becomes the
+    // replacement and is then trimmed away, which is exactly why an edge
+    // position cannot tell the class apart from the trim. Spelled with an
+    // escape rather than the literal byte, which is invisible in source.
+    const ctlEdge = `${String.fromCharCode(0xa0)}x${String.fromCharCode(0xa0)}`;
+    expect(displaySafe(ctlEdge, { asciiOnly: true })).toBe('x');
     // Floor against an early exit or a `continue` that skips the range -- NOT
     // against deleting the assertions above, which no counter in the same loop
     // can see. Probed by widening `sanitizeAsciiOnly` to `/[^\t -~]/`: this
