@@ -72,7 +72,7 @@ export class SnsSubscriptionUpdateStack extends cdk.Stack {
     // would make the mode-off deploy indistinguishable from one where cdkd
     // dropped the property entirely, so the phase-1 assertion could not tell a
     // forwarded `false` from a silent drop.
-    new sns.CfnSubscription(this, 'StandaloneSubscription', {
+    const subscription = new sns.CfnSubscription(this, 'StandaloneSubscription', {
       topicArn: topic.topicArn,
       protocol: 'sqs',
       endpoint: queue.queueArn,
@@ -81,5 +81,15 @@ export class SnsSubscriptionUpdateStack extends cdk.Stack {
 
     new cdk.CfnOutput(this, 'TopicArn', { value: topic.topicArn });
     new cdk.CfnOutput(this, 'QueueArn', { value: queue.queueArn });
+    // The `Fn::GetAtt` this fixture exists to exercise for issue
+    // [#3329](https://github.com/go-to-k/cdkd/issues/3329). Without it the
+    // fixture drives `update()` but never READS the attribute the provider now
+    // records, so a real-AWS run proves nothing about that change — review of
+    // go-to-k/cdkd#3355 caught exactly that before the run was spent.
+    //
+    // `attrArn` is a GetAtt, not a Ref: CloudFormation's `Ref` for this type
+    // returns the subscription ARN too, so a Ref-based output would pass
+    // whether or not the attribute was ever recorded.
+    new cdk.CfnOutput(this, 'SubscriptionArn', { value: subscription.attrArn });
   }
 }

@@ -91,6 +91,8 @@ describe('issue #3329 — SNS subscription Arn resolves from cache, and non-ARNs
   });
 
   it('resolves Fn::GetAtt Arn from the create record', async () => {
+    // NOT a discriminator on its own — see the case below. Kept as the
+    // readable statement of the happy path; the mutation coverage is there.
     mockSnsSend.mockResolvedValueOnce({ SubscriptionArn: SUB_ARN });
     const result = await new SNSSubscriptionProvider().create('Sub', TYPE, PROPS);
 
