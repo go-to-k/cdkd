@@ -260,6 +260,13 @@ export declare function collectFixtureDeltas(input: {
   silentDropRemoved: RemovedDropEntry[];
   readOnlyAddedCount: number;
   unreadable: string[];
+  /**
+   * Types whose `primaryIdentifier` VALUE changed (issue go-to-k/cdkd#3327).
+   * Declared here because its ABSENCE is what stopped a committed case from
+   * reading this field, which is why the first cut of that change could only
+   * claim the collection worked and not assert it.
+   */
+  identifierChanges: IdentifierChange[];
 };
 export declare function loadDeclaredProperties(repoRoot?: string): Map<string, Set<string>>;
 export declare function classifyGitShowFailure(stderr: string): undefined | typeof UNREADABLE;

@@ -1335,6 +1335,62 @@ describe('comparePrimaryIdentifier (issue 3327)', () => {
   });
 });
 
+describe('collectFixtureDeltas collects identifier changes (issue 3327 wiring)', () => {
+  // The PR that added this class DECLARED that the collect-to-render wiring
+  // could only be shown by an end-to-end probe, because the script reads the
+  // repo's own fixture directory. That was wrong, and review caught it:
+  // `collectFixtureDeltas` takes `files` / `committedOf` / `currentOf` as
+  // PARAMETERS, so the hop is directly drivable. The residual it claimed does
+  // not exist; only `main()`'s threading is left to the probe.
+  const fx = (pid: unknown): string =>
+    JSON.stringify({
+      resourceType: 'AWS::Sdk::Thing',
+      properties: ['A'],
+      readOnlyProperties: [],
+      createOnlyProperties: [],
+      ...(pid === undefined ? {} : { primaryIdentifier: pid }),
+    });
+  const collect = (committed: string, current: string, currentOf?: () => string) =>
+    collectFixtureDeltas({
+      files: ['AWS-Sdk-Thing.json'],
+      committedOf: () => committed,
+      currentOf: currentOf ?? (() => current),
+      providerFiles: new Map(),
+      declared: new Map(),
+    });
+
+  it('carries a flip out of the collector, keyed by resource type', () => {
+    expect(collect(fx(['ApiId']), fx(['Arn'])).identifierChanges).toEqual([
+      { resourceType: 'AWS::Sdk::Thing', before: ['ApiId'], after: ['Arn'] },
+    ]);
+  });
+
+  it('collects nothing when the identifier held still', () => {
+    expect(collect(fx(['ApiId']), fx(['ApiId'])).identifierChanges).toEqual([]);
+  });
+
+  it('reads the working-tree fixture ONCE per file', () => {
+    // The first cut called `currentOf` a second time for this comparison: two
+    // filesystem reads per fixture, and a TOCTOU window where the property
+    // comparison and the identifier comparison could see different bytes.
+    let calls = 0;
+    collect(fx(['ApiId']), '', () => {
+      calls += 1;
+      return fx(['Arn']);
+    });
+    expect(calls).toBe(1);
+  });
+
+  it('counts an unparseable working-tree side as unreadable, and reports NO identifier change', () => {
+    // The claim the first cut's comment made and did not keep: the comparison
+    // sat OUTSIDE the try, so a throwing or malformed second read escaped the
+    // collector uncaught instead of landing here.
+    const result = collect(fx(['ApiId']), '{ not json');
+    expect(result.unreadable).toEqual(['AWS-Sdk-Thing.json']);
+    expect(result.identifierChanges).toEqual([]);
+  });
+});
+
 describe('the changed-identifier decision class (issue 3327)', () => {
   const change = { resourceType: 'AWS::AppSync::GraphQLApi', before: ['ApiId'], after: ['Arn'] };
 

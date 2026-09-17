@@ -305,12 +305,23 @@ export function comparePropertySets(committedJson, refreshedJson) {
  * job rendered "additions only" over it, because `comparePropertySets` compares
  * `properties` / `readOnlyProperties` / `createOnlyProperties` and nothing else.
  *
- * Order-insensitive: the capture SORTS (`extractPrimaryIdentifier`), so a
- * re-ordering is not a change and comparing the joined strings would report
- * one. A missing or non-array field on either side reads as an EMPTY
- * identifier, which is what the extractor itself produces for a schema
- * declaring none — so "gained an identifier" and "lost one" are both reported
- * rather than thrown on.
+ * Order-insensitive because the capture SORTS (`extractPrimaryIdentifier`), and
+ * the honest statement of that is a BOUND rather than a reassurance: an AWS
+ * REORDER is UNOBSERVABLE here, not harmless. Order can matter downstream — on
+ * the Cloud Control path the `|`-joined physical id follows the declared order,
+ * which is why `childFirstInCompositeId` exists in `src/cli/commands/export.ts`
+ * for `AWS::ApiGateway::Deployment`'s `[DeploymentId, RestApiId]` against
+ * siblings that put the parent first. 19 of the 134 fixtures are compound. A
+ * reorder cannot reach this comparison at all, so nothing here reports it;
+ * comparing joined strings instead would report the capture's own sort as a
+ * change every time, which is why it is not done that way.
+ *
+ * A missing or non-array field on either side reads as an EMPTY identifier, so
+ * "gained an identifier" and "lost one" are both reported rather than thrown
+ * on. That is DEFENSIVE rather than expected: `buildFixture` always emits the
+ * key and `extractPrimaryIdentifier` returns `[]` for a schema declaring none,
+ * so a present-but-empty array is the real shape and an absent key would mean a
+ * fixture this codebase did not write.
  *
  * @param {string} committedJson
  * @param {string} refreshedJson
@@ -2420,7 +2431,7 @@ export function partitionPendingSdkBump({
  *   declarationCandidates?: typeof findDeclarationCandidates,
  *   sdkEvidence?: typeof sdkModelsMember,
  * }} input
- * @returns {{removed: RemovedEntry[], writableAdded: AddedEntry[], silentDropRemoved: RemovedDropEntry[], readOnlyAddedCount: number, unreadable: string[]}}
+ * @returns {{removed: RemovedEntry[], writableAdded: AddedEntry[], silentDropRemoved: RemovedDropEntry[], readOnlyAddedCount: number, unreadable: string[], identifierChanges: IdentifierChange[]}}
  */
 export function collectFixtureDeltas({
   files,
@@ -2452,8 +2463,19 @@ export function collectFixtureDeltas({
     if (committed === undefined) continue; // Brand-new fixture: nothing to compare.
     let delta;
     let resourceType;
+    /** @type {{before: string[], after: string[]} | undefined} */
+    let identifierChange;
     try {
-      delta = comparePropertySets(committed, currentOf(file));
+      // READ ONCE. `currentOf` hits the filesystem, so calling it twice per
+      // fixture doubles the reads AND opens a TOCTOU window the single-read
+      // version did not have — the two comparisons could see different bytes.
+      // (Review of go-to-k/cdkd#3349: the identifier comparison was added
+      // outside this `try` with a comment claiming it was inside. It was not,
+      // and a `currentOf` that threw on the second call escaped this function
+      // uncaught instead of landing in `unreadable`.)
+      const current = currentOf(file);
+      delta = comparePropertySets(committed, current);
+      identifierChange = comparePrimaryIdentifier(committed, current);
       // The filename stem converted back, never the raw stem: it is hyphenated
       // and `renderName` rejects hyphens, so the fallback rendered
       // `**[name rejected]**` as the heading — the same shape as the two render
@@ -2473,10 +2495,10 @@ export function collectFixtureDeltas({
 
     readOnlyAddedCount += delta.added.length - delta.writableAdded.length;
 
-    // Inside the SAME try's success path and after `resourceType` is resolved,
-    // so an unparseable side is already counted as `unreadable` rather than
-    // reaching here (issue go-to-k/cdkd#3327).
-    const identifierChange = comparePrimaryIdentifier(committed, currentOf(file));
+    // Recorded here rather than in the `try`, because `resourceType` is
+    // resolved there and an entry needs it; the COMPARISON itself ran inside,
+    // so an unparseable side is already counted as `unreadable` and never
+    // reaches this line (issue go-to-k/cdkd#3327).
     if (identifierChange !== undefined) {
       identifierChanges.push({ resourceType, ...identifierChange });
     }
