@@ -244,6 +244,13 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   // guards, but both sit within ~1 KB of their own payload caps, so adding
   // them here would breach a budget rather than inform a lane.
   ['state-malformed-containers.md', 1], // literal list: EXACT, see below
+  // TWO literal paths, and deliberately NOT the module the guards live in
+  // (issue go-to-k/cdkd#3191). The `properties` container's readers are the
+  // diff calculator and the read-only load that feeds it; the defining module
+  // sat ~300 B under its own payload cap, so listing it here would have
+  // breached a budget rather than informed a lane — the same call the
+  // `state-malformed-containers.md` note above records for scrub and import.
+  ['state-malformed-properties.md', 2], // literal list: EXACT, see below
   // 93 files: the 92 entries `.claude/hooks/*.sh` reaches at depth 1 -- 46
   // whose names end `.test.sh` and 46 that do not, which ONE glob covers
   // because a suite's name also ends in `.sh` -- plus `.claude/settings.json`.
@@ -1344,7 +1351,16 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 // Neither branch's figure is the merged one. That is the whole reason this
 // count is asserted rather than described: two correct increments compose to a
 // number neither author wrote.
-const CORPUS_FILE_COUNT = 65; // + cloud-control-wait.md (go-to-k/cdkd#3236): the `waitForOperation`
+const CORPUS_FILE_COUNT = 66; // + state-malformed-properties.md (go-to-k/cdkd#3191): the
+                              //  `properties` container's triple took
+                              //  `src/state/malformed-resources-bag.ts` 2,116 B over its 57,000 B
+                              //  cap, so the detail moved to a satellite globbed at its two
+                              //  READERS (`src/analyzer/diff-calculator.ts`,
+                              //  `src/cli/commands/diff-recursive.ts`) with a two-line pointer
+                              //  left behind. The defining module is deliberately NOT in that
+                              //  glob -- it had ~300 B of headroom, the same call the
+                              //  `state-malformed-containers.md` row records for scrub and import.
+                              // + cloud-control-wait.md (go-to-k/cdkd#3236): the `waitForOperation`
                               //  poll fence took `src/provisioning/cloud-control-provider.ts` over
                               //  its cap from inside layout-provisioning.md, so it moved to a
                               //  satellite globbed at `src/deployment/retryable-errors.ts` alone --
@@ -1357,17 +1373,20 @@ const CORPUS_FILE_COUNT = 65; // + cloud-control-wait.md (go-to-k/cdkd#3236): th
                               //  shortest usable pointer is 45), so the cost lands only on the path
                               //  that wants the text. An earlier revision of this comment named
                               //  layout-deployment.md, which the tree contradicts.
-                              // Was 64: SEVEN lanes each added one satellite and each set this from
-                              //  the count it saw, so 58 / 59 / 59 / 60 / 62 / 63 / 64 were all
-                              //  written independently and none is the merged figure -- exactly what
-                              //  the note above warns about. This lane alone wrote FOUR (60, 61, 63,
-                              //  then 64 on main) as go-to-k/cdkd#3208, two `layout-cli-*`
-                              //  satellites and a seventh landed first. MEASURED on the merged tree:
-                              //  65 files in `.claude/rules/` (64 on origin/main plus this lane's).
-                              //  A keep-EITHER resolution here silently drops a satellite, which is
-                              //  how this constant goes wrong -- and so does adding a satellite
-                              //  without adding its `+` entry below, which is how the next lane
-                              //  loses the ability to reconcile.
+                              // Was 64, then 65 TWICE: EIGHT lanes have now each added one
+                              //  satellite and each set this from the count it saw, so
+                              //  58 / 59 / 59 / 60 / 62 / 63 / 64 / 65 were all written
+                              //  independently and none is the merged figure -- exactly what the
+                              //  note above warns about, and this pair is its cleanest instance
+                              //  yet: go-to-k/cdkd#3236 and go-to-k/cdkd#3191 BOTH measured 65 on
+                              //  their own branch, from DIFFERENT 64-file bases, and 65 is wrong
+                              //  on the merge of either with the other. The #3208 lane alone wrote
+                              //  FOUR (60, 61, 63, then 64 on main). MEASURED on the merged tree:
+                              //  66 files in `.claude/rules/` (65 on origin/main once #3236 landed,
+                              //  plus this lane's). A keep-EITHER resolution here silently drops a
+                              //  satellite, which is how this constant goes wrong -- and so does
+                              //  adding a satellite without adding its `+` entry below, which is
+                              //  how the next lane loses the ability to reconcile.
                               // + layout-cli-diff.md AND layout-cli-state.md (go-to-k/cdkd#3245):
                               //  `layout-cli.md` globs all of `src/cli/**`, so every CLI path paid
                               //  for every command's bullet and `src/cli/commands/scrub.ts` had run
@@ -1608,6 +1627,25 @@ const CORPUS_BYTES_MIN = 1_098_000; // RE-DERIVED UPWARD 1_046_000 -> 1_098_000 
                                     // less), leaving 33,957 B of slack -- the same ~34 KB margin
                                     // every previous setting used, and well under `hooks.md`'s
                                     // 75,745 B, so the case that failed passes with room.
+                                    //
+                                    // go-to-k/cdkd#3191's PR rebased over that and KEPT 1_098_000
+                                    // rather than its own branch figure of 1_090_000, which is the
+                                    // resolution rule for a FLOOR under conflict: take the HIGHER
+                                    // of the two, since the lower one silently un-calibrates the
+                                    // margin the higher lane measured. Re-measured on the MERGE at
+                                    // 66 files / 1,138,596 B (2026-09-17, against origin/main
+                                    // 55f4dc7b9), so the floor holds 40,596 B of slack and
+                                    // `corpus - hooks.md` is 1,062,851 B -- 35,149 B under the
+                                    // floor, so the largest-satellite case still discriminates.
+                                    // That figure moved TWICE inside one review round: a peer
+                                    // merged 409 B into `layout-cli.md` mid-session, and this
+                                    // lane's own satellite then grew. Hence it is written as a
+                                    // DATED measurement of the merge rather than as a fact about
+                                    // the corpus -- re-derive, never quote.
+                                    // The 1,124,030 B this lane's branch recorded as
+                                    // "projected onto origin/main" reproduced against NEITHER tree
+                                    // and is retired rather than carried: project by measuring the
+                                    // merge, never by adding deltas.
                                     //
                                     // The ledger's own growth figure is why the margin is not made
                                     // larger: main grew ~41 KB in 22 h, so a wider slack buys days

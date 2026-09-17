@@ -44,8 +44,10 @@ import { NESTED_STACK_RESOURCE_TYPE } from './retire-cfn-stack.js';
 import {
   malformedExportNamesWarning,
   malformedOutputsWarning,
+  malformedResourcePropertiesWarning,
   malformedResourcesWarning,
   repairMalformedOutputsForReadOnly,
+  repairMalformedResourcePropertiesForReadOnly,
   repairMalformedResourcesForReadOnly,
 } from '../../state/malformed-resources-bag.js';
 
@@ -278,6 +280,24 @@ async function loadStateOrEmpty(
   if (result) {
     if (repairMalformedResourcesForReadOnly(result.state)) {
       logger.warn(malformedResourcesWarning(stackName, region));
+    }
+    // The same treatment one level DOWN, on each entry's `properties` bag
+    // (go-to-k/cdkd#3191). A THIRD call rather than a widening of the one
+    // above, for the reason this file's `outputs` note already gives: the
+    // containers are independent and a record can be malformed in any one
+    // alone, so the warning must name the one that is actually broken.
+    //
+    // Ordered AFTER the bag repair deliberately —
+    // `repairMalformedResourcePropertiesForReadOnly` walks entries, and an
+    // unreadable BAG has none to walk.
+    //
+    // This call is what keeps `cdkd diff` on the read-only side of the split:
+    // the same defect REFUSES inside `DiffCalculator.calculateDiff`, which
+    // both `cdkd deploy` paths reach. `cdkd diff` persists nothing, so it
+    // previews the record and says how the preview is wrong instead.
+    const unreadableProps = repairMalformedResourcePropertiesForReadOnly(result.state);
+    if (unreadableProps.length > 0) {
+      logger.warn(malformedResourcePropertiesWarning(stackName, region, unreadableProps));
     }
     // The SAME treatment for the `outputs` BAG (go-to-k/cdkd#3189). Every
     // consumer of that bag below this line takes it from
@@ -766,6 +786,24 @@ export async function computeStackDiff(
         ...currentState,
         resources: { ...currentState.resources, ...plan.adopted },
       };
+      // A SECOND properties repair, because this splice is the one place a
+      // record enters the diff that `loadStateOrEmpty` never walked
+      // (go-to-k/cdkd#3191 review). `planOrphanAdoption` builds each adopted
+      // entry from `state.orphans[].state` verbatim, and that container is
+      // outside the resource bag the load repaired — so a torn
+      // `orphans[].state.properties` reached `calculateDiff` unguarded and
+      // ABORTED `cdkd diff` with the deploy's refusal, on the command a user
+      // runs precisely to inspect a record they already suspect.
+      //
+      // Scoped INSIDE this branch on purpose: with no adoption there is
+      // nothing here the load did not already see, and running it
+      // unconditionally would walk every entry a second time to find nothing.
+      // The mutation lands on `plan.adopted`'s own records, never on
+      // `state.orphans`, so the stored evidence survives for `cdkd state show`.
+      const tornAdopted = repairMalformedResourcePropertiesForReadOnly(stateForDiff);
+      if (tornAdopted.length > 0) {
+        logger.warn(malformedResourcePropertiesWarning(stackName, region, tornAdopted));
+      }
     }
   }
 
