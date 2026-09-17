@@ -629,6 +629,10 @@ async function bucketHasAnyState(
         Bucket: bucketName,
         Prefix: 'cdkd/',
         MaxKeys: 1,
+        // No `EncodingType` on purpose (go-to-k/cdkd#3313): this reads `KeyCount`
+        // and never a KEY, so the XML CR-to-LF round-trip cannot reach anything.
+        // Asking for encoding here would be inert, and a site that asks without
+        // decoding is the shape that corrupts a legitimate `%` in a key.
         ...(await expectedOwnerParam(client)),
       })
     );

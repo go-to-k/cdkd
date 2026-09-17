@@ -70,6 +70,7 @@ import {
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { markNonRetryable, markRedactedCause } from '../../deployment/retryable-errors.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { LISTING_ENCODING_TYPE, decodeListingKey } from '../../utils/s3-listing-keys.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { S3_AUTO_DELETE_OBJECTS_TAG, hasCdkAutoDeleteTag } from '../data-delete-intent.js';
@@ -7997,6 +7998,8 @@ export class S3BucketProvider implements ResourceProvider {
     while (true) {
       const listResp = await this.s3Client.send(
         new ListObjectVersionsCommand({
+          // go-to-k/cdkd#3313: a CR in a key becomes an LF without this.
+          EncodingType: LISTING_ENCODING_TYPE,
           Bucket: bucketName,
           MaxKeys: 1000,
           ...(keyMarker && { KeyMarker: keyMarker }),
@@ -8006,10 +8009,15 @@ export class S3BucketProvider implements ResourceProvider {
 
       const objects: Array<{ Key: string; VersionId: string }> = [];
       for (const v of listResp.Versions || []) {
-        if (v.Key && v.VersionId) objects.push({ Key: v.Key, VersionId: v.VersionId });
+        // go-to-k/cdkd#3313: these Keys are deleted, so they must be the real ones.
+        const vKey = decodeListingKey(v.Key);
+        if (vKey && v.VersionId) objects.push({ Key: vKey, VersionId: v.VersionId });
       }
       for (const d of listResp.DeleteMarkers || []) {
-        if (d.Key && d.VersionId) objects.push({ Key: d.Key, VersionId: d.VersionId });
+        // Decoded like its `Versions` sibling above — the listing asks for URL
+        // encoding, so a raw marker key here deletes the wrong object.
+        const dKey = decodeListingKey(d.Key); // go-to-k/cdkd#3313
+        if (dKey && d.VersionId) objects.push({ Key: dKey, VersionId: d.VersionId });
       }
 
       if (objects.length > 0) {
@@ -8023,7 +8031,8 @@ export class S3BucketProvider implements ResourceProvider {
       }
 
       if (!listResp.IsTruncated) break;
-      keyMarker = listResp.NextKeyMarker;
+      // DECODED: the next request sends the RAW marker (go-to-k/cdkd#3313).
+      keyMarker = decodeListingKey(listResp.NextKeyMarker);
       versionIdMarker = listResp.NextVersionIdMarker;
     }
   }

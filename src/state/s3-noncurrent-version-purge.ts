@@ -1,6 +1,7 @@
 import { ListObjectVersionsCommand, DeleteObjectsCommand, type S3Client } from '@aws-sdk/client-s3';
 import { getLogger } from '../utils/logger.js';
 import { displaySafe } from '../utils/display-safe.js';
+import { LISTING_ENCODING_TYPE, decodeListingKey } from '../utils/s3-listing-keys.js';
 import {
   warnIfPurgeIsReplicated,
   DEFAULT_PURGED_OBJECT_DESCRIPTION,
@@ -414,6 +415,12 @@ async function purgeUnderPrefix(
         // also returns `<key>.bak` — so every returned entry is re-checked
         // against `wanted` below before anything is deleted.
         Prefix: prefix,
+        // Issue go-to-k/cdkd#3313: without this the XML round-trip turns a
+        // CARRIAGE RETURN in a key into a LINE FEED, `wanted.has` then misses
+        // the entry, and it is silently skipped — recorded in neither `purged`
+        // nor `unsettledBodies`, so a version carrying a secret plaintext
+        // survives a sweep that reports success.
+        EncodingType: LISTING_ENCODING_TYPE,
         ...(keyMarker !== undefined && { KeyMarker: keyMarker }),
         ...(versionIdMarker !== undefined && { VersionIdMarker: versionIdMarker }),
       })
@@ -433,7 +440,43 @@ async function purgeUnderPrefix(
       ...(resp.DeleteMarkers ?? []).map((entry) => ({ entry, hasBody: false })),
     ];
     for (const { entry, hasBody } of entries) {
-      if (entry.Key === undefined || !wanted.has(entry.Key)) continue;
+      // DECODE before every use: the listing above asks for URL encoding, so a
+      // raw `entry.Key` here would fail `wanted.has` for any key containing a
+      // `%` and would delete the wrong object. Request and decode are one
+      // decision (go-to-k/cdkd#3313).
+      // PER ENTRY, not per page: `Prefix` is a prefix match, so this walk sees
+      // NEIGHBOURING keys it was never asked about. Letting one undecodable
+      // neighbour throw would abort the whole prefix and leave every
+      // secret-bearing version behind — and the two callers swallow the throw to
+      // a warn, so the sweep would report nothing wrong.
+      let decodedKey: string | undefined;
+      try {
+        decodedKey = decodeListingKey(entry.Key);
+      } catch {
+        // FAIL-CLOSED, and the first cut of this arm did the opposite. It tested
+        // `wanted.has(entry.Key)` with the RAW key before recording — but
+        // `wanted` holds keys cdkd CONSTRUCTED, i.e. already in decoded form, so
+        // an encoded key can essentially never match one. The arm recorded
+        // nothing, and the "a body went unsettled" signal it exists to raise was
+        // lost for exactly the entries that could not be read.
+        //
+        // With no decodable key there is no way to tell an asked-about key from
+        // a neighbour, so the undecidable case is recorded rather than dropped:
+        // over-reporting costs a warning, under-reporting is a surviving
+        // secret-bearing version the sweep called clean. The RAW key is carried
+        // only to NAME it — nothing addresses an object with it.
+        // The key recorded is the RAW, still-encoded one — there is no other.
+        // It is a REPORTING handle and never addresses an object, but it does
+        // reach `warnIfPurgeIsReplicated`'s `key.startsWith(rule.prefix)`, where
+        // an encoded form can miss a prefix the real key matches. That is the
+        // under-warn direction, so the entry is marked rather than left to look
+        // like an ordinary key: a reader of the warning sees the encoding.
+        if (hasBody && entry.Key !== undefined) {
+          unsettledBodies.add(`${entry.Key} [key not decodable; shown as S3 returned it]`);
+        }
+        continue;
+      }
+      if (decodedKey === undefined || !wanted.has(decodedKey)) continue;
       // `!== false`, not `=== true`: an entry with the field ABSENT must be
       // treated as possibly-current and left alone. Keying on `=== true` fails
       // OPEN — it would delete the CURRENT version of a key whose `IsLatest`
@@ -454,11 +497,11 @@ async function purgeUnderPrefix(
       if (entry.IsLatest === undefined) {
         recordFailure(
           failed,
-          entry.Key,
+          decodedKey,
           `version ${entry.VersionId ?? '<unknown>'}: listing omitted IsLatest, so the entry was ` +
             `left alone rather than risk deleting a current version`
         );
-        if (hasBody) unsettledBodies.add(entry.Key);
+        if (hasBody) unsettledBodies.add(decodedKey);
       }
       if (entry.IsLatest !== false) continue;
       // A NONCURRENT entry with no `VersionId` cannot be deleted -- there is
@@ -471,16 +514,16 @@ async function purgeUnderPrefix(
       if (!entry.VersionId) {
         recordFailure(
           failed,
-          entry.Key,
+          decodedKey,
           `listing returned a noncurrent entry with no VersionId, so it could not be deleted`
         );
-        if (hasBody) unsettledBodies.add(entry.Key);
+        if (hasBody) unsettledBodies.add(decodedKey);
         continue;
       }
-      stale.push({ Key: entry.Key, VersionId: entry.VersionId });
+      stale.push({ Key: decodedKey, VersionId: entry.VersionId });
       // Provenance is decided HERE, at listing time, and nothing downstream may
       // revisit it: see the NOTE on the delete loop below.
-      if (hasBody) purged.add(entry.Key);
+      if (hasBody) purged.add(decodedKey);
     }
 
     for (let i = 0; i < stale.length; i += DELETE_BATCH_SIZE) {
@@ -590,7 +633,10 @@ async function purgeUnderPrefix(
         }
       }
     }
-    keyMarker = resp.IsTruncated === true ? resp.NextKeyMarker : undefined;
+    // DECODED: the next request sends the RAW marker, and the listing above
+    // asked for URL encoding (go-to-k/cdkd#3313). Sending the encoded form back
+    // restarts the walk at the wrong key.
+    keyMarker = resp.IsTruncated === true ? decodeListingKey(resp.NextKeyMarker) : undefined;
     versionIdMarker = keyMarker !== undefined ? resp.NextVersionIdMarker : undefined;
   } while (keyMarker !== undefined);
 }

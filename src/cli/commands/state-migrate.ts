@@ -27,6 +27,7 @@ import { getDefaultStateBucketName, getLegacyStateBucketName } from '../config-l
 import { expectedOwnerParam } from '../../utils/expected-bucket-owner.js';
 import { buildDenyExternalAccessPolicy } from '../../utils/deny-external-access-policy.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { LISTING_ENCODING_TYPE, decodeListingKey } from '../../utils/s3-listing-keys.js';
 
 interface MigrateOptions {
   region?: string;
@@ -177,19 +178,21 @@ async function stateMigrateCommand(options: MigrateOptions): Promise<void> {
       try {
         let copied = 0;
         for (const obj of sourceObjects) {
-          if (!obj.Key) continue;
+          // go-to-k/cdkd#3313: the copy SOURCE and DEST are both this key.
+          const objKey = decodeListingKey(obj.Key);
+          if (!objKey) continue;
           await newS3.send(
             new CopyObjectCommand({
               Bucket: newBucket,
-              Key: obj.Key,
+              Key: objKey,
               ...(await expectedOwnerParam(newS3)),
               ExpectedSourceBucketOwner: accountId,
               // CopySource needs encoding for slashes inside the key path.
-              CopySource: encodeURIComponent(`${legacyBucket}/${obj.Key}`),
+              CopySource: encodeURIComponent(`${legacyBucket}/${objKey}`),
             })
           );
           copied++;
-          logger.debug(`  copied ${obj.Key}`);
+          logger.debug(`  copied ${objKey}`);
         }
         logger.info(`✓ Copied ${copied} object(s) to ${newBucket}`);
 
@@ -259,6 +262,8 @@ async function listAllObjects(s3: S3Client, bucket: string): Promise<_Object[]> 
   do {
     const resp = await s3.send(
       new ListObjectsV2Command({
+        // go-to-k/cdkd#3313: a CR in a key becomes an LF without this.
+        EncodingType: LISTING_ENCODING_TYPE,
         Bucket: bucket,
         ...(await expectedOwnerParam(s3)),
         ...(continuationToken && { ContinuationToken: continuationToken }),
@@ -278,7 +283,7 @@ async function listAllObjects(s3: S3Client, bucket: string): Promise<_Object[]> 
 async function assertNoActiveLocks(s3: S3Client, bucket: string): Promise<void> {
   const all = await listAllObjects(s3, bucket);
   const locks = all
-    .map((o) => o.Key)
+    .map((o) => decodeListingKey(o.Key)) // go-to-k/cdkd#3313
     .filter((k): k is string => typeof k === 'string' && k.endsWith('/lock.json'));
   if (locks.length > 0) {
     const sample = locks.slice(0, 3).join(', ');
@@ -387,6 +392,8 @@ async function emptyBucketAllVersions(s3: S3Client, bucket: string): Promise<voi
   do {
     const resp = await s3.send(
       new ListObjectVersionsCommand({
+        // go-to-k/cdkd#3313: a CR in a key becomes an LF without this.
+        EncodingType: LISTING_ENCODING_TYPE,
         Bucket: bucket,
         ...(await expectedOwnerParam(s3)),
         ...(keyMarker && { KeyMarker: keyMarker }),
@@ -396,10 +403,13 @@ async function emptyBucketAllVersions(s3: S3Client, bucket: string): Promise<voi
 
     const ids: { Key: string; VersionId: string }[] = [];
     for (const v of resp.Versions ?? []) {
-      if (v.Key && v.VersionId) ids.push({ Key: v.Key, VersionId: v.VersionId });
+      const vKey = decodeListingKey(v.Key); // go-to-k/cdkd#3313
+      if (vKey && v.VersionId) ids.push({ Key: vKey, VersionId: v.VersionId });
     }
     for (const dm of resp.DeleteMarkers ?? []) {
-      if (dm.Key && dm.VersionId) ids.push({ Key: dm.Key, VersionId: dm.VersionId });
+      // Decoded like its `Versions` sibling above (go-to-k/cdkd#3313).
+      const dmKey = decodeListingKey(dm.Key);
+      if (dmKey && dm.VersionId) ids.push({ Key: dmKey, VersionId: dm.VersionId });
     }
 
     // DeleteObjects is capped at 1000 entries per call.
@@ -417,7 +427,10 @@ async function emptyBucketAllVersions(s3: S3Client, bucket: string): Promise<voi
       );
     }
 
-    keyMarker = resp.NextKeyMarker;
+    // `NextKeyMarker` is ENCODED and the next request sends the RAW value, so it
+    // is decoded; `NextVersionIdMarker` is not encoded and goes back verbatim
+    // (go-to-k/cdkd#3313).
+    keyMarker = decodeListingKey(resp.NextKeyMarker);
     versionIdMarker = resp.NextVersionIdMarker;
   } while (keyMarker || versionIdMarker);
 }

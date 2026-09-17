@@ -42,6 +42,7 @@ import {
 } from './state-file-keys.js';
 import { displayIdent } from '../../utils/display-safe.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { LISTING_ENCODING_TYPE, decodeListingKey } from '../../utils/s3-listing-keys.js';
 
 /**
  * `cdkd bootstrap --destroy` — teardown of cdkd-created account resources
@@ -215,6 +216,8 @@ async function emptyAndDeleteBucket(
   do {
     const page = await s3Client.send(
       new ListObjectVersionsCommand({
+        // go-to-k/cdkd#3313: a CR in a key becomes an LF without this.
+        EncodingType: LISTING_ENCODING_TYPE,
         Bucket: bucket,
         ExpectedBucketOwner: accountId,
         ...(keyMarker && { KeyMarker: keyMarker }),
@@ -222,7 +225,11 @@ async function emptyAndDeleteBucket(
       })
     );
     const entries: ObjectIdentifier[] = [...(page.Versions ?? []), ...(page.DeleteMarkers ?? [])]
+      // go-to-k/cdkd#3313: these Keys go straight into DeleteObjects.
+      .map((v) => ({ ...v, Key: decodeListingKey(v.Key) }))
       .filter((v) => v.Key)
+      // listing-key-raw-ok: `v.Key` here is the DECODED value the `.map` above
+      // already produced, not a raw listing key.
       .map((v) => ({ Key: v.Key!, ...(v.VersionId && { VersionId: v.VersionId }) }));
     if (entries.length > 0) {
       const response = await s3Client.send(
@@ -243,7 +250,8 @@ async function emptyAndDeleteBucket(
         );
       }
     }
-    keyMarker = page.IsTruncated ? page.NextKeyMarker : undefined;
+    // DECODED: the next request sends the RAW marker (go-to-k/cdkd#3313).
+    keyMarker = page.IsTruncated ? decodeListingKey(page.NextKeyMarker) : undefined;
     versionIdMarker = page.IsTruncated ? page.NextVersionIdMarker : undefined;
   } while (keyMarker || versionIdMarker);
 
