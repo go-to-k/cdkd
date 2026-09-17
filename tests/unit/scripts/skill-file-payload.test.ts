@@ -420,7 +420,7 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // character to itself), pins the replacement character and the trim, and
     // sweeps every code point instead of stopping at U+2FFF. The rule text
     // carries those three requirements, funded in-file again: one 5-e example
-    // and two clauses of the new bullet itself. implement.md 29,940 -> 29,998
+    // and two clauses of the new bullet itself. implement.md 29,940 -> 29,999
     // (+59), no other file touched, reconciling 200,814 -> 200,873.
     //
     // implement.md is now the LARGEST, with 1 B of cap left; triage.md is

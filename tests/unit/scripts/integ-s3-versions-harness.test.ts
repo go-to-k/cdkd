@@ -2252,14 +2252,40 @@ const FALSIFIED_CLAIMS: readonly {
     re: /every caller wrap(s|ping) the purge in/i,
   },
   {
-    retired: 'the Fn::ImportValue sibling already masks the same shape at its own catch', // falsified sample
+    // VERBATIM, from the second of the two spellings go-to-k/cdkd#3275 actually
+    // shipped (`ecd6da1f7`: "sibling already masks the same shape at its own
+    // catch"; `de512a6d4`: "sibling catches and masks the same shape"). The
+    // first version of this entry quoted NEITHER -- it was a hand-written
+    // reflow onto one line, with `Fn::ImportValue` moved in front of `sibling`,
+    // and `re` was written to match THAT. Executed over the scanned corpus
+    // against both real spellings it scored ZERO, so the liveness test below
+    // certified a string that never existed in the tree.
+    //
+    // Both real spellings WRAP mid-claim, and `Fn::ImportValue` ends the line
+    // ABOVE in each. This fence tests one LINE at a time, so any pattern
+    // reaching across that seam can never fire -- the same line-wrap defeat the
+    // `fixtures` entry below documents at length, walked into one entry later.
+    retired: 'sibling catches and masks the same shape', // falsified sample
     why:
       'FALSE: that catch masks the caught message with the BAGS alone — `maskSecretsForLog` over a ' +
       'composed AWS sentence finds no registered twin and falls to the needle pass, whose substring ' +
       'arm has a four-character floor — so the POSITIONAL half of the class is open there too. ' +
       'go-to-k/cdkd#3275 shipped this sentence as the reason its own site was "catching up", and ' +
       'review corrected it; the sibling is an INSTANCE of the gap, not the pattern to copy.',
-    re: /Fn::ImportValue`? sibling already masks/i,
+    // DERIVED FROM THE PROPOSITION, not from either wording in front of me
+    // (`.claude/skills/work-issues/references/verify.md` §8-g). The claim is
+    // "some sibling already covers this class"; every spelling of it puts a
+    // covering verb immediately before `the same <shape|class>` on ONE line,
+    // while the SUBJECT is what wraps away. So the subject is deliberately not
+    // in the pattern.
+    //
+    // `case` is excluded from the noun list: `src/deployment/recreate-targets
+    // .ts:1057`'s "general soft-fail covers the same case." is an unrelated
+    // TRUE sentence, and the only hit the wider list took across the scanned
+    // corpus. Measured at this commit: 0 non-fence hits, while the pattern
+    // still matches both shipped spellings, the reflow above, and a reworded
+    // restoration ("twin covers the same class").
+    re: /\b(mask|redact|cover|handle)(s|es)? the same (shape|class)\b/i,
   },
   {
     retired: 'not reached — no fixture in the swept set has one today; tracked', // falsified sample

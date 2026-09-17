@@ -1911,6 +1911,14 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
   const SINK_CLASS = /[^ -~]/;
   /** What the sink replaces a rejected character WITH, and the trim it ends in. */
   const SINK_REPLACEMENT = ' ';
+  /**
+   * `SINK_CLASS.test`, made STATELESS. `RegExp.prototype.test` advances
+   * `lastIndex` on a `g` pattern, so on single-character probes a global
+   * `SINK_CLASS` would report every OTHER rejected character as accepted --
+   * silently, and in the safe-looking direction for both loops below. Nothing
+   * requires `SINK_CLASS` to stay non-global, so neither loop may assume it.
+   */
+  const rejects = (ch: string): boolean => new RegExp(SINK_CLASS.source, SINK_CLASS.flags.replace('g', '')).test(ch);
 
   /** The realistic failure: cdkd's own wrapper over an AWS rejection, both quoting the key. */
   function rejectingBackend(stackName: string, region = 'us-east-1'): S3StateBackend {
@@ -1959,8 +1967,13 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
     // defect this constant exists to close, one level down. DEFENSIVE and
     // recorded as such: adding `u` to `SINK_CLASS` leaves this suite green
     // either way (measured), so no case here distinguishes it.
+    //
+    // `g` is STRIPPED before it is appended: `new RegExp(re, 'gg')` throws
+    // `SyntaxError: Invalid flags supplied` (measured), so the defensive copy
+    // would itself break on the one edit -- adding `g` to the shared constant
+    // -- that no other reader here would even notice.
     const shown = (t: string): string =>
-      t.replace(new RegExp(SINK_CLASS, `${SINK_CLASS.flags}g`), SINK_REPLACEMENT).trim();
+      t.replace(new RegExp(SINK_CLASS, `${SINK_CLASS.flags.replace('g', '')}g`), SINK_REPLACEMENT).trim();
     return {
       listStacks: vi.fn(async () => []),
       getState: vi.fn(async () => {
@@ -2308,7 +2321,7 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
       // An astral code point is TWO UTF-16 units and the class carries no `u`
       // flag, so the sink replaces each half — two spaces, not one. A lone
       // surrogate is one unit and takes one.
-      const expected = SINK_CLASS.test(ch)
+      const expected = rejects(ch)
         ? `a${SINK_REPLACEMENT.repeat(ch.length)}b`
         : probe;
       if (displaySafe(probe, { asciiOnly: true }) !== expected) {
@@ -2327,10 +2340,23 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
     expect(displaySafe(' x ', { asciiOnly: true })).toBe('x');
     // And the COMPOSITION: a REJECTED character at an edge becomes the
     // replacement and is then trimmed away, which is exactly why an edge
-    // position cannot tell the class apart from the trim. Spelled with an
-    // escape rather than the literal byte, which is invisible in source.
-    const ctlEdge = `${String.fromCharCode(0xa0)}x${String.fromCharCode(0xa0)}`;
-    expect(displaySafe(ctlEdge, { asciiOnly: true })).toBe('x');
+    // position cannot tell the class apart from the trim.
+    //
+    // The edge character is DERIVED rather than hand-picked, because picking
+    // one by hand is what has now gone vacuous twice in a row here: the
+    // replacement itself (the class never fires on it), then `U+00A0`, which
+    // is ECMAScript `WhiteSpace` -- so native `.trim()` removes it unaided and
+    // the case passed with the class deleted entirely. A hand-picked constant
+    // cannot state the two properties this case needs, so it states them:
+    // REJECTED by the class, and not already trimmable.
+    const edge = (() => {
+      for (let cp = 0x21; cp <= 0xffff; cp++) {
+        const ch = String.fromCodePoint(cp);
+        if (rejects(ch) && ch.trim() !== '') return ch;
+      }
+      throw new Error('no rejected, non-trimmable character exists -- this case cannot fence anything');
+    })();
+    expect(displaySafe(`${edge}x${edge}`, { asciiOnly: true })).toBe('x');
     // Floor against an early exit or a `continue` that skips the range -- NOT
     // against deleting the assertions above, which no counter in the same loop
     // can see. Probed by widening `sanitizeAsciiOnly` to `/[^\t -~]/`: this
