@@ -103,14 +103,20 @@ describe('check-resolver-mask-coverage', () => {
       // nested-stack refusal's declared-output list, the producer-region line,
       // three `Fn::ImportValue` producer-region interpolations and the
       // ambiguous-region refusal's producer-region list, retiring the six notes
-      // that described them as unmasked: 136 / 167 / 103). This subsumes the band
+      // that described them as unmasked: 136 / 167 / 103; issue #3207 added
+      // `resolveGetStackOutput`'s malformed-producer-record refusal, ONE throw
+      // interpolating the two already-masked identifiers its neighbours use and
+      // needing no note: 137 / 169 / 103, re-measured on the combined tree
+      // rather than carried from either side of the rebase, since #3150 and
+      // #3207 moved these counts independently and neither side's triple is
+      // right for the merge). This subsumes the band
       // check on the real tree and is meant
       // to: a change to this file's throw/log population is a decision, and the
       // three numbers moving in a diff is how it gets read. The band still earns
       // its place — it is what the SHIPPED binary enforces in CI, where this
       // suite's assertions do not run.
-      expect(result.statements).toBe(136);
-      expect(result.maskedExprs).toBe(167);
+      expect(result.statements).toBe(137);
+      expect(result.maskedExprs).toBe(169);
       expect(result.markers).toBe(103);
     });
 

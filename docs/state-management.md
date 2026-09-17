@@ -868,17 +868,42 @@ string, a list, a number, a boolean or `null` where the `outputs` map belongs.
 the bag from one produces a well-formed map of fabricated keys — `"abcdef"`
 becomes `{"0":"a", …, "5":"f"}`, and `null` becomes `{}`.
 
-Which answer a command gives depends on whether it can WRITE the record, and
-the two answers are deliberately opposite:
+Which answer a command gives depends on what it would DO with the bag — write it
+back, decide from it, or re-apply its value — and the answers are deliberately
+opposite. Writing back is the plain case; the other two are why "can it write"
+alone no longer predicts the table: `cdkd destroy` never rewrites the bag but
+deletes the record on the strength of it, and the resolver hands a value to a
+deploy that applies it to a live system:
 
 | Command | Answer |
 | --- | --- |
+| `cdkd deploy` | **Refuses** at the load (`STATE_RESOURCES_MALFORMED`, exit `1`) — it rebuilds the bag, saves it, and republishes the result into the shared exports index |
+| `cdkd destroy` / `cdkd state destroy` | **Refuses** before the prompt (`STATE_RESOURCES_MALFORMED`, exit `1`) — it reads the bag to decide whether the stack might export anything, and that decision gates the cross-stack check below |
 | `cdkd orphan` | **Refuses** (`STATE_RESOURCES_MALFORMED`, exit `1`) — it rebuilds the bag and saves the result |
 | `cdkd import` | **Refuses** (`STATE_RESOURCES_MALFORMED`, exit `1`) — it carries the bag into a save |
+| A nested stack's child record | **Refuses** the parent's deploy AND its destroy (`STATE_RESOURCES_MALFORMED`, exit `1`) — the parent's `Outputs.<Key>` attributes are rebuilt from the child's bag and persisted into the parent's record, and the parent's destroy reaches the child through `runDestroyForStack`, which carries the same refusal |
 | `cdkd scrub` | **Refuses** on a real run (exit `2`); audits and reports under `--dry-run` — see [`cdkd scrub`](cli-scrub.md#exit-codes) |
 | `cdkd diff` | **Repairs** in memory and warns — it never writes state; see [`cdkd diff`](cli-diff.md#when-the-state-record-is-malformed) |
 | `cdkd state show` / `state resources` | **Repairs** in memory and warns; `--json` still emits the stored value — see [`cdkd state`](cli-state.md#when-resources-is-not-an-object) |
+| `cdkd local *` (`--from-state`) | **Repairs** in memory and warns — it writes no state record, so the run continues with no outputs from that record |
+| An `Fn::GetStackOutput` read of that record | **Refuses the reference** — the deploy fails rather than resolving a fabricated value into the consumer's template |
 | The exports index rebuild | Publishes **nothing** from that record, warns, and indexes every other producer — see [cross-stack internals](cross-stack-internals.md#an-unreadable-producer-record-contributes-nothing-and-says-so) |
+
+The destroy row is the one whose *repair* answer would be unsafe rather than
+merely lossy. `cdkd destroy` refuses to delete a stack another stack still
+imports from, and it decides whether to run that check by asking whether the
+`outputs` bag holds anything. A string or a list invents one export name per
+character or element; a `null`, a number or a boolean reads as "exports
+nothing" and **skips the check entirely**, deleting the record while consumers
+still resolve against it. Reading the bag as empty is that second answer, so
+there is no repair available — only a refusal.
+
+The `Fn::GetStackOutput` row is the only one where the fabricated value would
+be **applied** rather than displayed. `Object.hasOwn('abcdef', '0')` is true,
+so an `OutputName: "0"` against a six-character producer bag used to resolve
+the single character `a` and the deploy sent it to AWS as a live resource's
+property. `Fn::ImportValue` was never affected: it binds through the export-set
+predicate, which fails closed.
 
 Refusing is what keeps the damaged record readable. Saving over it replaces the
 only signal that anything is wrong with a legitimate-looking one, permanently —

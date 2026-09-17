@@ -19,6 +19,11 @@ import {
   type BuildCrossStackResolverOptions,
   type LoadStateForStackOptions,
 } from '../cli/commands/local-state-loader.js';
+import {
+  malformedLocalOutputsWarning,
+  repairMalformedOutputsForReadOnly,
+} from '../state/malformed-resources-bag.js';
+import { getLogger } from '../utils/logger.js';
 import type { CrossStackResolver } from './state-resolver.js';
 import type { LocalStateProvider, LocalStateRecord } from './local-state-provider.js';
 
@@ -77,6 +82,29 @@ export class S3LocalStateProvider implements LocalStateProvider {
     };
     const loaded = await loadStateForStack(stackName, synthRegion, loadOpts);
     if (!loaded) return undefined;
+    // AT THE LOAD, above the coercion walk (issue #3207). `parseStateBody`
+    // validates the root object and the schema version and nothing inside, so
+    // `outputs` can hold a string, a list, a number, a boolean or `null` — and
+    // `Object.entries` walks the first two as readily as a map, so the walk
+    // below fabricated one local output per CHARACTER or element, each of which
+    // the local run then substitutes into an environment variable.
+    //
+    // REPAIR-AND-WARN, not refuse: this provider writes no `state.json` (the
+    // one DERIVED key a `cdkd local` run can write is the exports index, which
+    // is separately fail-closed — see `hasReadableExportSet`), so there is
+    // nothing here to launder, and a local invoke over a damaged record is
+    // still worth running. The warning is what stops an empty map from reading
+    // as "this stack publishes no outputs".
+    //
+    // The `resources` bag carried through below is a separate container with a
+    // separate absence rule and is NOT guarded here — tracked by
+    // go-to-k/cdkd#3202.
+    // Through the SHARED repair helper rather than a local `= {}`: it and
+    // `hasReadableOutputs` are one spelling of the absence rule, and a second
+    // copy here could drift into warning about a record cdkd writes on purpose.
+    if (repairMalformedOutputsForReadOnly(loaded.state)) {
+      getLogger().warn(malformedLocalOutputsWarning(stackName, loaded.region));
+    }
     // Outputs are typed `Record<string, unknown>` on `StackState` but
     // every value cdkd ever writes is a string at the wire level —
     // coerce here so the rest of the local-substitution path can

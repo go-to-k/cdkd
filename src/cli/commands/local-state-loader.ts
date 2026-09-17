@@ -32,6 +32,10 @@ import {
   readBootstrapMarkerBody,
 } from '../../assets/asset-storage.js';
 import { importableOutputKeys, type StackState } from '../../types/state.js';
+import {
+  hasReadableOutputs,
+  malformedLocalOutputsWarning,
+} from '../../state/malformed-resources-bag.js';
 import type { CrossStackResolver } from '../../local/state-resolver.js';
 
 export interface LoadStateForStackOptions {
@@ -451,6 +455,26 @@ export async function buildCrossStackResolver(
   const logger = getLogger();
   const prefix = opts.logPrefix ?? '--from-state';
 
+  /**
+   * Producer records already named by the malformed-outputs warning below
+   * (issue go-to-k/cdkd#3207), keyed `stack@region`.
+   *
+   * ONCE PER PRODUCER RECORD, not per reference, which is the shape
+   * `scrub.ts`'s equivalent arm already deduped ("ONCE PER PRODUCER RECORD,
+   * not per reference") and this reader did not adopt: one `cdkd local` env
+   * block routinely carries several `Fn::GetStackOutput` entries against the
+   * SAME producer, and the warning is a paragraph. Repeating it per entry
+   * buries the other diagnostics the run emits, and it reads as several
+   * damaged records rather than one.
+   *
+   * Keyed by RECORD and not by stack, because `resolveGetStackOutput` tries
+   * the exact region spelling and then folds across others: those are
+   * DISTINCT state records that can be damaged independently, so each still
+   * deserves its own line. The closure — not `readOutput` — is the only scope
+   * that outlives a single reference.
+   */
+  const warnedMalformedProducers = new Set<string>();
+
   let stateBucket: string;
   try {
     // Issue #1836 round 4: the bucket NAME resolution gets the FOLDED spelling,
@@ -609,10 +633,62 @@ export async function buildCrossStackResolver(
       producerRegion: string,
       outputName: string
     ): Promise<string | undefined> {
-      const readOutput = (got: { state: StackState } | null | undefined): string | undefined => {
-        if (!got || !got.state.outputs) return undefined;
-        if (!(outputName in got.state.outputs)) return undefined;
-        const value = got.state.outputs[outputName];
+      const readOutput = (
+        got: { state: StackState } | null | undefined,
+        recordRegion: string
+      ): string | undefined => {
+        if (!got) return undefined;
+        // Issue #3207. This is the `Fn::GetStackOutput` arm; its
+        // `Fn::ImportValue` sibling above is already covered because it tests
+        // membership through `importableOutputKeys`, which fails closed. Here
+        // the membership test used to be `outputName in got.state.outputs`, and
+        // on a PRODUCER record whose bag is not a plain object that is wrong in
+        // two directions at once: `in` throws a bare `TypeError` on a string, a
+        // number, a boolean or `null` (caught by the outer `try` and reported
+        // as "state read failed", naming nothing about the record), while it
+        // ANSWERS on a list — `0 in [1,2]` is `true` — so a list bag resolved a
+        // fabricated element as the output's value.
+        //
+        // REPAIR-AND-WARN rather than refuse: this reader writes no
+        // `state.json` (see the module header for the one DERIVED key a
+        // `cdkd local` run can write, which is separately fail-closed), and the
+        // file's stated policy is that every expected miss warns and returns
+        // `undefined`. So the bag is read as EMPTY — the miss it already
+        // returns — and the record is NAMED, which is what stops "this producer
+        // has no such output" from standing in for "this producer's record is
+        // damaged".
+        if (!hasReadableOutputs(got.state)) {
+          // The miss is returned unconditionally; only the LINE is deduped.
+          // Suppressing the return as well would make the second reference
+          // RESOLVE where the first did not.
+          // `\u0000` and not a printable separator, the spelling `scrub.ts`'s
+          // sibling Set already uses: the stack half is template-controlled, so
+          // a PRINTABLE separator lets two distinct records collide into one key
+          // and DROP the second record's warning — silence, in the one class
+          // this change exists to make loud.
+          //
+          // It narrows the collision rather than closing it, and the honest
+          // statement is that a planted key can carry a NUL too — this repo
+          // already plants one (`scrub-malformed-and-nameless.test.ts`). Closing
+          // it needs a length-prefixed or JSON-encoded key at BOTH sites, which
+          // is go-to-k/cdkd#3308; matching the sibling is what is worth doing
+          // here, since two spellings of one rule is the worse failure.
+          const recordKey = `${producerStack}\u0000${recordRegion}`;
+          if (!warnedMalformedProducers.has(recordKey)) {
+            warnedMalformedProducers.add(recordKey);
+            logger.warn(`${prefix}: ${malformedLocalOutputsWarning(producerStack, recordRegion)}`);
+          }
+          return undefined;
+        }
+        const outputs = got.state.outputs;
+        if (!outputs) return undefined;
+        // `Object.hasOwn`, not `in`: `outputName` is template-controlled, and on
+        // a healthy bag `in` still walks the prototype chain, so an
+        // `OutputName: 'toString'` answered TRUE and resolved a FUNCTION. Same
+        // defence, and the same reason, as the deploy-side resolver's
+        // `Fn::GetStackOutput` arm (issue #2767).
+        if (!Object.hasOwn(outputs, outputName)) return undefined;
+        const value = outputs[outputName];
         if (typeof value === 'string') return value;
         if (typeof value === 'number' || typeof value === 'boolean') return String(value);
         return JSON.stringify(value);
@@ -626,7 +702,7 @@ export async function buildCrossStackResolver(
         // case-variant record instead would answer from a record the caller did
         // not name.
         const got = await stateBackend.getState(producerStack, producerRegion);
-        if (got) return readOutput(got);
+        if (got) return readOutput(got, producerRegion);
         // Issue #1836 round 4: case recovery, the same BOTH-SIDES fold
         // `resolveImport`'s index-miss scan does — this arm had none, and it is
         // reached with a `producerRegion` cdkd does not control. cdk-local's
@@ -646,7 +722,10 @@ export async function buildCrossStackResolver(
           const region = ref.region ?? producerRegion;
           if (region === producerRegion) continue; // already probed above
           if (canonicalizeRegion(region) !== canonicalProducerRegion) continue;
-          const recovered = readOutput(await stateBackend.getState(producerStack, region));
+          // The RECORD's own region spelling, not the caller's: this arm reads a
+          // case-variant record, so a warning naming `producerRegion` would
+          // point the reader at a key that does not exist.
+          const recovered = readOutput(await stateBackend.getState(producerStack, region), region);
           if (recovered !== undefined) {
             logger.debug(
               `${prefix}: Fn::GetStackOutput '${producerStack}.${outputName}' resolved from the case-variant state record '${region}' (no record spells '${producerRegion}' exactly).`

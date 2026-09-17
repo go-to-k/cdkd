@@ -607,6 +607,45 @@ A stack whose deletes were interrupted keeps its `state.json` and its
 deployment-event history. The events are the post-mortem for the retry, which
 is why `--purge-events` is skipped on an interrupted run.
 
+## A malformed `outputs` map refuses the destroy
+
+`cdkd destroy` and `cdkd state destroy` refuse to delete a stack another stack
+still imports from, and they decide whether to run that cross-stack check by
+asking whether the record's `outputs` map holds anything.
+
+A state record is used as typed data without a field-by-field shape check, so a
+hand-edited or truncated one can hold a string, a list, a number, a boolean or
+`null` there. Both answers are then wrong, and one of them is dangerous:
+
+| Stored shape | What the check used to conclude |
+| --- | --- |
+| A string or a list | "this stack exports things", inventing one name per character or element |
+| `null`, a number, a boolean, `[]` | "this stack exports nothing" — the cross-stack check was **skipped** and the record deleted while consumers still resolved against it |
+
+The destroy therefore refuses before the per-stack confirmation prompt
+(`STATE_RESOURCES_MALFORMED`, exit `1`), naming the record and the region.
+`cdkd state destroy --all` raises its batch prompt first, so there the operator
+confirms the batch and the refusal follows. The refusal sits inside
+`runDestroyForStack`, so every route into a destroy inherits it — including a
+nested **child** record reached through its parent's destroy.
+Reading the bag as empty — the repair `cdkd diff` and `cdkd state show` apply —
+is the second row above, so there is no safe repair here.
+
+Inspect the record with `cdkd state show <stack> --stack-region <region>
+--json`, repair or remove it, then re-run. Note what "remove" means here: with
+`deploy`, `destroy`, `state destroy`, `orphan`, `import` and `scrub` all
+refusing such a record, no cdkd command will delete it for you. Remove it with
+the AWS CLI —
+
+```bash
+aws s3 rm s3://<state-bucket>/cdkd/<stack>/<region>/state.json
+```
+
+— which orphans whatever the record described, so prefer repairing the bag when
+the resources still matter. An **absent** `outputs` field is not
+a defect and is never refused: cdkd writes such records on purpose. The full
+per-command table is in [State Management](state-management.md#when-outputs-is-not-an-object).
+
 ## Every other mutating confirmation prompt is interactive-only too
 
 Ten more commands prompt before a mutation, and all of them follow the same

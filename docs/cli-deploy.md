@@ -362,6 +362,30 @@ CloudFormation-parity completion semantics — a smoke-test gate, a
 production-leaning promotion step — can bake `--full-wait` into its deploy
 invocation as a standing setting.
 
+## A malformed `outputs` map refuses the deploy
+
+A state record is used as typed data without a field-by-field shape check, so a
+hand-edited or truncated one can hold a string, a list, a number, a boolean or
+`null` where the `outputs` map belongs — and enumerating a string yields one
+entry per **character**.
+
+`cdkd deploy` refuses such a record at the load
+(`STATE_RESOURCES_MALFORMED`, exit `1`) rather than continuing. It rebuilds the
+bag before saving, so a six-character value would be written back as a
+well-formed six-key map: the only signal the record is damaged replaced by a
+legitimate-looking one, permanently — and the next deploy republishes those
+fabricated keys into the region's shared exports index, which every other
+stack's `Fn::ImportValue` resolves against.
+
+The same refusal covers a nested stack's **child** record, whose outputs the
+parent's `Outputs.<Key>` attributes are rebuilt from and persisted into the
+parent's own record.
+
+Inspect the record with `cdkd state show <stack> --stack-region <region>
+--json`, repair or remove it, then re-run. An **absent** `outputs` field is not
+a defect and is never refused: cdkd writes such records on purpose. The full
+per-command table is in [State Management](state-management.md#when-outputs-is-not-an-object).
+
 ## Exit codes
 
 | Code | Meaning |
