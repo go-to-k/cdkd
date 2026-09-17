@@ -77,15 +77,20 @@ Index of every area: [code-layout.md](code-layout.md).
   [#3147](https://github.com/go-to-k/cdkd/issues/3147) the DynamoDB FORWARDERS (`coerceWarmThroughput`
   here, every capacity / ceiling reader in `dynamodb-globaltable-provider.ts`, the
   TABLE-LEVEL `ProvisionedThroughput`, the billing-flip arm, the per-GSI FLIP and CREATE readers
-  (`readCapacityNumber` / `coerceIndexCapacityForCreate`) and `RecoveryPeriodInDays` in
-  `dynamodb-table-provider.ts` — which went
-  through a bare `Number()` and so were outside #3135's `toFiniteNumber` grep — and the diagnostic /
+  (`readCapacityNumber` / `coerceIndexCapacityBlock`), `OnDemandThroughput`
+  (`coerceOnDemandCeilingsForSend`, go-to-k/cdkd#3265) and `RecoveryPeriodInDays` in
+  `dynamodb-table-provider.ts` — most of which went
+  through a bare `Number()` and so were outside #3135's `toFiniteNumber` grep, while
+  `OnDemandThroughput` went through a verbatim CAST and so was outside any numeric grep at all,
+  which is why go-to-k/cdkd#3147 and go-to-k/cdkd#3255 both missed it — and the diagnostic /
   mirror predicates paired with each) read through `coerceCfnInteger` itself, because the DynamoDB A/B
   (table on `toCfnInteger`'s doc) rejects a padded `" 7 "` at properties validation where the Logs
   handler trims it — so `toFiniteNumber` is the GUARD reader only (live-readback compares,
   already-matches / decrease / zero-capacity tests), where over-acceptance is the safe side. **What a
-  rejected spelling BECOMES differs per type and is a decision, not an oversight**: the GlobalTable
-  forwarders announce a 5/5 FALLBACK, while the Table provider's OMIT the member and let DynamoDB
+  rejected spelling BECOMES differs per type and PROPERTY, a decision**: the GlobalTable
+  CAPACITY forwarders announce a 5/5 FALLBACK — its CEILING ones do NOT, leaving a rejected value
+  UNSENT with AWS untouched, so the 5/5 is a PROVISIONED-capacity answer and not a type-wide one —
+  while the Table's capacity ones OMIT it and let DynamoDB
   reject the request naming it (`tableCapacityForSend`'s doc carries the two reasons — this type's own
   "let AWS reject a missing required capacity" precedent, and the fact that a substituted capacity
   compares EQUAL on every later `cdkd diff` and so is invisible afterwards). A predicate paired with a
