@@ -373,6 +373,11 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   // literal list: EXACT. The three files that consult the collision predicates.
   ['name-collision-classification.md', 3],
   ['rollback-replay-create.md', 1],
+  // The generator, its suite and its two matrix outputs: four literal paths, no
+  // wildcard, so this is EXACT (go-to-k/cdkd#3324). Keeping it off `scripts/**`
+  // is the entire point of the split — a wildcard would put the detail straight
+  // back on `refresh-cfn-schemas.mjs`'s payload.
+  ['sdk-attr-coverage-critic.md', 4],
   ['session-report.md', 1], // literal list: EXACT, see below
   ['state-schema.md', 5],
   ['state-version-purge.md', 2], // literal list: EXACT, see below
@@ -480,6 +485,29 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // budget the satellite's bytes would be bounded by nothing but the per-file
   // cap, and the row above would go on reporting the pre-split figure.
   ['scripts/refresh-cfn-schemas.mjs', 72_500, 90_000], // measured 82,644 = layout-scripts.md 71,193 + layout-schema-refresh.md 11,451
+  // The representative path for sdk-attr-coverage-critic.md
+  // (go-to-k/cdkd#3324), for the reason the row above states: it is a
+  // `scripts/**` file, so it carries layout-scripts.md as well, and without a
+  // budget of its own the satellite's bytes would be bounded by nothing but the
+  // per-file cap. The split's effect is on the row above — it took ~1.5 KB off
+  // every other `scripts/**` path, which is what let the correction land.
+  //
+  // BOTH bounds are set against the satellite, not round-numbered, because a
+  // first cut at 62_000 / 90_000 could not fail for either reason it was added
+  // for (caught in review): the floor sat BELOW `layout-scripts.md` alone, so
+  // gutting the satellite to zero bytes while keeping its four literal paths
+  // left the row passing, and the cap's slack was 2.3x the satellite — the
+  // shape the `rollback-executor.ts` note above refuses.
+  //
+  // The two properties are ASSERTED, not described, in
+  // `the gen-sdk-attr-coverage.ts floor still discriminates a GUTTED satellite`
+  // below — the shape the `tests/setup.ts` row uses. Three successive review
+  // rounds found this row wrong in a different way (floor under the parent's
+  // solo size; a stale byte count; a floor that passed a GUTTED satellite even
+  // after the first fix), each time in prose that asked a human to re-derive
+  // something a case can compute. The figure here is a dated measurement for a
+  // reader; the guarantee is the case.
+  ['scripts/gen-sdk-attr-coverage.ts', 75_500, 82_000], // measured 2026-09-17: 78,654 = layout-scripts.md 71,626 + sdk-attr-coverage-critic.md 7,028
   // Review probe, 2026-08-25: with only the six rows above, 9 of the 28 rule
   // files (355,718 B -- 45% of the corpus) were matched by NO budgeted path,
   // and the four heaviest paths in the repo were all among them. A budget table
@@ -1368,7 +1396,15 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 // Neither branch's figure is the merged one. That is the whole reason this
 // count is asserted rather than described: two correct increments compose to a
 // number neither author wrote.
-const CORPUS_FILE_COUNT = 67; // + state-malformed-resources-gated.md (go-to-k/cdkd#3161): the
+const CORPUS_FILE_COUNT = 68; // + sdk-attr-coverage-critic.md (go-to-k/cdkd#3324): the
+                              //  `gen-sdk-attr-coverage` entry moved out of `layout-scripts.md`
+                              //  because `scripts/refresh-cfn-schemas.mjs` — which loads that file
+                              //  whole — sat 5 B under its 90,000 B payload cap, so CORRECTING one
+                              //  stale sentence in the entry could not land in place. UNPREFIXED
+                              //  on purpose: a `layout-` name obliges a `code-layout.md` row, and
+                              //  that row's bytes put `src/deployment/secret-redaction.ts` and
+                              //  `src/utils/aws-client-defaults.ts` over THEIR caps (measured).
+                              // + state-malformed-resources-gated.md (go-to-k/cdkd#3161): the
                               //  `resources` root bag's two GATE-SCOPED refusals (destroy and
                               //  deploy) took `src/state/malformed-resources-bag.ts` 1,837 B over
                               //  its 57,000 B cap, so the detail moved to a satellite globbed at
@@ -2953,6 +2989,84 @@ describe('.claude/rules payload fence', () => {
       live,
       `the live payload is ${live} B, over the row's ${cap} B cap`
     ).toBeLessThanOrEqual(cap);
+  });
+
+  it('SUBSTANTIVE_MIN_BYTES is pinned — both gutting clauses are only as strong as it', () => {
+    // Review round 4 measured the hole: lowering it 1_500 -> 200 left all 404
+    // cases GREEN, because it is the SOLE input to the gutting clause in both
+    // discrimination cases (`tests/setup.ts` and the one below) and to the
+    // per-file `substantive content` floor. A lower value makes every one of
+    // them accept a thinner stub while nothing reports a change — the shape
+    // where a fence weakens by a constant rather than by an edit to the fence.
+    //
+    // Pinned as a LITERAL, the way `FLOORS` is: moving it is a decision that
+    // has to be made here, next to what depends on it, rather than inline.
+    expect(SUBSTANTIVE_MIN_BYTES).toBe(1_500);
+  });
+
+  it('the gen-sdk-attr-coverage.ts floor still discriminates a GUTTED satellite', () => {
+    // The twin of the `tests/setup.ts` case above, for the row issue
+    // go-to-k/cdkd#3324 added, and it exists because that row was wrong three
+    // times in three review rounds — each time in a COMMENT asking a human to
+    // re-derive what this case computes. The last of the three is the one this
+    // assertion uniquely owns: a floor CAN clear the parent's solo size (so a
+    // DELETED satellite reds) while still passing a satellite GUTTED to a stub,
+    // which is the realistic regression — a lane trimming the file, not
+    // removing it.
+    //
+    // Computed by GLOB rather than by naming the two files, for the reason the
+    // sibling case gives: a future satellite split out of `layout-scripts.md`
+    // would also match this path, and a name-based version would keep
+    // reporting green while the floor was re-subsumed.
+    //
+    // This is the SECOND hand-written copy of this shape, for the second of
+    // ~50 rows — at least 8 of which are satellite-representative and carry no
+    // such case. Generalizing it into one loop over rows that DECLARE their
+    // satellite is issue
+    // [#3342](https://github.com/go-to-k/cdkd/issues/3342), which deletes both
+    // copies; it is not done here because the 8 declarations are a judgement
+    // per row, and several rows will need their bounds re-derived once the
+    // relations are actually enforced.
+    const row = PAYLOAD_BUDGETS.find(([path]) => path === 'scripts/gen-sdk-attr-coverage.ts');
+    expect(row, 'the scripts/gen-sdk-attr-coverage.ts budget row was removed').toBeDefined();
+    const [, floor, cap] = row as readonly [string, number, number];
+
+    const matched = ruleFiles.filter((rule) =>
+      (rule.paths ?? []).some((glob) => globToRegExp(glob).test('scripts/gen-sdk-attr-coverage.ts'))
+    );
+    const satellite = matched.find((r) => r.name === 'sdk-attr-coverage-critic.md');
+    expect(
+      satellite,
+      'sdk-attr-coverage-critic.md no longer matches scripts/gen-sdk-attr-coverage.ts'
+    ).toBeDefined();
+    const live = matched.reduce((sum, r) => sum + r.bytes, 0);
+    const withoutSatellite = live - (satellite as { bytes: number }).bytes;
+
+    expect(
+      withoutSatellite,
+      `deleting sdk-attr-coverage-critic.md would leave ${withoutSatellite} B, which the ` +
+        `${floor} B floor must reject`
+    ).toBeLessThan(floor);
+    expect(
+      withoutSatellite + SUBSTANTIVE_MIN_BYTES,
+      `gutting sdk-attr-coverage-critic.md to ${SUBSTANTIVE_MIN_BYTES} B would leave ` +
+        `${withoutSatellite + SUBSTANTIVE_MIN_BYTES} B, at or above the ${floor} B floor -- the ` +
+        'floor no longer discriminates. Raise it (and the cap if needed), or say in the commit ' +
+        'why the gutting case is now covered elsewhere.'
+    ).toBeLessThan(floor);
+    expect(
+      live,
+      `the live payload is ${live} B, under the ${floor} B floor this case just required`
+    ).toBeGreaterThanOrEqual(floor);
+    // The OTHER relation the row's bounds encode, and the one round 1 got
+    // wrong in the opposite direction: slack wide enough to absorb a whole
+    // second satellite is slack that hides one landing here.
+    expect(
+      cap - live,
+      `the cap leaves ${cap - live} B of slack, at or above sdk-attr-coverage-critic.md's own ` +
+        `${(satellite as { bytes: number }).bytes} B -- a second satellite could land on this ` +
+        'path unnoticed. Lower the cap.'
+    ).toBeLessThan((satellite as { bytes: number }).bytes);
   });
 
   it('every payload budget is a band, so no row can be satisfied by crossing', () => {

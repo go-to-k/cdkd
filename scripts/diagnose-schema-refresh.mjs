@@ -786,9 +786,28 @@ export const CHECK_GUIDANCE = {
     'vp run audit:sdk-attr-coverage:check',
     '```',
     '',
-    'Cache the attribute in the provider under its CFn name, or — if the type',
-    'is Cloud-Control-routed — check whether its `primaryIdentifier` already',
-    'covers it.',
+    // VERBATIM the generator's `GAP_REMEDY`, line for line. This is the third
+    // of three surfaces stating one remedy, and it is the one that cannot
+    // import the constant (a `.mjs` reading a `.ts`), so the binding is a test:
+    // `diagnose-schema-refresh.test.ts` asserts the rendered document CONTAINS
+    // the normalised constant, which reds on drift from either side. An earlier
+    // revision let this copy paraphrase and watched three phrases instead —
+    // review round 5 measured that the constant could then be INVERTED with
+    // every phrase intact. Edit both, or neither.
+    'Cache the attribute under its exact CFn name in the provider create/update',
+    '(via the returned `attributes` map), or add a `constructAttribute` handler.',
+    'An `SDK_ATTR_ALLOW_LIST` entry (in scripts/gen-sdk-attr-coverage.ts) is the',
+    'third option and deliberately the least cheap: it needs a rationale naming',
+    'the `create()` line that already mints the value and, for a REAL gap, a',
+    'tracking issue.',
+    '',
+    'The schema `primaryIdentifier` is NOT an answer here, and used to be',
+    'offered as one: since issue',
+    '[#3324](https://github.com/go-to-k/cdkd/issues/3324) that critic does not',
+    'consult the field at all. It names the CLOUD CONTROL identifier, while',
+    'every type the critic classifies is Tier 1 and mints its own physical id —',
+    'a different value or a `|`-joined composite for many of the types it',
+    'applied to — the live figures are in docs/_generated/sdk-attr-coverage.json.',
   ],
   'fixture-consumer-tests': [
     'A unit test that reads the schema fixtures directly and asserts something',

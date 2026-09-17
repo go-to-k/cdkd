@@ -5,12 +5,15 @@ import {
   classifyType,
   buildReport,
   findGaps,
+  renderMarkdown,
+  GAP_REMEDY,
   loadAllFixtures,
   SDK_ATTR_ALLOW_LIST,
   type AllowListEntry,
 } from '../../../scripts/gen-sdk-attr-coverage.js';
 import { parseProviderSource } from '../../../scripts/gen-property-coverage.js';
-import { readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 /**
@@ -30,6 +33,14 @@ const CACHED_ARN_PAIRS = [
   ['AWS::RDS::DBSubnetGroup', 'DBSubnetGroupArn'],
   ['AWS::SSM::Parameter', 'Arn'],
   ['AWS::ApiGatewayV2::Api', 'ExecuteApiArn'],
+  // Issue 3324's own regression, and the reason this pair is the right fence
+  // for it rather than a new one: the attribute was never a gap and was never
+  // allow-listed — the 2026-09-17 refresh flipped AWS's `primaryIdentifier`
+  // for this type from `ApiId` to `Arn`, and the classifier's filter DELETED
+  // the row from the matrix. Requiring `cached` fails on the deletion (the
+  // pair classifies nothing) and on a re-added carve-out alike, neither of
+  // which `findGaps(report)).toEqual([])` can see.
+  ['AWS::AppSync::GraphQLApi', 'Arn'],
 ] as const;
 
 describe('collectStoredAttributeKeys', () => {
@@ -108,7 +119,6 @@ describe('classifyType', () => {
     const c = classifyType(
       'AWS::BedrockAgentCore::Runtime',
       ['AgentRuntimeArn', 'Status'],
-      [],
       new Set(['Arn', 'AgentRuntimeId']), // wrong key cached, ARN missing
       new Set(), // not in constructAttribute
       EMPTY
@@ -121,7 +131,6 @@ describe('classifyType', () => {
     const c = classifyType(
       'AWS::BedrockAgentCore::Runtime',
       ['AgentRuntimeArn'],
-      [],
       new Set(['AgentRuntimeArn']),
       new Set(),
       EMPTY
@@ -131,33 +140,27 @@ describe('classifyType', () => {
   });
 
   it('marks construct-attribute when the resolver handles the type', () => {
-    const c = classifyType('AWS::Foo::Bar', ['FooArn'], [], new Set(), new Set(['AWS::Foo::Bar']), EMPTY);
+    const c = classifyType('AWS::Foo::Bar', ['FooArn'], new Set(), new Set(['AWS::Foo::Bar']), EMPTY);
     expect(c.bucket).toBe('covered');
     expect(c.arnAttributes[0].status).toBe('construct-attribute');
-  });
-
-  it('excludes a primaryIdentifier ARN (physicalId fallback resolves it)', () => {
-    const c = classifyType('AWS::Foo::Bar', ['FooArn'], ['FooArn'], new Set(), new Set(), EMPTY);
-    expect(c.bucket).toBe('no-arn-attr');
-    expect(c.arnAttributes).toEqual([]);
   });
 
   it('respects the allow-list', () => {
     const allow = new Map<string, AllowListEntry>([
       ['AWS::SNS::Subscription', { attributes: ['Arn'], rationale: 'Arn == physicalId' }],
     ]);
-    const c = classifyType('AWS::SNS::Subscription', ['Arn'], [], new Set(), new Set(), allow);
+    const c = classifyType('AWS::SNS::Subscription', ['Arn'], new Set(), new Set(), allow);
     expect(c.bucket).toBe('covered');
     expect(c.arnAttributes[0].status).toBe('allow-listed');
   });
 
   it('classifies a type with only non-ARN/URL readOnly attributes as no-arn-attr', () => {
-    const c = classifyType('AWS::Foo::Bar', ['Id', 'Status'], [], new Set(), new Set(), EMPTY);
+    const c = classifyType('AWS::Foo::Bar', ['Id', 'Status'], new Set(), new Set(), EMPTY);
     expect(c.bucket).toBe('no-arn-attr');
   });
 
   it('treats a *Url attribute the same as *Arn', () => {
-    const c = classifyType('AWS::Foo::Bar', ['ServiceUrl'], [], new Set(), new Set(), EMPTY);
+    const c = classifyType('AWS::Foo::Bar', ['ServiceUrl'], new Set(), new Set(), EMPTY);
     expect(c.bucket).toBe('gap');
     expect(c.gaps).toEqual(['ServiceUrl']);
   });
@@ -179,6 +182,79 @@ describe('buildReport / findGaps', () => {
     expect(report.summary.classifiedCount).toBe(2); // pure-CC type excluded
     const gaps = findGaps(report);
     expect(gaps.map((g) => g.resourceType)).toEqual(['AWS::Sdk::Gap']);
+  });
+
+  it('audits an ARN the FIXTURE names as its primaryIdentifier (issue 3324)', () => {
+    // Deliberately written through `loadAllFixtures` + `buildReport` rather
+    // than `classifyType`, and the level is the whole point. The removed
+    // filter read a FIXTURE FIELD, and `classifyType` no longer has a
+    // parameter that could express the old behaviour — a case written there
+    // passes under BOTH implementations, since dropping an argument only
+    // shifts the remaining ones along. Only a case that puts the field in a
+    // fixture can tell the two apart: under the old code this type classified
+    // `no-arn-attr` with an EMPTY `arnAttributes` and no gap.
+    //
+    // It is also the only fence here that does not self-retire. The real
+    // `AWS::AppSync::GraphQLApi` pair in `CACHED_ARN_PAIRS` is latent until
+    // that fixture's `primaryIdentifier` actually flips (the refresh carrying
+    // it is still open), and the allow-list staleness loop disappears with its
+    // entry the day `SNSSubscriptionProvider` caches `Arn` — the condition
+    // that entry documents for its own removal.
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-sdk-attr-pid-'));
+    try {
+      writeFileSync(
+        join(dir, 'AWS-Sdk-IdIsArn.json'),
+        JSON.stringify({
+          resourceType: 'AWS::Sdk::IdIsArn',
+          readOnlyProperties: ['ThingArn'],
+          primaryIdentifier: ['ThingArn'],
+        })
+      );
+      const report = buildReport(
+        loadAllFixtures(dir),
+        new Set(['AWS::Sdk::IdIsArn']),
+        new Map(), // nothing cached
+        new Set() // no constructAttribute handler
+      );
+      const classified = report.types.find((t) => t.resourceType === 'AWS::Sdk::IdIsArn');
+      expect(classified?.arnAttributes.map((a) => a.name)).toEqual(['ThingArn']);
+      expect(classified?.bucket).toBe('gap');
+      expect(findGaps(report).map((g) => g.resourceType)).toEqual(['AWS::Sdk::IdIsArn']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('renderMarkdown', () => {
+  it('prints the shared remedy in the gap section (the surface a real gap shows)', () => {
+    // This section renders only when `gapTypes.length > 0`, and the tree has
+    // none — so before issue 3324's round-5 pass nothing exercised it, and the
+    // `.replace(/\n/g, ' ')` unwrap added in the same PR was dead to every
+    // test. A synthetic gap is the only way in.
+    const report = buildReport(
+      [{ resourceType: 'AWS::Sdk::Gap', readOnlyProperties: ['ThingArn'] }],
+      new Set(['AWS::Sdk::Gap']),
+      new Map(),
+      new Set()
+    );
+    const md = renderMarkdown(report);
+    // SCOPED to the gap section. Round 6 measured that asserting the type name
+    // over the WHOLE document is satisfied by the full-classification table
+    // further down: deleting the gap-rows loop entirely left this case green,
+    // so it covered the section's entry and its remedy but not the listing the
+    // section exists for.
+    const start = md.indexOf('## Latent gaps');
+    expect(start, 'the gap section no longer renders for a report WITH a gap').toBeGreaterThan(0);
+    const next = md.indexOf('\n## ', start + 1);
+    const section = md.slice(start, next === -1 ? undefined : next);
+    expect(section).toContain('`AWS::Sdk::Gap`');
+    expect(section).toContain('`ThingArn`');
+    // The remedy is the SAME text the other two surfaces state, unwrapped to a
+    // single paragraph for markdown. Asserting the unwrapped constant pins both
+    // the sharing and the unwrap: a stray newline here would break the line.
+    expect(section).toContain(GAP_REMEDY.replace(/\n/g, ' '));
+    expect(section).not.toContain('\n' + GAP_REMEDY.split('\n')[1]);
   });
 });
 
@@ -241,10 +317,12 @@ describe('real repo coverage (regression floor)', () => {
     // what made the "DELETE this entry when it is fixed" note in the allow-list
     // enforceable rather than aspirational.
     //
-    // The loop is VACUOUS while the list is empty (issue 1824 retired the last
-    // two entries), so it is paired with the positive fence below rather than
-    // relied on alone — a vacuous green is exactly what this file's sibling
-    // rules forbid.
+    // The loop was VACUOUS while the list was empty (issue 1824 retired the
+    // last two entries) and is not any more: issue 3324 restored the one
+    // `AWS::SNS::Subscription` entry, so this fence now has a real subject —
+    // it fails the day `SNSSubscriptionProvider` starts caching `Arn` under its
+    // CFn name, which is the entry's retirement condition. It stays paired with
+    // the positive fence below rather than relied on alone.
     for (const [resourceType, entry] of SDK_ATTR_ALLOW_LIST) {
       const classified = report.types.find((t) => t.resourceType === resourceType);
       expect(classified, `allow-list entry for ${resourceType} classifies nothing`).toBeDefined();
@@ -258,8 +336,9 @@ describe('real repo coverage (regression floor)', () => {
     }
 
     // POSITIVE FENCE for the two attributes issue 1824 fixed. `findGaps` above
-    // only proves nothing is UN-allow-listed, and with the list now empty an
-    // entry could be silently re-added to re-silence either type. Requiring
+    // only proves nothing is UN-allow-listed, and an entry could be silently
+    // added to re-silence either type (the list is no longer empty since issue
+    // 3324, but it names neither of these). Requiring
     // `cached` — not merely "not a gap" — pins that the classification comes from
     // real provider caching rather than from a carve-out.
     //
@@ -280,7 +359,7 @@ describe('real repo coverage (regression floor)', () => {
       const found = classified!.arnAttributes.find((a) => a.name === attr);
       expect(
         found?.status,
-        `${resourceType}.${attr} must be CACHED by its provider (issue 1824) — not allow-listed`
+        `${resourceType}.${attr} must be CACHED by its provider — not allow-listed, and not dropped from the matrix`
       ).toBe('cached');
     }
   }, REAL_REPO_TIMEOUT_MS);
@@ -324,13 +403,23 @@ describe('real repo coverage (regression floor)', () => {
     // assertion, because the next reader trusts the claim.
   });
 
-  it('no longer allow-lists AWS::SNS::Subscription — primaryIdentifier filtering covers it', () => {
-    // Retired by the issue-1800 re-capture: the fixture predated the #1694
-    // `primaryIdentifier` capture, so `Arn` reached the allow-list; now it is
-    // filtered as the primaryIdentifier first, which is the auto-classification
-    // that mechanism exists for. Asserting the ABSENCE keeps a future
-    // re-introduction honest.
-    expect(SDK_ATTR_ALLOW_LIST.has('AWS::SNS::Subscription')).toBe(false);
+  it('allow-lists AWS::SNS::Subscription as a NOT-A-BUG, not a known gap (issue 3324)', () => {
+    // History in one line: seeded at introduction, RETIRED by the issue-1800
+    // re-capture (which let the `primaryIdentifier` filter reach it first), and
+    // RESTORED by issue 3324, which removed that filter because the field
+    // describes the Cloud Control identifier rather than the id cdkd's own
+    // provider mints. This type is the one where the two coincide —
+    // `SNSSubscriptionProvider.create` returns the `Subscribe` response's
+    // `SubscriptionArn` verbatim — so the entry is a NOT-A-BUG and must never
+    // carry `knownGap`; `Fn::GetAtt ...Arn` resolves through
+    // `guardedPhysicalIdFallback` with nothing cached.
+    const entry = SDK_ATTR_ALLOW_LIST.get('AWS::SNS::Subscription');
+    expect(entry?.attributes).toEqual(['Arn']);
+    expect(entry?.knownGap).toBeUndefined();
+    // It is the ONLY entry: measured, not assumed — with the filter removed the
+    // critic over the real tree reports this finding and no other. A second
+    // entry appearing here is a decision someone has to make deliberately.
+    expect([...SDK_ATTR_ALLOW_LIST.keys()]).toEqual(['AWS::SNS::Subscription']);
   });
 
   it('does NOT allow-list AWS::Lambda::EventSourceMapping (the #1190 gap was fixed by caching the ARN)', () => {
