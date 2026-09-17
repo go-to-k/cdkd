@@ -454,6 +454,25 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/refresh-aws-cli-removals.ts',
         cache: false,
       },
+      // Re-captures the longest observed duration of every workflow JOB into
+      // `docs/_generated/workflow-job-durations.json`, which
+      // `tests/unit/scripts/workflow-timeout-headroom.test.ts` reads offline to
+      // refuse a `timeout-minutes` that is too TIGHT (issue #3283 — the sibling
+      // fence catches an absent bound and one at or above 360, and nothing in
+      // between, which is how `hooks.yml` sat at 1.1x headroom for its whole
+      // life).
+      //
+      // NOT in `gen:all-matrices` and NOT a CI staleness guard, for two separate
+      // reasons. It calls the GitHub API, so it needs a network round-trip and a
+      // credential — the same reason `audit:coverage:regenerate` and
+      // `gen:aws-cli-removals` are excluded, and the aggregate must stay the
+      // command that fails on an accidental degradation. And the underlying data
+      // changes every time CI runs, so a byte-diff guard would fail constantly
+      // and teach everyone to ignore it. Refresh it when a bound is questioned.
+      'gen:workflow-durations': {
+        command: 'node --experimental-strip-types scripts/gen-workflow-job-durations.ts',
+        cache: false,
+      },
       'audit:aws-cli-removals:check': {
         command: 'node --experimental-strip-types scripts/refresh-aws-cli-removals.ts --check',
         cache: false,
