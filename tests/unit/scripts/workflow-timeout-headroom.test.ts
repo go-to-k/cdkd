@@ -36,8 +36,9 @@
  * indefensible on the evidence in hand.
  *
  * WHY 2, AND WHERE THAT NUMBER COMES FROM. Measured across the bounds in the
- * tree, headroom runs from about 2.27x to over 100x, and the tightest is
- * `hooks.yml` / `hook-suites`.
+ * tree, headroom runs from 2.27x (`hooks.yml` / `hook-suites`, the tightest)
+ * to 69.23x (`ci.yml` / `release-pr-not-stale`, the loosest). An earlier
+ * revision said "over 100x"; nothing reaches it, in either snapshot revision.
  *
  * The `>=` is owed to go-to-k/cdkd#3282, NOT to this fence's own issue. #3282
  * proposes bringing `hook-suites` back to a 30-minute bound once its suite runs
@@ -61,19 +62,21 @@
  */
 
 import { describe, expect, it } from 'vite-plus/test';
-import { readFileSync, readdirSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import {
   displayNameToKey,
   resolveJobKey,
+  walkMayStop,
 } from '../../../scripts/gen-workflow-job-durations.ts';
 // The SIBLING's sanitisers, imported rather than re-derived. Every field this
 // file renders — a job key, a workflow file name, a snapshot range — is
 // fork-controlled on `pull_request`, and go-to-k/cdkd#3272 found that class
 // FOUR times, each instance inside the code that fixed the previous one. A
 // fifth venue with its own copies of the helpers is how that happens again.
-import { safeName, safeText } from './workflow-log-safety.js';
+import { safeName, safeText, type Safe } from './workflow-log-safety.js';
 
 const REPO_ROOT = join(import.meta.dirname, '../../..');
 const WORKFLOW_DIR = join(REPO_ROOT, '.github', 'workflows');
@@ -88,8 +91,12 @@ const MIN_HEADROOM = 2;
  * case pass by having nothing to check. Pinned from both sides below.
  */
 const MIN_DECLARED = 18;
-const MIN_SNAPSHOT = 12;
-const MIN_COMPARED = 12;
+// 18, not 12. At 12 the round-1 defect — four jobs vanishing because the
+// generator keyed them by display name — cleared the floor with room to spare,
+// so the floor could not have caught the very failure that made this fence
+// necessary.
+const MIN_SNAPSHOT = 18;
+const MIN_COMPARED = 18;
 
 /**
  * Jobs with no snapshot entry that are EXPECTED to have none.
@@ -100,8 +107,10 @@ const MIN_COMPARED = 12;
  * on the Actions API's display name while this fence keys on the YAML job id,
  * so the four jobs that override `name:` vanished; the fifth was dropped by a
  * prune that stopped before it had seen every job. `issue-conventions.yml` is
- * in fact the highest-volume workflow in the repo (~885 successful runs in a
- * day), the opposite of rare.
+ * in fact the highest-volume workflow in the repo — 106/71/274/389/496/356
+ * successful runs per day over 2026-09-12..09-17 — the opposite of rare. (An
+ * earlier revision said "~885 in a day": that was the RANGE total restated as
+ * a daily rate, and two reviewers caught it independently.)
  *
  * So this list absorbed a generator defect and gave it a plausible story, which
  * is exactly the failure the fence exists to catch, reproduced inside the fence.
@@ -148,25 +157,52 @@ export const jobsFromWorkflow = (file: string, doc: unknown): Map<string, number
 };
 
 /** Every `<file>/<job>` the tree declares, with its bound. */
-const declaredJobs = (): Map<string, number | undefined> => {
-  const out = new Map<string, number | undefined>();
-  for (const file of readdirSync(WORKFLOW_DIR).filter((n) => /\.ya?ml$/.test(n)).sort()) {
-    const doc: unknown = parseYaml(readFileSync(join(WORKFLOW_DIR, file), 'utf8'));
-    for (const [key, bound] of jobsFromWorkflow(file, doc)) out.set(key, bound);
+export const declaredJobs = (
+  dir: string = WORKFLOW_DIR,
+): { jobs: Map<string, number | undefined>; unreadable: string[] } => {
+  const jobs = new Map<string, number | undefined>();
+  const unreadable: string[] = [];
+  for (const file of readdirSync(dir).filter((n) => /\.ya?ml$/.test(n)).sort()) {
+    let doc: unknown;
+    try {
+      doc = parseYaml(readFileSync(join(dir, file), 'utf8'));
+    } catch {
+      // The MESSAGE is never rendered. A YAML parse error quotes the offending
+      // source, which on `pull_request` is a FORK's bytes — measured carrying a
+      // newline, an ANSI escape and a bidi override, printed by vitest at
+      // column 0 where the runner interprets `::error::`. That this ran
+      // unguarded at module scope, while `FindingKind` already declared
+      // `'unreadable-workflow'` and nothing constructed it, is the tell: the
+      // arm was designed and never written.
+      unreadable.push(file);
+      continue;
+    }
+    for (const [key, bound] of jobsFromWorkflow(file, doc)) jobs.set(key, bound);
   }
-  return out;
+  return { jobs, unreadable };
 };
 
 /** Parse and VALIDATE snapshot text. Separate from reading it so the refusals are testable. */
 export const parseSnapshot = (text: string, where: string): Record<string, JobSample> => {
-  const raw: unknown = JSON.parse(text);
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    // Node embeds the offending SOURCE in a JSON parse error, and this file is
+    // committed, so a PR edits it freely. A fixed message carries the same
+    // information a reader needs — the file is unreadable, regenerate it.
+    throw new Error(`${where} is not valid JSON; regenerate it`);
+  }
   if (!isMapping(raw) || !isMapping(raw['jobs'])) {
     throw new Error(`${where} has no jobs mapping; regenerate it`);
   }
   const jobs: Record<string, JobSample> = {};
   for (const [key, value] of Object.entries(raw['jobs'])) {
     if (!isMapping(value) || typeof value['max'] !== 'number') {
-      throw new Error(`${where}: ${key} has no numeric max in the snapshot; regenerate it`);
+      // `safeText(key)`: an object key in this file is arbitrary attacker-chosen
+      // text with no length limit — a strictly more capable venue than the job
+      // key this file already sanitises, and it was raw.
+      throw new Error(`${where}: ${safeText(key)} has no numeric max in the snapshot; regenerate it`);
     }
     // POSITIVE and finite. A `max` of 0 makes headroom `Infinity`, and
     // `Infinity < MIN_HEADROOM` is false, so every bound on that job would pass
@@ -174,7 +210,7 @@ export const parseSnapshot = (text: string, where: string): Record<string, JobSa
     // floors at 1, so a 0 here means a hand-edited or truncated snapshot.
     if (!Number.isFinite(value['max']) || value['max'] <= 0) {
       throw new Error(
-        `${where}: ${key} has a max that is not a positive number; regenerate it`,
+        `${where}: ${safeText(key)} has a max that is not a positive number; regenerate it`,
       );
     }
     jobs[key] = {
@@ -203,25 +239,42 @@ type FindingKind =
  */
 interface Finding {
   readonly kind: FindingKind;
-  readonly job: string;
+  // `Safe`, not `string`. Typing these `string` shipped the brand's helpers and
+  // opted out of the type that makes them unforgettable: dropping BOTH
+  // sanitisers from `finding` below produced zero `tsc` errors and left all 42
+  // cases green — measured. The whole argument for the brand, in the shared
+  // module's own header, is that a forgotten sanitiser becomes a compile error
+  // rather than a review finding, and a consumer typing its fields `string`
+  // quietly declines that.
+  readonly job: Safe;
   readonly bound?: number;
   readonly max?: number;
   readonly headroom?: number;
-  readonly range?: string;
+  readonly range?: Safe;
 }
 
 /** The single construction point; see the note on `Finding`. */
 const finding = (
   kind: FindingKind,
   job: string,
-  extra: { bound?: number; max?: number; headroom?: number; range?: string } = {},
+  // `range` is destructured OUT rather than spread with the rest: spreading it
+  // put the raw `string` into the object type ahead of the sanitised override,
+  // so the compiler saw `range: string` and the brand could not hold. The
+  // unsanitised field must not be spreadable at all.
+  { range, ...numbers }: { bound?: number; max?: number; headroom?: number; range?: string } = {},
 ): Finding => ({
   kind,
-  // A job key is `<file>/<job>`: the file half is constrained by `safeName`,
-  // the job half flattened and clamped. A fork controls both.
-  job: `${safeName(job.slice(0, job.indexOf('/')))}/${safeText(job.slice(job.indexOf('/') + 1))}`,
-  ...extra,
-  ...(extra.range === undefined ? {} : { range: safeText(extra.range) }),
+  // A job key is `<file>/<job>`: the file half is CONSTRAINED by `safeName`
+  // (a name can read as a whole finding about another file without carrying a
+  // single control byte), the job half flattened and clamped. A fork controls
+  // both halves. The cast is the one boundary on this path — a template
+  // literal is `string` however safe its parts — and it is why the field type
+  // above is `Safe`: without it, dropping either call compiles cleanly.
+  job: `${safeName(job.slice(0, job.indexOf('/')))}/${safeText(
+    job.slice(job.indexOf('/') + 1),
+  )}` as Safe,
+  ...numbers,
+  ...(range === undefined ? {} : { range: safeText(range) }),
 });
 
 /**
@@ -242,6 +295,7 @@ export const auditHeadroom = (
   declared: ReadonlyMap<string, number | undefined>,
   snapshot: Readonly<Record<string, JobSample>>,
   exempt: Readonly<Record<string, string>>,
+  unreadable: readonly string[] = [],
 ): Finding[] => {
   const findings: Finding[] = [];
 
@@ -285,6 +339,8 @@ export const auditHeadroom = (
     if (!declared.has(job)) findings.push(finding('snapshot-job-not-declared', job));
   }
 
+  for (const file of unreadable) findings.push(finding('unreadable-workflow', `${file}/`));
+
   return findings;
 };
 
@@ -298,7 +354,7 @@ const render = (findings: readonly Finding[]): string[] =>
       : `${f.job}: ${f.kind}`,
   );
 
-const DECLARED = declaredJobs();
+const { jobs: DECLARED, unreadable: UNREADABLE } = declaredJobs();
 const SNAPSHOT = loadSnapshot();
 
 /** A one-job tree, for the arms the real tree cannot exhibit. */
@@ -307,15 +363,17 @@ const snap = (max: number) => ({ 'w.yml/j': { max, from: 'a', to: 'b' } });
 
 describe('no workflow job is bounded too tightly to survive its own longest run', () => {
   it('the real tree reports nothing', () => {
-    expect(render(auditHeadroom(DECLARED, SNAPSHOT, RARELY_RUN))).toEqual([]);
+    expect(render(auditHeadroom(DECLARED, SNAPSHOT, RARELY_RUN, UNREADABLE))).toEqual([]);
   });
 
   it('the inputs it attests to are actually there', () => {
     // Floors: a snapshot that silently became `{}`, or a walk that stopped
     // matching, would make every case above pass by having nothing to check.
-    // BOTH halves of the filter, exercised below rather than only here: a
-    // bound-less job and an entry-less job each drop out, and neither half
-    // survives deletion once the synthetic cases pin them.
+    // Both halves are here for shape, and NEITHER is fenced: with every job
+    // carrying both a bound and an entry, `compared` is identically `DECLARED`
+    // and `MIN_COMPARED` duplicates `MIN_DECLARED`. An earlier revision claimed
+    // the synthetic cases pinned them; they do not. It is kept because the day
+    // a job loses its entry, this is the count that notices.
     const compared = [...DECLARED].filter(([k, b]) => b !== undefined && SNAPSHOT[k] !== undefined);
     expect(DECLARED.size).toBeGreaterThanOrEqual(MIN_DECLARED);
     expect(Object.keys(SNAPSHOT).length).toBeGreaterThanOrEqual(MIN_SNAPSHOT);
@@ -326,8 +384,14 @@ describe('no workflow job is bounded too tightly to survive its own longest run'
     // rather than a fixed margin, so that adding a workflow does not red an
     // unrelated PR.
     expect(MIN_DECLARED * 2).toBeGreaterThanOrEqual(DECLARED.size);
-    expect(MIN_SNAPSHOT * 2).toBeGreaterThanOrEqual(Object.keys(SNAPSHOT).length);
-    expect(MIN_COMPARED * 2).toBeGreaterThanOrEqual(compared.length);
+    // The snapshot floors are PINNED TO `MIN_DECLARED`, not banded separately.
+    // A proportional band cannot tell 12 from 18 — both clear a 21-entry
+    // snapshot — so at 12 the round-1 defect, four jobs vanishing, passed the
+    // floor that exists to catch exactly that. Every declared job must have an
+    // entry (the `not-in-snapshot` arm enforces it), so the three floors are
+    // one number by construction and moving one alone is the error.
+    expect(MIN_SNAPSHOT).toBe(MIN_DECLARED);
+    expect(MIN_COMPARED).toBe(MIN_DECLARED);
   });
 });
 
@@ -375,6 +439,34 @@ describe('the auditor reports what it claims to', () => {
     expect(auditHeadroom(new Map(), {}, { 'gone.yml/j': 'stale' }).map((f) => f.kind)).toEqual([
       'exemption-for-absent-job',
     ]);
+  });
+
+  it('a real unparseable workflow is reported by FILE, never by its content', () => {
+    // Through `declaredJobs` against a scratch copy, not a hand-built list:
+    // the `catch` is what must not carry the fork's YAML, and pushing anything
+    // other than the bare file name survived every other case.
+    const marker = 'FORGED-YAML-ECHO';
+    const scratch = mkdtempSync(join(tmpdir(), 'cdkd-headroom-'));
+    try {
+      cpSync(WORKFLOW_DIR, scratch, { recursive: true });
+      writeFileSync(join(scratch, 'zz-evil.yml'), `jobs:\n  a: [\n  ${marker}\n`);
+      const { unreadable } = declaredJobs(scratch);
+      expect(unreadable).toEqual(['zz-evil.yml']);
+      expect(render(auditHeadroom(new Map(), {}, {}, unreadable))).toEqual([
+        'zz-evil.yml/: unreadable-workflow',
+      ]);
+      expect(JSON.stringify(unreadable)).not.toContain(marker);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it('an unreadable workflow is a finding, and its message is never rendered', () => {
+    // The arm `FindingKind` declared and nothing constructed. A YAML parse error
+    // quotes the fork's own source; only the FILE is named.
+    const found = auditHeadroom(new Map(), {}, {}, ['evil.yml']);
+    expect(found.map((f) => f.kind)).toEqual(['unreadable-workflow']);
+    expect(render(found)).toEqual(['evil.yml/: unreadable-workflow']);
   });
 
   it('a snapshot entry for a job the tree does not declare is reported', () => {
@@ -442,6 +534,10 @@ describe('the auditor reports what it claims to', () => {
     // say what the bound is, what it is up against, and over which range — the
     // three things that decide whether to raise the bound or shorten the job.
     const line = render(auditHeadroom(tree(60), snap(3600), {}))[0] ?? '';
+    // The `too-tight` line renders its NUMBERS rather than its kind — they are
+    // what a reader acts on. The kind is load-bearing on the other branch,
+    // asserted in the unreadable-workflow case above, where there are no
+    // numbers and the kind is the entire message.
     expect(line).toContain('60 min');
     expect(line).toContain('3600 s');
     expect(line).toContain('1.00x');
@@ -497,8 +593,62 @@ describe('the generator resolves an API job name to a declared key', () => {
     ['a document that is not a mapping', 7],
     ['a document with no jobs', { name: 'x' }],
     ['a jobs node that is not a mapping', { jobs: 7 }],
+    ['a null document', null],
+    ['a null jobs node', { jobs: null }],
   ])('%s yields an empty map rather than throwing', (_what, bad) => {
+    // `null` is reachable and was unpinned in every one of these guards:
+    // `parseYaml('')` returns null, and a bodiless `jobs:` gives a null node.
+    // `typeof null === 'object'`, so only the explicit null test rejects them.
     expect([...displayNameToKey('w.yml', bad)]).toEqual([]);
+  });
+
+  it.each([
+    ['a numeric name', 123, '123'],
+    ['a boolean name', true, 'true'],
+  ])('%s is keyed by what the API will actually send', (_what, name, sent) => {
+    // Falling back to the job id here manufactures a job with no snapshot
+    // entry — the state an exemption used to hide.
+    const map = displayNameToKey('w.yml', { jobs: { j: { name } } });
+    expect(resolveJobKey(sent, map)).toBe('w.yml/j');
+    expect(resolveJobKey('j', map)).toBeUndefined();
+  });
+
+  it.each([
+    ['a null node', { jobs: { j: null } }],
+    ['a name that is null', { jobs: { j: { name: null } } }],
+  ])('%s falls back to the job id', (_what, doc) => {
+    expect(resolveJobKey('j', displayNameToKey('w.yml', doc))).toBe('w.yml/j');
+  });
+});
+
+describe('the walk stops only when it can no longer learn anything', () => {
+  // `walkMayStop` carries the snapshot's whole coverage guarantee, and until it
+  // was extracted from `main()` the line that fixed it could be deleted without
+  // a single case reddening.
+  const seen = (entries: readonly [string, number][]) => new Map(entries);
+
+  it('never stops before every declared job has been seen', () => {
+    // THE ROUND-1 DEFECT. `b` has no entry, so its maximum is unknown and no
+    // run can be ruled out yet — however short this one is. Production case:
+    // `release.yml/publish` appeared in none of the runs the walk had fetched,
+    // and the walk stopped after one of 387.
+    expect(walkMayStop(['w/a', 'w/b'], seen([['w/a', 100]]), 1)).toBe(false);
+  });
+
+  it('stops once every job is seen and no later run can beat a maximum', () => {
+    expect(walkMayStop(['w/a', 'w/b'], seen([['w/a', 100], ['w/b', 50]]), 50)).toBe(true);
+    expect(walkMayStop(['w/a', 'w/b'], seen([['w/a', 100], ['w/b', 50]]), 49)).toBe(true);
+  });
+
+  it('keeps walking while a run could still contain a longer job', () => {
+    // 51 > min(50), so a job in this run could still raise `b`'s maximum.
+    expect(walkMayStop(['w/a', 'w/b'], seen([['w/a', 100], ['w/b', 50]]), 51)).toBe(false);
+  });
+
+  it('never stops on an empty maxima map', () => {
+    // With nothing declared, `every` is vacuously true and `Math.min()` of
+    // nothing is `Infinity` — which would make every run prunable.
+    expect(walkMayStop([], seen([]), 1)).toBe(false);
   });
 });
 
@@ -510,6 +660,9 @@ describe('the snapshot is refused rather than half-read', () => {
     ['an entry that is not a mapping', '{"jobs":{"a/b":7}}', /no numeric max/],
     ['a max of zero', '{"jobs":{"a/b":{"max":0,"from":"x","to":"y"}}}', /positive/],
     ['a negative max', '{"jobs":{"a/b":{"max":-1,"from":"x","to":"y"}}}', /positive/],
+    // `1e999` parses to `Infinity`, which is a NUMBER and is not `<= 0`, so the
+    // `Number.isFinite` half of that guard was dead as tested until this row.
+    ['an infinite max', '{"jobs":{"a/b":{"max":1e999,"from":"x","to":"y"}}}', /positive/],
   ])('%s is a refusal', (_what, body, pattern) => {
     // The PATTERN, not a bare `.toThrow()`. Gutting either message to "x" left
     // all four of these green, so the wording — which is what tells a reader to
@@ -531,6 +684,37 @@ describe('the snapshot is refused rather than half-read', () => {
     // an array is an object too, so neither is reachable from the mapping cases
     // above and both survived deletion.
     expect(() => parseSnapshot(body, '<probe>')).toThrow(/has no jobs mapping/);
+  });
+
+  it('a hostile snapshot key cannot forge a line through the refusal', () => {
+    // An object key here is arbitrary attacker-chosen text with no length
+    // limit — a strictly more capable venue than the job key this file already
+    // fences, and it reached the message raw.
+    const hostile = `a/b${String.fromCodePoint(0x0a)}  ci.yml / x: FORGED${String.fromCodePoint(0x202e)}`;
+    const body = JSON.stringify({ jobs: { [hostile]: { from: 'x', to: 'y' } } });
+    let message = '';
+    try {
+      parseSnapshot(body, '<probe>');
+    } catch (error) {
+      message = String((error as Error).message);
+    }
+    expect(message).toContain('no numeric max');
+    expect(message).not.toContain(String.fromCodePoint(0x0a));
+    expect(message).not.toContain(String.fromCodePoint(0x202e));
+  });
+
+  it('malformed JSON is refused without echoing the source', () => {
+    // Node embeds the offending source in a JSON parse error, and this file is
+    // committed, so a PR edits it freely.
+    const marker = 'FORGED-SOURCE-ECHO';
+    let message = '';
+    try {
+      parseSnapshot(`{"a":\nzzz${marker}}`, '<probe>');
+    } catch (error) {
+      message = String((error as Error).message);
+    }
+    expect(message).toContain('not valid JSON');
+    expect(message).not.toContain(marker);
   });
 
   it('a well-formed snapshot parses', () => {

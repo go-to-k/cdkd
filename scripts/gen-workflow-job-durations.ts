@@ -114,17 +114,21 @@ interface Snapshot {
  * anything else rethrows immediately: a rate limit, a 404, a bad flag and a
  * parse error are all states where trying again is just slower.
  */
-const TRANSIENT = /dial tcp|operation timed out|connection reset|EOF|502 Bad Gateway|503|timeout awaiting/i;
+// ANCHORED. A bare `503` substring-matched the COMMAND TEXT: a hard 404 on run
+// `35035035035` classified as transient and burned four attempts and 20 s of
+// sleeps — the opposite of what the docstring above promises, and ~0.9% of run
+// ids contain `503`. `/EOF/i` matched a job named `eof-check` the same way.
+const TRANSIENT =
+  /dial tcp|operation timed out|connection reset|\bEOF\b|\bHTTP 50[23]\b|timeout awaiting/;
 
 const gh = (args: readonly string[]): unknown => {
   let lastError: unknown;
-  for (let attempt = 0; attempt < 4; attempt += 1) {
+  // THREE attempts, and the loop bound says so. `attempt < 4` printed
+  // "retry 4/3" and slept 8 s before rethrowing — a wait that bought nothing.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    let out: string;
     try {
-      const out = execFileSync('gh', [...args], {
-        encoding: 'utf8',
-        maxBuffer: 64 * 1024 * 1024,
-      });
-      return JSON.parse(out) as unknown;
+      out = execFileSync('gh', [...args], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
     } catch (error) {
       lastError = error;
       const text = `${String((error as { stderr?: string }).stderr ?? '')}${String(error)}`;
@@ -133,9 +137,14 @@ const gh = (args: readonly string[]): unknown => {
       // connections rather than a server asking us to slow down, and a long
       // backoff on a thousands-of-requests walk costs more than it saves.
       const waitMs = 2000 * (attempt + 1);
+      process.stderr.write(`  transient gh failure, retry ${attempt + 1}/2 after ${waitMs}ms\n`);
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, waitMs);
-      process.stderr.write(`  transient gh failure, retry ${attempt + 1}/3 after ${waitMs}ms\n`);
+      continue;
     }
+    // OUTSIDE the retried block: a malformed response is not transient, and
+    // retrying it only repeats the same bytes. It also stopped a parse error
+    // whose text happened to contain a transient-looking word from retrying.
+    return JSON.parse(out) as unknown;
   }
   throw lastError;
 };
@@ -157,8 +166,9 @@ const workflowFiles = (): string[] =>
  * the four `issue-conventions.yml` jobs are the only ones in this tree that
  * override, and all four vanished from the snapshot — then got written into the
  * fence's exemption list with reasons that were FALSE. That workflow is the
- * highest-volume one in the repo (~885 successful runs in a day), not a rare
- * one. An exemption list absorbing a generator defect is the exact failure this
+ * highest-volume one in the repo: 106/71/274/389/496/356 successful runs per
+ * day over 2026-09-12..09-17, not a rare one. (An earlier revision said "~885
+ * in a day"; 885 was the RANGE total restated as a daily rate.) An exemption list absorbing a generator defect is the exact failure this
  * fence exists to catch, reproduced inside it.
  *
  * Matrix legs arrive as `<display name> (leg)`. The suffix is stripped ONLY
@@ -170,7 +180,18 @@ export const displayNameToKey = (file: string, doc: unknown): Map<string, string
   const out = new Map<string, string>();
   if (!isMapping(doc) || !isMapping(doc['jobs'])) return out;
   for (const [job, node] of Object.entries(doc['jobs'])) {
-    const display = isMapping(node) && typeof node['name'] === 'string' ? node['name'] : job;
+    // A NON-STRING `name:` is refused rather than silently falling back to the
+    // job id. YAML makes `name: 123` a number, the API then sends `"123"`, and
+    // the fallback would key the job by its id — producing a job with no
+    // snapshot entry, which is the exact state that used to be papered over by
+    // an exemption. `String(...)` matches what the API will send.
+    const raw = isMapping(node) ? node['name'] : undefined;
+    const display =
+      raw === undefined || raw === null
+        ? job
+        : typeof raw === 'string'
+          ? raw
+          : String(raw);
     out.set(display, `${file}/${job}`);
   }
   return out;
@@ -217,6 +238,33 @@ interface RunRow {
   readonly seconds: number;
 }
 
+/**
+ * May the descending walk stop before this run?
+ *
+ * Extracted as a pure predicate so it can be FENCED. It lived inside `main()`
+ * with the network calls, which meant the one line carrying the whole
+ * snapshot's coverage guarantee — `allSeen` — could be deleted without a single
+ * case reddening. A reviewer's 200,000 invariant-respecting populations confirm
+ * it is correct; being correct and being pinned are different properties, and
+ * only the second survives an edit.
+ *
+ * Two conditions, and the first is the one the earlier revision lacked: every
+ * declared job must have been SEEN, because a job with no entry in `maxima` was
+ * never in the minimum and a job appearing only in shorter runs was dropped
+ * from the snapshot entirely. The second is the original inequality — a job
+ * cannot outlast its run, so once the wall clock is at or below every maximum
+ * so far, no later run can raise one.
+ */
+export const walkMayStop = (
+  declaredHere: readonly string[],
+  maxima: ReadonlyMap<string, number>,
+  runSeconds: number,
+): boolean => {
+  if (!declaredHere.every((key) => maxima.has(key))) return false;
+  if (maxima.size === 0) return false;
+  return runSeconds <= Math.min(...maxima.values());
+};
+
 /** Successful runs of one workflow inside the closed range, longest wall clock first. */
 const runsInRange = (file: string, from: string, to: string): RunRow[] | null => {
   const raw = gh([
@@ -259,16 +307,33 @@ const runsInRange = (file: string, from: string, to: string): RunRow[] | null =>
 /**
  * Per-job durations of one run, keyed by DECLARED JOB KEY.
  *
- * `skipped` is excluded — it never ran. `failure` and `cancelled` are INCLUDED,
- * which is the safety-relevant direction: a job killed at its own bound is the
- * strongest evidence a bound is too tight, and filtering to successes alone
- * excluded exactly that, understating the maximum in the hiding direction.
+ * Only `success` is reachable here, and that is a STATED LIMIT rather than a
+ * choice. `failure` and `cancelled` are accepted below, but `runsInRange`
+ * filters `--status success` at the RUN level and no workflow here uses
+ * `continue-on-error`, so such a job never arrives — measured 0 of 6746 job
+ * records. An earlier revision of this comment claimed the opposite, that
+ * including them captured "a job killed at its own bound"; it captures nothing.
+ *
+ * The consequence is worth stating plainly because it bounds what this fence
+ * can ever prove: a job that is KILLED at its bound never completes, so the
+ * snapshot cannot contain the one observation that would most clearly show a
+ * bound is too tight. The fence reasons from how long jobs take when they
+ * succeed, and a bound below that is the defect it can see.
  */
 const jobDurations = (
   runId: number,
   byDisplay: ReadonlyMap<string, string>,
 ): Map<string, number[]> => {
-  const raw = gh(['api', `repos/${REPO}/actions/runs/${runId}/jobs?per_page=100`, '--paginate']);
+  // `--slurp`, because `--paginate` on an OBJECT response concatenates one JSON
+  // document per page and `JSON.parse` then throws — measured at position 7384
+  // on a run with more than 100 jobs. Without it the `Array.isArray` branch
+  // below was dead and such a run aborted the whole walk non-transiently.
+  const raw = gh([
+    'api',
+    `repos/${REPO}/actions/runs/${runId}/jobs?per_page=100`,
+    '--paginate',
+    '--slurp',
+  ]);
   const out = new Map<string, number[]>();
   const pages = Array.isArray(raw) ? raw : [raw];
   for (const page of pages) {
@@ -322,6 +387,17 @@ const main = (): void => {
   for (const a of argv) {
     if (a !== '--no-prune' && !a.startsWith('--from=') && !a.startsWith('--to=')) {
       throw new Error(`unknown argument ${a}\n${USAGE}`);
+    }
+  }
+
+  const DAY = /^\d{4}-\d{2}-\d{2}$/;
+  for (const name of ['--from', '--to'] as const) {
+    const value = flag(name);
+    if (value !== undefined && (!DAY.test(value) || Number.isNaN(Date.parse(`${value}T00:00:00Z`)))) {
+      // Otherwise `--to=2026-9-17` reaches `Date.parse` and dies with a bare
+      // `RangeError: Invalid time value` that names neither the flag nor the
+      // value.
+      throw new Error(`${name}=${value} is not a YYYY-MM-DD date`);
     }
   }
 
@@ -388,11 +464,24 @@ const main = (): void => {
       //
       // So the walk may only prune once every declared job of this workflow has
       // been seen at least once.
-      const allSeen = declaredHere.every((key) => maxima.has(key));
-      if (prune && allSeen && run.seconds <= Math.min(...maxima.values())) break;
+      if (prune && walkMayStop(declaredHere, maxima, run.seconds)) break;
       runsFetched += 1;
       for (const [key, seconds] of jobDurations(run.id, byDisplay)) {
         if (!declared.has(key)) continue;
+        // The prune's soundness rests on `job <= run wall clock`, computed from
+        // two different pairs of timestamps and never checked until now. A
+        // reviewer measured that 9,526 of 50,000 populations VIOLATING it give
+        // a wrong result, so the assumption is worth making self-checking
+        // rather than trusting: a violation means the prune may have stopped
+        // early and the run should be re-taken with `--no-prune`.
+        for (const s of seconds) {
+          if (s > run.seconds + 1) {
+            process.stderr.write(
+              `  WARNING ${key} ran ${Math.round(s)}s inside a ${Math.round(run.seconds)}s run; ` +
+                'the prune assumes job <= run. Re-run with --no-prune.\n',
+            );
+          }
+        }
         const list = samples.get(key) ?? [];
         list.push(...seconds);
         samples.set(key, list);
@@ -458,6 +547,19 @@ const main = (): void => {
  * is how the name-mapping defect this file now guards against survived in the
  * first place.
  */
-if (process.argv[1] !== undefined && import.meta.filename === realpathSync(process.argv[1])) {
+const invokedDirectly = (): boolean => {
+  const entry = process.argv[1];
+  if (entry === undefined) return false;
+  try {
+    // `realpathSync` THROWS on a path that is not real, and this runs at module
+    // scope of a file the fence imports — an ENOENT here would kill the whole
+    // suite's collection with a stack rather than a finding.
+    return import.meta.filename === realpathSync(entry);
+  } catch {
+    return false;
+  }
+};
+
+if (invokedDirectly()) {
   main();
 }
