@@ -2369,26 +2369,30 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
     // REJECTED by the class, and not already trimmable.
     //
     // Three conditions, all three in the PREDICATE rather than in the bound,
-    // because a bound cannot enforce what it only gestures at: an earlier
-    // version started the scan at U+0021 "to skip the C0 controls, whose
-    // rendering in a failure message is its own hazard" and then selected
-    // U+007F, which is DEL -- a control, with exactly that hazard. So the
-    // character must be REJECTED by the class, NOT already trimmable, and
-    // RENDERABLE. The range is then only a termination bound: it stops at the
-    // BMP because a qualifying character certainly exists below it, and the
-    // sweep above is what covers the whole domain.
+    // because a bound cannot enforce what it only gestures at. Twice now:
+    // first a scan starting at U+0021 "to skip the C0 controls, whose
+    // rendering in a failure message is its own hazard" selected U+007F, which
+    // is DEL -- a control, with exactly that hazard; then a hand-rolled
+    // `cp <= 0x1f || (0x7f..0x9f)` was called RENDERABLE while admitting
+    // U+00AD, U+200B and U+202E, the last being the Trojan-Source bidi
+    // override `src/utils/display-safe.ts` names as a rendering hazard in its
+    // own docstring. The predicate uses the Unicode classes the repo already
+    // spells for this question (`src/deployment/outputs-export-alias.ts`),
+    // so the word and the code mean the same thing.
+    //
+    // The range really is only a termination bound now: it starts at 0 --
+    // measured, the pick is U+00A1 either way -- and stops at the BMP because
+    // a qualifying character certainly exists below it. The sweep above is
+    // what covers the whole domain.
     //
     // The `throw` keeps the bound honest: if a future class accepts everything
     // in this range, the case REFUSES rather than silently fencing the trim
     // alone -- which is what both hand-picked spellings did.
-    const isControl = (ch: string): boolean => {
-      const cp = ch.codePointAt(0)!;
-      return cp <= 0x1f || (cp >= 0x7f && cp <= 0x9f);
-    };
+    const UNRENDERABLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/u;
     const edge = (() => {
-      for (let cp = 0x21; cp <= 0xffff; cp++) {
+      for (let cp = 0; cp <= 0xffff; cp++) {
         const ch = String.fromCodePoint(cp);
-        if (rejects(ch) && ch.trim() !== '' && !isControl(ch)) return ch;
+        if (rejects(ch) && ch.trim() !== '' && !UNRENDERABLE.test(ch)) return ch;
       }
       throw new Error('no rejected, non-trimmable, renderable character exists -- this case cannot fence anything');
     })();
