@@ -87,11 +87,27 @@ to refuse. `GATE_MARKER_ALIASES` is therefore one reviewable row per
   verifies THAT marker, and a stale one is refused by
   `gate_refuse_stale_alias_marker`, which names the target's gate and the
   command that refreshes it there. The refusal is satisfiable.
-- **none** -- nothing equivalent is declared. Still a REFUSAL, exit 2, same as
-  before; what changed is that `gate_refuse_no_equivalent_marker` names the
-  mapping row to add rather than a gate that cannot exist. Passing here was
-  never an option: it would silently drop the policy cdkd deliberately applies
-  to sibling-repo commands.
+- **none** -- nothing equivalent is declared. A REFUSAL by default, exit 2, and
+  `gate_refuse_no_equivalent_marker` names the mapping row to add rather than a
+  gate that cannot exist. Passing UNCONDITIONALLY was never an option: it would
+  silently drop the policy cdkd deliberately applies to sibling-repo commands.
+
+  **One gate carves out of this, and the carve-out is per-gate rather than
+  general** (go-to-k/cdkd#3351). `integ-schema-migration` exits 0 at `none` when
+  the target is PROVABLY a different repository -- `gate_target_is_foreign`,
+  which settles identity on the repo SLUG across every remote and refuses to
+  relax when the command can name another repo. The other three `integ-*` gates
+  keep refusing, and a new gate does NOT inherit this.
+
+  What justifies it there and not elsewhere: the schema contract is about a
+  document CDKD persists, and cdk-local's own schema is its own business to
+  gate, so `none` genuinely means "this policy does not apply here" rather than
+  "this repo has not proved it yet". Read the carve-out as narrower than
+  go-to-k/cdkd#3209's, not wider: #3209 drops only cdkd's MECHANISM (the
+  sentinel) and still requires `markgate verify verify-pr`, while this is a
+  bare `exit 0` with markgate never consulted -- which is sound only because at
+  `none` there is no marker to ask for. A gate that HAS an answerable marker in
+  the target must not copy this shape.
 
 **Fail closed on UNDETERMINABLE.** Only a positively parsed `gates:` block with
 the name absent counts as "not declared"; a `.markgate.yml` that exists but
@@ -113,8 +129,8 @@ in REACHABILITY and in whether an alias exists:
 
 **The `integ-schema-migration` row earned a correction, and the correction is
 the interesting part.** An earlier revision of this table said "neither sibling
-has `src/types/state.ts`". That is FALSE: `/Users/goto/pc/github/cdk-local/src/types/state.ts`
-exists, is 15 KB, and carries `STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 7`.
+has `src/types/state.ts`". That is FALSE: cdk-local ships that same path, and it
+carries `STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 7`.
 The gate's FILE-path scope check therefore matches cdk-local exactly. What KEPT
 it inert, until go-to-k/cdkd#3351 corrected them, was only the second half of
 its activation test -- the diff-content regexes -- which scored 0 against that

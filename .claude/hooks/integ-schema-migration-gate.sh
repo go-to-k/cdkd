@@ -276,6 +276,23 @@ fi
 # v10 (#3006). DERIVE any future change to these patterns from
 # `src/types/state.ts`, never from a doc that describes it; the suite's fixture
 # is generated from that file for the same reason.
+#
+# TWO BOUNDS, recorded so the next author does not discharge them by widening a
+# pattern from prose again -- which is the exact move that produced the bug:
+#
+#   - The union pattern needs the declaration on ONE line. Print width here is
+#     100 and the union is 72 characters at v10, growing ~5 per member, so it
+#     reflows somewhere around v16 and this alternative then matches nothing,
+#     leaving the `_CURRENT` one to carry the gate alone. That fails LOUDLY
+#     rather than silently: the suite derives its fixture with
+#     `grep -m1 '^export type StateSchemaVersion = '`, which misses a wrapped
+#     head, and FLOOR 1 turns that into a FATAL. When it fires, teach the
+#     derivation and the pattern about the wrap; do not delete the floor.
+#   - `[^=<>]*` excludes `<` and `>` on purpose. With a bare `[^=]*` the span
+#     reaches across a `>=`, and a JSDoc line such as
+#     `* \`STATE_SCHEMA_VERSION_CURRENT\` is stamped whenever version >= 2.`
+#     MATCHES (measured) -- a false positive in a file whose header promises
+#     comment edits never activate the gate. Fail-closed, but wrong.
 plus_match=0
 minus_match=0
 in_schema_block=0
@@ -297,14 +314,14 @@ while IFS= read -r line; do
     "+"*)
       payload="${line#+}"
       if printf '%s' "$payload" | grep -qE 'StateSchemaVersion[[:space:]]*=[[:space:]]*[0-9]+([[:space:]]*\|[[:space:]]*[0-9]+)+' \
-        || printf '%s' "$payload" | grep -qE 'STATE_SCHEMA_VERSION_CURRENT[^=]*=[[:space:]]*[0-9]+'; then
+        || printf '%s' "$payload" | grep -qE 'STATE_SCHEMA_VERSION_CURRENT[^=<>]*=[[:space:]]*[0-9]+'; then
         plus_match=1
       fi
       ;;
     "-"*)
       payload="${line#-}"
       if printf '%s' "$payload" | grep -qE 'StateSchemaVersion[[:space:]]*=[[:space:]]*[0-9]+([[:space:]]*\|[[:space:]]*[0-9]+)+' \
-        || printf '%s' "$payload" | grep -qE 'STATE_SCHEMA_VERSION_CURRENT[^=]*=[[:space:]]*[0-9]+'; then
+        || printf '%s' "$payload" | grep -qE 'STATE_SCHEMA_VERSION_CURRENT[^=<>]*=[[:space:]]*[0-9]+'; then
         minus_match=1
       fi
       ;;
@@ -333,8 +350,13 @@ fi
 # Same structural defect as integ-local-gate: this hook fires on merges whose
 # target is a SIBLING repo too, and `integ-schema-migration` is a cdkd-only gate
 # name, so a sibling took a refusal it could never clear. No alias row for this
-# gate: neither sibling persists a versioned state document, so there is nothing
-# whose vN -> vN+1 round trip another gate could have verified.
+# gate: cdk-local DOES persist a versioned state document (its own
+# `src/types/state.ts`, at v7 in the same spelling as cdkd's), but none of the
+# gates it declares -- check / docs / verify-pr / pr-review / integ /
+# cdkd-parity / create-integ / merge-pr -- attests to a vN -> vN+1 round trip,
+# so there is nothing for an alias row to point at. An earlier revision said
+# "neither sibling persists a versioned state document", which is false and was
+# contradicted thirteen lines below by this file's own relaxation comment.
 __plan=$(gate_resolve_marker_gate "$target_dir" integ-schema-migration)
 __mode=$(printf '%s' "$__plan" | cut -f1)
 __gate=$(printf '%s' "$__plan" | cut -f2)
@@ -367,6 +389,18 @@ if [ "$__mode" = "none" ]; then
   # not have -- an unparsable config cannot say what it declares.
   if [ "$__target_is_foreign" -eq 1 ]; then
     exit 0
+  fi
+  # A foreign target that did NOT relax reaches here, and the refusal it is
+  # about to print tells it to add a GATE_MARKER_ALIASES row -- which is the
+  # wrong remedy when the real cause was the RELAXATION being withdrawn (an
+  # unexpanded `$VAR` in the command, a repo override, a `git remote add
+  # upstream` naming cdkd). Say so first; `gate_refuse_no_equivalent_marker`
+  # then exits 2 as before. Without this the reader is sent to a mapping table
+  # that cannot fix their problem.
+  if [ -n "${GATE_FOREIGN_RETRACT:-}" ]; then
+    printf 'integ-schema-migration-gate: this target was NOT treated as a separate repository, because %s.\n' \
+      "$GATE_FOREIGN_RETRACT" >&2
+    printf '  If it really is one, re-run without that, and the gate will not apply here at all.\n' >&2
   fi
   gate_refuse_no_equivalent_marker "integ-schema-migration-gate" "integ-schema-migration" "$target_dir" \
     "a state schema version bump (src/types/state.ts)"

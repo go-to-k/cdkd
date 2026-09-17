@@ -248,6 +248,13 @@ mk_repo() { # <dir>
   echo "// base" > "$d/src/types/state.ts"
   echo one > "$d/f.txt"
   : > "$d/README.md"
+  # EMPTY on purpose. An empty config is UNPARSABLE, so
+  # `gate_resolve_marker_gate` fails closed to `canonical` and
+  # integ-schema-migration-gate consults markgate and blocks -- which is what
+  # keeps it in EXPECTED_EXERCISED below. A config declaring OTHER gates, or an
+  # absent one, resolves to `none`, and since go-to-k/cdkd#3351 a foreign target
+  # at `none` relaxes; these fixtures are throwaway repos, hence foreign, so the
+  # gate would go quiet here.
   touch "$d/.markgate.yml"
   "$REAL_GIT" -C "$d" add -A >/dev/null 2>&1
   "$REAL_GIT" -C "$d" -c user.email=t@t -c user.name=t commit -q -m base

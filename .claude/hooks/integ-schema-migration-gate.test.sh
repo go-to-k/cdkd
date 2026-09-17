@@ -13,13 +13,26 @@
 set -u
 
 # The gate consults `gate_target_is_foreign` since go-to-k/cdkd#3351, whose
-# allowlist reads `GH_REPO` / `GH_HOST` from the ENVIRONMENT: inherited, either
-# one retracts the relaxation in every case at once. verify-pr-gate.test.sh
-# carries the same line with a measured reason (with `GH_REPO=x` exported that
-# suite reported 69/10).
+# allowlist reads `GH_REPO` from the ENVIRONMENT: inherited, it retracts the
+# relaxation in every case at once. verify-pr-gate.test.sh carries the same line
+# with a measured reason (with `GH_REPO=x` exported that suite reported 69/10).
+#
+# `GH_HOST` is unset alongside it because gh honours it too and this suite must
+# not depend on the caller's environment -- but note the allowlist does NOT read
+# it, so unsetting it here fences nothing on its own. An earlier revision of
+# this comment claimed it did; that is the shape of claim this whole PR exists
+# to stop making.
 unset GH_REPO GH_HOST
 
 HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/integ-schema-migration-gate.sh"
+HOOKS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_REAL="$HOOKS_DIR/lib/command-match.sh"
+
+# `run-tests.sh` runs each SUITE under both bashes and exports HOOK_BASH, but the
+# hook is `#!/usr/bin/env bash` and takes whatever is first on PATH -- so without
+# this the hook has never run under bash 3.2 locally, only in CI (go-to-k/cdkd#2715).
+# "Passes under 3.2" was true of the test and false of the thing under test.
+HOOK_RUN="${HOOK_BASH:+$HOOK_BASH }$HOOK"
 
 # go-to-k/cdkd#2236: a fixture repo must DECLARE the gate the hook asks about,
 # the way the real repo does. The gates now read the target repo's own
@@ -134,7 +147,7 @@ run_case() {
     rm -f "$GH_MOCK_DIFF"
   fi
   local got
-  printf '%s' "$payload" | "$HOOK" >/dev/null 2>&1
+  printf '%s' "$payload" | $HOOK_RUN >/dev/null 2>&1
   got=$?
 
   local cwd_ok=1
@@ -259,7 +272,15 @@ case "$SCHEMA_N" in
 esac
 SCHEMA_NEXT=$((SCHEMA_N + 1))
 
-UNION_NEW=$(printf '%s' "$UNION_OLD" | sed -E "s/ \\| ${SCHEMA_N};\$/ | ${SCHEMA_N} | ${SCHEMA_NEXT};/")
+# `[|]`, never `\|`. In an ERE a backslash-escaped `|` is UNDEFINED: BSD sed
+# (macOS, and therefore CI) reads it as a literal pipe, while GNU sed 4.9 and
+# busybox read it as ALTERNATION -- which matches the empty string and yields
+# `... | 9 | | 10 | 11;`. FLOOR 2 would still pass (the line changed) and the
+# gate regex would still match, so the suite would be GREEN over a fixture
+# `src/types/state.ts` cannot produce: exactly the vacuity this file exists to
+# remove, reintroduced by the derivation meant to prevent it, and visible only
+# to a Linux contributor. A bracket expression is portable across all three.
+UNION_NEW=$(printf '%s' "$UNION_OLD" | sed -E "s/ [|] ${SCHEMA_N};\$/ | ${SCHEMA_N} | ${SCHEMA_NEXT};/")
 CONST_NEW=$(printf '%s' "$CONST_OLD" | sed -E "s/=[[:space:]]*${SCHEMA_N};\$/= ${SCHEMA_NEXT};/")
 
 # FLOOR 2: the bump must actually CHANGE the line. A rename leaving both greps
@@ -554,6 +575,44 @@ x2236_case "foreign target + a CLUSTERED -R still REFUSES" 2 fresh NOT_CALLED \
 x2236_case "foreign target + a PR URL selector still REFUSES" 2 fresh NOT_CALLED \
   "declares no gate" "$x2236_other" "gh pr merge https://github.com/go-to-k/cdkd/pull/1 --squash"
 x2236_case "unparsable config keeps the cdkd gate name (fail closed)" 2 stale CALLED "integ-schema-migration" "$x2236_emptycfg"
+
+# --- The identity is computed BEFORE this process changes its cwd -------------
+#
+# `.claude/settings.json` invokes the hook as
+# `${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/integ-schema-migration-gate.sh`, so in
+# production the script's own path is RELATIVE whenever that variable is unset.
+# The identity block therefore runs ABOVE the hook's `cd "$target_dir"`, or
+# `$__hook_dir` resolves from inside the TARGET, the hook's "own" repo becomes
+# the target, every target classifies as cdkd, and the relaxation inverts into a
+# no-op -- the unclearable sibling refusal silently back.
+#
+# NOTHING FENCED THAT until go-to-k/cdkd#3351's review: every case above invokes
+# `$HOOK` by ABSOLUTE path, so `__hook_dir` is already resolved and the ordering
+# cannot matter. Measured -- moving the call below the `cd` left this suite at
+# 27/0 while the production spelling went 0 -> 2.
+#
+# So this case must use a RELATIVE invocation from a cwd that is NOT the target,
+# which is the same discriminator verify-pr-gate.test.sh records for its own
+# copy of this block.
+rel_home="$TMPDIR/rel-home"
+x2236_mk_repo "$rel_home" "https://github.com/go-to-k/cdkd.git" check integ-schema-migration
+mkdir -p "$rel_home/.claude/hooks/lib"
+cp "$HOOK" "$rel_home/.claude/hooks/integ-schema-migration-gate.sh"
+cp "$LIB_REAL" "$rel_home/.claude/hooks/lib/command-match.sh"
+chmod +x "$rel_home/.claude/hooks/integ-schema-migration-gate.sh"
+
+printf '{"files":[{"path":"src/types/state.ts"}]}' > "$GH_MOCK_FILES"
+printf '%s' "$BUMP_DIFF" > "$GH_MOCK_DIFF"
+rel_rc=$(cd "$rel_home" && printf '{"cwd":"%s","tool_input":{"command":"gh -C %s pr merge 1 --squash"}}' \
+  "$rel_home" "$x2236_other" \
+  | MARKGATE_MOCK_VERDICT=fresh ${HOOK_BASH:+$HOOK_BASH }./.claude/hooks/integ-schema-migration-gate.sh >/dev/null 2>&1; echo $?)
+if [ "$rel_rc" = "0" ]; then
+  pass=$((pass + 1)); printf 'OK   a RELATIVE invocation resolves its own repo BEFORE the cd\n'
+else
+  fail=$((fail + 1))
+  fail_log="${fail_log}FAIL relative invocation: got $rel_rc, want 0 -- the identity block has moved below the cd, so the foreign target reads as cdkd\n"
+  printf 'FAIL a RELATIVE invocation resolves its own repo BEFORE the cd (got %s)\n' "$rel_rc"
+fi
 
 # --- Summary ------------------------------------------------------
 

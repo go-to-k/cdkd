@@ -4437,8 +4437,20 @@ gate_markgate_declared_gates() {
 #   https://github.com/o/r(.git)      scp-like  git@github.com:o/r(.git)
 #   ssh://git@github.com/o/r(.git)
 gate_repo_slug() {
-  local url host path rest
+  local url
   url=$(git -C "$1" config --get remote.origin.url 2>/dev/null) || return 1
+  gate_slug_from_url "$url"
+}
+
+# gate_slug_from_url <url>
+#   The normalisation half of `gate_repo_slug`, split out by go-to-k/cdkd#3351 so
+#   a caller can ask the same question about a remote OTHER than `origin`.
+#   `gate_target_is_foreign` must, because gh prefers an `upstream` remote over
+#   `origin` -- an origin-only test answers about the wrong repository for the
+#   ordinary fork setup.
+gate_slug_from_url() {
+  local url host path rest
+  url="$1"
   [ -n "$url" ] || return 1
   url="${url%.git}"
   url="${url%/}"
@@ -4792,6 +4804,32 @@ GATE_FOREIGN_RETRACT=""
 #     selector with no flag at all.
 #   - and the arguments do not arrive from stdin (`xargs`), where the command
 #     text cannot name the target repo at all.
+#
+# RESIDUAL CLASS, and the pointers to it must not be dropped again. This
+# allowlist reads the COMMAND TEXT, so it is blind to every channel that names a
+# repo WITHOUT appearing in argv:
+#
+#   - an `upstream` remote in the target checkout -- gh prefers it over
+#     `origin`, so a plain `git remote add upstream <other repo>` re-points
+#     resolution with nothing in the command at all
+#     (go-to-k/cdkd#3235, OPEN);
+#   - `gh repo set-default`, which writes a `gh-resolved` entry into the
+#     target's git config (go-to-k/cdkd#3256, OPEN);
+#   - a `gh alias` expanding to a flagged form, and `GH_REPO` / `GH_HOST`
+#     assembled at run time or sourced from a file (go-to-k/cdkd#2354, OPEN).
+#
+# The first is CLOSED for `gate_target_is_foreign` specifically, by the repo-slug
+# conjunct below, which reads the target's remotes rather than the command. The
+# other two remain. They were recorded on `verify-pr-gate.sh` before
+# go-to-k/cdkd#3351 moved this code, and that move deleted every reference to all
+# three from the repo -- the pointers are re-attached HERE, where the predicate
+# now lives, because a bound whose issue number no longer appears anywhere
+# stops being a bound and becomes a surprise.
+#
+# CONSEQUENCE DEPENDS ON THE CALLER, and this function cannot bound it. For
+# `verify-pr-gate` a wrong "foreign" verdict drops a sentinel and still verifies
+# the marker; for `integ-schema-migration-gate` it SKIPS THE GATE ENTIRELY.
+# Weigh a new caller against the harsher reading, not the milder one.
 gate_cmd_names_no_other_repo() {
   local cmd="$1" verb_ere="$2" seg tok noq argv
   GATE_FOREIGN_RETRACT=""
@@ -4890,12 +4928,69 @@ EOF
 # over.
 gate_target_is_foreign() {
   local hook_dir="$1" target_dir="$2" cmd="$3" verb_ere="$4"
-  local hook_common target_common
+  local hook_common target_common hook_slug url
   GATE_FOREIGN_RETRACT=""
 
   hook_common=$(gate_git_common_dir "$hook_dir") || return 1
   target_common=$(gate_git_common_dir "$target_dir") || return 1
   [ "$hook_common" != "$target_common" ] || return 1
+
+  # A DIFFERENT CHECKOUT IS NOT A DIFFERENT REPOSITORY, and conflating the two
+  # is a total bypass of any gate that relaxes on this answer
+  # (go-to-k/cdkd#3351 review). The comparison above is on `--git-common-dir`,
+  # so a SECOND CLONE of this very repo compares unequal and reads as foreign --
+  # measured: a checkout whose `origin` is literally `github.com/go-to-k/cdkd`,
+  # with its `.markgate.yml` removed so the marker plan resolves to `none`,
+  # relaxed. gh resolves the real cdkd PR from there and the merge lands ungated,
+  # with no `-R`, no `GH_REPO` and no URL for the allowlist to see.
+  #
+  # This bound was ACCEPTABLE for verify-pr-gate, which is where the directory
+  # test came from: there foreignness drops only the sha BINDING and the marker
+  # must still verify, so a second clone loses lane-inheritance protection and
+  # nothing else. Read as a general predicate it is not acceptable at all, and
+  # this function is now general. Do not re-derive the bound from that gate's
+  # KNOWN BOUNDS list without re-reading what its caller does with the answer.
+  #
+  # So identity is settled on the REPO SLUG, and against EVERY remote rather
+  # than `origin`: gh prefers an `upstream` remote over `origin`, so the
+  # ordinary fork setup (`git remote add upstream <this repo>` in a sibling
+  # checkout) resolves THIS repo's pull requests while `origin` names the
+  # sibling -- measured on go-to-k/cdkd#3235, whose record this function is
+  # now the home of.
+  #
+  # FAIL CLOSED on the HOOK side: an unresolvable hook slug (no `origin`, a
+  # local filesystem remote, a malformed URL) answers "not foreign", because a
+  # gate that cannot identify ITSELF cannot claim the target is something else.
+  #
+  # The TARGET side is deliberately NOT symmetric, and the asymmetry is
+  # measured rather than stylistic. A first cut also required the target to
+  # resolve to at least one slug, on the instinct that "I cannot tell what this
+  # is" should never relax. That regressed go-to-k/cdkd#3209: `verify-pr-gate`'s
+  # foreign fixtures are bare `git init` directories with no remote, and the
+  # rule put cdkd's own sentinel requirement back onto a foreign checkout --
+  # the unclearable refusal #3209 exists to remove.
+  #
+  # Re-deriving the hazard rather than keeping the instinct: to be dangerous the
+  # target must be a place gh resolves a pull request in THIS repo from. With no
+  # remote and no flag gh resolves nothing at all (it errors), and every flagged
+  # or env-driven spelling is the allowlist's job below. So the hazard is a
+  # remote NAMING this repo -- which is exactly what the loop tests -- and not
+  # the absence of remotes.
+  local slug
+  if ! hook_slug=$(gate_repo_slug "$hook_dir"); then
+    GATE_FOREIGN_RETRACT="this gate's own repository could not be identified (no usable \`origin\` remote), so it cannot tell whether the target is a different one"
+    return 1
+  fi
+  while IFS= read -r url; do
+    [ -n "$url" ] || continue
+    slug=$(gate_slug_from_url "$url" 2>/dev/null) || continue
+    if [ "$slug" = "$hook_slug" ]; then
+      GATE_FOREIGN_RETRACT="the target checkout has a remote naming $hook_slug, so it is the SAME repository as this gate's, in a different directory"
+      return 1
+    fi
+  done <<EOF
+$(git -C "$target_dir" config --get-regexp '^remote\..*\.url$' 2>/dev/null | sed 's/^[^ ]* //')
+EOF
 
   gate_cmd_names_no_other_repo "$cmd" "$verb_ere" || return 1
   return 0

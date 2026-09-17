@@ -98,6 +98,13 @@ git init -q -b feat/lane "$REPO"
 git -C "$REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 # Repo opt-in: every one of these gates is scoped to repos carrying a
 # `.markgate.yml`, so without this the whole suite passes through untested.
+# EMPTY on purpose, and integ-schema-migration-gate depends on it: an empty
+# config is UNPARSABLE, `gate_resolve_marker_gate` fails closed to `canonical`,
+# and the gate therefore consults markgate. A config DECLARING other gates --
+# or an absent one -- resolves to `none`, and since go-to-k/cdkd#3351 a foreign
+# target at `none` RELAXES, which would take that gate below this fence's
+# reachability floor: it would go quiet in the suite built to notice a gate
+# going quiet.
 touch "$REPO/.markgate.yml"
 
 # `stop-warn` resolves its repo from `${BASH_SOURCE[0]}` -- its OWN checkout --

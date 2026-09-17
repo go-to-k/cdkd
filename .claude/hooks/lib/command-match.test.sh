@@ -3240,6 +3240,9 @@ __gtf_hooks_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 __gtf_repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 __gtf_tmp="$(mktemp -d)"
 git init -q "$__gtf_tmp/foreign" 2>/dev/null
+# A remote from creation: since go-to-k/cdkd#3351 foreignness is decided on the
+# repo SLUG, so a fixture with no remote is unidentifiable and correctly refuses.
+git -C "$__gtf_tmp/foreign" remote add origin https://github.com/go-to-k/cdk-local.git 2>/dev/null
 
 # Guard the fixture itself: if either path stops resolving to a git repo, every
 # case below degrades into the vacuous pass described above.
@@ -3285,14 +3288,91 @@ __gtf "foreign + a PR URL selector -> NOT foreign" 1 \
 __gtf "foreign + an unreadable argument -> NOT foreign" 1 \
   "$__gtf_hooks_dir" "$__gtf_tmp/foreign" 'gh pr merge "$N" --squash'
 
+# --- The retract arms that red on NOTHING without these ----------------------
+#
+# Measured in go-to-k/cdkd#3351's review: deleting `-R*` from the case label, or
+# the `GH_REPO` env test, or the `GH_REPO`-in-text test, or the `xargs` test,
+# left this block GREEN. Each is covered by `verify-pr-gate.test.sh`, but the
+# stated reason for extracting the predicate was that it be fenced ONCE, here --
+# and an equality guard reading "exactly N cases" implies exactly that.
+#
+# BARE `-R` is its own case because the cluster pattern does not cover it:
+# `-[!-]*R*` requires a character between the dash and the R, so `-R <slug>`
+# and the glued `-Rgo-to-k/cdkd` are matched only by the `-R*` label.
+__gtf "foreign + a BARE -R -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/foreign" "gh pr merge 1 -R go-to-k/cdkd"
+__gtf "foreign + a GLUED -R<slug> -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/foreign" "gh pr merge 1 -Rgo-to-k/cdkd"
+__gtf "foreign + GH_REPO in the command text -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/foreign" "GH_REPO=go-to-k/cdkd gh pr merge 1 --squash"
+__gtf "foreign + an EARLIER-SEGMENT GH_REPO export -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/foreign" "export GH_REPO=go-to-k/cdkd; gh pr merge 1 --squash"
+__gtf "foreign + arguments piped through xargs -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/foreign" "printf 1 | xargs gh pr merge --squash"
+
+# `GH_REPO` in the ENVIRONMENT, which no command text can show. Set only around
+# this one call so the rest of the block is unaffected.
+if GH_REPO=go-to-k/cdkd gate_target_is_foreign \
+     "$__gtf_hooks_dir" "$__gtf_tmp/foreign" "gh pr merge 1 --squash" "$GATE_RE_GH_PR_MERGE"; then
+  fail=$((fail + 1))
+  fail_log="${fail_log}FAIL GH_REPO in the environment must retract the relaxation\n"
+  printf 'FAIL foreign + GH_REPO in the ENVIRONMENT -> should NOT be foreign\n'
+else
+  pass=$((pass + 1)); printf 'OK   foreign + GH_REPO in the ENVIRONMENT -> NOT foreign\n'
+fi
+
+# --- REPO identity, not DIRECTORY identity (go-to-k/cdkd#3351 review) --------
+#
+# `--git-common-dir` alone says "a different checkout", which is not "a
+# different repository". Every case below was MEASURED relaxing before the slug
+# conjunct landed, and each is a total bypass of any gate that exits 0 on this
+# answer -- none of them carries a flag, an env var or a URL, so the allowlist
+# cannot see any of them.
+__gtf_slug="$(git -C "$__gtf_repo_dir" config --get remote.origin.url 2>/dev/null)"
+
+# A SECOND CLONE of this very repo. Directory differs, repository does not.
+git init -q "$__gtf_tmp/clone2" 2>/dev/null
+git -C "$__gtf_tmp/clone2" remote add origin "$__gtf_slug" 2>/dev/null
+__gtf "a second clone of THIS repo -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/clone2" "gh pr merge 1 --squash"
+
+# The ordinary fork setup: gh prefers `upstream` over `origin`, so this checkout
+# resolves THIS repo's pull requests while `origin` names the sibling.
+git init -q "$__gtf_tmp/fork" 2>/dev/null
+git -C "$__gtf_tmp/fork" remote add origin https://github.com/go-to-k/cdk-local.git 2>/dev/null
+git -C "$__gtf_tmp/fork" remote add upstream "$__gtf_slug" 2>/dev/null
+__gtf "a sibling with an upstream remote naming THIS repo -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/fork" "gh pr merge 1 --squash"
+
+# Same remote, SSH spelling: the slug normaliser must see through the scheme,
+# or the conjunct is one `git remote add` away from being bypassed again.
+git init -q "$__gtf_tmp/ssh" 2>/dev/null
+git -C "$__gtf_tmp/ssh" remote add origin https://github.com/go-to-k/cdk-local.git 2>/dev/null
+git -C "$__gtf_tmp/ssh" remote add upstream git@github.com:go-to-k/cdkd.git 2>/dev/null
+__gtf "an upstream remote in SSH spelling -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/ssh" "gh pr merge 1 --squash"
+
+# A target with NO remote still RELAXES, and that asymmetry is deliberate.
+# Requiring the target to resolve to a slug was tried and REGRESSED
+# go-to-k/cdkd#3209: `verify-pr-gate`'s foreign fixtures are bare `git init`
+# directories, so the rule put cdkd's own sentinel requirement back onto a
+# foreign checkout -- the unclearable refusal that issue exists to remove
+# (measured: its two relative-invocation cases went 0/0 -> 2/2).
+# The hazard is a remote NAMING this repo, not the absence of remotes: with no
+# remote and no flag gh resolves nothing at all, and every flagged or
+# env-driven spelling is the allowlist's job.
+git init -q "$__gtf_tmp/noremote" 2>/dev/null
+__gtf "a target with NO remote -> foreign (gh can resolve nothing there)" 0 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/noremote" "gh pr merge 1 --squash"
+
 rm -rf "$__gtf_tmp"
 
 # Equality, not a floor, for the reason every other block here uses equality:
 # a floor goes green when a case is deleted.
 __gtf_ran=$((pass + fail - __gtf_start))
-if [ "$__gtf_ran" -ne 8 ]; then
+if [ "$__gtf_ran" -ne 18 ]; then
   fail=$((fail + 1))
-  fail_log="${fail_log}FAIL gate_target_is_foreign block ran $__gtf_ran cases, expected exactly 8 -- a case vanished, or one was added without bumping the count\n"
+  fail_log="${fail_log}FAIL gate_target_is_foreign block ran $__gtf_ran cases, expected exactly 18 -- a case vanished, or one was added without bumping the count\n"
 else
   pass=$((pass + 1)); printf 'ok   gate_target_is_foreign block ran all %s cases\n' "$__gtf_ran"
 fi

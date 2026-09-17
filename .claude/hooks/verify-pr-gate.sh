@@ -173,26 +173,20 @@ fi
 # `--absolute-git-dir`, which differs in every linked worktree -- so only the
 # payload `cwd` can answer it, and `BASH_SOURCE` answered a question it was not
 # asked. "Which REPOSITORY is this?" is the opposite: deliberately
-# worktree-INVARIANT, and the GIT COMMON DIR is exactly the value every linked
-# worktree of one repository shares. So resolving it from `BASH_SOURCE` does not
-# reintroduce #559: the marker lookup below still comes from the payload cwd,
-# every cdkd worktree carries its own `.claude/hooks` copy that resolves to the
-# SAME common dir, and only a genuinely different repository takes the relaxed
-# path.
+# worktree-INVARIANT. So resolving it from `BASH_SOURCE` does not reintroduce
+# #559: the marker lookup below still comes from the payload cwd.
 #
-# Both values are canonicalised with `cd` + `pwd -P` -- the spelling
-# `.claude/skills/work-issues/references/launch-mode.md` uses for this same
-# value. It is DEFENSIVE AND UNFENCED, and saying why it is there is not the
-# same as having measured that it does anything: the usual reason given, that
-# macOS resolves `/var` to `/private/var`, was checked and is NOT one. Measured
-# 2026-09-16 on git 2.49: `--path-format=absolute --git-common-dir` already
-# prints `/private/var/...` for a main checkout, a linked worktree and a
-# relative `GIT_DIR`, and deleting this line changes no verdict in the suite.
-# It stays because a path git DID return unresolved would compare unequal to
-# itself in the RELAXING direction; do not cite a measurement for it.
+# HOW the question is answered -- the common-dir comparison, why a different
+# CHECKOUT is not a different REPOSITORY, the slug test across every remote,
+# the `cd` + `pwd -P` canonicalisation, and the allowlist -- lives on
+# `gate_target_is_foreign` in `lib/command-match.sh`, which is the only copy
+# (go-to-k/cdkd#3351). It is deliberately NOT restated here: an earlier
+# revision of this block described the mechanism beside the call, the mechanism
+# then moved, and the description stayed -- in a change whose whole rationale
+# was that there should be one copy.
 #
-# FAIL CLOSED: if EITHER common dir cannot be resolved, the sentinel stays
-# required, which is today's behaviour. An unresolvable identity never relaxes.
+# FAIL CLOSED: if the identity cannot be resolved, the sentinel stays required.
+# An unresolvable identity never relaxes.
 #
 # KNOWN BOUNDS, stated rather than chased:
 #   - For a foreign target, `verify-pr` is `requires: [...]` with no `include:`
@@ -200,12 +194,15 @@ fi
 #     very hole the binding closes here. That is the sibling repo's own design,
 #     and `.claude/rules/hooks.md` forbids porting cdkd's stricter gate down to
 #     fix it.
-#   - A second CLONE of cdkd (a clone, not a worktree) is foreign by this test
-#     and takes the relaxed path. Not hypothetical -- a separate checkout for
-#     drafting a security fix is an ordinary thing to have. Its marker must
-#     still be fresh, so what it loses is only the lane-N-inherits-lane-N-1
-#     protection: the same bound as the row above, in a checkout that has its
-#     own `/verify-pr`.
+#   - A second CLONE of cdkd used to be foreign by this test and take the
+#     relaxed path. It no longer is: go-to-k/cdkd#3351 settled identity on the
+#     repo SLUG across every remote, so a clone whose `origin` (or `upstream`)
+#     names cdkd is recognised as THIS repository in a different directory. The
+#     bound is recorded as CLOSED rather than deleted, because this file is
+#     where the next reader will look for it -- and because that same bound,
+#     copied verbatim into a gate that EXITS 0 on the answer, was a total
+#     bypass there while being merely a lost optimisation here. A bound is only
+#     as acceptable as what its caller does with the answer.
 #   - "FAIL CLOSED" covers an UNRESOLVABLE identity, not a RESOLVABLE WRONG one.
 #     If this file is reached through a symlinked `.claude` (or `.claude/hooks`)
 #     whose physical location sits inside a DIFFERENT repository, `git -C` follows
@@ -215,12 +212,6 @@ fi
 #     and in every worktree), and it needs write access to the checkout, which is
 #     already game over. Stated because the phrase above reads as if only the
 #     unresolvable case can go wrong.
-# The MECHANISM is shared with `integ-schema-migration-gate.sh` and lives in
-# `lib/command-match.sh` (`gate_target_is_foreign`, extracted by
-# go-to-k/cdkd#3351): the common-dir comparison, the ALLOWLIST that refuses to
-# relax when the command names another repo, and the measurements behind both.
-# `.claude/rules/hooks.md` records what copying a gate parser between hooks
-# costs -- the same hole reappeared at 24 sites once -- so there is one copy.
 #
 # Computed HERE, before the `cd -P` further down: `$__hook_dir` is relative in
 # production, so resolving it from inside the target makes the hook's own repo
