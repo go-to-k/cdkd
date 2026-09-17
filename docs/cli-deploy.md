@@ -386,6 +386,32 @@ Inspect the record with `cdkd state show <stack> --stack-region <region>
 a defect and is never refused: cdkd writes such records on purpose. The full
 per-command table is in [State Management](state-management.md#when-outputs-is-not-an-object).
 
+## A malformed resource `properties` map refuses the deploy
+
+Each resource record carries its own `properties` map — the resolved template
+values cdkd last sent — and it is unchecked in the same way. That one is what
+the change calculation compares your template against, so a non-object makes
+**every property the template declares read as missing from the deployed
+resource**. For a create-only property (an S3 `BucketName`, a DynamoDB
+`TableName`) that is a **replacement**: the live resource would be deleted and
+re-created from a record nobody asked cdkd to act on.
+
+`cdkd deploy` refuses such a record before touching any resource
+(`STATE_RESOURCES_MALFORMED`, exit `1`), naming the resource records it could
+not read — up to five, then a count.
+
+Reading the map as empty instead is not a safe alternative and cdkd does not
+offer one: an empty map declares nothing either, so it produces the identical
+replacement. Only a refusal avoids it. `cdkd diff` does repair those maps and
+warn, because it provisions nothing — its preview of such a record is wrong in
+exactly that direction, and its warning says so.
+
+An **absent** `properties` map is a defect and is refused; an empty `{}` is
+healthy, since a resource can legitimately declare no properties. Inspect the
+record with `cdkd state show <stack> --stack-region <region> --json`, repair or
+remove it, then re-run. Full table in
+[State Management](state-management.md#when-a-resource-properties-map-is-not-an-object).
+
 ## Exit codes
 
 | Code | Meaning |

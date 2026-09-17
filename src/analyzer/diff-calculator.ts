@@ -18,6 +18,7 @@ import {
   withoutAcceptedSilentDropProperties,
   withoutSilentDropProperties,
 } from '../provisioning/property-coverage.js';
+import { refuseMalformedResourceProperties } from '../state/malformed-resources-bag.js';
 
 /**
  * Best-effort resolver for intrinsic functions during diff calculation.
@@ -146,6 +147,51 @@ export class DiffCalculator {
     allowedUnsupportedProperties?: ReadonlySet<string>
   ): Promise<Map<string, ResourceChange>> {
     const changes = new Map<string, ResourceChange>();
+
+    // REFUSE a record whose `properties` bag cannot be read as a map, before
+    // anything dereferences it (issue
+    // [#3191](https://github.com/go-to-k/cdkd/issues/3191)).
+    //
+    // WHY HERE AND NOT ON THE FIVE READS. `currentResource.properties` is read
+    // five times below — the type-change UPDATE, the silent-drop narrowing
+    // pair, and the UPDATE / NO_CHANGE / DELETE records — and a guard on each
+    // is the shape `src/state/malformed-resources-bag.ts`'s header records as
+    // INERT: the first cut of go-to-k/cdkd#3018 put `?? {}` on twelve
+    // `Object.entries` sites and every flow had already dereferenced the
+    // container a line earlier. This is the point where `currentState` ENTERS
+    // this module, so one call dominates all five reads AND the comparison
+    // they feed.
+    //
+    // WHY A REFUSAL. A non-object bag compares unequal to any desired object,
+    // so every property the template declares reads as absent-in-current; a
+    // create-only one among them (`AWS::S3::Bucket`'s `BucketName` is the
+    // measured case) is turned into `requiresReplacement: true` by
+    // `compareProperties` below, and `DeployEngine` REPLACES the live
+    // resource. Reading the bag as empty instead does not avoid that —
+    // measured, a stored `[]` and a stored `5` enumerate no keys and reach the
+    // identical replacement verdict — so a planted or torn record must stop
+    // the run rather than be repaired into one.
+    // `refuseMalformedResourceProperties`'s own doc carries the measurement
+    // and the cost of refusing.
+    //
+    // There are exactly TWO callers of this method
+    // (`grep -rn '\.calculateDiff(' src/`): `deploy-engine.ts`, which
+    // provisions — a nested child reaches it through its own child engine —
+    // and `diff-recursive.ts`, which does not. The read-only one repairs and
+    // warns BEFORE calling, at its own load AND again after it splices adopted
+    // rollback orphans in, which is the read-only / write-capable split this
+    // module's siblings already take. A new caller that forgets gets the
+    // refusal, which is the fail-safe direction.
+    //
+    // NO IDENTITY IS PASSED, and that is the decision rather than an
+    // omission. The only stack name and region in reach are
+    // `currentState.stackName` / `.region`, fields of the very record being
+    // declared malformed, which `parseStateBody` never validates — so a
+    // planted one would make the refusal name a DIFFERENT, healthy stack and
+    // aim its pasteable remedy at that record instead (review of #3191).
+    // `stackClause` in `src/state/malformed-resources-bag.ts` carries the
+    // full reasoning and the shape a later lane threads a TRUSTED pair into.
+    refuseMalformedResourceProperties(currentState, undefined, undefined);
 
     const currentResources = currentState.resources;
     const desiredResources = desiredTemplate.Resources;

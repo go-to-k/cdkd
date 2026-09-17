@@ -38,6 +38,9 @@ mechanism that does not happen at either site. Enumerate them with
 `tests/unit/state/malformed-resources-bag.test.ts` derives the same list and
 fails when this one goes stale.
 
+A THIRD triple, over each ENTRY's `properties` map (#3191), lives with its
+readers: [state-malformed-properties.md](state-malformed-properties.md).
+
 Each function's own JSDoc is the authority for WHY; what follows is what a
 later edit must not undo.
 

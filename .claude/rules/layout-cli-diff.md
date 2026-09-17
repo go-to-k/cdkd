@@ -29,6 +29,8 @@ Children are the **union** of template nested rows (CREATE/UPDATE, descend via t
 - The ANCESTOR CHAIN, not a global visited set — two sibling rows may legitimately name one child template, and a global set would refuse that diamond as a cycle.
 - What the cycle cost was a DIAGNOSIS, not termination. The walk was always bounded: `loadStateOrEmpty` runs at every node against a `childStackName` that grows one `~<childLogicalId>` per level, so the 1024-byte S3 key limit stopped it — measured live at ~190 levels with `Your key is too long`, naming a stack that does not exist.
 
+`loadStateOrEmpty` is also where the read-only container repairs happen — the `resources` bag, the `outputs` bag, and each entry's own `properties` map, whose split from the deploy's refusal is in [state-malformed-properties.md](state-malformed-properties.md).
+
 ### `computeStackDiff`
 
 The per-stack state-vs-template diff, extracted so the top-level loop and the walker share one impl; returns `{changes, outputChanges}`.
