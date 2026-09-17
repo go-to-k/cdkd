@@ -40,8 +40,12 @@ union never drops.
 ## What the union does ACROSS deploys, measured
 
 An earlier revision of this file said a plaintext entry an older binary
-persisted "out-ranks" this run's redacted one. That is wrong, and the three
-cases behave differently enough that guessing was never going to land:
+persisted "out-ranks" this run's redacted one. That is wrong, and the cases
+behave differently enough that guessing was never going to land. The count is
+deliberately NOT stated: an earlier revision said "three" and a row was added
+beneath it without the number moving -- the same insertion that inverted the
+pointers, caught on the pointers and missed on the count. A sentence with no
+number in it cannot drift on the next one.
 
 Rows are NAMED, not numbered. An earlier revision inserted a row and left the
 pointers below on their old ordinals, which inverted them — it called the row
