@@ -65,13 +65,14 @@
 #           leaf persisted the OTHER token's frame. Each child `{Ref}` now
 #           binds to its own frame; the run asserts BOTH leaves rather than
 #           guessing which token lost the slot.
-#   #3114 - the child's DEBUG LINES over a frame the carry refuses.
+#   #3114 - the child's DEBUG LINES over an ssm-framed parameter.
 #           `SubFloorPinSsm` is an `Fn::Join` around an `ssm` SecureString
 #           token with a 2-character value (`port:m8`), consumed only by a
-#           child CONDITION. The child's inherited bag holds no whole-value
-#           entry for it and the middle is below the needle floor, so its
-#           parameter, `Ref` and `Fn::Join` lines printed `port:m8` until the
-#           child looked up the log twin the parent registered for the value.
+#           child CONDITION. Its parameter, `Ref` and `Fn::Join` lines printed
+#           `port:m8` until the child looked up the log twin the parent
+#           registered (#3114, then masked `port:***`). Since #3156 the parent's
+#           carry records a whole-value entry for this frame, so the lines are
+#           masked WHOLE (`***`) -- a live signal that the carry certified it.
 #
 # THREE deploys, and the third is not decoration. Phases 1-2b only ever reach
 # `NestedStackProvider.create` and a no-op, so the deploy engine's UPDATE call
@@ -286,10 +287,10 @@ if [ "${PIN_JOIN_VALUE}" = "${PIN_VALUE}" ]; then
 fi
 # The #3114 frame: an out-of-band SecureString with a 2-character value, which
 # the parent spells as an `Fn::Join` around its `ssm` token (the stack's
-# `pinSsmReference`). The parent's carry refuses that frame, so the child masks
-# it only through the log twin the parent registered. Its OWN value, for the
-# reason `PIN_JOIN_VALUE` gives: an equal framed value would be masked by
-# another arm's whole-value entry and this arm would pass with no twin at all.
+# `pinSsmReference`). Since #3156 the parent's carry records a whole-value
+# entry for that frame. Its OWN value, for the reason `PIN_JOIN_VALUE` gives:
+# an equal framed value would be masked by another arm's whole-value entry and
+# this arm would pass with the carry refusing it.
 PIN_SSM_PARAM_NAME="cdkd-nested-pinssm-${ACCOUNT_ID}"
 PIN_SSM_VALUE="m8"
 PIN_SSM_FRAMED_VALUE="port:${PIN_SSM_VALUE}"
@@ -473,8 +474,7 @@ assert_child_state_carries_no_plaintext() { # $1 = label, $2 = child state json
     exit 1
   fi
   # The #3114 frame is consumed only by a condition, so nothing in the child's
-  # record should ever hold it; a leaf that did would carry it in the clear,
-  # since the parent's carry refuses this frame.
+  # record should ever hold it.
   if grep -qF "${PIN_SSM_FRAMED_VALUE}" <<<"${scan}"; then
     echo "FAIL: ${label}: the child's state.json carries the ssm-framed sub-floor plaintext" >&2
     exit 1
@@ -530,18 +530,23 @@ scan_verbose_output() { # scan_verbose_output <label> <text>
     echo "FAIL: ${label}: no 'Resolved Fn::Join: port:***' line -- the framed pin's Join was not logged masked (issue #3100)" >&2
     exit 1
   fi
-  # THE #3114 ARM. The CHILD's three lines over the ssm-framed parameter, each
-  # asserted whole and masked BY POSITION: `port:***`, not `***`. A whole-value
-  # entry in the inherited bag would mask the parameter whole instead, so these
-  # exact texts also prove the carry refused the frame and the parent's log twin
-  # is what masked it. Presence, so the negative scan above cannot pass because
-  # the child stopped logging the parameter.
-  local line
-  for line in 'Parameter SubFloorPinSsm: using user-provided value port:***' \
-              'Resolved Ref to parameter: SubFloorPinSsm -> port:***' \
-              'Resolved Fn::Join: x-port:***'; do
-    if ! grep -qF "${line}" <<<"${text}"; then
-      echo "FAIL: ${label}: no '${line}' line -- the child did not log the ssm-framed parameter masked by the parent's twin (issue #3114)" >&2
+  # THE #3114 ARM, since #3156. The CHILD's lines over the ssm-framed
+  # parameter, each asserted whole and masked WHOLE: `***`, not the positional
+  # `port:***` the parent's log twin alone gives. The whole mask is the parent
+  # carry's whole-value entry reaching the child, so these exact texts prove
+  # the carry certified the frame (the refused frame printed `port:***`).
+  # Presence, so the negative scan above cannot pass because the child stopped
+  # logging the parameter. The child's `Resolved Fn::Join: ***` line is not
+  # parameter-specific, so it is not asserted here; the negative scan covers it.
+  # EVERY line holding the prefix must END in the mask, not merely one line
+  # contain it: `value ***m8` would satisfy a substring match, and the scan
+  # above greps the framed `port:m8`, not the bare two characters.
+  local prefix
+  for prefix in 'Parameter SubFloorPinSsm: using user-provided value ' \
+                'Resolved Ref to parameter: SubFloorPinSsm -> '; do
+    if ! awk -v p="${prefix}" 'index($0, p) { n++; if (substr($0, length($0) - length(p) - 2) != p "***") bad = 1 }
+      END { exit (n == 0 || bad) ? 1 : 0 }' <<<"${text}"; then
+      echo "FAIL: ${label}: the child's '${prefix}' lines are absent or not all masked whole by the parent carry's entry (issues #3114, #3156)" >&2
       exit 1
     fi
   done
@@ -1132,12 +1137,12 @@ assert_eq "child PinJoinParam's observedProperties readback holds the FRAMED exp
 # the phase 1 deploy. These are its PREMISES, stated here because they read the
 # synthesized template and the parent's record, neither of which exists then.
 echo "==> #3114: premises of the ssm-framed parameter arm"
-# The frame must be one the carry REFUSES, or the child would mask the value
-# through a whole-value entry and the twin lookup would go unexercised: an
-# OBJECT source, an empty delimiter and three parts -- a literal opening
-# `port:{{resolve:ssm:` with no other brace, the account `Ref`, and the bare
-# closing `}}`. A `secretsmanager` token here, or a literal CDK folded into a
-# string, fails it.
+# The frame must be the ssm spelling the carry refused before #3156, or the
+# whole mask asserted after the phase 1 deploy would not show that #3156's
+# provenance arm certified it: an OBJECT source, an empty delimiter and three
+# parts -- a literal opening `port:{{resolve:ssm:` with no other brace, the
+# account `Ref`, and the bare closing `}}`. A `secretsmanager` token here, or a
+# literal CDK folded into a string, fails it.
 assert_eq "premise: the synthesized SubFloorPinSsm is ONE ssm token in a literal frame, the account Ref inside it" \
   "$(jq -r '.Resources.Child.Properties.Parameters.SubFloorPinSsm | type == "object" and (.["Fn::Join"] | (length == 2) and (.[0] == "") and (.[1] | length == 3) and (.[1][0] | type == "string" and startswith("port:{{resolve:ssm:") and (ltrimstr("port:{{") | contains("{") or contains("}") | not)) and (.[1][1] == {"Ref": "AWS::AccountId"}) and (.[1][2] == "}}"))' "${SYNTH_TEMPLATE}")" "true"
 # The child must never persist the value: its only consumer is a condition.

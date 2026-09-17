@@ -17,9 +17,11 @@
  * `nested-stack-provider-inherited-secrets.test.ts`). They do NOT run the
  * engine's `recordNestedStackParameterExpressions`, which turns a wholly
  * literal secretsmanager frame (the `port:` + `PIN_REF` one most cases use)
- * into a whole-value inherited entry that masks the value first; the `ssm`
- * SecureString case is the frame that carry refuses, the one production
- * routes through this lookup.
+ * into a whole-value inherited entry that masks the value first. The one
+ * exception is the `ssm` SecureString case: its token sits in a nested part, a
+ * frame the carry still refuses (go-to-k/cdkd#3306), and it runs the carry to
+ * show that refusal, since production routes such a frame through this
+ * lookup.
  *
  * ROUTE 2 — a string resolved in two stages. A list element that still spells
  * a reference after its list intrinsic resolved it (a resolved VALUE that is
@@ -42,7 +44,7 @@ const PIN = 'q7';
  */
 const HEAD = 'po';
 
-/** A sub-floor SecureString value, for the frame the parent's carry refuses. */
+/** A sub-floor SecureString value, for a frame the parent's carry refuses. */
 const PIN_SSM = 'm8';
 
 /** The PUBLIC ssm value route 2's second stage resolves to. */
@@ -78,9 +80,9 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
           return { Parameter: { Value: '{{resolve:ssm:host}}', Type: 'String' } };
         }
         if (name === 'host') return { Parameter: { Value: PUBLIC_HOST, Type: 'String' } };
-        // The frame the parent's carry REFUSES (an `ssm` token inside an
-        // intrinsic frame), which is the frame that reaches the new lookup in
-        // production: a sub-floor SecureString.
+        // The ssm case's sub-floor SecureString, in a frame the parent's
+        // carry still refuses (a token in a nested part), which reaches this
+        // lookup in production.
         if (name === 'pinssm') return { Parameter: { Value: PIN_SSM, Type: 'SecureString' } };
         const notFound = new Error(`ParameterNotFound: ${String(name)}`);
         notFound.name = 'ParameterNotFound';
@@ -102,6 +104,9 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 
 const { IntrinsicFunctionResolver, resetAccountInfoCache } = await import(
   '../../../src/deployment/intrinsic-function-resolver.js'
+);
+const { recordNestedStackParameterExpressions, redactSecretsForState } = await import(
+  '../../../src/deployment/secret-redaction.js'
 );
 
 const PIN_REF = `{{resolve:secretsmanager:${SECRET_ID}:SecretString:pin}}`;
@@ -387,16 +392,35 @@ describe('issue #3114 route 1: a nested child takes the mask its parent register
     expect(debugLines('Resolved Fn::Join: ')).toEqual(['Resolved Fn::Join: ***']);
   });
 
-  it('the same lookup over an ssm SecureString frame, the one the parent carry refuses', async () => {
+  it('the same lookup over an ssm SecureString frame the parent carry still refuses (a token in a nested part)', async () => {
     const parentBag = new Map<string, string>();
     const parent = new IntrinsicFunctionResolver('us-east-1');
-    const parameterValue = String(
-      await parent.resolve(
-        { 'Fn::Join': ['', ['port:', '{{resolve:ssm:pinssm}}']] },
-        { template: { Resources: {} }, resources: {}, recordedSecretValues: parentBag } as never
-      )
-    );
+    // The token sits inside a NESTED `Fn::Sub` part, a shape the carry still
+    // refuses (go-to-k/cdkd#3306): the outer object's own text spells no
+    // token. Pinned below by running the carry over this very source, so the
+    // case keeps a production-reachable anchor.
+    // `Control` is a LITERAL frame over the same secret in the same row, which
+    // the carry does record: its entry below shows the walk ran over this bag
+    // and row, so `Endpoint`'s missing entry is a refusal, not an early exit.
+    const source = {
+      Parameters: {
+        Endpoint: { 'Fn::Join': ['', ['port:', { 'Fn::Sub': '{{resolve:ssm:pinssm}}' }]] },
+        Control: 'lit:{{resolve:ssm:pinssm}}',
+      },
+    };
+    const resolved = (await parent.resolve(source, {
+      template: { Resources: {} },
+      resources: {},
+      recordedSecretValues: parentBag,
+    } as never)) as { Parameters: { Endpoint: string; Control: string } };
+    const parameterValue = resolved.Parameters.Endpoint;
     expect(parameterValue).toBe(`port:${PIN_SSM}`);
+    recordNestedStackParameterExpressions(parentBag, 'AWS::CloudFormation::Stack', resolved, source);
+    expect(parentBag.get(`lit:${PIN_SSM}`)).toBe('lit:{{resolve:ssm:pinssm}}');
+    // Premise: after the carry, value-only redaction is SILENT on the value --
+    // no whole-value entry and no substring needle -- so the child's masked
+    // lines below can come only from the log twin the parent registered.
+    expect(redactSecretsForState(parameterValue, parentBag)).toBe(parameterValue);
 
     logSpies.debug.mockClear();
     const child = new IntrinsicFunctionResolver('us-east-1');

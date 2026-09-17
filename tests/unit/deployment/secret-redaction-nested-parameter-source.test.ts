@@ -1705,8 +1705,12 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
       // reference is `/app/prod`, a public String holding the same characters,
       // which the resolver records nothing for. The frame arm's wildcard then
       // matches `/app/dev` alone -- the premise below, the arm's own residual.
-      // From the recorder's side a SecureString spelled the same way is
-      // indistinguishable, so every ssm object frame is refused.
+      // From what the frame arm wrote a SecureString spelled the same way is
+      // indistinguishable. The bag here is hand-built, so no resolver recorded
+      // the leaf's own resolution and the provenance arm (issue #3156) has
+      // nothing to certify on; the real-resolver twin of this case, where that
+      // record shows a public replacement, is in
+      // `nested-stack-refused-frame-carry.test.ts`.
       const DEV = '{{resolve:ssm:/app/dev}}';
       const PUB_JOIN = { 'Fn::Join': ['', ['port:{{resolve:ssm:/app/', { Ref: 'Env' }, '}}']] };
       const parent = parentResolved([DEV, PIN]);

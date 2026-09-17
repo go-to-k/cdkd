@@ -16,6 +16,16 @@ directions), that the live values are the plaintext, that the tree is
 diff-clean, and that every level's state versions are swept. The secret is
 created out of band by `verify.sh`.
 
+Since issue [#3156](https://github.com/go-to-k/cdkd/issues/3156) a separate
+`Framed` branch carries two **2-character secrets in the intrinsic frames the
+nested-stack carry used to refuse**: an `ssm` SecureString token with the
+account `Ref` inside it, and a Secrets Manager token followed by a region
+`Ref` outside it. The middle stack owns nothing but its nested-stack row and
+hands each value down both as `{Ref}` and re-wrapped in an `Fn::Join`.
+`verify.sh` asserts the framed expression on the root row, the middle row and
+every grandchild leaf, and that the grandchild's parameter debug lines are
+present and masked. The SecureString is created out of band by `verify.sh`.
+
 This fixture is a strictly deeper + wider + bidirectional **superset** of the
 existing [`nested-stack-deep`](../nested-stack-deep) fixture. Where
 `nested-stack-deep` stops at 3 levels with one resource per level and only
@@ -39,9 +49,13 @@ CdkdNestedStack3LevelExample (root, depth=0)
       ├─ Param                     (AWS::SSM::Parameter — value = Fn::GetAtt[GreatGrandchild, Outputs.<ggc-param>] + sibling topic name)
       └─ GreatGrandchild           (AWS::CloudFormation::Stack, depth=3 — DEEPER than nested-stack-deep)
          └─ Param                  (AWS::SSM::Parameter — value carries the root topic name passed DOWN three boundaries)
+└─ Framed                          (AWS::CloudFormation::Stack, depth=1 — the #3156 branch; owns only its nested-stack row)
+   └─ FramedGrandchild             (AWS::CloudFormation::Stack, depth=2)
+      └─ FramedSsmPass / FramedSsmWrap / FramedOutPass / FramedOutWrap  (AWS::SSM::Parameter — one per framed hand-off)
 ```
 
-- **6 resources across 4 levels**: 4 SSM Parameters + 2 SNS Topics. SSM is the
+- **12 resources across 6 stacks**: 10 SSM Parameters + 2 SNS Topics (the
+  #3094 and #3156 arms add six of the parameters). SSM is the
   cheapest cdkd-supported resource (synchronous create/delete, no IAM
   dependency, no eventual-consistency window); the two SNS topics add a second
   type and a sibling-of-the-nested-node DAG edge at the grandchild level
