@@ -253,6 +253,23 @@ describe('cross-stack read names are redacted at persist (#3289)', () => {
     expect(normalize('prod-a')).not.toBe(normalize('prod-b'));
   });
 
+  it('normalizes using the OUTPUTS pass bag, which only the drain fills', () => {
+    // The same ordering trap as the persist path, in the code added to fix the
+    // persist path's duplicate. Every caller evaluates the normalizer INSIDE a
+    // state literal — before `withParentInfo` reaches `redactStateForPersist`
+    // — so without its own `absorbOutputsPassSecrets()` the bag is empty here,
+    // the identity arm is taken, and the duplicate survives on exactly the
+    // path the first blocker was on.
+    const engine = makeEngine();
+    seedSecrets(engine, 'outputs', new Map([[SECRET_PLAINTEXT, SECRET_EXPR]]));
+
+    const priv = engine as unknown as {
+      crossStackReadKeyNormalizer(): (name: string) => string;
+    };
+    const normalize = priv.crossStackReadKeyNormalizer();
+    expect(normalize(`prod-${SECRET_PLAINTEXT}`)).toBe(normalize(`prod-${SECRET_EXPR}`));
+  });
+
   it('normalizes to identity when this deploy resolved no secret', () => {
     // Keeps the union key byte-identical to the pre-#3289 one for every stack
     // that has no secret, which is almost all of them.

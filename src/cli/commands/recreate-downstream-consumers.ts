@@ -246,9 +246,9 @@ export function renderDownstreamConsumers(
     if (c.producerUnresolvable === true) {
       lines.push(
         `    - ${c.consumerStack} (${c.consumerRegion}) reads ${c.exportName} via ` +
-          `Fn::${c.intrinsic} from a producer cdkd CANNOT NAME: that stack name was ` +
-          `assembled from a secret reference, so it is stored unresolved and cannot be ` +
-          `compared. It may or may not be this stack.`
+          `Fn::${c.intrinsic} from a producer cdkd CANNOT NAME: that stack name ` +
+          `carried a secret, so it is stored redacted and cannot be compared to a ` +
+          `live stack name. It may or may not be this stack.`
       );
       continue;
     }

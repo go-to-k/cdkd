@@ -970,18 +970,31 @@ function crossStackReadsForPartialSave(
    * first. Measured before this parameter existed; the union never drops, so
    * nothing downstream would have removed it.
    *
-   * Absent means identity, which is what a caller holding no secrets wants
-   * and what every pre-#3289 call site did.
+   * REQUIRED, not defaulted to identity. A default here would be a branch no
+   * probe can red -- all seven call sites pass one, so nothing would exercise
+   * it -- which is the shape this change already deleted an empty-bag arm for.
+   * A caller holding no secrets gets identity from
+   * `crossStackReadKeyNormalizer` itself, where the emptiness is DECIDED.
    */
-  normalizeName: (name: string) => string = (name) => name
+  normalizeName: (name: string) => string
 ): Pick<StackState, 'imports' | 'outputReads'> {
-  const key = (stack: string, region: string, name: string): string =>
-    `${normalizeName(stack)}\u0000${canonicalizeRegion(region)}\u0000${normalizeName(name)}`;
-  const imports = unionCrossStackReads(previous.imports, recordedImports, (e) =>
-    key(e.sourceStack, e.sourceRegion, e.exportName)
-  );
-  const outputReads = unionCrossStackReads(previous.outputReads, recordedOutputReads, (e) =>
-    key(e.sourceStack, e.sourceRegion, e.outputName)
+  // The stack segment is normalized for `outputReads` and NOT for `imports`,
+  // matching exactly which fields the persist redaction rewrites. Normalizing
+  // both was tried and is wrong in the direction that DROPS a record:
+  // `imports[].sourceStack` is stored verbatim forever, so normalizing it makes
+  // the key space coarser than the value space -- two distinct producer names
+  // whose plaintexts share one expression collapse onto one key, and the union
+  // drops a genuinely distinct destroy-blocking import. That also contradicts
+  // this change's own argument for leaving that field alone.
+  const importKey = (e: StateImportEntry): string =>
+    `${e.sourceStack}\u0000${canonicalizeRegion(e.sourceRegion)}\u0000${normalizeName(e.exportName)}`;
+  const outputReadKey = (e: StateOutputReadEntry): string =>
+    `${normalizeName(e.sourceStack)}\u0000${canonicalizeRegion(e.sourceRegion)}\u0000${normalizeName(e.outputName)}`;
+  const imports = unionCrossStackReads(previous.imports, recordedImports, importKey);
+  const outputReads = unionCrossStackReads(
+    previous.outputReads,
+    recordedOutputReads,
+    outputReadKey
   );
   return {
     // Omitted rather than written empty, matching what every one of these save
@@ -1608,7 +1621,13 @@ export class DeployEngine {
    * only outputs-substituted references: a literal output equal to a secret
    * nothing resolved is not recorded, and is not touched.
    *
-   * Run by every {@link redactOutputs} (issue
+   * Run by every {@link redactOutputs}, AND by
+   * {@link crossStackReadKeyNormalizer} (issue
+   * [#3289](https://github.com/go-to-k/cdkd/issues/3289)), which needs the
+   * same bag and runs BEFORE the persist walk. Calling it twice in one save
+   * is safe and MEASURED rather than assumed: the entry fold re-sets equal
+   * values, and `recordResolvedPair` leaves a pair alone when the plaintext
+   * is unchanged, so no CONFLICTING marker is invented. (issue
    * [#2814](https://github.com/go-to-k/cdkd/issues/2814)), because a part the
    * drain cap stopped waiting for records into its pass map LATE: a secret
    * that arrives between the pass and the final save is then still a needle
@@ -2267,9 +2286,10 @@ export class DeployEngine {
     // ORDER IS LOAD-BEARING, and it is the opposite of how this read when the
     // cross-stack redaction was added (issue
     // [#3289](https://github.com/go-to-k/cdkd/issues/3289), security review).
-    // `redactOutputs` is the ONLY caller of `absorbOutputsPassSecrets`, which
-    // is the only writer of `outputSecrets` — so a cross-stack redaction
-    // evaluated first reads that bag EMPTY. The success path hides it (the
+    // `absorbOutputsPassSecrets` is the only writer of `outputSecrets`, and on
+    // THIS path `redactOutputs` is what calls it — so a cross-stack redaction
+    // evaluated first reads that bag EMPTY. (`crossStackReadKeyNormalizer`
+    // calls the absorb itself, for the same reason one level earlier.) The success path hides it (the
     // outputs pass drains earlier there), but `persistStateAfterOutputFailure`
     // reaches here from the `catch` with nothing absorbed, and that is exactly
     // the shape this redaction exists for: an `Fn::GetStackOutput` whose
@@ -2373,6 +2393,21 @@ export class DeployEngine {
    * byte-identical to the pre-#3289 one for every stack that has none.
    */
   private crossStackReadKeyNormalizer(): (name: string) => string {
+    // ABSORB FIRST, the same reason `redactOutputs` does and the same reason
+    // the persist order was corrected: `outputSecrets` is written only by
+    // `absorbOutputsPassSecrets`, and every caller of THIS method evaluates it
+    // inside a state literal -- i.e. BEFORE `withParentInfo` reaches
+    // `redactStateForPersist`. Without the drain the bag is empty here, the
+    // identity arm below is taken, and the duplicate this normalizer exists to
+    // stop survives on exactly the path the round-1 blocker was on: a
+    // `Fn::GetStackOutput` in a `CfnOutput.Value` (so the needle is in the
+    // outputs pass only) on a deploy whose outputs pass then threw.
+    //
+    // Fixing the persist order and leaving this one is how the same defect
+    // shipped twice in one PR. Calling the absorb from both places is safe:
+    // measured, a second call re-sets equal entries and `recordResolvedPair`
+    // leaves an unchanged pair alone, so it invents no CONFLICTING marker.
+    this.absorbOutputsPassSecrets();
     const secrets = this.allRecordedSecrets();
     if (secrets.size === 0) return (name) => name;
     return (name) => redactSecretsForState(name, secrets);

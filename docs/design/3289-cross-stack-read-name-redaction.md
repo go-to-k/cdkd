@@ -45,7 +45,8 @@ cases behave differently enough that guessing was never going to land:
 
 | `previous` (persisted) | does this deploy re-resolve the reference? | outcome |
 |---|---|---|
-| plaintext, older binary | yes | keys MATCH (both sides normalize to the same string), union dedups, the persist redaction rewrites it — **self-repairs** |
+| plaintext, older binary | yes, and the secret's VALUE is unchanged | keys MATCH (both sides normalize to the same string), union dedups, the persist redaction rewrites it — **self-repairs** |
+| plaintext, older binary | yes, but the secret has since ROTATED | this run's needle is the NEW value, so the old name normalizes to itself: keys disagree, the union keeps both, and only the new one is redacted — **the OLD plaintext survives beside a redacted twin** |
 | redacted | yes | keys agree only BECAUSE of `normalizeName`; without it the two spellings key differently, both survive, and the persist redaction makes them byte-identical **duplicates** |
 | plaintext, older binary | **no** — the resource is unchanged, or the reference is gone | this run holds no needle for it — **the plaintext survives** |
 
@@ -55,9 +56,14 @@ verbatim, the same compare-normalized / store-verbatim split the function
 already makes for the region. A duplicate row is not cosmetic — it doubles an
 entry in the destroy refusal and in the recreate prompt.
 
-Row 3 is the real residual, and it is what `cdkd scrub` is owed for
+Rows 3 and 4 are the real residual, and they are what `cdkd scrub` is owed for
 (go-to-k/cdkd#3337). The population is narrower than "everything written before
-this fix": a record whose reference IS re-resolved later repairs itself.
+this fix" — a record whose reference is re-resolved to the SAME value repairs
+itself — but it is wider than "never re-resolved again": a rotated secret leaves
+its old plaintext behind, and scrub cannot reach that one either, since scrub's
+needles are also the CURRENT value. Closing the rotation case needs something
+that recognises a stale plaintext without holding it, which is a different
+instrument from the value scan; it is stated as open rather than designed here.
 
 ## The needle bag is the UNION of this deploy's secrets
 

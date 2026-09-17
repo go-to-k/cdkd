@@ -313,6 +313,13 @@ describe('findDownstreamConsumers (#650)', () => {
       ]);
       expect(rendered).toContain('CANNOT NAME');
       expect(rendered).toContain('It may or may not be this stack.');
+      // The CAUSE is stated generically on purpose. An earlier wording said the
+      // name "was assembled from a secret reference, so it is stored
+      // unresolved", which is false for the mask-only class the `***` arm was
+      // added for -- there the cause is a custom resource's `NoEcho` response
+      // and the stored form is a mask, not a reference. A data-loss prompt is
+      // the wrong place to name a cause that is right half the time.
+      expect(rendered).not.toContain('assembled from a secret reference');
     });
 
     it('prints a redacted NAME as its expression, never as the plaintext', () => {
@@ -327,7 +334,6 @@ describe('findDownstreamConsumers (#650)', () => {
       // passed only because the fixture used a literal name. The property that
       // is actually true, and worth fencing, is that the PLAINTEXT never
       // appears.
-      const PLAINTEXT = 'correct-horse-battery-staple';
       const EXPR = '{{resolve:secretsmanager:prod/db:SecretString:password::}}';
       const rendered = renderDownstreamConsumers('Producer', [
         {
@@ -338,8 +344,31 @@ describe('findDownstreamConsumers (#650)', () => {
           producerUnresolvable: true,
         },
       ]);
-      expect(rendered).not.toContain(PLAINTEXT);
       expect(rendered).toContain(EXPR);
+    });
+
+    it('PASSES ITS INPUT THROUGH -- it is not a masking boundary', () => {
+      // Stated as a positive fact rather than fenced as a protection, because
+      // it is not one. An earlier version asserted the rendered line contains
+      // no plaintext, over a fixture whose input held none: unfalsifiable by
+      // construction, AND a claim the renderer does not enforce -- it prints
+      // `exportName` verbatim. A record written before the persist redaction
+      // still carries a plaintext `outputName`, and that reaches this prompt.
+      //
+      // Redaction happens at PERSIST. Moving a mask here would only cover rows
+      // this function happens to render, which is the per-sink approach the
+      // secret-redaction module records as the thing that keeps leaving the
+      // next sink open.
+      const rendered = renderDownstreamConsumers('Producer', [
+        {
+          consumerStack: 'StackB',
+          consumerRegion: 'us-east-1',
+          exportName: 'Endpoint-a-plaintext-from-an-older-record',
+          intrinsic: 'GetStackOutput',
+          producerUnresolvable: true,
+        },
+      ]);
+      expect(rendered).toContain('Endpoint-a-plaintext-from-an-older-record');
     });
   });
 
