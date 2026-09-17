@@ -3396,6 +3396,48 @@ git -C "$__gtf_tmp/ghresolved" config remote.origin.gh-resolved go-to-k/cdkd 2>/
 __gtf "gh-resolved pointing at THIS repo -> NOT foreign" 1 \
   "$__gtf_hooks_dir" "$__gtf_tmp/ghresolved" "gh pr merge 1 --squash"
 
+# --- Round 3: the URL set gh reads is not the one a hook reconstructs --------
+#
+# Each measured relaxing the gate on the real v10-bump PR. They are why the
+# enumeration now comes from `git remote -v` -- the source gh itself parses --
+# rather than from a hand-built set.
+
+# `set-url --add`: `ls-remote --get-url` prints only the FIRST url, so a
+# browser-copied decoy in front hid the real one.
+git init -q "$__gtf_tmp/addurl" 2>/dev/null
+git -C "$__gtf_tmp/addurl" remote add origin "${__gtf_slug%.git}/tree/main" 2>/dev/null
+git -C "$__gtf_tmp/addurl" remote set-url --add origin "$__gtf_slug" 2>/dev/null
+__gtf "a SECOND url added to one remote -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/addurl" "gh pr merge 1 --squash"
+
+# `pushInsteadOf` rewrites the PUSH url with no `pushurl` key to read.
+git init -q "$__gtf_tmp/pushio" 2>/dev/null
+git -C "$__gtf_tmp/pushio" remote add origin https://example.com/decoy/repo 2>/dev/null
+git -C "$__gtf_tmp/pushio" config "url.${__gtf_slug}.pushInsteadOf" https://example.com/decoy/repo 2>/dev/null
+__gtf "a pushInsteadOf rewrite naming THIS repo -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/pushio" "gh pr merge 1 --squash"
+
+# gh parses the URL and DECODES the path; a percent-encoded owner is a working
+# remote that a byte compare reads as a different repository.
+git init -q "$__gtf_tmp/pctenc" 2>/dev/null
+git -C "$__gtf_tmp/pctenc" remote add origin https://github.com/go%2Dto%2Dk/cdkd.git 2>/dev/null
+__gtf "a PERCENT-ENCODED owner -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/pctenc" "gh pr merge 1 --squash"
+
+# `gh-resolved` was the one comparison left unfolded.
+git init -q "$__gtf_tmp/ghrescase" 2>/dev/null
+git -C "$__gtf_tmp/ghrescase" remote add origin https://github.com/go-to-k/cdk-local.git 2>/dev/null
+git -C "$__gtf_tmp/ghrescase" config remote.origin.gh-resolved Go-To-K/CDKD 2>/dev/null
+__gtf "a MIXED-CASE gh-resolved -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/ghrescase" "gh pr merge 1 --squash"
+
+# `gh-resolved = base` is gh's "no override" value and must NOT refuse.
+git init -q "$__gtf_tmp/ghbase" 2>/dev/null
+git -C "$__gtf_tmp/ghbase" remote add origin https://github.com/go-to-k/cdk-local.git 2>/dev/null
+git -C "$__gtf_tmp/ghbase" config remote.origin.gh-resolved base 2>/dev/null
+__gtf "gh-resolved = base -> foreign (it names no override)" 0 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/ghbase" "gh pr merge 1 --squash"
+
 # THE FENCE FOR THE STRUCTURAL FIX. A remote that exists but does not normalise
 # must refuse -- that, not the list of shapes above, is what makes the class
 # terminate. Deleting the refusal reds THIS case and none of the others.
@@ -3421,9 +3463,9 @@ rm -rf "$__gtf_tmp"
 # Equality, not a floor, for the reason every other block here uses equality:
 # a floor goes green when a case is deleted.
 __gtf_ran=$((pass + fail - __gtf_start))
-if [ "$__gtf_ran" -ne 24 ]; then
+if [ "$__gtf_ran" -ne 29 ]; then
   fail=$((fail + 1))
-  fail_log="${fail_log}FAIL gate_target_is_foreign block ran $__gtf_ran cases, expected exactly 24 -- a case vanished, or one was added without bumping the count\n"
+  fail_log="${fail_log}FAIL gate_target_is_foreign block ran $__gtf_ran cases, expected exactly 29 -- a case vanished, or one was added without bumping the count\n"
 else
   pass=$((pass + 1)); printf 'ok   gate_target_is_foreign block ran all %s cases\n' "$__gtf_ran"
 fi

@@ -4514,6 +4514,17 @@ gate_slug_from_url() {
       *) break ;;
     esac
   done
+  # PERCENT-DECODE before folding: gh parses the URL and decodes the path, so
+  # `go%2Dto%2Dk` is `go-to-k` to gh and was a working remote that this gate
+  # read as a different repository (measured). `%` -> `\x` + `printf %b` is the
+  # bash 3.2 decode; a literal backslash already in the path would be eaten by
+  # it, so the decode is REFUSED rather than guessed when one is present -- and
+  # a refusal here means "unreadable", which the caller turns into "not
+  # foreign".
+  case "$path" in
+    *\\*) return 1 ;;
+    *%*) path=$(printf '%b' "${path//%/\\x}") ;;
+  esac
   host=$(printf '%s' "$host" | tr 'A-Z' 'a-z')
   path=$(printf '%s' "$path" | tr 'A-Z' 'a-z')
   # The WHOLE path, not its last two segments. Collapsing to `<owner>/<name>`
@@ -5036,48 +5047,63 @@ gate_target_is_foreign() {
   #
   # It also preserves go-to-k/cdkd#3209, whose foreign fixtures carry ZERO
   # remotes rather than unparsable ones -- the distinction the `continue` lost.
-  local slug name url_line saw_remote=0
+  local slug name url_line
   if ! hook_slug=$(gate_repo_slug "$hook_dir"); then
     GATE_FOREIGN_RETRACT="this gate's own repository could not be identified (no usable \`origin\` remote), so it cannot tell whether the target is a different one"
     return 1
   fi
 
-  # `ls-remote --get-url` APPLIES `insteadOf` (it prints the rewritten URL and
-  # contacts nothing), which is how the rewriting class is closed by asking git
-  # rather than by modelling it. `pushurl` is read too: gh falls back to it when
-  # the fetch URL is not a GitHub URL, and `^remote\..*\.url$` structurally
-  # cannot match it.
-  while IFS= read -r name; do
-    [ -n "$name" ] || continue
-    for url_line in \
-      "$(git -C "$target_dir" ls-remote --get-url "$name" 2>/dev/null)" \
-      "$(git -C "$target_dir" config --get "remote.$name.pushurl" 2>/dev/null)"; do
-      [ -n "$url_line" ] || continue
-      saw_remote=1
-      if ! slug=$(gate_slug_from_url "$url_line" 2>/dev/null); then
-        GATE_FOREIGN_RETRACT="the target checkout has a remote ($name) whose URL this gate cannot read, so it cannot rule out that it names the same repository"
-        return 1
-      fi
-      if [ "$slug" = "$hook_slug" ]; then
-        GATE_FOREIGN_RETRACT="the target checkout has a remote ($name) naming $hook_slug, so it is the SAME repository as this gate's, in a different directory"
-        return 1
-      fi
-    done
-    # `gh repo set-default` writes `remote.<name>.gh-resolved`, which gh prefers
-    # over every URL (go-to-k/cdkd#3256). It holds `owner/repo` or the literal
-    # `base`, not a URL, so it is compared against the hook slug's tail.
-    url_line=$(git -C "$target_dir" config --get "remote.$name.gh-resolved" 2>/dev/null)
-    if [ -n "$url_line" ] && [ "$url_line" != "base" ]; then
-      saw_remote=1
-      if [ "$url_line" = "${hook_slug#*/}" ]; then
-        GATE_FOREIGN_RETRACT="the target checkout has \`gh repo set-default\` pointing $name at ${hook_slug#*/}, so gh resolves this gate's own repository from there"
-        return 1
-      fi
+  # READ THE SOURCE gh READS, rather than reconstructing it. Three review rounds
+  # each found this gate's URL set narrower than gh's, one shape at a time --
+  # first `origin` only, then a hand-built set of `ls-remote --get-url` +
+  # `pushurl`. `git remote -v` ends that: it is what gh itself parses, it is
+  # already `insteadOf` AND `pushInsteadOf` expanded, and it lists EVERY url
+  # value as a fetch or push line, including the extra ones
+  # `git remote set-url --add` writes -- which `ls-remote --get-url` hides,
+  # since that prints only the FIRST url. Measured: with a browser-copied
+  # `.../tree/main` URL first and the real one added second, `--get-url` printed
+  # only the decoy while `gh repo view` answered go-to-k/cdkd, and the gate
+  # exited 0 on the real v10-bump PR.
+  #
+  # It also costs one `git` spawn for the whole walk instead of three per
+  # remote (measured 22.6 ms each, i.e. 4.5 s of the hook's 10 s budget at 200
+  # remotes -- and a hook killed by that budget disarms every gate at once).
+  while IFS= read -r url_line; do
+    [ -n "$url_line" ] || continue
+    # `<name>\t<url> (fetch|push)`.
+    name="${url_line%%	*}"
+    url_line="${url_line#*	}"
+    url_line="${url_line% (*)}"
+    [ -n "$url_line" ] || continue
+    if ! slug=$(gate_slug_from_url "$url_line" 2>/dev/null); then
+      GATE_FOREIGN_RETRACT="the target checkout has a remote ($name) whose URL this gate cannot read, so it cannot rule out that it names the same repository"
+      return 1
+    fi
+    if [ "$slug" = "$hook_slug" ]; then
+      GATE_FOREIGN_RETRACT="the target checkout has a remote ($name) naming $hook_slug, so it is the SAME repository as this gate's, in a different directory"
+      return 1
     fi
   done <<EOF
-$(git -C "$target_dir" remote 2>/dev/null)
+$(git -C "$target_dir" remote -v 2>/dev/null)
 EOF
-  : "$saw_remote"
+
+  # `gh repo set-default` writes `remote.<name>.gh-resolved`, which gh prefers
+  # over every URL (go-to-k/cdkd#3256). It holds `owner/repo` or the literal
+  # `base`, not a URL, so it is compared against the hook slug's path tail --
+  # CASE-FOLDED, like every other comparison here. It was the one comparison
+  # left raw, and `Go-To-K/CDKD` walked past it (measured).
+  while IFS= read -r url_line; do
+    [ -n "$url_line" ] || continue
+    url_line="${url_line#*	}"
+    [ -n "$url_line" ] && [ "$url_line" != "base" ] || continue
+    url_line=$(printf '%s' "$url_line" | tr 'A-Z' 'a-z')
+    if [ "$url_line" = "${hook_slug#*/}" ]; then
+      GATE_FOREIGN_RETRACT="the target checkout has \`gh repo set-default\` pointing a remote at ${hook_slug#*/}, so gh resolves this gate's own repository from there"
+      return 1
+    fi
+  done <<EOF
+$(git -C "$target_dir" config --get-regexp '^remote\..*\.gh-resolved$' 2>/dev/null | tr ' ' '\t')
+EOF
 
   gate_cmd_names_no_other_repo "$cmd" "$verb_ere" || return 1
   return 0
