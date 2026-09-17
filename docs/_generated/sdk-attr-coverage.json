@@ -1083,8 +1083,7 @@
       "arnAttributes": [
         {
           "name": "Arn",
-          "status": "allow-listed",
-          "rationale": "physicalId IS the subscription ARN (sns-subscription-provider.ts); the create path resolves through guardedPhysicalIdFallback"
+          "status": "cached"
         }
       ],
       "gaps": []

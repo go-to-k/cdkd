@@ -43,6 +43,73 @@ describe('SNSSubscriptionProvider', () => {
     provider = new SNSSubscriptionProvider();
   });
 
+  describe('the Arn attribute (issue #3329)', () => {
+    const TOPIC_ARN = 'arn:aws:sns:us-east-1:123456789012:my-topic';
+    const QUEUE_ARN = 'arn:aws:sqs:us-east-1:123456789012:my-queue';
+    const props = { TopicArn: TOPIC_ARN, Protocol: 'sqs', Endpoint: QUEUE_ARN };
+
+    it('records the ARN the Subscribe response returned', async () => {
+      // Before this issue the provider returned `attributes: {}` and a
+      // cross-resource `Fn::GetAtt ...Arn` was answered by
+      // `guardedPhysicalIdFallback`. That worked, which is why the type held
+      // the tree's only `SDK_ATTR_ALLOW_LIST` entry; caching retires it.
+      mockSend.mockResolvedValueOnce({ SubscriptionArn: `${TOPIC_ARN}:sub-id` });
+      const result = await provider.create('L', 'AWS::SNS::Subscription', props);
+      expect(result.physicalId).toBe(`${TOPIC_ARN}:sub-id`);
+      expect(result.attributes).toEqual({ Arn: `${TOPIC_ARN}:sub-id` });
+    });
+
+    it('records NOTHING when the response carried no ARN — never the constructed fallback', async () => {
+      // NEGATIVE ONE, and the SILENT half. `create` falls back to
+      // `<topicArn>:<logicalId>` for the physical id, and that string is
+      // ARN-SHAPED, so the resolver's guard passes it. Caching it would put a
+      // FABRICATED ARN in state that nothing downstream can tell from a real
+      // one — strictly worse than the fallback it would replace. The rule is
+      // "cache the ARN AWS returned, or cache nothing".
+      mockSend.mockResolvedValueOnce({});
+      const result = await provider.create('L', 'AWS::SNS::Subscription', props);
+      expect(result.physicalId).toBe(`${TOPIC_ARN}:L`);
+      expect(result.attributes).toEqual({});
+      expect(result.attributes).not.toHaveProperty('Arn');
+    });
+
+    it('records NOTHING on import, where the id can be PendingConfirmation', async () => {
+      // NEGATIVE TWO. An imported id is taken from the user verbatim and may be
+      // the literal `PendingConfirmation` that `delete()` special-cases. A
+      // CACHED attribute is served straight out of the record — this type has
+      // no `REF_RETURNS_ARN_FROM_STATE` entry, so the resolver's placeholder
+      // refusal never runs for it — and caching a non-ARN under an `*Arn` name
+      // converts that path's LOUD refusal into a silent wrong value.
+      const imported = await provider.import({
+        logicalId: 'L',
+        resourceType: 'AWS::SNS::Subscription',
+        stackName: 'TestStack',
+        region: 'us-east-1',
+        properties: props,
+        knownPhysicalId: 'PendingConfirmation',
+      });
+      expect(imported?.physicalId).toBe('PendingConfirmation');
+      expect(imported?.attributes).toEqual({});
+    });
+
+    it('carries the cached ARN through a replacement, since update delegates to create', async () => {
+      // `update()` returns `createResult.attributes`, and the engine REPLACES
+      // the attribute map rather than merging it — so a partial map here would
+      // erase what create recorded.
+      mockSend.mockResolvedValueOnce({}); // Unsubscribe
+      mockSend.mockResolvedValueOnce({ SubscriptionArn: `${TOPIC_ARN}:new-sub` });
+      const result = await provider.update(
+        'L',
+        `${TOPIC_ARN}:old-sub`,
+        'AWS::SNS::Subscription',
+        { ...props, Protocol: 'sqs' },
+        { ...props, Protocol: 'email' }
+      );
+      expect(result.wasReplaced).toBe(true);
+      expect(result.attributes).toEqual({ Arn: `${TOPIC_ARN}:new-sub` });
+    });
+  });
+
   describe('create — backfilled subscription attributes (issue #609)', () => {
     const TOPIC_ARN = 'arn:aws:sns:us-east-1:123456789012:my-topic';
     const QUEUE_ARN = 'arn:aws:sqs:us-east-1:123456789012:my-queue';

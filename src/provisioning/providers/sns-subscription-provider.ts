@@ -12,6 +12,7 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { stringifyValue } from '../../utils/stringify.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { definedAttributes } from '../attribute-map.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -206,7 +207,16 @@ export class SNSSubscriptionProvider implements ResourceProvider {
 
       return {
         physicalId: subscriptionArn,
-        attributes: {},
+        // Cache the ARN AWS RETURNED, or cache nothing — never the `||`
+        // fallback a line above (issue
+        // [#3329](https://github.com/go-to-k/cdkd/issues/3329)). That fallback
+        // is ARN-SHAPED, so it passes the resolver's `guardedPhysicalIdFallback`
+        // guard while being fabricated: caching it would put a value nothing
+        // downstream can tell from a real ARN into state, which is strictly
+        // worse than the fallback it replaces. `definedAttributes` drops the
+        // key when the response carried none, leaving the previous behaviour
+        // (resolve through the physical id) for that path alone.
+        attributes: definedAttributes({ Arn: response.SubscriptionArn }),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -600,6 +610,14 @@ export class SNSSubscriptionProvider implements ResourceProvider {
   // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (input.knownPhysicalId) {
+      // NO `Arn` attribute here, deliberately (issue
+      // [#3329](https://github.com/go-to-k/cdkd/issues/3329) review). The id is
+      // taken from the user verbatim and can legitimately be the literal
+      // `PendingConfirmation` that `delete()` below special-cases. A CACHED
+      // attribute is served straight out of the record — this type has no
+      // `REF_RETURNS_ARN_FROM_STATE` entry, so the resolver's placeholder
+      // refusal never runs for it — and caching a non-ARN under an `*Arn` name
+      // would turn that path's LOUD refusal into a silent wrong value.
       return { physicalId: input.knownPhysicalId, attributes: {} };
     }
     return null;
