@@ -1783,10 +1783,15 @@ describe('the malformed-properties texts (issue go-to-k/cdkd#3191)', () => {
     // its reach is the record's own unvalidated `stackName` / `region`, so a
     // planted pair would aim the pasteable remedy at a different, healthy
     // stack. It passes neither, and the text degrades to a TEMPLATE.
-    const text = malformedResourcePropertiesRefusalMessage(undefined, undefined, ['A']);
+    // `ParamZeta`, not `A`: the clause itself says "declares as ADDED" and "is
+    // A REPLACEMENT", so `toContain('A')` passes even when the id list renders
+    // NOTHING. The sibling file (`diff-recursive-malformed-properties.test.ts`)
+    // documents that trap and picks this same id for it; the rule just had not
+    // been applied here.
+    const text = malformedResourcePropertiesRefusalMessage(undefined, undefined, ['ParamZeta']);
     expect(text).toContain('The state record this command loaded holds 1 resource record(s)');
     expect(text).toContain('cdkd state show <stack> --stack-region <region> --json');
-    expect(text).toContain('A');
+    expect(text).toContain('ParamZeta');
     expect(text.split('\n')).toHaveLength(1);
   });
 
