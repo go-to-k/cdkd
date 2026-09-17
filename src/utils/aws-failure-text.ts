@@ -53,10 +53,27 @@
  * other side. Wrong text is not made safe by being short.
  *
  * So the test is what SET the message, and {@link isAwsAuthoredFailure} is the
- * whole statement of it: the smithy marker fields (`$metadata` / `$fault` /
- * `$response`), which every AWS SDK v3 error carries and nothing in cdkd sets.
- * `extractDeploymentEventError` already keys its own AWS-shaped test on
- * `$metadata`, so this is the repo's existing predicate rather than a new one.
+ * whole statement of it: a real SERVICE signal — `$fault`, or a NUMERIC
+ * `$metadata.httpStatusCode` — plus the `CredentialsProviderError` name for the
+ * one AWS-authored shape that carries neither. Nothing under `src/` sets any of
+ * them.
+ *
+ * It was the mere PRESENCE of `$metadata` / `$fault` / `$response` until issue
+ * [#3297](https://github.com/go-to-k/cdkd/issues/3297), on the premise that
+ * those are fields only an SDK error carries. That premise is true and the
+ * conclusion still did not follow: `@smithy/core`'s retry middleware stamps
+ * `$metadata` onto every error it gives up on, socket errors included, so the
+ * predicate answered YES for a transport failure and reduced
+ * `connect ECONNREFUSED <ip>:443` to the bare token `Error`.
+ *
+ * **`extractDeploymentEventError` still keys its own AWS-shaped test on
+ * `$metadata` presence, and that is a DIFFERENT question rather than a
+ * divergence to reconcile.** It asks "is there wire metadata worth recording"
+ * — the `requestId` and the wire `Code` it records for the events store —
+ * where this asks "did AWS write this sentence". A socket error answers yes to the first and no to
+ * the second. An earlier revision of this comment cited that function as
+ * evidence that the presence test was "the repo's existing predicate"; it is
+ * not evidence, and citing it that way is how the defect justified itself.
  *
  * The chain is deliberately NOT walked. A cdkd error WRAPPING an AWS one has
  * its own authored text at the top, and walking would reduce that to the
@@ -151,48 +168,130 @@ export interface AwsFailureText {
 /**
  * Appended to a redacted summary so the withheld half is still reachable.
  *
- * EXPORTED because a caller that reduces on its OWN authorship predicate has to
- * compose the same summary by hand, and a second spelling of this sentence is a
- * second thing to keep in sync — `cloud-control-provider.ts`'s `abandonWait`
- * hand-copied it, pinned only by a `toContain('Re-run with --verbose')` that
- * would have gone on passing while the two drifted.
+ * EXPORTED for the TESTS, and that is now its only reason. It was exported
+ * because `cloud-control-provider.ts`'s `abandonWait` reduced on its own wider
+ * predicate and had to compose this sentence by hand; issue
+ * [#3297](https://github.com/go-to-k/cdkd/issues/3297) removed that predicate
+ * and the hand-copy with it, so no `src/` file spells this literal twice. The
+ * remaining importer is `cloud-control-wait-abandoned.test.ts`, which asserts
+ * the ABSENCE of the pointer and would silently stop discriminating if it
+ * hard-coded the words instead.
  */
 export const VERBOSE_POINTER = "Re-run with --verbose for AWS's own message.";
 
 /**
  * The summary {@link describeAwsFailure} builds for an `Error` it is reducing.
  *
- * Exported for the same reason as {@link VERBOSE_POINTER}, one level up: a
- * caller whose authorship predicate is WIDER than this module's reduces shapes
- * the helper hands back raw, and must then build this exact string itself.
+ * UN-exported by issue [#3297](https://github.com/go-to-k/cdkd/issues/3297).
+ * It was exported for one caller — `cloud-control-provider.ts`, whose own
+ * authorship predicate was WIDER than this module's, so the helper handed it
+ * raw text for a shape it wanted reduced and it had to build this string
+ * itself. That predicate is gone and so is the divergence, leaving the export
+ * with no callers and a doc citing one that no longer exists. Keep it private:
+ * a re-export is the signal that a second predicate has appeared.
  */
-export function redactedAwsFailureSummary(error: Error): string {
+function redactedAwsFailureSummary(error: Error): string {
   return `${error.name || 'Error'}. ${VERBOSE_POINTER}`;
 }
 
 /**
  * Whether AWS wrote this failure's message.
  *
- * Keyed on the marker fields `@aws-sdk/*` errors carry through
- * `@smithy/smithy-client`'s `ServiceException` — `$metadata` on every
- * deserialized error, `$fault` on every modeled one, `$response` where a
- * middleware attached the raw response. Nothing under `src/` sets any of them,
- * so a match cannot be a cdkd-authored error.
+ * Keyed on a real SERVICE signal: `$fault`, which every modeled
+ * `@smithy/smithy-client` `ServiceException` carries, or a NUMERIC
+ * `$metadata.httpStatusCode`, which only a deserialized RESPONSE has. Nothing
+ * under `src/` sets either, so a match cannot be a cdkd-authored error.
  *
- * A transport-level failure (a socket timeout, a DNS error) can reach a caller
- * without `$metadata`, and that is the correct answer rather than a gap: those
+ * **`$metadata` PRESENCE is deliberately NOT the signal, and an earlier
+ * revision of this function used it** (issue
+ * [#3297](https://github.com/go-to-k/cdkd/issues/3297)). `@smithy/core`'s retry
+ * middleware stamps `$metadata = {attempts, totalRetryDelay}` onto EVERY error
+ * it gives up on — socket errors included — and creates the object when it is
+ * absent. Measured against a real `CloudControlClient` pointed at a closed
+ * port:
+ *
+ *     name 'Error', code 'ECONNREFUSED', $fault undefined,
+ *     message 'connect ECONNREFUSED 127.0.0.1:1',
+ *     $metadata { attempts: 3, totalRetryDelay: 58 }
+ *
+ * So the old predicate classified a plain transport failure as AWS-authored and
+ * reduced it to its `name` — which for a socket error is the bare token
+ * `Error`, carrying no diagnosis at all. That deleted `connect ECONNREFUSED
+ * <ip>:443`, the exact wording issue
+ * [#3236](https://github.com/go-to-k/cdkd/issues/3236) was REPORTED with, from
+ * the only durable record of the outage.
+ *
+ * The `CredentialsProviderError` name is the third arm because credential
+ * resolution carries NEITHER signal — identity is resolved by
+ * `httpAuthSchemeMiddleware` at step `serialize`, which WRAPS retry's
+ * `finalizeRequest`, so an escaping credential error never enters retry's catch
+ * (measured, and the mechanism is why: retry CREATES `$metadata` when absent,
+ * so an error arriving without one proves it bypassed retry). It is also the
+ * shape whose message carries the most: `@aws-sdk/credential-provider-process`
+ * wraps EVERY exec failure in it, so the text interpolates the helper's ARGV
+ * and its stderr.
+ *
+ * **Its siblings are deliberately NOT matched, and the reasons differ per class
+ * rather than being one rule.** `@smithy/property-provider` exports a family of
+ * three — `ProviderError`, and its subclasses `CredentialsProviderError` and
+ * `TokenProviderError` — plus `@smithy/credential-provider-imds`'s
+ * `InstanceMetadataV1FallbackError`, the only subclass OF
+ * `CredentialsProviderError` in the installed tree. (All four set `name`; an
+ * earlier revision read "the only subclass that overrides `name`", which is
+ * false of the three siblings.) Each was read rather than reasoned about,
+ * because the answers go BOTH ways:
+ *
+ *  - `TokenProviderError` must NOT be reduced. Its message IS the remedy —
+ *    `Token is expired. To refresh this SSO session run 'aws sso login' with
+ *    the corresponding profile.` — so reducing it to a wire name would delete
+ *    the fix instruction. A revision matching the whole `*ProviderError` suffix
+ *    did exactly that. The benefit is not realized on the Cloud Control poll
+ *    path today, and claiming otherwise was measured false:
+ *    `@aws-sdk/credential-provider-sso` catches every token failure and
+ *    rethrows it as a `CredentialsProviderError`, so the shape cannot escape a
+ *    SigV4 client there. The carve-out is a rule about the FAMILY, kept because
+ *    the rewrap is upstream behaviour that can change.
+ *  - `ProviderError` (the base) and `InstanceMetadataV1FallbackError` carry
+ *    connectivity and CONFIG wording respectively — the IMDS one interpolates
+ *    three fixed literals naming config keys, with no argv, stderr, profile
+ *    value or identity in it. Both are more useful raw.
+ *
+ * So string EQUALITY is right here, and right by enumeration rather than by
+ * assumption. Re-check the list when the SDK major moves; do not widen it to a
+ * suffix. The specific mechanism to re-check is `ProviderError.from()`, which
+ * does `Object.assign(new this(...), error)` — that copies a SOURCE error's own
+ * `name` over the class field and would defeat string equality outright. It has
+ * ZERO call sites anywhere in `node_modules` today, which is the only reason
+ * equality is safe rather than merely correct-looking.
+ *
+ * `$response` is gone with the `$metadata` disjunct, and the reason is NOT the
+ * obvious one -- an earlier revision of this comment said it "is only ever set
+ * on a `ServiceException`, which carries `$fault` anyway", and review measured
+ * that false. `@smithy/core`'s `deserializerMiddleware` stamps `$response` on
+ * ANY error escaping the deserializer, and the very next line reads
+ * `if (!("$metadata" in error))`, i.e. the library explicitly handles the
+ * `$response`-without-`$metadata` shape (a `JSON.parse` `SyntaxError` out of
+ * `parseJsonBody`). What actually preserves the verdict is the SIBLING line in
+ * that same catch: `error.$metadata = { httpStatusCode: response.statusCode,
+ * ... }`, so the `httpStatusCode` disjunct subsumes `$response` for every
+ * response the middleware can read. The residual is a `response` failing
+ * `HttpResponse.isInstance`, or a throw inside that block's own
+ * `catch (ignored)` -- shapes with no HTTP status at all, which are not service
+ * rejections and should not be reduced.
+ *
+ * A transport-level failure (a socket timeout, a DNS error) reaches a caller
+ * with neither signal, and that is the correct answer rather than a gap: those
  * messages are written by the HTTP layer and name a host, never a caller.
  */
 function isAwsAuthoredFailure(error: Error): boolean {
   const candidate = error as {
-    $metadata?: unknown;
+    $metadata?: { httpStatusCode?: unknown };
     $fault?: unknown;
-    $response?: unknown;
   };
   return (
-    candidate.$metadata !== undefined ||
     candidate.$fault !== undefined ||
-    candidate.$response !== undefined
+    typeof candidate.$metadata?.httpStatusCode === 'number' ||
+    error.name === 'CredentialsProviderError'
   );
 }
 

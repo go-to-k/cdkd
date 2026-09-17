@@ -62,6 +62,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { S3BucketProvider } from '../../../src/provisioning/providers/s3-bucket-provider.js';
 import {
+  hasRedactedCause,
   isIamPropagationError,
   isRetryableTransientError,
   markRedactedCause,
@@ -180,6 +181,67 @@ describe('S3BucketProvider thrown-failure identity redaction (issue #2302)', () 
       expect(debugText()).toContain('no identity-based policy allows');
       expect(debugText()).toContain(CALLER_ARN);
       expect(defaultLevelText()).not.toContain(CALLER_ARN);
+    });
+
+    it("keeps a TRANSPORT failure's wording, which the retry stamp used to delete (issue #3297)", async () => {
+      // UNFENCED at this call site until this case: every fixture in this file
+      // sets a numeric `httpStatusCode`, so none can exhibit the shape whose
+      // verdict go-to-k/cdkd#3297 changes.
+      //
+      // `@smithy/core`'s retry middleware stamps `$metadata = {attempts,
+      // totalRetryDelay}` onto every error it gives up on -- socket errors
+      // included -- and CREATES the object when absent. The old
+      // presence-keyed predicate therefore called a plain `ECONNREFUSED`
+      // AWS-authored and reduced it to its `name`, which for a socket error is
+      // the bare token `Error`: a persisted `ProvisioningError` saying nothing
+      // at all about what went wrong.
+      mockSend.mockRejectedValue(
+        Object.assign(new Error('connect ECONNREFUSED 10.0.0.1:443'), {
+          code: 'ECONNREFUSED',
+          $metadata: { attempts: 3, totalRetryDelay: 58 },
+        })
+      );
+
+      const thrown = await capture(() =>
+        provider.create(LOGICAL_ID, RESOURCE_TYPE, { BucketName: BUCKET })
+      );
+
+      // The host and the code SURVIVE into the persisted message.
+      expect(thrown.message).toContain('connect ECONNREFUSED 10.0.0.1:443');
+      expect(thrown.message).not.toContain('--verbose');
+      // The `markRedactedCause` gate rides the same verdict, and it is the
+      // other half that was unfenced: nothing was withheld, so the classifier
+      // must not be opted into reading the chain.
+      expect(hasRedactedCause(thrown)).toBe(false);
+    });
+
+    it('WITHHOLDS a credential-resolution failure, which used to pass through verbatim (issue #3297)', async () => {
+      // The inverse delta, and the leak this fix CLOSES. Credential resolution
+      // runs OUTSIDE the retry middleware, so a `CredentialsProviderError`
+      // carried no marker at all and the old predicate let its message through
+      // verbatim -- into the persisted `ProvisioningError`. With
+      // `credential_process` that text interpolates the helper's ARGV and its
+      // stderr.
+      mockSend.mockRejectedValue(
+        Object.assign(
+          new Error("Command failed: /bin/sh -c 'vault read aws'\nvault: token hvs.SECRET rejected"),
+          { name: 'CredentialsProviderError' }
+        )
+      );
+
+      const thrown = await capture(() =>
+        provider.create(LOGICAL_ID, RESOURCE_TYPE, { BucketName: BUCKET })
+      );
+
+      expect(thrown.message).toContain('CredentialsProviderError');
+      expect(thrown.message).not.toContain('hvs.SECRET');
+      expect(thrown.message).not.toContain('/bin/sh');
+      // Withheld, not deleted -- and nowhere at default level. The second half
+      // is what the sibling cases in this file already pair; without it a
+      // regression echoing the argv to `warn` satisfies everything above.
+      expect(debugText()).toContain('hvs.SECRET');
+      expect(defaultLevelText()).not.toContain('hvs.SECRET');
+      expect(defaultLevelText()).not.toContain('/bin/sh');
     });
 
     it('NEGATIVE CONTROL: a cdkd-authored refusal inside the same try passes through VERBATIM', async () => {

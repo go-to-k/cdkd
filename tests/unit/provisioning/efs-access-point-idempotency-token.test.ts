@@ -499,6 +499,60 @@ describe('EFSProvider CreateAccessPoint idempotency token (issue #2080)', () => 
       expect(warnSpy.mock.calls.flat().join('\n')).toContain('declined to adopt it');
     });
 
+    it("keeps a TRANSPORT read-back failure's wording, and withholds a credential one (issue #3297)", async () => {
+      // The widest of the three call sites go-to-k/cdkd#3297 touched without a
+      // case: `decline()`'s `failure.summary` reaches BOTH a default-level
+      // `logger.warn` and the persisted `ProvisioningError`. Every fixture in
+      // this file sets `$fault` AND a numeric `httpStatusCode`, so none of them
+      // can exhibit either shape whose verdict the fix changes.
+      //
+      // Transport half: `@smithy/core`'s retry middleware stamps `$metadata`
+      // onto every error it gives up on, so the old presence-keyed predicate
+      // reduced a socket failure to its `name` -- the bare token `Error` --
+      // leaving the decline reason saying nothing about what went wrong.
+      aws.loseNextResponse = true;
+      aws.describeError = Object.assign(new Error('connect ECONNREFUSED 10.0.0.1:443'), {
+        code: 'ECONNREFUSED',
+        $metadata: { attempts: 3, totalRetryDelay: 58 },
+      });
+
+      const transportMessage = await createAccessPoint().then(
+        () => '<resolved, expected a rejection>',
+        (e: unknown) => (e instanceof Error ? e.message : String(e))
+      );
+
+      expect(transportMessage).toContain('connect ECONNREFUSED 10.0.0.1:443');
+      expect(transportMessage).not.toContain('--verbose');
+    });
+
+    it('WITHHOLDS a credential read-back failure, which used to reach a default-level warn (issue #3297)', async () => {
+      // The inverse half at the same site, and the one that was a disclosure:
+      // credential resolution carries no marker, so the old predicate let a
+      // `CredentialsProviderError` through verbatim into the decline reason --
+      // which is both WARNED at default verbosity and thrown as a persisted
+      // `ProvisioningError`. Under `credential_process` that text is the
+      // helper's ARGV and its stderr.
+      aws.loseNextResponse = true;
+      aws.describeError = Object.assign(
+        new Error("Command failed: /bin/sh -c 'vault read aws'\nvault: token hvs.SECRET rejected"),
+        { name: 'CredentialsProviderError' }
+      );
+
+      const message = await createAccessPoint().then(
+        () => '<resolved, expected a rejection>',
+        (e: unknown) => (e instanceof Error ? e.message : String(e))
+      );
+
+      expect(message).toContain('CredentialsProviderError');
+      expect(message).not.toContain('hvs.SECRET');
+      expect(message).not.toContain('/bin/sh');
+      // Not at default level either -- the warn shares the reason string.
+      const warned = warnSpy.mock.calls.flat().join('\n');
+      expect(warned).not.toContain('hvs.SECRET');
+      // Withheld, not deleted: AWS's own words still reach `debug`.
+      expect(debugSpy.mock.calls.flat().join('\n')).toContain('hvs.SECRET');
+    });
+
     it('WITHHOLDS the AWS failure text from the thrown message, routing it to debug', async () => {
       aws.loseNextResponse = true;
       aws.describeError = awsAuthored(

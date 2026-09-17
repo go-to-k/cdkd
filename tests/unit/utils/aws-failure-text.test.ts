@@ -27,14 +27,9 @@ const AWS_TEXT =
   `"arn:aws:s3:::my-bucket" because no identity-based policy allows it`;
 
 /** Build an AWS-shaped failure carrying exactly ONE of the three marker fields. */
-function awsShaped(marker: '$metadata' | '$fault' | '$response', name = 'AccessDenied'): Error {
+function awsShaped(marker: '$metadata' | '$fault', name = 'AccessDenied'): Error {
   const e = new Error(AWS_TEXT);
-  const value =
-    marker === '$metadata'
-      ? { httpStatusCode: 403 }
-      : marker === '$fault'
-        ? 'client'
-        : { statusCode: 403, headers: {} };
+  const value = marker === '$metadata' ? { httpStatusCode: 403 } : 'client';
   return Object.assign(e, { name, [marker]: value });
 }
 
@@ -50,11 +45,18 @@ function expectWithheld(summary: string): void {
 }
 
 describe('describeAwsFailure: which failures are AWS-authored (issue #2302)', () => {
-  // Each marker ALONE must be enough. The predicate is an OR, so a fixture that
-  // sets all three cannot tell a working arm from a dead one -- which is the
-  // state the two call-site suites left `$fault` and `$response` in.
-  it.each(['$metadata', '$fault', '$response'] as const)(
-    'redacts a failure whose ONLY smithy marker is %s',
+  // Each signal ALONE must be enough. The predicate is an OR, so a fixture that
+  // sets both cannot tell a working arm from a dead one -- which is the state
+  // the two call-site suites left `$fault` in.
+  //
+  // `$response` is GONE from this list (issue
+  // [#3297](https://github.com/go-to-k/cdkd/issues/3297)) and its removal costs
+  // no coverage: it is only ever set on a `ServiceException`, which carries
+  // `$fault` anyway, so the disjunct decided nothing on its own. `$metadata`
+  // now means a NUMERIC `httpStatusCode`, not mere presence -- see the case
+  // below for why.
+  it.each(['$metadata', '$fault'] as const)(
+    'redacts a failure whose ONLY service signal is %s',
     (marker) => {
       const failure = describeAwsFailure(awsShaped(marker));
 
@@ -68,16 +70,79 @@ describe('describeAwsFailure: which failures are AWS-authored (issue #2302)', ()
     }
   );
 
-  it('treats an EMPTY $metadata as AWS-authored — presence is the signal, not contents', () => {
-    // `$metadata: {}` is what a failure that never reached error deserialization
-    // carries. Keying on a nested field instead of on presence would let it
-    // through unredacted.
-    const e = Object.assign(new Error(AWS_TEXT), { name: 'AccessDenied', $metadata: {} });
+  it('does NOT treat a $metadata without a status code as AWS-authored (issue #3297)', () => {
+    // This case asserted the OPPOSITE until issue
+    // [#3297](https://github.com/go-to-k/cdkd/issues/3297), under the title
+    // "presence is the signal, not contents" -- a defect stated as a
+    // specification, which is why it survived a review that read the code.
+    //
+    // `$metadata` PRESENCE is not a service signal. `@smithy/core`'s retry
+    // middleware stamps `$metadata = {attempts, totalRetryDelay}` onto EVERY
+    // error it gives up on, socket errors included, and CREATES the object when
+    // it is absent. Measured against a real `CloudControlClient` pointed at a
+    // closed port, a plain `ECONNREFUSED` arrives carrying one -- so the old
+    // predicate reduced it to its `name`, which for a socket error is the bare
+    // token `Error`. That deleted `connect ECONNREFUSED <ip>:443`, the exact
+    // wording issue [#3236](https://github.com/go-to-k/cdkd/issues/3236) was
+    // reported with, from the only durable record of the outage.
+    //
+    // The shape here is the RETRY stamp, not `{}`: `{}` is what the old comment
+    // described and is strictly weaker, since it cannot exhibit the field the
+    // new predicate reads.
+    const e = Object.assign(new Error('connect ECONNREFUSED 10.0.0.1:443'), {
+      name: 'Error',
+      code: 'ECONNREFUSED',
+      $metadata: { attempts: 3, totalRetryDelay: 58 },
+    });
+
+    const failure = describeAwsFailure(e);
+
+    expect(failure.redacted).toBe(false);
+    // The diagnosis SURVIVES, which is the whole point of the change.
+    expect(failure.summary).toBe('connect ECONNREFUSED 10.0.0.1:443');
+    expect(failure.detail).toBe('connect ECONNREFUSED 10.0.0.1:443');
+  });
+
+  it('redacts a CredentialsProviderError, which carries neither service signal', () => {
+    // The third arm, and the reason it is a NAME rather than a field: identity
+    // is resolved by `httpAuthSchemeMiddleware` at step `serialize`, which
+    // WRAPS retry's `finalizeRequest`, so an escaping credential error never
+    // enters retry's catch and never gets the stamp. It is also the shape whose
+    // message carries the most -- `@aws-sdk/credential-provider-process` wraps
+    // EVERY exec failure in it, so the text interpolates the helper's ARGV and
+    // its stderr.
+    const e = Object.assign(
+      new Error("Command failed: /bin/sh -c 'vault read'\nvault: token hvs.SECRET rejected"),
+      { name: 'CredentialsProviderError' }
+    );
 
     const failure = describeAwsFailure(e);
 
     expect(failure.redacted).toBe(true);
-    expectWithheld(failure.summary);
+    expect(failure.summary).toContain('CredentialsProviderError');
+    expect(failure.summary).not.toContain('hvs.SECRET');
+    expect(failure.summary).not.toContain('/bin/sh');
+    // Withheld, not deleted: `--verbose` still recovers it.
+    expect(failure.detail).toContain('hvs.SECRET');
+  });
+
+  it('does NOT redact the *ProviderError siblings, whose text is the remedy', () => {
+    // Both directions of the enumeration in `isAwsAuthoredFailure`'s doc: a
+    // revision matching the whole `*ProviderError` suffix would reduce an SSO
+    // expiry to a wire name and leave the user with no instruction.
+    for (const [name, message] of [
+      ['TokenProviderError', "Token is expired. To refresh this SSO session run 'aws sso login'."],
+      ['ProviderError', 'Could not load credentials from any providers'],
+      [
+        'InstanceMetadataV1FallbackError',
+        'AWS EC2 Metadata v1 fallback has been blocked by AWS SDK configuration',
+      ],
+    ] as const) {
+      const failure = describeAwsFailure(Object.assign(new Error(message), { name }));
+
+      expect(failure.redacted, `${name} must not be reduced`).toBe(false);
+      expect(failure.summary).toBe(message);
+    }
   });
 
   it('falls back to `Error` when the SDK nulled the name out', () => {
