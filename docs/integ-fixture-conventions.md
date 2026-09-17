@@ -1210,9 +1210,19 @@ It is not a full bash parser. A `wc` reached through a variable (`${WC} -l`),
 `wc` word in a fixture that is neither a counted invocation, comment text, nor
 text in a heredoc whose delimiter is quoted — including the word inside a quoted
 string such as an error message, so reword that text or move it into a comment.
-The classifier's header names the remaining bounds — a `case` pattern's `)`, a
-substitution inside arithmetic, undecoded `$'...'` escapes, and a heredoc inside
-a substitution in `wc`'s own arguments — none of which occurs in the tree.
+The classifier's header lists every remaining bound, none of which occurs in
+the tree. Two of them can pass an untrimmed `wc` with nothing else noticing, so
+do not write either:
+
+| Shape | What goes wrong |
+| --- | --- |
+| a heredoc inside a `$(...)` in `wc`'s own arguments | its body can read as the trim |
+| a `$'...'` escape spelling the command (`$'\x77c'`) | the command is never recognised as `wc` |
+
+Two more hide a `wc` from the classifier but are still reported by the test's
+word check: a parenthesis quoted inside arithmetic (`(( a["("] ))`) and a
+substitution inside arithmetic. A `case` pattern's `)` can misread the lines
+after it, and CRLF line endings are rejected tree-wide by a separate check.
 
 A site that genuinely must stay untrimmed takes
 `# allow-untrimmed-wc: <reason>` (the colon is required, and the reason is at least 10 characters) as a real comment, trailing on the `wc`'s line

@@ -81,24 +81,34 @@
  * WHAT IT DOES NOT CLAIM
  *
  *  - It checks the trim's SPELLING, not its effect.
- *  - It is not a bash parser. Known bounds: a `case` pattern's `)` is read as a
- *    subshell close, so a `wc)` pattern would read as an invocation and a
- *    pattern's unbalanced `)` inside `$(...)` desynchronises that substitution;
- *    a `wc` reached through a variable (`${WC} -l`), an alias, `eval`, or as an
- *    ARGUMENT of another command (`xargs wc`, `find -exec wc`, a runner option
- *    value not listed above) is not seen; a substitution inside arithmetic is
- *    not scanned, and a parenthesis quoted inside arithmetic (`a["("]`) is
- *    counted — inside a heredoc body the line-found terminator contains that,
- *    but outside one it hides the commands after it from the classifier (the
- *    unit test's tree invariant still reports each such `wc` word); `$'...'` escapes are read as the escaped character, not
- *    decoded (`$'\x77c'` is not seen); CRLF line endings are not read (a
- *    heredoc terminator followed by `\r` never matches, which is unreachable
- *    while `check-source-control-bytes.ts` rejects CR tree-wide); and a
- *    heredoc body inside a substitution in `wc`'s OWN arguments is read as code by the stage scan, so
- *    a quote in that body can hide a correct trim (this errs toward flagging).
- *    None of these exists in the tree, and the unit test keeps it so: every
- *    `wc` word in a tracked integ shell file must be a counted invocation,
- *    comment text, or text in a heredoc whose delimiter is quoted.
+ *  - It is not a bash parser. Known bounds, each with the direction it errs
+ *    in. None occurs in the tree today.
+ *     - A `case` pattern's `)` reads as a subshell close: a `wc)` pattern
+ *       reads as an invocation, and an unbalanced one inside `$(...)`
+ *       desynchronises that substitution.
+ *     - A `wc` reached through a variable (`${WC} -l`), an alias, `eval`, or
+ *       as an ARGUMENT of another command (`xargs wc`, `find -exec wc`, a
+ *       runner option value not listed above) is not seen. Fail-open, but the
+ *       unit test's tree invariant reports each such `wc` word.
+ *     - A substitution inside arithmetic is not scanned. Fail-open; the tree
+ *       invariant reports the `wc` word.
+ *     - A parenthesis quoted inside arithmetic (`a["("]`) is counted. Inside
+ *       a heredoc body the line-found terminator contains it; outside one it
+ *       hides the commands after it. Fail-open; the tree invariant reports
+ *       each hidden `wc` word.
+ *     - `$'...'` escapes are read as the escaped character, not decoded
+ *       (`$'\x77c'` is not seen). Fail-open, and NOT backstopped: the file
+ *       never spells `wc`.
+ *     - A heredoc body inside a substitution in `wc`'s OWN arguments is read
+ *       as code by the stage scan, so its text can end the stage early and
+ *       read as a trim. Fail-open, and NOT backstopped: the `wc` word is
+ *       counted.
+ *     - CRLF line endings are not read (a heredoc terminator followed by `\r`
+ *       never matches). Unreachable while `check-source-control-bytes.ts`
+ *       rejects CR tree-wide.
+ *    The tree invariant: every `wc` word in a tracked integ shell file must be
+ *    a counted invocation, comment text, or text in a heredoc whose delimiter
+ *    is quoted.
  *
  * ESCAPE HATCH
  *
@@ -335,13 +345,23 @@ function trimAfter(
     }
   };
   skipBlanks();
-  // Redirections after the argument (`> count.txt`, `2>/dev/null`) are not
-  // arguments of `tr`; step over each with its target before the end check.
+  // Redirections after the argument are not arguments of `tr`; step over each
+  // with its target before the end check. An OUTPUT redirection (`> count.txt`,
+  // `2>/dev/null`) leaves the pipe intact. One that replaces `tr`'s stdin (fd 0:
+  // `<file`, `<<EOF`, `<<<x`, `<>f`, `0<&3`, `<&-`) cuts the count off from the
+  // trim, so the site is untrimmed; only `<&0` keeps stdin where it is.
   for (;;) {
-    const r = /^(\d*(?:<<-|<<<|<<|>>|>\||<>|>|<)|&>>|&>)(&(?:\d+|-))?/.exec(src.slice(i));
+    const r = /^(?:(\d*)(<<-|<<<|<<|<>|>>|>\||>|<)|(&>>|&>))(&(?:\d+|-))?/.exec(src.slice(i));
     if (!r) break;
+    const op = r[2] ?? r[3]!;
+    const dup = r[4];
+    const fd = r[1] ? Number(r[1]) : op.startsWith('<') ? 0 : 1;
+    // `<&0`, `<&00`, `0>&0` duplicate fd 0 onto itself; the count still arrives.
+    // (`&-` closes it: `Number('-')` is NaN, so it is not a self-duplication.)
+    const selfDup = dup !== undefined && Number(dup.slice(1)) === 0;
+    if (fd === 0 && !selfDup) return null;
     i += r[0].length;
-    if (!r[2]) {
+    if (!dup) {
       skipBlanks();
       const target = /^(?:'[^']*'|"(?:\\.|[^"\\])*"|[^\s;&|()<>`#'"])+/.exec(src.slice(i));
       if (!target) return null;
@@ -459,7 +479,7 @@ type Frame =
   | CodeFrame
   | { kind: 'dq' }
   | { kind: 'param'; inDq: boolean }
-  | { kind: 'hd'; bodyStart: number; termStart: number; bodyEnd: number };
+  | { kind: 'hd'; termStart: number; bodyEnd: number };
 
 interface PendingHeredoc {
   delimiter: string;
@@ -715,30 +735,102 @@ export function classifyWcTrim(content: string): WcTrimClassification {
     return lo + 1;
   };
 
+  /** A line ending in an unescaped backslash, which an unquoted body joins to the next. */
+  const CONTINUED = /(^|[^\\])(\\\\)*\\$/;
+  interface TerminatorLine {
+    /** Start of the logical line (its first physical line), where the body ends. */
+    start: number;
+    /** Index just past its last physical line. */
+    bodyEnd: number;
+  }
+  const terminatorIndexes = new Map<string, Map<string, TerminatorLine[]>>();
+  /**
+   * Every line of the file, keyed by the text a delimiter is compared with, in
+   * file order: built once per variant, so finding N terminators costs
+   * N binary searches instead of N scans to the end of the file. `joined`
+   * merges each unescaped backslash-newline (an UNQUOTED body); `stripTabs`
+   * drops leading tabs (`<<-`). A line with no newline after it still ends.
+   */
+  const terminatorIndex = (joined: boolean, stripTabs: boolean): Map<string, TerminatorLine[]> => {
+    const key = `${joined ? 'j' : 'p'}${stripTabs ? 't' : 'n'}`;
+    const cached = terminatorIndexes.get(key);
+    if (cached) return cached;
+    const index = new Map<string, TerminatorLine[]>();
+    let at = 0;
+    let logical: string | null = null;
+    let start = 0;
+    // `at` always advances by a whole line, so the walk ends at the end of file.
+    while (at < src.length) {
+      const nl = src.indexOf('\n', at);
+      const next = nl === -1 ? src.length : nl + 1;
+      const raw = src.slice(at, nl === -1 ? src.length : nl);
+      if (logical === null) start = at;
+      if (joined && CONTINUED.test(raw)) {
+        logical = (logical ?? '') + raw.slice(0, -1);
+        at = next;
+        continue;
+      }
+      const text0 = (logical ?? '') + raw;
+      logical = null;
+      const text = stripTabs ? text0.replace(/^\t+/, '') : text0;
+      const entry = { start, bodyEnd: next };
+      const list = index.get(text);
+      if (list) list.push(entry);
+      else index.set(text, [entry]);
+      at = next;
+    }
+    terminatorIndexes.set(key, index);
+    return index;
+  };
+
   /**
    * Finds a body's terminator by LINE, before anything in the body is read —
    * as bash does — so nothing inside the body (an unbalanced substitution, an
    * arithmetic desync) can move where it ends.
    */
   const findTerminator = (pos: number, h: PendingHeredoc): { termStart: number; bodyEnd: number } => {
-    let at = pos;
-    // In an UNQUOTED body bash removes each backslash-newline first and matches
-    // the delimiter against the JOINED logical line.
-    let logical = '';
-    while (at < src.length) {
-      const nl = src.indexOf('\n', at);
-      const lineEnd = nl === -1 ? src.length : nl;
-      const raw = src.slice(at, lineEnd);
-      if (!h.quoted && nl !== -1 && /(^|[^\\])(\\\\)*\\$/.test(raw)) {
-        logical += raw.slice(0, -1);
-        at = nl + 1;
-        continue;
+    const joined = !h.quoted;
+    // The index joins continuations from the start of the FILE. When the line
+    // just before the body ends in a backslash bash did not treat as one (a
+    // comment, a quoted string), the index glued that line onto the body's first
+    // logical line. That glued entry starts before `pos`, so the search below
+    // skips it by itself; only whether the body's own first logical line is the
+    // terminator must be decided here. The walk stops as soon as the joined
+    // text outgrows the delimiter, so it never scans far.
+    if (joined && pos > 0) {
+      const prevStart = src.lastIndexOf('\n', pos - 2) + 1;
+      if (CONTINUED.test(src.slice(prevStart, pos - 1))) {
+        let at = pos;
+        let text = '';
+        for (;;) {
+          const nl = src.indexOf('\n', at);
+          const next = nl === -1 ? src.length : nl + 1;
+          const raw = src.slice(at, nl === -1 ? src.length : nl);
+          const continued = nl !== -1 && CONTINUED.test(raw);
+          text += continued ? raw.slice(0, -1) : raw;
+          const compared = h.stripTabs ? text.replace(/^\t+/, '') : text;
+          if (!continued) {
+            if (compared === h.delimiter) return { termStart: pos, bodyEnd: next };
+            break;
+          }
+          // `compared` is already tab-stripped, so outgrowing the delimiter is final.
+          if (compared.length > h.delimiter.length) break;
+          at = next;
+        }
       }
-      const joined = logical + raw;
-      logical = '';
-      const text = h.stripTabs ? joined.replace(/^\t+/, '') : joined;
-      if (text === h.delimiter) return { termStart: at, bodyEnd: nl === -1 ? src.length : nl + 1 };
-      at = nl === -1 ? src.length : nl + 1;
+    }
+    const starts = terminatorIndex(joined, h.stripTabs).get(h.delimiter);
+    if (starts !== undefined) {
+      // First indexed logical line starting at or after the body.
+      let lo = 0;
+      let hi = starts.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (starts[mid]!.start < pos) lo = mid + 1;
+        else hi = mid;
+      }
+      const hit = starts[lo];
+      if (hit !== undefined) return { termStart: hit.start, bodyEnd: hit.bodyEnd };
     }
     return { termStart: src.length, bodyEnd: src.length };
   };
@@ -754,7 +846,7 @@ export function classifyWcTrim(content: string): WcTrimClassification {
       const { termStart, bodyEnd } = findTerminator(pos, h);
       recordBody(pos, bodyEnd);
       if (!h.quoted) {
-        const hd = { kind: 'hd' as const, bodyStart: pos, termStart, bodyEnd };
+        const hd = { kind: 'hd' as const, termStart, bodyEnd };
         stack.push(hd);
         openBodies.push(hd);
         return pos;
@@ -769,7 +861,7 @@ export function classifyWcTrim(content: string): WcTrimClassification {
   };
 
   /** Unquoted heredoc bodies being lexed, innermost last (kept so the loop head is O(1)). */
-  const openBodies: Array<{ kind: 'hd'; bodyStart: number; termStart: number; bodyEnd: number }> = [];
+  const openBodies: Array<{ kind: 'hd'; termStart: number; bodyEnd: number }> = [];
 
   /**
    * A frame closed before the line its `<<` was written on ended

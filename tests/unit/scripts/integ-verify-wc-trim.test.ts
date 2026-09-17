@@ -85,10 +85,11 @@ describe('classifyWcTrim', () => {
       ['an ANSI-C quoted command name', "$'wc' -l </dev/null", 'redirect'],
       ['by absolute path', '/usr/bin/wc -l </dev/null', 'redirect'],
       ['behind `coproc`', 'coproc wc -l </dev/null', 'redirect'],
-      // After arithmetic holding quotes: the plain parenthesis counter must not
-      // lose the command that follows.
-      ['after arithmetic holding an ANSI-C quoted escaped quote', "declare -A a; (( a[$'\\''] = 1 )); wc -l </dev/null", 'redirect'],
-      ['after arithmetic holding a quote inside a substitution', "declare -A a; (( a[\"$(printf '\"')\"] = 1 )); wc -l </dev/null", 'redirect'],
+      // After arithmetic holding quotes whose parentheses BALANCE: these fence a
+      // future quote-aware rewrite of the counter; the quoted-parenthesis bound
+      // itself is pinned in the tree-invariant controls.
+      ['after arithmetic holding an ANSI-C quoted escaped quote (balanced; fences a rewrite)', "declare -A a; (( a[$'\\''] = 1 )); wc -l </dev/null", 'redirect'],
+      ['after arithmetic holding a quote inside a substitution (balanced; fences a rewrite)', "declare -A a; (( a[\"$(printf '\"')\"] = 1 )); wc -l </dev/null", 'redirect'],
       ['behind `env -`, an empty environment', 'env - wc -l </dev/null', 'redirect'],
       ['behind a quoted `env`, which still runs its command', "'env' wc -l </dev/null", 'redirect'],
       ['reading a duplicated descriptor', 'wc -l <&3', 'redirect'],
@@ -214,12 +215,19 @@ describe('classifyWcTrim', () => {
       ['a quoted brace inside an unquoted parameter default', "wc -l <<< ${N:-'}'} | tr -d ' '", 'space'],
       ['a heredoc body between the pipe and the trim', "wc -l <<EOF |\na\nEOF\ntr -d ' '", 'space'],
       ['a heredoc body and a blank line between the pipe and the trim', "wc -l <<EOF |\na\nEOF\n\ntr -d ' '", 'space'],
+      ['a comment ending in a backslash after the pipe, then the trim', "wc -l </dev/null | # \\\ntr -d ' '", 'space'],
       ['a comment after the trim', "ls | wc -l | tr -d ' ' # count", 'space'],
       ['a file redirect after the trim', "ls | wc -l | tr -d ' ' > count.txt", 'space'],
       ['a stderr redirect after the trim', "ls | wc -l | tr -d ' ' 2>/dev/null", 'space'],
-      ['an input redirect after the trim', "N=$(ls | wc -l | tr -d ' ' </dev/null)", 'space'],
       ['a descriptor duplication after the trim', "N=$(ls | wc -l | tr -d ' ' 2>&1)", 'space'],
       ['an appending redirect after the trim', "ls | wc -l | tr -d ' ' >> out.txt", 'space'],
+      // Redirections that leave tr's stdin (the pipe carrying the count) alone.
+      ['an input redirect on another descriptor after the trim', "ls | wc -l | tr -d ' ' 3</dev/null", 'space'],
+      ['stdin duplicated onto itself after the trim', "ls | wc -l | tr -d ' ' <&0", 'space'],
+      ['stdin duplicated onto itself, with an explicit 0, after the trim', "ls | wc -l | tr -d ' ' 0<&0", 'space'],
+      ['stdin duplicated onto itself with a zero-padded descriptor', "ls | wc -l | tr -d ' ' <&00", 'space'],
+      ['fd 0 duplicated onto itself with an output operator', "ls | wc -l | tr -d ' ' 0>&0", 'space'],
+      ['a heredoc on another descriptor after the trim', "ls | wc -l | tr -d ' ' 3<<'A'\nx\nA", 'space'],
       ['an appending &>> redirect after the trim', "ls | wc -l | tr -d ' ' &>> out.txt", 'space'],
       ['a quoted redirect target after the trim', "ls | wc -l | tr -d ' ' > \"count file.txt\"", 'space'],
       ['&> before the pipe into the trim', "wc -l &>/dev/null | tr -d ' '", 'space'],
@@ -232,10 +240,7 @@ describe('classifyWcTrim', () => {
       ['a heredoc inside a $( ) argument before a line-broken trim', "wc -l $(cat <<b\nx\nb\n) |\ntr -d ' '", 'space'],
       ['a heredoc inside a backtick argument before a line-broken trim', "wc -l `cat <<b\nx\nb\n` |\ntr -d ' '", 'space'],
       ['a << in a parameter default before a line-broken trim', "wc -l ${X:-a<<b} |\ntr -d ' '", 'space'],
-      ['a heredoc feeding the trim', "wc -l </dev/null | tr -d ' ' <<'A'\nx\nA", 'space'],
       ['an opener in a quoted substitution closed on the pipe line, its body before the trim', "x=\"$(cat <<'EOF')\" | wc -l |\nEOF\ntr -d ' '", 'space'],
-      ['a here-string feeding the trim', "wc -l </dev/null | tr -d ' ' <<<x", 'space'],
-      ['a tab-stripping heredoc feeding the trim', "wc -l </dev/null | tr -d ' ' <<- EOF\nx\nEOF", 'space'],
       ['a <<- heredoc body with a tab-indented terminator between the pipe and the trim', `wc -l <<-EOF |\na\n${TAB}EOF\ntr -d ' '`, 'space'],
       ['the body of a heredoc opened earlier in the pipeline', "cat <<EOF | wc -l |\nx\nEOF\ntr -d ' '", 'space'],
       ['that heredoc shape inside a double-quoted substitution', "N=\"$(wc -l <<EOF |\na\nEOF\ntr -d ' ')\"", 'space'],
@@ -266,6 +271,19 @@ describe('classifyWcTrim', () => {
       ['a trim followed by a backtick-substituted argument', "wc -l </dev/null | tr -d ' ' `printf %s -c`"],
       ['a trim followed by a redirection and then another argument', "wc -l </dev/null | tr -d ' ' &>/dev/null -c"],
       ['a trim followed by a file redirect and then another argument', "ls | wc -l | tr -d ' ' > out -c"],
+      // Redirections that REPLACE or CLOSE tr's stdin, so the count never
+      // reaches the trim (bash 5.3: tr reads the redirected input instead, or
+      // fails on a closed descriptor).
+      ['a file as the trim\'s stdin', "N=$(ls | wc -l | tr -d ' ' <f.txt)"],
+      ['a heredoc as the trim\'s stdin', "N=$(ls | wc -l | tr -d ' ' <<'A'\n   7\nA\n)"],
+      ['a tab-stripping heredoc as the trim\'s stdin', "ls | wc -l | tr -d ' ' <<- EOF\nx\nEOF"],
+      ['a here-string as the trim\'s stdin', "N=$(ls | wc -l | tr -d ' ' <<<'  9 ')"],
+      ['a read-write file as the trim\'s stdin', "ls | wc -l | tr -d ' ' <>f.txt"],
+      ['an explicit fd 0 file as the trim\'s stdin', "ls | wc -l | tr -d ' ' 0<f.txt"],
+      ['another descriptor duplicated onto the trim\'s stdin', "ls | wc -l | tr -d ' ' <&3"],
+      ['another descriptor duplicated onto an explicit fd 0', "ls | wc -l | tr -d ' ' 0<&3"],
+      ['the trim\'s stdin closed', "ls | wc -l | tr -d ' ' <&-"],
+      ['an output redirection onto fd 0', "ls | wc -l | tr -d ' ' 0>f.txt"],
       // An opener in a substitution inside an array: its body (holding the
       // trim-looking line) starts after the command's line; `cat` is next.
       ['an opener inside an array substitution, its body holding trim-looking text', "a=($(cat <<'EOF')) | wc -l |\ntr -d ' '\nEOF\ncat"],
@@ -374,8 +392,9 @@ describe('classifyWcTrim', () => {
       // newline inside its argument; the substitution runs.
       const c = classifyWcTrim(`${body}\n`);
       expect(c.violations.map((v) => v.line)).toEqual([line]);
-      // Exactly one data body, and it starts after the command's line, at `A`.
-      expect(c.dataHeredocBodies.map(([start]) => start)).toEqual([body.indexOf('\nA') + 1]);
+      // Exactly one data body: from the `A` line (after the command's line) to
+      // the end of the input.
+      expect(c.dataHeredocBodies).toEqual([[body.indexOf('\nA') + 1, body.length + 1]]);
     });
 
     it('starts an inner command\'s heredoc while an outer one is still pending', () => {
@@ -441,9 +460,48 @@ describe('classifyWcTrim', () => {
       expect(c.violations).toEqual([]);
     });
 
+    it.each([
+      ['a <<- terminator indented by more than one tab', 'cat <<-EOF\ndata\n\t\tEOF\nwc -l </dev/null', [4]],
+      // A backslash ending a COMMENT on the opener's line does not continue it,
+      // so the first body line can itself be the terminator.
+      ['a terminator right after an opener whose comment ends in a backslash', 'cat <<EOF # \\\nEOF\nwc -l </dev/null', [3]],
+      ['a continued terminator right after an opener whose comment ends in a backslash', 'cat <<EOF # \\\nE\\\nOF\nwc -l </dev/null', [4]],
+      ['a non-terminator right after such an opener, then the real terminator', 'cat <<EOF # \\\nx\nEOF\nwc -l </dev/null', [4]],
+      [
+        'two heredoc bodies on one line, the first quoted, in the order written',
+        "cmd <<'A' <<'B'\n$(ls | wc -l)\nA\n$(ls | wc -l)\nB\nwc -l </dev/null",
+        [6],
+      ],
+      [
+        'an opener re-owned through two nested substitutions',
+        "y=$(\n  x=$(cat <<'EOF')\n  wc -l </dev/null\nEOF\n)\nwc -l </dev/null",
+        [6],
+      ],
+    ])('reads %s', (_label, body, lines) => {
+      expect(classifyWcTrim(`${body}\n`).violations.map((v) => v.line)).toEqual(lines);
+    });
+
+    it('terminates on an unquoted body ending in a backslash with no newline after it', () => {
+      // A continuation at the very end of the file has no next line to join;
+      // the lookup must still end rather than loop.
+      expect(classifyWcTrim('cat <<EOF\nx\\').invocations).toEqual([]);
+    });
+
     it('ends an unquoted heredoc only at an unindented terminator', () => {
       // `  EOF` is body text; the wc on the line after it is text too.
       const c = classifyWcTrim('cat <<EOF\n  EOF\nwc -l </dev/null\nEOF\n');
+      expect(c.invocations).toEqual([]);
+    });
+
+    it.each([
+      ['unterminated openers packed bytes apart', (n: number) => '$(<<Z\n'.repeat(n)],
+      ['nested unterminated openers inside a terminated outer body', (n: number) => `cat <<E\n${'$(cat <<Z\n'.repeat(n)}E\n`],
+      ['openers whose comments end in a backslash', (n: number) => '$(<<Z # \\\n'.repeat(n)],
+    ])('stays fast on %s', (_label, make) => {
+      // Scanning to the end of the file for every absent or distant terminator
+      // was O(openers x file): ~5 s at n = 16000, and the nested shape did not
+      // finish in two minutes at n = 32000.
+      const c = classifyWcTrim(make(32_000));
       expect(c.invocations).toEqual([]);
     });
 
@@ -489,7 +547,9 @@ describe('classifyWcTrim', () => {
       expect(c.violations.map((v) => v.line)).toEqual([4]);
     });
 
-    it('consumes two heredoc bodies opened on one line, in order', () => {
+    it('consumes two heredoc bodies opened on one line', () => {
+      // Both delimiters unquoted, so this is order-blind; the ordering itself is
+      // pinned by the quoted-first case above.
       const c = classifyWcTrim('cmd <<A <<B\nwc -l\nA\nwc -w\nB\nN=$(ls | wc -l)\n');
       expect(c.violations.map((v) => v.line)).toEqual([6]);
     });
