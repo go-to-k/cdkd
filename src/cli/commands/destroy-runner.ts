@@ -33,7 +33,10 @@ import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { slowCcOperationTimeoutMs } from '../../provisioning/slow-cc-operation-timeouts.js';
 import { shouldRetainResource, type ResourceState, type StackState } from '../../types/state.js';
-import { refuseMalformedOutputsForDestroy } from '../../state/malformed-resources-bag.js';
+import {
+  refuseMalformedOutputsForDestroy,
+  refuseMalformedResourcesForDestroy,
+} from '../../state/malformed-resources-bag.js';
 import type { ResourceDeleteResult } from '../../types/resource.js';
 import {
   extractDeploymentEventError,
@@ -479,6 +482,36 @@ export async function runDestroyForStack(
   // straight to `cdkd events` for the reason rather than scrolling back.
   const guardIndeterminateTargets = new Set<string>();
 
+  // Region is load-bearing on the new state-key layout (PR 1). Fall back to
+  // the caller's baseRegion only for legacy `version: 1` records that never
+  // recorded one. Resolved HERE, above the two refusals, because both name the
+  // record they refuse and neither may be reached with the count already taken.
+  const regionForState = state.region ?? ctx.baseRegion;
+  // AT THE TOP OF THE DESTROY, and ABOVE THE COUNT BELOW (issue #3161).
+  //
+  // `parseStateBody` validates the root object and the schema version and
+  // nothing inside, so a hand-edited or truncated record reaches this function
+  // with `resources` holding a string, a list, a number, a boolean or `null`.
+  // `Object.keys` answers three different ways over those, and the middle
+  // answer is the damaging one: a `[]`, a `5` or a `true` enumerates NO keys,
+  // so `resourceCount` is 0 and — with no orphans — the run takes the
+  // empty-stack fast path a few lines down, which deletes `state.json` with no
+  // confirmation at all. The destroy reports success having deleted nothing,
+  // and every resource the record named is still live in AWS with the only
+  // record of what they were now gone. A string enumerates one fabricated
+  // logical id per character instead, and a `null` throws a bare `TypeError`.
+  //
+  // REFUSE rather than repair, and the read-only repair is not the safe half
+  // here: reading the bag as EMPTY *is* the fast path, byte-identical to the
+  // `[]` case. `malformedDestroyResourcesRefusalMessage` carries that
+  // measurement and names `cdkd state orphan` for an operator who does want
+  // the record gone.
+  //
+  // The DISCRIMINATOR is the container's SHAPE, never its size: a legitimately
+  // empty `{}` and an unreadable `[]` both count 0, so only `isReadableBag`
+  // separates them — which is why this cannot be folded into the
+  // `resourceCount === 0` test below.
+  refuseMalformedResourcesForDestroy(state, stackName, regionForState);
   const resourceCount = Object.keys(state.resources).length;
   // A stack that still has `DeletionPolicy: Retain` resources standing in AWS
   // is NOT empty (issue #2934), even with no rows in `resources`. The record of
@@ -487,10 +520,6 @@ export async function runDestroyForStack(
   // deletes state.json with no confirmation at all — in exactly the
   // first-deploy-fails flow that produces this shape.
   const orphanCount = (state.orphans ?? []).length;
-  // Region is load-bearing on the new state-key layout (PR 1). Fall back to
-  // the caller's baseRegion only for legacy `version: 1` records that never
-  // recorded one.
-  const regionForState = state.region ?? ctx.baseRegion;
   // AT THE TOP OF THE DESTROY, and REFUSE rather than repair (issue #3207).
   //
   // `parseStateBody` validates the root object and the schema version and
@@ -511,8 +540,9 @@ export async function runDestroyForStack(
   // `NestedStackProvider.delete`'s child destroy), none of which reads the bag
   // before handing the record over.
   //
-  // The `resources` bag is a separate container with a separate absence rule
-  // and is NOT guarded here — tracked by go-to-k/cdkd#3161.
+  // The `resources` bag is a separate container with a separate absence rule,
+  // refused separately just above (go-to-k/cdkd#3161) so the message a user
+  // sees names the container that is actually broken.
   refuseMalformedOutputsForDestroy(state, stackName, regionForState);
   if (resourceCount === 0 && orphanCount === 0) {
     // Issue #2171: this used to delete the state record with NO lock at all,
@@ -613,6 +643,14 @@ export async function runDestroyForStack(
     emptyLockHeld = true;
     try {
       const recheck = await ctx.stateBackend.getState(stackName, regionForState);
+      // The SECOND record this function counts, and it needs the same guard as
+      // the first (issue #3161). The re-read exists because emptiness has to be
+      // established UNDER the lock, so what it returns is a different object
+      // from the one the entry guard cleared — a concurrent writer, or a hand
+      // edit landing between the two reads, can make it unreadable. The count
+      // below would then be 0, `stillEmpty` would be true, and `deleteState`
+      // would run on the very line the re-read exists to protect.
+      if (recheck) refuseMalformedResourcesForDestroy(recheck.state, stackName, regionForState);
       const recheckResources = recheck ? Object.keys(recheck.state.resources).length : 0;
       const recheckOrphans = recheck ? (recheck.state.orphans ?? []).length : 0;
       // Same widening as the entry check (issue #2934): a record that gained

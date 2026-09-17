@@ -196,16 +196,14 @@ export class DiffCalculator {
     // deploy diff is now covered" and it is only covered ONE LEVEL DOWN.
     // `unreadableResourcePropertyBags` walks ENTRIES, so it returns `[]` when
     // the ROOT `resources` bag is itself unreadable — its own doc ends "What a
-    // caller must not do is take only this one", and the deploy path takes
-    // only this one: `deploy-engine.ts` calls `refuseMalformedOutputs` and no
-    // `resources` guard, and `refuseMalformedState`'s callers are `import.ts`,
-    // `orphan.ts` and `rollback.ts` alone. So a record spelling
-    // `"resources": "abcdef"` still arrives here, enumerates two fabricated
-    // logical ids, and re-CREATEs the whole stack. That is PRE-EXISTING and
-    // outside this lane's gate scope — `deploy-engine.ts` arms `integ-broad`
-    // and `integ-destroy`, and the remedy needs a contract decision this lane
-    // does not make. It is go-to-k/cdkd#3161, which covers the deploy mirror
-    // alongside the destroy one and proposes refusing outright.
+    // caller must not do is take only this one". Neither caller takes only
+    // this one any more: `deploy-engine.ts` calls
+    // `refuseMalformedResourcesForDeploy` at its state load, above this call
+    // (go-to-k/cdkd#3161), and `diff-recursive.ts` repairs the root bag and
+    // warns before it. So this method is still reachable ONLY with a readable
+    // root bag, and a guard for that class here would be a second spelling of
+    // a decision made one layer up, where it also dominates the twelve reads
+    // between the two.
     refuseMalformedResourceProperties(currentState, undefined, undefined);
 
     const currentResources = currentState.resources;

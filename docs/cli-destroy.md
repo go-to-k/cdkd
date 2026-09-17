@@ -607,6 +607,48 @@ A stack whose deletes were interrupted keeps its `state.json` and its
 deployment-event history. The events are the post-mortem for the retry, which
 is why `--purge-events` is skipped on an interrupted run.
 
+## A malformed `resources` map refuses the destroy
+
+The `resources` map is the list of what a destroy deletes, and a state record is
+used as typed data without a field-by-field shape check — so a hand-edited or
+truncated one can hold a string, a list, a number, a boolean or `null` there.
+
+Counting such a map answers three different ways, and the middle answer was the
+damaging one:
+
+| Stored shape | What the count used to conclude |
+| --- | --- |
+| `[]`, a number, a boolean | "this stack has no resources" — the run took the **empty-stack fast path**, deleted `state.json` with no confirmation, and reported **success having deleted nothing**. Every resource the record named was left live in AWS with nothing left to say what it was |
+| A string | one fabricated logical id per character, and the run proceeded against resources that do not exist |
+| `null`, or an absent field | a bare `TypeError` naming no stack, no key and no remedy |
+
+`cdkd destroy` and `cdkd state destroy` refuse before the per-stack
+confirmation prompt and before the lock (`STATE_RESOURCES_MALFORMED`, exit `1`),
+naming the record and the region. The refusal sits inside `runDestroyForStack`,
+so every route into a destroy inherits it — including a nested **child** record
+reached through its parent's destroy — and it runs again on the record the fast
+path re-reads under the lock, which is a second object the first check never saw.
+
+Reading the map as empty — the repair `cdkd diff` and `cdkd state show` apply —
+**is** the first row above, so there is no safe repair here. A legitimately
+empty `{}` still takes the fast path exactly as before: the two are separated by
+the container's shape, never by its size, since both count zero.
+
+Refusing does not leave you with no way to tear the stack down, because
+proceeding never tore anything down either — the list of what to delete is
+precisely what is unreadable. If what you want is the record gone with the live
+resources left standing, that is what the refusal points at:
+
+```bash
+cdkd state orphan <stack> --stack-region <region>
+```
+
+To act on the resources instead, inspect the record with `cdkd state show
+<stack> --stack-region <region> --json`, repair it, and re-run the destroy. An
+**absent** `resources` field is a defect and is refused too — a stack always has
+a resource map, even an empty one. Full per-command table in
+[State Management](state-management.md#when-resources-is-not-an-object).
+
 ## A malformed `outputs` map refuses the destroy
 
 `cdkd destroy` and `cdkd state destroy` refuse to delete a stack another stack
@@ -634,11 +676,11 @@ is the second row above, so there is no safe repair here.
 Inspect the record with `cdkd state show <stack> --stack-region <region>
 --json`, repair or remove it, then re-run. Note what "remove" means here: with
 `deploy`, `destroy`, `state destroy`, `orphan`, `import` and `scrub` all
-refusing such a record, no cdkd command will delete it for you. Remove it with
-the AWS CLI —
+refusing such a record, the command that will still remove it is
+`cdkd state orphan`, which drops the record without touching AWS —
 
 ```bash
-aws s3 rm s3://<state-bucket>/cdkd/<stack>/<region>/state.json
+cdkd state orphan <stack> --stack-region <region>
 ```
 
 — which orphans whatever the record described, so prefer repairing the bag when

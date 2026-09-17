@@ -432,10 +432,13 @@ character, each printing a character of the record as its previous value — row
 Both warnings point at
 `cdkd state show <stack> --stack-region <region> --json`, which emits the record
 as stored, so the evidence survives the repair. The `resources` warning
-additionally tells you not to run `cdkd deploy` or `cdkd destroy` against the
-record: those read the same map, and an unreadable one is indistinguishable
-from an empty stack, so a deploy would re-create every resource and a destroy
-would delete none of them. The `outputs` warning costs this preview's Outputs
+additionally says that `cdkd deploy` and `cdkd destroy` **refuse** such a
+record: they read the same map, an unreadable one is indistinguishable from an
+empty stack, and acting on that reading would make a deploy re-create every
+resource and a destroy delete none of them. So a `resources` preview that
+renders is followed by a refusal from either of those commands — see
+[when `resources` is not an object](state-management.md#when-resources-is-not-an-object).
+The `outputs` warning costs this preview's Outputs
 section, and it costs more than the preview: `cdkd deploy` and `cdkd destroy`
 refuse a record whose `outputs` map is unreadable rather than deciding from it,
 so a diff that previews cleanly is followed by a refusal. See

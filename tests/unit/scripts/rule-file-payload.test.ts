@@ -251,6 +251,12 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   // breached a budget rather than informed a lane — the same call the
   // `state-malformed-containers.md` note above records for scrub and import.
   ['state-malformed-properties.md', 2], // literal list: EXACT, see below
+  // ONE literal path (issue go-to-k/cdkd#3161): `src/cli/commands/destroy-runner.ts`.
+  // The `deploy` twin is DESCRIBED in that satellite and deliberately NOT in
+  // its glob — `src/deployment/deploy-engine.ts` sits ~200 B under its own
+  // payload cap, so listing it would breach a budget rather than inform a
+  // lane. Same call as the two notes above, for the third time in this class.
+  ['state-malformed-resources-gated.md', 1], // literal list: EXACT, see below
   // 93 files: the 92 entries `.claude/hooks/*.sh` reaches at depth 1 -- 46
   // whose names end `.test.sh` and 46 that do not, which ONE glob covers
   // because a suite's name also ends in `.sh` -- plus `.claude/settings.json`.
@@ -453,6 +459,17 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   ['src/cli/commands/deploy.ts', 41_000, 63_000],
   ['src/cli/commands/diff-recursive.ts', 40_000, 62_000], // measured 52,270 -- go-to-k/cdkd#3245: the path that reaches layout-cli-diff.md
   ['src/cli/commands/orphan.ts', 38_000, 60_000],        // measured 52,923 -- go-to-k/cdkd#3245: the path that reaches layout-cli-state.md
+  // The one path that loads `state-malformed-resources-gated.md`
+  // (go-to-k/cdkd#3161); without this row the satellite would sit under no
+  // budget at all. Payload is layout-cli.md + cli-internals.md +
+  // code-layout.md + delete-outcome.md + architecture.md + the satellite.
+  //
+  // Band calibrated to this file's own doctrine rather than picked round: the
+  // floor sits ~12% under the measurement, and the cap's slack is kept BELOW
+  // the smallest satellite on the path (`delete-outcome.md`, 4,675 B) so one
+  // going dark cannot be absorbed silently — the hazard the s3-bucket row
+  // documents.
+  ['src/cli/commands/destroy-runner.ts', 50_000, 61_000], // measured 56,900
   ['src/local/docker-runner.ts', 41_500, 67_000],
   ['src/analyzer/dag-builder.ts', 26_000, 35_000],
   ['scripts/gen-nested-key-coverage.ts', 52_000, 90_000],
@@ -1351,7 +1368,18 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 // Neither branch's figure is the merged one. That is the whole reason this
 // count is asserted rather than described: two correct increments compose to a
 // number neither author wrote.
-const CORPUS_FILE_COUNT = 66; // + state-malformed-properties.md (go-to-k/cdkd#3191): the
+const CORPUS_FILE_COUNT = 67; // + state-malformed-resources-gated.md (go-to-k/cdkd#3161): the
+                              //  `resources` root bag's two GATE-SCOPED refusals (destroy and
+                              //  deploy) took `src/state/malformed-resources-bag.ts` 1,837 B over
+                              //  its 57,000 B cap, so the detail moved to a satellite globbed at
+                              //  `src/cli/commands/destroy-runner.ts` ALONE, with a merged
+                              //  one-sentence pointer left behind beside #3191's. The deploy twin
+                              //  is described in that satellite and NOT in its glob:
+                              //  `src/deployment/deploy-engine.ts` had ~187 B of headroom, and the
+                              //  authority a deploy lane needs is the guard's own JSDoc plus the
+                              //  comment at its call site. Third time this class has made that
+                              //  call -- see the two `+` entries below.
+                              // + state-malformed-properties.md (go-to-k/cdkd#3191): the
                               //  `properties` container's triple took
                               //  `src/state/malformed-resources-bag.ts` 2,116 B over its 57,000 B
                               //  cap, so the detail moved to a satellite globbed at its two

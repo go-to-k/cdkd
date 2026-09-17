@@ -371,11 +371,13 @@ healthy parent whose nested child is malformed still renders the parent's
 resources, reports the child with none, and descends no further.
 
 The warning identifies the stack and region, says the output describes zero
-resources rather than a stack that has none, and tells you not to run
-`cdkd deploy` or `cdkd destroy` against the record. Both read the same map, and
-one they cannot read is indistinguishable from an empty stack: a deploy would
-re-create every resource and a destroy would delete none of them. Repair or
-remove the record instead.
+resources rather than a stack that has none, and says that `cdkd deploy` and
+`cdkd destroy` **refuse** such a record. Both read the same map, and one they
+cannot read is indistinguishable from an empty stack: acting on that reading
+would make a deploy re-create every resource and a destroy delete none of them
+while removing the record. Repair or remove the record instead — the full
+per-command table is under
+[when `resources` is not an object](state-management.md#when-resources-is-not-an-object).
 
 An absent or `null` bag is reported the same way and renders exactly as an
 empty one does. `cdkd state list --long` differs on those two: it counts them
