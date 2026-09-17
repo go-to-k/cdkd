@@ -1,3 +1,8 @@
+// The ONE import this module takes. `aws-failure-text.ts` is itself a
+// zero-import leaf, so this keeps the module graph flat -- which matters here
+// because this file is reached from the retry path of every command.
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
+
 /**
  * The **IAM-propagation** subset of {@link RETRYABLE_ERROR_MESSAGE_PATTERNS}:
  * an AWS service rejecting a call because a just-created IAM entity (role,
@@ -1318,7 +1323,15 @@ export function isRetryableTransientError(error: unknown, message: string): bool
  * classify.
  */
 export function retryClassificationText(error: unknown): string {
-  const top = error instanceof Error ? error.message : String(error);
+  // `.detail`, not a bare ternary: this is the FIRST thing the destroy retry
+  // loop does with a caught value (`destroy-runner.ts` calls it inside the
+  // per-resource retry catch, upstream of every handler that would RECORD the
+  // failure), so a `String()` that throws here replaces the AWS failure with a
+  // `TypeError` before anything can say what actually happened. Byte-identical
+  // to the ternary it replaced, so the substring tests below -- and the
+  // `.includes('Too Many Requests')` at the call site -- match exactly what
+  // they matched before (go-to-k/cdkd#3348).
+  const top = describeAwsFailure(error).detail;
   // OPT-IN, and that is the whole safety argument. Reading the chain
   // unconditionally would re-classify every wrapper whose message does not
   // already carry its cause's text, and that population is neither empty nor

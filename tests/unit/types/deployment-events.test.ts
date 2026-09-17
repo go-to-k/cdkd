@@ -156,4 +156,44 @@ describe('extractDeploymentEventError', () => {
       message: 'undefined',
     });
   });
+
+  // The case above says "without throwing" and cannot demonstrate it: every
+  // value it passes is one `String()` converts happily. The shapes `String()`
+  // actually throws on are these, and before go-to-k/cdkd#3348 this function
+  // threw on all three.
+  //
+  // What that cost is MEASURED rather than reasoned about, because the obvious
+  // reading is wrong. Structurally this runs inside the per-resource catch of a
+  // `level.map(...)` awaited by `Promise.all` with no recovering `try` between
+  // them, so a throw here looks like it would abandon the destroy's remaining
+  // levels. It does not: the first thing that catch's retry loop does is
+  // `retryClassificationText`, which stringified the same value and threw
+  // FIRST, so what arrived here was already a `TypeError` -- an `Error`, which
+  // takes the branch above. The real pre-fix cost was therefore a
+  // `RESOURCE_FAILED` row naming `TypeError: Cannot convert object to
+  // primitive value` instead of the AWS failure. Both sites are guarded now;
+  // guarding only one leaves the other throwing first and changes nothing.
+  it('records a value String() cannot convert, instead of throwing out of the recorder', () => {
+    const hostile: readonly unknown[] = [
+      Object.create(null) as object,
+      { toString: null },
+      {
+        toString() {
+          throw new Error('hostile toString');
+        },
+      },
+    ];
+
+    for (const value of hostile) {
+      // The premise, asserted rather than assumed: these really are the shapes
+      // a bare `String()` dies on.
+      expect(() => String(value)).toThrow();
+
+      const recorded = extractDeploymentEventError(value);
+      expect(recorded.name).toBe('UnknownError');
+      // A sentence, not `[object Object]`: this text is what an operator reads
+      // out of `deployments/{runId}.jsonl` after the run is gone.
+      expect(recorded.message).toBe('a value that could not be converted to text');
+    }
+  });
 });

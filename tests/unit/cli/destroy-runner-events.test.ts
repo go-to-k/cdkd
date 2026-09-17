@@ -227,4 +227,96 @@ describe('runDestroyForStack - #808 deployment events', () => {
     const result = await runDestroyForStack('S', state, ctxNoRecorder);
     expect(result.deletedCount).toBe(1);
   });
+
+  // The case nothing else in the tree can be (go-to-k/cdkd#3348). The recorder's
+  // own unit test never runs the runner; the source-shape fence proves a
+  // spelling, not a behaviour. This drives a HOSTILE caught value -- one
+  // `String()` throws on -- all the way through the per-resource catch, the
+  // retry classifier ahead of it, and the `Promise.all` that awaits the level.
+  //
+  // It reds on reverting EITHER guard, which is the point: review measured that
+  // `retryClassificationText` stringifies the value before the recorder ever
+  // sees it, so guarding one site alone leaves the other throwing first and
+  // this assertion unchanged.
+  it('records a hostile caught value and still deletes the next level', async () => {
+    const recorder = new CollectingRecorder();
+    const hostile = Object.create(null) as object;
+    expect(() => String(hostile), 'the fixture must be a shape String() dies on').toThrow();
+
+    // STAGGERED, so the ordering assertion is about LEVELS rather than about
+    // `Object.keys` order: `Parent`'s delete does not settle until `Child`'s
+    // rejection has. Review measured that a plain ordered compare passes on a
+    // flattened-AND-reordered fixture, i.e. it pinned declaration order, not
+    // the level separation the case is named for.
+    const deleted: string[] = [];
+    let childSettled = false;
+    const provider = {
+      delete: vi.fn().mockImplementation(async (logicalId: string) => {
+        if (logicalId === 'Child') {
+          deleted.push(logicalId);
+          // Settle on a LATER microtask. Without this the flag is already set
+          // by the time a same-level sibling's body runs -- `Child` is
+          // dispatched first either way -- so the assertion below passed on a
+          // flattened fixture and pinned dispatch order, not level separation.
+          await Promise.resolve();
+          childSettled = true;
+          throw hostile;
+        }
+        expect(
+          childSettled,
+          'Parent must be deleted in a LATER level, after Child settled'
+        ).toBe(true);
+        deleted.push(logicalId);
+        return undefined;
+      }),
+      disableOuterRetry: true,
+    };
+    const state = makeState({
+      Parent: {
+        physicalId: 'phys-parent',
+        resourceType: 'AWS::S3::Bucket',
+        properties: {},
+        attributes: {},
+        dependencies: [],
+        provisionedBy: 'sdk',
+      },
+      Child: {
+        physicalId: 'phys-child',
+        resourceType: 'AWS::S3::Bucket',
+        properties: {},
+        attributes: {},
+        dependencies: ['Parent'],
+        provisionedBy: 'sdk',
+      },
+    });
+
+    const ctx = makeContext({ provider, recorder });
+    const result = await runDestroyForStack('S', state, ctx);
+
+    // 1. The run was not abandoned: the SECOND level was still attempted.
+    //    Asserted as the ORDERED pair, not `toContain` -- review measured that
+    //    flattening the fixture to `dependencies: []` left a `toContain` green,
+    //    so it passed in a single level and the level-2 claim was unasserted.
+    expect(deleted, 'the level after the failure must still be deleted').toEqual([
+      'Child',
+      'Parent',
+    ]);
+    expect(result.deletedCount).toBe(1);
+    expect(result.errorCount).toBe(1);
+
+    // 2. The row says what happened, not what stringifying it did. Before the
+    //    fix this read `TypeError: Cannot convert object to primitive value`.
+    const failed = recorder.events.find((e) => e.eventType === 'RESOURCE_FAILED')!;
+    expect(failed, 'expected a RESOURCE_FAILED row for the hostile value').toBeDefined();
+    expect(failed.logicalId).toBe('Child');
+    expect(failed.error?.name).toBe('UnknownError');
+    expect(failed.error?.message).toBe('a value that could not be converted to text');
+
+    // 3. A resource failed, so the record is NOT dropped. Stated as what this
+    //    harness proves: the stub has no `saveState`, so the preserve write is
+    //    attempted and swallowed -- it is the absence of `deleteState` that is
+    //    asserted, and the suite's first case reaches `deleteState`, so this is
+    //    not vacuous.
+    expect(ctx.stateBackend.deleteState).not.toHaveBeenCalled();
+  });
 });

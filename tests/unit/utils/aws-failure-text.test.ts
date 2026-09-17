@@ -213,6 +213,52 @@ describe('describeAwsFailure: what must pass through UNTOUCHED (issue #2302)', (
   });
 });
 
+describe('the property cdkd prose matchers depend on (go-to-k/cdkd#3348)', () => {
+  // `destroy-runner.ts` decides "this delete failed because the resource was
+  // ALREADY GONE" by substring-matching the caught value's text, and on a match
+  // it DROPS the state record. go-to-k/cdkd#3348 moved that read from a bare
+  // ternary to `.detail`; the hazard a future edit will reach for is `.summary`,
+  // which for an AWS-authored failure replaces the message with the wire class.
+  //
+  // Fencing the wiring at the runner turned out to cost more than it buys: an
+  // `$fault`-carrying fixture lands on the retry classifier's transient path and
+  // the case spends its budget in backoff rather than reaching the assertion.
+  // So the PROPERTY is pinned here instead, and the runner's own suite is left
+  // alone. What this does NOT prove is that the runner still reads `.detail` --
+  // that is `msg`'s single reader, verified by review rather than by a test.
+  it('keeps the needle in .detail and loses it from .summary', () => {
+    // S3's real already-deleted shape. The NAME is the load-bearing half: it
+    // carries none of the matcher's needles while the MESSAGE carries
+    // `does not exist`. A first attempt used `ResourceNotFoundException`, whose
+    // name contains `NotFoundException` -- so `.summary` matched too and the
+    // probe passed against the substitution it existed to catch.
+    const noSuchBucket = Object.assign(new Error('The specified bucket does not exist'), {
+      name: 'NoSuchBucket',
+      $fault: 'client',
+    });
+
+    const described = describeAwsFailure(noSuchBucket);
+
+    expect(described.redacted, 'the fixture must be AWS-AUTHORED, or the two halves agree').toBe(
+      true
+    );
+    expect(described.detail).toContain('does not exist');
+    expect(described.summary).not.toContain('does not exist');
+    // And the name alone carries no needle, which is what makes the pair differ.
+    // All FIVE needles `destroy-runner.ts` matches on -- an earlier revision
+    // listed four and omitted `No policy found`.
+    for (const needle of [
+      'does not exist',
+      'not found',
+      'No policy found',
+      'NoSuchEntity',
+      'NotFoundException',
+    ]) {
+      expect(described.summary, `\`.summary\` must not carry ${needle}`).not.toContain(needle);
+    }
+  });
+});
+
 describe('safeStringify: the guarded 1:1 replacement for a bare String(x)', () => {
   // WHY this exists rather than `describeAwsFailure(x).detail`. The sweep that
   // converted `src/provisioning/**` to `.detail` reached nine BARE `String(x)`

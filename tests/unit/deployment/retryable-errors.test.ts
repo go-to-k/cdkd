@@ -2143,3 +2143,44 @@ describe('isUpdateUnsupportedError (issue #2520)', () => {
     expect(isUpdateUnsupportedError(loop, 'MyTable')).toBe(false);
   });
 });
+
+describe('retryClassificationText survives a value String() cannot convert', () => {
+  // This is the FIRST thing the destroy retry loop does with a caught value,
+  // upstream of every handler that would RECORD the failure -- so a `String()`
+  // that throws here replaced the AWS failure with a `TypeError` before
+  // anything could say what happened. Measured in review on go-to-k/cdkd#3362:
+  // that is what made the recorder's own guard insufficient on its own.
+  //
+  // The existing hostile-value coverage in this file goes through a `cause`
+  // LINK behind `markRedactedCause`, so reverting the top-level read to the
+  // bare ternary reds nothing there. This case drives the top level.
+  it('classifies a hostile top-level value instead of throwing', () => {
+    for (const hostile of [
+      Object.create(null) as object,
+      { toString: null },
+      {
+        toString() {
+          throw new Error('hostile toString');
+        },
+      },
+    ]) {
+      expect(() => String(hostile)).toThrow();
+      expect(() => retryClassificationText(hostile)).not.toThrow();
+      expect(retryClassificationText(hostile)).toBe('a value that could not be converted to text');
+    }
+  });
+
+  it('still returns AWS text verbatim, so the substring classifiers are unchanged', () => {
+    // The guard must not alter the population it guards: these are the reads
+    // `isRetryableTransientError` and the call site's `.includes(...)` match on.
+    expect(retryClassificationText(new Error('Rate exceeded'))).toBe('Rate exceeded');
+    // An `Error`, not a raw string: the load-bearing shape at the destroy call
+    // site is a thrown `Error` whose MESSAGE carries the needle, and a raw
+    // string exercises the non-`Error` branch instead.
+    expect(
+      retryClassificationText(new Error('Service returned 429 Too Many Requests'))
+    ).toContain('Too Many Requests');
+    expect(retryClassificationText(new Error(''))).toBe('');
+  });
+});
+

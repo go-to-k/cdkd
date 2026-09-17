@@ -1,4 +1,5 @@
 import * as readline from 'node:readline/promises';
+import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { getLogger } from '../../utils/logger.js';
 import { bold, green, red, yellow } from '../../utils/colors.js';
 import { formatResourceLine } from '../../utils/resource-line.js';
@@ -682,7 +683,7 @@ export async function runDestroyForStack(
         await ctx.lockManager.releaseLock(stackName, regionForState);
       } catch (releaseErr) {
         logger.warn(
-          `Failed to release lock after empty-state cleanup: ${releaseErr instanceof Error ? releaseErr.message : String(releaseErr)}`
+          `Failed to release lock after empty-state cleanup: ${describeAwsFailure(releaseErr).detail}`
         );
       } finally {
         process.removeListener('SIGINT', emptySigintHandler);
@@ -908,7 +909,7 @@ export async function runDestroyForStack(
       switchedClients?.destroy();
     } catch (destroyError) {
       logger.debug(
-        `Failed to destroy region-scoped AWS clients: ${destroyError instanceof Error ? destroyError.message : String(destroyError)}`
+        `Failed to destroy region-scoped AWS clients: ${describeAwsFailure(destroyError).detail}`
       );
     }
   };
@@ -1121,7 +1122,7 @@ export async function runDestroyForStack(
         await ctx.lockManager.releaseLock(stackName, regionForState);
       } catch (releaseErr) {
         logger.warn(
-          `Failed to release lock after strong-ref refusal/failure: ${releaseErr instanceof Error ? releaseErr.message : String(releaseErr)}`
+          `Failed to release lock after strong-ref refusal/failure: ${describeAwsFailure(releaseErr).detail}`
         );
       }
       // This exit also happens BEFORE the main try/finally that restores the
@@ -1234,7 +1235,7 @@ export async function runDestroyForStack(
         logger.debug(`State persisted after deleting ${logicalId}`);
       } catch (error) {
         logger.warn(
-          `Failed to persist state after deleting ${logicalId} (continuing): ${error instanceof Error ? error.message : String(error)}`
+          `Failed to persist state after deleting ${logicalId} (continuing): ${describeAwsFailure(error).detail}`
         );
       }
     });
@@ -1701,7 +1702,7 @@ export async function runDestroyForStack(
           persistStateAfterDelete(logicalId);
         } catch (error) {
           renderer.removeTask(logicalId);
-          const msg = error instanceof Error ? error.message : String(error);
+          const msg = describeAwsFailure(error).detail;
           // Treat "not found" as already deleted — but NEVER for a typed
           // final-snapshot failure (issue #1352): the snapshot step runs
           // BEFORE the delete, so its error means the resource is still
@@ -1791,7 +1792,7 @@ export async function runDestroyForStack(
               error: extractDeploymentEventError(wrapped),
             });
           } else {
-            logger.error(`  ✗ Failed to delete ${logicalId}:`, String(error));
+            logger.error(`  ✗ Failed to delete ${logicalId}:`, safeStringify(error));
             result.errorCount++;
             failedStateTargets.add(stateTargetFor(logicalId, resource.resourceType));
             ctx.eventRecorder?.record({
@@ -1855,7 +1856,7 @@ export async function runDestroyForStack(
         await ctx.stateBackend.saveState(stackName, regionForState, buildDestroySnapshot());
       } catch (error) {
         logger.warn(
-          `Failed to persist remaining state after partial destroy: ${error instanceof Error ? error.message : String(error)}. ` +
+          `Failed to persist remaining state after partial destroy: ${describeAwsFailure(error).detail}. ` +
             `The state file may still list already-deleted resources; a re-run resolves them idempotently.`
         );
       }
@@ -2027,7 +2028,7 @@ export async function runDestroyForStack(
       } catch (rendererError) {
         logger.debug(
           `Live renderer teardown failed (continuing to release the lock): ` +
-            `${rendererError instanceof Error ? rendererError.message : String(rendererError)}`
+            `${describeAwsFailure(rendererError).detail}`
         );
       }
 
@@ -2049,7 +2050,7 @@ export async function runDestroyForStack(
         await ctx.lockManager.releaseLock(stackName, regionForState);
       } catch (releaseErr) {
         logger.warn(
-          `Failed to release lock for stack '${stackName}': ${releaseErr instanceof Error ? releaseErr.message : String(releaseErr)}`
+          `Failed to release lock for stack '${stackName}': ${describeAwsFailure(releaseErr).detail}`
         );
       }
     } finally {

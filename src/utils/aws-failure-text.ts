@@ -141,8 +141,26 @@ export interface AwsFailureText {
    */
   readonly summary: string;
   /**
-   * The failure's own text, in full. `logger.debug` ONLY — never a thrown
-   * message, never a default-level line.
+   * The failure's own text, in full.
+   *
+   * Written as `logger.debug` ONLY, and that is no longer where it is used.
+   * The out-throw sweeps (go-to-k/cdkd#3330, go-to-k/cdkd#3348) converted
+   * ~215 sites from `x instanceof Error ? x.message : String(x)` to this
+   * field, because it IS that expression minus the throw — so every
+   * `logger.warn` and `logger.error` that already interpolated the ternary now
+   * interpolates `detail`, at DEFAULT level. That is a restatement of where
+   * the text already went, not a widening: no site's output changed.
+   *
+   * What still holds, and is the half worth keeping: this is the UNREDACTED
+   * text, so a THROWN message built from it is persisted to
+   * `deployments/{runId}.jsonl` and an AWS `AccessDenied` there spells out the
+   * caller's assumed-role ARN. Those sites are go-to-k/cdkd#2319's, and a NEW
+   * one needs that question answered first. No count is given on purpose: an
+   * earlier revision said "ten", which was not re-derivable — every such site
+   * reaches the throw through an intermediate binding, so there is no grep that
+   * settles it, and a number nothing can check is one that silently goes stale.
+   * Prefer {@link summary} wherever a wire class is enough — but never where
+   * the text feeds a substring classifier, which `summary` blinds.
    */
   readonly detail: string;
   /**

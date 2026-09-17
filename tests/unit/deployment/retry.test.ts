@@ -857,3 +857,40 @@ describe('withRetry rides a NAME COOLDOWN on its own grid (issue #2116)', () => 
     expect(line).toContain('(the full propagation budget)');
   });
 });
+
+
+describe('withRetry survives a rejection String() cannot convert (go-to-k/cdkd#3348)', () => {
+  // `withRetry`'s own catch stringifies the caught value to feed the
+  // message-based retry classifiers, and it wraps `provider.delete` -- so on
+  // the destroy path this runs BEFORE anything that would record the failure.
+  // A `String()` that throws here replaces the rejection with a `TypeError`
+  // and the operator never learns what actually failed.
+  //
+  // This was the FOURTH such site found on that path, and the only one of the
+  // five that shipped with no test: review measured that reverting it left the
+  // entire suite green.
+  it('rethrows the ORIGINAL value, not a TypeError from stringifying it', async () => {
+    for (const hostile of [
+      Object.create(null) as object,
+      { toString: null },
+      {
+        toString() {
+          throw new Error('hostile toString');
+        },
+      },
+    ]) {
+      // The premise, asserted rather than assumed.
+      expect(() => String(hostile)).toThrow();
+
+      const op = vi.fn().mockRejectedValue(hostile);
+      // `toBe`, so the IDENTITY of the rejected value is pinned: a `TypeError`
+      // substituted for it would satisfy a looser `toThrow()`.
+      await expect(
+        withRetry(op, 'MyResource', { sleep: () => Promise.resolve() })
+      ).rejects.toBe(hostile);
+      // Non-retryable by classification, so exactly one attempt -- if the guard
+      // regressed, the throw would escape from inside the catch instead.
+      expect(op).toHaveBeenCalledTimes(1);
+    }
+  });
+});

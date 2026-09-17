@@ -16,6 +16,13 @@
  * in state.json.
  */
 
+// The ONE import this module takes, and it is deliberate: `aws-failure-text.ts`
+// is itself a zero-import leaf, so this introduces no cycle, and
+// `extractDeploymentEventError` below is a runtime function rather than a type
+// -- the guard it needs cannot live in a caller, because every caller reaches
+// it from inside a catch that is already the last handler (go-to-k/cdkd#3348).
+import { safeStringify } from '../utils/aws-failure-text.js';
+
 /**
  * The cdkd command that produced a deployment run. `'rollback'` (issue
  * #1183) is the standalone `cdkd rollback` replay — additive literal, no
@@ -326,7 +333,21 @@ export interface DeploymentRunIndexFile {
  */
 export function extractDeploymentEventError(err: unknown): DeploymentEventError {
   if (!(err instanceof Error)) {
-    return { name: 'UnknownError', message: String(err) };
+    // `safeStringify`, not a bare `String`: this function is the one that
+    // RECORDS a failure, and `String()` throws for a null-prototype object or a
+    // hostile `toString` -- so the recorder took the run down instead of
+    // recording it.
+    //
+    // It runs inside the per-resource catch of a `level.map(...)` that
+    // `Promise.all` awaits, which LOOKS like a throw here abandons the
+    // destroy's remaining levels. Measured, it does not: `retryClassificationText`
+    // stringifies the same value first, in the same catch, and throws there --
+    // so what arrives is already a `TypeError`, an `Error`, taking the branch
+    // below. The cost was the DIAGNOSIS: the row named
+    // `TypeError: Cannot convert object to primitive value` instead of the AWS
+    // failure. Both sites are guarded; either alone changes nothing
+    // (go-to-k/cdkd#3348).
+    return { name: 'UnknownError', message: safeStringify(err) };
   }
   const result: DeploymentEventError = {
     name: err.name || 'Error',

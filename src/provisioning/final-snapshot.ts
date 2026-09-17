@@ -16,6 +16,7 @@ import {
   type ElastiCacheClient,
 } from '@aws-sdk/client-elasticache';
 import { CdkdError } from '../utils/error-handler.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 
 /** Minimal logger surface used here (avoids coupling to the full Logger type). */
 type InfoLogger = { info(message: string): void; debug(message: string): void };
@@ -208,7 +209,15 @@ const PRE_DELETE_SNAPSHOT_TIMEOUT_MS = 60 * 60 * 1_000;
 const REDSHIFT_CLUSTER_SETTLE_TIMEOUT_MS = 20 * 60 * 1_000;
 
 function errMsg(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  // `.detail` IS `error instanceof Error ? error.message : String(error)`,
+  // minus the throw: `String()` dies on a null-prototype object or a hostile
+  // `toString`. That matters here because `createPreDeleteFinalSnapshot` is
+  // called from `destroy-runner.ts` INSIDE the per-resource try, so a throw
+  // from this helper replaces the snapshot failure with a `TypeError` before
+  // anything records which resource was left un-snapshotted
+  // (go-to-k/cdkd#3348; review found it after two passes had called the
+  // destroy path complete without it).
+  return describeAwsFailure(error).detail;
 }
 
 function isVolumeNotFound(error: unknown): boolean {
