@@ -148,8 +148,27 @@ export interface AwsFailureText {
   readonly redacted: boolean;
 }
 
-/** Appended to a redacted summary so the withheld half is still reachable. */
-const VERBOSE_POINTER = "Re-run with --verbose for AWS's own message.";
+/**
+ * Appended to a redacted summary so the withheld half is still reachable.
+ *
+ * EXPORTED because a caller that reduces on its OWN authorship predicate has to
+ * compose the same summary by hand, and a second spelling of this sentence is a
+ * second thing to keep in sync — `cloud-control-provider.ts`'s `abandonWait`
+ * hand-copied it, pinned only by a `toContain('Re-run with --verbose')` that
+ * would have gone on passing while the two drifted.
+ */
+export const VERBOSE_POINTER = "Re-run with --verbose for AWS's own message.";
+
+/**
+ * The summary {@link describeAwsFailure} builds for an `Error` it is reducing.
+ *
+ * Exported for the same reason as {@link VERBOSE_POINTER}, one level up: a
+ * caller whose authorship predicate is WIDER than this module's reduces shapes
+ * the helper hands back raw, and must then build this exact string itself.
+ */
+export function redactedAwsFailureSummary(error: Error): string {
+  return `${error.name || 'Error'}. ${VERBOSE_POINTER}`;
+}
 
 /**
  * Whether AWS wrote this failure's message.
@@ -193,7 +212,7 @@ export function describeAwsFailure(error: unknown): AwsFailureText {
     // identity. Fall back to `Error` for the shapes that null it out, so the
     // summary is never an empty clause.
     return {
-      summary: `${error.name || 'Error'}. ${VERBOSE_POINTER}`,
+      summary: redactedAwsFailureSummary(error),
       detail: error.message,
       redacted: true,
     };
@@ -203,9 +222,25 @@ export function describeAwsFailure(error: unknown): AwsFailureText {
   // class to fall back to, so the value itself is withheld: it is the shape
   // with the fewest guarantees about what is inside it, not the most. Nothing
   // is lost — the caller still routes `detail` to `debug`.
+  //
+  // And `String(value)` is exactly where the fewest guarantees bite: a
+  // null-prototype object throws `TypeError: Cannot convert object to
+  // primitive value`, and an object with a throwing `toString` throws whatever
+  // it likes. Every caller is INSIDE a catch — `abandonWait` builds the error
+  // that carries #3236's `RequestToken` — so an exception here would replace
+  // the failure this function exists to describe, which is precisely the defect
+  // that issue is about. Same rule, and the same guard shape, as
+  // `retryClassificationText`: a helper on a failure path must not out-throw
+  // the failure it is describing.
+  let detail: string;
+  try {
+    detail = String(error);
+  } catch {
+    detail = 'a value that could not be converted to text';
+  }
   return {
     summary: `a non-Error value of type ${typeof error}. ${VERBOSE_POINTER}`,
-    detail: String(error),
+    detail,
     redacted: true,
   };
 }

@@ -18,7 +18,8 @@ import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { InterruptedWaitError } from '../../../src/provisioning/interrupt-watch.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { assertRegionMatch } from '../../../src/provisioning/region-check.js';
-import { markNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import { isMarkedNonRetryable, markNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import { markWaitAbandoned } from '../../../src/provisioning/wait-abandoned.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 
@@ -180,7 +181,9 @@ describe('DeployEngine DELETE — an interrupt is never "already deleted" (#2053
     expect(interrupt.message).toContain('NotFoundException');
     deleteError = interrupt;
 
-    await expect(buildEngine().deploy(STACK, template)).rejects.toThrow();
+    await expect(buildEngine().deploy(STACK, template)).rejects.toThrow(
+      new RegExp(`Failed to delete resource ${NEEDLE}`)
+    );
 
     // Pre-fix the substring arm swallowed this as "already deleted", removed
     // the record, and reported success — for a table that is still live.
@@ -196,7 +199,9 @@ describe('DeployEngine DELETE — an interrupt is never "already deleted" (#2053
       new InterruptedWaitError(`DynamoDB Table ${NEEDLE} delete`)
     );
 
-    await expect(buildEngine().deploy(STACK, template)).rejects.toThrow();
+    await expect(buildEngine().deploy(STACK, template)).rejects.toThrow(
+      new RegExp(`Failed to delete resource ${NEEDLE}`)
+    );
 
     expect(persistedResources()[NEEDLE]).toMatchObject({ physicalId: `phys-${NEEDLE}` });
   });
@@ -216,7 +221,45 @@ describe('DeployEngine DELETE — an interrupt is never "already deleted" (#2053
     expect(refusal?.message).toContain('NotFoundException');
     deleteError = refusal;
 
-    await expect(buildEngine().deploy(STACK, template)).rejects.toThrow();
+    await expect(buildEngine().deploy(STACK, template)).rejects.toThrow(
+      new RegExp(`Failed to delete resource ${NEEDLE}`)
+    );
+
+    expect(persistedResources()[NEEDLE]).toMatchObject({ physicalId: `phys-${NEEDLE}` });
+  });
+
+  it('keeps the state row for an ABANDONED WAIT carrying the needle (issue #3236)', async () => {
+    // The FOURTH member of this family, and the one `isMarkedNonRetryable`
+    // cannot cover: a DELETE abandonment is deliberately left RETRYABLE so the
+    // delete can be re-issued, so it carries no non-retryable marker and fell
+    // straight through to the substring classifier. It means cdkd stopped
+    // WATCHING a delete that may still be running — the opposite of
+    // already-gone — and its message interpolates the logical id.
+    // Built through the MARKER rather than the class, and that is the better
+    // subject anyway: the production guard reads `isWaitAbandonedError`, not
+    // `instanceof`, precisely because this file cannot see the provider (it
+    // mocks that module, and the real import would close a cycle). A test
+    // constructing the class here would fence a path the engine does not take.
+    const abandoned = markWaitAbandoned(
+      new Error(
+        `DELETE of ${NEEDLE} was accepted by Cloud Control API, but cdkd stopped waiting for it`
+      )
+    );
+    // Non-vacuity, both halves: the message carries the needle AND the error is
+    // retryable, i.e. the pre-existing guards genuinely do not cover it.
+    expect(abandoned.message).toContain('NotFoundException');
+    expect(isMarkedNonRetryable(abandoned)).toBe(false);
+    deleteError = abandoned;
+
+    // The identity is pinned, not just "it threw": a bare `toThrow()` would
+    // pass on any failure, including one the guard had nothing to do with. The
+    // engine wraps the delete failure, so the assertion is on the wrapper's
+    // own shape — it names the resource whose delete failed, which is what
+    // distinguishes this from the already-deleted path (which throws nothing
+    // and drops the row instead).
+    await expect(buildEngine().deploy(STACK, template)).rejects.toThrow(
+      new RegExp(`Failed to delete resource ${NEEDLE}`)
+    );
 
     expect(persistedResources()[NEEDLE]).toMatchObject({ physicalId: `phys-${NEEDLE}` });
   });

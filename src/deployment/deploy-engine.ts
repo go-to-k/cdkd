@@ -154,6 +154,7 @@ import {
 import { getCdkdVersion } from '../state/deployment-events-store.js';
 import type { RollbackJournalSegment } from '../types/rollback-journal.js';
 import { isInterruptedWaitError } from '../provisioning/interrupt-watch.js';
+import { isWaitAbandonedError } from '../provisioning/wait-abandoned.js';
 
 /**
  * The bag a resource with no recorded secret masks against (issue #2038).
@@ -6793,10 +6794,29 @@ export class DeployEngine {
                   // If old resource doesn't exist (already deleted), proceed with CREATE
                   const deleteMsg =
                     deleteError instanceof Error ? deleteError.message : String(deleteError);
+                  // Typed check FIRST, and this arm is the worst of the four
+                  // already-deleted classifiers to get wrong (issue
+                  // go-to-k/cdkd#3236): reading "already gone" here does not
+                  // merely drop a state row, it proceeds to CREATE the
+                  // replacement BESIDE an old resource whose delete may still
+                  // be running. A `CloudControlWaitAbandonedError` says
+                  // exactly that — cdkd stopped watching an operation still in
+                  // flight — and its message interpolates the LOGICAL ID, so a
+                  // construct named `PageNotFound` satisfies the bare
+                  // `NotFound` needle below. The substring match cannot be
+                  // made safe; any needle can appear in a user-chosen name.
+                  //
+                  // This arm carried NO typed guard at all, unlike its two
+                  // siblings — so `isInterruptedWaitError` and
+                  // `isMarkedNonRetryable` join it here for the same reasons
+                  // those siblings state.
                   if (
-                    deleteMsg.includes('does not exist') ||
-                    deleteMsg.includes('not found') ||
-                    deleteMsg.includes('NotFound')
+                    !isWaitAbandonedError(deleteError) &&
+                    !isInterruptedWaitError(deleteError) &&
+                    !isMarkedNonRetryable(deleteError) &&
+                    (deleteMsg.includes('does not exist') ||
+                      deleteMsg.includes('not found') ||
+                      deleteMsg.includes('NotFound'))
                   ) {
                     this.logger.debug(
                       `Old resource ${logicalId} already gone, proceeding with CREATE`
@@ -7307,9 +7327,16 @@ export class DeployEngine {
           // template-removal delete. Twin of the guard in
           // `destroy-runner.ts`; see the longer note there for why
           // `isMarkedNonRetryable` is the predicate.
+          // `isWaitAbandonedError` is the THIRD member of this family (issue
+          // go-to-k/cdkd#3236), and it needs its own predicate rather than
+          // riding `isMarkedNonRetryable`: a DELETE abandonment is
+          // deliberately left RETRYABLE so the delete can be re-issued, so it
+          // carries no non-retryable marker and would fall straight through to
+          // the substring match below.
           if (
             !isInterruptedWaitError(deleteError) &&
             !isMarkedNonRetryable(deleteError) &&
+            !isWaitAbandonedError(deleteError) &&
             (msg.includes('does not exist') ||
               msg.includes('was not found') ||
               msg.includes('not found') ||

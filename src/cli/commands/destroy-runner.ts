@@ -58,6 +58,7 @@ import {
 } from '../../utils/error-handler.js';
 import type { ExportIndexStore } from '../../state/export-index-store.js';
 import { isInterruptedWaitError } from '../../provisioning/interrupt-watch.js';
+import { isWaitAbandonedError } from '../../provisioning/wait-abandoned.js';
 
 /**
  * Execution context passed by the caller (`cdkd destroy` or
@@ -1693,10 +1694,20 @@ export async function runDestroyForStack(
           // refusal non-retryable precisely because it is a deterministic
           // verdict rather than an AWS condition, and nothing AWS returns
           // carries the marker.
+          // `isWaitAbandonedError` (issue go-to-k/cdkd#3236) is the fourth
+          // member of this family and needs its own predicate rather than
+          // riding `isMarkedNonRetryable`: a DELETE abandonment is
+          // deliberately left RETRYABLE — the point is that this loop can
+          // re-issue an idempotent delete — so it carries no non-retryable
+          // marker and would fall straight through to the substring match.
+          // Reading it as "already deleted" is the same orphan class the note
+          // above describes, arriving from cdkd having stopped WATCHING a
+          // delete rather than from a refusal.
           if (
             !isInterruptedWaitError(error) &&
             !isFinalSnapshotError(error) &&
             !isMarkedNonRetryable(error) &&
+            !isWaitAbandonedError(error) &&
             (msg.includes('does not exist') ||
               msg.includes('not found') ||
               msg.includes('No policy found') ||

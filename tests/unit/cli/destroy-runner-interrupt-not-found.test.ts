@@ -60,7 +60,8 @@ import { runDestroyForStack } from '../../../src/cli/commands/destroy-runner.js'
 import { InterruptedWaitError } from '../../../src/provisioning/interrupt-watch.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { assertRegionMatch } from '../../../src/provisioning/region-check.js';
-import { markNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import { isMarkedNonRetryable, markNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import { CloudControlWaitAbandonedError } from '../../../src/provisioning/cloud-control-provider.js';
 
 const REGION = 'us-east-1';
 
@@ -202,6 +203,46 @@ describe('an interrupted delete is never read as "already deleted"', () => {
     expect(result.errorCount).toBe(1);
     // The row SURVIVES — the load-bearing half. An error that is merely logged
     // while the record is dropped is the failure this fences.
+    expect(deleteState).not.toHaveBeenCalled();
+    const lastSave = saveState.mock.calls.at(-1);
+    expect(lastSave, 'expected the runner to persist the surviving state').toBeDefined();
+    expect(Object.keys((lastSave![2] as StackState).resources)).toContain(NEEDLE_LOGICAL_ID);
+  });
+
+  it('keeps the state row for an ABANDONED WAIT carrying the needle (issue #3236)', async () => {
+    // The FOURTH member of this family, and the one `isMarkedNonRetryable`
+    // cannot cover: a DELETE abandonment is deliberately left RETRYABLE, since
+    // the whole point is that THIS loop can re-issue an idempotent delete. So
+    // it carries no non-retryable marker and fell straight through to the
+    // substring match below.
+    //
+    // `CloudControlWaitAbandonedError` means cdkd stopped WATCHING a delete
+    // that may still be running — the opposite of already-gone — and its
+    // message interpolates the logical id, so the same needle-bearing name
+    // defeats the matcher here as it does for the three siblings above.
+    //
+    // Built by the PRODUCTION constructor rather than paraphrased, so a
+    // reworded message cannot leave this fencing a string that no longer ships.
+    const abandoned = new CloudControlWaitAbandonedError(
+      `DELETE of ${NEEDLE_LOGICAL_ID} was accepted by Cloud Control API, but cdkd stopped waiting for it`,
+      'AWS::DynamoDB::Table',
+      NEEDLE_LOGICAL_ID,
+      'tok-abandoned',
+      'DELETE',
+      undefined
+    );
+    // Non-vacuity, both halves: the message really carries a needle, AND the
+    // error really is retryable — i.e. the pre-existing guards do not cover it.
+    expect(abandoned.message).toContain('NotFoundException');
+    expect(isMarkedNonRetryable(abandoned)).toBe(false);
+
+    const mockProviderDelete = vi.fn().mockRejectedValue(abandoned);
+    const { ctx, saveState, deleteState } = makeCtx(mockProviderDelete);
+
+    const result = await runDestroyForStack('TestStack', makeState(NEEDLE_LOGICAL_ID), ctx);
+
+    expect(result.deletedCount).toBe(0);
+    expect(result.errorCount).toBe(1);
     expect(deleteState).not.toHaveBeenCalled();
     const lastSave = saveState.mock.calls.at(-1);
     expect(lastSave, 'expected the runner to persist the surviving state').toBeDefined();
