@@ -85,11 +85,16 @@ describe('classifyWcTrim', () => {
       ['an ANSI-C quoted command name', "$'wc' -l </dev/null", 'redirect'],
       ['by absolute path', '/usr/bin/wc -l </dev/null', 'redirect'],
       ['behind `coproc`', 'coproc wc -l </dev/null', 'redirect'],
+      // After arithmetic holding quotes: the plain parenthesis counter must not
+      // lose the command that follows.
+      ['after arithmetic holding an ANSI-C quoted escaped quote', "declare -A a; (( a[$'\\''] = 1 )); wc -l </dev/null", 'redirect'],
+      ['after arithmetic holding a quote inside a substitution', "declare -A a; (( a[\"$(printf '\"')\"] = 1 )); wc -l </dev/null", 'redirect'],
       ['behind `env -`, an empty environment', 'env - wc -l </dev/null', 'redirect'],
       ['behind a quoted `env`, which still runs its command', "'env' wc -l </dev/null", 'redirect'],
       ['reading a duplicated descriptor', 'wc -l <&3', 'redirect'],
       ['with an escaped quote in an argument before its redirect', 'wc -l "a\\"b" <f', 'redirect'],
       ['after ||, which is not a pipe', 'false || wc -l x', 'argument'],
+      ['after a pipe and a descriptor redirection written first', 'ls | 2>/dev/null wc -l', 'pipe'],
       ['behind a here-string written before the command', '<<<"x" wc -l', 'here-string'],
       ['behind `env -C DIR`, whose option takes a value', 'env -C /tmp wc -l </dev/null', 'redirect'],
       ['behind `env -iu NAME`, clustered options ending in one that takes a value', 'env -iu HOME wc -l </dev/null', 'redirect'],
@@ -221,6 +226,16 @@ describe('classifyWcTrim', () => {
       ['<&3 before the pipe into the trim', "wc -l <&3 | tr -d ' '", 'space'],
       ['a comment right after the pipe, then the trim', "wc -l </dev/null |# c\ntr -d ' '", 'space'],
       ['|& into the trim', "wc -l </dev/null |& tr -d ' '", 'space'],
+      ['a shift in the arguments before a line-broken trim', "wc -l $((1<<2)) </dev/null |\ntr -d ' '", 'space'],
+      // A `<<` inside a substitution, backticks or `${...}` in wc's arguments
+      // belongs to that group, not to the wc stage.
+      ['a heredoc inside a $( ) argument before a line-broken trim', "wc -l $(cat <<b\nx\nb\n) |\ntr -d ' '", 'space'],
+      ['a heredoc inside a backtick argument before a line-broken trim', "wc -l `cat <<b\nx\nb\n` |\ntr -d ' '", 'space'],
+      ['a << in a parameter default before a line-broken trim', "wc -l ${X:-a<<b} |\ntr -d ' '", 'space'],
+      ['a heredoc feeding the trim', "wc -l </dev/null | tr -d ' ' <<'A'\nx\nA", 'space'],
+      ['an opener in a quoted substitution closed on the pipe line, its body before the trim', "x=\"$(cat <<'EOF')\" | wc -l |\nEOF\ntr -d ' '", 'space'],
+      ['a here-string feeding the trim', "wc -l </dev/null | tr -d ' ' <<<x", 'space'],
+      ['a tab-stripping heredoc feeding the trim', "wc -l </dev/null | tr -d ' ' <<- EOF\nx\nEOF", 'space'],
       ['a <<- heredoc body with a tab-indented terminator between the pipe and the trim', `wc -l <<-EOF |\na\n${TAB}EOF\ntr -d ' '`, 'space'],
       ['the body of a heredoc opened earlier in the pipeline', "cat <<EOF | wc -l |\nx\nEOF\ntr -d ' '", 'space'],
       ['that heredoc shape inside a double-quoted substitution', "N=\"$(wc -l <<EOF |\na\nEOF\ntr -d ' ')\"", 'space'],
@@ -251,7 +266,30 @@ describe('classifyWcTrim', () => {
       ['a trim followed by a backtick-substituted argument', "wc -l </dev/null | tr -d ' ' `printf %s -c`"],
       ['a trim followed by a redirection and then another argument', "wc -l </dev/null | tr -d ' ' &>/dev/null -c"],
       ['a trim followed by a file redirect and then another argument', "ls | wc -l | tr -d ' ' > out -c"],
+      // An opener in a substitution inside an array: its body (holding the
+      // trim-looking line) starts after the command's line; `cat` is next.
+      ['an opener inside an array substitution, its body holding trim-looking text', "a=($(cat <<'EOF')) | wc -l |\ntr -d ' '\nEOF\ncat"],
       ['a trim followed by a redirection with no target, which bash rejects', "ls | wc -l | tr -d ' ' >"],
+      // The trim must START the next stage: a later `tr -d ' '` elsewhere in the
+      // file cannot stand in for it.
+      ['a nine-character stage, with a tr -d on a later line', "N=$(ls | wc -l | abcdefghi)\nX=$(echo | tr -d ' ')"],
+      // A `<<` inside `$(( ))` is not a heredoc opener, so no body skip lands the
+      // trim check on a later `tr`.
+      ['a shift in the arguments, a line equal to its operand, then tr', "wc -l $((1<<2)) </dev/null |\n2\ntr -d ' '"],
+      // A quoted `(` inside a substitution must not hide the stage's real heredoc,
+      // whose body holds the trim-looking text; the next stage is `cat`.
+      ['a quoted ( in a substitution before a real heredoc', "wc -l $(printf '(' >/dev/null) <<EOF |\ntr -d ' '\nEOF\ncat"],
+      ['an escaped ( in a substitution before a real heredoc', "wc -l $(printf \\( >/dev/null) <<EOF |\ntr -d ' '\nEOF\ncat"],
+      ['an escaped quote then ( in a substitution before a real heredoc', "wc -l $(printf \"\\\"(\" >/dev/null) <<EOF |\ntr -d ' '\nEOF\ncat"],
+      ['a commented ( in a substitution before a real heredoc', "wc -l $(printf x >/dev/null # (\n) <<EOF |\ntr -d ' '\nEOF\ncat"],
+      ['a ( in a parameter default in a substitution before a real heredoc', "wc -l $(printf %s ${X:-(} >/dev/null) <<EOF |\ntr -d ' '\nEOF\ncat"],
+      ['a quoted heredoc on the pipe line whose body is not followed by tr', "wc -l <<'EOF' |\ntr -d ' '\nEOF\ncat"],
+      ['an unterminated heredoc body after the pipe, where no stage follows', "wc -l <<EOF |\ntr -d ' '"],
+      ['an unterminated QUOTED heredoc body after the pipe', "wc -l <<'EOF' |\ntr -d ' '"],
+      // Leading tabs are stripped only for `<<-`: a tab-indented EOF under `<<`
+      // is body text, so the body ends at the later EOF and `cat` is next.
+      ['a tab-indented EOF under << (not <<-), before trim-looking text', "wc -l <<EOF |\n\tEOF\ntr -d ' '\nEOF\ncat"],
+      ['a heredoc opened on the last line, with nothing after it', 'wc -l <<EOF |'],
       ['a trim argument joined to a # (the same word, not a comment)', "wc -l </dev/null | tr -d ' '#x"],
       ['a trim that is text inside a nested parameter default', "wc -l <<< ${A:-${B:-x}| tr -d ' ';}"],
       ['a trim argument with trailing text', "N=$(ls | wc -l | tr -d ' 'x)"],
@@ -325,6 +363,105 @@ describe('classifyWcTrim', () => {
       const c = classifyWcTrim('if [ $# -eq 0 ]; then wc -l </dev/null; fi\n');
       expect(c.violations.map((v) => v.line)).toEqual([1]);
       expect(c.commentOffsets).toEqual([]);
+    });
+
+    it.each([
+      ['a quoted $( ... ) argument', 'cat <<\'A\' "$(\nprintf \'x\\n\' | wc -l\n)"\nA', 2],
+      ['an unquoted $( ... ) argument', "cat <<'A' $(\nprintf 'x\\n' | wc -l\n)\nA", 2],
+      ['a backtick argument', "cat <<'A' `\nprintf 'x\\n' | wc -l\n`\nA", 2],
+    ])('runs a wc in %s spanning lines after a heredoc opener on the same command', (_label, body, line) => {
+      // Bash reads the body after the COMMAND's line ends, not after the first
+      // newline inside its argument; the substitution runs.
+      const c = classifyWcTrim(`${body}\n`);
+      expect(c.violations.map((v) => v.line)).toEqual([line]);
+      // Exactly one data body, and it starts after the command's line, at `A`.
+      expect(c.dataHeredocBodies.map(([start]) => start)).toEqual([body.indexOf('\nA') + 1]);
+    });
+
+    it('starts an inner command\'s heredoc while an outer one is still pending', () => {
+      // Line 2 is the inner quoted heredoc's data, not an executed wc.
+      const c = classifyWcTrim("cat <<'A' $(cat <<'B' >/dev/null\nwc -l </dev/null\nB\n)\nA\nwc -l </dev/null\n");
+      // Line 2 is data; the wc after both bodies (line 6) is a command.
+      expect(c.violations.map((v) => v.line)).toEqual([6]);
+    });
+
+    it.each([
+      [
+        'a quoted ( in arithmetic stretching past the terminator onto an unrelated tr',
+        "declare -A a\nwc -l <<: |\n$(( a[\"(\"] ))\n:\ncat\nprintf ')'\ntr -d ' ' </dev/null",
+        2,
+      ],
+      ['an unbalanced $(( that runs to the end of the file', 'cat <<EOF\n$(( 1\nEOF\nwc -l </dev/null', 4],
+      ['an unterminated quote in a substitution that runs to the end of the file', "cat <<EOF\n$(echo '\nEOF\nwc -l </dev/null", 4],
+      [
+        'a line continued by a backslash onto a line that reads like the terminator',
+        "cat <<EOF\n$(printf '%s' 'x\\\nEOF\n'\nwc -l </dev/null\n)\nEOF",
+        5,
+      ],
+    ])('ends a heredoc body at its terminator line despite %s', (_label, body, line) => {
+      // Bash finds the terminator by line before expanding the body, so nothing
+      // inside can move it; the lines after it are commands.
+      expect(classifyWcTrim(`${body}\n`).violations.map((v) => v.line)).toEqual([line]);
+    });
+
+    it('ends an unquoted heredoc at the line after a lone backslash-newline', () => {
+      // `\` + newline + `EOF` is the logical line `EOF`, which terminates.
+      const c = classifyWcTrim('cat <<EOF\n\\\nEOF\nwc -l </dev/null\n');
+      expect(c.violations.map((v) => v.line)).toEqual([4]);
+    });
+
+    it('ends a QUOTED heredoc at a terminator even after a backslash line (no continuation in data)', () => {
+      const c = classifyWcTrim("cat <<'EOF'\nx\\\nEOF\nwc -l </dev/null\n");
+      expect(c.violations.map((v) => v.line)).toEqual([4]);
+    });
+
+    it('ends an unquoted heredoc after an ESCAPED trailing backslash, which does not continue', () => {
+      const c = classifyWcTrim('cat <<EOF\nx\\\\\nEOF\nwc -l </dev/null\n');
+      expect(c.violations.map((v) => v.line)).toEqual([4]);
+    });
+
+    it.each([
+      ['the second heredoc of an inner command, after an outer one is pending', "cat <<'A' $(cat <<'B' >/dev/null\ndata\nB\nwc -l </dev/null\n)\nA\n", [4]],
+      ['a wc in a substitution inside an unquoted body nested in another', 'cat <<A\n$(cat <<B\nx\nB\nwc -l </dev/null\n)\nA\n', [5]],
+      ['a terminator spelled across two continuations', 'cat <<EOF\nE\\\nO\\\nF\nwc -l </dev/null\n', [5]],
+      ['a continued line that is not the terminator', 'cat <<EOF\nx\\\ny\nEOF\nwc -l </dev/null\n', [5]],
+      ['an opener whose substitution closed on its own line (bash reads the next lines as its body)', "x=$(cat <<'EOF')\nwc -l </dev/null\nEOF\nwc -l </dev/null\n", [4]],
+      ['the same with a process substitution', "cat <(cat <<'EOF')\nwc -l </dev/null\nEOF\nwc -l </dev/null\n", [4]],
+      ['the same with backticks', "cat `cat <<'EOF'`\nwc -l </dev/null\nEOF\nwc -l </dev/null\n", [4]],
+      ['a delimiter with a backtick inside it outside any substitution', 'cat <<E`OF`\nx\nE`OF`\nwc -l </dev/null\n', [4]],
+    ])('reports the right lines for %s', (_label, body, lines) => {
+      expect(classifyWcTrim(body).violations.map((v) => v.line)).toEqual(lines);
+    });
+
+    it.each([
+      ['a quoted body', "cat <<'EOF'\nx\nEOF\n"],
+      ['an unquoted body', 'cat <<EOF\nx\nEOF\n'],
+    ])('honours a full-line allow marker on the line right after %s', (_label, head) => {
+      const c = classifyWcTrim(`${head}# ${ALLOW_MARKER}: intentional count comparison\nN=$(ls | wc -l)\n`);
+      expect(c.violations).toEqual([]);
+    });
+
+    it('ends an unquoted heredoc only at an unindented terminator', () => {
+      // `  EOF` is body text; the wc on the line after it is text too.
+      const c = classifyWcTrim('cat <<EOF\n  EOF\nwc -l </dev/null\nEOF\n');
+      expect(c.invocations).toEqual([]);
+    });
+
+    it('stays fast on deeply nested parameter expansions', () => {
+      // A per-character search of the frame stack for an open heredoc was
+      // quadratic here (~7.8 s at n = 2048).
+      const n = 2048;
+      const c = classifyWcTrim(`echo ${'${X:-'.repeat(n)}${'x'.repeat(n * 1000)}${'}'.repeat(n)}\n`);
+      expect(c.invocations).toEqual([]);
+    });
+
+    it('stays fast when many wc stages carry a shift in their arguments', () => {
+      // A `<<` inside `$(( ))` once registered as an opener whose body walk ran
+      // to the end of the file for every stage: 4x per doubling, ~10 s at 1 MiB.
+      const body = Array.from({ length: 32_000 }, () => "wc -l $((1<<2)) </dev/null |\ntr -d ' '").join('\n');
+      const c = classifyWcTrim(`${body}\n`);
+      expect(c.violations).toEqual([]);
+      expect(c.invocations).toHaveLength(32_000);
     });
 
     it('ends a heredoc delimiter at a redirection written against it', () => {
@@ -432,6 +569,18 @@ describe('classifyWcTrim', () => {
       const c = classifyWcTrim(body);
       expect(c.violations).toEqual([]);
       expect(c.invocations.map((i) => i.allowed)).toEqual([true]);
+    });
+
+    it('requires a reason of at least 10 characters, measured after trimming', () => {
+      // The header and the docs state 10; every other case derives its reason
+      // from the constant, so this is the one place the number is asserted.
+      expect(MIN_ALLOW_REASON_LENGTH).toBe(10);
+      const at = (why: string) => classifyWcTrim(`N=$(ls | wc -l) # ${ALLOW_MARKER}: ${why}\n`);
+      expect(at('abcdefghi').malformedAllowMarkers).toEqual([1]);
+      expect(at('abcdefghij').violations).toEqual([]);
+      // Trailing blanks do not count toward the length.
+      expect(at('abcde      ').malformedAllowMarkers).toEqual([1]);
+      expect(at('abcde      ').violations).toHaveLength(1);
     });
 
     it('refuses a marker whose reason is too short, and reports it as malformed', () => {
@@ -575,8 +724,8 @@ describe('the tree stays inside what the classifier reads (issue #3213)', () => 
    */
   function uncountedWcWords(content: string): number[] {
     const c = classifyWcTrim(content);
-    // Line lookup by binary search over precomputed line starts: O(n log n), not
-    // file, not quadratic, since a fork PR can add a long fixture.
+    // Line lookup by binary search over precomputed line starts: O(n log n) in
+    // the file, not quadratic, since a fork PR can add a long fixture.
     const lineStarts = [0];
     for (let k = 0; k < content.length; k++) if (content[k] === '\n') lineStarts.push(k + 1);
     const lineOf = (offset: number) => {
@@ -617,10 +766,8 @@ describe('the tree stays inside what the classifier reads (issue #3213)', () => 
       const before = content[offset - 1];
       // `/wc` ends a path; any other word character before it makes a longer word.
       if (before !== undefined && before !== '/' && /[A-Za-z0-9_.-]/.test(before)) continue;
-      // Both lookups advance on every match, so neither can skip a range.
-      const counted = inCounted(offset);
-      const data = inDataBody(offset);
-      if (counted || data) continue;
+      // Each sweep is monotone in the offset, so skipping a call is harmless.
+      if (inCounted(offset) || inDataBody(offset)) continue;
       const line = lineOf(offset);
       const hash = commentStart.get(line);
       if (hash !== undefined && hash < offset) continue;
@@ -658,6 +805,8 @@ describe('the tree stays inside what the classifier reads (issue #3213)', () => 
     expect(uncountedWcWords("eval 'wc -l'; wc -l </dev/null | tr -d ' '\n")).toEqual([1]);
     expect(uncountedWcWords("wc -l wc | tr -d ' '\n")).toEqual([1]);
     expect(uncountedWcWords("cat <<'EOF'\nx\nEOF\neval 'wc -l'\n")).toEqual([4]);
+    // A data heredoc's range starts at its body, not at the start of the file.
+    expect(uncountedWcWords("eval 'wc -l'\ncat <<'EOF'\nbody\nEOF\n")).toEqual([1]);
     // A data heredoc that never terminates is data to the end of the file.
     expect(uncountedWcWords("cat <<'EOF'\nrun wc -l here")).toEqual([]);
     // A comment exempts only text AFTER its `#`, not an earlier word on the line.
@@ -665,6 +814,9 @@ describe('the tree stays inside what the classifier reads (issue #3213)', () => 
     // Counted ranges with no `wc` letters matched inside them (split quoting)
     // must still be stepped past, so a later uncounted word is found.
     expect(uncountedWcWords('"w""c" -l | tr -d \' \'; "w""c" -l | tr -d \' \'; eval \'wc -l\'\n')).toEqual([1]);
+    // Outside a heredoc, a quoted parenthesis in arithmetic hides the next
+    // command from the classifier (a named bound); the invariant still reports it.
+    expect(uncountedWcWords('declare -A a; (( a["("] = 1 )); wc -l </dev/null\n')).toEqual([1]);
     // A longer word ending in wc is not the word wc.
     expect(uncountedWcWords('echo awc\n')).toEqual([]);
   });

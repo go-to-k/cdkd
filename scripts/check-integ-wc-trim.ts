@@ -87,9 +87,14 @@
  *    a `wc` reached through a variable (`${WC} -l`), an alias, `eval`, or as an
  *    ARGUMENT of another command (`xargs wc`, `find -exec wc`, a runner option
  *    value not listed above) is not seen; a substitution inside arithmetic is
- *    not scanned; `$'...'` escapes are read as the escaped character, not
- *    decoded (`$'\x77c'` is not seen); and a heredoc body inside a
- *    substitution in `wc`'s OWN arguments is read as code by the stage scan, so
+ *    not scanned, and a parenthesis quoted inside arithmetic (`a["("]`) is
+ *    counted — inside a heredoc body the line-found terminator contains that,
+ *    but outside one it hides the commands after it from the classifier (the
+ *    unit test's tree invariant still reports each such `wc` word); `$'...'` escapes are read as the escaped character, not
+ *    decoded (`$'\x77c'` is not seen); CRLF line endings are not read (a
+ *    heredoc terminator followed by `\r` never matches, which is unreachable
+ *    while `check-source-control-bytes.ts` rejects CR tree-wide); and a
+ *    heredoc body inside a substitution in `wc`'s OWN arguments is read as code by the stage scan, so
  *    a quote in that body can hide a correct trim (this errs toward flagging).
  *    None of these exists in the tree, and the unit test keeps it so: every
  *    `wc` word in a tracked integ shell file must be a counted invocation,
@@ -291,31 +296,29 @@ const TRIM_RE = new RegExp(`^tr${GAP}-d${GAP}('[ ]'|"[ ]"|'\\[:space:\\]'|"\\[:s
  * The trim check, reading from the character that ended the `wc` stage: it
  * must be a `|`, then `tr -d <exact arg>`, and the `tr` stage must end
  * immediately after the argument. Between the `|` and `tr` bash allows blanks,
- * newlines and a comment. A `||` is refused by the same match: the character
+ * newlines, a comment, and the body of a heredoc opened on that line — whose
+ * extent comes from the lexer itself (`heredocBodies`: start -> end), never from
+ * re-reading the stage text. A `||` is refused by the same match: the character
  * after its first `|` is the second, not `tr`. `inBacktick` says the `wc` sits
  * directly in a backtick substitution.
  */
 function trimAfter(
   src: string,
-  stageStart: number,
   end: number,
   terminator: string,
   inBacktick: boolean,
-  earlierOpeners: readonly HeredocOpener[],
+  heredocBodies: ReadonlyMap<number, number>,
 ): WcTrim {
   if (terminator !== '|') return null;
   let i = end + 1;
   // `|&` pipes stderr too; the count still reaches the next stage.
   if (src[i] === '&') i++;
-  let bodiesSkipped = false;
   for (;;) {
-    if (src[i] === '\n' && !bodiesSkipped) {
-      // A heredoc opened earlier on the line (`cat <<EOF | wc -l |`) or in the
-      // wc stage itself (`wc -l <<EOF |`) has its body between the `|` and the
-      // next stage.
-      bodiesSkipped = true;
-      i = skipHeredocBodies(src, stageStart, end, i, earlierOpeners);
-    } else if (src[i] === ' ' || src[i] === '\t' || src[i] === '\n') i++;
+    // A heredoc body the lexer found starting here (`wc -l <<EOF |`,
+    // `cat <<EOF | wc -l |`) lies between the `|` and the next stage.
+    const bodyEnd = heredocBodies.get(i);
+    if (bodyEnd !== undefined) i = bodyEnd;
+    else if (src[i] === ' ' || src[i] === '\t' || src[i] === '\n') i++;
     else if (src[i] === '\\' && src[i + 1] === '\n') i += 2;
     else if (src[i] === '#' && /[\s|]/.test(src[i - 1]!)) {
       const nl = src.indexOf('\n', i);
@@ -335,7 +338,7 @@ function trimAfter(
   // Redirections after the argument (`> count.txt`, `2>/dev/null`) are not
   // arguments of `tr`; step over each with its target before the end check.
   for (;;) {
-    const r = /^(\d*(?:>>|>\||<>|>|<)|&>>|&>)(&(?:\d+|-))?/.exec(src.slice(i));
+    const r = /^(\d*(?:<<-|<<<|<<|>>|>\||<>|>|<)|&>>|&>)(&(?:\d+|-))?/.exec(src.slice(i));
     if (!r) break;
     i += r[0].length;
     if (!r[2]) {
@@ -456,68 +459,22 @@ type Frame =
   | CodeFrame
   | { kind: 'dq' }
   | { kind: 'param'; inDq: boolean }
-  | { kind: 'hd'; delimiter: string; stripTabs: boolean };
+  | { kind: 'hd'; bodyStart: number; termStart: number; bodyEnd: number };
 
-interface HeredocOpener {
+interface PendingHeredoc {
   delimiter: string;
   stripTabs: boolean;
-}
-
-interface PendingHeredoc extends HeredocOpener {
   quoted: boolean;
+  /**
+   * The code frame the `<<` was written in. Its body starts after the next
+   * newline IN THAT FRAME: a newline inside a `$( ... )` or backtick argument
+   * of the same command is not the end of the command's line.
+   */
+  frame: object;
 }
 
 const isCode = (f: Frame): f is CodeFrame =>
   f.kind === 'code' || f.kind === 'sub' || f.kind === 'bt' || f.kind === 'arr';
-
-/**
- * Returns the index just past the bodies of `earlierOpeners` (heredocs the line
- * opened before the `wc`) and of every heredoc the `wc` stage
- * `[stageStart, stageEnd)` opens, all of whose bodies start after the newline
- * `nl` (or `nl + 1` if there are none). Only the stage is read — it holds no comment
- * and starts inside any enclosing quote — and an opener counts outside quotes;
- * `<<<` is a here-string, not an opener.
- */
-function skipHeredocBodies(
-  src: string,
-  stageStart: number,
-  stageEnd: number,
-  nl: number,
-  earlierOpeners: readonly HeredocOpener[],
-): number {
-  const openers: HeredocOpener[] = [...earlierOpeners];
-  let quote: string | null = null;
-  for (let k = stageStart; k < stageEnd; k++) {
-    const c = src[k]!;
-    if (quote) {
-      if (c === quote) quote = null;
-      else if (c === '\\' && quote === '"') k++;
-      continue;
-    }
-    if (c === '\\') k++;
-    else if (c === "'" || c === '"') quote = c;
-    else if (c === '<' && src[k + 1] === '<' && src[k + 2] !== '<' && src[k - 1] !== '<') {
-      let j = k + 2;
-      const stripTabs = src[j] === '-';
-      if (stripTabs) j++;
-      while (src[j] === ' ' || src[j] === '\t') j++;
-      const d = readHeredocDelimiter(src, j);
-      if (d.end > j) openers.push({ delimiter: d.delimiter, stripTabs });
-      k = Math.max(k + 1, d.end - 1);
-    }
-  }
-  let pos = nl + 1;
-  for (const h of openers) {
-    while (pos < src.length) {
-      const next = src.indexOf('\n', pos);
-      const lineEnd = next === -1 ? src.length : next;
-      const text = h.stripTabs ? src.slice(pos, lineEnd).replace(/^\t+/, '') : src.slice(pos, lineEnd);
-      pos = next === -1 ? src.length : next + 1;
-      if (text === h.delimiter) break;
-    }
-  }
-  return pos;
-}
 
 /** Index just past the `)` closing a `((` / `$((` that starts at `open` (the first `(`). */
 function skipArithmetic(src: string, open: number): number {
@@ -533,11 +490,18 @@ function skipArithmetic(src: string, open: number): number {
  * Parses a heredoc delimiter word starting at `from`: the delimiter is its
  * quote-removed text, and the body is data when any part was quoted or escaped.
  */
-function readHeredocDelimiter(src: string, from: number): { delimiter: string; quoted: boolean; end: number } {
+function readHeredocDelimiter(
+  src: string,
+  from: number,
+  inBacktick: boolean,
+): { delimiter: string; quoted: boolean; end: number } {
   let k = from;
   let delimiter = '';
   let quoted = false;
-  while (k < src.length && !/[\s;&|()<>]/.test(src[k]!)) {
+  // Inside a backtick substitution a backtick ends the word too
+  // (`` `cat <<'EOF'` `` closes it); elsewhere it is part of the delimiter
+  // (``cat <<E`OF` ``).
+  while (k < src.length && !/[\s;&|()<>]/.test(src[k]!) && !(inBacktick && src[k] === '`')) {
     let c = src[k]!;
     if (c === '$' && (src[k + 1] === "'" || src[k + 1] === '"')) {
       k++;
@@ -567,6 +531,13 @@ export function classifyWcTrim(content: string): WcTrimClassification {
   const comments = new Map<number, CommentInfo>();
   const commentOffsets: number[] = [];
   const dataHeredocBodies: Array<[number, number]> = [];
+  /** Every heredoc body, data or not: start -> end. */
+  const heredocBodies = new Map<number, number>();
+  // Only a non-empty extent is recorded, so a lookup always moves forward.
+  const recordBody = (start: number, end: number) => {
+    if (end > start) heredocBodies.set(start, end);
+  };
+  const deferredTrims: Array<{ index: number; stageEnd: number; terminator: string; inBacktick: boolean }> = [];
 
   const newCode = (kind: CodeFrame['kind']): CodeFrame => ({
     kind,
@@ -705,13 +676,16 @@ export function classifyWcTrim(content: string): WcTrimClassification {
       }
       const { end: stageEnd, terminator } = scanStage(src, end, f.kind === 'bt');
       const form = inputFormOf(src.slice(end, stageEnd), w.afterPipe);
+      deferredTrims.push({ index: invocations.length, stageEnd, terminator, inBacktick: f.kind === 'bt' });
       invocations.push({
         line: w.line,
         offset: w.start,
         wordEnd: end,
         stage: src.slice(w.start, stageEnd).trim(),
         inputForm: form === 'here-string' || form === 'redirect' ? form : (f.leadInput ?? form),
-        trim: trimAfter(src, w.start, stageEnd, terminator, f.kind === 'bt', pending),
+        // Filled in after the whole file is lexed, once every heredoc body's
+        // extent is known.
+        trim: null,
         quotedSubstitution: dqAncestor(),
       });
       f.afterPipe = false;
@@ -727,32 +701,86 @@ export function classifyWcTrim(content: string): WcTrimClassification {
     }
   };
 
-  /** Starts the bodies of the heredocs opened on the line that just ended. */
-  const startHeredocs = (pos: number): number => {
-    while (pending.length > 0) {
-      const h = pending.shift()!;
+  // Physical line of an offset, by binary search over precomputed line starts.
+  const lineStarts = [0];
+  for (let k = 0; k < src.length; k++) if (src[k] === '\n') lineStarts.push(k + 1);
+  const lineAt = (offset: number) => {
+    let lo = 0;
+    let hi = lineStarts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (lineStarts[mid]! <= offset) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo + 1;
+  };
+
+  /**
+   * Finds a body's terminator by LINE, before anything in the body is read —
+   * as bash does — so nothing inside the body (an unbalanced substitution, an
+   * arithmetic desync) can move where it ends.
+   */
+  const findTerminator = (pos: number, h: PendingHeredoc): { termStart: number; bodyEnd: number } => {
+    let at = pos;
+    // In an UNQUOTED body bash removes each backslash-newline first and matches
+    // the delimiter against the JOINED logical line.
+    let logical = '';
+    while (at < src.length) {
+      const nl = src.indexOf('\n', at);
+      const lineEnd = nl === -1 ? src.length : nl;
+      const raw = src.slice(at, lineEnd);
+      if (!h.quoted && nl !== -1 && /(^|[^\\])(\\\\)*\\$/.test(raw)) {
+        logical += raw.slice(0, -1);
+        at = nl + 1;
+        continue;
+      }
+      const joined = logical + raw;
+      logical = '';
+      const text = h.stripTabs ? joined.replace(/^\t+/, '') : joined;
+      if (text === h.delimiter) return { termStart: at, bodyEnd: nl === -1 ? src.length : nl + 1 };
+      at = nl === -1 ? src.length : nl + 1;
+    }
+    return { termStart: src.length, bodyEnd: src.length };
+  };
+
+  /** Starts the bodies of the heredocs this frame opened on the line that just ended. */
+  const startHeredocs = (pos: number, owner: object): number => {
+    // Only this frame's openers start here, in the order they were written; an
+    // outer command's pending opener waits for its own line to end.
+    for (;;) {
+      const index = pending.findIndex((p) => p.frame === owner);
+      if (index === -1) break;
+      const h = pending.splice(index, 1)[0]!;
+      const { termStart, bodyEnd } = findTerminator(pos, h);
+      recordBody(pos, bodyEnd);
       if (!h.quoted) {
-        stack.push({ kind: 'hd', delimiter: h.delimiter, stripTabs: h.stripTabs });
+        const hd = { kind: 'hd' as const, bodyStart: pos, termStart, bodyEnd };
+        stack.push(hd);
+        openBodies.push(hd);
         return pos;
       }
-      const bodyStart = pos;
-      for (;;) {
-        if (pos >= src.length) {
-          pending.length = 0;
-          dataHeredocBodies.push([bodyStart, src.length]);
-          return pos;
-        }
-        const nl = src.indexOf('\n', pos);
-        const lineEnd = nl === -1 ? src.length : nl;
-        const text = h.stripTabs ? src.slice(pos, lineEnd).replace(/^\t+/, '') : src.slice(pos, lineEnd);
-        pos = nl === -1 ? src.length : nl + 1;
-        if (nl !== -1) line++;
-        lineStart = pos;
-        if (text === h.delimiter) break;
-      }
-      dataHeredocBodies.push([bodyStart, pos]);
+      // A quoted delimiter: the body is data, skipped whole.
+      dataHeredocBodies.push([pos, bodyEnd]);
+      pos = bodyEnd;
+      line = lineAt(pos);
+      lineStart = pos;
     }
     return pos;
+  };
+
+  /** Unquoted heredoc bodies being lexed, innermost last (kept so the loop head is O(1)). */
+  const openBodies: Array<{ kind: 'hd'; bodyStart: number; termStart: number; bodyEnd: number }> = [];
+
+  /**
+   * A frame closed before the line its `<<` was written on ended
+   * (`x=$(cat <<'EOF')`): its pending openers now wait for the enclosing
+   * frame's newline, which is where bash reads their bodies.
+   */
+  const closeFrame = (closed: object) => {
+    // The enclosing CODE frame — through any quote or `${...}` around the
+    // substitution — since only a code frame's newline starts bodies.
+    const outer = wordOwner() ?? stack[0]!;
+    for (const p of pending) if (p.frame === closed) p.frame = outer;
   };
 
   const pushSub = (kind: 'sub' | 'bt') => stack.push(newCode(kind));
@@ -769,24 +797,31 @@ export function classifyWcTrim(content: string): WcTrimClassification {
     return end;
   };
 
-  for (let i = 0; i < src.length; i++) {
+  // Something inside a body can consume to the end of the file (an unbalanced
+  // `$((`, an unterminated quote), and the body must still close at its
+  // terminator so the lines after it are read — hence no loop bound here.
+  for (let i = 0; ; i++) {
+    // A handler that jumped to the end of the file (an unterminated quote) can
+    // step past it; settle there so an open body still closes.
+    if (i > src.length) i = src.length;
+    // The innermost open heredoc body ends at its terminator line, whatever
+    // frames its contents left open.
+    const hd = openBodies[openBodies.length - 1];
+    if (hd !== undefined && i >= hd.termStart) {
+      openBodies.pop();
+      // Frames the body left open are closed with it.
+      stack.length = stack.lastIndexOf(hd);
+      line = lineAt(hd.bodyEnd);
+      lineStart = hd.bodyEnd;
+      // The frame below the finished body is the one that opened it.
+      i = startHeredocs(hd.bodyEnd, top()) - 1;
+      continue;
+    }
+    if (i >= src.length) break;
     const c = src[i]!;
     const frame = top();
 
     if (frame.kind === 'hd') {
-      if (i === lineStart) {
-        const nl = src.indexOf('\n', i);
-        const lineEnd = nl === -1 ? src.length : nl;
-        const text = frame.stripTabs ? src.slice(i, lineEnd).replace(/^\t+/, '') : src.slice(i, lineEnd);
-        if (text === frame.delimiter) {
-          stack.pop();
-          if (nl === -1) break;
-          line++;
-          lineStart = nl + 1;
-          i = startHeredocs(nl + 1) - 1;
-          continue;
-        }
-      }
       // An unquoted body reads like a double-quoted string without the quotes.
       if (c === '\\') {
         if (src[i + 1] === '\n') {
@@ -921,7 +956,7 @@ export function classifyWcTrim(content: string): WcTrimClassification {
       f.leadInput = null;
       f.runner = null;
       f.runnerValue = false;
-      i = startHeredocs(i + 1) - 1;
+      i = startHeredocs(i + 1, f) - 1;
       continue;
     }
     if (c === '#' && !f.word) {
@@ -994,6 +1029,7 @@ export function classifyWcTrim(content: string): WcTrimClassification {
       if (f.kind === 'bt') {
         endWord(f, i);
         stack.pop();
+        closeFrame(f);
       } else {
         markExpansion(f, i);
         pushSub('bt');
@@ -1032,12 +1068,14 @@ export function classifyWcTrim(content: string): WcTrimClassification {
       endWord(f, i);
       if (f.kind === 'arr') {
         stack.pop();
+        closeFrame(f);
         continue;
       }
       if (f.kind === 'sub') {
         if (f.parens > 0) f.parens--;
         else {
           stack.pop();
+          closeFrame(f);
           continue;
         }
       }
@@ -1101,9 +1139,9 @@ export function classifyWcTrim(content: string): WcTrimClassification {
           k++;
         }
         while (src[k] === ' ' || src[k] === '\t') k++;
-        const d = readHeredocDelimiter(src, k);
+        const d = readHeredocDelimiter(src, k, f.kind === 'bt');
         if (d.end > k) {
-          pending.push({ delimiter: d.delimiter, stripTabs, quoted: d.quoted });
+          pending.push({ delimiter: d.delimiter, stripTabs, quoted: d.quoted, frame: f });
           i = d.end - 1;
         } else {
           i++;
@@ -1134,6 +1172,9 @@ export function classifyWcTrim(content: string): WcTrimClassification {
   for (let s = stack.length - 1; s >= 0; s--) {
     const f = stack[s]!;
     if (isCode(f)) endWord(f, src.length);
+  }
+  for (const d of deferredTrims) {
+    invocations[d.index]!.trim = trimAfter(src, d.stageEnd, d.terminator, d.inBacktick, heredocBodies);
   }
 
   // Allow markers: a real comment trailing the wc's own line, or a FULL-LINE
