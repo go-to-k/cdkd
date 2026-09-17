@@ -161,55 +161,17 @@ export const SDK_ATTR_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Map<
   string,
   AllowListEntry
 >([
-  [
-    'AWS::SNS::Subscription',
-    {
-      // The one type whose physical id genuinely IS the ARN the schema names:
-      // `SNSSubscriptionProvider.create` records the `Subscribe` response's
-      // `SubscriptionArn` as the physical id (`sns-subscription-provider.ts`),
-      // so `guardedPhysicalIdFallback` returns an ARN-shaped value for
-      // `Fn::GetAtt ...Arn` with nothing cached.
-      //
-      // Three bounds on that, stated because an over-claimed carve-out is what
-      // this critic exists to prevent. The create path has a `|| ` fallback to
-      // a CONSTRUCTED `<topicArn>:<logicalId>` when the response carries no
-      // ARN — ARN-SHAPED, so the guard passes it while the value is
-      // fabricated. An `import` can record a non-ARN id
-      // (`PendingConfirmation`), where the guard REFUSES rather than resolves.
-      // And `--strict-getatt` throws on a fallback regardless of shape. The
-      // last two are LOUD (a refusal and a throw), so neither can mislead;
-      // bound 1 is the SILENT one, and it is near-unreachable because
-      // `Subscribe` is issued with `ReturnSubscriptionArn: true`. Bound 2 is
-      // NOT near-unreachable — the provider's own note names
-      // `cdkd import --resource <id>=PendingConfirmation` as a real shape —
-      // it is simply loud when reached. None is a gap; the honest reading of
-      // this entry is "the fallback is the right answer on the create path",
-      // not "every record of this type resolves".
-      //
-      // Caching `Arn` in the provider would retire this entry outright and is
-      // the shape #1190 / #1824 / `ApiGatewayV2.ExecuteApiArn` took; it is a
-      // `src/**` change with its own gates, so it is issue
-      // [#3329](https://github.com/go-to-k/cdkd/issues/3329) rather than part
-      // of a docs-and-scripts PR. Deleting this entry is the step that VERIFIES
-      // that fix — `classifyType` reads `cachedKeys` first, so an entry left
-      // behind goes inert while still reporting the type as a carve-out.
-      //
-      // This entry existed before the #1694 `primaryIdentifier` capture, was
-      // RETIRED by the issue-1800 re-capture (which let `classifyType` filter
-      // the attribute out before reaching this list), and is RESTORED by issue
-      // #3324, which removed that filter: the schema field it rested on
-      // describes the CLOUD CONTROL identifier, not the id this provider mints,
-      // and AWS can change it — it did, for `AWS::AppSync::GraphQLApi`, silently
-      // retiring that type's `Arn` row. An entry naming a `create()` line goes
-      // stale loudly instead; the fence in `gen-sdk-attr-coverage.test.ts` fails
-      // the moment the provider starts caching `Arn` under its CFn name.
-      //
-      // NOT a `knownGap`: nothing is unresolvable here.
-      attributes: ['Arn'],
-      rationale:
-        'physicalId IS the subscription ARN (sns-subscription-provider.ts); the create path resolves through guardedPhysicalIdFallback',
-    },
-  ],
+  // `AWS::SNS::Subscription` (`Arn`) was the list's ONE entry between issues
+  // 3324 and 3329, and its retirement is the mechanism working rather than a
+  // regression: `SNSSubscriptionProvider.create` now records the `Subscribe`
+  // response's `SubscriptionArn` under its CFn name, so `classifyType` reaches
+  // `cachedKeys` first and an entry left behind would sit INERT while the
+  // matrix still reported the type as a carve-out. Deleting it is what VERIFIES
+  // the fix — the same step #1190 and #1824 took. The provider caches ONLY the
+  // ARN AWS returned, never its constructed `<topicArn>:<logicalId>` fallback
+  // and never an imported id, so the two shapes that could have put a
+  // fabricated or non-ARN value in state still resolve the old way.
+  //
   // `AWS::RDS::DBSubnetGroup` (`DBSubnetGroupArn`) and `AWS::SSM::Parameter`
   // (`Arn`) were the two KNOWN GAP entries the issue-1800 re-capture added, and
   // both were RETIRED by their fix in issue 1824: `RDSProvider` now records the

@@ -14,15 +14,24 @@ reached main.
 ## What it tests
 
 - **Phase 1 — create.** A standalone L1 `CfnSubscription` with an explicit
-  `RawMessageDelivery: false`. Asserts one subscription, the right endpoint, and
-  that the explicit `false` was forwarded rather than dropped.
+  `RawMessageDelivery: false`, deployed with `--strict-getatt`. Asserts one
+  subscription, the right endpoint, and that the explicit `false` was forwarded
+  rather than dropped. Since issue
+  [#3329](https://github.com/go-to-k/cdkd/issues/3329) it also asserts the
+  recorded `attributes.Arn` and the resolved `SubscriptionArn` Output, which is
+  a `Fn::GetAtt` on the subscription — the two fail differently, so both are
+  checked: the ATTRIBUTE is the discriminator (it was absent before that
+  change), while the OUTPUT would resolve either way through the physical-id
+  fallback, which is what `--strict-getatt` closes off.
 - **Phase 2 — the regression arm.** `CDKD_TEST_UPDATE=raw-delivery` flips
   `RawMessageDelivery` to `true`, which routes to `update()`. Asserts the topic
   ends with **exactly one** subscription, that its `SubscriptionArn` **changed**
   (a fresh `Subscribe` after `Unsubscribe` mints a new GUID — measured — so the
   ARN is what proves the internal replacement actually ran), that the endpoint
   is unchanged, that the attribute converged, and that cdkd **recorded the new
-  ARN** in state.
+  ARN** in state — including that `attributes.Arn` and the Output both FOLLOW
+  the replacement, since `update()`'s attribute map REPLACES rather than merges
+  and a stale cached ARN would be served without ever reaching the fallback.
 - **Phase 3 — the thrown-delete arm.** The recorded `physicalId` is rewritten to
   a malformed subscription ARN, so `Unsubscribe` throws. Asserts cdkd aborts
   **before** creating, and that the live subscription is untouched.

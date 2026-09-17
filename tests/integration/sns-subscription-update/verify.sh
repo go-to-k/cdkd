@@ -228,6 +228,20 @@ state_sub_physical_id() {
     | jq -r --arg t "${SUB_TYPE}" \
       '[.resources | to_entries[] | select(.value.resourceType == $t) | .value.physicalId] | first // ""'
 }
+state_sub_arn_attribute() {
+  # The `Arn` ATTRIBUTE the provider records (issue 3329) — NOT the physicalId.
+  # They hold the same value on a healthy record, which is exactly why this reads
+  # the attribute explicitly: asserting the physicalId would pass whether or not
+  # the attribute was ever written, and that is the state this fixture missed
+  # before go-to-k/cdkd#3355's review.
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null \
+    | jq -r --arg t "${SUB_TYPE}" \
+      '[.resources | to_entries[] | select(.value.resourceType == $t) | .value.attributes.Arn] | first // ""'
+}
+state_output() { # usage: state_output <OutputKey>
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null \
+    | jq -r --arg k "$1" '.outputs[$k] // ""'
+}
 # `ListSubscriptionsByTopic` LAGS an `Unsubscribe`, so a bare read straight after
 # a replacement can still show the old subscription beside the new one. Read once
 # and you report a DUPLICATE — i.e. you accuse the fix of the exact defect it
@@ -261,9 +275,17 @@ assert_exactly_one_subscription() { # usage: assert_exactly_one_subscription "<p
 
 # --- Phase 1: create --------------------------------------------------------
 echo "==> Phase 1: deploy (standalone subscription, RawMessageDelivery=false)"
+# `--strict-getatt` is what makes the Output assertion below DISCRIMINATING
+# rather than confirmatory (issue 3329). Without it the Output resolves through
+# `guardedPhysicalIdFallback` too — this type's physical id IS the subscription
+# ARN — so it would pass with the attribute never recorded. The flag fails the
+# deploy on ANY fallback regardless of shape, so a pre-change binary hard-fails
+# here. Safe for this stack: the only other `Fn::GetAtt` is `Queue.Arn`, which
+# `docs/_generated/sdk-attr-coverage.md` records as cached.
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
+  --strict-getatt \
   --yes
 
 assert_exactly_one_subscription "phase 1"
@@ -283,7 +305,24 @@ if [ "${RAW_1}" != "false" ]; then
   echo "    => the explicit false was dropped rather than forwarded." >&2
   exit 1
 fi
+# The Arn ATTRIBUTE + the Fn::GetAtt Output that reads it (issue 3329). Before
+# that change the provider recorded `attributes: {}` and the Output resolved
+# through `guardedPhysicalIdFallback`; both are asserted because the Output alone
+# would pass under the fallback too.
+STATE_ARN_1=$(state_sub_arn_attribute)
+if [ "${STATE_ARN_1}" != "${SUB_ARN_1}" ]; then
+  echo "FAIL: phase 1: state attributes.Arn is '${STATE_ARN_1}', expected '${SUB_ARN_1}'" >&2
+  echo "    => the provider did not record the Arn attribute (issue 3329)." >&2
+  exit 1
+fi
+OUT_ARN_1=$(state_output SubscriptionArn)
+if [ "${OUT_ARN_1}" != "${SUB_ARN_1}" ]; then
+  echo "FAIL: phase 1: Output SubscriptionArn is '${OUT_ARN_1}', expected '${SUB_ARN_1}'" >&2
+  echo "    => Fn::GetAtt on the subscription Arn did not resolve to the live ARN." >&2
+  exit 1
+fi
 echo "    OK: one subscription ${SUB_ARN_1} -> ${QUEUE_ARN}, RawMessageDelivery=false"
+echo "    OK: state attributes.Arn and Output SubscriptionArn both ${SUB_ARN_1}"
 
 # --- Phase 2: the REGRESSION arm -------------------------------------------
 # `RawMessageDelivery` is mutable, so the engine hands this to
@@ -320,7 +359,26 @@ if [ "${STATE_PID_2}" != "${SUB_ARN_2}" ]; then
   echo "       that no longer exists and leak the live one." >&2
   exit 1
 fi
+# The attribute must track the REPLACEMENT (issue 3329). `update()` returns
+# `createResult.attributes` and the engine REPLACES the attribute map rather
+# than merging it, so a partial map here would leave the OLD ARN cached — and a
+# stale cached ARN is worse than none, since `Fn::GetAtt` would serve it without
+# ever reaching the fallback that would have been right.
+STATE_ARN_2=$(state_sub_arn_attribute)
+if [ "${STATE_ARN_2}" != "${SUB_ARN_2}" ]; then
+  echo "FAIL: phase 2: state attributes.Arn is '${STATE_ARN_2}', AWS has '${SUB_ARN_2}'" >&2
+  echo "    => the cached Arn did not follow the replacement (issue 3329)." >&2
+  exit 1
+fi
+OUT_ARN_2=$(state_output SubscriptionArn)
+if [ "${OUT_ARN_2}" != "${SUB_ARN_2}" ]; then
+  echo "FAIL: phase 2: Output SubscriptionArn is '${OUT_ARN_2}', expected '${SUB_ARN_2}'" >&2
+  echo "    => the Output kept the pre-replacement ARN, so a consumer stack would read" >&2
+  echo "       a subscription that no longer exists." >&2
+  exit 1
+fi
 echo "    OK: replaced ${SUB_ARN_1} -> ${SUB_ARN_2}, RawMessageDelivery=true, state in sync"
+echo "    OK: attributes.Arn and Output followed the replacement to ${SUB_ARN_2}"
 
 # --- Phase 3: the THROW arm -------------------------------------------------
 # A malformed subscription ARN makes `Unsubscribe` answer `InvalidParameter:

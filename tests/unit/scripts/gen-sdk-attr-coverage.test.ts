@@ -41,6 +41,14 @@ const CACHED_ARN_PAIRS = [
   // pair classifies nothing) and on a re-added carve-out alike, neither of
   // which `findGaps(report)).toEqual([])` can see.
   ['AWS::AppSync::GraphQLApi', 'Arn'],
+  // Issue 3329, and added for the same third shape the pair above exists for.
+  // `findGaps(report)).toEqual([])` sees this type only if it comes BACK as a
+  // gap; it is blind to the row being DELETED from the matrix — which is what a
+  // schema refresh dropping `Arn` from the type's fixture would do, leaving
+  // both that fence and the empty-allow-list assertion green. Requiring
+  // `cached` is what makes "deleting the allow-list entry VERIFIES the caching"
+  // true in both directions.
+  ['AWS::SNS::Subscription', 'Arn'],
 ] as const;
 
 describe('collectStoredAttributeKeys', () => {
@@ -317,12 +325,13 @@ describe('real repo coverage (regression floor)', () => {
     // what made the "DELETE this entry when it is fixed" note in the allow-list
     // enforceable rather than aspirational.
     //
-    // The loop was VACUOUS while the list was empty (issue 1824 retired the
-    // last two entries) and is not any more: issue 3324 restored the one
-    // `AWS::SNS::Subscription` entry, so this fence now has a real subject —
-    // it fails the day `SNSSubscriptionProvider` starts caching `Arn` under its
-    // CFn name, which is the entry's retirement condition. It stays paired with
-    // the positive fence below rather than relied on alone.
+    // The loop is VACUOUS again, and this time it is a RECORD of the fence
+    // working rather than an absence: issue 3324 restored the one
+    // `AWS::SNS::Subscription` entry and stated its retirement condition —
+    // `SNSSubscriptionProvider` caching `Arn` under its CFn name — and issue
+    // 3329 met that condition, so the entry is gone. While the list is empty
+    // this loop asserts nothing, which is why it is paired with the positive
+    // fence below rather than relied on alone.
     for (const [resourceType, entry] of SDK_ATTR_ALLOW_LIST) {
       const classified = report.types.find((t) => t.resourceType === resourceType);
       expect(classified, `allow-list entry for ${resourceType} classifies nothing`).toBeDefined();
@@ -403,23 +412,21 @@ describe('real repo coverage (regression floor)', () => {
     // assertion, because the next reader trusts the claim.
   });
 
-  it('allow-lists AWS::SNS::Subscription as a NOT-A-BUG, not a known gap (issue 3324)', () => {
-    // History in one line: seeded at introduction, RETIRED by the issue-1800
-    // re-capture (which let the `primaryIdentifier` filter reach it first), and
-    // RESTORED by issue 3324, which removed that filter because the field
-    // describes the Cloud Control identifier rather than the id cdkd's own
-    // provider mints. This type is the one where the two coincide —
-    // `SNSSubscriptionProvider.create` returns the `Subscribe` response's
-    // `SubscriptionArn` verbatim — so the entry is a NOT-A-BUG and must never
-    // carry `knownGap`; `Fn::GetAtt ...Arn` resolves through
-    // `guardedPhysicalIdFallback` with nothing cached.
-    const entry = SDK_ATTR_ALLOW_LIST.get('AWS::SNS::Subscription');
-    expect(entry?.attributes).toEqual(['Arn']);
-    expect(entry?.knownGap).toBeUndefined();
-    // It is the ONLY entry: measured, not assumed — with the filter removed the
-    // critic over the real tree reports this finding and no other. A second
-    // entry appearing here is a decision someone has to make deliberately.
-    expect([...SDK_ATTR_ALLOW_LIST.keys()]).toEqual(['AWS::SNS::Subscription']);
+  it('is EMPTY, and AWS::SNS::Subscription is not in it (issues 3324 / 3329)', () => {
+    // History in one line: seeded at introduction, retired by the issue-1800
+    // re-capture (which let the `primaryIdentifier` filter reach it first),
+    // RESTORED by issue 3324 when that filter was removed as unsound for
+    // Tier-1 types, and retired AGAIN by issue 3329 — this time by the
+    // mechanism the list documents for itself, `SNSSubscriptionProvider.create`
+    // recording the `Subscribe` response's `SubscriptionArn` under its CFn
+    // name. `classifyType` reads `cachedKeys` BEFORE this list, so an entry
+    // left behind would sit INERT while the matrix still reported the type as
+    // a carve-out; deleting it is what VERIFIES the caching.
+    //
+    // Empty is the green state, the same one issue 1824 left it in. Adding an
+    // entry back is a decision that needs a rationale and, for a real gap, a
+    // tracking issue.
+    expect([...SDK_ATTR_ALLOW_LIST.keys()]).toEqual([]);
   });
 
   it('does NOT allow-list AWS::Lambda::EventSourceMapping (the #1190 gap was fixed by caching the ARN)', () => {

@@ -83,7 +83,7 @@ None. Every `Arn`/`Url` read-only attribute on a cached SDK-backed type is cache
 | `AWS::ServiceDiscovery::PrivateDnsNamespace` | covered | `Arn` (cached) |
 | `AWS::ServiceDiscovery::PublicDnsNamespace` | covered | `Arn` (cached) |
 | `AWS::ServiceDiscovery::Service` | covered | `Arn` (cached) |
-| `AWS::SNS::Subscription` | covered | `Arn` (allow) |
+| `AWS::SNS::Subscription` | covered | `Arn` (cached) |
 | `AWS::SNS::Topic` | covered | `TopicArn` (cached) |
 | `AWS::SQS::Queue` | covered | `Arn` (cached), `QueueUrl` (cached) |
 | `AWS::SSM::Parameter` | covered | `Arn` (cached) |
