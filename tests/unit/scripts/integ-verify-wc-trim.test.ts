@@ -54,6 +54,89 @@ function trackedShellFiles(): string[] {
 
 const TAB = '\t';
 
+/**
+ * GROWTH, measured against a LINEAR REFERENCE in the same run: a guard on the
+ * complexity class that recurred four times in review (a per-item `filter`, a
+ * backtracking regex, a per-opener scan to the end of the file, a strip over a
+ * growing accumulator). Each instance ran 3.2x to 4x per doubling and still
+ * finished under vitest's default, so a timeout could not see it.
+ *
+ * Doubling the input and bounding the time ratio on its own is not stable
+ * enough to pin: measured here, six competing busy loops red a correct
+ * implementation 2 of 3 runs (wall-clock, and again with CPU time), because
+ * contention does not scale the two sizes alike. So each candidate's ratio is
+ * divided by the ratio of a plainly linear corpus measured the same way — the
+ * contention then cancels. A linear pass lands near 1.0; the implementation
+ * this replaced measured 5.70 on the `<<-` shape.
+ *
+ * What it does and does not buy: it separates the measured rates of those four
+ * recurrences from a linear one ON THE SHAPES BELOW — a growth an order milder
+ * (n log n) passes, and only the shapes listed are measured. Sizes are chosen so
+ * every baseline clears the noise floor (~10 ms of CPU); the last two shapes are
+ * the ones that carry a measurement rather than a verdict: a `<<-` delimiter (no
+ * other case is `<<-` at all, which is why the strip had nowhere to fail) and
+ * the tree-invariant helper, where the first recurrence lived.
+ */
+const MAX_RELATIVE_GROWTH = 1.5;
+
+/** This process's CPU time for one call, in milliseconds. */
+const cpuMs = (run: () => void) => {
+  const started = process.cpuUsage();
+  run();
+  const spent = process.cpuUsage(started);
+  return (spent.user + spent.system) / 1000;
+};
+
+/** Median of three ratios, each from interleaved best-of-three samples. */
+const growthRatio = (measure: (text: string) => void, make: (n: number) => string, n: number): number => {
+  const small = make(n);
+  const large = make(2 * n);
+  measure(small);
+  const ratios = [0, 1, 2].map(() => {
+    let a = Infinity;
+    let b = Infinity;
+    // Interleaved: a busy period that lands on one size lands on both.
+    for (let run = 0; run < 3; run++) {
+      a = Math.min(a, cpuMs(() => measure(small)));
+      b = Math.min(b, cpuMs(() => measure(large)));
+    }
+    // A floor on the denominator: a sub-millisecond baseline is noise, not growth.
+    return b / Math.max(a, 1);
+  });
+  return ratios.sort((x, y) => x - y)[1]!;
+};
+
+/** A corpus the classifier walks once, with no heredoc, substitution or index work. */
+const LINEAR_REFERENCE = (n: number) => `${Array.from({ length: n }, (_, k) => `echo line ${k}`).join('\n')}\n`;
+
+/**
+ * The reference's OWN growth, as an exponent over a 4x spread (1.0 is linear).
+ * Dividing by the reference cancels work the two share, so a regression in
+ * shared code would cancel itself out; this is what notices that. Measured:
+ * 0.82 quiet and 0.86 under six competing busy loops, against 1.71 with a
+ * quadratic line-index build.
+ */
+const MAX_REFERENCE_EXPONENT = 1.25;
+const referenceExponent = (): number => {
+  const n = 8_000;
+  const spread = 4;
+  const small = LINEAR_REFERENCE(n);
+  const large = LINEAR_REFERENCE(spread * n);
+  classifyWcTrim(small);
+  let a = Infinity;
+  let b = Infinity;
+  for (let run = 0; run < 3; run++) {
+    a = Math.min(a, cpuMs(() => classifyWcTrim(small)));
+    b = Math.min(b, cpuMs(() => classifyWcTrim(large)));
+  }
+  return Math.log(b / Math.max(a, 1)) / Math.log(spread);
+};
+let referenceRatio: number | undefined;
+const relativeGrowth = (measure: (text: string) => void, make: (n: number) => string, n: number): number => {
+  referenceRatio ??= growthRatio(classifyWcTrim, LINEAR_REFERENCE, 8_000);
+  return growthRatio(measure, make, n) / referenceRatio;
+};
+
 describe('classifyWcTrim', () => {
   describe('flags an untrimmed wc', () => {
     it.each([
@@ -218,6 +301,7 @@ describe('classifyWcTrim', () => {
       ['a comment ending in a backslash after the pipe, then the trim', "wc -l </dev/null | # \\\ntr -d ' '", 'space'],
       ['a comment after the trim', "ls | wc -l | tr -d ' ' # count", 'space'],
       ['a file redirect after the trim', "ls | wc -l | tr -d ' ' > count.txt", 'space'],
+      ['a redirect operator joined to the trim argument, which still ends the word', "ls | wc -l | tr -d ' '>count.txt", 'space'],
       ['a stderr redirect after the trim', "ls | wc -l | tr -d ' ' 2>/dev/null", 'space'],
       ['a descriptor duplication after the trim', "N=$(ls | wc -l | tr -d ' ' 2>&1)", 'space'],
       ['an appending redirect after the trim', "ls | wc -l | tr -d ' ' >> out.txt", 'space'],
@@ -227,6 +311,9 @@ describe('classifyWcTrim', () => {
       ['stdin duplicated onto itself, with an explicit 0, after the trim', "ls | wc -l | tr -d ' ' 0<&0", 'space'],
       ['stdin duplicated onto itself with a zero-padded descriptor', "ls | wc -l | tr -d ' ' <&00", 'space'],
       ['fd 0 duplicated onto itself with an output operator', "ls | wc -l | tr -d ' ' 0>&0", 'space'],
+      ['stdin duplicated onto itself and marked to close the source', "ls | wc -l | tr -d ' ' <&0-", 'space'],
+      ['stdin duplicated onto itself with a blank after the &', "ls | wc -l | tr -d ' ' <& 0", 'space'],
+      ['a NEW descriptor opened from stdin, leaving fd 0 alone', "ls | wc -l | tr -d ' ' {fd}<&0", 'space'],
       ['a heredoc on another descriptor after the trim', "ls | wc -l | tr -d ' ' 3<<'A'\nx\nA", 'space'],
       ['an appending &>> redirect after the trim', "ls | wc -l | tr -d ' ' &>> out.txt", 'space'],
       ['a quoted redirect target after the trim', "ls | wc -l | tr -d ' ' > \"count file.txt\"", 'space'],
@@ -284,6 +371,17 @@ describe('classifyWcTrim', () => {
       ['another descriptor duplicated onto an explicit fd 0', "ls | wc -l | tr -d ' ' 0<&3"],
       ['the trim\'s stdin closed', "ls | wc -l | tr -d ' ' <&-"],
       ['an output redirection onto fd 0', "ls | wc -l | tr -d ' ' 0>f.txt"],
+      // A trailing `-` MOVES stdin onto another descriptor, closing fd 0.
+      ['stdin moved onto another descriptor', "ls | wc -l | tr -d ' ' 3<&0-"],
+      ['stdin moved onto a new named descriptor', "ls | wc -l | tr -d ' ' {fd}<&0-"],
+      // `{name}<&-` closes the descriptor the variable holds, which may be fd 0.
+      ['a named descriptor closed on input', "ls | wc -l | tr -d ' ' {fd}<&-"],
+      ['a named descriptor closed on output', "ls | wc -l | tr -d ' ' {fd}>&-"],
+      // With no blank, the descriptor joins the ARGUMENT: `' '{fd1}` and `' '2`
+      // are the text tr deletes, so the trim is not the accepted spelling.
+      ['a named descriptor joined to the trim argument', "ls | wc -l | tr -d ' '{fd1}<&0"],
+      ['a numeric descriptor joined to the trim argument', "ls | wc -l | tr -d ' '2>/dev/null"],
+      ['a descriptor joined to the trim argument across a line continuation', "ls | wc -l | tr -d ' '\\\n{fd1}<&0"],
       // An opener in a substitution inside an array: its body (holding the
       // trim-looking line) starts after the command's line; `cat` is next.
       ['an opener inside an array substitution, its body holding trim-looking text', "a=($(cat <<'EOF')) | wc -l |\ntr -d ' '\nEOF\ncat"],
@@ -466,6 +564,10 @@ describe('classifyWcTrim', () => {
       // so the first body line can itself be the terminator.
       ['a terminator right after an opener whose comment ends in a backslash', 'cat <<EOF # \\\nEOF\nwc -l </dev/null', [3]],
       ['a continued terminator right after an opener whose comment ends in a backslash', 'cat <<EOF # \\\nE\\\nOF\nwc -l </dev/null', [4]],
+      // `<<-` strips the leading tabs of the first logical line in that prelude,
+      // however many, and stops stripping once the text has a non-tab character.
+      ['a multi-tab <<- terminator right after such an opener', 'cat <<-EOF # \\\n\t\tEOF\nwc -l </dev/null', [3]],
+      ['a continued <<- terminator whose second line is tab-indented', 'cat <<-EOF # \\\nE\\\n\tOF\nwc -l </dev/null\nEOF', []],
       ['a non-terminator right after such an opener, then the real terminator', 'cat <<EOF # \\\nx\nEOF\nwc -l </dev/null', [4]],
       [
         'two heredoc bodies on one line, the first quoted, in the order written',
@@ -494,32 +596,76 @@ describe('classifyWcTrim', () => {
     });
 
     it.each([
+      ['unterminated openers packed bytes apart', (n: number) => '$(<<Z\n'.repeat(n), 16_000],
+      [
+        'nested unterminated openers inside a terminated outer body',
+        (n: number) => `cat <<E\n${'$(cat <<Z\n'.repeat(n)}E\n`,
+        16_000,
+      ],
+      ['openers whose comments end in a backslash', (n: number) => '$(<<Z # \\\n'.repeat(n), 32_000],
+      [
+        'deeply nested parameter expansions',
+        (n: number) => `echo ${'${X:-'.repeat(n)}${'x'.repeat(n)}${'}'.repeat(n)}\n`,
+        16_000,
+      ],
+      [
+        'many wc stages whose arguments hold a shift',
+        (n: number) => `${Array.from({ length: n }, () => "wc -l $((1<<2)) </dev/null |\ntr -d ' '").join('\n')}\n`,
+        4_000,
+      ],
+      [
+        // No other case is `<<-` at all, which is why the strip over a growing
+        // accumulator had nowhere to fail.
+        'a long <<- delimiter reached through continued lines',
+        (n: number) => {
+          const delimiter = 'D'.repeat(n);
+          const body = Array.from({ length: Math.ceil(n / 2) }, () => '\tx\\').join('\n');
+          return `cat <<-${delimiter} # \\\n${body}\n\t${delimiter}\n`;
+        },
+        96_000,
+      ],
+    ])('grows about linearly on %s', (_label, make, n) => {
+      expect(relativeGrowth(classifyWcTrim, make, n)).toBeLessThan(MAX_RELATIVE_GROWTH);
+    }, 600_000);
+
+    it('grows about linearly on the reference corpus the other cases divide by', () => {
+      // Without this, a regression in code the reference SHARES cancels itself
+      // out of every ratio above.
+      expect(referenceExponent()).toBeLessThan(MAX_REFERENCE_EXPONENT);
+    }, 600_000);
+
+    it.each([
       ['unterminated openers packed bytes apart', (n: number) => '$(<<Z\n'.repeat(n)],
       ['nested unterminated openers inside a terminated outer body', (n: number) => `cat <<E\n${'$(cat <<Z\n'.repeat(n)}E\n`],
       ['openers whose comments end in a backslash', (n: number) => '$(<<Z # \\\n'.repeat(n)],
-    ])('stays fast on %s', (_label, make) => {
-      // Scanning to the end of the file for every absent or distant terminator
-      // was O(openers x file): ~5 s at n = 16000, and the nested shape did not
-      // finish in two minutes at n = 32000.
-      const c = classifyWcTrim(make(32_000));
-      expect(c.invocations).toEqual([]);
+    ])('reads %s without finding an invocation', (_label, make) => {
+      expect(classifyWcTrim(make(32_000)).invocations).toEqual([]);
     });
 
-    it('stays fast on deeply nested parameter expansions', () => {
-      // A per-character search of the frame stack for an open heredoc was
-      // quadratic here (~7.8 s at n = 2048).
-      const n = 2048;
-      const c = classifyWcTrim(`echo ${'${X:-'.repeat(n)}${'x'.repeat(n * 1000)}${'}'.repeat(n)}\n`);
-      expect(c.invocations).toEqual([]);
-    });
-
-    it('stays fast when many wc stages carry a shift in their arguments', () => {
-      // A `<<` inside `$(( ))` once registered as an opener whose body walk ran
-      // to the end of the file for every stage: 4x per doubling, ~10 s at 1 MiB.
+    it('sees every wc stage when many carry a shift in their arguments', () => {
       const body = Array.from({ length: 32_000 }, () => "wc -l $((1<<2)) </dev/null |\ntr -d ' '").join('\n');
       const c = classifyWcTrim(`${body}\n`);
       expect(c.violations).toEqual([]);
       expect(c.invocations).toHaveLength(32_000);
+    });
+
+    it.each([
+      // The index's two defining properties: the FIRST match at or after the
+      // body, and one index per (joined, tab-stripped) variant.
+      [
+        'a delimiter occurring twice after the body start',
+        "cat <<'EOF'\na\nEOF\nwc -l </dev/null\ncat <<'EOF'\nb\nEOF\n",
+        [4],
+      ],
+      ['a quoted << body followed by a <<- body', "cat <<'A'\na\nA\ncat <<-'B'\n\tb\n\tB\nwc -l </dev/null\n", [7]],
+      [
+        'a physical-line index for a quoted body beside a joined one for an unquoted body',
+        "cat <<B\nb\nB\ncat <<'A'\nx\\\nA\nwc -l </dev/null\n",
+        [7],
+      ],
+      ['a delimiter occurring only BEFORE the body start', 'EOF\ncat <<EOF\nwc -l </dev/null\n', []],
+    ])('indexes %s', (_label, body, lines) => {
+      expect(classifyWcTrim(body).violations.map((v) => v.line)).toEqual(lines);
     });
 
     it('ends a heredoc delimiter at a redirection written against it', () => {
@@ -880,6 +1026,14 @@ describe('the tree stays inside what the classifier reads (issue #3213)', () => 
     // A longer word ending in wc is not the word wc.
     expect(uncountedWcWords('echo awc\n')).toEqual([]);
   });
+
+  it.each([
+    ['many commented lines', (n: number) => `${Array.from({ length: n }, (_, k) => `# line ${k}: count with wc -l and trim it`).join('\n')}\n`],
+    ['many counted invocations', (n: number) => `${Array.from({ length: n }, () => "wc -l </dev/null | tr -d ' '").join('\n')}\n`],
+  ])('grows about linearly on %s', (_label, make) => {
+    // The first recurrence of the super-linear class lived in THIS helper.
+    expect(relativeGrowth((text) => void uncountedWcWords(text), make, 8_000)).toBeLessThan(MAX_RELATIVE_GROWTH);
+  }, 600_000);
 
   it('stays fast on long fixtures: no quadratic blowup in lines, line length, or counted ranges', () => {
     // Both shapes were super-linear in an earlier revision: a per-match scan of

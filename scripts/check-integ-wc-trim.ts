@@ -83,9 +83,10 @@
  *  - It checks the trim's SPELLING, not its effect.
  *  - It is not a bash parser. Known bounds, each with the direction it errs
  *    in. None occurs in the tree today.
- *     - A `case` pattern's `)` reads as a subshell close: a `wc)` pattern
- *       reads as an invocation, and an unbalanced one inside `$(...)`
- *       desynchronises that substitution.
+ *     - A `case` pattern's `)` reads as a subshell close, which errs in BOTH
+ *       directions: a `wc)` pattern is counted and flagged (fail-closed),
+ *       while a `wc` in a `case` arm inside `$(...)` is missed (fail-open,
+ *       and the tree invariant reports it).
  *     - A `wc` reached through a variable (`${WC} -l`), an alias, `eval`, or
  *       as an ARGUMENT of another command (`xargs wc`, `find -exec wc`, a
  *       runner option value not listed above) is not seen. Fail-open, but the
@@ -339,27 +340,55 @@ function trimAfter(
   const m = TRIM_RE.exec(src.slice(i));
   if (!m) return null;
   i += m[0].length;
+  /**
+   * Skips blanks and line continuations. Says whether a real SPACE or TAB was
+   * among them: bash removes a backslash-newline before splitting words, so
+   * `tr -d ' '\<newline>{fd}<&0` is the single word `tr -d ' {fd}'`.
+   */
   const skipBlanks = () => {
-    while (src[i] === ' ' || src[i] === '\t' || (src[i] === '\\' && src[i + 1] === '\n')) {
-      i += src[i] === '\\' ? 2 : 1;
+    let blank = false;
+    for (;;) {
+      if (src[i] === ' ' || src[i] === '\t') {
+        blank = true;
+        i++;
+      } else if (src[i] === '\\' && src[i + 1] === '\n') i += 2;
+      else return blank;
     }
   };
-  skipBlanks();
+  let separated = skipBlanks();
   // Redirections after the argument are not arguments of `tr`; step over each
   // with its target before the end check. An OUTPUT redirection (`> count.txt`,
   // `2>/dev/null`) leaves the pipe intact. One that replaces `tr`'s stdin (fd 0:
   // `<file`, `<<EOF`, `<<<x`, `<>f`, `0<&3`, `<&-`) cuts the count off from the
-  // trim, so the site is untrimmed; only `<&0` keeps stdin where it is.
+  // trim, so the site is untrimmed. What keeps stdin: a duplication of fd 0 onto
+  // itself (`<&0`, `<&00`, `<& 0`, `<&0-`, `0>&0`) and `{name}<&0`, which opens a
+  // new descriptor instead.
   for (;;) {
-    const r = /^(?:(\d*)(<<-|<<<|<<|<>|>>|>\||>|<)|(&>>|&>))(&(?:\d+|-))?/.exec(src.slice(i));
-    if (!r) break;
-    const op = r[2] ?? r[3]!;
-    const dup = r[4];
-    const fd = r[1] ? Number(r[1]) : op.startsWith('<') ? 0 : 1;
-    // `<&0`, `<&00`, `0>&0` duplicate fd 0 onto itself; the count still arrives.
-    // (`&-` closes it: `Number('-')` is NaN, so it is not a self-duplication.)
-    const selfDup = dup !== undefined && Number(dup.slice(1)) === 0;
-    if (fd === 0 && !selfDup) return null;
+    const r =
+      /^(?:(\{[A-Za-z_][A-Za-z0-9_]*\})|(\d*))(?:(<<-|<<<|<<|<>|>>|>\||>|<)|(&>>|&>))(&[ \t]*(?:\d+-?|-))?/.exec(
+        src.slice(i),
+      );
+    if (!r || (r[3] === undefined && r[4] === undefined)) break;
+    // A descriptor written with no blank after the argument is part of THAT word
+    // (`tr -d ' '2>x` deletes " 2"), so the trim is not the accepted spelling.
+    // Only the operator characters end a word on their own (`tr -d ' '>x`).
+    if (!separated && (r[1] !== undefined || r[2] !== '')) return null;
+    const op = r[3] ?? r[4]!;
+    const dup = r[5];
+    // `{name}<&0` opens a NEW descriptor, so fd 0 is untouched — but `{name}<&-`
+    // CLOSES the descriptor the variable holds, which may be fd 0.
+    const closesNamed = r[1] !== undefined && dup !== undefined && /^&[ \t]*-$/.test(dup);
+    const fd = r[1] ? (closesNamed ? 0 : -1) : r[2] ? Number(r[2]) : op.startsWith('<') ? 0 : 1;
+    // `<&0`, `<&00`, `<& 0`, `<&0-`, `0>&0` duplicate fd 0 onto itself; the count
+    // still arrives. (`&-` closes it: `Number('-')` is NaN, so it is not one.)
+    // `&-` alone closes the descriptor and is not a duplication of anything, and
+    // a trailing `-` MOVES fd 0 (closing it) unless the target is fd 0 itself.
+    const dupFd = dup === undefined ? null : /^&[ \t]*(\d+)(-?)$/.exec(dup);
+    const fromStdin = dupFd !== null && Number(dupFd[1]) === 0;
+    const selfDup = fromStdin;
+    // A trailing `-` MOVES stdin to another descriptor, closing fd 0 behind it.
+    const movesStdin = fromStdin && dupFd![2] === '-' && fd !== 0;
+    if ((fd === 0 && !selfDup) || movesStdin) return null;
     i += r[0].length;
     if (!dup) {
       skipBlanks();
@@ -368,6 +397,9 @@ function trimAfter(
       i += target[0].length;
     }
     skipBlanks();
+    // A redirection's operator ends the word, so what follows one is separated
+    // from the trim's argument however it is spelled.
+    separated = true;
   }
   const next = src[i];
   // A backtick ends the stage only when it closes the substitution the `wc`
@@ -765,7 +797,7 @@ export function classifyWcTrim(content: string): WcTrimClassification {
       const next = nl === -1 ? src.length : nl + 1;
       const raw = src.slice(at, nl === -1 ? src.length : nl);
       if (logical === null) start = at;
-      if (joined && CONTINUED.test(raw)) {
+      if (joined && CONTINUED.test(raw) && nl !== -1) {
         logical = (logical ?? '') + raw.slice(0, -1);
         at = next;
         continue;
@@ -801,14 +833,21 @@ export function classifyWcTrim(content: string): WcTrimClassification {
       const prevStart = src.lastIndexOf('\n', pos - 2) + 1;
       if (CONTINUED.test(src.slice(prevStart, pos - 1))) {
         let at = pos;
-        let text = '';
+        let compared = '';
+        // `<<-` strips the leading tabs ONCE, while the text is still all tabs;
+        // stripping the accumulator every round would be quadratic in its length.
+        let leadingTabs = h.stripTabs;
         for (;;) {
           const nl = src.indexOf('\n', at);
           const next = nl === -1 ? src.length : nl + 1;
           const raw = src.slice(at, nl === -1 ? src.length : nl);
-          const continued = nl !== -1 && CONTINUED.test(raw);
-          text += continued ? raw.slice(0, -1) : raw;
-          const compared = h.stripTabs ? text.replace(/^\t+/, '') : text;
+          const continued = CONTINUED.test(raw) && nl !== -1;
+          let segment = continued ? raw.slice(0, -1) : raw;
+          if (leadingTabs) {
+            segment = segment.replace(/^\t+/, '');
+            if (segment !== '') leadingTabs = false;
+          }
+          compared += segment;
           if (!continued) {
             if (compared === h.delimiter) return { termStart: pos, bodyEnd: next };
             break;

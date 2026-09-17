@@ -1202,7 +1202,11 @@ only where bash would run it:
 The trim may sit on the line after the `|`, after a comment, or after the body
 of a heredoc the pipeline opened. It refuses a trim that is not the very next
 stage, a `||` fallback, a tab, extra arguments after the trim, and a trim that
-sits only in a trailing comment.
+sits only in a trailing comment. It also refuses a redirection that replaces or
+closes the trim's own stdin — `<file`, `0<f`, `<<EOF`, `<<-EOF`, `<<<x`, `<>f`,
+`<&3`, `<&-`, `3<&0-` — because the count then never reaches `tr`. An output
+redirection (`>`, `2>`), one on another descriptor (`3<file`) and a duplication
+of stdin onto itself (`<&0`) keep it.
 
 It is not a full bash parser. A `wc` reached through a variable (`${WC} -l`),
 `eval`, an alias, or as an argument of another command (`xargs wc`,
