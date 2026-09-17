@@ -286,8 +286,11 @@ fi
 #     leaving the `_CURRENT` one to carry the gate alone. That fails LOUDLY
 #     rather than silently: the suite derives its fixture with
 #     `grep -m1 '^export type StateSchemaVersion = '`, which misses a wrapped
-#     head, and FLOOR 1 turns that into a FATAL. When it fires, teach the
-#     derivation and the pattern about the wrap; do not delete the floor.
+#     head. Review measured which floor actually catches it: FLOOR 2, not
+#     FLOOR 1 -- the grep still matches something, and it is the "the bump
+#     changed nothing" guard that fires. Still loud either way. When it fires,
+#     teach the derivation and the pattern about the wrap; do not delete the
+#     floor.
 #   - `[^=<>]*` excludes `<` and `>` on purpose. With a bare `[^=]*` the span
 #     reaches across a `>=`, and a JSDoc line such as
 #     `* \`STATE_SCHEMA_VERSION_CURRENT\` is stamped whenever version >= 2.`

@@ -567,8 +567,11 @@ common_of() {
 
 foreign_repo="$TMPDIR/foreign-repo"
 git init -q -b feature/z "$foreign_repo"
-# A SIBLING's remote -- deliberately NOT cdkd's, which is what makes this
-# fixture foreign under the slug test rather than merely a different directory.
+# A SIBLING's remote. It is INERT for the verdict -- measured: removing it
+# changes no case, because a target with NO remote relaxes anyway. It is here so
+# the fixture RESEMBLES a real sibling checkout, not because the slug test needs
+# it; `side_repo`'s remote IS load-bearing (removing that one reds 18 cases).
+# Said plainly because the first version of this comment claimed the opposite.
 git -C "$foreign_repo" remote add origin https://github.com/go-to-k/cdk-local.git
 git -C "$foreign_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 touch "$foreign_repo/.markgate.yml"

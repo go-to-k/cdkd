@@ -272,14 +272,22 @@ case "$SCHEMA_N" in
 esac
 SCHEMA_NEXT=$((SCHEMA_N + 1))
 
-# `[|]`, never `\|`. In an ERE a backslash-escaped `|` is UNDEFINED: BSD sed
-# (macOS, and therefore CI) reads it as a literal pipe, while GNU sed 4.9 and
-# busybox read it as ALTERNATION -- which matches the empty string and yields
-# `... | 9 | | 10 | 11;`. FLOOR 2 would still pass (the line changed) and the
-# gate regex would still match, so the suite would be GREEN over a fixture
-# `src/types/state.ts` cannot produce: exactly the vacuity this file exists to
-# remove, reintroduced by the derivation meant to prevent it, and visible only
-# to a Linux contributor. A bracket expression is portable across all three.
+# `[|]`, never `\|`. POSIX leaves a backslash-escaped ordinary character
+# UNDEFINED in an ERE, so `\|` is at the implementation's discretion; a bracket
+# expression is unambiguous everywhere and costs nothing.
+#
+# WHAT WAS AND WAS NOT MEASURED, because an earlier revision of this comment got
+# it wrong in the direction this whole PR is about. It asserted that GNU sed 4.9
+# and busybox read `\|` as ALTERNATION and corrupt the fixture -- stated as a
+# measurement, and never measured: no GNU sed exists on the machine it was
+# written on. Review then measured all three (BSD on macOS, GNU sed 4.9 on
+# `debian:stable-slim`, busybox on `alpine:3`) and they AGREE, treating `\|` as
+# a literal pipe and producing the identical correct fixture.
+#
+# So this is a portability HARDENING against an undefined construct, not a fix
+# for an observed divergence. Keeping the spelling and deleting the false
+# justification is the honest disposition; inventing a measurement to defend a
+# correct change is the same defect as the doc-derived regex, one layer up.
 UNION_NEW=$(printf '%s' "$UNION_OLD" | sed -E "s/ [|] ${SCHEMA_N};\$/ | ${SCHEMA_N} | ${SCHEMA_NEXT};/")
 CONST_NEW=$(printf '%s' "$CONST_OLD" | sed -E "s/=[[:space:]]*${SCHEMA_N};\$/= ${SCHEMA_NEXT};/")
 
@@ -358,6 +366,28 @@ run_case "the CLAUDE.md doc-snippet shape alone does NOT arm the gate" 0 \
   '{"tool_input":{"command":"gh pr merge 403 --squash"}}' \
   '{"files":[{"path":"src/types/state.ts"}]}' \
   "$DOC_SHAPE_DIFF"
+
+# --- The `[^=<>]*` narrowing, pinned (go-to-k/cdkd#3351 round 2) -------------
+#
+# The constant pattern spans everything between `STATE_SCHEMA_VERSION_CURRENT`
+# and the first `=`. With a bare `[^=]*` that span reaches ACROSS a `>=`, so an
+# ordinary JSDoc line mentioning the constant and a comparison MATCHES -- a
+# false positive in a file whose own header promises comment edits never arm the
+# gate. Measured: this diff arms under `[^=]*` and does not under `[^=<>]*`.
+# Fail-closed, so it costs a spurious block rather than a bypass, but the header
+# would be telling the next reader something untrue.
+JSDOC_COMPARISON_DIFF='diff --git a/src/types/state.ts b/src/types/state.ts
+index abc..def 100644
+--- a/src/types/state.ts
++++ b/src/types/state.ts
+@@ -120,2 +120,2 @@
+- * `STATE_SCHEMA_VERSION_CURRENT` is stamped whenever version >= 2.
++ * `STATE_SCHEMA_VERSION_CURRENT` is stamped whenever version >= 2 (reworded).'
+
+run_case "a JSDoc line carrying >= near the constant does NOT arm the gate" 0 \
+  '{"tool_input":{"command":"gh pr merge 404 --squash"}}' \
+  '{"files":[{"path":"src/types/state.ts"}]}' \
+  "$JSDOC_COMPARISON_DIFF"
 
 # --- Mixed PR: state.ts bumped AND non-state files also touched ---
 
@@ -525,7 +555,7 @@ x2236_case() {
   printf '{"files":[{"path":"src/types/state.ts"}]}' > "$GH_MOCK_FILES"
   printf '%s' "$BUMP_DIFF" > "$GH_MOCK_DIFF"
   out=$(printf '{"cwd":"%s","tool_input":{"command":"%s"}}' "$repo" "$command" \
-    | MARKGATE_MOCK_VERDICT="$verdict" "$HOOK" 2>&1)
+    | MARKGATE_MOCK_VERDICT="$verdict" $HOOK_RUN 2>&1)
   got=$?
   [ "$got" = "$want" ] || detail="$detail; want exit $want, got $got"
   if [ "$mg" = "NOT_CALLED" ] && [ -s "$CWD_TRACE_FILE" ]; then
@@ -568,8 +598,12 @@ x2236_case "foreign checkout with no .markgate.yml is RELAXED" 0 fresh NOT_CALLE
 # real cdkd schema bump merge with the marker never consulted. The identical
 # spelling was measured going 2 -> 0 on verify-pr-gate before go-to-k/cdkd#3209
 # built this allowlist.
-x2236_case "foreign target + --repo naming cdkd still REFUSES" 2 fresh NOT_CALLED \
-  "declares no gate" "$x2236_other" "gh pr merge 1 --squash --repo go-to-k/cdkd"
+# The stderr needle is the RETRACT REASON, not the generic refusal: a reader who
+# hits this needs to know the relaxation was withdrawn by a repo override, not
+# that they should add a GATE_MARKER_ALIASES row. Nothing asserted any of the
+# three retract messages reached a user until go-to-k/cdkd#3351 round 2.
+x2236_case "foreign target + --repo naming cdkd still REFUSES, and says why" 2 fresh NOT_CALLED \
+  "carries a repo override" "$x2236_other" "gh pr merge 1 --squash --repo go-to-k/cdkd"
 x2236_case "foreign target + a CLUSTERED -R still REFUSES" 2 fresh NOT_CALLED \
   "declares no gate" "$x2236_other" "gh pr merge 1 -sdR go-to-k/cdkd"
 x2236_case "foreign target + a PR URL selector still REFUSES" 2 fresh NOT_CALLED \

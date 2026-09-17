@@ -4452,6 +4452,25 @@ gate_slug_from_url() {
   local url host path rest
   url="$1"
   [ -n "$url" ] || return 1
+  # Trailing whitespace, a query/fragment tail, and a trailing slash are all
+  # spellings git accepts and gh resolves identically; none changes the repo.
+  # Measured relaxing before this (go-to-k/cdkd#3351 round 2): `.../cdkd.git/`,
+  # `.../cdkd.git?x=1` and `.../cdkd.git ` each failed to compare equal and the
+  # gate exited 0 on the real v10 bump.
+  while :; do
+    case "$url" in
+      *[[:space:]]) url="${url%?}" ;;
+      *) break ;;
+    esac
+  done
+  url="${url%%\?*}"
+  url="${url%%#*}"
+  while :; do
+    case "$url" in
+      */) url="${url%/}" ;;
+      *) break ;;
+    esac
+  done
   url="${url%.git}"
   url="${url%/}"
 
@@ -4482,6 +4501,21 @@ gate_slug_from_url() {
   esac
 
   path="${path#/}"
+  # Collapse repeated separators and FOLD CASE. GitHub treats host, owner and
+  # repo case-insensitively and resolves `GitHub.com/GO-TO-K/CDKD` to the same
+  # repository -- measured relaxing the gate on the real v10 bump before this.
+  # `tr`, not `${x,,}`: bash 3.2 has no case-modifying expansion and
+  # `run-tests.sh` runs every suite under it. Folding can only make two spellings
+  # compare EQUAL, and equal means "same repo, refuse to relax" -- the safe
+  # direction on a forge where case happens to matter.
+  while :; do
+    case "$path" in
+      *//*) path="$(printf '%s' "$path" | sed 's|//*|/|g')" ;;
+      *) break ;;
+    esac
+  done
+  host=$(printf '%s' "$host" | tr 'A-Z' 'a-z')
+  path=$(printf '%s' "$path" | tr 'A-Z' 'a-z')
   # The WHOLE path, not its last two segments. Collapsing to `<owner>/<name>`
   # is the same conflation the host fix targets, one level up: it keys
   # `github.com/o/r/sub/deep` as `github.com/sub/deep`, and it makes the GitLab
@@ -4818,13 +4852,22 @@ GATE_FOREIGN_RETRACT=""
 #   - a `gh alias` expanding to a flagged form, and `GH_REPO` / `GH_HOST`
 #     assembled at run time or sourced from a file (go-to-k/cdkd#2354, OPEN).
 #
-# The first is CLOSED for `gate_target_is_foreign` specifically, by the repo-slug
-# conjunct below, which reads the target's remotes rather than the command. The
-# other two remain. They were recorded on `verify-pr-gate.sh` before
-# go-to-k/cdkd#3351 moved this code, and that move deleted every reference to all
-# three from the repo -- the pointers are re-attached HERE, where the predicate
-# now lives, because a bound whose issue number no longer appears anywhere
-# stops being a bound and becomes a surprise.
+# For `gate_target_is_foreign` specifically, the first two are closed by the
+# repo-slug conjunct below, which reads the TARGET'S REMOTES rather than the
+# command: `insteadOf` by letting `git ls-remote --get-url` expand it, and
+# `gh-resolved` by reading that key directly. **Closed there, not everywhere** --
+# an earlier revision of this paragraph said "#3235 is CLOSED", which was true
+# only of the spellings the normaliser happened to know, and three more were
+# measured bypassing it in one review round. What actually closes the class is
+# the REFUSAL on an unreadable remote, not the list of shapes understood.
+#
+# `gh alias` and a run-time-assembled `GH_REPO` / `GH_HOST` (go-to-k/cdkd#2354)
+# remain open, and they defeat the gate at the MATCHER rather than here.
+#
+# All three were recorded on `verify-pr-gate.sh` before go-to-k/cdkd#3351 moved
+# this code, and that move deleted every reference from the repo -- re-attached
+# HERE, where the predicate now lives, because a bound whose issue number no
+# longer appears anywhere stops being a bound and becomes a surprise.
 #
 # CONSEQUENCE DEPENDS ON THE CALLER, and this function cannot bound it. For
 # `verify-pr-gate` a wrong "foreign" verdict drops a sentinel and still verifies
@@ -4976,21 +5019,65 @@ gate_target_is_foreign() {
   # or env-driven spelling is the allowlist's job below. So the hazard is a
   # remote NAMING this repo -- which is exactly what the loop tests -- and not
   # the absence of remotes.
-  local slug
+  # AN UNREADABLE REMOTE IS NOT A MISSING ONE, and collapsing the two was the
+  # round-2 blocker. The first cut skipped a remote whose URL would not
+  # normalise (`|| continue`), so every spelling this parser does not know read
+  # as "no evidence" and the target relaxed. Measured on the real hook against
+  # the real v10-bump PR, with no `-R`, no `GH_REPO` and no URL selector: an
+  # `insteadOf` shortcut, a `pushurl` on a non-GitHub fetch URL, and a
+  # case-variant host/path each exited 0.
+  #
+  # Enumerating the spellings has no termination proof -- this file says so
+  # about its own allowlist, and two rounds proved it again here. So the
+  # predicate INVERTS: an existing remote this parser cannot read makes the
+  # target NOT foreign. That is decidable and terminates, and it costs nothing
+  # real, because the only thing it refuses to relax is a checkout whose remotes
+  # cannot be understood.
+  #
+  # It also preserves go-to-k/cdkd#3209, whose foreign fixtures carry ZERO
+  # remotes rather than unparsable ones -- the distinction the `continue` lost.
+  local slug name url_line saw_remote=0
   if ! hook_slug=$(gate_repo_slug "$hook_dir"); then
     GATE_FOREIGN_RETRACT="this gate's own repository could not be identified (no usable \`origin\` remote), so it cannot tell whether the target is a different one"
     return 1
   fi
-  while IFS= read -r url; do
-    [ -n "$url" ] || continue
-    slug=$(gate_slug_from_url "$url" 2>/dev/null) || continue
-    if [ "$slug" = "$hook_slug" ]; then
-      GATE_FOREIGN_RETRACT="the target checkout has a remote naming $hook_slug, so it is the SAME repository as this gate's, in a different directory"
-      return 1
+
+  # `ls-remote --get-url` APPLIES `insteadOf` (it prints the rewritten URL and
+  # contacts nothing), which is how the rewriting class is closed by asking git
+  # rather than by modelling it. `pushurl` is read too: gh falls back to it when
+  # the fetch URL is not a GitHub URL, and `^remote\..*\.url$` structurally
+  # cannot match it.
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    for url_line in \
+      "$(git -C "$target_dir" ls-remote --get-url "$name" 2>/dev/null)" \
+      "$(git -C "$target_dir" config --get "remote.$name.pushurl" 2>/dev/null)"; do
+      [ -n "$url_line" ] || continue
+      saw_remote=1
+      if ! slug=$(gate_slug_from_url "$url_line" 2>/dev/null); then
+        GATE_FOREIGN_RETRACT="the target checkout has a remote ($name) whose URL this gate cannot read, so it cannot rule out that it names the same repository"
+        return 1
+      fi
+      if [ "$slug" = "$hook_slug" ]; then
+        GATE_FOREIGN_RETRACT="the target checkout has a remote ($name) naming $hook_slug, so it is the SAME repository as this gate's, in a different directory"
+        return 1
+      fi
+    done
+    # `gh repo set-default` writes `remote.<name>.gh-resolved`, which gh prefers
+    # over every URL (go-to-k/cdkd#3256). It holds `owner/repo` or the literal
+    # `base`, not a URL, so it is compared against the hook slug's tail.
+    url_line=$(git -C "$target_dir" config --get "remote.$name.gh-resolved" 2>/dev/null)
+    if [ -n "$url_line" ] && [ "$url_line" != "base" ]; then
+      saw_remote=1
+      if [ "$url_line" = "${hook_slug#*/}" ]; then
+        GATE_FOREIGN_RETRACT="the target checkout has \`gh repo set-default\` pointing $name at ${hook_slug#*/}, so gh resolves this gate's own repository from there"
+        return 1
+      fi
     fi
   done <<EOF
-$(git -C "$target_dir" config --get-regexp '^remote\..*\.url$' 2>/dev/null | sed 's/^[^ ]* //')
+$(git -C "$target_dir" remote 2>/dev/null)
 EOF
+  : "$saw_remote"
 
   gate_cmd_names_no_other_repo "$cmd" "$verb_ere" || return 1
   return 0
