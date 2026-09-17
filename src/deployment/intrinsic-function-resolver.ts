@@ -63,6 +63,7 @@ import {
   recordMaskOnlyValuesIn,
   recoverMaskedOutput,
   carriesSecretMask,
+  errorCauseChain,
   MIN_NEEDLE_LENGTH,
   SECRET_MASK,
   type RecordedSecretValues,
@@ -916,6 +917,192 @@ function nestedStackChildRegionFromLocalArn(physicalId: string | undefined): str
 }
 
 /**
+ * One entry in {@link ResolverContext.abandonedResolutions} — one UNIT of a
+ * resolution this pass could not complete, recorded instead of abandoning every
+ * later unit beside it (issues
+ * [#3181](https://github.com/go-to-k/cdkd/issues/3181) /
+ * [#3218](https://github.com/go-to-k/cdkd/issues/3218)).
+ *
+ * Two units, because the defect had two spellings and closing one leaves the
+ * other live. A `token` is one `{{resolve:...}}` reference inside a string leaf
+ * (#3181); a `key` is one entry of an object property bag or of an `Fn::Sub`
+ * variable map (#3218), whose failure needs no dynamic reference at all — the
+ * issue's own repro fails on a `Ref` — and therefore never reaches the token
+ * loop.
+ *
+ * STRUCTURED, for the reason its sibling below records at length: a consumer
+ * forced to recover structure out of a human string couples to a spelling, and
+ * both prior attempts at that coupling shipped a defect.
+ */
+export interface AbandonedResolution {
+  /** Which walk abandoned this unit. */
+  readonly unit: 'token' | 'key';
+  /**
+   * For `'token'`, the reference as the log twin would PRINT it — never the raw
+   * one: `resolveSub` / `resolveJoin` re-enter with an ASSEMBLED string, so
+   * `fullMatch` can carry a plaintext the caller holds no needle for (issue
+   * #2827). For `'key'`, the property / variable name, which is template
+   * structure rather than a value.
+   */
+  readonly subject: string;
+  /**
+   * The thrown message, MASKED at push. An SDK rejection arrives RAW through
+   * `sendWithThrottleRetry`, and an SSM `ValidationException` echoes the `Name`
+   * it was given — which for an assembled reference IS a plaintext. Render
+   * THIS, never {@link error}.
+   *
+   * The two units are masked to different DEPTHS, and the difference is stated
+   * rather than smoothed over. A `'token'` entry additionally maps each raw
+   * reference segment through the twin-derived `nameLogText` first, which has
+   * no length floor, so a SUB-FLOOR plaintext is cleaned. A `'key'` entry has
+   * no such source — the key is template structure, and the failure under it
+   * is a `Ref`/`Fn::GetAtt` rather than a fetch that echoes a secret name — so
+   * it gets the `MIN_NEEDLE_LENGTH`-floored needle mask alone. No reachable
+   * path was found where that matters (a nested token failure RECOVERS rather
+   * than throwing up to the key), but the asymmetry is real.
+   */
+  readonly message: string;
+  /**
+   * Whatever was thrown, for CLASSIFICATION only. Never render it: unlike
+   * {@link message} it is unmasked, and it is kept so a consumer can test its
+   * class rather than its wording.
+   */
+  readonly error: unknown;
+  /**
+   * Did THIS unit's own input carry a `{{resolve:...}}` reference at all?
+   *
+   * Recorded as a BOOLEAN, computed at push time from the raw input, so the
+   * entry can be judged per unit without carrying a value that could be a
+   * plaintext. A consumer that judged the enclosing property instead gets the
+   * wrong answer in both directions: go-to-k/cdkd#3218's abandoned key is a
+   * bare `{"Ref": ...}` carrying no reference — nothing about it is
+   * unverifiable — while a sibling entry in the same bag may be a genuinely
+   * unfetched reference that must still gate the exit code.
+   */
+  readonly carriedDynamicReference: boolean;
+  /**
+   * Did this unit's own input carry a reference that could be FETCHED — i.e.
+   * one that is not still awaiting an `Fn::Sub` placeholder? Separates "nobody
+   * could have resolved this" from "this one was resolvable and was not
+   * resolved", which is the line between reporting and gating.
+   */
+  readonly carriedFetchableReference: boolean;
+}
+
+/**
+ * The prefix every dynamic-reference diagnostic this resolver spells carries.
+ *
+ * Exported because `cdkd scrub` applies the SAME partition on its side and must
+ * not keep a second spelling of it (issue #1936's rule, one layer up): a bare
+ * marker tail is reachable from text this resolver did not write — `Parameter X
+ * is required but no value was provided` comes out of `resolveParameters` — so
+ * the prefix is what makes the match an assertion about OWNERSHIP.
+ */
+export const DYNAMIC_REFERENCE_PREFIX = 'Dynamic reference: ';
+
+/**
+ * Does `source` carry a `{{resolve:...}}` reference that could actually be
+ * FETCHED — one not still awaiting an `Fn::Sub` placeholder?
+ *
+ * Moved here from `cdkd scrub` (issue go-to-k/cdkd#3181), which still imports
+ * it, because the resolver needs the same question answered per abandoned UNIT
+ * and issue #1936 forbids a second spelling of the token pattern.
+ *
+ * The distinction it draws is between "nobody could have resolved this" and
+ * "this one was resolvable and was not resolved" — the line between merely
+ * REPORTING an abandonment and letting it gate an exit code.
+ */
+export function carriesFetchableDynamicReference(source: unknown): boolean {
+  if (typeof source === 'string') {
+    // `dynamicReferenceTokens`, never a local regex: a scan that disagreed with
+    // the resolver about where a token ENDS would disagree about which argument
+    // the `${` test is applied to. (Fenced by
+    // `secret-redaction-dynamic-reference-pattern.test.ts`.)
+    return dynamicReferenceTokens(source).some((token) => !token.includes('${'));
+  }
+  if (Array.isArray(source)) return source.some(carriesFetchableDynamicReference);
+  if (source !== null && typeof source === 'object') {
+    return Object.values(source as Record<string, unknown>).some(carriesFetchableDynamicReference);
+  }
+  return false;
+}
+
+/**
+ * The NAMELESS spellings, which REFUSE rather than fail to fetch.
+ *
+ * `{{resolve:secretsmanager:}}` with an empty argument is a structurally broken
+ * template, and no substitution produces one — an unresolved `Fn::Sub` keeps its
+ * literal `${...}`. `cdkd scrub` has refused on these since
+ * [#2692](https://github.com/go-to-k/cdkd/issues/2692), so the per-unit
+ * recovery must not quietly downgrade one to a skipped token.
+ */
+export const NAMELESS_DYNAMIC_REFERENCE_MARKERS = [
+  'PARAMETER_NAME is required',
+  'SECRET_ID is required',
+] as const;
+
+/**
+ * `err` is a refusal this resolver took ON PURPOSE rather than a step that
+ * failed, so the per-unit recovery must re-raise it and abort the walk.
+ *
+ * The partition is the one `cdkd scrub` already applies on its side
+ * (go-to-k/cdkd#3178), drawn by OWNERSHIP rather than vocabulary: every refusal
+ * here is one THIS repo decides and spells, which is what makes matching it
+ * sound in a way that matching AWS's error text never is. Everything else — any
+ * SDK rejection, any shape this cannot classify — is treated as a failed step
+ * and RECORDED. That asymmetry is deliberate: the residual is a unit reported
+ * as unresolved, never a refusal silently skipped.
+ *
+ * The two halves of the message test open the partition in DIFFERENT
+ * directions, and their EVIDENCE differs — stated separately rather than
+ * asserted together, because only one of them is demonstrated.
+ *
+ * {@link DYNAMIC_REFERENCE_PREFIX} is REACHABLE and tested: a secret id is
+ * template-assembled, so AWS's rejection echoes the name it was handed, and a
+ * parameter named after a marker puts the bare tail inside a message this repo
+ * did not write. Matching the tail alone reads that as a refusal and disarms
+ * recovery for the leaf — restoring exactly the loss #3181 removes.
+ *
+ * The CAUSE walk is defence in depth, and NO reachable wrapping of one of these
+ * throws was found from inside either walk's `try` (the in-repo precedent for
+ * the shape is `role-arn.ts`). It is kept because the two failure directions
+ * are not symmetric: an unrecognised refusal is recorded and walked past, which
+ * is the one residual this partition promises cannot happen, while the cost of
+ * the walk is a bounded chain read. Do not cite it as fenced — it is not.
+ */
+export function isNamelessDynamicReferenceError(err: unknown): boolean {
+  // The MESSAGE arm of the partition, exported because `cdkd scrub` asks the
+  // same question on its side and issue #1936 forbids a second spelling of one
+  // predicate. The constants moved here under go-to-k/cdkd#3181; the
+  // conjunction over them was left behind, spelled byte-identically in both
+  // files, which is the same drift one level up.
+  //
+  // Both halves are load-bearing. The prefix is what makes the match an
+  // assertion about OWNERSHIP — a bare marker tail is reachable from text this
+  // repo did not write (`resolveParameters` raises `Parameter <name> is
+  // required but no value was provided`). The cause walk catches a refusal
+  // wrapped on its way out.
+  if (!(err instanceof Error)) return false;
+  return errorCauseChain(err).some(
+    (link) =>
+      link.message.includes(DYNAMIC_REFERENCE_PREFIX) &&
+      NAMELESS_DYNAMIC_REFERENCE_MARKERS.some((m) => link.message.includes(m))
+  );
+}
+
+function isDeliberateResolutionRefusal(err: unknown): boolean {
+  // Covers `CrossAccountSecretRefusalError` and
+  // `DynamicReferenceRegionAmbiguousError`, which extend it — all three re-set
+  // their prototype, so `instanceof` survives the subclassing. Tested over the
+  // CAUSE chain for the same reason the message arm is.
+  if (!(err instanceof Error)) return false;
+  if (errorCauseChain(err).some((link) => link instanceof IntrinsicResolutionRefusalError)) {
+    return true;
+  }
+  return isNamelessDynamicReferenceError(err);
+}
+
+/**
  * One entry in {@link ResolverContext.redactedAttributeReads} — a read the
  * resolver served out of a REDACTED persisted record.
  *
@@ -1127,6 +1314,32 @@ export interface ResolverContext {
    * bag from its CALLER, and only the two provisioning sites pass one.
    */
   redactedAttributeReads?: RedactedAttributeRead[];
+
+  /**
+   * Units this pass could not resolve, recorded instead of abandoning every
+   * later unit beside them (issues #3181 / #3218).
+   *
+   * OPT-IN, exactly like the bag above and for the same reason: the recovery
+   * changes what a partially-resolved value looks like, so a caller asks for it
+   * on the line where it builds its context rather than inheriting it
+   * ambiently. Passing no bag keeps the pre-#3181 behaviour, where the first
+   * failing token aborts every later token in the leaf and the first failing
+   * key aborts every later key in the bag.
+   *
+   * **What a CONSUMER owes, and it is not optional: a non-empty bag MUST fail
+   * the operation.** Recovery leaves each abandoned unit's input in place, so
+   * `resolveValue`'s return can still carry a literal `{{resolve:...}}` token
+   * or an unresolved `{"Ref": ...}` — and for a caller that SENDS its resolved
+   * value to AWS that is the issue-#2482 shape, where the credential WAS the
+   * template text and the deploy exited 0. The two consumers today are
+   * `cdkd scrub`, which discards the resolved value and only wants the needles
+   * recorded along the way, and this resolver's own tests.
+   *
+   * What a PUSHER owes: `subject` and `message` must already be LOG text —
+   * an assembled reference can put a plaintext in the raw token, and an SDK
+   * rejection echoes the name it was given.
+   */
+  abandonedResolutions?: AbandonedResolution[];
   /**
    * Internal hook used while evaluating the template `Conditions` section.
    * A CFn Condition can reference ANOTHER named condition via
@@ -2928,10 +3141,22 @@ export class IntrinsicFunctionResolver {
       // region, `--region`, or a replay / drift / scrub resolver's region read
       // out of a literal token -- and no resolution of this pass produced it.
       // not-in-class(stripControlChars(loggedTarget).slice(0, 64)): a REGION's log text, masked at the guest's construction (issue #3150), or a resolver's own region as its command built it (stack / --region / literal-token region).
-      throw new Error(
-        `Refusing to build AWS clients for the region ` +
-          `'${stripControlChars(loggedTarget).slice(0, 64)}': it is not a valid AWS region name, and a ` +
-          `region is substituted into the AWS service hostname.`
+      // The refusal CLASS, not a plain Error, and `markNonRetryable` beside it
+      // (issue go-to-k/cdkd#3181 security review). This decides from a region
+      // name a retry cannot change, and the per-unit recovery partitions on
+      // OWNERSHIP: as a plain `Error` this arm was indistinguishable from a
+      // failed fetch, so a bag-carrying context RECORDED it and walked on —
+      // downgrading a guard whose subject is an AWS service HOSTNAME to a
+      // token reported as unfetched. Reachable with the bag in hand:
+      // `{{resolve:secretsmanager:arn:aws:secretsmanager:<region>:...}}` takes
+      // the `named-region` verdict, and `resolverForProducerRegion` applies no
+      // `isClientSafeRegion` gate of its own before the guest re-enters here.
+      throw markNonRetryable(
+        new IntrinsicResolutionRefusalError(
+          `Refusing to build AWS clients for the region ` +
+            `'${stripControlChars(loggedTarget).slice(0, 64)}': it is not a valid AWS region name, and a ` +
+            `region is substituted into the AWS service hostname.`
+        )
       );
     }
 
@@ -3486,8 +3711,72 @@ export class IntrinsicFunctionResolver {
   }
 
   /**
-   * Recursively resolve a value
+   * Resolve ONE key of a bag, recovering per key when the caller opted in.
+   *
+   * Shared by the two sequential key walks that had this defect — the generic
+   * object walk in {@link resolveValue} and `resolveSub`'s variable map — so
+   * the recovery and the REFUSAL partition cannot drift between them. Both were
+   * bare `for … await` loops, so the first failing key abandoned every later
+   * one (issue go-to-k/cdkd#3218; the variable map was found beside it and is
+   * the same defect, not a second one).
+   *
+   * An abandoned key keeps its INPUT value, matching what the per-token
+   * recovery does with an unfetched token. That is safe only because the bag
+   * obliges its consumer to fail the operation — `ResolverContext`'s field doc
+   * carries the obligation and why it is not optional.
+   *
+   * **The log-twin invariant (issue go-to-k/cdkd#3100) under the KEY ordering**,
+   * which is a separate claim from the token one and was missing while the
+   * token half was stated twice. `matches` / `twinTokens` are built inside
+   * `resolveDynamicReferencesWithLogTwin`, once per STRING LEAF, so the
+   * pairing is leaf-local: a key abandoned beside a leaf never enters that
+   * function for it and cannot shift its indices. Skipping a key changes only
+   * WHICH leaves are visited, never how any visited leaf pairs — and a leaf
+   * that is skipped pairs nothing at all rather than pairing wrongly. Fenced
+   * by the key case in
+   * `tests/unit/deployment/intrinsic-resolver-recovered-sibling-log-masking.test.ts`.
+   *
+   * **Both call sites reach it only when a bag is present, and that gate lives
+   * at the CALL SITE rather than in here on purpose.** `resolveValue` recurses
+   * once per nesting level, so routing every level through a second async
+   * frame roughly doubles the resolver's frame cost for a deeply nested
+   * property and lowers the depth at which it raises `RangeError`. An early
+   * return inside this method would not help — the frame is created by the
+   * call. Gating outside leaves every caller that passes no bag (deploy, diff,
+   * drift, rollback) on exactly the pre-#3218 call shape, which is what makes
+   * "a bagless caller is unchanged" true in the stack dimension too. Measured,
+   * not reasoned: the heavier shape inverted the frame-weight ordering that
+   * `tests/unit/cli/import-observed-baseline-refusal-matrix.test.ts` bisects
+   * for, and that is how it was caught rather than shipped.
    */
+  private async resolveKeyUnit(
+    key: string,
+    val: unknown,
+    context: ResolverContext,
+    /**
+     * The caller's bag, passed EXPLICITLY rather than re-read off `context`,
+     * so the push site needs no non-null assertion.
+     *
+     * This does NOT make "only runs when a bag exists" a type-level fact, and
+     * an earlier revision of this comment claimed it did: a future
+     * `resolveKeyUnit(key, val, context, context.abandonedResolutions ?? [])`
+     * type-checks, reintroduces the per-level frame, and silently discards
+     * every entry. The call-site gate below is the real control; this
+     * parameter only removes an assertion.
+     */
+    abandoned: AbandonedResolution[]
+  ): Promise<unknown> {
+    try {
+      return await this.resolveValue(val, context);
+    } catch (err) {
+      // The refusal gate, in the same order as the token loop's catch.
+      if (isDeliberateResolutionRefusal(err)) throw err;
+      abandoned.push(this.abandonedUnit('key', key, err, context, val));
+      return val;
+    }
+  }
+
+  /** Recursively resolve a value. */
   private async resolveValue(value: unknown, context: ResolverContext): Promise<unknown> {
     // Primitives: return as-is (but check strings for dynamic references)
     if (typeof value !== 'object' || value === null) {
@@ -3654,7 +3943,20 @@ export class IntrinsicFunctionResolver {
     // the fix carries no behaviour change beyond the key surviving.
     const resolved: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(obj)) {
-      const resolvedVal = await this.resolveValue(val, context);
+      // Per-KEY recovery (issue go-to-k/cdkd#3218), the sibling of the
+      // per-token one in `resolveDynamicReferencesWithLogTwin`. It is a
+      // SEPARATE fix and not a consequence of that one: #3218's repro fails on
+      // `{"A": {"Ref": "NoSuchThing"}, "B": "{{resolve:secretsmanager:...}}"}`,
+      // where `A` throws out of `resolveRef` and never reaches the token loop
+      // at all, so `B` was never fetched and recorded no needle — and a needle
+      // is the only thing that drives redaction.
+      //
+      // The bag test is HERE, not inside the helper: see `resolveKeyUnit`'s
+      // doc for why an extra async frame per nesting level is not free.
+      const resolvedVal =
+        context.abandonedResolutions === undefined
+          ? await this.resolveValue(val, context)
+          : await this.resolveKeyUnit(key, val, context, context.abandonedResolutions);
       // Skip properties that resolve to AWS::NoValue
       if (resolvedVal !== AWS_NO_VALUE) {
         if (key === '__proto__') {
@@ -6543,13 +6845,32 @@ export class IntrinsicFunctionResolver {
       }
       for (const [key, val] of Object.entries(variableMap)) {
         if (typeof val === 'string') {
+          // The string arm needs no per-key wrapper: it enters the token loop
+          // directly, which recovers per TOKEN and only throws for a refusal —
+          // and a refusal must abort this walk too.
           const resolved = val.includes('{{resolve:')
             ? await this.resolveDynamicReferencesWithLogTwin(val, val, context)
             : { result: val, twin: val };
           variables[key] = resolved.result;
           variableTwins[key] = resolved.twin;
         } else {
-          variables[key] = await this.resolveValue(val, context);
+          // Same sequential-walk defect as the object bag (issue
+          // go-to-k/cdkd#3218), found beside it: `Fn::Sub: ["...", {A: {Ref:
+          // "NoSuchThing"}, B: "{{resolve:secretsmanager:...}}"}]` loses `B`
+          // identically. The non-string arm is the one that needs the wrapper,
+          // because it is the arm that can throw for a reason the token loop
+          // never sees.
+          // Deliberately writes NO `variableTwins` entry, abandoned or not:
+          // this arm never set one, and the substitution site below falls back
+          // to `productLogTwin` for exactly the keys it omits. An abandoned key
+          // keeps its INPUT — an intrinsic object — and that fallback masks it
+          // the same way it masks any other non-string product.
+          // Bag-gated at the call site, as in `resolveValue` — see
+          // `resolveKeyUnit`'s doc for why the extra frame is not free.
+          variables[key] =
+            context.abandonedResolutions === undefined
+              ? await this.resolveValue(val, context)
+              : await this.resolveKeyUnit(key, val, context, context.abandonedResolutions);
         }
       }
     } else {
@@ -9378,6 +9699,47 @@ export class IntrinsicFunctionResolver {
   }
 
   /**
+   * Build one {@link AbandonedResolution}, masking BOTH of its text fields.
+   *
+   * One constructor for both walks so neither can grow a second masking rule:
+   * `subject` and `message` are the only fields a consumer may render, and each
+   * carries its own route to a plaintext — an assembled reference puts one in
+   * the raw token (issue #2827), and an SDK rejection arrives RAW through
+   * `sendWithThrottleRetry` echoing the `Name` it was handed. `error` is kept
+   * unmasked on purpose and is documented as classification-only.
+   */
+  private abandonedUnit(
+    unit: AbandonedResolution['unit'],
+    subject: string,
+    error: unknown,
+    context: ResolverContext | undefined,
+    rawInput: unknown,
+    /**
+     * Applied to {@link AbandonedResolution.message} BEFORE the needle mask.
+     *
+     * `subject` is twin-derived, so it is safe at any length. `message` is not:
+     * it comes from the thrown error, which for an SDK rejection echoes the
+     * NAME it was handed, and the needle mask alone has a `MIN_NEEDLE_LENGTH`
+     * floor. Measured: an assembled reference whose variable resolves to a
+     * SUB-FLOOR secret came back as `Parameter /deleted/pw1 not found.` in the
+     * clear, out of the field this interface documents as masked. The token
+     * loop passes a redactor that maps each raw reference segment through
+     * `nameLogText`, which is twin-derived and therefore floor-free.
+     */
+    preRedact?: (text: string) => string
+  ): AbandonedResolution {
+    const raw = error instanceof Error ? error.message : String(error);
+    return {
+      unit,
+      subject: this.maskSecretsForLog(subject, context),
+      message: this.maskSecretsForLog(preRedact === undefined ? raw : preRedact(raw), context),
+      error,
+      carriedDynamicReference: carriesDynamicReference(rawInput),
+      carriedFetchableReference: carriesFetchableDynamicReference(rawInput),
+    };
+  }
+
+  /**
    * The needle mask alone: {@link maskSecretsForLog} without the log-twin
    * lookup. For the two DETECTORS that must ask the needle mask apart from the
    * position mask: `logTwinText`, which asks it of a value that already has a
@@ -9924,6 +10286,9 @@ export class IntrinsicFunctionResolver {
     const tokensAligned = twinTokens.length === matches.length;
 
     for (const [index, { fullMatch, inner }] of matches.entries()) {
+      // OUTSIDE the `try` below: none of this can throw, and the catch needs
+      // `tokenLogText` to record the entry as the twin would PRINT it rather
+      // than as the raw token spells it.
       const service = inner.split(':')[0];
       const pairedTwin = tokensAligned ? twinTokens[index] : undefined;
       const tokenLogText =
@@ -9936,378 +10301,450 @@ export class IntrinsicFunctionResolver {
         (pairedTwin === undefined
           ? () => SECRET_MASK
           : this.dynamicReferenceNameLogText(inner, pairedTwin, context));
-      // A `secretsmanager` reference resolves to a real secret by SPELLING. A
-      // plain `ssm` one resolves to a secret only when the parameter's `Type` is
-      // `SecureString` (issue #1901) — a fact discovered from the GetParameter
-      // response below and remembered in `recordedSecretExpressions`, so the
-      // cache-hit and skip arms here can act on it without a second lookup.
-      // Either way the plaintext -> expression mapping is recorded so the deploy
-      // engine keeps the UNRESOLVED expression in persisted state and masks the
-      // value out of logs (GHSA fix). A plain `String` / `StringList` parameter
-      // is public config and stays RESOLVED in state, so it is never recorded.
-      // Recorded on the cache-hit path too, so a second reference to the same
-      // secret in the same pass is still redacted.
-      // `ssm-secure` is a secret by SPELLING too (issue #2482): CloudFormation
-      // defines that service for SecureString parameters only, so no lookup is
-      // needed to know the value must not be persisted — and on the comparison
-      // path below it is left unresolved WITHOUT a `GetParameter`, exactly like
-      // `secretsmanager`.
-      const isKnownSecret =
-        service === 'secretsmanager' ||
-        service === 'ssm-secure' ||
-        recordedSecretExpressions.has(fullMatch);
 
-      // Diff / no-op comparison path: leave SECRET references UNRESOLVED (the
-      // expression is what state stores, so comparing keeps like-for-like and
-      // makes no live GetSecretValue). A plain `ssm` reference still resolves —
-      // it is public config stored resolved in state — but it cannot be waved
-      // through on spelling alone, so an ssm reference of UNKNOWN type falls
-      // through to the lookup below, which asks for the type WITHOUT decrypting.
-      // (GHSA fix + issue #1901.)
-      if (isKnownSecret && context?.skipDynamicReferences) {
-        continue;
-      }
-
-      // WHICH REGION MUST ANSWER for this reference (issue #2134). Asked HERE,
-      // token by token, because here is the first point at which the COMPLETE
-      // expression exists: `resolveSub` and `resolveJoin` both re-enter this
-      // method with their assembled result, so a reference whose opening or
-      // whose tail is contributed by a `Ref` / `Fn::Sub` / `Fn::FindInMap` /
-      // `Fn::Join` part is a whole token by the time it reaches this loop.
+      // PER-TOKEN `try`, so one unfetchable reference stops abandoning every
+      // LATER token in the same leaf (go-to-k/cdkd#3181). This loop was a bare
+      // sequential walk: a deleted SSM parameter in token 1 meant token 2 was
+      // never fetched and recorded no needle, so a plaintext behind it survived
+      // every redaction pass and every re-run.
       //
-      // The pre-#2134 answer was a PRE-PASS over the RAW template leaf in
-      // `cdkd scrub`, which by construction could not see such a reference --
-      // it scanned text in which the reference did not yet exist, found
-      // nothing to classify, and handed the leaf on. `resolveSub` then
-      // resolved the assembled expression on THIS resolver, so a foreign ARN
-      // was fetched against the stack's own regional endpoint. What that COSTS
-      // depends on the spelling, and the measurement corrected the issue's own
-      // framing: for an ARN-form reference SSM validates the region and answers
-      // `Incorrect region in: arn:aws:ssm:...`, so it is a hard FAILURE rather
-      // than a silent wrong-region read (probed against real AWS with this fix
-      // reverted). The SILENT miss belongs to the region-LESS spelling, where a
-      // same-named secret in the wrong region answers successfully -- which is
-      // what the `ambiguous` refusal below covers.
-      //
-      // Placed after the `skipDynamicReferences` arm on purpose -- but the
-      // reason is NARROWER than "the comparison path resolves no secret at
-      // all", which is false: that arm skips only a KNOWN secret, so a plain
-      // `ssm` reference of unknown type falls through it and IS fetched. What
-      // makes the placement safe is that the only `skipDynamicReferences`
-      // caller (`diff-recursive.ts`) supplies no `producerRegions`, so the
-      // refusal cannot arm there whichever side of the arm it sits on. Stated
-      // this way because the stronger claim would go stale the moment a second
-      // caller sets both.
-      // Placed BEFORE the cache lookup on purpose too -- a `named-region`
-      // token is resolved by a SIBLING and belongs in the sibling's cache, so
-      // this resolver must never hold an entry for it.
-      const regionVerdict = classifyReplaySecretRegion(
-        fullMatch,
-        // `explicitRegion` is the region that BINDS; `resolverRegion` is its
-        // fallback guess and is only reachable from test construction (see the
-        // fields' own docs). The guess is used rather than `''` because an
-        // empty consumer region reads EVERY recorded producer region as
-        // foreign, turning the refusal below into a blanket one.
-        this.explicitRegion ?? this.resolverRegion,
-        context?.producerRegions
-      );
+      // THE LOG-TWIN INVARIANT IS UNAFFECTED, which is the half that had to be
+      // ARGUED rather than tested (issue #3100). Tokens pair to twin tokens BY
+      // INDEX into `matches` / `twinTokens`, both built BEFORE this loop, and
+      // recovery changes neither list: a skipped token is still visited, still
+      // occupies its index, and simply writes into neither string. The rule
+      // "every arm that writes into `result` writes into the twin too,
+      // replacing the SAME token" is untouched — what changes is only that a
+      // LATER arm now runs at all. An arm that throws part-way wrote to neither,
+      // since every write site sits at the end of its arm.
+      try {
+        // A `secretsmanager` reference resolves to a real secret by SPELLING. A
+        // plain `ssm` one resolves to a secret only when the parameter's `Type` is
+        // `SecureString` (issue #1901) — a fact discovered from the GetParameter
+        // response below and remembered in `recordedSecretExpressions`, so the
+        // cache-hit and skip arms here can act on it without a second lookup.
+        // Either way the plaintext -> expression mapping is recorded so the deploy
+        // engine keeps the UNRESOLVED expression in persisted state and masks the
+        // value out of logs (GHSA fix). A plain `String` / `StringList` parameter
+        // is public config and stays RESOLVED in state, so it is never recorded.
+        // Recorded on the cache-hit path too, so a second reference to the same
+        // secret in the same pass is still redacted.
+        // `ssm-secure` is a secret by SPELLING too (issue #2482): CloudFormation
+        // defines that service for SecureString parameters only, so no lookup is
+        // needed to know the value must not be persisted — and on the comparison
+        // path below it is left unresolved WITHOUT a `GetParameter`, exactly like
+        // `secretsmanager`.
+        const isKnownSecret =
+          service === 'secretsmanager' ||
+          service === 'ssm-secure' ||
+          recordedSecretExpressions.has(fullMatch);
 
-      if (regionVerdict.kind === 'ambiguous') {
-        // Non-retryable: this is a DECISION, not a transient failure, so a
-        // retry can only re-take it -- and the retry wrapper would otherwise
-        // spend the full backoff budget before surfacing the message that
-        // tells the user how to fix their template.
-        throw markNonRetryable(
-          new DynamicReferenceRegionAmbiguousError(
-            // `fullMatch` is the token cut from the ASSEMBLED reference string,
-            // so `resolveSub` re-entering with an assembled body puts a
-            // plaintext here — the same plaintext the sibling throws mask after
-            // parsing it out of this very token (issue #2827 review round 2).
-            `Refusing to resolve the secret reference ${this.maskSecretsForLog(tokenLogText, context)}: it names ` +
-              `'${this.maskSecretsForLog(nameLogText(regionVerdict.secretName), context)}' without a region, and this stack reads from ` +
-              `${this.maskSecretsForLog(regionVerdict.foreignProducerRegions.map((r) => this.maskSecretsForLog(r, context)).join(', '), context)} as well as its own ` +
-              `region. cdkd cannot tell which one must answer, and resolving against ` +
-              `the wrong one yields a different secret. Spell the reference as a full ARN ` +
-              `to say which region owns it.`
-          )
-        );
-      }
+        // Diff / no-op comparison path: leave SECRET references UNRESOLVED (the
+        // expression is what state stores, so comparing keeps like-for-like and
+        // makes no live GetSecretValue). A plain `ssm` reference still resolves —
+        // it is public config stored resolved in state — but it cannot be waved
+        // through on spelling alone, so an ssm reference of UNKNOWN type falls
+        // through to the lookup below, which asks for the type WITHOUT decrypting.
+        // (GHSA fix + issue #1901.)
+        if (isKnownSecret && context?.skipDynamicReferences) {
+          continue;
+        }
 
-      if (regionVerdict.kind === 'named-region') {
-        // Delegate the single TOKEN -- not the whole string -- to a resolver
-        // pinned to the region the ARN names. `resolverForProducerRegion`
-        // marks the sibling a `producerRegionGuest`, so it cannot pin a
-        // verdict in the process-global `recordedSecretExpressions` store: the
-        // #1933 hazard, where one region's `ssm` parameter TYPE decides
-        // another region's redaction.
+        // WHICH REGION MUST ANSWER for this reference (issue #2134). Asked HERE,
+        // token by token, because here is the first point at which the COMPLETE
+        // expression exists: `resolveSub` and `resolveJoin` both re-enter this
+        // method with their assembled result, so a reference whose opening or
+        // whose tail is contributed by a `Ref` / `Fn::Sub` / `Fn::FindInMap` /
+        // `Fn::Join` part is a whole token by the time it reaches this loop.
         //
-        // Exactly ONE level of recursion, and it is provable rather than
-        // argued: the sibling is constructed pinned to `verdict.region`, so
-        // when it re-enters this method the same classifier compares that ARN's
-        // region against its own and returns `local`. A name-form reference can
-        // never arrive here at all, because only the `named-region` arm
-        // delegates.
-        const sibling = this.resolverForProducerRegion(
-          regionVerdict.region,
-          context,
-          nameLogText(regionVerdict.region)
-        );
-        // Same evidence-stripping as `reresolveCrossStackValue` above, and for
-        // the same reason. Harmless on THIS path today -- the token is ARN-form
-        // by construction, so the sibling verdicts `local` whatever evidence it
-        // holds -- but the shape is identical, and leaving one site to depend
-        // on that argument is how the other one broke.
-        const foreign = await sibling.resolveDynamicReferencesWithLogTwin(
+        // The pre-#2134 answer was a PRE-PASS over the RAW template leaf in
+        // `cdkd scrub`, which by construction could not see such a reference --
+        // it scanned text in which the reference did not yet exist, found
+        // nothing to classify, and handed the leaf on. `resolveSub` then
+        // resolved the assembled expression on THIS resolver, so a foreign ARN
+        // was fetched against the stack's own regional endpoint. What that COSTS
+        // depends on the spelling, and the measurement corrected the issue's own
+        // framing: for an ARN-form reference SSM validates the region and answers
+        // `Incorrect region in: arn:aws:ssm:...`, so it is a hard FAILURE rather
+        // than a silent wrong-region read (probed against real AWS with this fix
+        // reverted). The SILENT miss belongs to the region-LESS spelling, where a
+        // same-named secret in the wrong region answers successfully -- which is
+        // what the `ambiguous` refusal below covers.
+        //
+        // Placed after the `skipDynamicReferences` arm on purpose -- but the
+        // reason is NARROWER than "the comparison path resolves no secret at
+        // all", which is false: that arm skips only a KNOWN secret, so a plain
+        // `ssm` reference of unknown type falls through it and IS fetched. What
+        // makes the placement safe is that the only `skipDynamicReferences`
+        // caller (`diff-recursive.ts`) supplies no `producerRegions`, so the
+        // refusal cannot arm there whichever side of the arm it sits on. Stated
+        // this way because the stronger claim would go stale the moment a second
+        // caller sets both.
+        // Placed BEFORE the cache lookup on purpose too -- a `named-region`
+        // token is resolved by a SIBLING and belongs in the sibling's cache, so
+        // this resolver must never hold an entry for it.
+        const regionVerdict = classifyReplaySecretRegion(
           fullMatch,
-          fullMatch,
-          // Unconditional here: this arm is reached only for an ARN-form token,
-          // whose region the ARN itself states, so the origin is known by
-          // construction and the evidence can only mislead.
-          withoutProducerRegions(context),
-          // How the sibling PRINTS the token and its names (issue #3150). Not
-          // passed as the twin: the sibling registers its result against the
-          // twin it holds, and a masked twin there would register a public
-          // value as `***`, which `Fn::Base64` then persists.
-          { tokenLogText, nameLogText }
+          // `explicitRegion` is the region that BINDS; `resolverRegion` is its
+          // fallback guess and is only reachable from test construction (see the
+          // fields' own docs). The guess is used rather than `''` because an
+          // empty consumer region reads EVERY recorded producer region as
+          // foreign, turning the refusal below into a blanket one.
+          this.explicitRegion ?? this.resolverRegion,
+          context?.producerRegions
         );
-        // Replacer FUNCTION for the same reason as every other substitution in
-        // this method: a resolved secret legitimately containing `$&` would
-        // otherwise splice the matched expression back into itself.
-        result = result.replace(fullMatch, () => foreign.result);
-        twin = twin.replace(fullMatch, () => foreign.twin);
-        continue;
-      }
 
-      // Check cache first. INSTANCE-scoped, so a hit can only ever be a value
-      // THIS resolver resolved — i.e. one from its own stack and its own region
-      // (issue #1933; see the field's own doc).
-      const cached = this.cachedDynamicReferences.get(fullMatch);
-      if (cached) {
-        // The `cached.value` test excludes the empty string: an empty secret is
-        // not a usable redaction needle (it would match every empty leaf).
-        //
-        // The verdict is read off the ENTRY **and only off the entry** —
-        // deliberately NOT `isKnownSecret`, and that exclusion is the point.
-        // `isKnownSecret` consults the process-global `recordedSecretExpressions`,
-        // which a FOREIGN resolver writes to, so ORing it in here would re-open
-        // the cross-resolver channel this cache's instance scope exists to close
-        // — in the opposite direction from the leak (issue #1933 review):
-        //
-        //   virginia resolves `/env` -> `String` -> retracts the memo, caches
-        //   {value:'prod', secret:false}; tokyo resolves the SAME expression ->
-        //   `SecureString` -> re-adds the memo; virginia's next resource hits
-        //   this arm with `isKnownSecret` true from TOKYO's add and records
-        //   'prod' as a redaction NEEDLE, rewriting its own `my-prod-bucket`
-        //   into `my-{{resolve:ssm:/env}}-bucket`.
-        //
-        // That is exactly the corruption the retraction arm below exists to
-        // prevent, arriving through the cache instead. Reachable at the default
-        // `--stack-concurrency 4`.
-        //
-        // Nothing legitimate is lost, because `cached.secret` is AUTHORITATIVE
-        // for every entry this resolver could have written: for ssm it is
-        // `param.secure` off the fresh `GetParameter` response (which OVERWRITES
-        // the `isKnownSecret` seed below), for secretsmanager it is `true` by
-        // spelling, and only `cacheable` — i.e. definitive — verdicts are stored
-        // at all. A cache hit therefore already knows its own answer, and the
-        // global store can only ever contradict it with another region's.
-        //
-        // Still deliberately does NOT add to `recordedSecretExpressions`:
-        // reaching this arm means the resolution that POPULATED this instance's
-        // cache already recorded whatever it was entitled to pin, and a second
-        // add could only ever be a no-op or an un-pinning it explicitly avoided
-        // (issue #1916).
-        if (cached.secret && cached.value) {
-          context?.recordedSecretValues?.set(cached.value, fullMatch);
-          // The uncollapsed twin of that entry (issue #2485) — see the
-          // fresh-resolution seam below.
-          if (context?.recordedSecretValues) {
-            recordResolvedPair(context.recordedSecretValues, fullMatch, cached.value);
-          }
-        }
-        // Replacer FUNCTION, not a string: `String.replace` interprets `$&`,
-        // "$`", `$'` and `$1` inside a replacement STRING, so a resolved value
-        // containing any of them would be corrupted on its way to AWS — and
-        // `$&` in particular splices the matched `{{resolve:...}}` expression
-        // back INTO the value. A secret is exactly the kind of value that
-        // legitimately contains `$`.
-        result = result.replace(fullMatch, () => cached.value);
-        twin = twin.replace(fullMatch, () =>
-          cached.secret && cached.value ? SECRET_MASK : cached.value
-        );
-        continue;
-      }
-
-      const parts = inner.split(':');
-
-      let resolved: string;
-      let isSecret = isKnownSecret;
-      /**
-       * May the resolved value be REMEMBERED, or must the next pass re-ask?
-       *
-       * Cleared for exactly the answers the verdict store refuses to pin — an
-       * ssm parameter judged secret from a `Type` that is not a definitive
-       * `SecureString` (issue #1901's fail-closed arm). Caching one would pin
-       * the transient answer for the whole resolver anyway, which is what the
-       * refusal to memoize exists to prevent: before the value cache became
-       * instance-scoped this was already true process-wide, and the
-       * "next pass re-asks" property only ever held on the comparison path,
-       * which caches nothing (issue #1933).
-       */
-      let cacheable = true;
-
-      if (service === 'secretsmanager') {
-        resolved = await this.resolveSecretsManagerReference(inner, context, nameLogText);
-      } else if (service === 'ssm') {
-        // On the comparison path fetch the parameter WITHOUT decryption: a
-        // `SecureString` then comes back as its encrypted blob, so the type can
-        // be learned with no plaintext ever leaving AWS. `String` /
-        // `StringList` are unaffected by the flag, so the value is the same one
-        // the deploy path would resolve and is safe to cache and substitute.
-        const decrypt = context?.skipDynamicReferences !== true;
-        const param = await this.resolveSSMReference(parts, decrypt, 'ssm', context, nameLogText);
-        // The FRESH response is authoritative, so a definitive public verdict
-        // both clears `isSecret` and RETRACTS a stale memo. Without the
-        // retraction the verdict could only ever be raised, so one transient
-        // unclassifiable `Type` (or a parameter retyped SecureString ->
-        // String) pinned "secret" for the process — and a pinned PUBLIC value
-        // then becomes a redaction NEEDLE, rewriting an unrelated string that
-        // merely contains it (`prod` turning `my-prod-bucket` into
-        // `my-{{resolve:ssm:/env}}-bucket` in that resource's record). Only a
-        // definitive `SecureString` is memoized: an unclassifiable type is
-        // treated as secret for THIS resolution but deliberately not pinned,
-        // so the next pass re-asks instead of inheriting a transient answer.
-        if (param.type === 'SecureString') {
-          this.pinSecretVerdict(fullMatch, true);
-        } else if (!param.secure) {
-          this.pinSecretVerdict(fullMatch, false);
-        } else {
-          // Secret, but from a `Type` too anomalous to memoize — so the VALUE is
-          // not memoized either. See `cacheable`'s doc above.
-          cacheable = false;
-        }
-        isSecret = param.secure;
-        if (param.secure) {
-          if (!decrypt) {
-            // Comparison path: the value in hand is ciphertext, which is neither
-            // what state holds nor safe to cache. Leave the expression
-            // unresolved, exactly as the secretsmanager skip above does — now
-            // that the type is known, later passes short-circuit before the
-            // lookup.
-            continue;
-          }
-        }
-        resolved = param.value;
-      } else if (service === 'ssm-secure') {
-        // Issue #2482. Before this arm existed the spelling fell through to
-        // the unsupported-service warning below and the LITERAL TOKEN went to
-        // AWS as the property's value — cdkd never passes through
-        // CloudFormation, so nothing resolved it server-side, and where the
-        // service API accepted the string (an IAM console password does) the
-        // live credential WAS the template text, with the deploy exiting 0.
-        //
-        // The value is a secret by SPELLING and the verdict does not depend on
-        // the response: CloudFormation defines `ssm-secure` for SecureString
-        // parameters only, and every reader that asks whether an expression is
-        // secret (`isKnownSecret` above, `isSecretExpressionByVerdictOrSpelling`
-        // in `secret-redaction.ts`) answers from the spelling. The expression is
-        // still RECORDED into the process-wide store at the shared tail below,
-        // beside `secretsmanager`, because that store is also ENUMERATED (the
-        // #1916 losing-member recovery) — not because a verdict needs a memo.
-        // The lookup itself is the `ssm` arm's, with decryption —
-        // `isKnownSecret` kept the comparison path away from here, so
-        // `decrypt` is unconditional. A definitive `String` / `StringList` answer is
-        // REFUSED rather than resolved under a secret spelling: the template
-        // says the value is secret and the parameter says it is not, and
-        // resolving it would record a public value as a redaction needle over
-        // that disagreement. `markNonRetryable` because the parameter's type
-        // is not something a retry can change.
-        const param = await this.resolveSSMReference(
-          parts,
-          true,
-          'ssm-secure',
-          context,
-          nameLogText
-        );
-        if (!param.secure) {
-          // `secure` is false only for the two PUBLIC types the predicate
-          // names, so `type` is a definitive `String` / `StringList` here.
-          // not-in-class(param.type): a TYPE name from the template or from AWS, not a value.
+        if (regionVerdict.kind === 'ambiguous') {
+          // Non-retryable: this is a DECISION, not a transient failure, so a
+          // retry can only re-take it -- and the retry wrapper would otherwise
+          // spend the full backoff budget before surfacing the message that
+          // tells the user how to fix their template.
           throw markNonRetryable(
-            new IntrinsicResolutionRefusalError(
-              // Masked for the reason the `ssm-secure` refusal above states.
-              `Refusing to resolve ${this.maskSecretsForLog(tokenLogText, context)}: the parameter is a ${param.type} ` +
-                `parameter, and the ssm-secure spelling is defined for SecureString parameters only. ` +
-                `Reference it as {{resolve:ssm:...}} if it is public configuration.`
+            new DynamicReferenceRegionAmbiguousError(
+              // `fullMatch` is the token cut from the ASSEMBLED reference string,
+              // so `resolveSub` re-entering with an assembled body puts a
+              // plaintext here — the same plaintext the sibling throws mask after
+              // parsing it out of this very token (issue #2827 review round 2).
+              `Refusing to resolve the secret reference ${this.maskSecretsForLog(tokenLogText, context)}: it names ` +
+                `'${this.maskSecretsForLog(nameLogText(regionVerdict.secretName), context)}' without a region, and this stack reads from ` +
+                `${this.maskSecretsForLog(regionVerdict.foreignProducerRegions.map((r) => this.maskSecretsForLog(r, context)).join(', '), context)} as well as its own ` +
+                `region. cdkd cannot tell which one must answer, and resolving against ` +
+                `the wrong one yields a different secret. Spell the reference as a full ARN ` +
+                `to say which region owns it.`
             )
           );
         }
-        isSecret = true;
-        resolved = param.value;
-      } else {
-        // Masked like the lookup echoes above (issue #2728, review round 1):
-        // `service` is whatever sits before the first `:` of the ASSEMBLED
-        // token, and `resolveSub` re-enters this method with the assembled
-        // string — a body of `{{resolve:${Pw}}}` over a variable that
-        // resolved a secret makes `service` BE that plaintext, on a `warn`
-        // emitted at default verbosity. (The `continue` then leaves the
-        // literal span in the value, which redaction's strictly-inside
-        // carve-out spares into `state.json` — issue #2743.)
-        this.logger.warn(
-          this.maskSecretsForLog(
-            `Unsupported dynamic reference service: ${this.maskSecretsForLog(nameLogText(String(service)), context)}`,
-            context
-          )
+
+        if (regionVerdict.kind === 'named-region') {
+          // Delegate the single TOKEN -- not the whole string -- to a resolver
+          // pinned to the region the ARN names. `resolverForProducerRegion`
+          // marks the sibling a `producerRegionGuest`, so it cannot pin a
+          // verdict in the process-global `recordedSecretExpressions` store: the
+          // #1933 hazard, where one region's `ssm` parameter TYPE decides
+          // another region's redaction.
+          //
+          // Exactly ONE level of recursion, and it is provable rather than
+          // argued: the sibling is constructed pinned to `verdict.region`, so
+          // when it re-enters this method the same classifier compares that ARN's
+          // region against its own and returns `local`. A name-form reference can
+          // never arrive here at all, because only the `named-region` arm
+          // delegates.
+          const sibling = this.resolverForProducerRegion(
+            regionVerdict.region,
+            context,
+            nameLogText(regionVerdict.region)
+          );
+          // Same evidence-stripping as `reresolveCrossStackValue` above, and for
+          // the same reason. Harmless on THIS path today -- the token is ARN-form
+          // by construction, so the sibling verdicts `local` whatever evidence it
+          // holds -- but the shape is identical, and leaving one site to depend
+          // on that argument is how the other one broke.
+          const foreign = await sibling.resolveDynamicReferencesWithLogTwin(
+            fullMatch,
+            fullMatch,
+            // Unconditional here: this arm is reached only for an ARN-form token,
+            // whose region the ARN itself states, so the origin is known by
+            // construction and the evidence can only mislead.
+            withoutProducerRegions(context),
+            // How the sibling PRINTS the token and its names (issue #3150). Not
+            // passed as the twin: the sibling registers its result against the
+            // twin it holds, and a masked twin there would register a public
+            // value as `***`, which `Fn::Base64` then persists.
+            { tokenLogText, nameLogText }
+          );
+          // Replacer FUNCTION for the same reason as every other substitution in
+          // this method: a resolved secret legitimately containing `$&` would
+          // otherwise splice the matched expression back into itself.
+          result = result.replace(fullMatch, () => foreign.result);
+          twin = twin.replace(fullMatch, () => foreign.twin);
+          continue;
+        }
+
+        // Check cache first. INSTANCE-scoped, so a hit can only ever be a value
+        // THIS resolver resolved — i.e. one from its own stack and its own region
+        // (issue #1933; see the field's own doc).
+        const cached = this.cachedDynamicReferences.get(fullMatch);
+        if (cached) {
+          // The `cached.value` test excludes the empty string: an empty secret is
+          // not a usable redaction needle (it would match every empty leaf).
+          //
+          // The verdict is read off the ENTRY **and only off the entry** —
+          // deliberately NOT `isKnownSecret`, and that exclusion is the point.
+          // `isKnownSecret` consults the process-global `recordedSecretExpressions`,
+          // which a FOREIGN resolver writes to, so ORing it in here would re-open
+          // the cross-resolver channel this cache's instance scope exists to close
+          // — in the opposite direction from the leak (issue #1933 review):
+          //
+          //   virginia resolves `/env` -> `String` -> retracts the memo, caches
+          //   {value:'prod', secret:false}; tokyo resolves the SAME expression ->
+          //   `SecureString` -> re-adds the memo; virginia's next resource hits
+          //   this arm with `isKnownSecret` true from TOKYO's add and records
+          //   'prod' as a redaction NEEDLE, rewriting its own `my-prod-bucket`
+          //   into `my-{{resolve:ssm:/env}}-bucket`.
+          //
+          // That is exactly the corruption the retraction arm below exists to
+          // prevent, arriving through the cache instead. Reachable at the default
+          // `--stack-concurrency 4`.
+          //
+          // Nothing legitimate is lost, because `cached.secret` is AUTHORITATIVE
+          // for every entry this resolver could have written: for ssm it is
+          // `param.secure` off the fresh `GetParameter` response (which OVERWRITES
+          // the `isKnownSecret` seed below), for secretsmanager it is `true` by
+          // spelling, and only `cacheable` — i.e. definitive — verdicts are stored
+          // at all. A cache hit therefore already knows its own answer, and the
+          // global store can only ever contradict it with another region's.
+          //
+          // Still deliberately does NOT add to `recordedSecretExpressions`:
+          // reaching this arm means the resolution that POPULATED this instance's
+          // cache already recorded whatever it was entitled to pin, and a second
+          // add could only ever be a no-op or an un-pinning it explicitly avoided
+          // (issue #1916).
+          if (cached.secret && cached.value) {
+            context?.recordedSecretValues?.set(cached.value, fullMatch);
+            // The uncollapsed twin of that entry (issue #2485) — see the
+            // fresh-resolution seam below.
+            if (context?.recordedSecretValues) {
+              recordResolvedPair(context.recordedSecretValues, fullMatch, cached.value);
+            }
+          }
+          // Replacer FUNCTION, not a string: `String.replace` interprets `$&`,
+          // "$`", `$'` and `$1` inside a replacement STRING, so a resolved value
+          // containing any of them would be corrupted on its way to AWS — and
+          // `$&` in particular splices the matched `{{resolve:...}}` expression
+          // back INTO the value. A secret is exactly the kind of value that
+          // legitimately contains `$`.
+          result = result.replace(fullMatch, () => cached.value);
+          twin = twin.replace(fullMatch, () =>
+            cached.secret && cached.value ? SECRET_MASK : cached.value
+          );
+          continue;
+        }
+
+        const parts = inner.split(':');
+
+        let resolved: string;
+        let isSecret = isKnownSecret;
+        /**
+         * May the resolved value be REMEMBERED, or must the next pass re-ask?
+         *
+         * Cleared for exactly the answers the verdict store refuses to pin — an
+         * ssm parameter judged secret from a `Type` that is not a definitive
+         * `SecureString` (issue #1901's fail-closed arm). Caching one would pin
+         * the transient answer for the whole resolver anyway, which is what the
+         * refusal to memoize exists to prevent: before the value cache became
+         * instance-scoped this was already true process-wide, and the
+         * "next pass re-asks" property only ever held on the comparison path,
+         * which caches nothing (issue #1933).
+         */
+        let cacheable = true;
+
+        if (service === 'secretsmanager') {
+          resolved = await this.resolveSecretsManagerReference(inner, context, nameLogText);
+        } else if (service === 'ssm') {
+          // On the comparison path fetch the parameter WITHOUT decryption: a
+          // `SecureString` then comes back as its encrypted blob, so the type can
+          // be learned with no plaintext ever leaving AWS. `String` /
+          // `StringList` are unaffected by the flag, so the value is the same one
+          // the deploy path would resolve and is safe to cache and substitute.
+          const decrypt = context?.skipDynamicReferences !== true;
+          const param = await this.resolveSSMReference(parts, decrypt, 'ssm', context, nameLogText);
+          // The FRESH response is authoritative, so a definitive public verdict
+          // both clears `isSecret` and RETRACTS a stale memo. Without the
+          // retraction the verdict could only ever be raised, so one transient
+          // unclassifiable `Type` (or a parameter retyped SecureString ->
+          // String) pinned "secret" for the process — and a pinned PUBLIC value
+          // then becomes a redaction NEEDLE, rewriting an unrelated string that
+          // merely contains it (`prod` turning `my-prod-bucket` into
+          // `my-{{resolve:ssm:/env}}-bucket` in that resource's record). Only a
+          // definitive `SecureString` is memoized: an unclassifiable type is
+          // treated as secret for THIS resolution but deliberately not pinned,
+          // so the next pass re-asks instead of inheriting a transient answer.
+          if (param.type === 'SecureString') {
+            this.pinSecretVerdict(fullMatch, true);
+          } else if (!param.secure) {
+            this.pinSecretVerdict(fullMatch, false);
+          } else {
+            // Secret, but from a `Type` too anomalous to memoize — so the VALUE is
+            // not memoized either. See `cacheable`'s doc above.
+            cacheable = false;
+          }
+          isSecret = param.secure;
+          if (param.secure) {
+            if (!decrypt) {
+              // Comparison path: the value in hand is ciphertext, which is neither
+              // what state holds nor safe to cache. Leave the expression
+              // unresolved, exactly as the secretsmanager skip above does — now
+              // that the type is known, later passes short-circuit before the
+              // lookup.
+              continue;
+            }
+          }
+          resolved = param.value;
+        } else if (service === 'ssm-secure') {
+          // Issue #2482. Before this arm existed the spelling fell through to
+          // the unsupported-service warning below and the LITERAL TOKEN went to
+          // AWS as the property's value — cdkd never passes through
+          // CloudFormation, so nothing resolved it server-side, and where the
+          // service API accepted the string (an IAM console password does) the
+          // live credential WAS the template text, with the deploy exiting 0.
+          //
+          // The value is a secret by SPELLING and the verdict does not depend on
+          // the response: CloudFormation defines `ssm-secure` for SecureString
+          // parameters only, and every reader that asks whether an expression is
+          // secret (`isKnownSecret` above, `isSecretExpressionByVerdictOrSpelling`
+          // in `secret-redaction.ts`) answers from the spelling. The expression is
+          // still RECORDED into the process-wide store at the shared tail below,
+          // beside `secretsmanager`, because that store is also ENUMERATED (the
+          // #1916 losing-member recovery) — not because a verdict needs a memo.
+          // The lookup itself is the `ssm` arm's, with decryption —
+          // `isKnownSecret` kept the comparison path away from here, so
+          // `decrypt` is unconditional. A definitive `String` / `StringList` answer is
+          // REFUSED rather than resolved under a secret spelling: the template
+          // says the value is secret and the parameter says it is not, and
+          // resolving it would record a public value as a redaction needle over
+          // that disagreement. `markNonRetryable` because the parameter's type
+          // is not something a retry can change.
+          const param = await this.resolveSSMReference(
+            parts,
+            true,
+            'ssm-secure',
+            context,
+            nameLogText
+          );
+          if (!param.secure) {
+            // `secure` is false only for the two PUBLIC types the predicate
+            // names, so `type` is a definitive `String` / `StringList` here.
+            // not-in-class(param.type): a TYPE name from the template or from AWS, not a value.
+            throw markNonRetryable(
+              new IntrinsicResolutionRefusalError(
+                // Masked for the reason the `ssm-secure` refusal above states.
+                `Refusing to resolve ${this.maskSecretsForLog(tokenLogText, context)}: the parameter is a ${param.type} ` +
+                  `parameter, and the ssm-secure spelling is defined for SecureString parameters only. ` +
+                  `Reference it as {{resolve:ssm:...}} if it is public configuration.`
+              )
+            );
+          }
+          isSecret = true;
+          resolved = param.value;
+        } else {
+          // Masked like the lookup echoes above (issue #2728, review round 1):
+          // `service` is whatever sits before the first `:` of the ASSEMBLED
+          // token, and `resolveSub` re-enters this method with the assembled
+          // string — a body of `{{resolve:${Pw}}}` over a variable that
+          // resolved a secret makes `service` BE that plaintext, on a `warn`
+          // emitted at default verbosity. (The `continue` then leaves the
+          // literal span in the value, which redaction's strictly-inside
+          // carve-out spares into `state.json` — issue #2743.)
+          this.logger.warn(
+            this.maskSecretsForLog(
+              `Unsupported dynamic reference service: ${this.maskSecretsForLog(nameLogText(String(service)), context)}`,
+              context
+            )
+          );
+          continue;
+        }
+
+        // The verdict is stored ALONGSIDE the value so the cache-hit arm above can
+        // re-record it into a later pass's bag on its own, without depending on a
+        // process-global verdict store another stack's resolver can retract from
+        // under it (issue #1933).
+        if (cacheable) {
+          this.cachedDynamicReferences.set(fullMatch, { value: resolved, secret: isSecret });
+        }
+        if (isSecret && resolved) {
+          context?.recordedSecretValues?.set(resolved, fullMatch);
+          // The same pair keyed by EXPRESSION, per map instance (issue #2485):
+          // the map above keeps one expression per plaintext, and the redaction
+          // path needs to know what THIS token resolved to in THIS pass to
+          // position a literal leaf that embeds it beside a sibling sharing the
+          // value. Recorded here, beside the `set`, so the two cannot disagree
+          // about which pass the evidence belongs to.
+          if (context?.recordedSecretValues) {
+            recordResolvedPair(context.recordedSecretValues, fullMatch, resolved);
+          }
+          // The value-keyed map above COLLAPSES a group of expressions sharing a
+          // resolved value down to its last member; this set does not, which is
+          // what lets the redaction path name the losing member (issue #1916).
+          //
+          // Gated on the SPELLING rather than on `isSecret`, and that is the
+          // whole care of this line: every ssm verdict is owned by the arm above,
+          // which pins ONLY a definitive `SecureString`. An unclassifiable `Type`
+          // sets `isSecret` for THIS resolution and is deliberately NOT pinned,
+          // so that the next pass re-asks AWS instead of inheriting a transient
+          // answer — recording it here would pin it for the process and undo
+          // exactly that (issue #1901). It IS recorded above as pass-local
+          // evidence, though: the redaction path positions a literal leaf that
+          // embeds such a token — or a whole-token leaf this store cannot vouch
+          // for — by that record, for THIS pass only; what the unclassifiable
+          // verdict does not get is the process-wide pin. `ssm-secure` is secret by
+          // spelling exactly like `secretsmanager` (issue #2482), so it is
+          // recorded here for the same reason: `positionByIntrinsicSkeleton`
+          // enumerates this set to name a LOSING member, and without the entry
+          // two intrinsic-shaped `ssm-secure` references sharing a value would
+          // persist the winner's expression at the loser's position.
+          if (service === 'secretsmanager' || service === 'ssm-secure') {
+            this.pinSecretVerdict(fullMatch, true);
+          }
+        }
+        // Replacer FUNCTION — see the cache-hit arm above for why a replacement
+        // STRING is unsafe here.
+        result = result.replace(fullMatch, () => resolved);
+        twin = twin.replace(fullMatch, () => (isSecret && resolved ? SECRET_MASK : resolved));
+      } catch (err) {
+        // No bag means the caller did not opt in: keep the pre-#3181 abort.
+        if (context?.abandonedResolutions === undefined) throw err;
+        // A deliberate REFUSAL still aborts. Getting this backwards turns a
+        // decision that must stop the run into a silently skipped token.
+        if (isDeliberateResolutionRefusal(err)) throw err;
+        context.abandonedResolutions.push(
+          this.abandonedUnit('token', tokenLogText, err, context, fullMatch, (text) => {
+            // The thrown text can echo the reference's own ARGUMENT back —
+            // `sendWithThrottleRetry` rethrows an SDK rejection RAW, and SSM's
+            // `ValidationException` / `ParameterNotFound` name the parameter.
+            // For an ASSEMBLED reference that argument can be a SUB-FLOOR
+            // secret, which the needle mask cannot see. `nameLogText` is
+            // twin-derived and so has no floor; map each raw segment through
+            // it before the needle mask runs.
+            // LOAD-BEARING, and fenced — an earlier revision of this comment
+            // claimed the opposite and was wrong in the dangerous direction.
+            // It asserted no discriminating case could exist, reasoning that a
+            // twin with two secret-derived colon fields degrades to
+            // `() => SECRET_MASK`. False: `SECRET_MASK` carries no colon, so a
+            // secret wholly inside ONE field leaves the piece counts equal and
+            // `dynamicReferenceNameLogText` does not degrade.
+            //
+            // The discriminating shape is a LONGER secret-derived field that
+            // appears in the thrown text while a SHORTER field prefixing it
+            // sorts EARLIER in `inner.split(':')`. Measured under source order:
+            // `...staging label: ***SECRETTAIL` — ten characters of a recorded
+            // secret in the field this interface documents as masked, and the
+            // needle mask cannot recover it because the needle is mangled.
+            // Fenced by `redacts a LONGER reference field before a shorter one
+            // that prefixes it` in
+            // `tests/unit/deployment/intrinsic-resolver-per-token-recovery.test.ts`.
+            //
+            // LONGEST FIRST, and deduplicated. Replacing a SHORTER segment
+            // first mangles a longer one that contains it, so the longer one's
+            // own replacement then matches nothing and its remainder survives:
+            // for `secretsmanager:SEC:SecretString:SECRET`, masking `SEC` turns
+            // `SECRET` into `***RET` and `RET` is left in the clear. This is
+            // the same precedence `buildNeedleRegex` applies for the same
+            // reason — the repo had already solved it, and the first cut of
+            // this loop re-derived it wrongly in source order.
+            let out = text;
+            const segments = [...new Set(inner.split(':'))]
+              .filter((segment) => segment.length > 0)
+              .sort((a, b) => b.length - a.length);
+            for (const segment of segments) {
+              const logged = nameLogText(segment);
+              if (logged !== segment) out = out.split(segment).join(logged);
+            }
+            return out;
+          })
         );
+        // Leave the token in BOTH strings, unreplaced and still paired.
         continue;
       }
-
-      // The verdict is stored ALONGSIDE the value so the cache-hit arm above can
-      // re-record it into a later pass's bag on its own, without depending on a
-      // process-global verdict store another stack's resolver can retract from
-      // under it (issue #1933).
-      if (cacheable) {
-        this.cachedDynamicReferences.set(fullMatch, { value: resolved, secret: isSecret });
-      }
-      if (isSecret && resolved) {
-        context?.recordedSecretValues?.set(resolved, fullMatch);
-        // The same pair keyed by EXPRESSION, per map instance (issue #2485):
-        // the map above keeps one expression per plaintext, and the redaction
-        // path needs to know what THIS token resolved to in THIS pass to
-        // position a literal leaf that embeds it beside a sibling sharing the
-        // value. Recorded here, beside the `set`, so the two cannot disagree
-        // about which pass the evidence belongs to.
-        if (context?.recordedSecretValues) {
-          recordResolvedPair(context.recordedSecretValues, fullMatch, resolved);
-        }
-        // The value-keyed map above COLLAPSES a group of expressions sharing a
-        // resolved value down to its last member; this set does not, which is
-        // what lets the redaction path name the losing member (issue #1916).
-        //
-        // Gated on the SPELLING rather than on `isSecret`, and that is the
-        // whole care of this line: every ssm verdict is owned by the arm above,
-        // which pins ONLY a definitive `SecureString`. An unclassifiable `Type`
-        // sets `isSecret` for THIS resolution and is deliberately NOT pinned,
-        // so that the next pass re-asks AWS instead of inheriting a transient
-        // answer — recording it here would pin it for the process and undo
-        // exactly that (issue #1901). It IS recorded above as pass-local
-        // evidence, though: the redaction path positions a literal leaf that
-        // embeds such a token — or a whole-token leaf this store cannot vouch
-        // for — by that record, for THIS pass only; what the unclassifiable
-        // verdict does not get is the process-wide pin. `ssm-secure` is secret by
-        // spelling exactly like `secretsmanager` (issue #2482), so it is
-        // recorded here for the same reason: `positionByIntrinsicSkeleton`
-        // enumerates this set to name a LOSING member, and without the entry
-        // two intrinsic-shaped `ssm-secure` references sharing a value would
-        // persist the winner's expression at the loser's position.
-        if (service === 'secretsmanager' || service === 'ssm-secure') {
-          this.pinSecretVerdict(fullMatch, true);
-        }
-      }
-      // Replacer FUNCTION — see the cache-hit arm above for why a replacement
-      // STRING is unsafe here.
-      result = result.replace(fullMatch, () => resolved);
-      twin = twin.replace(fullMatch, () => (isSecret && resolved ? SECRET_MASK : resolved));
     }
 
     // Registered HERE rather than by callers (issue #3100): every route into

@@ -34,6 +34,9 @@ import { matchStacks, describeStack } from '../stack-matcher.js';
 import {
   IntrinsicFunctionResolver,
   carriesDynamicReference,
+  carriesFetchableDynamicReference,
+  isNamelessDynamicReferenceError,
+  type AbandonedResolution,
   type ResolverContext,
 } from '../../deployment/intrinsic-function-resolver.js';
 import {
@@ -3102,30 +3105,26 @@ function isRegionAmbiguousRefusal(err: unknown): boolean {
   );
 }
 
-/**
- * The marker the resolver's NAMELESS-dynamic-reference throw carries
- * (`Dynamic reference: <service> PARAMETER_NAME is required`).
- *
- * Pinned against the resolver's own literal by
- * `tests/unit/cli/scrub-nameless-dynamic-ref.test.ts`, because this is a
- * consumer of a string the resolver owns: a reword there would otherwise make
- * the predicate below silently stop matching and restore the very silence it
- * exists to remove (`.claude/rules/testing.md` -> "A fixture that greps
- * cdkd's OWN output must fail loudly when the format drifts").
- */
-const NAMELESS_DYNAMIC_REFERENCE_MARKERS = [
-  'PARAMETER_NAME is required',
-  'SECRET_ID is required',
-] as const;
-
-/**
- * The prefix a matching message must ALSO carry. Without it the bare tails
- * above are reachable from an unrelated throw: `resolveParameters` raises
- * `Parameter ${name} is required but no value was provided`, so a template
- * parameter literally NAMED `PARAMETER_NAME` would flip an ordinary
- * best-effort miss into a whole-stack refusal.
- */
-const DYNAMIC_REFERENCE_PREFIX = 'Dynamic reference: ';
+// `NAMELESS_DYNAMIC_REFERENCE_MARKERS` and `DYNAMIC_REFERENCE_PREFIX` used to
+// be declared here. Neither is imported any more: scrub delegates the whole
+// PREDICATE to `isNamelessDynamicReferenceError`, which lives beside the
+// throws in
+// `intrinsic-function-resolver.ts` (issue go-to-k/cdkd#3181). They moved
+// BESIDE the throws when the resolver grew the same partition internally: two
+// spellings of one predicate is what issue #1936 forbids, and the consumer
+// copy is the half that goes silently stale.
+//
+// Both carried a doc here explaining why scrub keys on them. That reasoning
+// did not move with them because it is no longer scrub's: the prefix is
+// required because a bare marker tail is reachable from text the resolver did
+// not write (`resolveParameters` raises `Parameter <name> is required but no
+// value was provided`), which is a fact about the THROWS, so it is stated at
+// the definitions.
+//
+// `tests/unit/cli/scrub-nameless-dynamic-ref.test.ts` still pins the set
+// against the resolver's own throw literals, and checks that scrub imports the
+// shared PREDICATE rather than re-declaring the list or re-spelling the
+// conjunction over it.
 
 /**
  * A NAMELESS dynamic reference is NOT a best-effort miss, however unresolvable
@@ -3135,12 +3134,18 @@ const DYNAMIC_REFERENCE_PREFIX = 'Dynamic reference: ';
  *
  * The resolver raises a bare `Error` for both, so they fall through the
  * typed-refusal test above into the `debug` below and `cdkd scrub` reports the
- * run CLEAN. What makes that wrong is WHERE the throw happens: the token loop
- * in `resolveDynamicReferences` has NO per-token `try`, so either one abandons
- * every remaining `{{resolve:...}}` token in the leaf. A real
- * `{{resolve:secretsmanager:prod/db}}` after it is never fetched and records NO
- * needle — and a legacy plaintext already in `state.json` then survives under
- * `No plaintext secrets found`, exit 0.
+ * run CLEAN.
+ *
+ * WHY THAT STILL MATTERS AFTER go-to-k/cdkd#3181, which changed the reason. It
+ * used to be about POSITION: the token loop had no per-token `try`, so a
+ * nameless throw abandoned every remaining `{{resolve:...}}` token in the leaf
+ * and a real reference behind it recorded no needle. That is no longer true —
+ * the loop recovers per token for every opted-in caller. What survives is the
+ * NAMELESS reference itself: it is a structurally broken template that no
+ * substitution produces, the resolver re-raises it through
+ * `isDeliberateResolutionRefusal` rather than recording it, and scrub must not
+ * report a run clean over one. The predicate below is what turns that re-raise
+ * into a refusal instead of a `debug` line.
  *
  * BOTH spellings are matched, and the second is the DOMINANT one. The first
  * cut matched `PARAMETER_NAME is required` alone, leaving the more common way
@@ -3149,8 +3154,7 @@ const DYNAMIC_REFERENCE_PREFIX = 'Dynamic reference: ';
  * precisely BECAUSE the other throw spells it differently.
  *
  * WHY THE SET STOPS AT "is required", having once been widened to the whole
- * `Dynamic reference:` family and reverted. The loop's missing per-token `try`
- * means four SIBLING failures — a deleted SSM parameter, a secret with no
+ * `Dynamic reference:` family and reverted. Four SIBLING failures — a deleted SSM parameter, a secret with no
  * `SecretString`, a missing `JSON_KEY`, a non-JSON secret — abandon the leaf
  * exactly the same way, so on the surface they belong here. They do not,
  * because scrub resolves with template DEFAULTS and takes no `--parameters`:
@@ -3179,15 +3183,12 @@ const DYNAMIC_REFERENCE_PREFIX = 'Dynamic reference: ';
  * The old, wrong-in-substance refusal was backstopping this one.
  */
 function isNamelessDynamicReferenceFailure(err: unknown): boolean {
-  return (
-    err instanceof Error &&
-    errorCauseChain(err).some(
-      (link) =>
-        link instanceof Error &&
-        link.message.includes(DYNAMIC_REFERENCE_PREFIX) &&
-        NAMELESS_DYNAMIC_REFERENCE_MARKERS.some((marker) => link.message.includes(marker))
-    )
-  );
+  // Delegates to the resolver's own arm (issue go-to-k/cdkd#3181). The
+  // constants moved there when the resolver grew the same partition; the
+  // CONJUNCTION over them stayed here, spelled byte-identically, which is the
+  // #1936 drift one level up — two copies, one of which goes stale silently.
+  // This wrapper survives because the NAME is what the sites here read.
+  return isNamelessDynamicReferenceError(err);
 }
 
 // Background for `abandonedScanVerdict` below.
@@ -3367,66 +3368,108 @@ function abandonedScanVerdict(source: unknown, err: unknown): 'count' | 'warn' |
 }
 
 /**
- * `source` carries a `{{resolve:...}}` token cdkd could actually have FETCHED —
- * i.e. one whose argument holds no surviving `${...}` placeholder.
+ * The same three-way question asked of ONE abandoned unit (issues
+ * go-to-k/cdkd#3181 / go-to-k/cdkd#3218), rather than of the property enclosing
+ * it.
  *
- * `carriesDynamicReference` alone is too generous here, and the gap is not
- * theoretical: scrub resolves with `bestEffort`, under which
- * `rethrowStructuralSubFailure` returns EARLY, so an `Fn::Sub` over an unbound
- * placeholder does not throw — it warn-and-KEEPS the literal `${Field}`. The
- * assembled token is then a request for a JSON key literally named `${Field}`,
- * which fails as `Dynamic reference: key '${Field}' not found in secret '<id>'`.
- * That is not a fetch that failed; it is a token that was never fetchable,
- * because scrub has only template DEFAULTS and accepts no `--parameters`. It is
- * ALSO not excludable by message, since `key ... not found` is a class
- * go-to-k/cdkd#3160 asks to COUNT when the key was real. So the discriminator
- * has to be the TOKEN, not the error.
+ * Identical in shape to {@link abandonedScanVerdict} and deliberately so — the
+ * only difference is WHERE the two structural facts come from. There they are
+ * computed from the whole property, because a thrown error is all that path
+ * has. Here the resolver recorded each unit's own answer at the push, as two
+ * booleans, so the verdict needs no value and can carry no plaintext.
  *
- * `some`, not `every`: a bag holding one placeholder-bearing token and one
- * fully substituted token still counts, because the second one genuinely was
- * fetchable and its scan genuinely stopped.
- *
- * WHAT THIS DOES AND DOES NOT BUY, since round 5 shipped a cut that confused
- * the two. A `false` here downgrades the GATE only — the record is still named
- * at default verbosity by the `warn` arm. It must never decide SILENCE: the
- * inner class is `[^}]`, so a placeholder ANYWHERE in a token fails this test,
- * and the reference assembled by an `Fn::Sub` over DEFAULTED parameters is the
- * dominant CDK spelling rather than an edge case.
- *
- * STATED RESIDUALS, both UNDER-counts against the gate, neither a silence:
- *
- * - A two-argument `Fn::Sub` whose placeholder IS bound
- *   (`{'Fn::Sub': ['{{resolve:ssm:${N}}}', {N: 'x'}]}`) substitutes fine and
- *   yields a fetchable token, but the raw bag still spells `${`, so a real
- *   fetch failure there warns instead of gating.
- * - The same for a single-argument `Fn::Sub` over a defaulted parameter, and
- *   for a placeholder mid-token, which yields no token at all.
- *
- * And one OVER-count, recorded for symmetry: this predicate is BAG-scoped while
- * the failure is TOKEN-scoped, so a bag holding a placeholder-bearing token
- * BESIDE a genuinely fetchable one returns `true`, and a `key '${Field}' not
- * found` raised for the first is gated as if it came from the second. Safety
- * is in the right direction (a gate that fires, not a plaintext under `clean`),
- * and same-bag co-location bounds it.
- *
- * go-to-k/cdkd#3181 is the fix that removes the need for any of these proxies.
+ * Asking per unit removes both of the bag-scoped proxy's errors at once:
+ * a unit carrying no reference (go-to-k/cdkd#3218's `{"Ref": ...}` key) no
+ * longer inherits a sibling's reference and count, and a genuinely unfetched
+ * reference no longer hides behind a template-shape failure recorded before it.
  */
-function carriesFetchableDynamicReference(source: unknown): boolean {
-  if (typeof source === 'string') {
-    // `dynamicReferenceTokens`, never a local regex: issue #1936 forbids a
-    // second spelling of the token pattern, and a scan that disagreed with the
-    // resolver about where a token ENDS would disagree about which argument the
-    // `${` test is applied to. (The fence for that is
-    // `secret-redaction-dynamic-reference-pattern.test.ts`, which caught this
-    // line's first cut.)
-    return dynamicReferenceTokens(source).some((token) => !token.includes('${'));
+function abandonedUnitVerdict(entry: AbandonedResolution): 'count' | 'warn' | 'silent' {
+  if (!entry.carriedDynamicReference) return 'silent';
+  if (isTemplateShapeResolutionFailure(entry.error) || !entry.carriedFetchableReference) {
+    return 'warn';
   }
-  if (Array.isArray(source)) return source.some(carriesFetchableDynamicReference);
-  if (source !== null && typeof source === 'object') {
-    return Object.values(source as Record<string, unknown>).some(carriesFetchableDynamicReference);
-  }
-  return false;
+  return 'count';
 }
+
+/**
+ * The verdict for a whole BAG of abandoned units: the most severe of them.
+ *
+ * `count` gates the exit code, `warn` only speaks, `silent` does neither — so
+ * folding to the most severe is what stops a gateable finding hiding behind an
+ * ungateable one recorded before it. That is not a hypothetical ordering
+ * concern: `isTemplateShapeResolutionFailure` fires EN MASSE on healthy stacks
+ * (one `Default`-less parameter makes every `{Ref: <param>}` throw), so a
+ * `warn` at index 0 is the common case, and the per-unit recovery exists
+ * precisely to keep walking past it to the reference that matters.
+ */
+function foldAbandonedUnitVerdict(
+  entries: readonly AbandonedResolution[]
+): 'count' | 'warn' | 'silent' {
+  const RANK = { silent: 0, warn: 1, count: 2 } as const;
+  let worst: 'count' | 'warn' | 'silent' = 'silent';
+  for (const entry of entries) {
+    const verdict = abandonedUnitVerdict(entry);
+    if (RANK[verdict] > RANK[worst]) worst = verdict;
+  }
+  return worst;
+}
+
+// Kept as a COMMENT, not JSDoc: the function it documented moved to
+// `intrinsic-function-resolver.ts` (issue go-to-k/cdkd#3181), so a `/** */`
+// block here attaches to whatever declaration follows. The residuals below
+// still describe this predicate's BAG-scoped use, which is the throw path.
+//
+// `source` carries a `{{resolve:...}}` token cdkd could actually have FETCHED —
+// i.e. one whose argument holds no surviving `${...}` placeholder.
+//
+// `carriesDynamicReference` alone is too generous here, and the gap is not
+// theoretical: scrub resolves with `bestEffort`, under which
+// `rethrowStructuralSubFailure` returns EARLY, so an `Fn::Sub` over an unbound
+// placeholder does not throw — it warn-and-KEEPS the literal `${Field}`. The
+// assembled token is then a request for a JSON key literally named `${Field}`,
+// which fails as `Dynamic reference: key '${Field}' not found in secret '<id>'`.
+// That is not a fetch that failed; it is a token that was never fetchable,
+// because scrub has only template DEFAULTS and accepts no `--parameters`. It is
+// ALSO not excludable by message, since `key ... not found` is a class
+// go-to-k/cdkd#3160 asks to COUNT when the key was real. So the discriminator
+// has to be the TOKEN, not the error.
+//
+// `some`, not `every`: a bag holding one placeholder-bearing token and one
+// fully substituted token still counts, because the second one genuinely was
+// fetchable and its scan genuinely stopped.
+//
+// WHAT THIS DOES AND DOES NOT BUY, since round 5 shipped a cut that confused
+// the two. A `false` here downgrades the GATE only — the record is still named
+// at default verbosity by the `warn` arm. It must never decide SILENCE: the
+// inner class is `[^}]`, so a placeholder ANYWHERE in a token fails this test,
+// and the reference assembled by an `Fn::Sub` over DEFAULTED parameters is the
+// dominant CDK spelling rather than an edge case.
+//
+// STATED RESIDUALS, both UNDER-counts against the gate, neither a silence:
+//
+// - A two-argument `Fn::Sub` whose placeholder IS bound
+//   (`{'Fn::Sub': ['{{resolve:ssm:${N}}}', {N: 'x'}]}`) substitutes fine and
+//   yields a fetchable token, but the raw bag still spells `${`, so a real
+//   fetch failure there warns instead of gating.
+// - The same for a single-argument `Fn::Sub` over a defaulted parameter, and
+//   for a placeholder mid-token, which yields no token at all.
+//
+// And one OVER-count, recorded for symmetry: this predicate is BAG-scoped while
+// the failure is TOKEN-scoped, so a bag holding a placeholder-bearing token
+// BESIDE a genuinely fetchable one returns `true`, and a `key '${Field}' not
+// found` raised for the first is gated as if it came from the second. Safety
+// is in the right direction (a gate that fires, not a plaintext under `clean`),
+// and same-bag co-location bounds it.
+//
+// go-to-k/cdkd#3181 is the fix that removes the need for any of these proxies.
+//
+// The function moved to `intrinsic-function-resolver.ts` and is imported above
+// (issue go-to-k/cdkd#3181). It is unchanged; what changed is that the resolver
+// now needs the same predicate, to record `carriedFetchableReference` per
+// abandoned UNIT, and issue #1936 forbids a second spelling of the token
+// pattern. The residuals above still describe this predicate's BAG-scoped use,
+// which is the throw path below; the recovered path asks it per unit and so
+// carries none of them.
 
 /**
  * `err` is cdkd's OWN refusal to resolve a template SHAPE — a `Ref`, an
@@ -4503,6 +4546,48 @@ export async function scrubStack(
   // function reads it. It exists so the per-stack note below can say how many
   // records it is explaining.
   let ungateableAbandonedScans = 0;
+
+  /**
+   * Report ONE bag of abandoned units: fold to the most severe verdict, count
+   * it, warn once, then debug one line per entry.
+   *
+   * ONE helper shared by all THREE opted-in passes (resource properties,
+   * orphan records, output values). They began as three hand-inlined copies of
+   * the same eight lines, which is the shape that drifts: a round-3 review
+   * measured that removing BOTH the orphan and output opt-ins reddened zero of
+   * 4,180 tests, so nothing would have caught two of the three copies diverging
+   * either. The passes differ only in the subject string and which needle map
+   * their lines mask through, so both are parameters.
+   *
+   * Renders `entry.message`, never `entry.error`: the interface documents
+   * `error` as classification-only, and `message` carries a twin-derived
+   * redaction the needle mask alone cannot reproduce for a sub-floor plaintext.
+   */
+  const reportAbandonedBag = (
+    entries: readonly AbandonedResolution[],
+    subject: string,
+    /** The needle map this pass populated — `outputSecrets` for the Outputs pass. */
+    secrets: RecordedSecretValues,
+    /** How the per-entry debug line names what was being resolved. */
+    debugSubject: string
+  ): void => {
+    if (entries.length === 0) return;
+    const worst = foldAbandonedUnitVerdict(entries);
+    if (worst !== 'silent') {
+      if (worst === 'count') unverifiableLeaves++;
+      else ungateableAbandonedScans++;
+      logger.warn(maskSecretsInText(abandonedScanWarning(subject, worst), secrets));
+    }
+    for (const entry of entries) {
+      logger.debug(
+        maskSecretsInText(
+          `Resolution of ${debugSubject} during scrub was partial: ${entry.message} ` +
+            `(abandoned one ${entry.unit})`,
+          secrets
+        )
+      );
+    }
+  };
   /**
    * ONE note per stack per arm. The per-record lines are deliberately short
    * (see `abandonedScanWarning`), so this is where the explanation lives, and
@@ -4946,40 +5031,83 @@ export async function scrubStack(
           bagKeys && !intrinsicShapedBag
             ? Object.entries(resolveInput as Record<string, unknown>)
             : [['', resolveInput]];
+
         for (const [propertyName, propertyValue] of resolveUnits) {
+          // OPT IN to per-unit recovery (issues go-to-k/cdkd#3181 /
+          // go-to-k/cdkd#3218). This is the consumer that makes the recovery
+          // reach a user: scrub's whole job is to learn every needle the
+          // template can produce, and before this a single unfetchable
+          // reference — or a single unresolvable KEY beside one — abandoned
+          // every later reference in the same property and recorded no needle
+          // for it, so its plaintext survived the scrub that reported success.
+          //
+          // Safe HERE specifically because scrub DISCARDS the resolved value
+          // and keeps only `recordedSecretValues`; a caller that sends its
+          // resolved value to AWS must not opt in without failing on a
+          // non-empty bag (see the field's doc).
+          const abandoned: AbandonedResolution[] = [];
           try {
-            await resolver.resolve(propertyValue, resourceContext);
+            await resolver.resolve(propertyValue, {
+              ...resourceContext,
+              abandonedResolutions: abandoned,
+            });
+            // Recovery means the resolve no longer THROWS for these, so the
+            // verdict has to be reached from the bag instead — PER ENTRY, and
+            // folded to the most severe.
+            //
+            // An earlier cut judged `abandoned[0]` against the whole property
+            // and called that "the count is unchanged". It was the defect. The
+            // verdict turns on `isTemplateShapeResolutionFailure`, and that
+            // class fires EN MASSE on healthy stacks — one `Default`-less
+            // parameter makes every `{Ref: <param>}` throw — so entry 0 is
+            // routinely a `warn`, which gates nothing. Recovery then reaches a
+            // genuinely unfetched reference later in the same property, and
+            // judging only entry 0 discarded exactly the finding this PR
+            // exists to produce: `--dry-run --fail` printed `No plaintext
+            // secrets found` and exited 0 over a surviving plaintext.
+            //
+            // Per ENTRY and not per property for the opposite error: an
+            // abandoned KEY can be a bare `{"Ref": ...}` carrying no reference
+            // at all (go-to-k/cdkd#3218's repro), and nothing about that is
+            // unverifiable — judged against the enclosing property it would
+            // inherit a sibling's reference and count.
+            reportAbandonedBag(
+              abandoned,
+              propertyName
+                ? `resource '${displaySafe(logicalId)}' property '${displaySafe(propertyName)}'`
+                : `resource '${displaySafe(logicalId)}'`,
+              recordedSecretValues,
+              `${displaySafe(logicalId)}${propertyName ? `.${displaySafe(propertyName)}` : ''}`
+            );
           } catch (err) {
             // A region-AMBIGUOUS refusal is not best-effort -- see
             // `isRegionAmbiguousRefusal`.
             if (isRegionAmbiguousRefusal(err) || isNamelessDynamicReferenceFailure(err)) throw err;
-            // The verdict is asked about THIS property, so a bag whose other
-            // properties resolved cleanly no longer inherits this one's
-            // abandonment.
+            // The THROW path, which cannot use `reportAbandonedBag`: it holds
+            // only an error, so it must ask `abandonedScanVerdict` about the
+            // whole property. Reached when the resolve failed for a reason the
+            // recovery does not catch — a refusal is re-raised above, so this
+            // is a failure with no bag-eligible unit under it.
             const leafVerdict = abandonedScanVerdict(propertyValue, err);
             if (leafVerdict !== 'silent') {
               if (leafVerdict === 'count') unverifiableLeaves++;
               else ungateableAbandonedScans++;
-              const subject = propertyName
-                ? `resource '${displaySafe(logicalId)}' property '${displaySafe(propertyName)}'`
-                : `resource '${displaySafe(logicalId)}'`;
               logger.warn(
-                maskSecretsInText(abandonedScanWarning(subject, leafVerdict), recordedSecretValues)
+                maskSecretsInText(
+                  abandonedScanWarning(
+                    propertyName
+                      ? `resource '${displaySafe(logicalId)}' property '${displaySafe(propertyName)}'`
+                      : `resource '${displaySafe(logicalId)}'`,
+                    leafVerdict
+                  ),
+                  recordedSecretValues
+                )
               );
             }
-            // Best-effort: a property whose intrinsics cannot resolve (a Ref to
-            // something not in state) still has its own {{resolve:...}} leaves
-            // recorded along the way; leave the rest untouched — and, since
-            // go-to-k/cdkd#3196, its SIBLINGS are still resolved.
-            //
-            // MASKED, for the reason `unresolvableForeignScrubSecretError`
+            // MASKED for the reason `unresolvableForeignScrubSecretError`
             // states: `resolveInput` is a bag `pinCrossRegionSecrets` may
             // already have SUBSTITUTED a foreign plaintext into, so a resolver
-            // error that echoes what it was handed can carry one — and
-            // `recordedSecretValues` holds exactly the plaintexts this
-            // resource's pin recorded. Verbose-only, so this is the
-            // lower-severity sibling of the `Export.Name` warn below, but it is
-            // the same site class.
+            // error that echoes what it was handed can carry one.
             logger.debug(
               maskSecretsInText(
                 `Resolution of ${displaySafe(logicalId)}` +
@@ -5056,8 +5184,22 @@ export async function scrubStack(
         // an intrinsic-shaped bag the resolver would dispatch on.
         const orphanContext = resolverContext(recordedSecretValues);
         for (const [bagName, bagValue] of Object.entries(resolveInput)) {
+          // Opts in like the resource loop (issues go-to-k/cdkd#3181 /
+          // go-to-k/cdkd#3218): the resolved value is DISCARDED here too, so
+          // the consumer obligation is met, and an orphan record's bag is
+          // exactly as able to hold a dead reference beside a live one.
+          const abandoned: AbandonedResolution[] = [];
           try {
-            await resolver.resolve(bagValue, orphanContext);
+            await resolver.resolve(bagValue, {
+              ...orphanContext,
+              abandonedResolutions: abandoned,
+            });
+            reportAbandonedBag(
+              abandoned,
+              `orphan record '${displaySafe(record.logicalId)}' ${bagName}`,
+              recordedSecretValues,
+              `orphan record ${displaySafe(record.logicalId)} ${bagName}`
+            );
           } catch (err) {
             // A region-AMBIGUOUS refusal is not best-effort -- see
             // `isRegionAmbiguousRefusal`.
@@ -5357,8 +5499,23 @@ export async function scrubStack(
         await resolveCrossStackReads(valueSource, valueContext, `output '${name}'`, {
           canRefuse: !isOutputSuppressed(name, output, conditions, state.outputs ?? {}),
         });
+        // Opts in for the same reason as the resource and orphan loops: the
+        // resolved value is discarded, only the needles matter, and an output
+        // Value is a common place for `postgres://u:{{resolve:A}}@h/{{resolve:B}}`
+        // — exactly the shape where abandoning at the first reference left the
+        // second one's plaintext un-needled (go-to-k/cdkd#3181).
+        const abandonedOutput: AbandonedResolution[] = [];
         try {
-          await resolver.resolve(valueSource, valueContext);
+          await resolver.resolve(valueSource, {
+            ...valueContext,
+            abandonedResolutions: abandonedOutput,
+          });
+          reportAbandonedBag(
+            abandonedOutput,
+            `output '${displaySafe(name)}'`,
+            outputSecrets,
+            `output ${displaySafe(name)}`
+          );
         } catch (err) {
           // A region-AMBIGUOUS refusal is not best-effort -- see
           // `isRegionAmbiguousRefusal`.
