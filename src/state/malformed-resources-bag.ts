@@ -1104,9 +1104,10 @@ function stackClause(stackName: string | undefined, region: string | undefined):
  *
  * **It diverges from {@link malformedDestroyResourcesRefusalMessage}, which
  * keeps `cdkd state orphan` a template on purpose, and the difference is where
- * the identity comes from.** That builder is reached with the RECORD's own
- * stackName / region, so substituting would aim a destructive command using
- * values the record supplied. This one is reached only with the caller's
+ * the identity comes from.** That builder is reached with a record-derived
+ * REGION (`state.region ?? ctx.baseRegion` in `destroy-runner.ts`) -- its stack
+ * name is the caller's, so the region alone is what would aim a destructive
+ * command using a value the record supplied. This one is reached only with the caller's
  * synthesized stack and `pickStackRegion`'s answer, so substituting is safe and
  * omitting the region is the wider action. Two opposite precedents in one
  * module; neither is the general rule.
@@ -1366,7 +1367,7 @@ function namedPropertyBagsClause(
 /**
  * The text {@link refuseMalformedResourceProperties} raises.
  *
- * `stackName` / `region` are the CALLER's resolved identity or nothing at all;
+ * `rawStackName` / `rawRegion` are the CALLER's resolved identity or nothing at all;
  * {@link stackClause} is the authority for why this one may be handed neither.
  *
  * **It must be true under `cdkd deploy --dry-run` as well**, and the first
@@ -1490,7 +1491,7 @@ export function malformedResourcePropertiesRefusalMessage(
  * reason — a plausible rewrite audit table followed by a refusal the moment
  * the flag comes off is the worst arm of all.
  *
- * `stackName` / `region` are the CALLER's resolved identity — the synthesized
+ * `rawStackName` / `rawRegion` are the CALLER's resolved identity — the synthesized
  * stack name and the region `pickStackRegion` settled on, never the record's
  * own unvalidated self-report. See {@link stackClause}.
  */
