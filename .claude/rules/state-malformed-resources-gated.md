@@ -13,15 +13,22 @@ is the file above rather than the module that defines the guards, and that
 file's `paths:` glob had no headroom left under its payload cap. That file keeps
 a one-line pointer here.
 
-**The glob names `destroy-runner.ts` alone, deliberately.** The deploy twin is
-described below because a destroy lane needs to know it exists, but
-`src/deployment/deploy-engine.ts` sits ~200 B under its own payload cap, and
-funding a satellite there would mean spending another lane's headroom — which
-this corpus's doctrine forbids. A deploy lane gets the same reasoning from
-`refuseMalformedResourcesForDeploy`'s JSDoc and from the comment at its call
-site, both of which are the authority.
+**The glob names `destroy-runner.ts` alone, deliberately.** The other two sites
+are described below because a destroy lane needs to know they exist, but
+`deploy-engine.ts` sits ~200 B under its own payload cap and the provider's
+rules are near theirs — funding a satellite at either would spend another
+lane's headroom, which this corpus's doctrine forbids. Those lanes get the same
+reasoning from each guard's JSDoc and the comment at its call site.
 
 Index of every area: [code-layout.md](code-layout.md).
+
+## THREE call sites, not two
+
+Besides `destroy-runner.ts` and `deploy-engine.ts`, a third sits in
+`src/provisioning/providers/nested-stack-provider.ts`: `delete()` counts the
+CHILD's bag one call BEFORE handing the record to `runDestroyForStack`, so the
+runner's guard could not see a `null` or absent child bag — the bare
+`TypeError` fired first. Same helper, so a child's refusal reads identically.
 
 ## Three refusal entry points, one predicate
 
@@ -40,6 +47,17 @@ duplicates their stack.
 exactly ONE container's list. A union COUNT alone stays green through a
 re-classification, so the partitions are asserted separately and the leftover
 set is asserted empty.
+
+A SECOND partition there covers the non-retryable MARKER: every exported
+refusal is marked, or named in `UNMARKED` with a reason. `refuseMalformedState`
+is the sole entry (its callers raise it outside any `withRetry`); the fence
+exists because `refuseMalformedOutputs` shipped unmarked beside three marked
+siblings and nothing said so.
+
+All three call sites carry a DOMINANCE case. The nested one is its own rather
+than a `REFUSE` row, because that loop's premise assertion is `saveState(` and
+this file writes none — write-capable THROUGH its caller, the relationship the
+`outputs` half already fences for it.
 
 ## The measurement that settles refuse-versus-repair
 
@@ -67,7 +85,8 @@ empty `{}` and an unreadable `[]` both count zero, and the fast path exists to
 serve the first — so a guard folded into the `resourceCount === 0` test
 separates nothing. Only `isReadableBag` does.
 
-**The destroy guards TWICE.** The fast path RE-READS the record under the lock,
+**The destroy guards TWICE in the runner** (three times counting the nested
+site above). The fast path RE-READS the record under the lock,
 because emptiness has to be established under the lock rather than inherited
 from the caller's snapshot — so the object that DECIDES is not the one the entry
 guard cleared. A concurrent writer or a hand edit landing between the two reads
@@ -83,9 +102,10 @@ Both guards sit at the state LOAD, above the first read.
   refusal can name the record.
 - `deploy-engine.ts`: beside `refuseMalformedOutputs`, above the
   `Object.keys(currentState.resources)` debug line and every read of the bag
-  behind it (five between the guard and `calculateDiff`, seventeen over the
-  rest of the method — measured 2026-09-17; re-derive rather than trusting
-  either figure). **Not** at `DiffCalculator.calculateDiff`, although that is the chokepoint
+  behind it (measured 2026-09-17 over comment-stripped source: FIVE between the
+  guard and `calculateDiff`, TEN over the rest of `doDeploy`. Seventeen is the
+  count to end of FILE and spans other methods — re-derive rather than trusting
+  any of the three). **Not** at `DiffCalculator.calculateDiff`, although that is the chokepoint
   both diff callers share: the engine's load dominates it, and `cdkd diff` keeps
   its repair-and-warn half at its own load, so the preview the deploy refusal
   points at still works.
@@ -103,11 +123,16 @@ leaves the user no supported way to tear the stack down — does not survive the
 measurement: proceeding tears nothing down either, since the list of what to
 delete is exactly what is unreadable — and that is per-shape rather than a
 slogan. `[]` / a number / a boolean name no resource at all; a STRING names one
-fabricated logical id per character whose entry is a single character, so
-`resourceType` and `physicalId` are both `undefined`, every `provider.delete`
-throws, and no live resource can be addressed. So a forced run deletes
-`state.json` and nothing else on the first three shapes, and on a string fails
-every delete and PRESERVES the record (`errorCount > 0`). The only outcome
+fabricated logical id per character whose ENTRY is a single character, so
+`resourceType` and `physicalId` are both `undefined` and
+`ProviderRegistry.getProviderFor` throws before any provider is selected — no
+AWS delete is issued and no live resource can be addressed. Measured
+2026-09-17 against the real registry: a bare `Cannot read properties of
+undefined (reading 'startsWith')` out of the `isCustomResource` test, which is
+a ROUTING failure and not the `provider.delete` rejection an earlier revision
+of this file asserted. So a forced run deletes `state.json` and nothing else on
+the first three shapes, and on a string every fabricated id fails,
+`errorCount > 0`, and the record is PRESERVED. The only outcome
 worth offering is the record's removal, and `cdkd state orphan` is the
 supported command for it, leaving the live resources standing. The destroy
 refusal NAMES it, which the sibling refusals do not.

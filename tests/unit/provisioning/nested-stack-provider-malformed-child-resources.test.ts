@@ -65,17 +65,27 @@ function childState(resources: unknown, opts: { omitResources?: boolean } = {}):
   return state;
 }
 
+/**
+ * ONE temp file for the whole suite, not one per context.
+ *
+ * `delete()` never reads `nestedTemplates` — only `create()` does — so the
+ * file exists solely to satisfy the context type, and building it per call
+ * leaked a `mkdtemp` directory per test (review round 2 of
+ * go-to-k/cdkd#3332).
+ */
+let templateFile: string | undefined;
 function templatePath(): string {
+  if (templateFile) return templateFile;
   const dir = mkdtempSync(join(tmpdir(), 'cdkd-3161-nested-'));
-  const file = join(dir, 'child.nested.template.json');
+  templateFile = join(dir, 'child.nested.template.json');
   writeFileSync(
-    file,
+    templateFile,
     JSON.stringify({
       AWSTemplateFormatVersion: '2010-09-09',
       Resources: { Foo: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'b1' } } },
     })
   );
-  return file;
+  return templateFile;
 }
 
 function makeContext(state: StackState): NestedStackProviderContext {
@@ -124,9 +134,12 @@ describe("NestedStackProvider.delete refuses a child's malformed resources (go-t
       const err = (await destroyChild(childState(bag)).catch((e: unknown) => e)) as CdkdError;
       expect(err).toBeInstanceOf(CdkdError);
       expect(err.code).toBe(STATE_RESOURCES_MALFORMED);
-      // Not a bare `TypeError` — the failure mode this closes for `null` and
-      // an absent field.
-      expect(err).not.toBeInstanceOf(TypeError);
+      // Not the bare `TypeError` this closes for `null` and an absent field.
+      // Asserted on the MESSAGE, because `not.toBeInstanceOf(TypeError)` is
+      // vacuous once the line above passed — `CdkdError` is not on that branch
+      // (review round 2 of go-to-k/cdkd#3332).
+      expect(err.message).toContain(`has no readable 'resources' map`);
+      expect(err.message).not.toContain('Cannot convert undefined or null to object');
       // DOMINANCE over the count AND over the hand-off: a guard placed inside
       // `runDestroyForStack` alone cannot stop this line, and the runner is
       // mocked here so reaching it is observable.

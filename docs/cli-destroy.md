@@ -647,8 +647,10 @@ Refusing does not leave you with no way to tear the stack down, because
 proceeding never tore anything down either — the list of what to delete is
 precisely what is unreadable. A `[]`, a number or a boolean names no resource
 at all; a string names one logical id per character, and each of those entries
-is a single character carrying neither a resource type nor a physical id, so
-every delete fails. If what you want is the record gone with the live resources
+is a single character carrying neither a resource type nor a physical id — so
+cdkd cannot even choose how to delete it, no AWS call is issued, and the run
+ends with one error per invented id and the record still in place. If what you
+want is the record gone with the live resources
 left standing, that is what the refusal points at:
 
 ```bash
