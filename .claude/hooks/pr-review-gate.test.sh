@@ -95,9 +95,12 @@ fail_log=""
 # case can assert the hook made the timeline query — or, just as load-bearing,
 # that it SKIPPED it when the answer could not change the tier.
 GRAPHQL_TRACE_FILE="$SHIM_DIR/graphql-trace"
+# The same receipt for the `pr view` call (go-to-k/cdkd#3273), which is the one
+# that decides which pull request gets sized.
+PR_VIEW_TRACE_FILE="$SHIM_DIR/pr-view-trace"
 # EXPORTED: the shim is a separate process reached through PATH, and it reads
 # this from the environment rather than from an interpolated literal.
-export GRAPHQL_TRACE_FILE
+export GRAPHQL_TRACE_FILE PR_VIEW_TRACE_FILE
 
 # Write the gh shim. It dispatches by the args fixture name in
 # $GH_FIXTURE — each test case sets that env var before invoking the
@@ -209,6 +212,16 @@ EOF
       ;;
   esac
   exit 0
+fi
+
+# EVERY `pr view` RECORDS ITS ARGV (go-to-k/cdkd#3273). The graphql half above
+# has done this since go-to-k/cdkd#2638 for exactly the same reason, and the
+# `pr view` half needed it more: it is the call that decides WHICH pull request
+# is sized, and this shim answered from `$GH_FIXTURE` alone, so a query naming
+# the wrong repository was byte-identical to a correct one. An exit code cannot
+# tell them apart either -- which is why the defect survived.
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ]; then
+  printf '%s\n' "$*" >> "${PR_VIEW_TRACE_FILE:-/dev/null}"
 fi
 
 case "${GH_FIXTURE:-}" in
@@ -516,6 +529,7 @@ run_case() {
   local expect_msg="${10:-}"
 
   : > "$GRAPHQL_TRACE_FILE"
+  : > "$PR_VIEW_TRACE_FILE"
 
   # Reset sentinel.
   if [ -n "$sentinel" ]; then
@@ -1038,6 +1052,138 @@ run_case "gh issue body quoting 'gh pr merge' passes (FP)" 0 \
 run_case "echo body quoting 'gh pr merge' passes (FP)" 0 \
   large stale "" \
   "echo \"after CI: gh pr merge 999 --auto\""
+
+# =====================================================================
+# WHICH REPOSITORY the gate sized (go-to-k/cdkd#3273)
+# =====================================================================
+#
+# Every case above is satisfied by a gate that sized the WRONG repository's PR,
+# because the fixture answers from `$GH_FIXTURE` and the exit code carries no
+# repo. That is how this defect survived: `gh pr view <n>` ran with no `-R`, so
+# `gh pr merge 42 -R go-to-k/cdk-local` from a cdkd worktree sized CDKD's 42 --
+# an unrelated PR's diff choosing this one's tier, and an unrelated
+# `headRefOid` deciding what the pr-review sentinel is compared against.
+#
+# These read the `pr view` argv the shim now records. Each `-R <slug>` row fails
+# against the pre-#3273 hook; the first is the CONTROL saying a command naming
+# no repo still asks cwd-relative, so this is a forward and not a blanket `-R`.
+want_view_repo() { # <name> <command> <expected slug, or "" for none>
+  local name="$1" command="$2" want="$3" payload got
+  : > "$PR_VIEW_TRACE_FILE"
+  payload=$(printf '{"cwd":"%s","tool_input":{"command":"%s"}}' "$REPO_ROOT" "$command")
+  printf '%s' "$payload" | GH_FIXTURE=medium MARKGATE_FIXTURE=stale \
+    PATH="$SHIM_DIR:$PATH" "$HOOK" >/dev/null 2>&1
+  got=$(sed -n 's/.*-R \([^ ][^ ]*\).*/\1/p' "$PR_VIEW_TRACE_FILE" | head -1)
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1))
+    printf 'OK   %s (repo=%s)\n' "$name" "${got:-<cwd>}"
+  else
+    fail=$((fail + 1))
+    fail_log+="FAIL $name: gate sized repo '$got', expected '$want'\n"
+    fail_log+="  pr view trace: $(tr '\n' '|' < "$PR_VIEW_TRACE_FILE" 2>/dev/null)\n"
+    printf 'FAIL %s (repo=%s, want=%s)\n' "$name" "$got" "$want"
+  fi
+}
+
+want_view_repo "no repo named: the lookup stays cwd-relative (control)" \
+  "gh pr merge 600" ""
+want_view_repo "post-verb -R is forwarded to pr view" \
+  "gh pr merge 600 -R go-to-k/cdk-local --squash" "go-to-k/cdk-local"
+want_view_repo "post-verb --repo is forwarded" \
+  "gh pr merge 600 --repo go-to-k/cdk-local" "go-to-k/cdk-local"
+want_view_repo "left-slot -R is forwarded" \
+  "gh -R go-to-k/cdk-local pr merge 600" "go-to-k/cdk-local"
+want_view_repo "between-slot -R is forwarded" \
+  "gh pr -R go-to-k/cdk-local merge 600" "go-to-k/cdk-local"
+want_view_repo "between-slot --repo=value is forwarded" \
+  "gh pr --repo=go-to-k/cdk-local merge 600" "go-to-k/cdk-local"
+want_view_repo "between-slot glued -R is forwarded" \
+  "gh pr -Rgo-to-k/cdk-local merge 600" "go-to-k/cdk-local"
+# THE NUMBER-LESS ARM takes the forward too. It is a separate `gh pr view`
+# invocation in the hook, so a fix applied to one arm and not the other is
+# exactly the sibling-site miss `/work-issues` warns about.
+want_view_repo "the number-less arm forwards the repo too" \
+  "gh pr merge --auto -R go-to-k/cdk-local" "go-to-k/cdk-local"
+# NEGATIVE: a slug-looking string inside a quoted ARGUMENT is not a repo.
+want_view_repo "a -R inside a quoted argument body is not a repo" \
+  "gh pr merge 600 --subject \"merge -R fake/repo\"" ""
+
+# AN UNREADABLE SLUG REFUSES, and calls gh NOT AT ALL -- falling back to the cwd
+# repo there is the #3273 defect with an extra step. Asserted on both
+# observables, since exit 2 alone is also what a stale marker produces.
+unreadable_refuses() { # <name> <command>
+  local name="$1" command="$2" payload rc trace out
+  : > "$PR_VIEW_TRACE_FILE"
+  payload=$(printf '{"cwd":"%s","tool_input":{"command":"%s"}}' "$REPO_ROOT" "$command")
+  out=$(printf '%s' "$payload" | GH_FIXTURE=medium MARKGATE_FIXTURE=fresh \
+    PATH="$SHIM_DIR:$PATH" "$HOOK" 2>&1)
+  rc=$?
+  trace=$(tr -d '\n' < "$PR_VIEW_TRACE_FILE")
+  if [ "$rc" -eq 2 ] && [ -z "$trace" ] \
+     && printf '%s' "$out" | grep -qF 'not literal text'; then
+    pass=$((pass + 1))
+    printf 'OK   %s (exit %s, no gh call)\n' "$name" "$rc"
+  else
+    fail=$((fail + 1))
+    fail_log+="FAIL $name: rc=$rc trace='$trace' out='$out'\n"
+    printf 'FAIL %s (rc=%s)\n' "$name" "$rc"
+  fi
+}
+# The `\"` pairs are JSON escapes inside the payload this harness builds by
+# hand; `$SLUG` stays a literal dollar because the surrounding shell quotes are
+# SINGLE. Escaping the dollar as well makes `\$`, which is not a valid JSON
+# escape, so jq returns an empty command and the case passes vacuously -- it did
+# exactly that on the first attempt.
+unreadable_refuses "an unexpanded \$VAR slug refuses" 'gh pr merge 600 -R \"$SLUG\" --squash'
+unreadable_refuses "a bare \$VAR slug refuses" 'gh pr merge 600 -R $SLUG --squash'
+unreadable_refuses "a trailing -R with no value refuses" 'gh pr merge 600 --squash -R'
+# TWO DIFFERENT REPOS IN ONE COMMAND (go-to-k/cdkd#3273 review). gh takes the
+# LAST `-R`; the first implementation of the slug walk returned on the FIRST,
+# so it sized a PR in one repo while gh would merge in the other. The walk runs
+# to the end of the segment and REFUSES two distinct slugs. rc=2 alone cannot
+# say so here (a stale marker gives 2 as well), which is why the helper also
+# requires an EMPTY pr-view trace: asking about either repo would be wrong.
+unreadable_refuses "two DIFFERENT slugs refuse (post-verb)" \
+  'gh pr merge 600 -R go-to-k/cdkd -R go-to-k/cdk-local'
+unreadable_refuses "two DIFFERENT slugs refuse (left slot + post-verb)" \
+  'gh -R go-to-k/cdkd pr merge 600 -R go-to-k/cdk-local'
+# ...and the other direction: two IDENTICAL slugs are not ambiguous.
+want_view_repo "two IDENTICAL slugs forward once, they do not refuse" \
+  "gh pr merge 600 -R go-to-k/cdk-local -R go-to-k/cdk-local" "go-to-k/cdk-local"
+# A TRAILING COMMENT IS NOT A REPOSITORY. The slug walk tokenised the raw
+# segment, so an apostrophe in a `#` comment truncated the split and the
+# truncation was reported as "names a repository with -R".
+want_view_repo "a trailing comment with an apostrophe is not a repo" \
+  "gh pr merge 600 --squash # don't wait for the flaky one" ""
+
+# THE FAIL-OPEN ENDS AT A NAMED REPO. The `fail` fixture makes `gh pr view`
+# error; with no `-R` that is the documented infra fail-open (case 15 above,
+# unchanged), and with one it BLOCKS -- the gate would otherwise pass a PR whose
+# size, files and head sha it never read, in a repo it has never seen.
+run_case "gh pr view failure WITH -R blocks (no infra fail-open)" 2 \
+  fail stale "" \
+  "gh pr merge 999 -R go-to-k/cdk-local" "" "" "" "no infra"
+run_case "gh pr view failure with -R blocks on the number-less arm too" 2 \
+  fail stale "" \
+  "gh pr merge --auto -R go-to-k/cdk-local" "" "" "" "no infra"
+# ...and the CONTROL keeping it narrow: the same failure with no `-R` still
+# fails OPEN and still SAYS so, which is case 15 restated at this block's own
+# fixture so a future edit cannot flip both together unnoticed.
+run_case "gh pr view failure WITHOUT -R still fails open (unchanged)" 0 \
+  fail stale "" \
+  "gh pr merge 999" "" "" "" "allowing merge (infra fail-open)"
+# ...and a WORKING named-repo lookup still reaches the ordinary verdict, so the
+# two blocks above are about the FAILURE and not about `-R` itself.
+run_case "a named repo with a stale marker still blocks on the MARKER" 2 \
+  medium stale "" \
+  "gh pr merge 600 -R go-to-k/cdk-local" "" "1-reviewer"
+# ...and the HAPPY PATH with a slug, which nothing else here covers: every
+# other `-R` case above ends in a refusal, so a forwarding bug that made the
+# gate refuse ALWAYS would satisfy the lot. This is the one that says a
+# correctly-reviewed cross-repo merge still PASSES.
+run_case "a named repo with a fresh marker and a matching sha PASSES" 0 \
+  medium fresh "med1234567890" \
+  "gh pr merge 600 -R go-to-k/cdk-local --squash"
 
 echo
 echo "Pass: $pass  Fail: $fail"

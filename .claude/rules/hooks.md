@@ -12,12 +12,15 @@ paths:
 vp run test:hooks     # or: bash .claude/hooks/run-tests.sh
 ```
 
-- **Every hook but `post-merge-sync-reminder` ships a `*.test.sh` suite**
-  (`run-tests.sh` is the runner; `stop-warn` got one via issue #2396), plus
+- **EVERY hook ships a `*.test.sh` suite** (`run-tests.sh` is the runner;
+  `stop-warn` got one via issue #2396 and `post-merge-sync-reminder`, the last
+  one without, via go-to-k/cdkd#3266), plus
   the CLASS fences with no same-named `.sh` — `markgate-gate-name-class`
   and `unresolved-target-class`. The counts that used to
   sit here went stale twice and are gone:
-  `ls .claude/hooks/*.sh | grep -v '\.test\.sh$' | wc -l`.
+  `ls .claude/hooks/*.sh | grep -v '\.test\.sh$' | wc -l`. Why the exception
+  ENDED: that hook hand-rolled its `gh ... pr merge` ERE, the ERE went silent
+  on every between-slot flag spelling, and with no suite nothing could say so.
 - **The runner executes every suite under BOTH bashes** — PATH `bash`
   (Homebrew 5.x) and `/bin/bash` (macOS system **3.2**). Hooks are
   `#!/usr/bin/env bash`, so without newer bash first on PATH they run under
@@ -509,9 +512,18 @@ printed `check-build-test fail` scrolled past, main went red until fix-forward
 hook like `pr-review-gate.sh`. Same cwd-aware resolution + PR-number token
 walk as `pr-review-gate.sh`. `gh` transport errors fail OPEN (a GitHub outage
 must not block merges); a parsable checks answer is enforced strictly. `CDKD_SKIP_CI_GREEN_GATE=1` is the documented bypass for a repo with no CI —
-never for merging a red PR. Smoke test:
+never for merging a red PR.
+
+**A PR NUMBER DOES NOT NAME A PULL REQUEST**, and until go-to-k/cdkd#3273 both
+this gate and `pr-review-gate` recovered the number and never the REPO, so they
+judged whatever repo the SHELL was in. Both forward a `-R` / `--repo` slug now,
+an unreadable one REFUSES, and the infra fail-open does not survive an explicit
+`-R`. **Full entry in [hooks-merge-target.md](hooks-merge-target.md)** (split
+out for the byte-cap reason
+[hooks-cwd-detector.md](hooks-cwd-detector.md) records). Smoke test:
 `ci-green-gate.test.sh` (stubbed `gh` for all-pass / skipping / fail /
-pending / no-checks / infra-error + the cdkd#563 quoted-body cases).
+pending / no-checks / infra-error / unresolvable-repo + the cdkd#563
+quoted-body cases).
 
 ## Integ base freshness (non-blocking)
 
@@ -957,12 +969,15 @@ future check added to that hook belongs INSIDE the `Bash` arm.
 **NOT fenced as a class yet** — the fence built alongside this change was split
 out into go-to-k/cdkd#2826 after four review rounds each measured the previous
 round's fix reporting a green tally over a live fail-open. **What holds the
-calls in place meanwhile is THREE suites and review, not thirty-one.**
+calls in place meanwhile is FOUR suites and review, not thirty-one.**
 Measured by deleting the `gate_require_const` line from each hook and re-running
 that hook's own suite: `main-tree-branch-gate`, `restore-backup` and
 `main-tree-edit-gate` redden; the other 27 report an identical tally before and
 after — because a suite that never stages a library missing the constant cannot
-see the call go away — and `post-merge-sync-reminder` has no suite at all. So
+see the call go away. `post-merge-sync-reminder` was a 28th until
+go-to-k/cdkd#3266 gave it a suite at all; its two constant cases are built to
+the shape below, and its own header records why rc-0-and-silent cannot be the
+assertion. So
 a hook added before go-to-k/cdkd#2826 lands can read a library constant with no
 `gate_require_const` and nothing will say so — and so can an existing one whose
 call is deleted. The three that catch it stage a stripped library and assert the
@@ -1067,10 +1082,12 @@ any of the four `integ-*` gate scripts or their suites.
 
 ## Class fences
 
-The suites whose subject is EVERY hook at once — the unresolved-target-directory
-sweep (issue 2027) and the gate-name fence (issue 2198) — live in
-[hooks-class-fences.md](hooks-class-fences.md), loaded when you touch one of
-them or the shared matcher. A third, for constant liveness, is designed and
+The suites whose subject is EVERY hook at once: the unresolved-target-directory
+sweep (issue 2027) is in [hooks-class-fences.md](hooks-class-fences.md), loaded
+when you touch it or the shared matcher, and the gate-name fence (issue 2198)
+in [hooks-gate-name-fence.md](hooks-gate-name-fence.md), loaded on its own
+suite alone — its subject is the markgate-backed hooks rather than the matcher.
+A third, for constant liveness, is designed and
 measured but NOT in the tree: go-to-k/cdkd#2826.
 
 ## Stop hooks

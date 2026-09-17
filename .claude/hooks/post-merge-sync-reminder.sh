@@ -34,6 +34,7 @@ __hook_dir="${BASH_SOURCE[0]%/*}"
 [ "$__hook_dir" = "${BASH_SOURCE[0]}" ] && __hook_dir="."
 if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   || ! declare -F cmd_matches_verb >/dev/null \
+  || ! declare -F gate_matches >/dev/null \
   || ! declare -F cmd_last_cd_target >/dev/null \
   || ! declare -F strip_noncommand_spans >/dev/null; then
   # Non-blocking reminder: skip rather than refuse when the helper is absent.
@@ -41,9 +42,10 @@ if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
 fi
 
 # go-to-k/cdkd#2729: the guard above covers the FUNCTIONS this hook calls and
-# CANNOT see a missing CONSTANT. This hook reads none of its OWN, so the call
-# takes no arguments and asks only about the library's -- the shared walk reads
-# several of them BARE inside function bodies, where the `${X:-}` defaults on
+# CANNOT see a missing CONSTANT. Since go-to-k/cdkd#3266 this hook reads ONE of
+# its own -- `GATE_RE_GH_PR_MERGE`, which replaced the inline ERE below -- so it
+# is named here; the call still asks about the library's own too, which the
+# shared walk reads BARE inside function bodies where the `${X:-}` defaults on
 # the load-time assignments do nothing.
 #
 # The SOFT form: this hook is NON-BLOCKING and only prints a reminder, so it
@@ -55,7 +57,7 @@ fi
 if ! declare -F gate_require_const_soft >/dev/null 2>&1; then
   exit 0
 fi
-gate_require_const_soft || exit 0
+gate_require_const_soft GATE_RE_GH_PR_MERGE || exit 0
 
 set -euo pipefail
 
@@ -68,26 +70,35 @@ tool_name=$(jq -r '.tool_name // empty' <<<"$input_json" 2>/dev/null || true)
 command=$(jq -r '.tool_input.command // empty' <<<"$input_json" 2>/dev/null || true)
 [[ -n "$command" ]] || exit 0
 
-# Match `gh pr merge` ONLY when it's an actual shell command at the
-# start of a line. Anchoring to line-start avoids the false-positive
-# class of matching `gh pr merge` inside quoted JSON strings / heredoc
-# bodies / commit message text.
+# Match `gh pr merge` in COMMAND POSITION, via the shared matcher: heredoc
+# bodies and quoted spans are neutralised first, so a commit message or a JSON
+# literal mentioning the phrase does not fire. Both of those shapes surfaced
+# 2026-05-23 and were the reason this hook stopped substring-matching:
+#   1. `git commit -F /tmp/x` whose message body contained "gh pr merge";
+#   2. a smoke-test command carrying `"command":"... && gh pr merge ..."`.
 #
-# Trade-off: a chained `git status && gh pr merge 100` on a single
-# line will NOT match, because the regex can't distinguish a real
-# shell `&&` separator from `&&` inside a quoted argument. Almost
-# every `gh pr merge` invocation in this codebase is standalone, so
-# the trade-off is acceptable. False-negatives (silent skip) are
-# better than false-positives (annoying reminder on every commit).
+# THE PATTERN IS THE LIBRARY'S SINCE go-to-k/cdkd#3266. It was an inline ERE,
+# `gh([[:space:]]+-[A-Za-z][[:space:]]+[^[:space:]]+)*[[:space:]]+pr[[:space:]]+merge(...)`,
+# which absorbed a LEFT-slot flag with a separated value and nothing else, so it
+# went silent on every between-slot spelling go-to-k/cdkd#3242 taught the
+# blocking gates to read. Measured through this hook:
 #
-# Both shapes surfaced 2026-05-23:
-#   1. `git commit -F /tmp/x` whose message body contained the text
-#      "gh pr merge" (naive substring match, fixed by anchoring).
-#   2. Smoke-test command containing JSON literals like
-#      `"command":"... && gh pr merge ..."` triggered the
-#      `[;&|]`-shell-separator branch (BSD grep doesn't know about
-#      shell quoting). Fixed by dropping that branch.
-if ! cmd_matches_verb "$command" 'gh([[:space:]]+-[A-Za-z][[:space:]]+[^[:space:]]+)*[[:space:]]+pr[[:space:]]+merge([[:space:]]|$|[|;&`)])'; then
+#   gh pr merge 42 --squash        MATCH    MATCH
+#   gh -R o/r pr merge 42          MATCH    MATCH
+#   gh pr -R o/r merge 42          nomatch  MATCH
+#   gh pr --repo=o/r merge 42      nomatch  MATCH
+#   gh pr -Ro/r merge 42           nomatch  MATCH
+#
+# `gate_matches`, NOT `cmd_matches_verb`: the latter wraps its argument in
+# `^( ... )` and the shared constants carry their own `^`, so the wrapper would
+# nest the anchor. `ci-green-gate` reads the same constant the same way.
+#
+# The inline ERE also carried pipe / semicolon / ampersand / backtick / close-
+# paren as extra verb terminators. Dropping them costs nothing: `gate_matches`
+# tests one SEGMENT at a time and a segment ends AT the separator, so `$`
+# already covers every one of them -- pinned by the chained, piped and subshell
+# cases in this hook's suite.
+if ! gate_matches "$command" "$GATE_RE_GH_PR_MERGE"; then
   exit 0
 fi
 

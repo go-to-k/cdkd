@@ -640,30 +640,91 @@ want_match 0 "quoted verb after a between-slot flag, single quotes" \
   "gh pr -R go-to-k/cdkd 'merge' 42 --squash" "$GATE_RE_GH_PR_MERGE"
 want_match 0 "quoted verb after a glued between-slot flag" \
   'gh pr -Rgo-to-k/cdkd "merge" 42' "$GATE_RE_GH_PR_MERGE"
-# THE BOUNDARY OF THE FIX, asserted rather than left implicit. A quoted verb is
-# reached only across flags the walk can classify: `-R` / `--repo` are in
-# `_gate_is_value_flag`, so their VALUE is consumed and the verb after it is
-# dequoted. `--json` is NOT in that list, so `number` reads as the first bare
-# token and the walk stops there, exactly as the LEFT slot does — this is the
-# already-enumerated residue "an unenumerated value-consuming global flag"
-# (`gate_dequote_structural`'s residue list), not a new hole, and widening that
-# list is the flag-enumeration treadmill hooks-class-fences.md says to refuse.
-# It is a case rather than a silence so that anyone who DOES widen the list reds
-# here and reads this note, per the lesson that a "deliberately not asserted"
-# gap hides its own second failure mode.
+# THE BOUNDARY OF THE FIX, asserted rather than left implicit. This case was a
+# RESIDUE until go-to-k/cdkd#3284 and is a positive now: `--json` is not in
+# `_gate_is_value_flag`, so `number` used to read as the first bare token and
+# the walk stopped there, leaving the quoted verb behind it unreachable.
 #
-# FILED as go-to-k/cdkd#3284 with the rule that would close it without an
-# enumeration: measured on gh 2.92.0, an unknown `--x` / `-x` at the group level
-# consumes exactly one following token VERBATIM (`gh pr --json number "view" N`
-# resolves; `gh pr --web "view" N` errors `unknown flag`), so dropping the
-# `__dq_quoted` condition in `gate_dequote_structural`'s `*)` arm reaches
-# `--json url "merge"` while `--search "merge" list` stays unmatched. Not taken
-# here: that walk already produced two of this PR's own review blockers, and
-# verify.md 8-a says the structural fix does not go in late in a cascade.
-want_match 1 "residue: a quoted verb behind an unenumerated value flag is not reached" \
+# What closed it is a RULE, not a longer flag list -- widening that list is the
+# enumeration treadmill hooks-class-fences.md says to refuse. Measured on
+# gh 2.92.0 at the group level: `gh pr --json number "view" 3271 -R go-to-k/cdkd`
+# resolves (the unknown flag ate `number`, the QUOTED `view` was the verb) while
+# `gh pr --web "view" 3271` errors `unknown flag: --web`. So an unknown bare
+# `--x` / `-x` there consumes exactly ONE following token verbatim, and the walk
+# now does the same regardless of that token's quoting.
+want_match 0 "a quoted verb behind an unenumerated value flag IS reached (#3284)" \
   'gh pr -R go-to-k/cdkd --json number "merge" 42' "$GATE_RE_GH_PR_MERGE"
-# ...and the control proving the residue is about the FLAG LIST and not about
-# "two flags": two flags both in the list DO reach the quoted verb.
+# The four spellings go-to-k/cdkd#3284 names, each measured nomatch on
+# `origin/main` AND on go-to-k/cdkd#3242's head -- a residue that change did not
+# close rather than one it opened.
+want_match 0 "#3284: quoted verb after a long flag's bare value" \
+  'gh pr --json url "merge" 42' "$GATE_RE_GH_PR_MERGE"
+want_match 0 "#3284: quoted verb after a short flag's bare value" \
+  'gh pr -q .x "merge" 42' "$GATE_RE_GH_PR_MERGE"
+want_match 0 "#3284: quoted verb after -t's bare value" \
+  'gh pr -t x "merge" 42' "$GATE_RE_GH_PR_MERGE"
+want_match 0 "#3284: the ISSUE group takes the same rule" \
+  'gh issue -R o/r --json url "create"' "$GATE_RE_GH_ISSUE_CREATE"
+# A GLUED value consumes NOTHING, so the token after it is still the subcommand.
+# Without this the fix could have been written as "skip one token after any
+# flag", which loses `--json=x "merge"`.
+want_match 0 "#3284: a --flag=value consumes nothing, so the next quoted token is the verb" \
+  'gh pr --json=number "merge" 42' "$GATE_RE_GH_PR_MERGE"
+# THE OTHER DIRECTION, and it is the half that prices the change. The consumed
+# value is still emitted VERBATIM, so a QUOTED value keeps its quotes and the
+# gates still do not see the verb word inside it. Every one of these is nomatch
+# BEFORE and AFTER; if one flips, the accepted false-refusal surface has widened
+# beyond what go-to-k/cdkd#3242's declaration priced.
+want_match 1 "#3284 polarity: a quoted flag VALUE is not the verb (read command)" \
+  'gh pr --search "merge" list' "$GATE_RE_GH_PR_MERGE"
+want_match 1 "#3284 polarity: a quoted value on a read verb stays inert" \
+  'gh pr -R o/r --json "merge" view 42' "$GATE_RE_GH_PR_MERGE"
+want_match 1 "#3284 polarity: a template body carrying the word stays inert" \
+  'gh pr --template "{{.title}} merge {{.number}}" list' "$GATE_RE_GH_PR_MERGE"
+want_match 1 "#3284 polarity: a quoted READ verb after a bare value stays inert" \
+  'gh pr -L 5 "list"' "$GATE_RE_GH_PR_WRITE"
+# A FLAG VALUE THAT STARTS WITH `-` IS STILL THE VALUE (go-to-k/cdkd#3273
+# review). cobra does not look at what it is consuming: measured on gh 2.92.0,
+# `gh pr --search -x "list"` and `gh pr --search --web "list"` both RUN `list`,
+# so the `-`-prefixed token was eaten as `--search`'s value and the QUOTED token
+# after it was the subcommand. The first cut of go-to-k/cdkd#3284 put the
+# pending-value test inside the `*)` arm, so a `-`-prefixed value took the FLAG
+# arm instead and these four real merges matched NOTHING in every gate. They are
+# nomatch on the merge base too, so a residue rather than a regression -- but the
+# rule that closes them is the same one condition, in the refusing direction.
+want_match 0 "#3273: a --flag whose value starts with -- still leaves the verb reachable" \
+  'gh pr -t --squash "merge" 42' "$GATE_RE_GH_PR_MERGE"
+want_match 0 "#3273: ...with a short-flag value" \
+  'gh pr -t -x "merge" 42' "$GATE_RE_GH_PR_MERGE"
+want_match 0 "#3273: ...with a bare -- as the value" \
+  'gh pr -t -- "merge" 42' "$GATE_RE_GH_PR_MERGE"
+want_match 0 "#3273: ...with -R itself eaten as the value, a later -R naming the repo" \
+  'gh pr -t -R "merge" 42 -R o/r' "$GATE_RE_GH_PR_MERGE"
+# THE OTHER DIRECTION for that same condition. Consuming a `-`-prefixed value
+# must not make a READ reachable: the token after the consumed one is the
+# subcommand, and `list` is not a gated verb.
+want_match 1 "#3273 polarity: a read verb after a --flag with a -- value stays inert" \
+  'gh pr --search -x "list"' "$GATE_RE_GH_PR_MERGE"
+want_match 1 "#3273 polarity: the same with a long-flag value" \
+  'gh pr --search --web "list"' "$GATE_RE_GH_PR_MERGE"
+# ...and the case the widening LOSES, pinned so the loss is declared rather
+# than discovered. `--json` eats `--repo`, so `o/r` is the subcommand and gh
+# answers `unknown command`. Not a merge, so losing it is correct.
+want_match 1 "#3273: an enumerated flag EATEN as a value stops being a value flag" \
+  'gh pr --json --repo o/r "merge" 42' "$GATE_RE_GH_PR_MERGE"
+
+# THE RESIDUE THAT SURVIVES, stated rather than left silent. A short-flag CLUSTER
+# longer than `-X` is classified as carrying its own value (the
+# go-to-k/cdkd#3242 arm that keeps `-Rgo-to-k/cdkd "merge"` working), so a
+# cluster whose LAST member takes a SEPARATE value stops the walk on that value.
+# Undecidable from the text -- `-tRelease` is `--title Release`, `-sR o/r` is
+# `--squash --repo o/r`, and only a per-flag arity table tells them apart, which
+# is the enumeration this file refuses. Pinned so that anyone who changes the
+# cluster arm reds here.
+want_match 1 "residue: a 3+-char short cluster taking a separate value stops the walk" \
+  'gh pr -sR go-to-k/cdkd "merge" 42' "$GATE_RE_GH_PR_MERGE"
+# ...and the control proving that residue is about the CLUSTER shape and not
+# about "two flags": two ordinary flags DO reach the quoted verb.
 want_match 0 "two enumerated value flags still reach the quoted verb" \
   'gh pr -R go-to-k/cdkd --repo go-to-k/cdkd "merge" 42' "$GATE_RE_GH_PR_MERGE"
 want_match 0 "quoted group verb on issue create" \
@@ -789,11 +850,15 @@ want_match 0 "a BARE flag value is still read as the subcommand (declared, uncha
 __ghv_ran=$((pass + fail - __ghv_start))
 # 1 population lint + 1 axis assertion + 26*(7+1) cross product + 6*3 read verbs
 # + 2 verb-prefix + 2 quoted-mention + 8 accepted false refusals
-# + 19 quoted-verb / flag-value / bare-token / shared-budget.
+# + 36 quoted-verb / flag-value / bare-token / shared-budget
+#   (19, plus the 10 go-to-k/cdkd#3284 added: 5 newly-reached spellings, 4
+#   polarity controls and 1 surviving-residue case; plus the 7 its review
+#   added for a flag VALUE that starts with `-`: 4 newly-reached merges, 2
+#   read-verb polarity controls and 1 declared LOSS).
 # (The prose said 4 and 13 while the literals said 8 and 19 -- the arithmetic was
 # right and the sentence was not, which is the cheapest kind of stale claim to
 # ship and the easiest to catch by reading the two against each other.)
-__ghv_want=$(( 1 + 1 + 26 * 8 + 18 + 2 + 2 + 8 + 19 ))
+__ghv_want=$(( 1 + 1 + 26 * 8 + 18 + 2 + 2 + 8 + 36 ))
 if [ "$__ghv_ran" -ne "$__ghv_want" ]; then
   fail=$((fail + 1))
   fail_log="${fail_log}FAIL the gh sub-flag block ran $__ghv_ran cases, expected exactly $__ghv_want -- an axis stopped expanding, or one was added without updating the literal\n"

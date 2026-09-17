@@ -542,6 +542,52 @@ run_case warn  "vp run build && gh pr merge in post-merge main tree" \
 run_case quiet 'cd "$W" && gh pr merge (quoted var, unresolvable)' \
   "$MAIN" 'cd "$W" && gh pr merge 123'
 
+# 31h. A gh REPO FLAG in either slot (go-to-k/cdkd#3266). The hand-rolled ERE
+#      this family carried absorbed only BARE flag TOKENS on the LEFT of the
+#      group word, so every one of these went QUIET while the eleven blocking
+#      gates fired on them — the asymmetry that made the missed warning worth
+#      closing. All five fail against the pre-#3266 hook.
+run_case warn  "left-slot repo flag, separate value" \
+  "$MAIN" 'gh -R go-to-k/cdkd pr merge 123 --squash'
+run_case warn  "between-slot repo flag, separate value" \
+  "$MAIN" 'gh pr -R go-to-k/cdkd merge 123 --squash'
+run_case warn  "between-slot repo flag, --repo=value" \
+  "$MAIN" 'gh pr --repo=go-to-k/cdkd merge 123'
+run_case warn  "between-slot repo flag, glued short" \
+  "$MAIN" 'gh pr -Rgo-to-k/cdkd merge 123'
+run_case warn  "a verb quoted behind a flag value (go-to-k/cdkd#3284)" \
+  "$MAIN" 'gh pr --json url "merge" 123'
+# ...and the POLARITY the widening must not cost: a flagged READ stays quiet.
+run_case quiet "between-slot repo flag on a READ verb stays quiet" \
+  "$MAIN" 'gh pr -R go-to-k/cdkd view 123'
+run_case quiet "between-slot repo flag on pr list stays quiet" \
+  "$MAIN" 'gh pr --repo=go-to-k/cdkd list'
+
+# 31i. THE CD-SCAN MUST READ THE SAME PATTERN AS THE ARMING TEST, and the
+#      UNRESOLVABLE-`cd` case is the only one that can say so. `awk -v x=<value>`
+#      escape-processes its value, so the shared constant's `[^"\\]` arrives as
+#      `[^"\]` — an unterminated bracket expression — and awk exits with a
+#      syntax error, which makes `has_cd_before_verb` answer "no cd" for every
+#      command in this family. That is invisible on both of the OTHER two
+#      shapes: with no `cd` the answer was going to be "no cd" anyway, and with
+#      a RESOLVABLE `cd` the bash-side `cmd_last_cd_target` answers first and
+#      the awk scan is never reached. Only the unresolvable branch consults it,
+#      and it is there that the collapse turns header rule 4's silence into a
+#      false alarm.
+#
+#      MEASURED by reverting `ENVIRON` to `awk -v` in the hook: exactly two
+#      cases red, both unresolvable-`cd` ones (this block's last case and the
+#      pre-existing 31g), and the two below them stay green. So 31g already
+#      discriminated the mechanism and the flagged twin extends it to the
+#      spelling go-to-k/cdkd#3266 added; the two greens are kept as the controls
+#      that say which branch the red belongs to.
+run_case warn  "flagged merge with no cd still warns (control: awk not consulted)" \
+  "$MAIN" 'gh pr -R go-to-k/cdkd merge 123'
+run_case quiet "cd <worktree> && flagged merge (control: resolved in bash)" \
+  "$MAIN" "cd $WT && gh pr -R go-to-k/cdkd merge 123"
+run_case quiet 'cd "$W" && flagged merge (unresolvable) stays quiet' \
+  "$MAIN" 'cd "$W" && gh pr -R go-to-k/cdkd merge 123'
+
 # 24. No feature worktree active -> QUIET even for a bare main-tree commit
 #     (no task in flight; ordinary main-tree work governed by branch-gate).
 git -C "$MAIN" worktree remove --force "$WT" >/dev/null 2>&1

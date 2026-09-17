@@ -1209,12 +1209,16 @@ gate_unquote_span() {
 #
 # IT IS AN ENUMERATION, and this file's whole thesis is that enumerations go
 # stale (go-to-k/cdkd#2156). The cost is bounded and recorded rather than
-# hidden: an UNENUMERATED value-consuming global (`--super-prefix`,
-# `--attr-source`) makes its VALUE look like the subcommand, so
-# `gate_dequote_structural` stops there and a QUOTED verb after it is not
-# dequoted. That is a residue of go-to-k/cdkd#2333, not a regression -- the
-# LITERAL-verb spelling still matches through the over-approximating trigger,
-# which is what `GATE_FLAGS` is for.
+# hidden, and it SHRANK in go-to-k/cdkd#3284: in the LEFT slot an unenumerated
+# value-consuming global (`--super-prefix`, `--attr-source`) still makes its
+# VALUE look like the subcommand, so `gate_dequote_structural` stops there and a
+# QUOTED verb after it is not dequoted -- a residue of go-to-k/cdkd#2333, not a
+# regression, since the LITERAL-verb spelling still matches through the
+# over-approximating trigger, which is what `GATE_FLAGS` is for. The BETWEEN-slot
+# walk no longer depends on this list for that: it consumes one token after any
+# bare flag, which is what gh itself does, so the list only decides whether a
+# token STARTING WITH `-` is read as that flag's value rather than as a flag of
+# its own (`gh pr --repo -x "merge"` versus `gh pr --json -x "merge"`).
 _gate_is_value_flag() {
   case "$1" in
     -C|-c|--git-dir|--work-tree|--namespace|--exec-path|--config-env|-R|--repo) return 0 ;;
@@ -1639,8 +1643,28 @@ gate_dequote_structural() {
           while [ -n "$rest" ] && _gate_struct_next "$rest"; do
             __dq_tok="$_GATE_STRUCT_TOK"
             _gate_struct_rewrite "$__dq_tok"
-            __dq_quoted="$_GATE_DQ_CHANGED"
             rest="$_GATE_STRUCT_REST"
+            # A PENDING FLAG CONSUMES THE NEXT TOKEN WHATEVER IT STARTS WITH,
+            # so this test sits AHEAD of the shape case rather than inside its
+            # `*)` arm (go-to-k/cdkd#3273 review). cobra does not look at the
+            # value: measured on gh 2.92.0, `gh pr --search -x "list"` and
+            # `gh pr --search --web "list"` both RUN `list` -- the `-`-prefixed
+            # token was eaten as `--search`'s value and the QUOTED token after
+            # it was the subcommand. With the test inside `*)`, a `-`-prefixed
+            # value took the flag arm instead, so `gh pr -t --squash "merge" 42`,
+            # `-t -x "merge" 42`, `-t -- "merge" 42` and
+            # `-t -R "merge" 42 -R o/r` were real merges matching NOTHING in any
+            # gate. Pre-existing on the merge base, so a residue rather than a
+            # regression -- and closed here because it is the same one-condition
+            # shape as the rest of go-to-k/cdkd#3284 and moves in the REFUSING
+            # direction.
+            if [ "$__dq_pend" = 1 ]; then
+              out="$out $__dq_tok"
+              __dq_pend=0
+              n=$((n + 1))
+              [ "$n" -gt "$GATE_STRUCT_MAXTOK" ] && break
+              continue
+            fi
             case "$_GATE_DQ" in
               -*)
                 out="$out $_GATE_DQ"
@@ -1668,31 +1692,68 @@ gate_dequote_structural() {
                 fi
                 ;;
               *)
-                # A QUOTED token straight after an UNENUMERATED flag is that
-                # flag's VALUE, not the subcommand -- emit it VERBATIM and keep
-                # looking. Without this test the walk dequoted an ARGUMENT and
-                # then took it as the verb, which is precisely the failure
-                # `_gate_is_value_flag` exists to prevent. Measured on the first
-                # revision of this walk, against origin/main which matched
-                # neither:
+                # THE TOKEN AFTER AN UNENUMERATED BARE FLAG IS THAT FLAG'S
+                # VALUE, whatever its quoting -- emit it VERBATIM and keep
+                # looking. The VALUE is never classified, for the reason
+                # `_gate_is_value_flag`'s arm above already gives.
                 #
-                #   gh pr --search "merge" list           nomatch -> MATCH
-                #   gh pr -R o/r --json "merge" view 42   nomatch -> MATCH
+                # go-to-k/cdkd#3242 shipped this test with a second conjunct,
+                # `[ "$__dq_quoted" = 1 ]`, so only a QUOTED next token was
+                # taken as the value and a BARE one was taken as the subcommand
+                # and ENDED the walk. That left the residue go-to-k/cdkd#3284
+                # was filed for: a verb quoted AFTER an unenumerated flag's bare
+                # value was never reached, because the walk had already stopped
+                # on the value. Measured against `origin/main` and #3242's head
+                # alike, all four nomatch, so a residue rather than a
+                # regression:
                 #
-                # the second being a READ command arming ci-green, pr-review and
-                # the four integ gates, with `gate_pr_selector` answering 42.
-                # A BARE token stays the subcommand, so the pre-existing
-                # over-approximation (`list --label merge`) is unchanged -- this
-                # closes only the quoted half, which is the half the accepted
-                # false-refusal note promises is inert.
-                if [ "$__dq_pend" = 1 ] && [ "$__dq_quoted" = 1 ]; then
-                  out="$out $__dq_tok"
-                  __dq_pend=0
-                else
-                  out="$out $_GATE_DQ"
-                  [ "$_GATE_DQ_CHANGED" = 1 ] && changed=1
-                  break
-                fi
+                #   gh pr --json url "merge" 42         nomatch -> MATCH
+                #   gh pr -q .x "merge" 42              nomatch -> MATCH
+                #   gh pr -t x "merge" 42               nomatch -> MATCH
+                #   gh issue -R o/r --json url "create" nomatch -> MATCH
+                #
+                # THE RULE THAT DECIDES THIS, and it is a rule rather than a
+                # flag list, which is what makes it closable at all
+                # (.claude/rules/hooks-class-fences.md: over-approximate the
+                # TRIGGER, stay strict on RESOLUTION). Measured on gh 2.92.0 at
+                # the `pr` / `issue` level, where cobra parses:
+                #
+                #   gh pr --json number "view" 3271 -R go-to-k/cdkd
+                #     -> {"number":3271}     an unknown value-taking flag ate
+                #                            `number`, and the QUOTED `view`
+                #                            was the verb
+                #   gh pr --web "view" 3271 -R go-to-k/cdkd
+                #     -> unknown flag: --web a non-value flag is REJECTED here
+                #
+                # So an unknown bare `--x` / `-x` in this slot consumes exactly
+                # ONE following token, verbatim, and the token AFTER that is the
+                # subcommand. Consuming regardless of quoting -- AND regardless
+                # of whether the value itself starts with `-`, which is the half
+                # the block above this `case` handles -- is therefore what gh
+                # itself does.
+                #
+                # THE BRAKE IS UNCHANGED, which is the half that matters in the
+                # other direction: the consumed value is still emitted VERBATIM,
+                # so a quoted one stays quoted and the gates still do not see
+                # the word inside it. Both halves measured through `gate_matches`
+                # on this tree:
+                #
+                #   gh pr --search "merge" list          nomatch -> nomatch
+                #   gh pr -R o/r --json "merge" view 42  nomatch -> nomatch
+                #   gh pr --template "{{.t}} merge" list nomatch -> nomatch
+                #   gh pr -L 5 "list"                    nomatch -> nomatch
+                #
+                # the second being the READ command that arms ci-green,
+                # pr-review and the four integ gates once its verb is dequoted.
+                # A BARE token in FIRST position is still the subcommand, so the
+                # pre-existing over-approximation (`gh pr --label merge list`)
+                # is unchanged in both directions.
+                # `__dq_pend` is already 0 here -- the block ahead of this
+                # `case` consumed every pending value -- so this is the
+                # SUBCOMMAND slot and nothing else.
+                out="$out $_GATE_DQ"
+                [ "$_GATE_DQ_CHANGED" = 1 ] && changed=1
+                break
                 ;;
             esac
             # SHARE THE OUTER `n` BUDGET, never a fresh counter. A private
@@ -3246,6 +3307,251 @@ gate_pr_selector() {
       printf '%s' "$1"
       return 0
     done
+    return 0
+  done < <(gate_segments "$cmd")
+  return 0
+}
+
+# Run a command under a hard wall-clock bound. Prints its stdout, returns its
+# exit status, and returns 124 if the bound expired.
+#
+# WHY. `.claude/settings.json` registers this hook with `timeout: 15`. A hook
+# killed by THAT timeout emits no `exit 2`, so the gate fails OPEN -- the wrong
+# direction for a merge gate. This hook makes one network call always and, since
+# go-to-k/cdkd#2638, a second serial one on most PRs, so a stalled GitHub must
+# resolve to a decision of ours rather than to an opaque kill.
+#
+# WHY NOT `alarm` + `exec`, which is the obvious spelling: `gh` is a Go binary,
+# and with no `os/signal` listener the Go runtime SWALLOWS SIGALRM. Measured on
+# macOS with a 2s alarm -- `sleep 20` returns rc 142 at 2s, a hanging
+# `gh api graphql` returns rc 1 at 30s. So the bound must FORK and signal the
+# child with something Go honours. Measured with this implementation, 3s bound:
+# a hanging `gh` returns rc 124 at 3s, a SIGALRM-deaf child returns 124 at 4s
+# (bound plus the TERM->KILL grace), a healthy `gh pr view` returns rc 0 with
+# its JSON intact, and a child exiting 7 still returns 7.
+#
+# `timeout(1)` is absent on macOS; `perl` already backs a dozen hooks here.
+#
+# THE WRAPPED COMMAND'S STDERR IS DISCARDED, and that is a decision, not a
+# side effect: this function must stay able to speak (the two degraded-mode
+# warnings above go to the WRAPPER's stderr), so the CHILD's is closed rather
+# than the whole invocation's. A caller that PARSES the wrapped command's
+# stderr sets `GATE_BOUNDED_KEEP_STDERR=1` -- `ci-green-gate` does, because
+# `gh pr checks` writes "no checks reported" there and that string is the one
+# discriminator between "no CI yet" and "a check failed" (both rc=1). Default
+# OFF, so every existing caller is byte-for-byte unchanged.
+gate_bounded() {
+  __gate_secs="$1"
+  shift
+  if ! command -v perl >/dev/null 2>&1; then
+    # Degrade LOUDLY rather than refuse a merge over a missing interpreter.
+    # The `2>/dev/null` lives INSIDE this function, on the wrapped command
+    # only -- when the callers carried it instead it also swallowed this
+    # warning, so the degraded mode was invisible exactly when it mattered.
+    #
+    # THIS ARM HONOURS `GATE_BOUNDED_KEEP_STDERR` TOO, and hardcoding the
+    # redirect here was a FAIL-OPEN the go-to-k/cdkd#3273 delta introduced.
+    # `ci-green-gate` reads "no checks reported" off gh's STDERR; with perl
+    # absent from PATH the redirect swallowed it, so stdout was empty, rc=1,
+    # `not_green` empty -- and the gate PASSED. Measured both ways: perl-less
+    # PATH rc=0, perl present rc=2 "Blocked ... no CI checks are reported".
+    # Reachability on macOS is effectively nil (`/usr/bin/perl` ships), but a
+    # gate that fails OPEN because an interpreter is missing is exactly the
+    # shape .claude/rules/hooks.md refuses.
+    #
+    # The message names no hook: this function serves two now, and saying
+    # `pr-review-gate` while ci-green is the caller sends the reader to the
+    # wrong file.
+    echo "gate_bounded: perl not found; running '$1' unbounded" >&2
+    if [ -n "${GATE_BOUNDED_KEEP_STDERR:-}" ]; then "$@"; else "$@" 2>/dev/null; fi
+    return $?
+  fi
+  perl -e '
+    my $secs = shift;
+    my $pid = fork();
+    if (!defined $pid) {
+      # No fork: run it unbounded rather than refuse, and SAY so. This warning
+      # is why the `2>/dev/null` moved OFF this perl invocation and INTO the
+      # child below: a redirect on the whole wrapper deleted the one line that
+      # announces the degraded mode, which is finding B one arm over.
+      print STDERR "gate_bounded: fork failed; running unbounded\n";
+      open(STDERR, ">", "/dev/null") unless $ENV{"GATE_BOUNDED_KEEP_STDERR"};
+      exec @ARGV or exit 127;
+    }
+    if (!$pid) {
+      # New PROCESS GROUP, so the kill below reaches descendants too. Signalling
+      # only the direct child is not a bound: `gh pr view` shells out to `git`,
+      # and any descendant that inherited stdout keeps the caller`s command
+      # substitution blocked long after the child dies. Measured: a child that
+      # backgrounds a 25s sleeper returns rc 124 at the bound but the CALLER
+      # waits the full 25s -- past the 15s harness kill, i.e. the fail-open this
+      # bound exists to prevent. With the group kill the same case ends at 4s.
+      setpgrp(0, 0);
+      # The wrapped command`s own stderr is suppressed HERE rather than on the
+      # wrapper, so this function can still speak. Note the BACKTICK: this whole
+      # program is a single-quoted shell argument, so an apostrophe would end it
+      # and hand the rest to bash as code.
+      open(STDERR, ">", "/dev/null") unless $ENV{"GATE_BOUNDED_KEEP_STDERR"};
+      exec @ARGV or exit 127;
+    }
+    $SIG{ALRM} = sub {
+      return unless $pid;
+      kill "TERM", -$pid;
+      select(undef, undef, undef, 0.5);
+      kill "KILL", -$pid;
+      exit 124;
+    };
+    # `setpgrp` above moved the child OUT of this hook`s process group, so a
+    # harness reap of the hook no longer collects it. Without this, a killed
+    # wrapper leaves `gh` and its descendants running with nothing enforcing the
+    # bound at all -- narrow (the bounds are well under the 15s budget) but
+    # unbounded in duration once it opens.
+    $SIG{TERM} = $SIG{INT} = sub {
+      kill "KILL", -$pid if $pid;
+      exit 143;
+    };
+    alarm $secs;
+    waitpid($pid, 0);
+    my $status = $?;
+    # CLEAR $pid FIRST, then disarm. The bigger window is `waitpid` returning ->
+    # `alarm 0`, where the pid is already reaped: a SIGALRM there would signal a
+    # possibly-recycled process group and report a false timeout. Clearing first
+    # makes the handler a no-op for that window; the reverse order only closes
+    # the shorter one.
+    $pid = 0;
+    alarm 0;
+    # A SIGNAL-killed child must not look like success. `$status >> 8` is 0 when
+    # the child died on a signal, and a truncated `gh` response then parses into
+    # loc=0 / fc=0 -- an `inline` verdict and a SILENT pass, where every earlier
+    # version of this hook printed its infra fail-open reason. 125 is distinct
+    # from the 124 the timeout arm uses.
+    exit(($status & 127) ? 125 : ($status >> 8));
+  ' "$__gate_secs" "$@"
+}
+
+# gate_gh_repo_slug <command> <verb-ere>
+#
+# The `owner/repo` slug the matched `gh` command names with `-R` / `--repo`, in
+# EITHER flag slot and after the verb too (cobra accepts it anywhere). Three
+# outcomes, and callers must distinguish all three:
+#
+#   rc 0, slug on stdout   the command names a repo, and it is readable
+#   rc 0, nothing          the command names NO repo (gh resolves from the cwd)
+#   rc 2, nothing          it names one this parser CANNOT read
+#
+# WHY THIS EXISTS (go-to-k/cdkd#3273). `ci-green-gate` and `pr-review-gate`
+# recovered the PR NUMBER from the command and never the REPO, then queried
+# `gh pr checks <n>` / `gh pr view <n>` with no `-R` at all -- i.e. against
+# whatever repo the shell happened to be in. So `gh pr merge 42 -R <other>` run
+# from a cdkd worktree judged CDKD's PR 42: a different PR, in a different
+# repository, deciding this merge. It fails in both directions -- a green cdkd
+# 42 clears a red foreign 42, and a red cdkd 42 refuses a green one -- and the
+# cross-repo merge flow it needs is one `.claude/rules/hooks.md` describes as
+# routine ("Working on a sibling repo from a cdkd session").
+#
+# THE THIRD OUTCOME IS THE POINT. Returning "no repo" for an unreadable one
+# would put the caller straight back on the cwd, which is the defect. A BLOCKING
+# caller must refuse instead -- the same posture `gate_target_dir_strict` takes
+# for a `-C` it cannot read, and for the same reason: a hook receives command
+# TEXT, so `-R "$SLUG"` arrives unexpanded and guessing is what produced the
+# bug.
+#
+# FOUR SPELLINGS ARE READ, and they are the ones gh documents and this repo
+# writes: `-R <slug>`, `-R<slug>`, `--repo <slug>`, `--repo=<slug>`. The prefix
+# test runs on the token with its QUOTE CHARACTERS REMOVED, so `"--repo"` and
+# `--re"po"` are caught too -- deleting quote characters can expose a prefix but
+# never hide one, which is the argument `verify-pr-gate`'s own repo-naming guard
+# already records.
+#
+# KNOWN BOUND, declared rather than discovered: a combined SHORT-FLAG CLUSTER
+# carrying `R` (`-cR <slug>`, `-sR<slug>`) is NOT read, and the caller then
+# judges the cwd repo exactly as it does today. gh honours those (measured
+# 2026-09-16 on 2.92.0, recorded in `verify-pr-gate.sh`), so this is a real
+# residue -- it is left because the cluster is not decidable from the text: a
+# per-flag ARITY table is the only thing that tells `-sR <slug>`
+# (`--squash --repo <slug>`) from `-tRelease` (`--subject Release`), and that is
+# the enumeration `.claude/rules/hooks-class-fences.md` refuses. Over-refusing
+# the cluster was considered and rejected: on a MERGE gate a wrong refusal is
+# not cheap. Filed as go-to-k/cdkd#3301.
+#
+# KNOWN BOUND, and it is NOT this function's: a repo reaching gh through a
+# channel that is not the segment's literal argv -- `GH_REPO` in the
+# environment, a URL selector (`gh pr merge https://github.com/o/r/pull/5`), an
+# `upstream` remote in the target checkout, a `gh alias`. `verify-pr-gate`
+# answers those by REFUSING to relax rather than by reading them, and
+# go-to-k/cdkd#3235 is the issue that would close the class properly. Here they
+# come back as "no repo", i.e. today's cwd-relative behaviour.
+gate_gh_repo_slug() {
+  local cmd="$1" re="$2" segment tok noq want=0 val toks found="" seen=0
+  while IFS= read -r segment; do
+    gate_verb_span "$segment" "$re" >/dev/null || continue
+    want=0; found=""; seen=0
+    # STRIP THE COMMENT FIRST. `gate_tokens` has no idea what `#` means, so
+    # `gh pr merge 42 --squash # don't wait` tokenises the apostrophe in the
+    # COMMENT as an opening quote, the split truncates, and the `|| return 2`
+    # below refused a command carrying no `-R` at all -- with a message saying
+    # it named a repository. `gate_strip_comment`'s own doc records this exact
+    # bug for `gate_argv`, and this function repeated it.
+    #
+    # `gate_tokens` returns non-zero when an unbalanced quote TRUNCATED the
+    # split, and that status is the difference between "no `-R` in this command"
+    # and "there may be one past the point I stopped reading". Reading it is why
+    # the token list goes through a variable rather than a process substitution,
+    # whose exit status bash does not hand back.
+    toks=$(gate_tokens "$(gate_strip_comment "$segment")") || return 2
+    # THE WALK RUNS TO THE END OF THE SEGMENT, and returning on the first hit
+    # was a live defect. `gh` takes the LAST `-R` when a command carries more
+    # than one -- measured on 2.92.0 in three slot orders, `-R a -R b` and
+    # `gh -R a pr view … -R b` both answering **b** -- so a first-hit return
+    # made `gh pr merge 42 -R <this repo> -R <other repo>` judge THIS repo's
+    # PR 42 and clear a merge in the other one. That is go-to-k/cdkd#3273's own
+    # defect, reproduced by its fix.
+    #
+    # THE ANSWER IS TO REFUSE, not to mirror gh's precedence, and the choice is
+    # deliberate. Mirroring would encode a MEASUREMENT of cobra's last-wins
+    # behaviour into a gate whose whole job is to be right about which repo gh
+    # acts on: if that precedence ever differs -- by slot, by flag spelling, by
+    # gh version -- the gate silently judges the wrong repo again, which is the
+    # class this function exists to close. Refusing cannot be wrong that way,
+    # it matches `gate_target_dir_strict`'s posture for a `-C` it cannot read,
+    # and it costs nothing real: no legitimate command names two DIFFERENT
+    # repositories for one `gh` call, since gh itself acts on only one. Two
+    # IDENTICAL slugs are not ambiguous and behave like one.
+    while IFS= read -r tok; do
+      [ -n "$tok" ] || continue
+      if [ "$want" = 1 ]; then
+        # The VALUE of a flag we have already recognised. It must be readable:
+        # an unexpanded `$VAR`, a substitution or an unbalanced quote is the
+        # rc=2 case, not a "no repo" one.
+        want=0
+        gate_word_is_literal "$tok" || return 2
+        val=$(gate_unquote "$tok")
+        [ -n "$val" ] || return 2
+        if [ "$seen" = 1 ] && [ "$val" != "$found" ]; then return 2; fi
+        found="$val"; seen=1
+        continue
+      fi
+      noq="${tok//\"/}"
+      noq="${noq//\'/}"
+      case "$noq" in
+        --repo=*|-R?*)
+          gate_word_is_literal "$tok" || return 2
+          case "$noq" in
+            --repo=*) val="${noq#--repo=}" ;;
+            *)        val="${noq#-R}" ;;
+          esac
+          [ -n "$val" ] || return 2
+          if [ "$seen" = 1 ] && [ "$val" != "$found" ]; then return 2; fi
+          found="$val"; seen=1 ;;
+        --repo|-R)
+          want=1 ;;
+      esac
+    done <<< "$toks"
+    # A trailing `-R` with NOTHING after it names a repo the command cannot
+    # resolve either; gh errors on it. Report it as unreadable rather than as
+    # absent, so the caller does not fall back to the cwd.
+    [ "$want" = 1 ] && return 2
+    [ "$seen" = 1 ] && printf '%s' "$found"
     return 0
   done < <(gate_segments "$cmd")
   return 0
