@@ -1417,18 +1417,20 @@ describe('collectFixtureDeltas collects identifier changes (issue 3327 wiring)',
     // uncaught (`Error: boom on call 2`, `SyntaxError`) instead of landing in
     // `unreadable`. With one hoisted read there is no second call to fail, so
     // these now assert the ABSENCE of a second read as much as the handling.
-    for (const [label, second] of [
-      ['throws', () => { throw new Error('boom on call 2'); }],
-      ['returns malformed JSON', () => '{ not json'],
-    ] as [string, () => string][]) {
-      let calls = 0;
-      const currentOf = (): string => {
-        calls += 1;
-        return calls === 1 ? fx(['Arn']) : second();
-      };
-      expect(() => collect(fx(['ApiId']), '', currentOf), `escaped: ${label}`).not.toThrow();
-      expect(calls, `a second read happened: ${label}`).toBe(1);
-    }
+    //
+    // ONE arm, not two. Review round 3: at this commit `second()` is never
+    // invoked, so a throwing arm and a malformed-JSON arm run identical code
+    // and the second adds nothing — the live assertion here is `calls === 1`,
+    // and `not.toThrow()` is what discriminates against the OLD shape, where
+    // `second()` did fire.
+    let calls = 0;
+    const currentOf = (): string => {
+      calls += 1;
+      if (calls > 1) throw new Error('boom on call 2');
+      return fx(['Arn']);
+    };
+    expect(() => collect(fx(['ApiId']), '', currentOf)).not.toThrow();
+    expect(calls, 'a second read happened').toBe(1);
   });
 });
 

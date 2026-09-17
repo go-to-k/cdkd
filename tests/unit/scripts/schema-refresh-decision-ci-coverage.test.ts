@@ -18,10 +18,12 @@
  * a second required check answering the same question, the duplication #3005
  * itself argued against.
  *
- * MOST is doing real work in that sentence and is not a hedge. THREE exceptions
- * survive: TWO terms are not covered at all (`UNCOVERED_TERMS` — `unreadable`,
- * and `identifierChanges` since go-to-k/cdkd#3327), and TWO of the five —
- * `failedChecks` and
+ * MOST is doing real work in that sentence and is not a hedge. FOUR TERMS are
+ * exceptional, in TWO kinds — counted by TERM here, because counting by kind
+ * and by term in one sentence is how this paragraph has been wrong before.
+ * Kind one, two terms NOT COVERED AT ALL (`UNCOVERED_TERMS`): `unreadable`, and
+ * `identifierChanges` since go-to-k/cdkd#3327. Kind two, two of the five
+ * covered terms — `failedChecks` and
  * `nestedKeyUnparsed` — are read from a refresh-side EXIT CODE, so an
  * environmental failure of a refresh-side invocation counts a decision CI
  * never sees, because CI runs those same tasks independently. Both terms carry

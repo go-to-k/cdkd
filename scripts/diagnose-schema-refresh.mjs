@@ -316,6 +316,15 @@ export function comparePropertySets(committedJson, refreshedJson) {
  * comparing joined strings instead would report the capture's own sort as a
  * change every time, which is why it is not done that way.
  *
+ * SOURCE-BLIND, and that bound belongs beside the others because issue
+ * go-to-k/cdkd#3327 recorded the two AWS sources DISAGREEING on this exact
+ * type: the public bundle said `/properties/Arn` while the per-type endpoint
+ * said `/properties/ApiId`. This compares two fixture captures without knowing
+ * which route produced either, so a hand-run refresh over a corpus captured the
+ * other way renders a labelled decision that is a SOURCE artifact rather than
+ * an AWS change. Harmless for the scheduled job, which is pinned to
+ * `--from-zip`; a hand run is where to remember it.
+ *
  * A missing or non-array field on either side reads as an EMPTY identifier, so
  * "gained an identifier" and "lost one" are both reported rather than thrown
  * on. That is DEFENSIVE rather than expected: `buildFixture` always emits the
@@ -2504,14 +2513,6 @@ export function collectFixtureDeltas({
 
     readOnlyAddedCount += delta.added.length - delta.writableAdded.length;
 
-    // Recorded here rather than in the `try`, because `resourceType` is
-    // resolved there and an entry needs it; the COMPARISON itself ran inside,
-    // so an unparseable side is already counted as `unreadable` and never
-    // reaches this line (issue go-to-k/cdkd#3327).
-    if (identifierChange !== undefined) {
-      identifierChanges.push({ resourceType, ...identifierChange });
-    }
-
     const providerRelPath = providerFiles.get(resourceType);
     const declaredHere = declared.get(resourceType) ?? new Set();
     const actionable = delta.removed.filter((/** @type {string} */ p) => declaredHere.has(p));
@@ -2585,9 +2586,18 @@ export function collectFixtureDeltas({
           (/** @type {string} */ p) => !afterReadOnly.has(p) && !declaredHere.has(p)
         );
       } catch {
-        // Unreachable in practice — `comparePropertySets` parsed the same text
-        // a few lines up — but the answer is a CLAIM about routing, so an
-        // unreadable side must not default to the confident reading.
+        // UNREACHABLE at this commit, not merely unlikely: since the read was
+        // hoisted this re-parses the exact string `comparePropertySets` already
+        // parsed, so reaching the catch would mean `JSON.parse` disagreeing
+        // with itself on one string. Kept because the answer is a CLAIM about
+        // routing and an unreadable side must not default to the confident
+        // reading — if a future edit gives this block its own input, the guard
+        // is already here.
+        //
+        // The `identifierChanges` entry is recorded BELOW rather than above
+        // for that future: this `continue` adds the file to `unreadable`, and
+        // with the push ordered earlier the same file counted TWICE in
+        // `countDecisions` (measured on the pre-hoist commits, review round 3).
         unreadable.push(file);
         continue;
       }
@@ -2596,6 +2606,16 @@ export function collectFixtureDeltas({
         properties: silentDropGone,
         retainsOtherDrops,
       });
+    }
+
+    // LAST in the loop body, after every `continue` that can add this file to
+    // `unreadable` (review round 3). Recorded here rather than beside the
+    // comparison so the two lists stay disjoint: a file counted in both would
+    // be counted twice by `countDecisions`, which is what the pre-hoist
+    // commits did when the routing branch's own read failed. `resourceType`
+    // and `identifierChange` are both in scope from the `try` above.
+    if (identifierChange !== undefined) {
+      identifierChanges.push({ resourceType, ...identifierChange });
     }
   }
 
