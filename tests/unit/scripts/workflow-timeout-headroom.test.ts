@@ -35,14 +35,21 @@
  * safety margin to be tuned finely: it is the floor below which a bound is
  * indefensible on the evidence in hand.
  *
- * WHY 2, AND THE ONE JOB THAT MAKES IT UNCOMFORTABLE. Measured across the
- * sixteen bounds, headroom runs from 2.27x to over 100x, and the tightest is
- * `hooks.yml` / `hook-suites`. go-to-k/cdkd#3282 proposes bringing that job back
- * to a 30-minute bound once its suite runs in under 15 minutes — which would be
- * exactly 2x, sitting ON this floor rather than above it. `>=` is therefore the
- * deliberate comparison: a job landing exactly on the floor passes, because the
- * alternative is a fence that refuses the very state a sibling issue is working
- * towards.
+ * WHY 2, AND WHERE THAT NUMBER COMES FROM. Measured across the bounds in the
+ * tree, headroom runs from about 2.27x to over 100x, and the tightest is
+ * `hooks.yml` / `hook-suites`.
+ *
+ * The `>=` is owed to go-to-k/cdkd#3282, NOT to this fence's own issue. #3282
+ * proposes bringing `hook-suites` back to a 30-minute bound once its suite runs
+ * in under 15 minutes — "the 2x+ headroom", i.e. exactly 2.00x, sitting ON this
+ * floor rather than above it. A fence that refused the very state a sibling
+ * issue is working towards would be disabled rather than obeyed.
+ *
+ * An earlier revision of this paragraph attributed that warning to
+ * go-to-k/cdkd#3283, which says no such thing: it writes `bound >= k * max`
+ * with `k` unfixed and never mentions `hook-suites` or #3282. Re-read before
+ * citing — a claim about what another document says is the kind this pair of
+ * fences has got wrong most often.
  *
  * EVERY UNREADABLE INPUT IS A FINDING, NEVER A SKIP. A snapshot that will not
  * parse, a job in the tree with no entry, and an entry whose job no longer
@@ -57,6 +64,16 @@ import { describe, expect, it } from 'vite-plus/test';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
+import {
+  displayNameToKey,
+  resolveJobKey,
+} from '../../../scripts/gen-workflow-job-durations.ts';
+// The SIBLING's sanitisers, imported rather than re-derived. Every field this
+// file renders — a job key, a workflow file name, a snapshot range — is
+// fork-controlled on `pull_request`, and go-to-k/cdkd#3272 found that class
+// FOUR times, each instance inside the code that fixed the previous one. A
+// fifth venue with its own copies of the helpers is how that happens again.
+import { safeName, safeText } from './workflow-log-safety.js';
 
 const REPO_ROOT = join(import.meta.dirname, '../../..');
 const WORKFLOW_DIR = join(REPO_ROOT, '.github', 'workflows');
@@ -75,21 +92,30 @@ const MIN_SNAPSHOT = 12;
 const MIN_COMPARED = 12;
 
 /**
- * Jobs with no snapshot entry that are EXPECTED to have none, each because it is
- * gated on something that rarely happens.
+ * Jobs with no snapshot entry that are EXPECTED to have none.
  *
- * Named rather than inferred: "no entry" and "this job never runs" look
- * identical in the data, so tolerating the shape wholesale would let a real
- * coverage loss pass as normal. An entry appearing for one of these is itself a
- * finding — it means the job now has data and the exemption is stale.
+ * EMPTY, and the emptiness is the point. The first cut of this file listed five
+ * jobs here with reasons like "gated on an issue or comment event" — and every
+ * one of those reasons was FALSE. They had no entry because the generator keyed
+ * on the Actions API's display name while this fence keys on the YAML job id,
+ * so the four jobs that override `name:` vanished; the fifth was dropped by a
+ * prune that stopped before it had seen every job. `issue-conventions.yml` is
+ * in fact the highest-volume workflow in the repo (~885 successful runs in a
+ * day), the opposite of rare.
+ *
+ * So this list absorbed a generator defect and gave it a plausible story, which
+ * is exactly the failure the fence exists to catch, reproduced inside the fence.
+ * With both causes fixed the snapshot covers 21 of 21 jobs and nothing needs
+ * exempting.
+ *
+ * The mechanism stays because a genuinely never-run job is possible. Adding an
+ * entry needs a reason that survives being checked — run
+ * `gh run list --workflow=<file> --json databaseId --limit 5` and look before
+ * writing one, because "no entry" and "never ran" are indistinguishable from
+ * the data alone. Both staleness directions are fenced: an exemption whose job
+ * gains data fails, and so does one whose job disappears.
  */
-const RARELY_RUN: Readonly<Record<string, string>> = {
-  'issue-conventions.yml/english-issue': 'gated on an issue or comment event',
-  'issue-conventions.yml/english-pr': 'gated on an issue or comment event',
-  'issue-conventions.yml/classification-labels': 'gated on an issue event',
-  'issue-conventions.yml/dup-check': 'gated on an issue event',
-  'release.yml/publish': 'gated on a release actually being created',
-};
+const RARELY_RUN: Readonly<Record<string, string>> = {};
 
 interface JobSample {
   readonly max: number;
@@ -142,6 +168,15 @@ export const parseSnapshot = (text: string, where: string): Record<string, JobSa
     if (!isMapping(value) || typeof value['max'] !== 'number') {
       throw new Error(`${where}: ${key} has no numeric max in the snapshot; regenerate it`);
     }
+    // POSITIVE and finite. A `max` of 0 makes headroom `Infinity`, and
+    // `Infinity < MIN_HEADROOM` is false, so every bound on that job would pass
+    // silently — the same false-comparison as `NaN < 2`. The generator now
+    // floors at 1, so a 0 here means a hand-edited or truncated snapshot.
+    if (!Number.isFinite(value['max']) || value['max'] <= 0) {
+      throw new Error(
+        `${where}: ${key} has a max that is not a positive number; regenerate it`,
+      );
+    }
     jobs[key] = {
       max: value['max'],
       from: String(value['from'] ?? ''),
@@ -154,12 +189,40 @@ export const parseSnapshot = (text: string, where: string): Record<string, JobSa
 const loadSnapshot = (): Record<string, JobSample> =>
   parseSnapshot(readFileSync(SNAPSHOT_PATH, 'utf8'), SNAPSHOT_PATH);
 
-type Finding =
-  | { kind: 'too-tight'; job: string; bound: number; max: number; headroom: number; range: string }
-  | { kind: 'not-in-snapshot'; job: string }
-  | { kind: 'exemption-now-covered'; job: string }
-  | { kind: 'exemption-for-absent-job'; job: string }
-  | { kind: 'snapshot-job-not-declared'; job: string };
+type FindingKind =
+  | 'too-tight'
+  | 'not-in-snapshot'
+  | 'exemption-now-covered'
+  | 'exemption-for-absent-job'
+  | 'snapshot-job-not-declared'
+  | 'unreadable-workflow';
+
+/**
+ * `job` and `range` are ALREADY SANITISED — `finding` below is the only
+ * constructor, and it is what sanitises. Numbers cannot carry a payload.
+ */
+interface Finding {
+  readonly kind: FindingKind;
+  readonly job: string;
+  readonly bound?: number;
+  readonly max?: number;
+  readonly headroom?: number;
+  readonly range?: string;
+}
+
+/** The single construction point; see the note on `Finding`. */
+const finding = (
+  kind: FindingKind,
+  job: string,
+  extra: { bound?: number; max?: number; headroom?: number; range?: string } = {},
+): Finding => ({
+  kind,
+  // A job key is `<file>/<job>`: the file half is constrained by `safeName`,
+  // the job half flattened and clamped. A fork controls both.
+  job: `${safeName(job.slice(0, job.indexOf('/')))}/${safeText(job.slice(job.indexOf('/') + 1))}`,
+  ...extra,
+  ...(extra.range === undefined ? {} : { range: safeText(extra.range) }),
+});
 
 /**
  * The whole verdict, as a pure function of its two inputs.
@@ -187,7 +250,7 @@ export const auditHeadroom = (
     if (sample === undefined) {
       // An absent entry and a job that simply never ran are indistinguishable
       // from the data, so the exemption list is what tells them apart.
-      if (!(job in exempt)) findings.push({ kind: 'not-in-snapshot', job });
+      if (!Object.hasOwn(exempt, job)) findings.push(finding('not-in-snapshot', job));
       continue;
     }
     // An absent bound is the SIBLING fence's finding, not this one's. Two
@@ -195,35 +258,43 @@ export const auditHeadroom = (
     // message is then the useful one.
     if (bound === undefined) continue;
     const headroom = (bound * 60) / sample.max;
-    if (headroom < MIN_HEADROOM) {
-      findings.push({
-        kind: 'too-tight',
-        job,
-        bound,
-        max: sample.max,
-        headroom,
-        range: `${sample.from}..${sample.to}`,
-      });
+    // `Number.isFinite`, and it is load-bearing twice over. A `max` of 0 makes
+    // headroom `Infinity`, and `Infinity < MIN_HEADROOM` is FALSE — so every
+    // bound on that job passed silently. The same false-comparison hides a
+    // `NaN` from a non-numeric bound, which is why deleting the `undefined`
+    // guard above was UNKILLABLE until this line existed: the fallthrough
+    // produced `NaN` and the case asserting `[]` got `[]` either way.
+    if (!Number.isFinite(headroom) || headroom < MIN_HEADROOM) {
+      findings.push(
+        finding('too-tight', job, {
+          bound,
+          max: sample.max,
+          headroom,
+          range: `${sample.from}..${sample.to}`,
+        }),
+      );
     }
   }
 
   for (const job of Object.keys(exempt)) {
-    if (snapshot[job] !== undefined) findings.push({ kind: 'exemption-now-covered', job });
-    else if (!declared.has(job)) findings.push({ kind: 'exemption-for-absent-job', job });
+    if (snapshot[job] !== undefined) findings.push(finding('exemption-now-covered', job));
+    else if (!declared.has(job)) findings.push(finding('exemption-for-absent-job', job));
   }
 
   for (const job of Object.keys(snapshot)) {
-    if (!declared.has(job)) findings.push({ kind: 'snapshot-job-not-declared', job });
+    if (!declared.has(job)) findings.push(finding('snapshot-job-not-declared', job));
   }
 
   return findings;
 };
 
 const render = (findings: readonly Finding[]): string[] =>
+  // Interpolation here is unguarded BY CONTRACT: `finding` sanitised every
+  // string field, and the rest are numbers.
   findings.map((f) =>
     f.kind === 'too-tight'
-      ? `${f.job}: ${f.bound} min against ${f.max} s observed (${f.headroom.toFixed(2)}x, ` +
-        `floor ${MIN_HEADROOM}x) in ${f.range}`
+      ? `${f.job}: ${f.bound} min against ${f.max} s observed ` +
+        `(${(f.headroom ?? Number.NaN).toFixed(2)}x, floor ${MIN_HEADROOM}x) in ${f.range}`
       : `${f.job}: ${f.kind}`,
   );
 
@@ -242,6 +313,9 @@ describe('no workflow job is bounded too tightly to survive its own longest run'
   it('the inputs it attests to are actually there', () => {
     // Floors: a snapshot that silently became `{}`, or a walk that stopped
     // matching, would make every case above pass by having nothing to check.
+    // BOTH halves of the filter, exercised below rather than only here: a
+    // bound-less job and an entry-less job each drop out, and neither half
+    // survives deletion once the synthetic cases pin them.
     const compared = [...DECLARED].filter(([k, b]) => b !== undefined && SNAPSHOT[k] !== undefined);
     expect(DECLARED.size).toBeGreaterThanOrEqual(MIN_DECLARED);
     expect(Object.keys(SNAPSHOT).length).toBeGreaterThanOrEqual(MIN_SNAPSHOT);
@@ -322,8 +396,45 @@ describe('the auditor reports what it claims to', () => {
     expect(auditHeadroom(jobsFromWorkflow('w.yml', doc), snap(100000), {})).toEqual([]);
   });
 
+  it.each([
+    ['a document that is not a mapping', 7],
+    ['a document with no jobs key', { name: 'x' }],
+    ['a jobs node that is not a mapping', { jobs: 'x' }],
+    ['a job node that is not a mapping', { jobs: { j: 'x' } }],
+  ])('%s yields no declared jobs rather than throwing', (_what, doc) => {
+    // Both halves of `jobsFromWorkflow`'s guard and its `isMapping(node)`
+    // ternary. Without them these THROW, and a throw at module scope takes the
+    // whole file's collection down rather than reporting a finding.
+    const got = jobsFromWorkflow('w.yml', doc);
+    expect([...got]).toEqual(_what === 'a job node that is not a mapping' ? [['w.yml/j', undefined]] : []);
+  });
+
   it('a numeric bound survives the same path', () => {
     expect(jobsFromWorkflow('w.yml', { jobs: { j: { 'timeout-minutes': 30 } } }).get('w.yml/j')).toBe(30);
+  });
+
+  it('a max of zero is reported, not treated as infinite headroom', () => {
+    // `parseSnapshot` refuses this, so the only way in is a direct call — which
+    // is exactly why the guard survived mutation until this case existed. The
+    // arithmetic is the trap: 3600/0 is `Infinity`, and `Infinity < 2` is
+    // FALSE, so without the finite check every bound on that job passes.
+    const found = auditHeadroom(tree(60), { 'w.yml/j': { max: 0, from: 'a', to: 'b' } }, {});
+    expect(found.map((f) => f.kind)).toEqual(['too-tight']);
+  });
+
+  it.each([
+    ['the job key', (hostile: string) => auditHeadroom(new Map([[`w.yml/${hostile}`, 60]]), { [`w.yml/${hostile}`]: { max: 3600, from: 'a', to: 'b' } }, {})],
+    ['the range', (hostile: string) => auditHeadroom(tree(60), { 'w.yml/j': { max: 3600, from: hostile, to: 'b' } }, {})],
+  ])('a hostile %s cannot forge a second line', (_what, build) => {
+    // Both are fork-controlled on `pull_request`: a job key comes from a
+    // workflow file, and a range from the committed snapshot, which a PR can
+    // edit. go-to-k/cdkd#3272 found this class FOUR times, each inside the fix
+    // for the previous one, so a fifth venue is the default assumption.
+    const hostile = `x${String.fromCodePoint(0x0a)}  ci.yml / check-build-test: FORGED${String.fromCodePoint(0x202e)}`;
+    const lines = render(build(hostile));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).not.toContain(String.fromCodePoint(0x0a));
+    expect(lines[0]).not.toContain(String.fromCodePoint(0x202e));
   });
 
   it('the rendered line carries the numbers a reader needs to act', () => {
@@ -338,14 +449,88 @@ describe('the auditor reports what it claims to', () => {
   });
 });
 
+describe('the generator resolves an API job name to a declared key', () => {
+  // `resolveJobKey` and `displayNameToKey` are the two pure halves of the
+  // defect that made five jobs vanish. They live in the generator, which is a
+  // manual network tool with no suite of its own, so they are pinned here: the
+  // network calls, the halving loop and the flag refusals can stay untested,
+  // but the NAME MAPPING cannot — it is what silently emptied the snapshot.
+  const doc = {
+    jobs: {
+      plain: { 'runs-on': 'x' },
+      renamed: { name: 'English-only (pull request)' },
+      sibling: { name: 'English-only (issue / comment)' },
+    },
+  };
+  const map = displayNameToKey('w.yml', doc);
+
+  it('maps a job with no name: by its key', () => {
+    expect(resolveJobKey('plain', map)).toBe('w.yml/plain');
+  });
+
+  it('maps a job with a name: by that name, not its key', () => {
+    expect(resolveJobKey('English-only (pull request)', map)).toBe('w.yml/renamed');
+    // And the KEY must not resolve — the API never sends it for a renamed job,
+    // so accepting it would only mask a mapping that had stopped working.
+    expect(resolveJobKey('renamed', map)).toBeUndefined();
+  });
+
+  it('does not pool two jobs whose names differ only by a parenthesised tail', () => {
+    // The original bug: stripping ` (...)` unconditionally turned both of these
+    // into `English-only` and merged two distinct jobs into one key.
+    expect(resolveJobKey('English-only (pull request)', map)).toBe('w.yml/renamed');
+    expect(resolveJobKey('English-only (issue / comment)', map)).toBe('w.yml/sibling');
+  });
+
+  it('strips a matrix leg only when the remainder resolves', () => {
+    const legs = displayNameToKey('w.yml', { jobs: { compat: { 'runs-on': 'x' } } });
+    expect(resolveJobKey('compat (22.12)', legs)).toBe('w.yml/compat');
+    expect(resolveJobKey('compat (22.12) (extra)', legs)).toBeUndefined();
+  });
+
+  it('returns undefined for a name no job declares, rather than inventing a key', () => {
+    expect(resolveJobKey('not a job', map)).toBeUndefined();
+    expect(resolveJobKey('', map)).toBeUndefined();
+  });
+
+  it.each([
+    ['a document that is not a mapping', 7],
+    ['a document with no jobs', { name: 'x' }],
+    ['a jobs node that is not a mapping', { jobs: 7 }],
+  ])('%s yields an empty map rather than throwing', (_what, bad) => {
+    expect([...displayNameToKey('w.yml', bad)]).toEqual([]);
+  });
+});
+
 describe('the snapshot is refused rather than half-read', () => {
   it.each([
-    ['no jobs mapping', '{"generatedAt":"x"}'],
-    ['jobs is not a mapping', '{"jobs":[]}'],
-    ['an entry with no numeric max', '{"jobs":{"a/b":{"from":"x","to":"y"}}}'],
-    ['an entry that is not a mapping', '{"jobs":{"a/b":7}}'],
+    ['no jobs mapping', '{"generatedAt":"x"}', /has no jobs mapping/],
+    ['jobs is not a mapping', '{"jobs":[]}', /has no jobs mapping/],
+    ['an entry with no numeric max', '{"jobs":{"a/b":{"from":"x","to":"y"}}}', /no numeric max/],
+    ['an entry that is not a mapping', '{"jobs":{"a/b":7}}', /no numeric max/],
+    ['a max of zero', '{"jobs":{"a/b":{"max":0,"from":"x","to":"y"}}}', /positive/],
+    ['a negative max', '{"jobs":{"a/b":{"max":-1,"from":"x","to":"y"}}}', /positive/],
+  ])('%s is a refusal', (_what, body, pattern) => {
+    // The PATTERN, not a bare `.toThrow()`. Gutting either message to "x" left
+    // all four of these green, so the wording — which is what tells a reader to
+    // regenerate rather than to go hunting — was pinned by nothing.
+    //
+    // `an entry that is not a mapping` shares its message with the numeric case
+    // on purpose: no JSON value can reach the `!isMapping` clause without also
+    // failing the `max` clause, so the two are one refusal and the case is
+    // named for the input rather than for a branch it cannot isolate.
+    expect(() => parseSnapshot(body, '<probe>')).toThrow(pattern);
+  });
+
+  it.each([
+    ['a top-level array', '[]'],
+    ['a top-level number', '7'],
+    ['top-level null', 'null'],
   ])('%s is a refusal', (_what, body) => {
-    expect(() => parseSnapshot(body, '<probe>')).toThrow();
+    // `isMapping`'s `typeof` and `null` clauses: `typeof null === "object"` and
+    // an array is an object too, so neither is reachable from the mapping cases
+    // above and both survived deletion.
+    expect(() => parseSnapshot(body, '<probe>')).toThrow(/has no jobs mapping/);
   });
 
   it('a well-formed snapshot parses', () => {

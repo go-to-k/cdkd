@@ -50,7 +50,7 @@
  * the population's — `--no-prune` re-derives them the slow way to check.
  */
 
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
@@ -103,9 +103,41 @@ interface Snapshot {
   readonly jobs: Record<string, JobSample>;
 }
 
+/**
+ * One `gh` call, retried on a TRANSIENT failure.
+ *
+ * The walk makes thousands of requests over tens of minutes, and a single
+ * dropped connection used to throw away all of it — measured: a `dial tcp ...
+ * operation timed out` on request ~1700 killed a run that had nothing else
+ * wrong with it, and the snapshot was never written. Retrying only helps a
+ * failure that is actually transient, so the classification is explicit and
+ * anything else rethrows immediately: a rate limit, a 404, a bad flag and a
+ * parse error are all states where trying again is just slower.
+ */
+const TRANSIENT = /dial tcp|operation timed out|connection reset|EOF|502 Bad Gateway|503|timeout awaiting/i;
+
 const gh = (args: readonly string[]): unknown => {
-  const out = execFileSync('gh', [...args], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
-  return JSON.parse(out) as unknown;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      const out = execFileSync('gh', [...args], {
+        encoding: 'utf8',
+        maxBuffer: 64 * 1024 * 1024,
+      });
+      return JSON.parse(out) as unknown;
+    } catch (error) {
+      lastError = error;
+      const text = `${String((error as { stderr?: string }).stderr ?? '')}${String(error)}`;
+      if (!TRANSIENT.test(text)) throw error;
+      // Linear, not exponential: the failures this retries are single dropped
+      // connections rather than a server asking us to slow down, and a long
+      // backoff on a thousands-of-requests walk costs more than it saves.
+      const waitMs = 2000 * (attempt + 1);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, waitMs);
+      process.stderr.write(`  transient gh failure, retry ${attempt + 1}/3 after ${waitMs}ms\n`);
+    }
+  }
+  throw lastError;
 };
 
 const isMapping = (v: unknown): v is Record<string, unknown> =>
@@ -116,6 +148,44 @@ const workflowFiles = (): string[] =>
   readdirSync(WORKFLOW_DIR)
     .filter((name) => /\.ya?ml$/.test(name))
     .sort();
+
+/**
+ * Display name -> job KEY, for one workflow.
+ *
+ * THE ACTIONS API RETURNS THE DISPLAY NAME, not the YAML job id, and a job may
+ * override it with `name:`. Keying on the name dropped every such job silently:
+ * the four `issue-conventions.yml` jobs are the only ones in this tree that
+ * override, and all four vanished from the snapshot — then got written into the
+ * fence's exemption list with reasons that were FALSE. That workflow is the
+ * highest-volume one in the repo (~885 successful runs in a day), not a rare
+ * one. An exemption list absorbing a generator defect is the exact failure this
+ * fence exists to catch, reproduced inside it.
+ *
+ * Matrix legs arrive as `<display name> (leg)`. The suffix is stripped ONLY
+ * when the remainder resolves to a declared job, because two jobs here differ
+ * solely by a parenthesised tail — `English-only (pull request)` and
+ * `English-only (issue / comment)` — and blind stripping pooled them into one.
+ */
+export const displayNameToKey = (file: string, doc: unknown): Map<string, string> => {
+  const out = new Map<string, string>();
+  if (!isMapping(doc) || !isMapping(doc['jobs'])) return out;
+  for (const [job, node] of Object.entries(doc['jobs'])) {
+    const display = isMapping(node) && typeof node['name'] === 'string' ? node['name'] : job;
+    out.set(display, `${file}/${job}`);
+  }
+  return out;
+};
+
+/** Resolve one API job name to a declared key, or `undefined` if it matches none. */
+export const resolveJobKey = (
+  apiName: string,
+  byDisplay: ReadonlyMap<string, string>,
+): string | undefined => {
+  const exact = byDisplay.get(apiName);
+  if (exact !== undefined) return exact;
+  const stripped = apiName.replace(/\s*\([^()]*\)$/, '');
+  return stripped === apiName ? undefined : byDisplay.get(stripped);
+};
 
 /**
  * Every job key the tree declares, as `<file>/<job>`.
@@ -186,24 +256,37 @@ const runsInRange = (file: string, from: string, to: string): RunRow[] | null =>
     .sort((a, b) => b.seconds - a.seconds);
 };
 
-/** Per-job durations of one run. A job still running or not successful is skipped. */
-const jobDurations = (runId: number): Map<string, number[]> => {
+/**
+ * Per-job durations of one run, keyed by DECLARED JOB KEY.
+ *
+ * `skipped` is excluded — it never ran. `failure` and `cancelled` are INCLUDED,
+ * which is the safety-relevant direction: a job killed at its own bound is the
+ * strongest evidence a bound is too tight, and filtering to successes alone
+ * excluded exactly that, understating the maximum in the hiding direction.
+ */
+const jobDurations = (
+  runId: number,
+  byDisplay: ReadonlyMap<string, string>,
+): Map<string, number[]> => {
   const raw = gh(['api', `repos/${REPO}/actions/runs/${runId}/jobs?per_page=100`, '--paginate']);
   const out = new Map<string, number[]>();
   const pages = Array.isArray(raw) ? raw : [raw];
   for (const page of pages) {
     if (!isMapping(page) || !Array.isArray(page['jobs'])) continue;
     for (const job of page['jobs']) {
-      if (!isMapping(job) || job['conclusion'] !== 'success') continue;
+      if (!isMapping(job)) continue;
+      const conclusion = job['conclusion'];
+      if (conclusion !== 'success' && conclusion !== 'failure' && conclusion !== 'cancelled') {
+        continue;
+      }
       const started = Date.parse(String(job['started_at']));
       const completed = Date.parse(String(job['completed_at']));
       if (!Number.isFinite(started) || !Number.isFinite(completed)) continue;
-      // Matrix legs share a job name with a `(leg)` suffix; the bound is
-      // declared once for the job, so the legs pool.
-      const name = String(job['name']).replace(/\s*\(.*\)$/, '');
-      const list = out.get(name) ?? [];
+      const key = resolveJobKey(String(job['name']), byDisplay);
+      if (key === undefined) continue;
+      const list = out.get(key) ?? [];
       list.push((completed - started) / 1000);
-      out.set(name, list);
+      out.set(key, list);
     }
   }
   return out;
@@ -280,16 +363,35 @@ const main = (): void => {
       }
     }
     ranges.set(file, { from: usedFrom, to });
+    const doc: unknown = parseYaml(readFileSync(join(WORKFLOW_DIR, file), 'utf8'));
+    const byDisplay = displayNameToKey(file, doc);
+    const declaredHere = [...declared].filter((k) => k.startsWith(`${file}/`));
     const maxima = new Map<string, number>();
     for (const run of runs) {
-      // The prune, and the whole reason this is affordable: a job cannot
-      // outlast its run. Once the run's wall clock is at or below every
-      // maximum already seen for this workflow, no later run (they descend)
-      // can raise one.
-      if (prune && maxima.size > 0 && run.seconds <= Math.min(...maxima.values())) break;
+      // THE PRUNE IS SOUND FOR A MAXIMUM AND WAS UNSOUND FOR COVERAGE, which
+      // is a distinction an earlier revision of this comment blurred by saying
+      // "the reported maxima are exactly the population's" and letting the
+      // reader infer the rest. A job cannot outlast its run, so once the run's
+      // wall clock is at or below every maximum SEEN SO FAR, no later run can
+      // raise one of those. But a job not yet seen has no entry in `maxima` at
+      // all, so it was never in that minimum — and a job that only ever appears
+      // in shorter runs was dropped from the snapshot entirely.
+      //
+      // Measured in production, not hypothetically: `release.yml/publish` has
+      // 387 successful runs, the longest of which contains only
+      // `release-please` at 118 s. `min(maxima)` was therefore 118, the second
+      // run (116 s) broke the walk, and ONE run of 387 was fetched — in which
+      // `publish` happened to be skipped. It then entered the fence's exemption
+      // list as "rarely run". A reviewer's brute force over 4000 synthetic
+      // populations found 0 understated maxima and 28 whole-job omissions,
+      // which is exactly this shape.
+      //
+      // So the walk may only prune once every declared job of this workflow has
+      // been seen at least once.
+      const allSeen = declaredHere.every((key) => maxima.has(key));
+      if (prune && allSeen && run.seconds <= Math.min(...maxima.values())) break;
       runsFetched += 1;
-      for (const [job, seconds] of jobDurations(run.id)) {
-        const key = `${file}/${job}`;
+      for (const [key, seconds] of jobDurations(run.id, byDisplay)) {
         if (!declared.has(key)) continue;
         const list = samples.get(key) ?? [];
         list.push(...seconds);
@@ -306,7 +408,12 @@ const main = (): void => {
     const file = key.slice(0, key.indexOf('/'));
     const used = ranges.get(file);
     jobs[key] = {
-      max: Math.round(list[list.length - 1] ?? 0),
+      // At least 1. `Math.round` turned any sub-500 ms job into 0, and a 0 max
+      // makes the fence's headroom `Infinity` — and `Infinity < 2` is FALSE, so
+      // every bound on that job would have passed silently. Flooring at one
+      // second overstates such a job by under a second and keeps the ratio
+      // finite, which is the safe direction.
+      max: Math.max(1, Math.round(list[list.length - 1] ?? 0)),
       from: used?.from ?? from,
       to: used?.to ?? to,
     };
@@ -341,4 +448,16 @@ const main = (): void => {
   }
 };
 
-main();
+/**
+ * Only when RUN, never when imported.
+ *
+ * Without this guard, importing the module for its pure helpers starts the
+ * whole network walk — measured: pinning `resolveJobKey` in a unit test hung
+ * the suite while the generator fetched runs in the background. A script whose
+ * pure parts cannot be imported is one whose pure parts cannot be fenced, which
+ * is how the name-mapping defect this file now guards against survived in the
+ * first place.
+ */
+if (process.argv[1] !== undefined && import.meta.filename === realpathSync(process.argv[1])) {
+  main();
+}
