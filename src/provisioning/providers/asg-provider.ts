@@ -30,6 +30,7 @@ import {
   type InstanceMaintenancePolicy,
 } from '@aws-sdk/client-auto-scaling';
 import { EC2Client } from '@aws-sdk/client-ec2';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -747,7 +748,7 @@ export class ASGProvider implements ResourceProvider {
         // Non-fatal: log and proceed. The actual delete below surfaces
         // any real error.
         this.logger.debug(
-          `Could not disable DeletionProtection on ${physicalId}: ${flipError instanceof Error ? flipError.message : String(flipError)}`
+          `Could not disable DeletionProtection on ${physicalId}: ${describeAwsFailure(flipError).detail}`
         );
       }
 
@@ -872,7 +873,7 @@ export class ASGProvider implements ResourceProvider {
       .then((r) => r.LifecycleHooks ?? [])
       .catch((err) => {
         this.logger.debug(
-          `DescribeLifecycleHooks(${physicalId}) failed: ${err instanceof Error ? err.message : String(err)}`
+          `DescribeLifecycleHooks(${physicalId}) failed: ${describeAwsFailure(err).detail}`
         );
         return [];
       });
@@ -882,7 +883,7 @@ export class ASGProvider implements ResourceProvider {
       .then((r) => r.TrafficSources ?? [])
       .catch((err) => {
         this.logger.debug(
-          `DescribeTrafficSources(${physicalId}) failed: ${err instanceof Error ? err.message : String(err)}`
+          `DescribeTrafficSources(${physicalId}) failed: ${describeAwsFailure(err).detail}`
         );
         return [];
       });
@@ -892,7 +893,7 @@ export class ASGProvider implements ResourceProvider {
       .then((r) => r.NotificationConfigurations ?? [])
       .catch((err) => {
         this.logger.debug(
-          `DescribeNotificationConfigurations(${physicalId}) failed: ${err instanceof Error ? err.message : String(err)}`
+          `DescribeNotificationConfigurations(${physicalId}) failed: ${describeAwsFailure(err).detail}`
         );
         return [];
       });
@@ -1133,7 +1134,7 @@ export class ASGProvider implements ResourceProvider {
         .filter((id): id is string => typeof id === 'string' && id.length > 0);
     } catch (describeError) {
       this.logger.debug(
-        `Could not enumerate instances of AutoScalingGroup ${logicalId} for termination-protection removal: ${describeError instanceof Error ? describeError.message : String(describeError)}`
+        `Could not enumerate instances of AutoScalingGroup ${logicalId} for termination-protection removal: ${describeAwsFailure(describeError).detail}`
       );
       return;
     }
@@ -1154,7 +1155,7 @@ export class ASGProvider implements ResourceProvider {
       return group?.AutoScalingGroupARN;
     } catch (err) {
       this.logger.debug(
-        `DescribeAutoScalingGroups(${groupName}) failed: ${err instanceof Error ? err.message : String(err)}`
+        `DescribeAutoScalingGroups(${groupName}) failed: ${describeAwsFailure(err).detail}`
       );
       return undefined;
     }
@@ -1419,7 +1420,7 @@ export class ASGProvider implements ResourceProvider {
         // timeout-warn path if the API is genuinely down.
         debug(
           `applyTargetGroupArnsDiff convergence poll: transient error, retrying — ${
-            err instanceof Error ? err.message : String(err)
+            describeAwsFailure(err).detail
           }`
         );
         await new Promise((r) => setTimeout(r, ASGProvider.TG_CONVERGENCE_POLL_INTERVAL_MS));

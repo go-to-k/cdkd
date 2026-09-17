@@ -46,6 +46,7 @@ import {
   type TargetDescription,
 } from '@aws-sdk/client-elastic-load-balancing-v2';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { withRetry, type RetryLogger } from '../../deployment/retry.js';
 import { isInterruptedWaitError, startInterruptWatch } from '../interrupt-watch.js';
 import {
@@ -1065,7 +1066,7 @@ export class ELBv2Provider implements ResourceProvider {
         zones = resp.CapacityReservationState ?? [];
       } catch (probeError) {
         this.logger.debug(
-          `DescribeCapacityReservation for ${logicalId} failed transiently (attempt ${attempt + 1}/${maxAttempts}): ${probeError instanceof Error ? probeError.message : String(probeError)}`
+          `DescribeCapacityReservation for ${logicalId} failed transiently (attempt ${attempt + 1}/${maxAttempts}): ${describeAwsFailure(probeError).detail}`
         );
         await capacityReservationDelays.sleep(intervalMs);
         continue;
@@ -1113,7 +1114,7 @@ export class ELBv2Provider implements ResourceProvider {
       } catch (flipError) {
         if (!this.isNotFoundError(flipError)) {
           this.logger.debug(
-            `Could not disable deletion_protection.enabled on ${physicalId}: ${flipError instanceof Error ? flipError.message : String(flipError)}`
+            `Could not disable deletion_protection.enabled on ${physicalId}: ${describeAwsFailure(flipError).detail}`
           );
         }
       }
@@ -2447,9 +2448,7 @@ export class ELBv2Provider implements ResourceProvider {
       // precede it already surface a deleted target group; this mirrors
       // `attachTags`, the sibling best-effort enrichment.
       this.logger.debug(
-        `ELBv2 DescribeTargetHealth(${targetGroupArn}) failed: ${
-          err instanceof Error ? err.message : String(err)
-        }`
+        `ELBv2 DescribeTargetHealth(${targetGroupArn}) failed: ${describeAwsFailure(err).detail}`
       );
     }
   }
@@ -2590,9 +2589,7 @@ export class ELBv2Provider implements ResourceProvider {
       const tags = normalizeAwsTagsToCfn(tagDesc?.Tags);
       result['Tags'] = tags;
     } catch (err) {
-      this.logger.debug(
-        `ELBv2 DescribeTags(${arn}) failed: ${err instanceof Error ? err.message : String(err)}`
-      );
+      this.logger.debug(`ELBv2 DescribeTags(${arn}) failed: ${describeAwsFailure(err).detail}`);
     }
   }
 

@@ -12,6 +12,7 @@ import {
   type InstanceRoleType,
 } from '@aws-sdk/client-emr';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { toSdkConfigurations } from '../emr-configuration.js';
@@ -417,7 +418,7 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
         } else {
           this.logger.warn(
             `Best-effort scale-to-0 of EMR instance group ${physicalId} failed: ${
-              error instanceof Error ? error.message : String(error)
+              describeAwsFailure(error).detail
             } — its instances are released when the parent cluster terminates`
           );
         }
@@ -568,7 +569,10 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
       return undefined;
     } catch (error) {
       const name = error instanceof Error ? error.name : '';
-      const msg = error instanceof Error ? error.message : String(error);
+      // `.detail`, never `.summary`: the substring test below is what keeps this
+      // degradation alive, and it matches AWS's OWN wording. Byte-identical to
+      // the ternary it replaced, minus that ternary's throw.
+      const msg = describeAwsFailure(error).detail;
       const transient =
         name === 'ThrottlingException' ||
         name === 'InternalServerException' ||

@@ -13,6 +13,7 @@ import {
   type CertificateOptions,
 } from '@aws-sdk/client-acm';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -417,7 +418,7 @@ export class ACMCertificateProvider implements ResourceProvider {
         idempotencyToken.release();
         return undefined;
       }
-      const detail = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+      const detail = describeAwsFailure(cleanupError).detail;
       this.logger.warn(
         `Could not delete the ACM certificate ${certificateArn} that the failed create of ${logicalId} requested: ${detail}`
       );
@@ -511,9 +512,9 @@ export class ACMCertificateProvider implements ResourceProvider {
         const inUse = isCertificateInUseError(error);
         orphanReason = inUse
           ? `old certificate ${physicalId} is still in use by another resource and was not deleted`
-          : `old certificate ${physicalId} could not be deleted: ${String(error)}`;
+          : `old certificate ${physicalId} could not be deleted: ${safeStringify(error)}`;
         this.logger.warn(
-          `Failed to delete old ACM certificate ${physicalId} during replacement: ${String(error)}. ` +
+          `Failed to delete old ACM certificate ${physicalId} during replacement: ${safeStringify(error)}. ` +
             (inUse
               ? `This usually means a consumer (e.g. a CloudFront distribution) still references it; ` +
                 `it can be deleted once DescribeCertificate.InUseBy is empty. `

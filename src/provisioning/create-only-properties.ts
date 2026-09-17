@@ -31,6 +31,7 @@
  */
 
 import { describeTypeWithThrottleRetry, hasNoRegistrySchema } from './describe-type.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { getLogger } from '../utils/logger.js';
 
 /**
@@ -93,7 +94,7 @@ export function getCreateOnlyPropertyPaths(
     // The lookup failed: drop the in-flight entry so a later call retries,
     // warn (once per failure), and fall back to an empty list for this call.
     createOnlyPropertiesCache.delete(resourceType);
-    const message = error instanceof Error ? error.message : String(error);
+    const message = describeAwsFailure(error).detail;
     getLogger()
       .child('CreateOnlyProperties')
       .warn(

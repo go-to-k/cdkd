@@ -1,4 +1,5 @@
 import type { CanonicalizePropertiesFn } from '../analyzer/diff-calculator.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import type { ResourceProvider } from '../types/resource.js';
 import { getLogger } from '../utils/logger.js';
 
@@ -41,7 +42,7 @@ export function makeCanonicalizePropertiesFn(registry: ProviderLookup): Canonica
     } catch (error) {
       logger.debug(
         `canonicalizeDesiredProperties failed for ${resourceType}: ${
-          error instanceof Error ? error.message : String(error)
+          describeAwsFailure(error).detail
         }`
       );
       return properties;

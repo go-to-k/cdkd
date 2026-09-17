@@ -25,6 +25,7 @@ import {
   type VPCRegion,
 } from '@aws-sdk/client-route-53';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
@@ -534,7 +535,7 @@ export class Route53Provider implements ResourceProvider {
           } catch (deleteError) {
             this.logger.warn(
               `Best-effort rollback DeleteHostedZone for ${zoneId} also failed: ${
-                deleteError instanceof Error ? deleteError.message : String(deleteError)
+                describeAwsFailure(deleteError).detail
               } — operator may need to clean up the orphan zone`
             );
           }
@@ -1673,7 +1674,13 @@ export class Route53Provider implements ResourceProvider {
         `Applied ${tags.length} tag(s) and removed ${removeTagKeys.length} tag(s) on hosted zone ${logicalId}`
       );
     } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
+      const detail = describeAwsFailure(error).detail;
+      // `detail` is `.detail` and not `.summary` because the REMOVAL arm below
+      // throws it, and its callers wrap this in `withRetry` -- a wire name
+      // alone would not tell a retryable tag failure from a permanent one.
+      // Same persisted-message caveat as the GlobalTable pre-delete describe;
+      // both belong to go-to-k/cdkd#2319 (thrown sites interpolating an AWS
+      // failure into a persisted error), not to go-to-k/cdkd#3341.
       // A failed ADD is self-healing: the template still declares the tag, so
       // the next deploy retries it. A failed REMOVAL is NOT — this update
       // returns success, state is rewritten WITHOUT the tag, and the next
@@ -1828,7 +1835,7 @@ export class Route53Provider implements ResourceProvider {
         return;
       }
       this.logger.warn(
-        `Failed to apply query logging config to hosted zone ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to apply query logging config to hosted zone ${logicalId}: ${describeAwsFailure(error).detail}`
       );
     }
   }
@@ -1901,7 +1908,7 @@ export class Route53Provider implements ResourceProvider {
         return;
       }
       this.logger.warn(
-        `Failed to delete query logging config for hosted zone ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to delete query logging config for hosted zone ${logicalId}: ${describeAwsFailure(error).detail}`
       );
     }
   }
@@ -1967,7 +1974,7 @@ export class Route53Provider implements ResourceProvider {
       }
     } catch (error) {
       this.logger.warn(
-        `Failed to sync VPC associations for hosted zone ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to sync VPC associations for hosted zone ${logicalId}: ${describeAwsFailure(error).detail}`
       );
     }
   }
@@ -2106,7 +2113,21 @@ export class Route53Provider implements ResourceProvider {
             ? sawLaterName || response.IsTruncated !== true
             : zones.length > 0 || response.IsTruncated !== true);
       } catch (error) {
-        lookupErrorMessage = error instanceof Error ? error.message : String(error);
+        // `.detail` keeps this binding IDENTICAL to what the old expression
+        // produced -- same text, so same truthiness at the condition below.
+        // Stated as identity rather than as "non-empty", which an earlier
+        // revision claimed and which is false: `new Error('')` yields `''`
+        // under both spellings. The point is that nothing about this binding
+        // changes, not that it is always populated.
+        //
+        // NOTE it also reaches a THROWN `ProvisioningError` below, and so the
+        // persisted `deployments/*.jsonl` store, while `aws-failure-text.ts`
+        // documents `detail` as `logger.debug` ONLY. That is pre-existing --
+        // the raw `.message` went to the same place -- and is deliberately not
+        // changed here, because `.summary` would alter the refusal's wording.
+        // Flagged so the site does not read as audited by the helper while
+        // sitting outside its contract.
+        lookupErrorMessage = describeAwsFailure(error).detail;
         lookupErrorCause = error instanceof Error ? error : undefined;
         this.logger.warn(
           `Failed to resolve HostedZoneName "${hostedZoneName}" for ${logicalId}: ${lookupErrorMessage}`
@@ -2160,6 +2181,13 @@ export class Route53Provider implements ResourceProvider {
     // not position against AWS's ordering), and reporting that as "specify a
     // zone" names neither the cause nor a remedy for a user who did specify
     // one.
+    // `lookupErrorMessage` below reaches a THROWN message that
+    // `extractDeploymentEventError` persists -- one of the ten such sites in
+    // this sweep, and the one two successive audits left UNCOUNTED: its
+    // conversion sits beside a `logger.warn`, so a reader who starts from the
+    // logger call sites finds it and stops. The note belongs HERE, at the
+    // throw. `.detail` keeps AWS's own sentence; the disclosure question for
+    // every site of that shape is go-to-k/cdkd#2319's.
     throw new ProvisioningError(
       lookupErrorMessage
         ? `Could not resolve HostedZoneName "${String(hostedZoneName)}" for ${subject.noun} ` +
@@ -2224,7 +2252,7 @@ export class Route53Provider implements ResourceProvider {
       // or credential error is otherwise indistinguishable from a template
       // that simply does not name a zone.
       this.logger.debug(
-        `Cannot resolve record-set identity for '${physicalId}': ${err instanceof Error ? err.message : String(err)}`
+        `Cannot resolve record-set identity for '${physicalId}': ${describeAwsFailure(err).detail}`
       );
       return undefined;
     }
@@ -2331,7 +2359,7 @@ export class Route53Provider implements ResourceProvider {
       result['HostedZoneTags'] = tags;
     } catch (err) {
       this.logger.debug(
-        `Route53 ListTagsForResource(${idTail}) failed: ${err instanceof Error ? err.message : String(err)}`
+        `Route53 ListTagsForResource(${idTail}) failed: ${describeAwsFailure(err).detail}`
       );
     }
 
@@ -2354,7 +2382,7 @@ export class Route53Provider implements ResourceProvider {
       }
     } catch (err) {
       this.logger.debug(
-        `Route53 ListQueryLoggingConfigs(${idTail}) failed: ${err instanceof Error ? err.message : String(err)}`
+        `Route53 ListQueryLoggingConfigs(${idTail}) failed: ${describeAwsFailure(err).detail}`
       );
       result['QueryLoggingConfig'] = {};
     }
@@ -2709,9 +2737,7 @@ export class Route53Provider implements ResourceProvider {
     try {
       observed = await this.readRecordSet(compositeId);
     } catch (err) {
-      return adoptVerbatim(
-        `verification failed: ${err instanceof Error ? err.message : String(err)}`
-      );
+      return adoptVerbatim(`verification failed: ${describeAwsFailure(err).detail}`);
     }
     if (!observed) {
       return adoptVerbatim('the record was not found under the resolved hosted zone');
@@ -2771,7 +2797,7 @@ export class Route53Provider implements ResourceProvider {
       if (error instanceof Error && error.name === 'NoSuchHostedZone') return null;
       this.logger.warn(
         `Imported hosted zone ${zoneId} but could not read its NameServers: ` +
-          `${error instanceof Error ? error.message : String(error)}. ` +
+          `${describeAwsFailure(error).detail}. ` +
           `The zone is adopted without them (any attributes already in state for this ` +
           `zone are kept). Re-run ` +
           `\`cdkd import --resource ${logicalId}=${zoneId} --force\` once the permission ` +

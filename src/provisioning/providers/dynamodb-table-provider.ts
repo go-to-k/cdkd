@@ -41,6 +41,7 @@ import {
   type LocalSecondaryIndexDescription,
 } from '@aws-sdk/client-dynamodb';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
@@ -1352,7 +1353,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         } catch (cleanupError) {
           warn(
             `Failed to roll back partially-created DynamoDB table ${tableName}: ${
-              cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+              describeAwsFailure(cleanupError).detail
             }`
           );
         }
@@ -2686,7 +2687,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
           observedProtectionOn = before.Table?.DeletionProtectionEnabled === true;
         } catch (observeError) {
           this.logger.debug(
-            `Could not read DeletionProtectionEnabled on ${physicalId} before disabling it: ${observeError instanceof Error ? observeError.message : String(observeError)}`
+            `Could not read DeletionProtectionEnabled on ${physicalId} before disabling it: ${describeAwsFailure(observeError).detail}`
           );
         }
         await this.dynamoDBClient.send(
@@ -2713,13 +2714,13 @@ export class DynamoDBTableProvider implements ResourceProvider {
           await this.waitForTableActiveAfterUpdate(physicalId, TABLE_ACTIVE_WAIT_ATTEMPTS, budget);
         } catch (waitErr) {
           this.logger.debug(
-            `Could not wait for table ${physicalId} ACTIVE after disabling protection: ${waitErr instanceof Error ? waitErr.message : String(waitErr)}`
+            `Could not wait for table ${physicalId} ACTIVE after disabling protection: ${describeAwsFailure(waitErr).detail}`
           );
         }
       } catch (flipError) {
         if (!(flipError instanceof ResourceNotFoundException)) {
           this.logger.debug(
-            `Could not disable DeletionProtectionEnabled on ${physicalId}: ${flipError instanceof Error ? flipError.message : String(flipError)}`
+            `Could not disable DeletionProtectionEnabled on ${physicalId}: ${describeAwsFailure(flipError).detail}`
           );
         }
       }
@@ -3055,7 +3056,10 @@ export class DynamoDBTableProvider implements ResourceProvider {
       try {
         return await op();
       } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
+        // `.detail`, never `.summary`: the classifier below matches AWS's OWN
+        // wording, which `.summary` replaces with the wire name alone. Same text as
+        // the `instanceof Error ?` ternary it replaced, minus that ternary's throw.
+        const msg = describeAwsFailure(error).detail;
         const name = error instanceof Error ? error.name : '';
         const transient =
           /being enabled|being updated|please retry later|backups are being/i.test(msg) ||
@@ -5037,7 +5041,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         }
       } catch (err) {
         this.logger.debug(
-          `Could not read PointInTimeRecovery for ${physicalId}: ${err instanceof Error ? err.message : String(err)}`
+          `Could not read PointInTimeRecovery for ${physicalId}: ${describeAwsFailure(err).detail}`
         );
       }
 
@@ -5060,7 +5064,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         }
       } catch (err) {
         this.logger.debug(
-          `Could not read TimeToLive for ${physicalId}: ${err instanceof Error ? err.message : String(err)}`
+          `Could not read TimeToLive for ${physicalId}: ${describeAwsFailure(err).detail}`
         );
       }
 
@@ -5087,7 +5091,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         } catch (err) {
           if (!(err instanceof ResourceNotFoundException)) {
             this.logger.debug(
-              `Could not read ResourcePolicy for ${physicalId}: ${err instanceof Error ? err.message : String(err)}`
+              `Could not read ResourcePolicy for ${physicalId}: ${describeAwsFailure(err).detail}`
             );
           }
         }
@@ -5116,7 +5120,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         }
       } catch (err) {
         this.logger.debug(
-          `Could not read KinesisStreamingDestination for ${physicalId}: ${err instanceof Error ? err.message : String(err)}`
+          `Could not read KinesisStreamingDestination for ${physicalId}: ${describeAwsFailure(err).detail}`
         );
       }
 
@@ -5140,7 +5144,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         }
       } catch (err) {
         this.logger.debug(
-          `Could not read ContributorInsights for ${physicalId}: ${err instanceof Error ? err.message : String(err)}`
+          `Could not read ContributorInsights for ${physicalId}: ${describeAwsFailure(err).detail}`
         );
       }
 

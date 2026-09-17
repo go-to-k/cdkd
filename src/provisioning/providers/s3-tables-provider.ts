@@ -18,6 +18,7 @@ import {
   NotFoundException,
 } from '@aws-sdk/client-s3tables';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import {
@@ -900,7 +901,7 @@ export class S3TablesProvider implements ResourceProvider {
     } catch (err) {
       this.logger.warn(
         `S3 Tables Table ${physicalId}: could not resolve its identity for drift ` +
-          `(${err instanceof Error ? err.message : String(err)}); reporting drift as unknown.`
+          `(${describeAwsFailure(err).detail}); reporting drift as unknown.`
       );
       return undefined;
     }
@@ -1434,7 +1435,7 @@ export class S3TablesProvider implements ResourceProvider {
       return out;
     } catch (err) {
       this.logger.debug(
-        `readTagsBestEffort: ListTagsForResource failed for ${resourceArn}: ${err instanceof Error ? err.message : String(err)} — emitting Tags: []`
+        `readTagsBestEffort: ListTagsForResource failed for ${resourceArn}: ${describeAwsFailure(err).detail} — emitting Tags: []`
       );
       return [];
     }

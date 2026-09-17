@@ -22,6 +22,7 @@ import {
   ResourceAlreadyExistsException,
 } from '@aws-sdk/client-cloudwatch-logs';
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
@@ -503,7 +504,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
               : 'Manual deletion may be required before the next deploy, via the console: the log ' +
                 'group name cannot be reproduced safely on a command line.';
             this.logger.warn(
-              `Failed to clean up partially-created log group ${logicalId} (${logGroupName}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. ${manualStep}`
+              `Failed to clean up partially-created log group ${logicalId} (${logGroupName}): ${describeAwsFailure(cleanupError).detail}. ${manualStep}`
             );
           }
         }
@@ -1155,7 +1156,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
         );
       } catch (flipError) {
         this.logger.debug(
-          `Could not disable DeletionProtectionEnabled on ${physicalId}: ${flipError instanceof Error ? flipError.message : String(flipError)}`
+          `Could not disable DeletionProtectionEnabled on ${physicalId}: ${describeAwsFailure(flipError).detail}`
         );
       }
     }

@@ -21,6 +21,7 @@ import {
   type MetricsName,
 } from '@aws-sdk/client-kinesis';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { readConfigString } from '../config-shape.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -1043,7 +1044,7 @@ export class KinesisStreamProvider implements ResourceProvider {
     } catch (err) {
       if (err instanceof ResourceNotFoundException) return undefined;
       this.logger.debug(
-        `Kinesis ListTagsForStream(${physicalId}) failed: ${err instanceof Error ? err.message : String(err)}`
+        `Kinesis ListTagsForStream(${physicalId}) failed: ${describeAwsFailure(err).detail}`
       );
     }
     return result;

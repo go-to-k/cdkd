@@ -31,6 +31,7 @@ import {
   type DeliveryStreamEncryptionConfigurationInput,
 } from '@aws-sdk/client-firehose';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import {
   CdkdError,
   ProvisioningError,
@@ -2011,7 +2012,7 @@ export class FirehoseProvider implements ResourceProvider {
     } catch (err) {
       if (err instanceof ResourceNotFoundException) return undefined;
       this.logger.debug(
-        `Firehose ListTagsForDeliveryStream(${physicalId}) failed: ${err instanceof Error ? err.message : String(err)}`
+        `Firehose ListTagsForDeliveryStream(${physicalId}) failed: ${describeAwsFailure(err).detail}`
       );
       result['Tags'] = [];
     }

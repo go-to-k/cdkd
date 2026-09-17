@@ -14,6 +14,7 @@ import {
   ListTagsForResourceCommand,
 } from '@aws-sdk/client-s3-control';
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { EC2Client, DescribeAvailabilityZonesCommand } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
@@ -108,7 +109,7 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
       }
     } catch (error) {
       this.logger.debug(
-        `Failed to resolve AZ ID for ${azName}: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to resolve AZ ID for ${azName}: ${describeAwsFailure(error).detail}`
       );
     }
     // Fallback: return the AZ name as-is
@@ -422,7 +423,10 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
         this.logger.debug(`Successfully deleted S3 Express Directory Bucket ${logicalId}`);
         return;
       } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
+        // `.detail`, never `.summary`: the substring test below is what keeps this
+        // degradation alive, and it matches AWS's OWN wording. Byte-identical to
+        // the ternary it replaced, minus that ternary's throw.
+        const msg = describeAwsFailure(error).detail;
         if (msg.includes('not empty') || msg.includes('BucketNotEmpty')) {
           if (!allowAutoEmpty) {
             throw new Error(

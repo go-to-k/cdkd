@@ -29,6 +29,7 @@ import {
   type Tag,
 } from '@aws-sdk/client-emr';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { protectedReplacementAdvice } from '../replacement-protection-advice.js';
@@ -334,7 +335,7 @@ export class EMRClusterProvider implements ResourceProvider {
         } catch (cleanupError) {
           this.logger.warn(
             `Failed to roll back partially-created EMR Cluster ${clusterId}: ${
-              cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+              describeAwsFailure(cleanupError).detail
             } — terminate it manually to stop billing`
           );
         }
@@ -684,7 +685,7 @@ export class EMRClusterProvider implements ResourceProvider {
       } catch (describeError) {
         this.logger.debug(
           `Post-update attribute refresh for ${physicalId} failed (returning without attributes): ${
-            describeError instanceof Error ? describeError.message : String(describeError)
+            describeAwsFailure(describeError).detail
           }`
         );
       }
@@ -855,7 +856,10 @@ export class EMRClusterProvider implements ResourceProvider {
       return response.Cluster;
     } catch (error) {
       const name = error instanceof Error ? error.name : '';
-      const msg = error instanceof Error ? error.message : String(error);
+      // `.detail`, never `.summary`: the substring test below is what keeps this
+      // degradation alive, and it matches AWS's OWN wording. Byte-identical to
+      // the ternary it replaced, minus that ternary's throw.
+      const msg = describeAwsFailure(error).detail;
       const transient =
         name === 'ThrottlingException' ||
         name === 'InternalServerException' ||

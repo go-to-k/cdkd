@@ -11,6 +11,7 @@ import {
   type SseType,
 } from '@aws-sdk/client-s3vectors';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
@@ -459,7 +460,7 @@ export class S3VectorsProvider implements ResourceProvider {
         result['Tags'] = normalizeAwsTagsToCfn(tagsResp.tags);
       } catch (err) {
         this.logger.debug(
-          `S3Vectors ListTagsForResource(${bucket.vectorBucketArn}) failed: ${err instanceof Error ? err.message : String(err)}`
+          `S3Vectors ListTagsForResource(${bucket.vectorBucketArn}) failed: ${describeAwsFailure(err).detail}`
         );
         result['Tags'] = [];
       }

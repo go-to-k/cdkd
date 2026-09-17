@@ -936,6 +936,45 @@ describe('ACMCertificateProvider', () => {
       expect(result.reason).toContain('no delete issued');
     });
 
+    // The case below cannot tell `safeStringify(err)` from
+    // `describeAwsFailure(err).detail`, because its fixture puts the wire code
+    // in the MESSAGE, where both spellings find it. `reason` here is PERSISTED
+    // as the row's `outcome: 'partial'` text, so its wording may not move --
+    // and the spelling that moves it is the one a tidying sweep reaches for.
+    // A real AWS failure carries the code as `name`, which only `String(err)`
+    // renders.
+    //
+    // The spy is what reaches that path: this provider's delete wraps every
+    // failure into a `ProvisioningError`, so in production the dropped prefix
+    // is `ProvisioningError: ` rather than AWS's own code. The PROPERTY is the
+    // same either way -- a persisted reason does not change wording -- and the
+    // spy states it in the form where the two spellings visibly differ. `provider-swallowing-catch-out-throw.test.ts` fences the
+    // spelling at all four persisted sites; this is the behavioural half here.
+    it('persists the unwrapped delete failure verbatim, name included', async () => {
+      const newArn = 'arn:aws:acm:us-east-1:123456789012:certificate/new';
+      mockSend.mockResolvedValueOnce({ CertificateArn: newArn });
+      vi.spyOn(provider, 'delete').mockRejectedValue(
+        Object.assign(new Error('User is not authorized to perform: acm:DeleteCertificate'), {
+          name: 'AccessDeniedException',
+          $metadata: { httpStatusCode: 403 },
+        })
+      );
+
+      const result = await provider.update(
+        'MyCert',
+        ARN,
+        'AWS::CertificateManager::Certificate',
+        { DomainName: 'example.com', SubjectAlternativeNames: ['www.example.com'] },
+        { DomainName: 'example.com', SubjectAlternativeNames: ['api.example.com'] }
+      );
+
+      expect(result.outcome).toBe('partial');
+      expect(result.reason).toBe(
+        `old certificate ${ARN} could not be deleted: AccessDeniedException: ` +
+          'User is not authorized to perform: acm:DeleteCertificate'
+      );
+    });
+
     it('reports partial with the raw cause for a non-in-use delete failure', async () => {
       const newArn = 'arn:aws:acm:us-east-1:123456789012:certificate/new';
       mockSend.mockResolvedValueOnce({ CertificateArn: newArn });

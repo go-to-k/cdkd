@@ -17,6 +17,7 @@ import {
   RemoveTagsFromResourceCommand,
 } from '@aws-sdk/client-rds';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
@@ -602,7 +603,7 @@ export class RDSProvider implements ResourceProvider {
               );
             } catch (disableError) {
               this.logger.debug(
-                `Could not disable DeletionProtection on partially-created DBCluster ${dbClusterIdentifier}: ${disableError instanceof Error ? disableError.message : String(disableError)} (proceeding with DeleteDBCluster anyway)`
+                `Could not disable DeletionProtection on partially-created DBCluster ${dbClusterIdentifier}: ${describeAwsFailure(disableError).detail} (proceeding with DeleteDBCluster anyway)`
               );
             }
           }
@@ -617,7 +618,7 @@ export class RDSProvider implements ResourceProvider {
           );
         } catch (cleanupError) {
           this.logger.warn(
-            `Failed to delete partially-created DBCluster ${logicalId} (${dbClusterIdentifier}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. THE CLUSTER IS STILL RUNNING AND BILLING. Manual cleanup required: ${wantsDeletionProtection ? `aws rds modify-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --no-deletion-protection --apply-immediately; ` : ''}aws rds delete-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --skip-final-snapshot`
+            `Failed to delete partially-created DBCluster ${logicalId} (${dbClusterIdentifier}): ${describeAwsFailure(cleanupError).detail}. THE CLUSTER IS STILL RUNNING AND BILLING. Manual cleanup required: ${wantsDeletionProtection ? `aws rds modify-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --no-deletion-protection --apply-immediately; ` : ''}aws rds delete-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --skip-final-snapshot`
           );
         }
         throw innerError;
@@ -818,7 +819,7 @@ export class RDSProvider implements ResourceProvider {
         } catch (disableError) {
           if (!this.isNotFoundError(disableError, 'DBClusterNotFoundFault')) {
             this.logger.debug(
-              `Could not disable deletion protection for ${physicalId}: ${disableError instanceof Error ? disableError.message : String(disableError)}`
+              `Could not disable deletion protection for ${physicalId}: ${describeAwsFailure(disableError).detail}`
             );
           }
         }
@@ -1189,7 +1190,7 @@ export class RDSProvider implements ResourceProvider {
         } catch (disableError) {
           if (!this.isNotFoundError(disableError, 'DBInstanceNotFoundFault')) {
             this.logger.debug(
-              `Could not disable deletion protection for ${physicalId}: ${disableError instanceof Error ? disableError.message : String(disableError)}`
+              `Could not disable deletion protection for ${physicalId}: ${describeAwsFailure(disableError).detail}`
             );
           }
         }
@@ -1725,7 +1726,7 @@ export class RDSProvider implements ResourceProvider {
       result['Tags'] = tags;
     } catch (err) {
       this.logger.debug(
-        `RDS ListTagsForResource(${arn}) failed: ${err instanceof Error ? err.message : String(err)}`
+        `RDS ListTagsForResource(${arn}) failed: ${describeAwsFailure(err).detail}`
       );
     }
   }

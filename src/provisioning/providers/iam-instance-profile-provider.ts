@@ -8,6 +8,7 @@ import {
   NoSuchEntityException,
 } from '@aws-sdk/client-iam';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -116,7 +117,7 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
           );
         } catch (cleanupError) {
           this.logger.warn(
-            `Failed to clean up partially-created IAM instance profile ${logicalId} (${instanceProfileName}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: remove every role (aws iam remove-role-from-instance-profile --instance-profile-name ${instanceProfileName} --role-name <name>) then aws iam delete-instance-profile --instance-profile-name ${instanceProfileName}`
+            `Failed to clean up partially-created IAM instance profile ${logicalId} (${instanceProfileName}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: remove every role (aws iam remove-role-from-instance-profile --instance-profile-name ${instanceProfileName} --role-name <name>) then aws iam delete-instance-profile --instance-profile-name ${instanceProfileName}`
           );
         }
         throw innerError;

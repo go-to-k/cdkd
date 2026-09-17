@@ -13,6 +13,7 @@ import {
   type Tag,
 } from '@aws-sdk/client-rds';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
@@ -428,7 +429,7 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
         result['Tags'] = normalizeAwsTagsToCfn(tagResp.TagList ?? []);
       } catch (error) {
         this.logger.debug(
-          `ListTagsForResource failed for ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+          `ListTagsForResource failed for ${physicalId}: ${describeAwsFailure(error).detail}`
         );
         result['Tags'] = [];
       }
@@ -467,7 +468,7 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
         if (arn) this.attributeCache.set(arnCacheKey, arn);
       } catch (error) {
         this.logger.debug(
-          `Skipping tag diff for ${physicalId} (no ARN): ${error instanceof Error ? error.message : String(error)}`
+          `Skipping tag diff for ${physicalId} (no ARN): ${describeAwsFailure(error).detail}`
         );
         return;
       }

@@ -9,6 +9,7 @@ import {
   type StatusType,
 } from '@aws-sdk/client-iam';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -198,7 +199,7 @@ export class IAMAccessKeyProvider implements ResourceProvider {
             );
           } catch (cleanupError) {
             this.logger.warn(
-              `Failed to clean up IAM access key ${logicalId} (${accessKeyId}) minted by a partial CreateAccessKey response: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required: aws iam delete-access-key --user-name ${userName} --access-key-id ${accessKeyId}`
+              `Failed to clean up IAM access key ${logicalId} (${accessKeyId}) minted by a partial CreateAccessKey response: ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required: aws iam delete-access-key --user-name ${userName} --access-key-id ${accessKeyId}`
             );
           }
         }
@@ -224,7 +225,7 @@ export class IAMAccessKeyProvider implements ResourceProvider {
             );
           } catch (cleanupError) {
             this.logger.warn(
-              `Failed to clean up partially-created IAM access key ${logicalId} (${accessKeyId}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws iam delete-access-key --user-name ${userName} --access-key-id ${accessKeyId}`
+              `Failed to clean up partially-created IAM access key ${logicalId} (${accessKeyId}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: aws iam delete-access-key --user-name ${userName} --access-key-id ${accessKeyId}`
             );
           }
           throw innerError;
@@ -371,7 +372,7 @@ export class IAMAccessKeyProvider implements ResourceProvider {
         );
       } catch (error) {
         this.logger.warn(
-          `Failed to delete the orphaned IAM access key ${accessKeyId} for user ${userName}: ${error instanceof Error ? error.message : String(error)}. Manual deletion may be required: aws iam delete-access-key --user-name ${userName} --access-key-id ${accessKeyId}`
+          `Failed to delete the orphaned IAM access key ${accessKeyId} for user ${userName}: ${describeAwsFailure(error).detail}. Manual deletion may be required: aws iam delete-access-key --user-name ${userName} --access-key-id ${accessKeyId}`
         );
       }
     }
@@ -420,7 +421,7 @@ export class IAMAccessKeyProvider implements ResourceProvider {
       // can leave an ACTIVE, untracked credential behind, which is exactly the
       // outcome a silent line would hide.
       this.logger.warn(
-        `Could not list existing access keys for user ${userName} while creating ${logicalId}: ${error instanceof Error ? error.message : String(error)}. Orphan detection is DISABLED for this create, so a retried attempt may leave an unusable but ACTIVE access key on the user. Grant iam:ListAccessKeys, or check the user's keys after the deploy: aws iam list-access-keys --user-name ${userName}`
+        `Could not list existing access keys for user ${userName} while creating ${logicalId}: ${describeAwsFailure(error).detail}. Orphan detection is DISABLED for this create, so a retried attempt may leave an unusable but ACTIVE access key on the user. Grant iam:ListAccessKeys, or check the user's keys after the deploy: aws iam list-access-keys --user-name ${userName}`
       );
       return undefined;
     }

@@ -8,6 +8,7 @@ import {
   type InvocationResponse,
 } from '@aws-sdk/client-lambda';
 import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import {
   S3Client,
   PutObjectCommand,
@@ -1613,7 +1614,7 @@ export class CustomResourceProvider implements ResourceProvider {
       // their catch classifies "already deleted" by substring, so an AWS text
       // carrying `does not exist` would put the record right back in the bin.
       this.logger.warn(
-        `Failed to delete custom resource ${logicalId}, but continuing: ${error instanceof Error ? error.message : String(error)}. ` +
+        `Failed to delete custom resource ${logicalId}, but continuing: ${describeAwsFailure(error).detail}. ` +
           `The Delete handler did not complete, so anything this custom resource manages may still ` +
           `be LIVE — cdkd is KEEPING the state record and the run exits non-zero. ` +
           `${CR_SKIP_NOT_A_RETRY_CAVEAT} ${DEPLOY_SKIP_CAVEAT}`
@@ -1657,7 +1658,7 @@ export class CustomResourceProvider implements ResourceProvider {
       }
       this.logger.debug(
         `GetFunction pre-check for ${serviceToken} failed inconclusively (${
-          error instanceof Error ? error.message : String(error)
+          describeAwsFailure(error).detail
         }); proceeding with the normal delete invoke`
       );
       return false;
@@ -1799,7 +1800,7 @@ export class CustomResourceProvider implements ResourceProvider {
           this.logger.warn(
             `Custom resource ${operation} for ${logicalId} hit a transient IAM-authorization error ` +
               `before the request was delivered (attempt ${attempt + 1}/${this.preDeliveryAuthzMaxRetries + 1}): ` +
-              `${this.truncateReason(error instanceof Error ? error.message : String(error))}. ` +
+              `${this.truncateReason(describeAwsFailure(error).detail)}. ` +
               `Retrying in ${delayMs / 1000}s with a fresh response URL and RequestId.`
           );
           // Best-effort, and BEFORE the sleep so an interrupt cannot skip it.
@@ -2136,7 +2137,7 @@ export class CustomResourceProvider implements ResourceProvider {
     } catch (error) {
       this.logger.debug(
         `Could not recycle backing function for ${logicalId} (${
-          error instanceof Error ? error.message : String(error)
+          describeAwsFailure(error).detail
         }); retrying invoke without a forced cold start`
       );
     }
@@ -2800,7 +2801,7 @@ export class CustomResourceProvider implements ResourceProvider {
           displaySafe(bucket, { asciiOnly: true }) || UNRENDERABLE
         }/${displaySafe(responseKey)}; ` +
           `it remains as a current object. Underlying error: ` +
-          `${displaySafe(error instanceof Error ? error.message : String(error)) || UNRENDERABLE}`
+          `${displaySafe(describeAwsFailure(error).detail) || UNRENDERABLE}`
       );
     }
 

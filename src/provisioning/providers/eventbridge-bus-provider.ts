@@ -15,6 +15,7 @@ import {
   type Tag,
 } from '@aws-sdk/client-eventbridge';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -299,7 +300,14 @@ export class EventBridgeBusProvider implements ResourceProvider {
         this.logger.debug(`EventBus ${physicalId} does not exist, skipping`);
         return;
       }
-      const msg = error instanceof Error ? error.message : String(error);
+      // `.detail`, never `.summary`: the substring test below is what keeps this
+      // degradation alive, and it matches AWS's OWN wording. Byte-identical to
+      // the ternary it replaced, minus that ternary's throw.
+      // It ALSO reaches a thrown `ProvisioningError` further down, which
+      // `extractDeploymentEventError` persists -- one of the ten such sites in
+      // this sweep. The disclosure question for all of them is
+      // go-to-k/cdkd#2319's.
+      const msg = describeAwsFailure(error).detail;
       if (msg.includes('does not exist')) {
         const clientRegion = await this.eventBridgeClient.config.region();
         assertRegionMatch(
@@ -392,7 +400,7 @@ export class EventBridgeBusProvider implements ResourceProvider {
     } catch (error) {
       if (error instanceof ResourceNotFoundException) return;
       this.logger.debug(
-        `Failed to list rules on bus ${busName}: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to list rules on bus ${busName}: ${describeAwsFailure(error).detail}`
       );
     }
   }

@@ -296,6 +296,41 @@ function isAwsAuthoredFailure(error: Error): boolean {
 }
 
 /**
+ * Exactly what `String(value)` produces, without the throw.
+ *
+ * `String(value)` is the only spelling that carries an `Error`'s NAME as well
+ * as its message (`"AccessDenied: User ... is not authorized"`), and several
+ * call sites depend on that: four build a persisted `outcome: 'partial'`
+ * reason where the wire code is the discriminator an operator reads first.
+ * {@link describeAwsFailure}'s `detail` is the MESSAGE only, so it is NOT a
+ * drop-in for the bare form -- substituting it silently deletes the code.
+ * Measured, after a sweep did exactly that at nine sites.
+ *
+ * So this is the 1:1 replacement: same output for every value `String` can
+ * convert, and a stable sentence for the ones it cannot. A null-prototype
+ * object throws `TypeError: Cannot convert object to primitive value`, and an
+ * object with a hostile or `null` `toString` throws whatever it likes -- inside
+ * a catch, that replaces the failure being reported.
+ *
+ * Use `describeAwsFailure(x).detail` where the site previously read
+ * `x instanceof Error ? x.message : String(x)`; use THIS where it read a bare
+ * `String(x)`.
+ *
+ * NOT a substitute for `displaySafe` in `display-safe.ts`, which guards the
+ * same coercion and answers differently on purpose -- it falls back to
+ * `Object.prototype.toString` and, more importantly, SANITISES the result for a
+ * terminal. Anything about to be rendered or logged goes through that one; this
+ * one is for the text a catch is about to record.
+ */
+export function safeStringify(value: unknown): string {
+  try {
+    return String(value);
+  } catch {
+    return 'a value that could not be converted to text';
+  }
+}
+
+/**
  * Describe a caught failure for a thrown message. See {@link AwsFailureText}.
  */
 export function describeAwsFailure(error: unknown): AwsFailureText {

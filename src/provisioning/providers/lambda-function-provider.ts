@@ -1,4 +1,5 @@
 import * as zlib from 'node:zlib';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import {
   LambdaClient,
   CreateFunctionCommand,
@@ -493,7 +494,16 @@ export class LambdaFunctionProvider implements ResourceProvider {
     try {
       await send();
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      // `message` is NOT warn-only: the `throw new ProvisioningError(...)` at
+      // the end of this handler interpolates it too, and
+      // `extractDeploymentEventError` persists that into
+      // `deployments/{runId}.jsonl`. So this is one of TEN thrown-and-persisted
+      // sites in this sweep, not the warn-only site it reads as; an audit
+      // reading only the warn above misses it, and review missed seven of the
+      // ten for exactly that reason before counting them from the throws.
+      // `.detail` keeps AWS's own sentence, and the disclosure question for
+      // every site of that shape is issue go-to-k/cdkd#2319's.
+      const message = describeAwsFailure(error).detail;
       this.logger.warn(
         `${ctx.apiName} failed for ${ctx.logicalId}: ${message} — deleting partially-created function to maintain atomicity`
       );
@@ -515,8 +525,14 @@ export class LambdaFunctionProvider implements ResourceProvider {
           cleanupFailure = undefined;
           break;
         } catch (deleteError) {
-          const deleteMessage =
-            deleteError instanceof Error ? deleteError.message : String(deleteError);
+          // `.detail`, never `.summary`: the classifier three lines down
+          // matches AWS's OWN wording. `.summary` is `${name || 'Error'}. ...`,
+          // so `/ResourceConflict/i` would still match on a
+          // `ResourceConflictException` -- but the `currently in the following
+          // state` alternative would be blinded, and AWS sends that wording for
+          // a function still updating. Losing it breaks on the first attempt
+          // and leaves an ORPHANED function, not merely a worse message.
+          const deleteMessage = describeAwsFailure(deleteError).detail;
           cleanupFailure = deleteMessage;
           // Only a state conflict is worth waiting out; anything else
           // (auth, already-deleted) will not change on a retry.
@@ -1039,7 +1055,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
         // The post-DeleteFunction ENI wait below remains as a safety net.
         this.logger.warn(
           `Pre-delete VPC detach failed for ${physicalId}: ${
-            error instanceof Error ? error.message : String(error)
+            describeAwsFailure(error).detail
           } — continuing with delete`
         );
       }
@@ -1338,7 +1354,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
         // Transient error — log and retry.
         this.logger.debug(
           `GetFunction failed while waiting for ${functionName} update: ${
-            error instanceof Error ? error.message : String(error)
+            describeAwsFailure(error).detail
           }`
         );
       }
@@ -1383,7 +1399,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
     } catch (error) {
       this.logger.warn(
         `DescribeNetworkInterfaces failed for ${functionName}: ${
-          error instanceof Error ? error.message : String(error)
+          describeAwsFailure(error).detail
         } — downstream Subnet/SG deletion will fall back to its own ENI cleanup`
       );
       return;
@@ -1408,7 +1424,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
         this.logger.debug(`Deleted Lambda ENI ${eniId} for ${functionName}`);
         return;
       } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
+        const msg = describeAwsFailure(error).detail;
         if (msg.includes('InvalidNetworkInterfaceID.NotFound') || msg.includes('does not exist')) {
           // Already gone — treat as success.
           return;
@@ -1814,7 +1830,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
         // (rare) failure.
         if (!(rlErr instanceof ResourceNotFoundException)) {
           this.logger.debug(
-            `GetFunctionRecursionConfig failed for ${physicalId}: ${rlErr instanceof Error ? rlErr.message : String(rlErr)}`
+            `GetFunctionRecursionConfig failed for ${physicalId}: ${describeAwsFailure(rlErr).detail}`
           );
         }
       }
@@ -1835,7 +1851,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
       } catch (pcErr) {
         if (!(pcErr instanceof ResourceNotFoundException)) {
           this.logger.debug(
-            `GetFunctionConcurrency failed for ${physicalId}: ${pcErr instanceof Error ? pcErr.message : String(pcErr)}`
+            `GetFunctionConcurrency failed for ${physicalId}: ${describeAwsFailure(pcErr).detail}`
           );
         }
       }
@@ -1871,7 +1887,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
             // the snapshot and `cdkd drift` then reports it as a REMOVAL against
             // state. The warning is what makes that false drift explainable.
             this.logger.warn(
-              `GetRuntimeManagementConfig failed for ${physicalId} — RuntimeManagementConfig omitted from the drift snapshot (may surface as a false removal): ${rmErr instanceof Error ? rmErr.message : String(rmErr)}`
+              `GetRuntimeManagementConfig failed for ${physicalId} — RuntimeManagementConfig omitted from the drift snapshot (may surface as a false removal): ${describeAwsFailure(rmErr).detail}`
             );
           }
         }
@@ -1893,7 +1909,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
             // WARN for the same reason as the read above — an omitted
             // CodeSigningConfigArn reads as a removed security control.
             this.logger.warn(
-              `GetFunctionCodeSigningConfig failed for ${physicalId} — CodeSigningConfigArn omitted from the drift snapshot (may surface as a false removal): ${csErr instanceof Error ? csErr.message : String(csErr)}`
+              `GetFunctionCodeSigningConfig failed for ${physicalId} — CodeSigningConfigArn omitted from the drift snapshot (may surface as a false removal): ${describeAwsFailure(csErr).detail}`
             );
           }
         }

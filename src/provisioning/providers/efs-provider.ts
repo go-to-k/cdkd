@@ -524,7 +524,7 @@ export class EFSProvider implements ResourceProvider {
         } catch (cleanupError) {
           this.logger.warn(
             `Failed to roll back partially-created EFS FileSystem ${fileSystemId}: ${
-              cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+              describeAwsFailure(cleanupError).detail
             }`
           );
         }
@@ -673,7 +673,10 @@ export class EFSProvider implements ResourceProvider {
       try {
         return await op();
       } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
+        // `.detail`, never `.summary`: the classifier below matches AWS's OWN
+        // wording, which `.summary` replaces with the wire name alone. Same text as
+        // the `instanceof Error ?` ternary it replaced, minus that ternary's throw.
+        const msg = describeAwsFailure(error).detail;
         const name = error instanceof Error ? error.name : '';
         const transient =
           /in progress|please retry|incorrect file system life ?cycle state|being (updated|modified)|try again/i.test(

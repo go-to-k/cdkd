@@ -19,6 +19,7 @@ import {
   type AssociationConfig,
 } from '@aws-sdk/client-wafv2';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -886,7 +887,7 @@ export class WAFv2WebACLProvider implements ResourceProvider {
       result['Tags'] = tags;
     } catch (err) {
       this.logger.debug(
-        `WAFv2 ListTagsForResource(${physicalId}) failed: ${err instanceof Error ? err.message : String(err)}`
+        `WAFv2 ListTagsForResource(${physicalId}) failed: ${describeAwsFailure(err).detail}`
       );
     }
 

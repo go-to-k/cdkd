@@ -78,6 +78,7 @@ import {
   type EventBatchingCondition,
 } from '@aws-sdk/client-glue';
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
+import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -2464,7 +2465,7 @@ export class GlueWorkflowProvider implements ResourceProvider {
     } catch (err) {
       // Best-effort — `GetTags` failure should not abort the drift read.
       this.logger.debug(
-        `GetTags failed for Glue Workflow ${physicalId}: ${err instanceof Error ? err.message : String(err)}`
+        `GetTags failed for Glue Workflow ${physicalId}: ${describeAwsFailure(err).detail}`
       );
     }
     result['Tags'] = tags;
@@ -3099,9 +3100,7 @@ async function fetchGlueTags(
     const resp = await client.send(new GetTagsCommand({ ResourceArn: arn }));
     return normalizeAwsTagsToCfn(resp.Tags);
   } catch (err) {
-    logger.debug(
-      `GetTags failed for ${resource}/${name}: ${err instanceof Error ? err.message : String(err)}`
-    );
+    logger.debug(`GetTags failed for ${resource}/${name}: ${describeAwsFailure(err).detail}`);
     return [];
   }
 }
@@ -3893,7 +3892,7 @@ export class GlueCrawlerProvider implements ResourceProvider {
       // crawler is already stopping or stopped — nothing to do but wait it out.
       this.logger.debug(
         `StopCrawler for ${physicalId} returned ${
-          err instanceof Error ? err.name : String(err)
+          err instanceof Error ? err.name : safeStringify(err)
         }; continuing to wait`
       );
     }
@@ -4619,7 +4618,7 @@ export class GlueTriggerProvider implements ResourceProvider {
         if (!(err instanceof EntityNotFoundException)) {
           this.logger.debug(
             `GetTrigger pre-check failed for ${physicalId}; continuing anyway: ${
-              err instanceof Error ? err.message : String(err)
+              describeAwsFailure(err).detail
             }`
           );
         }
@@ -4732,7 +4731,7 @@ export class GlueTriggerProvider implements ResourceProvider {
         if (!(err instanceof EntityNotFoundException)) {
           this.logger.debug(
             `GetTrigger pre-delete check failed for ${physicalId}; continuing: ${
-              err instanceof Error ? err.message : String(err)
+              describeAwsFailure(err).detail
             }`
           );
         }

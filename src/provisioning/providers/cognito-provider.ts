@@ -36,6 +36,7 @@ import {
   type SetUserPoolMfaConfigCommandInput,
 } from '@aws-sdk/client-cognito-identity-provider';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
@@ -1554,7 +1555,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
           this.logger.debug(`Rolled back partially-created Cognito User Pool ${createdUserPoolId}`);
         } catch (rollbackError) {
           this.logger.warn(
-            `Failed to roll back partially-created Cognito User Pool ${createdUserPoolId}: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`
+            `Failed to roll back partially-created Cognito User Pool ${createdUserPoolId}: ${describeAwsFailure(rollbackError).detail}`
           );
         }
       }
@@ -1805,7 +1806,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       this.logger.debug(
         `GetUserPoolMfaConfig failed for UserPool ${physicalId} ` +
           `(${error instanceof Error ? error.name : typeof error}): ` +
-          `${error instanceof Error ? error.message : String(error)}`
+          `${describeAwsFailure(error).detail}`
       );
       return { failed: true };
     }
@@ -1830,7 +1831,10 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       try {
         return await fn();
       } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
+        // `.detail`, never `.summary`: the classifier below matches AWS's OWN
+        // wording, which `.summary` replaces with the wire name alone. Same text as
+        // the `instanceof Error ?` ternary it replaced, minus that ternary's throw.
+        const msg = describeAwsFailure(error).detail;
         const name = error instanceof Error ? error.name : '';
         const transient =
           name === 'ConcurrentModificationException' ||
@@ -2460,7 +2464,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
             // Idempotent — log and proceed. The actual delete below will
             // surface any real authorization / state error.
             this.logger.debug(
-              `Could not disable DeletionProtection for ${physicalId}: ${flipError instanceof Error ? flipError.message : String(flipError)}`
+              `Could not disable DeletionProtection for ${physicalId}: ${describeAwsFailure(flipError).detail}`
             );
           }
         }
@@ -2604,7 +2608,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       result['WebAuthnUserVerification'] = mfa.WebAuthnConfiguration?.UserVerification ?? '';
     } catch (mfaErr) {
       this.logger.debug(
-        `GetUserPoolMfaConfig failed for ${physicalId}, skipping MFA-derived drift keys: ${mfaErr instanceof Error ? mfaErr.message : String(mfaErr)}`
+        `GetUserPoolMfaConfig failed for ${physicalId}, skipping MFA-derived drift keys: ${describeAwsFailure(mfaErr).detail}`
       );
     }
     return result;
