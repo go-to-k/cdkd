@@ -42,6 +42,7 @@ import {
 } from './state-file-keys.js';
 import { displayIdent } from '../../utils/display-safe.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { LISTING_ENCODING_TYPE, decodeListingKey } from '../../utils/s3-listing-keys.js';
 
 /**
  * `cdkd gc` — garbage-collect unreferenced objects / images from the
@@ -754,16 +755,21 @@ async function listS3Candidates(
     do {
       const response = await s3Client.send(
         new ListObjectsV2Command({
+          // go-to-k/cdkd#3313: a CR in a key becomes an LF without this.
+          EncodingType: LISTING_ENCODING_TYPE,
           Bucket: bucket,
           ExpectedBucketOwner: accountId,
           ...(continuationToken && { ContinuationToken: continuationToken }),
         })
       );
       for (const obj of response.Contents ?? []) {
-        if (!obj.Key) continue;
-        if (refs.s3Keys.has(obj.Key)) continue;
+        // go-to-k/cdkd#3313: decoded before the reference test AND before the
+        // delete candidate is built — both address the key returned here.
+        const objKey = decodeListingKey(obj.Key);
+        if (!objKey) continue;
+        if (refs.s3Keys.has(objKey)) continue;
         if (!obj.LastModified || obj.LastModified.getTime() >= cutoffMs) continue;
-        candidates.push({ key: obj.Key, size: obj.Size ?? 0, lastModified: obj.LastModified });
+        candidates.push({ key: objKey, size: obj.Size ?? 0, lastModified: obj.LastModified });
       }
       continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
     } while (continuationToken);

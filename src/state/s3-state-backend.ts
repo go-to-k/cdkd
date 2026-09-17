@@ -24,6 +24,7 @@ import {
 import type { FailedOperation } from '../deployment/rollback-executor.js';
 import { getLogger } from '../utils/logger.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
+import { LISTING_ENCODING_TYPE, decodeListingKey } from '../utils/s3-listing-keys.js';
 import { displaySafe } from '../utils/display-safe.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { UNRENDERABLE } from './lock-contention-message.js';
@@ -742,12 +743,14 @@ export class S3StateBackend {
             Bucket: this.config.bucket,
             ...(await this.ownerParam()),
             Prefix: prefix,
+            // go-to-k/cdkd#3313: a CR in a key becomes an LF without this.
+            EncodingType: LISTING_ENCODING_TYPE,
             ...(continuationToken && { ContinuationToken: continuationToken }),
           })
         );
 
         for (const obj of response.Contents ?? []) {
-          const key = obj.Key;
+          const key = decodeListingKey(obj.Key); // go-to-k/cdkd#3313
           if (!key) continue;
           if (!key.endsWith('/state.json')) continue;
 
@@ -853,11 +856,14 @@ export class S3StateBackend {
           Bucket: this.config.bucket,
           ...(await this.ownerParam()),
           Prefix: keyPrefix,
+          // go-to-k/cdkd#3313: a CR in a key becomes an LF without this.
+          EncodingType: LISTING_ENCODING_TYPE,
           ...(continuationToken && { ContinuationToken: continuationToken }),
         })
       );
       for (const obj of response.Contents ?? []) {
-        if (obj.Key) keys.push(obj.Key);
+        const decoded = decodeListingKey(obj.Key); // go-to-k/cdkd#3313
+        if (decoded) keys.push(decoded);
       }
       continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
     } while (continuationToken);
@@ -892,6 +898,8 @@ export class S3StateBackend {
           Bucket: this.config.bucket,
           ...(await this.ownerParam()),
           Prefix: keyPrefix,
+          // go-to-k/cdkd#3313: a CR in a key becomes an LF without this.
+          EncodingType: LISTING_ENCODING_TYPE,
           ...(continuationToken && { ContinuationToken: continuationToken }),
         })
       );
@@ -914,7 +922,14 @@ export class S3StateBackend {
           );
           continue;
         }
-        objects.push({ key: obj.Key, lastModified: obj.LastModified, size: obj.Size });
+        // go-to-k/cdkd#3313: the listing above asks for URL encoding, so the key
+        // is decoded before it leaves this method — its consumer is an
+        // age-guarded SWEEP that deletes by the value returned here.
+        objects.push({
+          key: decodeListingKey(obj.Key) ?? obj.Key,
+          lastModified: obj.LastModified,
+          size: obj.Size,
+        });
       }
       continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
     } while (continuationToken);

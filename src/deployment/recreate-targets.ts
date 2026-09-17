@@ -898,6 +898,8 @@ export async function probeStatefulRecreateTargetsAsync(
             clients.s3.send(
               new ListObjectVersionsCommand({
                 Bucket: target.physicalId,
+                // No `EncodingType` (go-to-k/cdkd#3313): this is an emptiness PROBE —
+                // it reads whether any entry came back, never a key.
                 MaxKeys: 1,
               })
             ),

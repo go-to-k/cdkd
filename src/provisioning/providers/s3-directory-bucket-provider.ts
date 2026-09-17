@@ -20,6 +20,7 @@ import { replayWarn, requireConfigString } from '../config-shape.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { LISTING_ENCODING_TYPE, decodeListingKey } from '../../utils/s3-listing-keys.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { S3_AUTO_DELETE_OBJECTS_TAG, hasCdkAutoDeleteTag } from '../data-delete-intent.js';
 import { generateResourceName } from '../resource-name.js';
@@ -454,6 +455,8 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
     do {
       const listResponse = await this.s3Client.send(
         new ListObjectsV2Command({
+          // go-to-k/cdkd#3313: a CR in a key becomes an LF without this.
+          EncodingType: LISTING_ENCODING_TYPE,
           Bucket: bucketName,
           MaxKeys: 1000,
           ContinuationToken: continuationToken,
@@ -466,7 +469,8 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
           new DeleteObjectsCommand({
             Bucket: bucketName,
             Delete: {
-              Objects: objects.map((obj) => ({ Key: obj.Key })),
+              // go-to-k/cdkd#3313: decoded — these Keys are deleted.
+              Objects: objects.map((obj) => ({ Key: decodeListingKey(obj.Key) })),
               Quiet: true,
             },
           })
