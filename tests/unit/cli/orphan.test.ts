@@ -513,7 +513,14 @@ describe('cdkd orphan (per-resource)', () => {
         // it unconditionally, which is impossible for a record the CDK app no
         // longer declares (security review of go-to-k/cdkd#3318).
         expect(message).toContain('repair the record by hand');
-        expect(message).toContain("'cdkd state orphan <stack>'");
+        // The remedy carries `--stack-region`, and the flag is the point:
+        // `cdkd state orphan <stack>` alone drops that stack name's record in
+        // EVERY region, so a message omitting it hands a stuck operator
+        // something wider than it describes (security review of
+        // go-to-k/cdkd#3318, round 2). Asserted WITH the region this caller
+        // holds, so a regression back to the bare form reds here rather than
+        // passing on a substring.
+        expect(message).toMatch(/drop it whole with 'cdkd state orphan \S+ --stack-region \S+'/);
         expect(message).toContain('only while the CDK app STILL DECLARES');
       });
     }

@@ -1085,6 +1085,30 @@ function stackClause(stackName: string | undefined, region: string | undefined):
 }
 
 /** The remedy command {@link stackClause}'s message ends on. */
+/**
+ * The DESTRUCTIVE remedy, built the way {@link inspectCommand} builds the
+ * read-only one, and the region clause follows the SAME rule for two reasons
+ * that pull in opposite directions.
+ *
+ * With a region in hand the flag is not decoration: `cdkd state orphan <stack>`
+ * without it drops the record for that stack name in EVERY region, so omitting
+ * it hands a stuck operator something wider than the message describes.
+ *
+ * With NO region the flag is worse than useless, and a placeholder is the worst
+ * of the three: an absent region means a v1 record, which predates the
+ * region-prefixed key layout, so `--stack-region <region>` selects no record at
+ * all whatever the operator fills in. The bare command is the correct one
+ * there, because such a record is not region-partitioned.
+ *
+ * With no trusted STACK the whole thing degrades to a template, as the inspect
+ * command does — there is nothing to substitute.
+ */
+function dropRecordCommand(stackName: string | undefined, region: string | undefined): string {
+  if (stackName === undefined) return 'cdkd state orphan <stack> --stack-region <region>';
+  const flag = region === undefined ? '' : ` --stack-region ${shellQuote(safeIdentifier(region))}`;
+  return `cdkd state orphan ${shellQuote(safeIdentifier(stackName))}${flag}`;
+}
+
 function inspectCommand(stackName: string | undefined, region: string | undefined): string {
   if (stackName === undefined) {
     // A TEMPLATE rather than a command, and it says so: substituting anything
@@ -1467,7 +1491,8 @@ export function malformedOrphanResourcePropertiesRefusalMessage(
     `number presents none to find, and a list is walked, so its rewrites are recorded into a ` +
     `container that is still not a map. Continuing would rewrite, save, and report success over ` +
     `a record 'cdkd deploy' then REFUSES. No state was written. Two ways out need no CDK app: ` +
-    `repair the record by hand, or drop it whole with 'cdkd state orphan <stack>', which leaves ` +
+    `repair the record by hand, or drop it whole with ` +
+    `'${dropRecordCommand(stackName, region)}', which leaves ` +
     `the live AWS resources standing. A third works only while the CDK app STILL DECLARES the ` +
     `named resource — this refusal covers just the records that would SURVIVE the save, so ` +
     `'cdkd orphan <its construct path>' removes it and repairs the rest; construct paths come ` +
@@ -1504,6 +1529,23 @@ export function malformedOrphanResourcePropertiesRefusalMessage(
  * the gap is go-to-k/cdkd#3344, filed rather than folded in because the remedy
  * differs — an entry in that container has no construct path, so the message's
  * third way out is meaningless for it.
+ *
+ * **A surviving ENTRY that is not a map is the other gap, and it DOES launder.**
+ * This scan asks whether a resource's `properties` is readable; it never asks
+ * whether the resource RECORD is. `isReadableBag('abcdef')` is false, so a
+ * string entry is skipped here, and then `rewriteResourceReferences`'s
+ * `{ ...resource }` spreads it into per-character keys — the record is SAVED as
+ * `{"0":"a",…,"dependencies":[]}` and the run reports success. A number entry
+ * saves as `{"dependencies":[]}`, a record with no `physicalId`. So the
+ * refusal's own text, which says a torn `properties` map is persisted verbatim
+ * rather than reshaped, is true of the container it scans and NOT of the one
+ * above it.
+ *
+ * That gap is NOT go-to-k/cdkd#3202's as filed — that issue records only the
+ * `null`-entry `TypeError` — and NOT open PR go-to-k/cdkd#3226's, whose file
+ * list carries neither `orphan.ts` nor `orphan-rewriter.ts`. A lane closing
+ * either one leaves this open, which is why it is named here rather than
+ * deferred to them by reference. Filed as go-to-k/cdkd#3350.
  *
  * CALL IT AT THE LOAD, beside {@link refuseMalformedState} and
  * {@link refuseMalformedOutputs}, above `rewriteResourceReferences` — the

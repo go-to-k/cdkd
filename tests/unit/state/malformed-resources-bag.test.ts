@@ -2730,7 +2730,13 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
     // this module's own notes record.
     const text = malformedOrphanResourcePropertiesRefusalMessage('S', 'us-east-1', ['A']);
     expect(text).toContain('repair the record by hand');
-    expect(text).toContain("'cdkd state orphan <stack>'");
+    // WITH `--stack-region`, and with the caller's real values substituted:
+    // `cdkd state orphan <stack>` alone drops that name's record in EVERY
+    // region, which is wider than this message describes (security review of
+    // go-to-k/cdkd#3318, round 2). The sibling case below pins the no-region
+    // arm, where the bare form IS correct because a region-less record is a v1
+    // one and is not region-partitioned.
+    expect(text).toContain("'cdkd state orphan S --stack-region us-east-1'");
     expect(text).toContain('only while the CDK app STILL DECLARES');
     expect(text).toContain('a resource the app no longer declares has none');
     expect(text).toContain('No state was written');
