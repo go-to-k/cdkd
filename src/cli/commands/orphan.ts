@@ -32,6 +32,7 @@ import {
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import {
   refuseMalformedOutputs,
+  refuseMalformedResourcePropertiesForOrphan,
   refuseMalformedState,
 } from '../../state/malformed-resources-bag.js';
 
@@ -242,6 +243,30 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
       // below, and a guard written there would sit under the reads the
       // `missing` check and the rewrite already made.
       refuseMalformedOutputs(state, stackInfo.stackName, targetRegion);
+      // And the per-ENTRY `properties` container (go-to-k/cdkd#3318), which
+      // neither refusal above covers: `refuseMalformedState` answers a question
+      // about the record ROOT, and `unreadableResourcePropertyBags` deliberately
+      // returns `[]` for a record whose root bag is unreadable — what a caller
+      // must not do is take only one of the two. `rewriteResourceReferences`
+      // passes each bag through `rewriteValue`, which returns a non-object
+      // VERBATIM, and re-assigns the result through a bare cast, so the record
+      // this command SAVES still carries the map it could not read.
+      //
+      // SCOPED TO THE SURVIVORS by handing it `orphanLogicalIds`. A record this
+      // run is dropping cannot be persisted, and refusing on one would close a
+      // way out of exactly this state — `cdkd orphan` over the damaged record
+      // removes it and repairs the rest. That way out is CONDITIONAL and the
+      // refusal says so: `orphanLogicalIds` comes from the SYNTHESIZED
+      // template's `aws:cdk:path` index, so a record the app no longer declares
+      // can never be exempted, and the message leads with the two remedies that
+      // need no CDK app. AT THE LOAD, above the rewrite walk and above the
+      // `--dry-run` return.
+      refuseMalformedResourcePropertiesForOrphan(
+        state,
+        orphanLogicalIds,
+        stackInfo.stackName,
+        targetRegion
+      );
 
       // Validate that every requested orphan exists in state — otherwise we
       // would silently no-op while the user expected a removal.

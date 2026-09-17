@@ -981,6 +981,7 @@ act on. A string map adds one fabricated change per character on top.
 | --- | --- |
 | `cdkd deploy` | **Refuses** before any resource is created, updated or deleted (`STATE_RESOURCES_MALFORMED`, exit `1`), naming the resource records it could not read |
 | `cdkd deploy --dry-run` | **Refuses**, identically — the plan a dry run prints comes from the same comparison, so it would show the replacement as though the template asked for it |
+| `cdkd orphan` | **Refuses** (`STATE_RESOURCES_MALFORMED`, exit `1`) for a map on a record it would **keep**, under `--dry-run` and `--force` too — but never for one on a record you are orphaning, which it removes as usual |
 | `cdkd diff` | **Repairs** those maps to empty in memory and warns, naming the same records — it writes nothing, and a preview of the rest of the stack is worth more than an abort |
 
 Reading the map as empty is **not** the safe answer here, which is why deploy
@@ -989,6 +990,44 @@ reaches the identical replacement verdict. The refusal is the only answer that
 does not act on the damage. `cdkd diff` can take the lossy one precisely
 because it never provisions, and its warning says the preview is wrong and that
 `cdkd deploy` will refuse on the same record.
+
+The `cdkd orphan` row is the one that is **scoped** rather than record-wide,
+and the reason is that this command is itself a way out. It rewrites every
+surviving resource's reference to the resources you are orphaning and saves the
+result, so a map it could not read is carried into that save untouched — the
+stored value is kept verbatim rather than fabricated into a well-formed one,
+but the command reports success over a record the next `cdkd deploy` refuses.
+What it cannot do is its own job: an unreadable map hides whichever references
+to the orphan it holds, so the run's audit table is incomplete and the
+`--force`-less failure on unresolvable references cannot fire for it. Because
+the save cannot persist a record it is deleting, the refusal names only the
+records that would **survive**. Three ways out, and the order matters:
+
+1. **Repair the record by hand.**
+   `cdkd state show <stack> --stack-region <region> --json` shows the stored
+   value; fix the map and put the record back. This is the only option that
+   keeps the resource under cdkd's management.
+2. **Drop the whole record** with
+   `cdkd state orphan <stack> --stack-region <region>`. It needs no CDK app and
+   leaves every live AWS resource standing.
+3. **Orphan just the damaged resource** — but only while your CDK app still
+   declares it:
+
+   ```bash
+   cdkd orphan MyStack/TheDamagedResource
+   ```
+
+   That removes it and repairs the rest of the record in one step, leaving the
+   live AWS resource standing like any other orphan. `cdkd orphan` addresses
+   resources by **construct path**, and construct paths come from the
+   synthesized template — so a resource your app no longer declares (a record
+   left behind after the construct was deleted) has no path, and must take
+   option 1 or 2. There is deliberately no flag for addressing one by logical
+   id.
+
+`cdkd deploy` refuses the same record until it is repaired or removed, so being
+blocked in both commands is the intended state rather than an extra restriction
+this row adds.
 
 An **absent** `properties` map is a defect and is refused: every writer in cdkd
 records an object there, and `JSON.stringify` never drops an empty one. An

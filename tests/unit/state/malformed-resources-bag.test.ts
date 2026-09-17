@@ -13,6 +13,7 @@ import {
   malformedExportSourceWarning,
   malformedLocalOutputsWarning,
   malformedNestedChildOutputsRefusalMessage,
+  malformedOrphanResourcePropertiesRefusalMessage,
   malformedOutputsRefusalMessage,
   malformedOutputsWarning,
   malformedRenderedContainersWarning,
@@ -24,6 +25,7 @@ import {
   refuseMalformedOutputs,
   refuseMalformedOutputsForDestroy,
   refuseMalformedResourceProperties,
+  refuseMalformedResourcePropertiesForOrphan,
   refuseMalformedResourcesForDeploy,
   refuseMalformedResourcesForDestroy,
   refuseMalformedState,
@@ -1463,8 +1465,8 @@ describe('write-capable commands refuse; read-only ones repair', () => {
    * The module's refusal entry points partition into exactly three containers.
    *
    * A UNION count alone would stay green through a RE-CLASSIFICATION — an
-   * `outputs` refusal renamed into the `resources` family keeps the total at
-   * seven — so each partition is asserted separately, and the leftover set is
+   * `outputs` refusal renamed into the `resources` family keeps the total
+   * unmoved — so each partition is asserted separately, and the leftover set is
    * asserted EMPTY so a helper belonging to none of them fails here instead of
    * silently escaping every dominance loop in this file.
    */
@@ -1473,7 +1475,7 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     const exported = [...moduleSrc.matchAll(/export function (refuseMalformed\w*)\(/g)].map(
       (m) => `${m[1]!}(`
     );
-    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(7);
+    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(8);
 
     const outputs = exported.filter((n) => /Outputs\(|Outputs[A-Z]/.test(n));
     const properties = exported.filter((n) => n.includes('ResourceProperties'));
@@ -1483,7 +1485,15 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     // Derived from REFUSAL_SPELLINGS rather than re-spelled: a second hard-coded
     // copy of that triple is what drifts when a fourth outputs refusal lands.
     expect(outputs.sort()).toEqual([...REFUSAL_SPELLINGS].sort());
-    expect(properties).toEqual(['refuseMalformedResourceProperties(']);
+    // TWO entry points on this container since go-to-k/cdkd#3318, one
+    // predicate: `cdkd deploy` refuses through the first and `cdkd orphan`
+    // through the second, for the message and the SCOPE rather than for the
+    // verdict — both read `unreadableResourcePropertyBags`, the orphan one
+    // subtracting the records its save is deleting.
+    expect([...properties].sort()).toEqual([
+      'refuseMalformedResourceProperties(',
+      'refuseMalformedResourcePropertiesForOrphan(',
+    ]);
     expect(
       [...resources].sort(),
       'a `resources` refusal exists that RESOURCES_REFUSAL_SPELLINGS does not name, so every ' +
@@ -2214,6 +2224,11 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
       'its callers are `cdkd import`, `cdkd orphan` and `cdkd rollback`, none of which wraps ' +
       'the call in withRetry — so the marker would fence nothing. Revisit if a retrying caller ' +
       'is added.',
+    'refuseMalformedResourcePropertiesForOrphan(':
+      'go-to-k/cdkd#3318. Its ONE caller is `cdkd orphan`, raising from the command body beside ' +
+      'the exempt sibling above — `rewriteResourceReferences` is called from nowhere else, so ' +
+      'no withRetry encloses it and the marker would fence nothing. Revisit if a retrying ' +
+      'caller is added.',
   };
 
   it('every refusal the module exports is either marked or a NAMED exception', () => {
@@ -2221,7 +2236,7 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
     const exported = [...moduleSrc.matchAll(/export function (refuseMalformed\w*)\(/g)].map(
       (m) => `${m[1]!}(`
     );
-    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(7);
+    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(8);
     // A refusal is MARKED when its body reaches `markNonRetryable`. Read from
     // the body rather than from the RETRIED table, so the two instruments stay
     // independent — the table proves the marker is SET at runtime, this proves
@@ -2452,6 +2467,7 @@ describe('the malformed-properties texts (issue go-to-k/cdkd#3191)', () => {
   for (const build of [
     malformedResourcePropertiesRefusalMessage,
     malformedResourcePropertiesWarning,
+    malformedOrphanResourcePropertiesRefusalMessage,
   ]) {
     it(`${build.name} sanitizes and JSON-quotes a hostile logical id`, () => {
       // Each id arrives from a hand-edited record — the premise of the guard —
@@ -2562,6 +2578,220 @@ describe('the malformed-properties texts (issue go-to-k/cdkd#3191)', () => {
       expect(text).toContain('cdkd state show S --json');
     });
   }
+});
+
+describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
+  /** A record whose SURVIVING `Other` entry carries the given `properties`. */
+  function record(otherProperties: unknown): StackState {
+    return state({
+      Bucket: { physicalId: 'b', resourceType: 'AWS::S3::Bucket', properties: {} },
+      Other: { physicalId: 'o', resourceType: 'AWS::S3::Bucket', properties: otherProperties },
+    });
+  }
+
+  // Every shape a hand edit or a truncation leaves behind, fenced ONE AT A
+  // TIME rather than as a single "not an object" case: `[]` and `5` enumerate
+  // no keys, so they are the shapes a repair-to-`{}` would silently equal, and
+  // ABSENT is the one `JSON.stringify` drops so a naive round-trip looks
+  // clean. Measured 2026-09-17 through the real `rewriteResourceReferences`:
+  // each one is carried through the rewrite VERBATIM and saved.
+  for (const [label, bag] of [
+    ['absent', undefined],
+    ['null', null],
+    ['an empty list', []],
+    ['a populated list', [{ Ref: 'Bucket' }]],
+    ['a number', 5],
+    ['a string', 'abcdef'],
+    ['a boolean', true],
+  ] as const) {
+    it(`refuses ${label}, naming the surviving record`, () => {
+      let thrown: unknown;
+      try {
+        refuseMalformedResourcePropertiesForOrphan(record(bag), ['Bucket'], 'S', 'us-east-1');
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown, `${label} was accepted; cdkd orphan would save it`).toBeInstanceOf(CdkdError);
+      expect((thrown as CdkdError).code).toBe(STATE_RESOURCES_MALFORMED);
+      expect((thrown as CdkdError).message).toContain('Other');
+      // WIRING, not just the builder: the refusal must raise THIS container's
+      // orphan text. Asserting the builder alone leaves the throw free to hand
+      // back `malformedResourcePropertiesRefusalMessage`, whose diff verdict
+      // `cdkd orphan` never computes — a mutation that reddened nothing until
+      // this line existed.
+      expect((thrown as CdkdError).message).toContain(
+        malformedOrphanResourcePropertiesRefusalMessage('S', 'us-east-1', ['Other'])
+      );
+    });
+  }
+
+  it('FLOOR: a legitimate bag on every surviving record raises nothing', () => {
+    // Without this the guard could refuse unconditionally and satisfy all
+    // seven cases above.
+    expect(() =>
+      refuseMalformedResourcePropertiesForOrphan(
+        record({ BucketName: 'o' }),
+        ['Bucket'],
+        'S',
+        'us-east-1'
+      )
+    ).not.toThrow();
+  });
+
+  it('EXEMPTS the records being orphaned — the recovery path the refusal must not close', () => {
+    // The decision this guard turns on. `cdkd orphan` over the DAMAGED record
+    // is the per-resource way out of exactly this state, and the save cannot
+    // persist a record it is deleting. A guard that ignored the orphan set
+    // would refuse the one command that repairs the record.
+    expect(() =>
+      refuseMalformedResourcePropertiesForOrphan(record('abcdef'), ['Other'], 'S', 'us-east-1')
+    ).not.toThrow();
+    // ...and it is the EXCLUSION doing that, not a blanket pass: the same
+    // record with a different orphan set still refuses.
+    expect(() =>
+      refuseMalformedResourcePropertiesForOrphan(record('abcdef'), ['Bucket'], 'S', 'us-east-1')
+    ).toThrow(/Other/);
+  });
+
+  it('names only the surviving damaged records, never the orphaned ones', () => {
+    // Two damaged records, one of them being orphaned. Naming it would point
+    // the operator at a record that is about to be gone.
+    const both = state({
+      Bucket: { physicalId: 'b', resourceType: 'AWS::S3::Bucket', properties: 'torn' },
+      Other: { physicalId: 'o', resourceType: 'AWS::S3::Bucket', properties: 'torn' },
+    });
+    let message = '';
+    try {
+      refuseMalformedResourcePropertiesForOrphan(both, ['Bucket'], 'S', 'us-east-1');
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toContain('1 resource record(s)');
+    expect(message).toContain('Other');
+    expect(message, 'the refusal names a record this run is deleting').not.toContain('Bucket');
+  });
+
+  it('takes the CALLER identity rather than the record body', () => {
+    // A record can carry any `stackName` / `region` it likes; `cdkd orphan`
+    // resolves both from the synthesized app and from `pickStackRegion`, so
+    // the message must render what it is HANDED.
+    const planted = record('abcdef');
+    planted.stackName = 'prod-payments';
+    planted.region = 'eu-west-1';
+    let message = '';
+    try {
+      refuseMalformedResourcePropertiesForOrphan(planted, ['Bucket'], 'dev', 'us-east-1');
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    // `shellQuote` leaves a plain identifier unquoted, which is why this reads
+    // bare — the identity is still the one the CALLER passed.
+    expect(message).toContain('State for dev (us-east-1)');
+    expect(message).toContain('cdkd state show dev --stack-region us-east-1 --json');
+    expect(message).not.toContain('prod-payments');
+    expect(message).not.toContain('eu-west-1');
+  });
+
+  it('states the consequence NEITHER the deploy nor the outputs refusal states', () => {
+    const text = malformedOrphanResourcePropertiesRefusalMessage('S', 'us-east-1', ['A']);
+    // Measured: `rewriteValue` returns a non-object verbatim, so nothing is
+    // fabricated here. Borrowing the outputs refusal's laundering sentence
+    // would state a mechanism that does not happen — the defect class this
+    // module's per-text split exists to avoid.
+    expect(malformedOutputsRefusalMessage('S', 'us-east-1')).toContain(
+      'saved back as a well-formed'
+    );
+    expect(text).not.toContain('saved back as a well-formed');
+    expect(text).toContain('carried through VERBATIM');
+    // And not the deploy text's diff verdict, which this command never
+    // computes. Pinned against the sibling's real wording so it cannot rot.
+    expect(malformedResourcePropertiesRefusalMessage('S', 'us-east-1', ['A'])).toContain(
+      'a DELETE and re-create of resources the template did not change'
+    );
+    expect(text).not.toContain('a DELETE and re-create of resources the template did not change');
+  });
+
+  it('is true under --dry-run and says so', () => {
+    // The guard sits at the load, above the `if (options.dryRun)` return, so a
+    // dry run reaches it. A plausible rewrite audit table followed by a
+    // refusal the moment the flag comes off is the worst arm of all.
+    expect(malformedOrphanResourcePropertiesRefusalMessage('S', 'us-east-1', ['A'])).toContain(
+      "under '--dry-run' too"
+    );
+  });
+
+  it('offers TWO template-free ways out, and states the condition on the third', () => {
+    // The security review of go-to-k/cdkd#3318 found the first revision naming
+    // only `cdkd orphan <its construct path>`, unconditionally. Construct paths
+    // come from the SYNTHESIZED template, so a record the CDK app no longer
+    // declares has none: that instruction dies on `Construct path '...' not
+    // found in template`, and the operator is left with a refusal whose only
+    // remedy is impossible. A refusal that misstates the next step is the class
+    // this module's own notes record.
+    const text = malformedOrphanResourcePropertiesRefusalMessage('S', 'us-east-1', ['A']);
+    expect(text).toContain('repair the record by hand');
+    // WITH `--stack-region`, and with the caller's real values substituted:
+    // `cdkd state orphan <stack>` alone drops that name's record in EVERY
+    // region, which is wider than this message describes (security review of
+    // go-to-k/cdkd#3318, round 2). The sibling case below pins the no-region
+    // arm, where the bare form IS correct because a region-less record is a v1
+    // one and is not region-partitioned.
+    expect(text).toContain("'cdkd state orphan S --stack-region us-east-1'");
+
+    // The other two arms of the same remedy, neither of which any test reached
+    // before (security review of go-to-k/cdkd#3318, round 3 — it found the
+    // `''` arm live and UNFENCED, and the arm the JSDoc defends unreachable).
+    //
+    // `''` is what `pickStackRegion` actually yields for a v1-legacy record --
+    // it returns `Promise<string>`, never `undefined` -- so this is the input
+    // the shipped path supplies, and it must produce the BARE command. A
+    // placeholder here selects no record whatever the operator fills in, and
+    // `'<unrenderable>'` additionally collides with the wrapping quotes.
+    const legacy = malformedOrphanResourcePropertiesRefusalMessage('S', '', ['R']);
+    expect(legacy).toContain("'cdkd state orphan S'");
+    expect(legacy).not.toContain('--stack-region');
+    expect(legacy).not.toContain('unrenderable');
+
+    // `undefined` takes the same arm: the two spellings must not diverge,
+    // because which one arrives depends on a caller this module does not own.
+    const legacyUndef = malformedOrphanResourcePropertiesRefusalMessage('S', undefined, ['R']);
+    expect(legacyUndef).toContain("'cdkd state orphan S'");
+    expect(legacyUndef).not.toContain('--stack-region');
+
+    // No trusted stack at all degrades the whole command to a template, where
+    // the `<region>` placeholder IS right -- it reads as a hole to fill rather
+    // than a command to run.
+    const noStack = malformedOrphanResourcePropertiesRefusalMessage(undefined, undefined, ['R']);
+    expect(noStack).toContain("'cdkd state orphan <stack> --stack-region <region>'");
+    expect(text).toContain('only while the CDK app STILL DECLARES');
+    expect(text).toContain('a resource the app no longer declares has none');
+    expect(text).toContain('No state was written');
+  });
+
+  it('does not claim a lock would be taken — one is already held when it raises', () => {
+    // On a NON-dry run `src/cli/commands/orphan.ts` acquires the lock BEFORE
+    // `getState`, so by the time this text renders a lock exists and the
+    // command's own `finally` releases it (pinned in
+    // `tests/unit/cli/orphan.test.ts`). The first revision said "Continuing
+    // would take a lock", which tells the operator no lock was involved (code
+    // review of go-to-k/cdkd#3318). Under `--dry-run` no lock is taken at all,
+    // which the sentence is also true for — it simply promises nothing.
+    const text = malformedOrphanResourcePropertiesRefusalMessage('S', 'us-east-1', ['A']);
+    expect(text).not.toContain('take a lock');
+    expect(text).toContain('Continuing would rewrite, save, and report success');
+  });
+
+  it('names every surviving damaged record up to the cap, with a count', () => {
+    // The `and N more` path through the SHARED clause, reached through THIS
+    // builder: the loop below covers sanitizing and truncation but not the
+    // multi-id rendering, and the orphan block's other cases are all N=1.
+    const ids = Array.from({ length: 7 }, (_, i) => `Torn${i}`);
+    const text = malformedOrphanResourcePropertiesRefusalMessage('S', 'us-east-1', ids);
+    expect(text).toContain('holds 7 resource record(s)');
+    expect(text).toContain('Torn4');
+    expect(text).not.toContain('Torn5');
+    expect(text).toContain('and 2 more');
+  });
 });
 
 /**
@@ -2689,6 +2919,116 @@ describe('the properties-container guards dominate their reads (issue go-to-k/cd
         `records from \`state.orphans[].state\`, which the load never walked, so a torn one ` +
         `reaches calculateDiff and ABORTS cdkd diff with the deploy's refusal.`
     ).toBeGreaterThan(spliceAt);
+  });
+
+  /**
+   * The THIRD consumer of this container, and the one that WRITES (issue
+   * [go-to-k/cdkd#3318](https://github.com/go-to-k/cdkd/issues/3318)).
+   *
+   * `cdkd orphan` neither diffs nor previews: it rewrites the surviving
+   * records and saves them. `refuseMalformedState` above it answers a question
+   * about the record ROOT only, and `unreadableResourcePropertyBags`
+   * deliberately returns `[]` for a record whose root bag is unreadable — so
+   * taking only that one leaves this container unguarded on a write path.
+   */
+  const ORPHAN = 'src/cli/commands/orphan.ts';
+
+  it(`${ORPHAN} REFUSES, above the rewrite walk that persists the bag`, () => {
+    const src = code(ORPHAN);
+    const refusalAt = src.indexOf('refuseMalformedResourcePropertiesForOrphan(');
+    expect(
+      refusalAt,
+      `${ORPHAN} no longer refuses an unreadable per-entry properties bag. \`rewriteValue\` ` +
+        `returns a non-object VERBATIM and the result is re-assigned through a bare cast, so ` +
+        `the record this command SAVES still carries the map it could not read.`
+    ).toBeGreaterThan(-1);
+    // DOMINANCE against the expression that carries the bag into the rewrite
+    // — the same anchor this file's outputs fence uses for this command,
+    // because it is the one call that reads every entry.
+    const derefAt = 'rewriteResourceReferences(';
+    const derefIndex = src.indexOf(derefAt);
+    expect(
+      derefIndex,
+      `${ORPHAN} no longer contains \`${derefAt}\`; this fence's anchor is stale.`
+    ).toBeGreaterThan(-1);
+    expect(
+      refusalAt,
+      `${ORPHAN} refuses BELOW \`${derefAt}\`, so the rewrite that carries the unreadable bag ` +
+        `into the saved record already ran — go-to-k/cdkd#3018's round-1 defect.`
+    ).toBeLessThan(derefIndex);
+    // It must sit at statement position: a refusal behind an `if` runs on the
+    // caller's terms rather than on the record's.
+    //
+    // The regex ALONE does not say that, and the first revision of this fence
+    // claimed it did — `/\n\s*refuseMalformed.../` matches equally when the
+    // call sits on its own line INSIDE `if (!options.dryRun) {`, which is
+    // precisely the gating it was written to refuse (code review of
+    // go-to-k/cdkd#3318). It is kept as the cheap half and paired with the
+    // dominance compare below, which the `if` form cannot satisfy.
+    expect(
+      src,
+      `${ORPHAN}'s refusal is no longer an unconditional statement.`
+    ).toMatch(/\n\s*refuseMalformedResourcePropertiesForOrphan\(/);
+    // NOT WRAPPED IN A DRY-RUN CONDITIONAL. The dominance compare below is NOT
+    // what catches that: an `if (!options.dryRun) { refuse... }` still sits
+    // above the dry-run return, so it satisfies the compare while skipping the
+    // refusal for exactly the mode the text says it covers (measured as a probe
+    // on this fence's first revision, which claimed the compare caught it).
+    //
+    // The 200-character window is a CHEAP tripwire, not the guarantee: it
+    // reaches back over part of the comment block above the call, so a wrapper
+    // placed around comment AND call sits outside it. The real discriminator is
+    // the runtime `--dry-run` case in `tests/unit/cli/orphan.test.ts`, which
+    // asserts the refusal text and cannot survive any gating at all.
+    expect(
+      src.slice(Math.max(0, refusalAt - 200), refusalAt),
+      `${ORPHAN}'s refusal is gated on a dry-run test. 'cdkd orphan --dry-run' would then print ` +
+        `a rewrite audit table the real run refuses — the worst arm of all.`
+    ).not.toContain('dryRun');
+    // DOMINANCE over the dry-run return: a guard written BELOW it never runs
+    // for a dry run at all.
+    const dryRunAt = src.indexOf('if (options.dryRun)');
+    expect(
+      dryRunAt,
+      `${ORPHAN} no longer contains its \`if (options.dryRun)\` return; this fence's anchor is stale.`
+    ).toBeGreaterThan(-1);
+    expect(
+      refusalAt,
+      `${ORPHAN} refuses BELOW its dry-run return, so 'cdkd orphan --dry-run' prints a plan over ` +
+        `a record the real run refuses — the worst arm of all.`
+    ).toBeLessThan(dryRunAt);
+    // (a) A read added ABOVE the guard. Anchoring on the FIRST
+    // `rewriteResourceReferences(` only says the guard precedes THAT one; the
+    // calculator fence one describe up carries the same arm for the same
+    // reason. There is one call site today, so this is a floor against a
+    // second appearing above the guard rather than a live discriminator.
+    const everyRewrite = [...src.matchAll(/rewriteResourceReferences\(/g)].map((m) => m.index ?? -1);
+    expect(
+      everyRewrite.length,
+      `${ORPHAN} no longer calls rewriteResourceReferences; this fence reads nothing.`
+    ).toBeGreaterThanOrEqual(1);
+    expect(
+      Math.min(...everyRewrite),
+      `${ORPHAN} carries the record into a rewrite BEFORE the refusal. A call added above the ` +
+        `guard is the same defect one line earlier.`
+    ).toBeGreaterThan(refusalAt);
+    // SCOPED to the survivors. Without the orphan set the guard refuses the
+    // one command that repairs the record — `cdkd orphan` over the damaged
+    // resource itself — which is the recovery path #3202 requires it to keep.
+    const call = src.slice(refusalAt, src.indexOf(');', refusalAt));
+    expect(
+      call,
+      `${ORPHAN} no longer passes the orphan set, so the refusal names records this run is ` +
+        `DELETING and closes the per-resource way out of a torn record.`
+    ).toContain('orphanLogicalIds');
+    // And the identity is the CALLER's, not the record's own self-report.
+    expect(call).toContain('stackInfo.stackName');
+    expect(call).toContain('targetRegion');
+    expect(
+      call,
+      `${ORPHAN} passes the record's own unvalidated identity; a planted pair names a ` +
+        `different, healthy stack in the remedy.`
+    ).not.toContain('state.stackName');
   });
 });
 

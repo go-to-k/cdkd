@@ -40,7 +40,7 @@ fails when this one goes stale.
 
 Two sets live with their READERS: `resources`' gate-scoped pair (#3161) in
 [state-malformed-resources-gated.md](state-malformed-resources-gated.md); the
-ENTRY-level `properties` triple (#3191) in
+ENTRY-level `properties` set (#3191, #3318) in
 [state-malformed-properties.md](state-malformed-properties.md).
 
 Each function's own JSDoc is the authority for WHY; what follows is what a
