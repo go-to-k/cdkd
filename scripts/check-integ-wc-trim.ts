@@ -102,8 +102,6 @@
  * length. The unit test pins how many are in use.
  */
 
-import { readFileSync } from 'node:fs';
-
 /** How the `wc` stage receives its input. */
 export type WcInputForm = 'pipe' | 'here-string' | 'redirect' | 'argument';
 
@@ -140,7 +138,7 @@ export const ALLOW_MARKER = 'allow-untrimmed-wc';
 /** Shortest reason accepted after the marker, trimmed. */
 export const MIN_ALLOW_REASON_LENGTH = 10;
 
-const ALLOW_RE = new RegExp(`^#\\s*${ALLOW_MARKER}\\s*:?\\s*(.*)$`);
+const ALLOW_RE = new RegExp(`^#\\s*${ALLOW_MARKER}\\s*:\\s*(.*)$`);
 
 /**
  * Reserved words after which the next word is still a command. Only an
@@ -296,6 +294,8 @@ function trimAfter(
 ): WcTrim {
   if (terminator !== '|') return null;
   let i = end + 1;
+  // `|&` pipes stderr too; the count still reaches the next stage.
+  if (src[i] === '&') i++;
   let bodiesSkipped = false;
   for (;;) {
     if (src[i] === '\n' && !bodiesSkipped) {
@@ -315,8 +315,25 @@ function trimAfter(
   const m = TRIM_RE.exec(src.slice(i));
   if (!m) return null;
   i += m[0].length;
-  while (src[i] === ' ' || src[i] === '\t' || (src[i] === '\\' && src[i + 1] === '\n')) {
-    i += src[i] === '\\' ? 2 : 1;
+  const skipBlanks = () => {
+    while (src[i] === ' ' || src[i] === '\t' || (src[i] === '\\' && src[i + 1] === '\n')) {
+      i += src[i] === '\\' ? 2 : 1;
+    }
+  };
+  skipBlanks();
+  // Redirections after the argument (`> count.txt`, `2>/dev/null`) are not
+  // arguments of `tr`; step over each with its target before the end check.
+  for (;;) {
+    const r = /^(\d*(?:>>|>\||<>|>|<)|&>>|&>)(&(?:\d+|-))?/.exec(src.slice(i));
+    if (!r || (r[1] === '' && !r[2])) break;
+    i += r[0].length;
+    if (!r[2]) {
+      skipBlanks();
+      const target = /^(?:'[^']*'|"(?:\\.|[^"\\])*"|[^\s;&|()<>`#'"])+/.exec(src.slice(i));
+      if (!target) return null;
+      i += target[0].length;
+    }
+    skipBlanks();
   }
   const next = src[i];
   // A backtick ends the stage only when it closes the substitution the `wc`
@@ -341,7 +358,8 @@ function inputFormOf(stage: string, afterPipe: boolean): WcInputForm {
   for (let i = 0; i < stage.length; i++) {
     const c = stage[i]!;
     if (quote) {
-      if (c === quote) quote = null;
+      if (c === '\\' && quote === '"') i++;
+      else if (c === quote) quote = null;
       continue;
     }
     if (c === "'" || c === '"') {
@@ -377,7 +395,8 @@ function inputFormOf(stage: string, afterPipe: boolean): WcInputForm {
     flat += c;
   }
   if (/<<</.test(flat)) return 'here-string';
-  if (/(^|[^<])<(?![<&(])/.test(flat)) return 'redirect';
+  // `<file`, `< file`, `<&3` (a duplicated input descriptor) — not `<<`, `<(`.
+  if (/(^|[^<])<(?![<(])/.test(flat)) return 'redirect';
   return afterPipe ? 'pipe' : 'argument';
 }
 
@@ -635,7 +654,8 @@ export function classifyWcTrim(content: string): WcTrimClassification {
       f.commandPosition = true;
       return;
     }
-    if (runner !== null && w.literal !== null && w.literal.startsWith('-') && w.literal !== '-') {
+    // `env -` (an empty environment) is an option too.
+    if (runner !== null && w.literal !== null && w.literal.startsWith('-')) {
       if (runner === 'command' && /[vV]/.test(w.literal)) {
         f.afterPipe = false;
         f.leadInput = null;
@@ -1128,8 +1148,4 @@ export function classifyWcTrim(content: string): WcTrimClassification {
     malformedAllowMarkers,
     commentOffsets,
   };
-}
-
-export function classifyShellFile(path: string): WcTrimClassification {
-  return classifyWcTrim(readFileSync(path, 'utf8'));
 }

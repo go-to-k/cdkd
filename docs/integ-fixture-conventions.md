@@ -1207,13 +1207,15 @@ sits only in a trailing comment.
 It is not a full bash parser. A `wc` reached through a variable (`${WC} -l`),
 `eval`, an alias, or as an argument of another command (`xargs wc`,
 `find -exec wc`) is not seen, so do not write one: the test also fails on any
-`wc` word in a fixture that is neither a counted invocation nor comment text.
+`wc` word in a fixture that is neither a counted invocation nor comment text —
+including the word inside a quoted string such as an error message, so reword
+that text or move it into a comment.
 The classifier's header names the remaining bounds — a `case` pattern's `)`, a
 substitution inside arithmetic, undecoded `$'...'` escapes, and a heredoc inside
 a substitution in `wc`'s own arguments — none of which occurs in the tree.
 
 A site that genuinely must stay untrimmed takes
-`# allow-untrimmed-wc: <reason>` as a real comment, trailing on the `wc`'s line
+`# allow-untrimmed-wc: <reason>` (the colon is required) as a real comment, trailing on the `wc`'s line
 or on its own line directly above; the test pins how many are in use. The
 per-shape floors match counts taken by hand, and a bash case runs each input
 form — piped, here-string, file redirect, backslash-continued — through a

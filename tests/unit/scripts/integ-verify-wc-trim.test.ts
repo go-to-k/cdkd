@@ -39,13 +39,17 @@ const INTEG_ROOT = join(REPO_ROOT, 'tests/integration');
  * files, and a walk would make this suite's verdict depend on which fixtures
  * happen to be installed on the machine running it.
  */
+let tracked: string[] | undefined;
 function trackedShellFiles(): string[] {
+  if (tracked) return tracked;
   const r = spawnSync('git', ['ls-files', '-z', '--', 'tests/integration/*.sh'], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
+    timeout: 30_000,
   });
   if (r.status !== 0) throw new Error(`git ls-files failed: ${r.stderr}`);
-  return r.stdout.split('\0').filter(Boolean);
+  tracked = r.stdout.split('\0').filter(Boolean);
+  return tracked;
 }
 
 const TAB = '\t';
@@ -81,6 +85,10 @@ describe('classifyWcTrim', () => {
       ['an ANSI-C quoted command name', "$'wc' -l </dev/null", 'redirect'],
       ['by absolute path', '/usr/bin/wc -l </dev/null', 'redirect'],
       ['behind `coproc`', 'coproc wc -l </dev/null', 'redirect'],
+      ['behind `env -`, an empty environment', 'env - wc -l </dev/null', 'redirect'],
+      ['behind a quoted `env`, which still runs its command', "'env' wc -l </dev/null", 'redirect'],
+      ['reading a duplicated descriptor', 'wc -l <&3', 'redirect'],
+      ['with an escaped quote in an argument before its redirect', 'wc -l "a\\"b" <f', 'redirect'],
       ['after ||, which is not a pipe', 'false || wc -l x', 'argument'],
       ['behind a here-string written before the command', '<<<"x" wc -l', 'here-string'],
       ['behind `env -C DIR`, whose option takes a value', 'env -C /tmp wc -l </dev/null', 'redirect'],
@@ -197,6 +205,16 @@ describe('classifyWcTrim', () => {
       ['a trimmed wc inside backticks', "N=`wc -l </dev/null | tr -d ' '`", 'space'],
       ['a quoted brace inside an unquoted parameter default', "wc -l <<< ${N:-'}'} | tr -d ' '", 'space'],
       ['a heredoc body between the pipe and the trim', "wc -l <<EOF |\na\nEOF\ntr -d ' '", 'space'],
+      ['a heredoc body and a blank line between the pipe and the trim', "wc -l <<EOF |\na\nEOF\n\ntr -d ' '", 'space'],
+      ['a comment after the trim', "ls | wc -l | tr -d ' ' # count", 'space'],
+      ['a file redirect after the trim', "ls | wc -l | tr -d ' ' > count.txt", 'space'],
+      ['a stderr redirect after the trim', "ls | wc -l | tr -d ' ' 2>/dev/null", 'space'],
+      ['an input redirect after the trim', "N=$(ls | wc -l | tr -d ' ' </dev/null)", 'space'],
+      ['a descriptor duplication after the trim', "N=$(ls | wc -l | tr -d ' ' 2>&1)", 'space'],
+      ['&> before the pipe into the trim', "wc -l &>/dev/null | tr -d ' '", 'space'],
+      ['<&3 before the pipe into the trim', "wc -l <&3 | tr -d ' '", 'space'],
+      ['a comment right after the pipe, then the trim', "wc -l </dev/null |# c\ntr -d ' '", 'space'],
+      ['|& into the trim', "wc -l </dev/null |& tr -d ' '", 'space'],
       ['a <<- heredoc body with a tab-indented terminator between the pipe and the trim', `wc -l <<-EOF |\na\n${TAB}EOF\ntr -d ' '`, 'space'],
       ['the body of a heredoc opened earlier in the pipeline', "cat <<EOF | wc -l |\nx\nEOF\ntr -d ' '", 'space'],
       ['that heredoc shape inside a double-quoted substitution', "N=\"$(wc -l <<EOF |\na\nEOF\ntr -d ' ')\"", 'space'],
@@ -226,6 +244,8 @@ describe('classifyWcTrim', () => {
       ['a trim followed by a QUOTED -c', 'N=$(ls | wc -l | tr -d \' \' "-c")'],
       ['a trim followed by a backtick-substituted argument', "wc -l </dev/null | tr -d ' ' `printf %s -c`"],
       ['a trim followed by a redirection and then another argument', "wc -l </dev/null | tr -d ' ' &>/dev/null -c"],
+      ['a trim followed by a file redirect and then another argument', "ls | wc -l | tr -d ' ' > out -c"],
+      ['a trim followed by a redirection with no target, which bash rejects', "ls | wc -l | tr -d ' ' >"],
       ['a trim argument joined to a # (the same word, not a comment)', "wc -l </dev/null | tr -d ' '#x"],
       ['a trim that is text inside a nested parameter default', "wc -l <<< ${A:-${B:-x}| tr -d ' ';}"],
       ['a trim argument with trailing text', "N=$(ls | wc -l | tr -d ' 'x)"],
@@ -260,6 +280,10 @@ describe('classifyWcTrim', () => {
       ['wc after || inside arithmetic', '(( 0 || wc ))'],
       ['wc after || inside an arithmetic expansion', 'echo $(( 0 || wc ))'],
       ['wc as the value of `env -u`', 'env -u wc printf x'],
+      ['a function named wc defined with a space before ()', 'wc () { :; }'],
+      ['wc as the target of >&', '>&wc printf x'],
+      ['wc as a name inside a quoted arithmetic expansion', 'echo "$(( wc + 1 ))"'],
+      ['wc as a name inside arithmetic in an unquoted heredoc body', 'cat <<EOF\n$(( wc + 1 ))\nEOF'],
       ['wc named after `command -V`, which only describes it', 'command -V wc'],
       ['wc after a quoted coproc, which is a command name', "'coproc' wc -l </dev/null"],
       ['wc after a quoted function, which is a command name', "'function' wc -l </dev/null"],
@@ -407,6 +431,26 @@ describe('classifyWcTrim', () => {
       expect(classifyWcTrim(body).violations).toHaveLength(1);
     });
 
+    it.each([
+      ['a double-quoted string', 'echo "a\nb"; wc -l </dev/null'],
+      ["an ANSI-C quoted string", "echo $'a\nb'; wc -l </dev/null"],
+      ['a quoted default inside ${...}', 'echo ${X:-"a\nb"}; wc -l </dev/null'],
+    ])('keeps physical lines through a newline inside %s', (_label, body) => {
+      expect(classifyWcTrim(`${body}\n`).violations.map((v) => v.line)).toEqual([2]);
+    });
+
+    it('refuses a marker with no colon before its reason', () => {
+      const c = classifyWcTrim(`# ${ALLOW_MARKER} ${reason}\nN=$(ls | wc -l)\n`);
+      expect(c.violations).toHaveLength(1);
+    });
+
+    it('does not let a marker above a backslash-wrapped statement exempt the wc two lines below', () => {
+      // The marker belongs on the wc's own line or directly above it; the
+      // #3182 sites are wrapped, so the rule is pinned rather than incidental.
+      const c = classifyWcTrim(`# ${ALLOW_MARKER}: ${reason}\nN="$(printf x \\\n  | wc -l)"\n`);
+      expect(c.violations.map((v) => v.line)).toEqual([3]);
+    });
+
     it('keeps physical lines through an escaped newline in a parameter expansion', () => {
       const c = classifyWcTrim(`# ${ALLOW_MARKER}: ${reason}\necho "\${N:-\\\nx}"; wc -l </dev/null\n`);
       expect(c.violations.map((v) => v.line)).toEqual([3]);
@@ -454,7 +498,7 @@ describe('tree-wide (issue #3213)', () => {
     expect(files.flatMap((f) => f.malformedAllowMarkers.map((l) => `${f.rel}:${l}`))).toEqual([]);
   });
 
-  it('sees every shape it claims to handle, at the counts taken by hand', () => {
+  it('sees every shape it claims to handle, at no fewer than the counts taken by hand', () => {
     // Counted by hand from the fixtures before this classifier existed, then
     // cross-checked by an independent grep. The go-to-k/cdkd#3182
     // review produced two different totals by hand, which is why the floor is
@@ -533,7 +577,8 @@ describe('the tree stays inside what the classifier reads (issue #3213)', () => 
     expect(
       hits,
       'the classifier did not count these as invocations, so its zero-violation verdict does not cover them. ' +
-        'Call wc directly as a command (and trim it), or extend scripts/check-integ-wc-trim.ts to read the new shape.',
+        'Call wc directly as a command (and trim it); if the word is only text (an error message, a quoted string), ' +
+        'reword it — the word wc may appear only in a comment; or extend scripts/check-integ-wc-trim.ts to read the new shape.',
     ).toEqual([]);
   });
 });
@@ -593,6 +638,9 @@ describe('bash behavior (the convention itself, through a BSD-padding wc)', () =
    * a GNU host the untrimmed cases would pass, so the host could never show the
    * defect — which is exactly why it ships. The CONTROL case proves the padding.
    */
+  /** The host's own `wc`, resolved from PATH before the shim shadows it (not a fixed /usr/bin path). */
+  const HOST_WC = spawnSync('sh', ['-c', 'command -v wc'], { encoding: 'utf8', timeout: 30_000 }).stdout.trim();
+
   function runWithBsdWc(body: string) {
     const dir = mkdtempSync(join(tmpdir(), 'cdkd-3213-'));
     try {
@@ -602,7 +650,7 @@ describe('bash behavior (the convention itself, through a BSD-padding wc)', () =
         join(bin, 'wc'),
         '#!/bin/sh\n' +
           '# Count with the host wc, then re-emit the number BSD-style.\n' +
-          'n="$(/usr/bin/env -i PATH=/usr/bin:/bin wc "$@" | awk \'{print $1}\')"\n' +
+          `n="$('${HOST_WC}' "$@" | awk '{print $1}')"\n` +
           'printf "%8d\\n" "$n"\n',
         { mode: 0o755 },
       );
@@ -611,6 +659,7 @@ describe('bash behavior (the convention itself, through a BSD-padding wc)', () =
       writeFileSync(script, `set -euo pipefail\ncd "${dir}"\n${body}`);
       return spawnSync('bash', [script], {
         encoding: 'utf8',
+        timeout: 30_000,
         env: { ...process.env, PATH: `${bin}:${process.env['PATH'] ?? ''}` },
       });
     } finally {
