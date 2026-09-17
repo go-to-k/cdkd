@@ -293,6 +293,43 @@ export function comparePropertySets(committedJson, refreshedJson) {
 }
 
 /**
+ * Whether the refresh CHANGED the type's `primaryIdentifier`, and to what.
+ *
+ * A sibling of `comparePropertySets` rather than a fourth field on it: that
+ * function answers "which property NAMES came and went", and every consumer
+ * reads its three arrays as sets of names. This question is about the VALUE of
+ * one key, and it is neither an addition nor a removal — which is exactly why
+ * it went unreported. Issue
+ * [#3327](https://github.com/go-to-k/cdkd/issues/3327): the 2026-09-17 refresh
+ * carried AWS flipping `AWS::AppSync::GraphQLApi` from `ApiId` to `Arn` and the
+ * job rendered "additions only" over it, because `comparePropertySets` compares
+ * `properties` / `readOnlyProperties` / `createOnlyProperties` and nothing else.
+ *
+ * Order-insensitive: the capture SORTS (`extractPrimaryIdentifier`), so a
+ * re-ordering is not a change and comparing the joined strings would report
+ * one. A missing or non-array field on either side reads as an EMPTY
+ * identifier, which is what the extractor itself produces for a schema
+ * declaring none — so "gained an identifier" and "lost one" are both reported
+ * rather than thrown on.
+ *
+ * @param {string} committedJson
+ * @param {string} refreshedJson
+ * @returns {{before: string[], after: string[]} | undefined} undefined when unchanged
+ */
+export function comparePrimaryIdentifier(committedJson, refreshedJson) {
+  const read = (/** @type {string} */ json) => {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed.primaryIdentifier)
+      ? [...parsed.primaryIdentifier].map(String).sort()
+      : [];
+  };
+  const before = read(committedJson);
+  const after = read(refreshedJson);
+  if (before.length === after.length && before.every((p, i) => p === after[i])) return undefined;
+  return { before, after };
+}
+
+/**
  * Blocking divergences from `audit:nested-key-coverage:check`'s output.
  *
  * The checker's own lines are the source of truth and are quoted verbatim into
@@ -871,7 +908,8 @@ export const CHECK_GUIDANCE = {
  *
  * @param {Pick<DiagnosisInput, 'removed' | 'divergences'> &
  *   Partial<Pick<DiagnosisInput,
- *     'nestedKeyUnparsed' | 'failedChecks' | 'unreadable' | 'pendingSdkBump'>>} input
+ *     'nestedKeyUnparsed' | 'failedChecks' | 'unreadable' | 'pendingSdkBump' |
+ *     'identifierChanges'>>} input
  * @returns {number}
  */
 export function countDecisions({
@@ -881,10 +919,17 @@ export function countDecisions({
   failedChecks = [],
   unreadable = [],
   pendingSdkBump = [],
+  identifierChanges = [],
 }) {
   return (
     removed.length +
     divergences.length +
+    // Per TYPE, the same unit as `removed`: one flipped `primaryIdentifier` is
+    // one judgement, however many property names the array holds. Added by
+    // issue [#3327](https://github.com/go-to-k/cdkd/issues/3327), and it is the
+    // one term NO check can red — `schema-refresh-decision-ci-coverage.test.ts`
+    // carries the entry saying so and why.
+    identifierChanges.length +
     // Counted per BUMP, not per divergence: `partitionPendingSdkBump` moves a
     // finding here only once the published client is known to declare the
     // member, so what is left to do is merge one dependency bump however many
@@ -1281,6 +1326,7 @@ export function renderDiagnosis(input) {
     autoEscalated = [],
     pendingSdkBump = [],
     unresolvedSdkLag = [],
+    identifierChanges = [],
     skipped,
     sdkLag,
   } = input;
@@ -1293,6 +1339,7 @@ export function renderDiagnosis(input) {
     failedChecks,
     unreadable,
     pendingSdkBump,
+    identifierChanges,
   });
   if (decisionTotal === 0) {
     // "additions only" is FALSE whenever a removal was SETTLED — AWS did remove
@@ -1399,6 +1446,45 @@ export function renderDiagnosis(input) {
       lines.push(`  - ${renderDetail(e.reason)}`);
     }
     lines.push('');
+  }
+
+  if (identifierChanges.length > 0) {
+    lines.push(
+      `### Types whose \`primaryIdentifier\` CHANGED (${identifierChanges.length}) — a decision is needed`,
+      '',
+      'AWS re-declared which property (or properties) identify the resource. This',
+      'is neither an addition nor a removal, so nothing else in this report sees',
+      'it, and no check reddens for it — the 2026-09-17 refresh reported exactly',
+      'this as a clean, no-decision cycle and silently dropped a coverage row',
+      '(issue [#3327](https://github.com/go-to-k/cdkd/issues/3327)). The literal',
+      'verdict phrase is deliberately NOT repeated here: it belongs to the',
+      'summary line alone, which several suites assert the absence of.',
+      '',
+      'The audience is CLOUD CONTROL routing, not the SDK provider. On the CC',
+      'path the physical id IS this value, so a flip changes which attribute',
+      '`Fn::GetAtt` resolves through the fallback and how',
+      '`gen-enrichment-coverage` classifies the type. cdkd\'s own SDK provider',
+      'mints its physical id independently and is NOT governed by this field —',
+      'issue [#3324](https://github.com/go-to-k/cdkd/issues/3324) removed the one',
+      'critic that had assumed otherwise, so do not read a flip here as a',
+      'statement about `create()`.',
+      '',
+      'What to decide: whether the new identifier is what cdkd should address the',
+      'resource by on the CC path, and whether any enrichment classification that',
+      'moved with it is still right.',
+      ''
+    );
+    for (const change of identifierChanges) {
+      const renderList = (/** @type {string[]} */ names) =>
+        names.length === 0 ? '_(none)_' : names.map((n) => renderKey(n)).join(', ');
+      lines.push(
+        `#### ${D()}${renderName(change.resourceType)}`,
+        '',
+        `- was: ${renderList(change.before)}`,
+        `- now: ${renderList(change.after)}`,
+        ''
+      );
+    }
   }
 
   if (removed.length > 0) {
@@ -2353,6 +2439,8 @@ export function collectFixtureDeltas({
   const silentDropRemoved = [];
   /** @type {string[]} */
   const unreadable = [];
+  /** @type {{resourceType: string, before: string[], after: string[]}[]} */
+  const identifierChanges = [];
   let readOnlyAddedCount = 0;
 
   for (const file of files) {
@@ -2384,6 +2472,14 @@ export function collectFixtureDeltas({
     }
 
     readOnlyAddedCount += delta.added.length - delta.writableAdded.length;
+
+    // Inside the SAME try's success path and after `resourceType` is resolved,
+    // so an unparseable side is already counted as `unreadable` rather than
+    // reaching here (issue go-to-k/cdkd#3327).
+    const identifierChange = comparePrimaryIdentifier(committed, currentOf(file));
+    if (identifierChange !== undefined) {
+      identifierChanges.push({ resourceType, ...identifierChange });
+    }
 
     const providerRelPath = providerFiles.get(resourceType);
     const declaredHere = declared.get(resourceType) ?? new Set();
@@ -2469,7 +2565,14 @@ export function collectFixtureDeltas({
     }
   }
 
-  return { removed, writableAdded, silentDropRemoved, readOnlyAddedCount, unreadable };
+  return {
+    removed,
+    writableAdded,
+    silentDropRemoved,
+    readOnlyAddedCount,
+    unreadable,
+    identifierChanges,
+  };
 }
 
 /**
@@ -3734,7 +3837,14 @@ function main() {
     (f) => f.endsWith('.json') && !f.startsWith('_')
   );
   assertFixtureFloor(fixtureFiles.length, declared.size);
-  const { removed, writableAdded, silentDropRemoved, readOnlyAddedCount, unreadable } = collectFixtureDeltas({
+  const {
+    removed,
+    writableAdded,
+    silentDropRemoved,
+    readOnlyAddedCount,
+    unreadable,
+    identifierChanges,
+  } = collectFixtureDeltas({
     files: fixtureFiles,
     // Follows the seam too. Leaving this hard-coded while `currentOf` moved is
     // harmless for the empty directory the test uses, and wrong for any other:
@@ -3977,6 +4087,7 @@ function main() {
       nestedKeyUnparsed: nestedKey.unparsedFailure,
       failedChecks,
       unreadable,
+      identifierChanges,
       skipped,
       sdkLag,
     }) + '\n'
@@ -3986,7 +4097,7 @@ function main() {
     try {
       writeFileSync(
         countOut,
-        `${countDecisions({ removed: removedForReport, divergences, pendingSdkBump, nestedKeyUnparsed: nestedKey.unparsedFailure, failedChecks, unreadable })}\n`
+        `${countDecisions({ removed: removedForReport, divergences, pendingSdkBump, nestedKeyUnparsed: nestedKey.unparsedFailure, failedChecks, unreadable, identifierChanges })}\n`
       );
     } catch (err) {
       process.stderr.write(

@@ -45,6 +45,7 @@ import { fileURLToPath } from 'node:url';
 // three-surface sync is bound, because the `.mjs` guidance cannot import it.
 import { GAP_REMEDY } from '../../../scripts/gen-sdk-attr-coverage.js';
 import {
+  comparePrimaryIdentifier,
   comparePropertySets,
   findDeclarationCandidates,
   mapTypesToProviderFiles,
@@ -1292,6 +1293,104 @@ describe('fixtures the report could not read', () => {
     });
     expect(md).toContain('additions only');
     expect(md).not.toContain('could not read');
+  });
+});
+
+describe('comparePrimaryIdentifier (issue 3327)', () => {
+  const fx = (pid: unknown): string =>
+    JSON.stringify({ resourceType: 'AWS::Sdk::Thing', primaryIdentifier: pid });
+
+  it('reports the flip that the 2026-09-17 refresh rendered as "additions only"', () => {
+    // The real shape: AWS moved `AWS::AppSync::GraphQLApi` from `ApiId` to
+    // `Arn`. Neither an addition nor a removal, so `comparePropertySets` — the
+    // only comparison the diagnosis had — saw nothing.
+    expect(comparePrimaryIdentifier(fx(['ApiId']), fx(['Arn']))).toEqual({
+      before: ['ApiId'],
+      after: ['Arn'],
+    });
+  });
+
+  it('is order-insensitive, because the capture sorts', () => {
+    // `extractPrimaryIdentifier` sorts, so a reordering is not a change and a
+    // joined-string compare would report one every time AWS shuffled a compound
+    // identifier.
+    expect(comparePrimaryIdentifier(fx(['Name', 'Scope']), fx(['Scope', 'Name']))).toBeUndefined();
+  });
+
+  it('reports gaining and losing an identifier rather than throwing', () => {
+    // A missing or non-array field is what the extractor itself emits for a
+    // schema declaring none, so both directions are real states.
+    expect(comparePrimaryIdentifier(fx(undefined), fx(['Id']))).toEqual({
+      before: [],
+      after: ['Id'],
+    });
+    expect(comparePrimaryIdentifier(fx(['Id']), fx(undefined))).toEqual({
+      before: ['Id'],
+      after: [],
+    });
+  });
+
+  it('says nothing when the identifier is unchanged', () => {
+    expect(comparePrimaryIdentifier(fx(['Id']), fx(['Id']))).toBeUndefined();
+  });
+});
+
+describe('the changed-identifier decision class (issue 3327)', () => {
+  const change = { resourceType: 'AWS::AppSync::GraphQLApi', before: ['ApiId'], after: ['Arn'] };
+
+  it('counts as a decision and renders its own section', () => {
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [],
+      divergences: [],
+      identifierChanges: [change],
+      skipped: [],
+    });
+    // The headline is the regression: this refresh MUST NOT read as clean.
+    expect(md).not.toContain('additions only');
+    expect(md).toContain('1 decision');
+    expect(md).toContain('`primaryIdentifier` CHANGED');
+    expect(md).toContain('AWS::AppSync::GraphQLApi');
+    expect(md).toContain('`ApiId`');
+    expect(md).toContain('`Arn`');
+  });
+
+  it('counts per TYPE, the unit the other decision classes use', () => {
+    expect(countDecisions({ removed: [], divergences: [], identifierChanges: [change] })).toBe(1);
+    expect(
+      countDecisions({
+        removed: [],
+        divergences: [],
+        identifierChanges: [change, { ...change, resourceType: 'AWS::Sdk::Other' }],
+      })
+    ).toBe(2);
+  });
+
+  it('points the reader at CLOUD CONTROL, not at the SDK provider', () => {
+    // The whole reason issue 3324 existed: a flip here says nothing about what
+    // `create()` mints. A reader sent to the provider would repeat the
+    // conflation that removal fixed, so the section says so explicitly.
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [],
+      divergences: [],
+      identifierChanges: [change],
+      skipped: [],
+    });
+    expect(md).toContain('CLOUD CONTROL');
+    expect(md).toContain('mints its physical id independently');
+  });
+
+  it('is absent, and costs no decision, when no identifier moved', () => {
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [],
+      divergences: [],
+      identifierChanges: [],
+      skipped: [],
+    });
+    expect(md).not.toContain('`primaryIdentifier` CHANGED');
+    expect(countDecisions({ removed: [], divergences: [], identifierChanges: [] })).toBe(0);
   });
 });
 
