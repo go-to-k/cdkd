@@ -48,6 +48,12 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # observed at least 902 s -- a figure REVIEW supplied and twice confirmed
+    # (run 34381614907). My own sampling saw only 76 s, having missed the run in
+    # the SAME range that the sample's `--limit 50` had capped away. That single
+    # miss is why this bound is 45 and not the 15 an earlier revision set, and
+    # why the figures here are lower bounds rather than maxima.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
@@ -121,6 +127,9 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
+    # observed at least 15 s; hands an already-built artifact to
+    # GitHub Pages, so the variable is Pages' latency rather than this repo's.
+    timeout-minutes: 20
     permissions:
       pages: write
       id-token: write

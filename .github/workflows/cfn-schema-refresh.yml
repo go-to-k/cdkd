@@ -103,6 +103,10 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    # observed at least 80 s. Its tail is AWS's rather than this
+    # repo's (a bundle download plus per-type DescribeType with retries), so the
+    # observed spread understates a bad day more than elsewhere.
+    timeout-minutes: 30
     permissions:
       contents: write
       # `pull-requests: write` covers the label and the assignee the marking

@@ -82,6 +82,9 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    # observed at least 102 s. Walks sub-issues through the GitHub
+    # API, so it grows with the campaign.
+    timeout-minutes: 20
     permissions:
       contents: read
       # The only write this job holds, and it now reaches the sub-issues alone —

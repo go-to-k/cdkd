@@ -33,10 +33,58 @@ on:
       - '.claude/settings.json'
       - '.github/workflows/hooks.yml'
 
+# Deny by default, then grant per job — see the same block in `ci.yml`. These
+# two were the only workflows relying on the repository's
+# `default_workflow_permissions` setting rather than declaring their own
+# (issue go-to-k/cdkd#3229).
+permissions: {}
+
 jobs:
   hook-suites:
     runs-on: macos-latest
-    timeout-minutes: 30
+    # RAISED from 30, which was the one bound in the repository this change's own
+    # standard condemned -- and the only pre-existing one it touches. Observed at
+    # least 1587 s (26.5 minutes) over 49 successful runs in the shared range,
+    # against that 30-minute bound: a real run came within 3.5 minutes of being
+    # killed, and nobody would have noticed, because a timeout kill reads as a
+    # flake, gets re-run, and passes. Review re-derived the same 1587 s max over
+    # a five-week window, so the week this figure comes from is not an artefact.
+    # (No count for that window is quoted: two reviewers' tallies differed by one
+    # and neither could be re-derived here under a rate limit. The max is the
+    # load-bearing part and both agree on it.)
+    #
+    # 45 was an intermediate answer and shared the error described in `ci.yml`:
+    # it was computed as a multiple of a sample max. 60 is chosen the way every
+    # other bound here now is -- generously above anything observed, far below
+    # the 360-minute default. A macOS runner executing two bash suites is the
+    # slowest and most variable host in the matrix.
+    #
+    # THE TRADE-OFF IS SHARPEST HERE, so it is stated rather than waved past.
+    # `hook-suites` is `pull_request`-triggered on `.claude/hooks/**`, checks out
+    # the PR ref and runs `bash .claude/hooks/run-tests.sh` -- the only job in
+    # the repo that executes fork-authored SHELL -- so raising the cap also
+    # lengthens the window a runaway gets on exactly that job.
+    #
+    # Not "and nowhere else", which an earlier version of this sentence claimed:
+    # `check-build-test` and `docs-deploy`/`build` are `pull_request`-triggered
+    # too and run fork-supplied code, and `ci.yml`'s own comment calls the first
+    # of those the job its cap matters most for. Two unqualified superlatives
+    # about the same property cannot both be true. What is specific to this job
+    # is the SHELL, and that is the claim kept.
+    #
+    # 60 is still the right call, because the two risks are not symmetric. The
+    # cost of 60 over 45 is fifteen extra minutes of bounded compute in an abuse
+    # case nobody has yet seen. The cost of 45 is 1.7x headroom over a 26.5-min
+    # observed run on the slowest and most variable host in the matrix, which
+    # risks killing legitimate runs — the failure this whole change exists to
+    # prevent, and the one `docs-deploy` was measurably already suffering.
+    #
+    # Making the suite FASTER removes the dilemma and is go-to-k/cdkd#3282: a
+    # 26-minute job is the longest feedback loop in the repo, and once it is
+    # shorter this ceiling is the one worth lowering rather than raising.
+    timeout-minutes: 60
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 

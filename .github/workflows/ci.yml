@@ -5,9 +5,75 @@ on:
   pull_request:
     branches: [main]
 
+# Deny by default, then grant per job. Nine of the eleven workflows already
+# DECLARE a block and four use exactly this `{}`-plus-per-job shape; `ci.yml`
+# declared none at all, and relied on the repository's
+# `default_workflow_permissions` setting being `read`. That is a setting a
+# maintainer can change from the web UI, which would silently widen every job
+# here -- including ones a FORK triggers through `pull_request`. An explicit
+# block cannot be widened from outside the file (issue go-to-k/cdkd#3229).
+permissions: {}
+
 jobs:
   check-build-test:
     runs-on: ubuntu-latest
+    # A RUNAWAY CAP, NOT A LATENCY TARGET. That reframing is the fix for an error
+    # this PR made four times: each revision set the bound from a sample MAXIMUM,
+    # and a sample maximum is always an UNDERESTIMATE of the true one, so every
+    # larger sample found a longer run and every headroom ratio published here
+    # was optimistic. The last round shipped `docs-deploy` at 15 minutes while a
+    # real 902 s build sat inside the very range the comment cited -- a bound
+    # BELOW a legitimate run, which is the failure go-to-k/cdkd#3229 exists to
+    # prevent, introduced by the change meant to prevent it.
+    #
+    # So the bounds are no longer derived from a max. Between "this job takes
+    # about twelve minutes" and the Actions default of 360 there is an enormous
+    # band, and choosing generously inside it costs nothing: a runaway is capped
+    # either way, and a slow runner is never killed. Figures below are stated as
+    # "observed at least X" -- a claim that stays true however incomplete the
+    # sample is, unlike "the maximum is X".
+    #
+    # NO PER-BOUND SAMPLE SIZE IS QUOTED. Three revisions quoted one and it was
+    # wrong three different ways -- a positional window, then a `--limit` cap
+    # read as a population, then counts double-added across two overlapping
+    # sample files, producing n's LARGER than the number of successful runs
+    # those workflows have ever had. The load-bearing claim is the lower bound
+    # and needs no n: "observed at least X" is true of one run or a thousand.
+    # (Population figures still appear where they are the POINT of a sentence --
+    # the 865 below, and `hooks.yml`'s 49 -- and an earlier version of this
+    # paragraph said "no sample size is quoted" while two sat within fifteen
+    # lines of it.)
+    #
+    # AND THE FIGURE MUST BE PER JOB, which is where three of them went wrong:
+    # `inherit`, `disarm` and `release-please` were briefly stated from a run's
+    # WALL CLOCK, taken from a review report while this token was rate-limited
+    # and published without re-deriving. A run includes queue time and every
+    # other job in it; `timeout-minutes` bounds neither. `disarm`'s run-level
+    # 235 s was a job that took 11 s.
+    #
+    # Every figure here is one MEASURED AT JOB LEVEL BY THIS BRANCH, and each is
+    # a LOWER BOUND: "observed at least X". Review briefly reported larger maxima
+    # for `disarm` and `release-please`; re-derivation from the reviewer's own
+    # wider data then matched these values, so nothing larger is quoted. The
+    # general rule stands regardless -- a weaker lower bound that was verified
+    # beats a stronger one that was not.
+    #
+    # Samples come from the closed range 2026-09-09..2026-09-15, UTC:
+    #
+    #   gh run list --workflow=<name>.yml --status=success \
+    #     --created 2026-09-09..2026-09-15 --limit 1000 --json databaseId
+    #   gh api repos/go-to-k/cdkd/actions/runs/<id>/jobs
+    #
+    # then difference `started_at` against `completed_at` per job. Note the
+    # `--limit`: at 50 it silently CAPS the sample (the range holds 865 `ci.yml`
+    # runs), which is how the 902 s build was missed.
+    #
+    # observed at least 823 s (13.7 min). This job is
+    # fork-reachable through `pull_request`, so it is the one the cap matters
+    # most for.
+    timeout-minutes: 45
+    permissions:
+      contents: read
     steps:
       # `fetch-depth: 0` is load-bearing, not a default anyone forgot to trim.
       # `rule-file-payload.test.ts` projects this branch's rule-file payload onto
@@ -422,6 +488,11 @@ jobs:
   # new entry is not, and a new test file that leaks fails this job.
   once-leak-detect:
     runs-on: ubuntu-latest
+    # observed at least 745 s. Same cap as
+    # check-build-test: it runs the same unit suite, so the two grow together.
+    timeout-minutes: 45
+    permissions:
+      contents: read
     steps:
       # Same reason as check-build-test: this job runs the unit suite too, so it
       # reaches the same `origin/main` projection and would fail closed without
@@ -464,6 +535,11 @@ jobs:
   runtime-compat:
     runs-on: ubuntu-latest
     needs: check-build-test
+    # observed at least 110 s across the matrix legs. Dominated by install and
+    # build rather than by anything that scales with the repo.
+    timeout-minutes: 20
+    permissions:
+      contents: read
     strategy:
       matrix:
         # The first row is the EXACT published floor (`package.json`
@@ -516,6 +592,9 @@ jobs:
   release-pr-not-stale:
     if: startsWith(github.head_ref, 'release-please--')
     runs-on: ubuntu-latest
+    # observed at least 13 s; the job is gated on a release-please
+    # branch, so it runs rarely.
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -598,6 +677,8 @@ jobs:
     if: always()
     needs: [check-build-test, once-leak-detect, runtime-compat, release-pr-not-stale]
     runs-on: ubuntu-latest
+    # observed at least 5 s -- a shell loop over four strings.
+    timeout-minutes: 10
     permissions: {}
     env:
       # Through `env:` rather than inline in `run:`. The value space here is a

@@ -46,6 +46,8 @@ concurrency:
 jobs:
   disarm:
     runs-on: ubuntu-latest
+    # observed at least 17 s -- API calls with no checkout.
+    timeout-minutes: 15
     permissions:
       contents: read
       pull-requests: write

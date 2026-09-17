@@ -40,6 +40,8 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # observed at least 6 s -- one action against the PR title.
+    timeout-minutes: 15
     steps:
       - name: Check PR Title
         uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6
@@ -62,6 +64,9 @@ jobs:
 
   prefix-scope:
     runs-on: ubuntu-latest
+    # observed at least 82 s -- checks out the base and runs one
+    # TypeScript checker.
+    timeout-minutes: 20
     # Narrower than the workflow-level block: this job only READS. Nothing from
     # the head is executed: the checkout is pinned to the BASE commit (see the
     # step below), and the two PR-controlled inputs (title, file list) are
