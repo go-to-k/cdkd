@@ -93,14 +93,23 @@ Run these sequentially and report results:
    nothing sits between the caller and the verdict (the cached `vp run test`
    historically replayed without executing and could exit 0 having run
    NOTHING; both gone since `cache: false`, but the direct spelling stays the
-   rule). Read the summary line, not just the exit code — a run reporting no
-   `Test Files` count did not run.
+   rule). Read the summary line, not just the exit code — and read its NUMBER,
+   not its colour. **`Test Files N passed (N)` is self-consistent over a suite
+   that LOST files before they ran**, so it cannot report its own shortfall:
+   measured 2026-09-17 with several sessions loading the host,
+   `Test Files 916 passed (916)` beside `Errors 148`, every one
+   `[vitest-pool]: Failed to start forks worker`, against the 1065 the same
+   tree collected once the host was quiet. The count's only external reference
+   is the tree, so the block below DERIVES it rather than pinning a threshold
+   that would drift (it also subsumes "no `Test Files` line at all": the
+   extraction comes back empty and the comparison fails).
+   `vp test run --maxWorkers=4` cleared it.
 
    **And check WHICH PROJECT the summary belongs to — the summary line cannot
    tell you.** Measured 2026-09-02 with several sessions running suites at
    once: three consecutive `vp test run` invocations from cdkd's worktree
-   printed a **cdk-local worktree's** suite (246 files, not cdkd's 856), with
-   `pwd` correct throughout. The tells: the `RUN <root>` header far above the
+   printed a **cdk-local worktree's** suite (246 files, a fraction of cdkd's),
+   with `pwd` correct throughout. The tells: the `RUN <root>` header far above the
    summary, and a stray `vp run: cdk-local#test` line at the end. **The
    MECHANISM is unconfirmed — do not repeat a guess as fact** (ruled out:
    workspace links, an unpinned `vp`). Acting on the wrong summary sets the
@@ -123,8 +132,62 @@ Run these sequentially and report results:
      [ "$runs" = 1 ] || { echo "expected 1 RUN header, found $runs -- attests to nothing; log: $log"; exit 1; }
      run_root=$(grep -m1 -oE "RUN  v[0-9.]+ .*" "$log" | sed 's/^RUN  v[0-9.]* //')
      [ "$run_root" = "$(pwd -P)" ] || { echo "WRONG PROJECT ($run_root) -- attests to nothing; log: $log"; exit 1; }
-     grep -E "Test Files|      Tests |Type Errors" "$log"
-     [ "$rc" = 0 ] || { echo "SUITE FAILED rc=$rc; log: $log"; exit 1; }
+     # `Errors` is a DIFFERENT line from `Type Errors` (that one covers
+     # *.test-d.ts alone), and it is where a dead pool worker reports. Without
+     # it the grep reproduces three reassuring lines and hides the count that
+     # explains the rc.
+     #
+     # Every alternative here is chosen against the COLOURED bytes, which is
+     # the class `ci.yml`'s test-ran guard already failed a green run on.
+     # vitest pads the label (`str.padStart(11) + ' '`) INSIDE the dim escape,
+     # so `      Tests ` survives colouring while the tighter `Tests +[0-9]`
+     # does NOT -- an escape sits between the label and the count. Same for
+     # `Errors`: the `.*` is what crosses that escape, and `Errors +[0-9]+`
+     # matches nothing. Measured both ways; do not "tighten" either one.
+     grep -E "Test Files|      Tests |Type Errors|Errors.*[0-9]+ error" "$log"
+     # rc FIRST, and the LOST-WORKER remedy belongs on THIS arm rather than on
+     # the count arm below. vitest sets a non-zero exit for an unhandled error
+     # and prints the `Errors` line only when there is one, so the founding
+     # incident -- `Test Files 916 passed (916)` beside `Errors 148`, every one
+     # `[vitest-pool]: Failed to start forks worker` -- ALWAYS lands here.
+     #
+     # The predicate is the pool's own PREFIX, and both halves of that are
+     # measured rather than chosen. Anchoring on `[vitest-pool]` is what keeps
+     # cdkd's `Failed to start metadata-endpoints sidecar: ...`
+     # (src/local/ecs-network.ts, which interpolates a docker argv that can
+     # carry `worker`) from claiming an ordinary test failure was a pool
+     # problem. Matching the whole prefix rather than one message is what
+     # covers the REST of the family, which a host under load produces just as
+     # readily: `Failed to start <pool> worker`, `Timeout starting <pool>
+     # runner`, `Worker <pool> emitted error`, `Timeout terminating <pool>
+     # worker`, and `[vitest-pool-runner]: Timeout waiting for worker to
+     # respond`. `--maxWorkers=4` is the remedy for all of them.
+     if [ "$rc" != 0 ]; then
+       echo "SUITE FAILED rc=$rc; log: $log"
+       grep -qE '\[vitest-pool(-runner)?\]: ' "$log" \
+         && echo "  the pool lost workers before their files ran, so the passing counts above cover only what survived -- re-run with --maxWorkers=4"
+       exit 1
+     fi
+     # Only a run that exited 0 reaches here, so this is NOT the lost-worker
+     # case. What it still catches is a run that collected fewer files than the
+     # tree holds -- a stray filter left on the command line, or a narrowed
+     # `include` -- which `Test Files N passed (N)` cannot report, being
+     # self-consistent over whatever it did collect.
+     #
+     # Unanchored, and the LAST `(N)` on the line: the coloured summary ends in
+     # `\e[39m`, not in `)`, so a `$` anchor extracts nothing and the comparison
+     # below then false-FAILS a green suite. `tail -1` because a multi-line
+     # value makes `[` a syntax error rather than a verdict.
+     collected=$(grep 'Test Files' "$log" | grep -oE '\([0-9]+\)' | tail -1 | tr -d '()')
+     # `:(glob)` on every pathspec: git's bare `**` demands an intervening `/`
+     # while vitest's does not, so a depth-1 `tests/foo.test.ts` would be
+     # collected and not listed, weakening the floor by one, silently.
+     ondisk=$(git ls-files ':(glob)tests/**/*.test.ts' ':(glob)src/**/*.test.ts' \
+       ':(glob)tests/**/*.test-d.ts' ':(glob)src/**/*.test-d.ts' | wc -l | tr -d ' ')
+     # `-ge`, not `=`: an UNTRACKED new test file is collected but not listed,
+     # which is legitimate and must not red. The direction that matters is
+     # collected < tracked.
+     [ "${collected:-0}" -ge "$ondisk" ] || { echo "COLLECTED ${collected:-none} of $ondisk tracked test files over a run that exited 0 -- attests to nothing. Usually a filter left on the command line or a narrowed include; a test deleted but not committed reads the same here. log: $log"; exit 1; }
    )
    ```
 
