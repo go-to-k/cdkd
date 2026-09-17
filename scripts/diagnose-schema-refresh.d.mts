@@ -37,6 +37,10 @@ export interface SdkLagRow {
   matched: boolean;
 }
 export declare const NESTED_KEY_FAILURE_RE: RegExp;
+export declare function comparePrimaryIdentifier(
+  committedJson: string,
+  refreshedJson: string
+): { before: string[]; after: string[] } | undefined;
 export declare function comparePropertySets(
   committedJson: string,
   refreshedJson: string
@@ -129,7 +133,18 @@ export interface DiagnosisInput {
    * claiming a check that never happened.
    */
   unresolvedSdkLag?: NestedKeyDivergence[];
+  /**
+   * Types whose `primaryIdentifier` VALUE changed in this refresh — neither an
+   * addition nor a removal, so nothing else in the diagnosis sees it (issue
+   * go-to-k/cdkd#3327). One entry per type; counted as a decision.
+   */
+  identifierChanges?: IdentifierChange[];
   skipped: string[];
+}
+export interface IdentifierChange {
+  resourceType: string;
+  before: string[];
+  after: string[];
 }
 export declare function renderDiagnosis(input: DiagnosisInput): string;
 /**
@@ -143,7 +158,11 @@ export declare function countDecisions(
     Partial<
       Pick<
         DiagnosisInput,
-        'nestedKeyUnparsed' | 'failedChecks' | 'unreadable' | 'pendingSdkBump'
+        | 'nestedKeyUnparsed'
+        | 'failedChecks'
+        | 'unreadable'
+        | 'pendingSdkBump'
+        | 'identifierChanges'
       >
     >
 ): number;
@@ -241,6 +260,13 @@ export declare function collectFixtureDeltas(input: {
   silentDropRemoved: RemovedDropEntry[];
   readOnlyAddedCount: number;
   unreadable: string[];
+  /**
+   * Types whose `primaryIdentifier` VALUE changed (issue go-to-k/cdkd#3327).
+   * Declared here because its ABSENCE is what stopped a committed case from
+   * reading this field, which is why the first cut of that change could only
+   * claim the collection worked and not assert it.
+   */
+  identifierChanges: IdentifierChange[];
 };
 export declare function loadDeclaredProperties(repoRoot?: string): Map<string, Set<string>>;
 export declare function classifyGitShowFailure(stderr: string): undefined | typeof UNREADABLE;

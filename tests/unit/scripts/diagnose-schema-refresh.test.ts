@@ -45,6 +45,7 @@ import { fileURLToPath } from 'node:url';
 // three-surface sync is bound, because the `.mjs` guidance cannot import it.
 import { GAP_REMEDY } from '../../../scripts/gen-sdk-attr-coverage.js';
 import {
+  comparePrimaryIdentifier,
   comparePropertySets,
   findDeclarationCandidates,
   mapTypesToProviderFiles,
@@ -1295,6 +1296,203 @@ describe('fixtures the report could not read', () => {
   });
 });
 
+describe('comparePrimaryIdentifier (issue 3327)', () => {
+  const fx = (pid: unknown): string =>
+    JSON.stringify({ resourceType: 'AWS::Sdk::Thing', primaryIdentifier: pid });
+
+  it('reports the flip that the 2026-09-17 refresh rendered as "additions only"', () => {
+    // The real shape: AWS moved `AWS::AppSync::GraphQLApi` from `ApiId` to
+    // `Arn`. Neither an addition nor a removal, so `comparePropertySets` — the
+    // only comparison the diagnosis had — saw nothing.
+    expect(comparePrimaryIdentifier(fx(['ApiId']), fx(['Arn']))).toEqual({
+      before: ['ApiId'],
+      after: ['Arn'],
+    });
+  });
+
+  it('is order-insensitive, because the capture sorts', () => {
+    // `extractPrimaryIdentifier` sorts, so a reordering is not a change and a
+    // joined-string compare would report one every time AWS shuffled a compound
+    // identifier.
+    expect(comparePrimaryIdentifier(fx(['Name', 'Scope']), fx(['Scope', 'Name']))).toBeUndefined();
+  });
+
+  it('reports gaining and losing an identifier rather than throwing', () => {
+    // A missing or non-array field is what the extractor itself emits for a
+    // schema declaring none, so both directions are real states.
+    expect(comparePrimaryIdentifier(fx(undefined), fx(['Id']))).toEqual({
+      before: [],
+      after: ['Id'],
+    });
+    expect(comparePrimaryIdentifier(fx(['Id']), fx(undefined))).toEqual({
+      before: ['Id'],
+      after: [],
+    });
+  });
+
+  it('says nothing when the identifier is unchanged', () => {
+    expect(comparePrimaryIdentifier(fx(['Id']), fx(['Id']))).toBeUndefined();
+  });
+});
+
+describe('collectFixtureDeltas collects identifier changes (issue 3327 wiring)', () => {
+  // The PR that added this class DECLARED that the collect-to-render wiring
+  // could only be shown by an end-to-end probe, because the script reads the
+  // repo's own fixture directory. That was wrong, and review caught it:
+  // `collectFixtureDeltas` takes `files` / `committedOf` / `currentOf` as
+  // PARAMETERS, so the hop is directly drivable. The residual it claimed does
+  // not exist; only `main()`'s threading is left to the probe.
+  const fx = (pid: unknown): string =>
+    JSON.stringify({
+      resourceType: 'AWS::Sdk::Thing',
+      properties: ['A'],
+      readOnlyProperties: [],
+      createOnlyProperties: [],
+      ...(pid === undefined ? {} : { primaryIdentifier: pid }),
+    });
+  const collect = (committed: string, current: string, currentOf?: () => string) =>
+    collectFixtureDeltas({
+      files: ['AWS-Sdk-Thing.json'],
+      committedOf: () => committed,
+      currentOf: currentOf ?? (() => current),
+      providerFiles: new Map(),
+      declared: new Map(),
+    });
+
+  it('carries a flip out of the collector, keyed by resource type', () => {
+    expect(collect(fx(['ApiId']), fx(['Arn'])).identifierChanges).toEqual([
+      { resourceType: 'AWS::Sdk::Thing', before: ['ApiId'], after: ['Arn'] },
+    ]);
+  });
+
+  it('collects nothing when the identifier held still', () => {
+    expect(collect(fx(['ApiId']), fx(['ApiId'])).identifierChanges).toEqual([]);
+  });
+
+  it('reads the working-tree fixture ONCE per file, on the path that USED to read twice', () => {
+    // The fixture matters and the first version of this case got it wrong: it
+    // used one with no writable removal, so it never reached the routing
+    // question further down the loop — the very reader that was still calling
+    // `currentOf` again. Measured at that commit, this shape returned 2.
+    //
+    // `B` is writable, declared by nobody, and present in the committed side
+    // only: that makes it a REMOVED silent drop, which is what takes the loop
+    // into the `silentDropGone` branch.
+    let calls = 0;
+    const committed = JSON.stringify({
+      resourceType: 'AWS::Sdk::Thing',
+      properties: ['A', 'B'],
+      readOnlyProperties: [],
+      createOnlyProperties: [],
+      primaryIdentifier: ['ApiId'],
+    });
+    const current = JSON.stringify({
+      resourceType: 'AWS::Sdk::Thing',
+      properties: ['A'],
+      readOnlyProperties: [],
+      createOnlyProperties: [],
+      primaryIdentifier: ['Arn'],
+    });
+    const result = collect(committed, '', () => {
+      calls += 1;
+      return current;
+    });
+    // The branch really was entered — otherwise this case is the old vacuous
+    // one wearing a better title.
+    expect(result.silentDropRemoved.length).toBeGreaterThan(0);
+    expect(calls).toBe(1);
+  });
+
+  it('counts an unparseable working-tree side as unreadable, and reports NO identifier change', () => {
+    const result = collect(fx(['ApiId']), '{ not json');
+    expect(result.unreadable).toEqual(['AWS-Sdk-Thing.json']);
+    expect(result.identifierChanges).toEqual([]);
+  });
+
+  it('does not ESCAPE when the working-tree read fails on a LATER call', () => {
+    // The actual round-1 defect, which the case above cannot reach: its
+    // `currentOf` is constant, so the FIRST read already throws inside the
+    // `try`. The bug needed a reader that succeeds once and fails after —
+    // measured against that commit, both arms below escaped the collector
+    // uncaught (`Error: boom on call 2`, `SyntaxError`) instead of landing in
+    // `unreadable`. With one hoisted read there is no second call to fail, so
+    // these now assert the ABSENCE of a second read as much as the handling.
+    //
+    // ONE arm, not two. Review round 3: at this commit `second()` is never
+    // invoked, so a throwing arm and a malformed-JSON arm run identical code
+    // and the second adds nothing — the live assertion here is `calls === 1`,
+    // and `not.toThrow()` is what discriminates against the OLD shape, where
+    // `second()` did fire.
+    let calls = 0;
+    const currentOf = (): string => {
+      calls += 1;
+      if (calls > 1) throw new Error('boom on call 2');
+      return fx(['Arn']);
+    };
+    expect(() => collect(fx(['ApiId']), '', currentOf)).not.toThrow();
+    expect(calls, 'a second read happened').toBe(1);
+  });
+});
+
+describe('the changed-identifier decision class (issue 3327)', () => {
+  const change = { resourceType: 'AWS::AppSync::GraphQLApi', before: ['ApiId'], after: ['Arn'] };
+
+  it('counts as a decision and renders its own section', () => {
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [],
+      divergences: [],
+      identifierChanges: [change],
+      skipped: [],
+    });
+    // The headline is the regression: this refresh MUST NOT read as clean.
+    expect(md).not.toContain('additions only');
+    expect(md).toContain('1 decision');
+    expect(md).toContain('`primaryIdentifier` CHANGED');
+    expect(md).toContain('AWS::AppSync::GraphQLApi');
+    expect(md).toContain('`ApiId`');
+    expect(md).toContain('`Arn`');
+  });
+
+  it('counts per TYPE, the unit the other decision classes use', () => {
+    expect(countDecisions({ removed: [], divergences: [], identifierChanges: [change] })).toBe(1);
+    expect(
+      countDecisions({
+        removed: [],
+        divergences: [],
+        identifierChanges: [change, { ...change, resourceType: 'AWS::Sdk::Other' }],
+      })
+    ).toBe(2);
+  });
+
+  it('points the reader at CLOUD CONTROL, not at the SDK provider', () => {
+    // The whole reason issue 3324 existed: a flip here says nothing about what
+    // `create()` mints. A reader sent to the provider would repeat the
+    // conflation that removal fixed, so the section says so explicitly.
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [],
+      divergences: [],
+      identifierChanges: [change],
+      skipped: [],
+    });
+    expect(md).toContain('CLOUD CONTROL');
+    expect(md).toContain('mints its physical id independently');
+  });
+
+  it('is absent, and costs no decision, when no identifier moved', () => {
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [],
+      divergences: [],
+      identifierChanges: [],
+      skipped: [],
+    });
+    expect(md).not.toContain('`primaryIdentifier` CHANGED');
+    expect(countDecisions({ removed: [], divergences: [], identifierChanges: [] })).toBe(0);
+  });
+});
+
 describe('the read-only additions section', () => {
   it('does not promise a read-only addition is always a no-op', () => {
     // A new read-only `*Arn`/`*Url` on a type that had none fails
@@ -2414,8 +2612,12 @@ describe('the module’s own doc comments', () => {
     const src = readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.d.mts'), 'utf8');
     expect(orphansIn(src), 'a docblock is not attached to a declaration').toEqual([]);
     // BOUND, stated rather than implied: `orphansIn` matches ` */` EXACTLY, so
-    // it examines only the 7 top-level docblocks here and not the 5 INDENTED
+    // it examines only the TOP-LEVEL docblocks here and not the INDENTED
     // interface-member ones (`SdkLagRow.matched`, `DiagnosisInput`'s members),
+    // NO COUNTS — they said 7 and 5, were 16 and more by the time review
+    // measured them, and nothing recomputes a figure written into a comment.
+    // The bound is about WHICH blocks the predicate sees, which does not depend
+    // on how many there are,
     // where the same class — a member inserted between a docblock and its
     // symbol — is equally reachable. Widening the predicate to indented blocks
     // is a change to the shared `.mjs` arm too, so it is not made here.
@@ -4666,6 +4868,21 @@ describe('the decision labels and the count cannot disagree', () => {
     ['failed checks only', { removed: [], divergences: [], failedChecks: ['property-coverage'] }],
     ['unparsed checker only', { removed: [], divergences: [], nestedKeyUnparsed: true }],
     ['unreadable only', { removed: [], divergences: [], unreadable: ['AWS-S3-Bucket.json'] }],
+    // The seventh term (go-to-k/cdkd#3327). Added here as well as to the
+    // all-kinds case because this list is what makes the labels FENCED: review
+    // measured that with no entry, dropping `D()` from the new section left
+    // every committed case green. That is the same omission this block's own
+    // comment records happening to the standing-tolerance class.
+    [
+      'identifier changes only',
+      {
+        removed: [],
+        divergences: [],
+        identifierChanges: [
+          { resourceType: 'AWS::AppSync::GraphQLApi', before: ['ApiId'], after: ['Arn'] },
+        ],
+      },
+    ],
     [
       'every kind at once',
       {
@@ -4674,6 +4891,10 @@ describe('the decision labels and the count cannot disagree', () => {
         failedChecks: ['property-coverage', 'audit:sdk-attr-coverage:check'],
         nestedKeyUnparsed: true,
         unreadable: ['AWS-S3-Bucket.json'],
+        identifierChanges: [
+          { resourceType: 'AWS::AppSync::GraphQLApi', before: ['ApiId'], after: ['Arn'] },
+          { resourceType: 'AWS::SQS::Queue', before: ['QueueUrl'], after: ['Arn'] },
+        ],
       },
     ],
     // The pending-bump section is COUNTED (one label per bump, not per

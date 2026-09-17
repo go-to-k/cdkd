@@ -10,7 +10,7 @@
  * (2026-09-11T10:01Z) the repository had none that a red fixture check reached.
  * go-to-k/cdkd#2999 landed the `ci-ok` aggregate less than two hours later and
  * made it the required check, which closes MOST of the hole by a different
- * mechanism: FIVE of `countDecisions`'s six terms also red `check-build-test`,
+ * mechanism: FIVE of `countDecisions`'s SEVEN terms also red `check-build-test`,
  * and `ci-ok` waits on that job. So a decision-carrying refresh PR is
  * unmergeable in BOTH of the states it is ever in — held at `action_required`,
  * where a required check that has not reported blocks the merge button, and
@@ -18,9 +18,12 @@
  * a second required check answering the same question, the duplication #3005
  * itself argued against.
  *
- * MOST is doing real work in that sentence and is not a hedge. TWO exceptions
- * survive: the sixth term, `unreadable`, is not covered at all
- * (`UNCOVERED_TERMS`), and TWO of the five — `failedChecks` and
+ * MOST is doing real work in that sentence and is not a hedge. FOUR TERMS are
+ * exceptional, in TWO kinds — counted by TERM here, because counting by kind
+ * and by term in one sentence is how this paragraph has been wrong before.
+ * Kind one, two terms NOT COVERED AT ALL (`UNCOVERED_TERMS`): `unreadable`, and
+ * `identifierChanges` since go-to-k/cdkd#3327. Kind two, two of the five
+ * covered terms — `failedChecks` and
  * `nestedKeyUnparsed` — are read from a refresh-side EXIT CODE, so an
  * environmental failure of a refresh-side invocation counts a decision CI
  * never sees, because CI runs those same tasks independently. Both terms carry
@@ -64,12 +67,14 @@
  * direction that matters — and the only one asserted — is that nothing the
  * refresh counts can leave CI green.
  *
- * ONE TERM IS HONESTLY NOT COVERED, and `UNCOVERED_TERMS` says so rather than
- * being folded into a tidy table. Writing a rationale for a term nothing
+ * TWO TERMS ARE HONESTLY NOT COVERED, and `UNCOVERED_TERMS` says so rather than
+ * folding them into a tidy table. Writing a rationale for a term nothing
  * reddens would have been the same defect #3005 reports, one level up: a fence
- * asserting a coverage that does not exist. The residual is stated there and in
- * the issue, and a NEW term must be classified into one bucket or the other —
- * neither is a default.
+ * asserting a coverage that does not exist. The residuals are stated there and
+ * in the issues, and a NEW term must be classified into one bucket or the
+ * other — neither is a default. That mechanism WORKED on the second one:
+ * go-to-k/cdkd#3327's term arrived with no classification and this file refused
+ * the build until it had one.
  *
  * The sibling `cfn-schema-refresh-workflow.test.ts` owns the refresh workflow's
  * internal invariants (including `run_check` vs `CHECK_GUIDANCE`), and
@@ -319,6 +324,24 @@ const CI_COVERAGE: Record<string, { command: string; covers: string[]; why: stri
  * counted as protected there.
  */
 const UNCOVERED_TERMS: Record<string, string> = {
+  identifierChanges: [
+    'Uncoverable BY CONSTRUCTION, and that is why issue go-to-k/cdkd#3327 asked for a decision class',
+    'rather than a check. A changed `primaryIdentifier` has exactly one consumer left —',
+    '`gen-enrichment-coverage`, whose subject is the Cloud Control path — and the refresh REGENERATES',
+    'that matrix in the same run, so the committed copy matches the new value and the DRIFT arm of',
+    'that check passes. Scoped to the DRIFT arm deliberately: the LATENT-GAP arm',
+    '(`audit:enrichment-coverage:check`) runs BEFORE `gen:all-matrices` in the refresh workflow, so a',
+    'flip that pushed a type into `unenrichedGap` WOULD red there — and be counted twice, once as',
+    '`failedChecks` and once here. That case is covered; this exemption is about the ordinary flip,',
+    'which moves a classification without creating a pure-CC gap.',
+    'The sdk-attr critic used to read the field and no longer does (go-to-k/cdkd#3324), which',
+    'is the defect this term exists to surface: that removal was forced by a flip nothing reported.',
+    'A check COULD pin each type\'s identifier, but it would then red on every legitimate AWS change —',
+    'i.e. it would be the decision itself, restated as a failure. So the marking (label, title,',
+    'assignee) is the whole signal here, which is the job\'s own stated design for this PR class.',
+    'Measured on the 2026-09-17 refresh: identifier flipped, every check green, "additions only"',
+    'rendered, and a coverage row silently dropped.',
+  ].join(' '),
   unreadable: [
     'Not a schema decision — it is the DIAGNOSIS failing to read its own input, and it has TWO',
     'producers which differ in exactly the way that matters here. `committedVersion` sets it when',
@@ -1033,7 +1056,15 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
   it('keeps the uncovered set exactly what was decided, with a real reason each', () => {
     // Pinned by NAME, not by size: a second uncovered term slipping in under a
     // count is the accumulation this bucket exists to prevent.
-    expect(Object.keys(UNCOVERED_TERMS)).toEqual(['unreadable']);
+    //
+    // TWO since issue go-to-k/cdkd#3327, and the second one is a DELIBERATE
+    // addition rather than accumulation — the list growing is exactly what this
+    // case is meant to make someone argue for, so the argument is in
+    // `identifierChanges`' own reason: a changed `primaryIdentifier` cannot red
+    // a check without the check becoming the decision. Sorted, because the two
+    // buckets are compared as sets elsewhere and an order-sensitive literal
+    // here would red on an unrelated reordering.
+    expect(Object.keys(UNCOVERED_TERMS).sort()).toEqual(['identifierChanges', 'unreadable']);
     for (const [term, reason] of Object.entries(UNCOVERED_TERMS)) {
       expect(reason.length, `${term}'s exemption reason is a placeholder`).toBeGreaterThan(200);
     }
