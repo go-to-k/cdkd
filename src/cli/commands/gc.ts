@@ -32,11 +32,15 @@ import {
   listAllStateKeys,
   listAllLockKeys,
   describeStateKey,
+  parseStateKey,
+  isPasteableIdent,
+  STATE_KEY_MAX_CODE_POINTS,
   LOCK_FILE_SUFFIX,
   STATE_FILE_SUFFIX,
   DEFAULT_STATE_PREFIX,
   CUSTOM_RESOURCE_RESPONSE_PREFIX,
 } from './state-file-keys.js';
+import { displayIdent } from '../../utils/display-safe.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
@@ -653,23 +657,53 @@ async function scanReferencedAssets(
   for (const key of stateKeys) {
     const body = await stateBackend.getRawObject(key);
     if (body === null) {
-      logger.debug(`State file ${key} disappeared during the scan — skipping`);
+      logger.debug(
+        `State file ${displayIdent(key, { maxCodePoints: STATE_KEY_MAX_CODE_POINTS })} disappeared during the scan — skipping`
+      );
       continue;
     }
     let parsed: unknown;
     try {
       parsed = JSON.parse(body);
     } catch (error) {
-      const described = describeStateKey(key, STATE_FILE_SUFFIX, DEFAULT_STATE_PREFIX);
-      const regionMatch = /^(\S+) \((\S+)\)$/.exec(described);
-      const inspectHint = regionMatch
-        ? `cdkd state show ${regionMatch[1]} --stack-region ${regionMatch[2]}`
-        : `cdkd state show ${described}`;
+      // Issue go-to-k/cdkd#3179 section C. This builds a command we TELL THE
+      // OPERATOR TO RUN out of an S3 key nobody validated, so it gets two
+      // things the previous version had neither of.
+      //
+      // The parts come from `parseStateKey` rather than from a regex over
+      // `describeStateKey`'s rendered output. That re-parse read its own
+      // display string, so it could not survive the display string being
+      // sanitised — and it was already wrong: `\S` excludes `\r`, so a planted
+      // carriage return took the no-match branch and put the ENTIRE rendered
+      // string, control characters and all, where the stack name goes.
+      //
+      // And the command is offered ONLY when both parts are pasteable. A name
+      // outside that set is not quoted into the command, because quoting does
+      // not fix the case this is really about: every character of
+      // `--state-bucket=attacker` is a plain identifier character, so it
+      // renders bare AND is still an option when pasted, silently pointing the
+      // inspection at another bucket. When either part fails, the operator gets
+      // the KEY — which is what they need to find the object anyway.
+      const { stack, region } = parseStateKey(key, STATE_FILE_SUFFIX, DEFAULT_STATE_PREFIX);
+      const pasteable =
+        isPasteableIdent(stack) && (region === undefined || isPasteableIdent(region));
+      const inspectHint = pasteable
+        ? region === undefined
+          ? `cdkd state show ${stack}`
+          : `cdkd state show ${stack} --stack-region ${region}`
+        : undefined;
+      // The KEY is an S3 key too, so it is sanitised on its own account — it is
+      // named here whether or not a command could be offered.
+      const inspect =
+        inspectHint === undefined
+          ? `its stack name is not safe to paste into a command, so inspect the ` +
+            `object at that key directly`
+          : `'${inspectHint}' to inspect`;
       throw new CdkdError(
-        `State file '${key}' is not valid JSON — aborting: gc must know every ` +
+        `State file ${displayIdent(key, { maxCodePoints: STATE_KEY_MAX_CODE_POINTS })} is not valid JSON — aborting: gc must know every ` +
           `referenced asset before deleting anything, and this file's references ` +
           `are unreadable. Repair or remove the corrupt state file ` +
-          `('${inspectHint}' to inspect), then re-run.`,
+          `(${inspect}), then re-run.`,
         'GC_STATE_UNREADABLE',
         error as Error
       );
@@ -863,11 +897,15 @@ export async function listResponsePlaceholderCandidates(
   for (const obj of objects) {
     const leaf = obj.key.slice(`${CUSTOM_RESOURCE_RESPONSE_PREFIX}/`.length);
     if (!RESPONSE_PLACEHOLDER_KEY.test(leaf)) {
-      logger.debug(`gc: keeping ${obj.key} — not a cdkd response placeholder`);
+      logger.debug(
+        `gc: keeping ${displayIdent(obj.key, { maxCodePoints: STATE_KEY_MAX_CODE_POINTS })} — not a cdkd response placeholder`
+      );
       continue;
     }
     if (obj.lastModified.getTime() >= cutoffMs) {
-      logger.debug(`gc: keeping ${obj.key} — newer than the --older-than cutoff`);
+      logger.debug(
+        `gc: keeping ${displayIdent(obj.key, { maxCodePoints: STATE_KEY_MAX_CODE_POINTS })} — newer than the --older-than cutoff`
+      );
       continue;
     }
     candidates.push(obj);
@@ -1258,7 +1296,15 @@ export async function gcCommand(options: GcOptions): Promise<void> {
     const lockKeys = await listAllLockKeys(stateBackend);
     if (lockKeys.length > 0) {
       const listing = lockKeys
-        .map((k) => `  - ${describeStateKey(k, LOCK_FILE_SUFFIX, DEFAULT_STATE_PREFIX)}  [${k}]`)
+        // Both halves are sanitised: `describeStateKey` renders the split, and
+        // the raw KEY beside it is an S3 key with the same provenance — leaving
+        // it bare would have made the first half inert, since the same planted
+        // control characters reach the same terminal line either way
+        // (go-to-k/cdkd#3179 C).
+        .map(
+          (k) =>
+            `  - ${describeStateKey(k, LOCK_FILE_SUFFIX, DEFAULT_STATE_PREFIX)}  [${displayIdent(k, { maxCodePoints: STATE_KEY_MAX_CODE_POINTS })}]`
+        )
         .join('\n');
       throw new CdkdError(
         `Refusing to gc while ${lockKeys.length} stack(s) hold an active lock ` +
