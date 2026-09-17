@@ -250,6 +250,34 @@ describe('findDownstreamConsumers (#650)', () => {
       ]);
     });
 
+    it('also flags a MASK-ONLY name, which carries no expression at all', async () => {
+      // The mask-only needle class (a custom resource's `NoEcho` response
+      // Data) has no expression behind it, so the redaction writes `***`.
+      // Testing `{{resolve:` alone let such a name fail BOTH the literal match
+      // and the unresolvable test — the silent drop, back again, in the shape
+      // an operator is least likely to notice.
+      const backend = mockBackend(
+        [{ stackName: 'StackB', region: 'us-east-1' }],
+        new Map([
+          [
+            'StackB|us-east-1',
+            st('StackB', 'us-east-1', undefined, [
+              { sourceStack: 'prod-***', sourceRegion: 'us-east-1', outputName: 'Masked' },
+            ]),
+          ],
+        ])
+      );
+      const out = await findDownstreamConsumers({
+        producerStack: 'Producer',
+        producerRegion: 'us-east-1',
+        stateBackend: backend,
+        baseRegion: 'us-east-1',
+      });
+      expect(out.map((c) => [c.exportName, c.producerUnresolvable === true])).toEqual([
+        ['Masked', true],
+      ]);
+    });
+
     it('still narrows by REGION, so an unresolvable name elsewhere is not reported', async () => {
       // Without the region conjunct every recreate in the account would carry
       // every such consumer, which is noise rather than a warning.
@@ -285,9 +313,33 @@ describe('findDownstreamConsumers (#650)', () => {
       ]);
       expect(rendered).toContain('CANNOT NAME');
       expect(rendered).toContain('It may or may not be this stack.');
-      // The rendered line must not leak the expression it could not resolve
-      // back into the prompt as if it were a producer name.
-      expect(rendered).not.toContain('{{resolve:');
+    });
+
+    it('prints a redacted NAME as its expression, never as the plaintext', () => {
+      // `exportName` on a flagged row comes from `outputReads[].outputName`,
+      // which is itself redacted — so when BOTH names were assembled from one
+      // secret, the rendered line carries a `{{resolve:...}}`. That is not a
+      // leak and must not be "fixed": the expression IS the safe form, and it
+      // tells the operator which reference cdkd could not resolve.
+      //
+      // An earlier version of this case asserted the line contains no
+      // `{{resolve:`, which is a protection the renderer does not perform and
+      // passed only because the fixture used a literal name. The property that
+      // is actually true, and worth fencing, is that the PLAINTEXT never
+      // appears.
+      const PLAINTEXT = 'correct-horse-battery-staple';
+      const EXPR = '{{resolve:secretsmanager:prod/db:SecretString:password::}}';
+      const rendered = renderDownstreamConsumers('Producer', [
+        {
+          consumerStack: 'StackB',
+          consumerRegion: 'us-east-1',
+          exportName: `Endpoint-${EXPR}`,
+          intrinsic: 'GetStackOutput',
+          producerUnresolvable: true,
+        },
+      ]);
+      expect(rendered).not.toContain(PLAINTEXT);
+      expect(rendered).toContain(EXPR);
     });
   });
 

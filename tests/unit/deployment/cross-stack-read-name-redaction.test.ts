@@ -52,6 +52,16 @@ function makeEngine(): DeployEngine {
  * Both are private, and both are seeded here because the union of them is
  * exactly what `allRecordedSecrets` is for — a cross-stack entry carries no
  * logical id, so it has nothing to be scoped by.
+ *
+ * THE OUTPUTS ARM SEEDS `outputsPassSecretMaps`, NOT `outputSecrets`, and that
+ * is the whole point. `outputSecrets` is filled ONLY by
+ * `absorbOutputsPassSecrets`, which only `redactOutputs` calls — so assigning
+ * it directly seeds the state AFTER a mechanism this suite is supposed to be
+ * testing through, and an evaluation order that never drains would pass. That
+ * is not hypothetical: the first version of this file assigned `outputSecrets`
+ * and was green while `redactCrossStackReads` ran BEFORE `redactOutputs`,
+ * leaving the outputs-failure save path persisting the plaintext (found in
+ * security review, not here). Seed the upstream bag; let the engine drain it.
  */
 function seedSecrets(
   engine: DeployEngine,
@@ -60,10 +70,10 @@ function seedSecrets(
 ): void {
   const priv = engine as unknown as {
     perResourceSecrets: Map<string, RecordedSecretValues>;
-    outputSecrets: RecordedSecretValues;
+    outputsPassSecretMaps: RecordedSecretValues[];
   };
   if (where === 'resource') priv.perResourceSecrets.set('SomeResource', pairs);
-  else priv.outputSecrets = pairs;
+  else priv.outputsPassSecretMaps.push(pairs);
 }
 
 function redact(engine: DeployEngine, state: StackState): StackState {
@@ -159,15 +169,98 @@ describe('cross-stack read names are redacted at persist (#3289)', () => {
     expect(persisted.outputReads![0]!.outputName).toBe(SECRET_EXPR);
   });
 
-  it('returns the lists unchanged when this deploy resolved no secret', () => {
+  it('leaves a name alone when no needle matches it', () => {
+    // A SEEDED engine whose secret appears in neither name. The first version
+    // of this case seeded one engine and then redacted through a SECOND,
+    // unseeded one (`redact(makeEngine(), ...)`, with a `void engine;` to
+    // silence the unused binding) — so it asserted that an engine holding no
+    // secrets changes nothing, which the `...state` spread guarantees whatever
+    // this method does. Review measured it: inserting `return {}` at the top
+    // of `redactCrossStackReads` left it green.
     const engine = makeEngine();
-    const imports = [{ sourceStack: 'P', sourceRegion: 'us-east-1', exportName: 'E' }];
-    const outputReads = [{ sourceStack: 'P', sourceRegion: 'us-east-1', outputName: 'O' }];
+    seedSecrets(engine, 'resource', new Map([[SECRET_PLAINTEXT, SECRET_EXPR]]));
 
-    const persisted = redact(makeEngine(), baseState({ imports, outputReads }));
+    const imports = [{ sourceStack: 'P', sourceRegion: 'us-east-1', exportName: 'ExportOne' }];
+    const outputReads = [{ sourceStack: 'P', sourceRegion: 'us-east-1', outputName: 'OutputOne' }];
+
+    const persisted = redact(engine, baseState({ imports, outputReads }));
     expect(persisted.imports).toEqual(imports);
     expect(persisted.outputReads).toEqual(outputReads);
-    void engine;
+  });
+
+  it('redacts only the entries that carry a needle, across a multi-entry list', () => {
+    // Every other case uses a single-entry list, which leaves the `.map`'s
+    // per-entry identity unpinned: a walk that rewrote EVERY entry to the
+    // first one's value would pass them all.
+    const engine = makeEngine();
+    seedSecrets(engine, 'resource', new Map([[SECRET_PLAINTEXT, SECRET_EXPR]]));
+
+    const persisted = redact(
+      engine,
+      baseState({
+        outputReads: [
+          { sourceStack: 'Plain', sourceRegion: 'us-east-1', outputName: 'NoSecret' },
+          { sourceStack: `s-${SECRET_PLAINTEXT}`, sourceRegion: 'us-east-1', outputName: 'B' },
+          { sourceStack: 'AlsoPlain', sourceRegion: 'eu-west-1', outputName: 'C' },
+        ],
+        imports: [
+          { sourceStack: 'P', sourceRegion: 'us-east-1', exportName: `e-${SECRET_PLAINTEXT}` },
+          { sourceStack: 'P', sourceRegion: 'us-east-1', exportName: 'Untouched' },
+        ],
+      })
+    );
+
+    expect(persisted.outputReads!.map((e) => e.sourceStack)).toEqual([
+      'Plain',
+      `s-${SECRET_EXPR}`,
+      'AlsoPlain',
+    ]);
+    expect(persisted.outputReads!.map((e) => e.outputName)).toEqual(['NoSecret', 'B', 'C']);
+    expect(persisted.imports!.map((e) => e.exportName)).toEqual([
+      `e-${SECRET_EXPR}`,
+      'Untouched',
+    ]);
+  });
+
+  it('does not DUPLICATE an entry the previous record already holds redacted', () => {
+    // The across-deploy shape, and the one this fix nearly shipped broken.
+    // `previous` is a persisted record, so its names are REDACTED; `recorded`
+    // is this run's in-memory bag, so they are PLAINTEXT. Keyed raw, the two
+    // spellings of ONE reference have different keys, the union keeps both --
+    // it never drops -- and the persist redaction then rewrites the plaintext
+    // one into a byte-identical duplicate. That doubles a row in the
+    // destroy refusal and in the recreate prompt on every deploy after the
+    // first.
+    const engine = makeEngine();
+    seedSecrets(engine, 'resource', new Map([[SECRET_PLAINTEXT, SECRET_EXPR]]));
+
+    const priv = engine as unknown as {
+      recordedOutputReads: Array<{ sourceStack: string; sourceRegion: string; outputName: string }>;
+      crossStackReadKeyNormalizer(): (name: string) => string;
+    };
+    priv.recordedOutputReads.push({
+      sourceStack: `prod-${SECRET_PLAINTEXT}`,
+      sourceRegion: 'us-east-1',
+      outputName: 'O',
+    });
+
+    const normalize = priv.crossStackReadKeyNormalizer();
+    // The key the union computes for each side must AGREE. Asserting the
+    // normalizer rather than driving a save keeps the case on the mechanism:
+    // the union itself is module-private and reachable only through a deploy.
+    expect(normalize(`prod-${SECRET_PLAINTEXT}`)).toBe(normalize(`prod-${SECRET_EXPR}`));
+    // And it must still SEPARATE two genuinely different references.
+    expect(normalize('prod-a')).not.toBe(normalize('prod-b'));
+  });
+
+  it('normalizes to identity when this deploy resolved no secret', () => {
+    // Keeps the union key byte-identical to the pre-#3289 one for every stack
+    // that has no secret, which is almost all of them.
+    const priv = makeEngine() as unknown as {
+      crossStackReadKeyNormalizer(): (name: string) => string;
+    };
+    const normalize = priv.crossStackReadKeyNormalizer();
+    expect(normalize(`prod-${SECRET_PLAINTEXT}`)).toBe(`prod-${SECRET_PLAINTEXT}`);
   });
 
   it('leaves an absent list ABSENT rather than minting an empty one', () => {

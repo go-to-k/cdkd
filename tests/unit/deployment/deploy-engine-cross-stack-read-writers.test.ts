@@ -106,8 +106,13 @@ const SUCCESS_PATH_WRITES: readonly string[] = [
 const REDACTION_WRITES: readonly string[] = [
   // In FILE order. These sit ABOVE the success-path writes (see ENTITLED_WRITES),
   // which is the order the two lists are concatenated in.
-  '...(state.imports === undefined ? {} : { imports: state.imports }),',
-  '...(state.outputReads === undefined ? {} : { outputReads: state.outputReads }),',
+  //
+  // TWO, not four. A first cut also listed an empty-bag early return spelling
+  // both fields verbatim; review measured that branch BEHAVIOURALLY DEAD (the
+  // caller spreads `...state` first, so an absent key leaves the original in
+  // place either way) and it was removed rather than allow-listed. A branch no
+  // probe can red is worse than none: a case naming it passes through the
+  // spread and reads as coverage.
   'imports: state.imports.map((entry) => ({',
   'outputReads: state.outputReads.map((entry) => ({',
 ];

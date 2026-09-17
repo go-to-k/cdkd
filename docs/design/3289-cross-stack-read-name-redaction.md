@@ -34,12 +34,30 @@ equal this producer's name) would break that refusal.
 
 `crossStackReadsForPartialSave` / `unionCrossStackReads` dedup on
 `${sourceStack}\0${canonicalizeRegion(sourceRegion)}\0${name}`. Changing a
-value mid-run makes the union write BOTH spellings of the same entry, and its
-first-seen-wins merge keeps whichever arrived first.
+value mid-run makes the union write BOTH spellings of the same entry, and the
+union never drops.
 
-That same property is the reason a repair pass is still owed: a plaintext entry
-an older binary persisted out-ranks this run's redacted one, so the deploy-side
-fix does not clean an existing record. `cdkd scrub` is where that belongs.
+## What the union does ACROSS deploys, measured
+
+An earlier revision of this file said a plaintext entry an older binary
+persisted "out-ranks" this run's redacted one. That is wrong, and the three
+cases behave differently enough that guessing was never going to land:
+
+| `previous` (persisted) | does this deploy re-resolve the reference? | outcome |
+|---|---|---|
+| plaintext, older binary | yes | keys MATCH (both sides normalize to the same string), union dedups, the persist redaction rewrites it — **self-repairs** |
+| redacted | yes | keys agree only BECAUSE of `normalizeName`; without it the two spellings key differently, both survive, and the persist redaction makes them byte-identical **duplicates** |
+| plaintext, older binary | **no** — the resource is unchanged, or the reference is gone | this run holds no needle for it — **the plaintext survives** |
+
+Row 2 is why `crossStackReadsForPartialSave` takes a `normalizeName`: the
+identity key is computed on the REDACTED spelling while the entry is STORED
+verbatim, the same compare-normalized / store-verbatim split the function
+already makes for the region. A duplicate row is not cosmetic — it doubles an
+entry in the destroy refusal and in the recreate prompt.
+
+Row 3 is the real residual, and it is what `cdkd scrub` is owed for
+(go-to-k/cdkd#3337). The population is narrower than "everything written before
+this fix": a record whose reference IS re-resolved later repairs itself.
 
 ## The needle bag is the UNION of this deploy's secrets
 

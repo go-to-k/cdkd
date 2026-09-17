@@ -41,6 +41,7 @@
 
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
 import { getLogger } from '../../utils/logger.js';
+import { SECRET_MASK } from '../../deployment/secret-redaction.js';
 
 /**
  * One downstream consumer of a recreate target's outputs.
@@ -83,15 +84,24 @@ export interface DownstreamConsumer {
 }
 
 /**
- * Does this persisted producer name carry an unresolved dynamic reference?
+ * Does this persisted producer name carry something that cannot be compared to
+ * a live stack name?
  *
- * A redacted `sourceStack` holds the expression verbatim, so the test is the
- * presence of a `{{resolve:` opener rather than a shape test on the whole
- * value: the name can EMBED one (`prod-{{resolve:...}}`), which is exactly the
- * `Fn::Sub` case that made it secret-bearing.
+ * TWO spellings, not one. A redaction usually writes the unresolved expression
+ * back, so `{{resolve:` is the common case — tested by CONTAINMENT rather than
+ * by shape, because the name can EMBED one (`prod-{{resolve:...}}`), which is
+ * exactly the `Fn::Sub` case that made it secret-bearing.
+ *
+ * But the MASK-ONLY needle class has no expression behind it: a Lambda-backed
+ * custom resource declaring its response `Data` sensitive records
+ * `plaintext -> SECRET_MASK`, so `redactSecretsForState`'s whole-value arm
+ * writes `***`. An earlier version of this predicate tested `{{resolve:`
+ * alone, and a `***` name then failed BOTH the literal match and this test —
+ * reinstating the silent drop the reporting arm exists to remove, in the one
+ * shape where the operator has least chance of noticing.
  */
 function producerNameIsUnresolved(sourceStack: string): boolean {
-  return sourceStack.includes('{{resolve:');
+  return sourceStack.includes('{{resolve:') || sourceStack.includes(SECRET_MASK);
 }
 
 /**
