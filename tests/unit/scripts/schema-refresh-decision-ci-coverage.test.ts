@@ -10,7 +10,7 @@
  * (2026-09-11T10:01Z) the repository had none that a red fixture check reached.
  * go-to-k/cdkd#2999 landed the `ci-ok` aggregate less than two hours later and
  * made it the required check, which closes MOST of the hole by a different
- * mechanism: FIVE of `countDecisions`'s six terms also red `check-build-test`,
+ * mechanism: FIVE of `countDecisions`'s SEVEN terms also red `check-build-test`,
  * and `ci-ok` waits on that job. So a decision-carrying refresh PR is
  * unmergeable in BOTH of the states it is ever in — held at `action_required`,
  * where a required check that has not reported blocks the merge button, and
@@ -18,9 +18,10 @@
  * a second required check answering the same question, the duplication #3005
  * itself argued against.
  *
- * MOST is doing real work in that sentence and is not a hedge. TWO exceptions
- * survive: the sixth term, `unreadable`, is not covered at all
- * (`UNCOVERED_TERMS`), and TWO of the five — `failedChecks` and
+ * MOST is doing real work in that sentence and is not a hedge. THREE exceptions
+ * survive: TWO terms are not covered at all (`UNCOVERED_TERMS` — `unreadable`,
+ * and `identifierChanges` since go-to-k/cdkd#3327), and TWO of the five —
+ * `failedChecks` and
  * `nestedKeyUnparsed` — are read from a refresh-side EXIT CODE, so an
  * environmental failure of a refresh-side invocation counts a decision CI
  * never sees, because CI runs those same tasks independently. Both terms carry
@@ -64,12 +65,14 @@
  * direction that matters — and the only one asserted — is that nothing the
  * refresh counts can leave CI green.
  *
- * ONE TERM IS HONESTLY NOT COVERED, and `UNCOVERED_TERMS` says so rather than
- * being folded into a tidy table. Writing a rationale for a term nothing
+ * TWO TERMS ARE HONESTLY NOT COVERED, and `UNCOVERED_TERMS` says so rather than
+ * folding them into a tidy table. Writing a rationale for a term nothing
  * reddens would have been the same defect #3005 reports, one level up: a fence
- * asserting a coverage that does not exist. The residual is stated there and in
- * the issue, and a NEW term must be classified into one bucket or the other —
- * neither is a default.
+ * asserting a coverage that does not exist. The residuals are stated there and
+ * in the issues, and a NEW term must be classified into one bucket or the
+ * other — neither is a default. That mechanism WORKED on the second one:
+ * go-to-k/cdkd#3327's term arrived with no classification and this file refused
+ * the build until it had one.
  *
  * The sibling `cfn-schema-refresh-workflow.test.ts` owns the refresh workflow's
  * internal invariants (including `run_check` vs `CHECK_GUIDANCE`), and
