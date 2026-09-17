@@ -833,6 +833,71 @@ describe('cdkd bootstrap --destroy', () => {
       expectNothingDeleted();
     });
 
+    // Issue go-to-k/cdkd#3179 section C. This is the list an operator reads
+    // before passing `--force` to delete the state bucket, and each row carries
+    // the rendered `stack (region)` AND the raw S3 key beside it. Both come off
+    // a key nobody validated, so guarding one alone is inert.
+    it('sanitises BOTH the descriptor and the bracketed key in the refusal list', async () => {
+      const planted = `cdkd/Prod${String.fromCharCode(27)}[2K${String.fromCharCode(13)}Safe/us-east-1/state.json`;
+      stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
+        if (prefix === 'cdkd-bootstrap/') return [MARKER_KEY];
+        if (prefix === '') return [planted];
+        return [];
+      });
+
+      let message = '';
+      try {
+        await runDestroy(['--yes', '--include-state-bucket']);
+      } catch (error) {
+        message = (error as Error).message;
+      }
+
+      expect(message, 'precondition: the state-bucket guard fired').toMatch(
+        /still have state in it/
+      );
+      // Pin the planted ROW verbatim. The first revision asserted a
+      // control-character class over the WHOLE message, and that class excluded
+      // `\x0d` — so the CARRIAGE RETURN its comment named was never watched,
+      // and being message-wide it could not see WHICH row carried a survivor.
+      // A verbatim row also pins the BOUNDARY: without it, swapping
+      // `displayIdent` for `displaySafe` — sanitised but unquoted — stays green.
+      const row = message.split('\n').find((l) => l.includes('Prod'));
+      expect(row, 'the planted row is missing from the refusal entirely').toBeDefined();
+      expect(row).toBe(
+        '  - "Prod [2K Safe" (us-east-1)  ["cdkd/Prod [2K Safe/us-east-1/state.json"]'
+      );
+      expectNothingDeleted();
+    });
+
+    // The SIBLING refusal, 14 lines below the one above and reachable on the
+    // complementary branch: no state keys, markers present. Its region names
+    // come off `cdkd-bootstrap/<segment>.json`, which is a key with the same
+    // provenance, so the listing guard above would have been half a fix
+    // (go-to-k/cdkd#3179 C, found by the security review of that change).
+    it('sanitises the marker-sibling region list too', async () => {
+      const planted = `cdkd-bootstrap/${String.fromCharCode(27)}[2K${String.fromCharCode(13)}ap-northeast-1.json`;
+      stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
+        if (prefix === 'cdkd-bootstrap/') return [MARKER_KEY, planted];
+        return [];
+      });
+
+      let message = '';
+      try {
+        await runDestroy(['--yes', '--include-state-bucket']);
+      } catch (error) {
+        message = (error as Error).message;
+      }
+
+      expect(message, 'precondition: the marker-sibling guard fired').toMatch(
+        /still opted in to cdkd asset/
+      );
+      // The region list is joined inline rather than one row per entry, so the
+      // sentence itself is what gets pinned — same reasoning as the two
+      // verbatim-row cases: a class-based control-character check missed CR.
+      expect(message).toContain('region(s) "[2K ap-northeast-1" are still opted in');
+      expectNothingDeleted();
+    });
+
     it('empties + deletes the state bucket after the asset teardown', async () => {
       const rebuiltSend = vi.fn().mockImplementation(async (command: object) => {
         callLog.push(`rebuilt:${command.constructor.name}`);

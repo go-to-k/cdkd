@@ -36,9 +36,11 @@ import { S3StateBackend } from '../../state/s3-state-backend.js';
 import {
   listAllStateKeys,
   describeStateKey,
+  STATE_KEY_MAX_CODE_POINTS,
   STATE_FILE_SUFFIX,
   DEFAULT_STATE_PREFIX,
 } from './state-file-keys.js';
+import { displayIdent } from '../../utils/display-safe.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
@@ -348,6 +350,17 @@ async function listBootstrapMarkerSiblings(
 
   // Same region, different KEY than the one this run resolved: every spelling
   // of this region's own marker that the teardown will NOT delete.
+  //
+  // `otherRegions` above is rendered through `displayIdent` and these are NOT,
+  // and the asymmetry is deliberate — a review round read it as a half-applied
+  // sweep, so the reason is recorded here rather than left to be re-derived.
+  // `folded` is `canonicalizeRegion(raw)`, i.e. `raw.toLowerCase()`, and
+  // `region` is the CALLER's own `--region`. So an entry reaching this array
+  // differs from a value the operator typed by CASE ALONE: a control character
+  // has no case and cannot fold into it, and neither can `$(…)` unless the
+  // operator typed that as their region. `otherRegions` has no such constraint
+  // — it is every OTHER folded name in the bucket — which is why only it needs
+  // the boundary. Issue go-to-k/cdkd#3179 section C.
   const sameRegionKeys = segments
     .filter((e) => e.folded === region && e.key !== resolvedMarkerKey)
     .map((e) => e.key);
@@ -652,7 +665,15 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
       const stateKeys = await listAllStateKeys(stateBackend);
       if (stateKeys.length > 0) {
         const listing = stateKeys
-          .map((k) => `  - ${describeStateKey(k, STATE_FILE_SUFFIX, DEFAULT_STATE_PREFIX)}  [${k}]`)
+          // The raw KEY is sanitised alongside the rendered split, for the
+          // reason `gc.ts`'s twin listing states: both come off the same S3
+          // key, so leaving one bare makes guarding the other inert
+          // (go-to-k/cdkd#3179 C). This list is what an operator reads before
+          // passing `--force`.
+          .map(
+            (k) =>
+              `  - ${describeStateKey(k, STATE_FILE_SUFFIX, DEFAULT_STATE_PREFIX)}  [${displayIdent(k, { maxCodePoints: STATE_KEY_MAX_CODE_POINTS })}]`
+          )
           .join('\n');
         throw new CdkdError(
           `Refusing to delete state bucket '${bucketName}': ${stateKeys.length} stack(s) ` +
@@ -665,7 +686,7 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
       if (markerSiblings.otherRegions.length > 0) {
         throw new CdkdError(
           `Refusing to delete state bucket '${bucketName}': region(s) ` +
-            `${markerSiblings.otherRegions.join(', ')} are still opted in to cdkd asset ` +
+            `${markerSiblings.otherRegions.map((r) => displayIdent(r)).join(', ')} are still opted in to cdkd asset ` +
             `storage (their bootstrap markers live in this bucket). Run ` +
             `'cdkd bootstrap --destroy --region <r>' for each first.`,
           'STATE_BUCKET_HOLDS_MARKERS'
