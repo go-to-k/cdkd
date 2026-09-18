@@ -61,8 +61,19 @@ Index of every area: [code-layout.md](code-layout.md).
     `scrubResourceRecord(record, secrets)` (redacts one `ResourceState`'s
     `properties` / `attributes` / `observedProperties`, shared by the deploy
     save choke point and `cdkd scrub`), and `maskSecretsInText(text, secrets)`
-    (secret value → `***` for log / error output). Resolver log lines use
-    `maskSecretsForLog`: log twin (#3150, `***` if a needle hits the raw
+    (secret value → `***` for log / error output). Resolver log lines RENDER
+    through `displayMasked(value, context)` and never through the masker
+    directly (go-to-k/cdkd#3408): the masker answers only "does this contain a
+    recorded secret", so 97 interpolations of its result were masked but not
+    CONTROL-STRIPPED, and a template-supplied name could redraw a terminal.
+    Three review rounds each fixed the sites they found and the next round
+    found more, so the rule is now enforced by shape rather than by
+    enumeration — `tests/unit/deployment/resolver-display-masked-population.test.ts`
+    fails on any `${this.maskSecretsForLog(...)}`. `displayLeaf` is the same
+    thing for the log-twin route (`logTextOfLeaf`), which the `origin` builders
+    use. Both are in `MASKERS` in `scripts/check-resolver-mask-coverage.ts`, on
+    the strength of delegating to the masker. That masking itself is unchanged:
+    log twin (#3150, `***` if a needle hits the raw
     text too), else masks `context.inheritedSecrets` FIRST, then
     `context.recordedSecretValues` (#1903 round 2: on a nested-stack
     child the parent-decrypted parameter plaintext is in the inherited bag

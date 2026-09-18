@@ -349,8 +349,16 @@ describe('check-resolver-mask-coverage', () => {
       // wrapped spelling. `String.replace` mutates the FIRST occurrence, which
       // is the DBProxy `VpcId` refusal, not `guardedPhysicalIdFallback`
       // (whose two sites are the last of the six).
-      ['physicalId at the first strip-and-mask refusal site (DBProxy VpcId)', '${displaySafe(this.maskThenStripThenMask(physicalId, context))}', '${physicalId}'],
-      ['attributeName', '${this.maskSecretsForLog(attributeName, context)}', '${attributeName}'],
+      //
+      // Both premises are now `this.displayMasked(...)`: go-to-k/cdkd#3408
+      // collapsed the hand-spelled `displaySafe(this.maskThenStripThenMask(v))`
+      // and the bare `this.maskSecretsForLog(v)` into ONE display builder, so
+      // every interpolation in the subject reads the same way. That these two
+      // rows had to change is the rename being observable rather than a
+      // problem -- a transcribed literal that did NOT move would mean the
+      // probe had stopped matching its subject.
+      ['physicalId at the first strip-and-mask refusal site (DBProxy VpcId)', '${this.displayMasked(physicalId, context)}', '${physicalId}'],
+      ['attributeName', '${this.displayMasked(attributeName, context)}', '${attributeName}'],
       // The full encoder call, not the bare mask: since issue #3114 the `Ref` to
       // a parameter and the `Fn::GetAtt` lines also pass `maskValueLeaves(value,
       // context)` into an encoder under an outer `maskSecretsForLog`, and the

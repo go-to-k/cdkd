@@ -230,13 +230,24 @@ export const STACK_REF_MAX_CODE_POINTS = 128 + 4 * (1 + IDENT_MAX_CODE_POINTS);
  * makes for a nested-stack child's name.
  *
  * Derived rather than rounded, so the arithmetic is auditable: the longest
- * partition cdkd knows is `aws-iso-e` (9), and the fixed segments are
+ * partition cdkd knows is `aws-us-gov` (10), and the fixed segments are
  * `arn:` + `:iam::` + 12 + `:role` = 27.
+ *
+ * It read `aws-iso-e` (9) until go-to-k/cdkd#3397's review, which is one short
+ * and wrong by inspection of `PARTITION_TABLE` in `src/utils/aws-partition.ts`
+ * -- `aws-us-gov` is in that table and is a character longer. The consequence
+ * was the exact failure this constant exists to prevent, on exactly one input:
+ * a maximal GovCloud role ARN (613 code points) rendered
+ * `[cut: 1 more characters withheld]`. Counting the longest entry of the table
+ * rather than naming one is what would have avoided it, but the table is in a
+ * module this leaf must not import, so the number stays transcribed -- and
+ * `tests/unit/utils/display-safe-role-arn-cap.test.ts` now derives the maximum
+ * from `PARTITION_TABLE` and fails if this falls behind it again.
  *
  * It bounds the PAYLOAD, which is all a cap can do -- the wrapping caveat on
  * `STACK_REF_MAX_CODE_POINTS` applies here unchanged.
  */
-export const ROLE_ARN_MAX_CODE_POINTS = 27 + 9 + 512 + 64;
+export const ROLE_ARN_MAX_CODE_POINTS = 27 + 10 + 512 + 64;
 
 /**
  * The cap for a SECRET REFERENCE -- an ECS task definition's `ValueFrom`, the
@@ -254,6 +265,49 @@ export const ROLE_ARN_MAX_CODE_POINTS = 27 + 9 + 512 + 64;
  * shorter than the ARN containing it.
  */
 export const SECRET_REF_MAX_CODE_POINTS = 2048;
+
+/**
+ * The cap for AWS's OWN error text when it is rendered beside a sanitized
+ * identifier (issue go-to-k/cdkd#3397 review).
+ *
+ * `displaySafe` takes no `maxCodePoints` — it is the free-form-text helper and
+ * its output is normally an SDK sentence of bounded length. That stops being
+ * true at the two sites this constant serves, and for a specific reason: STS
+ * and IAM ECHO THE SUBMITTED VALUE VERBATIM in a validation error, so the
+ * message's length is chosen by whoever supplied the `RoleArn`. Those sites
+ * sanitize the ARN with `ROLE_ARN_MAX_CODE_POINTS` and then print AWS's reply
+ * next to it, where an oversized input returns UNBOUNDED past the cap the ARN
+ * itself just paid — the guard defeated by its own neighbour, in the length
+ * dimension rather than the charset one.
+ *
+ * Deliberately generous. The message is the DIAGNOSIS, so cutting it costs the
+ * user the answer; this is a flood stop, not a formatting rule. A genuine AWS
+ * error is far below it — the value only bites on a message carrying an echoed
+ * payload, which is exactly the case that should be cut.
+ */
+export const AWS_MESSAGE_MAX_CODE_POINTS = 4096;
+
+/**
+ * AWS's own error text, sanitized AND bounded, with the cut MARKED.
+ *
+ * One helper rather than the expression spelled at each site, for the reason
+ * `displayIdent`'s own truncation gives: a reader has to be able to tell a
+ * message that ENDED from one that was CUT. `truncateCodePoints` reports
+ * `truncated`, and round 2 of go-to-k/cdkd#3408 found both call sites taking
+ * `.text` and discarding it, so a bounded message ended mid-sentence looking
+ * complete — which on a diagnostic is worse than the flood it prevents, since
+ * the reader acts on a sentence whose second half is missing.
+ *
+ * The marker is spelled exactly as `displayIdent`'s, so the two cannot teach a
+ * reader two different things about the same event.
+ */
+export function displayAwsMessage(value: unknown): string {
+  const sanitized = displaySafe(value);
+  const { text, truncated } = truncateCodePoints(sanitized, AWS_MESSAGE_MAX_CODE_POINTS);
+  if (!truncated) return text;
+  const withheld = Array.from(sanitized).length - Array.from(text).length;
+  return `${text} [cut: ${withheld} more characters withheld]`;
+}
 
 /**
  * The shape of a value that renders WITHOUT a visible boundary: the characters

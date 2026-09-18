@@ -145,8 +145,26 @@ const EXPECTED_STACK_NAME_RENDERS = 12;
  * a region, logical id, resource type or change type, none of which needs the
  * wider stack-name cap. Exact, so a stack name ADDED through the weak helper
  * moves a number instead of slipping past a pattern.
+ *
+ * Went 59 -> 58 in go-to-k/cdkd#3397: the `--role-arn` note moved OFF `safe()`
+ * onto `safeRoleArn()`, because an AWS-legal role ARN reaches 613 code points
+ * and the 255 default was cutting it inside the sentence that names it. That is
+ * the fence behaving as designed -- it refused the first cut of that fix, which
+ * spelled the cap inline at the site, and the refusal is what produced the
+ * named helper.
  */
-const EXPECTED_SAFE_REFERENCES = 59;
+const EXPECTED_SAFE_REFERENCES = 58;
+
+/**
+ * Bare `safeRoleArn` references -- 1 declaration plus the single role-ARN
+ * render (the `--role-arn` note on the journal's newest segment).
+ *
+ * A THIRD exact total rather than folding ARNs into one of the two above, for
+ * the reason the `safe` note gives about stack names: a shared count is
+ * satisfied by a render moving between helpers, and moving an ARN onto the
+ * 255-code-point helper is exactly the regression this file now guards.
+ */
+const EXPECTED_ROLE_ARN_RENDERS = 1;
 
 /** A journal + state pair with ONE replayable CREATE, enough to reach the prompt. */
 function installOneCreateSegment(): FakeBackend {
@@ -1241,7 +1259,8 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
 
   function installForgedJournal(
     kind: 'completed' | 'failed',
-    opOverride: Record<string, unknown> = {}
+    opOverride: Record<string, unknown> = {},
+    roleArnOverride?: string
   ): FakeBackend {
     const op = {
       logicalId: FORGED_ID,
@@ -1276,7 +1295,9 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
             reason: 'auto-rollb\u200back-clean\n  - delete   RealTable (AWS::DynamoDB::Table)',
             // Rendered in its own `Note:` line directly ABOVE the plan header --
             // the one journal field the first fix round did not enumerate.
-            roleArn: 'arn:aws:iam::1:role/De\u200bploy\n  - delete   RealRole (AWS::IAM::Role)',
+            roleArn:
+              roleArnOverride ??
+              'arn:aws:iam::1:role/De\u200bploy\n  - delete   RealRole (AWS::IAM::Role)',
             initialDeploy: false,
             operations: kind === 'completed' ? [op] : [],
             ...(kind === 'failed' && { failedOperations: [op] }),
@@ -1289,11 +1310,12 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
   async function forgedPlanLines(
     kind: 'completed' | 'failed',
     opts: Record<string, unknown> = {},
-    opOverride: Record<string, unknown> = {}
+    opOverride: Record<string, unknown> = {},
+    roleArnOverride?: string
   ): Promise<string[]> {
     const { getLogger } = await import('../../../../src/utils/logger.js');
     const info = getLogger().info as unknown as ReturnType<typeof vi.fn>;
-    installForgedJournal(kind, opOverride);
+    installForgedJournal(kind, opOverride, roleArnOverride);
     await rollbackCommand('S', { ...baseOpts, ...opts }).catch(() => undefined);
     return info.mock.calls.map((c) => String(c[0]));
   }
@@ -1336,6 +1358,33 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
     expect(rows[0]).toContain(`- skip     "${spoof}" (AWS::S3::Bucket) — already reverted`);
     // Outside the quotes, the annotation appears exactly once: the genuine one.
     expect(rows[0]!.replace(`"${spoof}"`, '').split('already reverted')).toHaveLength(2);
+  });
+
+  it('a MAXIMAL role ARN in the --role-arn note is NOT cut (issue #3397 review)', async () => {
+    // The BEHAVIOURAL half of `safeRoleArn`. The source-shape assertions above
+    // pin that the helper exists and which cap it names; only this one proves
+    // an AWS-legal ARN survives the render. Before the helper this value went
+    // through `safe()`'s 255 default and came back
+    // `[cut: 358 more characters withheld]` -- inside `pass --role-arn to
+    // match`, the sentence whose only job is to say which role to pass back.
+    //
+    // 613 code points: `arn:` + `aws-us-gov` + `:iam::` + 12 + `:role`, then a
+    // 512-character path (its own slashes included) and a 64-character name.
+    const path = `/${'p'.repeat(510)}/`;
+    const maximalArn = `arn:aws-us-gov:iam::123456789012:role${path}${'n'.repeat(64)}`;
+    expect(Array.from(maximalArn).length).toBe(613);
+
+    const lines = await forgedPlanLines('completed', {}, {}, maximalArn);
+    const note = lines.find((l) => l.includes('the failed deploy ran with --role-arn'));
+
+    expect(note, 'the --role-arn note was not rendered at all').toBeDefined();
+    expect(note, 'a legitimate maximal ARN was truncated in the message naming it').toContain(
+      maximalArn
+    );
+    expect(note).not.toContain('withheld');
+    // ...and the note still carries its remedy, so the assertion above is not
+    // satisfied by a line that is nothing but the ARN.
+    expect(note).toContain('pass --role-arn to match');
   });
 
   it('a value past the identifier cap is cut and the cut is named (#3092)', async () => {
@@ -1771,6 +1820,23 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
     // value belongs in.
     const safeRefs = code.match(/\bsafe\b/g) ?? [];
     expect(safeRefs).toHaveLength(EXPECTED_SAFE_REFERENCES);
+
+    // The ROLE-ARN class, tracked the same way and for the same reason
+    // (go-to-k/cdkd#3397). `\bsafe\b` does not match inside `safeRoleArn` --
+    // both sides of the boundary are word characters -- so this total is
+    // independent of the one above, exactly as `safeStack`'s is.
+    expect(code).toContain('function safeRoleArn');
+    const roleArnDecls = code.match(/\bfunction\s+safeRoleArn\b/g) ?? [];
+    expect(roleArnDecls).toHaveLength(1);
+    const roleArnRefs = code.match(/\bsafeRoleArn\b/g) ?? [];
+    expect(roleArnRefs).toHaveLength(roleArnDecls.length + EXPECTED_ROLE_ARN_RENDERS);
+
+    // ...and the cap it carries is the ARN one. Without this the helper could
+    // be quietly re-pointed at the 255 default and every count above would
+    // still balance -- the "a fence must watch the field it claims" rule.
+    expect(code).toMatch(
+      /function safeRoleArn\([^)]*\)[^{]*\{\s*return displayIdent\(value, \{ maxCodePoints: ROLE_ARN_MAX_CODE_POINTS \}\);/
+    );
   });
 
   it('the comment stripper does not remove code', () => {

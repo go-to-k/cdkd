@@ -507,3 +507,148 @@ describe('applyRoleArnIfSet', () => {
     expect(STSClient).toHaveBeenCalledWith({});
   });
 });
+
+/**
+ * The cross-account AssumeRole message is CAPPED as well as sanitized.
+ *
+ * go-to-k/cdkd#3408's security review, on go-to-k/cdkd#3397's own fix. That
+ * issue gave `assumeRoleForCrossAccountStateRead`'s STS error text
+ * `displaySafe`, closing the CHARSET half of "the guard defeated by its own
+ * neighbour" — the ARN beside it is capped at `ROLE_ARN_MAX_CODE_POINTS`, and
+ * an unbounded neighbour defeats that cap in the LENGTH dimension instead.
+ *
+ * It is reachable rather than theoretical: STS answers an unparseable `RoleArn`
+ * with a `ValidationError` that ECHOES THE SUBMITTED VALUE VERBATIM, and on
+ * this path the `RoleArn` is a literal from the user's own template. So the
+ * message's length is chosen by whoever wrote the template.
+ */
+describe('assumeRoleForCrossAccountStateRead bounds AWS error text (issue #3397 review)', () => {
+  beforeEach(() => {
+    mockStsSend.mockReset();
+    resetAwsClientDefaults();
+  });
+
+  it('truncates an STS message that echoes an oversized submitted value', async () => {
+    const { assumeRoleForCrossAccountStateRead, clearCrossAccountCredentialsCache } = await import(
+      '../../../src/utils/role-arn.js'
+    );
+    clearCrossAccountCredentialsCache();
+
+    // A message the size an ECHOED payload can reach. The literal is
+    // independent of `AWS_MESSAGE_MAX_CODE_POINTS` in both directions, so this
+    // case cannot scale with the constant the way a `CAP + 1` input would.
+    const echoed = 'E'.repeat(200_000);
+    mockStsSend.mockRejectedValue(new Error(`ValidationException: rejected ${echoed}`));
+
+    const err = await assumeRoleForCrossAccountStateRead(
+      'arn:aws:iam::123456789012:role/Producer'
+    ).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+
+    expect(err, 'the assume was expected to fail').toBeDefined();
+    const message = String(err?.message ?? '');
+
+    // BOUNDED. The remaining allowance is the sentence cdkd wraps around it
+    // (the ARN, the trust-policy hint and the docs URL), which is well under
+    // 2000 characters.
+    expect(
+      message.length,
+      'the echoed payload returned unbounded past the cap the ARN itself paid'
+    ).toBeLessThan(10_000);
+
+    // ...and still DIAGNOSTIC. A cap that emptied the message would satisfy the
+    // bound above while costing the user the reason.
+    expect(message).toContain('AssumeRole into');
+    expect(message).toContain('ValidationException');
+    expect(message).toContain('trust-policy');
+  });
+
+  it('leaves an ORDINARY STS message intact', async () => {
+    // The other direction: the cap is a flood stop, not a formatting rule, so a
+    // real AWS sentence must pass through whole.
+    const { assumeRoleForCrossAccountStateRead, clearCrossAccountCredentialsCache } = await import(
+      '../../../src/utils/role-arn.js'
+    );
+    clearCrossAccountCredentialsCache();
+
+    const real =
+      'User: arn:aws:iam::111122223333:user/dev is not authorized to perform: sts:AssumeRole on resource: arn:aws:iam::123456789012:role/Producer';
+    mockStsSend.mockRejectedValue(new Error(real));
+
+    const err = await assumeRoleForCrossAccountStateRead(
+      'arn:aws:iam::123456789012:role/Producer'
+    ).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+
+    expect(String(err?.message ?? '')).toContain(real);
+  });
+});
+
+/**
+ * `applyRoleArnIfSet` sanitizes an STS REJECTION, not only its debug line.
+ *
+ * go-to-k/cdkd#3408 round 2's MAJOR. This function wrapped `sts.send` in
+ * `try { ... } finally { sts.destroy() }` with NO `catch`, so an STS rejection
+ * propagated verbatim — while its twin `assumeRoleForCrossAccountStateRead`
+ * caught and sanitized for the stated reason that STS ECHOES THE SUBMITTED
+ * RoleArn back. One class, two halves, one guard.
+ *
+ * Reachable rather than theoretical: `IAM_ROLE_ARN_REGEX` in
+ * `src/cli/options.ts` is START-anchored and constrains nothing past `role/`,
+ * `formatError` renders the message, and `ConsoleLogger.formatMessage`
+ * sanitizes a call's extra ARGS and never the message itself.
+ */
+describe('applyRoleArnIfSet sanitizes an STS rejection (issue #3397 review round 2)', () => {
+  beforeEach(() => {
+    mockStsSend.mockReset();
+    resetAwsClientDefaults();
+  });
+
+  it('strips control characters STS echoed back from the submitted RoleArn', async () => {
+    const esc = String.fromCharCode(0x1b);
+    const hostile = `arn:aws:iam::123456789012:role/x${esc}[2K\revil`;
+    // The real shape: STS quotes the submitted value into its own message.
+    mockStsSend.mockRejectedValue(
+      new Error(`ValidationError: ${hostile} is invalid`)
+    );
+
+    const err = await applyRoleArnIfSet({ roleArn: hostile, region: 'us-east-1' }).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+
+    expect(err, 'the assume was expected to fail').toBeDefined();
+    const message = String(err?.message ?? '');
+
+    expect(message, 'a raw ESC escaped through the STS rejection').not.toContain(esc);
+    expect(message, 'a raw CR escaped through the STS rejection').not.toContain('\r');
+    // ...and it still says what happened and which role, on BOTH sides of the
+    // sanitization -- a guard that emptied the message would pass the two
+    // assertions above.
+    expect(message).toContain('AssumeRole for');
+    expect(message).toContain('ValidationError');
+    expect(message).toContain('evil');
+  });
+
+  it('threads the ORIGINAL error as `cause`, unmasked, for the retry classifiers', async () => {
+    // `layout-deployment-secrets.md`'s rule for every wrapper of an AWS
+    // failure: the retry classifiers walk `$metadata` down the cause chain, so
+    // masking the cause would change which failures are retryable.
+    const original = new Error('ValidationError: nope');
+    mockStsSend.mockRejectedValue(original);
+
+    const err = await applyRoleArnIfSet({
+      roleArn: 'arn:aws:iam::123456789012:role/R',
+      region: 'us-east-1',
+    }).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+
+    expect((err as Error & { cause?: unknown }).cause).toBe(original);
+  });
+});

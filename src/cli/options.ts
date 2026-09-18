@@ -4,6 +4,7 @@ import {
   DEFAULT_RESOURCE_TIMEOUT_MS,
 } from '../deployment/deploy-engine.js';
 import { getLogger } from '../utils/logger.js';
+import { displayIdent, ROLE_ARN_MAX_CODE_POINTS } from '../utils/display-safe.js';
 import { DEFAULT_STATE_PREFIX } from './commands/state-file-keys.js';
 
 /**
@@ -1286,6 +1287,21 @@ export interface AssumeRoleOption {
   bareAutoResolve?: boolean;
 }
 
+/**
+ * ANCHORED AT THE START ONLY, and that is what makes the renders below a
+ * display boundary rather than a formality (issue
+ * [#3397](https://github.com/go-to-k/cdkd/issues/3397)).
+ *
+ * A value CLEARING this test is constrained in its first ~30 characters and in
+ * nothing after `role/` — `arn:aws:iam::1:role/` followed by an ESC, a
+ * newline, or 10 MB of anything is a PASS. So `normalizeStartApiAssumeRole`'s
+ * mutual-exclusion error, which renders an ARN this regex already accepted,
+ * needs sanitizing exactly as much as the three REFUSALS that render one it
+ * rejected. Tightening the regex instead was considered and is the wrong tool:
+ * `src/utils/role-arn.ts`'s `IAM_ROLE_ARN_RE` is the strict parse, it runs
+ * later and on a different path, and a stricter argparse here would start
+ * refusing role-name shapes the deploy path accepts.
+ */
 const IAM_ROLE_ARN_REGEX = /^arn:[^:]+:iam::\d+:role\//;
 
 /**
@@ -1304,11 +1320,23 @@ export function parseAssumeRoleToken(
   const acc: AssumeRoleOption = previous ?? { perLambda: {} };
   if (!acc.perLambda) acc.perLambda = {};
 
+  // Every render below is ARGV — the most untrusted text cdkd handles — and all
+  // three are REFUSALS, so the value reaching them is by construction one no
+  // shape test accepted (issue go-to-k/cdkd#3397, the same argument issue
+  // [#3377](https://github.com/go-to-k/cdkd/issues/3377) made about
+  // `writeProfileCredentialsFile` interpolating the name it was refusing).
+  // `shownRaw` is bound once so the three cannot drift.
+  //
+  // ALL THREE, not just the ARN-shaped one: `raw` and `logicalId` are the same
+  // argv with different substrings taken, so sanitizing the operand that
+  // happens to be called `arn` and leaving its neighbours raw would be the
+  // "guard defeated by its own neighbour" shape on one line.
+  const shownRaw = displayIdent(raw, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS });
   const eqIndex = raw.indexOf('=');
   if (eqIndex === -1) {
     if (!IAM_ROLE_ARN_REGEX.test(raw)) {
       throw new Error(
-        `Invalid --assume-role value "${raw}": expected an IAM role ARN like arn:aws:iam::123456789012:role/MyRole, or LogicalId=<arn>.`
+        `Invalid --assume-role value "${shownRaw}": expected an IAM role ARN like arn:aws:iam::123456789012:role/MyRole, or LogicalId=<arn>.`
       );
     }
     acc.globalArn = raw;
@@ -1319,12 +1347,12 @@ export function parseAssumeRoleToken(
   const arn = raw.substring(eqIndex + 1).trim();
   if (!/^[A-Za-z][A-Za-z0-9]*$/.test(logicalId)) {
     throw new Error(
-      `Invalid --assume-role value "${raw}": left-hand side "${logicalId}" must be a CloudFormation logical ID (alphanumeric, leading letter).`
+      `Invalid --assume-role value "${shownRaw}": left-hand side "${displayIdent(logicalId)}" must be a CloudFormation logical ID (alphanumeric, leading letter).`
     );
   }
   if (!IAM_ROLE_ARN_REGEX.test(arn)) {
     throw new Error(
-      `Invalid --assume-role value "${raw}": right-hand side "${arn}" must be an IAM role ARN like arn:aws:iam::123456789012:role/MyRole.`
+      `Invalid --assume-role value "${shownRaw}": right-hand side "${displayIdent(arn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}" must be an IAM role ARN like arn:aws:iam::123456789012:role/MyRole.`
     );
   }
   acc.perLambda[logicalId] = arn;
@@ -1360,8 +1388,11 @@ export function normalizeStartApiAssumeRole(
   }
   if (autoResolve && raw.globalArn) {
     throw new Error(
+      // `globalArn` CLEARED `IAM_ROLE_ARN_REGEX`, which constrains nothing past
+      // `role/` — see that constant's note. So this is the same untrusted value
+      // as the refusals above, one branch later (issue go-to-k/cdkd#3397).
       `--assume-role-auto auto-resolves EACH routed Lambda's own execution role, ` +
-        `but --assume-role ${raw.globalArn} also names a single global default. ` +
+        `but --assume-role ${displayIdent(raw.globalArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })} also names a single global default. ` +
         `These are mutually exclusive on the global slot. Either drop the global ARN ` +
         `to keep --assume-role-auto for every Lambda, or drop --assume-role-auto to keep the global default. ` +
         `Per-Lambda overrides (--assume-role <LogicalId>=<arn>) are compatible with either side.`

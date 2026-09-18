@@ -97,6 +97,22 @@ export const MASKERS = [
   // FOURTH call site is a security decision — check that its value's needle can
   // only be in the inherited bag before adding one.
   'maskInherited',
+  // The DISPLAY builder (go-to-k/cdkd#3408). `displaySafe(maskThenStripThenMask(v))`
+  // — so every path through it passes `maskSecretsForLog`, twice, which makes
+  // it strictly stronger than the plain masker it replaced at 84 sites and
+  // unable to be weaker at any input. Listing it is a security decision under
+  // this list's own rule, and it is the one that lets the sibling scanner
+  // (`tests/unit/deployment/resolver-display-masked-population.test.ts`) demand
+  // it INSTEAD of a bare masker at every interpolation: without the entry here,
+  // routing a render through it would trade a strip-coverage failure for a
+  // mask-coverage one.
+  'displayMasked',
+  // The LOG-TWIN display route (go-to-k/cdkd#3408). `displayMasked(logTextOfLeaf(v))`
+  // — so it is `displayMasked` plus a twin resolution, and inherits that
+  // entry's justification unchanged. Listed for the same reason: without it,
+  // routing the four `origin` builders through it would trade a strip-coverage
+  // failure for a mask-coverage one.
+  'displayLeaf',
 ] as const;
 
 /** Marker tag; the parenthesised expression is matched against the bare one. */
