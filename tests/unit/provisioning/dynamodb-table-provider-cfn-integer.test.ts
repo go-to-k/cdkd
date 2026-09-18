@@ -1858,6 +1858,26 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
       expect(updates).toEqual([]);
     });
 
+    it('site 5 update: does NOT reset a member ABSENT from a live block that EXISTS (go-to-k/cdkd#3373)', async () => {
+      // The PER-MEMBER half of condition 3, which the whole-block case below
+      // cannot reach: there `live?.OnDemandThroughput` is undefined and the
+      // rule short-circuits, so deleting the per-member test left that case
+      // GREEN (measured). Here the live block EXISTS and carries only the READ
+      // member -- reachable from an out-of-band console change -- so there is
+      // no write maximum to remove and `-1` would be a call with nothing to do.
+      //
+      // The READ ceiling CHANGES so an op is emitted either way: the
+      // discriminator is the op's SHAPE, not its presence.
+      const updates = await gsiCeilingOps(
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: 90 })],
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: 50, MaxWriteRequestUnits: 60 })],
+        { indexes: [{ ...LIVE_GSI('gsi1'), OnDemandThroughput: { MaxReadRequestUnits: 50 } }] }
+      );
+      expect(updates).toEqual([
+        { IndexName: 'gsi1', OnDemandThroughput: { MaxReadRequestUnits: 90 } },
+      ]);
+    });
+
     it('site 5 update: does NOT reset a member the RECORD holds in a spelling cdkd REFUSED (go-to-k/cdkd#3373)', async () => {
       // Condition 1. `previousProperties` is a cdkd STATE record and the record
       // is RAW -- it holds the spelling the TEMPLATE declared, including a
