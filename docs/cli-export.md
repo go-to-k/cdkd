@@ -119,22 +119,31 @@ A type whose CloudFormation registry schema declares no `read` handler **and**
 reports `ProvisioningType: NON_PROVISIONABLE` is rejected by `CreateChangeSet`
 with `ResourceTypes [<T>] are not supported for Import`. `AWS::Glue::Table`,
 `AWS::Route53::RecordSet`, `AWS::Route53::RecordSetGroup`,
-`AWS::AppSync::ApiKey`, `AWS::EC2::NetworkAclEntry`, `AWS::SQS::QueuePolicy`
-and `AWS::SNS::TopicPolicy` are all in this class.
+`AWS::AppSync::GraphQLSchema`, `AWS::EC2::NetworkAclEntry`,
+`AWS::SQS::QueuePolicy` and `AWS::SNS::TopicPolicy` are all in this class.
+(`AWS::AppSync::ApiKey` left it in September 2026, when AWS re-published the
+type with a read handler; it imports, and cdkd resolves its composite
+`[ApiId, ApiKeyId]` identifier from the `apiId|apiKeyId` physical id.)
 
 cdkd surfaces them from the schema it already fetches for the identifier and
 names **every** offending resource in one message — AWS's own error is not
 exhaustive. Both signals must agree before cdkd refuses, so a partial or
 unusual registry response falls back to letting AWS answer.
 
+The registry heuristic is necessary but not sufficient: a type can declare a
+read handler and still be refused. `AWS::AppSync::GraphQLApi` is the measured
+case (us-east-1, September 2026: registry `FULLY_MUTABLE` with a full handler
+set, changeset rejected all the same), so cdkd also blocks it up front from a
+short list of dated measurements, with the same remedies.
+
 Remove the resource from the stack before exporting — it stays in AWS and can
 be re-declared in CloudFormation afterwards — or destroy it first and let
 CloudFormation create it fresh.
 
-The verdict is a registry **heuristic**, not AWS's published
-supported-for-import list. `--skip-import-support-preflight` is the escape
-hatch when AWS has since made a type importable: the changeset is then
-submitted and CloudFormation answers for itself.
+Neither verdict is AWS's published supported-for-import list.
+`--skip-import-support-preflight` is the escape hatch when AWS has since made
+a type importable: both checks are skipped, the changeset is submitted and
+CloudFormation answers for itself.
 
 ## Types cdkd re-creates instead of importing
 

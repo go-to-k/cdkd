@@ -366,10 +366,6 @@ describe('a secret-seeding integ fixture must sweep S3 object versions', () => {
       'deletion-policy-snapshot-heavy',
       'docdb-neptune',
       'eventbridge-api-destination',
-      // Issue #3414: an `appsync.CfnApiKey` whose value cdkd records as an
-      // attribute; the fixture sources the helper, purges noncurrent versions
-      // from cleanup and sweeps + asserts on its success path.
-      'export',
       'iam-access-key',
       'import-secret-observed',
       'lambda-esm-self-managed-kafka',

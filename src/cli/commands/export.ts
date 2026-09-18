@@ -4372,6 +4372,23 @@ export async function buildImportPlan(
         });
         continue;
       }
+      const measuredRefusal = cfnRefusesImportDespiteRegistry(resourceType);
+      if (!options.skipImportSupportPreflight && measuredRefusal !== undefined) {
+        blocked.push({
+          logicalId,
+          resourceType,
+          reason:
+            `AWS CloudFormation does not support ${resourceType} in IMPORT changesets, ` +
+            `${measuredRefusal}. Its registry schema passes cdkd's read-handler pre-flight, so ` +
+            `without this list CreateChangeSet would reject the whole export with ` +
+            `"ResourceTypes [${resourceType}] are not supported for Import" after the stack was ` +
+            `locked. Remove the resource from the stack before exporting (it stays in AWS and can ` +
+            `be re-declared in CloudFormation afterwards), or destroy it first and let ` +
+            `CloudFormation create it fresh. If AWS has since added IMPORT support for this ` +
+            `type, re-run with --skip-import-support-preflight and please open a cdkd issue.`,
+        });
+        continue;
+      }
       resolved = await resolveResourceIdentifier(
         resourceType,
         logicalId,
@@ -4700,6 +4717,43 @@ async function cachedTypeSchemaInfo(
  */
 function typeIsImportUnsupported(entry: PrimaryIdentifierCacheEntry): boolean {
   return entry.importSupport === 'unsupported';
+}
+
+/**
+ * Types CloudFormation REFUSES in an IMPORT changeset although their registry
+ * schema passes {@link typeIsImportUnsupported} — a `read` handler declared,
+ * `ProvisioningType: FULLY_MUTABLE` — so the registry heuristic lets them
+ * through and `CreateChangeSet` answers `ResourceTypes [<T>] are not
+ * supported for Import` after the lock, the prompt and the template
+ * preprocessing have already happened. The heuristic is NECESSARY (a type
+ * with no read handler is never importable) but the 2026-09-18 measurement
+ * showed it is not SUFFICIENT: AWS's supported-for-import list is a separate
+ * fact the registry does not carry.
+ *
+ * Each entry is a dated measurement, and the map is the `blocked` message's
+ * evidence. `--skip-import-support-preflight` bypasses this set together with
+ * the heuristic, for the same reason it exists there: AWS may add support
+ * without cdkd noticing, and the changeset is then the authority.
+ *
+ * | Type | measured |
+ * |---|---|
+ * | `AWS::AppSync::GraphQLApi` | us-east-1, 2026-09-18, the `export` integ fixture: registry `[read, create, update, delete, list]` / `FULLY_MUTABLE` / identifier `Arn`; `CreateChangeSet --change-set-type IMPORT` carrying the API (resolved to its ARN) rejected with `ResourceTypes [AWS::AppSync::GraphQLApi] are not supported for Import`. `AWS::AppSync::ApiKey` is NOT here: a standalone IMPORT changeset carrying one key with `{ApiId, ApiKeyId}` reached `CREATE_COMPLETE` the same day. (issue #3414) |
+ */
+const CFN_IMPORT_REFUSED_DESPITE_REGISTRY: ReadonlyMap<string, string> = new Map([
+  [
+    'AWS::AppSync::GraphQLApi',
+    'measured in us-east-1 on 2026-09-18: the registry schema declares a read handler and ' +
+      'FULLY_MUTABLE, yet CreateChangeSet --change-set-type IMPORT rejected the type',
+  ],
+]);
+
+/**
+ * The dated measurement behind a {@link CFN_IMPORT_REFUSED_DESPITE_REGISTRY}
+ * entry, or `undefined` when CloudFormation has not been measured refusing the
+ * type. Exported for unit tests.
+ */
+export function cfnRefusesImportDespiteRegistry(resourceType: string): string | undefined {
+  return CFN_IMPORT_REFUSED_DESPITE_REGISTRY.get(resourceType);
 }
 
 /**

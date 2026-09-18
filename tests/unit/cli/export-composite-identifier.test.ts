@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
   buildImportPlan,
+  cfnRefusesImportDespiteRegistry,
   COMPOSITE_PHYSICAL_ID_IDENTIFIER_TYPES,
   hasCompositePhysicalIdIdentifier,
   resolveCompositePhysicalIdIdentifier,
@@ -1298,11 +1299,45 @@ describe('buildImportPlan — AWS::AppSync::GraphQLApi / ::ApiKey (issue #3414)'
         },
       },
     };
-    const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');
+    // Under the bypass flag: the measured refusal below blocks the API by
+    // default, and the identifier resolution is what this case pins.
+    const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack', {
+      skipImportSupportPreflight: true,
+    });
     expect(plan.blocked).toEqual([]);
     expect(plan.phase1Imports).toHaveLength(1);
     expect(plan.phase1Imports[0]!.resourceIdentifier).toEqual({ Arn: GRAPHQL_API_ARN });
     expect(plan.phase1Imports[0]!.propertiesOverlay).toEqual({});
+  });
+
+  it('blocks the API up front from the MEASURED refusal list although its registry passes the read-handler pre-flight', async () => {
+    // us-east-1, 2026-09-18, the `export` integ fixture: registry FULLY_MUTABLE
+    // with a full handler set, and CreateChangeSet --change-set-type IMPORT
+    // still answered `ResourceTypes [AWS::AppSync::GraphQLApi] are not
+    // supported for Import` — after the lock. The heuristic is necessary, not
+    // sufficient, so the type is blocked before any of that happens.
+    expect(cfnRefusesImportDespiteRegistry('AWS::AppSync::GraphQLApi')).toMatch(/2026-09-18/);
+    // The key is NOT on the list: a standalone IMPORT changeset carrying one
+    // reached CREATE_COMPLETE the same day.
+    expect(cfnRefusesImportDespiteRegistry('AWS::AppSync::ApiKey')).toBeUndefined();
+    const state = stateWith({
+      Api: {
+        resourceType: 'AWS::AppSync::GraphQLApi',
+        physicalId: GRAPHQL_API_ID,
+        attributes: { Arn: GRAPHQL_API_ARN },
+      },
+    });
+    const template = {
+      Resources: { Api: { Type: 'AWS::AppSync::GraphQLApi', Properties: { Name: 'my-api' } } },
+    };
+    const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');
+    expect(plan.phase1Imports).toEqual([]);
+    expect(plan.blocked).toHaveLength(1);
+    expect(plan.blocked[0]!.reason).toMatch(/measured in us-east-1 on 2026-09-18/);
+    expect(plan.blocked[0]!.reason).toMatch(/--skip-import-support-preflight/);
+    // The registry stub DOES declare a read handler, so the older heuristic
+    // did not fire — the case that made the list necessary.
+    expect(plan.blocked[0]!.reason).not.toMatch(/declares no 'read' handler/);
   });
 
   it('takes the plain single-key path when the registry still reports the OLD `ApiId` identifier', async () => {
@@ -1329,7 +1364,8 @@ describe('buildImportPlan — AWS::AppSync::GraphQLApi / ::ApiKey (issue #3414)'
           provisioningType: 'FULLY_MUTABLE',
         },
       }),
-      'MyStack'
+      'MyStack',
+      { skipImportSupportPreflight: true }
     );
     expect(plan.blocked).toEqual([]);
     expect(plan.phase1Imports[0]!.resourceIdentifier).toEqual({ ApiId: GRAPHQL_API_ID });
@@ -1357,7 +1393,8 @@ describe('buildImportPlan — AWS::AppSync::GraphQLApi / ::ApiKey (issue #3414)'
           provisioningType: 'FULLY_MUTABLE',
         },
       }),
-      'MyStack'
+      'MyStack',
+      { skipImportSupportPreflight: true }
     );
     expect(plan.phase1Imports).toEqual([]);
     expect(plan.blocked).toHaveLength(1);
@@ -1388,7 +1425,8 @@ describe('buildImportPlan — AWS::AppSync::GraphQLApi / ::ApiKey (issue #3414)'
           provisioningType: 'FULLY_MUTABLE',
         },
       }),
-      'MyStack'
+      'MyStack',
+      { skipImportSupportPreflight: true }
     );
     expect(plan.phase1Imports).toEqual([]);
     expect(plan.blocked).toHaveLength(1);
