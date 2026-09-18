@@ -68,7 +68,7 @@ import { parse as parseYaml } from 'yaml';
 // interpolated them raw. This script is not reached from CI today — both locks
 // in `main` see to that — so the venue is a maintainer's terminal rather than
 // the Actions log, which is why it is closed here rather than argued about.
-import { safeName, safeText } from './workflow-log-safety.ts';
+import { safeKey, safeName, safeText } from './workflow-log-safety.ts';
 
 const REPO = 'go-to-k/cdkd';
 const REPO_ROOT = join(import.meta.dirname, '..');
@@ -137,6 +137,17 @@ interface Snapshot {
 // request ~1700 aborts a tens-of-minutes walk that writes nothing — exactly the
 // scenario this retry exists for. `TLS handshake timeout` and `connection
 // refused` were missing for the same reason.
+/**
+ * A `gh` failure, with the fork-controlled parts constrained.
+ *
+ * Node's `execFileSync` message begins `Command failed: gh <argv…>`, and this
+ * script's argv carries a WORKFLOW FILE NAME on nearly every call. Git stores a
+ * newline in a path, so a fork can ship one.
+ */
+const ghFailure = (args: readonly string[], error: unknown): string =>
+  `gh ${safeText(args.slice(0, 2).join(' '))} failed: ` +
+  safeText(String((error as { stderr?: string }).stderr ?? (error as Error)?.message ?? error));
+
 /** Attempts per `gh` call, including the first. See the loop below. */
 const ATTEMPTS = 3;
 
@@ -164,7 +175,12 @@ const gh = (args: readonly string[]): unknown => {
       // made every hard failure on it match `\bEOF\b`, turning a 404 into
       // three attempts and six seconds of sleeps.
       const text = String((error as { stderr?: string }).stderr ?? '');
-      if (!TRANSIENT.test(text)) throw error;
+      // RETHROWN SANITISED, not raw. Excluding the command text from the
+      // CLASSIFIER was only half of it: `main` catches nothing, so the original
+      // error reaches the terminal with its `Command failed: gh run list …
+      // --workflow <name>` prefix intact — and a workflow file name may carry a
+      // newline, which puts `::error::` at column 0.
+      if (!TRANSIENT.test(text)) throw new Error(ghFailure(args, error));
       // Linear, not exponential: the failures this retries are single dropped
       // connections rather than a server asking us to slow down, and a long
       // backoff on a thousands-of-requests walk costs more than it saves.
@@ -181,7 +197,7 @@ const gh = (args: readonly string[]): unknown => {
     // whose text happened to contain a transient-looking word from retrying.
     return JSON.parse(out) as unknown;
   }
-  throw lastError;
+  throw new Error(ghFailure(args, lastError));
 };
 
 const isMapping = (v: unknown): v is Record<string, unknown> =>
@@ -495,14 +511,6 @@ const main = (): void => {
   // "no entry" state the fence cannot distinguish from "never ran". The
   // `Math.max(MIN_WINDOW_DAYS, ...)` below hides it further by clamping the
   // negative span to a positive one while `from` keeps the inverted value.
-  const rawFrom = flag('--from');
-  const rawTo = flag('--to');
-  if (rawFrom !== undefined && rawTo !== undefined && rawFrom > rawTo) {
-    throw new Error(
-      `--from=${safeText(rawFrom)} is after --to=${safeText(rawTo)}; the range is inverted`,
-    );
-  }
-
   const today = new Date();
   const lastComplete = isoDay(new Date(today.getTime() - 24 * 3600 * 1000));
   // A `--to` ON OR AFTER today is refused rather than accepted and silently
@@ -527,6 +535,17 @@ const main = (): void => {
   const windowDays = explicitFrom
     ? Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${explicitFrom}T00:00:00Z`)) / 86400000)
     : DEFAULT_WINDOW_DAYS;
+  // THE COMPUTED SPAN, not the raw flag pair. Guarding `rawFrom > rawTo` only
+  // fired when BOTH were given, so a lone `--from=<date after the default --to>`
+  // walked an inverted range: `gh run list --created 2026-09-30..2026-09-17`
+  // returns zero rows at exit 0 for every workflow, the capped check sees
+  // 0 < 1000 and passes, and the snapshot is overwritten with `"jobs": {}` —
+  // the exact outcome the guard was added to prevent, reached around it.
+  if (windowDays <= 0) {
+    throw new Error(
+      `--from=${safeText(explicitFrom ?? '')} is not before --to=${to}; the range is inverted or empty`,
+    );
+  }
   const from = explicitFrom ?? isoDay(new Date(Date.parse(`${to}T00:00:00Z`) - windowDays * 86400000));
 
   const declared = new Set(declaredJobKeys());
@@ -546,13 +565,23 @@ const main = (): void => {
       usedFrom = isoDay(new Date(Date.parse(`${to}T00:00:00Z`) - days * 24 * 3600 * 1000));
       runs = runsInRange(file, usedFrom, to);
       if (runs === null) {
-        if (days <= MIN_WINDOW_DAYS || days <= windowDays) {
+        // THE EXIT IS COMPUTED FROM THE NEXT WINDOW, not compared against the
+        // starting one. `days <= windowDays` was true on the FIRST iteration
+        // by construction — `days` is initialised to `windowDays` — so the
+        // halving below was unreachable and the first capped listing threw. The
+        // committed snapshot carries halved ranges for four workflows, so the
+        // generator could not reproduce the file this PR ships, and the message
+        // said "1-day window" while printing a 14-day one. That regression was
+        // introduced by the round that removed a `Math.max` floor from the
+        // window, one guard away from the loop it broke.
+        const next = Math.floor(days / 2);
+        if (next < MIN_WINDOW_DAYS || next >= days) {
           throw new Error(
-            `${safeName(file)} has >= 1000 successful runs even in a ${MIN_WINDOW_DAYS}-day window ` +
+            `${safeName(file)} has >= 1000 successful runs even in a ${days}-day window ` +
               `(${usedFrom}..${to}); the listing cannot be read without truncation.`,
           );
         }
-        days = Math.max(MIN_WINDOW_DAYS, Math.floor(days / 2));
+        days = next;
       }
     }
     ranges.set(file, { from: usedFrom, to });
@@ -604,7 +633,7 @@ const main = (): void => {
         for (const s of seconds) {
           if (s > run.seconds + 1) {
             process.stderr.write(
-              `  WARNING ${key} ran ${Math.round(s)}s inside a ${Math.round(run.seconds)}s run; ` +
+              `  WARNING ${safeKey(key)} ran ${Math.round(s)}s inside a ${Math.round(run.seconds)}s run; ` +
                 'the prune assumes job <= run. Re-run with --no-prune.\n',
             );
           }
@@ -660,7 +689,7 @@ const main = (): void => {
   );
   const missing = [...declared].filter((k) => !(k in jobs));
   if (missing.length > 0) {
-    process.stdout.write(`  no successful run in range: ${missing.map(safeText).join(', ')}\n`);
+    process.stdout.write(`  no successful run in range: ${missing.map(safeKey).join(', ')}\n`);
   }
 };
 

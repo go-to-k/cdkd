@@ -138,6 +138,7 @@ import {
   MAX_FIELD_LENGTH,
   MAX_RENDERED_FINDINGS,
   boundedList,
+  safeJobId,
   safeName,
   safeText,
   type Safe,
@@ -252,7 +253,19 @@ export const auditWorkflowHardening = (dir: string): Audit => {
     findings.push({
       kind,
       workflow: safeName(workflow),
-      job: job === undefined ? undefined : safeText(job),
+      // `safeJobId`, NOT `safeText`, and the difference is the whole reason
+      // that helper exists: flattening and clamping do not touch a job id of
+      // pure ASCII, and this renderer is `<workflow> / <job>: <kind>`, so a
+      // fork declaring a job named `x: no-timeout - and ci.yml / check-build-test`
+      // renders a complete fabricated finding against a real critical job, in a
+      // run that is genuinely red so the line is genuinely printed. Quoting is
+      // what separates them.
+      //
+      // It arrived here a round late: `safeJobId` was written for the sibling
+      // fence and applied only there, which is precisely the "a fix lands in
+      // one place and not the other" failure the shared module's own header
+      // gives as the reason it exists.
+      job: job === undefined ? undefined : safeJobId(job),
       detail: detail === undefined ? undefined : safeText(detail),
     });
   };
@@ -535,7 +548,7 @@ const independentlyUnboundedJobs = (dir: string): Safe[] => {
         Number.isInteger(timeout) &&
         timeout >= 1 &&
         timeout < ACTIONS_DEFAULT_TIMEOUT_MINUTES;
-      if (!ok) out.push(twinLabel(safeName(workflow), safeText(job), safeJson(timeout)));
+      if (!ok) out.push(twinLabel(safeName(workflow), safeJobId(job), safeJson(timeout)));
     }
   }
   return boundedList(out);
@@ -937,7 +950,7 @@ describe('shapes the real tree cannot exhibit', () => {
 });
 
 describe('a finding cannot forge a line in the log', () => {
-  it('a hostile job key is flattened before it is rendered', () => {
+  it('a hostile job key is flattened AND quoted before it is rendered', () => {
     // A fork can add a workflow whose job key carries a newline; the missing
     // timeout then guarantees the fence fails and renders it. Un-sanitised,
     // this emits a second line reading as a finding against ci.yml plus a
@@ -950,7 +963,13 @@ describe('a finding cannot forge a line in the log', () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]).not.toContain('\n');
     expect(lines[0]).toContain('FORGED-OK');
-    expect(lines[0]).toMatch(/^zz-evil\.yml \/ a ci\.yml/);
+    // QUOTED, which flattening alone was not. An earlier revision of this case
+    // asserted `/^zz-evil\.yml \/ a ci\.yml/` — i.e. it accepted the flattened
+    // text sitting bare in the line, which reads as a finding against a real
+    // job even with every control byte gone. That is the threat `safeJobId`
+    // was written for, and this fence was still using `safeText` when the
+    // sibling had already moved.
+    expect(lines[0]).toMatch(/^zz-evil\.yml \/ "a ci\.yml/);
   });
 
   it('a file name containing a quote cannot break out of the quoting', () => {
@@ -1116,7 +1135,9 @@ describe('the caps are literals, not whatever the constants say', () => {
     const forged = lines.filter((l) => l.includes('FORGED'));
     expect(forged).toHaveLength(1);
     expect(forged[0]).not.toContain(String.fromCodePoint(0x0a));
-    expect(forged[0]?.startsWith('zz-twin.yml / a ')).toBe(true);
+    // Quoted here too — the twins render the same job id through the same
+    // helper, and a fix that reached only the audit would leave this line bare.
+    expect(forged[0]?.startsWith('zz-twin.yml / "a ')).toBe(true);
   });
 
   it('exactly 20 findings are rendered whole, 21 are capped', () => {

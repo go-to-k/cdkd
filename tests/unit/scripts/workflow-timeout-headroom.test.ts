@@ -88,7 +88,14 @@ import {
 // fork-controlled on `pull_request`, and go-to-k/cdkd#3272 found that class
 // FOUR times, each instance inside the code that fixed the previous one. A
 // fifth venue with its own copies of the helpers is how that happens again.
-import { boundedList, safeJobId, safeName, safeText, type Safe } from '../../../scripts/workflow-log-safety.ts';
+import {
+  boundedList,
+  safeKey,
+  safeName,
+  safeRange,
+  safeText,
+  type Safe,
+} from '../../../scripts/workflow-log-safety.ts';
 
 const REPO_ROOT = join(import.meta.dirname, '../../..');
 const WORKFLOW_DIR = join(REPO_ROOT, '.github', 'workflows');
@@ -113,11 +120,18 @@ const MIN_DECLARED = 18;
  * A COUNT FLOOR CANNOT SEE A VACUOUS SNAPSHOT. Every other floor here counts
  * entries, and a snapshot whose every `max` is 1 passes all of them while
  * making each `too-tight` comparison meaningless — measured green, 72 of 72.
- * `hooks.yml/hook-suites` is 1587 s and is the job this fence exists for, so
- * this sits below that with room for the suite to get faster (go-to-k/cdkd#3282
- * is trying to), and is banded from above in the case that reads it.
+ *
+ * 600, NOT 900, AND THE ARITHMETIC IS THE REASON. The assertion takes the max
+ * over ALL jobs, so the value it actually guards is whichever job is longest.
+ * `hooks.yml/hook-suites` is 1587 s today; the SECOND longest is
+ * `docs-deploy.yml/build` at 902 s. A 900 floor therefore had two seconds of
+ * real margin — the moment go-to-k/cdkd#3282 succeeds in taking hook-suites
+ * under 15 minutes, the floor is held by an unrelated and variable job, and a
+ * docs build peaking at 880 s reds an HONEST snapshot with a message pointing
+ * at this constant. An earlier revision of this comment claimed the opposite,
+ * that 900 left "room for the suite to get faster"; 900 IS #3282's target.
  */
-const MIN_LONGEST_MAX = 900;
+const MIN_LONGEST_MAX = 600;
 
 const MIN_SNAPSHOT = 18;
 const MIN_COMPARED = 18;
@@ -250,7 +264,12 @@ export const parseSnapshot = (text: string, where: string): Record<string, JobSa
       // `safeText(key)`: an object key in this file is arbitrary attacker-chosen
       // text with no length limit — a strictly more capable venue than the job
       // key this file already sanitises, and it was raw.
-      throw new Error(`${where}: ${safeText(key)} has no numeric max in the snapshot; regenerate it`);
+      // `safeKey`, not `safeText`: this value is a `<file>/<job>` pair, and
+      // flattening plus clamping leaves a pure-ASCII key reading as a complete
+      // finding about a real job — `x is fine; <path>: ci.yml/check-build-test`
+      // was measured doing exactly that. The cases below assert the absence of
+      // LF and RLO only, which is why this stayed green.
+      throw new Error(`${where}: ${safeKey(key)} has no numeric max in the snapshot; regenerate it`);
     }
     // POSITIVE and finite. A `max` of 0 makes headroom `Infinity`, and
     // `Infinity < MIN_HEADROOM` is false, so every bound on that job would pass
@@ -258,7 +277,7 @@ export const parseSnapshot = (text: string, where: string): Record<string, JobSa
     // floors at 1, so a 0 here means a hand-edited or truncated snapshot.
     if (!Number.isFinite(value['max']) || value['max'] <= 0) {
       throw new Error(
-        `${where}: ${safeText(key)} has a max that is not a positive number; regenerate it`,
+        `${where}: ${safeKey(key)} has a max that is not a positive number; regenerate it`,
       );
     }
     jobs[key] = {
@@ -270,8 +289,58 @@ export const parseSnapshot = (text: string, where: string): Record<string, JobSa
   return jobs;
 };
 
+/**
+ * How old the snapshot may be before it is a finding, in days.
+ *
+ * go-to-k/cdkd#3283 asks for `bound >= k * max` "plus a STALENESS GUARD", and
+ * three of its four structural guards were built — a job in the tree but not in
+ * the snapshot, an entry whose job is gone, an exemption that is no longer
+ * needed — while the one the phrase most plainly means, AGE, was not. The PR
+ * body argued only that a CI byte-diff guard is impossible here (it is: the
+ * data changes on every run), which answers a different question.
+ *
+ * What an age guard buys: the maxima only ever grow as jobs get slower, so a
+ * snapshot that stopped being refreshed makes every `too-tight` comparison
+ * describe a repo that no longer exists — quietly, and in the passing
+ * direction. What it costs: a chore. 90 days is chosen so the chore is
+ * quarterly rather than constant; the integ gates in this repo use 14, which
+ * is right for real-AWS drift and would be noise for a generator nobody can
+ * run from CI.
+ */
+const MAX_SNAPSHOT_AGE_DAYS = 90;
+
+/**
+ * The snapshot's own age, as a finding-or-nothing.
+ *
+ * Pure, and separate from the read, because the real artifact is fresh — the
+ * only way to reach any arm here is to call it, which is the same reason
+ * `auditHeadroom` is a pure function of its inputs.
+ */
+export const auditSnapshotAge = (
+  generatedAt: unknown,
+  now: number,
+): 'ok' | 'unreadable' | 'stale' | 'future' => {
+  // NOT PINNED, and equivalent rather than missing: every non-string this can
+  // receive — `undefined`, a number, an object — reaches `Date.parse`, which
+  // answers `NaN`, which the next line already turns into the same verdict.
+  // Kept because the answer should not depend on a coercion.
+  if (typeof generatedAt !== 'string') return 'unreadable';
+  const at = Date.parse(generatedAt);
+  if (Number.isNaN(at)) return 'unreadable';
+  // A FUTURE stamp is its own arm, not a negative age that reads as fresh: a
+  // hand-edited or clock-skewed date is exactly how a stale snapshot would be
+  // made to look current, and `age < 90` is true for every future date.
+  if (at > now) return 'future';
+  return now - at > MAX_SNAPSHOT_AGE_DAYS * 86400000 ? 'stale' : 'ok';
+};
+
 const loadSnapshot = (): Record<string, JobSample> =>
   parseSnapshot(readFileSync(SNAPSHOT_PATH, 'utf8'), SNAPSHOT_PATH);
+
+const snapshotGeneratedAt = (): unknown => {
+  const raw: unknown = JSON.parse(readFileSync(SNAPSHOT_PATH, 'utf8'));
+  return isMapping(raw) ? raw['generatedAt'] : undefined;
+};
 
 type FindingKind =
   | 'too-tight'
@@ -301,26 +370,6 @@ interface Finding {
   readonly range?: Safe;
 }
 
-/**
- * Sanitise a `<file>/<job>` key, each half by the helper that constrains it.
- *
- * TWO DEFECTS LIVED IN THE INLINE VERSION THIS REPLACES, both reachable from a
- * fork-edited snapshot key. (1) With NO `/` in the key, `indexOf` returns -1,
- * so `slice(0, -1)` dropped the last character and `slice(0)` re-emitted the
- * whole key — measured: `evil` rendered as `"evi"/evil`, and `ci.yml` as
- * `"ci.ym"/ci.yml`. Every synthetic key in this suite contains a `/`, so no
- * case looked at it. (2) The job half got only `safeText`, which is not the
- * helper for this threat: see `safeJobId`.
- */
-const splitKey = (key: string): Safe => {
-  const cut = key.indexOf('/');
-  // A key with no separator is not a `<file>/<job>` pair at all, so it is
-  // rendered as one constrained name rather than split into two halves, one of
-  // which would be empty.
-  if (cut < 0) return safeName(key);
-  return `${safeName(key.slice(0, cut))}/${safeJobId(key.slice(cut + 1))}` as Safe;
-};
-
 /** The single construction point; see the note on `Finding`. */
 const finding = (
   kind: FindingKind,
@@ -334,9 +383,13 @@ const finding = (
   kind,
   // A job key is `<file>/<job>` and a fork controls BOTH halves, each with its
   // own legal shape — see `splitKey`, which is where the boundary cast lives.
-  job: splitKey(job),
+  job: safeKey(job),
   ...numbers,
-  ...(range === undefined ? {} : { range: safeText(range) }),
+  // `safeRange`, not `safeText`. The range comes from the committed snapshot
+  // with no shape check, a PR may edit that file, and it lands at the END of a
+  // `too-tight` line with budget to spare — enough to read as a whole finding
+  // about another job. Same argument as `safeJobId`, same fix.
+  ...(range === undefined ? {} : { range: safeRange(range) }),
 });
 
 /**
@@ -418,13 +471,19 @@ const render = (findings: readonly Finding[]): string[] =>
   // Interpolation is unguarded BY CONTRACT: `finding` sanitised every string
   // field, and the rest are numbers.
   boundedList(
-    findings.map(
+    // `too-tight` FIRST, because the cap keeps the first 20 and `auditHeadroom`
+    // emits in file-name order: a fork adding `aaa.yml` with 20 unbounded jobs
+    // pushes the genuine `hooks.yml` finding past the cap, which is the burial
+    // the cap was added to prevent, achieved through the cap.
+    [...findings]
+      .sort((a, b) => Number(b.kind === 'too-tight') - Number(a.kind === 'too-tight'))
+      .map(
       (f) =>
         (f.kind === 'too-tight'
           ? `${f.job}: ${f.bound} min against ${f.max} s observed ` +
             `(${(f.headroom ?? Number.NaN).toFixed(2)}x, floor ${MIN_HEADROOM}x) in ${f.range}`
           : `${f.job}: ${f.kind}`) as Safe,
-    ),
+      ),
   );
 
 const { jobs: DECLARED, unreadable: UNREADABLE } = declaredJobs();
@@ -435,6 +494,15 @@ const tree = (bound: number | undefined) => new Map([['w.yml/j', bound]]);
 const snap = (max: number) => ({ 'w.yml/j': { max, from: 'a', to: 'b' } });
 
 describe('no workflow job is bounded too tightly to survive its own longest run', () => {
+  it('the committed snapshot is not stale', () => {
+    // THE ACCEPTANCE ITEM THIS FENCE SHIPPED WITHOUT. go-to-k/cdkd#3283 asks
+    // for the ratio assertion "plus a staleness guard", and the three
+    // STRUCTURAL guards were built while the one the phrase most plainly
+    // means — age — was not. Maxima only grow as jobs get slower, so a snapshot
+    // nobody refreshes fails in the passing direction.
+    expect(auditSnapshotAge(snapshotGeneratedAt(), Date.now())).toBe('ok');
+  });
+
   it('the real tree reports nothing', () => {
     expect(render(auditHeadroom(DECLARED, SNAPSHOT, RARELY_RUN, UNREADABLE))).toEqual([]);
   });
@@ -488,6 +556,15 @@ describe('no workflow job is bounded too tightly to survive its own longest run'
     // Banded from the other side for the same reason as the counts: `X >= 0`
     // is not a floor, so a `MIN_LONGEST_MAX` neutralised to zero must red here.
     expect(MIN_LONGEST_MAX * 4).toBeGreaterThanOrEqual(longest);
+    // AND BELOW THE SECOND-LONGEST JOB, which is the band that actually binds.
+    // `* 4` let the floor be raised to 1000 with every case still green, and a
+    // floor above the second-longest (`docs-deploy.yml/build`, 902 s) is one
+    // that reds an HONEST snapshot the moment go-to-k/cdkd#3282 takes
+    // `hook-suites` under its target — the failure mode that made 900 wrong.
+    const [, second] = Object.values(SNAPSHOT)
+      .map((s) => s.max)
+      .sort((a, b) => b - a);
+    expect(MIN_LONGEST_MAX).toBeLessThan(second ?? 0);
     // The snapshot floors are PINNED TO `MIN_DECLARED`, not banded separately.
     // A proportional band cannot tell 12 from 18 — both clear a 21-entry
     // snapshot — so at 12 the round-1 defect, four jobs vanishing, passed the
@@ -673,6 +750,23 @@ describe('the auditor reports what it claims to', () => {
     expect(lines.at(-1)).toBe('… and 4980 more');
   });
 
+  it('a real finding survives a flood designed to bury it', () => {
+    // THE CAP IS ORDER-EVADABLE WITHOUT THIS. `boundedList` keeps the FIRST 20
+    // and `auditHeadroom` emits in file-name order, so a fork adding `aaa.yml`
+    // with 20 unbounded jobs pushes the genuine `hooks.yml` finding past the
+    // cap — burial achieved THROUGH the mechanism added to prevent burial.
+    // Sorting `too-tight` first is what holds, and deleting the sort left every
+    // other case green.
+    const declared = new Map<string, number | undefined>();
+    for (let i = 0; i < 40; i += 1) declared.set(`aaa.yml/j${i}`, 60);
+    declared.set('zzz.yml/real', 60);
+    const snapshot = { 'zzz.yml/real': { max: 3600, from: 'a', to: 'b' } };
+    const lines = render(auditHeadroom(declared, snapshot, {}));
+    expect(lines).toHaveLength(21);
+    expect(lines[0]).toContain('zzz.yml/real');
+    expect(lines[0]).toContain('min against');
+  });
+
   it('a snapshot entry for a job the tree does not declare is reported', () => {
     expect(auditHeadroom(new Map(), snap(10), {}).map((f) => f.kind)).toEqual([
       'snapshot-job-not-declared',
@@ -739,6 +833,28 @@ describe('the auditor reports what it claims to', () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]).not.toContain(String.fromCodePoint(0x0a));
     expect(lines[0]).not.toContain(String.fromCodePoint(0x202e));
+  });
+
+  it.each([
+    ['a hostile range is quoted', 'a..b 1 min against 9 s observed (0.01x, floor 2x', true],
+    ['a real range is not', '2026-09-02..2026-09-16', false],
+  ])('%s', (_what, range, quoted) => {
+    // THE RANGE IS FORK-EDITABLE AND SITS AT THE END OF THE LINE, which is the
+    // easiest place to append a second finding: `parseSnapshot` takes it with
+    // `String(value['from'] ?? '')` and no shape check, the snapshot is a
+    // committed file a PR may edit, and 120 characters is ample. `safeText`
+    // flattens and clamps, neither of which touches pure ASCII — swapping
+    // `safeRange` for it left every case green, and so did widening the range
+    // pattern to match anything.
+    // `finding` receives the range already joined, so the halves are split here
+    // only to feed `JobSample`; a hostile value goes in whole as `from`.
+    const dots = range.indexOf('..');
+    const snapshot = {
+      'w.yml/j': { max: 3600, from: range.slice(0, dots), to: range.slice(dots + 2) },
+    };
+    const line = render(auditHeadroom(tree(60), snapshot, {}))[0] ?? '';
+    const rendered = line.slice(line.lastIndexOf(' in ') + 4);
+    expect(rendered.startsWith('"')).toBe(quoted);
   });
 
   it('the rendered line carries the numbers a reader needs to act', () => {
@@ -884,6 +1000,42 @@ describe('the walk stops only when it can no longer learn anything', () => {
     // With nothing declared, `every` is vacuously true and `Math.min()` of
     // nothing is `Infinity` — which would make every run prunable.
     expect(walkMayStop([], seen([]), 1)).toBe(false);
+  });
+});
+
+describe('the snapshot is refused when it is too old to describe this tree', () => {
+  const at = (iso: string) => Date.parse(iso);
+  const now = at('2026-09-18T00:00:00Z');
+
+  it.each([
+    ['fresh', '2026-09-17T00:00:00Z', 'ok'],
+    ['one day inside the window', '2026-06-21T00:00:00Z', 'ok'],
+    ['one day outside it', '2026-06-19T00:00:00Z', 'stale'],
+    ['ancient', '2024-01-01T00:00:00Z', 'stale'],
+  ])('a snapshot generated %s reads as %s', (_what, stamp, verdict) => {
+    // Both sides of the boundary, because a guard pinned only from the passing
+    // side is satisfied by a constant of any size.
+    expect(auditSnapshotAge(stamp, now)).toBe(verdict);
+  });
+
+  it('a stamp in the FUTURE is its own verdict, not a negative age', () => {
+    // `now - at > 90 days` is false for every future date, so a clock-skewed or
+    // hand-edited stamp would read as the freshest possible snapshot — which is
+    // precisely how a stale one would be made to pass this guard.
+    expect(auditSnapshotAge('2027-01-01T00:00:00Z', now)).toBe('future');
+  });
+
+  it.each([
+    ['absent', undefined],
+    ['a number', 1_700_000_000_000],
+    ['an object', { at: 'x' }],
+    ['unparseable text', 'last Tuesday'],
+    ['an empty string', ''],
+  ])('a generatedAt that is %s is unreadable, not fresh', (_what, stamp) => {
+    // `Date.parse` returns NaN for these and EVERY comparison against NaN is
+    // false — so without the explicit arm they would all report `ok`, which is
+    // the `NaN < 2` shape this whole fence exists because of.
+    expect(auditSnapshotAge(stamp, now)).toBe('unreadable');
   });
 });
 
@@ -1064,6 +1216,11 @@ describe('the snapshot is refused rather than half-read', () => {
     expect(message).toContain('no numeric max');
     expect(message).not.toContain(String.fromCodePoint(0x0a));
     expect(message).not.toContain(String.fromCodePoint(0x202e));
+    // QUOTED, which is the half `safeText` does not do: asserting the absence
+    // of LF and RLO left `safeKey` -> `safeText` green, and a key of pure ASCII
+    // like `x is fine; <path>: ci.yml/check-build-test` needs neither byte to
+    // read as a finding about a real job.
+    expect(message).toContain('<probe>: "');
   });
 
   it('a hostile snapshot key cannot forge a line through the SECOND refusal', () => {

@@ -143,6 +143,44 @@ export const safeJobId = (id: string): Safe =>
   // Cast scoped to the quoting branch alone, for the reason given on `safeName`.
   JOB_ID.test(id) ? safeText(id) : (JSON.stringify(safeText(id)) as Safe);
 
+/**
+ * A `<file>/<job>` key, each half by the helper that constrains it.
+ *
+ * HERE, NOT IN ONE FENCE, for the reason the whole module exists: the first
+ * version of this lived inline in the headroom fence, and the round that added
+ * it left four other key-shaped values — two snapshot refusal messages, a
+ * generator warning and a generator summary — reaching output through
+ * `safeText`, which flattens and clamps but does not QUOTE. A key is the shape
+ * this pair renders most often; it gets one implementation.
+ *
+ * TWO DEFECTS LIVED IN THE INLINE VERSION. (1) With no `/` in the key,
+ * `indexOf` returns -1, so `slice(0, -1)` dropped the last character and
+ * `slice(0)` re-emitted the whole key — `evil` rendered as `"evi"/evil`.
+ * (2) The job half got only `safeText`.
+ */
+export const safeKey = (key: string): Safe => {
+  const cut = key.indexOf('/');
+  // A key with no separator is not a `<file>/<job>` pair at all, so it is
+  // rendered as ONE constrained name rather than split into two halves, one of
+  // which would be empty.
+  if (cut < 0) return safeName(key);
+  return `${safeName(key.slice(0, cut))}/${safeJobId(key.slice(cut + 1))}` as Safe;
+};
+
+/**
+ * A snapshot RANGE (`YYYY-MM-DD..YYYY-MM-DD`), constrained like a name.
+ *
+ * It is read from the committed snapshot with no shape check, a fork may edit
+ * that file, and it lands at the END of a `too-tight` line with room to spare —
+ * measured rendering `a ci.yml/x: 1 min against 9999 s observed (0.01x, floor
+ * 2x`, which reads as a complete finding about another job. `safeText` does not
+ * stop that; quoting does, and the shape is narrow enough to check.
+ */
+const RANGE = /^\d{4}-\d{2}-\d{2}\.\.\d{4}-\d{2}-\d{2}$/;
+
+export const safeRange = (range: string): Safe =>
+  RANGE.test(range) ? safeText(range) : (JSON.stringify(safeText(range)) as Safe);
+
 /** How many findings a renderer emits before the rest are summarised. */
 export const MAX_RENDERED_FINDINGS = 20;
 
