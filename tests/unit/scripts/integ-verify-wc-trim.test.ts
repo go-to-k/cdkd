@@ -8,7 +8,6 @@ import {
   MIN_ALLOW_REASON_LENGTH,
   classifyWcTrim,
 } from '../../../scripts/check-integ-wc-trim.js';
-import { uncountedWcWords } from '../../uncounted-wc-words.js';
 
 /**
  * Regression guard for issue #3213: a `wc` result in a `tests/integration`
@@ -29,10 +28,6 @@ import { uncountedWcWords } from '../../uncounted-wc-words.js';
  *  4. bash, through a BSD-padding `wc` shim: the untrimmed `=` comparison
  *     really fails and both trims really fix it, for each input form — so the
  *     CONVENTION is proven on a GNU host too, where the real `wc` never shows it.
- *
- * How the classifier's running time GROWS is guarded separately, in
- * `integ-verify-wc-trim-growth.test.ts`: timings taken in this file would be
- * taken in the heap its other cases leave behind.
  */
 
 const REPO_ROOT = join(import.meta.dirname, '../../..');
@@ -638,6 +633,72 @@ describe('classifyWcTrim', () => {
       expect(c.invocations).toEqual([]);
     });
 
+    // Large generated inputs of the shapes that were once super-linear in this
+    // classifier. Nothing checks their running time — only that each is read
+    // correctly, under a bound on a hang. Every generator opens with an
+    // untrimmed `wc` on line 1, which each case asserts is reported.
+    const SENTINEL = 'wc -l </dev/null\n';
+    it.each([
+      ['unterminated openers packed bytes apart', (n: number) => SENTINEL + '$(<<Z\n'.repeat(n), 8_000, () => 1],
+      [
+        'nested unterminated openers inside a terminated outer body',
+        (n: number) => `${SENTINEL}cat <<E\n${'$(cat <<Z\n'.repeat(n)}E\n`,
+        8_000,
+        () => 1,
+      ],
+      ['openers whose comments end in a backslash', (n: number) => SENTINEL + '$(<<Z # \\\n'.repeat(n), 16_000, () => 1],
+      [
+        'deeply nested parameter expansions',
+        (n: number) => `${SENTINEL}echo ${'${X:-'.repeat(n)}${'x'.repeat(n)}${'}'.repeat(n)}\n`,
+        8_000,
+        () => 1,
+      ],
+      [
+        // One character from the previous shape: the quote pushes a frame the
+        // classifier once searched past per character.
+        'deeply nested parameter expansions around a double-quoted word',
+        (n: number) => `${SENTINEL}echo ${'${X:-'.repeat(n)}"${'x'.repeat(n)}"${'}'.repeat(n)}\n`,
+        8_000,
+        () => 1,
+      ],
+      [
+        'many wc stages whose arguments hold a shift',
+        (n: number) => `${SENTINEL}${Array.from({ length: n }, () => "wc -l $((1<<2)) </dev/null |\ntr -d ' '").join('\n')}\n`,
+        2_000,
+        () => 1,
+      ],
+      [
+        // Stages nest, so re-walking each one from its `wc` was quadratic.
+        'wc stages nested in one another',
+        (n: number) => `${SENTINEL}${'wc $('.repeat(n)}${')'.repeat(n)}\n`,
+        16_000,
+        (n: number) => n + 1,
+      ],
+      [
+        // A duplication target read by a backtracking pattern rescanned the run.
+        'a duplication target reached through many line continuations',
+        (n: number) => `${SENTINEL}wc -l >&1${'\\\n'.repeat(n)}file | tr -d ' '\n`,
+        16_000,
+        () => 2,
+      ],
+      [
+        // No other case is `<<-` at all, which is why the strip over a growing
+        // accumulator had nowhere to fail.
+        'a long <<- delimiter reached through continued lines',
+        (n: number) => {
+          const delimiter = 'D'.repeat(n);
+          const body = Array.from({ length: Math.ceil(n / 2) }, () => '\tx\\').join('\n');
+          return `${SENTINEL}cat <<-${delimiter} # \\\n${body}\n\t${delimiter}\n`;
+        },
+        48_000,
+        () => 1,
+      ],
+    ])('reads %s at scale, reporting the wc on line 1', (_label, make, n, violations) => {
+      const c = classifyWcTrim(make(n));
+      expect(c.violations[0]?.line).toBe(1);
+      expect(c.violations).toHaveLength(violations(n));
+    }, 60_000);
+
     it.each([
       ['unterminated openers packed bytes apart', (n: number) => '$(<<Z\n'.repeat(n)],
       ['nested unterminated openers inside a terminated outer body', (n: number) => `cat <<E\n${'$(cat <<Z\n'.repeat(n)}E\n`],
@@ -946,6 +1007,68 @@ describe('tree-wide (issue #3213)', () => {
 });
 
 describe('the tree stays inside what the classifier reads (issue #3213)', () => {
+  /**
+   * Each occurrence of the WORD `wc` (bare or as a path's last segment) that is
+   * not the command word of a counted invocation, comment text, or text in a
+   * data heredoc — even on a line that also holds a counted one: a `wc` reached
+   * some way the classifier does not read — through a variable (`COUNTER=wc; ${COUNTER} -l`),
+   * `eval`, an alias, or as an argument of `xargs` / `find -exec`. Returns the
+   * 1-based lines those occurrences are on.
+   */
+  function uncountedWcWords(content: string): number[] {
+    const c = classifyWcTrim(content);
+    // Line lookup by binary search over precomputed line starts: O(n log n) in
+    // the file, not quadratic, since a fork PR can add a long fixture.
+    const lineStarts = [0];
+    for (let k = 0; k < content.length; k++) if (content[k] === '\n') lineStarts.push(k + 1);
+    const lineOf = (offset: number) => {
+      let lo = 0;
+      let hi = lineStarts.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (lineStarts[mid]! <= offset) lo = mid;
+        else hi = mid - 1;
+      }
+      return lo + 1;
+    };
+    // Earliest real comment start per line.
+    const commentStart = new Map<number, number>();
+    for (const h of c.commentOffsets) {
+      const line = lineOf(h);
+      if (!commentStart.has(line) || h < commentStart.get(line)!) commentStart.set(line, h);
+    }
+    // Ranges are disjoint, and matches arrive in increasing offset order, so a
+    // pointer that only moves forward answers "inside a range?" in linear time.
+    const sweep = (ranges: Array<[number, number]>) => {
+      const sorted = [...ranges].sort((a, b) => a[0] - b[0]);
+      let k = 0;
+      return (offset: number) => {
+        while (k < sorted.length && sorted[k]![1] <= offset) k++;
+        return k < sorted.length && sorted[k]![0] <= offset;
+      };
+    };
+    // A counted invocation covers every letter of its WORD, so `"wc"`,
+    // `$'wc'` and `/usr/bin/wc` all match by range, not by the word's first index.
+    const inCounted = sweep(c.invocations.map((i): [number, number] => [i.offset, i.wordEnd]));
+    const inDataBody = sweep(c.dataHeredocBodies);
+    const out = new Set<number>();
+    // Anchored on the letters themselves (no leading character class that can
+    // backtrack across a long line); the boundary is checked by hand.
+    for (const m of content.matchAll(/wc(?![A-Za-z0-9_-])/g)) {
+      const offset = m.index;
+      const before = content[offset - 1];
+      // `/wc` ends a path; any other word character before it makes a longer word.
+      if (before !== undefined && before !== '/' && /[A-Za-z0-9_.-]/.test(before)) continue;
+      // Each sweep is monotone in the offset, so skipping a call is harmless.
+      if (inCounted(offset) || inDataBody(offset)) continue;
+      const line = lineOf(offset);
+      const hash = commentStart.get(line);
+      if (hash !== undefined && hash < offset) continue;
+      out.add(line);
+    }
+    return [...out];
+  }
+
   it('finds a wc the classifier does not read, in each spelling that reaches one', () => {
     // Controls: without them an empty tree-wide result could mean the helper
     // matches nothing at all.
@@ -992,8 +1115,6 @@ describe('the tree stays inside what the classifier reads (issue #3213)', () => 
   });
 
   it('reads long fixtures correctly: many lines, a long line, many counted ranges', () => {
-    // The same four shapes are measured for GROWTH in
-    // integ-verify-wc-trim-growth.test.ts; this case pins the answers on them.
     const lines = Array.from({ length: 20_000 }, (_, k) => `# line ${k}: count with wc -l and trim it`).join('\n');
     expect(uncountedWcWords(`${lines}\n`)).toEqual([]);
     expect(uncountedWcWords(`echo ${'=a/'.repeat(32_000)}\n`)).toEqual([]);
@@ -1005,7 +1126,30 @@ describe('the tree stays inside what the classifier reads (issue #3213)', () => 
     expect(uncountedWcWords(`${bodies}\n`)).toEqual([]);
     // The path form is still recognised on a long line.
     expect(uncountedWcWords(`echo ${'a/'.repeat(1_000)}wc\n`)).toEqual([1]);
-    // A bound on a hang, not on speed: growth is the other file's job.
+    // A bound on a hang, not on speed: nothing here times the helper.
+  }, 60_000);
+
+  // The same long-input shapes, each carrying one uncounted `wc` on line 1 the
+  // helper must still find.
+  const UNCOUNTED = "eval 'wc -l'\n";
+  it.each([
+    [
+      'many commented lines',
+      (n: number) => `${UNCOUNTED}${Array.from({ length: n }, (_, k) => `# line ${k}: count with wc -l and trim it`).join('\n')}\n`,
+    ],
+    [
+      'many counted invocations',
+      (n: number) => `${UNCOUNTED}${Array.from({ length: n }, () => "wc -l </dev/null | tr -d ' '").join('\n')}\n`,
+    ],
+    // A leading character class in the word regex once backtracked across a
+    // long line.
+    ['one long line of path-like text', (n: number) => `${UNCOUNTED}echo ${'=a/'.repeat(2 * n)}\n`],
+    [
+      'many data heredoc bodies',
+      (n: number) => `${UNCOUNTED}${Array.from({ length: n }, () => "cat <<'EOF'\nrun wc -l here\nEOF").join('\n')}\n`,
+    ],
+  ])('finds the one uncounted wc in %s', (_label, make) => {
+    expect(uncountedWcWords(make(16_000))).toEqual([1]);
   }, 60_000);
 
   it('every wc word in the tree is a counted invocation, comment text, or data heredoc text', () => {

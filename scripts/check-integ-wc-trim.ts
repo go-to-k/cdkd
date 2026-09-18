@@ -118,11 +118,11 @@
  *       compares the tab-stripped line against the raw delimiter and misses
  *       it, and the rest of the file is read as data. Fail-open, and NOT
  *       backstopped: a data body is exempt from the tree invariant.
- *    On COST rather than verdicts: `integ-verify-wc-trim-growth.test.ts` bounds
- *    how the classifier's running time grows with the input on a listed set of
- *    shapes (a fork PR can add a tracked fixture of any size). That set is
- *    open — a shape one character from a measured one has escaped it before —
- *    so a new shape belongs in that list when it is found, not in this comment.
+ *    On COST rather than verdicts: nothing bounds the running time. The unit
+ *    test reads large generated inputs of the shapes that were once
+ *    super-linear here (a fork PR can add a tracked fixture of any size) and
+ *    checks only that each is read correctly, under a hang bound; a
+ *    super-linear pass on those or any other shape is not caught.
  *    The tree invariant: every `wc` word in a tracked integ shell file must be
  *    a counted invocation, comment text, or text in a heredoc whose delimiter
  *    is quoted.
@@ -368,7 +368,8 @@ interface CodeFrame {
   leadInput: 'redirect' | 'here-string' | null;
   /**
    * A redirection of stdout written BEFORE the command word (`>f wc`). Cleared
-   * at each separator, the only way to reach a later command word.
+   * at `;`, `&`, `|` and a newline, the separators that can come before a later
+   * command word (`>f (` and `>f )` are not valid bash, so `(` and `)` need not).
    */
   leadStdout: boolean;
   /** The command runner (`env`, `exec` ...) whose options are being read. */
@@ -684,6 +685,11 @@ export function classifyWcTrim(content: string): WcTrimClassification {
     }
   };
 
+  /** `nextSolid[k]`: the first index at or after `k` that is not whitespace. */
+  const nextSolid = new Int32Array(src.length + 1);
+  nextSolid[src.length] = src.length;
+  for (let k = src.length - 1; k >= 0; k--) nextSolid[k] = /\s/.test(src[k]!) ? nextSolid[k + 1]! : k;
+
   /**
    * A redirection of stdout in `f`: it belongs to the `wc` stage the frame is
    * reading, or to the command to come. (One after another command's word is
@@ -706,19 +712,13 @@ export function classifyWcTrim(content: string): WcTrimClassification {
     // would be quadratic on `wc $(wc $(...))`. The text is cut only when
     // something other than trailing whitespace lies past the cap.
     const cut = open.start + MAX_STAGE_CHARS;
-    // Past the end of the file `nextSolid` is undefined, which compares false.
-    const capped = nextSolid[cut]! < end;
+    const capped = cut < src.length && nextSolid[cut]! < end;
     // Never between the halves of a surrogate pair.
     const keep = capped && /[\uD800-\uDBFF]/.test(src[cut - 1]!) ? cut - 1 : cut;
     const text = src.slice(open.start, Math.min(end, keep)).trim();
     invocations[open.index]!.stage = capped ? `${text}...` : text;
     deferredTrims.push({ index: open.index, stageEnd: end, terminator, inBacktick: f.kind === 'bt' });
   };
-
-  /** `nextSolid[k]`: the first index at or after `k` that is not whitespace. */
-  const nextSolid = new Int32Array(src.length + 1);
-  nextSolid[src.length] = src.length;
-  for (let k = src.length - 1; k >= 0; k--) nextSolid[k] = /\s/.test(src[k]!) ? nextSolid[k + 1]! : k;
 
   // Physical line of an offset, by binary search over precomputed line starts.
   const lineStarts = [0];
