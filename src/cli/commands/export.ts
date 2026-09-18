@@ -1517,14 +1517,19 @@ interface CompositePhysicalIdIdentifier {
  * `sgr-02345615af6d2db0d`, with `Ref` and `Fn::GetAtt .Id` both returning that
  * same value.
  *
- * All five declare a `read` handler, so CFn genuinely does accept them for
- * IMPORT — unlike `AWS::Glue::Table`, the type issue #1659's title names, which
- * CFn rejects outright (see {@link typeIsImportUnsupported}).
+ * All five declare a `read` handler. For four of them CFn genuinely does accept
+ * the IMPORT — unlike `AWS::Glue::Table`, the type issue #1659's title names,
+ * which CFn rejects outright (see {@link typeIsImportUnsupported}). The fifth,
+ * `AWS::AppSync::GraphQLApi`, is measured REFUSED despite its read handler
+ * (see {@link CFN_IMPORT_REFUSED_DESPITE_REGISTRY}), so its row below is
+ * reachable only under `--skip-import-support-preflight`.
  */
 const COMPOSITE_PHYSICAL_ID_IDENTIFIERS: Record<string, CompositePhysicalIdIdentifier> = {
   // cdkd stores the bare `<apiId>` (appsync-provider.ts's `createGraphQLApi`)
   // and records the API ARN as the `Arn` attribute. See the table above for
-  // why the entry tolerates a schema that still reports `ApiId`.
+  // why the entry tolerates a schema that still reports `ApiId`. Reachable
+  // ONLY under `--skip-import-support-preflight`: the measured refusal list
+  // blocks the type before identifier resolution by default.
   'AWS::AppSync::GraphQLApi': recordedArnIdentifier({
     resourceType: 'AWS::AppSync::GraphQLApi',
     field: 'Arn',
@@ -4355,23 +4360,11 @@ export async function buildImportPlan(
       // `resolveResourceIdentifier` takes the entry rather than re-fetching it.
       // A failure here means no usable schema AND no fallback entry, which the
       // catch reports with `fetchPrimaryIdentifier`'s own remediation message.
-      const schemaInfo = await cachedTypeSchemaInfo(resourceType, cfnClient, identifierCache);
-      if (!options.skipImportSupportPreflight && typeIsImportUnsupported(schemaInfo)) {
-        blocked.push({
-          logicalId,
-          resourceType,
-          reason:
-            `AWS CloudFormation does not support ${resourceType} in IMPORT changesets: its ` +
-            `CloudFormation registry schema declares no 'read' handler (and reports the type as ` +
-            `NON_PROVISIONABLE), and IMPORT needs that handler to look the resource up by ` +
-            `identifier. CreateChangeSet would reject the whole export ` +
-            `with "ResourceTypes [${resourceType}] are not supported for Import". Remove the ` +
-            `resource from the stack before exporting (it stays in AWS and can be re-declared in ` +
-            `CloudFormation afterwards), or destroy it first and let CloudFormation create it ` +
-            `fresh. If AWS has since added IMPORT support for this type, please open a cdkd issue.`,
-        });
-        continue;
-      }
+      // The measured list needs no schema, so it is consulted BEFORE the
+      // DescribeType fetch: a type on it has no PRIMARY_IDENTIFIER_FALLBACK
+      // row, and a fetch failure (permissions, throttle) would otherwise
+      // report `could not resolve resource identifier` in place of the
+      // refusal that actually applies.
       const measuredRefusal = cfnRefusesImportDespiteRegistry(resourceType);
       if (!options.skipImportSupportPreflight && measuredRefusal !== undefined) {
         blocked.push({
@@ -4386,6 +4379,23 @@ export async function buildImportPlan(
             `be re-declared in CloudFormation afterwards), or destroy it first and let ` +
             `CloudFormation create it fresh. If AWS has since added IMPORT support for this ` +
             `type, re-run with --skip-import-support-preflight and please open a cdkd issue.`,
+        });
+        continue;
+      }
+      const schemaInfo = await cachedTypeSchemaInfo(resourceType, cfnClient, identifierCache);
+      if (!options.skipImportSupportPreflight && typeIsImportUnsupported(schemaInfo)) {
+        blocked.push({
+          logicalId,
+          resourceType,
+          reason:
+            `AWS CloudFormation does not support ${resourceType} in IMPORT changesets: its ` +
+            `CloudFormation registry schema declares no 'read' handler (and reports the type as ` +
+            `NON_PROVISIONABLE), and IMPORT needs that handler to look the resource up by ` +
+            `identifier. CreateChangeSet would reject the whole export ` +
+            `with "ResourceTypes [${resourceType}] are not supported for Import". Remove the ` +
+            `resource from the stack before exporting (it stays in AWS and can be re-declared in ` +
+            `CloudFormation afterwards), or destroy it first and let CloudFormation create it ` +
+            `fresh. If AWS has since added IMPORT support for this type, please open a cdkd issue.`,
         });
         continue;
       }
@@ -7493,11 +7503,12 @@ export function createExportCommand(): Command {
     .option(
       '--skip-import-support-preflight',
       'Skip the pre-flight that refuses resource types whose CloudFormation registry ' +
-        'schema says CFn cannot IMPORT them (no read handler AND NON_PROVISIONABLE), and ' +
-        'let CreateChangeSet answer instead. The pre-flight is a registry HEURISTIC, not ' +
-        "AWS's supported-for-import list, so this is the escape hatch for a type AWS has " +
-        'since made importable. Expect the changeset to be rejected if the heuristic was ' +
-        'right.',
+        'schema says CFn cannot IMPORT them (no read handler AND NON_PROVISIONABLE), AND ' +
+        "cdkd's short list of types measured refused by CreateChangeSet despite their " +
+        'registry schema (AWS::AppSync::GraphQLApi), and let CreateChangeSet answer ' +
+        "instead. Neither check is AWS's supported-for-import list, so this is the escape " +
+        'hatch for a type AWS has since made importable. Expect the changeset to be ' +
+        'rejected if the check was right.',
       false
     )
     .option(

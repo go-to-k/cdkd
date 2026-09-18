@@ -177,11 +177,12 @@ echo "[verify] step 1: install + build cdkd"
 (cd "${REPO_ROOT}" && vp run build)
 
 cd "${TEST_DIR}"
-# Issue #3414 added an AppSync API key to the fixture, whose value cdkd records
-# in state as an attribute; the versioned state bucket keeps every prior
-# `state.json` readable, so the run sweeps the stack prefix's object versions
-# (cleanup purges noncurrent, the success path sweeps everything and asserts
-# zero). Sourced before the trap is installed so `cleanup` can call it.
+# The versioned state bucket keeps every prior `state.json` readable, so the
+# run sweeps the stack prefix's object versions (cleanup purges noncurrent, the
+# success path sweeps everything and asserts zero). No resource in this fixture
+# records a secret today — the AppSync API key issue #3414 briefly added did,
+# and the sweep it introduced is kept so the class stays closed for whatever
+# is added next. Sourced before the trap is installed so `cleanup` can call it.
 . ../s3-versions.sh
 STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 # Vendored cdk CLI (issue 1485): the guard installs when node_modules is
@@ -209,10 +210,11 @@ cleanup() {
       ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force || true
     fi
   fi
-  # The AppSync key's value is recorded in cdkd state as an attribute (issue
-  # #3414 added the key to this fixture), and the state bucket is versioned,
-  # so every `state.json` write leaves a readable prior version behind. Purge
-  # the NONCURRENT versions from every exit path — AFTER the failure-arm
+  # The state bucket is versioned, so every `state.json` write leaves a
+  # readable prior version behind (no secret-bearing resource is in the
+  # fixture today; the sweep is kept for the class — see the note at the
+  # helper's `source`). Purge the NONCURRENT versions from every exit path —
+  # AFTER the failure-arm
   # destroy above, whose state deletion is what makes the last `state.json`
   # noncurrent (a purge placed before it would leave exactly that version).
   # The success path below does the full sweep plus the zero-assertion
@@ -624,8 +626,8 @@ esac
 
 trap - EXIT INT TERM
 # Full sweep — current versions AND delete markers, not only noncurrent — then
-# assert nothing under the stack prefix survives: the key value that cdkd
-# state carried must not outlive the run in a prior object version.
+# assert nothing under the stack prefix survives in a prior object version
+# (kept for the class; see the note at the helper's `source`).
 s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "export state teardown"
 echo "[verify] PASS (variant=${VARIANT})"

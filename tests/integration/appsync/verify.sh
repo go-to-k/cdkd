@@ -556,6 +556,12 @@ EXPORT_OUT="$(node "${LOCAL_DIST}" export "${STACK}" \
   --yes 2>&1)"
 EXPORT_RC=$?
 set -e
+# cdkd's logger colors every line unconditionally (not TTY-gated), so a
+# captured line reads `\e[31m  - GraphQLApi (...)...\e[0m` and any
+# line-ANCHORED grep below would silently never match (review of #3414 proved
+# the first cut's `^\s+- ` exclusion inert this way). Strip the escapes once
+# and run every assertion in this block against the plain text.
+EXPORT_OUT="$(printf '%s\n' "${EXPORT_OUT}" | sed $'s/\x1b\\[[0-9;]*m//g')"
 if [ "${EXPORT_RC}" -eq 0 ]; then
   if ! printf '%s\n' "${EXPORT_OUT}" | grep -qE 'Import plan for CloudFormation stack'; then
     echo "FAIL: export --dry-run exited 0 without printing an import plan" >&2
@@ -591,7 +597,19 @@ else
   # Blocked lines render as `  - <logicalId> (<type>): <reason>`; drop the two
   # expected blockers BY LOGICAL ID so a genuine ApiKey / DataSource /
   # Resolver failure cannot hide behind a type name quoted in their reasons.
+  # Break-test: the exclusion must actually REMOVE the two lines (it did not,
+  # before the ANSI strip above), or the loop below is comparing the whole
+  # output and the comment two lines up is a lie.
   OTHER_LINES="$(printf '%s\n' "${EXPORT_OUT}" | grep -vE '^\s+- (GraphQLSchema|GraphQLApi) \(')"
+  if printf '%s\n' "${OTHER_LINES}" | grep -qE '^\s+- (GraphQLSchema|GraphQLApi) \('; then
+    echo "FAIL: the blocked-line exclusion did not remove the expected blockers (ANSI or format drift)" >&2
+    exit 1
+  fi
+  if [ "$(printf '%s\n' "${EXPORT_OUT}" | grep -cE '^\s+- (GraphQLSchema|GraphQLApi) \(')" != "2" ]; then
+    echo "FAIL: expected exactly two anchored blocker lines in the plain output (format drift?)" >&2
+    printf '%s\n' "${EXPORT_OUT}" | grep -E -- '- ' | sed 's/^/  /' >&2
+    exit 1
+  fi
   for unresolved in 'could not resolve resource identifier' 'COMPOSITE_ID_SPLITTERS' \
     'AWS::AppSync::ApiKey' 'AWS::AppSync::DataSource' 'AWS::AppSync::Resolver'; do
     if printf '%s\n' "${OTHER_LINES}" | grep -qF -- "${unresolved}"; then

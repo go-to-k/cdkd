@@ -1302,6 +1302,7 @@ describe('buildImportPlan — AWS::AppSync::GraphQLApi / ::ApiKey (issue #3414)'
     // Under the bypass flag: the measured refusal below blocks the API by
     // default, and the identifier resolution is what this case pins.
     const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack', {
+      recreateImportUnsupported: true,
       skipImportSupportPreflight: true,
     });
     expect(plan.blocked).toEqual([]);
@@ -1365,7 +1366,7 @@ describe('buildImportPlan — AWS::AppSync::GraphQLApi / ::ApiKey (issue #3414)'
         },
       }),
       'MyStack',
-      { skipImportSupportPreflight: true }
+      { recreateImportUnsupported: true, skipImportSupportPreflight: true }
     );
     expect(plan.blocked).toEqual([]);
     expect(plan.phase1Imports[0]!.resourceIdentifier).toEqual({ ApiId: GRAPHQL_API_ID });
@@ -1394,7 +1395,7 @@ describe('buildImportPlan — AWS::AppSync::GraphQLApi / ::ApiKey (issue #3414)'
         },
       }),
       'MyStack',
-      { skipImportSupportPreflight: true }
+      { recreateImportUnsupported: true, skipImportSupportPreflight: true }
     );
     expect(plan.phase1Imports).toEqual([]);
     expect(plan.blocked).toHaveLength(1);
@@ -1426,7 +1427,7 @@ describe('buildImportPlan — AWS::AppSync::GraphQLApi / ::ApiKey (issue #3414)'
         },
       }),
       'MyStack',
-      { skipImportSupportPreflight: true }
+      { recreateImportUnsupported: true, skipImportSupportPreflight: true }
     );
     expect(plan.phase1Imports).toEqual([]);
     expect(plan.blocked).toHaveLength(1);
