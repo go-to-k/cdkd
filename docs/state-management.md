@@ -1060,7 +1060,9 @@ it at all, so read the object from the state bucket directly. The refusal
 prints those forms for that record, and names the object's path only when the
 stack name renders exactly.
 
-The `cdkd state orphan` and `cdkd state show` commands it prints carry the
+The refusal prints its commands at the end, each on a line of its own after a
+label; copy the command after the label. The `cdkd state orphan` and `cdkd state show`
+commands carry the
 `--profile`, `--state-bucket` and non-default `--state-prefix` the run was
 given, so pasting them reaches the same bucket. If the stack name would not
 survive display unchanged, both become templates with the name left as a hole;

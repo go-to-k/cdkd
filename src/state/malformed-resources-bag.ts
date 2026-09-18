@@ -1773,7 +1773,22 @@ export function malformedOrphanResourcePropertiesRefusalMessage(
   // `--stack-region '<unrenderable>'`).
   const stackName = rawStackName === '' ? undefined : rawStackName;
   const region = rawRegion === '' ? undefined : rawRegion;
-  return (
+  const inspect = orphanInspectClause(stackName, region, recovery);
+  const listCommand = withheldIdentityListCommand(stackName, region, recovery);
+  // Every PASTEABLE command goes LAST and UNWRAPPED, one per line — never inside
+  // the prose's `'...'`. A command that itself carries `shellQuote`d values
+  // composes with a wrapping quote into its inverse: pasted together with the
+  // wrapper, `'cdkd state orphan S --state-bucket 'b; printf X; #''` closes the
+  // wrapper at the value's opening quote and RUNS `printf X` (measured, bash),
+  // and the bucket is plantable from a cloned repo's `cdk.json`. The rule
+  // `.claude/rules/lock-contention-message.md` records for the force-unlock
+  // hint, applied to the three commands here (go-to-k/cdkd#3363 review).
+  const commands = [
+    `Drop the record: ${dropRecordCommand(stackName, region, recovery)}`,
+    ...(listCommand === undefined ? [] : [`Find the exact name: ${listCommand}`]),
+    ...(inspect.command === undefined ? [] : [`Inspect the record: ${inspect.command}`]),
+  ];
+  const prose =
     `${namedPropertyBagsClause(stackName, region, logicalIds)} 'cdkd orphan' REWRITES and SAVES ` +
     `every record it keeps, so it refuses rather than continuing — under '--dry-run' too, ` +
     `because the rewrite audit table a dry run prints is the wrong one. It is not that the save ` +
@@ -1783,15 +1798,16 @@ export function malformedOrphanResourcePropertiesRefusalMessage(
     `number presents none to find, and a list is walked, so its rewrites are recorded into a ` +
     `container that is still not a map. Continuing would rewrite, save, and report success over ` +
     `a record 'cdkd deploy' then REFUSES. No state was written. Two ways out need no CDK app: ` +
-    `repair the record by hand, or drop it whole with ` +
-    `'${dropRecordCommand(stackName, region, recovery)}', which leaves ` +
-    `the live AWS resources standing${withheldIdentityClause(stackName, region, recovery)}. A third works ` +
+    `repair the record by hand, or drop it whole with the 'Drop the record' command below, ` +
+    `which leaves the live AWS resources standing` +
+    `${withheldIdentityClause(stackName, region)}. A third works ` +
     `only while the CDK app STILL DECLARES the ` +
     `named resource — this refusal covers just the records that would SURVIVE the save, so ` +
     `'cdkd orphan <its construct path>' removes it and repairs the rest; construct paths come ` +
     `from the synthesized template, so a resource the app no longer declares has none and must ` +
-    `take one of the first two. ${orphanInspectClause(stackName, region, recovery)}`
-  );
+    `take one of the first two.` +
+    (inspect.sentence === undefined ? '' : ` ${inspect.sentence}`);
+  return [prose, ...commands].join('\n');
 }
 
 /**
@@ -1807,32 +1823,46 @@ export function malformedOrphanResourcePropertiesRefusalMessage(
  * substituted, and when no name was known at all — that arm's template already
  * reads as a hole to fill.
  */
-function withheldIdentityClause(
+function withheldIdentityClause(stackName: string | undefined, region: string | undefined): string {
+  if (!identityWithheld(stackName, region)) return '';
+  return (
+    ` — the stack name or region above did not render exactly, so take them from the ` +
+    `'Find the exact name' command below (shell-quote them) rather than from this message`
+  );
+}
+
+/**
+ * The listing {@link withheldIdentityClause} points at, printed as its own
+ * trailing command line. Qualified like the remedy it stands in for: a bare
+ * listing after `cdkd orphan --profile prod ...` would read the DEFAULT
+ * profile's bucket, and the name it hands back would then be a different
+ * bucket's.
+ */
+function withheldIdentityListCommand(
   stackName: string | undefined,
   region: string | undefined,
   recovery?: LockRecoveryContext
-): string {
-  if (stackName === undefined) return '';
+): string | undefined {
+  if (!identityWithheld(stackName, region)) return undefined;
+  return ['cdkd state list --json', ...recoveryCommandFlags(recovery).flags].join(' ');
+}
+
+/** A name WAS known, and it or the region beside it did not render exactly. */
+function identityWithheld(stackName: string | undefined, region: string | undefined): boolean {
+  if (stackName === undefined) return false;
   // The same `''` floor {@link dropRecordCommand} carries, so the two agree on
   // whether a region was supplied at all. Unreachable through the one builder
   // that calls this (it normalises `''` at entry) and kept for the reason
   // `dropRecordCommand` gives: a later caller inherits the floor.
   const known = region === '' ? undefined : region;
-  if (rendersExactly(stackName) && (known === undefined || rendersExactly(known))) return '';
-  // Qualified like the remedy it stands in for: a bare listing after
-  // `cdkd orphan --profile prod ...` would read the DEFAULT profile's bucket,
-  // and the name it hands back would then be a different bucket's.
-  const list = ['cdkd state list --json', ...recoveryCommandFlags(recovery).flags].join(' ');
-  return (
-    ` — the stack name or region above did not render exactly, so take them from ` +
-    `'${list}' (shell-quoted) rather than from this message`
-  );
+  return !(rendersExactly(stackName) && (known === undefined || rendersExactly(known)));
 }
 
 /**
- * The `cdkd state show` line the orphan properties refusal ends on for a record
- * listed WITH a region — gated and qualified exactly as the drop command two
- * sentences above it is, because it is the same identity in the same message.
+ * The `cdkd state show` command on the orphan properties refusal's trailing
+ * `Inspect the record:` line, for a record listed WITH a region — gated and
+ * qualified exactly as the drop command on the line above it is, because it is
+ * the same identity in the same message.
  * Gating only the drop command left the message contradicting itself: it said
  * the name did not render exactly, pointed at `cdkd state list --json`, and then
  * printed `cdkd state show prod-api ...` with the trimmed spelling of
@@ -1859,7 +1889,10 @@ function orphanInspectCommand(
 }
 
 /**
- * The line {@link malformedOrphanResourcePropertiesRefusalMessage} ends on.
+ * How {@link malformedOrphanResourcePropertiesRefusalMessage} tells the operator
+ * to inspect the record: a `command` it prints on its trailing
+ * `Inspect the record:` line, or — for the legacy region-less shape, where no
+ * command can serve — a prose `sentence` naming the S3 object.
  *
  * A KNOWN stack with NO region is a legacy record (`<prefix>/<stack>/state.json`)
  * that `listStacks` lists with no region — `cdkd orphan` hands this module the
@@ -1888,7 +1921,7 @@ function orphanInspectClause(
   stackName: string | undefined,
   region: string | undefined,
   recovery?: LockRecoveryContext
-): string {
+): { command?: string; sentence?: string } {
   if (stackName === undefined) {
     // The same template the shared `inspectCommand` gives for no identity, but
     // qualified: the identity is the hole, not the account.
@@ -1896,10 +1929,10 @@ function orphanInspectClause(
       'cdkd state show <stack> --stack-region <region> --json',
       ...recoveryCommandFlags(recovery).flags,
     ].join(' ');
-    return `Inspect the record with: ${template}`;
+    return { command: template };
   }
   if (region !== undefined) {
-    return `Inspect the record with: ${orphanInspectCommand(stackName, region, recovery)}`;
+    return { command: orphanInspectCommand(stackName, region, recovery) };
   }
   const lead =
     `The record is listed with no region — a legacy 'state.json' whose body names none, or ` +
@@ -1916,7 +1949,7 @@ function orphanInspectClause(
     ? `in state bucket ${shellQuote(bucket)}`
     : `in the state bucket ('cdkd state info' names it)`;
   if (!rendersExactly(stackName)) {
-    return `${lead}: it is the legacy 'state.json' under this stack's name ${where}.`;
+    return { sentence: `${lead}: it is the legacy 'state.json' under this stack's name ${where}.` };
   }
   const prefix = exactOrUndefined(recovery?.statePrefix);
   const key = shellQuote(`${prefix ?? '<prefix>'}/${stackName}/state.json`);
@@ -1926,7 +1959,7 @@ function orphanInspectClause(
     recovery?.statePrefix === undefined
       ? ` (the prefix is 'cdkd' unless '--state-prefix' was given)`
       : '';
-  return `${lead}: it is ${key} ${where}${fill}.`;
+  return { sentence: `${lead}: it is ${key} ${where}${fill}.` };
 }
 
 /**

@@ -618,7 +618,7 @@ describe('cdkd state orphan', () => {
         ['Other'],
         { profile: 'prod', stateBucket: 'test-bucket', statePrefix: 'custom' }
       );
-      const m = /drop it whole with '(cdkd state orphan .*?)', which leaves/.exec(message);
+      const m = /^Drop the record: (cdkd state orphan .*)$/m.exec(message);
       expect(m, 'the drop remedy is no longer rendered in the expected shape').not.toBeNull();
       expect(m![1]!).toContain("cdkd state orphan 'It'\\''s Legacy' --profile prod");
       const argv = shellWords(m![1]!);

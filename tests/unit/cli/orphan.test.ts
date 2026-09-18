@@ -524,7 +524,7 @@ describe('cdkd orphan (per-resource)', () => {
         // `--state-bucket` (and `--profile` / `--state-prefix` when given), so
         // the region is asserted as a flag PAIR rather than as the last token.
         expect(message).toMatch(
-          /drop it whole with 'cdkd state orphan \S+ --stack-region \S+( --state-bucket \S+)?'/
+          /^Drop the record: cdkd state orphan \S+ --stack-region \S+( --state-bucket \S+)?$/m
         );
         expect(message).toContain('only while the CDK app STILL DECLARES');
       });
@@ -618,7 +618,7 @@ describe('cdkd orphan (per-resource)', () => {
      */
     describe('a legacy record names the region it is LISTED under (go-to-k/cdkd#3359)', () => {
       function dropCommand(message: string): string {
-        const m = /drop it whole with '(cdkd state orphan [^']*)'/.exec(message);
+        const m = /^Drop the record: (cdkd state orphan .*)$/m.exec(message);
         expect(m, 'the drop remedy is no longer rendered in the expected shape').not.toBeNull();
         return m![1]!;
       }
