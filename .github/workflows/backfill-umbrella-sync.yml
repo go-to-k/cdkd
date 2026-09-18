@@ -1,38 +1,33 @@
-# Keeps the backfill campaign's issues equal to what `main` says, by rendering
-# them from `main` whenever `main`'s coverage map moves.
+# Keeps the backfill campaign's checklist equal to what `main` says, by
+# rendering it from `main` whenever `main`'s coverage map moves.
 #
-# "Issues", plural, since go-to-k/cdkd#2949: the campaign is a PARENT issue
-# carrying prose and audit provenance, plus one generated SUB-ISSUE per resource
-# type that still has silently-dropped properties. This job reconciles that set
-# — creating, updating, reopening and closing.
+# ONE issue: the campaign is a single umbrella (go-to-k/cdkd#2762) whose body
+# carries a GENERATED BLOCK between `<!-- backfill-types:start -->` and
+# `<!-- backfill-types:end -->`, one row per resource type that still has
+# silently-dropped properties. This job rewrites that block, and nothing else on
+# the page.
 #
-# It does NOT write the parent's body, and that is the whole of what
-# go-to-k/cdkd#2949 got wrong and go-to-k/cdkd#2998 removed. It used to splice a
-# per-type index between markers there; GitHub renders the sub-issue list and its
-# completion count natively, so the index duplicated title, number and state, and
-# its `- [ ]` rows offered a second place to record state that a reader could
-# hand-tick and the next sync would silently revert. The one thing the index did
-# not duplicate — a per-type remaining COUNT — turned out to have no reader: a
-# lane picks a type by the provider it is touching, and `/work-issues` excludes
-# these issues from triage entirely. Deleting the block deleted the marker
-# machinery with it, and with that the only write in this system that could
-# destroy human provenance.
+# go-to-k/cdkd#2949 had fanned the campaign into ~44 generated per-type SUB-ISSUES,
+# which this job created, updated, reopened and closed. Measured afterwards: 44
+# of the repository's 240 open issues were bot-filed slices of one campaign, and
+# in a public open-issue count a generated slice is indistinguishable from a
+# defect nobody has fixed. The per-type issues are closed (once, by hand:
+# `REPO=<owner/repo> node scripts/sync-backfill-umbrella.ts --close-legacy`) and
+# the `backfill-type` label is legacy — nothing generates it any more.
 #
-# The shape changed because a single 288-row checklist could not be LINKED to
-# the work that advances it. A pull request wiring one type had nothing to
-# `Closes`, since the umbrella has to stay open for the other 43 types, so the
-# campaign was invisible to `Closes`, to `pr-inherit-issue-labels.yml` and to
-# the `/work-issues` claim flow. At type granularity 25 of the 44 types hold 1-3
-# properties, so a single pull request closes its issue outright for the
-# majority. Service granularity was measured and rejected: RDS alone spans
-# `DBInstance` (62), `DBCluster` (40) and others, and even DynamoDB — the
-# smallest multi-provider service — needs two pull requests, so `Closes` is
-# unavailable there, which was the whole point.
+# What the fan-out bought, and what replaces it: a pull request wiring one type
+# had nothing to `Closes`, since the umbrella has to stay open for the other 43
+# types. It writes `Refs` and ticks nothing — the row for that type disappears on
+# its own once the coverage map says the type is done, which is the same
+# completion signal the sub-issue's auto-close used.
 #
-# The generated half is generated ALL the way down. Forty-four hand-maintained
-# lists would be strictly worse than one, and hand creation reintroduces the bug
-# `renderUmbrellaChecklist`'s doc comment records: an append-only list cannot
-# express a type that was ticked off and later regained a property.
+# The generated half is generated ALL the way down. Hand-maintaining the rows
+# reintroduces the bug the renderer's doc comment records: an append-only list
+# cannot express a type that was ticked off and later regained a property. The
+# HUMAN half of the body — the audit provenance, the procedure, which pull
+# request closed which slice — lives OUTSIDE the two markers and is carried
+# through byte for byte; it cannot be recomputed, which is why the splice is
+# delimited rather than the whole body being written.
 #
 # This used to be a step inside `cfn-schema-refresh.yml`, and being there made
 # it describe a state that need never exist. That job renders the checklist
@@ -82,14 +77,14 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    # observed at least 102 s. Walks sub-issues through the GitHub
-    # API, so it grows with the campaign.
+    # One issue read and at most one issue edit, plus the checkout.
     timeout-minutes: 20
     permissions:
       contents: read
-      # The only write this job holds, and it now reaches the sub-issues alone —
-      # the parent is READ, for its number. The refresh job needed `issues: write`
-      # for this same campaign; moving it here is what lets that job drop it.
+      # The only write this job holds, and it reaches ONE issue body: the
+      # generated block of the single open issue carrying the umbrella label.
+      # The refresh job needed `issues: write` for this same campaign; moving it
+      # here is what lets that job drop it.
       issues: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
@@ -98,12 +93,12 @@ jobs:
           # `.git/config` where the render step's subprocesses could reach it.
           persist-credentials: false
 
-      # No `vp install`. Every flag in `RENDER_ONLY_FLAGS` —
-      # `--umbrella-subissues` here — returns before any of the refresh-report
-      # setup and uses only `node:` builtins to read one committed file, and
-      # `scripts/sync-backfill-subissues.ts` imports nothing outside `node:`
-      # either, so a dependency install would add a failure surface to two steps
-      # that cannot use it.
+      # No `vp install`. Every flag in `RENDER_ONLY_FLAGS` — `--umbrella-types`
+      # here — returns before any of the refresh-report setup and uses only
+      # `node:` builtins to read one committed file, and
+      # `scripts/sync-backfill-umbrella.ts` imports nothing outside `node:` and
+      # that same renderer, so a dependency install would add a failure surface
+      # to two steps that cannot use it.
       #
       # That was a true statement about what the mode CALLS and a false one
       # about what it LOADS, and the difference cost this workflow every run it
@@ -128,10 +123,10 @@ jobs:
       # Rendered in a step holding NO token, the same split the refresh job
       # draws: this is repository code reading repository files, and the step
       # below is the one that can write.
-      - name: Render the reconciliation plan from main's coverage map
+      - name: Render the per-type plan from main's coverage map
         run: |
           set -euo pipefail
-          node scripts/diagnose-schema-refresh.mjs --umbrella-subissues > /tmp/plan.json
+          node scripts/diagnose-schema-refresh.mjs --umbrella-types > /tmp/plan.json
           # SHAPE, not size. A size test looks like it covers a broken render
           # and does not: `diagnose-schema-refresh.mjs` wraps `main()` in a
           # catch that writes `_The automated diagnosis failed to run (…)_` to
@@ -145,12 +140,12 @@ jobs:
           # and "this is not a plan" are different states and only the second is
           # a failure here: a finished campaign renders `{"types": []}` legally,
           # and the reconciler has its own, louder refusal for the case where
-          # that empty array arrives while sub-issues are still open. A length
-          # test here would make a genuinely finished campaign unrepresentable,
-          # the same way accepting only rows once did for the flat checklist.
+          # that empty array arrives while the published checklist still holds
+          # rows. A length test here would make a genuinely finished campaign
+          # unrepresentable, the same way accepting only rows once did.
           jq -e '.types | type == "array"' /tmp/plan.json > /dev/null
 
-      - name: Reconcile the per-type sub-issues
+      - name: Rewrite the umbrella's generated checklist block
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -162,30 +157,23 @@ jobs:
           # lookup below refuses to guess when the label is not on exactly one
           # open issue.
           BACKFILL_UMBRELLA_LABEL: backfill-umbrella
-          # The label on the GENERATED per-type issues. Two distinct labels, and
-          # the split is load-bearing in both directions: the lookup above must
-          # find exactly ONE issue, so the sub-issues cannot share the umbrella's
-          # label; and `/work-issues` excludes this one from its backlog listing,
-          # so a hand-filed issue must never carry it. Its spelling is fenced
-          # against the script's `SUBISSUE_LABEL` and against the skill's
-          # exclusion by `tests/unit/scripts/sync-backfill-subissues.test.ts`.
-          SUBISSUE_LABEL: backfill-type
         run: |
           set -euo pipefail
-          # REGENERATE the campaign's issues from the coverage map, rather than
-          # appending findings to them.
+          # REGENERATE the campaign's checklist from the coverage map, rather
+          # than appending findings to it.
           #
           # Appending cannot express a type that was ticked off and later
           # regained a property: the `[x]` row stays checked and a second row
           # appears for the same type, so the reader sees one entry saying
           # "done" and another saying "not". Dedup does not fix that — the
           # append model is what is wrong. The map is the campaign's own stated
-          # completion criterion, so rendering FROM it means a type's issue
-          # reopens when it regains a property and closes when it is finished,
-          # with no hand-maintained state to go stale.
+          # completion criterion, so rendering FROM it means a type's row
+          # returns when it regains a property and disappears when it is
+          # finished, with no hand-maintained state to go stale.
           #
           # Human provenance — which PR closed which slice — cannot be
-          # recomputed, and it lives on the PARENT, which nothing here writes.
+          # recomputed, and it lives OUTSIDE the two markers, which the
+          # reconciler never writes through.
           #
           # The STATUS is captured separately from the value, because "GitHub
           # did not answer" and "no issue carries the label" are different
@@ -204,31 +192,20 @@ jobs:
           umbrella_count=$(printf '%s' "${umbrella}" | wc -w | tr -d ' ')
 
           if [ "${umbrella_count}" != "1" ]; then
-            echo "::warning::Expected exactly one OPEN issue labelled '${BACKFILL_UMBRELLA_LABEL}', found ${umbrella_count} (${umbrella:-none}). Refusing to guess which issue the sub-issues belong under. Label exactly one and re-run this workflow."
+            echo "::warning::Expected exactly one OPEN issue labelled '${BACKFILL_UMBRELLA_LABEL}', found ${umbrella_count} (${umbrella:-none}). Refusing to guess which issue carries the campaign. Label exactly one and re-run this workflow."
             exit 0
           fi
 
-          # The sub-issue label has to EXIST before an issue can be created with
-          # it, and `gh issue create --label` fails outright on an unknown one --
-          # which on a first run is every creation. `--force` updates in place
-          # rather than failing when it is already there, so this is idempotent
-          # without a `|| true` that would also swallow a real permission error.
-          gh label create "${SUBISSUE_LABEL}" --force \
-            --color BFD4F2 \
-            --description "Generated per-resource-type slice of the backfill campaign; do not hand-edit the body."
-
-          # The reconciliation itself, and the only write this job makes. It is
-          # handed the umbrella's NUMBER and nothing else: the parent's body is
-          # not touched, because GitHub renders the sub-issue list and its
-          # progress natively and a second copy in the body is a surface that can
-          # disagree with it (issue
-          # https://github.com/go-to-k/cdkd/issues/2998).
+          # The rewrite itself, and the only write this job makes. It is handed
+          # the umbrella's NUMBER and nothing else: the region it rewrites is
+          # delimited by the markers in the body, so everything a human wrote
+          # around them survives unchanged.
           #
-          # Everything the reconciler refuses exits NON-ZERO and mutates nothing,
-          # unlike the label refusals above, which warn and exit 0. The asymmetry
-          # is deliberate and the script's header argues it: those are states a
-          # human fixes and a stale list is the cost, while every refusal inside
-          # the reconciler guards against WRITING the wrong thing across ~44
-          # public issues, where a green run that changed nothing is not a
-          # notification.
-          PARENT="${umbrella}" node scripts/sync-backfill-subissues.ts /tmp/plan.json
+          # Everything the reconciler refuses exits NON-ZERO and mutates
+          # nothing, unlike the label refusals above, which warn and exit 0. The
+          # asymmetry is deliberate and the script's header argues it: those are
+          # states a human fixes and a stale list is the cost, while every
+          # refusal inside the reconciler guards against WRITING the wrong thing
+          # onto the campaign's only public page, where a green run that changed
+          # nothing is not a notification.
+          PARENT="${umbrella}" node scripts/sync-backfill-umbrella.ts /tmp/plan.json

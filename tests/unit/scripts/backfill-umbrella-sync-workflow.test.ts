@@ -1,25 +1,27 @@
 /**
  * Issue [#2774](https://github.com/go-to-k/cdkd/issues/2774) — invariants of
  * `.github/workflows/backfill-umbrella-sync.yml`, the job that keeps the
- * backfill campaign's per-type sub-issues equal to what `main` says.
+ * backfill campaign's generated checklist equal to what `main` says.
  *
  * A workflow is the one artifact here with no local run to catch a mistake: it
- * fires unattended on a `main` push and holds `issues: write` over ~44 public
- * issues. A defect surfaces on pages nobody is watching. So the properties that
- * are load-bearing rather than cosmetic are pinned, and each case below says
- * which failure it is about.
+ * fires unattended on a `main` push and holds `issues: write` over the
+ * campaign's public page. A defect surfaces where nobody is watching. So the
+ * properties that are load-bearing rather than cosmetic are pinned, and each
+ * case below says which failure it is about.
  *
- * Its shape has moved twice, and both moves deleted a way to be wrong.
+ * Its shape has moved three times, and each move deleted a way to be wrong.
  * go-to-k/cdkd#2774 took the write out of `cfn-schema-refresh.yml` (whose own
  * suite is `cfn-schema-refresh-workflow.test.ts`), because rendering from that
  * job's post-refresh workspace described a state that need never exist.
- * go-to-k/cdkd#2998 then removed the parent-body splice entirely — GitHub
- * renders the sub-issue list natively, so the generated index duplicated it and
- * its checkboxes offered a second, hand-tickable place to record state. With no
- * block to splice, the marker machinery went too, and with it the only write in
- * this system that could destroy human-written provenance. Several cases here
- * are the gravestones of that machinery: what remains asserts the parent is READ
- * for its number and never written.
+ * go-to-k/cdkd#2998 removed the parent-body splice while go-to-k/cdkd#2949's
+ * per-type sub-issues carried the campaign. The fold-back then closed those ~44
+ * generated issues — a bot-filed slice is indistinguishable from an unfixed
+ * defect in a public issue count — and the body write returned in the one shape
+ * that cannot destroy provenance: a DELIMITED block, with everything outside its
+ * two markers carried through byte for byte. So the cases here assert what this
+ * STEP does (look the umbrella up by label, hand its number to the reconciler,
+ * write nothing itself); the reconciler's own refusals are
+ * `sync-backfill-umbrella.test.ts`.
  *
  * The file is read BOTH ways, because each view is blind where the other sees.
  * TEXT is right for the literal shell and the literal `uses:` pins, which YAML
@@ -80,8 +82,8 @@ const shellOf = (name: string) =>
     .join('\n');
 
 /** The two steps, named as literals so a rename must be made deliberately. */
-const RENDER_STEP = "Render the reconciliation plan from main's coverage map";
-const RECONCILE_STEP = 'Reconcile the per-type sub-issues';
+const RENDER_STEP = "Render the per-type plan from main's coverage map";
+const RECONCILE_STEP = "Rewrite the umbrella's generated checklist block";
 
 /**
  * The single file `renderUmbrellaChecklist` reads, and therefore the whole of
@@ -210,19 +212,19 @@ describe('backfill-umbrella-sync workflow (issue #2774)', () => {
       // wrong. The map is the umbrella's own stated completion criterion, so
       // rendering FROM it means a type reappears or disappears on its own.
       const render = shellOf(RENDER_STEP);
-      expect(render).toContain('node scripts/diagnose-schema-refresh.mjs --umbrella-subissues');
+      expect(render).toContain('node scripts/diagnose-schema-refresh.mjs --umbrella-types');
       expect(render).toContain('/tmp/plan.json');
       const step = shellOf(RECONCILE_STEP);
-      expect(step).toContain('node scripts/sync-backfill-subissues.ts /tmp/plan.json');
-      // The destination is the SUB-ISSUES, and nothing else. go-to-k/cdkd#2998
-      // removed the parent-body splice this case used to pin: GitHub renders the
-      // sub-issue list and its completion count natively, so a copy in the body
-      // was a second surface that could disagree with it, and its `- [ ]` rows
-      // invited a hand-tick the next sync reverted. What replaced those
-      // assertions is the absence below, plus the executed case further down —
-      // a text scan alone cannot say the step never reaches a body write.
-      for (const verb of ['gh issue edit', 'gh issue comment', 'INDEX_OUT', '/tmp/index.md']) {
-        expect(step, `the parent-body write is back via '${verb}'`).not.toContain(verb);
+      expect(step).toContain('node scripts/sync-backfill-umbrella.ts /tmp/plan.json');
+      // The body write belongs to the RECONCILER, which splices one delimited
+      // block and copies everything else. A `gh` write in the SHELL would be a
+      // second writer, outside every refusal that script makes and outside the
+      // markers that keep human provenance intact — and `gh issue edit --body`
+      // from here would replace the whole page. What replaces the finer
+      // assertions is the executed case further down: a text scan alone cannot
+      // say the step never reaches a write through some path.
+      for (const verb of ['gh issue edit', 'gh issue comment', 'gh issue close', 'gh label create']) {
+        expect(step, `the step writes on its own via '${verb}'`).not.toContain(verb);
       }
     });
 
@@ -245,8 +247,9 @@ describe('backfill-umbrella-sync workflow (issue #2774)', () => {
       // state unrepresentable — the same defect that once made the flat
       // checklist's rows-only guard kill the step under `set -e` with no
       // annotation, leaving the umbrella's stale rows standing permanently.
-      // The empty-plan danger is caught in the RECONCILER, where the open
-      // sub-issue count makes "finished" and "broken parse" separable.
+      // The empty-plan danger is caught in the RECONCILER, where the rows the
+      // published block still holds make "finished" and "broken parse"
+      // separable.
       expect(render, 'the shape guard is gone').toMatch(
         /jq -e '\.types \| type == "array"' \/tmp\/plan\.json/
       );
@@ -277,9 +280,7 @@ describe('backfill-umbrella-sync workflow (issue #2774)', () => {
       expect(script).toContain('process.exitCode = 1');
       // And the mode this workflow actually consumes is IN that set — the
       // membership test above is satisfied by a set that does not contain it.
-      expect(script).toMatch(
-        /RENDER_ONLY_FLAGS = new Set\(\[[^\]]*'--umbrella-subissues'[^\]]*\]\)/
-      );
+      expect(script).toMatch(/RENDER_ONLY_FLAGS = new Set\(\[[^\]]*'--umbrella-types'[^\]]*\]\)/);
     });
   });
 
@@ -345,15 +346,16 @@ describe('backfill-umbrella-sync workflow (issue #2774)', () => {
       expect(arm).not.toContain('exit 0');
     });
 
-    it('RUNS the step: the parent is READ for its number and never written', () => {
-      // EXECUTED, not matched. Every case above reads the shell as text, and
-      // the property this one is about is the point of go-to-k/cdkd#2998: the
-      // job holds `issues: write` and must reach the SUB-ISSUES with it, never
-      // the parent's body. A text scan can say `gh issue edit` is absent today;
-      // only a run can say the step does not reach it through some path.
+    it('RUNS the step: the umbrella is READ for its number, and the STEP writes nothing', () => {
+      // EXECUTED, not matched. Every case above reads the shell as text, and the
+      // property this one is about is that the job's `issues: write` is spent by
+      // the RECONCILER alone — which splices one delimited block — and never by
+      // a `gh` call in this shell, which no refusal and no marker would bound. A
+      // text scan can say `gh issue edit` is absent today; only a run can say
+      // the step does not reach it through some path.
       //
-      // The stub `gh` fails CLOSED on anything unmodelled, so a reintroduced
-      // body write shows up as a failing step rather than as silence.
+      // The stub `gh` fails CLOSED on anything unmodelled, so a write added here
+      // shows up as a failing step rather than as silence.
       const dir = mkdtempSync(join(tmpdir(), 'cdkd-sync-run-'));
       try {
         const bin = join(dir, 'bin');
@@ -392,21 +394,18 @@ echo "node $*" >> "$GH_LOG"
             GH_LOG: log,
             GH_LIST: join(dir, 'list'),
             BACKFILL_UMBRELLA_LABEL: byName(RECONCILE_STEP).env!['BACKFILL_UMBRELLA_LABEL']!,
-            SUBISSUE_LABEL: byName(RECONCILE_STEP).env!['SUBISSUE_LABEL']!,
           },
         });
         expect(res.status, `the step exited ${res.status}: ${res.stdout}${res.stderr}`).toBe(0);
         const calls = readFileSync(log, 'utf8');
-        expect(calls, 'the parent was never looked up').toContain('gh issue list');
-        expect(calls, 'the sub-issue label is not ensured before a create').toContain(
-          `gh label create ${byName(RECONCILE_STEP).env!['SUBISSUE_LABEL']!}`
-        );
+        expect(calls, 'the umbrella was never looked up').toContain('gh issue list');
         expect(calls, 'the reconciler was never invoked').toContain(
-          'node scripts/sync-backfill-subissues.ts /tmp/plan.json'
+          'node scripts/sync-backfill-umbrella.ts /tmp/plan.json'
         );
-        // The whole point: no path through this step writes an issue BODY.
-        for (const verb of ['issue edit', 'issue view', 'issue comment']) {
-          expect(calls, `the step reached '${verb}' — the parent's body is not its to write`)
+        // The whole point: no path through this step reaches GitHub itself,
+        // beyond the one read that finds the umbrella's number.
+        for (const verb of ['issue edit', 'issue view', 'issue comment', 'label create']) {
+          expect(calls, `the step reached '${verb}' — writing is the reconciler's job`)
             .not.toContain(verb);
         }
       } finally {
@@ -422,11 +421,11 @@ echo "node $*" >> "$GH_LOG"
       // inherited its job, and for one round NOTHING pinned it: review measured
       // that appending `|| true` to the node call left the whole suite green —
       // including the executed case, whose stub `node` exits 0 either way —
-      // while this workflow AND `sync-backfill-subissues.ts`'s header both go
-      // on claiming every refusal exits non-zero. That would green-wash all
-      // four refusals across ~44 public issues.
+      // while this workflow AND `sync-backfill-umbrella.ts`'s header both go
+      // on claiming every refusal exits non-zero. That would green-wash every
+      // refusal guarding the campaign's public page.
       const step = shellOf(RECONCILE_STEP);
-      const at = step.lastIndexOf('node scripts/sync-backfill-subissues.ts');
+      const at = step.lastIndexOf('node scripts/sync-backfill-umbrella.ts');
       expect(at, 'there is no reconciler invocation left to guard').toBeGreaterThan(-1);
       // UNSCOPED over the tail, unlike the lookup's scan. That one is sliced to
       // one statement because the marker `grep`s legitimately carried `|| true`
@@ -438,11 +437,11 @@ echo "node $*" >> "$GH_LOG"
       // The `if ! node …; then :; fi` shape sits BEFORE the anchor, so the tail
       // scan above cannot see it.
       expect(step, 'the reconciler is wrapped in an if that swallows its status').not.toMatch(
-        /if !\s*(\S+=\S+\s+)*node scripts\/sync-backfill-subissues\.ts/
+        /if !\s*(\S+=\S+\s+)*node scripts\/sync-backfill-umbrella\.ts/
       );
       // And `continue-on-error` is a YAML KEY — invisible to every text scan of
-      // `run:`, and it green-washes the same four refusals from outside the
-      // shell entirely. Read off the parsed step (review round 2).
+      // `run:`, and it green-washes the same refusals from outside the shell
+      // entirely. Read off the parsed step (review round 2).
       expect(
         byName(RECONCILE_STEP),
         'the step continues on error — its refusals report green'
@@ -450,16 +449,17 @@ echo "node $*" >> "$GH_LOG"
       expect(parsed.jobs.sync, 'the JOB continues on error').not.toHaveProperty('continue-on-error');
     });
 
-    it('ensures the sub-issue label BEFORE the reconciler can attach it', () => {
-      // Re-pinned after the deletion removed the ordering assertion that rode
-      // on the old live case. `gh issue create --label` fails outright on an
-      // unknown label, which on a first run is every creation.
+    it('looks the umbrella up BEFORE it can hand a number to the reconciler', () => {
+      // The ordering the deleted label case used to carry. `PARENT` is the only
+      // thing this step computes, and a reconciler invoked before the lookup
+      // gets an empty one — which its own usage guard turns into exit 2 rather
+      // than a write, but as a red run nobody can act on from the runbook.
       const step = shellOf(RECONCILE_STEP);
-      const labelAt = step.indexOf('gh label create');
-      const nodeAt = step.indexOf('node scripts/sync-backfill-subissues.ts');
-      expect(labelAt, 'the label is never ensured').toBeGreaterThan(-1);
+      const lookupAt = step.indexOf('gh issue list');
+      const nodeAt = step.indexOf('node scripts/sync-backfill-umbrella.ts');
+      expect(lookupAt, 'the umbrella is never looked up').toBeGreaterThan(-1);
       expect(nodeAt).toBeGreaterThan(-1);
-      expect(labelAt, 'the reconciler runs before the label it needs exists').toBeLessThan(nodeAt);
+      expect(lookupAt, 'the reconciler runs before the number it needs exists').toBeLessThan(nodeAt);
     });
 
     it('gives every step that runs a pipeline a pipefail before it', () => {
