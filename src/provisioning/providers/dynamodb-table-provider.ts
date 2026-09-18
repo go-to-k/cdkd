@@ -241,6 +241,110 @@ const PROVISIONED_CAPACITY_MEMBERS = ['ReadCapacityUnits', 'WriteCapacityUnits']
 const ON_DEMAND_CEILING_MEMBERS = ['MaxReadRequestUnits', 'MaxWriteRequestUnits'] as const;
 
 /**
+ * Narrow ONE `OnDemandThroughput` block to exactly what cdkd puts on the wire,
+ * and report the members that were DROPPED (issue
+ * [#3287](https://github.com/go-to-k/cdkd/issues/3287)).
+ *
+ * The ONE spelling of that transform, and that is the whole reason it is a
+ * module-level PURE function rather than a method: two callers need the same
+ * answer and one of them may not log.
+ *
+ *  - {@link DynamoDBTableProvider.coerceOnDemandCeilingsForSend} — the WIRE, at
+ *    all six send sites, which announces each `dropped` member;
+ *  - {@link DynamoDBTableProvider.indexCeilingForSend}'s per-index change
+ *    detector, which compares the desired and recorded blocks and must not warn
+ *    (the warning is the send's, one line further down, and a detector that
+ *    announced would fire on a comparison that emits no op at all).
+ *
+ * Behaviour is BYTE-identical to what `coerceOnDemandCeilingsForSend` did
+ * inline before issue [#3287](https://github.com/go-to-k/cdkd/issues/3287),
+ * including the two identity properties its callers
+ * depend on: a block that is not a plain object comes back AS ITSELF (AWS names
+ * the shape), and a block needing no rewrite comes back by IDENTITY, so
+ * {@link DynamoDBTableProvider.coerceIndexThroughputForCreate} can still tell
+ * "unchanged" from "rewritten" without a structural compare. A member name the
+ * grammar does not know is preserved untouched, the same fail-open direction.
+ *
+ * `dropped` carries the RAW declared value beside each member name because the
+ * warning interpolates it, and only the masking caller may do that.
+ */
+function narrowOnDemandCeilings(declared: unknown): {
+  block: unknown;
+  dropped: ReadonlyArray<{ member: string; raw: unknown }>;
+} {
+  if (!isPlainCapacityBlock(declared)) return { block: declared, dropped: [] };
+  const block = declared;
+  let rewritten: Record<string, unknown> | undefined;
+  const dropped: Array<{ member: string; raw: unknown }> = [];
+  for (const member of ON_DEMAND_CEILING_MEMBERS) {
+    if (!(member in block)) continue;
+    const coerced = coerceCfnInteger(block[member]);
+    // Already the exact integer cdkd would send: leave the key alone, so a
+    // numeric template rebuilds nothing.
+    if (coerced === block[member]) continue;
+    rewritten ??= { ...block };
+    if (coerced === undefined) {
+      dropped.push({ member, raw: block[member] });
+      delete rewritten[member];
+    } else {
+      rewritten[member] = coerced;
+    }
+  }
+  return { block: rewritten ?? block, dropped };
+}
+
+/**
+ * Does the ceiling AWS currently holds for a GSI already cover every member
+ * cdkd is about to send? (issue
+ * [#3287](https://github.com/go-to-k/cdkd/issues/3287))
+ *
+ * The `OnDemandThroughput` twin of {@link liveCapacityAlreadyMatches}, and it
+ * exists for the same #1630 reason: cdkd writes state only after `update()`
+ * RETURNS, so a ceiling op that already LANDED before a later step threw is
+ * unrecorded and the next deploy re-emits it. Consulting what AWS holds is what
+ * lets the deploy converge instead.
+ *
+ * Compared PER MEMBER over the members being SENT, deliberately, and it differs
+ * from the capacity sibling in exactly that: omitting a ceiling member KEEPS
+ * whatever maximum the table already carries (only an explicit `-1` removes
+ * one), so a member cdkd is not sending says nothing about whether the call is
+ * redundant. A live member the request does not carry is therefore ignored.
+ *
+ * Anything unreadable on EITHER side fails OPEN (the op is still emitted): an
+ * absent live block — which is also what `DescribeTable` reports for a
+ * PROVISIONED table, where the numbers do not exist — an absent live member, a
+ * value that is not a number. That is the correct direction: the worst case is
+ * the pre-fix behaviour of emitting the op, whereas a false MATCH would
+ * silently drop a ceiling change the user asked for.
+ *
+ * **What AWS does with a repeated identical ceiling is UNMEASURED**, and this
+ * guard is written so that it does not matter: it withholds only a call that
+ * would change nothing. If DynamoDB rejects the repeat the way it rejects a
+ * repeated provisioned capacity ("The provisioned throughput for the index X
+ * will not change"), the guard is what keeps the deploy from wedging; if it
+ * accepts it, the guard saves a call and a full index-ACTIVE wait. Measuring it
+ * would sharpen the doc, not the code.
+ */
+function liveCeilingAlreadyMatches(
+  live: OnDemandThroughput | undefined,
+  requested: Record<string, unknown>
+): boolean {
+  if (live === undefined) return false;
+  const liveBag = live as unknown as Record<string, unknown>;
+  let compared = 0;
+  for (const member of ON_DEMAND_CEILING_MEMBERS) {
+    if (!(member in requested)) continue;
+    const want = toFiniteNumber(requested[member]);
+    const have = toFiniteNumber(liveBag[member]);
+    if (want === undefined || have === undefined || want !== have) return false;
+    compared += 1;
+  }
+  // Nothing comparable was sent: say NO rather than vacuously YES, so an
+  // unreadable request still reaches AWS and is named there.
+  return compared > 0;
+}
+
+/**
  * The capacity both TABLE-level forwarders substitute for a member the
  * template does not declare at all — `create()`'s `CreateTable` and the
  * BillingMode flip's `UpdateTable`. It is the pre-issue-#3147 `?? 5`, kept
@@ -871,15 +975,27 @@ function reverseMapSecondaryIndex(
  *    [#3255](https://github.com/go-to-k/cdkd/issues/3255), across ALL FOUR
  *    per-index send sites (`create()`'s mapper plus `applyGsiUpdates`'
  *    adopted-repair, `Create` and same-name `Update` actions);
- *    `OnDemandThroughput`'s from issue
- *    [#3265](https://github.com/go-to-k/cdkd/issues/3265), across its own four
- *    (the two TABLE-level forwards plus `create()`'s mapper and
- *    `applyGsiUpdates`' `Create` action) — ever SUPPRESSES the block: each
+ *    `OnDemandThroughput`'s from issues
+ *    [#3265](https://github.com/go-to-k/cdkd/issues/3265) and
+ *    [#3287](https://github.com/go-to-k/cdkd/issues/3287), across its own SIX
+ *    (the two TABLE-level forwards, `create()`'s mapper, and all three
+ *    `applyGsiUpdates` actions) — ever SUPPRESSES the block: each
  *    rewrites members inside a block that is sent either way, so "would cdkd
  *    send this block" is unchanged by them, even where both members were
  *    dropped and an empty block goes out. That is the reason
  *    {@link DynamoDBTableProvider.coerceOnDemandCeilingsForSend} drops a
- *    MEMBER and never the block. Widening
+ *    MEMBER and never the block.
+ *
+ *    **The two per-index UPDATE arms added by #3287 are the ONE qualification,
+ *    and it does not reach this predicate.**
+ *    {@link DynamoDBTableProvider.indexCeilingForSend} withholds the MEMBER
+ *    from an `UpdateGlobalSecondaryIndexAction` when nothing survived, because
+ *    an action carrying only `IndexName` is rejected outright — where the
+ *    TABLE-level arm sends the empty block and lets DynamoDB answer. That is a
+ *    statement about one OP, not about whether the template declared a block
+ *    cdkd forwards: the same bag still reaches `CreateTable` / `UpdateTable`
+ *    wherever those arms run, so the predicate's answer is unchanged.
+ *    Widening
  *    `isSendableWarmThroughput` over them would be wrong twice over — it reads
  *    members those blocks do not have (`ReadUnitsPerSecond` vs
  *    `ReadCapacityUnits`), so every declared capacity would read as undeclared.
@@ -2129,7 +2245,15 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // once, and DynamoDB's answer to a same-value ceiling is unmeasured. The
       // real fix is the `effectiveProperties` + `canonicalizeDesiredProperties`
       // pair that would stop state recording the declared spelling at all, and
-      // that is go-to-k/cdkd#3286, which owns this whole class.
+      // that is go-to-k/cdkd#3286, which owns this whole class. That pair was
+      // written for this PR and WITHDRAWN from it: folding the record without
+      // also changing where `observedProperties` is captured
+      // (`deploy-engine.ts`, three call sites) leaves the observed bag carrying
+      // the per-index ceiling the record omits, and `drift-calculator.ts`
+      // compares `GlobalSecondaryIndexes` as one positional deep-equal array --
+      // PERMANENT phantom drift, with `--revert` holding a change to push. That
+      // is a deploy-engine change, so go-to-k/cdkd#3286 stays open and carries
+      // the evidence.
       if (
         JSON.stringify(properties['OnDemandThroughput']) !==
         JSON.stringify(previousProperties['OnDemandThroughput'])
@@ -3839,6 +3963,23 @@ export class DynamoDBTableProvider implements ResourceProvider {
             adopted.WarmThroughput = adoptedWarm;
             adoptedHasMember = true;
           }
+          // The on-demand ceiling is repaired on the adopted index for exactly
+          // the reason capacity and warm throughput are (issue #3287): the
+          // Create was skipped, so nothing else in this deploy would ever send
+          // it. There is no recorded previous side here, so — like the warm
+          // arm — the only comparison available is against what AWS holds.
+          const adoptedCeiling = this.indexCeilingForSend(
+            name,
+            physicalId,
+            gsi,
+            undefined,
+            live,
+            maskSecrets
+          );
+          if (adoptedCeiling) {
+            adopted.OnDemandThroughput = adoptedCeiling;
+            adoptedHasMember = true;
+          }
           if (adoptedHasMember) {
             ops.push({ Update: adopted });
           }
@@ -4009,6 +4150,26 @@ export class DynamoDBTableProvider implements ResourceProvider {
           update.WarmThroughput = warm;
           updateHasMember = true;
         }
+        // OnDemandThroughput on an existing index (issue #3287), on the SAME
+        // action. Until it landed, `UpdateGlobalSecondaryIndexAction`'s third
+        // member was never set by either arm AND `updateHasMember` was set only
+        // by the two arms above — so a ceiling-only edit produced no
+        // `GlobalSecondaryIndexUpdates` entry at all, deployed GREEN, and was
+        // recorded as applied. The sibling `Create` action has carried the
+        // ceiling since issue #3265, so one template applied it when the index
+        // was ADDED and silently ignored a later edit to it.
+        const ceiling = this.indexCeilingForSend(
+          name,
+          physicalId,
+          gsi,
+          before,
+          liveIndexByName?.get(name),
+          maskSecrets
+        );
+        if (ceiling) {
+          update.OnDemandThroughput = ceiling;
+          updateHasMember = true;
+        }
         if (updateHasMember) {
           ops.push({ Update: update });
         }
@@ -4145,6 +4306,116 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // nothing" — a non-object block and an all-integer one both take that arm
     // and must go out exactly as declared.
     return (coerced ?? declared) as unknown as ProvisionedThroughput;
+  }
+
+  /**
+   * The per-index `OnDemandThroughput` an `UpdateGlobalSecondaryIndexAction`
+   * should carry, or `undefined` when no op is warranted (issue
+   * [#3287](https://github.com/go-to-k/cdkd/issues/3287)).
+   *
+   * The whole of that issue: `UpdateGlobalSecondaryIndexAction` declares the
+   * member, the SDK has always accepted it, and NEITHER update arm ever set it
+   * — while the `Create` action arm has carried it since issue #3265. So one
+   * template applied a per-index ceiling when the index was ADDED and silently
+   * discarded a later edit to it, recording the new value as applied so no
+   * later deploy converged. Routed through
+   * {@link coerceOnDemandCeilingsForSend} like the other five sites, so one
+   * template value cannot be answered differently at two of them.
+   *
+   * FIVE decisions, in the order the op is decided:
+   *
+   *  - **The declaration gate is TRUTHINESS**, matching `indexDeclares`' gate
+   *    for this block and the `Create` arm's `gsi.OnDemandThroughput` test. A
+   *    tighter gate here would make the #1767 drift-side predicate answer
+   *    "declared" for a block this arm skips.
+   *  - **The change detector compares the NARROWED blocks, not the raw ones**,
+   *    and that is the one place it differs from its `ProvisionedThroughput`
+   *    sibling two arms up. `'200'` and `200` are the SAME ceiling once
+   *    coerced, so a raw detector re-emits an `UpdateGlobalSecondaryIndexAction`
+   *    — and a full index-ACTIVE wait — for a pure re-spelling. Both sides go
+   *    through {@link narrowOnDemandCeilings}, the transform the send below
+   *    runs anyway.
+   *
+   *    **It conceals nothing the TABLE-level detector still reports**, which is
+   *    why this arm narrows where that one deliberately stays raw. The only
+   *    outcome the two spellings disagree on is a pure re-spelling, where
+   *    nothing is dropped and nothing warns either way: a block carrying a
+   *    member the grammar REJECTS narrows to `{}` against a previous side that
+   *    is either absent (the sides differ, so the drop warning fires exactly as
+   *    it would raw) or carries the same rejected spelling (the sides compare
+   *    equal RAW as well, since state records what the template declared). The
+   *    empty-block gate below is the other half of that: an all-rejected block
+   *    reaches it and emits no op, so narrowing cannot produce the
+   *    `OnDemandThroughput: {}` an `UpdateTable` would have carried.
+   *  - **A block with no surviving member emits NO op.** The TABLE-level arm
+   *    sends the empty block and lets DynamoDB answer; here the action can
+   *    legitimately carry nothing but `IndexName`, which AWS rejects outright,
+   *    so an empty ceiling would take a capacity edit down with it or fire a
+   *    doomed call on its own. Nothing is lost by withholding it:
+   *    {@link warnUnusableOnDemandCeiling} has already named every dropped
+   *    member.
+   *  - **A block that is not a plain object is forwarded VERBATIM**, the
+   *    fail-open direction every forwarder in this file takes: a STRING, a
+   *    NUMBER or an ARRAY is AWS's to reject by name.
+   *  - **The live ceiling is consulted for idempotency**
+   *    ({@link liveCeilingAlreadyMatches}), the #1630 arm the capacity sibling
+   *    already has, and it needs NO billing-mode gate: `DescribeTable` reports
+   *    `OnDemandThroughput` only on a PAY_PER_REQUEST table, so on a
+   *    PROVISIONED one the live block is simply absent and the guard fails
+   *    open. There is no `{0, 0}` analogue of the #1571 capacity trap.
+   *
+   * What it deliberately does NOT do is REMOVE a ceiling. A desired side that
+   * declares none takes the truthiness gate and emits nothing, so the live
+   * maximum SURVIVES — `-1` is AWS's documented removal sentinel and an absent
+   * member keeps the maximum. That is byte-identical to what `update()`'s
+   * TABLE-level arm does with the same edit (its own comment states it), and
+   * implementing the reset on ONE of the two would make the same property
+   * behave differently at the table and at an index of the same table. The
+   * removal direction is filed for BOTH sites together as issue
+   * [#3373](https://github.com/go-to-k/cdkd/issues/3373), which also records
+   * why it is not an extrapolation from the GlobalTable measurement: `-1` is
+   * LIVE-VERIFIED at `UpdateTable.OnDemandThroughput` and UNMEASURED at this
+   * action's, and sending it DESTROYS a live ceiling.
+   */
+  private indexCeilingForSend(
+    name: string,
+    physicalId: string,
+    gsi: GlobalSecondaryIndex,
+    before: GlobalSecondaryIndex | undefined,
+    live: GlobalSecondaryIndexDescription | undefined,
+    maskSecrets: SecretMasker
+  ): OnDemandThroughput | undefined {
+    if (!gsi.OnDemandThroughput) return undefined;
+    if (before !== undefined) {
+      const { block: desiredNarrowed } = narrowOnDemandCeilings(gsi.OnDemandThroughput);
+      const { block: previousNarrowed } = narrowOnDemandCeilings(before.OnDemandThroughput);
+      if (JSON.stringify(desiredNarrowed) === JSON.stringify(previousNarrowed)) return undefined;
+    }
+    // ONE scope, built ONCE and reused by the send and by both debug lines.
+    // {@link indexScopeAt} is what masks the index NAME -- a RESOLVED property
+    // value -- and what guards the real masker's `String.prototype.replace`
+    // against a numeric `IndexName: 2024` off an unchecked template cast, which
+    // would take the whole deploy down from a diagnostic path. The sibling
+    // debug lines in `applyGsiUpdates` still interpolate the raw `name`; they
+    // are safe only because a template literal calls no masker, and they are
+    // not the pattern to copy.
+    const scope = this.indexScopeAt(name, physicalId, maskSecrets);
+    const send = this.coerceOnDemandCeilingsForSend(scope, gsi.OnDemandThroughput, maskSecrets);
+    if (!isPlainCapacityBlock(send)) return send;
+    if (Object.keys(send).length === 0) {
+      this.logger.debug(
+        `${scope}: declares an OnDemandThroughput with no usable member; emitting no ceiling op`
+      );
+      return undefined;
+    }
+    if (liveCeilingAlreadyMatches(live?.OnDemandThroughput, send)) {
+      this.logger.debug(
+        `${scope}: already carries the requested OnDemandThroughput in AWS; skipping its ceiling ` +
+          `Update`
+      );
+      return undefined;
+    }
+    return send;
   }
 
   /**
@@ -4323,7 +4594,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * through CloudFormation's DynamoDB Integer grammar (issue
    * [#3265](https://github.com/go-to-k/cdkd/issues/3265)).
    *
-   * Called from ALL FOUR send sites, which is the whole point — the block was
+   * Called from ALL SIX send sites, which is the whole point — the block was
    * forwarded VERBATIM at every one of them, so a CFn-legal
    * `MaxReadRequestUnits: '100'` reached AWS as the STRING `"100"` in a `Long`
    * field and the request failed, while a `' 100 '` / `'0x64'` / `'1e2'`
@@ -4337,15 +4608,19 @@ export class DynamoDBTableProvider implements ResourceProvider {
    *     same blind spot that hid this forwarder from issue #3147's sweep and
    *     from #3255's round 6, one property over);
    *  3. `update()`'s TABLE-level `UpdateTable.OnDemandThroughput`;
-   *  4. `applyGsiUpdates`' per-index `Create` action.
+   *  4. `applyGsiUpdates`' per-index `Create` action;
+   *  5. `applyGsiUpdates`' same-name `Update` action, and
+   *  6. its adopted-index repair `Update` — both through
+   *     {@link indexCeilingForSend}, added by issue
+   *     [#3287](https://github.com/go-to-k/cdkd/issues/3287).
    *
-   * FOUR and not six: `UpdateGlobalSecondaryIndexAction` declares
-   * `OnDemandThroughput` too, and neither the adopted-index repair nor the
-   * same-name `Update` arm ever sets it — so a ceiling EDIT on a live index is
-   * silently discarded today. That is a MISSING SEND rather than a grammar
-   * defect, so it is not routed here; issue
-   * [#3287](https://github.com/go-to-k/cdkd/issues/3287) holds it, and it will
-   * read through this function when it lands.
+   * Sites 5 and 6 were the MISSING SEND rather than a grammar defect: until
+   * #3287 `UpdateGlobalSecondaryIndexAction.OnDemandThroughput` was declared by
+   * the SDK and set by neither arm, and `updateHasMember` was set only by the
+   * capacity and warm arms — so a template whose only edit was a live index's
+   * ceiling fired no op at all, the engine recorded the new value, and the next
+   * deploy compared EQUAL. The edit was lost permanently, with nothing refused
+   * and nothing dropped to warn about.
    *
    * THREE decisions, each with a plausible alternative:
    *
@@ -4401,9 +4676,16 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * fail. Closing it needs `effectiveProperties` AND its
    * `canonicalizeDesiredProperties` twin (the rule requires the pair; shipping
    * the first alone re-issues a no-op `UpdateTable` on every later deploy), and
-   * this provider implements neither today. Tracked as issue
-   * [#3286](https://github.com/go-to-k/cdkd/issues/3286); the warning names the
-   * residual so a user is not left to discover it from a `cdkd drift` line. The
+   * this provider implements neither today. That pair was WRITTEN and
+   * WITHDRAWN: `observedProperties` is captured from the RAW template bag in
+   * `deploy-engine.ts`, so a folded record leaves the observed side carrying a
+   * per-index ceiling the record omits, and `drift-calculator.ts` compares
+   * `GlobalSecondaryIndexes` as one positional deep-equal array — the fold
+   * MANUFACTURES the phantom drift it exists to remove. Agreeing the two is a
+   * deploy-engine change across three call sites. Tracked as issue
+   * [#3286](https://github.com/go-to-k/cdkd/issues/3286), which carries the
+   * evidence; the warning names the residual so a user is not left to discover
+   * it from a `cdkd drift` line. The
    * `AWS::DynamoDB::GlobalTable` sibling answers the SAME way for the same
    * spelling — `collectTableOnDemandCeilings` coerces through
    * `coerceCfnInteger` and a rejected ceiling is reported and LEFT UNSENT, with
@@ -4427,23 +4709,15 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // looking. Found by the go-to-k/cdkd#3291 security review.
     maskSecrets: SecretMasker
   ): OnDemandThroughput {
-    if (!isPlainCapacityBlock(declared)) return declared as OnDemandThroughput;
-    const block = declared;
-    let rewritten: Record<string, unknown> | undefined;
-    for (const member of ON_DEMAND_CEILING_MEMBERS) {
-      if (!(member in block)) continue;
-      const coerced = coerceCfnInteger(block[member]);
-      // Already the exact integer cdkd would send: leave the key alone.
-      if (coerced === block[member]) continue;
-      rewritten ??= { ...block };
-      if (coerced === undefined) {
-        this.warnUnusableOnDemandCeiling(scope, member, block[member], maskSecrets);
-        delete rewritten[member];
-      } else {
-        rewritten[member] = coerced;
-      }
+    // The TRANSFORM lives in {@link narrowOnDemandCeilings} since issue #3287,
+    // because {@link indexCeilingForSend}'s change detector must give the
+    // identical answer and must not log. This method is the
+    // ANNOUNCING adapter: same transform, plus the per-member warning.
+    const { block, dropped } = narrowOnDemandCeilings(declared);
+    for (const { member, raw } of dropped) {
+      this.warnUnusableOnDemandCeiling(scope, member, raw, maskSecrets);
     }
-    return (rewritten ?? block) as unknown as OnDemandThroughput;
+    return block as OnDemandThroughput;
   }
 
   /**
@@ -4706,8 +4980,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * The per-index `WarmThroughput` this update should send, or `undefined`
    * (issue #1768, one nesting level down from the table-level branch).
    *
-   * `applyGsiUpdates` used to send only `ProvisionedThroughput` /
-   * `OnDemandThroughput` on both of its arms, while `readCurrentState` emits a
+   * `applyGsiUpdates` used to send only `ProvisionedThroughput` on both of its
+   * arms, while `readCurrentState` emits a
    * declared per-index `WarmThroughput` — so a template declaring one had it
    * silently dropped on every index add / change, `cdkd drift` reported the
    * difference forever, and `--revert` emitted no op at all and exited 0
@@ -4729,7 +5003,15 @@ export class DynamoDBTableProvider implements ResourceProvider {
    *    supported`.
    */
   private warmThroughputOpFor(
-    indexName: string,
+    // `unknown`, NOT `string` (the go-to-k/cdkd#3380 review, n4). The declared
+    // `string` was a LIE -- the caller's map is keyed by `g.IndexName!` off an
+    // UNCHECKED template cast, so an unquoted YAML `IndexName: 2024` arrives
+    // here as a NUMBER -- and that lie is exactly what licensed the bare
+    // `maskSecrets(indexName)` this method used to open with, which threw
+    // `text.replace is not a function` and took the whole deploy down from a
+    // diagnostic path. Typed honestly, a future direct interpolation does not
+    // compile and {@link indexScopeAt} stays the only way in.
+    indexName: unknown,
     physicalId: string,
     desired: GlobalSecondaryIndex,
     previous: GlobalSecondaryIndex | undefined,
@@ -4745,9 +5027,23 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // rather than a third inline wrap.
     const warn = (message: string): void => this.logger.warn(maskSecrets(message));
     const debug = (message: string): void => this.logger.debug(maskSecrets(message));
-    // Masked ONCE and reused, so the two helper `scope` strings and the two
+    // Built ONCE and reused, so the two helper `scope` strings and the two
     // lines below cannot drift apart again.
-    const safeIndexName = maskSecrets(indexName);
+    //
+    // Through {@link indexScopeAt} rather than a bare `maskSecrets(indexName)`,
+    // which is what this line was and which CRASHED THE DEPLOY. `indexName` is
+    // a key of a map built from `g.IndexName!` off an UNCHECKED template cast,
+    // so an unquoted YAML `IndexName: 2024` arrives here as a NUMBER — and the
+    // real masker is a `String.prototype.replace` call that THROWS on one. The
+    // call is EAGER, ahead of every gate, and `warmThroughputOpFor` runs for
+    // every same-name and adopted index, so an ordinary capacity edit on such a
+    // table took the whole update down with `text.replace is not a function`
+    // wrapped in a `Failed to update DynamoDB table` — the exact guard the
+    // review of issue #3255 added `indexScopeAt` for, at a site that sweep
+    // missed. Found by the issue #3287 round, whose own new scope made the
+    // numeric-name case reachable from a second arm. The rendered string is
+    // byte-identical for a string name.
+    const scope = this.indexScopeAt(indexName, physicalId, maskSecrets);
     const requested = desired.WarmThroughput;
     // The UNCHANGED gate runs FIRST, so the refusal below warns once per
     // CHANGED value rather than on every deploy that touches any other index
@@ -4765,17 +5061,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // even when a gate then skips the send (PR review round 7) — the skip
     // messages quote `sendable`, which is narrower than what the user wrote,
     // and without this the missing member went unmentioned entirely.
-    const sendable = this.coerceWarmThroughputForSend(
-      `GSI ${safeIndexName} on DynamoDB table ${physicalId}`,
-      requested,
-      maskSecrets
-    );
+    const sendable = this.coerceWarmThroughputForSend(scope, requested, maskSecrets);
     if (sendable === undefined) {
-      this.warnRefusedWarmThroughput(
-        `GSI ${safeIndexName} on DynamoDB table ${physicalId}`,
-        requested,
-        maskSecrets
-      );
+      this.warnRefusedWarmThroughput(scope, requested, maskSecrets);
       return undefined;
     }
     // Both gates below read the COERCED spec, not the raw declared value (PR
@@ -4800,7 +5088,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // only LOOKED safe.
     if (warmThroughputAlreadyMatches(sendable, live?.WarmThroughput)) {
       debug(
-        `GSI ${safeIndexName} on DynamoDB table ${physicalId} already carries the requested warm ` +
+        `${scope} already carries the requested warm ` +
           `throughput in AWS; skipping its WarmThroughput Update`
       );
       return undefined;
@@ -4816,7 +5104,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // `observedProperties` through this provider's own `readCurrentState`, so
       // the drift signal this leaves standing is erased by the next deploy.
       warn(
-        `GSI ${safeIndexName} on DynamoDB table ${physicalId}: the requested WarmThroughput ` +
+        `${scope}: the requested WarmThroughput ` +
           `${JSON.stringify(maskDeep(sendable, maskSecrets))} is lower than the ${JSON.stringify(
             maskDeep(
               {

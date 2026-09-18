@@ -211,5 +211,91 @@ export class DynamodbOndemandStack extends cdk.Stack {
       description:
         'PAY_PER_REQUEST table whose BillingMode is REMOVED under CDKD_TEST_UPDATE=true (issue #1553)',
     });
+
+    // --- Per-GSI on-demand CEILING update -------------------------------
+    //
+    // A FOURTH table, carrying the half of issue go-to-k/cdkd#3287 that no unit
+    // test can reach: what AWS actually holds after the edit.
+    //
+    // **go-to-k/cdkd#3287** — `UpdateGlobalSecondaryIndexAction` declares
+    // `OnDemandThroughput` and NEITHER per-index update arm ever set it, while
+    // `updateHasMember` was set only by the capacity and warm arms. So a
+    // template whose only edit was a live index's ceiling fired no op at all,
+    // deployed GREEN, and was recorded as applied — the edit lost permanently.
+    // The index's READ ceiling is therefore the ONLY thing this table changes
+    // under CDKD_TEST_UPDATE=true: no capacity edit, no warm-throughput edit,
+    // nothing else that could make an op exist for another reason. The WRITE
+    // ceiling is the CONTROL and must survive unchanged — without it, a fix
+    // that re-asserted the whole block would look identical to one that sent
+    // the edit.
+    //
+    // **go-to-k/cdkd#3265** — the TABLE-level ceiling declares one LEGAL
+    // member and one spelling CloudFormation's Integer grammar REJECTS (a
+    // padded `' 25 '`). Both members are SDK-OPTIONAL, so unlike the
+    // `ProvisionedThroughput` sibling the request SUCCEEDS with that half
+    // unapplied — a GREEN deploy, not a loud failure — which is the outcome
+    // only a real `DescribeTable` can confirm. verify.sh asserts AWS ends up
+    // holding the read ceiling and NO write ceiling, and that the rejected
+    // member did not take its legal sibling down with it.
+    //
+    // What verify.sh deliberately does NOT assert is the RECORD side: state
+    // still carries the declared `' 25 '`, so `cdkd drift` reports the
+    // difference until the template is fixed. That is go-to-k/cdkd#3286, which
+    // stays open — closing it needs `effectiveProperties` plus its
+    // `canonicalizeDesiredProperties` twin AND an agreeing
+    // `observedProperties` capture in `deploy-engine.ts`.
+    //
+    // A hand-written L1 plus an `addPropertyOverride` for the padded value.
+    // BOTH halves are required, and the second was measured rather than
+    // assumed: the L2 types these members as `number`, and the L1's own
+    // generated validator (`convertCfnTablePropsToCloudFormation`) REFUSES a
+    // string too — `cdk synth` dies with `supplied properties not correct for
+    // "OnDemandThroughputProperty"`. `addPropertyOverride` writes straight into
+    // the rendered template, which is the only way to synthesize the rejected
+    // SPELLING this phase is about.
+    //
+    // The table and its index are UNCONDITIONAL; only the ceiling VALUE is
+    // mode-keyed, the same rule the sibling tables above follow. A mode-gated
+    // index would be DROPPED by any later deploy that clears the mode, and
+    // dropping a live GSI is a slow, destructive operation rather than the
+    // in-place update this phase is about.
+    const gsiCeilingTable = new dynamodb.CfnTable(this, 'GsiCeilingTable', {
+      tableName: 'cdkd-ondemand-test-gsi-ceiling-table',
+      billingMode: 'PAY_PER_REQUEST',
+      keySchema: [{ attributeName: 'id', keyType: 'HASH' }],
+      attributeDefinitions: [
+        { attributeName: 'id', attributeType: 'S' },
+        { attributeName: 'gsipk', attributeType: 'S' },
+      ],
+      onDemandThroughput: {
+        maxReadRequestUnits: 30,
+      },
+      globalSecondaryIndexes: [
+        {
+          indexName: 'gsi-ceiling',
+          keySchema: [{ attributeName: 'gsipk', keyType: 'HASH' }],
+          projection: { projectionType: 'ALL' },
+          onDemandThroughput: {
+            maxReadRequestUnits: isUpdate ? 40 : 20,
+            maxWriteRequestUnits: 15,
+          },
+        },
+      ],
+    });
+    gsiCeilingTable.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    // The padded write ceiling, written past the L1 validator. CloudFormation
+    // refuses this spelling at properties validation, so cdkd DROPS the member
+    // and warns — and because both members are SDK-OPTIONAL the request still
+    // SUCCEEDS (measured us-east-1 2026-09-17: `CreateTable` with an empty
+    // `OnDemandThroughput` is ACCEPTED and `DescribeTable` then reports no
+    // ceiling at all), which is what makes the record fold necessary rather
+    // than cosmetic.
+    gsiCeilingTable.addPropertyOverride('OnDemandThroughput.MaxWriteRequestUnits', ' 25 ');
+
+    new cdk.CfnOutput(this, 'GsiCeilingTableName', {
+      value: gsiCeilingTable.ref,
+      description:
+        'PAY_PER_REQUEST table whose per-GSI OnDemandThroughput read ceiling changes under CDKD_TEST_UPDATE=true (issues #3287 / #3265)',
+    });
   }
 }

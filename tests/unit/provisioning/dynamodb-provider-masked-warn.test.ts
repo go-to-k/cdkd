@@ -806,7 +806,11 @@ describe('DynamoDB providers - resolved secrets in provider warnings (issue #199
     });
 
     // Below the 4-character floor, so the sink cannot reach it and only the
-    // whole-value mask on `safeIndexName` can.
+    // whole-value mask inside `indexScopeAt` can. (That helper REPLACED the
+    // method's own `safeIndexName` binding in the go-to-k/cdkd#3287 round: the
+    // bare `maskSecrets(indexName)` threw on a numeric `IndexName`, taking the
+    // whole update down from a diagnostic path. The rendered string is
+    // byte-identical for a string name, so this case is unchanged.)
     it('masks a SHORT index name in the decrease warning', async () => {
       const SHORT = 'iw3';
       await runDecrease(SHORT, bagFor(SHORT));
@@ -817,7 +821,7 @@ describe('DynamoDB providers - resolved secrets in provider warnings (issue #199
     });
 
     // The SINK's own arm in this method. The two cases above put the secret in
-    // `indexName`, which `safeIndexName` masks on its own — so removing the sink
+    // `indexName`, which `indexScopeAt` masks on its own — so removing the sink
     // left them green. The decrease warning ALSO interpolates the requested and
     // live warm-throughput NUMBERS, which no per-value mask touches (a number
     // cannot be a whole-value needle), so a numeric secret is reachable only

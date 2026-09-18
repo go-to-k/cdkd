@@ -78,6 +78,15 @@ PROV_INITIAL_READ=5
 PROV_INITIAL_WRITE=5
 PROV_UPDATED_READ=20
 PROV_UPDATED_WRITE=10
+# issues #3287 / #3265: the table whose per-GSI on-demand READ ceiling changes
+# under CDKD_TEST_UPDATE=true, and whose TABLE-level ceiling declares one member
+# CloudFormation's Integer grammar rejects.
+GSI_CEILING_TABLE="cdkd-ondemand-test-gsi-ceiling-table"
+GSI_CEILING_INDEX="gsi-ceiling"
+GSI_CEILING_INITIAL_READ=20
+GSI_CEILING_UPDATED_READ=40
+GSI_CEILING_WRITE=15
+TABLE_CEILING_READ=30
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -96,6 +105,7 @@ cleanup() {
   aws dynamodb delete-table --table-name "${TABLE_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   aws dynamodb delete-table --table-name "${PROV_TABLE_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   aws dynamodb delete-table --table-name "${BILLING_REMOVAL_TABLE}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws dynamodb delete-table --table-name "${GSI_CEILING_TABLE}" --region "${REGION}" >/dev/null 2>&1 || true
   aws kinesis delete-stream --stream-name "${STREAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
@@ -318,6 +328,58 @@ if [ "${REMOVAL_BASE_DROPPED_GSI}" != "billing-removal-dropped-gsi" ]; then
 fi
 echo "    OK (Phase 1): the to-be-dropped GSI exists before the flip"
 
+# --- issues #3287 / #3265 BASELINE ------------------------------------
+# The per-GSI ceiling before the edit, and the table-level member drop.
+#
+# Same non-vacuity convention as the two baselines above: a Phase 1.5
+# assertion that the READ ceiling is 40 passes just as well against an index
+# that never carried one, so this phase pins the 20 first. The WRITE ceiling
+# is the CONTROL — it is identical in both templates, so a fix that
+# re-asserted the whole block rather than sending the edit would be
+# indistinguishable without it.
+GSI_CEILING_BASE=$(aws dynamodb describe-table --table-name "${GSI_CEILING_TABLE}" --region "${REGION}" \
+  --query "Table.GlobalSecondaryIndexes[?IndexName=='${GSI_CEILING_INDEX}'].OnDemandThroughput | [0]" --output json)
+GSI_CEILING_BASE_READ=$(echo "${GSI_CEILING_BASE}" | jq -r 'if has("MaxReadRequestUnits") then .MaxReadRequestUnits | tostring else "absent" end')
+GSI_CEILING_BASE_WRITE=$(echo "${GSI_CEILING_BASE}" | jq -r 'if has("MaxWriteRequestUnits") then .MaxWriteRequestUnits | tostring else "absent" end')
+if [ "${GSI_CEILING_BASE_READ}" != "${GSI_CEILING_INITIAL_READ}" ]; then
+  echo "FAIL (issue #3287): the GSI's baseline MaxReadRequestUnits is '${GSI_CEILING_BASE_READ}', expected '${GSI_CEILING_INITIAL_READ}' -- the Phase 1.5 assertion would pass vacuously" >&2
+  echo "${GSI_CEILING_BASE}" | jq .
+  exit 1
+fi
+if [ "${GSI_CEILING_BASE_WRITE}" != "${GSI_CEILING_WRITE}" ]; then
+  echo "FAIL (issue #3287): the GSI's baseline MaxWriteRequestUnits is '${GSI_CEILING_BASE_WRITE}', expected '${GSI_CEILING_WRITE}'" >&2
+  echo "${GSI_CEILING_BASE}" | jq .
+  exit 1
+fi
+echo "    OK (Phase 1): the GSI carries ${GSI_CEILING_INITIAL_READ}/${GSI_CEILING_WRITE} before the ceiling edit"
+
+# The TABLE-level half: the template declares a padded ' 25 ' write ceiling,
+# which CloudFormation's Integer grammar rejects, so cdkd DROPS that member and
+# warns. Both members are SDK-optional, so the request SUCCEEDS -- AWS must end
+# up holding the read ceiling and NO write ceiling.
+TABLE_CEILING=$(aws dynamodb describe-table --table-name "${GSI_CEILING_TABLE}" --region "${REGION}" \
+  --query 'Table.OnDemandThroughput' --output json)
+TABLE_CEILING_ACTUAL_READ=$(echo "${TABLE_CEILING}" | jq -r 'if has("MaxReadRequestUnits") then .MaxReadRequestUnits | tostring else "absent" end')
+TABLE_CEILING_ACTUAL_WRITE=$(echo "${TABLE_CEILING}" | jq -r 'if has("MaxWriteRequestUnits") then .MaxWriteRequestUnits | tostring else "absent" end')
+if [ "${TABLE_CEILING_ACTUAL_READ}" != "${TABLE_CEILING_READ}" ]; then
+  echo "FAIL (issue #3265): the legal read ceiling is '${TABLE_CEILING_ACTUAL_READ}' on AWS, expected '${TABLE_CEILING_READ}' -- the rejected sibling took a legal member with it" >&2
+  echo "${TABLE_CEILING}" | jq .
+  exit 1
+fi
+if [ "${TABLE_CEILING_ACTUAL_WRITE}" != "absent" ]; then
+  echo "FAIL (issue #3265): AWS holds a write ceiling of '${TABLE_CEILING_ACTUAL_WRITE}', but the template's ' 25 ' is a spelling cdkd must DROP" >&2
+  echo "${TABLE_CEILING}" | jq .
+  exit 1
+fi
+echo "    OK (Phase 1): the rejected write ceiling reached neither AWS nor its legal sibling"
+
+# The RECORD side of the same drop is NOT asserted here, and that is a
+# DECISION: state still carries the declared ' 25 ' while AWS holds no write
+# ceiling, so `cdkd drift` reports the difference until the template is fixed.
+# Closing it needs `effectiveProperties` plus its `canonicalizeDesiredProperties`
+# twin AND an agreeing `observedProperties` capture in `deploy-engine.ts`, which
+# is issue #3286 -- open, with the evidence on the issue.
+
 echo "==> Phase 1.5: re-deploy with CDKD_TEST_UPDATE=true (BillingMode/ProvisionedThroughput in-place update)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -344,6 +406,46 @@ if [ -z "${UPDATE_OK}" ]; then
 fi
 assert_provisioned_capacity "${PROV_UPDATED_READ}" "${PROV_UPDATED_WRITE}" "Phase 1.5"
 echo "    OK: ProvisionedThroughput in-place UPDATE reached AWS (silent-drop CLOSED)"
+
+# --- Phase 1.55: the per-GSI on-demand ceiling EDIT (issue #3287) ------
+# The headline shape: the same CDKD_TEST_UPDATE=true deploy changes NOTHING on
+# this table except one live index's READ ceiling. Before the fix that fired no
+# `GlobalSecondaryIndexUpdates` entry at all -- the deploy went GREEN, the new
+# value was recorded as applied, and the next deploy compared equal, so the
+# edit was lost permanently with no warning anywhere. Only a real `DescribeTable`
+# can tell that apart from a fix that works; a mocked client agrees with
+# whichever wire assumption the author had.
+#
+# The ceiling change is async like every other `UpdateTable`, so poll rather
+# than race it.
+GSI_CEILING_OK=""
+for _ in $(seq 1 24); do
+  GSI_CEILING_NOW=$(aws dynamodb describe-table --table-name "${GSI_CEILING_TABLE}" --region "${REGION}" \
+    --query "Table.GlobalSecondaryIndexes[?IndexName=='${GSI_CEILING_INDEX}'].OnDemandThroughput | [0]" --output json)
+  if [ "$(echo "${GSI_CEILING_NOW}" | jq -r '.MaxReadRequestUnits // "absent"')" = "${GSI_CEILING_UPDATED_READ}" ]; then
+    GSI_CEILING_OK="yes"
+    break
+  fi
+  sleep 5
+done
+if [ -z "${GSI_CEILING_OK}" ]; then
+  echo "FAIL (issue #3287): the GSI's MaxReadRequestUnits did not reach ${GSI_CEILING_UPDATED_READ} within ~2min after the ceiling edit -- the per-index ceiling send is NOT closed" >&2
+  echo "${GSI_CEILING_NOW}" | jq .
+  exit 1
+fi
+echo "    OK (Phase 1.55): the per-GSI ceiling edit reached AWS (MaxReadRequestUnits == ${GSI_CEILING_UPDATED_READ})"
+
+# The CONTROL. cdkd omits a member it is not changing, and DynamoDB KEEPS
+# whatever maximum the index already carries -- only an explicit -1 removes one
+# (go-to-k/cdkd#3373). A fix that re-asserted the whole block, or one that
+# substituted the removal sentinel, would show up here and nowhere else.
+GSI_CEILING_NOW_WRITE=$(echo "${GSI_CEILING_NOW}" | jq -r 'if has("MaxWriteRequestUnits") then .MaxWriteRequestUnits | tostring else "absent" end')
+if [ "${GSI_CEILING_NOW_WRITE}" != "${GSI_CEILING_WRITE}" ]; then
+  echo "FAIL (issue #3287): the untouched MaxWriteRequestUnits is now '${GSI_CEILING_NOW_WRITE}', expected '${GSI_CEILING_WRITE}' -- the ceiling op disturbed a member the template did not change" >&2
+  echo "${GSI_CEILING_NOW}" | jq .
+  exit 1
+fi
+echo "    OK (Phase 1.55): the untouched write ceiling survived the edit"
 
 # --- Phase 1.6: BillingMode REMOVAL resets to PROVISIONED (issue #1553) ----
 # The same CDKD_TEST_UPDATE=true deploy REMOVES `BillingMode` from a
@@ -499,6 +601,21 @@ if [ -z "${REMOVAL_TABLE_GONE}" ]; then
 fi
 echo "    OK: BillingMode-removal DynamoDB table is gone"
 
+# ...and so is the issues #3287 / #3265 ceiling table.
+GSI_CEILING_TABLE_GONE=""
+for _ in $(seq 1 24); do
+  if gone_probe aws dynamodb describe-table --table-name "${GSI_CEILING_TABLE}" --region "${REGION}"; then
+    GSI_CEILING_TABLE_GONE=1
+    break
+  fi
+  sleep 5
+done
+if [ -z "${GSI_CEILING_TABLE_GONE}" ]; then
+  echo "FAIL: DynamoDB table ${GSI_CEILING_TABLE} still exists ~2min after destroy" >&2
+  exit 1
+fi
+echo "    OK: per-GSI ceiling DynamoDB table is gone"
+
 # Kinesis DeleteStream is async too.
 STREAM_GONE=""
 for _ in $(seq 1 24); do
@@ -518,4 +635,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> dynamodb-ondemand test passed (OnDemandThroughput + ResourcePolicy + KinesisStreamSpecification + ContributorInsightsSpecification backfill closed + BillingMode/ProvisionedThroughput in-place UPDATE + clean destroy)"
+echo "==> dynamodb-ondemand test passed (OnDemandThroughput + ResourcePolicy + KinesisStreamSpecification + ContributorInsightsSpecification backfill closed + BillingMode/ProvisionedThroughput in-place UPDATE + per-GSI ceiling edit + rejected ceiling member dropped + clean destroy)"
