@@ -975,8 +975,11 @@ describe('the auditor reports what it claims to', () => {
     // groups FIT: a fork controls the number of files, and with 21 groups
     // against a cap of 20 one group loses its line entirely — which one is
     // decided by order. Measured: 20 fork files with one finding each plus a
-    // genuine `too-tight`, unsorted, drops the genuine one and does not even
-    // name it among the five in the summary.
+    // genuine `too-tight`, unsorted, DROPS the genuine one from the kept lines.
+    // It is still NAMED — the summary reads `… and 1 more (not all shown for:
+    // zzz.yml; 1 show no line at all)` — and an earlier revision of this
+    // sentence claimed otherwise, which was true at no commit. Naming survives
+    // the sort's deletion; the LINE does not, and that is what the sort buys.
     //
     // The demotion came from generalising a narrower measurement (20 findings
     // inside ONE file, which is a single group and genuinely unaffected).

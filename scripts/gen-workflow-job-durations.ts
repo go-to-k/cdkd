@@ -751,17 +751,23 @@ const main = (): void => {
  * Only when RUN, never when imported.
  *
  * Without this guard, importing the module for its pure helpers starts the
- * whole network walk — measured: pinning `resolveJobKey` in a unit test hung
- * the suite while the generator fetched runs in the background. A script whose
- * pure parts cannot be imported is one whose pure parts cannot be fenced, which
- * is how the name-mapping defect this file now guards against survived in the
- * first place.
+ * whole network walk. A script whose pure parts cannot be imported is one whose
+ * pure parts cannot be fenced, which is how the name-mapping defect this file
+ * now guards against survived in the first place.
  *
- * EXPORTED AND PARAMETERISED BECAUSE BREAKING IT DOES NOT GO RED. Every other
- * arm in this file fails a case when mutated; this one HANGS the suite — the
- * import starts a walk, vitest waits, and the run dies on a timeout that names
- * a file rather than a cause. A hang is the worst colour a regression can have,
- * so the predicate takes its two inputs as arguments and is pinned by cases
+ * EXPORTED AND PARAMETERISED BECAUSE BREAKING IT DOES NOT GO RED — and the
+ * colour is worse than it first looked. An early probe reported that the
+ * mutation HUNG the suite, from a run that hit a 45-second cap; run to
+ * completion it is SILENT GREEN: the import performs the whole walk, rewrites
+ * `docs/_generated/workflow-job-durations.json`, and the fence then passes
+ * 57 of 57 against a snapshot the same run had just manufactured. A hang is
+ * loud. This is the fence validating its own output and saying nothing, which
+ * is why `main` also refuses to run inside a test runner — see
+ * `refuseInsideTestRunner`, whose note is the authority on this and which an
+ * earlier revision of THIS paragraph contradicted from 287 lines away, in the
+ * same commit.
+ *
+ * So the predicate takes its two inputs as arguments and is pinned by cases
  * that never touch `process.argv` and never reach `main`.
  */
 export const invokedDirectly = (entry: string | undefined, self: string): boolean => {
