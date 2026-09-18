@@ -37,6 +37,7 @@ import {
 import {
   buildLockContentionMessage,
   type LockRecoveryContext,
+  UNREPRODUCIBLE_LOCK_CLAUSE,
 } from '../../state/lock-contention-message.js';
 import {
   hasReadableResources,
@@ -2120,6 +2121,11 @@ async function stateOrphanCommand(
             const where = target.region
               ? displaySafe(target.region, { asciiOnly: true }) || UNRENDERABLE
               : 'legacy';
+            const recoveryCommand = buildForceUnlockCommand(stackName, target.region, {
+              profile: options.profile,
+              stateBucket: setup.bucket,
+              statePrefix: options.statePrefix,
+            });
             throw new Error(
               `Stack '${displaySafe(stackName, { asciiOnly: true })}' (${where}) is locked. ` +
                 // Through the shared builder rather than hand-interpolated
@@ -2133,21 +2139,32 @@ async function stateOrphanCommand(
                 // ALWAYS fell through to a hand-built UNQUOTED fallback that
                 // also dropped --profile / --state-bucket, i.e. exactly the
                 // wrong-lock-object harm this hint exists to prevent.
-                `Run: ${
-                  buildForceUnlockCommand(stackName, target.region, {
-                    profile: options.profile,
-                    stateBucket: setup.bucket,
-                    statePrefix: options.statePrefix,
-                  }) ||
-                  // The builder suppresses for TWO reasons now — an
-                  // unrenderable value AND one sanitization ALTERED — so a
-                  // `<unrenderable>` placeholder would contradict the same
-                  // sentence above, which renders `my stack` perfectly well.
-                  `a command cdkd cannot show safely: the recorded name or ` +
-                    `region would not survive a command line intact, so inspect ` +
-                    `the lock object directly`
-                } first, ` +
-                `or pass --force to remove anyway.`
+                // `UNREPRODUCIBLE_LOCK_CLAUSE`, not a local copy, and as its
+                // OWN SENTENCE rather than spliced into `Run: ... first`.
+                //
+                // This site used to carry its own noun phrase naming "the
+                // recorded name or region", which is what let it splice. Issue
+                // go-to-k/cdkd#3377 gave the builder three more values it can
+                // suppress on — the profile, the state bucket and the state
+                // prefix, all three of which THIS call site passes just above —
+                // so the copy blamed the stack name for a bad profile, at the
+                // one call site that change made newly reachable. A third
+                // spelling of a sentence enumerating a growing list is how the
+                // list goes stale, so the shared constant wins; but it is a
+                // full sentence, and go-to-k/cdkd#3390 round 3 measured the
+                // first attempt reading `Run: Inspect the lock object
+                // directly: ... . first, or pass --force`. Branching is what
+                // the shared wording costs, and it is cheaper than a fourth
+                // copy. `lock-manager.ts` reached the same conclusion.
+                //
+                // Still NOT a `<unrenderable>` placeholder: the builder
+                // suppresses both for a value with nothing renderable AND for
+                // one sanitization merely ALTERED, and a placeholder would
+                // contradict the sentence above, which renders `my stack`
+                // perfectly well.
+                (recoveryCommand
+                  ? `Run: ${recoveryCommand} first, or pass --force to remove anyway.`
+                  : `${UNREPRODUCIBLE_LOCK_CLAUSE} Or pass --force to remove anyway.`)
             );
           }
         }

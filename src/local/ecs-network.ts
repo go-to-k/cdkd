@@ -284,6 +284,10 @@ export function buildMetadataEnv(opts: {
     ECS_CONTAINER_METADATA_URI: `http://${ip}/v3/${opts.containerName}`,
   };
   if (opts.roleArn) {
+    // cdkd-arn-display: a URI PATH the container's SDK fetches, not a terminal
+    // line. `encodeURIComponent` percent-encodes every control byte already,
+    // and the metadata sidecar has to receive the ARN it was given -- a
+    // sanitizing pass would address a different role.
     env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'] = `/role/${encodeURIComponent(opts.roleArn)}`;
   }
   if (opts.region) env['AWS_REGION'] = opts.region;

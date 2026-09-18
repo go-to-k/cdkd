@@ -1481,8 +1481,12 @@ export class LockManager {
     // object it resolves to. Six sibling contention sites already went through
     // that builder; this one bypassed it.
     //
-    // `buildForceUnlockCommand` returns '' when the stack name or region has
-    // nothing that can be reproduced safely on a command line, in which case
+    // `buildForceUnlockCommand` returns '' when ANY value it would name has
+    // nothing that can be reproduced safely on a command line -- five of them
+    // since go-to-k/cdkd#3377 widened the guard to the profile, state bucket and
+    // state prefix, so `UNREPRODUCIBLE_LOCK_VALUES` is the list rather than this
+    // sentence (go-to-k/cdkd#3390 round 3 found this copy still saying two) --
+    // in which case
     // the advice degrades rather than naming a command that would address a
     // DIFFERENT lock -- see that module for why suggesting none is the honest
     // answer there.

@@ -360,6 +360,12 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   // credentials-FILE writer bind-mounted into the container, plus
   // `local-run-task.ts`, the one call site of that writer no other entry
   // reaches.
+  // Three literal paths: the module, the `acquireLockWithRetry` exhaustion arm
+  // that is its tenth caller, and the command whose bucket resolution is the
+  // whole reason the recovery hint carries `--profile` / `--state-bucket` /
+  // `--state-prefix` at all. EXACT -- a literal list, so a narrowed glob is
+  // caught by the count rather than by a floor.
+  ['lock-contention-message.md', 3],
   ['local-caller-identity.md', 7], // literal list: EXACT, see below
   ['local-engine-role-leak.md', 6], // literal list: EXACT -- the state-source
   //  shim, the four `local start-*` commands cdkd's restore does not cover,
@@ -798,6 +804,14 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // the satellite sits under no budget at all -- neither the
   // `src/state/s3-state-backend.ts` row nor the `src/types/state.ts` one
   // matches it, which is the point of the split.
+  // The lock-contention satellite, split out of `layout-state-types.md` by
+  // go-to-k/cdkd#3390 because that file's glob covers ALL of `src/state/**` and
+  // `src/types/**` while this entry is about ONE file -- so every edit anywhere
+  // in either directory was paying for it, and the go-to-k/cdkd#3377 fix pushed
+  // `src/state/malformed-resources-bag.ts` 581 B over its cap. Without a row
+  // here the satellite would sit under no budget at all: neither the
+  // `s3-state-backend.ts` row nor the `types/state.ts` one matches it.
+  ['src/state/lock-contention-message.ts', 40_000, 52_000], // measured 48,163 -- the satellite itself is only 8,068 B of it; the rest is the `src/state/**` blanket (state-schema.md alone is 23,671 B), which is exactly why moving this entry OUT of layout-state-types.md relieved every other state path
   ['src/state/malformed-resources-bag.ts', 46_000, 57_000], // measured 53,151; go-to-k/cdkd#3276 grew state-malformed-containers.md by 2,370 B, so this row RISES despite the split. It is also why this path cannot join intrinsic-refusals.md's `paths:` -- 53,151 + 7,888 = 61,039, over the 57,000 cap by 4,039
   // Ceiling was 57_000 -> 58_000 by go-to-k/cdkd#2717, calibrated against a
   // 57,019 B payload with 96 B of headroom, where a single `code-layout.md`
@@ -1685,7 +1699,15 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 // Neither branch's figure is the merged one. That is the whole reason this
 // count is asserted rather than described: two correct increments compose to a
 // number neither author wrote.
-const CORPUS_FILE_COUNT = 74; // + hooks-command-match-heredoc.md AND
+const CORPUS_FILE_COUNT = 75; // + lock-contention-message.md (go-to-k/cdkd#3390): the
+                              //  `layout-state-types.md` entry for ONE file had grown to
+                              //  ~10 KB inside a satellite globbed at all of `src/state/**`
+                              //  and `src/types/**`, so the go-to-k/cdkd#3377 fix pushed
+                              //  `src/state/malformed-resources-bag.ts` over its cap. Fifth
+                              //  time this class has bought a satellite rather than a cap.
+                              //  74 -> 75 taken from main's own figure at the rebase, per
+                              //  the note above -- main had meanwhile added two of its own.
+                              // 74: + hooks-command-match-heredoc.md AND
                               //  hooks-foot-gun-gates.md (go-to-k/cdkd#3040): 72 + 2, taken
                               //  from main`s own figure at the rebase rather than from either
                               //  branch`s count, which is what the note above says goes wrong.

@@ -17,6 +17,7 @@ function ecrUrlSuffix(region: string): string {
 export { parseEcrRegistryHost };
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
+import { displayIdent, displaySafe, ROLE_ARN_MAX_CODE_POINTS } from '../utils/display-safe.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 
 /**
@@ -323,16 +324,28 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   // image-pull loop).
   let assumed: TempCredentials | undefined;
   if (options.ecrRoleArn) {
+    // cdkd-arn-display: a Map KEY, never rendered. It is built from the ARN
+    // so two different roles cannot share a credential cache entry; nothing
+    // logs or displays it, and a sanitizing pass here would make two distinct
+    // ARNs collide on one entry -- the opposite of what the key is for.
     const cacheKey = `${options.ecrRoleArn}|${callerRegion ?? '_unset'}`;
     const cached = ASSUMED_ROLE_CACHE.get(cacheKey);
     if (cached && isCredentialFresh(cached)) {
       assumed = cached;
-      logger.debug(`Reusing cached AssumeRole credentials for ${options.ecrRoleArn}`);
+      logger.debug(
+        `Reusing cached AssumeRole credentials for ${displayIdent(options.ecrRoleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}`
+      );
     } else {
       assumed = await assumeRoleForEcr(options.ecrRoleArn, callerRegion, logger);
       ASSUMED_ROLE_CACHE.set(cacheKey, assumed);
       logger.info(
-        `Assumed role ${options.ecrRoleArn} for ECR pull (account=${parsed.accountId}, region=${parsed.region})`
+        // cdkd-raw-beside-safe: `parsed.accountId` / `parsed.region` come out
+        // of `parseEcrUri`, which delegates to `parseEcrRegistryHost` and refuses a region segment that is
+        // not `[A-Za-z0-9-]` and an account that is not 12 digits BEFORE
+        // folding case (`ecr-uri.ts`, issues go-to-k/cdkd#1786 /
+        // go-to-k/cdkd#1792). A control character cannot survive that, so
+        // these two are constrained rather than merely trusted.
+        `Assumed role ${displayIdent(options.ecrRoleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })} for ECR pull (account=${parsed.accountId}, region=${parsed.region})`
       );
     }
   } else if (crossAccount) {
@@ -392,7 +405,9 @@ async function assumeRoleForEcr(
   callerRegion: string | undefined,
   logger: ReturnType<ReturnType<typeof getLogger>['child']>
 ): Promise<TempCredentials> {
-  logger.debug(`Assuming role ${roleArn} for ECR pull...`);
+  logger.debug(
+    `Assuming role ${displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })} for ECR pull...`
+  );
   const sts = new STSClient({
     // cdkd-local-role-identity: pulling the image is cdkd's OWN call, not the
     // emulated workload's, so a `--role-arn` correctly answers it. Nothing
@@ -412,7 +427,7 @@ async function assumeRoleForEcr(
     const creds = response.Credentials;
     if (!creds || !creds.AccessKeyId || !creds.SecretAccessKey || !creds.SessionToken) {
       throw new LocalInvokeBuildError(
-        `AssumeRole(${roleArn}) returned no usable credentials. Verify the role's trust policy allows your identity to assume it.`
+        `AssumeRole(${displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}) returned no usable credentials. Verify the role's trust policy allows your identity to assume it.`
       );
     }
     return {
@@ -425,7 +440,7 @@ async function assumeRoleForEcr(
     if (err instanceof LocalInvokeBuildError) throw err;
     const reason = err instanceof Error ? err.message : String(err);
     throw new LocalInvokeBuildError(
-      `Failed to assume role ${roleArn} for ECR pull: ${reason}. ` +
+      `Failed to assume role ${displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })} for ECR pull: ${displaySafe(reason)}. ` +
         "Verify the role exists and its trust policy permits the caller's identity to assume it."
     );
   } finally {

@@ -11,6 +11,7 @@ import {
   parseStackRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { displayIdent, ROLE_ARN_MAX_CODE_POINTS } from '../../utils/display-safe.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import {
@@ -163,6 +164,8 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
   const state: EcsRunState = createEcsRunState();
   let sigintHandler: (() => void) | undefined;
   let sigintCount = 0;
+  // Set only once the detach path has actually handed the containers off.
+  let detachedSuccessfully = false;
   // Issue #606: the active state provider (--from-state / --from-cfn-stack).
   // Hoisted so the outer `finally` can dispose it even if the body
   // throws between provider creation and the normal exit path.
@@ -171,7 +174,17 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
   // (one INI section) bind-mounted into every user container so
   // handlers using `fromIni({ profile })` resolve to the same creds.
   // Disposed in the cleanup chain below.
-  let profileCredsFile: ProfileCredentialsFile | undefined;
+  //
+  // ONE binding for BOTH consumers -- the docker mount and the dispose -- rather
+  // than a second `profileCredsFile` local copied out of it. The copy was an
+  // assignment nothing executed: `local-run-task.test.ts` covers only the
+  // Commander surface, so mutating it to `undefined` left 161 tests green while
+  // a tmpdir holding a plaintext AWS credentials file survived every run
+  // (go-to-k/cdkd#3390 round 4, on go-to-k/cdkd#3394). With one binding the
+  // mount side is COMPILER-enforced -- `buildRunEcsTaskOptions` takes the
+  // non-optional shape, so emptying this cannot typecheck -- and the dispose
+  // reads the same object rather than a copy that can drift from it.
+  let channels: Awaited<ReturnType<typeof resolveTaskCredentialChannels>> | undefined;
 
   // Single-flight cleanup: the SIGINT handler AND the outer `finally` both
   // call this, so we await the first invocation's promise on every later
@@ -187,12 +200,12 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
         } catch (err) {
           getLogger().debug(`cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
         }
-        if (profileCredsFile) {
+        if (channels?.profileCredsFile) {
           try {
-            await profileCredsFile.dispose();
+            await channels.profileCredsFile.dispose();
           } catch (err) {
             getLogger().debug(
-              `Failed to remove profile credentials tmpdir ${profileCredsFile.hostPath}: ${
+              `Failed to remove profile credentials tmpdir ${channels.profileCredsFile.hostPath}: ${
                 err instanceof Error ? err.message : String(err)
               }`
             );
@@ -330,65 +343,17 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
       assumedCredentials = await assumeTaskRole(resolvedRoleArn, options.region);
     }
 
-    // Issue #658: when `--assume-task-role` is NOT effective but
-    // `--profile <p>` IS set, resolve the profile via the SDK's default
-    // credential provider chain (SSO / IAM Identity Center / fromIni /
-    // role-assumption) and forward the resulting `{AKID, SAK,
-    // sessionToken?}` to the metadata-endpoints sidecar. Without this,
-    // the sidecar starts inside a fresh container with no SSO config and
-    // no `~/.aws/credentials`, so every user container that hits
-    // `169.254.170.2/role/<role>` gets a credential-provider failure.
-    // Same gap class as #654/#655, which shipped the equivalent forward
-    // for `cdkd local start-api`'s Lambda container path.
-    const sidecarCredentials = await resolveSidecarCredentials(options, assumedCredentials);
-
-    // ECS analogue of PR #670 (Lambda-container fix-back finding #1):
-    // when `--profile <p>` is set AND `--assume-task-role` did NOT
-    // produce credentials for this task, synthesize a host-side AWS
-    // shared credentials file under `[<options.profile>]` and bind-
-    // mount it read-only into every user container. Handler code
-    // calling `fromIni({ profile: '<options.profile>' })` then
-    // resolves to the same creds the metadata sidecar serves —
-    // without this, the SDK looks for `[<options.profile>]` in
-    // `~/.aws/credentials` inside the container and fails.
-    //
-    // Gating `!assumedCredentials` preserves the documented
-    // precedence (assume-task-role > profile-file > sidecar): when
-    // `--assume-task-role` won, the sidecar's `/role/<arn>` endpoint
-    // already serves the assumed creds and the file env vars must
-    // NOT override them.
-    // cdkd-local-env-identity: the `!assumedCredentials` gate means
-    // `resolveSidecarCredentials` reached its `--profile` arm, so this is
-    // `resolveProfileCredentials` through
-    // `awsClientDefaults({ ignoreAssumedRole: true })` — the caller's own chain,
-    // never the `--role-arn` role — and never an `--assume-task-role` STS result,
-    // which wins earlier and is served by the metadata sidecar instead.
-    if (options.profile && sidecarCredentials && !assumedCredentials) {
-      profileCredsFile = await writeProfileCredentialsFile(options.profile, sidecarCredentials);
-    }
+    // Both credential channels this task gets, resolved together — see
+    // `resolveTaskCredentialChannels` for why they are ONE call (issue
+    // go-to-k/cdkd#3378).
+    channels = await resolveTaskCredentialChannels(options, assumedCredentials);
 
     const envOverrides = readEnvOverridesFile(options.envVars);
 
-    const runOpts: RunEcsTaskOptions = {
-      cluster: options.cluster,
-      containerHost: options.containerHost,
-      skipPull: options.pull === false,
-      keepRunning: options.keepRunning,
-      detach: options.detach,
-    };
-    if (envOverrides) runOpts.envOverrides = envOverrides;
-    if (sidecarCredentials) runOpts.taskCredentials = sidecarCredentials;
-    if (resolvedRoleArn) runOpts.taskRoleArn = resolvedRoleArn;
-    if (options.platform) runOpts.platformOverride = options.platform;
-    if (options.region) runOpts.region = options.region;
-    if (options.ecrRoleArn) runOpts.ecrRoleArn = options.ecrRoleArn;
-    if (profileCredsFile) {
-      runOpts.profileCredentialsFile = {
-        hostPath: profileCredsFile.hostPath,
-        containerPath: profileCredsFile.containerPath,
-        profileName: profileCredsFile.profileName,
-      };
-    }
+    const runOpts = buildRunEcsTaskOptions(options, channels, {
+      ...(envOverrides !== undefined && { envOverrides }),
+      ...(resolvedRoleArn !== undefined && { resolvedRoleArn }),
+    });
     // Let task containers reach a server on the host (an `AWS_ENDPOINT_URL_*`
     // local endpoint / tunneled VPC resource) via `host.docker.internal`.
     // Resolved once at boot; merged into the runner's `--add-host` flag list
@@ -405,7 +370,24 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
         `Use 'docker ps -a --filter network=${result.state.network?.networkName ?? '<network>'}' to inspect; ` +
           `tear down with 'docker rm -f' and 'docker network rm'.`
       );
-      // Detach mode skips cleanup — the caller manages container lifecycle.
+      // Detach mode skips cleanup — the caller manages container lifecycle —
+      // and that includes the profile credentials file, which is
+      // mode-0600 but holds LIVE AWS credentials and is bind-mounted into the
+      // containers that outlive this process. It cannot be disposed here for
+      // exactly that reason, so NAME it: an operator who is not told the path
+      // has no way to find it, and nothing else ever will
+      // (go-to-k/cdkd#3390 security review). Rendered through `displayIdent`
+      // like every other terminal-bound value on this surface — the path is
+      // cdkd's own `mkdtemp` output rather than user input, so it is the
+      // identity on it, but the rule is the surface's rather than the value's.
+      if (channels.profileCredsFile) {
+        logger.info(
+          `The AWS credentials file mounted into the containers is NOT removed in detached ` +
+            `mode: delete ${displayIdent(channels.profileCredsFile.hostPath)} once you tear them down.`
+        );
+      }
+      // Only a REACHED detach hands the containers off; see the `finally`.
+      detachedSuccessfully = true;
       sigintCount = 99;
       return;
     }
@@ -421,7 +403,15 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
   } finally {
     if (sigintHandler) process.off('SIGINT', sigintHandler);
     if (stateProvider) stateProvider.dispose();
-    if (!options.detach) await cleanup();
+    // `detachedSuccessfully`, not `options.detach` (go-to-k/cdkd#3390 round 2).
+    // The flag is what `--detach` MEANS here -- the containers were handed off
+    // and outlive this process, so tearing down their network and unlinking the
+    // credentials file they have mounted would break them. A detach run that
+    // THREW before `runEcsTask` returned handed nothing off: the old condition
+    // skipped cleanup for it anyway, stranding a 0600 file of live AWS
+    // credentials in `/tmp` that nothing would ever remove, and no message named
+    // it either because the notice above is on the success path too.
+    if (!detachedSuccessfully) await cleanup();
   }
 }
 
@@ -447,7 +437,7 @@ async function resolvePlaceholderAccount(arn: string, region: string | undefined
     const account = identity.Account;
     if (!account) {
       throw new Error(
-        `--assume-task-role: GetCallerIdentity returned no Account; cannot resolve placeholder ARN '${arn}'. ` +
+        `--assume-task-role: GetCallerIdentity returned no Account; cannot resolve placeholder ARN ${displayIdent(arn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}. ` +
           `Pass the ARN explicitly: --assume-task-role <arn>`
       );
     }
@@ -483,7 +473,9 @@ async function assumeTaskRole(
     );
     const creds = response.Credentials;
     if (!creds?.AccessKeyId || !creds.SecretAccessKey || !creds.SessionToken) {
-      throw new Error(`AssumeRole(${roleArn}) returned no usable credentials.`);
+      throw new Error(
+        `AssumeRole(${displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}) returned no usable credentials.`
+      );
     }
     return {
       accessKeyId: creds.AccessKeyId,
@@ -775,6 +767,144 @@ export async function resolveSidecarCredentials(
   if (assumedCredentials) return assumedCredentials;
   if (options.profile) return resolveProfileCredentials(options.profile);
   return undefined;
+}
+
+/**
+ * Resolve BOTH credential channels a locally-run ECS task receives, and decide
+ * whether the second one exists at all.
+ *
+ * 1. `sidecarCredentials` — what the AWS-published
+ *    `amazon-ecs-local-container-endpoints` sidecar serves at
+ *    `169.254.170.2/role/<role>`; {@link resolveSidecarCredentials} owns the
+ *    precedence (issue #658).
+ * 2. `profileCredsFile` — the ECS analogue of PR #670 (Lambda-container
+ *    fix-back finding #1). When `--profile <p>` is set AND `--assume-task-role`
+ *    did NOT produce credentials for this task, a host-side AWS shared
+ *    credentials file is written under `[<options.profile>]` and bind-mounted
+ *    read-only into every user container, so handler code calling
+ *    `fromIni({ profile: '<options.profile>' })` resolves to the same creds the
+ *    sidecar serves. Without it the SDK looks for `[<options.profile>]` in
+ *    `~/.aws/credentials` INSIDE the container and fails.
+ *
+ *    Gating on `!assumedCredentials` preserves the documented precedence
+ *    (assume-task-role > profile-file > sidecar): when `--assume-task-role`
+ *    won, the sidecar's `/role/<arn>` endpoint already serves the assumed creds
+ *    and the file's env vars must NOT override them.
+ *
+ * ONE helper rather than two, and that is the substance of issue
+ * go-to-k/cdkd#3378 rather than a tidying choice. Both of these lived inline in
+ * `localRunTaskCommand`'s body, which meant the gate's annotation below was
+ * fenced only for EXISTING (`local-surface-env-identity.test.ts` checks that an
+ * annotation is there and carries a reason — it cannot check that the reason is
+ * TRUE). And the reason is not a property of the `if` at all: it is a property
+ * of the COMPOSITION, that `sidecarCredentials` on the `!assumedCredentials`
+ * path can only have come from {@link resolveSidecarCredentials}'s `--profile`
+ * arm. Extracting the three-line gate ALONE would have re-tested the same three
+ * booleans and proved nothing; a test over this helper writes a real file and
+ * can read the bytes back. `resolveSidecarCredentials`'s own doc already set
+ * the precedent for the seam over a command-level harness — that harness would
+ * have to mock the whole Synth + Docker + AWS pipeline, and a mock is exactly
+ * what cannot answer "which identity's bytes landed in the file".
+ *
+ * cdkd-local-env-identity: the `!assumedCredentials` gate means
+ * `resolveSidecarCredentials` reached its `--profile` arm, so this is
+ * `resolveProfileCredentials` through
+ * `awsClientDefaults({ ignoreAssumedRole: true })` — the caller's own chain,
+ * never the `--role-arn` role — and never an `--assume-task-role` STS result,
+ * which wins earlier and is served by the metadata sidecar instead.
+ */
+export async function resolveTaskCredentialChannels(
+  options: { profile?: string },
+  assumedCredentials:
+    | { accessKeyId: string; secretAccessKey: string; sessionToken?: string }
+    | undefined
+): Promise<{
+  sidecarCredentials:
+    | { accessKeyId: string; secretAccessKey: string; sessionToken?: string }
+    | undefined;
+  profileCredsFile: ProfileCredentialsFile | undefined;
+}> {
+  const sidecarCredentials = await resolveSidecarCredentials(options, assumedCredentials);
+  if (options.profile && sidecarCredentials && !assumedCredentials) {
+    return {
+      sidecarCredentials,
+      // cdkd-local-env-identity: the `!assumedCredentials` gate above means
+      // `resolveSidecarCredentials` reached its `--profile` arm, so these bytes
+      // are `resolveProfileCredentials` through
+      // `awsClientDefaults({ ignoreAssumedRole: true })` — the caller's own
+      // chain, never the `--role-arn` role — and never an `--assume-task-role`
+      // STS result, which wins earlier and is served by the metadata sidecar
+      // instead. The doc comment above carries why that reasoning needed a
+      // SEAM to become checkable (go-to-k/cdkd#3378).
+      profileCredsFile: await writeProfileCredentialsFile(options.profile, sidecarCredentials),
+    };
+  }
+  return { sidecarCredentials, profileCredsFile: undefined };
+}
+
+/**
+ * Build the `RunEcsTaskOptions` bag from the options and the resolved credential
+ * channels.
+ *
+ * Extracted for the WIRING, which is the half
+ * {@link resolveTaskCredentialChannels} could not cover (go-to-k/cdkd#3390 round
+ * 2, on go-to-k/cdkd#3394). That helper decides WHETHER a credentials file
+ * exists and whose bytes are in it; this one decides whether the answer reaches
+ * the runner at all. Between them sat a single assignment, and mutating it to
+ * `undefined` left 114 tests green across five files: no file is bind-mounted,
+ * so every handler calling `fromIni({ profile })` inside the task container
+ * fails -- the exact defect PR go-to-k/cdkd#670 shipped this path to fix. "A
+ * probed callee says nothing about its WIRING" is the rule, and this is the
+ * seam that lets a unit test say something about it.
+ *
+ * PURE, and it takes the whole `channels` object rather than a pre-destructured
+ * file so the test subject is the same value the resolver returns -- a helper
+ * taking `profileCredsFile` alone would move the untested assignment rather
+ * than remove it.
+ *
+ * The file is COPIED field by field rather than passed through: `dispose` stays
+ * with the command, which owns the lifetime, and `RunEcsTaskOptions` deliberately
+ * declares only the three fields the runner mounts with.
+ */
+export function buildRunEcsTaskOptions(
+  options: Pick<
+    LocalRunTaskOptions,
+    | 'cluster'
+    | 'containerHost'
+    | 'pull'
+    | 'keepRunning'
+    | 'detach'
+    | 'platform'
+    | 'region'
+    | 'ecrRoleArn'
+  >,
+  // Derived from the producer rather than re-spelled: the two must agree, and a
+  // structural copy is how they would come to disagree silently
+  // (go-to-k/cdkd#3390 round 3).
+  channels: Awaited<ReturnType<typeof resolveTaskCredentialChannels>>,
+  extra: { envOverrides?: RunEcsTaskOptions['envOverrides']; resolvedRoleArn?: string } = {}
+): RunEcsTaskOptions {
+  const runOpts: RunEcsTaskOptions = {
+    cluster: options.cluster,
+    containerHost: options.containerHost,
+    skipPull: options.pull === false,
+    keepRunning: options.keepRunning,
+    detach: options.detach,
+  };
+  if (extra.envOverrides) runOpts.envOverrides = extra.envOverrides;
+  if (channels.sidecarCredentials) runOpts.taskCredentials = channels.sidecarCredentials;
+  if (extra.resolvedRoleArn) runOpts.taskRoleArn = extra.resolvedRoleArn;
+  if (options.platform) runOpts.platformOverride = options.platform;
+  if (options.region) runOpts.region = options.region;
+  if (options.ecrRoleArn) runOpts.ecrRoleArn = options.ecrRoleArn;
+  if (channels.profileCredsFile) {
+    runOpts.profileCredentialsFile = {
+      hostPath: channels.profileCredsFile.hostPath,
+      containerPath: channels.profileCredsFile.containerPath,
+      profileName: channels.profileCredsFile.profileName,
+    };
+  }
+  return runOpts;
 }
 
 export function createLocalRunTaskCommand(): Command {

@@ -217,6 +217,45 @@ export const IDENT_MAX_CODE_POINTS = 255;
 export const STACK_REF_MAX_CODE_POINTS = 128 + 4 * (1 + IDENT_MAX_CODE_POINTS);
 
 /**
+ * The cap for an IAM ROLE ARN, which the 255 default TRUNCATES while still
+ * legal.
+ *
+ * AWS bounds a role PATH at 512 characters and a role NAME at 64, on top of the
+ * `arn:<partition>:iam::<12-digit account>:role` prefix -- so a perfectly valid
+ * ARN reaches ~612 and `displayIdent`'s default would render
+ * `[cut: N more characters withheld]` inside the very message that says WHICH
+ * role failed to assume (go-to-k/cdkd#3390 round 3). Cutting the identifier out
+ * of the sentence whose only job is to identify it is the failure this constant
+ * exists to avoid, and it is the same argument `STACK_REF_MAX_CODE_POINTS`
+ * makes for a nested-stack child's name.
+ *
+ * Derived rather than rounded, so the arithmetic is auditable: the longest
+ * partition cdkd knows is `aws-iso-e` (9), and the fixed segments are
+ * `arn:` + `:iam::` + 12 + `:role` = 27.
+ *
+ * It bounds the PAYLOAD, which is all a cap can do -- the wrapping caveat on
+ * `STACK_REF_MAX_CODE_POINTS` applies here unchanged.
+ */
+export const ROLE_ARN_MAX_CODE_POINTS = 27 + 9 + 512 + 64;
+
+/**
+ * The cap for a SECRET REFERENCE -- an ECS task definition's `ValueFrom`, the
+ * Secrets Manager ARN it classifies to, or the SSM parameter name.
+ *
+ * A separate constant from {@link ROLE_ARN_MAX_CODE_POINTS} because the grammar
+ * is genuinely different and the role figure is too small: an SSM parameter NAME
+ * runs to 1011 characters on its own, and AWS caps an ARN at 2048. Rendering
+ * `[cut: N more characters withheld]` in the message that says WHICH secret
+ * failed to resolve is the failure both constants exist to avoid
+ * (go-to-k/cdkd#3390 round 4).
+ *
+ * 2048 is AWS's documented ARN ceiling, which bounds every shape this cap
+ * serves -- the ARN forms by definition, and the bare parameter name by being
+ * shorter than the ARN containing it.
+ */
+export const SECRET_REF_MAX_CODE_POINTS = 2048;
+
+/**
  * The shape of a value that renders WITHOUT a visible boundary: the characters
  * a CloudFormation logical id, a resource type (`AWS::S3::Bucket`,
  * `Custom::my-thing_v2@x`), a change type, a stack name -- including the
