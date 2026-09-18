@@ -8,7 +8,7 @@ import {
   SECOND_ROLE_PUBLISH_REFUSAL,
 } from './aws-client-defaults.js';
 import { readEnvCredentials } from './caller-credentials.js';
-import { displaySafe } from './display-safe.js';
+import { displayAwsMessage, displayIdent, ROLE_ARN_MAX_CODE_POINTS } from './display-safe.js';
 
 /**
  * Temporary AWS credentials produced by `sts:AssumeRole`. Shape mirrors the
@@ -162,7 +162,21 @@ export async function assumeRoleForCrossAccountStateRead(roleArn: string): Promi
 
   const promise = (async (): Promise<AwsCredentials> => {
     const logger = getLogger().child('role-arn');
-    logger.debug(`Assuming role for cross-account state read: ${roleArn}`);
+    // The SAME binding the `--role-arn` path below has carried since issue
+    // [#2170](https://github.com/go-to-k/cdkd/issues/2170), added here by issue
+    // [#3397](https://github.com/go-to-k/cdkd/issues/3397). This function is
+    // the CROSS-ACCOUNT `Fn::GetStackOutput` twin and its five renders were all
+    // raw — one FILE adopting a rule in one of its two functions is the exact
+    // shape `display-safe.ts`'s own header describes ("widened BY HAND one
+    // module at a time and missing an instance every round"), and here the
+    // module was not even the unit that got missed.
+    //
+    // `roleArn` is a LITERAL from the user's own template and NOTHING has
+    // validated its shape at this point: `parseIamRoleArn` runs in the
+    // resolver's `getCrossAccountStackState`, which is only one of this
+    // function's callers.
+    const displayRoleArn = displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS });
+    logger.debug(`Assuming role for cross-account state read: ${displayRoleArn}`);
 
     const sts = new STSClient({ ...awsClientDefaults() });
     try {
@@ -182,9 +196,21 @@ export async function assumeRoleForCrossAccountStateRead(roleArn: string): Promi
         // the raw SDK error ("AccessDenied: User ... is not authorized
         // to perform: sts:AssumeRole on resource: ...") is opaque to
         // anyone who hasn't seen it before.
-        const message = err instanceof Error ? err.message : String(err);
+        // `message` is sanitized BESIDE the ARN, not instead of it (issue
+        // go-to-k/cdkd#3397). STS answers an unparseable `RoleArn` with a
+        // `ValidationError` that ECHOES THE SUBMITTED VALUE VERBATIM, so
+        // guarding only the interpolation two words left would leave the same
+        // bytes arriving through the error text — the "sanitized one value and
+        // rendered its NEIGHBOUR raw" shape
+        // `tests/unit/cli/local-profile-display-population.test.ts` derives.
+        // `displaySafe` for the message because AWS's own wording legitimately
+        // carries non-ASCII, where `asciiOnly` would delete a whole sentence.
+        // CAPPED as well as sanitized: STS echoes an unparseable RoleArn back
+        // verbatim, so this message's length is the submitter's choice and an
+        // oversized ARN would flood past the cap the ARN itself just paid.
+        const message = displayAwsMessage(err instanceof Error ? err.message : String(err));
         throw new Error(
-          `AssumeRole into ${roleArn} failed: ${message}. ` +
+          `AssumeRole into ${displayRoleArn} failed: ${message}. ` +
             `If this is a trust-policy issue, the producer's role must allow sts:AssumeRole ` +
             `from the consumer's principal. See https://github.com/go-to-k/cdkd/blob/main/docs/cross-stack-references.md for the trust-policy template.`,
           { cause: err instanceof Error ? err : undefined }
@@ -192,17 +218,21 @@ export async function assumeRoleForCrossAccountStateRead(roleArn: string): Promi
       }
       if (!response.Credentials) {
         throw new Error(
-          `AssumeRole for cross-account Fn::GetStackOutput returned no credentials (RoleArn=${roleArn})`
+          `AssumeRole for cross-account Fn::GetStackOutput returned no credentials (RoleArn=${displayRoleArn})`
         );
       }
       const { AccessKeyId, SecretAccessKey, SessionToken, Expiration } = response.Credentials;
       if (!AccessKeyId || !SecretAccessKey || !SessionToken) {
         throw new Error(
-          `AssumeRole response missing required credentials fields for cross-account state read (RoleArn=${roleArn})`
+          `AssumeRole response missing required credentials fields for cross-account state read (RoleArn=${displayRoleArn})`
         );
       }
+      // cdkd-raw-beside-safe: `Expiration` is an STS-returned `Date` and
+      // `toISOString()` emits a fixed ISO-8601 form, so the raw operand carries
+      // no caller-controlled bytes at all -- the literal `'unknown'` fallback
+      // even less. The ARN beside it is the untrusted value and is sanitized.
       logger.info(
-        `Assumed role for cross-account state read: ${roleArn} (session expires ${
+        `Assumed role for cross-account state read: ${displayRoleArn} (session expires ${
           Expiration?.toISOString() ?? 'unknown'
         })`
       );
@@ -343,9 +373,29 @@ export async function applyRoleArnIfSet(opts: {
   const logger = getLogger().child('role-arn');
   // `roleArn` is user-controlled text (a CLI argument or `CDKD_ROLE_ARN`) on its
   // way to a terminal, and this line fires BEFORE any validation of it — the
-  // same class the warning below withholds the profile name for. `asciiOnly`
-  // because an ARN has a known charset, so a legitimate one renders unchanged.
-  const displayRoleArn = displaySafe(roleArn, { asciiOnly: true });
+  // same class the warning below withholds the profile name for.
+  //
+  // `displayIdent` rather than the `displaySafe(…, { asciiOnly: true })` this
+  // site carried from issue #2170 until issue go-to-k/cdkd#3397, so this file
+  // holds ONE spelling once its cross-account sibling above acquired a binding
+  // of its own. `displayIdent` is the rule issue
+  // [#3390](https://github.com/go-to-k/cdkd/issues/3390) settled for the ARN
+  // class, and it adds a length cap (`asciiOnly` has none, and this value is
+  // unbounded) plus a JSON-quoted BOUNDARY once the value stops looking like an
+  // identifier.
+  //
+  // THE COST, stated rather than implied away (go-to-k/cdkd#3408 code review
+  // measured it): a COMMON ARN renders byte-identically, but "every legitimate
+  // ARN does" is FALSE. IAM's path grammar is `/[!-~]+/`,
+  // which admits `( ) ! # $ % & * [ ]` — none of them in `PLAIN_IDENT` — so
+  // `arn:aws:iam::123456789012:role/team(a)/MyRole` renders JSON-QUOTED where
+  // `asciiOnly` left it bare. That is a display change on a legal value, and it
+  // is accepted rather than avoided: quoting is `displayIdent`'s signal that a
+  // value is not a plain identifier, which for an ARN carrying shell-active
+  // characters is the correct thing to say. A reader who needs the bare form
+  // has it in the AWS console; a reader who needs to know the value is unusual
+  // had no way to tell before.
+  const displayRoleArn = displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS });
   logger.debug(`Assuming role ${displayRoleArn}...`);
 
   // `ignoreAssumedRole` because this hop must be answered by the identity the
@@ -365,13 +415,40 @@ export async function applyRoleArnIfSet(opts: {
     ...(opts.region && { region: opts.region }),
   });
   try {
-    const response = await sts.send(
-      new AssumeRoleCommand({
-        RoleArn: roleArn,
-        RoleSessionName: `cdkd-${Date.now()}`,
-        DurationSeconds: 3600,
-      })
-    );
+    // CAUGHT AND SANITIZED, since go-to-k/cdkd#3408 round 2. This function had
+    // `try { ... } finally { sts.destroy() }` with NO catch, so an STS rejection
+    // escaped with its message verbatim — while its twin
+    // `assumeRoleForCrossAccountStateRead` catches and sanitizes for exactly the
+    // stated reason that STS ECHOES THE SUBMITTED RoleArn back. The two halves
+    // of one class, and only one had the guard.
+    //
+    // Reachable: `IAM_ROLE_ARN_REGEX` in `src/cli/options.ts` is START-anchored
+    // and constrains nothing past `role/`, so `--role-arn` accepts
+    // `arn:aws:iam::123456789012:role/x<ESC>[2K<CR>evil`; `formatError` renders
+    // the message and `ConsoleLogger.formatMessage` sanitizes only a call's
+    // extra ARGS, never the message text. So this PR was sanitizing the
+    // `Assuming role ...` debug line while the FAILURE it is about went out raw.
+    //
+    // `cause` is threaded UNMASKED so the retry classifiers' `$metadata` walk
+    // still sees the original — the rule `layout-deployment-secrets.md` records
+    // for every provider that wraps an AWS failure.
+    let response;
+    try {
+      response = await sts.send(
+        new AssumeRoleCommand({
+          RoleArn: roleArn,
+          RoleSessionName: `cdkd-${Date.now()}`,
+          DurationSeconds: 3600,
+        })
+      );
+    } catch (err) {
+      throw new Error(
+        `AssumeRole for ${displayRoleArn} failed: ${displayAwsMessage(
+          err instanceof Error ? err.message : String(err)
+        )}`,
+        { cause: err instanceof Error ? err : undefined }
+      );
+    }
     if (!response.Credentials) {
       throw new Error(`AssumeRole returned no credentials for role ${displayRoleArn}`);
     }
@@ -400,6 +477,9 @@ export async function applyRoleArnIfSet(opts: {
       sessionToken: SessionToken,
       ...(Expiration && { expiration: Expiration }),
     });
+    // cdkd-raw-beside-safe: the same verdict as its cross-account twin above --
+    // an STS-returned `Date` in a fixed ISO-8601 form, carrying no
+    // caller-controlled bytes, beside the sanitized ARN.
     logger.info(
       `Assumed role ${displayRoleArn} (session expires ${Expiration?.toISOString() ?? 'unknown'})`
     );

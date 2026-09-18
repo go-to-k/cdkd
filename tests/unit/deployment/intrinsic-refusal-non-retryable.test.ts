@@ -293,7 +293,7 @@ describe('IntrinsicResolutionRefusalError throw sites are non-retryable (#1874 r
     // site, outside that population — so the note is a claim the checker
     // cannot see. This pins it at the source: each `observed:` argument is
     // either a string literal, a `describeFailureObserved(...)` call, or a
-    // template literal whose only holes are `this.maskSecretsForLog(...)` and
+    // template literal whose only holes are `this.displayMasked(...)` and
     // `observedState` (the EC2 state enum). A fourth shape fails here.
     const source = readFileSync(
       new URL('../../../src/deployment/intrinsic-function-resolver.ts', import.meta.url),
@@ -314,10 +314,18 @@ describe('IntrinsicResolutionRefusalError throw sites are non-retryable (#1874 r
     const LITERAL = /^'[^'+`]*'$/;
     const DESCRIBE_FAILURE = /^this\.describeFailureObserved\('[A-Za-z]+', err, context\)$/;
     // `attributeName` by NAME, not any identifier: a masked resolved value
-    // (`maskSecretsForLog(physicalId, context)`) would satisfy "masked" while
+    // (`displayMasked(physicalId, context)`) would satisfy "masked" while
     // contradicting the `not-in-class(observed)` note, which promises a state
     // name, an error class or the attribute NAME (closing probe of #3096).
-    const MASKED_HOLE = /^this\.maskSecretsForLog\(attributeName, context\)$/;
+    //
+    // The builder moved from `maskSecretsForLog` to `displayMasked` in
+    // go-to-k/cdkd#3408, which routed every interpolated render in the subject
+    // through one display helper. This anchor is STRICTLY stronger for it: the
+    // new helper masks exactly as before AND control-strips, so the clause this
+    // note promises is now also safe to render. The rename being visible HERE
+    // is the fence doing its job -- an anchor that had not moved would mean it
+    // had stopped matching its subject.
+    const MASKED_HOLE = /^this\.displayMasked\(attributeName, context\)$/;
     for (const arg of observedArgs) {
       if (LITERAL.test(arg) || DESCRIBE_FAILURE.test(arg)) continue;
       const holes = [...arg.matchAll(/\$\{([^}]*)\}/g)].map((m) => m[1]!.trim());

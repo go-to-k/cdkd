@@ -48,6 +48,11 @@ import { defineOwnKey, hasOwnKey, hasPlainPrototype, ownValue } from '../../util
 import { CloudControlProvider } from '../../provisioning/cloud-control-provider.js';
 import { withStackName } from '../../provisioning/resource-name.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
+import {
+  displayAwsMessage,
+  displayIdent,
+  ROLE_ARN_MAX_CODE_POINTS,
+} from '../../utils/display-safe.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import {
@@ -1122,8 +1127,18 @@ function createIamPrincipalUniqueIdResolver(awsClients: AwsClients): PrincipalUn
         if (entityArn !== undefined && entityArn.toLowerCase() === arn.toLowerCase()) {
           uniqueId = entityId;
         } else {
+          // `arn` is a principal ARN lifted out of a RESOURCE POLICY — the
+          // user's template, or AWS's readback of one — so it is untrusted text
+          // on its way to a terminal (issue go-to-k/cdkd#3397). `entityArn` is
+          // sanitized beside it rather than trusted for being AWS's answer:
+          // `GetRole` echoes back a name AWS stored, and a guard on one operand
+          // is no evidence about the one next to it.
           getLogger().debug(
-            `Principal ${arn} resolved to ${entityArn ?? 'no entity'} — ` +
+            `Principal ${displayIdent(arn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })} resolved to ${
+              entityArn === undefined
+                ? 'no entity'
+                : displayIdent(entityArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })
+            } — ` +
               `same name in this account or under another IAM path; ` +
               `leaving the policy principal comparison untouched.`
           );
@@ -1152,8 +1167,14 @@ function createIamPrincipalUniqueIdResolver(awsClients: AwsClients): PrincipalUn
               `it, or re-run with --verbose for the full error.`
           );
         }
+        // BOTH operands, and `message` is the load-bearing half here: the
+        // comment fourteen lines up records that IAM's `NoSuchEntity` text
+        // EMBEDS THE ROLE NAME verbatim, so sanitizing `arn` alone would let
+        // the same bytes arrive through the error string — the "guard defeated
+        // by its own neighbour" shape (issue go-to-k/cdkd#3397). `displaySafe`
+        // for the message because AWS's wording legitimately carries non-ASCII.
         getLogger().debug(
-          `Could not resolve the unique id of principal ${arn} (${message}); ` +
+          `Could not resolve the unique id of principal ${displayIdent(arn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })} (${displayAwsMessage(message)}); ` +
             `leaving the policy principal comparison untouched.`
         );
         // A THROTTLE is transient, and caching it would poison the rest of the

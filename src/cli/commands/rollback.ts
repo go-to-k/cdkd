@@ -37,7 +37,12 @@ import {
   type StackOrphanRecord,
 } from '../../types/state.js';
 import type { StackStateRef } from '../../state/s3-state-backend.js';
-import { displayIdent, displaySafe, STACK_REF_MAX_CODE_POINTS } from '../../utils/display-safe.js';
+import {
+  displayIdent,
+  displaySafe,
+  ROLE_ARN_MAX_CODE_POINTS,
+  STACK_REF_MAX_CODE_POINTS,
+} from '../../utils/display-safe.js';
 import { refuseMalformedState } from '../../state/malformed-resources-bag.js';
 
 interface RollbackOptions {
@@ -183,6 +188,31 @@ function safe(value: unknown): string {
  */
 function safeStack(value: unknown): string {
   return displayIdent(value, { maxCodePoints: STACK_REF_MAX_CODE_POINTS });
+}
+
+/**
+ * `safe()` for an IAM ROLE ARN, the SECOND value class in this file whose
+ * legitimate grammar runs past `displayIdent`'s 255-code-point default (issue
+ * go-to-k/cdkd#3397 review).
+ *
+ * An AWS-legal role ARN reaches 613 code points — a 512-character path plus a
+ * 64-character name — so `safe()` cut the one ARN this file renders at 255 and
+ * appended `[cut: N more characters withheld]` INSIDE
+ * `pass --role-arn to match`, the sentence whose only job is to say which role
+ * to pass back. That is verbatim the failure `ROLE_ARN_MAX_CODE_POINTS`'s own
+ * doc exists to prevent, and the display fence could not see it: it checks that
+ * a sanitizer was CALLED, never which cap the call passed.
+ *
+ * A NAMED helper rather than a `maxCodePoints` argument at the site, for the
+ * reason {@link safeStack} records about itself — a per-site spelling of
+ * exactly this rule is what issue #3164 exists to stop, and a first cut of this
+ * fix wrote one before the reference-count fence in
+ * `tests/unit/cli/commands/rollback.test.ts` refused it. That refusal is the
+ * fence working: it forces the question "which helper does this value belong
+ * in" to be answered in code rather than in a diff.
+ */
+function safeRoleArn(value: unknown): string {
+  return displayIdent(value, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS });
 }
 
 /**
@@ -447,8 +477,17 @@ export async function rollbackCommand(
       // a role, but --role-arn was not passed this run.
       const newestSegment = journal.segments[journal.segments.length - 1]!;
       if (newestSegment.roleArn && !options.roleArn) {
+        // `safe()`'s 255-code-point default is the WRONG cap for an ARN, and
+        // this is the one site in this file holding one (issue
+        // go-to-k/cdkd#3397 review). An AWS-legal role ARN reaches ~613 --
+        // a 512-character path plus a 64-character name -- so the default cut
+        // it at 255 and appended `[cut: N more characters withheld]` INSIDE the
+        // sentence whose only job is to say which role to pass back, which is
+        // verbatim the failure `ROLE_ARN_MAX_CODE_POINTS` exists to prevent.
+        // Not caught by the display fence: it checks that a sanitizer was
+        // CALLED, never which cap the call passed.
         logger.info(
-          `Note: the failed deploy ran with --role-arn ${safe(newestSegment.roleArn)}; ` +
+          `Note: the failed deploy ran with --role-arn ${safeRoleArn(newestSegment.roleArn)}; ` +
             `this rollback is running with ambient credentials (pass --role-arn to match).`
         );
       }

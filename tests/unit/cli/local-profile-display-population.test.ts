@@ -157,26 +157,130 @@ function isProfileSite(expression: string): boolean {
 /**
  * Which files the ARN class is derived over.
  *
- * The `cdkd local` surface ONLY, where the profile class is derived over all of
- * `src/**`. That is a scope decision rather than an oversight: the DEPLOY path
- * has its own raw ARN renders, in `src/deployment/intrinsic-function-resolver.ts`,
- * and go-to-k/cdkd#3397 owns them. Widening this arm to `src/**` would demand a
- * verdict on those five sites inside a PR whose session never opened that
- * module, which is how a security sweep loses track of what it verified. When
- * go-to-k/cdkd#3397 lands, drop this predicate and let the ARN arm run over the
- * whole tree like its sibling.
+ * go-to-k/cdkd#3397 landed, and this predicate's previous revision said to
+ * "drop it and let the ARN arm run over the whole tree like its sibling". THAT
+ * INSTRUCTION WAS WRONG, and measuring it is what this note replaces it with.
+ *
+ * Running the ARN arm over all of `src/**` reports **153 undeclared sites on
+ * THIS tree** — 147 under `src/provisioning/`, 6 under `src/synthesis/`, and
+ * ZERO inside the four surfaces widened below (measured 2026-09-18 by returning
+ * `true` here and reading the failure list; re-derive it the same way rather
+ * than trusting the figure). The number is ATTRIBUTED rather than left bare
+ * because it moves with the fix: the same probe on the PRE-go-to-k/cdkd#3397
+ * tree reported 168, the extra 15 being this PR's own 14 raw renders plus
+ * `rollback.ts`'s `safe()` site, which read as undeclared until
+ * `SANITIZED_FUNCTION_DECL` landed. Both figures describe the same finding.
+ *
+ * Almost none of them are the class. `namesARoleArn` matches any token carrying
+ * `Arn` as a segment, which on the `cdkd local` surface is a sound proxy for
+ * "the user supplied this" — every ARN there arrived as `--assume-role` /
+ * `--ecr-role-arn`. Off that surface it is not, and the honest form of that
+ * claim is narrower than a first draft's: MOST are AWS-returned (`policyArn`
+ * in `iam-managed-policy-provider.ts` is the clean example), but some are
+ * template-supplied — `iam-user-group-provider.ts` renders
+ * `properties['ManagedPolicyArns']` at four sites. What makes them out of scope
+ * is therefore the SURFACE and its reachability, not a blanket claim about
+ * provenance. Demanding a display verdict on all 153 would make this fence
+ * "noisy enough to be disabled", which `namesARoleArn`'s own doc gives as the
+ * reason it is not a substring test.
+ *
+ * So the widening is by SURFACE, and the surfaces are the ones where an ARN is
+ * USER-SUPPLIED — argv, or a literal in the user's own template:
+ *
+ *   - `src/cli/**` — argv, where `--assume-role` is parsed and refused;
+ *   - `src/local/**` — the `cdkd local` surface go-to-k/cdkd#3390 covered;
+ *   - `src/utils/role-arn.ts` — `--role-arn` / `CDKD_ROLE_ARN`, and the
+ *     cross-account `Fn::GetStackOutput` assume;
+ *   - `src/deployment/intrinsic-function-resolver.ts` — `Fn::GetStackOutput`'s
+ *     `RoleArn`, a literal the template author wrote.
+ *
+ * What the widening actually bought, which is the argument for doing it at all
+ * rather than patching the five sites the issue named: it found **ten**, and the
+ * five it added were in files nobody had looked at. Two in `src/cli/options.ts`
+ * (the `--assume-role` refusals — argv, and `IAM_ROLE_ARN_REGEX` is
+ * start-anchored so even the ACCEPTED value is unconstrained past `role/`), two
+ * in `src/cli/commands/drift.ts`, and — the one that matters most — FIVE in
+ * `src/utils/role-arn.ts` itself, the file go-to-k/cdkd#3397's body cites as
+ * having "sanitized its own since issue #2170". It had, in ONE of its two
+ * functions; `assumeRoleForCrossAccountStateRead` beside it rendered `roleArn`
+ * raw at every one of its five sites. A hand sweep keyed on the issue's own
+ * file list could not have reached that, and the issue would have closed
+ * claiming a class it had half-fixed.
  */
 function inArnScope(file: string): boolean {
   const posix = file.replace(/\\/g, '/');
-  return /^src\/cli\/commands\/local-[^/]*\.ts$/.test(posix) || posix.startsWith('src/local/');
+  return (
+    posix.startsWith('src/cli/') ||
+    posix.startsWith('src/local/') ||
+    posix === 'src/utils/role-arn.ts' ||
+    posix === 'src/deployment/intrinsic-function-resolver.ts'
+  );
+}
+
+/**
+ * Which files the MIXED-RENDER arm is derived over — the `cdkd local` surface,
+ * i.e. what `inArnScope` was before go-to-k/cdkd#3397 widened it.
+ *
+ * THE TWO SCOPES ARE NOW SEPARATE, and that separation is the finding rather
+ * than a convenience. The previous revision ran both arms off one predicate and
+ * said "widen both arms together when that issue lands". They cannot be widened
+ * together, because the mixed-render arm is VALUE-CLASS-INDEPENDENT: it asks
+ * only whether a statement sanitized one operand and rendered another raw, so it
+ * has no notion of "an ARN" to be scoped by. Pointing it at `src/cli/**` alone
+ * reports dozens of statements in `scrub.ts`, `events.ts`, `state.ts`,
+ * `bootstrap-destroy.ts` and `gc.ts` (measured 2026-09-18), every one about a
+ * different value class — stack names, bucket names, counts — and none of them
+ * anything go-to-k/cdkd#3397 is about.
+ *
+ * That is a real backlog and not a reason to pretend the arm is tree-wide:
+ * go-to-k/cdkd#3405 owns it, one surface at a time, so each widening lands with
+ * a session that has read the files it is judging. Keeping the two scopes
+ * DISTINCT and named is what stops the next author widening the ARN arm and
+ * silently dragging an unscoped, value-class-independent walk along with it.
+ */
+function inMixedScope(file: string): boolean {
+  const posix = file.replace(/\\/g, '/');
+  return (
+    /^src\/cli\/commands\/local-[^/]*\.ts$/.test(posix) ||
+    posix.startsWith('src/local/') ||
+    // The ONE surface go-to-k/cdkd#3397 added, and it is added because that
+    // issue's own fix lands on it: `assumeRoleForCrossAccountStateRead` now
+    // sanitizes the STS error message BESIDE the ARN, which is precisely this
+    // arm's shape, and a probe (D1) measured the arm covering it in ZERO
+    // directions while it sat out of scope. Fixing a mixed render and leaving
+    // it unfenced is how the shape came back the last two times.
+    //
+    // Admitted rather than deferred to go-to-k/cdkd#3405 because the cost was
+    // MEASURED and is three statements, all benign: one splitter artifact the
+    // filter above now drops, and two `Expiration?.toISOString()` renders of an
+    // STS-returned `Date`, annotated at their sites. That is what the rest of
+    // that issue's surfaces are NOT -- dozens of statements each needing a
+    // judgement about a value class this session never read.
+    posix === 'src/utils/role-arn.ts'
+  );
 }
 
 function isRoleArnSite(expression: string): boolean {
   return namesARoleArn(expression);
 }
 
-/** A direct call to the sanitizer, in the rendering expression itself. */
-const SANITIZER_CALL = /\b(displayIdent|displaySafe)\s*\(/;
+/**
+ * A direct call to the sanitizer, in the rendering expression itself.
+ *
+ * `displayAwsMessage` joined the list in go-to-k/cdkd#3408 round 2, and adding
+ * a name here is a SECURITY DECISION rather than bookkeeping — everything in
+ * this alternation is trusted to make a value safe to render, exactly as
+ * `MASKERS` in `scripts/check-resolver-mask-coverage.ts` is trusted to make one
+ * unreadable. It earns its place by DELEGATING: it is `displaySafe` plus a
+ * length bound and a cut marker, so it is strictly stronger than the entry it
+ * wraps and cannot be weaker at any input.
+ *
+ * Its arrival was reported by this arm rather than remembered, which is the
+ * fence working: extracting the helper turned `${message}` — a site that had
+ * just been sanitized — back into an undeclared raw neighbour, because the
+ * predicate keys on the CALL and not on what the call does.
+ */
+const SANITIZER_CALL = /\b(displayIdent|displaySafe|displayAwsMessage)\s*\(/;
 
 /**
  * A local holding an ALREADY-sanitized profile, as `safeProfile` / `shownProfile`
@@ -201,13 +305,115 @@ const SANITIZER_CALL = /\b(displayIdent|displaySafe)\s*\(/;
  */
 const SANITIZED_LOCAL_DECL = /\bconst\s+([A-Za-z_$][\w$]*)\s*=/;
 
+/**
+ * The SECOND proof shape: a FUNCTION DECLARATION whose body calls a sanitizer.
+ *
+ * Added by go-to-k/cdkd#3397 for the same reason the whole widening happened —
+ * it was found by widening, not by reading. `src/cli/commands/rollback.ts`
+ * wraps the helper as `function safe(value: unknown) { return displayIdent(value); }`
+ * and calls it at a dozen sites; under the `const`-only proof its
+ * `--role-arn ${safe(newestSegment.roleArn)}` line read as UNDECLARED the
+ * moment that file entered scope. Reporting an already-sanitized site is the
+ * benign direction, but it is still a false positive, and a fence that reports
+ * one teaches the next author to add an annotation asserting something the code
+ * already does — which then survives the day someone deletes the wrapper.
+ *
+ * `function` only, deliberately. An arrow assigned to a `const` is already
+ * covered by `SANITIZED_LOCAL_DECL` (its declaration IS the statement the walk
+ * below reads), and a METHOD is not: a method's name is reachable only through
+ * a receiver, so proving `safe` would wrongly clear an unrelated `x.safe(v)`.
+ */
+const SANITIZED_FUNCTION_DECL = /\bfunction\s+([A-Za-z_$][\w$]*)\s*\(/;
+
+/**
+ * EVERY declaration of a name must prove itself, not just one.
+ *
+ * This walk has no scopes -- it reads a file as lines -- so a name declared
+ * TWICE is one name to it. Found by go-to-k/cdkd#3397's P2 mutation probe, on
+ * real code: `src/utils/role-arn.ts` declares `const displayRoleArn` in BOTH of
+ * its functions, and with only the "some declaration is proven" rule, reverting
+ * the cross-account one to `= roleArn` -- a genuine regression putting a raw
+ * user-supplied ARN on a terminal at five sites -- left this fence GREEN,
+ * because the SIBLING function's declaration still matched the name.
+ *
+ * That is the same defect the two notes above record one level out each time:
+ * the sanitizer side stopped trusting names, the consumer side kept trusting
+ * them across a property access, and this is the third layer -- trusting a name
+ * across a FUNCTION BOUNDARY. The repair is the conservative one available to a
+ * line walk: a name counts as proven only when EVERY declaration of it in the
+ * file calls a sanitizer. A file where one does and one does not is exactly the
+ * ambiguous case, and the fence now reports it rather than clearing it.
+ *
+ * The cost is a false positive when a file legitimately has a proven local and
+ * an unrelated same-named one holding something else. That is the LOUD
+ * direction -- the site reads undeclared and the suite names it, where the old
+ * rule's failure was silent -- and the remedy at such a site is to rename or to
+ * annotate, both of which are visible. Zero instances in scope today.
+ */
+/**
+ * EVERY declaration on the line, not just the leftmost.
+ *
+ * `RegExp.exec` without `/g` returns the FIRST match, so a line declaring two
+ * names counted only one of them — and the one it dropped went into neither
+ * total, which is the "some declaration vouches for the rest" hole the counting
+ * above exists to close, surviving inside its own repair (go-to-k/cdkd#3408
+ * code review). The shape that reaches it is ordinary formatted code:
+ * `const ids = xs.map((x) => { const shown = displayIdent(x.arn); … })`.
+ */
+function declarationsOn(head: string): { name: string; at: number }[] {
+  const found: { name: string; at: number }[] = [];
+  for (const source of [SANITIZED_LOCAL_DECL, SANITIZED_FUNCTION_DECL]) {
+    const all = new RegExp(source.source, 'g');
+    let m: RegExpExecArray | null;
+    while ((m = all.exec(head)) !== null) {
+      if (m[1]) found.push({ name: m[1], at: m.index });
+    }
+  }
+  return found;
+}
+
+/**
+ * The text that decides ONE declaration's verdict: from where it starts, to the
+ * end of its own initializer.
+ *
+ * Bounding it per declaration is go-to-k/cdkd#3408 round 2's correction, and it
+ * closes the INVERSE of the hole the every-declaration counting opened. That
+ * counting asked whether the STATEMENT calls a sanitizer and applied one answer
+ * to every name on the line, so an inner declaration INHERITED an outer one's
+ * verdict — measured:
+ *
+ * ```
+ * const ids = xs.map((x) => { const shown = x.roleArn; return displayIdent(x.roleArn); });
+ * ```
+ *
+ * `shown` came out PROVEN, and then vouched for every `${shown}` elsewhere in
+ * that file. The leftmost-only rule it replaced never entered `shown` into the
+ * map at all, so the repair for one direction opened the other — "pair every
+ * cap with a floor", one layer in.
+ *
+ * The cut is at the first `;` after the declaration, which is the end of its
+ * initializer for every shape in scope. Where there is no `;` (the 20-line
+ * bound was hit, or the statement genuinely ends without one) the rest is used,
+ * which is the pre-existing behaviour.
+ *
+ * It errs toward NOT proving: `const ids = xs.map(… displayIdent(…) …)` now
+ * reads unproven, where the old rule proved it. That is the LOUD direction —
+ * the site reports as undeclared and the suite names it — and there are zero
+ * such sites in scope today.
+ */
+function initializerTextFor(full: string, at: number): string {
+  const tail = full.slice(at);
+  const end = tail.indexOf(';');
+  return end === -1 ? tail : tail.slice(0, end);
+}
+
 function sanitizedLocals(lines: string[]): Set<string> {
-  const proven = new Set<string>();
+  const declared = new Map<string, { total: number; proven: number }>();
   lines.forEach((line, i) => {
     if (isCommentLine(line)) return;
     const head = stripLineComment(line);
-    const decl = SANITIZED_LOCAL_DECL.exec(head);
-    if (!decl?.[1]) return;
+    const names = declarationsOn(head);
+    if (names.length === 0) return;
     const parts: string[] = [];
     for (let j = i; j < Math.min(lines.length, i + 20); j++) {
       const raw = lines[j] ?? '';
@@ -215,8 +421,21 @@ function sanitizedLocals(lines: string[]): Set<string> {
       parts.push(code);
       if (CLOSES_A_STATEMENT.test(code)) break;
     }
-    if (SANITIZER_CALL.test(parts.join(' '))) proven.add(decl[1]);
+    // `parts[0]` IS `head`, so a declaration's index into `head` is its index
+    // into the join — which is what lets the per-declaration bound below work
+    // across a wrapped statement.
+    const full = parts.join(' ');
+    for (const { name, at } of names) {
+      const seen = declared.get(name) ?? { total: 0, proven: 0 };
+      seen.total += 1;
+      if (SANITIZER_CALL.test(initializerTextFor(full, at))) seen.proven += 1;
+      declared.set(name, seen);
+    }
   });
+  const proven = new Set<string>();
+  for (const [name, seen] of declared) {
+    if (seen.proven > 0 && seen.proven === seen.total) proven.add(name);
+  }
   return proven;
 }
 
@@ -459,10 +678,12 @@ function templateSubstitutions(code: string): string[] {
  * next either knows something worth writing down, or has a bug. Both known
  * exceptions here are the first case, and both say so.
  *
- * It runs over `inArnScope` only, like the ARN arm and for the same reason --
- * go-to-k/cdkd#3397 owns the deploy path. So it is value-class-INDEPENDENT but
- * not tree-wide, and `src/state/lock-contention-message.ts` is outside it today.
- * Widen both arms together when that issue lands.
+ * It runs over `inMixedScope`, NOT over the ARN arm's scope. The two were one
+ * predicate until go-to-k/cdkd#3397 and the split is that issue's finding:
+ * being value-class-INDEPENDENT, this arm cannot be scoped by a value class, so
+ * widening it follows nothing the ARN arm's widening establishes. `inMixedScope`
+ * carries the measurement; go-to-k/cdkd#3405 owns the remaining surfaces, of
+ * which `src/state/lock-contention-message.ts` is one.
  */
 /**
  * The whole STATEMENT beginning at `lines[i]`, comment-stripped and joined.
@@ -515,10 +736,40 @@ function mixedRenderLines(
     // go-to-k/cdkd#3390 round 6, which made `joinStatement`'s own doc about the
     // `+` chain true of the value-class arms and false of this one:
     // `` `x ${displayIdent(arn)} ` + err.message `` read as clean.
-    const exprs = [...templateSubstitutions(statement.text), ...concatOperands(statement.text)];
+    const exprsFromTemplate = templateSubstitutions(statement.text);
+    const operands = concatOperands(statement.text);
+    const exprs = [...exprsFromTemplate, ...operands];
     const safe = (e: string) => SANITIZER_CALL.test(e) || isDeclared(e, proven);
     const sanitized = exprs.filter(safe);
-    const raw = exprs.filter((e) => !safe(e) && e.trim() !== '' && !/^\d+$/.test(e.trim()));
+    // PUNCTUATION-ONLY operands are dropped beside the existing empty and
+    // all-digit ones, and it is the same rule rather than a new exemption: a
+    // fragment with no identifier character in it renders no VALUE, so it
+    // cannot be the raw neighbour this arm looks for. The shape is a splitter
+    // artifact -- `concatOperands` removes string literals and splits what is
+    // left on `+`, so a `throw new Error(\`...\` + \`...\`, { cause: e })`
+    // leaves a bare `,` behind the closing literal. Found by
+    // go-to-k/cdkd#3397's D1 probe, which widened this arm to
+    // `src/utils/role-arn.ts` and got `raw: ,` back. Without it the only way to
+    // clear that statement is an annotation asserting that a comma cannot carry
+    // anything, which is noise the next author learns to paste past.
+    //
+    // Applied to the CONCAT operands ALONE, which is narrower than the first
+    // cut and is the go-to-k/cdkd#3408 review's correction: only the `+` split
+    // manufactures a punctuation-only fragment, so applying it to
+    // `templateSubstitutions` output too would have been an unearned exemption
+    // over a population that never produces one. A `${}` substitution with no
+    // identifier character in it is not an artifact -- it is something a
+    // reviewer should see.
+    // `operands.includes(e)` ALONE does the narrowing. A first cut also
+    // required `!exprsFromTemplate.includes(e)`, which round 2 measured INERT:
+    // `concatOperands` strips string literals before splitting, so no valid
+    // `${}` substitution is both punctuation-only and equal to a `+`-split
+    // fragment. An inert conjunct reads as a guard and fences nothing.
+    const dropsAsArtifact = (e: string): boolean =>
+      operands.includes(e) && !/[A-Za-z0-9_$]/.test(e);
+    const raw = exprs.filter(
+      (e) => !safe(e) && e.trim() !== '' && !/^\d+$/.test(e.trim()) && !dropsAsArtifact(e)
+    );
     if (sanitized.length > 0 && raw.length > 0) {
       out.push({ line: i + 1, raw, exempt: annotationAbove(lines, i, MIXED_ANNOTATION) });
     }
@@ -687,24 +938,60 @@ describe('every rendering of a user-supplied --profile name declares a verdict (
       'profile `annotated` verdict'
     ).toBeGreaterThanOrEqual(8);
 
-    // Measured 2026-09-18: 20 ARN sites across 7 files, 18 sanitized and 2
-    // annotated. The arm exists because the ARN class was swept BY HAND twice
-    // in go-to-k/cdkd#3390 and came up short both times -- by a local named
-    // `arn`, and by four sites nobody thought to grep. Its scope is the `cdkd
-    // local` surface; go-to-k/cdkd#3397 owns the deploy path's copies.
-    expect(roleArn.length, 'role-ARN rendering sites').toBeGreaterThanOrEqual(18);
+    // Re-measured 2026-09-18 after go-to-k/cdkd#3397 widened `inArnScope` from
+    // the `cdkd local` surface to the four USER-SUPPLIED-ARN surfaces: 39 ARN
+    // sites across 12 files, 36 sanitized and 3 annotated (39 `template`, 0
+    // `concat`). Before the widening it was 20 across 7, 18 sanitized and 2
+    // annotated -- so the arm very nearly DOUBLED, and 14 of the sites it
+    // gained were rendering raw.
+    //
+    // The arm exists because the ARN class was swept BY HAND twice in
+    // go-to-k/cdkd#3390 and came up short both times -- by a local named `arn`,
+    // and by four sites nobody thought to grep. go-to-k/cdkd#3397 is the third
+    // data point and the strongest: its issue body listed five sites derived by
+    // grep, and the widened fence found ten, including five in a file the body
+    // asserted was already clean.
+    //
+    // NO `concat` FLOOR on this arm, deliberately, and it is a live zero rather
+    // than an oversight: every ARN render in scope today is a `${}`
+    // substitution. The profile arm carries one because it HAS such a site; a
+    // floor of 0 here would assert nothing, and a floor of 1 would be red on a
+    // correct tree.
+    expect(roleArn.length, 'role-ARN rendering sites').toBeGreaterThanOrEqual(39);
     expect(
       new Set(roleArn.map((s) => s.file)).size,
       'files with a role-ARN site'
-    ).toBeGreaterThanOrEqual(6);
+    ).toBeGreaterThanOrEqual(12);
+    expect(
+      roleArn.filter((s) => s.shape === 'template').length,
+      'role-ARN `template` shape'
+    ).toBeGreaterThanOrEqual(39);
     expect(
       roleArn.filter((s) => s.verdict === 'sanitized').length,
       'role-ARN `sanitized` verdict'
-    ).toBeGreaterThanOrEqual(16);
+    ).toBeGreaterThanOrEqual(36);
     expect(
       roleArn.filter((s) => s.verdict === 'annotated').length,
       'role-ARN `annotated` verdict -- the deliberately non-display ones'
-    ).toBeGreaterThanOrEqual(2);
+    ).toBeGreaterThanOrEqual(3);
+
+    // A PER-FILE floor for each of the four surfaces the widening added, on top
+    // of the totals. The totals above are dominated by the `cdkd local` surface
+    // (20 of 39), so every one of them stays green if a whole new surface
+    // silently drops out of `inArnScope` -- which is exactly the regression the
+    // widening is exposed to, and exactly what a per-arm floor is for one level
+    // down. Asserted per file rather than as "more than one directory", for the
+    // reason the directory case below states about itself.
+    const arnFiles = new Set(roleArn.map((s) => s.file.replace(/\\/g, '/')));
+    for (const file of [
+      'src/cli/options.ts',
+      'src/cli/commands/drift.ts',
+      'src/cli/commands/rollback.ts',
+      'src/utils/role-arn.ts',
+      'src/deployment/intrinsic-function-resolver.ts',
+    ]) {
+      expect(arnFiles.has(file), `no role-ARN site in ${file}`).toBe(true);
+    }
   });
 
   it('reaches every DIRECTORY the class spans, not just the reported one', () => {
@@ -851,6 +1138,111 @@ describe('every rendering of a user-supplied --profile name declares a verdict (
     expect(isDeclared('`--profile ${profile}`', proven)).toBe(true);
   });
 
+  it('refuses a name one of whose TWO declarations is unproven (go-to-k/cdkd#3397 P2)', () => {
+    // The shape a real-code mutation probe found, added here so the gap stays
+    // closed cheaply. `src/utils/role-arn.ts` declares `displayRoleArn` in both
+    // of its functions; this walk has no scopes, so under a "some declaration is
+    // proven" rule the sibling vouched for a reverted one and reverting the
+    // cross-account binding to `= roleArn` left the whole fence green.
+    const bothProven = [
+      '  const displayRoleArn = displayIdent(roleArn);',
+      '  logger.debug(`a ${displayRoleArn}`);',
+      '  const displayRoleArn = displayIdent(roleArn, { maxCodePoints: 612 });',
+      '  logger.debug(`b ${displayRoleArn}`);',
+    ];
+    expect(sanitizedLocals(bothProven).has('displayRoleArn')).toBe(true);
+
+    // ONE reverted -- the P2 mutation, in miniature.
+    const oneReverted = [
+      '  const displayRoleArn = roleArn;',
+      '  logger.debug(`a ${displayRoleArn}`);',
+      '  const displayRoleArn = displayIdent(roleArn, { maxCodePoints: 612 });',
+      '  logger.debug(`b ${displayRoleArn}`);',
+    ];
+    expect(
+      sanitizedLocals(oneReverted).has('displayRoleArn'),
+      'a sibling declaration must not vouch for an unproven one'
+    ).toBe(false);
+
+    // ORDER-INDEPENDENT: the unproven one second must refuse too. Without this,
+    // a "first declaration wins" implementation passes the case above.
+    const otherOrder = [
+      '  const displayRoleArn = displayIdent(roleArn, { maxCodePoints: 612 });',
+      '  logger.debug(`a ${displayRoleArn}`);',
+      '  const displayRoleArn = roleArn;',
+      '  logger.debug(`b ${displayRoleArn}`);',
+    ];
+    expect(sanitizedLocals(otherOrder).has('displayRoleArn')).toBe(false);
+
+    // ...and a name declared once and unproven is still refused, so the new
+    // counting cannot have made a single unproven declaration read as proven.
+    expect(sanitizedLocals(['  const shown = raw;']).has('shown')).toBe(false);
+    // A neighbouring proven name in the same file is unaffected.
+    const mixed = [...oneReverted, '  const safeThing = displaySafe(x);'];
+    expect(sanitizedLocals(mixed).has('safeThing')).toBe(true);
+  });
+
+  it('counts EVERY declaration on a line, not just the leftmost (go-to-k/cdkd#3408)', () => {
+    // The hole the every-declaration counting had INSIDE its own repair:
+    // `RegExp.exec` without `/g` returns the first match, so the second name on
+    // a line went into neither total and a later unproven declaration of it
+    // could not be seen. Ordinary formatted code reaches it.
+    const twoOnOneLine = [
+      '  const ids = xs.map((x) => { const shown = x.rawArn; return shown; });',
+      '  const shown = displayIdent(other);',
+      '  logger.info(`${shown}`);',
+    ];
+    expect(
+      sanitizedLocals(twoOnOneLine).has('shown'),
+      'the inner `const shown = x.rawArn` must count toward `shown`, so one proven ' +
+        'declaration elsewhere cannot vouch for it'
+    ).toBe(false);
+    // `ids` is declared once, on a line whose statement DOES call a sanitizer
+    // nowhere -- so it is unproven too, and for its own reason.
+    expect(sanitizedLocals(twoOnOneLine).has('ids')).toBe(false);
+
+    // Both declarations on one line, both proven: still proven.
+    const bothOnOneLine = ['  const a = displayIdent(x); const b = displaySafe(y);'];
+    expect(sanitizedLocals(bothOnOneLine).has('a')).toBe(true);
+    expect(sanitizedLocals(bothOnOneLine).has('b')).toBe(true);
+
+    // THE INVERSE, which the every-declaration counting opened and the
+    // per-declaration bound closes (round 2). An inner declaration must not
+    // inherit an outer statement's sanitizer.
+    const inner = [
+      '  const ids = xs.map((x) => { const shown = x.roleArn; return displayIdent(x.roleArn); });',
+      '  logger.info(`${shown}`);',
+    ];
+    expect(
+      sanitizedLocals(inner).has('shown'),
+      'an inner `const shown = x.roleArn` must not be proven by a sanitizer later in the ' +
+        'enclosing statement -- it would then vouch for every `${shown}` in the file'
+    ).toBe(false);
+
+    // ...and the same shape spelled as two statements on one line.
+    expect(sanitizedLocals(['  const a = raw; const b = displayIdent(y);']).has('a')).toBe(false);
+    expect(sanitizedLocals(['  const a = raw; const b = displayIdent(y);']).has('b')).toBe(true);
+  });
+
+  it('proves a FUNCTION declaration wrapper, and does not prove a METHOD', () => {
+    // `SANITIZED_FUNCTION_DECL`'s direct case. `rollback.ts` wraps the helper
+    // this way and its `--role-arn` render read as undeclared without it; the
+    // "a METHOD is not matched" half of the doc was an unverified claim until
+    // go-to-k/cdkd#3408's test review asked for it.
+    expect(
+      sanitizedLocals(['function safe(value: unknown): string {', '  return displayIdent(value);', '}']).has('safe')
+    ).toBe(true);
+    // A method shares the name but is reachable only through a receiver, so
+    // proving it would clear an unrelated `x.safe(v)`.
+    expect(
+      sanitizedLocals(['  safe(value: unknown): string {', '    return displayIdent(value);', '  }']).has('safe')
+    ).toBe(false);
+    // A function whose body does NOT sanitize is not proven.
+    expect(
+      sanitizedLocals(['function safe(value: unknown): string {', '  return String(value);', '}']).has('safe')
+    ).toBe(false);
+  });
+
   it('classifies the ROLE-ARN class by shape, and does not match mere lookalikes', () => {
     // The predicate is a claim about the SUBJECT, so both directions are pinned.
     // The `arn` EXACTLY arm is the one that matters: go-to-k/cdkd#3390 round 3
@@ -873,21 +1265,71 @@ describe('every rendering of a user-supplied --profile name declares a verdict (
     expect(isRoleArnSite('stackName')).toBe(false);
   });
 
-  it('scopes the ROLE-ARN arm to the cdkd local surface, and says why', () => {
-    // A scope decision, pinned so a later widening is deliberate rather than
-    // accidental -- and so that when go-to-k/cdkd#3397 lands, THIS case is what
-    // reds and points at the predicate to delete.
-    expect(inArnScope('src/cli/commands/local-invoke.ts')).toBe(true);
-    expect(inArnScope('src/cli/commands/local-run-task.ts')).toBe(true);
-    expect(inArnScope('src/local/ecr-puller.ts')).toBe(true);
-    expect(inArnScope('src/local/nested/deep.ts')).toBe(true);
-    // The deploy path, which go-to-k/cdkd#3397 owns.
-    expect(inArnScope('src/deployment/intrinsic-function-resolver.ts')).toBe(false);
-    expect(inArnScope('src/utils/role-arn.ts')).toBe(false);
-    // Not the whole command tree either -- `localish.ts` is the near-miss the
-    // sibling env fence pins for the same reason.
-    expect(inArnScope('src/cli/commands/deploy.ts')).toBe(false);
-    expect(inArnScope('src/cli/commands/localish.ts')).toBe(false);
+  it('scopes the ROLE-ARN arm to the USER-SUPPLIED-ARN surfaces, and the MIXED arm separately', () => {
+    // The two predicates must not collapse back into one. go-to-k/cdkd#3397
+    // widened the ARN arm and measured that widening the mixed arm with it
+    // reports dozens of statements about unrelated value classes, so this case
+    // pins them as SEPARATE and pins the shape of each. A single
+    // `inArnScope === inMixedScope` assertion would go green the moment someone
+    // deleted one and pointed both loops at the other.
+    expect(inMixedScope('src/cli/commands/local-run-task.ts')).toBe(true);
+    expect(inMixedScope('src/local/ecr-puller.ts')).toBe(true);
+    // Most of what the ARN arm GAINED is deliberately still out of the mixed
+    // arm -- go-to-k/cdkd#3405 owns those surfaces.
+    expect(inMixedScope('src/cli/options.ts')).toBe(false);
+    expect(inMixedScope('src/cli/commands/drift.ts')).toBe(false);
+    expect(inMixedScope('src/deployment/intrinsic-function-resolver.ts')).toBe(false);
+    // ...with ONE exception, and it is asserted as a POSITIVE so the admission
+    // cannot be reverted silently: go-to-k/cdkd#3397's fix puts a sanitized STS
+    // error message beside a sanitized ARN in this file, which is this arm's
+    // own shape, so leaving it unfenced would be fixing the shape and not
+    // watching it. Its cost was measured at three benign statements.
+    expect(inMixedScope('src/utils/role-arn.ts')).toBe(true);
+
+    // The four surfaces on which an ARN is USER-SUPPLIED -- argv, or a literal
+    // in the user's own template. Each is asserted by NAME because each was a
+    // separate judgement, and three of the four held a live raw render.
+    expect(inArnScope('src/cli/options.ts')).toBe(true);
+    expect(inArnScope('src/cli/commands/rollback.ts')).toBe(true);
+    expect(inArnScope('src/utils/role-arn.ts')).toBe(true);
+    expect(inArnScope('src/deployment/intrinsic-function-resolver.ts')).toBe(true);
+
+    // ...and the surfaces it deliberately does NOT reach. Pinned so a later
+    // "just drop the predicate" cannot land quietly -- `inArnScope`'s own doc
+    // carries the measurement (153 sites on this tree) and the reason, which is
+    // REACHABILITY rather than a blanket claim that every ARN out there came
+    // back from AWS.
+    expect(inArnScope('src/provisioning/providers/acm-certificate-provider.ts')).toBe(false);
+    expect(inArnScope('src/provisioning/providers/dynamodb-table-provider.ts')).toBe(false);
+    expect(inArnScope('src/provisioning/cloud-control-provider.ts')).toBe(false);
+    expect(inArnScope('src/state/lock-manager.ts')).toBe(false);
+    // Scoped by PATH, not by substring: a sibling of the resolver is out.
+    expect(inArnScope('src/deployment/deploy-engine.ts')).toBe(false);
+    expect(inArnScope('src/utils/role-arn-helpers.ts')).toBe(false);
+  });
+
+  it('keeps the cdkd local surface inside BOTH arms, prefix-shaped not name-shaped', () => {
+    // The original `cdkd local` population, which go-to-k/cdkd#3397's widening
+    // must not have dropped out of either arm on its way past.
+    for (const predicate of [inArnScope, inMixedScope]) {
+      expect(predicate('src/cli/commands/local-invoke.ts')).toBe(true);
+      expect(predicate('src/cli/commands/local-run-task.ts')).toBe(true);
+      expect(predicate('src/local/ecr-puller.ts')).toBe(true);
+      // A nested file under `src/local/`, so the rule is a PREFIX rather than a
+      // one-directory listing.
+      expect(predicate('src/local/nested/deep.ts')).toBe(true);
+    }
+    // `localish.ts` is the near-miss the sibling env fence pins for the same
+    // reason: the mixed arm's `local-` rule is a NAME rule, so it must not
+    // match a file that merely starts with those letters. The ARN arm DOES
+    // take it now, via `src/cli/` -- which is the widening, not a slip.
+    expect(inMixedScope('src/cli/commands/localish.ts')).toBe(false);
+    expect(inMixedScope('src/cli/commands/deploy.ts')).toBe(false);
+    expect(inArnScope('src/cli/commands/localish.ts')).toBe(true);
+    // A WINDOWS path separator resolves the same, for both. The predicates
+    // normalize it, and nothing else in this file would notice if one stopped.
+    expect(inArnScope('src\\cli\\options.ts')).toBe(true);
+    expect(inMixedScope('src\\local\\ecr-puller.ts')).toBe(true);
   });
 
   it('keeps the two value classes separate, so one verdict cannot answer for the other', () => {
@@ -919,7 +1361,7 @@ describe('every rendering of a user-supplied --profile name declares a verdict (
     const exempted: string[] = [];
     const scanned: string[] = [];
     for (const file of sourceFilesUnder('src')) {
-      if (!inArnScope(file)) continue;
+      if (!inMixedScope(file)) continue;
       scanned.push(file);
       const lines = readFileSync(file, 'utf8').split('\n');
       for (const hit of mixedRenderLines(lines, sanitizedLocals(lines))) {
@@ -937,13 +1379,16 @@ describe('every rendering of a user-supplied --profile name declares a verdict (
     // The EXEMPTED floor is the stronger of the two: an exemption is produced by
     // the same code path an offender is, one branch later, so a non-zero count
     // proves the offender path itself is live rather than merely that files were
-    // opened. Measured 2026-09-18: 68 in-scope files scanned, 3 exempted.
-    expect(scanned.length, 'files the mixed-render walk read').toBeGreaterThanOrEqual(60);
+    // opened. Re-measured 2026-09-18 after go-to-k/cdkd#3397 admitted
+    // `src/utils/role-arn.ts` to this arm: 69 in-scope files scanned, 5 exempted
+    // (was 68 and 3). The two new exemptions are that file's
+    // `Expiration?.toISOString()` renders beside a sanitized ARN.
+    expect(scanned.length, 'files the mixed-render walk read').toBeGreaterThanOrEqual(69);
     expect(
       exempted.length,
       'statements that WOULD offend but carry a `cdkd-raw-beside-safe:` reason -- ' +
         'zero here means the walk found nothing at all, not that the tree is clean'
-    ).toBeGreaterThanOrEqual(3);
+    ).toBeGreaterThanOrEqual(5);
 
     expect(
       offenders,
