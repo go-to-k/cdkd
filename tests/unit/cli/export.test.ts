@@ -588,6 +588,8 @@ describe('hasCompositeIdSplitter', () => {
     expect(hasCompositeIdSplitter('AWS::ApiGatewayV2::Integration')).toBe(true);
     expect(hasCompositeIdSplitter('AWS::ApiGatewayV2::Route')).toBe(true);
     expect(hasCompositeIdSplitter('AWS::Lambda::Permission')).toBe(true);
+    // Issue #3414: composite `[ApiId, ApiKeyId]` since AWS's 2026-09 re-publish.
+    expect(hasCompositeIdSplitter('AWS::AppSync::ApiKey')).toBe(true);
     // AWS::ApiGatewayV2::Stage: AWS reports single-key (`Id`), so no splitter
     // is needed AND AWS doesn't support Stage in IMPORT anyway (see export.ts
     // COMPOSITE_ID_SPLITTERS comment block for the follow-up tracking).
@@ -894,6 +896,65 @@ describe('splitCompositePhysicalId', () => {
       resourceIdentifier: { FunctionName: 'my-stack-fn', Id: 'MyStatement123' },
       propertiesOverlay: { FunctionName: 'my-stack-fn' },
     });
+  });
+
+  // Issue #3414 — AWS::AppSync::ApiKey. All three id shapes the splitter
+  // accepts, each narrowing the overlay to `ApiId` (`ApiKeyId` is readOnly).
+  it('parses AWS::AppSync::ApiKey `apiId|apiKeyId` (what the SDK provider packs)', () => {
+    expect(splitCompositePhysicalId('AWS::AppSync::ApiKey', 'abc123|da2-key456')).toEqual({
+      resourceIdentifier: { ApiId: 'abc123', ApiKeyId: 'da2-key456' },
+      propertiesOverlay: { ApiId: 'abc123' },
+    });
+  });
+
+  it('parses the AWS::AppSync::ApiKey ARN (CloudFormation `Ref`, the migrate-from-cfn PhysicalResourceId)', () => {
+    expect(
+      splitCompositePhysicalId(
+        'AWS::AppSync::ApiKey',
+        'arn:aws:appsync:us-east-1:123456789012:apis/abc123/apikey/da2-key456'
+      )
+    ).toEqual({
+      resourceIdentifier: { ApiId: 'abc123', ApiKeyId: 'da2-key456' },
+      propertiesOverlay: { ApiId: 'abc123' },
+    });
+  });
+
+  it('parses a bare AWS::AppSync::ApiKey id (pre-flip Cloud Control record), taking ApiId from state', () => {
+    expect(
+      splitCompositePhysicalId('AWS::AppSync::ApiKey', 'da2-key456', { ApiId: 'abc123' })
+    ).toEqual({
+      resourceIdentifier: { ApiId: 'abc123', ApiKeyId: 'da2-key456' },
+      propertiesOverlay: { ApiId: 'abc123' },
+    });
+  });
+
+  it('never writes the read-only ApiKeyId into Properties for any AWS::AppSync::ApiKey shape', () => {
+    for (const id of [
+      'abc123|da2-key456',
+      'arn:aws:appsync:us-east-1:123456789012:apis/abc123/apikey/da2-key456',
+      'da2-key456',
+    ]) {
+      const result = splitCompositePhysicalId('AWS::AppSync::ApiKey', id, { ApiId: 'abc123' });
+      expect(result.propertiesOverlay).toBeDefined();
+      expect(result.propertiesOverlay).not.toHaveProperty('ApiKeyId');
+    }
+  });
+
+  it('refuses a malformed AWS::AppSync::ApiKey id rather than guessing', () => {
+    expect(() => splitCompositePhysicalId('AWS::AppSync::ApiKey', 'a|b|c')).toThrow(
+      /got 3 parts/
+    );
+    expect(() => splitCompositePhysicalId('AWS::AppSync::ApiKey', 'abc123|')).toThrow(
+      /empty part/
+    );
+    expect(() => splitCompositePhysicalId('AWS::AppSync::ApiKey', '   ')).toThrow(
+      /empty physical id/
+    );
+    // The bare form needs the parent from state: a corrupt record is reported,
+    // not turned into a half-identifier.
+    expect(() => splitCompositePhysicalId('AWS::AppSync::ApiKey', 'da2-key456', {})).toThrow(
+      /missing 'ApiId'/
+    );
   });
 
   it('throws on wrong part count for ApiGateway::Method', () => {

@@ -109,6 +109,18 @@ assert_composite_id_plan() {
   # the pre-#1761 refusal.
   assert_plan_identifier "${log}" 'AWS::EC2::SecurityGroupIngress' \
     '\(AWS::EC2::SecurityGroupIngress\).*Id=sgr-[0-9a-f]+'
+  # Issue #3414 — the two AppSync types AWS re-declared in September 2026.
+  # The API is the second COMPOSITE_PHYSICAL_ID_IDENTIFIERS member here: the
+  # value is the recorded `Arn` attribute, so `Arn=<bare apiId>` (what the
+  # single-key path would ship) is the defect and `Arn=arn:...:apis/<apiId>`
+  # is the fix. The key is a splitter member whose id cdkd packs as
+  # `<apiId>|<apiKeyId>`; before the splitter existed the whole command
+  # aborted, so a plan line at all is half the proof and the field order the
+  # other half.
+  assert_plan_identifier "${log}" 'AWS::AppSync::GraphQLApi' \
+    '\(AWS::AppSync::GraphQLApi\).*Arn=arn:aws:appsync:[a-z0-9-]+:[0-9]{12}:apis/[a-z0-9]+'
+  assert_plan_identifier "${log}" 'AWS::AppSync::ApiKey' \
+    '\(AWS::AppSync::ApiKey\).*ApiId=[a-z0-9]+, ApiKeyId=da2-[a-z0-9]+'
 }
 
 # assert_cfn_physical_id <logicalId> <anchored-ERE>
@@ -177,6 +189,13 @@ echo "[verify] step 1: install + build cdkd"
 (cd "${REPO_ROOT}" && vp run build)
 
 cd "${TEST_DIR}"
+# Issue #3414 added an AppSync API key to the fixture, whose value cdkd records
+# in state as an attribute; the versioned state bucket keeps every prior
+# `state.json` readable, so the run sweeps the stack prefix's object versions
+# (cleanup purges noncurrent, the success path sweeps everything and asserts
+# zero). Sourced before the trap is installed so `cleanup` can call it.
+. ../s3-versions.sh
+STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 # Vendored cdk CLI (issue 1485): the guard installs when node_modules is
 # absent OR pre-exists without the cdk bin (stale checkout from before
 # aws-cdk was pinned), and the PATH prepend guarantees `npx cdk` resolves
@@ -186,6 +205,12 @@ export PATH="${TEST_DIR}/node_modules/.bin:${PATH}"
 
 cleanup() {
   rc=$?
+  # The AppSync key's value is recorded in cdkd state as an attribute (issue
+  # #3414 added the key to this fixture), and the state bucket is versioned,
+  # so every `state.json` write leaves a readable prior version behind. Purge
+  # the NONCURRENT versions from every exit path; the success path below does
+  # the full sweep plus the zero-assertion (docs/integ-fixture-conventions.md).
+  s3_purge_prefix_versions "${STATE_BUCKET:-}" "${STATE_PREFIX:-}" noncurrent || true
   if [ "${rc}" -ne 0 ]; then
     echo "[verify] FAIL (exit ${rc}) — attempting cleanup"
     # If the CFn stack exists (export succeeded into CFn), delete via CFn.
@@ -502,6 +527,17 @@ case "${VARIANT}" in
     # The IPv6 route arm the VPCCidrBlock unblocks: same splitter as its IPv4
     # sibling above, second destination shape.
     assert_cfn_physical_id 'DefaultRouteV6' '^rtb-[0-9a-f]+\|::/0$'
+    # Issue #3414. CloudFormation's third string for the two AppSync types:
+    # the API's is its ARN (the `Ref` value, and the registry identifier since
+    # the 2026-09 flip), so `^arn:…:apis/<apiId>$` also rejects the bare apiId
+    # cdkd stores. The key's is EITHER the key ARN (`Ref`) or the
+    # `<apiId>|<apiKeyId>` registry identifier — which one CloudFormation
+    # reports after an IMPORT of the re-published type is exactly what this
+    # run measures, so both anchored shapes are accepted and a bare
+    # `da2-…` (the pre-flip single identifier) is refused.
+    assert_cfn_physical_id 'GraphqlApi' '^arn:aws:appsync:[a-z0-9-]+:[0-9]{12}:apis/[a-z0-9]+$'
+    assert_cfn_physical_id 'GraphqlApiKey' \
+      '^(arn:aws:appsync:[a-z0-9-]+:[0-9]{12}:apis/[a-z0-9]+/apikey/da2-[a-z0-9]+|[a-z0-9]+\|da2-[a-z0-9]+)$'
     echo "[verify] step 4b2 ok"
 
     # Regression guard: phase-2 UPDATE must NOT have caused silent
@@ -607,4 +643,9 @@ for lid in sorted(deleted):
 esac
 
 trap - EXIT INT TERM
+# Full sweep — current versions AND delete markers, not only noncurrent — then
+# assert nothing under the stack prefix survives: the key value that cdkd
+# state carried must not outlive the run in a prior object version.
+s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
+s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "export state teardown"
 echo "[verify] PASS (variant=${VARIANT})"

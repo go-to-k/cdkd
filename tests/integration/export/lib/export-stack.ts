@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as apigwv2_integ from 'aws-cdk-lib/aws-apigatewayv2-integrations';
+import * as appsync from 'aws-cdk-lib/aws-appsync';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -212,6 +213,30 @@ export class ExportStack extends cdk.Stack {
       path: '/echo',
       methods: [apigwv2.HttpMethod.GET],
       integration: new apigwv2_integ.HttpLambdaIntegration('EchoIntegration', handler),
+    });
+
+    // ── AppSync GraphQL API + API key (issue #3414) ─────────────────
+    // AWS re-declared both types' identifiers in September 2026: the API is
+    // now identified by its ARN (cdkd stores the bare apiId, so this is the
+    // second `COMPOSITE_PHYSICAL_ID_IDENTIFIERS` member here, resolved from
+    // the recorded `Arn` attribute), and the key by the composite
+    // `[ApiId, ApiKeyId]` — and the key gained the read handler that takes it
+    // past the IMPORT pre-flight, which had shadowed its missing splitter.
+    // Only a real IMPORT changeset proves CloudFormation accepts both maps
+    // (and rejects neither overlay), so they live here, not only in unit
+    // tests. No `CfnGraphQLSchema`: that type still has no read handler and
+    // is NON_PROVISIONABLE, so a schema would block the whole export.
+    // L1 constructs, so `DeletionPolicy: Delete` and the CFn DeleteStack at
+    // the end tears both down; the key's value is recorded in cdkd state as
+    // an attribute, which is why verify.sh sweeps the state prefix's S3
+    // object versions (docs/integ-fixture-conventions.md).
+    const graphqlApi = new appsync.CfnGraphQLApi(this, 'GraphqlApi', {
+      name: `cdkd-export-test-${suffix}`,
+      authenticationType: 'API_KEY',
+    });
+    new appsync.CfnApiKey(this, 'GraphqlApiKey', {
+      apiId: graphqlApi.attrApiId,
+      description: 'cdkd export composite-identifier probe',
     });
 
     // ── EC2 networking (composite-id splitters, issue #1771) ───────

@@ -529,6 +529,61 @@ assert_eq "removed versioned DS deltaSyncConfig cleared" "NONE" "${DELTA_CFG}"
 assert_eq "retained versioned DS versioned" "True" \
   "$(datasource_query VersionedItemsDataSource 'dataSource.dynamodbConfig.versioned')"
 
+# --- Phase 3b: cdkd export --dry-run identifier resolution (issue #3414) ------
+# AWS re-declared the AppSync identifiers in September 2026 (GraphQLApi:
+# `ApiId` -> `Arn`; ApiKey: `ApiKeyId` -> `[ApiId, ApiKeyId]`, plus the read
+# handler that takes the key past the IMPORT pre-flight for the first time),
+# and `cdkd export` had no resolution for either. This stack cannot be
+# exported end to end — `AWS::AppSync::GraphQLSchema` still has no read
+# handler and is NON_PROVISIONABLE, so it blocks migration — but the plan
+# builder resolves EVERY resource's identifier before it reports the blockers,
+# and a resolution failure is reported as a blocker of its own ("could not
+# resolve resource identifier"). So the assertion is on the blocked list:
+# the schema is the ONLY blocker, and neither AppSync identifier appears in
+# it. `block migration` is the sentinel that proves the parse is live; if it
+# ever stops appearing (AWS publishes a read handler for the schema), the
+# command exits 0 and the plan lines are asserted directly instead.
+echo "==> Phase 3b: cdkd export --dry-run resolves every AppSync identifier"
+set +e
+EXPORT_OUT="$(node "${LOCAL_DIST}" export "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --stack-region "${REGION}" \
+  --dry-run \
+  --yes 2>&1)"
+EXPORT_RC=$?
+set -e
+if [ "${EXPORT_RC}" -eq 0 ]; then
+  if ! printf '%s\n' "${EXPORT_OUT}" | grep -qE 'Import plan for CloudFormation stack'; then
+    echo "FAIL: export --dry-run exited 0 without printing an import plan" >&2
+    printf '%s\n' "${EXPORT_OUT}" | sed 's/^/  /' >&2
+    exit 1
+  fi
+  printf '%s\n' "${EXPORT_OUT}" | grep -qE '\(AWS::AppSync::GraphQLApi\).*Arn=arn:aws:appsync:' \
+    || { echo "FAIL: export plan did not resolve the GraphQLApi identifier from the recorded Arn" >&2; exit 1; }
+  printf '%s\n' "${EXPORT_OUT}" | grep -qE "\(AWS::AppSync::ApiKey\).*ApiId=${API_ID}, ApiKeyId=da2-" \
+    || { echo "FAIL: export plan did not resolve the ApiKey composite identifier" >&2; exit 1; }
+else
+  if ! printf '%s\n' "${EXPORT_OUT}" | grep -q 'block migration'; then
+    echo "FAIL: export --dry-run failed for a reason other than blocked resources (rc=${EXPORT_RC})" >&2
+    printf '%s\n' "${EXPORT_OUT}" | sed 's/^/  /' >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "${EXPORT_OUT}" | grep -q 'AWS::AppSync::GraphQLSchema'; then
+    echo "FAIL: the blocked list does not name AWS::AppSync::GraphQLSchema (the sentinel blocker)" >&2
+    printf '%s\n' "${EXPORT_OUT}" | sed 's/^/  /' >&2
+    exit 1
+  fi
+  for unresolved in 'could not resolve resource identifier' 'COMPOSITE_ID_SPLITTERS' \
+    'AWS::AppSync::ApiKey' 'AWS::AppSync::GraphQLApi' 'AWS::AppSync::DataSource' 'AWS::AppSync::Resolver'; do
+    if printf '%s\n' "${EXPORT_OUT}" | grep -F -- "${unresolved}" | grep -qv 'GraphQLSchema'; then
+      echo "FAIL: export --dry-run reports an unresolved identifier (${unresolved}):" >&2
+      printf '%s\n' "${EXPORT_OUT}" | grep -F -- "${unresolved}" | sed 's/^/  /' >&2
+      exit 1
+    fi
+  done
+  echo "==> Phase 3b: only AWS::AppSync::GraphQLSchema blocks the export (every other AppSync identifier resolved)"
+fi
+
 # --- Phase 4: destroy -------------------------------------------------------
 echo "==> Phase 4: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \

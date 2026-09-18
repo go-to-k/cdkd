@@ -448,6 +448,42 @@ describe('AppSyncProvider.import records the child ARN attributes (issue #1728)'
   // id ever stops carrying the key — which is exactly when masking the attribute
   // WOULD start buying something, and therefore when this decision should be
   // revisited.
+  it('import of AWS::AppSync::GraphQLApi records the ApiId / Arn / GraphQLUrl create() records (issue #3414)', async () => {
+    // `cdkd export` sends the recorded `Arn` as the type's CloudFormation
+    // identifier now that AWS declares the API by ARN; an adopted API used to
+    // land with `attributes: {}` and block that export until its next update.
+    mockSend.mockResolvedValueOnce({
+      graphqlApi: {
+        apiId: 'abcd1234',
+        arn: 'arn:aws:appsync:us-east-1:123456789012:apis/abcd1234',
+        uris: { GRAPHQL: 'https://example.appsync-api.us-east-1.amazonaws.com/graphql' },
+      },
+    });
+
+    const result = await provider.import(importInput('AWS::AppSync::GraphQLApi', 'abcd1234'));
+
+    expect(result).toEqual({
+      physicalId: 'abcd1234',
+      attributes: {
+        ApiId: 'abcd1234',
+        Arn: 'arn:aws:appsync:us-east-1:123456789012:apis/abcd1234',
+        GraphQLUrl: 'https://example.appsync-api.us-east-1.amazonaws.com/graphql',
+      },
+    });
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockSend.mock.calls[0]?.[0].input).toEqual({ apiId: 'abcd1234' });
+  });
+
+  it('import of AWS::AppSync::GraphQLApi omits a member the read did not report rather than recording an empty string', async () => {
+    mockSend.mockResolvedValueOnce({ graphqlApi: { apiId: 'abcd1234' } });
+
+    const result = await provider.import(importInput('AWS::AppSync::GraphQLApi', 'abcd1234'));
+
+    expect(result).toEqual({ physicalId: 'abcd1234', attributes: { ApiId: 'abcd1234' } });
+    expect(result?.attributes).not.toHaveProperty('Arn');
+    expect(result?.attributes).not.toHaveProperty('GraphQLUrl');
+  });
+
   it('carries the API key inside the composite physicalId, not only in attributes (issue #2847)', async () => {
     const apiKeyId = 'da2-abcdefghij';
     const result = await provider.import(

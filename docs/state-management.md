@@ -1359,19 +1359,23 @@ records the corrected attribute.
 `cdkd export` hands a stack to CloudFormation via an IMPORT changeset,
 which addresses each resource by its CFn `primaryIdentifier`. For most
 composite types that identifier is multi-field and cdkd splits the id
-into it. Four types are different — their CFn identifier is a SINGLE
-field holding a value that is not any segment of cdkd's composite:
+into it. Five types are different — their CFn identifier is a SINGLE
+field holding a value that is not cdkd's physical id (for four of them
+not any segment of cdkd's composite; for the GraphQL API, whose physical
+id is the bare `apiId`, the ARN CloudFormation has identified it by since
+September 2026):
 
 | Resource Type | CloudFormation IMPORT identifies it by | cdkd resolves it from |
 |---------------|----------------------------------------|-----------------------|
 | `AWS::AppSync::DataSource` | `DataSourceArn` | the recorded `DataSourceArn` attribute |
 | `AWS::AppSync::Resolver` | `ResolverArn` | the recorded `ResolverArn` attribute |
+| `AWS::AppSync::GraphQLApi` | `Arn` | the recorded `Arn` attribute |
 | `AWS::S3Tables::Table` | `TableARN` | the recorded `TableARN` attribute |
 | `AWS::EC2::SecurityGroupIngress` | `Id` (the `sgr-…` rule id) | the recorded `Id` attribute |
 
-You do not need to do anything for the first three on a stack deployed
-by a current cdkd: a fresh deploy and `cdkd import` both record the
-attribute. A record that lacks it — the degraded cases listed above —
+You do not need to do anything for the ARN-identified four on a stack
+deployed by a current cdkd: a fresh deploy and `cdkd import` both record
+the attribute. A record that lacks it — the degraded cases listed above —
 makes `cdkd export` block that resource with a message naming the
 attribute; re-deploy the stack once to heal the record, then re-run the
 export.

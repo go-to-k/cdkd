@@ -187,32 +187,40 @@ than in the id — and produces the field map:
 - `AWS::S3Tables::Namespace`
 - `AWS::Lambda::EventInvokeConfig`
 - `AWS::Lambda::Permission`
+- `AWS::AppSync::ApiKey`
 
 Sub-resource types whose identifier includes an AWS-generated id
-(`IntegrationId`, `RouteId`, `AWS::Lambda::Permission`'s `Id`) narrow the
+(`IntegrationId`, `RouteId`, `AWS::Lambda::Permission`'s `Id`,
+`AWS::AppSync::ApiKey`'s `ApiKeyId`) narrow the
 `Properties` overlay to the writable subset, so CloudFormation does not reject
 the changeset with "Encountered unsupported property". A composite type not in
 the list is refused with a message naming it.
 
 ### Identifiers cdkd reads from recorded attributes
 
-Four types have a **single-field** CloudFormation identifier while cdkd's
-physical id is a pipe-joined composite — and the identifier is not a segment of
-that composite, so no splitter can produce it. cdkd reads the value from the
-resource's recorded `attributes` instead.
+Five types have a **single-field** CloudFormation identifier that is not cdkd's
+physical id — for four of them the physical id is a pipe-joined composite the
+identifier is not a segment of, and for `AWS::AppSync::GraphQLApi` it is the
+bare API id while CloudFormation identifies the API by its ARN — so no splitter
+can produce it. cdkd reads the value from the resource's recorded `attributes`
+instead.
 
 | Resource type | CloudFormation identifier | cdkd physical id |
 | --- | --- | --- |
 | `AWS::S3Tables::Table` | `TableARN` | `<tableBucketARN>\|<namespace>\|<name>` |
 | `AWS::AppSync::DataSource` | `DataSourceArn` | `<apiId>\|<name>` |
 | `AWS::AppSync::Resolver` | `ResolverArn` | `<apiId>\|<typeName>\|<fieldName>` |
+| `AWS::AppSync::GraphQLApi` | `Arn` | `<apiId>` |
 | `AWS::EC2::SecurityGroupIngress` | `Id` (the `sgr-...` rule id) | `<groupId>\|<ipProtocol>\|<fromPort>\|<toPort>` |
 
 When state does not carry the attribute, the resource is blocked with an
-actionable message. For the first three, that means a record written before
-cdkd started recording the ARN — re-deploy the stack once to heal it, as
+actionable message. For the ARN-identified four, that means a record written
+before cdkd started recording the ARN — re-deploy the stack once to heal it, as
 [State Management](state-management.md#the-composite-id-is-not-what-ref-returns)
-describes.
+describes. The `AWS::AppSync::GraphQLApi` row is recent: AWS moved the type's
+identifier from `ApiId` to `Arn` in September 2026, and a registry that still
+reports `ApiId` is accepted as-is, because cdkd's physical id already is that
+value.
 
 ### `AWS::EC2::SecurityGroupIngress`
 
