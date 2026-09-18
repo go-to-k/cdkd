@@ -138,6 +138,7 @@ import {
   MAX_FIELD_LENGTH,
   MAX_RENDERED_FINDINGS,
   boundedList,
+  safeDetail,
   safeJobId,
   safeName,
   safeText,
@@ -266,7 +267,12 @@ export const auditWorkflowHardening = (dir: string): Audit => {
       // one place and not the other" failure the shared module's own header
       // gives as the reason it exists.
       job: job === undefined ? undefined : safeJobId(job),
-      detail: detail === undefined ? undefined : safeText(detail),
+      // `safeDetail`, which QUOTES. A detail is free-form prose with no legal
+      // shape to test against, it is the LAST field on the rendered line, and
+      // for `unparseable` it is a YAML parser's message echoing the fork's own
+      // bytes — so a `)` in it closes the parenthesis early and the tail reads
+      // as a finding about another job. The tenth venue for this class.
+      detail: detail === undefined ? undefined : safeDetail(detail),
     });
   };
 
@@ -679,7 +685,16 @@ describe('the audit fails against real code', () => {
     const detail = finding?.detail ?? '';
     expect(detail).not.toContain(String.fromCodePoint(0x202e));
     expect(detail).not.toContain(String.fromCodePoint(0x85));
-    expect(detail.length).toBeLessThanOrEqual(MAX_FIELD_LENGTH + 1);
+    // `+ 3`: the clamp keeps 120 characters and appends an ellipsis, and
+    // `safeDetail` then QUOTES — a parse error carries `:` and `/`, so it can
+    // never take the unquoted branch. An earlier revision allowed `+ 1`, which
+    // was right when this field was only flattened.
+    expect(detail.length).toBeLessThanOrEqual(MAX_FIELD_LENGTH + 3);
+    // AND it is quoted, which is the half that stops a pure-ASCII parse error
+    // — no control byte anywhere — from reading as a finding about another
+    // job. The two assertions above are satisfied by flattening alone, which
+    // is how `safeText` survived here for a whole round.
+    expect(detail.startsWith('"')).toBe(true);
   });
 
   it('a workflow that does not parse is a finding, not a silent zero', () => {

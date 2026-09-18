@@ -148,6 +148,28 @@ const ghFailure = (args: readonly string[], error: unknown): string =>
   `gh ${safeText(args.slice(0, 2).join(' '))} failed: ` +
   safeText(String((error as { stderr?: string }).stderr ?? (error as Error)?.message ?? error));
 
+/**
+ * The next window to try when a listing came back capped, or `null` to refuse.
+ *
+ * EXTRACTED BECAUSE TWO OF THIS PR'S BLOCKERS LIVED IN THIS ARITHMETIC, and the
+ * file's own doctrine — `walkMayStop` was extracted for exactly this reason —
+ * had been applied everywhere except the code that produced them. One round
+ * removed a floor and made the loop's exit true on its first iteration, so the
+ * halving never ran; the round before it slept on a terminal attempt. Neither
+ * was reachable from a case, because the enclosing loop makes network calls.
+ *
+ * `Number.isInteger` is not defensive dressing: `NaN <= 0` is FALSE and
+ * `Math.floor(NaN / 2) >= NaN` is FALSE, so a non-finite span would have spun
+ * this loop forever issuing `gh` calls with an `Invalid Date` range. It is
+ * unreachable today only because the flag parser validates first — which is a
+ * property of the caller, not of this function.
+ */
+export const nextWindow = (days: number): number | null => {
+  if (!Number.isInteger(days) || days <= 0) return null;
+  const next = Math.floor(days / 2);
+  return next < MIN_WINDOW_DAYS ? null : next;
+};
+
 /** Attempts per `gh` call, including the first. See the loop below. */
 const ATTEMPTS = 3;
 
@@ -448,7 +470,7 @@ export const refuseInsideTestRunner = (env: Record<string, string | undefined>):
       'gen-workflow-job-durations: refusing to run inside the test runner. ' +
         'This script performs a network walk and REWRITES the committed snapshot ' +
         'the fence reads, which would make that fence assert against its own output. ' +
-        'Run it from a shell instead: `node scripts/gen-workflow-job-durations.ts`.',
+        'Run it from a shell instead: `vp run gen:workflow-durations`.',
     );
   }
 };
@@ -541,7 +563,7 @@ const main = (): void => {
   // returns zero rows at exit 0 for every workflow, the capped check sees
   // 0 < 1000 and passes, and the snapshot is overwritten with `"jobs": {}` —
   // the exact outcome the guard was added to prevent, reached around it.
-  if (windowDays <= 0) {
+  if (!Number.isInteger(windowDays) || windowDays <= 0) {
     throw new Error(
       `--from=${safeText(explicitFrom ?? '')} is not before --to=${to}; the range is inverted or empty`,
     );
@@ -565,17 +587,9 @@ const main = (): void => {
       usedFrom = isoDay(new Date(Date.parse(`${to}T00:00:00Z`) - days * 24 * 3600 * 1000));
       runs = runsInRange(file, usedFrom, to);
       if (runs === null) {
-        // THE EXIT IS COMPUTED FROM THE NEXT WINDOW, not compared against the
-        // starting one. `days <= windowDays` was true on the FIRST iteration
-        // by construction — `days` is initialised to `windowDays` — so the
-        // halving below was unreachable and the first capped listing threw. The
-        // committed snapshot carries halved ranges for four workflows, so the
-        // generator could not reproduce the file this PR ships, and the message
-        // said "1-day window" while printing a 14-day one. That regression was
-        // introduced by the round that removed a `Math.max` floor from the
-        // window, one guard away from the loop it broke.
-        const next = Math.floor(days / 2);
-        if (next < MIN_WINDOW_DAYS || next >= days) {
+        // The arithmetic is in `nextWindow`, where a case can reach it.
+        const next = nextWindow(days);
+        if (next === null) {
           throw new Error(
             `${safeName(file)} has >= 1000 successful runs even in a ${days}-day window ` +
               `(${usedFrom}..${to}); the listing cannot be read without truncation.`,

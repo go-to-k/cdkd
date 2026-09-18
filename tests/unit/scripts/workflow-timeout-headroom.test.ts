@@ -40,17 +40,20 @@
  * to 69.23x (`ci.yml` / `release-pr-not-stale`, the loosest). An earlier
  * revision said "over 100x"; nothing reaches it, in either snapshot revision.
  *
- * The `>=` is owed to go-to-k/cdkd#3282, NOT to this fence's own issue. #3282
- * proposes bringing `hook-suites` back to a 30-minute bound once its suite runs
- * in under 15 minutes — "the 2x+ headroom", i.e. exactly 2.00x, sitting ON this
- * floor rather than above it. A fence that refused the very state a sibling
- * issue is working towards would be disabled rather than obeyed.
+ * THE `>=` IS THE ISSUE'S OWN, AND `k = 2` IS THIS FENCE'S. go-to-k/cdkd#3283
+ * writes `bound >= k * max` itself and leaves `k` unfixed, so the inclusive
+ * comparison is inherited and the constant is a decision made here.
  *
- * An earlier revision of this paragraph attributed that warning to
- * go-to-k/cdkd#3283, which says no such thing: it writes `bound >= k * max`
- * with `k` unfixed and never mentions `hook-suites` or #3282. Re-read before
- * citing — a claim about what another document says is the kind this pair of
- * fences has got wrong most often.
+ * Three revisions of this paragraph said otherwise, and all three claims were
+ * false: that the `>=` was owed to go-to-k/cdkd#3282; that #3282 asks for a
+ * state sitting exactly ON this floor (it asks for "a max comfortably UNDER 15
+ * minutes, at which point the bound goes back to 30", which is above 2x); and
+ * that #3283 never mentions `hook-suites` (its Dup-check line does). The
+ * corrections landed in the PR body first and not here, which is the same
+ * one-place-not-the-other failure this pair has now had in a sanitiser, in a
+ * prose claim, and in an assertion. Re-read the source before citing it: a
+ * claim about what another document says is the kind this pair gets wrong most
+ * often.
  *
  * EVERY UNREADABLE INPUT IS A FINDING, NEVER A SKIP. A snapshot that will not
  * parse, a job in the tree with no entry, and an entry whose job no longer
@@ -79,6 +82,7 @@ import { parse as parseYaml } from 'yaml';
 import {
   displayNameToKey,
   invokedDirectly,
+  nextWindow,
   refuseInsideTestRunner,
   resolveJobKey,
   walkMayStop,
@@ -89,7 +93,11 @@ import {
 // FOUR times, each instance inside the code that fixed the previous one. A
 // fifth venue with its own copies of the helpers is how that happens again.
 import {
+  MAX_FIELD_LENGTH,
+  MAX_RENDERED_FINDINGS,
   boundedList,
+  flatten,
+  safeJobId,
   safeKey,
   safeName,
   safeRange,
@@ -338,7 +346,18 @@ const loadSnapshot = (): Record<string, JobSample> =>
   parseSnapshot(readFileSync(SNAPSHOT_PATH, 'utf8'), SNAPSHOT_PATH);
 
 const snapshotGeneratedAt = (): unknown => {
-  const raw: unknown = JSON.parse(readFileSync(SNAPSHOT_PATH, 'utf8'));
+  // GUARDED, because a bare `JSON.parse` here is the exact source-echo venue
+  // `parseSnapshot` exists to close: Node embeds the offending text in the
+  // error, and this file is committed, so a PR edits it freely. It is
+  // unreachable today only because `loadSnapshot()` runs first at module scope
+  // and throws the sanitised message — a property of statement ORDER, which is
+  // one reorder away from not holding.
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(SNAPSHOT_PATH, 'utf8'));
+  } catch {
+    throw new Error(`${SNAPSHOT_PATH} is not valid JSON; regenerate it`);
+  }
   return isMapping(raw) ? raw['generatedAt'] : undefined;
 };
 
@@ -382,7 +401,8 @@ const finding = (
 ): Finding => ({
   kind,
   // A job key is `<file>/<job>` and a fork controls BOTH halves, each with its
-  // own legal shape — see `splitKey`, which is where the boundary cast lives.
+  // own legal shape — see `safeKey` in the shared module, which splits it and
+  // is where the boundary cast lives.
   job: safeKey(job),
   ...numbers,
   // `safeRange`, not `safeText`. The range comes from the committed snapshot
@@ -594,9 +614,10 @@ describe('the auditor reports what it claims to', () => {
   });
 
   it('a bound EXACTLY on the floor passes', () => {
-    // `>=`, deliberately: go-to-k/cdkd#3282 proposes returning `hook-suites` to
-    // a bound that would sit exactly on this floor, and a fence refusing the
-    // state a sibling issue is working towards is a fence that gets disabled.
+    // `>=` because go-to-k/cdkd#3283 writes `>=`. An earlier revision of this
+    // comment justified it from go-to-k/cdkd#3282 instead, claiming that issue
+    // targets a bound sitting exactly on this floor; it targets one above it.
+    // The behaviour is unchanged and the reason is now the real one.
     expect(auditHeadroom(tree(60), snap(1800), {})).toEqual([]);
     expect(auditHeadroom(tree(60), snap(1801), {}).map((f) => f.kind)).toEqual(['too-tight']);
   });
@@ -787,6 +808,13 @@ describe('the auditor reports what it claims to', () => {
   });
 
   it.each([
+    // `null` FIRST, because it is the reachable one: `parseYaml` answers null
+    // for an empty or comment-only workflow, `typeof null === 'object'` slips
+    // past a bare `typeof`, and `declaredJobs()` runs at MODULE SCOPE — so a
+    // missing `isMapping(doc)` takes this file's whole collection down with a
+    // TypeError instead of reporting anything. The parallel `displayNameToKey`
+    // table has had this row since round 1; this one did not.
+    ['a null document', null, []],
     ['a document that is not a mapping', 7, []],
     ['a document with no jobs key', { name: 'x' }, []],
     ['a jobs node that is not a mapping', { jobs: 'x' }, []],
@@ -1003,6 +1031,65 @@ describe('the walk stops only when it can no longer learn anything', () => {
   });
 });
 
+describe('the shared sanitisers constrain the shapes this fence renders', () => {
+  it.each([
+    ['U+2800 BRAILLE PATTERN BLANK', '\u2800'],
+    ['U+3164 HANGUL FILLER', '\u3164'],
+    ['U+115F HANGUL CHOSEONG FILLER', '\u115f'],
+    ['U+180E MONGOLIAN VOWEL SEPARATOR', '\u180e'],
+    ['U+FFA0 HALFWIDTH HANGUL FILLER', '\uffa0'],
+  ])('%s renders blank but is not whitespace, so it is flattened', (_what, ch) => {
+    // BLANK IS NOT THE SAME AS WHITESPACE, and `/\s/` matches none of these.
+    // Each one RENDERS as a space, so a fork pads a forged finding with them
+    // and the line reads as ordinary text while carrying no byte any earlier
+    // check looked for. Measured on U+2800 in a real YAML parse error, which
+    // is how the tenth venue was found; the rest of the class is here because
+    // enumerating bad shapes one at a time is what produced ten venues.
+    expect(flatten(`a${ch}b`)).toBe('a b');
+  });
+
+  it.each([
+    ['a real range', '2026-09-02..2026-09-16', false],
+    ['a range with a forged PREFIX', 'x: too-tight 2026-09-02..2026-09-16', true],
+    ['a range with a forged SUFFIX', '2026-09-02..2026-09-16 and ci.yml: x', true],
+  ])('%s', (_what, range, quoted) => {
+    // BOTH ANCHORS. `^` and `$` were each droppable with every case green,
+    // because the only range any case used was a well-formed one — and either
+    // drop lets a forged finding ride along unquoted at the end of the line.
+    expect(safeRange(range).startsWith('"')).toBe(quoted);
+  });
+
+  it('a long but legal job id is still clamped', () => {
+    // `safeJobId`'s PASSING branch returned the raw id, so 5,000 legal
+    // characters reached the line unclamped — the bound `MAX_FIELD_LENGTH`
+    // exists to hold. `safeName` has this case from its own round-2 defect;
+    // this helper was written from `safeName` and inherited the shape without
+    // the case.
+    expect(safeJobId('a'.repeat(5000)).length).toBeLessThanOrEqual(MAX_FIELD_LENGTH + 1);
+  });
+
+  it('a key is split at the FIRST slash, so the whole file name is the file half', () => {
+    // `lastIndexOf` survived every case: a workflow file name cannot contain a
+    // slash and a job id can, so only the first split puts the whole file name
+    // in the half `safeName` constrains. With `lastIndexOf`, part of a
+    // fork-chosen job id is handed to `safeName` instead.
+    expect(safeKey('a.yml/deep/er')).toBe('a.yml/"deep/er"');
+  });
+
+  it('a flood from one workflow cannot take the whole cap', () => {
+    // SORTING IS NOT ENOUGH, which round 5 assumed. A fork controls how many
+    // findings ITS file produces, so 25 findings of the WINNING kind fill the
+    // cap from one file and the genuine line is gone. `boundedList` shares the
+    // cap round-robin by workflow, so every file that has a finding gets a
+    // line before any file gets a second.
+    const many = Array.from({ length: 25 }, (_, i) => `aaa.yml/j${i}: too-tight` as Safe);
+    const real = 'hooks.yml/hook-suites: too-tight' as Safe;
+    const out = boundedList([...many, real]);
+    expect(out).toContain(real);
+    expect(out).toHaveLength(MAX_RENDERED_FINDINGS + 1);
+  });
+});
+
 describe('the snapshot is refused when it is too old to describe this tree', () => {
   const at = (iso: string) => Date.parse(iso);
   const now = at('2026-09-18T00:00:00Z');
@@ -1010,6 +1097,10 @@ describe('the snapshot is refused when it is too old to describe this tree', () 
   it.each([
     ['fresh', '2026-09-17T00:00:00Z', 'ok'],
     ['one day inside the window', '2026-06-21T00:00:00Z', 'ok'],
+    // EXACTLY 90 days. Without this row the comparison could be `>=` and the
+    // constant could be 89, both with every case green — the rows sat at 89 and
+    // 91 while the comment claimed "both sides of the boundary".
+    ['exactly at the window', '2026-06-20T00:00:00Z', 'ok'],
     ['one day outside it', '2026-06-19T00:00:00Z', 'stale'],
     ['ancient', '2024-01-01T00:00:00Z', 'stale'],
   ])('a snapshot generated %s reads as %s', (_what, stamp, verdict) => {
@@ -1023,6 +1114,10 @@ describe('the snapshot is refused when it is too old to describe this tree', () 
     // hand-edited stamp would read as the freshest possible snapshot — which is
     // precisely how a stale one would be made to pass this guard.
     expect(auditSnapshotAge('2027-01-01T00:00:00Z', now)).toBe('future');
+    // ONE MILLISECOND is the case that matters: the threat named above is clock
+    // SKEW, not a hand-typed year, and `at > now + 86_400_000` passed the
+    // three-month probe while letting a day of skew read as fresh.
+    expect(auditSnapshotAge(new Date(now + 1).toISOString(), now)).toBe('future');
   });
 
   it.each([
@@ -1036,6 +1131,53 @@ describe('the snapshot is refused when it is too old to describe this tree', () 
     // false — so without the explicit arm they would all report `ok`, which is
     // the `NaN < 2` shape this whole fence exists because of.
     expect(auditSnapshotAge(stamp, now)).toBe('unreadable');
+  });
+});
+
+describe('the window halves until the listing is not capped, then refuses', () => {
+  // TWO OF THIS PR'S BLOCKERS LIVED IN THIS ARITHMETIC and neither was
+  // reachable from a case, because the loop around it makes network calls. One
+  // round removed a floor and made the exit true on its first iteration, so the
+  // halving never ran and the generator could not reproduce the snapshot it
+  // ships; the round before that slept on a terminal attempt. The file's own
+  // doctrine — `walkMayStop` is extracted for exactly this reason — had been
+  // applied everywhere except the code that produced the blockers.
+
+  it('walks the default window down to the floor', () => {
+    // The real sequence, which the fake-`gh` probe also shows end to end.
+    const seen: number[] = [];
+    for (let d: number | null = 14; d !== null; d = nextWindow(d)) seen.push(d);
+    expect(seen).toEqual([14, 7, 3, 1]);
+  });
+
+  it('refuses at the floor rather than proposing a zero-day window', () => {
+    expect(nextWindow(1)).toBeNull();
+  });
+
+  it.each([
+    ['zero', 0],
+    ['negative', -5],
+    ['fractional', 2.5],
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+  ])('a %s span is refused, never halved', (_what, days) => {
+    // `NaN` is the one that mattered: `NaN <= 0` is FALSE and
+    // `Math.floor(NaN / 2) >= NaN` is FALSE, so before `Number.isInteger` a
+    // non-finite span spun the enclosing loop forever, issuing `gh` calls with
+    // an `Invalid Date` range. Unreachable today only because the flag parser
+    // validates first — a property of the caller, not of this function.
+    expect(nextWindow(days)).toBeNull();
+  });
+
+  it('always makes progress, so the loop terminates', () => {
+    // The property the loop depends on, asserted rather than assumed: every
+    // answer is strictly smaller than its input and at least the floor.
+    for (let d = 1; d <= 400; d += 1) {
+      const next = nextWindow(d);
+      if (next === null) continue;
+      expect(next).toBeLessThan(d);
+      expect(next).toBeGreaterThanOrEqual(1);
+    }
   });
 });
 
@@ -1157,6 +1299,11 @@ describe('the snapshot is refused rather than half-read', () => {
     ['jobs is not a mapping', '{"jobs":[]}', /has no jobs mapping/],
     ['an entry with no numeric max', '{"jobs":{"a/b":{"from":"x","to":"y"}}}', /no numeric max/],
     ['an entry that is not a mapping', '{"jobs":{"a/b":7}}', /no numeric max/],
+    // `null` is the row that pins the `isMapping(value)` clause: on `null`,
+    // `value['max']` THROWS rather than answering `undefined`, so deleting the
+    // clause turns a refusal into a crash. `7` cannot show that — a number
+    // answers `undefined` for any property.
+    ['a null entry', '{"jobs":{"a/b":null}}', /no numeric max/],
     ['a max of zero', '{"jobs":{"a/b":{"max":0,"from":"x","to":"y"}}}', /positive/],
     ['a negative max', '{"jobs":{"a/b":{"max":-1,"from":"x","to":"y"}}}', /positive/],
     // `1e999` parses to `Infinity`, which is a NUMBER and is not `<= 0`, so the
@@ -1168,9 +1315,11 @@ describe('the snapshot is refused rather than half-read', () => {
     // regenerate rather than to go hunting — was pinned by nothing.
     //
     // `an entry that is not a mapping` shares its message with the numeric case
-    // on purpose: no JSON value can reach the `!isMapping` clause without also
-    // failing the `max` clause, so the two are one refusal and the case is
-    // named for the input rather than for a branch it cannot isolate.
+    // because every value that reaches one reaches the other — but the CLAUSE
+    // is still load-bearing, and an earlier revision of this comment called it
+    // unreachable. It is not, for `null`: `value['max']` on `null` THROWS
+    // rather than answering `undefined`, so without `isMapping(value)` a
+    // snapshot entry of `null` crashes the read instead of being refused.
     expect(() => parseSnapshot(body, '<probe>')).toThrow(pattern);
   });
 
@@ -1241,6 +1390,14 @@ describe('the snapshot is refused rather than half-read', () => {
     expect(message).toContain('not a positive number');
     expect(message).not.toContain(String.fromCodePoint(0x0a));
     expect(message).not.toContain(String.fromCodePoint(0x202e));
+    // QUOTED — and without this the case passed for exactly the wrong reason.
+    // `safeText` FLATTENS, which removes the LF and the RLO the two lines above
+    // look for, so `safeKey` -> `safeText` survived here with all 186 cases
+    // green while rendering
+    //   <probe>: x is fine; regenerate it <probe>: ci.yml/check-build-test has …
+    // Its twin got this assertion last round and this one did not: the same
+    // one-place-not-the-other shape, in the adjacent case.
+    expect(message).toContain('<probe>: "');
   });
 
   it('malformed JSON is refused without echoing the source', () => {

@@ -89,6 +89,21 @@ export const flatten = (text: string): string => {
       (code >= 0x200e && code <= 0x200f) ||
       (code >= 0x202a && code <= 0x202e) ||
       (code >= 0x2066 && code <= 0x2069) ||
+      // BLANK BUT NOT WHITESPACE. `/\s/` does not match these, and each RENDERS
+      // as a space — so a fork pads a forged finding with them and it reads as
+      // an ordinary line while surviving every check above. Measured on
+      // U+2800 and U+3164; the rest of the class is here because enumerating
+      // bad shapes one at a time is how this file reached a tenth venue.
+      code === 0x115f ||
+      code === 0x1160 ||
+      code === 0x17b4 ||
+      code === 0x17b5 ||
+      code === 0x180e ||
+      code === 0x2800 ||
+      code === 0x3164 ||
+      code === 0xffa0 ||
+      (code >= 0xfff9 && code <= 0xfffb) ||
+      (code >= 0xe0000 && code <= 0xe007f) ||
       /\s/.test(ch);
     if (unsafe) {
       if (!blank) out += ' ';
@@ -140,6 +155,12 @@ const WORKFLOW_NAME = /^[A-Za-z0-9._-]+\.ya?ml$/;
 const JOB_ID = /^[A-Za-z0-9_-]*$/;
 
 export const safeJobId = (id: string): Safe =>
+  // `safeText` on BOTH branches, never the raw `id`: a job id of 5,000 legal
+  // characters matches `JOB_ID` and would otherwise reach the line unclamped,
+  // which is the bound `MAX_FIELD_LENGTH` exists to hold. `safeName` learned
+  // this in go-to-k/cdkd#3272 round 2 and has a case for it; this helper was
+  // written from `safeName` and inherited the shape without the case.
+  //
   // Cast scoped to the quoting branch alone, for the reason given on `safeName`.
   JOB_ID.test(id) ? safeText(id) : (JSON.stringify(safeText(id)) as Safe);
 
@@ -159,6 +180,10 @@ export const safeJobId = (id: string): Safe =>
  * (2) The job half got only `safeText`.
  */
 export const safeKey = (key: string): Safe => {
+  // THE FIRST slash, not the last. A workflow file name cannot contain one and
+  // a job id can, so the first is the only split that puts the whole file name
+  // in the file half; `lastIndexOf` was a surviving mutant with every case
+  // green, and it would hand part of a fork-chosen job id to `safeName`.
   const cut = key.indexOf('/');
   // A key with no separator is not a `<file>/<job>` pair at all, so it is
   // rendered as ONE constrained name rather than split into two halves, one of
@@ -176,10 +201,43 @@ export const safeKey = (key: string): Safe => {
  * 2x`, which reads as a complete finding about another job. `safeText` does not
  * stop that; quoting does, and the shape is narrow enough to check.
  */
+// BOTH ANCHORS ARE LOAD-BEARING and both were droppable with every case green:
+// without `^` a range PREFIXED with a forged finding matches, without `$` one
+// SUFFIXED with it does, and either renders unquoted at the end of the line.
+// `safeName`'s anchors are pinned from its own round; these were not.
 const RANGE = /^\d{4}-\d{2}-\d{2}\.\.\d{4}-\d{2}-\d{2}$/;
 
 export const safeRange = (range: string): Safe =>
   RANGE.test(range) ? safeText(range) : (JSON.stringify(safeText(range)) as Safe);
+
+/**
+ * A free-form DETAIL, always quoted.
+ *
+ * THE TENTH VENUE, and the last field on its line. `safeText` flattens and
+ * clamps, and the round that carried quoting to four other shapes — a name, a
+ * job id, a key, a range — did not carry it here, in the same function whose
+ * sibling line it edited. For `kind: 'unparseable'` the detail is a YAML
+ * parser's own message, which echoes the fork's bytes: measured rendering
+ *
+ *     zz-evil.yml: unparseable (Unresolved alias ... : ) and ci.yml / check-build-test: no-timeout)
+ *
+ * where the `)` closes the parenthesis early and the tail reads as a genuine
+ * finding against a real critical job.
+ *
+ * THE SHAPE IS DEFINED BY WHAT A FORGERY NEEDS, not by what a detail is. Every
+ * detail this pair generates itself is a `typeof` word, a `safeJson` scalar or
+ * a comparison — `object`, `"write-all"`, `2.5`, `360 >= 360` — and none of
+ * them needs `:` or `/` or a parenthesis. A forged finding needs all three,
+ * because the line it must imitate is `<file> / <job>: <kind> (<detail>)`. So
+ * the safe set excludes exactly those, and a detail carrying one is quoted.
+ * Unconditional quoting was tried first and is worse: it puts quotes around
+ * fourteen machine-generated strings that could never forge anything, which is
+ * the noise that gets a rule switched off.
+ */
+const DETAIL = /^[A-Za-z0-9_"'.,=<> -]*$/;
+
+export const safeDetail = (detail: string): Safe =>
+  DETAIL.test(detail) ? safeText(detail) : (JSON.stringify(safeText(detail)) as Safe);
 
 /** How many findings a renderer emits before the rest are summarised. */
 export const MAX_RENDERED_FINDINGS = 20;
@@ -196,15 +254,46 @@ export const MAX_RENDERED_FINDINGS = 20;
  * forges no line — every one is sanitised — but it buries the real finding,
  * which is the same harm one layer up.
  */
-export const boundedList = (lines: readonly Safe[]): Safe[] =>
-  lines.length > MAX_RENDERED_FINDINGS
-    ? [
-        ...lines.slice(0, MAX_RENDERED_FINDINGS),
-        // The only string this function builds itself, and it carries nothing
-        // fork-controlled — a subtraction of two lengths.
-        `… and ${lines.length - MAX_RENDERED_FINDINGS} more` as Safe,
-      ]
-    : [...lines];
+export const boundedList = (lines: readonly Safe[]): Safe[] => {
+  if (lines.length <= MAX_RENDERED_FINDINGS) return [...lines];
+  // ROUND-ROBIN BY WORKFLOW, not the first 20. Taking a prefix lets ONE file
+  // fill the cap, and a fork controls how many findings its own file produces:
+  // 25 jobs in an `aaa.yml` bury a genuine `hooks.yml` finding whether the
+  // caller sorts by kind or not, because the burial is within the winning kind.
+  // Sorting is the caller's business; fair SHARE of the cap is this function's,
+  // and it is here so both fences inherit it.
+  //
+  // The group is the text before the first space or `/` — every line either
+  // fence renders begins `<workflow>/...` or `<workflow> / ...`. A line with
+  // neither is its own group, which is the safe direction.
+  const groups = new Map<string, Safe[]>();
+  for (const line of lines) {
+    const cut = line.search(/[ /]/);
+    const key = cut < 0 ? line : line.slice(0, cut);
+    const bucket = groups.get(key);
+    if (bucket === undefined) groups.set(key, [line]);
+    else bucket.push(line);
+  }
+  const kept: Safe[] = [];
+  const queues = [...groups.values()];
+  for (let round = 0; kept.length < MAX_RENDERED_FINDINGS; round += 1) {
+    let took = false;
+    for (const queue of queues) {
+      if (kept.length >= MAX_RENDERED_FINDINGS) break;
+      const line = queue[round];
+      if (line === undefined) continue;
+      kept.push(line);
+      took = true;
+    }
+    if (!took) break;
+  }
+  return [
+    ...kept,
+    // The only string this function builds itself, and it carries nothing
+    // fork-controlled — a subtraction of two lengths.
+    `… and ${lines.length - kept.length} more` as Safe,
+  ];
+};
 
 export const safeName = (name: string): Safe =>
   // The cast is scoped to the quoting branch alone. Spanning the whole ternary
