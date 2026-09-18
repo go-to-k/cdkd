@@ -96,15 +96,33 @@ equal and RELAX:
   remote-derived comparison can see is a tree whose FILES came from one repo
   while its remotes now name another — that is a broken checkout, not something
   this test can decide.
-- **A remote the parser cannot classify REFUSES; it is never dropped.** The
-  GitHub-host test is deliberately MORE GENEROUS than gh — anything at or under
-  `github.com` counts — because the two errors are not symmetric: treating a
-  remote as GitHub that gh drops can only make the comparison unequal, an
-  over-refusal, while missing one gh accepts is the fail-open. gh is pickier
-  (`www.github.com` resolves over https, `ssh.github.com` only in scp form,
-  `nope.github.com` nowhere), and emulating that exactly could only ever be
-  wrong in the unsafe direction. `github.com.evil.example` does not match: the
-  suffix test carries the dot and anchors at the end.
+- **A remote the parser cannot classify REFUSES; it is never dropped.** ONLY an
+  exact `github.com` is classifiable — every other HOST refuses, and only a
+  hostless remote (a local path, `file://`) is dropped.
+
+  An earlier revision accepted `*.github.com` as well, arguing that being more
+  generous than gh could only ever over-refuse. **That argument is wrong**, and
+  the counter-example is measured: over-accepting a remote gh DROPS makes the
+  comparison come out EQUAL when that remote outranks gh's real choice and its
+  slug coincides with `origin`. With `origin` = cdk-local, `github` = cdkd and
+  `upstream` = `https://ssh.github.com/go-to-k/cdk-local.git`, gh drops the
+  upstream and answers **cdkd**, while the gate ranked it first, read
+  cdk-local, matched `origin`, and RELAXED. The accepted slug feeds the
+  EQUALITY, not just the refusal, so over-acceptance is not a one-way error.
+  `over_accepted_outranks` is that row.
+
+  Two other hosts refuse for the same reason: a DOTLESS host in scp / `ssh://`
+  form is an ssh `Host` alias as often as a real name and **gh expands it** —
+  measured, gh shells out to `ssh -G <host>` (an `ssh` wrapper on PATH logged
+  `-G github-work`) while `git remote get-url` returns the alias verbatim — and
+  an authenticated GitHub ENTERPRISE host is one gh keeps and this cannot
+  recognise, the auth config not being readable from here.
+
+  **The cost is real and is accepted**: a checkout whose only GitHub remote is
+  spelled `git@ssh.github.com:...`, or that carries any non-`github.com` remote
+  at all (a GitLab mirror, a GHES upstream), is refused rather than judged. That
+  is an over-refusal falling back to the binding, never below `origin/main`, and
+  the prescribed sibling checkouts carry github.com remotes only.
 
 ### It retires the second-clone bound
 

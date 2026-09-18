@@ -1029,6 +1029,11 @@ mixed_host|origin=https://gitlab.com/foo/bar.git,upstream=https://github.com/go-
 insteadof_shorthand|origin=https://github.com/go-to-k/cdk-local.git,upstream=gh:go-to-k/cdkd.git|url.https://github.com/.insteadOf=gh:|go-to-k/cdkd|block
 insteadof_on_origin_only|origin=gh:go-to-k/cdk-local.git|url.https://github.com/.insteadOf=gh:|go-to-k/cdk-local|relax
 ssh_github_host|origin=https://github.com/go-to-k/cdk-local.git,upstream=git@ssh.github.com:go-to-k/cdkd.git||go-to-k/cdkd|block
+over_accepted_outranks|origin=https://github.com/go-to-k/cdk-local.git,github=https://github.com/go-to-k/cdkd.git,upstream=https://ssh.github.com/go-to-k/cdk-local.git||go-to-k/cdkd|block
+ghes_host_refuses|origin=https://github.com/go-to-k/cdk-local.git,upstream=https://ghe.corp.example/x/cdkd.git||go-to-k/cdk-local|block
+ssh_host_alias_refuses|origin=https://github.com/go-to-k/cdk-local.git,upstream=git@github-work:go-to-k/cdkd.git||go-to-k/cdk-local|block
+local_path_remote_drops|origin=https://github.com/go-to-k/cdk-local.git,mirror=../some-local-mirror||go-to-k/cdk-local|relax
+file_url_remote_drops|origin=https://github.com/go-to-k/cdk-local.git,mirror=file:///tmp/some-mirror||go-to-k/cdk-local|relax
 www_github_host|origin=https://github.com/go-to-k/cdk-local.git,upstream=https://www.github.com/go-to-k/cdkd.git||go-to-k/cdkd|block
 unreadable_remote_refuses|origin=https://github.com/go-to-k/cdk-local.git,upstream=::::nonsense::::||go-to-k/cdk-local|block
 tail_tiebreak_decides|origin=https://github.com/go-to-k/cdk-local.git,aaa=https://github.com/go-to-k/cdk-real-drift.git,zzz=https://github.com/go-to-k/cdkd.git|remote.aaa.gh-resolved=go-to-k/cdk-local,remote.zzz.gh-resolved=go-to-k/cdkd|go-to-k/cdk-local|relax
@@ -1102,11 +1107,11 @@ EOF
 
 # A floor, so a mangled heredoc or an `IFS` slip cannot report a green over an
 # empty table -- the "checker must prove it sees its input" rule.
-if [ "$matrix_rows" -ge 26 ]; then
+if [ "$matrix_rows" -ge 31 ]; then
   pass=$((pass + 1)); printf 'OK   gh-resolution matrix parsed %s rows\n' "$matrix_rows"
 else
   fail=$((fail + 1))
-  fail_log+="FAIL gh-resolution matrix parsed only $matrix_rows rows (want >= 26)\n"
+  fail_log+="FAIL gh-resolution matrix parsed only $matrix_rows rows (want >= 31)\n"
   printf 'FAIL gh-resolution matrix row count (%s)\n' "$matrix_rows"
 fi
 
@@ -1178,6 +1183,32 @@ else
   fail_log+="FAIL second-clone refusal message: $clone_msg\n"
   printf 'FAIL second-clone refusal message\n'
 fi
+
+# A TAB IN A REMOTE NAME. Not expressible through the matrix builder --
+# `git remote add` refuses the name -- so it is written straight into
+# `.git/config`, which is the only way it occurs in the wild too. Without the
+# guard the `name<TAB>slug` protocol desyncs: `origin<TAB>x` takes `origin`'s
+# rank AND its identity branch, and both sides of the comparison end up reading
+# the same mangled field, so the gate RELAXES.
+tabname_repo="$TMPDIR/tabname"
+git init -q -b feature/z "$tabname_repo"
+git -C "$tabname_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+touch "$tabname_repo/.markgate.yml"
+rm -f "$tabname_repo/.markgate-verify-pr-sha"
+git -C "$tabname_repo" remote add aaa https://github.com/go-to-k/cdk-real-drift.git
+printf '[remote "origin\tx"]\n\turl = https://github.com/go-to-k/cdkd.git\n' \
+  >> "$tabname_repo/.git/config"
+# The fixture must prove it built what it claims, or the case passes for the
+# wrong reason: `git remote` must actually list a tab-bearing name.
+if git -C "$tabname_repo" remote | grep -q "$(printf 'origin\tx')"; then
+  pass=$((pass + 1)); printf 'OK   fixture: a TAB-bearing remote name is listed by git\n'
+else
+  fail=$((fail + 1))
+  fail_log+="FAIL tabname fixture: git does not list the tab-bearing remote\n"
+  printf 'FAIL tabname fixture\n'
+fi
+run_case "a TAB in a remote name REFUSES, it does not desync" 2 fresh "" \
+  '{"cwd":"'"$tabname_repo"'","tool_input":{"command":"gh pr create --title x"}}'
 
 # OPT-IN DIFFERENTIAL. Re-measures column 4 against real gh. Not part of the
 # offline run; `run-tests.sh` never sets it.

@@ -630,6 +630,10 @@ __vpg_slug_from_url() {
       host="${rest%%/*}"
       host="${host%%:*}"
       case "$rest" in */*) rest="${rest#*/}" ;; *) return 2 ;; esac
+      # `file:///path` and friends carry no host. Not GitHub by any reading, and
+      # gh drops them, so this is a DROP (1) rather than a refusal -- a local
+      # mirror remote must not refuse every relaxation in the checkout.
+      [ -n "$host" ] || return 1
       ;;
     *:*)
       # scp-like `git@github.com:owner/repo.git`
@@ -637,16 +641,44 @@ __vpg_slug_from_url() {
       host="${host#*@}"
       rest="${u#*:}"
       ;;
-    *) return 2 ;;
+    # No scheme and no colon: a local path remote (`../mirror`, `/srv/repo`).
+    # gh drops it; so do we.
+    *) return 1 ;;
   esac
   # bash 3.2 has no `${var,,}`; `tr` is the portable spelling the rest of this
   # hook family uses.
   host=$(printf '%s' "$host" | tr 'A-Z' 'a-z')
   [ -n "$host" ] || return 2
-  case "$host" in
-    github.com | *.github.com) ;;
-    *) return 1 ;;
-  esac
+  # ONLY an exact `github.com` is classifiable. EVERY other host REFUSES.
+  #
+  # An earlier revision accepted `*.github.com` too, on the argument that being
+  # more generous than gh could only ever over-refuse. THAT ARGUMENT IS WRONG
+  # and the counter-example is measured: over-accepting a remote gh DROPS makes
+  # the comparison come out EQUAL when that remote outranks gh's real choice and
+  # its slug coincides with `origin`. Measured on gh 2.92.0 --
+  # `origin` = cdk-local, `github` = cdkd, `upstream` =
+  # `https://ssh.github.com/go-to-k/cdk-local.git`: gh drops the upstream and
+  # answers **cdkd**, while the gate ranked that upstream FIRST, read cdk-local,
+  # matched `origin`, and RELAXED. Over-acceptance is not a one-way error,
+  # because the accepted slug feeds the EQUALITY, not just the refusal.
+  #
+  # The same reasoning retires two other would-be classifications:
+  #   - a DOTLESS host in scp / `ssh://` form is an ssh `Host` ALIAS as often as
+  #     a real name, and gh expands it -- measured, gh shells out to
+  #     `ssh -G <host>` (an `ssh` wrapper on PATH logged `-G github-work`),
+  #     while `git remote get-url` returns the alias verbatim;
+  #   - an authenticated GitHub ENTERPRISE host is one gh keeps and this cannot
+  #     recognise, since the auth config is not readable from here.
+  # All three are the same defect as the `insteadOf` one: a remote gh SEES that
+  # the gate does not count identically.
+  #
+  # THE COST, stated because it is real: a checkout whose only GitHub remote is
+  # spelled `git@ssh.github.com:...`, or that carries any non-github.com remote
+  # at all (a GitLab mirror, a GHES upstream), is REFUSED rather than judged.
+  # That is an over-refusal falling back to the binding requirement, never below
+  # `origin/main`, and it does not touch the prescribed flow, whose sibling
+  # checkouts carry github.com remotes only.
+  [ "$host" = "github.com" ] || return 2
   rest="${rest#/}"
   rest="${rest%/}"
   rest="${rest%.git}"
@@ -714,8 +746,22 @@ __vpg_slug_from_resolved() {
 # mis-parsed a remote NAME CONTAINING A SPACE.
 __vpg_remote_list() {
   local dir="$1" name url slug rc
+  local tab
+  tab=$(printf '\t')
   while IFS= read -r name; do
     [ -n "$name" ] || continue
+    # A TAB in a remote NAME desyncs the `name<TAB>slug` protocol every consumer
+    # below reads with `IFS=<TAB>`. `git remote add` refuses one, but a
+    # hand-written `.git/config` subsection carries it and `git remote` lists it
+    # (git rejects a newline, so the tab is the only vector). Left unhandled, a
+    # remote named `origin<TAB>x` takes BOTH `origin`'s rank and its identity
+    # branch, and a name ending in `<TAB>!UNREADABLE` forges the sentinel.
+    case "$name" in
+      *"$tab"*)
+        printf '%s\t!UNREADABLE\n' "unreadable-remote-name"
+        continue
+        ;;
+    esac
     if ! url=$(git -C "$dir" remote get-url "$name" 2>/dev/null); then
       printf '%s\t!UNREADABLE\n' "$name"
       continue
