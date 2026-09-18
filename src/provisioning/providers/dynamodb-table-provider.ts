@@ -352,6 +352,131 @@ function liveCeilingAlreadyMatches(
 }
 
 /**
+ * The sentinel DynamoDB accepts to CLEAR an on-demand request-unit maximum
+ * (issue [#3373](https://github.com/go-to-k/cdkd/issues/3373)).
+ *
+ * LIVE-VERIFIED at BOTH positions this file sends from, which is what makes it
+ * implementable at both at once rather than at one and not the other:
+ *
+ *  - `UpdateTable.OnDemandThroughput` — AWS's own SDK model doc for the block,
+ *    and the measurement recorded on issue
+ *    [#1434](https://github.com/go-to-k/cdkd/issues/1434) (us-east-1 +
+ *    us-west-2, 2026-08-09);
+ *  - `UpdateTable.GlobalSecondaryIndexUpdates[].Update.OnDemandThroughput` —
+ *    the position issue #3373's body called UNMEASURED. It is not. Issue
+ *    [#1423](https://github.com/go-to-k/cdkd/issues/1423) was filed to probe
+ *    exactly this action and its comment thread carries the transcript
+ *    (us-east-1, 2026-08-09, throwaway table): `{-1, -1}` was ACCEPTED and
+ *    `DescribeTable` then reported the block ABSENT, and the MIXED
+ *    `{MaxReadRequestUnits: 50, MaxWriteRequestUnits: -1}` was accepted with
+ *    the kept member preserved. `dynamodb-globaltable-provider.ts` has shipped
+ *    on that measurement since. #3373's dup-check dismissed those issues
+ *    because `AWS::DynamoDB::GlobalTable` spells its per-GSI ceilings
+ *    `Write` / `ReadOnDemandThroughputSettings` — true of the TEMPLATE and
+ *    irrelevant to the WIRE, where both providers send the same
+ *    `UpdateGlobalSecondaryIndexAction.OnDemandThroughput`.
+ *
+ * The read-back is ABSENCE, never `-1`, at both positions — so nothing on the
+ * drift / `readCurrentState` side may expect this value.
+ */
+const ON_DEMAND_LIMIT_RESET = -1;
+
+/**
+ * Which `OnDemandThroughput` members this update must explicitly REMOVE, as a
+ * list of member names (issue #3373).
+ *
+ * An absent member KEEPS whatever maximum the table already carries, so a
+ * template edit that drops a ceiling used to deploy GREEN, be recorded as
+ * applied, and leave the live maximum in force forever — the #1160
+ * absent-field-reset class, one level down inside a nested block.
+ *
+ * PER MEMBER, never per BLOCK: read and write maxima are independent template
+ * values, so a whole-block branch would drop the single-member removal, which
+ * is the likelier user edit (the `AWS::DynamoDB::GlobalTable` twin paid for
+ * that once already).
+ *
+ * THREE conditions, all necessary, each closing a different way this goes
+ * wrong:
+ *
+ *  1. **the PREVIOUS side declared it AND it survived narrowing.**
+ *     `previousProperties` is a cdkd STATE record and the record is RAW — it
+ *     holds the spelling the TEMPLATE declared, including a member
+ *     {@link narrowOnDemandCeilings} REFUSED and cdkd therefore never sent. A
+ *     raw presence test would read such a member as "previously applied".
+ *  2. **the DESIRED side does not declare it AT ALL, raw.** This is issue
+ *     [#1440](https://github.com/go-to-k/cdkd/issues/1440) exactly: a member
+ *     the grammar rejected is the template TRYING to SET a ceiling, and taking
+ *     the reset branch for it would silently CLEAR the ceiling being set. The
+ *     narrowed desired side cannot tell those apart; the raw one can.
+ *  3. **AWS actually HOLDS the member right now.** `DescribeTable` reports
+ *     `OnDemandThroughput` only on a PAY_PER_REQUEST table, so this single
+ *     condition does three jobs at once: it proves there is a maximum to
+ *     remove, it keeps a doomed `-1` off a PROVISIONED table (where the call
+ *     would be rejected and take co-resident edits with it), and it makes the
+ *     whole rule fail CLOSED when cdkd holds no live snapshot — which is the
+ *     correct direction for a send that DESTROYS a live value.
+ *
+ * `declared` present but NOT a plain block (a string, an array, an unresolved
+ * intrinsic) yields NO removals: that value is forwarded VERBATIM for AWS to
+ * reject by shape, and merging a sentinel into it is not expressible.
+ *
+ * And a declared block cdkd cannot READ AT ALL yields none either — a plain
+ * object with no member surviving {@link narrowOnDemandCeilings}, i.e. only
+ * rejected spellings or only names the grammar does not know (`{Ref: 'Unset'}`,
+ * a mis-nested value). That is condition 2 one level up: such a block is not a
+ * statement that the sibling member was REMOVED, it is a template cdkd could
+ * not read, and clearing a live maximum on the strength of it is the same
+ * destruction #1440 describes. An ABSENT desired side is the opposite and is
+ * the headline case — nothing declared means nothing kept.
+ */
+function onDemandCeilingRemovals(
+  declared: unknown,
+  previous: unknown,
+  live: OnDemandThroughput | undefined
+): string[] {
+  if (live === undefined) return [];
+  if (declared !== undefined && declared !== null && !isPlainCapacityBlock(declared)) return [];
+  const previousBlock = narrowOnDemandCeilings(previous).block;
+  if (!isPlainCapacityBlock(previousBlock)) return [];
+  const declaredBlock = isPlainCapacityBlock(declared) ? declared : undefined;
+  if (declaredBlock !== undefined) {
+    const declaredSurvivors = narrowOnDemandCeilings(declaredBlock).block;
+    if (
+      !isPlainCapacityBlock(declaredSurvivors) ||
+      !ON_DEMAND_CEILING_MEMBERS.some((member) => member in declaredSurvivors)
+    ) {
+      return [];
+    }
+  }
+  const liveBag = live as unknown as Record<string, unknown>;
+  const removals: string[] = [];
+  for (const member of ON_DEMAND_CEILING_MEMBERS) {
+    if (!(member in previousBlock)) continue;
+    if (declaredBlock !== undefined && member in declaredBlock) continue;
+    if (toFiniteNumber(liveBag[member]) === undefined) continue;
+    removals.push(member);
+  }
+  return removals;
+}
+
+/**
+ * Merge the {@link onDemandCeilingRemovals} sentinels into a block bound for
+ * the wire (issue #3373).
+ *
+ * A COPY, never a mutation of `block`: {@link narrowOnDemandCeilings} returns
+ * its input BY IDENTITY when nothing needed rewriting, so mutating here would
+ * write `-1` into the caller's own `properties` bag — which the engine then
+ * records as state.
+ */
+function withOnDemandCeilingRemovals(block: unknown, removals: readonly string[]): unknown {
+  if (removals.length === 0) return block;
+  const base = isPlainCapacityBlock(block) ? block : {};
+  const merged: Record<string, unknown> = { ...base };
+  for (const member of removals) merged[member] = ON_DEMAND_LIMIT_RESET;
+  return merged;
+}
+
+/**
  * The capacity both TABLE-level forwarders substitute for a member the
  * template does not declare at all — `create()`'s `CreateTable` and the
  * BillingMode flip's `UpdateTable`. It is the pre-issue-#3147 `?? 5`, kept
@@ -1838,9 +1963,120 @@ export class DynamoDBTableProvider implements ResourceProvider {
             `PROVISIONED${absentNote} while still declaring OnDemandThroughput, which AWS ` +
             `accepts only on a PAY_PER_REQUEST table. Nothing was applied. Remove ` +
             `OnDemandThroughput, or keep BillingMode: PAY_PER_REQUEST.`,
-          logicalId,
-          resourceType
+          // `resourceType` then `logicalId`, which is the CONSTRUCTOR's order
+          // and was TRANSPOSED here from issue #1553 until go-to-k/cdkd#3392
+          // swept the file: every other `new ProvisioningError` in this
+          // provider already passed them this way, so the refusal was reporting
+          // `resourceType: 'MyTable'` and `logicalId: 'AWS::DynamoDB::Table'`
+          // into the deployment event and the error display.
+          resourceType,
+          logicalId
         );
+      }
+      // The PER-INDEX twin of the refusal above (issue
+      // [#3392](https://github.com/go-to-k/cdkd/issues/3392)). The arm above
+      // keys on `properties['OnDemandThroughput']`, the TABLE block, so a
+      // template declaring the ceiling only inside `GlobalSecondaryIndexes[]`
+      // slipped past it — and `applyGsiUpdates` has THREE per-index send sites
+      // (the `Create` action since issue #3265, and both `Update` arms since
+      // issue #3287). DynamoDB accepts `OnDemandThroughput` only on a
+      // PAY_PER_REQUEST table, and all three ride the same
+      // `GlobalSecondaryIndexUpdates` array, so on a PROVISIONED table AWS
+      // rejects the whole request and an otherwise-valid per-index CAPACITY
+      // edit sharing that action goes down with it — after the BillingMode flip
+      // has already been applied. Refusing here is what keeps the pre-flight
+      // ahead of the mutation. (`applyTagDiff` above has already run, exactly
+      // as it has for the table-level arm since #1553; the ordering that
+      // matters is against the flip and the GSI ops.)
+      //
+      // A mid-update warn-and-SKIP was the first shape tried, in PR
+      // go-to-k/cdkd#3380, and a review returned a BLOCKER against it: the
+      // deploy then SUCCEEDS, so the engine records the DESIRED bag including a
+      // ceiling AWS never received, and the next deploy — the one where the
+      // user FIXES the billing mode — compares desired against that record,
+      // finds them equal, and returns before the send. That is #3287's own
+      // defect reintroduced through the gate meant to make it safe, and it is
+      // the silent-drop class the table-level twin refuses for the same reason.
+      //
+      // The INPUT is the EFFECTIVE mode, not `billingMode` and not
+      // `liveBillingMode` alone. `billingMode` is the normalized DESIRED mode
+      // and only reaches AWS when `billingOrThroughputChanged` is true; when
+      // that flag is false nothing is sent and the table keeps what it already
+      // has. Either binding alone is wrong in a direction this file documents
+      // as reachable at the arm above (a `cdkd import`, an out-of-band console
+      // flip, `BillingMode` absent on both sides): the desired mode alone
+      // FALSELY REFUSES a live on-demand table whose template omits
+      // `BillingMode` (both sides normalize to the type default PROVISIONED,
+      // yet no flip is sent), and it FALSELY ACCEPTS a live PROVISIONED table
+      // whose record and template both say PAY_PER_REQUEST, where the ceiling
+      // really is rejected.
+      const effectiveBillingMode = billingOrThroughputChanged ? billingMode : liveBillingMode;
+      if (effectiveBillingMode === 'PROVISIONED') {
+        // TRUTHINESS, matching `indexCeilingForSend`'s own gate and the `Create`
+        // arm's `gsi.OnDemandThroughput` test exactly. A refusal NARROWER than
+        // the send leaves a hole; a WIDER one refuses a deploy that would have
+        // been fine.
+        const ceilingIndexNames = (
+          Array.isArray(properties['GlobalSecondaryIndexes'])
+            ? (properties['GlobalSecondaryIndexes'] as unknown[])
+            : []
+        )
+          .filter(
+            (entry): entry is Record<string, unknown> =>
+              entry !== null && typeof entry === 'object' && !Array.isArray(entry)
+          )
+          .filter((entry) => Boolean(entry['OnDemandThroughput']))
+          // The index NAME is a RESOLVED property value, and the `IndexName!`
+          // cast every other site in this file carries means a NUMERIC name
+          // really does arrive — which is why this renders through the same
+          // `<unnamed>` fallback {@link indexScopeAt} uses rather than handing
+          // a non-string to the masker's `String.prototype.replace`.
+          .map((entry) =>
+            typeof entry['IndexName'] === 'string'
+              ? maskSecrets(entry['IndexName'])
+              : '<unnamed index>'
+          );
+        if (ceilingIndexNames.length > 0) {
+          const modeNote = billingOrThroughputChanged
+            ? ''
+            : ' (the table is already PROVISIONED in AWS and this update sends no BillingMode change)';
+          const message =
+            `AWS::DynamoDB::Table ${logicalId}: GlobalSecondaryIndexes ` +
+            `${ceilingIndexNames.join(', ')} declare OnDemandThroughput while the table's ` +
+            `billing mode is PROVISIONED${modeNote}, which AWS accepts only on a ` +
+            `PAY_PER_REQUEST table. Remove the per-index OnDemandThroughput, or set ` +
+            `BillingMode: PAY_PER_REQUEST.`;
+          // DOWNGRADE on a replay, unlike the table-level twin — and the
+          // difference is not a style choice. That arm can state that its shape
+          // "cannot occur in a valid record"; this one cannot. Before issue
+          // #3287 NEITHER `Update` arm sent the member, so a PROVISIONED table
+          // carrying a per-index ceiling DEPLOYED GREEN and was recorded, and a
+          // hard throw on the rollback executor's revert arms would leave such a
+          // stack un-rollbackable with no template-side remedy — the exact class
+          // `.claude/rules/provider-replay-and-refusals.md` exists to prevent.
+          //
+          // The flip side, stated rather than glossed: on the TEMPLATE path this
+          // IS a behaviour change on the steady-state shape. A PROVISIONED table
+          // whose template has always carried a per-index ceiling deployed green
+          // whenever the ceiling was UNCHANGED (the change detector returns
+          // before the send), and now fails at pre-flight. That is deliberate:
+          // the ceiling can never take effect on such a table, the user believes
+          // they have a cost cap and do not, and the remedy is one template edit.
+          if (context?.replayingState === true) {
+            warn(
+              `${message} Downgraded to a warning because this update is replaying a cdkd ` +
+                `state record, which the template cannot fix; the per-index ceiling will be ` +
+                `sent and AWS will reject it.`
+            );
+          } else {
+            throw new ProvisioningError(
+              `${message} Nothing was applied.`,
+              resourceType,
+              logicalId,
+              physicalId
+            );
+          }
+        }
       }
       // The LIVE index list and the DESIRED index map, hoisted out of the flip
       // block because the pre-flip REMOVAL below needs both before the flip is
@@ -2270,26 +2506,50 @@ export class DynamoDBTableProvider implements ResourceProvider {
         JSON.stringify(properties['OnDemandThroughput']) !==
         JSON.stringify(previousProperties['OnDemandThroughput'])
       ) {
-        // A pure REMOVAL (new absent, previous present) fires the detector and
-        // then sends nothing, so the live ceiling SURVIVES -- the same shape the
-        // `WarmThroughput` branch below states for itself. It is called out here
-        // because this change makes it conspicuous: the drop warning now teaches
-        // `-1` as the removal spelling, so a reader could reasonably expect
-        // deleting the block to remove the maximum too, and it does not. Raised
-        // by the go-to-k/cdkd#3291 review; pre-existing, not introduced here.
-        if (properties['OnDemandThroughput']) {
-          await this.dynamoDBClient.send(
-            new UpdateTableCommand({
-              TableName: physicalId,
-              // COERCED, not forwarded verbatim (issue #3265), through the same
+        // A pure REMOVAL (new absent, previous present) used to fire the
+        // detector and then send NOTHING, so the live ceiling survived forever
+        // while state recorded the removal as applied. Issue
+        // [#3373](https://github.com/go-to-k/cdkd/issues/3373) closes that at
+        // BOTH of this property's positions in the same change — its per-index
+        // twin is in {@link indexCeilingForSend} — because implementing it at
+        // one of the two would make the same property behave differently at the
+        // table and at an index of the same table.
+        //
+        // {@link onDemandCeilingRemovals} owns every condition; read its doc
+        // before touching this. The live block it reads is the `DescribeTable`
+        // from the top of this method, which is also what keeps the reset off a
+        // PROVISIONED table.
+        const ceilingRemovals = onDemandCeilingRemovals(
+          properties['OnDemandThroughput'],
+          previousProperties['OnDemandThroughput'],
+          table?.OnDemandThroughput
+        );
+        if (properties['OnDemandThroughput'] || ceilingRemovals.length > 0) {
+          const declaredForSend = properties['OnDemandThroughput']
+            ? // COERCED, not forwarded verbatim (issue #3265), through the same
               // reader `create()` uses — the change DETECTOR above compares the
               // declared block against the recorded one, both raw, which is
               // what keeps it symmetric; this is only what goes on the wire.
-              OnDemandThroughput: this.coerceOnDemandCeilingsForSend(
+              this.coerceOnDemandCeilingsForSend(
                 `AWS::DynamoDB::Table ${logicalId}`,
                 properties['OnDemandThroughput'],
                 maskSecrets
-              ),
+              )
+            : {};
+          if (ceilingRemovals.length > 0) {
+            debug(
+              `AWS::DynamoDB::Table ${logicalId}: removing the OnDemandThroughput ` +
+                `${ceilingRemovals.join(' / ')} the template no longer declares (sending ` +
+                `${ON_DEMAND_LIMIT_RESET}, DynamoDB's reset sentinel)`
+            );
+          }
+          await this.dynamoDBClient.send(
+            new UpdateTableCommand({
+              TableName: physicalId,
+              OnDemandThroughput: withOnDemandCeilingRemovals(
+                declaredForSend,
+                ceilingRemovals
+              ) as OnDemandThroughput,
             })
           );
           // UpdateTable is async; wait for ACTIVE so later branches (SSE /
@@ -3154,10 +3414,20 @@ export class DynamoDBTableProvider implements ResourceProvider {
   private async applyPointInTimeRecovery(
     tableName: string,
     spec: unknown,
-    previousSpec?: unknown,
+    // REQUIRED rather than optional (issue
+    // [#3364](https://github.com/go-to-k/cdkd/issues/3364)) — not a decision of
+    // its own, but the consequence of making `maskSecrets` required: a required
+    // parameter cannot follow an optional one. Both call sites already pass it
+    // explicitly (`undefined` on the create path), so nothing changed but the
+    // fence.
+    previousSpec: unknown,
     // Threaded for the ONE warning below (issue #3147). The spec arrives
     // RESOLVED, so a member of it can be secret plaintext.
-    maskSecrets: SecretMasker = (text) => text
+    //
+    // REQUIRED, with no identity default (issue #3364): an omitted argument
+    // would silently degrade BOTH masking layers at once, and the typechecker
+    // is the only fence that catches it at every present and future call site.
+    maskSecrets: SecretMasker
   ): Promise<void> {
     let enabled: boolean | undefined;
     let recoveryPeriodInDays: number | undefined;
@@ -3480,11 +3750,16 @@ export class DynamoDBTableProvider implements ResourceProvider {
   private async applyKinesisStreamingDestination(
     tableName: string,
     spec: unknown,
-    previousSpec?: unknown,
+    // REQUIRED rather than optional for the same mechanical reason as
+    // `applyPointInTimeRecovery`'s (issue #3364): a required parameter cannot
+    // follow an optional one. Both call sites already pass it explicitly.
+    previousSpec: unknown,
     // The caller's secret masker (issue #1997). The warning below names
     // `tableName`, which on the create path IS `properties['TableName']`.
-    // Defaults to IDENTITY; both callers are on the create / update path.
-    maskSecrets: SecretMasker = (text) => text
+    //
+    // REQUIRED, with no identity default (issue #3364) — see
+    // `applyPointInTimeRecovery` for why the typechecker is the fence.
+    maskSecrets: SecretMasker
   ): Promise<void> {
     const newArn = this.extractKinesisStreamArn(spec);
     const prevArn = this.extractKinesisStreamArn(previousSpec);
@@ -3825,7 +4100,13 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // capacity change that equals the current value, so re-asserting it fails
     // the deploy outright. Only the throughput arm is suppressed: an index that
     // was ADDED or REMOVED in the same deploy still needs its own op.
-    handledByBillingFlip: ReadonlySet<string> = new Set<string>(),
+    //
+    // REQUIRED rather than defaulted since issue
+    // [#3364](https://github.com/go-to-k/cdkd/issues/3364), together with the
+    // three parameters below it: a required parameter cannot follow an optional
+    // one, and `maskSecrets` at the end of this list had to become required.
+    // The sole call site already passes all four.
+    handledByBillingFlip: ReadonlySet<string>,
     // The index names AWS actually has right now (issue #1617). A Delete is
     // emitted only for a name in this set, which makes the removal arm
     // IDEMPOTENT — covering both the indexes the pre-flip removal just deleted
@@ -3837,25 +4118,27 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // `undefined` means "no live snapshot to reason from" and disables the
     // filter, so a caller without a DescribeTable result keeps the original
     // behavior rather than silently skipping every removal.
-    liveIndexNames?: ReadonlySet<string>,
+    liveIndexNames: ReadonlySet<string> | undefined,
     // The live `DescribeTable` index descriptions, keyed by name (issue
     // #1630). Carries the whole description rather than just the capacity
     // because the Create arm also needs `IndexStatus` to tell a recovered
     // index from one that is on its way OUT. `undefined` = no snapshot to
     // reason from, which disables both idempotency arms.
-    liveIndexByName?: ReadonlyMap<string, GlobalSecondaryIndexDescription>,
+    liveIndexByName: ReadonlyMap<string, GlobalSecondaryIndexDescription> | undefined,
     // Whether the live capacity NUMBERS mean anything. False for a table whose
     // LIVE billing mode is PAY_PER_REQUEST, where `DescribeTable` reports
     // `{0, 0}` for every index (the #1571 trap) — comparing that would be
     // meaningless, so the capacity half stays disabled while the EXISTENCE
     // half above still applies.
-    liveCapacityComparable = false,
+    liveCapacityComparable: boolean,
     // The caller's secret masker (issue #1932 item 3, adopted here by issue
     // #1997). Every warning below names a RESOLVED property value — an index
     // NAME, or a declared `WarmThroughput` / `ProvisionedThroughput` block — and
     // the helpers this method calls each install their own masked sink from it.
-    // Defaults to IDENTITY so existing callers and unit tests are unchanged.
-    maskSecrets: SecretMasker = (text) => text
+    // REQUIRED, with no identity default: see
+    // {@link DynamoDBTableProvider.coerceOnDemandCeilingsForSend} for why the
+    // typechecker is the only fence (issue #3364).
+    maskSecrets: SecretMasker
   ): Promise<void> {
     // ONE masked sink for the warnings this method emits directly (issue
     // #1997); the helpers below take the masker itself so they can also mask
@@ -4214,7 +4497,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
   private coerceWarmThroughputForSend(
     scope: string,
     value: unknown,
-    maskSecrets: SecretMasker = (text) => text
+    maskSecrets: SecretMasker
   ): WarmThroughput | undefined {
     // ONE masked sink (issue #1997) — BUILT, not an inline wrap. An inline
     // `this.logger.warn(maskSecrets(...))` leaves the next warning added here
@@ -4359,24 +4642,23 @@ export class DynamoDBTableProvider implements ResourceProvider {
    *    deploy succeed, so the engine records the un-sent ceiling as applied and
    *    the deploy that FIXES the billing mode then compares equal and never
    *    sends it — issue #3287's own defect, reintroduced by its own guard. The
-   *    file's table-level twin states that reasoning at its own refusal. The
-   *    correct shape is a PRE-FLIGHT refusal covering all THREE per-index send
-   *    sites (the `Create` arm has carried the same defect since #3265), which
-   *    is issue [#3392](https://github.com/go-to-k/cdkd/issues/3392). Until
-   *    then AWS validates the constraint, exactly as it does for the
-   *    TABLE-level arm and for the `Create` action.
+   *    file's table-level twin states that reasoning at its own refusal.
    *
-   *    **That IS a behaviour change on this shape, stated rather than glossed**
-   *    (round 3's C4). Before #3287 neither `Update` arm sent the member, so a
-   *    PROVISIONED table declaring a per-index ceiling deployed GREEN with the
-   *    ceiling silently ignored. Now the same-name arm sends it once the
-   *    ceiling CHANGES, AWS rejects the `UpdateTable`, and the co-resident
-   *    capacity / warm edits fail with it; the adopted-index arm has no
-   *    recorded previous side to gate on, so it re-fails every deploy until the
-   *    template is edited. Loud and recording nothing beats silent and lost,
-   *    which is why it ships this way rather than behind the withdrawn skip —
-   *    but it is a change, and #3392 is what makes it a cdkd-worded refusal
-   *    before any call instead of an AWS rejection after one.
+   *    **The refusal it pointed at has SHIPPED** (issue
+   *    [#3392](https://github.com/go-to-k/cdkd/issues/3392)): `update()` walks
+   *    `GlobalSecondaryIndexes[]` before any call and throws when the EFFECTIVE
+   *    billing mode is PROVISIONED, which covers all THREE per-index send sites
+   *    at once (this arm, the same-name `Update` arm's caller, and the `Create`
+   *    action, which has carried the same defect since #3265) because none of
+   *    them is reached. So this arm's job is unchanged and stays deliberately
+   *    mode-blind: a gate here would be a SECOND spelling of one rule, and the
+   *    mid-update spelling is the one that was measured wrong.
+   *
+   *    On the REPLAY path the pre-flight downgrades to a warning and this arm
+   *    still runs, so the remaining behaviour is what #3287's round 3 recorded:
+   *    the member goes out, AWS rejects the `UpdateTable`, and the co-resident
+   *    capacity / warm edits fail with it. Loud and recording nothing beats
+   *    silent and lost.
    *  - **The change detector compares the NARROWED blocks WHEN NOTHING WAS
    *    DROPPED, and the RAW ones otherwise** — the one place it differs from its
    *    `ProvisionedThroughput` sibling two arms up. `'200'` and `200` are the
@@ -4422,18 +4704,26 @@ export class DynamoDBTableProvider implements ResourceProvider {
    *    rejects by name (issue #3392) rather than a silently dropped change.
    *    There is no `{0, 0}` analogue of the #1571 capacity trap.
    *
-   * What it deliberately does NOT do is REMOVE a ceiling. A desired side that
-   * declares none takes the truthiness gate and emits nothing, so the live
-   * maximum SURVIVES — `-1` is AWS's documented removal sentinel and an absent
-   * member keeps the maximum. That is byte-identical to what `update()`'s
-   * TABLE-level arm does with the same edit (its own comment states it), and
-   * implementing the reset on ONE of the two would make the same property
-   * behave differently at the table and at an index of the same table. The
-   * removal direction is filed for BOTH sites together as issue
-   * [#3373](https://github.com/go-to-k/cdkd/issues/3373), which also records
-   * why it is not an extrapolation from the GlobalTable measurement: `-1` is
-   * LIVE-VERIFIED at `UpdateTable.OnDemandThroughput` and UNMEASURED at this
-   * action's, and sending it DESTROYS a live ceiling.
+   * It DOES remove a ceiling, since issue
+   * [#3373](https://github.com/go-to-k/cdkd/issues/3373) — and the removal is
+   * the one thing here that runs AHEAD of the truthiness gate, because the
+   * whole point is a desired side that declares nothing. An absent member KEEPS
+   * whatever maximum the index already carries, so before #3373 a template edit
+   * dropping a ceiling deployed GREEN, was recorded as applied, and left the
+   * live maximum in force forever.
+   *
+   * {@link onDemandCeilingRemovals} owns every condition and
+   * {@link ON_DEMAND_LIMIT_RESET} carries the measurement for THIS action's
+   * position (issue #1423's probe transcript, not an extrapolation from the
+   * table-level field's docs). Two properties of that rule matter most here:
+   * the previous side is read through {@link narrowOnDemandCeilings} so a
+   * member cdkd REFUSED cannot read as "previously applied", and the reset
+   * fires only for a member AWS is OBSERVED to hold — which is also what keeps
+   * it off a PROVISIONED index and makes it fail CLOSED with no live snapshot.
+   *
+   * The TABLE-level arm in `update()` takes the same rule in the same change,
+   * because implementing it at ONE of the two positions would make the same
+   * property behave differently at the table and at an index of the same table.
    */
   private indexCeilingForSend(
     // `unknown`, NOT `string` (the go-to-k/cdkd#3380 review, n4) — the same
@@ -4448,7 +4738,25 @@ export class DynamoDBTableProvider implements ResourceProvider {
     live: GlobalSecondaryIndexDescription | undefined,
     maskSecrets: SecretMasker
   ): OnDemandThroughput | undefined {
-    if (!gsi.OnDemandThroughput) return undefined;
+    // Computed BEFORE the truthiness gate (issue #3373): the headline removal
+    // is a desired side that declares no block at all, which that gate rejects.
+    const removals = onDemandCeilingRemovals(
+      gsi.OnDemandThroughput,
+      before?.OnDemandThroughput,
+      live?.OnDemandThroughput
+    );
+    if (!gsi.OnDemandThroughput) {
+      if (removals.length === 0) return undefined;
+      const removalScope = this.indexScopeAt(name, physicalId, maskSecrets);
+      this.logger.debug(
+        maskSecrets(
+          `${removalScope}: removing the OnDemandThroughput ${removals.join(' / ')} the ` +
+            `template no longer declares (sending ${ON_DEMAND_LIMIT_RESET}, DynamoDB's reset ` +
+            `sentinel)`
+        )
+      );
+      return withOnDemandCeilingRemovals({}, removals) as OnDemandThroughput;
+    }
     if (before !== undefined) {
       const desired = narrowOnDemandCeilings(gsi.OnDemandThroughput);
       const previous = narrowOnDemandCeilings(before.OnDemandThroughput);
@@ -4473,8 +4781,21 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // is what keeps the NEXT line added here masked by default.
     const warn = (message: string): void => this.logger.warn(maskSecrets(message));
     const debug = (message: string): void => this.logger.debug(maskSecrets(message));
-    const send = this.coerceOnDemandCeilingsForSend(scope, gsi.OnDemandThroughput, maskSecrets);
-    if (!isPlainCapacityBlock(send)) return send;
+    const coerced = this.coerceOnDemandCeilingsForSend(scope, gsi.OnDemandThroughput, maskSecrets);
+    if (!isPlainCapacityBlock(coerced)) return coerced;
+    // The SINGLE-MEMBER removal (issue #3373): the template still declares one
+    // maximum and dropped the other. Merged BEFORE the surviving-member gate
+    // below, so a desired block carrying only an unknown member name still
+    // delivers the reset its sibling member earned instead of being withheld as
+    // "nothing DynamoDB accepts". The merged shape is live-verified at this
+    // action's position -- see {@link ON_DEMAND_LIMIT_RESET}.
+    if (removals.length > 0) {
+      debug(
+        `${scope}: removing the OnDemandThroughput ${removals.join(' / ')} the template no ` +
+          `longer declares (sending ${ON_DEMAND_LIMIT_RESET}, DynamoDB's reset sentinel)`
+      );
+    }
+    const send = withOnDemandCeilingRemovals(coerced, removals) as Record<string, unknown>;
     if (!ON_DEMAND_CEILING_MEMBERS.some((member) => member in send)) {
       // Two ways to reach here, and they need DIFFERENT levels (the
       // go-to-k/cdkd#3380 round-3 review's C3, correcting round 2's C3).
@@ -4511,7 +4832,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
       );
       return undefined;
     }
-    return send;
+    return send as OnDemandThroughput;
   }
 
   /**
@@ -4550,7 +4871,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
   private coerceIndexThroughputForCreate(
     logicalId: string,
     entry: GlobalSecondaryIndex,
-    maskSecrets: SecretMasker = (text) => text
+    maskSecrets: SecretMasker
   ): GlobalSecondaryIndex {
     if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return entry;
     const bag = entry as unknown as Record<string, unknown>;
@@ -4663,7 +4984,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
   private coerceIndexCapacityBlock(
     scope: string,
     declared: unknown,
-    maskSecrets: SecretMasker = (text) => text
+    maskSecrets: SecretMasker
   ): Record<string, unknown> | undefined {
     if (!isPlainCapacityBlock(declared)) return undefined;
     const block = declared;
@@ -4934,7 +5255,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
     scope: string,
     member: string,
     raw: unknown,
-    maskSecrets: SecretMasker = (text) => text
+    maskSecrets: SecretMasker
   ): void {
     // ONE masked sink (issue #1997) — BUILT, not an inline wrap, with the raw
     // declared member masked leaf by leaf first. See
@@ -4972,7 +5293,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
   private warnRefusedWarmThroughput(
     scope: string,
     value: unknown,
-    maskSecrets: SecretMasker = (text) => text
+    maskSecrets: SecretMasker
   ): void {
     // ONE masked sink (issue #1997) — BUILT, not an inline wrap, with the raw
     // declared value masked leaf by leaf first. See
@@ -5049,7 +5370,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
     indexName: unknown,
     physicalId: string,
     requested: ProvisionedThroughput | undefined,
-    maskSecrets: SecretMasker = (text) => text
+    maskSecrets: SecretMasker
   ): boolean {
     if (requested === undefined) return false;
     if (
@@ -5115,7 +5436,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
     desired: GlobalSecondaryIndex,
     previous: GlobalSecondaryIndex | undefined,
     live: GlobalSecondaryIndexDescription | undefined,
-    maskSecrets: SecretMasker = (text) => text
+    maskSecrets: SecretMasker
   ): WarmThroughput | undefined {
     // ONE masked sink per level for every line in this method (issue #1997).
     // Built rather than inline-wrapped because this method had TWO further
@@ -5263,9 +5584,11 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // The caller's masker (the go-to-k/cdkd#3380 round-3 security review, S3).
     // The per-op debug line below names an index NAME -- a RESOLVED property
     // value -- and `logger.ts` masks nothing, so a resolved secret used as an
-    // index name printed in plaintext under `--verbose`. Defaults to IDENTITY
-    // so existing callers and unit tests are unchanged.
-    maskSecrets: SecretMasker = (text) => text
+    // index name printed in plaintext under `--verbose`. REQUIRED, with no
+    // identity default: see
+    // {@link DynamoDBTableProvider.coerceOnDemandCeilingsForSend} for why the
+    // typechecker is the only fence (issue #3364).
+    maskSecrets: SecretMasker
   ): Promise<void> {
     // ONE sink for this method, per `.claude/rules/provider-masking.md`: the
     // next debug line added here is masked by construction.
@@ -5367,7 +5690,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // bag containing members cdkd already dropped.
     desired: WarmThroughput,
     live: WarmThroughputUnits | undefined,
-    maskSecrets: SecretMasker = (text) => text
+    maskSecrets: SecretMasker
   ): boolean {
     // ONE masked sink (issue #1997) — BUILT, not an inline wrap. `desired` is
     // the COERCED numeric spec, so it carries no plaintext of its own, but a

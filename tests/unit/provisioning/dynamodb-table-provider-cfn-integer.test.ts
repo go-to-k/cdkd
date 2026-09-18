@@ -1795,15 +1795,134 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
       expect(warnings()).not.toContain(ON_DEMAND);
     });
 
-    it('site 5 update (SAME-NAME GSI Update action): a REMOVED ceiling sends nothing (go-to-k/cdkd#3373)', async () => {
-      // The decision, pinned: omitting a member KEEPS the live maximum (only an
-      // explicit `-1` removes one), and cdkd does NOT substitute the sentinel at
-      // either of this property's two positions. Byte-identical to what the
-      // TABLE-level arm does with the same edit; the removal direction is filed
-      // for both together as go-to-k/cdkd#3373.
+    it('site 5 update (SAME-NAME GSI Update action): a REMOVED ceiling sends the -1 sentinel (go-to-k/cdkd#3373)', async () => {
+      // INVERTED by go-to-k/cdkd#3373. This case used to pin the opposite
+      // ("sends nothing"), which was the DEFECT: an absent member keeps
+      // whatever maximum the index already carries, so the template edit
+      // deployed green, was recorded as applied, and left the live maximum in
+      // force forever.
+      //
+      // `-1` is DynamoDB's documented removal sentinel and is live-verified at
+      // THIS action's position -- go-to-k/cdkd#1423's probe transcript, the
+      // measurement `dynamodb-globaltable-provider.ts` has shipped on since.
       const updates = await gsiCeilingOps(
         [ppRequestGsi('gsi1')],
         [ppRequestGsi('gsi1', { MaxReadRequestUnits: 200 })],
+        { indexes: [{ ...LIVE_GSI('gsi1'), OnDemandThroughput: { MaxReadRequestUnits: 200 } }] }
+      );
+      expect(updates).toEqual([
+        { IndexName: 'gsi1', OnDemandThroughput: { MaxReadRequestUnits: -1 } },
+      ]);
+    });
+
+    it('site 5 update: a SINGLE-MEMBER removal keeps the sibling the template still declares (go-to-k/cdkd#3373)', async () => {
+      // PER MEMBER, never per BLOCK: read and write maxima are independent
+      // template values, and the single-member drop is the likelier user edit.
+      // The MIXED payload is the shape go-to-k/cdkd#1423 measured accepted at
+      // this position, with the kept member preserved.
+      const updates = await gsiCeilingOps(
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: 50 })],
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: 50, MaxWriteRequestUnits: 60 })],
+        {
+          indexes: [
+            {
+              ...LIVE_GSI('gsi1'),
+              OnDemandThroughput: { MaxReadRequestUnits: 50, MaxWriteRequestUnits: 60 },
+            },
+          ],
+        }
+      );
+      expect(updates).toEqual([
+        {
+          IndexName: 'gsi1',
+          OnDemandThroughput: { MaxReadRequestUnits: 50, MaxWriteRequestUnits: -1 },
+        },
+      ]);
+    });
+
+    it('site 5 update: does NOT reset a member AWS is not observed to hold (go-to-k/cdkd#3373)', async () => {
+      // Condition 3 of `onDemandCeilingRemovals`, and it does three jobs at
+      // once. `DescribeTable` reports `OnDemandThroughput` only on a
+      // PAY_PER_REQUEST table, so "AWS holds it" simultaneously proves there is
+      // a maximum to remove, keeps a doomed `-1` off a PROVISIONED index, and
+      // makes the whole rule fail CLOSED where cdkd has no live snapshot --
+      // which is the right direction for a send that DESTROYS a live value.
+      //
+      // The live index here carries NO ceiling, so nothing is removed even
+      // though the record says a maximum was once applied.
+      const updates = await gsiCeilingOps(
+        [ppRequestGsi('gsi1')],
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: 200 })],
+        { indexes: [LIVE_GSI('gsi1')] }
+      );
+      expect(updates).toEqual([]);
+    });
+
+    it('site 5 update: does NOT reset a member the RECORD holds in a spelling cdkd REFUSED (go-to-k/cdkd#3373)', async () => {
+      // Condition 1. `previousProperties` is a cdkd STATE record and the record
+      // is RAW -- it holds the spelling the TEMPLATE declared, including a
+      // member `narrowOnDemandCeilings` refused and cdkd therefore never sent.
+      // A raw presence test would read `' 200 '` as "previously applied" and
+      // clear a ceiling AWS still holds from an EARLIER deploy.
+      const updates = await gsiCeilingOps(
+        [ppRequestGsi('gsi1')],
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: ' 200 ' })],
+        { indexes: [{ ...LIVE_GSI('gsi1'), OnDemandThroughput: { MaxReadRequestUnits: 90 } }] }
+      );
+      expect(updates).toEqual([]);
+    });
+
+    it('site 5 update: does NOT reset a member the DESIRED side declares but cdkd REJECTED (go-to-k/cdkd#1440)', async () => {
+      // Condition 2, and the destructive one. A declared-but-rejected member is
+      // the template TRYING to SET a ceiling; taking the reset branch for it
+      // would silently CLEAR the ceiling being set. The discriminator is the
+      // RAW desired side -- the narrowed one cannot tell "rejected" from
+      // "omitted". The sibling member still carries the edit, so the op is
+      // emitted and the arm really ran.
+      const updates = await gsiCeilingOps(
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: ' 200 ', MaxWriteRequestUnits: 70 })],
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: 200, MaxWriteRequestUnits: 60 })],
+        {
+          indexes: [
+            {
+              ...LIVE_GSI('gsi1'),
+              OnDemandThroughput: { MaxReadRequestUnits: 200, MaxWriteRequestUnits: 60 },
+            },
+          ],
+        }
+      );
+      expect(updates).toEqual([
+        { IndexName: 'gsi1', OnDemandThroughput: { MaxWriteRequestUnits: 70 } },
+      ]);
+    });
+
+    it('site 5 update: an UNREADABLE desired block resets NOTHING, even though it declares no member (go-to-k/cdkd#3373)', async () => {
+      // `{Ref: 'Unset'}` is a plain object that declares no member the grammar
+      // knows, so the "desired does not declare it" test alone reads it as a
+      // REMOVAL -- and clearing a live maximum on the strength of an
+      // unresolved intrinsic is #1440's destruction one level up. The rule
+      // therefore requires the desired block to carry at least one SURVIVING
+      // member before any sibling counts as removed; an ABSENT block is the
+      // opposite and is the headline case.
+      const updates = await gsiCeilingOps(
+        [ppRequestGsi('gsi1', { Ref: 'Unset' })],
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: 200 })],
+        { indexes: [{ ...LIVE_GSI('gsi1'), OnDemandThroughput: { MaxReadRequestUnits: 200 } }] }
+      );
+      expect(updates).toEqual([]);
+      expect(warnings()).toContain('no member DynamoDB accepts');
+    });
+
+    it('site 5 update: the ADOPTED-index arm has no previous side, so it removes nothing (go-to-k/cdkd#3373)', async () => {
+      // The third per-index send site. It reaches `indexCeilingForSend` with
+      // `before === undefined` -- there IS no recorded previous side to derive
+      // a removal from -- so the reset can never fire there, whatever AWS
+      // holds. Pinned because the arm is easy to reach by accident: a `?.`
+      // slip on the previous side would make every adopted index clear its
+      // live ceiling.
+      const updates = await gsiCeilingOps(
+        [ppRequestGsi('gsi1')],
+        [],
         { indexes: [{ ...LIVE_GSI('gsi1'), OnDemandThroughput: { MaxReadRequestUnits: 200 } }] }
       );
       expect(updates).toEqual([]);

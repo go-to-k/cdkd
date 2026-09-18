@@ -15,6 +15,12 @@
 # silent-drop routing flip is caught, and that the destroy path cleans up the
 # table, the Kinesis stream, and the cdkd state file.
 #
+# Phase 1.56 exercises the REMOVAL direction of the same property (issue
+# go-to-k/cdkd#3373): a fifth table drops one `OnDemandThroughput` member at
+# the TABLE level AND at one of its GSIs while RETAINING the sibling at each,
+# and the phase asserts AWS reports the dropped member ABSENT and the retained
+# one unchanged. Pre-fix the removal was a silent no-op recorded as applied.
+#
 # Phase 1.5 additionally exercises the BillingMode/ProvisionedThroughput
 # in-place UPDATE path on a standalone PROVISIONED table: a re-deploy with
 # CDKD_TEST_UPDATE=true flips its capacity (RCU 5->20 / WCU 5->10) and asserts
@@ -87,6 +93,16 @@ GSI_CEILING_INITIAL_READ=20
 GSI_CEILING_UPDATED_READ=40
 GSI_CEILING_WRITE=15
 TABLE_CEILING_READ=30
+# issue go-to-k/cdkd#3373: the table whose TABLE-level AND per-GSI on-demand
+# WRITE ceilings are REMOVED by the UPDATE phase while the READ ceilings are
+# RETAINED. Values disjoint from every other table in this fixture, so a
+# describe-table assertion cannot match the wrong resource.
+CEILING_REMOVAL_TABLE="cdkd-ondemand-test-ceiling-removal-table"
+CEILING_REMOVAL_INDEX="gsi-ceiling-removal"
+CEILING_REMOVAL_TABLE_READ=61
+CEILING_REMOVAL_TABLE_WRITE=57
+CEILING_REMOVAL_GSI_READ=43
+CEILING_REMOVAL_GSI_WRITE=39
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -106,6 +122,7 @@ cleanup() {
   aws dynamodb delete-table --table-name "${PROV_TABLE_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   aws dynamodb delete-table --table-name "${BILLING_REMOVAL_TABLE}" --region "${REGION}" >/dev/null 2>&1 || true
   aws dynamodb delete-table --table-name "${GSI_CEILING_TABLE}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws dynamodb delete-table --table-name "${CEILING_REMOVAL_TABLE}" --region "${REGION}" >/dev/null 2>&1 || true
   aws kinesis delete-stream --stream-name "${STREAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
@@ -373,6 +390,43 @@ if [ "${TABLE_CEILING_ACTUAL_WRITE}" != "absent" ]; then
 fi
 echo "    OK (Phase 1): the rejected write ceiling reached neither AWS nor its legal sibling"
 
+# --- issue go-to-k/cdkd#3373 BASELINE ---------------------------------
+# The ceilings that the UPDATE phase will REMOVE, asserted LIVE first.
+#
+# This baseline is the whole reason the removal assertion is not vacuous: a
+# Phase 1.56 check that a member is ABSENT passes just as well for a member
+# that never reached AWS at all. Both positions are pinned, and at each one the
+# READ ceiling is the RETAINED sibling — without it a wholesale reset clearing
+# BOTH members would be indistinguishable from the per-member removal cdkd
+# actually performs.
+ceiling_removal_member() { # usage: ceiling_removal_member <json> <member>
+  echo "$1" | jq -r --arg m "$2" 'if has($m) then .[$m] | tostring else "absent" end'
+}
+assert_ceiling_removal() { # usage: assert_ceiling_removal <label> <json> <member> <expected>
+  local actual
+  actual="$(ceiling_removal_member "$2" "$3")"
+  if [ "${actual}" != "$4" ]; then
+    echo "FAIL (issue go-to-k/cdkd#3373): $1 $3 is '${actual}', expected '$4'" >&2
+    echo "$2" | jq .
+    exit 1
+  fi
+}
+
+CEILING_REMOVAL_TABLE_BASE=$(aws dynamodb describe-table --table-name "${CEILING_REMOVAL_TABLE}" --region "${REGION}" \
+  --query 'Table.OnDemandThroughput' --output json)
+assert_ceiling_removal "the removal table's baseline table-level" "${CEILING_REMOVAL_TABLE_BASE}" \
+  MaxReadRequestUnits "${CEILING_REMOVAL_TABLE_READ}"
+assert_ceiling_removal "the removal table's baseline table-level" "${CEILING_REMOVAL_TABLE_BASE}" \
+  MaxWriteRequestUnits "${CEILING_REMOVAL_TABLE_WRITE}"
+
+CEILING_REMOVAL_GSI_BASE=$(aws dynamodb describe-table --table-name "${CEILING_REMOVAL_TABLE}" --region "${REGION}" \
+  --query "Table.GlobalSecondaryIndexes[?IndexName=='${CEILING_REMOVAL_INDEX}'].OnDemandThroughput | [0]" --output json)
+assert_ceiling_removal "the removal table's baseline per-index" "${CEILING_REMOVAL_GSI_BASE}" \
+  MaxReadRequestUnits "${CEILING_REMOVAL_GSI_READ}"
+assert_ceiling_removal "the removal table's baseline per-index" "${CEILING_REMOVAL_GSI_BASE}" \
+  MaxWriteRequestUnits "${CEILING_REMOVAL_GSI_WRITE}"
+echo "    OK (Phase 1): both ceiling positions carry ${CEILING_REMOVAL_TABLE_READ}/${CEILING_REMOVAL_TABLE_WRITE} and ${CEILING_REMOVAL_GSI_READ}/${CEILING_REMOVAL_GSI_WRITE} before the removal"
+
 # The RECORD side of the same drop is NOT asserted here, and that is a
 # DECISION: state still carries the declared ' 25 ' while AWS holds no write
 # ceiling, so `cdkd drift` reports the difference until the template is fixed.
@@ -450,6 +504,62 @@ if [ "${GSI_CEILING_NOW_WRITE}" != "${GSI_CEILING_WRITE}" ]; then
   exit 1
 fi
 echo "    OK (Phase 1.55): the untouched write ceiling survived the edit"
+
+# --- Phase 1.56: the on-demand ceiling REMOVAL (issue go-to-k/cdkd#3373) ---
+# The same CDKD_TEST_UPDATE=true deploy DROPS one member at each of this
+# property's two positions on a fifth table, retaining the sibling at both.
+#
+# Before #3373 an absent member KEPT whatever maximum the table already
+# carried, so this edit deployed GREEN, was recorded as applied, and left the
+# live maximum in force forever -- the #1160 absent-field-reset class one level
+# down inside a nested block. cdkd now substitutes DynamoDB's `-1` reset
+# sentinel per MEMBER. The reset reads back as ABSENCE, never as -1, at both
+# positions (go-to-k/cdkd#1434 and go-to-k/cdkd#1423's probe), which is exactly
+# what this phase checks -- and no mocked client could: the wire value cdkd
+# sends and the value AWS then reports are different things.
+#
+# Async like every other `UpdateTable`, so poll rather than race it. The poll
+# is on the TABLE-level member; the per-index member rides its own
+# `GlobalSecondaryIndexUpdates` call and is re-read after the loop.
+CEILING_REMOVAL_OK=""
+for _ in $(seq 1 24); do
+  CEILING_REMOVAL_TABLE_NOW=$(aws dynamodb describe-table --table-name "${CEILING_REMOVAL_TABLE}" --region "${REGION}" \
+    --query 'Table.OnDemandThroughput' --output json)
+  if [ "$(ceiling_removal_member "${CEILING_REMOVAL_TABLE_NOW}" MaxWriteRequestUnits)" = "absent" ]; then
+    CEILING_REMOVAL_OK="yes"
+    break
+  fi
+  sleep 5
+done
+if [ -z "${CEILING_REMOVAL_OK}" ]; then
+  echo "FAIL (issue go-to-k/cdkd#3373): the TABLE-level MaxWriteRequestUnits is still live ~2min after the removal -- the reset sentinel is NOT reaching AWS" >&2
+  echo "${CEILING_REMOVAL_TABLE_NOW}" | jq .
+  exit 1
+fi
+# The RETAINED sibling: a reset that cleared the whole block would pass the
+# assertion above and fail here.
+assert_ceiling_removal "the removal table's retained table-level" "${CEILING_REMOVAL_TABLE_NOW}" \
+  MaxReadRequestUnits "${CEILING_REMOVAL_TABLE_READ}"
+echo "    OK (Phase 1.56): the TABLE-level write ceiling was REMOVED and its read sibling retained"
+
+CEILING_REMOVAL_GSI_OK=""
+for _ in $(seq 1 24); do
+  CEILING_REMOVAL_GSI_NOW=$(aws dynamodb describe-table --table-name "${CEILING_REMOVAL_TABLE}" --region "${REGION}" \
+    --query "Table.GlobalSecondaryIndexes[?IndexName=='${CEILING_REMOVAL_INDEX}'].OnDemandThroughput | [0]" --output json)
+  if [ "$(ceiling_removal_member "${CEILING_REMOVAL_GSI_NOW}" MaxWriteRequestUnits)" = "absent" ]; then
+    CEILING_REMOVAL_GSI_OK="yes"
+    break
+  fi
+  sleep 5
+done
+if [ -z "${CEILING_REMOVAL_GSI_OK}" ]; then
+  echo "FAIL (issue go-to-k/cdkd#3373): the PER-INDEX MaxWriteRequestUnits is still live ~2min after the removal -- the reset sentinel is NOT reaching the UpdateGlobalSecondaryIndexAction position" >&2
+  echo "${CEILING_REMOVAL_GSI_NOW}" | jq .
+  exit 1
+fi
+assert_ceiling_removal "the removal table's retained per-index" "${CEILING_REMOVAL_GSI_NOW}" \
+  MaxReadRequestUnits "${CEILING_REMOVAL_GSI_READ}"
+echo "    OK (Phase 1.56): the PER-INDEX write ceiling was REMOVED and its read sibling retained"
 
 # --- Phase 1.6: BillingMode REMOVAL resets to PROVISIONED (issue #1553) ----
 # The same CDKD_TEST_UPDATE=true deploy REMOVES `BillingMode` from a
@@ -620,6 +730,21 @@ if [ -z "${GSI_CEILING_TABLE_GONE}" ]; then
 fi
 echo "    OK: per-GSI ceiling DynamoDB table is gone"
 
+# ...and so is the issue go-to-k/cdkd#3373 ceiling-removal table.
+CEILING_REMOVAL_TABLE_GONE=""
+for _ in $(seq 1 24); do
+  if gone_probe aws dynamodb describe-table --table-name "${CEILING_REMOVAL_TABLE}" --region "${REGION}"; then
+    CEILING_REMOVAL_TABLE_GONE=1
+    break
+  fi
+  sleep 5
+done
+if [ -z "${CEILING_REMOVAL_TABLE_GONE}" ]; then
+  echo "FAIL: DynamoDB table ${CEILING_REMOVAL_TABLE} still exists ~2min after destroy" >&2
+  exit 1
+fi
+echo "    OK: ceiling-removal DynamoDB table is gone"
+
 # Kinesis DeleteStream is async too.
 STREAM_GONE=""
 for _ in $(seq 1 24); do
@@ -639,4 +764,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> dynamodb-ondemand test passed (OnDemandThroughput + ResourcePolicy + KinesisStreamSpecification + ContributorInsightsSpecification backfill closed + BillingMode/ProvisionedThroughput in-place UPDATE + per-GSI ceiling edit + rejected ceiling member dropped + clean destroy)"
+echo "==> dynamodb-ondemand test passed (OnDemandThroughput + ResourcePolicy + KinesisStreamSpecification + ContributorInsightsSpecification backfill closed + BillingMode/ProvisionedThroughput in-place UPDATE + per-GSI ceiling edit + rejected ceiling member dropped + per-member ceiling REMOVAL at both positions + clean destroy)"

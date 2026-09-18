@@ -167,9 +167,79 @@ describe('DynamoDBTableProvider OnDemandThroughput wiring', () => {
       expect(findCalls(UpdateTableCommand)).toHaveLength(0);
     });
 
-    it('makes no UpdateTable call on the removal path (no spec to apply)', async () => {
-      // Dropping OnDemandThroughput from the template: a removal carries no
-      // new spec to send, so update() must not issue a malformed UpdateTable.
+    it('sends the -1 removal sentinel when the template drops the block (go-to-k/cdkd#3373)', async () => {
+      // INVERTED by go-to-k/cdkd#3373. This case used to pin "makes no
+      // UpdateTable call on the removal path", which was the DEFECT: an absent
+      // member KEEPS whatever maximum the table already carries, so dropping
+      // the block deployed green, was recorded as applied, and left the live
+      // maximum in force forever. `-1` is AWS's documented reset sentinel for
+      // this field and is live-verified at this position (go-to-k/cdkd#1434).
+      mockSend.mockResolvedValueOnce({
+        Table: {
+          TableName: TABLE_NAME,
+          TableArn: TABLE_ARN,
+          TableStatus: 'ACTIVE',
+          BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' },
+          OnDemandThroughput: { MaxReadRequestUnits: 10, MaxWriteRequestUnits: 5 },
+        },
+      });
+      mockSend.mockResolvedValueOnce({}); // UpdateTable
+      primeDescribeTable(); // waitForTableActiveAfterUpdate
+
+      await provider.update(
+        'L',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {},
+        { OnDemandThroughput: { MaxReadRequestUnits: 10, MaxWriteRequestUnits: 5 } }
+      );
+
+      const updateCalls = findCalls(UpdateTableCommand);
+      expect(updateCalls).toHaveLength(1);
+      expect(updateCalls[0]!.input.OnDemandThroughput).toEqual({
+        MaxReadRequestUnits: -1,
+        MaxWriteRequestUnits: -1,
+      });
+    });
+
+    it('removes ONLY the member the template dropped, keeping the one it still declares', async () => {
+      // PER MEMBER, never per BLOCK -- read and write maxima are independent
+      // template values and the single-member drop is the likelier user edit.
+      mockSend.mockResolvedValueOnce({
+        Table: {
+          TableName: TABLE_NAME,
+          TableArn: TABLE_ARN,
+          TableStatus: 'ACTIVE',
+          BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' },
+          OnDemandThroughput: { MaxReadRequestUnits: 10, MaxWriteRequestUnits: 5 },
+        },
+      });
+      mockSend.mockResolvedValueOnce({}); // UpdateTable
+      primeDescribeTable(); // waitForTableActiveAfterUpdate
+
+      await provider.update(
+        'L',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        { OnDemandThroughput: { MaxReadRequestUnits: 10 } },
+        { OnDemandThroughput: { MaxReadRequestUnits: 10, MaxWriteRequestUnits: 5 } }
+      );
+
+      const updateCalls = findCalls(UpdateTableCommand);
+      expect(updateCalls).toHaveLength(1);
+      expect(updateCalls[0]!.input.OnDemandThroughput).toEqual({
+        MaxReadRequestUnits: 10,
+        MaxWriteRequestUnits: -1,
+      });
+    });
+
+    it('makes NO call on the removal path when AWS is not observed to hold the maximum', async () => {
+      // The fail-CLOSED half, and the reason the rule reads the LIVE block
+      // rather than the record alone: `DescribeTable` reports
+      // `OnDemandThroughput` only on a PAY_PER_REQUEST table, so "AWS holds it"
+      // proves there is something to remove AND keeps a doomed `-1` off a
+      // PROVISIONED table. `primeDescribeTable` reports no ceiling at all,
+      // which is also what a table with no live snapshot looks like.
       primeDescribeTable();
 
       await provider.update(

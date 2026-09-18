@@ -297,5 +297,73 @@ export class DynamodbOndemandStack extends cdk.Stack {
       description:
         'PAY_PER_REQUEST table whose per-GSI OnDemandThroughput read ceiling changes under CDKD_TEST_UPDATE=true (issues #3287 / #3265)',
     });
+
+    // A FIFTH table, for the REMOVAL direction of the same property (issue
+    // go-to-k/cdkd#3373) — the half no unit test can settle, because what is
+    // under test is whether AWS honours `-1` as a reset and reports the member
+    // ABSENT afterwards.
+    //
+    // An absent member KEEPS whatever maximum the table already carries, so
+    // before #3373 a template edit dropping a ceiling deployed GREEN, was
+    // recorded as applied, and left the live maximum in force forever. cdkd now
+    // substitutes DynamoDB's `-1` reset sentinel per MEMBER, at the TABLE level
+    // and per INDEX.
+    //
+    // The fixture shape follows `.claude/rules/testing.md`'s REMOVAL-testing
+    // convention, and every part of it is load-bearing:
+    //
+    //  - **both positions on ONE table**, because #3373's whole premise is that
+    //    the table-level and per-index answers must move together;
+    //  - **a RETAINED sibling at each position** — the READ ceiling stays
+    //    declared while the WRITE ceiling is dropped. Without it a wholesale
+    //    reset that cleared BOTH members would pass identically;
+    //  - **the retained value is asserted LIVE in the baseline phase** before
+    //    the removal phase asserts the dropped one is gone, or "gone" also
+    //    passes for a member that never reached AWS at all;
+    //  - **values disjoint from every other table in this fixture**, so a
+    //    `DescribeTable` assertion cannot match the wrong resource.
+    //
+    // It is a separate table rather than an arm on `gsiCeilingTable` because
+    // that table's WRITE ceiling is the CONTROL for #3287's send assertion —
+    // dropping it there would delete the very thing that discriminates "the
+    // edit was sent" from "the whole block was re-asserted".
+    //
+    // The table and its index are UNCONDITIONAL; only the ceiling MEMBERS are
+    // mode-keyed, for the reason stated at `gsiCeilingTable` above.
+    const ceilingRemovalTable = new dynamodb.CfnTable(this, 'CeilingRemovalTable', {
+      tableName: 'cdkd-ondemand-test-ceiling-removal-table',
+      billingMode: 'PAY_PER_REQUEST',
+      keySchema: [{ attributeName: 'id', keyType: 'HASH' }],
+      attributeDefinitions: [
+        { attributeName: 'id', attributeType: 'S' },
+        { attributeName: 'gsipk', attributeType: 'S' },
+      ],
+      onDemandThroughput: {
+        maxReadRequestUnits: 61,
+        // DROPPED by the update phase. `AWS::NoValue` is not available on an
+        // L1 property object, so the member is omitted from the synthesized
+        // template outright — which is exactly the shape under test: a
+        // template that no longer DECLARES the member.
+        ...(isUpdate ? {} : { maxWriteRequestUnits: 57 }),
+      },
+      globalSecondaryIndexes: [
+        {
+          indexName: 'gsi-ceiling-removal',
+          keySchema: [{ attributeName: 'gsipk', keyType: 'HASH' }],
+          projection: { projectionType: 'ALL' },
+          onDemandThroughput: {
+            maxReadRequestUnits: 43,
+            ...(isUpdate ? {} : { maxWriteRequestUnits: 39 }),
+          },
+        },
+      ],
+    });
+    ceilingRemovalTable.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+    new cdk.CfnOutput(this, 'CeilingRemovalTableName', {
+      value: ceilingRemovalTable.ref,
+      description:
+        'PAY_PER_REQUEST table whose TABLE-level and per-GSI OnDemandThroughput WRITE ceilings are REMOVED under CDKD_TEST_UPDATE=true, with the READ ceilings retained (issue go-to-k/cdkd#3373)',
+    });
   }
 }
