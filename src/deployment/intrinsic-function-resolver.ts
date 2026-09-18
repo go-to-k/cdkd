@@ -8457,10 +8457,16 @@ export class IntrinsicFunctionResolver {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       // Both halves are the spelling THIS line prints below, so the pair and
-      // the rendering cannot disagree about what "masked" means.
+      // the rendering cannot disagree about what "masked" means. That is a
+      // live constraint, not a tidiness one: go-to-k/cdkd#3408 round 2 moved
+      // the two printed operands to `displayMasked` (which STRIPS as well as
+      // masks) and left these pairs on `maskSecretsForLog`, so the same name
+      // could render two ways in one message — bare in the AWS echo this
+      // rewrites, stripped where we print it ourselves. Whoever edits the
+      // printed spellings below must edit these with them.
       const cfnNameMask = this.positionalNameMask([
-        [stackName, this.maskSecretsForLog(stackName, context)],
-        [region, this.maskSecretsForLog(loggedRegionText, context)],
+        [stackName, this.displayMasked(stackName, context)],
+        [region, this.displayMasked(loggedRegionText, context)],
       ]);
       this.logger.warn(
         // MASKED, the exact twin of `lookupCfnExport`'s own line (issue #2133
@@ -9099,7 +9105,27 @@ export class IntrinsicFunctionResolver {
       value,
       region,
       context,
-      `Fn::GetStackOutput '${this.displayLeaf(outputName, context)}' (producer ${this.displayLeaf(stackName, context)} / ${loggedRegionText})`,
+      // All THREE operands, not the two the first pass moved. `loggedRegionText`
+      // survived raw one operand to the left of two sanitized ones — the
+      // "guard defeated by its own neighbour" shape, on the line the guard was
+      // added to. It is not an exposure on the template-supplied path
+      // (`isClientSafeRegion(canonicalizeRegion(...))` gates it, and no control
+      // character lower-cases into `[a-z0-9-]`), but the DEFAULT path binds
+      // `logTextOfLeaf(this.resolverRegion)`, which has no such gate. Sanitized
+      // here rather than annotated, because this string flows into
+      // `redactedAttributeReads[].display` and out through a
+      // `ProvisioningError` message, and this whole tree is outside
+      // `inMixedScope` so no fence watches it.
+      //
+      // (That sentence named the tree with a trailing glob until the scanner
+      // fence caught it. A path separator directly followed by a star is a
+      // block-comment opener as far as that stripper is concerned -- it runs
+      // before line comments are removed, so a line comment is no shelter --
+      // and the accidental span swallowed 1,036 characters of real code. Do
+      // not write a glob in a comment in this file; the fence in
+      // `tests/unit/deployment/resolver-display-masked-population.test.ts`
+      // will refuse it, and its message will say so.)
+      `Fn::GetStackOutput '${this.displayLeaf(outputName, context)}' (producer ${this.displayLeaf(stackName, context)} / ${this.displayLeaf(loggedRegionText, context)})`,
       sourceKey,
       // Issue #2274: this read is `outputs[outputName]` of that producer's
       // state, so the coordinate is exact — see the ImportValue arms. A

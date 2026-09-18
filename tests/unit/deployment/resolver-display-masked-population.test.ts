@@ -63,9 +63,46 @@ const SUBJECT = 'src/deployment/intrinsic-function-resolver.ts';
  * very file — deliberately, so two scanners over one subject cannot disagree
  * about what its code IS.
  */
-function subjectCode(): string {
+function rawSubject(): string {
   const repoRoot = path.resolve(import.meta.dirname, '../../..');
-  return readFileSync(path.join(repoRoot, SUBJECT), 'utf8')
+  return readFileSync(path.join(repoRoot, SUBJECT), 'utf8');
+}
+
+/**
+ * Every span {@link subjectCode}'s block-comment expression removes, with a
+ * verdict on whether its `/*` was a real opener.
+ *
+ * `openedFrom` is `'comment'` when only whitespace or a JSDoc continuation
+ * `*` precedes the `/` on its line — the shape every genuine block comment in
+ * this tree has. Anything else (a quote, a `//`, code) means the span is an
+ * accident, and the characters it removed were never comment text.
+ *
+ * Written over the RAW file rather than over `code`, because the evidence is
+ * destroyed by the very strip it is judging: from `code` alone a swallowed
+ * region and a region that was never there are the same absence.
+ */
+function blockCommentSpans(
+  raw: string
+): { line: number; length: number; prefix: string; openedFrom: 'comment' | 'code' }[] {
+  const spans: { line: number; length: number; prefix: string; openedFrom: 'comment' | 'code' }[] =
+    [];
+  const re = /\/\*[\s\S]*?\*\//g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(raw)) !== null) {
+    const lineStart = raw.lastIndexOf('\n', match.index) + 1;
+    const prefix = raw.slice(lineStart, match.index);
+    spans.push({
+      line: raw.slice(0, match.index).split('\n').length,
+      length: match[0].length,
+      prefix: prefix.trimEnd().slice(-60),
+      openedFrom: /^[\s*]*$/.test(prefix) ? 'comment' : 'code',
+    });
+  }
+  return spans;
+}
+
+function subjectCode(): string {
+  return rawSubject()
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/(^|[^:])\/\/.*$/gm, '$1');
 }
@@ -87,6 +124,35 @@ describe('the resolver never interpolates a raw masker result (issue #3397 revie
     expect(code, 'the masker this rule is about is gone or renamed').toContain(
       'private maskSecretsForLog(text: string, context?: ResolverContext): string'
     );
+
+    // The stripper is the one thing above that can fail QUIETLY in the
+    // direction that matters. Its block-comment expression is non-greedy over
+    // the RAW file, so a `/*` anywhere that is not a real opener — inside a
+    // string, a regex literal, or a LINE comment, since block comments are
+    // stripped first — opens a span that runs to the next `*/` and takes
+    // every render in between out of `code`. The scan then goes green because
+    // the offender is no longer in the text being scanned, not because it is
+    // no longer in the file.
+    //
+    // The span is what is asserted, not a size. A RATIO band was written
+    // first and MEASURED NOT DISCRIMINATING (2026-09-19): the probe shape —
+    // a `/*` on a code line — swallows only to the NEXT `*/`, which in a file
+    // this comment-dense is a few hundred characters, moving the ratio from
+    // 0.3153 to 0.3132 and leaving the band green. The `>= 88` population
+    // floor below does not cover it either: one hidden offender does not move
+    // a count of 88.
+    //
+    // This case found a LIVE instance on its first run, in a comment added by
+    // the same change that added the case: a line comment naming a source
+    // tree with a trailing glob spells `/*`, and it had swallowed 1,036
+    // characters of real code.
+    for (const span of blockCommentSpans(rawSubject())) {
+      expect(
+        span.openedFrom,
+        `a '/*' at line ${span.line} is not a comment opener (prefix: ${JSON.stringify(span.prefix)}), ` +
+          `so the stripper removed ${span.length} characters the scan then could not see`
+      ).toBe('comment');
+    }
   });
 
   it('routes a LARGE population through the builder, so the rule is not vacuous', () => {
