@@ -400,7 +400,7 @@ const ON_DEMAND_LIMIT_RESET = -1;
  * is the likelier user edit (the `AWS::DynamoDB::GlobalTable` twin paid for
  * that once already).
  *
- * THREE conditions, all necessary, each closing a different way this goes
+ * FOUR conditions, all necessary, each closing a different way this goes
  * wrong:
  *
  *  1. **the PREVIOUS side declared it AND it survived narrowing.**
@@ -430,8 +430,22 @@ const ON_DEMAND_LIMIT_RESET = -1;
  *     the #3392 pre-flight exists to prevent. `dynamodb-globaltable-provider.ts`
  *     carries the same guard at both of its positions
  *     (`onDemandCeilingLive` / `!billingFlipped`), named in PR
- *     go-to-k/cdkd#1433's body as "skipped on a billing flip". Nothing is lost
- *     by skipping: the flip itself makes the on-demand ceiling inapplicable.
+ *     go-to-k/cdkd#1433's body as "skipped on a billing flip".
+ *
+ *     What the skip COSTS was asked and MEASURED, not assumed (the
+ *     go-to-k/cdkd#3401 code review raised it; issue
+ *     [#1441](https://github.com/go-to-k/cdkd/issues/1441) had already
+ *     settled it). The worry is a round trip: deploy A sets a ceiling on a
+ *     PAY_PER_REQUEST table, deploy B flips to PROVISIONED and drops it (the
+ *     reset suppressed here), deploy C flips back declaring nothing — and
+ *     since deploy B's template is now the previous side, condition 1 can
+ *     never fire again, so a RETAINED ceiling would be unclearable. #1441's
+ *     probe (us-east-1, 2026-08-10, transcript on the issue) ran exactly that
+ *     sequence at the TABLE level: `DescribeTable` reports the block ABSENT
+ *     after the flip, and it does NOT come back on the flip home. Nothing is
+ *     stranded. The PER-INDEX round trip is not separately measured — issue
+ *     [#3403](https://github.com/go-to-k/cdkd/issues/3403) — but it fails in
+ *     the SAFE direction (a lingering maximum, never a destroyed one).
  *
  * `declared` present but NOT a plain block (a string, an array, an unresolved
  * intrinsic) yields NO removals: that value is forwarded VERBATIM for AWS to
@@ -454,7 +468,15 @@ function onDemandCeilingRemovals(
 ): string[] {
   if (!ceilingsSendable) return [];
   if (live === undefined) return [];
-  if (declared !== undefined && declared !== null && !isPlainCapacityBlock(declared)) return [];
+  // ONLY an ABSENT key is the removal statement. Anything PRESENT -- including
+  // a bare `OnDemandThroughput:` YAML key, which resolves to `null` -- must be
+  // a plain block carrying a surviving member before a sibling counts as
+  // removed (go-to-k/cdkd#3401 code review, finding 4). An earlier cut routed
+  // `null` to the ABSENT arm, which made `OnDemandThroughput:` clear a live
+  // ceiling while `{}` did not; a declared-but-unreadable value is a template
+  // cdkd could not read, not an instruction to destroy a maximum, and the
+  // asymmetry had no stated reason.
+  if (declared !== undefined && !isPlainCapacityBlock(declared)) return [];
   const previousBlock = narrowOnDemandCeilings(previous).block;
   if (!isPlainCapacityBlock(previousBlock)) return [];
   const declaredBlock = isPlainCapacityBlock(declared) ? declared : undefined;
@@ -1980,7 +2002,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
         throw new ProvisioningError(
           `AWS::DynamoDB::Table ${logicalId}: the template flips BillingMode to ` +
             `PROVISIONED${absentNote} while still declaring OnDemandThroughput, which AWS ` +
-            `accepts only on a PAY_PER_REQUEST table. Nothing was applied. Remove ` +
+            `accepts only on a PAY_PER_REQUEST table. No BillingMode flip and no index ` +
+            `change were applied. Remove ` +
             `OnDemandThroughput, or keep BillingMode: PAY_PER_REQUEST.`,
           // `resourceType` then `logicalId`, which is the CONSTRUCTOR's order
           // and was TRANSPOSED here from issue #1553 until go-to-k/cdkd#3392
@@ -2065,14 +2088,29 @@ export class DynamoDBTableProvider implements ResourceProvider {
             `billing mode is PROVISIONED${modeNote}, which AWS accepts only on a ` +
             `PAY_PER_REQUEST table. Remove the per-index OnDemandThroughput, or set ` +
             `BillingMode: PAY_PER_REQUEST.`;
-          // DOWNGRADE on a replay, unlike the table-level twin — and the
-          // difference is not a style choice. That arm can state that its shape
-          // "cannot occur in a valid record"; this one cannot. Before issue
-          // #3287 NEITHER `Update` arm sent the member, so a PROVISIONED table
-          // carrying a per-index ceiling DEPLOYED GREEN and was recorded, and a
-          // hard throw on the rollback executor's revert arms would leave such a
-          // stack un-rollbackable with no template-side remedy — the exact class
+          // DOWNGRADE on a NON-TEMPLATE desired bag, unlike the table-level
+          // twin — and the difference is not a style choice. That arm can state
+          // that its shape "cannot occur in a valid record"; this one cannot.
+          // Before issue #3287 NEITHER `Update` arm sent the member, so a
+          // PROVISIONED table carrying a per-index ceiling DEPLOYED GREEN and
+          // was recorded, and a hard throw would leave such a stack
+          // un-rollbackable with no template-side remedy — the exact class
           // `.claude/rules/provider-replay-and-refusals.md` exists to prevent.
+          //
+          // BOTH flags, not just `replayingState` (the go-to-k/cdkd#3401 code
+          // review, finding 3). That rule file says to ask per site what each of
+          // the THREE `update()` callers means by the value, and here the answer
+          // is the same for two of them: the rollback executor's revert arms set
+          // `replayingState`, `cdkd drift --revert` sets
+          // `desiredFromAwsReadback`, and NEITHER hands a bag the user can edit
+          // from the template. Gating on `replayingState` alone left
+          // `drift --revert` hard-throwing on exactly the legitimate record this
+          // downgrade exists for, aborting the revert of every OTHER drifted
+          // property on the same table. In the common case the arm emits no
+          // ceiling op at all — the change detector compares the record against
+          // itself — so the downgrade usually lets the operation SUCCEED rather
+          // than merely deferring the failure to AWS. The deploy engine sets
+          // neither flag, so the refusal stands on the template path.
           //
           // The flip side, stated rather than glossed: on the TEMPLATE path this
           // IS a behaviour change on the steady-state shape. A PROVISIONED table
@@ -2098,15 +2136,15 @@ export class DynamoDBTableProvider implements ResourceProvider {
           // `GlobalSecondaryIndexUpdates` array and take a co-resident capacity
           // edit down with them, AFTER the flip. Widening the table-level arm
           // to match is a separate behaviour change with its own review round.
-          if (context?.replayingState === true) {
+          if (context?.replayingState === true || context?.desiredFromAwsReadback === true) {
             warn(
-              `${message} Downgraded to a warning because this update is replaying a cdkd ` +
-                `state record, which the template cannot fix; the per-index ceiling will be ` +
-                `sent and AWS will reject it.`
+              `${message} Downgraded to a warning because this update's desired properties ` +
+                `did not come from the template, so there is no template-side remedy; the ` +
+                `per-index ceiling will be sent and AWS will reject it.`
             );
           } else {
             throw new ProvisioningError(
-              `${message} Nothing was applied.`,
+              `${message} No BillingMode flip and no index change were applied.`,
               resourceType,
               logicalId,
               physicalId
@@ -4765,9 +4803,13 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * position (issue #1423's probe transcript, not an extrapolation from the
    * table-level field's docs). Two properties of that rule matter most here:
    * the previous side is read through {@link narrowOnDemandCeilings} so a
-   * member cdkd REFUSED cannot read as "previously applied", and the reset
-   * fires only for a member AWS is OBSERVED to hold — which is also what keeps
-   * it off a PROVISIONED index and makes it fail CLOSED with no live snapshot.
+   * member cdkd REFUSED cannot read as "previously applied"; the reset fires
+   * only for a member AWS is OBSERVED to hold, which makes it fail CLOSED with
+   * no live snapshot; and it is suppressed outright when this update FLIPS the
+   * table to PROVISIONED (`onDemandCeilingsSendable`). Do not read the
+   * observed-live condition as covering the flip — it does not, and believing
+   * it did was a merge blocker: the live snapshot is taken before the flip and
+   * never refreshed.
    *
    * The TABLE-level arm in `update()` takes the same rule in the same change,
    * because implementing it at ONE of the two positions would make the same

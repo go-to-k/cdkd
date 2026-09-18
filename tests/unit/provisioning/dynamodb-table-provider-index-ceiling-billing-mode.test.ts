@@ -398,6 +398,62 @@ describe('AWS::DynamoDB::Table: per-GSI OnDemandThroughput vs the billing mode (
     expect(tableLevel).toMatchObject({ resourceType: RESOURCE_TYPE, logicalId: 'MyTable' });
   });
 
+  it('DOWNGRADES for `drift --revert` too, whose bag is an AWS readback (go-to-k/cdkd#3401 finding 3)', async () => {
+    // `.claude/rules/provider-diff-record-folds.md` says to ask, per site, what
+    // each of the THREE `update()` callers means by the flag. Two of them mean
+    // the same thing here: the rollback executor's revert arms set
+    // `replayingState`, `cdkd drift --revert` sets `desiredFromAwsReadback`,
+    // and NEITHER hands a bag the user can edit from the template -- which is
+    // the entire justification for the downgrade.
+    //
+    // Gating on `replayingState` alone left `drift --revert` hard-throwing on
+    // exactly the legitimate pre-go-to-k/cdkd#3287 record the downgrade exists
+    // for, aborting the revert of every OTHER drifted property on that table.
+    primeDescribe('PROVISIONED');
+
+    await provider.update(
+      'MyTable',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      {
+        KeySchema: KEY_SCHEMA,
+        AttributeDefinitions: ATTRS,
+        GlobalSecondaryIndexes: [{ ...GSI_BASE, OnDemandThroughput: CEILING }],
+      },
+      { KeySchema: KEY_SCHEMA, AttributeDefinitions: ATTRS },
+      { desiredFromAwsReadback: true }
+    );
+
+    const warned = childLogger.warn.mock.calls
+      .map((c) => String(c[0]))
+      .filter((m) => m.includes('declare OnDemandThroughput'));
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toMatch(/did not come from the template/);
+  });
+
+  it('still THROWS for the deploy engine, which sets neither flag', async () => {
+    // The other direction of the same gate: `deploy-engine.ts` passes a
+    // template-borne bag and sets neither field, so a downgrade keyed on
+    // "a context was supplied at all" would silence the refusal on the one
+    // path where the user CAN fix it.
+    primeDescribe('PROVISIONED');
+
+    await expect(
+      provider.update(
+        'MyTable',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          KeySchema: KEY_SCHEMA,
+          AttributeDefinitions: ATTRS,
+          GlobalSecondaryIndexes: [{ ...GSI_BASE, OnDemandThroughput: CEILING }],
+        },
+        { KeySchema: KEY_SCHEMA, AttributeDefinitions: ATTRS },
+        { maskSecrets: (text: string) => text }
+      )
+    ).rejects.toThrow(/billing mode is PROVISIONED/);
+  });
+
   it('DOWNGRADES to a warning when the desired bag is a replayed state record', async () => {
     // The asymmetry with the TABLE-level twin, and it is load-bearing rather
     // than cautious: before issue #3287 neither `Update` arm sent the member,
@@ -423,6 +479,6 @@ describe('AWS::DynamoDB::Table: per-GSI OnDemandThroughput vs the billing mode (
       .map((c) => String(c[0]))
       .filter((m) => m.includes('declare OnDemandThroughput'));
     expect(warned).toHaveLength(1);
-    expect(warned[0]).toMatch(/replaying a cdkd state record/);
+    expect(warned[0]).toMatch(/did not come from the template/);
   });
 });

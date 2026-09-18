@@ -400,7 +400,15 @@ echo "    OK (Phase 1): the rejected write ceiling reached neither AWS nor its l
 # BOTH members would be indistinguishable from the per-member removal cdkd
 # actually performs.
 ceiling_removal_member() { # usage: ceiling_removal_member <json> <member>
-  echo "$1" | jq -r --arg m "$2" 'if has($m) then .[$m] | tostring else "absent" end'
+  # `type == "object"` guards the shapes `has()` REFUSES. Measured with jq
+  # 1.7.1: a `null` input (what both `--query` expressions above yield for an
+  # absent block or an index-name miss) answers "absent" cleanly, but a string /
+  # number / array makes `has()` error, `actual` come back empty, and the poll
+  # below spin to a misleading "~2min" failure instead of naming the shape.
+  # Neither query can produce those today; the guard is what keeps that true if
+  # one is ever rewritten.
+  echo "$1" | jq -r --arg m "$2" \
+    'if type == "object" and has($m) then .[$m] | tostring else "absent" end'
 }
 assert_ceiling_removal() { # usage: assert_ceiling_removal <label> <json> <member> <expected>
   local actual

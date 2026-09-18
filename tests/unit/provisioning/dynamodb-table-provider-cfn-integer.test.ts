@@ -1957,6 +1957,22 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
       ]);
     });
 
+    it('site 5 update: a DECLARED null resets nothing -- only an ABSENT key is a removal (go-to-k/cdkd#3401 finding 4)', async () => {
+      // A bare `OnDemandThroughput:` YAML key resolves to `null`, and the
+      // truthiness gates elsewhere in this file read that as absent. The
+      // REMOVAL rule deliberately does not: absence is the removal statement,
+      // and a declared-but-unreadable value is a template cdkd could not read,
+      // not an instruction to DESTROY a maximum. An earlier cut routed `null`
+      // to the absent arm, so `OnDemandThroughput:` cleared a live ceiling
+      // while `{}` did not -- an asymmetry with no stated reason.
+      const updates = await gsiCeilingOps(
+        [ppRequestGsi('gsi1', null)],
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: 200 })],
+        { indexes: [{ ...LIVE_GSI('gsi1'), OnDemandThroughput: { MaxReadRequestUnits: 200 } }] }
+      );
+      expect(updates).toEqual([]);
+    });
+
     it('site 5 update: an UNREADABLE desired block resets NOTHING, even though it declares no member (go-to-k/cdkd#3373)', async () => {
       // `{Ref: 'Unset'}` is a plain object that declares no member the grammar
       // knows, so the "desired does not declare it" test alone reads it as a
