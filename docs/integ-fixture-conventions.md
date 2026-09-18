@@ -1,6 +1,6 @@
 ---
 title: Integration fixture conventions
-description: "The rules a cdkd integration fixture follows — verify.sh signal traps, gone-probes, CLI flags, removal policies, S3 version sweeps, destructive prefix-sweep guards, and the unit-test priming conventions."
+description: "The rules a cdkd integration fixture follows — verify.sh signal traps, gone-probes, CLI flags, removal policies, S3 version sweeps, destructive prefix-sweep guards, wc count trims, and the unit-test priming conventions."
 unlisted: true
 ---
 
@@ -1160,6 +1160,90 @@ segment rather than a flag. Both are tracked in
 [#2682](https://github.com/go-to-k/cdkd/issues/2682). Write the guard anyway if
 you are adding one of those shapes: the rule above covers them, only the
 back-fill does not.
+
+## Trim every `wc` count
+
+BSD `wc` — the one on a stock macOS host — right-aligns its count in a field
+eight characters wide; GNU `wc` does not. `$(...)` strips only the trailing
+newline, so on macOS this captures `"       1"` and the comparison is false:
+
+```bash
+N="$(printf 'a\n' | wc -l)"
+[ "${N}" = "1" ] || { echo "FAIL" >&2; exit 1; }   # always fails on macOS
+```
+
+A fixture written on a GNU host passes review, passes CI and passes its own
+real-AWS run, then fails every time on a Mac. Pipe the count straight through a
+trim, as the next pipeline stage:
+
+```bash
+N="$(printf 'a\n' | wc -l | tr -d ' ')"
+```
+
+`| tr -d '[:space:]'` is accepted too. The rule covers every `wc`, including one
+only compared arithmetically (`-eq` reads a padded value correctly) or only
+echoed: where a count ends up is often a helper's return value or a comparison
+many lines later, so the only place a check can reliably look is where the
+count is produced.
+
+`tests/unit/scripts/integ-verify-wc-trim.test.ts` enforces this over every
+tracked shell file under `tests/integration/` (classifier:
+`scripts/check-integ-wc-trim.ts`). It reads each file word by word, tracking
+bash's quoting, substitution nesting, comments and heredocs, so a `wc` counts
+only where bash would run it:
+
+| Counted as a `wc` command | Not counted |
+| --- | --- |
+| fed by a pipe, a here-string (`wc -l <<<"${X}"`) or a file redirect (`wc -l <"${F}"`), including one written first (`</dev/null wc -l`), or reading a file named as its argument (`wc -l "${F}"`) | text in quotes, a comment, or a heredoc whose delimiter is quoted |
+| by name or by path (`/usr/bin/wc`), quoted or escaped (`"wc"`) | a redirection target (`>wc`) or `wc` joined to more text (`wc"x"`) |
+| inside `$(...)`, backticks, `<(...)` / `>(...)`, a `${...}` default, or a `$(...)` in a heredoc whose delimiter is unquoted | a name inside `(( ... ))` / `$(( ... ))`, an array `ARR=( ... )`, or an operand of `[[ ... ]]` |
+| after `if` / `then` / `do` / `!` / `{`, a `NAME=value` prefix, or `command` / `exec` / `env` / `nohup` / `time` / `coproc` and their options | after `command -v` / `-V`, or as the name in `wc() {` / `function wc {` |
+
+The trim may sit on the line after the `|`, after a comment, or after the body
+of a heredoc the pipeline opened. It refuses a trim that is not the very next
+stage, a `||` fallback, a trim on a later pipeline (after `;`, `&`, `&&` or a
+newline), a tab, extra arguments after the trim, and a trim that sits only in a
+trailing comment. A redirection keeps the trim only when the count still flows
+from `wc`'s stdout into `tr`'s stdin:
+
+| Redirection | Verdict |
+| --- | --- |
+| on `wc`'s own stdout, before or after the `wc` word: `>count.txt`, `>>f`, `>\|f`, `>&2`, `1>&2`, `&>f`, `>&-`, a move of it (`3>&1-`), or a quoted or expanded target (`3>&'1-'`) | refused: the count goes elsewhere and `tr` reads nothing |
+| on `tr`'s stdin: `<file`, `0<f`, `<<EOF`, `<<-EOF`, `<<<x`, `<>f`, `<&3`, `<&-`, `3<&0-` | refused: the count never reaches `tr` |
+| a descriptor joined to the trim argument with no blank: `tr -d ' '2>x`, `tr -d ' '{fd}<&0` | refused: it is part of the argument, so bash deletes ` 2` |
+| a descriptor before `&>` / `&>>`: `tr -d ' ' 2&>R` | refused: `&>` starts a word, so `2` is an argument to `tr` |
+| a quoted or expanded duplication target on either stage (`2>&"1"`, `3<&'0-'`), or a named descriptor closed (`{fd}>&-`, `{fd}<&-`) | refused: it may move or close the descriptor the count travels on |
+| another descriptor with a plain target, after a blank: `2>/dev/null` or `2>&1` on either stage, `3<file`, and `tr`'s own output (`> out`) | kept |
+| a descriptor duplicated or moved onto itself (`<&0` on `tr`, `>&1` or `>&1-` on `wc`), or a new one (`{fd}<&0`) | kept |
+
+Some refused spellings do keep the count on the pipe (a quoted `>&"1"`, or saving and restoring stdout with `3>&1 >f >&3`); write them in the plain form.
+
+It is not a full bash parser. A `wc` reached through a variable (`${WC} -l`),
+`eval`, an alias, or as an argument of another command (`xargs wc`,
+`find -exec wc`) is not seen, so do not write one: the test also fails on any
+`wc` word in a fixture that is neither a counted invocation, comment text, nor
+text in a heredoc whose delimiter is quoted — including the word inside a quoted
+string such as an error message, so reword that text or move it into a comment.
+The classifier's header lists every remaining bound, none of which occurs in
+the tree. Two of them can pass an untrimmed `wc` with nothing else noticing, so
+do not write either:
+
+| Shape | What goes wrong |
+| --- | --- |
+| a `$'...'` escape spelling the command (`$'\x77c'`) | the command is never recognised as `wc` |
+| a quoted `<<-` delimiter that starts with a tab (`cat <<-"<TAB>EOF"`) | the rest of the file is read as heredoc text |
+
+Two more hide a `wc` from the classifier but are still reported by the test's
+word check: a parenthesis quoted inside arithmetic (`(( a["("] ))`) and a
+substitution inside arithmetic. A `case` pattern's `)` can misread the lines
+after it, and CRLF line endings are rejected tree-wide by a separate check.
+
+A site that genuinely must stay untrimmed takes
+`# allow-untrimmed-wc: <reason>` (the colon is required, and the reason is at least 10 characters) as a real comment, trailing on the `wc`'s line
+or on its own line directly above; the test pins how many are in use. The
+per-shape floors match counts taken by hand, and a bash case runs each input
+form — piped, here-string, file redirect, backslash-continued — through a
+BSD-padding `wc`, so the convention is proven on a GNU host too (issue #3213).
 
 ## Unit tests: prime exactly what the code path consumes
 
