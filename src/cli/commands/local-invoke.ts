@@ -77,7 +77,10 @@ import { createLocalStartAlbCommand } from './local-start-alb.js';
 import { createLocalStartCloudFrontCommand } from './local-start-cloudfront.js';
 import { setEmbedConfig } from 'cdk-local';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
-import { applyCallerIdentityCredentials } from '../../utils/caller-credentials.js';
+import {
+  applyCallerIdentityCredentials,
+  AWS_CREDENTIAL_ENV_KEYS,
+} from '../../utils/caller-credentials.js';
 
 /**
  * cdkd's branding for cdk-local's embed-config. cdkd re-exports cdk-local's
@@ -432,6 +435,11 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
     // existing env-var injection; this file is the additive layer for
     // the explicit-profile case. Disposed in the shared `cleanup`
     // single-flight below.
+    // cdkd-local-env-identity: `--profile`, resolved by
+    // `resolveProfileCredentials` through
+    // `awsClientDefaults({ ignoreAssumedRole: true })` — the caller's own chain,
+    // never the `--role-arn` role. The same identity the env-var overlay writes;
+    // the mounted file is the additive channel for `fromIni({ profile })`.
     if (options.profile && profileCredentials) {
       profileCredsFile = await writeProfileCredentialsFile(options.profile, profileCredentials);
     }
@@ -1537,13 +1545,12 @@ async function assumeLambdaExecutionRole(
  * which drives the `--role-arn` cases without the synth + docker pipeline.
  */
 export function forwardAwsEnv(env: Record<string, string>): void {
-  const passThrough = [
-    'AWS_ACCESS_KEY_ID',
-    'AWS_SECRET_ACCESS_KEY',
-    'AWS_SESSION_TOKEN',
-    'AWS_REGION',
-    'AWS_DEFAULT_REGION',
-  ] as const;
+  // The credential triple comes from `AWS_CREDENTIAL_ENV_KEYS` rather than a
+  // local copy so this site and the fence that watches it cannot disagree about
+  // the population (issue #3250 item 4 — the constant documented that guarantee
+  // while nothing imported it). The two region keys are this command's own
+  // concern and stay here.
+  const passThrough = [...AWS_CREDENTIAL_ENV_KEYS, 'AWS_REGION', 'AWS_DEFAULT_REGION'] as const;
   const regionKeys = new Set<string>(['AWS_REGION', 'AWS_DEFAULT_REGION']);
   for (const key of passThrough) {
     const value = process.env[key];

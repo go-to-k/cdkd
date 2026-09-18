@@ -1,7 +1,18 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vite-plus/test';
+
+import {
+  clientSiteKind,
+  EXTRA_SURFACE_FILES,
+  hasAnnotationAbove,
+  isAnnotationCommentLine,
+  isCommentLine,
+  isInSurface,
+  stripComments,
+  surfaceFiles,
+  type ClientSiteKind,
+} from './_local-surface-scope.js';
 
 /**
  * Every AWS client the `cdkd local *` surface builds must DECLARE whose
@@ -23,12 +34,9 @@ import { describe, expect, it } from 'vite-plus/test';
  * verdict is the default — a site either opts out or says why it does not.
  *
  * TWO SHAPES REACH `awsClientDefaults`, and counting only the first made this
- * file's headline claim false for the second. A direct `new XxxClient({
- * ...awsClientDefaults(...) })` can pass `ignoreAssumedRole`; a
- * `new AwsClients({...})` bag CANNOT — it spreads the helper internally — so
- * its only available verdict is the annotation. Leaving that shape out of the
- * population meant `local-state-loader.ts`'s three bags carried no verdict at
- * all, which is not the same as carrying the right one.
+ * file's headline claim false for the second. `clientSiteKind` in
+ * `_local-surface-scope.ts` owns that distinction and why the `new AwsClients`
+ * bag's only available verdict is the annotation.
  *
  * WHAT THIS FENCE STILL CANNOT SEE, recorded rather than implied away: a client
  * CONSTRUCTED ELSEWHERE and injected. `resolveEcsSecrets` accepts
@@ -38,112 +46,51 @@ import { describe, expect, it } from 'vite-plus/test';
  * test-only; nothing here can enforce it.
  *
  * The sibling fence for the OTHER channel — the `AWS_*` environment triple
- * `cdkd local *` copies into the container — is
- * `tests/unit/local/local-surface-env-identity.test.ts`. Neither can see the
- * other's population.
+ * `cdkd local *` copies into the container, and the INI credentials file it
+ * bind-mounts — is `tests/unit/local/local-surface-env-identity.test.ts`.
+ * Neither can see the other's population; `_local-surface-scope.ts` is the
+ * SCOPE they share, and the reason that sharing is a module rather than a
+ * promise.
  */
-const ROOTS = ['src/local', 'src/cli/commands'];
-
-/**
- * One extra file under `src/cli/commands` that no `local-` prefix reaches:
- * the shim re-exporting cdk-local's ECS service emulator, which is what
- * `local start-service` / `local start-alb` run. It builds no client TODAY,
- * which is exactly why it belongs in the population — the fence's job is to
- * make the FIRST one decide.
- */
-const EXTRA_SURFACE_FILES = ['src/cli/commands/ecs-service-emulator.ts'];
-
-/**
- * `src/local` is whole; under `src/cli/commands` the surface is the `local-*`
- * files PLUS anything under a `local/` subdirectory. The nested form matters
- * because the original pattern forbade `/` outright, so a future
- * `src/cli/commands/local/foo.ts` would have been silently out of scope — the
- * one direction a fence must never fail in.
- */
-function isInSurface(relPath: string): boolean {
-  const path = relPath.split('\\').join('/');
-  if (!path.endsWith('.ts')) return false;
-  if (path.startsWith('src/local/')) return true;
-  if (EXTRA_SURFACE_FILES.includes(path)) return true;
-  return /^src\/cli\/commands\/local(-[A-Za-z0-9_-]*|\/.+)\.ts$/.test(path);
-}
-
-function walk(dir: string, out: string[] = []): string[] {
-  for (const entry of readdirSync(dir)) {
-    const full = join(dir, entry);
-    if (statSync(full).isDirectory()) walk(full, out);
-    else out.push(full);
-  }
-  return out;
-}
-
-/**
- * Drop line and block comments from ONE line before classifying it.
- *
- * Load-bearing, not tidiness: the verdict used to be a raw substring test over
- * the whole line, so a trailing `// ignoreAssumedRole: true is not needed here`
- * marked the site decided and the fence inert for it — the opposite of what the
- * comment says. A string literal containing the token is not worth modelling
- * (nothing in the tree has one and a quote-aware scan would be its own source
- * of silent misses); comments are, because they are where an author explains
- * the very decision being asserted.
- */
-function stripComments(line: string): string {
-  return line.replace(/\/\*.*?\*\//g, '').replace(/\/\/.*$/, '');
-}
-
-/** A comment line carrying the annotation AND a non-empty reason after it. */
-function isAnnotationLine(line: string): boolean {
-  const trimmed = line.trim();
-  // The marker only counts inside a comment. A bare mention on a code line
-  // (a string, an identifier) says nothing about why the site keeps the role.
-  if (!trimmed.startsWith('//') && !trimmed.startsWith('*')) return false;
-  const marker = trimmed.indexOf('cdkd-local-role-identity:');
-  if (marker === -1) return false;
-  // "why" is the whole content of the verdict, so an empty one is no verdict.
-  return trimmed.slice(marker + 'cdkd-local-role-identity:'.length).trim().length > 0;
-}
-
-type SiteKind = 'awsClientDefaults' | 'AwsClients';
+const ANNOTATION = 'cdkd-local-role-identity:';
 
 interface Site {
   file: string;
   line: number;
   text: string;
-  kind: SiteKind;
+  kind: ClientSiteKind;
   optsOut: boolean;
   annotated: boolean;
 }
 
-function siteKind(code: string): SiteKind | undefined {
-  if (code.includes('awsClientDefaults(')) return 'awsClientDefaults';
-  if (code.includes('new AwsClients(')) return 'AwsClients';
-  return undefined;
-}
-
 function collectSites(): Site[] {
   const sites: Site[] = [];
-  const files = new Set<string>();
-  for (const root of ROOTS) for (const file of walk(root)) files.add(file);
-  for (const extra of EXTRA_SURFACE_FILES) if (existsSync(extra)) files.add(extra);
-
-  for (const file of [...files].sort()) {
+  for (const file of surfaceFiles()) {
     if (!isInSurface(file)) continue;
     const lines = readFileSync(file, 'utf8').split('\n');
     lines.forEach((text, i) => {
+      // Skip a line that is ENTIRELY prose before stripping. `stripComments`
+      // does not touch a JSDoc ` * ` continuation, so a doc paragraph spelling
+      // `awsClientDefaults()` classified as a SITE and demanded a verdict — the
+      // one place this fence still disagreed with its sibling about "is this
+      // line code or prose", which is exactly what `_local-surface-scope.ts`
+      // exists to make impossible. No such line exists today; it is a loud
+      // failure rather than a silent one, hence a fix and not a blocker.
+      if (isCommentLine(text)) return;
       const code = stripComments(text);
-      const kind = siteKind(code);
+      const kind = clientSiteKind(code);
       if (kind === undefined) return;
-      // The annotation may sit on any of the four lines above the call, which
-      // is as far as the explanations here run.
-      const above = lines.slice(Math.max(0, i - 4), i);
       sites.push({
         file,
         line: i + 1,
         text: text.trim(),
         kind,
         optsOut: code.includes('ignoreAssumedRole: true'),
-        annotated: above.some(isAnnotationLine),
+        // Issue #3250 item 6: a fixed 4-line window, which FOUR of the sites
+        // below sat exactly on. `hasAnnotationAbove` walks the enclosing
+        // statement instead, so a rewrapped word cannot drop a decided site to
+        // undecided — see its doc for why that is not simply "a wider window".
+        annotated: hasAnnotationAbove(lines, i, ANNOTATION),
       });
     });
   }
@@ -155,7 +102,7 @@ describe('every AWS client on the `cdkd local` surface declares whose identity i
 
   it('sees the population it claims to guard', () => {
     // Floors, so a broken walk or a renamed helper reports a failure rather
-    // than a vacuous pass. Measured 2026-09-16: 24 sites across 8 files — 21
+    // than a vacuous pass. Measured 2026-09-18: 24 sites across 8 files — 21
     // `awsClientDefaults(` and 3 `new AwsClients(`. The floors sit below that
     // so ordinary deletions do not trip them, and each SHAPE carries its own:
     // an aggregate floor stays green while one shape stops being matched at
@@ -183,11 +130,18 @@ describe('every AWS client on the `cdkd local` surface declares whose identity i
     ).toEqual([]);
   });
 
-  it('carries BOTH verdicts, so neither arm is vacuous', () => {
+  it('carries BOTH verdicts, each with its own floor, so neither arm is vacuous', () => {
     // A population that had drifted to all-one-kind would make the fence above
-    // unfalsifiable in one direction.
-    expect(sites.some((s) => s.optsOut)).toBe(true);
-    expect(sites.some((s) => s.annotated && !s.optsOut)).toBe(true);
+    // unfalsifiable in one direction. `some()` alone is far too weak for that:
+    // measured 2026-09-18 there are 18 opt-outs and 6 annotations, so 17 of the
+    // 18 could flip to the other verdict with `some()` still true on both. The
+    // sibling fence carries a floor per VERDICT for exactly this reason and
+    // says so in its own header; this arm was the one place the two disagreed.
+    expect(sites.filter((s) => s.optsOut).length, 'sites opting out').toBeGreaterThanOrEqual(15);
+    expect(
+      sites.filter((s) => s.annotated && !s.optsOut).length,
+      'sites carrying an annotation instead'
+    ).toBeGreaterThanOrEqual(6);
   });
 
   it('refuses a trailing comment as a verdict, and an empty reason as an annotation', () => {
@@ -200,11 +154,48 @@ describe('every AWS client on the `cdkd local` surface declares whose identity i
     expect(stripComments('...awsClientDefaults({ ignoreAssumedRole: true }),')).toContain(
       'ignoreAssumedRole: true'
     );
-    expect(isAnnotationLine('  // cdkd-local-role-identity:')).toBe(false);
-    expect(isAnnotationLine("  const tag = 'cdkd-local-role-identity: x';")).toBe(false);
-    expect(isAnnotationLine('  // cdkd-local-role-identity: cdkd calls AWS as itself here')).toBe(
-      true
-    );
+    expect(isAnnotationCommentLine('  // cdkd-local-role-identity:', ANNOTATION)).toBe(false);
+    expect(
+      isAnnotationCommentLine("  const tag = 'cdkd-local-role-identity: x';", ANNOTATION)
+    ).toBe(false);
+    expect(
+      isAnnotationCommentLine(
+        '  // cdkd-local-role-identity: cdkd calls AWS as itself here',
+        ANNOTATION
+      )
+    ).toBe(true);
+  });
+
+  it('accepts an annotation the old 4-line window would have dropped, and stops at a statement', () => {
+    // Issue #3250 item 6. FOUR real sites sat EXACTLY on the old window's
+    // boundary (`local-state-loader.ts:554` and all three `ecr-puller.ts`
+    // clients), so one rewrapped word in any of their annotations would have
+    // reported a fence failure that was really a formatting change.
+    const decidedAcrossALongAnnotation = [
+      '  // cdkd-local-role-identity: cdkd calls AWS as itself here, for its own',
+      '  // bookkeeping, and nothing it resolves becomes an identity the emulated',
+      '  // workload can act as. The reason runs long on purpose.',
+      '  //',
+      '  // A second paragraph, further from the site than any fixed window ran.',
+      '  const clients = new AwsClients({',
+    ];
+    expect(
+      hasAnnotationAbove(decidedAcrossALongAnnotation, 5, ANNOTATION),
+      'an annotation five lines up must still govern its site'
+    ).toBe(true);
+
+    // The other direction, which is what keeps the walk from being "a wider
+    // window": an intervening STATEMENT ends it, so a site cannot inherit the
+    // reason written for the one above it.
+    const separatedByAStatement = [
+      '  // cdkd-local-role-identity: this reason belongs to the client below it',
+      '  const first = new AwsClients({ region });',
+      '  const second = new AwsClients({ region });',
+    ];
+    expect(
+      hasAnnotationAbove(separatedByAStatement, 2, ANNOTATION),
+      "a second client must not inherit the first's reason"
+    ).toBe(false);
   });
 
   it('keeps a nested `src/cli/commands/local/**` file and the emulator shim in scope', () => {
@@ -215,8 +206,21 @@ describe('every AWS client on the `cdkd local` surface declares whose identity i
     expect(isInSurface('src/cli/commands/local-invoke.ts')).toBe(true);
     expect(isInSurface('src/cli/commands/ecs-service-emulator.ts')).toBe(true);
     expect(isInSurface('src/local/nested/deep/thing.ts')).toBe(true);
+    expect(isInSurface('src\\local\\nested\\thing.ts')).toBe(true);
     // Still NOT the whole command tree.
     expect(isInSurface('src/cli/commands/deploy.ts')).toBe(false);
     expect(isInSurface('src/cli/commands/localish.ts')).toBe(false);
+    expect(isInSurface('src/local/notes.md')).toBe(false);
+  });
+
+  it('presents an EXTRA_SURFACE_FILES entry to the predicate even from outside a ROOT', () => {
+    // `isInSurface` accepting a path buys nothing if the walk never offers it.
+    // Both fences go through `surfaceFiles()` for that reason; this pins the
+    // seeding, which is invisible while every extra entry happens to live under
+    // a ROOT -- as today's single entry does.
+    expect(surfaceFiles()).toContain('src/cli/commands/ecs-service-emulator.ts');
+    for (const extra of EXTRA_SURFACE_FILES) {
+      expect(isInSurface(extra), `${extra} must be in surface`).toBe(true);
+    }
   });
 });

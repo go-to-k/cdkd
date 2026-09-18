@@ -162,6 +162,19 @@ When the runtime **does** declare a `customJwtAuthorizer`:
 `--sigv4` is also ignored, with a warning, on the `MCP`, `A2A` and `--ws` paths,
 because it signs the HTTP `/invocations` request only.
 
+The signature says who is **invoking** the agent, so cdkd signs it as **you**,
+in this order: `--assume-role`, then `--profile`, then your shell credentials. A
+`--role-arn` deploy role is deliberately excluded — it is the identity cdkd uses
+for its own calls, never the one an emulated agent should see as its caller (see
+[`--role-arn`](cli-reference.md#role-arn)). So on a `--role-arn` run whose own
+credentials come from IAM Identity Center (SSO), an EC2 instance role or an ECS
+container role, `--sigv4` **refuses** rather than signing: there is nothing of
+yours to sign with, even though `AWS_ACCESS_KEY_ID` is set in the process by
+then. Pass `--profile <name>`, pass `--assume-role <arn>`, or export
+`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` in your shell *before* running
+cdkd — the export has to precede the command, because what cdkd restores is the
+snapshot it took before assuming the role.
+
 On `MCP` and `A2A` runtimes cdkd POSTs to the local container's `/mcp` or `/`
 directly, speaking vanilla JSON-RPC. An inbound JWT is an AgentCore
 managed-plane concern that the cloud front door layers on top, so

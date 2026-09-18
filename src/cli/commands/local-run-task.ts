@@ -357,6 +357,12 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
     // `--assume-task-role` won, the sidecar's `/role/<arn>` endpoint
     // already serves the assumed creds and the file env vars must
     // NOT override them.
+    // cdkd-local-env-identity: the `!assumedCredentials` gate means
+    // `resolveSidecarCredentials` reached its `--profile` arm, so this is
+    // `resolveProfileCredentials` through
+    // `awsClientDefaults({ ignoreAssumedRole: true })` — the caller's own chain,
+    // never the `--role-arn` role — and never an `--assume-task-role` STS result,
+    // which wins earlier and is served by the metadata sidecar instead.
     if (options.profile && sidecarCredentials && !assumedCredentials) {
       profileCredsFile = await writeProfileCredentialsFile(options.profile, sidecarCredentials);
     }

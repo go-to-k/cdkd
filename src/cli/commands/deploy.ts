@@ -186,9 +186,19 @@ async function deployCommand(
   const rawBaseRegion = rawCliRegion(options.region) ?? 'us-east-1';
   foldRegionOption(options);
 
-  // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call. Writes the
-  // assumed-role temp credentials into AWS_* env vars so every later
-  // `new AwsClients(...)` picks them up via the SDK default chain.
+  // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call. The RULE to reason
+  // from: what an SDK client here runs as is decided by the EXPLICIT
+  // `credentials` value `awsClientDefaults()` publishes, not by the `AWS_*`
+  // environment variables beside it — those exist for the consumers that
+  // channel cannot reach, which is cdk-local's own in-process SDK clients as
+  // well as the CDK app subprocess. The env channel alone is not merely weaker, it is silently
+  // INERT whenever a profile is selected (`credential-provider-node` skips its
+  // env link once `AWS_PROFILE` is set), which is the whole defect issue #3130
+  // fixed. `applyRoleArnIfSet`'s header owns both channels, why `AWS_PROFILE`
+  // is nonetheless left set, and the one consumer channel 2 must not reach; do
+  // not restate any of it here — this comment carried the pre-#3130 mechanism
+  // at the busiest call site of that function, teaching the exact belief that
+  // produced the bug (issue #3225).
   await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
   // Resolve the prefix-user-supplied-names flag pair once at command

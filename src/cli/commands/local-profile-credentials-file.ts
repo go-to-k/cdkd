@@ -98,6 +98,14 @@ export async function writeProfileCredentialsFile(
   }
   const dir = await mkdtemp(path.join(tmpdir(), 'cdkd-profile-creds-'));
   const hostPath = path.join(dir, 'credentials');
+  // cdkd-local-env-identity: this writer chooses NO identity — it renders the
+  // credential set its caller hands it, so the verdict belongs at the four call
+  // sites and each carries one. It is a site anyway because the file below is
+  // bind-mounted into the container: whatever reaches here reaches the user's
+  // code, through a LOWERCASE INI key that neither fence saw until issue #3250
+  // item 7. A future call site passing the raw `process.env` triple — which
+  // `--role-arn` has already overwritten — now fails this fence instead of
+  // being silent.
   const lines: string[] = [
     `[${profileName}]`,
     `aws_access_key_id = ${creds.accessKeyId}`,

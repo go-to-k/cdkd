@@ -126,7 +126,10 @@ import {
   type ProfileCredentialsFile,
 } from './local-profile-credentials-file.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
-import { applyCallerIdentityCredentials } from '../../utils/caller-credentials.js';
+import {
+  applyCallerIdentityCredentials,
+  AWS_CREDENTIAL_ENV_KEYS,
+} from '../../utils/caller-credentials.js';
 
 interface LocalStartApiOptions {
   app?: string;
@@ -638,6 +641,11 @@ async function localStartApiCommand(
     // on the FIRST synthesizeAndBuild (initial server boot) — hot
     // reload sees the variable already set and skips re-writing per
     // the caveat above.
+    // cdkd-local-env-identity: `--profile`, resolved by
+    // `resolveProfileCredentials` through
+    // `awsClientDefaults({ ignoreAssumedRole: true })` — the caller's own chain,
+    // never the `--role-arn` role. The same identity the env-var overlay writes;
+    // the mounted file is the additive channel for `fromIni({ profile })`.
     if (options.profile && profileCredentials && !profileCredsFile) {
       profileCredsFile = await writeProfileCredentialsFile(options.profile, profileCredentials);
     }
@@ -2596,13 +2604,12 @@ function readEnvOverridesFile(filePath: string | undefined): EnvOverrideFile | u
  * which drives the `--role-arn` cases without booting the API server.
  */
 export function forwardAwsEnv(env: Record<string, string>): void {
-  const passThrough = [
-    'AWS_ACCESS_KEY_ID',
-    'AWS_SECRET_ACCESS_KEY',
-    'AWS_SESSION_TOKEN',
-    'AWS_REGION',
-    'AWS_DEFAULT_REGION',
-  ] as const;
+  // The credential triple comes from `AWS_CREDENTIAL_ENV_KEYS` rather than a
+  // local copy so this site and the fence that watches it cannot disagree about
+  // the population (issue #3250 item 4 — the constant documented that guarantee
+  // while nothing imported it). The two region keys are this command's own
+  // concern and stay here.
+  const passThrough = [...AWS_CREDENTIAL_ENV_KEYS, 'AWS_REGION', 'AWS_DEFAULT_REGION'] as const;
   for (const key of passThrough) {
     const value = process.env[key];
     if (value !== undefined) env[key] = value;

@@ -54,6 +54,21 @@ import {
  * The three environment variables that carry a static AWS identity into a child
  * process or container. Spelled once here so a forwarding site and the fence
  * that watches it cannot disagree about the population.
+ *
+ * That claim is only true while the population is IMPORTED, and for one release
+ * it was not: every `forwardAwsEnv` body hardcoded its own array and
+ * `local-surface-env-identity.test.ts` hardcoded the quoted literal, so the
+ * constant guaranteed nothing and a fourth key added here would have reached
+ * neither (issue [#3250](https://github.com/go-to-k/cdkd/issues/3250) item 4).
+ * Every forwarding site now spreads this array and the fence treats the
+ * constant's NAME as one of its site shapes, with a floor per spelling — so a
+ * site quietly going back to a local copy drops out of one shape's count while
+ * the other stays green, which is the failure that floor exists to report.
+ *
+ * Derive the readers with
+ * `grep -rn AWS_CREDENTIAL_ENV_KEYS src tests`, never from a list written here:
+ * a list of call sites in a doc comment is the shape that went stale in the
+ * first place.
  */
 export const AWS_CREDENTIAL_ENV_KEYS = [
   'AWS_ACCESS_KEY_ID',
@@ -103,6 +118,26 @@ export function readEnvCredentials(
 export function callerEnvCredentials(): CallerEnvCredentials | undefined {
   if (getAssumedRoleCredentials() === undefined) return readEnvCredentials();
   return getPreAssumeEnvCredentials();
+}
+
+/**
+ * Is the credential triple currently in `process.env` cdkd's OWN `--role-arn`
+ * assumed role rather than the caller's?
+ *
+ * For a site that has to EXPLAIN a `callerEnvCredentials()` miss, not for one
+ * that has to act on it. `undefined` from that function is ambiguous to a USER
+ * in exactly one direction: with a role assumed, `AWS_ACCESS_KEY_ID` is visibly
+ * set — cdkd set it — so an error telling them to set it is advice they have
+ * already followed, and the real reason is that cdkd refuses to act as the role
+ * here (issue [#3250](https://github.com/go-to-k/cdkd/issues/3250) item 5).
+ *
+ * Do not branch BEHAVIOUR on this. The three-way decision belongs to
+ * `callerEnvCredentials` / `applyCallerIdentityCredentials`, which distinguish
+ * "no role assumed" from "a role assumed over a caller who had nothing" — a
+ * distinction this boolean deliberately collapses.
+ */
+export function envCredentialsAreAssumedRole(): boolean {
+  return getAssumedRoleCredentials() !== undefined;
 }
 
 /**
