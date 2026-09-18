@@ -233,6 +233,58 @@ describe('DynamoDBTableProvider OnDemandThroughput wiring', () => {
       });
     });
 
+    it('makes NO removal call on a deploy that FLIPS the table to PROVISIONED (go-to-k/cdkd#3401 M0)', async () => {
+      // Condition 4 of `onDemandCeilingRemovals`, and condition 3 does NOT
+      // subsume it -- believing it did was a merge blocker.
+      //
+      // The live snapshot is the ONE `DescribeTable` at the top of `update()`
+      // and is never refreshed, while the removal arm runs AFTER the
+      // BillingMode flip. So on a template that flips a live on-demand table to
+      // PROVISIONED *and* drops the ceiling, neither pre-flight refusal fires
+      // (neither side DECLARES a ceiling), the flip lands, and the stale
+      // snapshot still reports the member live -- cdkd would send `-1` to a
+      // now-PROVISIONED table, AWS would reject it, and a previously-green
+      // no-op would become a HALF-APPLIED deploy.
+      //
+      // The discriminator is the SHAPE of the calls, not their count: the flip
+      // itself is an `UpdateTable`, so "did not throw" and "exactly one call"
+      // both pass against the bug.
+      mockSend.mockResolvedValueOnce({
+        Table: {
+          TableName: TABLE_NAME,
+          TableArn: TABLE_ARN,
+          TableStatus: 'ACTIVE',
+          BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' },
+          OnDemandThroughput: { MaxReadRequestUnits: 10, MaxWriteRequestUnits: 5 },
+        },
+      });
+      mockSend.mockResolvedValueOnce({}); // the flip UpdateTable
+      primeDescribeTable(); // waitForTableActiveAfterUpdate
+
+      await provider.update(
+        'L',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          BillingMode: 'PROVISIONED',
+          ProvisionedThroughput: { ReadCapacityUnits: 3, WriteCapacityUnits: 4 },
+        },
+        {
+          BillingMode: 'PAY_PER_REQUEST',
+          OnDemandThroughput: { MaxReadRequestUnits: 10, MaxWriteRequestUnits: 5 },
+        }
+      );
+
+      const ceilingCalls = findCalls(UpdateTableCommand).filter(
+        (c) => c.input.OnDemandThroughput !== undefined
+      );
+      expect(ceilingCalls).toHaveLength(0);
+      // ...and the flip itself DID go out, so the case is not vacuous.
+      expect(
+        findCalls(UpdateTableCommand).filter((c) => c.input.BillingMode === 'PROVISIONED')
+      ).toHaveLength(1);
+    });
+
     it('makes NO call on the removal path when AWS is not observed to hold the maximum', async () => {
       // The fail-CLOSED half, and the reason the rule reads the LIVE block
       // rather than the record alone: `DescribeTable` reports

@@ -1840,6 +1840,47 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
       ]);
     });
 
+    it('site 5 update: does NOT reset on a deploy that FLIPS the table to PROVISIONED (go-to-k/cdkd#3401 M0)', async () => {
+      // Condition 4, the per-index half. Same hazard as its table-level twin:
+      // the live snapshot is the ONE `DescribeTable` at the top of `update()`
+      // and is never refreshed, while `applyGsiUpdates` runs AFTER the flip --
+      // so the stale snapshot would report the member live on a table that is
+      // PROVISIONED by the time the op goes out. The pre-flight refusal cannot
+      // save this shape: a REMOVAL declares no ceiling for it to see.
+      //
+      // Not routed through `gsiCeilingOps`, which pins both sides to
+      // PAY_PER_REQUEST by construction and so cannot express a flip.
+      primeGeneric({
+        billingMode: 'PAY_PER_REQUEST',
+        indexes: [{ ...LIVE_GSI('gsi1'), OnDemandThroughput: { MaxReadRequestUnits: 200 } }],
+      });
+      await provider.update(
+        'L',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          TableName: TABLE_NAME,
+          BillingMode: 'PROVISIONED',
+          ProvisionedThroughput: { ReadCapacityUnits: 3, WriteCapacityUnits: 4 },
+          GlobalSecondaryIndexes: [ppRequestGsi('gsi1')],
+        },
+        {
+          TableName: TABLE_NAME,
+          BillingMode: 'PAY_PER_REQUEST',
+          GlobalSecondaryIndexes: [ppRequestGsi('gsi1', { MaxReadRequestUnits: 200 })],
+        }
+      );
+      const ceilingOps = findCalls(UpdateTableCommand)
+        .flatMap((c) => c.input.GlobalSecondaryIndexUpdates ?? [])
+        .filter((op) => op.Update?.OnDemandThroughput !== undefined);
+      expect(ceilingOps).toEqual([]);
+      // Non-vacuity: the flip itself DID go out, so `applyGsiUpdates` really
+      // ran against a table this deploy re-priced.
+      expect(
+        findCalls(UpdateTableCommand).filter((c) => c.input.BillingMode === 'PROVISIONED')
+      ).toHaveLength(1);
+    });
+
     it('site 5 update: does NOT reset a member AWS is not observed to hold (go-to-k/cdkd#3373)', async () => {
       // Condition 3 of `onDemandCeilingRemovals`, and it does three jobs at
       // once. `DescribeTable` reports `OnDemandThroughput` only on a
