@@ -184,7 +184,10 @@ const MIN_COMPARED = 19;
  *
  * THE FIRST REASON WRITTEN HERE WAS ALREADY FALSE WHEN IT WAS WRITTEN — "no
  * successful run on main yet", recorded at 07:56Z, when the job had been
- * succeeding since the 06:41Z merge run and has 28 successes that day. That is
+ * succeeding since the 06:41Z merge run. (The count is deliberately not
+ * recorded: it grew from 20 to 40 job records while three review rounds argued
+ * about it, so any figure written here is stale before it is read. What matters
+ * is that it was NON-ZERO.) That is
  * round 1's defect, reproduced in the commit that claimed to retire it, and it
  * is why this docstring insists the reason be CHECKED rather than plausible.
  *
@@ -700,12 +703,19 @@ describe('no workflow job is bounded too tightly to survive its own longest run'
     // an oversight of the "proportional band" an earlier revision of this
     // comment claimed — a proportional band cannot tell 12 from 18, which is
     // how the round-1 defect cleared it. Adding a job needs two steps and the
-    // second is the one that surprises: the new job has no successful run on
-    // `main` yet, so it has no snapshot entry and reports `not-in-snapshot`
-    // until the generator is re-run after the merge. Until then it belongs in
-    // `RARELY_RUN` with THAT as its reason — "added in #N, no successful run on
-    // main yet" is a true reason, and a true reason is the whole requirement
-    // the list's own note makes.
+    // second is the one that surprises: the new job has no snapshot entry and
+    // reports `not-in-snapshot` until the generator is re-run, so it belongs in
+    // `RARELY_RUN` until then.
+    //
+    // WRITE THE REASON FROM WHAT YOU MEASURE, NOT FROM THIS SENTENCE. An
+    // earlier revision of this guidance recommended "added in #N, no successful
+    // run on main yet" — the exact string the list's own docstring retires as
+    // having been FALSE when it was written, because a job merged that morning
+    // had been green since its merge run. Recommending it here while retiring
+    // it there is the same correction-in-one-place-only failure, in the file
+    // that documents the failure. Check with `gh run list`, and record what
+    // actually blocks an entry: usually the DAY the runs are in, since the
+    // generator refuses a `--to` inside a day in progress.
     expect(MIN_DECLARED).toBeGreaterThan(DECLARED.size - 4);
     expect(MIN_DECLARED).toBeLessThanOrEqual(DECLARED.size);
     // MAGNITUDE, not just COUNT. Every floor above counts ENTRIES, and setting

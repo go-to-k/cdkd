@@ -402,11 +402,11 @@ export const boundedList = (lines: readonly Safe[], kinds?: readonly string[]): 
   // lines this function received — so listing them adds no new venue.
   // PARTIALLY dropped, not only entirely dropped. Naming just the groups with
   // NO kept line misses the case a fork reaches for next: leave the workflow
-  // one line and push the interesting one out of its group. Measured — 19 fork
-  // files plus three fork-chosen snapshot keys under `hooks.yml` dropped that
-  // workflow's `unreadable-workflow` line while `hooks.yml` kept a line, so it
-  // was not named and the reader could not learn a real workflow had stopped
-  // parsing.
+  // one line and push the interesting one out of its group. The measurement
+  // that showed it — 19 fork files plus three fork-chosen snapshot keys under
+  // `hooks.yml` — no longer reproduces now that the cap is split by KIND first,
+  // which is the point: the general case stands, and the specific fixture that
+  // demonstrated it was closed by a later fix.
   //
   // CAPPED AT FIVE, and the cap is the point: a fork controls the number of
   // groups, so an uncapped list puts thousands of names on one line — the
