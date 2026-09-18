@@ -75,6 +75,9 @@ if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   || ! declare -F gate_refuse_unevaluable_marker >/dev/null \
   || ! declare -F cmd_last_cd_target >/dev/null \
   || ! declare -F gate_target_is_foreign >/dev/null \
+  || ! declare -F gate_pr_selector >/dev/null \
+  || ! declare -F gate_pr_selector_unreadable >/dev/null \
+  || ! declare -F gate_pr_selector_ate_number >/dev/null \
   || ! declare -F strip_noncommand_spans >/dev/null; then
   # FAIL CLOSED. Without the helper `cmd_matches_verb` is undefined, the
   # `if ! cmd_matches_verb ...` guard below sees exit 127 (truthy for `!`),
@@ -171,29 +174,36 @@ SCHEMA_FILE='src/types/state.ts'
 
 # --- Extract PR number from the `gh pr merge` command (same pattern
 # as integ-broad-gate.sh / pr-review-gate.sh).
-pr_number=""
-args="${cmd#*merge}"
-# shellcheck disable=SC2086
-set -- $args
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --*=*) shift; continue ;;
-    --auto|--admin|--delete-branch|--squash|--merge|--rebase)
-      shift; continue ;;
-    -*)
-      shift
-      [ $# -gt 0 ] && shift
-      continue
-      ;;
-    *)
-      if printf '%s' "$1" | grep -qE '^[0-9]+$'; then
-        pr_number="$1"
-        break
-      fi
-      shift
-      ;;
-  esac
-done
+# PR SELECTOR (go-to-k/cdkd#3365). See integ-broad-gate.sh for the full
+# reasoning. Short form: swapping the hand-rolled walk for `gate_pr_selector`
+# buys one spelling and closes NOTHING about a URL selector, which is empty
+# through both. The fix is the EMPTY case -- it falls back to the CURRENT
+# BRANCH's PR, right for `gh pr merge --squash` from the PR's own worktree and
+# wrong for `gh pr merge <URL>`. This gate makes the mistake TWICE, since it
+# also runs `gh pr diff` on the same number.
+__selector_unreadable=0
+pr_number="$(gate_pr_selector "$cmd" "$__verb_ere")"
+if [ -z "$pr_number" ] && gate_pr_selector_unreadable "$cmd" "$__verb_ere"; then
+  # NOT an exit. Refusing HERE would land ahead of the scope check, so a
+  # docs-only PR merged by URL -- which this gate exempts by design -- would be
+  # refused by a state-schema gate. Instead the unreadable selector is
+  # carried as "scope UNKNOWN": the scope check is skipped (treated as in
+  # scope, since nothing can say otherwise) and the marker decides. A FRESH
+  # marker passes, which is right -- with the marker fresh the gate would
+  # permit the merge whatever the PR touched, so the identity never mattered.
+  # The refusal is spent only where the answer is load-bearing: a STALE marker,
+  # where falling back to the current branch's PR could exempt a PR gh is
+  # actually merging.
+  __selector_unreadable=1
+fi
+
+# An unreadable selector means the scope is UNKNOWN, not out of scope: the only
+# PR whose files and diff could be fetched is the current branch's, which is not
+# the one gh is about to merge. Both checks below are skipped and the marker
+# decides (go-to-k/cdkd#3365). This gate makes the wrong-PR mistake TWICE --
+# `gh pr view` for the file list and `gh pr diff` for the version constant -- so
+# the guard has to cover both, not just the first.
+if [ "$__selector_unreadable" -eq 0 ]; then
 
 # Pass-through on any gh error so an unrelated infra outage doesn't
 # block merges (mirrors integ-destroy-gate.sh / pr-review-gate.sh /
@@ -339,7 +349,10 @@ if [ "$plus_match" -eq 0 ] || [ "$minus_match" -eq 0 ]; then
   exit 0
 fi
 
-# This IS a schema version bump. Enforce the marker.
+fi  # end of the readable-selector scope checks (go-to-k/cdkd#3365)
+
+# This IS a schema version bump -- or the selector was unreadable and nothing
+# could say otherwise. Enforce the marker.
 if command -v mise >/dev/null 2>&1; then
   markgate=(mise exec -- markgate)
 elif command -v markgate >/dev/null 2>&1; then
@@ -364,6 +377,17 @@ __plan=$(gate_resolve_marker_gate "$target_dir" integ-schema-migration)
 __mode=$(printf '%s' "$__plan" | cut -f1)
 __gate=$(printf '%s' "$__plan" | cut -f2)
 __gate_fix=$(printf '%s' "$__plan" | cut -f3)
+
+# The SCOPE DESCRIPTOR these refusals print. With an unreadable selector
+# the scope was never checked -- no PR diff could be fetched -- so asserting
+# it here is the same wrong claim the stale-marker arm was fixed not to make
+# (go-to-k/cdkd#3365 review). Bound once so the two call sites below cannot
+# drift apart.
+if [ "$__selector_unreadable" -eq 1 ]; then
+  __scope_desc="code this gate could not identify, because the pull request named in the command cannot be resolved to a number"
+else
+  __scope_desc="a state schema version bump (src/types/state.ts)"
+fi
 
 if [ "$__mode" = "none" ]; then
   # A FOREIGN target that declares no equivalent gate PASSES (go-to-k/cdkd#3351),
@@ -406,7 +430,7 @@ if [ "$__mode" = "none" ]; then
     printf '  If it really is one, re-run without that, and the gate will not apply here at all.\n' >&2
   fi
   gate_refuse_no_equivalent_marker "integ-schema-migration-gate" "integ-schema-migration" "$target_dir" \
-    "a state schema version bump (src/types/state.ts)"
+    "$__scope_desc"
 fi
 
 "${markgate[@]}" verify "$__gate" >/dev/null 2>&1
@@ -427,13 +451,37 @@ fi
 if [ "$__mode" = "alias" ]; then
   gate_refuse_stale_alias_marker "integ-schema-migration-gate" "integ-schema-migration" "$target_dir" \
     "$__gate" "$__gate_fix" \
-    "a state schema version bump (src/types/state.ts)"
+    "$__scope_desc"
 fi
 
 # Extract the parenthesized reason (`digest differs` vs `expired by ttl`
 # vs `marker missing`) for a more actionable error message.
 reason=$("${markgate[@]}" status "$__gate" 2>/dev/null \
   | awk '/^state:/ { if (match($0, /\([^)]+\)/)) print substr($0, RSTART, RLENGTH); exit }')
+
+# The selector arm speaks FIRST and in its own words: the sentence below asserts
+# the PR bumps the state schema version, which is exactly what could not be
+# checked here. Saying it anyway would send the reader to a diff that does not
+# support it.
+if [ "$__selector_unreadable" -eq 1 ]; then
+  cat >&2 <<'EOF_SELECTOR'
+Blocked by integ-schema-migration-gate: the pull request cannot be identified, and
+the `integ-schema-migration` marker is stale or missing.
+
+The command names a PR in a form this gate cannot resolve to a number -- a URL,
+a branch name, or a number consumed by a flag it does not know -- so it could
+not read that PR's diff to decide whether this gate even applies. This gate asks gh
+twice -- once for the file list and once for the diff that proves the version
+constant actually changed -- so neither check could run. The current
+branch's PR is a DIFFERENT pull request than the one gh merges, so it is not
+consulted. With the marker fresh this would have passed regardless; it is only
+the stale marker that makes the identity load-bearing.
+
+Re-run naming the PR by number, which lets the scope check run:
+  gh pr merge <N> --squash --delete-branch
+EOF_SELECTOR
+  exit 2
+fi
 
 if [ -n "$reason" ]; then
   printf "Blocked by integ-schema-migration-gate: this PR bumps the cdkd state schema version (src/types/state.ts) and the \`integ-schema-migration\` marker is stale %s.\n\n" "$reason" >&2

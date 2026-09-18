@@ -2199,6 +2199,154 @@ want_sel ""   "selector: a branch name is not a PR number"   'gh pr merge featur
 # `gh pr checks msg` answers with "no pull requests found" -- straight into
 # ci-green-gate's fail-open arm. Strictly worse than the empty selector it
 # replaced, because empty fell back to the current branch and blocked.
+# `gate_pr_selector_unreadable` is the THREE-WAY split the two functions above
+# cannot make between them (go-to-k/cdkd#3365). `ate_number` answers only "a
+# flag swallowed it"; a URL and a branch name are ALSO selectors this walk
+# cannot resolve, and both come back from `gate_pr_selector` as the empty string
+# -- byte-identical to `gh pr merge --squash`, which carries no selector at all
+# and must keep the current-branch fallback. A caller that BLOCKS needs to tell
+# those apart: falling back resolves the CURRENT BRANCH's PR, which is the wrong
+# pull request whenever gh was handed one it could resolve and this walk could
+# not.
+want_unreadable() {
+  local expect="$1" name="$2" cmd="$3"
+  local got=no
+  gate_pr_selector_unreadable "$cmd" "$GATE_RE_GH_PR_MERGE" && got=YES
+  if [ "$got" = "$expect" ]; then
+    pass=$((pass + 1)); printf 'ok   %s\n' "$name"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (got %s, want %s)\n' "$name" "$got" "$expect"
+    fail_log="${fail_log}FAIL ${name}\n"
+  fi
+}
+# The NO arm is the one that bounds the refusal. Both members matter: a command
+# carrying no selector, and one whose number was read fine.
+want_unreadable no  "unreadable: no selector at all"        'gh pr merge --squash'
+want_unreadable no  "unreadable: no selector, --auto"       'gh pr merge --auto'
+want_unreadable no  "unreadable: number read fine"          'gh pr merge 552 --squash'
+want_unreadable no  "unreadable: number after a valued flag" 'gh pr merge -t msg 2195'
+# The YES arm, one member per WAY a selector can be present and unresolvable.
+want_unreadable YES "unreadable: a PR URL"                  'gh pr merge https://github.com/go-to-k/cdkd/pull/552 --squash'
+want_unreadable YES "unreadable: a branch name"             'gh pr merge feature-branch'
+want_unreadable YES "unreadable: an unlisted flag ate it"   'gh pr merge --future-flag 552'
+want_unreadable YES "unreadable: a short-flag CLUSTER ate it" 'gh pr merge -sd 552'
+# REVIEW ROUND 1 (go-to-k/cdkd#3365). Three shapes the first cut got wrong, each
+# measured against the shipped helper before the fix.
+#
+# A REDIRECTION names no pull request. It is a non-flag, non-numeric token, so
+# the walk reported it as a selector it could not read -- a REFUSAL, and in two
+# gates it also skipped the scope check, so a docs-only PR that used to merge
+# started blocking.
+want_unreadable no  "unreadable: a stdout redirect is not a selector"  'gh pr merge --squash > /tmp/log'
+want_unreadable no  "unreadable: 2>&1 and a pipe are not selectors"    'gh pr merge --squash 2>&1 | tee /tmp/log'
+want_unreadable no  "unreadable: append redirect is not a selector"    'gh pr merge --squash >> /tmp/log 2>&1'
+# ROUND 2 measured the round-1 arm fixing only the SPACED spelling: the GLUED
+# one -- the common one -- still refused, and the fd-prefixed operator was
+# ordered so that a bare `2>` did NOT eat its filename, making
+# `gh pr merge 2> 552` scope-check a LOG FILENAME as PR 552. Both came from
+# writing PATTERNS per spelling; the arm classifies positively now (strip the fd
+# digits, ask if an operator opens what remains, glued-or-not sets the arity).
+# The grid below is what that claim has to survive: every operator, with and
+# without an fd, glued and spaced.
+want_unreadable no  "unreadable: GLUED stdout redirect"                'gh pr merge --squash >/tmp/log'
+want_unreadable no  "unreadable: GLUED append redirect"                'gh pr merge --squash >>/tmp/log'
+want_unreadable no  "unreadable: GLUED fd redirect"                    'gh pr merge --squash 2>/tmp/log'
+want_unreadable no  "unreadable: spaced fd redirect"                   'gh pr merge --squash 2> /tmp/log'
+want_unreadable no  "unreadable: fd duplication 2>&1"                  'gh pr merge --squash 2>&1'
+want_unreadable no  "unreadable: fd duplication >&2"                   'gh pr merge --squash >&2'
+want_unreadable no  "unreadable: stdin redirect"                       'gh pr merge --squash < /tmp/in'
+# THE WRONG-PR ONE, and the reason the arity cannot be left to pattern order: a
+# BARE operator must consume its target, or the target becomes the selector.
+want_unreadable no  "unreadable: a bare 2> consumes its target"        'gh pr merge 2> 552'
+want_sel ""   "selector: a redirect target is never the selector"      'gh pr merge 2> 552'
+# ...and the CONTROL, or the arm could simply be eating everything: a real
+# selector sitting BEFORE a redirect must still resolve.
+# NOTE ON POSITION, measured in review: a redirect written AFTER the number is
+# not a control for anything -- the walk resolves the number and returns before
+# the arm runs, so these two pass with the arm deleted entirely. They are kept
+# as the ORDINARY shape, and the discriminating cases are the ones below, where
+# the redirect comes FIRST and its arity decides whether the number survives.
+want_sel 552  "selector: a number survives a following redirect"       'gh pr merge 552 > /tmp/log'
+want_sel 552  "selector: a number survives a following glued fd redirect" 'gh pr merge 552 2>/tmp/log'
+# THE ARITY, which had NO case at all until round 3's test review: disabling
+# `_gate_sel_glued` -- so every redirect eats the next token -- left the whole
+# suite green while `gh pr merge >/tmp/log 552` went to the empty selector and
+# every gate fell back to the CURRENT BRANCH's PR. That is the #3365 class
+# itself, unfenced inside the change that closes it. Each shape is a PAIR:
+# GLUED must leave the following number alone, BARE must swallow it.
+# Both arities must leave the NUMBER, and they get there differently -- a glued
+# redirect consumes nothing, a bare one consumes its TARGET. Writing the bare
+# rows as `want_sel ""` was my own error, corrected by measurement: a bare
+# operator eats `/tmp/log`, not the 552 behind it.
+want_sel 552  "arity: a GLUED redirect does not eat the PR number"     'gh pr merge >/tmp/log 552'
+want_sel 552  "arity: a BARE redirect eats only its target"            'gh pr merge > /tmp/log 552'
+want_sel 552  "arity: a GLUED fd redirect does not eat the PR number"  'gh pr merge 2>/tmp/log 552'
+want_sel 552  "arity: a BARE fd redirect eats only its target"         'gh pr merge 2> /tmp/log 552'
+want_sel 552  "arity: a GLUED here-string does not eat the PR number"  'gh pr merge <<<word 552'
+want_sel 552  "arity: a GLUED heredoc does not eat the PR number"      'gh pr merge <<-EOF 552'
+# THE ARITY IS OBSERVED BY THE PAIR, not by either row: with `_gate_sel_glued`
+# disabled every redirect eats the next token, so the GLUED rows go empty while
+# the BARE ones stay 552. With the arm eating nothing, the BARE rows resolve the
+# TARGET instead. Only both directions pin it.
+want_sel ""   "arity: a BARE redirect with nothing after it resolves nothing" 'gh pr merge > /tmp/log'
+# `>|` is NOT here, and that is a measurement rather than an omission: the
+# segmenter splits on `|` before this walk sees the token, so `>|out` is
+# unreachable end-to-end. It is covered at classifier level in the operator
+# grid; asserting it here would pass for the segmenter's reason, not this
+# arm's.
+# The unquote moved to ONE place, before any arm looks at a token, because the
+# per-arm version left the sibling arm open: this shape evaded the
+# flag-ate-the-number guard entirely.
+want_unreadable YES "unreadable: an unlisted flag ate a QUOTED number" 'gh pr merge --future-flag "552"'
+# ROUND 3. The operator peel stripped a FIXED TWO characters, so `<<<` left a
+# third, classified GLUED, did not consume its word, and the word became the PR
+# -- round 2's blocker for a different operator, and a REGRESSION against
+# origin/main. A fixed repetition count is still an enumeration; the peel loops
+# now. The bare/glued pair is asserted for each shape, because only the pair
+# says the ARITY is right rather than just the recognition.
+want_sel ""   "selector: a here-string word is not the PR"        'gh pr merge --squash <<< 552'
+want_sel ""   "selector: a tab-stripping heredoc is not the PR"   'gh pr merge --squash <<- 552'
+want_sel ""   "selector: force-overwrite >| consumes its target"  'gh pr merge --squash >| 552'
+want_sel 552  "selector: a GLUED here-string leaves the PR alone" 'gh pr merge 552 --squash <<<word'
+want_sel 552  "selector: a GLUED heredoc leaves the PR alone"     'gh pr merge 552 --squash <<-EOF'
+want_unreadable no "unreadable: a here-string names no PR"        'gh pr merge --squash <<< word'
+want_unreadable no "unreadable: a tab-stripping heredoc names no PR" 'gh pr merge --squash <<- EOF'
+# ROUND 3, minor 2: two fixes of `gate_pr_selector_unreadable`'s own, from
+# earlier rounds, had cancelled. The "a resolved selector answers NO" test was
+# applied to the WHOLE COMMAND, which made the per-segment scan unreachable --
+# so a second merge naming a PR badly went unseen behind a first that resolved.
+# Both questions are per SEGMENT now, and this pair is what holds them apart.
+want_unreadable YES "unreadable: a resolved segment does not mask a later bad one" 'gh pr merge 552 && gh pr merge https://github.com/o/r/pull/9'
+want_unreadable no  "unreadable: two resolved segments stay readable"              'gh pr merge 552 && gh pr merge 553'
+# A QUOTED number is still a number. The tokeniser keeps the quotes ON, so the
+# numeric guard read `"552"` as non-numeric and the caller refused a readable
+# selector. Both the verdict AND the resolved value are pinned -- answering
+# "not unreadable" while returning empty would still send the gate to the
+# current branch.
+want_unreadable no  "unreadable: a double-quoted number is readable"   'gh pr merge "552" --squash'
+want_unreadable no  "unreadable: a single-quoted number is readable"   "gh pr merge '552' --squash"
+want_sel 552  "selector: a double-quoted number resolves"              'gh pr merge "552" --squash'
+want_sel 552  "selector: a single-quoted number resolves"              "gh pr merge '552' --squash"
+# THE PROBE SCANS EVERY MATCHING SEGMENT, the ordinary walk only the first.
+# `gate_pr_selector` answers "which PR does this command name" and stops at the
+# first merge; the caller asks "could ANY selector here not be read", and
+# answering that from the first segment let one leading selector-less token
+# evade the refusal entirely.
+want_unreadable YES "unreadable: a later segment carries a URL"        'gh pr merge --squash && gh pr merge https://github.com/x/y/pull/9'
+want_unreadable YES "unreadable: a later segment carries a branch (;)" 'gh pr merge --squash ; gh pr merge feature-branch'
+want_unreadable no  "unreadable: two READABLE merges stay readable"    'gh pr merge 552 --squash && gh pr merge 553 --squash'
+# The ordinary walk is UNCHANGED by that -- it still answers for the first.
+want_sel 552  "selector: the first segment still wins for the plain walk" 'gh pr merge 552 --squash && gh pr merge 553 --squash'
+# THE CONTRACT, which the header states and nothing pinned: rc 0 means "a
+# selector was present and could not be READ", and the caller must test
+# emptiness FIRST. For a READABLE selector the answer is rc 1 -- but a flag that
+# ate a number still yields rc 0 WITH a readable-looking command, which is why
+# the three gates guard on `[ -z "$pr_number" ] &&` before asking.
+want_unreadable no  "unreadable: a readable selector answers NO"       'gh pr merge -t 42 552'
+# The sentinel is INTERNAL: `gate_pr_selector` must never leak the string
+# `unreadable` to an ordinary caller, or a gate would run `gh pr view unreadable`.
+want_sel ""   "selector: the unreadable sentinel does not leak" 'gh pr merge feature-branch'
+
 want_sel 2195 "selector: -t value is consumed, not returned"  'gh pr merge -t msg 2195 --squash'
 want_sel 2195 "selector: --match-head-commit value consumed"  'gh pr merge --match-head-commit abc 2195'
 want_sel 2195 "selector: --body-file numeric value consumed"  'gh pr merge --body-file 7 2195 --squash'

@@ -12,6 +12,11 @@
 set -u
 
 HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/integ-local-gate.sh"
+# `run-tests.sh` runs each SUITE under both bashes and exports HOOK_BASH, but the
+# hook is `#!/usr/bin/env bash` and so takes whatever comes FIRST on PATH --
+# meaning a suite that ignores HOOK_BASH advertises 3.2 coverage of itself and
+# not of its subject (.claude/rules/hooks.md). Added by go-to-k/cdkd#3365 review.
+HOOK_RUN="${HOOK_BASH:+$HOOK_BASH }$HOOK"
 
 # go-to-k/cdkd#2236: a fixture repo must DECLARE the gate the hook asks about,
 # the way the real repo does. The gates now read the target repo's own
@@ -45,11 +50,11 @@ fail_log=""
 run_case() {
   local name="$1"; local want="$2"; local payload="$3"
   local got out
-  out=$(printf '%s' "$payload" | "$HOOK" 2>&1) || true
+  out=$(printf '%s' "$payload" | $HOOK_RUN 2>&1) || true
   got=$?
   # The above always evaluates to 0 (`|| true`), so capture status
   # via a separate run.
-  printf '%s' "$payload" | "$HOOK" >/dev/null 2>&1
+  printf '%s' "$payload" | $HOOK_RUN >/dev/null 2>&1
   got=$?
   if [[ "$got" == "$want" ]]; then
     pass=$((pass + 1))
@@ -223,6 +228,37 @@ GH_STUB_FAIL="" run_case "gh pr merge <N> with src/local file gate fires" 2 \
 printf '{"files":[{"path":"tests/integration/local-invoke/verify.sh"}]}' > "$GH_FILES_PAYLOAD"
 GH_STUB_FAIL="" run_case "gh pr merge <N> with tests/integration/local- file gate fires" 2 \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 999"}}' "$fixture_repo")"
+
+# 19b. THE INVERSE OF THE BYPASS (go-to-k/cdkd#3365 review). Passing the UNION
+#      ERE made `gate_pr_selector` answer from the `git merge` segment, so a
+#      READABLE selector behind one came back unreadable and refused -- a
+#      spelling `origin/main` resolved fine. With the narrow ERE the selector is
+#      999 again and the gate scope-checks THAT PR: local files -> exit 2.
+printf '{"files":[{"path":"src/local/docker-runner.ts"}]}' > "$GH_FILES_PAYLOAD"
+GH_STUB_FAIL="" run_case "git merge <ref> prefix does not hide a readable selector" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git merge origin/main && gh pr merge 999 --squash"}}' "$fixture_repo")"
+
+# 19c. Its discriminator: the SAME shape whose PR is OUT of local scope must
+#      pass. Exit 2 alone could not tell "resolved 999 and it is in scope" from
+#      "refused because the selector read as unreadable".
+printf '{"files":[{"path":"docs/testing.md"}]}' > "$GH_FILES_PAYLOAD"
+GH_STUB_FAIL="" run_case "git merge <ref> prefix, readable selector, out of scope passes" 0 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git merge origin/main && gh pr merge 999 --squash"}}' "$fixture_repo")"
+
+# 19d. A QUOTED NUMBER IS STILL A NUMBER (round-2 review G10). The tokeniser
+#      keeps the quotes ON, so `gh pr merge "999"` reached the numeric guard as
+#      `"999"` and was refused as an unreadable selector. Fenced at library
+#      level only until now. In-scope files, so exit 2 proves it RESOLVED and
+#      was scope-checked rather than refused.
+printf '{"files":[{"path":"src/local/docker-runner.ts"}]}' > "$GH_FILES_PAYLOAD"
+GH_STUB_FAIL="" run_case "a double-quoted number resolves and is scope-checked" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"%s"}}' "$fixture_repo" 'gh pr merge \"999\" --squash')"
+
+# 19e. Its discriminator: OUT of scope must pass. Exit 2 alone could not tell
+#      "resolved 999, in scope" from "refused the quoted token as unreadable".
+printf '{"files":[{"path":"docs/testing.md"}]}' > "$GH_FILES_PAYLOAD"
+GH_STUB_FAIL="" run_case "a double-quoted number, out of scope, passes" 0 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"%s"}}' "$fixture_repo" 'gh pr merge \"999\" --squash')"
 
 # 20. `gh pr view` failure -> fail-open (exit 0), an infra outage must
 #     not block merges (mirrors integ-broad-gate.sh).
@@ -660,6 +696,12 @@ case "\$1" in
   status)
     if [ "\${MG_VERDICT:-stale}" = fresh ]; then
       printf 'key:        %s\nstate:      match\n' "\$2"
+    elif [ "\${MG_VERDICT:-stale}" = stale_noreason ]; then
+      # STALE with no parenthesised reason -- markgate prints this for a marker
+      # that is simply missing. The hook greps the parens out and branches on
+      # whether it found any, so a message arm placed inside the found-a-reason
+      # branch is silent here and nothing else in this file would notice.
+      printf 'key:        %s\nstate:      stale\n' "\$2"
     else
       printf 'key:        %s\nstate:      stale (digest differs)\n' "\$2"
     fi
@@ -701,7 +743,12 @@ run_x() {
   local name="$1" want="$2" verdict="$3" want_txt="$4" deny_txt="$5" want_argv="$6" payload="$7"
   local out got argv detail=""
   : > "$MG_ARGV"
-  out=$(printf '%s' "$payload" | MG_VERDICT="$verdict" PATH="$X_SHIM:$PATH" "$HOOK" 2>&1)
+  # `$X_RUN_GH` prepends a gh stub for cases whose gate REACHES the scope check.
+  # Without it those call the real gh, which is authenticated locally and not in
+  # CI -- so the case passed here and failed there with `gh pr view <N> failed;
+  # allowing merge (infra fail-open)`. A test that needs the network is not a
+  # test of this hook (go-to-k/cdkd#3365 review round 3).
+  out=$(printf '%s' "$payload" | MG_VERDICT="$verdict" PATH="${X_RUN_GH:+$X_RUN_GH:}$X_SHIM:$PATH" $HOOK_RUN 2>&1)
   got=$?
   argv=$(tr '\n' '|' < "$MG_ARGV" 2>/dev/null)
   [ "$got" = "$want" ] || detail="$detail; want exit $want, got $got"
@@ -818,7 +865,7 @@ XGH_EOF
 chmod +x "$X_GH/gh"
 : > "$MG_ARGV"
 x_out=$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 7 --squash"}}' "$sib_repo" \
-  | MG_VERDICT=stale PATH="$X_GH:$X_SHIM:$PATH" "$HOOK" 2>&1)
+  | MG_VERDICT=stale PATH="$X_GH:$X_SHIM:$PATH" $HOOK_RUN 2>&1)
 x_rc=$?
 if [ "$x_rc" = 0 ] && [ ! -s "$MG_ARGV" ]; then
   pass=$((pass + 1)); printf 'OK   sibling PR out of local scope passes before any gate lookup (exit 0)\n'
@@ -826,6 +873,41 @@ else
   fail=$((fail + 1)); printf 'FAIL sibling PR out of local scope (rc=%s argv=%s)\n' "$x_rc" "$(tr '\n' '|' < "$MG_ARGV")"
   fail_log+="FAIL sibling PR out of local scope: rc=$x_rc out=$x_out\n"
 fi
+
+X_GH_INSCOPE="$TMPDIR/x-gh-inscope"
+mkdir -p "$X_GH_INSCOPE"
+cat > "$X_GH_INSCOPE/gh" <<'XGHI_EOF'
+#!/usr/bin/env bash
+if [ "${1:-} ${2:-}" = "pr view" ]; then
+  printf '{"files":[{"path":"src/local/docker-runner.ts"}]}'
+  exit 0
+fi
+exit 0
+XGHI_EOF
+chmod +x "$X_GH_INSCOPE/gh"
+
+# THE SCOPE DESCRIPTOR (go-to-k/cdkd#3365 review round 2, G7). The refusals that
+# run BEFORE the selector arm print "this merge touches <scope>", and with an
+# unreadable selector that scope was never checked -- so the descriptor has to
+# switch. Nothing asserted the switched string, which meant the whole
+# `__scope_desc` binding could be mutated with every suite still green.
+#
+# This suite is where BOTH arms are reachable, which is why the pair lives here
+# rather than beside the other selector cases: `$sib_repo` has an ALIAS row
+# (cdk-local -> `integ`), so a stale alias refusal is reached with a READABLE
+# selector as well as an unreadable one. On the schema gate the only refusal
+# printing the descriptor is the foreign/`none` one, where a readable selector
+# takes go-to-k/cdkd#3351's relaxation and exits 0.
+X_RUN_GH="$X_GH_INSCOPE" run_x "the alias refusal does not assert a scope it could not check" 2 stale \
+  "could not identify" "local-execution code" - \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge https://github.com/go-to-k/cdkd/pull/7"}}' "$sib_repo")"
+
+# THE CONTROL -- a READABLE selector on the SAME refusal must still name the
+# real scope, or the descriptor could have been replaced wholesale and the case
+# above would not notice.
+X_RUN_GH="$X_GH_INSCOPE" run_x "a readable selector still names the real scope" 2 stale \
+  "local-execution code" "could not identify" - \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 7 --squash"}}' "$sib_repo")"
 
 # J. THE SLUG CARRIES THE HOST (go-to-k/cdkd#2236 review, item 3). A DIFFERENT
 #    forge with the same owner/name must not inherit cdk-local's alias. Driven
@@ -908,6 +990,99 @@ mkdir -p "$sib_repo/src/local/deeply/nested"
 # fixture path never appears in the output. Both refusals use --show-toplevel,
 # which is the point of this case -- they now agree with each other.
 sib_top=$(git -C "$sib_repo" rev-parse --show-toplevel)
+# --- The PR selector (go-to-k/cdkd#3365) ---
+#
+# An EMPTY selector falls through to the UNCONDITIONAL verify here (this gate's
+# scope check runs only when a PR NUMBER was read) -- right for the prescribed
+# `gh pr merge --squash` from the PR's own worktree, wrong for a spelling gh
+# resolves and this gate cannot: there the scope check is skipped for a PR that
+# may well be out of scope, and the refusal asserted the merge touched
+# local-execution code without having looked.
+#
+# On run_x rather than the plain run_case: every case below shares exit 2 with
+# the ordinary stale-marker refusal, so the code alone cannot say WHICH arm
+# fired, and run_x takes a NEGATIVE needle too -- which is what pins that the
+# two messages do not both print.
+run_x "URL selector refuses, and does NOT assert what it could not check" 2 stale \
+  "cannot be identified" "touches local-execution code" - \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge https://github.com/go-to-k/cdkd/pull/400 --squash"}}' "$own_repo")"
+
+run_x "a BRANCH NAME selector refuses" 2 stale \
+  "cannot be identified" "touches local-execution code" - \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge feat/my-branch --squash"}}' "$own_repo")"
+
+run_x "a CLUSTERED flag that eats the number refuses" 2 stale \
+  "cannot be identified" "touches local-execution code" - \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge -sd 400"}}' "$own_repo")"
+
+# CHAINED COMMANDS, and this gate had the WORST version of it (review round 1).
+# It passed `$__verb_ere` -- the UNION of `gh pr merge` and `git merge` -- so
+# `git merge 42 && gh pr merge <URL>` read 42 off the GIT MERGE ref, scope
+# checked PR 42, and exited 0 while gh merged the URL'd PR. A measured wrong-PR
+# fail-open, newly opened by this very change and closed by passing the narrow
+# ERE. The second case is the inverse that the union ERE also broke: a readable
+# selector behind a `git merge` must still resolve.
+run_x "git merge <n> prefix does NOT hide a URL selector" 2 stale \
+  "cannot be identified" "touches local-execution code" - \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git merge 42 && gh pr merge https://github.com/go-to-k/cdkd/pull/400"}}' "$own_repo")"
+
+run_x "a later segment's URL selector is still seen" 2 stale \
+  "cannot be identified" "touches local-execution code" - \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge --squash && gh pr merge https://github.com/go-to-k/cdkd/pull/400"}}' "$own_repo")"
+
+# A REDIRECTION names no PR (test review G1): it must take the ORDINARY
+# fallback, not the selector refusal.
+run_x "a stdout redirect is not a selector" 2 stale \
+  "touches local-execution code" "cannot be identified" - \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge --squash > /tmp/merge.log"}}' "$own_repo")"
+
+# CONTROL 1 -- the prescribed spelling carries NO selector and must keep the
+# fallback, reaching the ORDINARY refusal. Without it the new arm could widen to
+# every no-number merge and nothing here would say so.
+run_x "no selector at all still falls back to the current branch" 2 stale \
+  "touches local-execution code" "cannot be identified" - \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge --squash"}}' "$own_repo")"
+
+# CONTROL 2 -- THE PRICE OF THE PLACEMENT, as a case rather than a comment. With
+# the marker FRESH this gate permits the merge whatever the PR touched, so the
+# PR's identity never mattered and an unreadable selector must NOT refuse.
+# Refusing ahead of the marker question -- the first cut of this change --
+# reddens exactly this case.
+run_x "fresh marker + unreadable selector does NOT refuse" 0 fresh - "cannot be identified" - \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge https://github.com/go-to-k/cdkd/pull/400 --squash"}}' "$own_repo")"
+
+# REGRESSION, go-to-k/cdkd#3365 self-review -- both arms of it, and neither was
+# visible to any case that existed before.
+#
+# (1) `__selector_unreadable` was initialised INSIDE the `gh pr merge` branch.
+# This gate also fires on `git merge`, which never enters that branch, so under
+# `set -u` the read at the block message killed the hook: exit 1, which
+# PreToolUse treats as a NON-BLOCKING error -- `git merge` passed UNGATED.
+#
+# The two cases below are NOT what first caught it, and an earlier revision of
+# this comment claimed they were the only thing that could: "every git-merge
+# case here missed it". Measured FALSE in review -- `git merge <branch> matches`
+# and `git -C <fixture> merge matches` above BOTH redden under that mutation, so
+# the exit-code half was already fenced. What these add is the MESSAGE half: a
+# stale verdict, so the block message is actually reached, and a negative needle
+# proving no `unbound variable` reached stderr on the way.
+run_x "git merge reaches the block message with the flag BOUND" 2 stale \
+  "touches local-execution code" "unbound variable" - \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git merge --abort"}}' "$own_repo")"
+
+run_x "git merge <ref> reaches the block message with the flag BOUND" 2 stale \
+  "touches local-execution code" "unbound variable" - \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git merge origin/main"}}' "$own_repo")"
+
+# (2) The selector message arm landed INSIDE `if [ -n "$reason" ]`, so it was
+# silent for a marker that is merely MISSING -- and the heredoc branch then
+# asserted the merge touched local-execution code, the exact claim the arm
+# exists to withhold. Same case as the URL one above but with no parsable
+# reason; it is the verdict, not the command, that discriminates.
+run_x "URL selector refuses even when the marker has NO parsable reason" 2 stale_noreason \
+  "cannot be identified" "touches local-execution code" - \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge https://github.com/go-to-k/cdkd/pull/400 --squash"}}' "$own_repo")"
+
 run_x "unevaluable refusal names the repo TOPLEVEL, not the cwd" 2 error \
   "target repo : $sib_top" - - \
   "$(printf '{"cwd":"%s/src/local/deeply/nested","tool_input":{"command":"gh pr merge --squash"}}' "$sib_repo")"

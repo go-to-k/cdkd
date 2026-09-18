@@ -13,6 +13,11 @@
 set -u
 
 HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/integ-broad-gate.sh"
+# `run-tests.sh` runs each SUITE under both bashes and exports HOOK_BASH, but the
+# hook is `#!/usr/bin/env bash` and so takes whatever comes FIRST on PATH --
+# meaning a suite that ignores HOOK_BASH advertises 3.2 coverage of itself and
+# not of its subject (.claude/rules/hooks.md). Added by go-to-k/cdkd#3365 review.
+HOOK_RUN="${HOOK_BASH:+$HOOK_BASH }$HOOK"
 
 # go-to-k/cdkd#2236: a fixture repo must DECLARE the gate the hook asks about,
 # the way the real repo does. The gates now read the target repo's own
@@ -102,6 +107,13 @@ case "\$1" in
   status)
     if [ "\$verdict" = "fresh" ]; then
       printf 'key:        %s\nstate:      match\n' "\$2"
+    elif [ "\$verdict" = "stale_noreason" ]; then
+      # STALE with NO parenthesised reason -- what markgate prints for a marker
+      # that is simply missing. The hook greps the parens out and branches on
+      # whether it found any, so a message arm placed inside the found-a-reason
+      # branch is silent here while every other case runs the other arm
+      # (go-to-k/cdkd#3365 self-review, which found exactly that in two gates).
+      printf 'key:        %s\nstate:      stale\n' "\$2"
     else
       printf 'key:        %s\nstate:      stale (marker missing)\n' "\$2"
     fi
@@ -129,6 +141,33 @@ fail_log=""
 #                     and we assert it contains expect_cwd. Empty
 #                     skips the cwd assertion (used for pass-through
 #                     cases that never reach markgate).
+# run_case_needle <name> <expect_exit> <payload> <gh_files> <stderr needle>
+#   run_case discards stderr, and every selector case below shares exit 2 with
+#   the ordinary stale-marker refusal -- so the code alone cannot say WHICH arm
+#   fired. Measured on the sibling gate: with the arm disarmed all three
+#   blocking cases still exit 2 and only the needle goes red.
+run_case_needle() {
+  local name="$1"; local want="$2"; local payload="$3"; local gh_files="$4"; local needle="$5"; local deny="${6:-}"
+  : > "$CWD_TRACE_FILE"
+  if [ -n "$gh_files" ]; then echo "$gh_files" > "$GH_MOCK_PAYLOAD"; else rm -f "$GH_MOCK_PAYLOAD"; fi
+  local err got
+  err=$(printf '%s' "$payload" | $HOOK_RUN 2>&1 >/dev/null)
+  got=$?
+  # The NEGATIVE needle (go-to-k/cdkd#3365 review, test G4): without it a gate
+  # that printed BOTH messages would pass, and "the selector arm speaks in its
+  # own words" is precisely a claim about what is NOT printed.
+  local deny_hit=0
+  [ -n "$deny" ] && printf '%s' "$err" | grep -qF "$deny" && deny_hit=1
+  if [[ "$got" == "$want" ]] && printf '%s' "$err" | grep -qF "$needle" && [ "$deny_hit" -eq 0 ]; then
+    pass=$((pass + 1))
+    printf 'OK   %s (exit %s)\n' "$name" "$got"
+  else
+    fail=$((fail + 1))
+    fail_log+="FAIL $name: want exit $want + [$needle], got $got\n  stderr: $err\n"
+    printf 'FAIL %s (want %s + [%s], got %s)\n' "$name" "$want" "$needle" "$got"
+  fi
+}
+
 run_case() {
   local name="$1"; local want="$2"; local payload="$3"; local gh_files="$4"; local expect_cwd="${5:-}"
   : > "$CWD_TRACE_FILE"
@@ -138,7 +177,7 @@ run_case() {
     rm -f "$GH_MOCK_PAYLOAD"
   fi
   local got
-  printf '%s' "$payload" | "$HOOK" >/dev/null 2>&1
+  printf '%s' "$payload" | $HOOK_RUN >/dev/null 2>&1
   got=$?
 
   local cwd_ok=1
@@ -347,6 +386,91 @@ run_case "block: gh -C <side> pr merge from main cwd" 2 \
 # form must pass through because the matcher fires BEFORE the diff
 # scope check.
 
+# --- The PR selector (go-to-k/cdkd#3365) ------------------------------------
+#
+# An EMPTY selector sends this gate to `gh pr view` with no argument, which
+# resolves the CURRENT BRANCH's PR -- right for the prescribed
+# `gh pr merge --squash` from the PR's own worktree, wrong for every spelling
+# gh resolves and this gate cannot. The refusal is placed AFTER the marker
+# question on purpose, so the LAST case here is the one that prices it.
+# REGRESSION, go-to-k/cdkd#3365 self-review -- the arm landed inside
+# `if [ -n "$reason" ]` in two sibling gates and was silent for a merely MISSING
+# marker, where the other branch asserted the very scope it could not check.
+# Same command as the URL case below; the VERDICT discriminates, so keep the pair.
+# GAP 4 (round 3): the heredoc branch's own wording is asserted nowhere else --
+# every other reference to it is a DENY needle, which goes quiet if the message
+# is re-wrapped rather than failing. This asserts it POSITIVELY.
+MARKGATE_MOCK_VERDICT="stale_noreason" run_case_needle \
+  "no selector + no parsable reason prints the ORDINARY heredoc message" 2 \
+  '{"tool_input":{"command":"gh pr merge --squash"},"cwd":"."}' \
+  '{"files":[{"path":"src/deployment/deploy-engine.ts"}]}' "touches cross-cutting" "cannot be identified"
+
+MARKGATE_MOCK_VERDICT="stale_noreason" run_case_needle \
+  "a URL selector refuses even when the marker has NO parsable reason" 2 \
+  '{"tool_input":{"command":"gh pr merge https://github.com/go-to-k/cdkd/pull/400 --squash"},"cwd":"."}' \
+  '{"files":[{"path":"src/deployment/deploy-engine.ts"}]}' "cannot be identified" "touches cross-cutting"
+
+run_case_needle "a URL selector refuses rather than judging the current branch" 2 \
+  '{"tool_input":{"command":"gh pr merge https://github.com/go-to-k/cdkd/pull/400 --squash"},"cwd":"."}' \
+  '{"files":[{"path":"src/deployment/deploy-engine.ts"}]}' "cannot be identified" "touches cross-cutting"
+
+run_case_needle "a BRANCH NAME selector refuses" 2 \
+  '{"tool_input":{"command":"gh pr merge feat/my-branch --squash"},"cwd":"."}' \
+  '{"files":[{"path":"src/deployment/deploy-engine.ts"}]}' "cannot be identified" "touches cross-cutting"
+
+run_case_needle "a CLUSTERED flag that eats the number refuses" 2 \
+  '{"tool_input":{"command":"gh pr merge -sd 400"},"cwd":"."}' \
+  '{"files":[{"path":"src/deployment/deploy-engine.ts"}]}' "cannot be identified" "touches cross-cutting"
+
+# THE WIDENING ITSELF, which nothing above pins (go-to-k/cdkd#3365 review, spec
+# M1 + test G2). Every case above feeds an IN-SCOPE current-branch PR, and the
+# pre-fix code exits 2 for those too -- so they discriminate only by needle. The
+# behaviour DELTA is this one: an OUT-OF-SCOPE current-branch PR, where the old
+# code fetched its files, found nothing cross-cutting and exited 0, which is the
+# outcome #3365 names ("the gate scope-checks a DIFFERENT pull request's files
+# and passes"). Exit 2 here is reachable only through the new arm.
+run_case_needle "out-of-scope fallback PR + URL selector: the widening, exit 0 -> 2" 2 \
+  '{"tool_input":{"command":"gh pr merge https://github.com/go-to-k/cdkd/pull/400 --squash"},"cwd":"."}' \
+  '{"files":[{"path":"docs/testing.md"}]}' "cannot be identified" "touches cross-cutting"
+
+# Its CONTROL, and the pair is the point: the SAME out-of-scope files with NO
+# selector must still exit 0. Without it the case above would also pass if the
+# gate had simply stopped honouring its scope exemption.
+run_case "out-of-scope fallback PR + NO selector still passes" 0 \
+  '{"tool_input":{"command":"gh pr merge --squash"},"cwd":"."}' \
+  '{"files":[{"path":"docs/testing.md"}]}'
+
+# CHAINED COMMANDS (review round 1). `gate_pr_selector` answers for the FIRST
+# matching segment, so a leading selector-less merge hid the URL'd one behind
+# it and the refusal was evaded by one token. The probe scans every segment now.
+run_case_needle "a later segment's URL selector is still seen" 2 \
+  '{"tool_input":{"command":"gh pr merge --squash && gh pr merge https://github.com/go-to-k/cdkd/pull/400"},"cwd":"."}' \
+  '{"files":[{"path":"docs/testing.md"}]}' "cannot be identified" "touches cross-cutting"
+
+# A REDIRECTION names no PR (test review G1). It is a non-flag, non-numeric
+# token, so it was classified as an unreadable selector -- refusing, and
+# skipping the scope check, so this docs-only PR blocked where it used to pass.
+run_case "a stdout redirect is not a selector" 0 \
+  '{"tool_input":{"command":"gh pr merge --squash > /tmp/merge.log"},"cwd":"."}' \
+  '{"files":[{"path":"docs/testing.md"}]}'
+
+# CONTROL 1 -- the prescribed spelling carries no selector at all and must KEEP
+# the current-branch fallback. Without it the refusal could widen to every
+# no-number merge and nothing here would say so.
+run_case_needle "no selector at all still falls back to the current branch" 2 \
+  '{"tool_input":{"command":"gh pr merge --squash"},"cwd":"."}' \
+  '{"files":[{"path":"src/deployment/deploy-engine.ts"}]}' "touches cross-cutting" "cannot be identified"
+
+# CONTROL 2 -- THE PRICE OF THE PLACEMENT, stated as a case rather than as a
+# comment. With the marker FRESH the gate permits the merge whatever the PR
+# touched, so the PR's identity never mattered and an unreadable selector must
+# NOT refuse. Refusing before the marker question (the first cut) reddens this.
+# run_case, not run_case_needle: the property IS the exit code, and a pass
+# emits no stderr for a needle to match.
+MARKGATE_MOCK_VERDICT="fresh" run_case "fresh marker + unreadable selector does NOT refuse" 0 \
+  '{"tool_input":{"command":"gh pr merge https://github.com/go-to-k/cdkd/pull/400 --squash"},"cwd":"."}' \
+  '{"files":[{"path":"src/deployment/deploy-engine.ts"}]}'
+
 run_case "pass: gh issue body quoting 'gh pr merge' (FP)" 0 \
   '{"tool_input":{"command":"gh issue create --body \"next step: gh pr merge --squash\""},"cwd":"."}' \
   '{"files":[{"path":"src/deployment/deploy-engine.ts"}]}'
@@ -400,11 +524,16 @@ x2236_mk_repo "$x2236_emptycfg" "https://github.com/go-to-k/cdk-local.git" check
 #   consulting a marker at all, which is what the no-equivalent refusal must do.
 x2236_case() {
   local name="$1" want="$2" verdict="$3" mg="$4" want_txt="$5" repo="$6"
+  # Optional 7th arg: override the command, and optional 8th: a needle that must
+  # NOT appear. Both added by go-to-k/cdkd#3365 review round 2, to reach this
+  # gate's `__scope_desc` arms -- only the foreign/`none` refusal prints one and
+  # the selector has to vary to switch it.
+  local command="${7:-gh pr merge 1 --squash}" deny="${8:-}"
   local out got detail=""
   : > "$CWD_TRACE_FILE"
   printf '{"files":[{"path":"src/deployment/deploy-engine.ts"}]}' > "$GH_MOCK_PAYLOAD"
-  out=$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 1 --squash"}}' "$repo" \
-    | MARKGATE_MOCK_VERDICT="$verdict" "$HOOK" 2>&1)
+  out=$(printf '{"cwd":"%s","tool_input":{"command":"%s"}}' "$repo" "$command" \
+    | MARKGATE_MOCK_VERDICT="$verdict" $HOOK_RUN 2>&1)
   got=$?
   [ "$got" = "$want" ] || detail="$detail; want exit $want, got $got"
   if [ "$mg" = "NOT_CALLED" ] && [ -s "$CWD_TRACE_FILE" ]; then
@@ -416,6 +545,9 @@ x2236_case() {
   if [ "$want_txt" != "-" ] && ! printf '%s' "$out" | grep -qF "$want_txt"; then
     detail="$detail; stderr missing [$want_txt]"
   fi
+  if [ -n "$deny" ] && printf '%s' "$out" | grep -qF "$deny"; then
+    detail="$detail; stderr must NOT contain [$deny]"
+  fi
   if [ -z "$detail" ]; then
     pass=$((pass + 1)); printf 'OK   %s (exit %s)\n' "$name" "$got"
   else
@@ -426,7 +558,25 @@ x2236_case() {
 }
 
 x2236_case "target declaring integ-broad consults that marker" 2 stale CALLED - "$x2236_declares"
-x2236_case "sibling declaring only its own gate is NOT accepted on it" 2 fresh NOT_CALLED "declares no gate" "$x2236_other"
+x2236_case "sibling declaring only its own gate is NOT accepted on it" 2 fresh NOT_CALLED "declares no gate" "$x2236_other" \
+  "gh pr merge 1 --squash" "could not identify"
+# THE SCOPE DESCRIPTOR (go-to-k/cdkd#3365 review rounds 2-3, G7 then gap 3). The
+# refusal above prints "this merge touches <scope>", and with an unreadable
+# selector that scope was never checked -- so the descriptor switches.
+#
+# THE PAIR IS THESE TWO, not this one and the case above it: round 3 measured
+# that calling that case the control was wrong, because it asserts
+# `declares no gate` and never the scope string at all, so replacing the
+# READABLE arm wholesale left the suite at 42/0. The readable half below asserts
+# the real scope POSITIVELY, which is the only thing that pins it.
+x2236_case "a readable selector names the real scope" 2 fresh NOT_CALLED \
+  "cross-cutting deploy" "$x2236_other" \
+  "gh pr merge 1 --squash" "could not identify"
+
+x2236_case "the refusal does not assert a scope it could not check" 2 fresh NOT_CALLED \
+  "could not identify" "$x2236_other" \
+  "gh pr merge https://github.com/go-to-k/cdkd/pull/1 --squash" "cross-cutting deploy"
+
 x2236_case "checkout with no .markgate.yml refuses actionably" 2 fresh NOT_CALLED "GATE_MARKER_ALIASES" "$x2236_bare"
 x2236_case "unparsable config keeps the cdkd gate name (fail closed)" 2 stale CALLED "integ-broad" "$x2236_emptycfg"
 

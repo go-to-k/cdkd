@@ -642,7 +642,23 @@ shape that gets a gate disabled rather than obeyed. `gh pr diff` failing
 decides scope from the file list alone (the sibling gates' infra fail-open).
 A PR touching none of a gate's scope passes even with a stale marker — the
 integ markers carry a 14d TTL, so without the guard an expired marker would
-block EVERY merge. The three are scoped by different mechanisms:
+block EVERY merge. **That exemption needs the gate to know WHICH PR is being
+merged, and since go-to-k/cdkd#3365 a command that names one in a form the gate
+cannot resolve — a URL, a branch name, a number a flag consumed — is refused
+instead of exempted**, because the only diff it could have fetched is the
+CURRENT BRANCH's, which is a different pull request than the one gh merges. So
+an out-of-scope PR merged as `gh pr merge <URL>` with a stale marker BLOCKS,
+where the same PR merged by number passes. **The gates that is true of are
+`integ-broad`, `integ-local` and `integ-schema-migration`** — NOT the
+`integ-destroy` this paragraph's heading names, which resolves no PR number at
+all (it scopes by `git diff --name-only "$diff_base"...HEAD`, so there is no
+selector to be unreadable), and the third one is absent from that heading
+although it is the gate where the marker is rarely fresh. Carrying NO selector is not that
+case and keeps the fallback (`gh pr merge --squash` from the PR's own worktree
+is the spelling CLAUDE.md prescribes). The refusal sits AFTER the marker
+question, so a FRESH marker still passes whatever the selector: with the marker
+fresh the gate would permit the merge regardless of scope, and the PR's
+identity never mattered. The three are scoped by different mechanisms:
 `integ-destroy` by this branch's delta against `origin/main` (markgate 0.4
 `hash: diff`); `integ-local` by its file-scope content; `integ-broad` by a
 sentinel file a pull cannot touch. `integ-local-gate` — the only gate also

@@ -3683,8 +3683,51 @@ gate_pr_selector_ate_number() {
   [ "$out" = "ate" ]
 }
 
+# gate_pr_selector_unreadable <command> <verb-ere>
+#   rc 0 when the command CARRIED a selector this walk could not resolve to a PR
+#   number -- a URL, a branch name, or a number a flag consumed -- and rc 1 when
+#   it carried NONE at all.
+#
+# THE TWO ARE NOT THE SAME THING, and conflating them is a fail-open
+# (go-to-k/cdkd#3365). On an empty selector a gate falls back to `gh pr view`
+# with no argument, which resolves the CURRENT BRANCH's PR. That is CORRECT for
+# `gh pr merge --squash` run from the PR's own worktree -- the spelling
+# CLAUDE.md prescribes -- and WRONG for `gh pr merge <URL>`, where gh merges the
+# URL'd PR while the gate scope-checks a different one, or finds none and takes
+# its infra fail-open at exit 0.
+#
+# A caller that BLOCKS should refuse on rc 0 and keep the current-branch
+# fallback on rc 1. `gate_pr_selector` alone cannot make that call: it returns
+# the empty string for both, which is why this is a separate question rather
+# than a richer return value -- every existing caller reads that string.
+#
+# It subsumes `gate_pr_selector_ate_number` FOR AN EMPTY SELECTOR: an eaten
+# number is one way a selector becomes unreadable, and a caller asking this one
+# wants both. It does NOT report an eaten number when the walk still resolved a
+# selector -- `gh pr merge -t 42 552` resolves 552 and answers NO -- because the
+# question is whether the caller can trust the selector it got, and there it
+# can.
+gate_pr_selector_unreadable() {
+  # BOTH questions are answered PER SEGMENT inside the walk, and round 3
+  # measured why that matters: an earlier cut asked them of the whole command
+  # from out here -- a leading `[ -n "$(gate_pr_selector ...)" ] && return 1`
+  # for "did anything resolve", then `gate_pr_selector_ate_number` for "did a
+  # flag eat a number". Each answers from the FIRST matching segment, so the
+  # early return made the per-segment scan unreachable and
+  # `gh pr merge 552 && gh pr merge <URL>` answered NO -- the URL'd merge never
+  # scope-checked. Two fixes of this function's own, from two earlier rounds,
+  # cancelling each other.
+  #
+  # Per segment the two compose without conflict: a segment that RESOLVED a
+  # selector is fine whatever its flags ate (`gh pr merge -t 42 552`), and a
+  # segment that resolved nothing is unreadable if it carried a non-numeric
+  # positional OR a flag ate a number. The walk reports `unreadable` the moment
+  # any segment qualifies.
+  [ "$(_gate_sel_want_unreadable=1 gate_pr_selector "$1" "$2")" = "unreadable" ]
+}
+
 gate_pr_selector() {
-  local cmd="$1" re="$2" segment rest tok _gate_span
+  local cmd="$1" re="$2" segment rest tok _gate_span _gate_sel_red _gate_sel_tok _gate_sel_argc _gate_sel_redir _gate_sel_glued _gate_sel_ate_here
   while IFS= read -r segment; do
     _gate_span=$(gate_verb_span "$segment" "$re") || continue
     rest="${segment:$_gate_span}"
@@ -3712,7 +3755,69 @@ gate_pr_selector() {
       [ -n "$rest" ] || break
     done
     [ "$_gate_noglob" = "on" ] || set +f
+    # UNQUOTE EVERY TOKEN ONCE, here, before any arm looks at one. The
+    # tokeniser keeps the quotes ON (deliberately -- that is what makes a
+    # quoted flag VALUE one token), so `gh pr merge "552"` reached the numeric
+    # guard as `"552"` and was refused as unreadable. Round 2 measured the
+    # per-arm fix leaving the sibling arm open: `--future-flag "552"` still
+    # evaded the flag-ate-the-number guard. Stripping once is the only
+    # placement with no next arm to leak through. ONE matching pair only;
+    # anything stranger stays as it is and is refused downstream as before.
+    _gate_sel_argc=$#
+    while [ "$_gate_sel_argc" -gt 0 ]; do
+      _gate_sel_tok="$1"; shift
+      case "$_gate_sel_tok" in
+        \"?*\"|\'?*\') _gate_sel_tok="${_gate_sel_tok:1:${#_gate_sel_tok}-2}" ;;
+      esac
+      set -- "$@" "$_gate_sel_tok"
+      _gate_sel_argc=$((_gate_sel_argc - 1))
+    done
+    _gate_sel_ate_here=0
     while [ $# -gt 0 ]; do
+      # IS THIS TOKEN A REDIRECTION, and does it carry its target GLUED ON?
+      # Computed here rather than as a case pattern because a glob has no
+      # "one or more" quantifier. Peel an optional `&`, the fd digit run, then
+      # the operator run, then the modifiers `&` / `|` / `-`; whatever is left
+      # is the GLUED target, and empty means the target is the NEXT token.
+      #
+      # EVERY PEEL IS A LOOP, and that is the whole correction. Round 3 measured
+      # this block stripping exactly TWO operator characters, so `<<<` left a
+      # third, classified GLUED, did not consume its word, and
+      # `gh pr merge --squash <<< 552` read 552 as the PR -- round 2's blocker
+      # B2 for a different operator, and a regression against origin/main. A
+      # FIXED REPETITION COUNT IS STILL AN ENUMERATION: rounds 1 and 2 enumerated
+      # SPELLINGS, round 2's fix enumerated a LENGTH, and all three failed the
+      # same way. Nothing here counts.
+      _gate_sel_redir=""
+      _gate_sel_glued=no
+      _gate_sel_red="${1#&}"
+      while [ -n "$_gate_sel_red" ]; do
+        case "$_gate_sel_red" in
+          [0-9]*) _gate_sel_red="${_gate_sel_red#?}" ;;
+          *) break ;;
+        esac
+      done
+      case "$_gate_sel_red" in
+        ["<>"]*)
+          _gate_sel_redir="$1"
+          while [ -n "$_gate_sel_red" ]; do
+            case "$_gate_sel_red" in
+              ["<>"]*) _gate_sel_red="${_gate_sel_red#?}" ;;
+              *) break ;;
+            esac
+          done
+          # `&` (fd duplication), `|` (force-overwrite `>|`) and `-` (the
+          # `<<-` tab-stripping heredoc) attach to the operator, never to the
+          # target. Peeled as a set for the same reason, not one each.
+          while [ -n "$_gate_sel_red" ]; do
+            case "$_gate_sel_red" in
+              ["&|-"]*) _gate_sel_red="${_gate_sel_red#?}" ;;
+              *) break ;;
+            esac
+          done
+          [ -n "$_gate_sel_red" ] && _gate_sel_glued=yes
+          ;;
+      esac
       case "$1" in
         # VALUELESS flags are enumerated; everything else that looks like a flag
         # is assumed to TAKE a value and consumes the next token.
@@ -3764,6 +3869,40 @@ gate_pr_selector() {
           shift; continue ;;
         --remove-milestone|--help)
           shift; continue ;;
+        # REDIRECTIONS NAME NO PULL REQUEST (go-to-k/cdkd#3365 review rounds 1-2).
+        #
+        # ONE RULE, NOT AN ENUMERATION, and the enumeration is why: round 1
+        # listed the spaced operators, round 2 measured that the GLUED spelling
+        # (`>/tmp/log`, the common one) still refused, and that listing
+        # `[0-9]">"*` ahead of `[0-9]">"` made a bare `2>` skip its filename --
+        # `gh pr merge 2> 552` then scope-checked 552, a LOG FILENAME read as a
+        # PR. Two rounds, two new spellings, one of them a wrong-PR read: the
+        # shape this repo's own hooks-class-fences.md warns about, where each
+        # round removes only the spellings someone thought to try.
+        #
+        # So the token is classified POSITIVELY instead, by the LOOPED peel
+        # above the case: optional `&`, fd digits, operator characters, then the
+        # `& | -` modifiers, and whatever survives is the GLUED target. Round 3
+        # found the first cut of that peel stripping a FIXED TWO operator
+        # characters, which left `<<<` glued and read its word as the PR -- a
+        # fixed repetition count is still an enumeration. Nothing counts now.
+        #
+        # The shell consumes these before gh ever sees them, so they can never
+        # be the selector -- unlike a flag, where guessing wrong costs a PR
+        # number.
+        # The arity question is answered in `_gate_sel_redir` just above the
+        # case, because a GLOB CANNOT SAY "one or more digits" -- `*` is a
+        # wildcard, not a quantifier -- and two attempts to write the fd prefix
+        # as a pattern each got a different subset wrong: `[0-9]*[<>]*` needs a
+        # leading digit, so the fd-LESS `>` never matched, and `[0-9][0-9]*`
+        # needs two, so `2>` stopped matching. Any pattern here would bound the
+        # fd digit count, which is the enumeration mistake in miniature.
+        "$_gate_sel_redir")
+          shift
+          # A GLUED target (`>file`, `2>&1`) is complete; a BARE operator takes
+          # the next token as its target.
+          [ "$_gate_sel_glued" = no ] && [ $# -gt 0 ] && shift
+          continue ;;
         --auto|--disable-auto|--admin)
           shift; continue ;;
         -*)
@@ -3773,7 +3912,12 @@ gate_pr_selector() {
             # That is the case the caller must not treat as a plain absence.
             case "$1" in
               ''|*[!0-9]*) ;;
-              *) [ -n "${_gate_sel_want_ate:-}" ] && { printf 'ate'; return 0; } ;;
+              *)
+                [ -n "${_gate_sel_want_ate:-}" ] && { printf 'ate'; return 0; }
+                # Under the unreadable PROBE this is recorded, not returned: a
+                # later positional in the SAME segment may still resolve, and
+                # `gh pr merge -t 42 552` must answer NO.
+                _gate_sel_ate_here=1 ;;
             esac
             shift
           fi
@@ -3793,11 +3937,31 @@ gate_pr_selector() {
           # `gh pr merge --future-flag 552` -> empty because 552 was eaten,
           # and falling back there is how a sibling's ci-green merged past red
           # CI. One walk answers both so the two cannot drift apart.
+          #
+          # THE THIRD SHAPE, and it reaches HERE rather than the ate-arm
+          # (go-to-k/cdkd#3365): a non-flag token gh RESOLVES and this walk
+          # cannot -- a URL selector, a branch name. `gh pr merge <URL>` is
+          # empty AND un-eaten, so it was indistinguishable from
+          # `gh pr merge --squash`, and a blocking caller fell back to the
+          # CURRENT BRANCH's PR while gh merged the URL'd one.
+          [ -n "${_gate_sel_want_unreadable:-}" ] && { printf 'unreadable'; return 0; }
           return 0 ;;
       esac
+      # A READABLE selector ends the ordinary walk. Under the probe it does
+      # NOT: a later segment may still carry an unreadable one, and the caller
+      # is asking about the COMMAND, not about its first merge.
+      [ -n "${_gate_sel_want_unreadable:-}" ] && continue 2
       printf '%s' "$1"
       return 0
     done
+    # Tokens exhausted with no positional -- this segment named no PR. Under
+    # the probe, a flag having EATEN a number makes this segment unreadable
+    # (`gh pr merge --future-flag 552`); otherwise keep looking, since a later
+    # segment may name one badly.
+    if [ -n "${_gate_sel_want_unreadable:-}" ]; then
+      [ "$_gate_sel_ate_here" -eq 1 ] && { printf 'unreadable'; return 0; }
+      continue
+    fi
     return 0
   done < <(gate_segments "$cmd")
   return 0

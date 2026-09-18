@@ -62,6 +62,9 @@ if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   || ! declare -F gate_refuse_stale_alias_marker >/dev/null \
   || ! declare -F gate_refuse_unevaluable_marker >/dev/null \
   || ! declare -F cmd_last_cd_target >/dev/null \
+  || ! declare -F gate_pr_selector >/dev/null \
+  || ! declare -F gate_pr_selector_unreadable >/dev/null \
+  || ! declare -F gate_pr_selector_ate_number >/dev/null \
   || ! declare -F strip_noncommand_spans >/dev/null; then
   # FAIL CLOSED. Without the helper `cmd_matches_verb` is undefined, the
   # `if ! cmd_matches_verb ...` guard below sees exit 127 (truthy for `!`),
@@ -173,29 +176,45 @@ CROSS_CUTTING_REGEX='^src/deployment/(deploy-engine|intrinsic-function-resolver|
 #   gh pr merge                              (no number: gh resolves
 #                                             the PR for the current
 #                                             branch automatically)
-pr_number=""
-args="${cmd#*merge}"
-# shellcheck disable=SC2086
-set -- $args
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --*=*) shift; continue ;;
-    --auto|--admin|--delete-branch|--squash|--merge|--rebase)
-      shift; continue ;;
-    -*)
-      shift
-      [ $# -gt 0 ] && shift
-      continue
-      ;;
-    *)
-      if printf '%s' "$1" | grep -qE '^[0-9]+$'; then
-        pr_number="$1"
-        break
-      fi
-      shift
-      ;;
-  esac
-done
+# PR SELECTOR (go-to-k/cdkd#3365). `gate_pr_selector` replaces a hand-rolled
+# walk this gate carried in common with two siblings; `ci-green-gate` and
+# `pr-review-gate` already called it. The substitution alone buys one spelling
+# -- a short flag no longer eats the number (`gh pr merge -s 552` used to yield
+# empty) -- and the measurement that mattered is what it does NOT buy: a URL
+# selector is empty through BOTH walks.
+#
+# So the fix is the EMPTY case, not the parser. An empty selector sends this
+# gate to `gh pr view` with no argument, which resolves the CURRENT BRANCH's PR.
+# That is right for `gh pr merge --squash` from the PR's own worktree -- the
+# spelling CLAUDE.md prescribes -- and wrong for `gh pr merge <URL>`, where gh
+# merges the URL'd PR while this gate scope-checks a different one, or finds
+# none and takes the infra fail-open below at exit 0.
+#
+# `gate_pr_selector_unreadable` separates the two: a selector that was PRESENT
+# and could not be read refuses, a command carrying none keeps the fallback.
+__selector_unreadable=0
+pr_number="$(gate_pr_selector "$cmd" "$__verb_ere")"
+if [ -z "$pr_number" ] && gate_pr_selector_unreadable "$cmd" "$__verb_ere"; then
+  # NOT an exit. Refusing HERE would land ahead of the scope check, so a
+  # docs-only PR merged by URL -- which this gate exempts by design -- would be
+  # refused by a cross-cutting-code gate. Instead the unreadable selector is
+  # carried as "scope UNKNOWN": the scope check is skipped (treated as in
+  # scope, since nothing can say otherwise) and the marker decides. A FRESH
+  # marker passes, which is right -- with the marker fresh the gate would
+  # permit the merge whatever the PR touched, so the identity never mattered.
+  # The refusal is spent only where the answer is load-bearing: a STALE marker,
+  # where falling back to the current branch's PR could exempt a PR gh is
+  # actually merging.
+  __selector_unreadable=1
+fi
+
+# An unreadable selector means the scope is UNKNOWN, not out of scope: the
+# only PR whose files could be fetched is the current branch's, which is not
+# the one gh is about to merge. Treat it as in scope and let the marker decide
+# (go-to-k/cdkd#3365).
+if [ "$__selector_unreadable" -eq 1 ]; then
+  cross_cutting=1
+else
 
 # Pass-through on any gh error so an unrelated infra outage doesn't
 # block merges (mirrors integ-destroy-gate.sh / pr-review-gate.sh).
@@ -223,6 +242,7 @@ while IFS= read -r f; do
 done <<EOF_FILES
 $paths
 EOF_FILES
+fi
 
 if [ "$cross_cutting" -eq 0 ]; then
   exit 0
@@ -249,9 +269,20 @@ __mode=$(printf '%s' "$__plan" | cut -f1)
 __gate=$(printf '%s' "$__plan" | cut -f2)
 __gate_fix=$(printf '%s' "$__plan" | cut -f3)
 
+# The SCOPE DESCRIPTOR these refusals print. With an unreadable selector
+# the scope was never checked -- no PR diff could be fetched -- so asserting
+# it here is the same wrong claim the stale-marker arm was fixed not to make
+# (go-to-k/cdkd#3365 review). Bound once so the two call sites below cannot
+# drift apart.
+if [ "$__selector_unreadable" -eq 1 ]; then
+  __scope_desc="code this gate could not identify, because the pull request named in the command cannot be resolved to a number"
+else
+  __scope_desc="cross-cutting deploy / destroy code (deploy-engine, dag-builder, retry, register-providers)"
+fi
+
 if [ "$__mode" = "none" ]; then
   gate_refuse_no_equivalent_marker "integ-broad-gate" "integ-broad" "$target_dir" \
-    "cross-cutting deploy / destroy code (deploy-engine, dag-builder, retry, register-providers)"
+    "$__scope_desc"
 fi
 
 "${markgate[@]}" verify "$__gate" >/dev/null 2>&1
@@ -272,13 +303,35 @@ fi
 if [ "$__mode" = "alias" ]; then
   gate_refuse_stale_alias_marker "integ-broad-gate" "integ-broad" "$target_dir" \
     "$__gate" "$__gate_fix" \
-    "cross-cutting deploy / destroy code (deploy-engine, dag-builder, retry, register-providers)"
+    "$__scope_desc"
 fi
 
 # Extract the parenthesized reason (`digest differs` vs `expired by ttl`
 # vs `marker missing`) for a more actionable error message.
 reason=$("${markgate[@]}" status "$__gate" 2>/dev/null \
   | awk '/^state:/ { if (match($0, /\([^)]+\)/)) print substr($0, RSTART, RLENGTH); exit }')
+
+# The selector arm speaks FIRST and in its own words: the sentences below assert
+# the PR touches cross-cutting code, which is exactly what could not be checked
+# here. Saying it anyway would send the reader to a diff that does not support
+# it.
+if [ "$__selector_unreadable" -eq 1 ]; then
+  cat >&2 <<'EOF_SELECTOR'
+Blocked by integ-broad-gate: the pull request cannot be identified, and the
+`integ-broad` marker is stale or missing.
+
+The command names a PR in a form this gate cannot resolve to a number -- a URL,
+a branch name, or a number consumed by a flag it does not know -- so it could
+not read that PR's diff to decide whether this gate even applies. The current
+branch's PR is a DIFFERENT pull request than the one gh merges, so it is not
+consulted. With the marker fresh this would have passed regardless; it is only
+the stale marker that makes the identity load-bearing.
+
+Re-run naming the PR by number, which lets the scope check run:
+  gh pr merge <N> --squash --delete-branch
+EOF_SELECTOR
+  exit 2
+fi
 
 if [ -n "$reason" ]; then
   printf "Blocked by integ-broad-gate: this PR touches cross-cutting deploy/destroy code and the \`integ-broad\` marker is stale %s.\n\n" "$reason" >&2

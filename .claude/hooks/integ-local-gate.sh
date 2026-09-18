@@ -60,6 +60,9 @@ if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   || ! declare -F gate_refuse_stale_alias_marker >/dev/null \
   || ! declare -F gate_refuse_unevaluable_marker >/dev/null \
   || ! declare -F cmd_last_cd_target >/dev/null \
+  || ! declare -F gate_pr_selector >/dev/null \
+  || ! declare -F gate_pr_selector_unreadable >/dev/null \
+  || ! declare -F gate_pr_selector_ate_number >/dev/null \
   || ! declare -F strip_noncommand_spans >/dev/null; then
   # FAIL CLOSED. Without the helper `cmd_matches_verb` is undefined, the
   # `if ! cmd_matches_verb ...` guard below sees exit 127 (truthy for `!`),
@@ -208,29 +211,53 @@ bumps_cdk_local() {
   '
 }
 
+# Initialised HERE and not inside the `gh pr merge` branch below: this gate also
+# fires on `git merge`, which never enters that branch, and under `set -u` the
+# read at the block message killed the hook -- exit 1, a non-blocking PreToolUse
+# error, so `git merge` passed UNGATED (go-to-k/cdkd#3365 self-review).
+__selector_unreadable=0
+
 # The SHARED matcher, not a local grep. The hand-rolled copy absorbed only a
 # `-C` with an unquoted value, so `gh -C "/a b" pr merge <N>` and
 # `gh -R <repo> pr merge <N>` skipped the PR-diff scope check below and took the
 # `git merge` branch instead (go-to-k/cdkd#2027 review round 4).
 if gate_matches "$cmd" "$GATE_RE_GH_PR_MERGE"; then
-  pr_number=""
-  args="${cmd#*merge}"
-  # shellcheck disable=SC2086
-  set -- $args
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --*=*) shift; continue ;;
-      --auto|--admin|--delete-branch|--squash|--merge|--rebase) shift; continue ;;
-      -*) shift; [ $# -gt 0 ] && shift; continue ;;
-      *)
-        if printf '%s' "$1" | grep -qE '^[0-9]+$'; then
-          pr_number="$1"
-          break
-        fi
-        shift
-        ;;
-    esac
-  done
+  # PR SELECTOR (go-to-k/cdkd#3365). See integ-broad-gate.sh for the full
+  # reasoning; the short form is that replacing the hand-rolled walk with
+  # `gate_pr_selector` buys one spelling (a short flag no longer eats the
+  # number) and closes NOTHING about a URL selector -- that is empty through
+  # both walks. The fix is the EMPTY case: an empty selector falls back to the
+  # CURRENT BRANCH's PR, which is right for `gh pr merge --squash` from the
+  # PR's own worktree and wrong for `gh pr merge <URL>`.
+  # `$GATE_RE_GH_PR_MERGE`, NOT `$__verb_ere`. This gate's `__verb_ere` is the
+  # UNION of `gh pr merge` and `git merge`, and `gate_pr_selector` answers for
+  # the FIRST matching segment -- so `git merge 42 && gh pr merge <URL>` read
+  # `42` off the GIT MERGE ref and scope-checked PR 42 while gh merged the
+  # URL'd one. Measured rc=0 with `gh pr view 42 --json files` in the argv
+  # trace: the wrong-PR fail-open this change exists to CLOSE, newly opened by
+  # it. The branch is already conditioned on the narrow match one line up, so
+  # the narrow ERE is the right question here. (go-to-k/cdkd#3365 review;
+  # #3365's own prescription names this constant literally.)
+  pr_number="$(gate_pr_selector "$cmd" "$GATE_RE_GH_PR_MERGE")"
+  if [ -z "$pr_number" ] && gate_pr_selector_unreadable "$cmd" "$GATE_RE_GH_PR_MERGE"; then
+    # NOT an exit; it is carried to the block message below.
+    #
+    # THIS GATE IS THE ODD ONE OF THE THREE, and an earlier revision of this
+    # comment copied the siblings' story wholesale (go-to-k/cdkd#3365 review).
+    # Its scope check runs only `if [ -n "$pr_number" ]`, so an EMPTY selector
+    # never reached `gh pr view` here at all and never wrongly exempted anything
+    # -- it fell straight through to the unconditional verify. What the flag
+    # buys HERE is therefore an accurate MESSAGE, not a closed scope hole: the
+    # ordinary refusal asserts the merge touches local-execution code, which is
+    # exactly what could not be checked. The siblings, which DO fall back to the
+    # current branch's diff, are where the exemption itself was at stake.
+    #
+    # The placement is shared even so: refusing here rather than at the block
+    # message would refuse ahead of the marker question, and a FRESH marker
+    # permits the merge whatever the PR touched -- so the identity never
+    # mattered and the refusal would be spent for nothing.
+    __selector_unreadable=1
+  fi
 
   if [ -n "$pr_number" ]; then
     # Pass-through on any gh error so an unrelated infra outage does not
@@ -427,13 +454,24 @@ __mode=$(printf '%s' "$__plan" | cut -f1)
 __gate=$(printf '%s' "$__plan" | cut -f2)
 __gate_fix=$(printf '%s' "$__plan" | cut -f3)
 
+# The SCOPE DESCRIPTOR these refusals print. With an unreadable selector
+# the scope was never checked -- no PR diff could be fetched -- so asserting
+# it here is the same wrong claim the stale-marker arm was fixed not to make
+# (go-to-k/cdkd#3365 review). Bound once so the two call sites below cannot
+# drift apart.
+if [ "$__selector_unreadable" -eq 1 ]; then
+  __scope_desc="code this gate could not identify, because the pull request named in the command cannot be resolved to a number"
+else
+  __scope_desc="local-execution code (src/local/**, src/cli/commands/local-*.ts, tests/integration/local-*)"
+fi
+
 if [ "$__mode" = "none" ]; then
   # NOT a pass-through: cdkd's policy is that local-execution code is verified
   # against real Docker wherever it lands. What changes is that the refusal
   # names something the reader can actually do, instead of a gate that cannot
   # exist in that repo.
   gate_refuse_no_equivalent_marker "integ-local-gate" "integ-local" "$target_dir" \
-    "local-execution code (src/local/**, src/cli/commands/local-*.ts, tests/integration/local-*)"
+    "$__scope_desc"
 fi
 
 "${markgate[@]}" verify "$__gate" >/dev/null 2>&1
@@ -455,7 +493,7 @@ fi
 if [ "$__mode" = "alias" ]; then
   gate_refuse_stale_alias_marker "integ-local-gate" "integ-local" "$target_dir" \
     "$__gate" "$__gate_fix" \
-    "local-execution code (src/local/**, src/cli/commands/local-*.ts, tests/integration/local-*)"
+    "$__scope_desc"
 fi
 
 # Extract the parenthesized reason from `markgate status integ-local` so
@@ -468,6 +506,28 @@ fi
 # Fails open to a generic message when extraction fails.
 reason=$("${markgate[@]}" status "$__gate" 2>/dev/null \
   | awk '/^state:/ { if (match($0, /\([^)]+\)/)) print substr($0, RSTART, RLENGTH); exit }')
+
+# The selector arm speaks FIRST and in its own words: the sentence below asserts
+# the merge touches local-execution code, which is exactly what could not be
+# checked here. Saying it anyway would send the reader to a diff that does not
+# support it.
+if [ "$__selector_unreadable" -eq 1 ]; then
+  cat >&2 <<'EOF_SELECTOR'
+Blocked by integ-local-gate: the pull request cannot be identified, and
+the `integ-local` marker is stale or missing.
+
+The command names a PR in a form this gate cannot resolve to a number -- a URL,
+a branch name, or a number consumed by a flag it does not know -- so it could
+not read that PR's diff to decide whether this gate even applies. The current
+branch's PR is a DIFFERENT pull request than the one gh merges, so it is not
+consulted. With the marker fresh this would have passed regardless; it is only
+the stale marker that makes the identity load-bearing.
+
+Re-run naming the PR by number, which lets the scope check run:
+  gh pr merge <N> --squash --delete-branch
+EOF_SELECTOR
+  exit 2
+fi
 
 if [ -n "$reason" ]; then
   printf "Blocked by integ-local-gate: this merge touches local-execution code and the \`integ-local\` marker is stale %s.\n\n" "$reason" >&2
