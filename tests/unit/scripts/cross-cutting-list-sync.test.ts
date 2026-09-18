@@ -995,3 +995,106 @@ describe('integ-stale-base-detector scope superset', () => {
     ).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// integ-local: the hook's ACTIVATION scope vs the marker's include scope
+// ---------------------------------------------------------------------------
+
+/**
+ * The same two-list hazard the integ-destroy section above fences, for the
+ * `integ-local` gate — which had no fence at all until go-to-k/cdkd#3040 added
+ * a SECOND activation mechanism to the hook. The hook now decides scope two
+ * ways: a path regex (`LOCAL_SCOPE_REGEX`) and a CONTENT test on the diff
+ * (`bumps_cdk_local`, which fires on a change to the `"cdk-local":` line of a
+ * `package.json`). `.markgate.yml`'s `integ-local.include` has to cover BOTH,
+ * and the second is the one a path-list comparison cannot see: `package.json`
+ * sits in the include list purely so that a cdk-local bump STALES the marker.
+ * Drop it and the hook activates against a marker a previous local integ
+ * left fresh — the hook-only FAIL-OPEN, the worse direction — with every
+ * per-gate suite still green, because `integ-local-gate.test.sh` drives a
+ * stub markgate that never reads the include list.
+ *
+ * So the assertions are paired by MECHANISM, not merged into one set:
+ *   - every path glob the hook's regex activates on is in the include list,
+ *     and every non-manifest include entry is one the regex activates on;
+ *   - `package.json` is in the include list IF AND ONLY IF the hook carries
+ *     the content test — the two halves of one decision, and either alone is
+ *     a defect (include-only: a marker that stales for nothing; hook-only:
+ *     the fail-open above).
+ *
+ * The regex is NOT expanded the way the destroy hook's patterns are: it is
+ * split on `|` and each alternative compared VERBATIM against the hand-paired
+ * table below, so a respelling of an alternative reds even when it would
+ * still match the same paths -- a deliberately cruder fence, since the three
+ * alternatives are anchored prefixes with nothing to expand.
+ */
+const LOCAL_HOOK = join(repoRoot, '.claude', 'hooks', 'integ-local-gate.sh');
+
+/** `.markgate.yml`'s `integ-local.include` list. */
+function localIncludeScope(): string[] {
+  const m = /^ {2}integ-local:\n([\s\S]*?)^ {2}[a-z][a-z-]*:$/m.exec(read(MARKGATE_YML));
+  expect(m, '.markgate.yml: could not locate the integ-local gate block').not.toBeNull();
+  const out = [...m![1].matchAll(/^\s+- "([^"]+)"$/gm)].map((e) => e[1]);
+  assertFloor(out, '.markgate.yml integ-local.include', 4);
+  return out;
+}
+
+/** The hook's `LOCAL_SCOPE_REGEX`, as the path prefixes it activates on. */
+function localHookPathScope(): string[] {
+  const src = read(LOCAL_HOOK);
+  const m = /^LOCAL_SCOPE_REGEX='([^']+)'$/m.exec(src);
+  expect(m, "integ-local-gate.sh: no LOCAL_SCOPE_REGEX='...' assignment found").not.toBeNull();
+  const out = m![1].split('|');
+  assertFloor(out, 'integ-local-gate.sh LOCAL_SCOPE_REGEX', 3);
+  return out;
+}
+
+/**
+ * Map one include glob to the regex alternative that activates on it. The
+ * three path globs and the three alternatives are hand-paired here on purpose:
+ * a generic glob-to-ERE translation would be a fourth parser to keep honest.
+ * Only the two MEMBERSHIP sets are asserted — the include list equals the
+ * table's globs, the hook regex equals the table's alternatives — so a glob
+ * moved onto a different row would still pass; the row layout is a reading
+ * aid for whoever edits one side, not something the test enforces.
+ */
+const LOCAL_PATH_PAIRS: ReadonlyArray<readonly [glob: string, ereAlternative: string]> = [
+  ['src/local/**', '^src/local/'],
+  ['src/cli/commands/local-*.ts', '^src/cli/commands/local-[A-Za-z0-9_-]*\\.ts$'],
+  ['tests/integration/local-*/**', '^tests/integration/local-'],
+];
+
+describe('integ-local: hook activation scope vs .markgate.yml include scope', () => {
+  it('every path glob the hook activates on is in the include list, and vice versa', () => {
+    const include = localIncludeScope();
+    const hook = localHookPathScope();
+
+    const includePaths = include.filter((g) => g !== 'package.json');
+    expect(
+      [...includePaths].sort(),
+      'the non-manifest include entries must be exactly the three path globs the pairs table names',
+    ).toEqual(LOCAL_PATH_PAIRS.map(([g]) => g).sort());
+    expect(
+      [...hook].sort(),
+      'the hook regex alternatives must be exactly the three the pairs table names',
+    ).toEqual(LOCAL_PATH_PAIRS.map(([, e]) => e).sort());
+  });
+
+  it('package.json is in the include list IF AND ONLY IF the hook carries the cdk-local content test', () => {
+    const include = localIncludeScope();
+    const src = read(LOCAL_HOOK);
+    const hookHasContentTest =
+      /^bumps_cdk_local\(\) \{$/m.test(src) && /"cdk-local":/.test(src) && /bumps_cdk_local "\$/.test(src);
+    const includeHasManifest = include.includes('package.json');
+
+    expect(
+      includeHasManifest,
+      hookHasContentTest
+        ? 'the hook fires on a cdk-local bump but .markgate.yml does not stale the marker on ' +
+            'package.json: the merge would be judged by a marker a previous local integ left ' +
+            'fresh (hook-only fail-open, go-to-k/cdkd#3040)'
+        : '.markgate.yml stales the integ-local marker on package.json but no hook reads that ' +
+            'signal: the include entry is dead weight and should go with the content test',
+    ).toBe(hookHasContentTest);
+  });
+});
