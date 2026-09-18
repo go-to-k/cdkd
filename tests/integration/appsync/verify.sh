@@ -573,6 +573,15 @@ else
     printf '%s\n' "${EXPORT_OUT}" | sed 's/^/  /' >&2
     exit 1
   fi
+  # "ONLY" is a COUNT, not the absence of six strings: the thrown message
+  # carries the number of blocked resources, so pin it at exactly one — a
+  # second blocker with any wording this loop does not know (a masked id, a
+  # row missing from state) would otherwise pass silently.
+  if ! printf '%s\n' "${EXPORT_OUT}" | grep -q '1 resource(s) block migration'; then
+    echo "FAIL: more than one resource blocks the export (expected AWS::AppSync::GraphQLSchema alone):" >&2
+    printf '%s\n' "${EXPORT_OUT}" | grep -E 'block migration|^\s' | sed 's/^/  /' >&2
+    exit 1
+  fi
   for unresolved in 'could not resolve resource identifier' 'COMPOSITE_ID_SPLITTERS' \
     'AWS::AppSync::ApiKey' 'AWS::AppSync::GraphQLApi' 'AWS::AppSync::DataSource' 'AWS::AppSync::Resolver'; do
     if printf '%s\n' "${EXPORT_OUT}" | grep -F -- "${unresolved}" | grep -qv 'GraphQLSchema'; then

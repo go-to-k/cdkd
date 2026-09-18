@@ -1335,6 +1335,35 @@ describe('buildImportPlan — AWS::AppSync::GraphQLApi / ::ApiKey (issue #3414)'
     expect(plan.phase1Imports[0]!.resourceIdentifier).toEqual({ ApiId: GRAPHQL_API_ID });
   });
 
+  it('does NOT bypass the drift guard for an ARN-shaped physicalId under the old `ApiId` registry', async () => {
+    // A `--migrate-from-cloudformation` record stores CloudFormation's
+    // PhysicalResourceId — the API ARN. Shipping that as `ApiId` would be a
+    // wrong identifier, so the tolerance is scoped to a non-ARN physicalId and
+    // this record keeps the loud cross-check refusal (review of #3414).
+    const state = stateWith({
+      Api: { resourceType: 'AWS::AppSync::GraphQLApi', physicalId: GRAPHQL_API_ARN },
+    });
+    const template = {
+      Resources: { Api: { Type: 'AWS::AppSync::GraphQLApi', Properties: {} } },
+    };
+    const plan = await buildImportPlan(
+      state,
+      template,
+      cfnClientFor({
+        ...SCHEMAS,
+        'AWS::AppSync::GraphQLApi': {
+          primaryIdentifier: ['/properties/ApiId'],
+          handlers: { create: {}, read: {}, update: {}, delete: {}, list: {} },
+          provisioningType: 'FULLY_MUTABLE',
+        },
+      }),
+      'MyStack'
+    );
+    expect(plan.phase1Imports).toEqual([]);
+    expect(plan.blocked).toHaveLength(1);
+    expect(plan.blocked[0]!.reason).toMatch(/registry schema changed under cdkd/);
+  });
+
   it('still refuses by name when the registry reports a field the entry does NOT tolerate', async () => {
     // `physicalIdIsIdentifierFor` is a LIST, not a blanket "any single field":
     // a third spelling is a genuine schema change and keeps the drift guard.

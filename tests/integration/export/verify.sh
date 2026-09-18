@@ -205,12 +205,6 @@ export PATH="${TEST_DIR}/node_modules/.bin:${PATH}"
 
 cleanup() {
   rc=$?
-  # The AppSync key's value is recorded in cdkd state as an attribute (issue
-  # #3414 added the key to this fixture), and the state bucket is versioned,
-  # so every `state.json` write leaves a readable prior version behind. Purge
-  # the NONCURRENT versions from every exit path; the success path below does
-  # the full sweep plus the zero-assertion (docs/integ-fixture-conventions.md).
-  s3_purge_prefix_versions "${STATE_BUCKET:-}" "${STATE_PREFIX:-}" noncurrent || true
   if [ "${rc}" -ne 0 ]; then
     echo "[verify] FAIL (exit ${rc}) — attempting cleanup"
     # If the CFn stack exists (export succeeded into CFn), delete via CFn.
@@ -227,6 +221,15 @@ cleanup() {
       ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force || true
     fi
   fi
+  # The AppSync key's value is recorded in cdkd state as an attribute (issue
+  # #3414 added the key to this fixture), and the state bucket is versioned,
+  # so every `state.json` write leaves a readable prior version behind. Purge
+  # the NONCURRENT versions from every exit path — AFTER the failure-arm
+  # destroy above, whose state deletion is what makes the last `state.json`
+  # noncurrent (a purge placed before it would leave exactly that version).
+  # The success path below does the full sweep plus the zero-assertion
+  # (docs/integ-fixture-conventions.md).
+  s3_purge_prefix_versions "${STATE_BUCKET:-}" "${STATE_PREFIX:-}" noncurrent || true
   exit "${rc}"
 }
 trap cleanup EXIT

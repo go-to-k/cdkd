@@ -957,6 +957,21 @@ describe('splitCompositePhysicalId', () => {
     );
   });
 
+  it('refuses an ARN that is not the AppSync key ARN instead of shipping it as a bare key id', () => {
+    // Review of #3414: a mis-spelled ARN (plural `apikeys`, another service)
+    // has no `|`, so without the guard it fell through to the bare arm and
+    // went out verbatim as `ApiKeyId` — a wrong identifier only CreateChangeSet
+    // would have noticed.
+    for (const arn of [
+      'arn:aws:appsync:us-east-1:123456789012:apis/abc123/apikeys/da2-key456',
+      'arn:aws:lambda:us-east-1:123456789012:function:not-a-key',
+    ]) {
+      expect(() =>
+        splitCompositePhysicalId('AWS::AppSync::ApiKey', arn, { ApiId: 'abc123' })
+      ).toThrow(/looks like an ARN but is not an AppSync API key ARN/);
+    }
+  });
+
   it('throws on wrong part count for ApiGateway::Method', () => {
     expect(() => splitCompositePhysicalId('AWS::ApiGateway::Method', 'only-two|parts')).toThrow(
       /expected 3 parts/

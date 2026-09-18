@@ -864,14 +864,20 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
   //   2. the key ARN `arn:<partition>:appsync:<region>:<account>:apis/<apiId>/apikey/<apiKeyId>`
   //      — CloudFormation's `Ref` for the type, so the `PhysicalResourceId` a
   //      `--migrate-from-cloudformation` import records verbatim;
-  //   3. the bare `<apiKeyId>` — a record the Cloud Control route wrote while
-  //      the identifier was still the single `ApiKeyId`; the parent comes from
-  //      the recorded `ApiId` property, the way `AWS::ApiGateway::Resource`'s
-  //      bare form recovers `RestApiId`.
+  //   3. the bare `<apiKeyId>` — what `cdkd import --resource Key=<apiKeyId>`
+  //      records verbatim (`AppSyncProvider.import` stores `knownPhysicalId` as
+  //      given for every child type); the parent comes from the recorded
+  //      `ApiId` property, the way `AWS::ApiGateway::Resource`'s bare form
+  //      recovers `RestApiId`. NOT a Cloud Control shape: the type was
+  //      NON_PROVISIONABLE before the flip, so CC never wrote a bare id.
   // `ApiKeyId` is `readOnlyProperties`, so the overlay narrows to `ApiId` —
   // writing the read-only field into Properties is rejected at changeset-create.
   // Both segments are AWS-minted ids, so a `|` inside one cannot occur and the
-  // arity test is exact rather than "at least".
+  // arity test is exact rather than "at least". An `arn:`-prefixed value that
+  // is NOT the key ARN shape above is refused rather than shipped as a bare
+  // key id — a mis-spelled ARN (`apikeys`, a wrong service) has no `|`, so
+  // without the guard it would fall through to shape 3 and only CreateChangeSet
+  // would notice.
   'AWS::AppSync::ApiKey': (physicalId, properties) => {
     const trimmed = physicalId.trim();
     if (!trimmed) {
@@ -888,6 +894,12 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
         resourceIdentifier: { ApiId: apiId, ApiKeyId: apiKeyId },
         propertiesOverlay: { ApiId: apiId },
       };
+    }
+    if (trimmed.startsWith('arn:')) {
+      throw new Error(
+        `'${physicalId}' looks like an ARN but is not an AppSync API key ARN ` +
+          `(expected arn:<partition>:appsync:<region>:<account>:apis/<apiId>/apikey/<apiKeyId>)`
+      );
     }
     const parts = trimmed.split('|');
     if (parts.length > 2) {
@@ -1392,7 +1404,9 @@ interface CompositePhysicalIdIdentifier {
    * name as a schema change. Exists for a type whose identifier AWS moved
    * recently and whose two published sources disagreed while it moved
    * (`AWS::AppSync::GraphQLApi`, `ApiId` -> `Arn`, issue #3327 / #3414): the
-   * OLD answer is not wrong, it is the value cdkd stores.
+   * OLD answer is not wrong, it is the value cdkd stores for a record it
+   * deployed. An ARN-shaped physicalId (a record adopted from CloudFormation)
+   * is excluded from the bypass by `resolveCompositeId`.
    */
   readonly physicalIdIsIdentifierFor?: readonly string[];
   /**
@@ -1483,9 +1497,13 @@ interface CompositePhysicalIdIdentifier {
  * reads the `Arn` attribute `AppSyncProvider.create` records. Because the
  * flip is recent and the two sources disagreed, the entry ALSO declares
  * `physicalIdIsIdentifierFor: ['ApiId']`: a schema that reports the OLD
- * single field is not a schema change that needs a code edit — cdkd's
- * physicalId already IS that value — so `resolveCompositeId` takes the plain
- * single-key path for it instead of refusing by name.
+ * single field is not a schema change that needs a code edit — for a record
+ * cdkd deployed, the physicalId already IS that value — so `resolveCompositeId`
+ * takes the plain single-key path for it instead of refusing by name. The
+ * bypass excludes an ARN-shaped physicalId (a `--migrate-from-cloudformation`
+ * record stores CloudFormation's `PhysicalResourceId`, the ARN), which under
+ * a pre-flip registry keeps the loud cross-check refusal rather than shipping
+ * an ARN as `ApiId`.
  *
  * The SG-ingress row is measured the same way as the rest, and separately
  * against a real CloudFormation stack because the three strings that name one
@@ -4542,11 +4560,17 @@ async function resolveResourceIdentifier(
   // as the WHOLE identifier is the "physicalId is the identifier" case the
   // entry exists to bypass — so it is not a schema change to refuse, and the
   // single-key path below is the right one. Decided BEFORE the cross-check,
-  // which would otherwise name it as a change.
+  // which would otherwise name it as a change. The bypass is scoped to a
+  // physicalId that is NOT an ARN: a record adopted through
+  // `--migrate-from-cloudformation` stores CloudFormation's `PhysicalResourceId`,
+  // which for the API is its ARN, and shipping an ARN as `ApiId` would be a
+  // wrong identifier — so under a pre-flip registry such a record keeps the
+  // cross-check's loud refusal instead.
   const compositeIdentifier =
     registered &&
     entry.fields.length === 1 &&
-    registered.physicalIdIsIdentifierFor?.includes(entry.fields[0]!)
+    registered.physicalIdIsIdentifierFor?.includes(entry.fields[0]!) &&
+    !physicalId.trim().startsWith('arn:')
       ? undefined
       : registered;
   if (compositeIdentifier) {
