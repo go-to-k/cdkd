@@ -85,12 +85,12 @@ dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-prot
 dynamic-ref-cross-region	2026-08-21T18:32:07Z	PASS	164	verify.sh	#2157 live arm (Phase 3e), FINAL run on the merged shape. A THIRD stack carries ONE assembled foreign-ARN SecureString reference and no region-less one -- the other two spell theirs region-LESSLY and would classify ambiguous and refuse FIRST once foreign outputReads is seeded. Seeds the legacy plaintext plus that evidence, requires rc=0 AND 'Scrubbed 1 resource record(s)' AND the record back on its expression. MUTATION-PROBED against real AWS on an earlier build: restoring the pre-2157 refusal reds it with 'exited 2, expected 0'. The deferred-lookup FINDING that a Phase 3f once fenced was withdrawn after 3 review rounds (residual filed as go-to-k/cdkd#2166), so that phase is gone with it. 3 stacks destroyed, 0 errors, 0 orphans, 0 surviving state object versions
 dynamodb-autoscaling	2026-08-10T05:13:55Z	PASS	65	verify.sh	0810 sweep b5; table autoscaling re-verify post-#1451 GlobalTable work, 0 err 0 orph
 dynamodb-globaltable	2026-09-05T22:37:14Z	PASS	1521	verify.sh	PR2662 gate run; 16 steps, destroy 0 errors, 0 orphans across us-east-1/us-west-2/eu-west-1
-dynamodb-gsi-update	2026-09-17T21:32:00Z	PASS	282	verify.sh	rc ok, orph clean (go-to-k/cdkd#3265)
-dynamodb-ondemand	2026-09-17T22:00:16Z	PASS	300	verify.sh	rc ok, orph clean (go-to-k/cdkd#3265; re-run after a post-integ provider fix staled the digest)
+dynamodb-gsi-update	2026-09-18T07:35:18Z	PASS	286	verify.sh	rc ok, orph clean (go-to-k/cdkd#3287; runGsiOps parameter change)
+dynamodb-ondemand	2026-09-18T07:35:18Z	PASS	312	verify.sh	rc ok, orph clean (go-to-k/cdkd#3287; per-GSI ceiling edit + rejected member dropped)
 dynamodb-sse	2026-08-01T10:07:21Z	PASS	40	verify.sh	0801 regression sweep; SSE mapping ok, 0 orphans
 dynamodb-stream-filter	2026-08-10T05:13:55Z	PASS	57	verify.sh	0810 sweep b5; stream filter criteria, 0 err 0 orph
 dynamodb-streams	2026-08-10T05:13:55Z	PASS	81	verify.sh	0810 sweep b5; streams+ESM+StreamSpec UPDATE, 0 err 0 orph
-dynamodb-tableclass-switch	2026-08-22T19:12:07Z	PASS	72	verify.sh	issue 2176 masking sweep; rc 0, destroy 0 errors, orphans clean
+dynamodb-tableclass-switch	2026-09-18T07:35:18Z	PASS	268	verify.sh	rc ok, orph clean (go-to-k/cdkd#3287; same provider update() path)
 dynamodb-ttl-attr-change	2026-08-10T11:50:46Z	PASS	57	verify.sh	0810 P0/P1 sweep b3; TTL attr change refused w/ actionable error, AWS TTL unchanged
 ec2-instance	2026-09-15T03:39:03Z	PASS	165	verify.sh	#3139 gating: default-VPC SG VpcId read back at create (Phase 0 + Phase 1), SG gone, default VPC untouched; 0 err 0 orph
 ec2-instance-fanout	2026-07-30T06:24:02Z	PASS	150	verify.sh	new fixture (#1292): 10-inst cold fan-out converged, 13 propagation retries, 0 throttles, 32s deploy

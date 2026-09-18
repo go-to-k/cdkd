@@ -53,10 +53,14 @@ const ATTRIBUTE_DEFINITIONS = [{ AttributeName: 'id', AttributeType: 'S' }];
  * `/^[+-]?\d+$/` with NO trim. The sweep that produced its list grepped
  * `toFiniteNumber`, and this provider's capacity reads never appeared on it:
  * they went through a bare `Number()`, which is WIDER still. This file is the
- * table for what each spelling now does at each of the FIVE sites, driven
+ * table for what each spelling now does at each forwarder, driven
  * through the real `create()` / `update()` rather than through the helpers, so
  * a site that stops calling the shared reader reds a row rather than passing on
- * a helper nothing wires.
+ * a helper nothing wires. The per-SITE counts are asserted in the blocks
+ * below rather than stated here, so a site added or removed moves an assertion
+ * instead of a sentence — `OnDemandThroughput` went from four sites to six
+ * when issue [#3287](https://github.com/go-to-k/cdkd/issues/3287) wired the two
+ * `UpdateGlobalSecondaryIndexAction` arms that had never set it.
  *
  * The spellings and their CloudFormation verdicts are the live A/B on issue
  * #3135 (us-east-1, 2026-09-14; the table is on `toCfnInteger` in
@@ -1099,9 +1103,68 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
         WriteCapacityUnits: 3,
       });
     });
+
+    it('the ZERO-CAPACITY refusal survives a NUMERIC IndexName too (go-to-k/cdkd#3380 security m1)', async () => {
+      // The THIRD site of the same class, found by the go-to-k/cdkd#3380
+      // security review: `skipZeroCapacityIndexUpdate` also opened with a bare
+      // `maskSecrets(indexName)`, and it is reached from the SAME-NAME update
+      // arm on an ordinary PROVISIONED table whose recorded previous carries
+      // AWS's `{0, 0}` on-demand placeholder -- the shape a pre-#1767 record or
+      // a `cdkd drift --revert` of one produces. So with a numeric IndexName and
+      // any resolved secret in the bag, a refusal PATH took the whole deploy
+      // down with `text.replace is not a function`.
+      //
+      // The two sibling warns this round also routed through `indexScopeAt`
+      // (`already exists in AWS` / `was adopted from AWS`) are DEFENSIVE rather
+      // than fenced here, and derivably so: both sit inside `if (recovered)`,
+      // which needs `liveIndexByName.get(name)` to hit -- and that map is built
+      // with a `typeof live.IndexName === 'string'` filter, so a numeric key
+      // can never match it. There is no reachable case to pin.
+      primeGeneric({ billingMode: 'PROVISIONED' });
+      const numericGsi = (capacity: Record<string, unknown>) => ({
+        IndexName: 2024,
+        KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+        Projection: { ProjectionType: 'ALL' },
+        ProvisionedThroughput: capacity,
+      });
+      await expect(
+        provider.update(
+          'L',
+          TABLE_NAME,
+          RESOURCE_TYPE,
+          {
+            TableName: TABLE_NAME,
+            BillingMode: 'PROVISIONED',
+            ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+            GlobalSecondaryIndexes: [
+              numericGsi({ ReadCapacityUnits: 0, WriteCapacityUnits: 0 }),
+            ],
+          },
+          {
+            TableName: TABLE_NAME,
+            BillingMode: 'PROVISIONED',
+            ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+            GlobalSecondaryIndexes: [
+              numericGsi({ ReadCapacityUnits: 3, WriteCapacityUnits: 3 }),
+            ],
+          },
+          // A non-empty secret bag is what makes the masker a real
+          // `String.replace` call rather than the identity default.
+          { maskSecrets: (text: string) => text.replace(/s3cr3t/g, '<redacted>') }
+        )
+      ).resolves.not.toThrow();
+
+      // The refusal still FIRED -- a case that only proved "no throw" would
+      // also pass against a build that never reached the warn at all.
+      expect(warnings()).toContain('on-demand placeholder');
+      expect(warnings()).toContain('<unnamed>');
+      expect(
+        findCalls(UpdateTableCommand).flatMap((c) => c.input.GlobalSecondaryIndexUpdates ?? [])
+      ).toEqual([]);
+    });
   });
 
-  describe('the OnDemandThroughput ceilings at all FOUR send sites (#3265)', () => {
+  describe('the OnDemandThroughput ceilings at all SIX send sites (#3265, #3287)', () => {
     /**
      * `OnDemandThroughput` was forwarded VERBATIM at every site while every
      * sibling capacity property had moved onto CloudFormation's Integer
@@ -1547,19 +1610,38 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
       expect(warnings()).not.toContain('OnDemandThroughput.');
     });
 
-    // Shared by the two go-to-k/cdkd#3287 arms below. PROVISIONED, because the
-    // op has to be fired by a CAPACITY change: a ceiling-only edit fires no op
-    // at all (that IS go-to-k/cdkd#3287), so an op list built from one would be
-    // EMPTY and `every(...)` vacuously true -- passing exactly as well for an
-    // arm that never ran. Both cases shipped in that state and were measured so
-    // by the go-to-k/cdkd#3291 test review (probe D2).
-    const gsiUpdateOps = async (
+    /**
+     * The driver for every per-index CEILING case: a PAY_PER_REQUEST table.
+     *
+     * TWO properties of it are load-bearing, and both were bought by a review
+     * round rather than chosen.
+     *
+     * **PAY_PER_REQUEST, not PROVISIONED.** A PROVISIONED driver has to fire
+     * the action from a CAPACITY change, so the ceiling assertion rides an op
+     * that exists for another reason -- and `OnDemandThroughput` is a
+     * PAY_PER_REQUEST-only property, so the shape under test is one AWS would
+     * reject outright. The billing-mode question those cases kept raising is
+     * filed as go-to-k/cdkd#3392; the cases themselves belong on the mode the
+     * property is legal in.
+     *
+     * **The two index arrays must DIFFER.** `update()` gates the whole GSI
+     * branch on `JSON.stringify(desired) !== JSON.stringify(previous)`, so
+     * byte-identical arrays never reach `applyGsiUpdates` at all and a case
+     * asserting "no op" then passes over an arm that never ran. Where a case
+     * needs the ceiling itself UNCHANGED, it carries a SECOND index whose
+     * ceiling does change (go-to-k/cdkd#3380 round 2, A1 / A2 -- both shipped
+     * vacuous before it was measured).
+     *
+     * The GSIs carry NO `ProvisionedThroughput`, matching what a real
+     * PAY_PER_REQUEST template declares.
+     */
+    const gsiCeilingOps = async (
       desiredIndexes: unknown[],
       previousIndexes: unknown[],
       live?: { indexes?: unknown[] }
     ) => {
       primeGeneric({
-        billingMode: 'PROVISIONED',
+        billingMode: 'PAY_PER_REQUEST',
         ...(live?.indexes ? { indexes: live.indexes } : {}),
       });
       await provider.update(
@@ -1568,14 +1650,12 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
         RESOURCE_TYPE,
         {
           TableName: TABLE_NAME,
-          BillingMode: 'PROVISIONED',
-          ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+          BillingMode: 'PAY_PER_REQUEST',
           GlobalSecondaryIndexes: desiredIndexes,
         },
         {
           TableName: TABLE_NAME,
-          BillingMode: 'PROVISIONED',
-          ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+          BillingMode: 'PAY_PER_REQUEST',
           GlobalSecondaryIndexes: previousIndexes,
         }
       );
@@ -1585,38 +1665,243 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
         .filter((a): a is NonNullable<typeof a> => a !== undefined);
     };
 
-    it('the SAME-NAME update action carries no ceiling (go-to-k/cdkd#3287, arm 1)', async () => {
-      // NOT an endorsement -- a ceiling edit on a LIVE index is silently lost
-      // today, which is what go-to-k/cdkd#3287 exists to fix. It is pinned
-      // because the fix must route through `coerceOnDemandCeilingsForSend` like
-      // the other four sites: without a case here, wiring the member UNCOERCED
-      // reds nothing and re-opens exactly the defect this PR closes.
-      const updates = await gsiUpdateOps(
-        [{ ...cfnGsi('gsi1', '9', '4'), OnDemandThroughput: { MaxReadRequestUnits: '200' } }],
-        [cfnGsi('gsi1', '3', '3')]
-      );
-      expect(updates.length).toBeGreaterThan(0);
-      expect(updates[0]?.ProvisionedThroughput).toEqual({
-        ReadCapacityUnits: 9,
-        WriteCapacityUnits: 4,
-      });
-      // When go-to-k/cdkd#3287 lands, this flips to asserting a COERCED 200.
-      expect(updates.every((a) => a.OnDemandThroughput === undefined)).toBe(true);
+    /** A PAY_PER_REQUEST GSI: no capacity block, ceiling supplied per case. */
+    const ppRequestGsi = (name: string, ceiling?: unknown) => ({
+      IndexName: name,
+      KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+      Projection: { ProjectionType: 'ALL' },
+      ...(ceiling === undefined ? {} : { OnDemandThroughput: ceiling }),
     });
 
-    it('a ceiling-only edit under PAY_PER_REQUEST fires NO op (go-to-k/cdkd#3287, the shape the two arms above cannot see)', async () => {
-      // THE RESIDUAL the go-to-k/cdkd#3291 test re-review measured (probe P3).
-      // The two arms above force an op to exist with a CAPACITY change, which
-      // is what makes them non-vacuous -- but it also means they only watch an
-      // UNGATED go-to-k/cdkd#3287 fix. A fix gated to the on-demand shape
-      // (`if (!gsi.ProvisionedThroughput && gsi.OnDemandThroughput)`) wires
-      // nothing on a PROVISIONED fixture, so it left all 9247 cases green.
+    it('site 5 update (SAME-NAME GSI Update action): carries the COERCED ceiling (go-to-k/cdkd#3287, arm 1)', async () => {
+      // Was pinned at "carries no ceiling" while go-to-k/cdkd#3287 was open,
+      // deliberately, so the fix could not land silently. It asserts the
+      // COERCED `200` rather than the declared `'200'`, which is what keeps the
+      // member routed through `coerceOnDemandCeilingsForSend` like the other
+      // five sites: wiring it verbatim reds this case.
+      const updates = await gsiCeilingOps(
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: '200' })],
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: 50 })]
+      );
+      expect(updates).toEqual([
+        { IndexName: 'gsi1', OnDemandThroughput: { MaxReadRequestUnits: 200 } },
+      ]);
+    });
+
+    it('site 5 update (SAME-NAME GSI Update action): an UNCHANGED ceiling adds no member', async () => {
+      // The control for arm 1: without the change detector a ceiling would be
+      // re-asserted on every deploy that touches this index for any other
+      // reason, re-sending a value AWS already holds and paying a full
+      // index-ACTIVE wait for it.
       //
-      // This case watches that shape directly: TODAY a ceiling-only edit on a
-      // live index under PAY_PER_REQUEST emits NO GSI op at all -- which IS
-      // go-to-k/cdkd#3287 -- so the count is pinned at ZERO. A gated fix makes
-      // an op appear and reds this, which is the point; it then flips to
-      // asserting the op carries a COERCED 200 rather than the declared '200'.
+      // A SECOND index carries the change, and that is load-bearing rather than
+      // incidental (the go-to-k/cdkd#3380 round-2 test review, A2). `update()`
+      // gates the whole GSI branch on
+      // `JSON.stringify(desired) !== JSON.stringify(previous)`, so byte-identical
+      // arrays never reach `applyGsiUpdates` at all -- the case would then pass
+      // over an arm that never ran, which is exactly how it read when it was
+      // first moved onto this driver. It also makes the assertion sharper than
+      // the original: the detector must be PER INDEX, so gsi2's edit going out
+      // while gsi1 stays silent is one fact rather than two.
+      const updates = await gsiCeilingOps(
+        [
+          ppRequestGsi('gsi1', { MaxReadRequestUnits: 200 }),
+          ppRequestGsi('gsi2', { MaxReadRequestUnits: 90 }),
+        ],
+        [
+          ppRequestGsi('gsi1', { MaxReadRequestUnits: 200 }),
+          ppRequestGsi('gsi2', { MaxReadRequestUnits: 50 }),
+        ]
+      );
+      expect(updates).toEqual([
+        { IndexName: 'gsi2', OnDemandThroughput: { MaxReadRequestUnits: 90 } },
+      ]);
+    });
+
+    it('site 5 update (SAME-NAME GSI Update action): a LOSSLESS re-spelling adds no member', async () => {
+      // This arm's detector narrows BOTH sides when NOTHING was dropped, unlike
+      // the TABLE-level one two describes up: `'200'` and `200` are the same
+      // ceiling, and re-asserting it costs a full index-ACTIVE wait. LOSSLESS
+      // is the load-bearing word -- see the two drop cases below, where the
+      // detector deliberately falls back to the RAW compare.
+      const updates = await gsiCeilingOps(
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: '200' })],
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: 200 })]
+      );
+      expect(updates).toEqual([]);
+    });
+
+    it('site 5 update (SAME-NAME GSI Update action): a RECORD holding the non-canonical spelling adds no member', async () => {
+      // The RECORDED side of the detector, which the re-spelled case above
+      // cannot reach: there the template is the non-canonical side, so
+      // narrowing the desired side alone already makes the two agree. Here the
+      // RECORD holds the string -- what a template spelling `'200'` put there
+      // on an earlier deploy -- and only narrowing BOTH sides keeps a template
+      // since corrected to `200` from re-issuing the op on every deploy.
+      const updates = await gsiCeilingOps(
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: 200 })],
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: '200' })]
+      );
+      expect(updates).toEqual([]);
+    });
+
+    it('site 5 update: two DIFFERENT rejected spellings still WARN, because a drop falls back to the RAW compare (go-to-k/cdkd#3380 Drift 2)', async () => {
+      // The narrowed detector's one concealment, closed. `' 25 '` and `' 30 '`
+      // are both refused by CloudFormation's Integer grammar, so they narrow to
+      // the SAME block -- and a purely narrowed detector would return before
+      // `coerceOnDemandCeilingsForSend` ever ran, so the user would stop being
+      // told what to fix while the template stayed broken. That is the
+      // concealment `.claude/rules/provider-diff-record-folds.md` refuses and
+      // the reason the TABLE-level detector stays raw. The discriminator is
+      // `narrowOnDemandCeilings`' own `dropped` report: any drop on either side
+      // compares RAW instead.
+      const updates = await gsiCeilingOps(
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: ' 30 ', MaxWriteRequestUnits: 15 })],
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: ' 25 ', MaxWriteRequestUnits: 15 })]
+      );
+      // The warning is the point. The op itself still carries only the SURVIVING
+      // member, which differs from nothing AWS holds here, so it is emitted.
+      expect(warnings()).toContain(ON_DEMAND);
+      expect(updates).toEqual([
+        { IndexName: 'gsi1', OnDemandThroughput: { MaxWriteRequestUnits: 15 } },
+      ]);
+    });
+
+    it('site 5 update: an UNEDITED malformed ceiling does NOT re-warn when another index changes', async () => {
+      // The anti-nag control for the RAW-on-drop fallback, and the reason that
+      // fallback is keyed on `dropped` rather than on "did anything change".
+      // gsi2 carries the edit, so `applyGsiUpdates` really runs; gsi1's
+      // still-broken `' 25 '` is IDENTICAL on both sides, so the raw compare is
+      // equal and the arm returns before the announcing forwarder. Without
+      // that, every deploy touching any OTHER index would re-warn about a
+      // template nobody edited.
+      //
+      // It shipped once as a version handing both sides byte-identical arrays,
+      // which never reached `applyGsiUpdates` at all (round 2, A1); this is the
+      // same repair its sibling took, not a deletion.
+      const updates = await gsiCeilingOps(
+        [
+          ppRequestGsi('gsi1', { MaxReadRequestUnits: ' 25 ' }),
+          ppRequestGsi('gsi2', { MaxReadRequestUnits: 90 }),
+        ],
+        [
+          ppRequestGsi('gsi1', { MaxReadRequestUnits: ' 25 ' }),
+          ppRequestGsi('gsi2', { MaxReadRequestUnits: 50 }),
+        ]
+      );
+      expect(updates).toEqual([
+        { IndexName: 'gsi2', OnDemandThroughput: { MaxReadRequestUnits: 90 } },
+      ]);
+      expect(warnings()).not.toContain(ON_DEMAND);
+    });
+
+    it('site 5 update (SAME-NAME GSI Update action): a REMOVED ceiling sends nothing (go-to-k/cdkd#3373)', async () => {
+      // The decision, pinned: omitting a member KEEPS the live maximum (only an
+      // explicit `-1` removes one), and cdkd does NOT substitute the sentinel at
+      // either of this property's two positions. Byte-identical to what the
+      // TABLE-level arm does with the same edit; the removal direction is filed
+      // for both together as go-to-k/cdkd#3373.
+      const updates = await gsiCeilingOps(
+        [ppRequestGsi('gsi1')],
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: 200 })],
+        { indexes: [{ ...LIVE_GSI('gsi1'), OnDemandThroughput: { MaxReadRequestUnits: 200 } }] }
+      );
+      expect(updates).toEqual([]);
+    });
+
+    it('site 5 update: survives a NUMERIC IndexName with a masker in play', async () => {
+      // `indexScopeAt`'s guard, exercised through the NEW scope this arm builds.
+      // `IndexName: 2024` is an unchecked cast off the template, and the real
+      // masker is a `String.prototype.replace` call that THROWS on a number —
+      // which would take the whole deploy down from a diagnostic path. The
+      // site-4 twin covers the `Create` action; this one covers the ceiling arm,
+      // whose scope now feeds the drop warning AND both debug lines.
+      primeGeneric({ billingMode: 'PAY_PER_REQUEST', indexes: [LIVE_GSI('2024')] });
+      const desired = {
+        IndexName: 2024,
+        KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+        Projection: { ProjectionType: 'ALL' },
+      };
+      await expect(
+        provider.update(
+          'L',
+          TABLE_NAME,
+          RESOURCE_TYPE,
+          {
+            TableName: TABLE_NAME,
+            BillingMode: 'PAY_PER_REQUEST',
+            GlobalSecondaryIndexes: [
+              { ...desired, OnDemandThroughput: { MaxReadRequestUnits: ' 200 ' } },
+            ],
+          },
+          {
+            TableName: TABLE_NAME,
+            BillingMode: 'PAY_PER_REQUEST',
+            GlobalSecondaryIndexes: [
+              { ...desired, OnDemandThroughput: { MaxReadRequestUnits: 50 } },
+            ],
+          },
+          // A non-empty secret bag is what makes the masker a real
+          // `String.replace` call rather than the identity default.
+          { maskSecrets: (text: string) => text.replace(/s3cr3t/g, '<redacted>') }
+        )
+      ).resolves.not.toThrow();
+      expect(warnings()).toContain('<unnamed>');
+      expect(warnings()).toContain(ON_DEMAND);
+    });
+
+    it('site 5 update (SAME-NAME GSI Update action): an ALL-REJECTED ceiling emits no op at all', async () => {
+      // An `UpdateGlobalSecondaryIndexAction` carrying nothing but `IndexName`
+      // is rejected by AWS outright, so an EMPTY ceiling block would fire a
+      // doomed call — which is why this arm withholds it where the TABLE-level
+      // one sends `{}` and lets DynamoDB answer. The drop is still ANNOUNCED
+      // per member, which is the whole licence for withholding it.
+      const updates = await gsiCeilingOps(
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: ' 200 ', MaxWriteRequestUnits: 'abc' })],
+        [ppRequestGsi('gsi1')]
+      );
+      expect(updates).toEqual([]);
+      expect(warnings()).toContain(ON_DEMAND);
+      expect(warnings()).toContain('OnDemandThroughput.MaxWriteRequestUnits');
+      // ...and NOT the unknown-member advice (the go-to-k/cdkd#3380 round-3
+      // review's C3). Both members were just named as declared-but-rejected, so
+      // telling the user to "check the member names" one line later contradicts
+      // the advice above it. That branch is DEBUG when anything was dropped.
+      expect(warnings()).not.toContain('Check the member names');
+    });
+
+    it('site 5 update: an OnDemandThroughput whose known member is present-but-undefined is DROPPED and named (go-to-k/cdkd#3380 C5)', async () => {
+      // A key PRESENT with an `undefined` value satisfies `member in block` and
+      // coerces to `undefined`, so the narrowing's identity short-circuit used
+      // to keep it -- leaving a member the SDK serializes away, with nothing
+      // dropped and nothing warned. It now takes the drop arm like any other
+      // unusable spelling, so the surviving sibling still goes out and the user
+      // is told which member was lost.
+      const updates = await gsiCeilingOps(
+        [
+          ppRequestGsi('gsi1', {
+            MaxReadRequestUnits: undefined,
+            MaxWriteRequestUnits: 15,
+          }),
+        ],
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: 50, MaxWriteRequestUnits: 15 })]
+      );
+      expect(updates).toEqual([
+        { IndexName: 'gsi1', OnDemandThroughput: { MaxWriteRequestUnits: 15 } },
+      ]);
+      expect(warnings()).toContain(ON_DEMAND);
+    });
+
+    it('site 5 update: a CEILING-ONLY edit under PAY_PER_REQUEST now fires its own op (go-to-k/cdkd#3287, the headline shape)', async () => {
+      // THE SHAPE the two capacity-driven arms cannot see, and the one
+      // go-to-k/cdkd#3287 is named for: a template editing NOTHING but a live
+      // index's ceiling. Before the fix `updateHasMember` was set only by the
+      // capacity and warm arms, so this produced no `GlobalSecondaryIndexUpdates`
+      // entry at all, deployed GREEN, and was recorded as applied -- the edit
+      // lost permanently with no warning anywhere. It was pinned at ZERO ops
+      // while the issue was open, precisely so a fix GATED to the on-demand
+      // shape could not land silently (the two arms above stay green under such
+      // a fix, measured by the go-to-k/cdkd#3291 test re-review, probe P3).
       primeGeneric({ billingMode: 'PAY_PER_REQUEST', indexes: [LIVE_GSI('gsi1')] });
       const desired = {
         IndexName: 'gsi1',
@@ -1645,32 +1930,223 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
       const ops = findCalls(UpdateTableCommand).flatMap(
         (c) => c.input.GlobalSecondaryIndexUpdates ?? []
       );
-      expect(ops).toEqual([]);
+      // ONE op, carrying the ceiling and nothing else: the capacity arm is
+      // correctly silent under PAY_PER_REQUEST.
+      expect(ops).toEqual([
+        { Update: { IndexName: 'gsi1', OnDemandThroughput: { MaxReadRequestUnits: 200 } } },
+      ]);
     });
 
-    it('the ADOPTED-REPAIR update action carries no ceiling either (go-to-k/cdkd#3287, arm 2)', async () => {
+    it('site 5 update: the live ceiling is consulted, so an op AWS already applied is not re-emitted (#1630 class)', async () => {
+      // cdkd writes state only after `update()` RETURNS, so a ceiling op that
+      // LANDED before a later step threw is unrecorded and the next deploy
+      // re-emits it. What DynamoDB does with a repeated identical ceiling is
+      // unmeasured; the guard withholds only a call that would change nothing,
+      // so it is right either way. The recorded previous side still says the
+      // ceiling changed -- that is what makes this case discriminate the LIVE
+      // read rather than the detector.
+      primeGeneric({
+        billingMode: 'PAY_PER_REQUEST',
+        indexes: [{ ...LIVE_GSI('gsi1'), OnDemandThroughput: { MaxReadRequestUnits: 200 } }],
+      });
+      const desired = {
+        IndexName: 'gsi1',
+        KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+        Projection: { ProjectionType: 'ALL' },
+      };
+      await provider.update(
+        'L',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          TableName: TABLE_NAME,
+          BillingMode: 'PAY_PER_REQUEST',
+          GlobalSecondaryIndexes: [{ ...desired, OnDemandThroughput: { MaxReadRequestUnits: 200 } }],
+        },
+        {
+          TableName: TABLE_NAME,
+          BillingMode: 'PAY_PER_REQUEST',
+          GlobalSecondaryIndexes: [{ ...desired, OnDemandThroughput: { MaxReadRequestUnits: 50 } }],
+        }
+      );
+      expect(
+        findCalls(UpdateTableCommand).flatMap((c) => c.input.GlobalSecondaryIndexUpdates ?? [])
+      ).toEqual([]);
+    });
+
+    it('site 5 update: a live ceiling that DIFFERS fails the guard open and the op is emitted', async () => {
+      // The other direction of the same guard: without this, hard-coding
+      // `liveCeilingAlreadyMatches` to `true` would swallow every ceiling
+      // change and the case above would still pass.
+      primeGeneric({
+        billingMode: 'PAY_PER_REQUEST',
+        indexes: [{ ...LIVE_GSI('gsi1'), OnDemandThroughput: { MaxReadRequestUnits: 50 } }],
+      });
+      const desired = {
+        IndexName: 'gsi1',
+        KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+        Projection: { ProjectionType: 'ALL' },
+      };
+      await provider.update(
+        'L',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          TableName: TABLE_NAME,
+          BillingMode: 'PAY_PER_REQUEST',
+          GlobalSecondaryIndexes: [{ ...desired, OnDemandThroughput: { MaxReadRequestUnits: 200 } }],
+        },
+        {
+          TableName: TABLE_NAME,
+          BillingMode: 'PAY_PER_REQUEST',
+          GlobalSecondaryIndexes: [{ ...desired, OnDemandThroughput: { MaxReadRequestUnits: 50 } }],
+        }
+      );
+      expect(
+        findCalls(UpdateTableCommand).flatMap((c) => c.input.GlobalSecondaryIndexUpdates ?? [])
+      ).toEqual([
+        { Update: { IndexName: 'gsi1', OnDemandThroughput: { MaxReadRequestUnits: 200 } } },
+      ]);
+    });
+
+    it('site 5 update: a PLAIN-OBJECT block of UNKNOWN members is WITHHELD, because AWS would never see the name (go-to-k/cdkd#3380 m2)', async () => {
+      // The fail-open "let AWS name the shape" reasoning does NOT reach this
+      // shape at THIS site, and getting that wrong is what the review caught.
+      // `narrowOnDemandCeilings` preserves an unknown member name by design, so
+      // an unresolved intrinsic leaves a NON-EMPTY object -- which the SDK then
+      // serializes to `{}`, producing exactly the action-carrying-only-
+      // `IndexName` that AWS rejects outright and that would take a capacity
+      // edit riding the same action down with it. AWS never sees `Ref` to name
+      // it. So the gate tests SURVIVING GRAMMAR MEMBERS, not `Object.keys`.
+      //
+      // The NON-object arm is the opposite answer and keeps its own case below:
+      // a string / number / array really does reach AWS and is rejected by
+      // shape, so forwarding it verbatim is informative.
+      primeGeneric({
+        billingMode: 'PAY_PER_REQUEST',
+        indexes: [{ ...LIVE_GSI('gsi1'), OnDemandThroughput: { MaxReadRequestUnits: 200 } }],
+      });
+      const desired = {
+        IndexName: 'gsi1',
+        KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+        Projection: { ProjectionType: 'ALL' },
+      };
+      await provider.update(
+        'L',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          TableName: TABLE_NAME,
+          BillingMode: 'PAY_PER_REQUEST',
+          GlobalSecondaryIndexes: [{ ...desired, OnDemandThroughput: { Ref: 'Unset' } }],
+        },
+        {
+          TableName: TABLE_NAME,
+          BillingMode: 'PAY_PER_REQUEST',
+          GlobalSecondaryIndexes: [{ ...desired, OnDemandThroughput: { MaxReadRequestUnits: 50 } }],
+        }
+      );
+      expect(
+        findCalls(UpdateTableCommand).flatMap((c) => c.input.GlobalSecondaryIndexUpdates ?? [])
+      ).toEqual([]);
+      // WARNED, not withheld in silence (round 2's C3): an unknown member is
+      // never DROPPED by the narrowing -- its name is preserved -- so the
+      // per-member drop announcement says nothing about it, and this arm owes
+      // the user the only line they will get.
+      expect(warnings()).toContain('no member DynamoDB accepts');
+    });
+
+    it('site 5 update: a NON-OBJECT ceiling is forwarded VERBATIM, so AWS rejects it by shape', async () => {
+      // The other side of the gate above, and the arm the go-to-k/cdkd#3380
+      // test review measured UNPINNED at this site: flipping the passthrough to
+      // `return undefined` left all 147 cases green. A STRING / NUMBER / ARRAY
+      // is the fail-open direction every forwarder in this file takes -- AWS
+      // receives the value and names it, which an unknown MEMBER never gets.
+      const updates = await gsiCeilingOps(
+        [ppRequestGsi('gsi1', '100')],
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: 50 })]
+      );
+      expect(updates).toEqual([{ IndexName: 'gsi1', OnDemandThroughput: '100' }]);
+    });
+
+    it('site 5 update: a live ceiling covering only the OTHER member does not suppress the op', async () => {
+      // Per MEMBER, over the members being SENT. A live block carrying a
+      // different member says nothing about the one cdkd is about to change,
+      // and a whole-block compare would read the two as unequal by accident
+      // rather than by rule — which is the same answer here, so the
+      // discriminating half is the case above plus this one together.
+      primeGeneric({
+        billingMode: 'PAY_PER_REQUEST',
+        indexes: [{ ...LIVE_GSI('gsi1'), OnDemandThroughput: { MaxWriteRequestUnits: 200 } }],
+      });
+      const desired = {
+        IndexName: 'gsi1',
+        KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+        Projection: { ProjectionType: 'ALL' },
+      };
+      await provider.update(
+        'L',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          TableName: TABLE_NAME,
+          BillingMode: 'PAY_PER_REQUEST',
+          GlobalSecondaryIndexes: [{ ...desired, OnDemandThroughput: { MaxReadRequestUnits: 200 } }],
+        },
+        {
+          TableName: TABLE_NAME,
+          BillingMode: 'PAY_PER_REQUEST',
+          GlobalSecondaryIndexes: [{ ...desired, OnDemandThroughput: { MaxReadRequestUnits: 50 } }],
+        }
+      );
+      expect(
+        findCalls(UpdateTableCommand).flatMap((c) => c.input.GlobalSecondaryIndexUpdates ?? [])
+      ).toEqual([
+        { Update: { IndexName: 'gsi1', OnDemandThroughput: { MaxReadRequestUnits: 200 } } },
+      ]);
+    });
+
+    it('site 6 update (ADOPTED-REPAIR action): carries the COERCED ceiling (go-to-k/cdkd#3287, arm 2)', async () => {
       // THE SECOND ARM, which the case above cannot reach: here the index is
       // LIVE but ABSENT from the recorded previous side, so its Create is
-      // skipped and the difference repaired by an Update built at a different
-      // site. Wiring the member uncoerced into THIS arm left the whole suite
-      // green, so a future go-to-k/cdkd#3287 fix touching only it would have
-      // landed silently.
-      const adopted = await gsiUpdateOps(
-        [{ ...cfnGsi('gsi1', '9', '4'), OnDemandThroughput: { MaxReadRequestUnits: '200' } }],
+      // skipped and the difference repaired by an Update built at a DIFFERENT
+      // site. Wiring the member into arm 1 alone leaves this green, so the two
+      // arms need their own cases; it is repaired here for exactly the reason
+      // capacity and warm throughput are, namely that the skipped Create means
+      // nothing else in this deploy would ever send it.
+      const adopted = await gsiCeilingOps(
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: '200' })],
+        [],
+        { indexes: [{ IndexName: 'gsi1', IndexStatus: 'ACTIVE' }] }
+      );
+      expect(warnings()).toContain('already exists in AWS');
+      expect(adopted).toEqual([
+        { IndexName: 'gsi1', OnDemandThroughput: { MaxReadRequestUnits: 200 } },
+      ]);
+    });
+
+    it('site 6 update (ADOPTED-REPAIR action): withholds a ceiling the LIVE index already carries', async () => {
+      // There is no recorded previous side on this arm, so the live read is the
+      // ONLY comparison available — the same asymmetry the warm-throughput arm
+      // beside it has. Without the guard, adopting an index would re-assert
+      // every ceiling it already holds.
+      const adopted = await gsiCeilingOps(
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: '200' })],
         [],
         {
           indexes: [
             {
               IndexName: 'gsi1',
               IndexStatus: 'ACTIVE',
-              ProvisionedThroughput: { ReadCapacityUnits: 3, WriteCapacityUnits: 3 },
+              OnDemandThroughput: { MaxReadRequestUnits: 200 },
             },
           ],
         }
       );
-      expect(warnings()).toContain('already exists in AWS');
-      expect(adopted.length).toBeGreaterThan(0);
-      expect(adopted.every((a) => a.OnDemandThroughput === undefined)).toBe(true);
+      // No op AT ALL: the ceiling was the only member this arm had to repair,
+      // so withholding it leaves `adoptedHasMember` false and no action is
+      // pushed. (Under PAY_PER_REQUEST the capacity arm is correctly silent.)
+      expect(adopted).toEqual([]);
     });
 
     it('site 4 update (GSI Create action): coerces the ceiling of a newly added index', async () => {
