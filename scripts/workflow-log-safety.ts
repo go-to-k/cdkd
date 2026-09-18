@@ -11,12 +11,20 @@
  * fix lands in one place and not the other, which is a failure this pair has
  * already had in prose and in a filter.
  *
- * TWO OF THREE, NOT ALL THREE. `workflow-expression-syntax.test.ts` holds a
- * third, unbranded `safeName` of its own and is NOT a consumer of this module.
- * It was left alone deliberately — it is a third fence with its own review
+ * IN `scripts/`, NOT BESIDE THE FENCES, and that placement is the fix for a
+ * finding rather than a filing preference. The generator is the THIRD consumer
+ * and the one that most needed it: it was the only file in this pair with no
+ * sanitiser at all, interpolating raw workflow file names and raw YAML/JSON
+ * parse errors — a fork's own bytes — into eight of its own messages. A module
+ * under `tests/` cannot be imported by a script without reversing the
+ * dependency, so the module moved rather than the rule bending.
+ *
+ * THREE OF FOUR, NOT ALL FOUR. `workflow-expression-syntax.test.ts` holds a
+ * fourth, unbranded `safeName` of its own and is NOT a consumer of this module.
+ * It was left alone deliberately — it is another fence with its own review
  * history, and folding it in here would put an unrelated file in this PR's
  * blast radius — but the consequence has to be stated rather than implied by
- * the word "shared": a fix made here reaches two fences, not the repo.
+ * the word "shared": a fix made here reaches three files, not the repo.
  *
  * Importing the helpers from the other TEST file was tried first and is worse
  * than it looks: a `.test.ts` import re-runs that file's whole suite (92 cases
@@ -112,6 +120,54 @@ export const safeText = (text: string): Safe => {
  * anything else is quoted, so it can only ever be read as one field.
  */
 const WORKFLOW_NAME = /^[A-Za-z0-9._-]+\.ya?ml$/;
+/**
+ * A JOB id, constrained the way `safeName` constrains a file name.
+ *
+ * THE SECOND HALF OF A KEY IS AS FORK-CONTROLLED AS THE FIRST, and it was
+ * getting only `safeText`. That flattens control bytes and clamps length, which
+ * is not the threat here: a job id of pure ASCII, with no byte either helper
+ * touches, reads as a complete finding about a different job —
+ * `a.yml/j: not-in-snapshot - and ci.yml/check-build-test: not-in-snapshot`
+ * was measured rendering exactly that. Quoting is what closes it, and quoting
+ * is what `safeName` already does for the file half; the only reason this is a
+ * second function is that the two halves have different legal shapes.
+ */
+// `*`, not `+`: the EMPTY job half is legal here. An `unreadable-workflow`
+// finding names a file and has no job, so it is constructed as `<file>/`, and
+// quoting an empty string turns a clean `evil.yml/: unreadable-workflow` into
+// `evil.yml/"": unreadable-workflow`. An empty string can carry no payload,
+// which is the whole test this pattern applies.
+const JOB_ID = /^[A-Za-z0-9_-]*$/;
+
+export const safeJobId = (id: string): Safe =>
+  // Cast scoped to the quoting branch alone, for the reason given on `safeName`.
+  JOB_ID.test(id) ? safeText(id) : (JSON.stringify(safeText(id)) as Safe);
+
+/** How many findings a renderer emits before the rest are summarised. */
+export const MAX_RENDERED_FINDINGS = 20;
+
+/**
+ * Cap any list of fork-derived lines.
+ *
+ * HERE RATHER THAN IN ONE FENCE, because the per-field clamp and this per-LIST
+ * clamp are two halves of one contract and they have already come apart twice:
+ * go-to-k/cdkd#3272 round 2 capped its findings and left its twins unbounded
+ * (measured: 3000 entries, nothing truncated), and when the sanitisers were
+ * extracted for go-to-k/cdkd#3283 this half stayed behind, so the new fence
+ * shipped a bare `.map`. A fork adding 5,000 keys to the committed snapshot
+ * forges no line — every one is sanitised — but it buries the real finding,
+ * which is the same harm one layer up.
+ */
+export const boundedList = (lines: readonly Safe[]): Safe[] =>
+  lines.length > MAX_RENDERED_FINDINGS
+    ? [
+        ...lines.slice(0, MAX_RENDERED_FINDINGS),
+        // The only string this function builds itself, and it carries nothing
+        // fork-controlled — a subtraction of two lengths.
+        `… and ${lines.length - MAX_RENDERED_FINDINGS} more` as Safe,
+      ]
+    : [...lines];
+
 export const safeName = (name: string): Safe =>
   // The cast is scoped to the quoting branch alone. Spanning the whole ternary
   // would let a future edit return `name` raw from the passing branch and still

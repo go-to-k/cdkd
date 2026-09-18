@@ -62,6 +62,13 @@ import { mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } fro
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
+// The SAME sanitisers the two fences use, not a third copy and not nothing.
+// This file was the one with nothing: a workflow file name and a YAML or JSON
+// parse error are a FORK's bytes on `pull_request`, and eight messages here
+// interpolated them raw. This script is not reached from CI today — both locks
+// in `main` see to that — so the venue is a maintainer's terminal rather than
+// the Actions log, which is why it is closed here rather than argued about.
+import { safeName, safeText } from './workflow-log-safety.ts';
 
 const REPO = 'go-to-k/cdkd';
 const REPO_ROOT = join(import.meta.dirname, '..');
@@ -130,31 +137,42 @@ interface Snapshot {
 // request ~1700 aborts a tens-of-minutes walk that writes nothing — exactly the
 // scenario this retry exists for. `TLS handshake timeout` and `connection
 // refused` were missing for the same reason.
+/** Attempts per `gh` call, including the first. See the loop below. */
+const ATTEMPTS = 3;
+
 const TRANSIENT =
   /dial tcp|operation timed out|connection re(set|fused)|TLS handshake timeout|\bEOF\b|\bHTTP 5\d\d\b|timeout awaiting/;
 
 const gh = (args: readonly string[]): unknown => {
   let lastError: unknown;
-  // THREE attempts, and the loop bound says so. `attempt < 4` printed
-  // "retry 4/3" and slept 8 s before rethrowing — a wait that bought nothing.
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  // ONE constant, because encoding "three attempts" in three places produced
+  // two measured bugs in two rounds: `attempt < 4` printed "retry 4/3" and
+  // slept 8 s before rethrowing, and after that was corrected the TERMINAL
+  // attempt still printed "retry 3/2" and slept six seconds before rethrowing.
+  // Both were the same wait that bought nothing, surviving at a smaller number.
+  for (let attempt = 0; attempt < ATTEMPTS; attempt += 1) {
     let out: string;
     try {
       out = execFileSync('gh', [...args], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
     } catch (error) {
       lastError = error;
-      const text = `${String((error as { stderr?: string }).stderr ?? '')}${String(error)}`;
+      // `error.stderr` ALONE, never `String(error)`. Node's message for a
+      // failed `execFileSync` is `Command failed: gh run list --workflow <f>`
+      // followed by the stderr — so `String(error)` both duplicates the stderr
+      // and drags the COMMAND TEXT, which carries a fork-controlled workflow
+      // file name, into the classifier. Measured: a workflow named `EOF.yml`
+      // made every hard failure on it match `\bEOF\b`, turning a 404 into
+      // three attempts and six seconds of sleeps.
+      const text = String((error as { stderr?: string }).stderr ?? '');
       if (!TRANSIENT.test(text)) throw error;
       // Linear, not exponential: the failures this retries are single dropped
       // connections rather than a server asking us to slow down, and a long
       // backoff on a thousands-of-requests walk costs more than it saves.
-      // BAIL BEFORE THE SLEEP on the last attempt. Correcting the loop bound
-      // was not enough: the terminal attempt still printed `retry 3/2` and slept
-      // six seconds before rethrowing — the same "a wait that bought nothing"
-      // this comment claims to have removed, surviving at a smaller number.
-      if (attempt === 2) break;
+      if (attempt === ATTEMPTS - 1) break;
       const waitMs = 2000 * (attempt + 1);
-      process.stderr.write(`  transient gh failure, retry ${attempt + 1}/2 after ${waitMs}ms\n`);
+      process.stderr.write(
+        `  transient gh failure, retry ${attempt + 1}/${ATTEMPTS - 1} after ${waitMs}ms\n`,
+      );
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, waitMs);
       continue;
     }
@@ -243,10 +261,16 @@ const declaredJobKeys = (): string[] => {
     try {
       doc = parseYaml(readFileSync(join(WORKFLOW_DIR, file), 'utf8'));
     } catch (error) {
-      throw new Error(`${file} does not parse, so its jobs cannot be enumerated: ${String(error)}`);
+      // The parse error QUOTES the offending source, so it is named, never
+      // rendered — the same rule the fence applies to the same class of error.
+      throw new Error(
+        `${safeName(file)} does not parse, so its jobs cannot be enumerated; fix the workflow`,
+      );
     }
     if (!isMapping(doc) || !isMapping(doc['jobs']) || Object.keys(doc['jobs']).length === 0) {
-      throw new Error(`${file} declares no jobs mapping; refusing to write a partial snapshot`);
+      throw new Error(
+        `${safeName(file)} declares no jobs mapping; refusing to write a partial snapshot`,
+      );
     }
     for (const job of Object.keys(doc['jobs'])) keys.push(`${file}/${job}`);
   }
@@ -306,18 +330,20 @@ const runsInRange = (file: string, from: string, to: string): RunRow[] | null =>
     '--json',
     'databaseId,startedAt,updatedAt',
   ]);
-  if (!Array.isArray(raw)) throw new Error(`unreadable run list for ${file}`);
+  if (!Array.isArray(raw)) throw new Error(`unreadable run list for ${safeName(file)}`);
   // The caller decides what to do about a capped listing; `null` says "capped",
   // never a truncated array, so a truncated population cannot be mistaken for a
   // complete one further down.
   if (raw.length >= 1000) return null;
   return raw
     .map((row) => {
-      if (!isMapping(row)) throw new Error(`unreadable run row for ${file}`);
+      if (!isMapping(row)) throw new Error(`unreadable run row for ${safeName(file)}`);
       const started = Date.parse(String(row['startedAt']));
       const updated = Date.parse(String(row['updatedAt']));
       if (!Number.isFinite(started) || !Number.isFinite(updated)) {
-        throw new Error(`run ${String(row['databaseId'])} of ${file} has unreadable timestamps`);
+        throw new Error(
+          `run ${safeText(String(row['databaseId']))} of ${safeName(file)} has unreadable timestamps`,
+        );
       }
       return { id: Number(row['databaseId']), seconds: (updated - started) / 1000 };
     })
@@ -439,7 +465,16 @@ const main = (): void => {
   // exit 0).
   for (const a of argv) {
     if (a !== '--no-prune' && !a.startsWith('--from=') && !a.startsWith('--to=')) {
-      throw new Error(`unknown argument ${a}\n${USAGE}`);
+      throw new Error(`unknown argument ${safeText(a)}\n${USAGE}`);
+    }
+  }
+  // A REPEATED flag is refused, because `flag` takes the FIRST match: a
+  // `--to=2026-09-16 --to=2026-09-02` reads as the first and walks a range the
+  // caller did not ask for, which is the same silent-wrong-population failure
+  // as the inverted range below.
+  for (const name of ['--from', '--to'] as const) {
+    if (argv.filter((a) => a.startsWith(`${name}=`)).length > 1) {
+      throw new Error(`${name} given more than once; only one range is walked`);
     }
   }
 
@@ -450,7 +485,7 @@ const main = (): void => {
       // Otherwise `--to=2026-9-17` reaches `Date.parse` and dies with a bare
       // `RangeError: Invalid time value` that names neither the flag nor the
       // value.
-      throw new Error(`${name}=${value} is not a YYYY-MM-DD date`);
+      throw new Error(`${name}=${safeText(value)} is not a YYYY-MM-DD date`);
     }
   }
   // An INVERTED range is silent, not empty-with-an-error: `gh run list
@@ -463,17 +498,34 @@ const main = (): void => {
   const rawFrom = flag('--from');
   const rawTo = flag('--to');
   if (rawFrom !== undefined && rawTo !== undefined && rawFrom > rawTo) {
-    throw new Error(`--from=${rawFrom} is after --to=${rawTo}; the range is inverted`);
+    throw new Error(
+      `--from=${safeText(rawFrom)} is after --to=${safeText(rawTo)}; the range is inverted`,
+    );
   }
 
   const today = new Date();
-  const to = flag('--to') ?? isoDay(new Date(today.getTime() - 24 * 3600 * 1000));
+  const lastComplete = isoDay(new Date(today.getTime() - 24 * 3600 * 1000));
+  // A `--to` ON OR AFTER today is refused rather than accepted and silently
+  // recorded as a closed range. An IN-PROGRESS UTC day is the defect that has
+  // now reached this PR twice — once in the committed artifact, whose own
+  // "closed range population" note it falsified, and once in the prose that
+  // replaced the first. Nothing but this line stops it arriving a third time.
+  const requestedTo = flag('--to');
+  if (requestedTo !== undefined && requestedTo > lastComplete) {
+    throw new Error(
+      `--to=${safeText(requestedTo)} is not a complete UTC day (the last one is ${lastComplete}); ` +
+        'a range ending inside a day in progress is not the closed population this snapshot claims',
+    );
+  }
+  const to = requestedTo ?? lastComplete;
   const explicitFrom = flag('--from');
+  // NO `Math.max` FLOOR on an explicit span. Clamping it to `MIN_WINDOW_DAYS`
+  // widened `--from=X --to=X` into a two-day walk while `requestedRange.from`
+  // went on recording X — the artifact describing a narrower population than
+  // the one that produced it. The floor belongs to the HALVING loop below,
+  // which is where a window can legitimately shrink.
   const windowDays = explicitFrom
-    ? Math.max(
-        MIN_WINDOW_DAYS,
-        Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${explicitFrom}T00:00:00Z`)) / 86400000),
-      )
+    ? Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${explicitFrom}T00:00:00Z`)) / 86400000)
     : DEFAULT_WINDOW_DAYS;
   const from = explicitFrom ?? isoDay(new Date(Date.parse(`${to}T00:00:00Z`) - windowDays * 86400000));
 
@@ -494,9 +546,9 @@ const main = (): void => {
       usedFrom = isoDay(new Date(Date.parse(`${to}T00:00:00Z`) - days * 24 * 3600 * 1000));
       runs = runsInRange(file, usedFrom, to);
       if (runs === null) {
-        if (days <= MIN_WINDOW_DAYS) {
+        if (days <= MIN_WINDOW_DAYS || days <= windowDays) {
           throw new Error(
-            `${file} has >= 1000 successful runs even in a ${MIN_WINDOW_DAYS}-day window ` +
+            `${safeName(file)} has >= 1000 successful runs even in a ${MIN_WINDOW_DAYS}-day window ` +
               `(${usedFrom}..${to}); the listing cannot be read without truncation.`,
           );
         }
@@ -608,7 +660,7 @@ const main = (): void => {
   );
   const missing = [...declared].filter((k) => !(k in jobs));
   if (missing.length > 0) {
-    process.stdout.write(`  no successful run in range: ${missing.join(', ')}\n`);
+    process.stdout.write(`  no successful run in range: ${missing.map(safeText).join(', ')}\n`);
   }
 };
 

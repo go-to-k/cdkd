@@ -134,7 +134,14 @@ import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 // Extracted to a shared module so the sibling fence uses the SAME sanitisers
 // rather than a second copy — see that file's header (issue go-to-k/cdkd#3283).
-import { MAX_FIELD_LENGTH, safeName, safeText, type Safe } from './workflow-log-safety.js';
+import {
+  MAX_FIELD_LENGTH,
+  MAX_RENDERED_FINDINGS,
+  boundedList,
+  safeName,
+  safeText,
+  type Safe,
+} from '../../../scripts/workflow-log-safety.ts';
 
 const REPO_ROOT = join(import.meta.dirname, '../../..');
 const WORKFLOW_DIR = join(REPO_ROOT, '.github', 'workflows');
@@ -156,9 +163,6 @@ const ACTIONS_DEFAULT_TIMEOUT_MINUTES = 360;
  */
 const MIN_WORKFLOWS = 10;
 const MIN_JOBS = 18;
-
-/** How many findings are rendered before the rest are summarised. */
-const MAX_RENDERED_FINDINGS = 20;
 
 
 type FindingKind =
@@ -323,21 +327,6 @@ export const auditWorkflowHardening = (dir: string): Audit => {
 
   return { workflows: names.length, jobs, findings };
 };
-
-/**
- * Cap any list of fork-derived lines. Shared by `render` and by both twins —
- * round 2 capped the findings and left the twins unbounded, which is the same
- * omission one layer over (measured: 3000 entries, nothing truncated).
- */
-const boundedList = (lines: readonly Safe[]): Safe[] =>
-  lines.length > MAX_RENDERED_FINDINGS
-    ? [
-        ...lines.slice(0, MAX_RENDERED_FINDINGS),
-        // The only string this function builds itself, and it carries nothing
-        // fork-controlled — a subtraction of two lengths.
-        `… and ${lines.length - MAX_RENDERED_FINDINGS} more` as Safe,
-      ]
-    : [...lines];
 
 /**
  * Render findings for an assertion message — one line each, capped.

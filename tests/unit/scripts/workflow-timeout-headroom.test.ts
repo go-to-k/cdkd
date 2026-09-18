@@ -88,7 +88,7 @@ import {
 // fork-controlled on `pull_request`, and go-to-k/cdkd#3272 found that class
 // FOUR times, each instance inside the code that fixed the previous one. A
 // fifth venue with its own copies of the helpers is how that happens again.
-import { safeName, safeText, type Safe } from './workflow-log-safety.js';
+import { boundedList, safeJobId, safeName, safeText, type Safe } from '../../../scripts/workflow-log-safety.ts';
 
 const REPO_ROOT = join(import.meta.dirname, '../../..');
 const WORKFLOW_DIR = join(REPO_ROOT, '.github', 'workflows');
@@ -107,6 +107,18 @@ const MIN_DECLARED = 18;
 // generator keyed them by display name — cleared the floor with room to spare,
 // so the floor could not have caught the very failure that made this fence
 // necessary.
+/**
+ * The longest job in an honest snapshot, in seconds.
+ *
+ * A COUNT FLOOR CANNOT SEE A VACUOUS SNAPSHOT. Every other floor here counts
+ * entries, and a snapshot whose every `max` is 1 passes all of them while
+ * making each `too-tight` comparison meaningless — measured green, 72 of 72.
+ * `hooks.yml/hook-suites` is 1587 s and is the job this fence exists for, so
+ * this sits below that with room for the suite to get faster (go-to-k/cdkd#3282
+ * is trying to), and is banded from above in the case that reads it.
+ */
+const MIN_LONGEST_MAX = 900;
+
 const MIN_SNAPSHOT = 18;
 const MIN_COMPARED = 18;
 
@@ -230,6 +242,8 @@ export const parseSnapshot = (text: string, where: string): Record<string, JobSa
   // `<file>/<job>` pair and a `/` cannot appear in either of those names — so
   // this closes a SHAPE, not a live hole. It costs one call, and a keyed bag
   // built from parsed JSON is the shape that has bitten this repo before.
+  // NOT PINNED, and labelled like the other two: replacing this with `{}` keeps
+  // every case green, because the shape it closes is unreachable (see above).
   const jobs: Record<string, JobSample> = Object.create(null) as Record<string, JobSample>;
   for (const [key, value] of Object.entries(raw['jobs'])) {
     if (!isMapping(value) || typeof value['max'] !== 'number') {
@@ -287,6 +301,26 @@ interface Finding {
   readonly range?: Safe;
 }
 
+/**
+ * Sanitise a `<file>/<job>` key, each half by the helper that constrains it.
+ *
+ * TWO DEFECTS LIVED IN THE INLINE VERSION THIS REPLACES, both reachable from a
+ * fork-edited snapshot key. (1) With NO `/` in the key, `indexOf` returns -1,
+ * so `slice(0, -1)` dropped the last character and `slice(0)` re-emitted the
+ * whole key — measured: `evil` rendered as `"evi"/evil`, and `ci.yml` as
+ * `"ci.ym"/ci.yml`. Every synthetic key in this suite contains a `/`, so no
+ * case looked at it. (2) The job half got only `safeText`, which is not the
+ * helper for this threat: see `safeJobId`.
+ */
+const splitKey = (key: string): Safe => {
+  const cut = key.indexOf('/');
+  // A key with no separator is not a `<file>/<job>` pair at all, so it is
+  // rendered as one constrained name rather than split into two halves, one of
+  // which would be empty.
+  if (cut < 0) return safeName(key);
+  return `${safeName(key.slice(0, cut))}/${safeJobId(key.slice(cut + 1))}` as Safe;
+};
+
 /** The single construction point; see the note on `Finding`. */
 const finding = (
   kind: FindingKind,
@@ -298,15 +332,9 @@ const finding = (
   { range, ...numbers }: { bound?: number; max?: number; headroom?: number; range?: string } = {},
 ): Finding => ({
   kind,
-  // A job key is `<file>/<job>`: the file half is CONSTRAINED by `safeName`
-  // (a name can read as a whole finding about another file without carrying a
-  // single control byte), the job half flattened and clamped. A fork controls
-  // both halves. The cast is the one boundary on this path — a template
-  // literal is `string` however safe its parts — and it is why the field type
-  // above is `Safe`: without it, dropping either call compiles cleanly.
-  job: `${safeName(job.slice(0, job.indexOf('/')))}/${safeText(
-    job.slice(job.indexOf('/') + 1),
-  )}` as Safe,
+  // A job key is `<file>/<job>` and a fork controls BOTH halves, each with its
+  // own legal shape — see `splitKey`, which is where the boundary cast lives.
+  job: splitKey(job),
   ...numbers,
   ...(range === undefined ? {} : { range: safeText(range) }),
 });
@@ -379,13 +407,24 @@ export const auditHeadroom = (
 };
 
 const render = (findings: readonly Finding[]): string[] =>
-  // Interpolation here is unguarded BY CONTRACT: `finding` sanitised every
-  // string field, and the rest are numbers.
-  findings.map((f) =>
-    f.kind === 'too-tight'
-      ? `${f.job}: ${f.bound} min against ${f.max} s observed ` +
-        `(${(f.headroom ?? Number.NaN).toFixed(2)}x, floor ${MIN_HEADROOM}x) in ${f.range}`
-      : `${f.job}: ${f.kind}`,
+  // THROUGH `boundedList`, not a bare `.map`. Per-field clamping bounds a LINE;
+  // nothing in `auditHeadroom` bounds the COUNT, and a fork may add keys to the
+  // committed snapshot freely — 5,000 of them yield 5,000
+  // `snapshot-job-not-declared` lines, each individually safe, burying the one
+  // `too-tight` finding a reader needs. The sibling fence learned this in its
+  // round 2 and this file shipped without the half, because the extraction that
+  // shared the sanitisers left the list cap behind.
+  //
+  // Interpolation is unguarded BY CONTRACT: `finding` sanitised every string
+  // field, and the rest are numbers.
+  boundedList(
+    findings.map(
+      (f) =>
+        (f.kind === 'too-tight'
+          ? `${f.job}: ${f.bound} min against ${f.max} s observed ` +
+            `(${(f.headroom ?? Number.NaN).toFixed(2)}x, floor ${MIN_HEADROOM}x) in ${f.range}`
+          : `${f.job}: ${f.kind}`) as Safe,
+    ),
   );
 
 const { jobs: DECLARED, unreadable: UNREADABLE } = declaredJobs();
@@ -423,8 +462,32 @@ describe('no workflow job is bounded too tightly to survive its own longest run'
     // permitted exactly the round-1 defect it was added to catch. Four jobs is
     // the measured size of that defect; the floor may not sit further than that
     // below the real count, and may never exceed it.
+    //
+    // THIS IS A RATCHET, and a PR that ADDS A JOB has to turn it: at 22 jobs
+    // `MIN_DECLARED` must rise to at least 19. That is deliberate rather than
+    // an oversight of the "proportional band" an earlier revision of this
+    // comment claimed — a proportional band cannot tell 12 from 18, which is
+    // how the round-1 defect cleared it. Adding a job needs two steps and the
+    // second is the one that surprises: the new job has no successful run on
+    // `main` yet, so it has no snapshot entry and reports `not-in-snapshot`
+    // until the generator is re-run after the merge. Until then it belongs in
+    // `RARELY_RUN` with THAT as its reason — "added in #N, no successful run on
+    // main yet" is a true reason, and a true reason is the whole requirement
+    // the list's own note makes.
     expect(MIN_DECLARED).toBeGreaterThan(DECLARED.size - 4);
     expect(MIN_DECLARED).toBeLessThanOrEqual(DECLARED.size);
+    // MAGNITUDE, not just COUNT. Every floor above counts ENTRIES, and setting
+    // every `max` in the snapshot to 1 left all 72 cases green — a snapshot
+    // regenerated over a quiet window, or by a walk that stopped early, makes
+    // every `too-tight` verdict vacuous while passing every count. The longest
+    // job in the tree is the one figure that cannot be small in an honest
+    // snapshot: `hooks.yml/hook-suites` was measured at 1587 s, and that is the
+    // job the whole fence was written for.
+    const longest = Math.max(...Object.values(SNAPSHOT).map((s) => s.max));
+    expect(longest).toBeGreaterThanOrEqual(MIN_LONGEST_MAX);
+    // Banded from the other side for the same reason as the counts: `X >= 0`
+    // is not a floor, so a `MIN_LONGEST_MAX` neutralised to zero must red here.
+    expect(MIN_LONGEST_MAX * 4).toBeGreaterThanOrEqual(longest);
     // The snapshot floors are PINNED TO `MIN_DECLARED`, not banded separately.
     // A proportional band cannot tell 12 from 18 — both clear a 21-entry
     // snapshot — so at 12 the round-1 defect, four jobs vanishing, passed the
@@ -570,6 +633,46 @@ describe('the auditor reports what it claims to', () => {
     expect(render(found)).toEqual(['evil.yml/: unreadable-workflow']);
   });
 
+  it.each([
+    ['a hostile JOB half is quoted', 'a.yml/j: not-in-snapshot - and ci', true],
+    ['an ordinary job id is not', 'a.yml/check-build-test', false],
+    ['an EMPTY job half is not', 'a.yml/', false],
+  ])('%s', (_what, key, quoted) => {
+    // THE JOB HALF IS AS FORK-CONTROLLED AS THE FILE HALF and was getting only
+    // `safeText`, which flattens and clamps — neither of which touches the
+    // threat: the string below is pure ASCII and reads as a complete finding
+    // about another job. Quoting is what separates them, and the two negative
+    // rows are what stops a fix that simply quotes everything: the ordinary
+    // case must stay readable, and an empty half must not render as `""`.
+    const line = render(auditHeadroom(new Map([[key, 60]]), {}, {}))[0] ?? '';
+    const job = line.slice(line.indexOf('/') + 1, line.indexOf(':', line.indexOf('/')));
+    expect(job.startsWith('"')).toBe(quoted);
+  });
+
+  it('a key with no separator is rendered as one name, not split in two', () => {
+    // `indexOf` returns -1 for a key a fork put in the snapshot without a `/`,
+    // and the inline version this replaced then did `slice(0, -1)` — DROPPING
+    // THE LAST CHARACTER — and `slice(0)`, re-emitting the whole key as the job
+    // half. Measured: `evil` rendered as `"evi"/evil`.
+    const line = render(auditHeadroom(new Map(), { evil: { max: 1, from: 'a', to: 'b' } }, {}))[0] ?? '';
+    expect(line).toBe('"evil": snapshot-job-not-declared');
+  });
+
+  it('a flood of findings is capped, not printed in full', () => {
+    // PER-FIELD CLAMPING BOUNDS A LINE; NOTHING BOUNDED THE COUNT. The snapshot
+    // is a committed file a PR may edit, so a fork can add as many keys as it
+    // likes and each becomes a `snapshot-job-not-declared` finding. None of
+    // them forges a line — they are all sanitised — but 5,000 of them bury the
+    // one `too-tight` finding the reader has to act on, which is the same harm
+    // one layer up. The sibling fence capped this in ITS round 2; the
+    // extraction that shared the sanitisers left the cap behind.
+    const flood: Record<string, JobSample> = {};
+    for (let i = 0; i < 5000; i += 1) flood[`x.yml/j${i}`] = { max: 1, from: 'a', to: 'b' };
+    const lines = render(auditHeadroom(new Map(), flood, {}));
+    expect(lines).toHaveLength(21);
+    expect(lines.at(-1)).toBe('… and 4980 more');
+  });
+
   it('a snapshot entry for a job the tree does not declare is reported', () => {
     expect(auditHeadroom(new Map(), snap(10), {}).map((f) => f.kind)).toEqual([
       'snapshot-job-not-declared',
@@ -590,17 +693,24 @@ describe('the auditor reports what it claims to', () => {
   });
 
   it.each([
-    ['a document that is not a mapping', 7],
-    ['a document with no jobs key', { name: 'x' }],
-    ['a jobs node that is not a mapping', { jobs: 'x' }],
-    ['a jobs node that is a NON-EMPTY array', { jobs: ['x'] }],
-    ['a job node that is not a mapping', { jobs: { j: 'x' } }],
-  ])('%s yields no declared jobs rather than throwing', (_what, doc) => {
-    // Both halves of `jobsFromWorkflow`'s guard and its `isMapping(node)`
-    // ternary. Without them these THROW, and a throw at module scope takes the
-    // whole file's collection down rather than reporting a finding.
-    const got = jobsFromWorkflow('w.yml', doc);
-    expect([...got]).toEqual(_what === 'a job node that is not a mapping' ? [['w.yml/j', undefined]] : []);
+    ['a document that is not a mapping', 7, []],
+    ['a document with no jobs key', { name: 'x' }, []],
+    ['a jobs node that is not a mapping', { jobs: 'x' }, []],
+    ['a jobs node that is a NON-EMPTY array', { jobs: ['x'] }, []],
+    // A job node that EXISTS is still declared — with no bound, which hands it
+    // to the sibling fence. `null` is the reachable one: `jobs:\n  j:\n` is
+    // legal YAML and `parseYaml` gives a null node, `typeof null === 'object'`
+    // slips past a bare `typeof` check, and `declaredJobs()` runs at MODULE
+    // SCOPE — so a missing `isMapping(node)` takes this file's whole collection
+    // down with a TypeError, which is the outcome this table exists to prevent.
+    // Deleting that guard was green until this row existed.
+    ['a job node that is not a mapping', { jobs: { j: 'x' } }, [['w.yml/j', undefined]]],
+    ['a null job node', { jobs: { j: null } }, [['w.yml/j', undefined]]],
+  ])('%s yields no declared jobs rather than throwing', (_what, doc, expected) => {
+    // The expectation is a COLUMN, not a comparison against the case label: an
+    // `it.each` body that branches on its own `_what` string asserts whatever
+    // the label says, so a mislabelled row checks the wrong thing silently.
+    expect([...jobsFromWorkflow('w.yml', doc)]).toEqual(expected);
   });
 
   it('a numeric bound survives the same path', () => {
@@ -644,6 +754,10 @@ describe('the auditor reports what it claims to', () => {
     expect(line).toContain('3600 s');
     expect(line).toContain('1.00x');
     expect(line).toContain('a..b');
+    // The FLOOR too: without this, `floor ${MIN_HEADROOM}x` could render any
+    // number and every case stayed green. It is half of what the reader acts
+    // on — 1.00x means nothing without the 2x it is short of.
+    expect(line).toContain('floor 2x');
   });
 });
 
@@ -684,6 +798,18 @@ describe('the generator resolves an API job name to a declared key', () => {
     const legs = displayNameToKey('w.yml', { jobs: { compat: { 'runs-on': 'x' } } });
     expect(resolveJobKey('compat (22.12)', legs)).toBe('w.yml/compat');
     expect(resolveJobKey('compat (22.12) (extra)', legs)).toBeUndefined();
+  });
+
+  it('strips the LAST parenthesised group, not the first', () => {
+    // THE `$` ANCHOR, and nothing else discriminated it: dropping it left the
+    // `(extra)` row above answering `undefined` either way. A renamed job that
+    // also has a matrix leg is the shape that separates them — the API sends
+    // `English-only (pull request) (22.12)`, the anchored pattern removes the
+    // LEG and resolves, the unanchored one removes the job's own parenthesised
+    // tail and yields `English-only (22.12)`, which resolves to nothing. That
+    // is the round-1 defect exactly: a real job VANISHING from the snapshot,
+    // and the four jobs that override `name:` are the four this would hit.
+    expect(resolveJobKey('English-only (pull request) (22.12)', map)).toBe('w.yml/renamed');
   });
 
   it('returns undefined for a name no job declares, rather than inventing a key', () => {
@@ -846,8 +972,15 @@ describe('the generator runs only when it is the entry point', () => {
     // one line later on the unknown flag. Neither path reaches the network or
     // the writer, so this case cannot do what it exists to prevent. Asserting
     // the MESSAGE is what discriminates them — both exit non-zero.
-    const r = spawnSync(process.execPath, [join(self, '..', 'gen-workflow-job-durations.ts'), '--bogus'], {
-      env: { ...process.env, VITEST: '1' },
+    const r = spawnSync(process.execPath, [self, '--bogus'], {
+      // A MINIMAL environment, not an inherited one. The child's `main` would
+      // perform a credentialed `gh` walk and overwrite a committed file, and
+      // the only thing keeping it from doing so is the two-deep behavioural
+      // argument above. Handing it the whole environment adds nothing to the
+      // case and makes that argument the ONLY thing standing between a future
+      // edit and a real walk. (`ci.yml`'s unit job carries no secret today —
+      // this is hygiene, and hygiene is what the argument should not depend on.)
+      env: { VITEST: '1', PATH: process.env['PATH'] ?? '' },
       encoding: 'utf8',
       timeout: 30_000,
     });
@@ -929,6 +1062,26 @@ describe('the snapshot is refused rather than half-read', () => {
       message = String((error as Error).message);
     }
     expect(message).toContain('no numeric max');
+    expect(message).not.toContain(String.fromCodePoint(0x0a));
+    expect(message).not.toContain(String.fromCodePoint(0x202e));
+  });
+
+  it('a hostile snapshot key cannot forge a line through the SECOND refusal', () => {
+    // TWO refusals interpolate the key, and only one of them was pinned:
+    // dropping `safeText` from the non-positive-max message left all 72 cases
+    // green, because the case above supplies no `max` at all and never reaches
+    // it. `max: 0` is what routes the same hostile key to the sibling message —
+    // and 0 is the value that motivated that refusal in the first place, since
+    // it makes headroom `Infinity` and `Infinity < 2` is false.
+    const hostile = `a/b${String.fromCodePoint(0x0a)}  ci.yml / x: FORGED${String.fromCodePoint(0x202e)}`;
+    const body = JSON.stringify({ jobs: { [hostile]: { max: 0, from: 'x', to: 'y' } } });
+    let message = '';
+    try {
+      parseSnapshot(body, '<probe>');
+    } catch (error) {
+      message = String((error as Error).message);
+    }
+    expect(message).toContain('not a positive number');
     expect(message).not.toContain(String.fromCodePoint(0x0a));
     expect(message).not.toContain(String.fromCodePoint(0x202e));
   });
