@@ -86,7 +86,7 @@ dynamic-ref-cross-region	2026-08-21T18:32:07Z	PASS	164	verify.sh	#2157 live arm 
 dynamodb-autoscaling	2026-08-10T05:13:55Z	PASS	65	verify.sh	0810 sweep b5; table autoscaling re-verify post-#1451 GlobalTable work, 0 err 0 orph
 dynamodb-globaltable	2026-09-05T22:37:14Z	PASS	1521	verify.sh	PR2662 gate run; 16 steps, destroy 0 errors, 0 orphans across us-east-1/us-west-2/eu-west-1
 dynamodb-gsi-update	2026-09-18T07:35:18Z	PASS	286	verify.sh	rc ok, orph clean (go-to-k/cdkd#3287; runGsiOps parameter change)
-dynamodb-ondemand	2026-09-18T07:35:18Z	PASS	312	verify.sh	rc ok, orph clean (go-to-k/cdkd#3287; per-GSI ceiling edit + rejected member dropped)
+dynamodb-ondemand	2026-09-18T10:57:33Z	PASS	330	verify.sh	rc ok, orph clean (go-to-k/cdkd#3392/#3373/#3364; per-member ceiling REMOVAL at both positions)
 dynamodb-sse	2026-08-01T10:07:21Z	PASS	40	verify.sh	0801 regression sweep; SSE mapping ok, 0 orphans
 dynamodb-stream-filter	2026-08-10T05:13:55Z	PASS	57	verify.sh	0810 sweep b5; stream filter criteria, 0 err 0 orph
 dynamodb-streams	2026-08-10T05:13:55Z	PASS	81	verify.sh	0810 sweep b5; streams+ESM+StreamSpec UPDATE, 0 err 0 orph

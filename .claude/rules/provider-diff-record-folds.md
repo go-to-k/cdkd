@@ -256,9 +256,17 @@ record, so it licenses the `CreateContext.replayingState` asymmetry — a refusa
 written for a bad TEMPLATE downgrades to what the record's own writer did —
 and NOTHING about the values' provenance: a provider must not read it as
 permission to delete a live configuration. The `{Rules: []}` arms above read
-`desiredFromAwsReadback` and are untouched by it. `LogsLogGroupProvider`'s
-`RetentionInDays` refusal is the one consumer; the deploy engine and
-`drift --revert` leave it unset.
+`desiredFromAwsReadback` and are untouched by it. TWO update-path refusals
+consume it — `LogsLogGroupProvider`'s `RetentionInDays` and, since issue
+[#3392](https://github.com/go-to-k/cdkd/issues/3392),
+`DynamoDBTableProvider`'s per-GSI `OnDemandThroughput` pre-flight — and the
+second is worth reading for WHEN the downgrade is owed: its TABLE-level twin
+refuses unconditionally on the ground that its shape "cannot occur in a valid
+record", which is a claim about HISTORY, and the per-index shape fails it
+(before issue #3287 neither `Update` arm sent the member, so a PROVISIONED
+table carrying the ceiling deployed GREEN and was recorded). Derive that
+answer per refusal rather than copying a sibling's. The deploy engine and
+`drift --revert` leave the field unset.
 
 **The other field is inherited, not its own** — `UpdateContext` and
 `CreateContext` both extend `SecretMaskingContext`, which supplies

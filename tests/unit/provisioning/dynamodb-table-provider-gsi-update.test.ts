@@ -346,7 +346,25 @@ describe('DynamoDBTableProvider GSI in-place update', () => {
       ...GSI,
       OnDemandThroughput: { MaxReadRequestUnits: 10, MaxWriteRequestUnits: 5 },
     };
-    mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN, TableStatus: 'ACTIVE' } });
+    // `BillingModeSummary` added by issue
+    // [#3392](https://github.com/go-to-k/cdkd/issues/3392). This case USED to
+    // run against a table with no summary, which `liveBillingMode` resolves to
+    // PROVISIONED — i.e. it asserted the forward on exactly the shape AWS
+    // rejects, which is the defect #3392 closes. The forward itself is
+    // unchanged and is still fenced here, now on the mode that can carry it.
+    // The PROVISIONED polarity is asserted as a REFUSAL in a DIFFERENT file --
+    // `dynamodb-table-provider-index-ceiling-billing-mode.test.ts`, whose
+    // steady-PROVISIONED and no-BillingModeSummary cases both drive the Create
+    // arm (their previous side declares no GSI at all). Named explicitly
+    // because an earlier revision said "below" and a reader grepping THIS file
+    // found nothing.
+    mockSend.mockResolvedValueOnce({
+      Table: {
+        TableArn: TABLE_ARN,
+        TableStatus: 'ACTIVE',
+        BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' },
+      },
+    });
     mockSend.mockResolvedValueOnce({});
     mockSend.mockResolvedValueOnce({
       Table: {

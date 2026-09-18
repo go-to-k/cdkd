@@ -1795,18 +1795,327 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
       expect(warnings()).not.toContain(ON_DEMAND);
     });
 
-    it('site 5 update (SAME-NAME GSI Update action): a REMOVED ceiling sends nothing (go-to-k/cdkd#3373)', async () => {
-      // The decision, pinned: omitting a member KEEPS the live maximum (only an
-      // explicit `-1` removes one), and cdkd does NOT substitute the sentinel at
-      // either of this property's two positions. Byte-identical to what the
-      // TABLE-level arm does with the same edit; the removal direction is filed
-      // for both together as go-to-k/cdkd#3373.
+    it('site 5 update (SAME-NAME GSI Update action): a REMOVED ceiling sends the -1 sentinel (go-to-k/cdkd#3373)', async () => {
+      // INVERTED by go-to-k/cdkd#3373. This case used to pin the opposite
+      // ("sends nothing"), which was the DEFECT: an absent member keeps
+      // whatever maximum the index already carries, so the template edit
+      // deployed green, was recorded as applied, and left the live maximum in
+      // force forever.
+      //
+      // `-1` is DynamoDB's documented removal sentinel and is live-verified at
+      // THIS action's position -- go-to-k/cdkd#1423's probe transcript, the
+      // measurement `dynamodb-globaltable-provider.ts` has shipped on since.
       const updates = await gsiCeilingOps(
         [ppRequestGsi('gsi1')],
         [ppRequestGsi('gsi1', { MaxReadRequestUnits: 200 })],
         { indexes: [{ ...LIVE_GSI('gsi1'), OnDemandThroughput: { MaxReadRequestUnits: 200 } }] }
       );
+      expect(updates).toEqual([
+        { IndexName: 'gsi1', OnDemandThroughput: { MaxReadRequestUnits: -1 } },
+      ]);
+    });
+
+    it('site 5 update: a SINGLE-MEMBER removal keeps the sibling the template still declares (go-to-k/cdkd#3373)', async () => {
+      // PER MEMBER, never per BLOCK: read and write maxima are independent
+      // template values, and the single-member drop is the likelier user edit.
+      // The MIXED payload is the shape go-to-k/cdkd#1423 measured accepted at
+      // this position, with the kept member preserved.
+      const updates = await gsiCeilingOps(
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: 50 })],
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: 50, MaxWriteRequestUnits: 60 })],
+        {
+          indexes: [
+            {
+              ...LIVE_GSI('gsi1'),
+              OnDemandThroughput: { MaxReadRequestUnits: 50, MaxWriteRequestUnits: 60 },
+            },
+          ],
+        }
+      );
+      expect(updates).toEqual([
+        {
+          IndexName: 'gsi1',
+          OnDemandThroughput: { MaxReadRequestUnits: 50, MaxWriteRequestUnits: -1 },
+        },
+      ]);
+    });
+
+    it('site 5 update: does NOT reset on a deploy that FLIPS the table to PROVISIONED (go-to-k/cdkd#3401 M0)', async () => {
+      // Condition 4, the per-index half. Same hazard as its table-level twin:
+      // the live snapshot is the ONE `DescribeTable` at the top of `update()`
+      // and is never refreshed, while `applyGsiUpdates` runs AFTER the flip --
+      // so the stale snapshot would report the member live on a table that is
+      // PROVISIONED by the time the op goes out. The pre-flight refusal cannot
+      // save this shape: a REMOVAL declares no ceiling for it to see.
+      //
+      // Not routed through `gsiCeilingOps`, which pins both sides to
+      // PAY_PER_REQUEST by construction and so cannot express a flip.
+      primeGeneric({
+        billingMode: 'PAY_PER_REQUEST',
+        indexes: [{ ...LIVE_GSI('gsi1'), OnDemandThroughput: { MaxReadRequestUnits: 200 } }],
+      });
+      await provider.update(
+        'L',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          TableName: TABLE_NAME,
+          BillingMode: 'PROVISIONED',
+          ProvisionedThroughput: { ReadCapacityUnits: 3, WriteCapacityUnits: 4 },
+          GlobalSecondaryIndexes: [ppRequestGsi('gsi1')],
+        },
+        {
+          TableName: TABLE_NAME,
+          BillingMode: 'PAY_PER_REQUEST',
+          GlobalSecondaryIndexes: [ppRequestGsi('gsi1', { MaxReadRequestUnits: 200 })],
+        }
+      );
+      const ceilingOps = findCalls(UpdateTableCommand)
+        .flatMap((c) => c.input.GlobalSecondaryIndexUpdates ?? [])
+        .filter((op) => op.Update?.OnDemandThroughput !== undefined);
+      expect(ceilingOps).toEqual([]);
+      // Non-vacuity: the flip itself DID go out, so `applyGsiUpdates` really
+      // ran against a table this deploy re-priced.
+      expect(
+        findCalls(UpdateTableCommand).filter((c) => c.input.BillingMode === 'PROVISIONED')
+      ).toHaveLength(1);
+    });
+
+    it('site 5 update: does NOT reset a member AWS is not observed to hold (go-to-k/cdkd#3373)', async () => {
+      // Condition 3 of `onDemandCeilingRemovals`, and it does three jobs at
+      // once. `DescribeTable` reports `OnDemandThroughput` only on a
+      // PAY_PER_REQUEST table, so "AWS holds it" simultaneously proves there is
+      // a maximum to remove, keeps a doomed `-1` off a PROVISIONED index, and
+      // makes the whole rule fail CLOSED where cdkd has no live snapshot --
+      // which is the right direction for a send that DESTROYS a live value.
+      //
+      // The live index here carries NO ceiling, so nothing is removed even
+      // though the record says a maximum was once applied.
+      const updates = await gsiCeilingOps(
+        [ppRequestGsi('gsi1')],
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: 200 })],
+        { indexes: [LIVE_GSI('gsi1')] }
+      );
       expect(updates).toEqual([]);
+    });
+
+    it('site 5 update: does NOT reset a member ABSENT from a live block that EXISTS (go-to-k/cdkd#3373)', async () => {
+      // The PER-MEMBER half of condition 3, which the whole-block case below
+      // cannot reach: there `live?.OnDemandThroughput` is undefined and the
+      // rule short-circuits, so deleting the per-member test left that case
+      // GREEN (measured). Here the live block EXISTS and carries only the READ
+      // member -- reachable from an out-of-band console change -- so there is
+      // no write maximum to remove and `-1` would be a call with nothing to do.
+      //
+      // The READ ceiling CHANGES so an op is emitted either way: the
+      // discriminator is the op's SHAPE, not its presence.
+      const updates = await gsiCeilingOps(
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: 90 })],
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: 50, MaxWriteRequestUnits: 60 })],
+        { indexes: [{ ...LIVE_GSI('gsi1'), OnDemandThroughput: { MaxReadRequestUnits: 50 } }] }
+      );
+      expect(updates).toEqual([
+        { IndexName: 'gsi1', OnDemandThroughput: { MaxReadRequestUnits: 90 } },
+      ]);
+    });
+
+    it('site 5 update: does NOT reset a member the RECORD holds in a spelling cdkd REFUSED (go-to-k/cdkd#3373)', async () => {
+      // Condition 1. `previousProperties` is a cdkd STATE record and the record
+      // is RAW -- it holds the spelling the TEMPLATE declared, including a
+      // member `narrowOnDemandCeilings` refused and cdkd therefore never sent.
+      // A raw presence test would read `' 200 '` as "previously applied" and
+      // clear a ceiling AWS still holds from an EARLIER deploy.
+      const updates = await gsiCeilingOps(
+        [ppRequestGsi('gsi1')],
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: ' 200 ' })],
+        { indexes: [{ ...LIVE_GSI('gsi1'), OnDemandThroughput: { MaxReadRequestUnits: 90 } }] }
+      );
+      expect(updates).toEqual([]);
+    });
+
+    it('site 5 update: does NOT reset a member the DESIRED side declares but cdkd REJECTED (go-to-k/cdkd#1440)', async () => {
+      // Condition 2, and the destructive one. A declared-but-rejected member is
+      // the template TRYING to SET a ceiling; taking the reset branch for it
+      // would silently CLEAR the ceiling being set. The discriminator is the
+      // RAW desired side -- the narrowed one cannot tell "rejected" from
+      // "omitted". The sibling member still carries the edit, so the op is
+      // emitted and the arm really ran.
+      const updates = await gsiCeilingOps(
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: ' 200 ', MaxWriteRequestUnits: 70 })],
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: 200, MaxWriteRequestUnits: 60 })],
+        {
+          indexes: [
+            {
+              ...LIVE_GSI('gsi1'),
+              OnDemandThroughput: { MaxReadRequestUnits: 200, MaxWriteRequestUnits: 60 },
+            },
+          ],
+        }
+      );
+      expect(updates).toEqual([
+        { IndexName: 'gsi1', OnDemandThroughput: { MaxWriteRequestUnits: 70 } },
+      ]);
+    });
+
+    it('site 5 update: a POLLUTED Object.prototype cannot manufacture a removal (go-to-k/cdkd#3401 security nit)', async () => {
+      // The three member-presence tests gating this DESTRUCTIVE send read own
+      // keys (`Object.hasOwn`), not `in`, which walks the prototype chain. The
+      // bag they read is a cdkd STATE record -- the own-key convention
+      // `drift.ts`'s `hasOwnKey` / `ownValue` already follow for state-derived
+      // bags (issue go-to-k/cdkd#2899).
+      //
+      // The DESIRED side is ABSENT here on purpose: that is the one shape where
+      // pollution is ASYMMETRIC. With a declared block present, both sides
+      // inherit the poisoned key and the two conditions cancel out; with none,
+      // condition 2 is skipped and only the PREVIOUS side is consulted -- so a
+      // prototype-walking test would report a member the record never carried
+      // and clear a live ceiling nothing asked to clear.
+      //
+      // `enumerable: false` so no spread picks the key up, and `finally`
+      // deletes it however the case ends -- a leaked prototype key would
+      // corrupt every later case in this worker.
+      Object.defineProperty(Object.prototype, 'MaxWriteRequestUnits', {
+        value: 999,
+        configurable: true,
+        enumerable: false,
+        writable: true,
+      });
+      try {
+        const updates = await gsiCeilingOps(
+          [ppRequestGsi('gsi1')],
+          [ppRequestGsi('gsi1', { MaxReadRequestUnits: 50 })],
+          {
+            indexes: [
+              {
+                ...LIVE_GSI('gsi1'),
+                OnDemandThroughput: { MaxReadRequestUnits: 50, MaxWriteRequestUnits: 60 },
+              },
+            ],
+          }
+        );
+        // ONLY the read member the record actually owned is reset.
+        expect(updates).toEqual([
+          { IndexName: 'gsi1', OnDemandThroughput: { MaxReadRequestUnits: -1 } },
+        ]);
+      } finally {
+        delete (Object.prototype as unknown as Record<string, unknown>)[
+          'MaxWriteRequestUnits'
+        ];
+      }
+      expect('MaxWriteRequestUnits' in {}).toBe(false);
+    });
+
+    it('site 5 update: does NOT write the -1 sentinel back into the declared GSI block (go-to-k/cdkd#3401 finding 1)', async () => {
+      // The per-index half of the copy-not-mutate invariant. Same mechanism as
+      // its table-level twin in `dynamodb-table-provider-ondemand-throughput
+      // .test.ts`: `narrowOnDemandCeilings` returns an all-integer block BY
+      // IDENTITY, so a merge-in-place would write `-1` into `gsi.OnDemandThroughput`
+      // -- the object inside the bag the engine records as state, and a value
+      // `DescribeTable` can never report back.
+      //
+      // The block is bound ONCE and inspected after the call.
+      const declaredCeiling: Record<string, unknown> = { MaxReadRequestUnits: 50 };
+      primeGeneric({
+        billingMode: 'PAY_PER_REQUEST',
+        indexes: [
+          {
+            ...LIVE_GSI('gsi1'),
+            OnDemandThroughput: { MaxReadRequestUnits: 50, MaxWriteRequestUnits: 60 },
+          },
+        ],
+      });
+      await provider.update(
+        'L',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          TableName: TABLE_NAME,
+          BillingMode: 'PAY_PER_REQUEST',
+          GlobalSecondaryIndexes: [ppRequestGsi('gsi1', declaredCeiling)],
+        },
+        {
+          TableName: TABLE_NAME,
+          BillingMode: 'PAY_PER_REQUEST',
+          GlobalSecondaryIndexes: [
+            ppRequestGsi('gsi1', { MaxReadRequestUnits: 50, MaxWriteRequestUnits: 60 }),
+          ],
+        }
+      );
+
+      const ops = findCalls(UpdateTableCommand)
+        .flatMap((c) => c.input.GlobalSecondaryIndexUpdates ?? [])
+        .map((op) => op.Update)
+        .filter((a): a is NonNullable<typeof a> => a !== undefined);
+      expect(ops).toEqual([
+        {
+          IndexName: 'gsi1',
+          OnDemandThroughput: { MaxReadRequestUnits: 50, MaxWriteRequestUnits: -1 },
+        },
+      ]);
+      expect(declaredCeiling).toEqual({ MaxReadRequestUnits: 50 });
+      expect(Object.keys(declaredCeiling)).toEqual(['MaxReadRequestUnits']);
+    });
+
+    it('site 5 update: a DECLARED null resets nothing -- only an ABSENT key is a removal (go-to-k/cdkd#3401 finding 4)', async () => {
+      // A bare `OnDemandThroughput:` YAML key resolves to `null`, and the
+      // truthiness gates elsewhere in this file read that as absent. The
+      // REMOVAL rule deliberately does not: absence is the removal statement,
+      // and a declared-but-unreadable value is a template cdkd could not read,
+      // not an instruction to DESTROY a maximum. An earlier cut routed `null`
+      // to the absent arm, so `OnDemandThroughput:` cleared a live ceiling
+      // while `{}` did not -- an asymmetry with no stated reason.
+      const updates = await gsiCeilingOps(
+        [ppRequestGsi('gsi1', null)],
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: 200 })],
+        { indexes: [{ ...LIVE_GSI('gsi1'), OnDemandThroughput: { MaxReadRequestUnits: 200 } }] }
+      );
+      expect(updates).toEqual([]);
+    });
+
+    it('site 5 update: an UNREADABLE desired block resets NOTHING, even though it declares no member (go-to-k/cdkd#3373)', async () => {
+      // `{Ref: 'Unset'}` is a plain object that declares no member the grammar
+      // knows, so the "desired does not declare it" test alone reads it as a
+      // REMOVAL -- and clearing a live maximum on the strength of an
+      // unresolved intrinsic is #1440's destruction one level up. The rule
+      // therefore requires the desired block to carry at least one SURVIVING
+      // member before any sibling counts as removed; an ABSENT block is the
+      // opposite and is the headline case.
+      const updates = await gsiCeilingOps(
+        [ppRequestGsi('gsi1', { Ref: 'Unset' })],
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: 200 })],
+        { indexes: [{ ...LIVE_GSI('gsi1'), OnDemandThroughput: { MaxReadRequestUnits: 200 } }] }
+      );
+      expect(updates).toEqual([]);
+      expect(warnings()).toContain('no member DynamoDB accepts');
+    });
+
+    it('site 5 update: the ADOPTED-index arm has no previous side, so it removes nothing (go-to-k/cdkd#3373)', async () => {
+      // The third per-index send site. It reaches `indexCeilingForSend` with
+      // `before === undefined` -- there IS no recorded previous side to derive
+      // a removal from -- so the reset can never fire there, whatever AWS
+      // holds. Pinned because the arm is easy to reach by accident: a `?.`
+      // slip on the previous side would make every adopted index clear its
+      // live ceiling.
+      //
+      // `gsi2` is the CONTROL the test review asked for (go-to-k/cdkd#3401):
+      // without it the assertion is satisfied by `applyGsiUpdates` throwing or
+      // never reaching the arm, which is how the case first read. gsi2 takes an
+      // ORDINARY same-name ceiling edit, so exactly one op must come back --
+      // proving the arm ran and emitted for the index it should while emitting
+      // nothing for the adopted one.
+      const updates = await gsiCeilingOps(
+        [ppRequestGsi('gsi1'), ppRequestGsi('gsi2', { MaxReadRequestUnits: 90 })],
+        [ppRequestGsi('gsi2', { MaxReadRequestUnits: 50 })],
+        {
+          indexes: [
+            { ...LIVE_GSI('gsi1'), OnDemandThroughput: { MaxReadRequestUnits: 200 } },
+            { ...LIVE_GSI('gsi2'), OnDemandThroughput: { MaxReadRequestUnits: 50 } },
+          ],
+        }
+      );
+      expect(updates).toEqual([
+        { IndexName: 'gsi2', OnDemandThroughput: { MaxReadRequestUnits: 90 } },
+      ]);
     });
 
     it('site 5 update: survives a NUMERIC IndexName with a masker in play', async () => {
