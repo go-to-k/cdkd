@@ -62,12 +62,24 @@
  */
 
 import { describe, expect, it } from 'vite-plus/test';
-import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import {
   displayNameToKey,
+  invokedDirectly,
+  refuseInsideTestRunner,
   resolveJobKey,
   walkMayStop,
 } from '../../../scripts/gen-workflow-job-durations.ts';
@@ -107,10 +119,13 @@ const MIN_COMPARED = 18;
  * on the Actions API's display name while this fence keys on the YAML job id,
  * so the four jobs that override `name:` vanished; the fifth was dropped by a
  * prune that stopped before it had seen every job. `issue-conventions.yml` is
- * in fact the highest-volume workflow in the repo — 106/71/274/389/496/356
- * successful runs per day over 2026-09-12..09-17 — the opposite of rare. (An
- * earlier revision said "~885 in a day": that was the RANGE total restated as
- * a daily rate, and two reviewers caught it independently.)
+ * in fact the highest-volume workflow in the repo — 106/71/274/389/496
+ * successful runs per day over 2026-09-12..09-16 — the opposite of rare. (Two
+ * earlier revisions of that figure were wrong in two different ways: "~885 in a
+ * day" was the RANGE total restated as a daily rate, caught independently by
+ * two reviewers; and the six-day version ended on 2026-09-17, which was still
+ * IN PROGRESS when it was taken — the same in-progress-day defect this PR had
+ * already fixed once in the artifact, recurring in the prose that replaced it.)
  *
  * So this list absorbed a generator defect and gave it a plausible story, which
  * is exactly the failure the fence exists to catch, reproduced inside the fence.
@@ -159,9 +174,17 @@ export const jobsFromWorkflow = (file: string, doc: unknown): Map<string, number
 /** Every `<file>/<job>` the tree declares, with its bound. */
 export const declaredJobs = (
   dir: string = WORKFLOW_DIR,
-): { jobs: Map<string, number | undefined>; unreadable: string[] } => {
+): { jobs: Map<string, number | undefined>; unreadable: Safe[] } => {
   const jobs = new Map<string, number | undefined>();
-  const unreadable: string[] = [];
+  // `Safe[]`, NOT `string[]` — the SEVENTH venue for this class, and the first
+  // one that is not a rendered line at all. `finding` sanitises the file name
+  // on the way to the report, so the report was fine; an ASSERTION over these
+  // values is not. `expect(unreadable).toEqual([...])` prints the raw array in
+  // its diff, at column 0, with vitest's pretty-format escaping only `"` and
+  // `\` — not LF, not U+202E, not U+0085. A fork that names a workflow file
+  // `x\n::error::...` forges a line through the FAILURE path of the case that
+  // exists to prove the fork cannot forge a line.
+  const unreadable: Safe[] = [];
   for (const file of readdirSync(dir).filter((n) => /\.ya?ml$/.test(n)).sort()) {
     let doc: unknown;
     try {
@@ -174,7 +197,11 @@ export const declaredJobs = (
       // unguarded at module scope, while `FindingKind` already declared
       // `'unreadable-workflow'` and nothing constructed it, is the tell: the
       // arm was designed and never written.
-      unreadable.push(file);
+      // Sanitised at the PUSH, not at each reader: a value that leaves this
+      // function raw has as many venues as it has consumers. `finding` below
+      // sanitises again on the render path — idempotent for a real file name,
+      // which cannot contain a byte either helper touches.
+      unreadable.push(safeName(file));
       continue;
     }
     for (const [key, bound] of jobsFromWorkflow(file, doc)) jobs.set(key, bound);
@@ -196,7 +223,14 @@ export const parseSnapshot = (text: string, where: string): Record<string, JobSa
   if (!isMapping(raw) || !isMapping(raw['jobs'])) {
     throw new Error(`${where} has no jobs mapping; regenerate it`);
   }
-  const jobs: Record<string, JobSample> = {};
+  // NULL PROTOTYPE, and the reason is stated rather than dramatised: `snapshot`
+  // is read with `snapshot[job]`, and on an ordinary object literal a `job` of
+  // `constructor` or `toString` answers with an inherited FUNCTION instead of
+  // `undefined`. It is not reachable here — every key this fence looks up is a
+  // `<file>/<job>` pair and a `/` cannot appear in either of those names — so
+  // this closes a SHAPE, not a live hole. It costs one call, and a keyed bag
+  // built from parsed JSON is the shape that has bitten this repo before.
+  const jobs: Record<string, JobSample> = Object.create(null) as Record<string, JobSample>;
   for (const [key, value] of Object.entries(raw['jobs'])) {
     if (!isMapping(value) || typeof value['max'] !== 'number') {
       // `safeText(key)`: an object key in this file is arbitrary attacker-chosen
@@ -295,7 +329,7 @@ export const auditHeadroom = (
   declared: ReadonlyMap<string, number | undefined>,
   snapshot: Readonly<Record<string, JobSample>>,
   exempt: Readonly<Record<string, string>>,
-  unreadable: readonly string[] = [],
+  unreadable: readonly Safe[] = [],
 ): Finding[] => {
   const findings: Finding[] = [];
 
@@ -384,6 +418,13 @@ describe('no workflow job is bounded too tightly to survive its own longest run'
     // rather than a fixed margin, so that adding a workflow does not red an
     // unrelated PR.
     expect(MIN_DECLARED * 2).toBeGreaterThanOrEqual(DECLARED.size);
+    // And a TIGHT lower bound, because `* 2` is not one: lowering all three
+    // floors together to 14, or to 11, left every case here green — so the band
+    // permitted exactly the round-1 defect it was added to catch. Four jobs is
+    // the measured size of that defect; the floor may not sit further than that
+    // below the real count, and may never exceed it.
+    expect(MIN_DECLARED).toBeGreaterThan(DECLARED.size - 4);
+    expect(MIN_DECLARED).toBeLessThanOrEqual(DECLARED.size);
     // The snapshot floors are PINNED TO `MIN_DECLARED`, not banded separately.
     // A proportional band cannot tell 12 from 18 — both clear a 21-entry
     // snapshot — so at 12 the round-1 defect, four jobs vanishing, passed the
@@ -461,10 +502,70 @@ describe('the auditor reports what it claims to', () => {
     }
   });
 
+  it('only YAML files in the directory are read', () => {
+    // The `.ya?ml$` filter. Without it `declaredJobs` hands a README, an
+    // editor's `.yml.bak`, or a stray script to `parseYaml`, and each lands in
+    // `unreadable` as a finding naming a file nobody can fix — indistinguishable
+    // in the rendered line from a genuinely broken workflow. `.yaml` must still
+    // be read: nothing stops a workflow using it. The `$` is load-bearing on
+    // its own — `c.yml.bak` is what catches its loss.
+    //
+    // The `.sort()` beside the filter is NOT pinned, and no honest case is
+    // available: `readdirSync` returned already-sorted names in every probe on
+    // this host (40 of 40 with random names, macOS/APFS), so a case would pass
+    // with the call deleted. It stays for determinism on a filesystem that does
+    // not, and this note is what a reader gets instead of a green case proving
+    // nothing.
+    const scratch = mkdtempSync(join(tmpdir(), 'cdkd-headroom-ext-'));
+    try {
+      writeFileSync(join(scratch, 'a.yml'), 'jobs:\n  one: {}\n');
+      writeFileSync(join(scratch, 'b.yaml'), 'jobs:\n  two: {}\n');
+      writeFileSync(join(scratch, 'README.md'), '# not a workflow\n');
+      writeFileSync(join(scratch, 'c.yml.bak'), 'jobs:\n  [\n');
+      const { jobs, unreadable } = declaredJobs(scratch);
+      expect([...jobs.keys()]).toEqual(['a.yml/one', 'b.yaml/two']);
+      expect(unreadable).toEqual([]);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it('a hostile workflow FILE NAME is sanitised at the push, not at the reader', () => {
+    // THE SEVENTH VENUE, and the first that is not a rendered line: the
+    // ASSERTION path. `expect(unreadable).toEqual([...])` prints this array in
+    // vitest's failure diff at column 0, and pretty-format escapes `"` and `\`
+    // and nothing else — not LF, not U+202E, not U+0085. Pushing the raw name
+    // kept every other case green, because the only name they use is benign
+    // and `safeName` is the identity on it.
+    //
+    // A real file name CAN carry a newline on both macOS and Linux, so this is
+    // a fork's actual capability, not a synthetic one.
+    const scratch = mkdtempSync(join(tmpdir(), 'cdkd-headroom-name-'));
+    try {
+      const hostile = 'zz\n::error::forged.yml';
+      writeFileSync(join(scratch, hostile), 'jobs:\n  a: [\n');
+      const { unreadable } = declaredJobs(scratch);
+      expect(unreadable).toHaveLength(1);
+      // TWO transformations, and the case names both because the first alone
+      // is not enough. `safeName` FLATTENS the newline to a space — so no byte
+      // of it can start a line, in the diff or in a rendered finding — and then
+      // QUOTES the result, which is what stops a name that carries no control
+      // byte at all from reading as a complete finding about another workflow.
+      expect(unreadable[0]).not.toContain('\n');
+      expect(unreadable[0]).toBe('"zz ::error::forged.yml"');
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
   it('an unreadable workflow is a finding, and its message is never rendered', () => {
     // The arm `FindingKind` declared and nothing constructed. A YAML parse error
     // quotes the fork's own source; only the FILE is named.
-    const found = auditHeadroom(new Map(), {}, {}, ['evil.yml']);
+    //
+    // `safeName`, not a bare literal: typing the parameter `Safe` made this
+    // line a TYPE ERROR, which is the brand working — a caller can no longer
+    // hand the auditor an unsanitised file name, in a case or in production.
+    const found = auditHeadroom(new Map(), {}, {}, [safeName('evil.yml')]);
     expect(found.map((f) => f.kind)).toEqual(['unreadable-workflow']);
     expect(render(found)).toEqual(['evil.yml/: unreadable-workflow']);
   });
@@ -492,6 +593,7 @@ describe('the auditor reports what it claims to', () => {
     ['a document that is not a mapping', 7],
     ['a document with no jobs key', { name: 'x' }],
     ['a jobs node that is not a mapping', { jobs: 'x' }],
+    ['a jobs node that is a NON-EMPTY array', { jobs: ['x'] }],
     ['a job node that is not a mapping', { jobs: { j: 'x' } }],
   ])('%s yields no declared jobs rather than throwing', (_what, doc) => {
     // Both halves of `jobsFromWorkflow`'s guard and its `isMapping(node)`
@@ -595,7 +697,14 @@ describe('the generator resolves an API job name to a declared key', () => {
     ['a jobs node that is not a mapping', { jobs: 7 }],
     ['a null document', null],
     ['a null jobs node', { jobs: null }],
+    ['a jobs node that is a NON-EMPTY array', { jobs: ['plain'] }],
   ])('%s yields an empty map rather than throwing', (_what, bad) => {
+    // The array case pins `isMapping`'s THIRD clause, and only a non-empty one
+    // does: `typeof [] === 'object'` and `[] !== null`, so without
+    // `!Array.isArray` a `jobs:` written as a YAML sequence reaches
+    // `Object.entries`, which hands back INDICES — a `w.yml/0` no workflow
+    // declares. An empty array yields no entries either way, discriminating
+    // nothing.
     // `null` is reachable and was unpinned in every one of these guards:
     // `parseYaml('')` returns null, and a bodiless `jobs:` gives a null node.
     // `typeof null === 'object'`, so only the explicit null test rejects them.
@@ -652,6 +761,111 @@ describe('the walk stops only when it can no longer learn anything', () => {
   });
 });
 
+describe('the generator runs only when it is the entry point', () => {
+  // THIS ARM FAILED IN THE ONE COLOUR NOTHING ELSE HERE CAN, and it was
+  // MEASURED rather than reasoned about. With `invokedDirectly` broken, the
+  // import at the top of this file ran the whole network walk, OVERWROTE
+  // `docs/_generated/workflow-job-durations.json` in place, and the suite then
+  // passed 57 of 57 — `the real tree reports nothing` asserting against a
+  // snapshot the run had just manufactured from live data. Green, silent, and
+  // self-referential: the defect class this pair of files exists to catch,
+  // reproduced by its own tooling.
+  //
+  // Two locks answer it. The predicate below takes its inputs as ARGUMENTS, so
+  // every arm is decided without touching `process.argv` and without reaching
+  // `main`; and `main` itself refuses inside a test runner, on a signal
+  // independent of the predicate, so no mutation of either one can reach
+  // `writeFileSync` from here.
+  const self = realpathSync(
+    join(import.meta.dirname, '../../../scripts/gen-workflow-job-durations.ts'),
+  );
+
+  it('runs when argv[1] is this module', () => {
+    expect(invokedDirectly(self, self)).toBe(true);
+  });
+
+  it('does not run when argv[1] is another file', () => {
+    // What the vitest worker actually passes: its own runner entry.
+    expect(invokedDirectly(process.argv[1], self)).toBe(false);
+  });
+
+  it('does not run when there is no argv[1]', () => {
+    // `node --eval` and an embedded runtime both leave it undefined. The
+    // explicit guard for this is an EQUIVALENT arm — deleting it keeps every
+    // case green, because `realpathSync(undefined)` throws into the `catch`,
+    // which answers the same `false`. Measured, and recorded rather than
+    // dressed up: this case pins the ANSWER, not that line.
+    expect(invokedDirectly(undefined, self)).toBe(false);
+  });
+
+  it('does not run, rather than throwing, when argv[1] does not exist', () => {
+    // `realpathSync` throws ENOENT on a path that is not real, at MODULE SCOPE
+    // of a file this fence imports — which would take the whole collection down
+    // with a stack instead of reporting anything.
+    expect(invokedDirectly(join(self, 'no-such-entry.ts'), self)).toBe(false);
+  });
+
+  it('compares REAL paths, so a symlinked entry still counts as direct', () => {
+    // `node scripts/gen-workflow-job-durations.ts` reached through a symlinked
+    // path gives an argv[1] that is not byte-equal to `import.meta.filename`; a
+    // `===` on the raw strings would silently decline to run and print nothing.
+    const scratch = mkdtempSync(join(tmpdir(), 'cdkd-entry-'));
+    try {
+      const link = join(scratch, 'link.ts');
+      symlinkSync(self, link);
+      expect(invokedDirectly(link, self)).toBe(true);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['VITEST', { VITEST: 'true' }],
+    ['VITEST_WORKER_ID', { VITEST_WORKER_ID: '1' }],
+  ])('%s makes the generator refuse to run at all', (_what, env) => {
+    // The second lock. It is keyed on the RUNNER, not on the entry point, so it
+    // holds however the first lock breaks.
+    expect(() => refuseInsideTestRunner(env)).toThrow(/refusing to run inside the test runner/);
+  });
+
+  it('a shell with no test-runner variable is allowed through', () => {
+    // The other half: a lock that refused unconditionally would be one that
+    // never lets the generator run, and nothing else in this suite would say so.
+    expect(() => refuseInsideTestRunner({})).not.toThrow();
+    expect(() => refuseInsideTestRunner({ CI: 'true', HOME: '/root' })).not.toThrow();
+  });
+
+  it('the lock is WIRED INTO `main`, not merely defined beside it', () => {
+    // REGISTRATION IS NOT EXECUTION. Deleting the `refuseInsideTestRunner`
+    // call from `main` left every case above green — necessarily so, since a
+    // working entry-point guard means `main` is never reached from here. The
+    // lock existed and nothing proved it was called.
+    //
+    // A SUBPROCESS answers it, and the argument is what makes that safe: with
+    // the lock in place the run dies on the lock; with the lock deleted it dies
+    // one line later on the unknown flag. Neither path reaches the network or
+    // the writer, so this case cannot do what it exists to prevent. Asserting
+    // the MESSAGE is what discriminates them — both exit non-zero.
+    const r = spawnSync(process.execPath, [join(self, '..', 'gen-workflow-job-durations.ts'), '--bogus'], {
+      env: { ...process.env, VITEST: '1' },
+      encoding: 'utf8',
+      timeout: 30_000,
+    });
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/refusing to run inside the test runner/);
+    expect(r.stderr).not.toMatch(/unknown argument/);
+  });
+
+  it('this suite really is inside the runner the lock keys on', () => {
+    // Without this, the two cases above are assertions about a hand-built
+    // object and say nothing about the venue they protect. If vitest ever stops
+    // exporting these variables the lock is inert, and this is the case that
+    // notices.
+    expect(process.env['VITEST'] ?? process.env['VITEST_WORKER_ID']).toBeDefined();
+    expect(() => refuseInsideTestRunner(process.env)).toThrow();
+  });
+});
+
 describe('the snapshot is refused rather than half-read', () => {
   it.each([
     ['no jobs mapping', '{"generatedAt":"x"}', /has no jobs mapping/],
@@ -684,6 +898,22 @@ describe('the snapshot is refused rather than half-read', () => {
     // an array is an object too, so neither is reachable from the mapping cases
     // above and both survived deletion.
     expect(() => parseSnapshot(body, '<probe>')).toThrow(/has no jobs mapping/);
+  });
+
+  it('a hostile FILE half is quoted, which only `safeName` does', () => {
+    // THE BRAND CANNOT CATCH THE WRONG SANITISER, only a missing one: swapping
+    // `safeName` for `safeText` typechecks, because both return `Safe`, and it
+    // left every other case green. `safeText` is exactly the helper that fails
+    // this threat — the name below is pure ASCII with no control byte, so the
+    // flattening is a no-op and it reads as a complete finding about a
+    // different workflow. Only the quoting tells the two apart.
+    //
+    // No `/` in the forged name: a real file name cannot contain one, and
+    // `finding` splits the key at the FIRST `/` to separate the halves.
+    const forged = 'ci.yml_ check-build-test: no-timeout - and also.yml';
+    const line = render(auditHeadroom(new Map([[`${forged}/j`, 60]]), {}, {}))[0] ?? '';
+    expect(line.startsWith('"')).toBe(true);
+    expect(JSON.parse(line.slice(0, line.indexOf('"', 1) + 1))).toBe(forged);
   });
 
   it('a hostile snapshot key cannot forge a line through the refusal', () => {

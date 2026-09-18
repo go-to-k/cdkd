@@ -11,6 +11,13 @@
  * fix lands in one place and not the other, which is a failure this pair has
  * already had in prose and in a filter.
  *
+ * TWO OF THREE, NOT ALL THREE. `workflow-expression-syntax.test.ts` holds a
+ * third, unbranded `safeName` of its own and is NOT a consumer of this module.
+ * It was left alone deliberately — it is a third fence with its own review
+ * history, and folding it in here would put an unrelated file in this PR's
+ * blast radius — but the consequence has to be stated rather than implied by
+ * the word "shared": a fix made here reaches two fences, not the repo.
+ *
  * Importing the helpers from the other TEST file was tried first and is worse
  * than it looks: a `.test.ts` import re-runs that file's whole suite (92 cases
  * measured), so the two fences become one run and a failure in either reports

@@ -41,8 +41,16 @@
  *
  * THE PRUNE IS SOUND, NOT AN APPROXIMATION. Fetching the job breakdown of every
  * run costs one request each and exhausts the hourly budget on this repo
- * (measured: ~3300 runs in a one-week range, and the secondary limit trips well
- * before that). But a job cannot outlast the run that contains it, so a run
+ * (measured 2026-09-18 over 2026-09-10..09-16: 6382 successful runs in a
+ * one-week range, and the secondary limit trips well before that — a figure
+ * that grows with the repo, so treat it as an order of magnitude).
+ *
+ * Taking that number cost one more instance of the defect this file exists to
+ * document. Summing `gh run list --limit 1000` per workflow gave 5530, and
+ * `issue-conventions.yml` returned EXACTLY 1000 — the cap, not a count. Its
+ * real week is 1852, taken day by day. An earlier revision of this line said
+ * "~3300", which was wrong by roughly a factor of two and carried no date at
+ * all. But a job cannot outlast the run that contains it, so a run
  * whose WALL CLOCK is already below the longest job seen for that workflow
  * cannot change any maximum. Runs are therefore walked longest-first and the
  * walk stops when the run duration drops below every current maximum. That
@@ -118,8 +126,12 @@ interface Snapshot {
 // `35035035035` classified as transient and burned four attempts and 20 s of
 // sleeps — the opposite of what the docstring above promises, and ~0.9% of run
 // ids contain `503`. `/EOF/i` matched a job named `eof-check` the same way.
+// `5\d\d`, not `50[23]`: GitHub returns 504 Gateway Timeout, and a 504 at
+// request ~1700 aborts a tens-of-minutes walk that writes nothing — exactly the
+// scenario this retry exists for. `TLS handshake timeout` and `connection
+// refused` were missing for the same reason.
 const TRANSIENT =
-  /dial tcp|operation timed out|connection reset|\bEOF\b|\bHTTP 50[23]\b|timeout awaiting/;
+  /dial tcp|operation timed out|connection re(set|fused)|TLS handshake timeout|\bEOF\b|\bHTTP 5\d\d\b|timeout awaiting/;
 
 const gh = (args: readonly string[]): unknown => {
   let lastError: unknown;
@@ -136,6 +148,11 @@ const gh = (args: readonly string[]): unknown => {
       // Linear, not exponential: the failures this retries are single dropped
       // connections rather than a server asking us to slow down, and a long
       // backoff on a thousands-of-requests walk costs more than it saves.
+      // BAIL BEFORE THE SLEEP on the last attempt. Correcting the loop bound
+      // was not enough: the terminal attempt still printed `retry 3/2` and slept
+      // six seconds before rethrowing — the same "a wait that bought nothing"
+      // this comment claims to have removed, surviving at a smaller number.
+      if (attempt === 2) break;
       const waitMs = 2000 * (attempt + 1);
       process.stderr.write(`  transient gh failure, retry ${attempt + 1}/2 after ${waitMs}ms\n`);
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, waitMs);
@@ -166,9 +183,12 @@ const workflowFiles = (): string[] =>
  * the four `issue-conventions.yml` jobs are the only ones in this tree that
  * override, and all four vanished from the snapshot — then got written into the
  * fence's exemption list with reasons that were FALSE. That workflow is the
- * highest-volume one in the repo: 106/71/274/389/496/356 successful runs per
- * day over 2026-09-12..09-17, not a rare one. (An earlier revision said "~885
- * in a day"; 885 was the RANGE total restated as a daily rate.) An exemption list absorbing a generator defect is the exact failure this
+ * highest-volume one in the repo: 106/71/274/389/496 successful runs per day
+ * over 2026-09-12..09-16, not a rare one. (Two earlier revisions of this figure
+ * were wrong in two different ways: "~885 in a day" was the RANGE total
+ * restated as a daily rate, and the six-day version ended on 2026-09-17, a day
+ * still in progress when it was taken — the same in-progress-day defect this
+ * PR had already fixed once, recurring inside the prose that replaced it.) An exemption list absorbing a generator defect is the exact failure this
  * fence exists to catch, reproduced inside it.
  *
  * Matrix legs arrive as `<display name> (leg)`. The suffix is stripped ONLY
@@ -359,7 +379,40 @@ const jobDurations = (
 
 const isoDay = (d: Date): string => d.toISOString().slice(0, 10);
 
+/**
+ * THE SECOND LOCK, and the one that decides the COLOUR of a regression.
+ *
+ * The entry-point guard below is not enough on its own, and a reviewer measured
+ * exactly how it fails: with `invokedDirectly` broken, importing this module
+ * for its pure helpers runs the whole walk, OVERWRITES
+ * `docs/_generated/workflow-job-durations.json` in place, and the fence then
+ * passes — against a snapshot it had just manufactured from live data. The one
+ * case that validates the committed artifact (`the real tree reports nothing`)
+ * becomes self-referential, which is the defect class this pair of files exists
+ * to catch, reproduced in the tool that feeds it.
+ *
+ * So `main` refuses before it can reach `writeFileSync`, on a signal that is
+ * INDEPENDENT of the guard: the test runner's own environment. Break the guard
+ * now and the import throws at collection — a loud red naming this function —
+ * rather than a green suite and a rewritten input. A silent green is the worst
+ * colour a regression can have; this converts it.
+ */
+export const refuseInsideTestRunner = (env: Record<string, string | undefined>): void => {
+  // `VITEST_WORKER_ID` as well as `VITEST`: a forked worker is where an import
+  // of this module actually happens, and only the worker is guaranteed to carry
+  // the second one.
+  if (env['VITEST'] !== undefined || env['VITEST_WORKER_ID'] !== undefined) {
+    throw new Error(
+      'gen-workflow-job-durations: refusing to run inside the test runner. ' +
+        'This script performs a network walk and REWRITES the committed snapshot ' +
+        'the fence reads, which would make that fence assert against its own output. ' +
+        'Run it from a shell instead: `node scripts/gen-workflow-job-durations.ts`.',
+    );
+  }
+};
+
 const main = (): void => {
+  refuseInsideTestRunner(process.env);
   const argv = process.argv.slice(2);
   const prune = !argv.includes('--no-prune');
   const flag = (name: string): string | undefined => {
@@ -399,6 +452,18 @@ const main = (): void => {
       // value.
       throw new Error(`${name}=${value} is not a YYYY-MM-DD date`);
     }
+  }
+  // An INVERTED range is silent, not empty-with-an-error: `gh run list
+  // --created 2026-09-16..2026-09-02` returns zero rows and exits 0, the
+  // `capped` check below sees 0 < 1000 and passes, and the generator writes a
+  // snapshot of nothing but the jobs it could not find — i.e. exactly the
+  // "no entry" state the fence cannot distinguish from "never ran". The
+  // `Math.max(MIN_WINDOW_DAYS, ...)` below hides it further by clamping the
+  // negative span to a positive one while `from` keeps the inverted value.
+  const rawFrom = flag('--from');
+  const rawTo = flag('--to');
+  if (rawFrom !== undefined && rawTo !== undefined && rawFrom > rawTo) {
+    throw new Error(`--from=${rawFrom} is after --to=${rawTo}; the range is inverted`);
   }
 
   const today = new Date();
@@ -453,8 +518,11 @@ const main = (): void => {
       // all, so it was never in that minimum — and a job that only ever appears
       // in shorter runs was dropped from the snapshot entirely.
       //
-      // Measured in production, not hypothetically: `release.yml/publish` has
-      // 387 successful runs, the longest of which contains only
+      // Measured in production, not hypothetically: `release.yml` has 387
+      // successful RUNS, in 45 of which `publish` itself succeeded (299 skipped)
+      // — a run total is not a job total, which is measurement rule 1 above and
+      // an earlier revision of this very sentence broke it. The longest run
+      // contains only
       // `release-please` at 118 s. `min(maxima)` was therefore 118, the second
       // run (116 s) broke the walk, and ONE run of 387 was fetched — in which
       // `publish` happened to be skipped. It then entered the fence's exemption
@@ -471,9 +539,16 @@ const main = (): void => {
         // The prune's soundness rests on `job <= run wall clock`, computed from
         // two different pairs of timestamps and never checked until now. A
         // reviewer measured that 9,526 of 50,000 populations VIOLATING it give
-        // a wrong result, so the assumption is worth making self-checking
-        // rather than trusting: a violation means the prune may have stopped
-        // early and the run should be re-taken with `--no-prune`.
+        // a wrong result, so a violation is worth reporting: it means the prune
+        // may have stopped early and the run should be re-taken with
+        // `--no-prune`.
+        //
+        // It is a TRIPWIRE, NOT A PROOF, and the difference is the whole point
+        // of the prune: this loop only ever sees runs that were FETCHED, and a
+        // run pruned away is never fetched, so the one place a violation would
+        // do damage is the one place this cannot look. An earlier revision of
+        // this comment called the assumption "self-checking", which claims the
+        // coverage the prune exists to avoid paying for.
         for (const s of seconds) {
           if (s > run.seconds + 1) {
             process.stderr.write(
@@ -546,20 +621,32 @@ const main = (): void => {
  * pure parts cannot be imported is one whose pure parts cannot be fenced, which
  * is how the name-mapping defect this file now guards against survived in the
  * first place.
+ *
+ * EXPORTED AND PARAMETERISED BECAUSE BREAKING IT DOES NOT GO RED. Every other
+ * arm in this file fails a case when mutated; this one HANGS the suite — the
+ * import starts a walk, vitest waits, and the run dies on a timeout that names
+ * a file rather than a cause. A hang is the worst colour a regression can have,
+ * so the predicate takes its two inputs as arguments and is pinned by cases
+ * that never touch `process.argv` and never reach `main`.
  */
-const invokedDirectly = (): boolean => {
-  const entry = process.argv[1];
+export const invokedDirectly = (entry: string | undefined, self: string): boolean => {
+  // BELT AND BRACES, not a load-bearing arm: deleting this line is an
+  // EQUIVALENT mutation, because `realpathSync(undefined)` throws and the
+  // `catch` below already answers `false`. It is kept because the answer should
+  // not depend on a throw, and it is labelled because an earlier revision of
+  // this comment claimed the opposite — that without it the module-scope call
+  // dies with a stack — which the probe refuted.
   if (entry === undefined) return false;
   try {
     // `realpathSync` THROWS on a path that is not real, and this runs at module
     // scope of a file the fence imports — an ENOENT here would kill the whole
     // suite's collection with a stack rather than a finding.
-    return import.meta.filename === realpathSync(entry);
+    return self === realpathSync(entry);
   } catch {
     return false;
   }
 };
 
-if (invokedDirectly()) {
+if (invokedDirectly(process.argv[1], import.meta.filename)) {
   main();
 }
