@@ -54,7 +54,9 @@ separate the clauses, is in
 
 These are the issues currently on the tracker whose subject is the tooling
 rather than cdkd. They are listed here so the record survives, and are to be
-closed on the tracker.
+closed on the tracker. A finding recorded before anyone worked it has no issue
+to link, and carries `—` in the Issue column; a row whose item has SHIPPED says
+which PR took it, so nobody picks it up twice.
 
 | Issue | Title |
 | --- | --- |
@@ -121,16 +123,16 @@ closed on the tracker.
 | [#2853](https://github.com/go-to-k/cdkd/issues/2853) | chore(hooks): fence the no-shell-recipe shape across every refusal reachable when the matcher is broken |
 | [#2923](https://github.com/go-to-k/cdkd/issues/2923) | chore(rules): the import.ts rule payload has ~500 bytes of headroom, so a lane touching cdkd import cannot record why its change is the way it is |
 | [#2940](https://github.com/go-to-k/cdkd/issues/2940) | chore(rules): .claude/rules/testing.md is 39 bytes under the tests/** payload cap, so the next testing decision has nowhere to land |
-| [#3040](https://github.com/go-to-k/cdkd/issues/3040) | chore(hooks): integ-local's scope is source paths only, so a cdk-local version bump — the change most certain to move local-execution behaviour — passes ungated |
+| [#3040](https://github.com/go-to-k/cdkd/issues/3040) | chore(hooks): integ-local's scope is source paths only, so a cdk-local version bump — the change most certain to move local-execution behaviour — passes ungated — SHIPPED by [#3082](https://github.com/go-to-k/cdkd/pull/3082) |
 | [#3043](https://github.com/go-to-k/cdkd/issues/3043) | chore(hooks): a missing jq makes every Bash gate exit 0, indistinguishable from a pass |
 | [#3047](https://github.com/go-to-k/cdkd/issues/3047) | chore(hooks): a non-ASCII path is C-quoted by git, so integ-destroy's patterns never match it |
-| [#3066](https://github.com/go-to-k/cdkd/issues/3066) | fix(hooks): a heredoc opener flushed from a substitution body leaks pending_tag into the top-level latch, which then swallows lines up to an unrelated later terminator |
+| [#3066](https://github.com/go-to-k/cdkd/issues/3066) | fix(hooks): a heredoc opener flushed from a substitution body leaks pending_tag into the top-level latch, which then swallows lines up to an unrelated later terminator — SHIPPED by [#3082](https://github.com/go-to-k/cdkd/pull/3082) |
 | [#3081](https://github.com/go-to-k/cdkd/issues/3081) | hooks: close_paren / subst_open do not read `)#` as a comment, so a `cd` inside $( ) is emitted top-level |
 | [#3099](https://github.com/go-to-k/cdkd/issues/3099) | hooks: strip_noncommand_spans reads a heredoc delimiter as the quoted span alone, and knows no # comment (third reader, not on heredoc_word) |
 | [#3132](https://github.com/go-to-k/cdkd/issues/3132) | hooks: run()'s continuation arm joins a backslash that ends a comment, or precedes a CR, and refuses an even run inside backticks |
 | [#3204](https://github.com/go-to-k/cdkd/issues/3204) | hooks: a leading redirection defeats every blocking gate (gate_strip_prefix strips no redirection) |
 | [#3205](https://github.com/go-to-k/cdkd/issues/3205) | hooks: a newline inside a bash -c string is joined away, so the second line's verb is never matched |
-| [#3213](https://github.com/go-to-k/cdkd/issues/3213) | test(integ): nothing lints that a verify.sh wc result is trimmed, so a fixture written on GNU coreutils fails unconditionally on macOS |
+| [#3213](https://github.com/go-to-k/cdkd/issues/3213) | test(integ): nothing lints that a verify.sh wc result is trimmed, so a fixture written on GNU coreutils fails unconditionally on macOS — SHIPPED by [#3304](https://github.com/go-to-k/cdkd/pull/3304) |
 | [#3217](https://github.com/go-to-k/cdkd/issues/3217) | chore(hooks): post-merge-sync-reminder reports "PR merge succeeded" over a merge that failed, when the caller masks the exit status |
 | [#3219](https://github.com/go-to-k/cdkd/issues/3219) | hooks: the $( ) heredoc latch drops a body bash's syntax-error recovery actually runs (malformed opener) |
 | [#3228](https://github.com/go-to-k/cdkd/issues/3228) | hooks: a # comment inside a multi-line $( ) swallows the next command line (the join replaces its newline) |
@@ -153,5 +155,7 @@ closed on the tracker.
 | [#3342](https://github.com/go-to-k/cdkd/issues/3342) | test(rules): assert each payload budget's satellite relations instead of re-deriving them by hand per row |
 | [#3365](https://github.com/go-to-k/cdkd/issues/3365) | chore(hooks): three integ-* gates hand-roll the PR-number walk, so a URL selector makes them judge the wrong pull request |
 | [#3384](https://github.com/go-to-k/cdkd/issues/3384) | test(scripts): six subprocess-spawning suites declare no per-test timeout, so a loaded run flakes and inflates any mutation-table row measured at that moment |
-| [#3385](https://github.com/go-to-k/cdkd/issues/3385) | chore(hooks): gate_slug_from_url keeps the host, so a remote naming this repo through one of gh's github.com aliases reads as another repo and drops the verify-pr binding |
+| [#3385](https://github.com/go-to-k/cdkd/issues/3385) | chore(hooks): gate_slug_from_url keeps the host, so a remote naming this repo through one of gh's github.com aliases reads as another repo and drops the verify-pr binding — SHIPPED by [#3386](https://github.com/go-to-k/cdkd/pull/3386) |
 | [#3387](https://github.com/go-to-k/cdkd/issues/3387) | fix(hooks): gate_repo_slug trims `.git` before it case-folds, so a case-variant remote reads as a FOREIGN repo |
+| [#3428](https://github.com/go-to-k/cdkd/issues/3428) | test(scripts): the wc-trim classifier declares two bounds that can ship an untrimmed `wc` with nothing else noticing, and neither has a case pinning it, so closing one or opening a third leaves the header and the docs asserting a stale set |
+| — | test(unit): `gen-handled-property-wiring.test.ts`'s `every malformed FIELD gets a STRUCTURED refusal, not a caught crash` runs 4.8 s isolated against vitest's 5 s default, and timed out on a run overlapping a build. Widens [#3384](https://github.com/go-to-k/cdkd/issues/3384): that population is six spawning suites, and this file is not in it |
