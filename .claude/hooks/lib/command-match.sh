@@ -5167,7 +5167,7 @@ gate_target_is_foreign() {
   #
   # It also preserves go-to-k/cdkd#3209, whose foreign fixtures carry ZERO
   # remotes rather than unparsable ones -- the distinction the `continue` lost.
-  local slug name url_line __gtf_seen resolved_raw
+  local slug name url_line __gtf_seen resolved_raw resolved_key
   # THE HOOK SIDE READS EVERY REMOTE TOO, for the same reason the target side
   # does (go-to-k/cdkd#3351 round 6). Reading only `origin` here makes a
   # contributor working from a FORK -- `origin` = their fork, `upstream` = this
@@ -5264,6 +5264,13 @@ EOF
   # left raw, and `Go-To-K/CDKD` walked past it (measured).
   while IFS= read -r url_line; do
     [ -n "$url_line" ] || continue
+    # The config KEY, kept for the refusal message. `git config --get-regexp`
+    # emits `remote.<name>.gh-resolved<TAB><value>`, and the next line throws
+    # the key away -- so without this the message can say WHAT matched but not
+    # WHICH remote to edit, which is the actual next step for its reader. The
+    # target-remote loop above already names its remote; this makes the two
+    # refusals consistent.
+    resolved_key="${url_line%%	*}"
     url_line="${url_line#*	}"
     [ -n "$url_line" ] && [ "$url_line" != "base" ] || continue
     # Keep the value AS CONFIGURED for the refusal message. Everything below
@@ -5320,7 +5327,7 @@ EOF
     # falsified both copies.
     for slug in $hook_slug; do
       if [ "$url_line" = "${slug#*/}" ] || [ "$url_line" = "$slug" ]; then
-        GATE_FOREIGN_RETRACT="the target checkout has \`gh repo set-default\` pointing a remote at $resolved_raw, so gh resolves this gate's own repository from there"
+        GATE_FOREIGN_RETRACT="the target checkout sets \`$resolved_key\` = $resolved_raw (\`gh repo set-default\`), so gh resolves this gate's own repository from there"
         return 1
       fi
     done

@@ -3481,13 +3481,16 @@ __gtf "a gh-resolved naming ANOTHER repo -> foreign" 0 \
 # asserted any `GATE_FOREIGN_RETRACT` text before this case.
 GH_REPO="" gate_target_is_foreign "$__gtf_hooks_dir" "$__gtf_tmp/ghresforeignhost" \
   "gh pr merge 1 --squash" "$GATE_RE_GH_PR_MERGE"
+# BOTH halves: the value as configured AND the config key naming which remote
+# to edit. The message is the reader's only route to the setting, so asserting
+# one half would let the other regress silently.
 case "$GATE_FOREIGN_RETRACT" in
-  *gitlab.com/go-to-k/cdkd*)
-    pass=$((pass + 1)); printf 'OK   the gh-resolved refusal names the value AS CONFIGURED\n' ;;
+  *remote.origin.gh-resolved*gitlab.com/go-to-k/cdkd*)
+    pass=$((pass + 1)); printf 'OK   the gh-resolved refusal names the KEY and the value AS CONFIGURED\n' ;;
   *)
     fail=$((fail + 1))
-    fail_log="${fail_log}FAIL gh-resolved refusal text: want the raw 'gitlab.com/go-to-k/cdkd', got '$GATE_FOREIGN_RETRACT'\n"
-    printf 'FAIL gh-resolved refusal names the normalised value, not the configured one\n' ;;
+    fail_log="${fail_log}FAIL gh-resolved refusal text: want 'remote.origin.gh-resolved' and the raw 'gitlab.com/go-to-k/cdkd', got '$GATE_FOREIGN_RETRACT'\n"
+    printf 'FAIL gh-resolved refusal is missing the config key or the configured value\n' ;;
 esac
 
 __gtf "a MIXED-CASE gh-resolved -> NOT foreign" 1 \
