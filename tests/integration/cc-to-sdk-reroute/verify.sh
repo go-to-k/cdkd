@@ -138,8 +138,8 @@ assert_max_size() { # usage: assert_max_size <phase> <topic-arn> <expected>
   got="$(max_size "$2")"
   [ "${got}" = "$3" ] || { echo "FAIL: ${1}: MaximumMessageSize on AWS is ${got}, expected $3 (the SDK provider's wire for issue #3413 did not land)" >&2; exit 1; }
 }
-assert_max_size "phase 1 (SDK create)" "${P0}" 1048576
-echo "    OK: MaximumMessageSize=1048576 reached AWS through CreateTopic"
+assert_max_size "phase 1 (SDK create)" "${P0}" 131072
+echo "    OK: MaximumMessageSize=131072 reached AWS through CreateTopic"
 
 echo "==> Phase 2: force the resource onto Cloud Control (--recreate-via-cc-api)"
 # Seeds the sticky cc-api state the exemption has to escape from. Deliberately
@@ -175,7 +175,7 @@ D_SEED=$(aws sns get-topic-attributes --topic-arn "${P1}" --region "${REGION}" \
 # Cloud Control forwards the full property map, so the member survives the
 # recreate too — and this is the record the flip in phase 5 must NOT read as a
 # drop (the both-bags gate consults the recorded bag as well as the desired).
-assert_max_size "phase 2 (CC recreate)" "${P1}" 1048576
+assert_max_size "phase 2 (CC recreate)" "${P1}" 131072
 echo "    OK: pinned to Cloud Control, id ${P1}, CC write confirmed live"
 
 # IDENTITY WITNESS. With a fixed name the ARN survives a destroy + recreate, so
@@ -241,9 +241,11 @@ SUBS_AFTER=$(aws sns list-subscriptions-by-topic --topic-arn "${P2}" --region "$
 DISPLAY=$(aws sns get-topic-attributes --topic-arn "${P2}" --region "${REGION}" \
   --query 'Attributes.DisplayName' --output text)
 [ "${DISPLAY}" = "after-reroute" ] || { echo "FAIL: the update did not reach AWS (DisplayName=${DISPLAY})" >&2; exit 1; }
-# The same deploy carried 1048576 -> 524288, so this is the SDK provider's
+# The same deploy carried 131072 -> 65536, so this is the SDK provider's
 # UPDATE arm for the member (SetTopicAttributes), not only its create arm.
-assert_max_size "phase 5 (SDK update)" "${P2}" 524288
+# (Both below the 262144 default: the email witness above refuses a larger
+# maximum — see the stack's MAXIMUM_MESSAGE_SIZE_BY_PHASE note.)
+assert_max_size "phase 5 (SDK update)" "${P2}" 65536
 echo "    OK: same id ${P2}, record flipped to sdk, unmanaged subscription intact, update applied in place"
 
 echo "==> Phase 5b: REMOVE MaximumMessageSize from the template (issue #3413 reset arm)"

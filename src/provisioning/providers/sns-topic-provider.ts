@@ -826,8 +826,15 @@ export class SNSTopicProvider implements ResourceProvider {
     // reset-to-default compares equal to itself (no phantom drift), a
     // console-side ADD compares unequal (drift, and `--revert` sends the
     // default back, which SNS accepts). A number, like the SQS sibling, so a
-    // template's integer compares equal to the readback.
-    const liveMaxSize = attrs['MaximumMessageSize'] ?? SNS_MAXIMUM_MESSAGE_SIZE_DEFAULT;
+    // template's integer compares equal to the readback. "Every baseline"
+    // means every baseline THIS binary captured: an `observedProperties` bag
+    // written by an older cdkd has no key and is refreshed only on the
+    // resource's next real update or by `cdkd state refresh-observed` — the
+    // same transition the `''` string members above went through.
+    // `||`, not `??`: SNS refuses `''` on write, so it should never be
+    // reported, but `Number('')` is a finite 0 and would surface as drift
+    // against 262144 if it ever were.
+    const liveMaxSize = attrs['MaximumMessageSize'] || SNS_MAXIMUM_MESSAGE_SIZE_DEFAULT;
     const maxSizeNumber = Number(liveMaxSize);
     result['MaximumMessageSize'] = Number.isFinite(maxSizeNumber) ? maxSizeNumber : liveMaxSize;
 

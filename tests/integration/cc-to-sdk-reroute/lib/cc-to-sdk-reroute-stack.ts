@@ -21,15 +21,23 @@ const DISPLAY_NAME_BY_PHASE: Record<string, string> = {
  * silentDrop map. Wiring it restores the premise; this fixture is where the
  * wire is observed: created on the SDK route (base), carried through the
  * Cloud Control recreate (seed / pinned), UPDATED by the SDK provider on the
- * flip (1048576 -> 524288), then REMOVED (`removed` leaves it undeclared),
+ * flip (131072 -> 65536), then REMOVED (`removed` leaves it undeclared),
  * which must reset the live value to SNS's 262144 default rather than send
  * the `''` SNS refuses. An undefined entry means "not declared".
+ *
+ * Every declared value stays BELOW the 262144 default on purpose: the
+ * fixture's identity witness is an email subscription, and SNS refuses
+ * `Subscribe` for that protocol on a topic whose maximum exceeds 262144
+ * (`MaximumMessageSize greater than 262144 bytes is not supported for the
+ * following protocol: [email]`, measured us-east-1 2026-09-18 — the first run
+ * used 1048576 and died at the witness). Non-default values still exercise
+ * every arm; the removal phase is what reaches the default.
  */
 const MAXIMUM_MESSAGE_SIZE_BY_PHASE: Record<string, number | undefined> = {
-  base: 1048576,
-  seed: 1048576,
-  pinned: 1048576,
-  flip: 524288,
+  base: 131072,
+  seed: 131072,
+  pinned: 131072,
+  flip: 65536,
   removed: undefined,
 };
 

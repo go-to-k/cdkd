@@ -37,7 +37,10 @@ import {
   SNSTopicProvider,
   SNS_MAXIMUM_MESSAGE_SIZE_DEFAULT,
 } from '../../../src/provisioning/providers/sns-topic-provider.js';
-import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
+import {
+  calculateResourceDrift,
+  undeclaredEmptyObservedKeys,
+} from '../../../src/analyzer/drift-calculator.js';
 
 const TOPIC_ARN = 'arn:aws:sns:us-east-1:123456789012:my-topic';
 
@@ -207,9 +210,15 @@ describe('SNSTopicProvider MaximumMessageSize (issue #3413)', () => {
   ) => {
     const baseline = (await readWith(baselineAttrs, {}))!;
     const live = (await readWith(liveAttrs, {}))!;
-    return calculateResourceDrift(baseline, live).filter((d) =>
-      d.path.startsWith('MaximumMessageSize')
-    );
+    // The same options `cdkd drift` passes (src/cli/commands/drift.ts): the
+    // union walk (which does not reach the state-keys-only top level, the
+    // property under test) and the undeclared-empty-observed-key ignore list
+    // computed against an EMPTY declared bag — exactly the undeclared-member
+    // case the fold exists for, and a numeric 262144 is never "empty".
+    return calculateResourceDrift(baseline, live, {
+      unionWalkObjects: true,
+      ignorePaths: undeclaredEmptyObservedKeys(baseline, {}),
+    }).filter((d) => d.path.startsWith('MaximumMessageSize'));
   };
 
   it('comparator: a template REMOVAL (reset to the default) is NOT drift', async () => {
