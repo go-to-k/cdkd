@@ -54,20 +54,26 @@ install_hook() {
   mkdir -p "$dest/lib" || { echo "install_hook: mkdir failed for $dest" >&2; exit 1; }
   cp "$HOOK_REAL" "$dest/verify-pr-gate.sh" || { echo "install_hook: cp hook failed" >&2; exit 1; }
   cp "$LIB_REAL" "$dest/lib/command-match.sh" || { echo "install_hook: cp lib failed" >&2; exit 1; }
-  # HOOK_BASH shim (go-to-k/cdkd#2715, which lists the suites still missing it).
-  # Running this SUITE under bash 3.2 does NOT run the HOOK under 3.2: the hook
-  # is `#!/usr/bin/env bash`, so it takes whatever is first on PATH, and the
-  # suite then advertises 3.2 coverage of ITSELF. `run-tests.sh` exports
-  # `HOOK_BASH` beside each shell for exactly this. Rewriting the INSTALLED
-  # copy's shebang is the single point that covers every invocation below,
-  # since each one runs a copy this function produced.
-  if [ -n "${HOOK_BASH:-}" ]; then
-    { printf '#!%s\n' "$HOOK_BASH"; tail -n +2 "$dest/verify-pr-gate.sh"; } > "$dest/.hook.shim" \
-      || { echo "install_hook: shebang rewrite failed" >&2; exit 1; }
-    mv "$dest/.hook.shim" "$dest/verify-pr-gate.sh" || { echo "install_hook: shim mv failed" >&2; exit 1; }
-  fi
   chmod +x "$dest/verify-pr-gate.sh" || { echo "install_hook: chmod failed" >&2; exit 1; }
   printf '%s\n' "$dest/verify-pr-gate.sh"
+}
+
+# HOOK_BASH shim (go-to-k/cdkd#2715, which lists the suites still missing it).
+# Running this SUITE under bash 3.2 does NOT run the HOOK under 3.2: the hook is
+# `#!/usr/bin/env bash`, so it takes whatever is first on PATH, and the suite
+# then advertises 3.2 coverage of ITSELF. `run-tests.sh` exports `HOOK_BASH`
+# beside each shell for exactly this.
+#
+# IT MUST BE USED AS A COMMAND WORD, never interpolated into a shebang.
+# `run-tests.sh` iterates `for candidate in bash /bin/bash` and keeps the
+# CANDIDATE, so the first value is the bare word `bash` -- `#!bash` is not an
+# absolute path and every case dies with 126, "bad interpreter". A first cut
+# rewrote the installed copy's shebang and passed locally because the runs were
+# hand-given absolute paths; CI, which is the only place the bare word appears,
+# failed all 137 cases. A command word resolves through PATH and works for both
+# spellings, and it is the idiom the sibling suites already use.
+run_hook() {
+  if [ -n "${HOOK_BASH:-}" ]; then "$HOOK_BASH" "$@"; else "$@"; fi
 }
 
 require_hook() {
@@ -174,7 +180,7 @@ run_case() {
   local hook="${6:-$HOOK}"
   : > "$CWD_TRACE_FILE"
   local got
-  printf '%s' "$payload" | MARKGATE_MOCK_VERDICT="$verdict" "$hook" >/dev/null 2>&1
+  printf '%s' "$payload" | MARKGATE_MOCK_VERDICT="$verdict" run_hook "$hook" >/dev/null 2>&1
   got=$?
 
   local cwd_ok=1
@@ -382,7 +388,7 @@ MARKGATE_MOCK_VERDICT=fresh
 export MARKGATE_MOCK_VERDICT
 printf '%s' "$(jq -n --arg c "gh pr create --title t" --arg d "$main_repo" \
   '{tool_name:"Bash", tool_input:{command:$c}, cwd:$d}')" \
-  | bash "$HOOK" >/dev/null 2>&1
+  | run_hook "$HOOK" >/dev/null 2>&1
 # --- SHA BINDING (go-to-k/cdkd#2686) ----------------------------------------
 #
 # A FRESH marker is not sufficient. `verify-pr` has no `include:` of its own, so
@@ -414,7 +420,7 @@ run_case "fresh marker + a NON-OBJECT sha REFUSED" 2 fresh "" "$side_payload"
 # The message must NOT say "stale": the marker is fresh, and sending the reader
 # to /check for a problem no child has is how a real block gets worked around.
 printf '%s' "$side_prev" > "$side_repo/.markgate-verify-pr-sha"
-foreign_msg=$(printf '%s' "$side_payload" | MARKGATE_MOCK_VERDICT=fresh "$HOOK" 2>&1 >/dev/null)
+foreign_msg=$(printf '%s' "$side_payload" | MARKGATE_MOCK_VERDICT=fresh run_hook "$HOOK" 2>&1 >/dev/null)
 # The LABELS must be on the right shas, not merely present: grepping that
 # `$real_sha` appears somewhere passed a full swap of both lines (measured).
 if printf '%s' "$foreign_msg" | grep -q 'bound to a different commit' \
@@ -475,7 +481,7 @@ run_case "sha padded past the SIZE CAP is REFUSED" 2 fresh "" "$side_payload"
 # unset. Inputs chosen so exactly one check catches each.
 printf '%s' "0123456789abcdef0123456789abcdef0123456z" > "$side_repo/.markgate-verify-pr-sha"
 run_case "40 chars with a non-hex byte REFUSED" 2 fresh "" "$side_payload"
-nonhex_msg=$(printf '%s' "$side_payload" | MARKGATE_MOCK_VERDICT=fresh "$HOOK" 2>&1 >/dev/null)
+nonhex_msg=$(printf '%s' "$side_payload" | MARKGATE_MOCK_VERDICT=fresh run_hook "$HOOK" 2>&1 >/dev/null)
 if printf '%s' "$nonhex_msg" | grep -q 'present but unreadable or malformed'; then
   pass=$((pass + 1)); printf 'OK   a malformed sentinel is named as such, not as unset\n'
 else
@@ -485,7 +491,7 @@ fi
 
 printf '%s' "$(printf '%s' "$real_sha" | cut -c1-12)" > "$side_repo/.markgate-verify-pr-sha"
 run_case "an all-hex ABBREVIATED sha REFUSED" 2 fresh "" "$side_payload"
-abbrev_msg=$(printf '%s' "$side_payload" | MARKGATE_MOCK_VERDICT=fresh "$HOOK" 2>&1 >/dev/null)
+abbrev_msg=$(printf '%s' "$side_payload" | MARKGATE_MOCK_VERDICT=fresh run_hook "$HOOK" 2>&1 >/dev/null)
 if printf '%s' "$abbrev_msg" | grep -q 'present but unreadable or malformed'; then
   pass=$((pass + 1)); printf 'OK   a short all-hex sentinel is named malformed, not printed raw\n'
 else
@@ -496,7 +502,7 @@ fi
 # A MISSING sentinel must still read as unset, or the label above is satisfied
 # by a hook that calls everything malformed.
 rm -f "$side_repo/.markgate-verify-pr-sha"
-missing_msg=$(printf '%s' "$side_payload" | MARKGATE_MOCK_VERDICT=fresh "$HOOK" 2>&1 >/dev/null)
+missing_msg=$(printf '%s' "$side_payload" | MARKGATE_MOCK_VERDICT=fresh run_hook "$HOOK" 2>&1 >/dev/null)
 if printf '%s' "$missing_msg" | grep -q '<unset>' \
    && ! printf '%s' "$missing_msg" | grep -q 'malformed'; then
   pass=$((pass + 1)); printf 'OK   a MISSING sentinel is named unset, not malformed\n'
@@ -527,7 +533,7 @@ run_case "fresh marker + UNREADABLE head REFUSED" 2 fresh "" "$empty_payload" "$
 # ...and must say WHY. With both shas empty the old `!=` guard was false, so a
 # FRESH marker fell through to "the marker is stale (or missing)" -- the exact
 # misdirection the branch exists to prevent (measured; both reviews found it).
-empty_msg=$(printf '%s' "$empty_payload" | MARKGATE_MOCK_VERDICT=fresh "$HOOK_EMPTY" 2>&1 >/dev/null)
+empty_msg=$(printf '%s' "$empty_payload" | MARKGATE_MOCK_VERDICT=fresh run_hook "$HOOK_EMPTY" 2>&1 >/dev/null)
 if printf '%s' "$empty_msg" | grep -q 'bound to a different commit' \
    && ! printf '%s' "$empty_msg" | grep -q 'marker is stale'; then
   pass=$((pass + 1)); printf 'OK   unreadable-head block names the binding, not staleness\n'
@@ -647,7 +653,7 @@ run_case "identity FOREIGN + STALE marker still REFUSED" 2 stale "$foreign_repo"
 
 # ...and it must be refused as STALE, not as a binding problem: sending a
 # sibling lane to a sentinel it cannot write is the whole defect.
-foreign_stale_msg=$(printf '%s' "$foreign_payload" | MARKGATE_MOCK_VERDICT=stale "$HOOK" 2>&1 >/dev/null)
+foreign_stale_msg=$(printf '%s' "$foreign_payload" | MARKGATE_MOCK_VERDICT=stale run_hook "$HOOK" 2>&1 >/dev/null)
 if printf '%s' "$foreign_stale_msg" | grep -q 'marker is stale' \
    && ! printf '%s' "$foreign_stale_msg" | grep -q 'bound to a different commit'; then
   pass=$((pass + 1)); printf 'OK   foreign-target refusal names staleness, not the binding\n'
@@ -876,9 +882,9 @@ run_case "FOREIGN + the word xargs as an ARGUMENT: still relaxed" 0 fresh "" \
 # suite ITSELF was inheriting the caller's `GH_REPO` (69/10 when one was
 # exported). Set for THIS invocation only; the suite unsets it at the top.
 gh_repo_env_rc=$(printf '%s' "$(foreign_gh 'gh pr merge 42 --squash')" \
-  | GH_REPO=go-to-k/cdkd MARKGATE_MOCK_VERDICT=fresh "$HOOK" >/dev/null 2>&1; echo $?)
+  | GH_REPO=go-to-k/cdkd MARKGATE_MOCK_VERDICT=fresh run_hook "$HOOK" >/dev/null 2>&1; echo $?)
 gh_repo_env_msg=$(printf '%s' "$(foreign_gh 'gh pr merge 42 --squash')" \
-  | GH_REPO=go-to-k/cdkd MARKGATE_MOCK_VERDICT=fresh "$HOOK" 2>&1 >/dev/null)
+  | GH_REPO=go-to-k/cdkd MARKGATE_MOCK_VERDICT=fresh run_hook "$HOOK" 2>&1 >/dev/null)
 if [ "$gh_repo_env_rc" = "2" ] \
    && printf '%s' "$gh_repo_env_msg" | grep -q "GH_REPO is set in this session's environment"; then
   pass=$((pass + 1)); printf 'OK   GH_REPO in the HOOK env retracts the relaxation, and says so\n'
@@ -896,7 +902,7 @@ fi
 # to that sentinel. With `GH_REPO` exported in a shell profile EVERY sibling PR
 # lands here, so it is not a corner.
 retract_msg=$(printf '%s' "$(foreign_gh 'gh pr merge 42 --squash --repo go-to-k/cdkd')" \
-  | MARKGATE_MOCK_VERDICT=fresh "$HOOK" 2>&1 >/dev/null)
+  | MARKGATE_MOCK_VERDICT=fresh run_hook "$HOOK" 2>&1 >/dev/null)
 if printf '%s' "$retract_msg" | grep -q 'which is NOT this repo' \
    && printf '%s' "$retract_msg" | grep -q 'names a repository of its own' \
    && printf '%s' "$retract_msg" | grep -q "the PR named by NUMBER, not by URL" \
@@ -915,7 +921,7 @@ fi
 # the marker and is blocked again by a different message, with nothing having
 # said the other reason was there all along.
 retract_stale_msg=$(printf '%s' "$(foreign_gh 'gh pr merge 42 --squash --repo go-to-k/cdkd')" \
-  | MARKGATE_MOCK_VERDICT=stale "$HOOK" 2>&1 >/dev/null)
+  | MARKGATE_MOCK_VERDICT=stale run_hook "$HOOK" 2>&1 >/dev/null)
 if printf '%s' "$retract_stale_msg" | grep -q 'marker is stale' \
    && printf '%s' "$retract_stale_msg" | grep -q 'A SECOND REASON' \
    && printf '%s' "$retract_stale_msg" | grep -q 'the PR named by NUMBER, not by URL'; then
@@ -928,7 +934,7 @@ fi
 # ...and a plain STALE refusal must NOT carry the second-reason note, or the
 # case above is satisfied by a hook that prints it unconditionally.
 plain_stale_msg=$(printf '%s' "$(foreign_gh 'gh pr merge 42 --squash')" \
-  | MARKGATE_MOCK_VERDICT=stale "$HOOK" 2>&1 >/dev/null)
+  | MARKGATE_MOCK_VERDICT=stale run_hook "$HOOK" 2>&1 >/dev/null)
 if printf '%s' "$plain_stale_msg" | grep -q 'marker is stale' \
    && ! printf '%s' "$plain_stale_msg" | grep -q 'A SECOND REASON'; then
   pass=$((pass + 1)); printf 'OK   a PLAIN stale refusal carries no second-reason note\n'
@@ -941,7 +947,7 @@ fi
 # ...and the ORDINARY foreign-sha refusal must still print the sentinel text,
 # or the case above is satisfied by a hook that stopped printing it anywhere.
 printf '%s' "$side_prev" > "$side_repo/.markgate-verify-pr-sha"
-ordinary_msg=$(printf '%s' "$side_payload" | MARKGATE_MOCK_VERDICT=fresh "$HOOK" 2>&1 >/dev/null)
+ordinary_msg=$(printf '%s' "$side_payload" | MARKGATE_MOCK_VERDICT=fresh run_hook "$HOOK" 2>&1 >/dev/null)
 printf '%s' "$real_sha" > "$side_repo/.markgate-verify-pr-sha"
 if printf '%s' "$ordinary_msg" | grep -q 'marker bound to:' \
    && printf '%s' "$ordinary_msg" | grep -q 'Required action' \
@@ -970,9 +976,9 @@ fi
 # that should relax refuses. Measured: with the block moved, the pair below goes
 # 0/0 -> 2/2 while every other case stays green.
 rel_a=$(cd "$side_repo" && printf '{"cwd":"%s","tool_input":{"command":"gh -C %s pr create"}}' "$side_repo" "$foreign_repo" \
-  | MARKGATE_MOCK_VERDICT=fresh ./.claude/hooks/verify-pr-gate.sh >/dev/null 2>&1; echo $?)
+  | MARKGATE_MOCK_VERDICT=fresh run_hook ./.claude/hooks/verify-pr-gate.sh >/dev/null 2>&1; echo $?)
 rel_b=$(cd "$side_repo" && printf '{"cwd":"%s","tool_input":{"command":"cd %s && gh pr create"}}' "$side_repo" "$foreign_repo" \
-  | MARKGATE_MOCK_VERDICT=fresh ./.claude/hooks/verify-pr-gate.sh >/dev/null 2>&1; echo $?)
+  | MARKGATE_MOCK_VERDICT=fresh run_hook ./.claude/hooks/verify-pr-gate.sh >/dev/null 2>&1; echo $?)
 if [ "$rel_a" = "0" ] && [ "$rel_b" = "0" ]; then
   pass=$((pass + 1)); printf 'OK   a RELATIVE invocation resolves its own repo BEFORE the cd -P\n'
 else
@@ -1020,6 +1026,13 @@ upper_cased_slug|origin=https://github.com/GO-TO-K/CDK-Local.git||go-to-k/cdk-lo
 case_differs_across_sources|origin=https://github.com/GO-TO-K/CDK-Local.git|remote.origin.gh-resolved=go-to-k/cdk-local|go-to-k/cdk-local|relax
 non_github_only|origin=https://gitlab.com/foo/bar.git||ERROR|block
 mixed_host|origin=https://gitlab.com/foo/bar.git,upstream=https://github.com/go-to-k/cdkd.git||go-to-k/cdkd|block
+insteadof_shorthand|origin=https://github.com/go-to-k/cdk-local.git,upstream=gh:go-to-k/cdkd.git|url.https://github.com/.insteadOf=gh:|go-to-k/cdkd|block
+insteadof_on_origin_only|origin=gh:go-to-k/cdk-local.git|url.https://github.com/.insteadOf=gh:|go-to-k/cdk-local|relax
+ssh_github_host|origin=https://github.com/go-to-k/cdk-local.git,upstream=git@ssh.github.com:go-to-k/cdkd.git||go-to-k/cdkd|block
+www_github_host|origin=https://github.com/go-to-k/cdk-local.git,upstream=https://www.github.com/go-to-k/cdkd.git||go-to-k/cdkd|block
+unreadable_remote_refuses|origin=https://github.com/go-to-k/cdk-local.git,upstream=::::nonsense::::||go-to-k/cdk-local|block
+tail_tiebreak_decides|origin=https://github.com/go-to-k/cdk-local.git,aaa=https://github.com/go-to-k/cdk-real-drift.git,zzz=https://github.com/go-to-k/cdkd.git|remote.aaa.gh-resolved=go-to-k/cdk-local,remote.zzz.gh-resolved=go-to-k/cdkd|go-to-k/cdk-local|relax
+insteadof_parseable_to_parseable|origin=https://github.com/go-to-k/cdk-local.git|url.https://github.com/go-to-k/cdkd.git.insteadOf=https://github.com/go-to-k/cdk-local.git|go-to-k/cdkd|relax
 '
 
 # Build one matrix row's repo. Prints its path.
@@ -1059,6 +1072,24 @@ while IFS='|' read -r m_name m_remotes m_config m_gh m_expect; do
   [ -n "$m_name" ] || continue
   matrix_rows=$((matrix_rows + 1))
   m_dir=$(gh_matrix_repo "$m_name" "$m_remotes" "$m_config")
+  # THE FIXTURE MUST VERIFY ITSELF. The `block` rows fail loudly if the builder
+  # stops creating remotes, but every `relax` row passes on a repo with NO
+  # remotes at all -- the one wave-through -- so a silently broken builder would
+  # leave them green while testing nothing. Measured: stubbing `remote add` out
+  # of the builder left all the relax rows passing. Count the remotes the row
+  # asked for and compare.
+  m_want_remotes=0
+  if [ -n "$m_remotes" ]; then
+    m_want_remotes=$(printf '%s' "$m_remotes" | tr ',' '\n' | grep -c '=')
+  fi
+  m_got_remotes=$(git -C "$m_dir" remote 2>/dev/null | grep -c . || true)
+  if [ "$m_got_remotes" = "$m_want_remotes" ]; then
+    pass=$((pass + 1))
+  else
+    fail=$((fail + 1))
+    fail_log+="FAIL fixture $m_name: wanted $m_want_remotes remotes, built $m_got_remotes\n"
+    printf 'FAIL fixture %s built %s of %s remotes\n' "$m_name" "$m_got_remotes" "$m_want_remotes"
+  fi
   m_payload='{"cwd":"'"$m_dir"'","tool_input":{"command":"gh pr create --title x"}}'
   # `relax` = the foreign-target pass that go-to-k/cdkd#3209 enables (exit 0 on a
   # fresh marker with NO sentinel); `block` = the relaxation retracted, so the
@@ -1071,11 +1102,11 @@ EOF
 
 # A floor, so a mangled heredoc or an `IFS` slip cannot report a green over an
 # empty table -- the "checker must prove it sees its input" rule.
-if [ "$matrix_rows" -ge 19 ]; then
+if [ "$matrix_rows" -ge 26 ]; then
   pass=$((pass + 1)); printf 'OK   gh-resolution matrix parsed %s rows\n' "$matrix_rows"
 else
   fail=$((fail + 1))
-  fail_log+="FAIL gh-resolution matrix parsed only $matrix_rows rows (want >= 19)\n"
+  fail_log+="FAIL gh-resolution matrix parsed only $matrix_rows rows (want >= 26)\n"
   printf 'FAIL gh-resolution matrix row count (%s)\n' "$matrix_rows"
 fi
 
@@ -1083,7 +1114,7 @@ fi
 # foreign target for any reason would satisfy every `block` row above.
 blk_dir=$(gh_matrix_repo msgcheck "origin=https://github.com/go-to-k/cdk-local.git,upstream=https://github.com/go-to-k/cdkd.git" "")
 blk_msg=$(printf '{"cwd":"%s","tool_input":{"command":"gh pr create --title x"}}' "$blk_dir" \
-  | MARKGATE_MOCK_VERDICT=fresh "$HOOK" 2>&1 >/dev/null)
+  | MARKGATE_MOCK_VERDICT=fresh run_hook "$HOOK" 2>&1 >/dev/null)
 if printf '%s' "$blk_msg" | grep -q 'go-to-k/cdkd' \
   && printf '%s' "$blk_msg" | grep -q 'go-to-k/cdk-local' \
   && printf '%s' "$blk_msg" | grep -q 'remote' \
@@ -1138,7 +1169,7 @@ run_case "a genuine SIBLING repo still takes the relaxed path" 0 fresh "" \
 # And the retirement must name the BINDING, not the remote comparison -- a
 # second clone's problem is the missing sentinel, and sending it to
 # `gh repo set-default` would be the wrong instruction.
-clone_msg=$(printf '%s' "$clone_b_payload" | MARKGATE_MOCK_VERDICT=fresh "$HOOK_CLONE" 2>&1 >/dev/null)
+clone_msg=$(printf '%s' "$clone_b_payload" | MARKGATE_MOCK_VERDICT=fresh run_hook "$HOOK_CLONE" 2>&1 >/dev/null)
 if printf '%s' "$clone_msg" | grep -q 'bound to a different commit' \
   && ! printf '%s' "$clone_msg" | grep -q 'gh repo set-default'; then
   pass=$((pass + 1)); printf 'OK   the second-clone refusal names the binding, not the remotes remedy\n'

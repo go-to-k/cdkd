@@ -293,6 +293,7 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['hooks-branch-gate.md', 2], // literal list: EXACT, see below
   ['hooks-cwd-detector.md', 2], // literal list: EXACT, see below
   ['hooks-merge-target.md', 4], // literal list: EXACT, see below
+  ['hooks-target-repo-identity.md', 2], // literal list: EXACT, see below
   // go-to-k/cdkd#3273 split the "which pull request do the merge-time gates
   // judge" entry out of hooks.md. Its four globs are the two live-query gates
   // and their suites -- the suites because the argv-recording blocks ARE the
@@ -962,6 +963,14 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // hooks.md + hooks-merge-target.md + hooks-authoring.md, the last because
   // its glob covers every hook.
   ['.claude/hooks/ci-green-gate.sh', 66_000, 105_000], // measured 91_620 on 2026-09-17
+  // go-to-k/cdkd#3235's entry took `main-tree-edit-gate.sh`'s payload 530 B past
+  // its 95,000 B cap from inside hooks.md, so "which repository will this gh
+  // command act on" moved to its own satellite -- the same precedent as the two
+  // rows above. Representative path for it (its two globs are the gate and its
+  // suite, per the REACH_FLOORS entry). Payload is hooks.md +
+  // hooks-target-repo-identity.md + hooks-authoring.md, the last because its
+  // glob covers every hook.
+  ['.claude/hooks/verify-pr-gate.sh', 66_000, 105_000],
   // The gate-name fence's entry moved out of hooks-class-fences.md in the same
   // change, for the same cap. Representative path for it (its ONE glob is its
   // own suite, per the REACH_FLOORS entry above). Payload is hooks.md +
@@ -1657,7 +1666,18 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 // Neither branch's figure is the merged one. That is the whole reason this
 // count is asserted rather than described: two correct increments compose to a
 // number neither author wrote.
-const CORPUS_FILE_COUNT = 72; // + state-malformed-properties-orphan.md (go-to-k/cdkd#3318): the
+const CORPUS_FILE_COUNT = 73; // + hooks-target-repo-identity.md (go-to-k/cdkd#3235):
+                              //  "which repository will this gh command act on" -- the
+                              //  target checkout's REMOTES, which is a channel the command
+                              //  text does not carry. It went into hooks.md first and took
+                              //  `.claude/hooks/main-tree-edit-gate.sh` 530 B past its
+                              //  95,000 B cap, so the detail moved to a satellite globbed
+                              //  at `verify-pr-gate.sh` and its suite ALONE, with a
+                              //  one-paragraph pointer left behind. hooks.md went 78,301 ->
+                              //  77,293 B in the same move, so this split PAYS DOWN the
+                              //  budget rather than spending it -- the opposite of the
+                              //  usual entry below.
+                              // + state-malformed-properties-orphan.md (go-to-k/cdkd#3318): the
                               //  `properties` container's THIRD reader, `cdkd orphan`, which runs
                               //  no diff and so is described by neither section of
                               //  `state-malformed-properties.md`. Listing `src/cli/commands/orphan.ts`

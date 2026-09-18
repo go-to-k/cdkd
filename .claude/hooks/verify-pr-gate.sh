@@ -593,9 +593,31 @@ EOF
 # `gh repo set-default <the checkout's own slug>` clears it for a non-fork
 # multi-remote checkout, which is the case the presence test would have broken.
 
-# `owner/repo`, lowercased, from a GitHub remote URL. Returns 1 for a URL on any
-# other host, and for anything this cannot split -- both of which are refusals
-# upstream, never a fallback.
+# `owner/repo`, lowercased, from a GitHub remote URL.
+#
+# THREE outcomes, and keeping them apart is what closes a fail-open:
+#   0 -- a GitHub remote; the slug is printed.
+#   1 -- parsed, and the host is positively SOME OTHER host. Droppable: gh drops
+#        it too (measured: `origin` = gitlab + `upstream` = github answers the
+#        github one).
+#   2 -- could not be parsed at all. This must REFUSE upstream, never be
+#        dropped, because a form gh understands and this does not is exactly the
+#        fail-open direction.
+# An earlier revision returned 1 for both of the last two and the caller
+# `continue`d on it, so an unreadable remote VANISHED and the remaining ones
+# compared equal -- the 2 -> 0 shape this whole guard exists to close.
+#
+# The GitHub test is DELIBERATELY MORE GENEROUS THAN GH, because the two errors
+# are not symmetric. Treating a remote as GitHub that gh drops can only make the
+# comparison unequal -> an over-refusal, the safe direction. FAILING to treat
+# one as GitHub that gh accepts is the fail-open. So anything at `github.com` or
+# under `*.github.com` counts here, though gh is pickier -- measured on gh
+# 2.92.0: `www.github.com` resolves over https, `ssh.github.com` (GitHub's
+# official SSH-over-443 host) resolves in scp form but NOT as an https URL, and
+# `nope.github.com` / `a.b.github.com` resolve nowhere. Emulating that exactly
+# would buy nothing and could only ever be wrong in the unsafe direction.
+# `github.com.evil.example` does NOT match: the suffix test carries the dot and
+# anchors at the end.
 __vpg_slug_from_url() {
   local u="$1" rest host owner repo
   case "$u" in
@@ -607,7 +629,7 @@ __vpg_slug_from_url() {
       case "${rest%%/*}" in *@*) rest="${rest#*@}" ;; esac
       host="${rest%%/*}"
       host="${host%%:*}"
-      case "$rest" in */*) rest="${rest#*/}" ;; *) return 1 ;; esac
+      case "$rest" in */*) rest="${rest#*/}" ;; *) return 2 ;; esac
       ;;
     *:*)
       # scp-like `git@github.com:owner/repo.git`
@@ -615,18 +637,25 @@ __vpg_slug_from_url() {
       host="${host#*@}"
       rest="${u#*:}"
       ;;
-    *) return 1 ;;
+    *) return 2 ;;
   esac
   # bash 3.2 has no `${var,,}`; `tr` is the portable spelling the rest of this
   # hook family uses.
-  [ "$(printf '%s' "$host" | tr 'A-Z' 'a-z')" = "github.com" ] || return 1
+  host=$(printf '%s' "$host" | tr 'A-Z' 'a-z')
+  [ -n "$host" ] || return 2
+  case "$host" in
+    github.com | *.github.com) ;;
+    *) return 1 ;;
+  esac
   rest="${rest#/}"
   rest="${rest%/}"
   rest="${rest%.git}"
   owner="${rest%%/*}"
   repo="${rest#*/}"
-  case "$owner" in '' | */*) return 1 ;; esac
-  case "$repo" in '' | */*) return 1 ;; esac
+  # A GitHub host we cannot split into owner/repo is UNREADABLE (2), not
+  # "some other host" (1) -- gh may well resolve it.
+  case "$owner" in '' | */*) return 2 ;; esac
+  case "$repo" in '' | */*) return 2 ;; esac
   printf '%s/%s' "$owner" "$repo" | tr 'A-Z' 'a-z'
   printf '\n'
 }
@@ -663,20 +692,45 @@ __vpg_slug_from_resolved() {
   printf '\n'
 }
 
-# Every GitHub remote of $1, as `name<TAB>slug`. Non-GitHub remotes are dropped,
-# which is what gh does before it ranks anything.
+# Every remote of $1, as `name<TAB>slug`, or `name<TAB>!UNREADABLE` for one this
+# cannot classify. Positively-other-host remotes are dropped, which is what gh
+# does before it ranks anything.
+#
+# THE URL COMES FROM `git remote get-url`, NOT FROM THE RAW CONFIG, and that is
+# a correctness fix rather than a style choice. `git config remote.<n>.url`
+# returns the URL as WRITTEN; gh reads it as git RESOLVES it, with
+# `url.<base>.insteadOf` applied. Measured on git 2.49 / gh 2.92.0: with
+# `url.https://github.com/.insteadOf = gh:` and `upstream = gh:go-to-k/cdkd.git`,
+# the raw config says `gh:go-to-k/cdkd.git` (unreadable, and an earlier revision
+# silently DROPPED it) while `get-url` and gh both say
+# `https://github.com/go-to-k/cdkd.git`. With the upstream dropped, `origin`
+# alone compared equal to itself and the gate RELAXED -- the exact defect this
+# guard exists to close, one `insteadOf` line away. `insteadOf` lives in a
+# user's global gitconfig routinely (shorthands, mirrors, protocol switches).
+#
+# `git remote` / `git remote get-url` execute nothing from the target: measured
+# with `core.fsmonitor` and `core.pager` set to a file-creating command, neither
+# fired. It also drops the raw config's `${line%% *}` key/value split, which
+# mis-parsed a remote NAME CONTAINING A SPACE.
 __vpg_remote_list() {
-  local dir="$1" line key url name slug
-  git -C "$dir" config --get-regexp '^remote\..*\.url$' 2>/dev/null | while IFS= read -r line; do
-    key="${line%% *}"
-    url="${line#* }"
-    [ "$key" != "$line" ] || continue
-    name="${key#remote.}"
-    name="${name%.url}"
+  local dir="$1" name url slug rc
+  while IFS= read -r name; do
     [ -n "$name" ] || continue
-    slug=$(__vpg_slug_from_url "$url") || continue
-    printf '%s\t%s\n' "$name" "$slug"
-  done
+    if ! url=$(git -C "$dir" remote get-url "$name" 2>/dev/null); then
+      printf '%s\t!UNREADABLE\n' "$name"
+      continue
+    fi
+    if slug=$(__vpg_slug_from_url "$url"); then
+      printf '%s\t%s\n' "$name" "$slug"
+    else
+      rc=$?
+      # 1 = a readable OTHER host, which gh drops too. 2 = we could not read it,
+      # which must refuse rather than vanish.
+      [ "$rc" = 1 ] || printf '%s\t!UNREADABLE\n' "$name"
+    fi
+  done <<EOF
+$(git -C "$dir" remote 2>/dev/null)
+EOF
 }
 
 # The same remotes in GH'S OWN ORDER: upstream, github, origin, then the rest
@@ -717,10 +771,13 @@ __vpg_gh_base_slug() {
   tab=$(printf '\t')
   while IFS="$tab" read -r rank name slug; do
     [ -n "$name" ] || continue
+    # A remote we could not classify refuses the whole answer. It may be the one
+    # gh ranks FIRST, so skipping it would hand back a confident wrong slug.
+    [ "$slug" != "!UNREADABLE" ] || return 1
     [ -n "$first" ] || first="$slug"
     rv=$(git -C "$dir" config --get "remote.$name.gh-resolved" 2>/dev/null) || rv=""
     if [ -n "$rv" ]; then
-      out=$(__vpg_slug_from_resolved "$rv" "$slug") || return 1
+      out=$(__vpg_slug_from_resolved "$rv" "$slug") || return 2
       printf '%s\n' "$out"
       return 0
     fi
@@ -746,6 +803,7 @@ __vpg_own_slug() {
   tab=$(printf '\t')
   while IFS="$tab" read -r name slug; do
     [ -n "$name" ] || continue
+    [ "$slug" != "!UNREADABLE" ] || return 1
     if [ "$name" = "origin" ]; then
       printf '%s\n' "$slug"
       return 0
@@ -775,10 +833,31 @@ __vpg_target_repo_is_its_own() {
   # rewrite, an ssh host alias), which is the dangerous direction and refuses
   # below. The test is "did git report any remote", never "did our parser
   # return nothing".
-  if ! git -C "$dir" config --get-regexp '^remote\..*\.url$' >/dev/null 2>&1; then
+  local names rc
+  names=$(git -C "$dir" remote 2>/dev/null); rc=$?
+  # rc is NOT folded into the emptiness test: `git remote` exits 0 with no
+  # output for a checkout that has none, and non-zero when git could not answer
+  # at all. Treating those alike would wave through the case where the gate
+  # learned nothing.
+  if [ "$rc" -ne 0 ]; then
+    __vpg_retract="the target checkout's remotes could not be read at all"
+    __vpg_retract_kind="remotes"
+    return 1
+  fi
+  if [ -z "$names" ]; then
     return 0
   fi
-  if ! resolved=$(__vpg_gh_base_slug "$dir"); then
+  resolved=$(__vpg_gh_base_slug "$dir"); rc=$?
+  if [ "$rc" -eq 2 ]; then
+    # Distinguished from the no-readable-remote case below: here a remote DOES
+    # resolve and its `gh-resolved` value is the unreadable part, so "none this
+    # gate can read as a GitHub repository" would be a false description and
+    # would point at the wrong thing to fix.
+    __vpg_retract="the target checkout carries a \`gh-resolved\` value this gate cannot read, so it cannot tell which repo gh would act on"
+    __vpg_retract_kind="remotes"
+    return 1
+  fi
+  if [ "$rc" -ne 0 ]; then
     __vpg_retract="the target checkout has remotes, but none this gate can read as a GitHub repository, so it cannot tell which repo gh would act on"
     __vpg_retract_kind="remotes"
     return 1
