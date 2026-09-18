@@ -1205,8 +1205,11 @@ stage, a `||` fallback, a tab, extra arguments after the trim, and a trim that
 sits only in a trailing comment. It also refuses a redirection that replaces or
 closes the trim's own stdin — `<file`, `0<f`, `<<EOF`, `<<-EOF`, `<<<x`, `<>f`,
 `<&3`, `<&-`, `3<&0-` — because the count then never reaches `tr`. An output
-redirection (`>`, `2>`), one on another descriptor (`3<file`) and a duplication
-of stdin onto itself (`<&0`) keep it.
+redirection written after a blank (`> out`, `2>/dev/null`), one on another
+descriptor (`3<file`), a duplication of stdin onto itself (`<&0`) and a new
+descriptor opened from it (`{fd}<&0`) keep it. A descriptor joined to the trim
+argument with no blank (`tr -d ' '2>x`, `tr -d ' '{fd}<&0`) is part of that
+argument — bash then deletes ` 2` — and is refused for the same reason.
 
 It is not a full bash parser. A `wc` reached through a variable (`${WC} -l`),
 `eval`, an alias, or as an argument of another command (`xargs wc`,

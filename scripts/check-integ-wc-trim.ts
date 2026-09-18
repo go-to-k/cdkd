@@ -107,6 +107,16 @@
  *     - CRLF line endings are not read (a heredoc terminator followed by `\r`
  *       never matches). Unreachable while `check-source-control-bytes.ts`
  *       rejects CR tree-wide.
+ *     - A quoted `<<-` delimiter that itself starts with a tab
+ *       (`cat <<-"<TAB>EOF"`): bash ends the body on the raw line, this
+ *       compares the tab-stripped line against the raw delimiter and misses
+ *       it, and the rest of the file is read as data. Fail-open, and NOT
+ *       backstopped: a data body is exempt from the tree invariant.
+ *    On COST rather than verdicts: the unit test bounds how the classifier's
+ *    running time grows with the input on a listed set of shapes (a fork PR
+ *    can add a tracked fixture of any size). That set is open — a shape one
+ *    character from a measured one has escaped it before — so a new shape
+ *    belongs in that list when it is found, not in this comment.
  *    The tree invariant: every `wc` word in a tracked integ shell file must be
  *    a counted invocation, comment text, or text in a heredoc whose delimiter
  *    is quoted.
@@ -157,6 +167,9 @@ export interface WcTrimClassification {
 
 export const ALLOW_MARKER = 'allow-untrimmed-wc';
 
+/** Longest `stage` text reported for a site; it names the site, nothing reads it. */
+const MAX_STAGE_CHARS = 200;
+
 /** Shortest reason accepted after the marker, trimmed. */
 export const MIN_ALLOW_REASON_LENGTH = 10;
 
@@ -188,116 +201,6 @@ const RUNNER_OPTION_WITH_VALUE: Record<string, RegExp> = {
 /** `NAME=`, `NAME+=`, `NAME[i]=` at the start of a word's raw text. */
 const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=/;
 
-
-/**
- * Scans the stage that starts right after a `wc` word. Returns where the stage
- * ends and what ended it, honouring quotes and nested substitutions so a `|`
- * inside `$(...)` in `wc`'s own arguments never ends the stage.
- */
-function scanStage(src: string, from: number, inBacktick: boolean): { end: number; terminator: string } {
-  // `param` is `${...}` inside double quotes; `paramq` is one outside them,
-  // where quotes inside it still quote (`${N:-'}'}`).
-  const stack: Array<'sq' | 'ansi' | 'dq' | 'sub' | 'bt' | 'param' | 'paramq'> = [];
-  // One parenthesis depth per open `$(` / `<(` / `>(`, so nested substitutions
-  // balance independently.
-  const parens: number[] = [];
-  const openSub = (i: number) => {
-    stack.push('sub');
-    parens.push(0);
-    return i + 1;
-  };
-  for (let i = from; i < src.length; i++) {
-    const c = src[i]!;
-    const top = stack[stack.length - 1];
-    if (top === 'sq') {
-      if (c === "'") stack.pop();
-      continue;
-    }
-    if (c === '\\') {
-      i++;
-      continue;
-    }
-    if (top === 'ansi') {
-      if (c === "'") stack.pop();
-      continue;
-    }
-    // Only inside double quotes (directly or in a `${...}` there) is `$'` literal.
-    if (top !== 'dq' && top !== 'param' && c === '$' && src[i + 1] === "'") {
-      // `$'...'` honours backslash escapes, so `$'\''` does not close early.
-      stack.push('ansi');
-      i++;
-      continue;
-    }
-    if (top === 'dq') {
-      if (c === '"') stack.pop();
-      else if (c === '$' && src[i + 1] === '(') i = openSub(i);
-      else if (c === '$' && src[i + 1] === '{') {
-        stack.push('param');
-        i++;
-      } else if (c === '`') stack.push('bt');
-      continue;
-    }
-    if (top === 'param' || top === 'paramq') {
-      if (c === '}') stack.pop();
-      else if (c === '$' && src[i + 1] === '{') {
-        stack.push(top);
-        i++;
-      }
-      else if (top === 'paramq' && c === "'") stack.push('sq');
-      else if (c === '"') stack.push('dq');
-      else if (c === '$' && src[i + 1] === '(') i = openSub(i);
-      else if (c === '`') stack.push('bt');
-      continue;
-    }
-    if (top === 'sub' || top === 'bt') {
-      if (c === "'") stack.push('sq');
-      else if (c === '"') stack.push('dq');
-      else if (c === '#' && /\s/.test(src[i - 1] ?? ' ')) {
-        // A comment inside the substitution: its parentheses are not code.
-        const nl = src.indexOf('\n', i);
-        i = (nl === -1 ? src.length : nl) - 1;
-      } else if (c === '$' && src[i + 1] === '{') {
-        // A nested `$(` needs no frame of its own here: the enclosing
-        // substitution's parenthesis count already balances it.
-        stack.push('paramq');
-        i++;
-      } else if (top === 'sub' && c === '(') parens[parens.length - 1]!++;
-      else if (top === 'sub' && c === ')') {
-        if (parens[parens.length - 1]! > 0) parens[parens.length - 1]!--;
-        else {
-          stack.pop();
-          parens.pop();
-        }
-      } else if (c === '`') {
-        if (top === 'bt') stack.pop();
-        else stack.push('bt');
-      }
-      continue;
-    }
-    // Relative top level of the stage. A `"` here always OPENS an argument's
-    // quote: a `wc` inside double quotes is inside a `$(...)`, whose `)` ends
-    // the stage before the enclosing quote closes. A backtick ends the stage
-    // only when the `wc` itself sits in a backtick substitution.
-    if (c === "'") stack.push('sq');
-    else if (c === '"') stack.push('dq');
-    else if (c === '$' && src[i + 1] === '(') i = openSub(i);
-    else if ((c === '<' || c === '>') && src[i + 1] === '(') i = openSub(i);
-    else if (c === '$' && src[i + 1] === '{') {
-      stack.push('paramq');
-      i++;
-    } else if (c === '`') {
-      if (inBacktick) return { end: i, terminator: '`' };
-      stack.push('bt');
-    } else if (c === '|' && src[i - 1] !== '>') return { end: i, terminator: c };
-    else if (c === '&') {
-      // `2>&1`, `&>file`, `<&3` are redirections, not separators.
-      if (src[i - 1] === '>' || src[i - 1] === '<' || src[i + 1] === '>') continue;
-      return { end: i, terminator: c };
-    } else if (c === ';' || c === '\n' || c === ')') return { end: i, terminator: c };
-    else if (c === '#' && /\s/.test(src[i - 1] ?? ' ')) return { end: i, terminator: '#' };
-  }
-  return { end: src.length, terminator: '' };
-}
 
 /** Separators between `tr`, `-d` and its argument: blanks and line continuations. */
 const GAP = String.raw`(?:[ \t]|\\\n)+`;
@@ -368,11 +271,15 @@ function trimAfter(
       /^(?:(\{[A-Za-z_][A-Za-z0-9_]*\})|(\d*))(?:(<<-|<<<|<<|<>|>>|>\||>|<)|(&>>|&>))(&[ \t]*(?:\d+-?|-))?/.exec(
         src.slice(i),
       );
-    if (!r || (r[3] === undefined && r[4] === undefined)) break;
+    if (!r) break;
+    const prefixed = r[1] !== undefined || r[2] !== '';
     // A descriptor written with no blank after the argument is part of THAT word
     // (`tr -d ' '2>x` deletes " 2"), so the trim is not the accepted spelling.
     // Only the operator characters end a word on their own (`tr -d ' '>x`).
-    if (!separated && (r[1] !== undefined || r[2] !== '')) return null;
+    if (!separated && prefixed) return null;
+    // `&>` is an operator only at the start of a word: `2&>R` hands `tr` the
+    // argument `2` and trims nothing.
+    if (r[4] !== undefined && prefixed) return null;
     const op = r[3] ?? r[4]!;
     const dup = r[5];
     // `{name}<&0` opens a NEW descriptor, so fd 0 is untouched — but `{name}<&-`
@@ -385,10 +292,9 @@ function trimAfter(
     // a trailing `-` MOVES fd 0 (closing it) unless the target is fd 0 itself.
     const dupFd = dup === undefined ? null : /^&[ \t]*(\d+)(-?)$/.exec(dup);
     const fromStdin = dupFd !== null && Number(dupFd[1]) === 0;
-    const selfDup = fromStdin;
     // A trailing `-` MOVES stdin to another descriptor, closing fd 0 behind it.
     const movesStdin = fromStdin && dupFd![2] === '-' && fd !== 0;
-    if ((fd === 0 && !selfDup) || movesStdin) return null;
+    if ((fd === 0 && !fromStdin) || movesStdin) return null;
     i += r[0].length;
     if (!dup) {
       skipBlanks();
@@ -412,58 +318,6 @@ function trimAfter(
     (next === '#' && /[ \t]/.test(src[i - 1]!));
   if (!endsStage) return null;
   return m[1]!.includes('space:') ? 'posix-space-class' : 'space';
-}
-
-function inputFormOf(stage: string, afterPipe: boolean): WcInputForm {
-  // Read only the stage's top level — quotes, `$(...)` / `<(...)`, backticks and
-  // `${...}` are blanked — so a `<` inside an argument is not taken for wc's own
-  // redirect.
-  let flat = '';
-  let depth = 0;
-  let quote: string | null = null;
-  for (let i = 0; i < stage.length; i++) {
-    const c = stage[i]!;
-    if (quote) {
-      if (c === '\\' && quote === '"') i++;
-      else if (c === quote) quote = null;
-      continue;
-    }
-    if (c === "'" || c === '"') {
-      quote = c;
-      flat += ' ';
-      continue;
-    }
-    if ((c === '$' || c === '<' || c === '>') && stage[i + 1] === '(') {
-      depth++;
-      i++;
-      continue;
-    }
-    if (depth === 0 && c === '`') {
-      const close = stage.indexOf('`', i + 1);
-      i = close === -1 ? stage.length : close;
-      flat += ' ';
-      continue;
-    }
-    if (depth === 0 && c === '$' && stage[i + 1] === '{') {
-      let braces = 0;
-      for (; i < stage.length; i++) {
-        if (stage[i] === '{') braces++;
-        else if (stage[i] === '}' && --braces === 0) break;
-      }
-      flat += ' ';
-      continue;
-    }
-    if (depth > 0) {
-      if (c === '(') depth++;
-      else if (c === ')') depth--;
-      continue;
-    }
-    flat += c;
-  }
-  if (/<<</.test(flat)) return 'here-string';
-  // `<file`, `< file`, `<&3` (a duplicated input descriptor) — not `<<`, `<(`.
-  if (/(^|[^<])<(?![<(])/.test(flat)) return 'redirect';
-  return afterPipe ? 'pipe' : 'argument';
 }
 
 interface CommentInfo {
@@ -504,6 +358,8 @@ interface CodeFrame {
   functionName: boolean;
   /** The next word follows `coproc`: a name when a `{` comes after it. */
   coproc: boolean;
+  /** The `wc` invocation whose stage this frame is still reading, if any. */
+  open: { index: number; start: number } | null;
   word: Word | null;
 }
 
@@ -603,9 +459,12 @@ export function classifyWcTrim(content: string): WcTrimClassification {
     cond: false,
     functionName: false,
     coproc: false,
+    open: null,
     word: null,
   });
   const stack: Frame[] = [newCode('code')];
+  /** The code frames on `stack`, in order — so the innermost is O(1) to find. */
+  const codeFrames: CodeFrame[] = [stack[0] as CodeFrame];
   const pending: PendingHeredoc[] = [];
   let line = 1;
   let lineStart = 0;
@@ -615,14 +474,10 @@ export function classifyWcTrim(content: string): WcTrimClassification {
    * The code frame whose word a quote or `${...}` at the top of the stack is
    * part of. A heredoc body pushes neither, so none sits above one.
    */
-  const wordOwner = (): CodeFrame | null => {
-    for (let s = stack.length - 1; s >= 0; s--) {
-      const f = stack[s]!;
-      if (isCode(f)) return f;
-    }
-    return null;
-  };
-  const dqAncestor = () => stack.some((f) => f.kind === 'dq');
+  const wordOwner = (): CodeFrame | null => codeFrames[codeFrames.length - 1] ?? null;
+  /** How many double-quote frames are open — kept as a count, not a stack scan. */
+  let dqDepth = 0;
+  const dqAncestor = () => dqDepth > 0;
 
   /** Starts a word in `f` at `i` if none is in progress, and returns it. */
   const wordAt = (f: CodeFrame, i: number): Word => {
@@ -726,15 +581,17 @@ export function classifyWcTrim(content: string): WcTrimClassification {
         f.afterPipe = false;
         return;
       }
-      const { end: stageEnd, terminator } = scanStage(src, end, f.kind === 'bt');
-      const form = inputFormOf(src.slice(end, stageEnd), w.afterPipe);
-      deferredTrims.push({ index: invocations.length, stageEnd, terminator, inBacktick: f.kind === 'bt' });
+      // The stage is read INCREMENTALLY by this frame from here: its input form
+      // from the redirections it meets, its end from the separator it meets.
+      // Re-walking each stage from the `wc` word would be quadratic on nested
+      // `wc $(wc $(...))`.
+      f.open = { index: invocations.length, start: w.start };
       invocations.push({
         line: w.line,
         offset: w.start,
         wordEnd: end,
-        stage: src.slice(w.start, stageEnd).trim(),
-        inputForm: form === 'here-string' || form === 'redirect' ? form : (f.leadInput ?? form),
+        stage: '',
+        inputForm: f.leadInput ?? (w.afterPipe ? 'pipe' : 'argument'),
         // Filled in after the whole file is lexed, once every heredoc body's
         // extent is known.
         trim: null,
@@ -751,6 +608,22 @@ export function classifyWcTrim(content: string): WcTrimClassification {
       f.afterPipe = false;
       f.leadInput = null;
     }
+  };
+
+  /**
+   * Ends the `wc` stage this frame is reading at `end`, the separator that ended
+   * it. The reported stage text is capped, since it only names the site.
+   */
+  const closeStage = (f: CodeFrame, end: number, terminator: string) => {
+    const open = f.open;
+    if (!open) return;
+    f.open = null;
+    // Slice only what is reported: stages nest, so slicing each whole stage
+    // would be quadratic on `wc $(wc $(...))`.
+    const capped = end - open.start > MAX_STAGE_CHARS;
+    const text = src.slice(open.start, capped ? open.start + MAX_STAGE_CHARS : end).trim();
+    invocations[open.index]!.stage = capped ? `${text}...` : text;
+    deferredTrims.push({ index: open.index, stageEnd: end, terminator, inBacktick: f.kind === 'bt' });
   };
 
   // Physical line of an offset, by binary search over precomputed line starts.
@@ -914,7 +787,18 @@ export function classifyWcTrim(content: string): WcTrimClassification {
     for (const p of pending) if (p.frame === closed) p.frame = outer;
   };
 
-  const pushSub = (kind: 'sub' | 'bt') => stack.push(newCode(kind));
+  const pushCode = (f: CodeFrame) => {
+    stack.push(f);
+    codeFrames.push(f);
+  };
+  const pushSub = (kind: 'sub' | 'bt') => pushCode(newCode(kind));
+  /** Pops the code frame on top of the stack, closing its open `wc` stage. */
+  const popCode = (f: CodeFrame, at: number, terminator: string) => {
+    closeStage(f, at, terminator);
+    stack.pop();
+    codeFrames.pop();
+    closeFrame(f);
+  };
 
   /** Skips arithmetic from its first `(`, keeping the physical line count. */
   const skipArith = (open: number): number => {
@@ -940,8 +824,19 @@ export function classifyWcTrim(content: string): WcTrimClassification {
     const hd = openBodies[openBodies.length - 1];
     if (hd !== undefined && i >= hd.termStart) {
       openBodies.pop();
-      // Frames the body left open are closed with it.
-      stack.length = stack.lastIndexOf(hd);
+      // Frames the body left open are closed with it (the index once: a
+      // per-iteration search would be quadratic in the nesting depth).
+      const hdIndex = stack.lastIndexOf(hd);
+      let codeFramesLeft = codeFrames.length;
+      for (let s = stack.length - 1; s > hdIndex; s--) {
+        const f = stack[s]!;
+        if (isCode(f)) {
+          closeStage(f, hd.termStart, '\n');
+          codeFramesLeft--;
+        } else if (f.kind === 'dq') dqDepth--;
+      }
+      stack.length = hdIndex;
+      codeFrames.length = codeFramesLeft;
       line = lineAt(hd.bodyEnd);
       lineStart = hd.bodyEnd;
       // The frame below the finished body is the one that opened it.
@@ -992,6 +887,7 @@ export function classifyWcTrim(content: string): WcTrimClassification {
         const owner = wordOwner();
         if (owner) wordAt(owner, i).quoted = true;
         stack.push({ kind: 'dq' });
+        dqDepth++;
       } else if (c === "'" && !frame.inDq) {
         // Outside double quotes a `'` inside `${...}` quotes its text.
         const close = src.indexOf("'", i + 1);
@@ -1021,6 +917,7 @@ export function classifyWcTrim(content: string): WcTrimClassification {
       const expansion = () => owner && markExpansion(owner, i);
       if (c === '"') {
         stack.pop();
+        dqDepth--;
       } else if (c === '\\') {
         if (src[i + 1] === '\n') {
           line++;
@@ -1078,6 +975,7 @@ export function classifyWcTrim(content: string): WcTrimClassification {
     }
     if (c === '\n') {
       endWord(f, i);
+      closeStage(f, i, '\n');
       line++;
       lineStart = i + 1;
       // After a `|` a newline keeps the pipe; after a finished command it ends it.
@@ -1091,6 +989,7 @@ export function classifyWcTrim(content: string): WcTrimClassification {
       continue;
     }
     if (c === '#' && !f.word) {
+      closeStage(f, i, '#');
       const nl = src.indexOf('\n', i);
       const end = nl === -1 ? src.length : nl;
       comments.set(line, { text: src.slice(i, end), fullLine: src.slice(lineStart, i).trim() === '' });
@@ -1133,6 +1032,7 @@ export function classifyWcTrim(content: string): WcTrimClassification {
       // Even an empty `""` quotes the word: `""if` is a command named `if`.
       wordAt(f, i).quoted = true;
       stack.push({ kind: 'dq' });
+      dqDepth++;
       continue;
     }
     if (c === '$' && src[i + 1] === '(' && src[i + 2] === '(') {
@@ -1159,8 +1059,7 @@ export function classifyWcTrim(content: string): WcTrimClassification {
     if (c === '`') {
       if (f.kind === 'bt') {
         endWord(f, i);
-        stack.pop();
-        closeFrame(f);
+        popCode(f, i, '`');
       } else {
         markExpansion(f, i);
         pushSub('bt');
@@ -1179,7 +1078,7 @@ export function classifyWcTrim(content: string): WcTrimClassification {
         // `arr=(a b)`: a compound assignment. Its elements are words — quoted,
         // expanded, substituted — but never commands.
         markExpansion(f, i);
-        stack.push({ ...newCode('arr'), commandPosition: false });
+        pushCode({ ...newCode('arr'), commandPosition: false });
         continue;
       }
       endWord(f, i);
@@ -1198,18 +1097,17 @@ export function classifyWcTrim(content: string): WcTrimClassification {
     if (c === ')') {
       endWord(f, i);
       if (f.kind === 'arr') {
-        stack.pop();
-        closeFrame(f);
+        popCode(f, i, ')');
         continue;
       }
       if (f.kind === 'sub') {
         if (f.parens > 0) f.parens--;
         else {
-          stack.pop();
-          closeFrame(f);
+          popCode(f, i, ')');
           continue;
         }
       }
+      closeStage(f, i, ')');
       // A `case` pattern's `)`, or a subshell close: the next word starts a
       // command in the pattern case and is an operator after a subshell.
       f.commandPosition = true;
@@ -1220,6 +1118,7 @@ export function classifyWcTrim(content: string): WcTrimClassification {
     if (c === '|') {
       endWord(f, i);
       const double = src[i + 1] === '|';
+      closeStage(f, i, double ? '||' : '|');
       if (double || src[i + 1] === '&') i++;
       f.afterPipe = !double;
       f.commandPosition = true;
@@ -1236,6 +1135,7 @@ export function classifyWcTrim(content: string): WcTrimClassification {
         continue;
       }
       endWord(f, i);
+      closeStage(f, i, '&');
       if (src[i + 1] === '&') i++;
       f.commandPosition = true;
       f.afterPipe = false;
@@ -1244,6 +1144,7 @@ export function classifyWcTrim(content: string): WcTrimClassification {
     }
     if (c === ';') {
       endWord(f, i);
+      closeStage(f, i, ';');
       if (src[i + 1] === ';') i++;
       f.commandPosition = true;
       f.afterPipe = false;
@@ -1252,6 +1153,15 @@ export function classifyWcTrim(content: string): WcTrimClassification {
     }
     if (c === '<' || c === '>') {
       const w = f.word;
+      // A word attached to the operator with no blank is its descriptor when it
+      // is digits (`3<f`) or `{name}`; any other attached word (`wc<f`) is a
+      // plain word before a stdin redirection. Only an operator with no
+      // descriptor, or descriptor `0`, reads on stdin — the input `wc` counts.
+      const descriptor =
+        w !== null && !w.redirectTarget && !w.quoted && w.literal !== null && /^(\d+|\{[A-Za-z_][A-Za-z0-9_]*\})$/.test(w.literal)
+          ? w.literal
+          : null;
+      const onStdin = c === '<' && (descriptor === null || Number(descriptor) === 0);
       if (w && !w.redirectTarget && !w.quoted && w.literal !== null && /^\d+$/.test(w.literal)) {
         // `2>&1`: the digits are the redirection's file descriptor, not a word.
         f.word = null;
@@ -1280,8 +1190,13 @@ export function classifyWcTrim(content: string): WcTrimClassification {
         continue;
       }
       // Any other redirection operator; its target word follows.
-      if (c === '<' && f.commandPosition && src[i + 1] !== '>') {
+      if (onStdin && f.commandPosition && src[i + 1] !== '>') {
         f.leadInput = src.startsWith('<<<', i) ? 'here-string' : 'redirect';
+      }
+      if (onStdin && f.open) {
+        // The open `wc` stage's input. Bash applies redirections left to right,
+        // so the LAST one on stdin is the one `wc` reads from.
+        invocations[f.open.index]!.inputForm = src.startsWith('<<<', i) ? 'here-string' : 'redirect';
       }
       let k = i + 1;
       while (src[k] === '<' || src[k] === '>' || src[k] === '|') k++;
@@ -1299,10 +1214,14 @@ export function classifyWcTrim(content: string): WcTrimClassification {
 
     appendLiteral(f, i, c);
   }
-  // A file that ends inside a word (no trailing newline) still ends that word.
+  // A file that ends inside a word (no trailing newline) still ends that word,
+  // and the stage it was reading.
   for (let s = stack.length - 1; s >= 0; s--) {
     const f = stack[s]!;
-    if (isCode(f)) endWord(f, src.length);
+    if (isCode(f)) {
+      endWord(f, src.length);
+      closeStage(f, src.length, '');
+    }
   }
   for (const d of deferredTrims) {
     invocations[d.index]!.trim = trimAfter(src, d.stageEnd, d.terminator, d.inBacktick, heredocBodies);
