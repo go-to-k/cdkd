@@ -5727,6 +5727,63 @@ export async function scrubStack(
       recordsChanged++;
       return { ...record, state: scrubbed };
     });
+    // --- CROSS-STACK READ NAMES (go-to-k/cdkd#3337) -------------------------
+    //
+    // go-to-k/cdkd#3289 closed the WRITE side: `imports[].exportName`,
+    // `outputReads[].sourceStack` and `outputReads[].outputName` are redacted at
+    // the persist choke point, so a name an `Fn::Sub` assembled around a
+    // resolved `{{resolve:...}}` no longer reaches `state.json` in plaintext. It
+    // did NOT close the repair side — both lists rode this function's
+    // `...carriedState` spread untouched, so a record an older binary already
+    // wrote kept its plaintext and `cdkd scrub --fail` reported it clean.
+    //
+    // WHICH FIELDS, and why it is not all six: the per-field provenance is in
+    // `docs/design/3289-cross-stack-read-name-redaction.md`. Three names come
+    // from the TEMPLATE and are redactable; `sourceRegion` is an AWS region and
+    // `imports[].sourceStack` is stored verbatim forever because
+    // `scanActiveConsumers` matches destroy-time refusals on it. Redacting that
+    // one would drop a destroy-blocking record, which is why the write side
+    // leaves it alone too — the two sides must agree on the field set or a
+    // scrub would undo a deploy's deliberate decision.
+    //
+    // SCOPE IS **NEVER-AGAIN** ONLY, and the issue body was corrected before
+    // this landed rather than after. Of the four across-deploy cases,
+    // SAME-VALUE self-repairs and DUPLICATE is closed by the union normalizer;
+    // this walk closes NEVER-AGAIN, where the reference is never re-resolved so
+    // no later deploy rewrites it. **ROTATED is NOT closed and is not claimed
+    // to be**: scrub derives its needles by re-resolving the live template, so
+    // it holds the CURRENT secret value, and the stale plaintext on disk is a
+    // value nothing in this run knows. Closing it needs something that can
+    // recognise a value that WAS a secret without holding it, which the value
+    // scan structurally cannot do.
+    //
+    // The needle set is `allRecordedSecrets` — the union — for the same reason
+    // `redactUnaccountedOutputs` uses it: a cross-stack NAME is not positioned
+    // against any one resource's bag, so the per-resource scoping that protects
+    // `state.resources` has nothing to scope here. Filtered to
+    // `MIN_NEEDLE_LENGTH`, matching that call site: the floorless whole-value
+    // arm is sound only for a POSITION-SCOPED bag, and this one is not.
+    const crossStackNeedles = new Map(
+      [...allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets)].filter(
+        ([plaintext]) => plaintext.length >= MIN_NEEDLE_LENGTH
+      )
+    );
+    const redactCrossStackName = (name: string): string =>
+      crossStackNeedles.size === 0 ? name : redactSecretsForState(name, crossStackNeedles);
+    const newImports = state.imports?.map((entry) => {
+      const exportName = redactCrossStackName(entry.exportName);
+      if (exportName === entry.exportName) return entry;
+      recordsChanged++;
+      return { ...entry, exportName };
+    });
+    const newOutputReads = state.outputReads?.map((entry) => {
+      const sourceStack = redactCrossStackName(entry.sourceStack);
+      const outputName = redactCrossStackName(entry.outputName);
+      if (sourceStack === entry.sourceStack && outputName === entry.outputName) return entry;
+      recordsChanged++;
+      return { ...entry, sourceStack, outputName };
+    });
+
     // `TEMPLATE_SOURCED_RULES`, converging this call with its deploy-side twin
     // `DeployEngine.redactOutputs` (issues
     // [#1943](https://github.com/go-to-k/cdkd/issues/1943) /
@@ -5820,6 +5877,21 @@ export async function scrubStack(
         // Spread conditionally so a state file that never orphaned anything
         // does not GAIN the key by being scrubbed.
         ...(state.orphans !== undefined && { orphans: newOrphans }),
+        // WRITTEN BACK, not carried — the same shape as `orphans` above and for
+        // the same reason (go-to-k/cdkd#3337). Both lists rode `...carriedState`
+        // untouched, which was correct while nothing scrubbed them and is a
+        // silent drop of this pass's work now. Spread CONDITIONALLY so a state
+        // file that records no cross-stack reads does not GAIN an empty key by
+        // being scrubbed: `imports` / `outputReads` are optional in the schema,
+        // and materialising `[]` here is a write this command never intended.
+        // The guard tests the NEW binding, not `state.imports`: under
+        // `exactOptionalPropertyTypes` TypeScript cannot carry a narrowing from
+        // one binding to another, so guarding on the source leaves the spread
+        // typed `StateImportEntry[] | undefined` against an optional property.
+        // `newImports` is undefined exactly when `state.imports` is, so the two
+        // spellings are the same condition.
+        ...(newImports !== undefined && { imports: newImports }),
+        ...(newOutputReads !== undefined && { outputReads: newOutputReads }),
         // The cast restates what `StackState` already gets wrong rather than
         // introducing a lie: `outputs` is TYPED as required while every
         // consumer treats it as optional, and a state file that simply has no
