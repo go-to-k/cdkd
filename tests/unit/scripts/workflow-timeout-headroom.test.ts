@@ -840,18 +840,27 @@ describe('the auditor reports what it claims to', () => {
     expect(lines[0]).toContain('min against');
   });
 
-  it('a real finding survives a flood of MANY WORKFLOWS, not just many jobs', () => {
-    // THE CASE THAT REFUTES "round-robin makes the sort cosmetic". Round-robin
-    // holds a place for every group only while the groups FIT: a fork controls
-    // the number of FILES, and 21 groups against a cap of 20 means one loses
-    // its line entirely — decided by order, which is what the sort fixes.
-    // Measured with the sort deleted: the genuine finding is absent from the
-    // kept lines AND from the five names the summary can fit.
-    const declared = new Map<string, number | undefined>([['zzz.yml/real', 60]]);
-    const snapshot: Record<string, JobSample> = { 'zzz.yml/real': { max: 3600, from: 'a', to: 'b' } };
-    for (let i = 0; i < 20; i += 1) snapshot[`aaa${String(i).padStart(2, '0')}.yml/j`] = { max: 1, from: 'a', to: 'b' };
-    const lines = render(auditHeadroom(declared, snapshot, {}));
-    expect(lines.some((l) => l.includes('zzz.yml/real'))).toBe(true);
+  it('a starved workflow is NAMED FIRST, even when its line is crowded out', () => {
+    // ROUND-ROBIN HOLDS A PLACE FOR EVERY GROUP ONLY WHILE THE GROUPS FIT. A
+    // fork controls the number of FILES, so 21 groups against a cap of 20 means
+    // one gets nothing — and it is chosen by insertion order, which is
+    // directory order, which the fork also picks. No fixed budget can promise a
+    // particular LINE survives that. What it can promise is that the starved
+    // workflow is NAMED, and that is what this pins: `incomplete` is ranked by
+    // kept-count ascending, so the group that got nothing leads the list.
+    //
+    // An earlier revision of this case put the fork's jobs in the SNAPSHOT,
+    // where `auditHeadroom` emits them after the declared loop, so the genuine
+    // finding was always first and nothing was ever buried — it asserted a
+    // property its own fixture could not exhibit, and the comment claimed a
+    // measurement that could not hold. The fork's jobs are declared here.
+    const declared = new Map<string, number | undefined>();
+    for (let i = 0; i < 20; i += 1) declared.set(`aaa${String(i).padStart(2, '0')}.yml/j`, 60);
+    declared.set('zzz.yml/real', 60);
+    const snapshot: Record<string, JobSample> = {};
+    for (const key of declared.keys()) snapshot[key] = { max: 3600, from: 'a', to: 'b' };
+    const summary = render(auditHeadroom(declared, snapshot, {})).at(-1) ?? '';
+    expect(summary).toContain('not all shown for: zzz.yml');
   });
 
   it('a real finding survives a flood designed to bury it', () => {
@@ -1231,6 +1240,12 @@ describe('the shared sanitisers constrain the shapes this fence renders', () => 
     const summary = lines.at(-1) ?? '';
     expect(summary).toContain('… and 7 more');
     expect(summary).toContain('and 2 more)');
+    // EXACTLY FIVE names must NOT carry the tail: `>` -> `>=` renders
+    // ", and 0 more", which reads as information and is noise.
+    const atFive = boundedList(
+      Array.from({ length: 25 }, (_, i) => `x${String(i).padStart(2, '0')}.yml/j: too-tight` as Safe),
+    ).at(-1) ?? '';
+    expect(atFive).not.toContain('and 0 more');
     // Five names, not twenty-seven.
     expect(summary.split(', ').filter((part) => part.includes('.yml')).length).toBe(5);
   });
@@ -1250,6 +1265,38 @@ describe('the shared sanitisers constrain the shapes this fence renders', () => 
     // in the half `safeName` constrains. With `lastIndexOf`, part of a
     // fork-chosen job id is handed to `safeName` instead.
     expect(safeKey('a.yml/deep/er')).toBe('a.yml/"deep/er"');
+  });
+
+  it('two IDENTICAL lines in a group are counted separately', () => {
+    // A `Set` of strings cannot tell two identical lines apart, so a group with
+    // a kept line and a dropped TWIN of it read as complete and went unnamed.
+    // Reachable without an adversary: two job ids long enough to clamp render
+    // the same text. The groups hold INDICES for this reason.
+    const flood = Array.from(
+      { length: 20 },
+      (_, i) => `f${String(i).padStart(2, '0')}.yml/j: too-tight` as Safe,
+    );
+    const twin = 'dup.yml/j: too-tight' as Safe;
+    const summary = boundedList([twin, twin, ...flood]).at(-1) ?? '';
+    expect(summary).toContain('dup.yml');
+  });
+
+  it('a workflow that lost EVERY line outranks one that lost some', () => {
+    // The ranking, which the widened filter silently demoted. `incomplete` is
+    // built in insertion order — the same order the round-robin serves — so a
+    // starved group is naturally LAST and is pushed out of the five names by
+    // groups that merely lost a line. Measured before the ranking: a real
+    // workflow's only finding was dropped from the log AND unnamed.
+    // TWENTY fork files plus the genuine one is 21 groups against a cap of 20,
+    // so exactly one group is starved. At 19 every group fits and nothing is
+    // crowded out — a fixture that cannot exhibit the property it asserts.
+    const flood: Safe[] = [];
+    for (let i = 0; i < 20; i += 1) {
+      flood.push(`f${String(i).padStart(2, '0')}.yml/a: too-tight` as Safe);
+      flood.push(`f${String(i).padStart(2, '0')}.yml/b: too-tight` as Safe);
+    }
+    const summary = boundedList([...flood, 'zzz.yml/only: too-tight' as Safe]).at(-1) ?? '';
+    expect(summary).toContain('not all shown for: zzz.yml');
   });
 
   it('a workflow crowded out entirely is NAMED, not silently absent', () => {
@@ -1282,6 +1329,44 @@ describe('the shared sanitisers constrain the shapes this fence renders', () => 
     // keyed `"zz`, which takes ONE share between them — nine real workflows
     // silently lose their line to a shared prefix a fork chooses.
     for (const line of quoted) expect(lines).toContain(line);
+  });
+
+  it.each([
+    ['a quoted name containing an escaped quote', 'ev"'],
+    ['a quoted name containing a backslash', 'ev\\'],
+  ])('%s is one whole group', (_what, raw) => {
+    // THE ESCAPE SCAN. Deleting it — searching for the next `"` — stops at the
+    // ESCAPED one, so 22 files named `ev"N.yml` collapse under a single
+    // unterminated token `"ev\`. And `slice(0, i + 1)` must include the closing
+    // quote: at `slice(0, i)` every group name in the summary loses it, which
+    // breaks the quoting invariant the summary's own values maintain.
+    const names = Array.from({ length: 22 }, (_, i) => safeName(`${raw}${i}.yml`));
+    const lines = names.map((n) => `${n}/j: too-tight` as Safe);
+    const summary = boundedList(lines).at(-1) ?? '';
+    // Each named group is a COMPLETE JSON string, not a prefix of one.
+    for (const part of summary.slice(summary.indexOf(': ') + 2, -1).split(', ')) {
+      if (!part.startsWith('"')) continue;
+      expect(() => JSON.parse(part) as unknown).not.toThrow();
+    }
+    // And distinct files stay distinct: a single collapsed token would name one.
+    expect(summary).toMatch(/and \d+ more/);
+  });
+
+  it('the SIBLING renderer\'s two shapes are one group', () => {
+    // THE SPACE MEMBER, which a "NOT PINNED / equivalent" label wrongly
+    // dismissed. This fence renders `a.yml/j: kind`; the SIBLING renders
+    // `a.yml / j: kind` WITH SPACES and `a.yml: kind`. Without the space in the
+    // separator class the first cuts at the `/` and yields `a.yml ` — with a
+    // trailing space, a partial token — while the second yields `a.yml`: one
+    // workflow, two groups, two shares, and a real workflow loses its line.
+    // No case mixed the two sibling shapes, which is why the label survived a
+    // mutation probe.
+    const lines = boundedList([
+      ...Array.from({ length: 5 }, (_, i) => `a.yml / j${i}: no-timeout` as Safe),
+      ...Array.from({ length: 5 }, () => 'a.yml: no-top-level-permissions' as Safe),
+      ...Array.from({ length: 19 }, (_, i) => `w${String(i).padStart(2, '0')}.yml/j: too-tight` as Safe),
+    ]);
+    expect(lines.some((l) => l.startsWith('w18.yml'))).toBe(true);
   });
 
   it('one workflow cannot take two shares of the cap', () => {
@@ -1320,12 +1405,16 @@ describe('the shared sanitisers constrain the shapes this fence renders', () => 
 
 describe('the snapshot is refused when it is too old to describe this tree', () => {
   it.each([
-    ['the oldest end wins', { a: 2, b: 2, c: 2 }, ['2026-01-01', '2026-09-16', '2026-05-05'], '2026-01-01'],
+    // The oldest is NOT first: with it at position 0 a "take the first entry"
+    // mutant is indistinguishable from the minimum, and it survived.
+    ['the oldest end wins', { a: 2, b: 2, c: 2 }, ['2026-09-16', '2026-01-01', '2026-05-05'], '2026-01-01'],
     ['a single entry', { a: 2 }, ['2026-03-03'], '2026-03-03'],
   ])('oldestRangeEnd: %s', (_what, shape, ends, expected) => {
     // A MINIMUM: on a partially refreshed snapshot the oldest entry is the one
-    // that says how old the population really is. Taking the maximum, or the
-    // first entry, both survived until these rows existed.
+    // that says how old the population really is. Both the maximum and the
+    // first entry survived until these rows existed — and the first-entry
+    // mutant kept surviving after them, because the row put the oldest value at
+    // position 0, where the two answers coincide.
     const snapshot = Object.fromEntries(
       Object.keys(shape).map((k, i) => [`w.yml/${k}`, { max: 1, from: 'a', to: ends[i] ?? '' }]),
     );

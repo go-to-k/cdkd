@@ -783,6 +783,21 @@ describe('the audit fails against real code', () => {
     expect(() => JSON.parse(detail) as unknown).not.toThrow();
   });
 
+  it.each([
+    ['a colon', 'x: and ci.yml y no-timeout'],
+    ['a slash', 'x ci.yml / check-build-test y'],
+    ['a parenthesis', 'x (and ci.yml y'],
+  ])('a detail whose only excluded character is %s is quoted', (_what, detail) => {
+    // ONE FIXTURE PER EXCLUDED CHARACTER. The case below carries `:`, `(` and
+    // `)` at once, so admitting any ONE of them into `DETAIL` left it green —
+    // it pinned the disjunction, not the members. These three differ from a
+    // legal detail in exactly one character each.
+    expect(safeDetail(detail).startsWith('"')).toBe(true);
+    // And the control: the same text with that character removed is NOT quoted,
+    // so each row discriminates its own character rather than something else.
+    expect(safeDetail(detail.replace(/[:/()]/g, '')).startsWith('"')).toBe(false);
+  });
+
   it('a PURE-ASCII parse error is quoted too, which is what the shape test is for', () => {
     // THE EXCLUSION `DETAIL` EXISTS FOR, pinned by nothing until now: widening
     // the class to admit `:`, `/` and parentheses — the three characters its

@@ -290,11 +290,16 @@ export const MAX_RENDERED_FINDINGS = 20;
  */
 const groupKey = (line: string): string => {
   if (!line.startsWith('"')) {
-    // The SPACE is now EQUIVALENT and kept for shape: a quoted name takes the
-    // branch above, so the only lines reaching here are bare
-    // `a.yml / j: kind` / `a.yml: kind`, where the `/` or `:` always cuts
-    // first. Deleting it kills no case, and the honest label is better than a
-    // case contrived to pin a member that cannot matter.
+    // ALL THREE MEMBERS ARE LOAD-BEARING, and an earlier revision of this
+    // comment called the SPACE equivalent — measured false. The hardening
+    // renderer emits `a.yml / j: kind` with spaces around the slash, so without
+    // the space the cut lands on the `/` and yields `a.yml ` WITH A TRAILING
+    // SPACE, while its sibling `a.yml: kind` yields `a.yml`: one workflow, two
+    // groups, two shares — the very defect the `:` member was added for, plus
+    // the partial token this function's own docstring forbids.
+    //
+    // The label survived a mutation probe because no case mixed the two
+    // hardening shapes; the case that pins it now does.
     const cut = line.search(/[ /:]/);
     return cut < 0 ? line : line.slice(0, cut);
   }
@@ -305,6 +310,10 @@ const groupKey = (line: string): string => {
     }
     if (line[i] === '"') return line.slice(0, i + 1);
   }
+  // UNREACHABLE from either renderer, and labelled rather than pinned: every
+  // line that starts with `"` starts with `quoteClamped` output, which is
+  // `JSON.stringify` output, which always terminates. A case would have to
+  // hand-build a line no sanitiser can produce.
   return line;
 };
 
@@ -320,26 +329,34 @@ export const boundedList = (lines: readonly Safe[]): Safe[] => {
   // The group is the text before the first space or `/` — every line either
   // fence renders begins `<workflow>/...` or `<workflow> / ...`. A line with
   // neither is its own group, which is the safe direction.
-  const groups = new Map<string, Safe[]>();
-  for (const line of lines) {
+  // GROUPS HOLD INDICES, NOT LINES. Two fork job ids long enough to clamp to
+  // the same rendered text produce two IDENTICAL lines, and a `Set` of strings
+  // cannot tell them apart — so one could be dropped while the group still read
+  // as complete. An earlier revision fixed the same defect by swapping an
+  // `Array#includes` for a `Set`, and labelled it "by identity", which is not
+  // what a `Set<string>` does. Indices are the only thing here that is unique.
+  const groups = new Map<string, number[]>();
+  for (const [index, line] of lines.entries()) {
     const key = groupKey(line);
     const bucket = groups.get(key);
-    if (bucket === undefined) groups.set(key, [line]);
-    else bucket.push(line);
+    if (bucket === undefined) groups.set(key, [index]);
+    else bucket.push(index);
   }
-  const kept: Safe[] = [];
+  const keptIndices: number[] = [];
   const queues = [...groups.values()];
-  for (let round = 0; kept.length < MAX_RENDERED_FINDINGS; round += 1) {
+  for (let round = 0; keptIndices.length < MAX_RENDERED_FINDINGS; round += 1) {
     let took = false;
     for (const queue of queues) {
-      if (kept.length >= MAX_RENDERED_FINDINGS) break;
-      const line = queue[round];
-      if (line === undefined) continue;
-      kept.push(line);
+      if (keptIndices.length >= MAX_RENDERED_FINDINGS) break;
+      const index = queue[round];
+      if (index === undefined) continue;
+      keptIndices.push(index);
       took = true;
     }
     if (!took) break;
   }
+  const keptSet = new Set<number>(keptIndices);
+  const kept = keptIndices.map((index) => lines[index] as Safe);
   // NAME WHAT WAS DROPPED ENTIRELY. Round-robin guarantees a SHARE to every
   // group that fits, and a fork controls the NUMBER of groups: 21 fork files
   // with one finding each leave one group with no line at all, and a reader
@@ -357,8 +374,20 @@ export const boundedList = (lines: readonly Safe[]): Safe[] => {
   // CAPPED AT FIVE, and the cap is the point: a fork controls the number of
   // groups, so an uncapped list puts thousands of names on one line — the
   // burial this function exists to stop, achieved through its own summary.
+  // STARVED GROUPS FIRST. Widening this filter from "lost every line" to "lost
+  // any line" was right, and it silently demoted the case it was named for:
+  // `incomplete` is built in insertion order, which is the order the
+  // round-robin serves, so a group that got NOTHING is always last and is
+  // pushed out of the five names by groups that merely lost a line. Measured —
+  // a real `ci.yml` unreadable-workflow finding was dropped from the log AND
+  // unnamed, where the narrower filter had named it. Ranking by kept-count
+  // ascending puts the ones a reader most needs to know about at the front.
   const incomplete = [...groups.entries()]
-    .filter(([, queue]) => !queue.every((line) => kept.includes(line)))
+    .filter(([, queue]) => !queue.every((index) => keptSet.has(index)))
+    .sort(
+      (a, b) =>
+        a[1].filter((i) => keptSet.has(i)).length - b[1].filter((i) => keptSet.has(i)).length,
+    )
     .map(([key]) => key);
   const dropped = `… and ${lines.length - kept.length} more` as Safe;
   return [
@@ -369,6 +398,7 @@ export const boundedList = (lines: readonly Safe[]): Safe[] => {
     incomplete.length === 0
       ? dropped
       : (`${dropped} (not all shown for: ${incomplete.slice(0, 5).join(', ')}${
+          // `>`, not `>=`: at exactly five the tail would read ", and 0 more".
           incomplete.length > 5 ? `, and ${incomplete.length - 5} more` : ''
         })` as Safe),
   ];
