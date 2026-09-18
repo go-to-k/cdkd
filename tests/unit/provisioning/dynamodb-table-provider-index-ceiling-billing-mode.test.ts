@@ -256,7 +256,10 @@ describe('AWS::DynamoDB::Table: per-GSI OnDemandThroughput vs the billing mode (
         { maskSecrets: (text: string) => text.replace(/s3cr3t/g, '<redacted>') }
       )
       .catch((error: unknown) => (error as Error).message);
-    expect(message).toContain('<unnamed index>');
+    // The SAME literal `indexScopeAt` renders, asserted as such: a user
+    // grepping their log for one must find the other (the go-to-k/cdkd#3401
+    // security review's second nit).
+    expect(message).toContain('<unnamed>');
     expect(message).not.toContain('2024');
   });
 

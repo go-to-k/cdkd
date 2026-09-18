@@ -1957,6 +1957,54 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
       ]);
     });
 
+    it('site 5 update: a POLLUTED Object.prototype cannot manufacture a removal (go-to-k/cdkd#3401 security nit)', async () => {
+      // The three member-presence tests gating this DESTRUCTIVE send read own
+      // keys (`Object.hasOwn`), not `in`, which walks the prototype chain. The
+      // bag they read is a cdkd STATE record -- the own-key convention
+      // `drift.ts`'s `hasOwnKey` / `ownValue` already follow for state-derived
+      // bags (issue go-to-k/cdkd#2899).
+      //
+      // The DESIRED side is ABSENT here on purpose: that is the one shape where
+      // pollution is ASYMMETRIC. With a declared block present, both sides
+      // inherit the poisoned key and the two conditions cancel out; with none,
+      // condition 2 is skipped and only the PREVIOUS side is consulted -- so a
+      // prototype-walking test would report a member the record never carried
+      // and clear a live ceiling nothing asked to clear.
+      //
+      // `enumerable: false` so no spread picks the key up, and `finally`
+      // deletes it however the case ends -- a leaked prototype key would
+      // corrupt every later case in this worker.
+      Object.defineProperty(Object.prototype, 'MaxWriteRequestUnits', {
+        value: 999,
+        configurable: true,
+        enumerable: false,
+        writable: true,
+      });
+      try {
+        const updates = await gsiCeilingOps(
+          [ppRequestGsi('gsi1')],
+          [ppRequestGsi('gsi1', { MaxReadRequestUnits: 50 })],
+          {
+            indexes: [
+              {
+                ...LIVE_GSI('gsi1'),
+                OnDemandThroughput: { MaxReadRequestUnits: 50, MaxWriteRequestUnits: 60 },
+              },
+            ],
+          }
+        );
+        // ONLY the read member the record actually owned is reset.
+        expect(updates).toEqual([
+          { IndexName: 'gsi1', OnDemandThroughput: { MaxReadRequestUnits: -1 } },
+        ]);
+      } finally {
+        delete (Object.prototype as unknown as Record<string, unknown>)[
+          'MaxWriteRequestUnits'
+        ];
+      }
+      expect('MaxWriteRequestUnits' in {}).toBe(false);
+    });
+
     it('site 5 update: does NOT write the -1 sentinel back into the declared GSI block (go-to-k/cdkd#3401 finding 1)', async () => {
       // The per-index half of the copy-not-mutate invariant. Same mechanism as
       // its table-level twin in `dynamodb-table-provider-ondemand-throughput

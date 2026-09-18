@@ -447,6 +447,14 @@ const ON_DEMAND_LIMIT_RESET = -1;
  *     [#3403](https://github.com/go-to-k/cdkd/issues/3403) — but it fails in
  *     the SAFE direction (a lingering maximum, never a destroyed one).
  *
+ * Every member-presence test here is `Object.hasOwn`, not `in` (the
+ * go-to-k/cdkd#3401 security review). `in` walks the prototype chain, and these
+ * three tests gate a DESTRUCTIVE send off a cdkd STATE record — the own-key
+ * convention `drift.ts`'s `hasOwnKey` / `ownValue` already follow for
+ * state-derived bags (issue go-to-k/cdkd#2899). Not demonstrably reachable
+ * today; the point is that the guard on a destroying path should not depend on
+ * that staying true.
+ *
  * `declared` present but NOT a plain block (a string, an array, an unresolved
  * intrinsic) yields NO removals: that value is forwarded VERBATIM for AWS to
  * reject by shape, and merging a sentinel into it is not expressible.
@@ -484,7 +492,7 @@ function onDemandCeilingRemovals(
     const declaredSurvivors = narrowOnDemandCeilings(declaredBlock).block;
     if (
       !isPlainCapacityBlock(declaredSurvivors) ||
-      !ON_DEMAND_CEILING_MEMBERS.some((member) => member in declaredSurvivors)
+      !ON_DEMAND_CEILING_MEMBERS.some((member) => Object.hasOwn(declaredSurvivors, member))
     ) {
       return [];
     }
@@ -492,8 +500,8 @@ function onDemandCeilingRemovals(
   const liveBag = live as unknown as Record<string, unknown>;
   const removals: string[] = [];
   for (const member of ON_DEMAND_CEILING_MEMBERS) {
-    if (!(member in previousBlock)) continue;
-    if (declaredBlock !== undefined && member in declaredBlock) continue;
+    if (!Object.hasOwn(previousBlock, member)) continue;
+    if (declaredBlock !== undefined && Object.hasOwn(declaredBlock, member)) continue;
     if (toFiniteNumber(liveBag[member]) === undefined) continue;
     removals.push(member);
   }
@@ -2076,7 +2084,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
           .map((entry) =>
             typeof entry['IndexName'] === 'string'
               ? maskSecrets(entry['IndexName'])
-              : '<unnamed index>'
+              : // The same literal {@link indexScopeAt} renders, so a user
+                // grepping their log for one finds the other.
+                '<unnamed>'
           );
         if (ceilingIndexNames.length > 0) {
           const modeNote = billingOrThroughputChanged
