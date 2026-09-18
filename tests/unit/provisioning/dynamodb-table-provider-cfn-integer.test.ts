@@ -1723,35 +1723,29 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
       // re-asserted on every deploy that touches this index for any other
       // reason, re-sending a value AWS already holds and paying a full
       // index-ACTIVE wait for it.
-      const updates = await gsiCeilingOps(
-        [ppRequestGsi('gsi1', { MaxReadRequestUnits: 200 })],
-        [ppRequestGsi('gsi1', { MaxReadRequestUnits: 200 })]
-      );
-      expect(updates).toEqual([]);
-    });
-
-    it('site 5 update: a GSI ceiling on a PROVISIONED table is REFUSED, and the capacity edit still goes out (go-to-k/cdkd#3380 M1)', async () => {
-      // AWS accepts `OnDemandThroughput` only on a PAY_PER_REQUEST table, and
-      // the ceiling rides the SAME `UpdateGlobalSecondaryIndexAction` as the
-      // capacity -- so sending it here would have the action rejected outright
-      // and take a perfectly valid capacity edit down with it, half-applying
-      // the deploy. The table-level pre-flight refusal cannot see this shape:
-      // it keys on `properties['OnDemandThroughput']`, the TABLE block, and
-      // this template declares the ceiling only inside the index.
       //
-      // Both halves matter. The ceiling member must be ABSENT, and the capacity
-      // member must still be PRESENT -- a gate that suppressed the whole action
-      // would trade one silent loss for another.
-      const updates = await gsiUpdateOps(
-        [{ ...cfnGsi('gsi1', '9', '4'), OnDemandThroughput: { MaxReadRequestUnits: 200 } }],
-        [cfnGsi('gsi1', '3', '3')]
+      // A SECOND index carries the change, and that is load-bearing rather than
+      // incidental (the go-to-k/cdkd#3380 round-2 test review, A2). `update()`
+      // gates the whole GSI branch on
+      // `JSON.stringify(desired) !== JSON.stringify(previous)`, so byte-identical
+      // arrays never reach `applyGsiUpdates` at all -- the case would then pass
+      // over an arm that never ran, which is exactly how it read when it was
+      // first moved onto this driver. It also makes the assertion sharper than
+      // the original: the detector must be PER INDEX, so gsi2's edit going out
+      // while gsi1 stays silent is one fact rather than two.
+      const updates = await gsiCeilingOps(
+        [
+          ppRequestGsi('gsi1', { MaxReadRequestUnits: 200 }),
+          ppRequestGsi('gsi2', { MaxReadRequestUnits: 90 }),
+        ],
+        [
+          ppRequestGsi('gsi1', { MaxReadRequestUnits: 200 }),
+          ppRequestGsi('gsi2', { MaxReadRequestUnits: 50 }),
+        ]
       );
       expect(updates).toEqual([
-        { IndexName: 'gsi1', ProvisionedThroughput: { ReadCapacityUnits: 9, WriteCapacityUnits: 4 } },
+        { IndexName: 'gsi2', OnDemandThroughput: { MaxReadRequestUnits: 90 } },
       ]);
-      // WARNED, not dropped silently: the template really is self-contradictory
-      // and nothing else in the deploy says so.
-      expect(warnings()).toContain('accepts only on a PAY_PER_REQUEST table');
     });
 
     it('site 5 update (SAME-NAME GSI Update action): a LOSSLESS re-spelling adds no member', async () => {
@@ -1801,19 +1795,6 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
       expect(updates).toEqual([
         { IndexName: 'gsi1', OnDemandThroughput: { MaxWriteRequestUnits: 15 } },
       ]);
-    });
-
-    it('site 5 update: the SAME rejected spelling on both sides is still silent, so the warning is change-gated', async () => {
-      // The control for the case above, and the reason the fallback is keyed on
-      // `dropped` rather than on "did anything change": an unchanged malformed
-      // template compares equal RAW as well, so the warning does not become a
-      // per-deploy nag on a template nobody edited.
-      const updates = await gsiCeilingOps(
-        [ppRequestGsi('gsi1', { MaxReadRequestUnits: ' 25 ', MaxWriteRequestUnits: 15 })],
-        [ppRequestGsi('gsi1', { MaxReadRequestUnits: ' 25 ', MaxWriteRequestUnits: 15 })]
-      );
-      expect(updates).toEqual([]);
-      expect(warnings()).not.toContain(ON_DEMAND);
     });
 
     it('site 5 update (SAME-NAME GSI Update action): a REMOVED ceiling sends nothing (go-to-k/cdkd#3373)', async () => {
@@ -2043,6 +2024,11 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
       expect(
         findCalls(UpdateTableCommand).flatMap((c) => c.input.GlobalSecondaryIndexUpdates ?? [])
       ).toEqual([]);
+      // WARNED, not withheld in silence (round 2's C3): an unknown member is
+      // never DROPPED by the narrowing -- its name is preserved -- so the
+      // per-member drop announcement says nothing about it, and this arm owes
+      // the user the only line they will get.
+      expect(warnings()).toContain('no member DynamoDB accepts');
     });
 
     it('site 5 update: a NON-OBJECT ceiling is forwarded VERBATIM, so AWS rejects it by shape', async () => {

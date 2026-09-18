@@ -2505,12 +2505,6 @@ export class DynamoDBTableProvider implements ResourceProvider {
           currentLiveIndexNames,
           currentLiveIndexByName,
           liveCapacityComparable,
-          // The EFFECTIVE mode this deploy leaves the table in, not the live
-          // one: a flip INTO PAY_PER_REQUEST has already been applied above, so
-          // a ceiling is sendable on the same deploy, while a flip INTO
-          // PROVISIONED must withhold it even though the table was on-demand
-          // moments ago.
-          billingMode === 'PAY_PER_REQUEST',
           maskSecrets
         );
       }
@@ -3844,28 +3838,6 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // meaningless, so the capacity half stays disabled while the EXISTENCE
     // half above still applies.
     liveCapacityComparable = false,
-    // Whether an `OnDemandThroughput` ceiling may go on the wire AT ALL for
-    // this table, i.e. whether this deploy leaves it PAY_PER_REQUEST (the
-    // go-to-k/cdkd#3380 review, M1). The ceiling's twin of
-    // `liveCapacityComparable` above, and it is a REFUSAL rather than a
-    // comparability flag: DynamoDB accepts `OnDemandThroughput` only on a
-    // PAY_PER_REQUEST table, so on a PROVISIONED one the op is rejected
-    // outright — and because the ceiling rides the SAME
-    // `UpdateGlobalSecondaryIndexAction` as the capacity, it would take an
-    // otherwise-valid capacity edit down with it, half-applying the deploy.
-    //
-    // It is needed at the INDEX level specifically because the table-level
-    // pre-flight refusal cannot see this shape: that guard keys on
-    // `properties['OnDemandThroughput']`, the TABLE block, so a template
-    // declaring the ceiling only inside `GlobalSecondaryIndexes[]` slips past
-    // it, the flip is applied, and the rejection lands afterwards. Before
-    // go-to-k/cdkd#3287 neither arm sent the member, so the contradiction was
-    // inert; wiring the send is what makes the gate load-bearing.
-    //
-    // Defaults to FALSE so a caller that does not know the mode withholds the
-    // member rather than emitting a call AWS may reject — the same direction
-    // `liveCapacityComparable` defaults in, and the pre-#3287 behaviour.
-    onDemandCeilingSendable = false,
     // The caller's secret masker (issue #1932 item 3, adopted here by issue
     // #1997). Every warning below names a RESOLVED property value — an index
     // NAME, or a declared `WarmThroughput` / `ProvisionedThroughput` block — and
@@ -3877,6 +3849,14 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // #1997); the helpers below take the masker itself so they can also mask
     // raw values before stringifying them.
     const warn = (message: string): void => this.logger.warn(maskSecrets(message));
+    // ...and its DEBUG twin. Added by the go-to-k/cdkd#3380 round-2 review
+    // (C4 / security S2): the two `logger.debug` lines below interpolate a raw
+    // index NAME -- a RESOLVED property value -- and `logger.ts` masks nothing,
+    // so a resolved secret used as an index name printed in plaintext under
+    // `--verbose`. Pre-existing, and the sink is the fix rather than two inline
+    // wraps for the reason `.claude/rules/provider-masking.md` gives: the next
+    // debug line added here is masked by construction.
+    const debug = (message: string): void => this.logger.debug(maskSecrets(message));
     const prev = previousGsis ?? [];
     const desired = desiredGsis ?? [];
     const prevByName = new Map(prev.filter((g) => g.IndexName).map((g) => [g.IndexName!, g]));
@@ -3890,9 +3870,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
     for (const name of prevByName.keys()) {
       if (desiredByName.has(name)) continue;
       if (liveIndexNames !== undefined && !liveIndexNames.has(name)) {
-        this.logger.debug(
-          `GSI ${name} is recorded in cdkd state but not live on DynamoDB table ${physicalId}; ` +
-            `skipping its Delete (already removed)`
+        debug(
+          `${this.indexScopeAt(name, physicalId, maskSecrets)} is recorded in cdkd state but ` +
+            `not live; skipping its Delete (already removed)`
         );
         continue;
       }
@@ -4002,7 +3982,6 @@ export class DynamoDBTableProvider implements ResourceProvider {
             gsi,
             undefined,
             live,
-            onDemandCeilingSendable,
             maskSecrets
           );
           if (adoptedCeiling) {
@@ -4143,9 +4122,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
               gsi.ProvisionedThroughput
             )
           ) {
-            this.logger.debug(
-              `GSI ${name} on DynamoDB table ${physicalId} already carries the requested ` +
-                `capacity in AWS; skipping its throughput Update`
+            debug(
+              `${this.indexScopeAt(name, physicalId, maskSecrets)} already carries the ` +
+                `requested capacity in AWS; skipping its throughput Update`
             );
           } else if (
             !this.skipZeroCapacityIndexUpdate(
@@ -4194,7 +4173,6 @@ export class DynamoDBTableProvider implements ResourceProvider {
           gsi,
           before,
           liveIndexByName?.get(name),
-          onDemandCeilingSendable,
           maskSecrets
         );
         if (ceiling) {
@@ -4353,23 +4331,28 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * {@link coerceOnDemandCeilingsForSend} like the other five sites, so one
    * template value cannot be answered differently at two of them.
    *
-   * SIX decisions, in the order the op is decided:
+   * FIVE decisions, in the order the op is decided, plus one deliberate NON-decision:
    *
    *  - **The declaration gate is TRUTHINESS**, matching `indexDeclares`' gate
    *    for this block and the `Create` arm's `gsi.OnDemandThroughput` test. A
    *    tighter gate here would make the #1767 drift-side predicate answer
    *    "declared" for a block this arm skips.
-   *  - **The BILLING MODE is a hard refusal** (`sendable`, the
-   *    go-to-k/cdkd#3380 review's M1). DynamoDB accepts `OnDemandThroughput`
-   *    only on a PAY_PER_REQUEST table, and the ceiling rides the SAME action
-   *    as the capacity — so on a PROVISIONED one the op is rejected and takes
-   *    an otherwise-valid capacity edit with it, half-applying the deploy. The
-   *    table-level pre-flight refusal cannot cover this: it keys on
-   *    `properties['OnDemandThroughput']`, the TABLE block, so a template
-   *    declaring the ceiling only inside `GlobalSecondaryIndexes[]` reaches
-   *    here. It WARNS rather than dropping silently (the template really is
-   *    self-contradictory), and it sits AFTER the change detector so the
-   *    warning is change-gated on the arm that has one.
+   *  - **The BILLING MODE is deliberately NOT gated here**, and that is a
+   *    decision with a filed issue rather than an oversight. DynamoDB accepts
+   *    `OnDemandThroughput` only on a PAY_PER_REQUEST table, and the ceiling
+   *    rides the SAME action as the capacity — so on a PROVISIONED one the op
+   *    is rejected and takes an otherwise-valid capacity edit with it. A gate
+   *    WITHHOLDING the member was written for the go-to-k/cdkd#3380 review's M1
+   *    and REVERTED on the next round: a mid-update warn-and-skip lets the
+   *    deploy succeed, so the engine records the un-sent ceiling as applied and
+   *    the deploy that FIXES the billing mode then compares equal and never
+   *    sends it — issue #3287's own defect, reintroduced by its own guard. The
+   *    file's table-level twin states that reasoning at its own refusal. The
+   *    correct shape is a PRE-FLIGHT refusal covering all THREE per-index send
+   *    sites (the `Create` arm has carried the same defect since #3265), which
+   *    is issue [#3392](https://github.com/go-to-k/cdkd/issues/3392). Until
+   *    then AWS validates the constraint, exactly as it does for the
+   *    TABLE-level arm and for the `Create` action.
    *  - **The change detector compares the NARROWED blocks WHEN NOTHING WAS
    *    DROPPED, and the RAW ones otherwise** — the one place it differs from its
    *    `ProvisionedThroughput` sibling two arms up. `'200'` and `200` are the
@@ -4386,7 +4369,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
    *    {@link narrowOnDemandCeilings}'s OWN `dropped` report: any drop on either
    *    side falls back to the RAW compare, which keeps the announcement alive
    *    while the narrowed compare still absorbs a lossless re-spelling.
-   *  - **A block with no SURVIVING GRAMMAR MEMBER emits NO op.** The TABLE-level
+   *  - **A block with no SURVIVING GRAMMAR MEMBER emits NO op, and WARNS.** The TABLE-level
    *    arm sends the empty block and lets DynamoDB answer; here the action can
    *    legitimately carry nothing but `IndexName`, which AWS rejects outright,
    *    so an empty ceiling would take a capacity edit down with it or fire a
@@ -4396,21 +4379,24 @@ export class DynamoDBTableProvider implements ResourceProvider {
    *    design, so a typo'd `MaxReadRequestUnit` leaves a non-empty object that
    *    the SDK serializes to `{}` — the same rejected action, reached past a
    *    key-count gate. The fail-open "let AWS name it" reasoning does NOT reach
-   *    that shape here, because AWS never sees the name to name. Nothing is lost
-   *    by withholding: {@link warnUnusableOnDemandCeiling} has already named
-   *    every dropped member.
+   *    that shape here, because AWS never sees the name to name. The warning is
+   *    this arm's OWN, not {@link warnUnusableOnDemandCeiling}'s (round 2's C3):
+   *    an unknown member is never DROPPED by the narrowing — its name is
+   *    preserved — so the per-member announcement says nothing about it, and
+   *    withholding silently would lose the ceiling where the pre-gate code at
+   *    least failed loudly at AWS.
    *  - **A block that is not a plain object is forwarded VERBATIM**, the
    *    fail-open direction every forwarder in this file takes: a STRING, a
    *    NUMBER or an ARRAY is AWS's to reject by name — and unlike the unknown
    *    member above, AWS really does see it and rejects it by shape.
    *  - **The live ceiling is consulted for idempotency**
    *    ({@link liveCeilingAlreadyMatches}), the #1630 arm the capacity sibling
-   *    already has. It needs no billing-mode gate OF ITS OWN — `DescribeTable`
-   *    reports `OnDemandThroughput` only on a PAY_PER_REQUEST table, so on a
+   *    already has, and it needs NO billing-mode gate: `DescribeTable` reports
+   *    `OnDemandThroughput` only on a PAY_PER_REQUEST table, so on a
    *    PROVISIONED one the live block is simply absent and the guard fails
-   *    open — and since the `sendable` refusal above already withheld that case,
-   *    the fail-open lands on a call that is never made. There is no `{0, 0}`
-   *    analogue of the #1571 capacity trap.
+   *    OPEN — the correct direction, since the worst case is the op AWS then
+   *    rejects by name (issue #3392) rather than a silently dropped change.
+   *    There is no `{0, 0}` analogue of the #1571 capacity trap.
    *
    * What it deliberately does NOT do is REMOVE a ceiling. A desired side that
    * declares none takes the truthiness gate and emits nothing, so the live
@@ -4436,7 +4422,6 @@ export class DynamoDBTableProvider implements ResourceProvider {
     gsi: GlobalSecondaryIndex,
     before: GlobalSecondaryIndex | undefined,
     live: GlobalSecondaryIndexDescription | undefined,
-    sendable: boolean,
     maskSecrets: SecretMasker
   ): OnDemandThroughput | undefined {
     if (!gsi.OnDemandThroughput) return undefined;
@@ -4464,18 +4449,20 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // is what keeps the NEXT line added here masked by default.
     const warn = (message: string): void => this.logger.warn(maskSecrets(message));
     const debug = (message: string): void => this.logger.debug(maskSecrets(message));
-    if (!sendable) {
-      warn(
-        `${scope}: declares an OnDemandThroughput, which AWS accepts only on a PAY_PER_REQUEST ` +
-          `table. The ceiling was NOT sent; remove it, or keep the table on PAY_PER_REQUEST.`
-      );
-      return undefined;
-    }
     const send = this.coerceOnDemandCeilingsForSend(scope, gsi.OnDemandThroughput, maskSecrets);
     if (!isPlainCapacityBlock(send)) return send;
     if (!ON_DEMAND_CEILING_MEMBERS.some((member) => member in send)) {
-      debug(
-        `${scope}: declares an OnDemandThroughput with no usable member; emitting no ceiling op`
+      // WARN, not debug (the go-to-k/cdkd#3380 round-2 review, C3): the
+      // "every dropped member is already announced" licence does NOT cover the
+      // shape this arm exists for. `narrowOnDemandCeilings` never DROPS an
+      // unknown member -- it preserves the name -- so a typo'd
+      // `MaxReadRequestUnit` produces no drop warning at all, and before the
+      // per-member gate the op at least reached AWS and failed loudly. Without
+      // a warning here that template would lose its ceiling in silence.
+      warn(
+        `${scope}: declares an OnDemandThroughput with no member DynamoDB accepts ` +
+          `(${ON_DEMAND_CEILING_MEMBERS.join(' / ')}), so no ceiling op was sent. Check the ` +
+          `member names.`
       );
       return undefined;
     }
@@ -5125,8 +5112,19 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // through the same helper. The population is derivable rather than
     // remembered — `grep -nE 'maskSecrets\((name|indexName)\)'` over this file
     // returns only the two lines INSIDE {@link indexScope} /
-    // {@link indexScopeAt} themselves. Every other index-name interpolation
-    // is `typeof … === 'string'`-filtered at its source.
+    // {@link indexScopeAt} themselves.
+    //
+    // The remaining index-name interpolations split THREE ways, and an earlier
+    // revision of this comment claimed they were all `typeof`-filtered, which
+    // was FALSE (round 2's S2). They are: filtered at the source (the removal
+    // and flip warnings read live names behind
+    // `typeof indexName !== 'string'`); masked by a SINK (`applyGsiUpdates`'
+    // own `warn` / `debug`, and the debug pair was routed through
+    // {@link indexScopeAt} in that same round); or a THROWN message, which
+    // `DeployEngine` masks at all three of its sinks. `prevByName` /
+    // `desiredByName` are keyed under a TRUTHINESS filter, not a `typeof` one,
+    // so a numeric name really does reach them — which is what made the debug
+    // pair a live plaintext leak under `--verbose`.
     const scope = this.indexScopeAt(indexName, physicalId, maskSecrets);
     const requested = desired.WarmThroughput;
     // The UNCHANGED gate runs FIRST, so the refusal below warns once per

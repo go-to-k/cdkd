@@ -934,6 +934,95 @@ describe('DynamoDB providers - resolved secrets in provider warnings (issue #199
     });
   });
 
+  // The go-to-k/cdkd#3380 round-2 security review (S2 / code C4).
+  // `applyGsiUpdates` built a masked `warn` sink but NOT a `debug` one, so two
+  // of its own debug lines interpolated a raw index NAME -- a resolved property
+  // value -- and `logger.ts` masks nothing. A resolved secret used as an index
+  // name printed in plaintext under `--verbose`. Pre-existing on main; found
+  // because the round's first attempt at the comment claimed these sites did
+  // not exist.
+  describe('AWS::DynamoDB::Table applyGsiUpdates debug lines (go-to-k/cdkd#3380 S2)', () => {
+    let provider: DynamoDBTableProvider;
+    const SECRET_INDEX = 'issue3380-gsi-debug-plaintext';
+
+    beforeEach(() => {
+      provider = new DynamoDBTableProvider();
+    });
+
+    const bag = (): RecordedSecretValues =>
+      new Map([[SECRET_INDEX, '{{resolve:secretsmanager:tbl/gsidebug:SecretString:v::}}']]);
+
+    const gsi = (name: string, read: number) => ({
+      IndexName: name,
+      KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+      Projection: { ProjectionType: 'ALL' },
+      ProvisionedThroughput: { ReadCapacityUnits: read, WriteCapacityUnits: 5 },
+    });
+
+    const primeTable = (liveIndexes: unknown[]): void => {
+      mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+        if (command.constructor.name === 'DescribeTableCommand') {
+          return Promise.resolve({
+            Table: {
+              TableName: 'plain-public-table',
+              TableArn: 'arn:aws:dynamodb:us-east-1:0:table/plain-public-table',
+              TableStatus: 'ACTIVE',
+              BillingModeSummary: { BillingMode: 'PROVISIONED' },
+              ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+              GlobalSecondaryIndexes: liveIndexes,
+            },
+          });
+        }
+        return Promise.resolve({});
+      });
+    };
+
+    // The Delete arm's already-removed skip: the index is in the RECORD and
+    // absent from AWS, so nothing is deleted and the line names the index.
+    it('masks the index name in the already-removed Delete debug line', async () => {
+      primeTable([]);
+      await provider.update(
+        'MyTable',
+        'plain-public-table',
+        'AWS::DynamoDB::Table',
+        { BillingMode: 'PROVISIONED', GlobalSecondaryIndexes: [] },
+        { BillingMode: 'PROVISIONED', GlobalSecondaryIndexes: [gsi(SECRET_INDEX, 5)] },
+        { maskSecrets: createSecretMasker(bag()) }
+      );
+
+      const debugLog = debugged.join('\n');
+      expect(debugLog).toContain('skipping its Delete (already removed)');
+      expect(debugLog).not.toContain(SECRET_INDEX);
+      expect(debugLog).toContain(SECRET_MASK);
+    });
+
+    // The capacity idempotency skip: the record says the capacity changed while
+    // AWS already holds the requested value, so the Update is withheld and the
+    // line names the index.
+    it('masks the index name in the capacity already-matches debug line', async () => {
+      primeTable([
+        {
+          IndexName: SECRET_INDEX,
+          IndexStatus: 'ACTIVE',
+          ProvisionedThroughput: { ReadCapacityUnits: 9, WriteCapacityUnits: 5 },
+        },
+      ]);
+      await provider.update(
+        'MyTable',
+        'plain-public-table',
+        'AWS::DynamoDB::Table',
+        { BillingMode: 'PROVISIONED', GlobalSecondaryIndexes: [gsi(SECRET_INDEX, 9)] },
+        { BillingMode: 'PROVISIONED', GlobalSecondaryIndexes: [gsi(SECRET_INDEX, 3)] },
+        { maskSecrets: createSecretMasker(bag()) }
+      );
+
+      const debugLog = debugged.join('\n');
+      expect(debugLog).toContain('already carries the requested capacity in AWS');
+      expect(debugLog).not.toContain(SECRET_INDEX);
+      expect(debugLog).toContain(SECRET_MASK);
+    });
+  });
+
   // Minor 2 (spec review): `create()` installed the masker but built no sink, so
   // the partial-create rollback warning printed `tableName` — which is
   // `properties['TableName']` — unmasked. Reached by letting CreateTable
