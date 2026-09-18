@@ -342,6 +342,27 @@ export const auditSnapshotAge = (
   return now - at > MAX_SNAPSHOT_AGE_DAYS * 86400000 ? 'stale' : 'ok';
 };
 
+/**
+ * The newest day any entry's range covers, or `''` when there are none.
+ *
+ * THE STAMP IS NOT THE DATA'S AGE, and keying the guard on `generatedAt` alone
+ * missed the reading that matters. `generatedAt` is refreshed by EVERY run, so
+ * re-deriving the snapshot over its own recorded range — which is exactly how
+ * this artifact gets checked — writes a fresh stamp over an arbitrarily old
+ * population and the age guard answers `ok`. `main` bounds `--to` from ABOVE
+ * (it must be a complete UTC day) and not from below, so nothing stops a walk
+ * of a range from last year.
+ *
+ * `to` is the field that carries the population's age, and the maximum over
+ * entries is the right one: a single quiet workflow with an older window must
+ * not make the whole snapshot read as stale.
+ */
+export const latestRangeEnd = (snapshot: Readonly<Record<string, JobSample>>): string => {
+  let latest = '';
+  for (const sample of Object.values(snapshot)) if (sample.to > latest) latest = sample.to;
+  return latest;
+};
+
 const loadSnapshot = (): Record<string, JobSample> =>
   parseSnapshot(readFileSync(SNAPSHOT_PATH, 'utf8'), SNAPSHOT_PATH);
 
@@ -521,6 +542,11 @@ describe('no workflow job is bounded too tightly to survive its own longest run'
     // means — age — was not. Maxima only grow as jobs get slower, so a snapshot
     // nobody refreshes fails in the passing direction.
     expect(auditSnapshotAge(snapshotGeneratedAt(), Date.now())).toBe('ok');
+    // AND the DATA's age, not just the stamp's. These are different questions
+    // and only the second one is about the population the verdicts rest on —
+    // see `latestRangeEnd`. `to` is `YYYY-MM-DD`, which `Date.parse` reads as
+    // UTC midnight, so the same guard answers both.
+    expect(auditSnapshotAge(latestRangeEnd(SNAPSHOT), Date.now())).toBe('ok');
   });
 
   it('the real tree reports nothing', () => {
@@ -1091,6 +1117,38 @@ describe('the shared sanitisers constrain the shapes this fence renders', () => 
 });
 
 describe('the snapshot is refused when it is too old to describe this tree', () => {
+  it.each([
+    ['the newest end wins', { a: 2, b: 2, c: 2 }, ['2026-01-01', '2026-09-16', '2026-05-05'], '2026-09-16'],
+    ['a single entry', { a: 2 }, ['2026-03-03'], '2026-03-03'],
+  ])('latestRangeEnd: %s', (_what, shape, ends, expected) => {
+    // A quiet workflow's older window must not make the whole snapshot read as
+    // stale, so this is a MAXIMUM. Taking the minimum, or the first entry, both
+    // survived until these rows existed.
+    const snapshot = Object.fromEntries(
+      Object.keys(shape).map((k, i) => [`w.yml/${k}`, { max: 1, from: 'a', to: ends[i] ?? '' }]),
+    );
+    expect(latestRangeEnd(snapshot)).toBe(expected);
+  });
+
+  it('latestRangeEnd: an empty snapshot has no end, and that is not a fresh one', () => {
+    // `''` parses to NaN, which `auditSnapshotAge` reports as `unreadable` —
+    // never as `ok`. A guard that answered "fresh" for "no data" would be the
+    // `NaN < 2` shape again.
+    expect(latestRangeEnd({})).toBe('');
+    expect(auditSnapshotAge(latestRangeEnd({}), Date.now())).toBe('unreadable');
+  });
+
+  it('a fresh STAMP over an ancient POPULATION is still stale', () => {
+    // THE READING THE FIRST VERSION OF THIS GUARD MISSED. Re-deriving the
+    // snapshot over its own recorded range refreshes `generatedAt` and changes
+    // nothing about how old the runs are — and that is the normal way this
+    // artifact gets re-checked, not an adversarial case.
+    const now = Date.parse('2026-09-18T00:00:00Z');
+    const ancient = { 'w.yml/j': { max: 1, from: '2024-01-01', to: '2024-01-14' } };
+    expect(auditSnapshotAge(new Date(now - 1000).toISOString(), now)).toBe('ok');
+    expect(auditSnapshotAge(latestRangeEnd(ancient), now)).toBe('stale');
+  });
+
   const at = (iso: string) => Date.parse(iso);
   const now = at('2026-09-18T00:00:00Z');
 

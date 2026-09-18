@@ -547,6 +547,18 @@ const main = (): void => {
         'a range ending inside a day in progress is not the closed population this snapshot claims',
     );
   }
+  // AND FROM BELOW. Bounding `--to` only from above let a walk of a range from
+  // last year write a snapshot with a fresh `generatedAt` — the stamp every run
+  // refreshes — over an arbitrarily old population. The fence catches that now
+  // (it reads the newest `to`, not the stamp), but a refusal here names the
+  // cause at the moment it is caused rather than in a CI failure three steps
+  // later. Half the fence's window, so regenerating never lands on the boundary.
+  if (requestedTo !== undefined && Date.parse(`${requestedTo}T00:00:00Z`) < Date.now() - 45 * 86400000) {
+    throw new Error(
+      `--to=${safeText(requestedTo)} is more than 45 days ago; the fence that reads this ` +
+        'snapshot refuses a population that old, so writing one only defers the failure',
+    );
+  }
   const to = requestedTo ?? lastComplete;
   const explicitFrom = flag('--from');
   // NO `Math.max` FLOOR on an explicit span. Clamping it to `MIN_WINDOW_DAYS`
