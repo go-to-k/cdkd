@@ -235,6 +235,26 @@ the old shape as part of the same change, not as a follow-up.
   outright and then reported "origin remote missing or not host-qualified",
   which was false for that remote -- fail-closed, but a wrong diagnosis.
 
+  **Two normalisations qualify "verbatim", and both were live defects**
+  (go-to-k/cdkd#3385). gh ALIASES two of its own hosts, so `ssh.github.com`
+  (GitHub's SSH-over-443 host) and `www.github.com` are folded to `github.com`
+  -- without it the same repository keyed two ways, and a checkout naming THIS
+  repo through an alias read as FOREIGN, dropping the go-to-k/cdkd#2686 binding
+  in a checkout that is cdkd. ONLY those two: `nope.github.com` and
+  `gist.github.com` resolve nowhere in gh (measured), so leaving them unaliased
+  agrees with gh. And the `.git` suffix is stripped CASE-INSENSITIVELY, because
+  the case-fold happens after it and an upper-case `.GIT` otherwise survived
+  into the slug -- a latent bug whose own test case is GREEN IN CI (which checks
+  out a suffix-less URL) and RED in a local clone, so the direct
+  `gate_slug_from_url` cases are what hold it.
+
+  Over-normalising is safe HERE only because every consumer asks "does this
+  remote name a repo I know": a spurious match makes a checkout read as THIS
+  repo, which ADDS a requirement. It is NOT safe in a design that ranks remotes
+  and compares a winner -- there an over-accepted remote outranking gh's real
+  choice makes the comparison EQUAL and RELAXES (measured, go-to-k/cdkd#3372).
+  Do not carry the argument to such a caller.
+
 **The ordering trap above is fenced STATICALLY, in `markgate-gate-name-class.test.sh`
 fence 4**, which asserts that each of the four gates handles markgate rc-2 at an
 earlier line than its alias refusal. It has to be static, and the measurement

@@ -3570,15 +3570,54 @@ __gsu "empty userinfo @@"  github.com/go-to-k/cdkd https://@@github.com/go-to-k/
 __gsu "user:pass@"         github.com/go-to-k/cdkd https://u:p@github.com/go-to-k/cdkd.git
 __gsu "port"               github.com/go-to-k/cdkd https://github.com:443/go-to-k/cdkd.git
 __gsu "deep path kept whole" gitlab.com/a/x/repo https://gitlab.com/a/x/repo.git
+# An UPPER-CASE `.GIT` suffix. The fold happens after the strip, so it used to
+# survive into the slug and the same repo keyed two ways. The whole-URL variant
+# is what this file's `a CASE-variant spelling of THIS repo` case feeds, and
+# that case is GREEN IN CI (which checks out a suffix-less URL) and RED in a
+# local clone -- so these direct cases are what actually hold the behaviour.
+__gsu "upper .GIT suffix"    github.com/go-to-k/cdkd https://github.com/go-to-k/CDKD.GIT
+__gsu "whole URL upper"      github.com/go-to-k/cdkd HTTPS://GITHUB.COM/GO-TO-K/CDKD.GIT
+__gsu "mixed .Git suffix"    github.com/go-to-k/cdkd https://github.com/go-to-k/cdkd.Git
+# A repo whose NAME contains a dot keeps it: the strip is anchored to the
+# suffix, not to "the last dot segment".
+__gsu "dotted repo name"     github.com/go-to-k/my.repo https://github.com/go-to-k/my.repo.git
+__gsu "dotted name no suffix" github.com/go-to-k/my.repo https://github.com/go-to-k/my.repo
+# gh's TWO github.com host ALIASES (go-to-k/cdkd#3385). Keeping the host
+# verbatim made the same repository key two ways, so a checkout whose remote
+# named THIS repo through one of them read as FOREIGN and `verify-pr-gate`
+# dropped the go-to-k/cdkd#2686 binding in a checkout that is cdkd.
+#
+# The right-hand column records whether GH ITSELF resolves that spelling,
+# measured 2026-09-18 on gh 2.92.0 -- because the normalisation is deliberately
+# NOT per-scheme while gh is, and the difference must be visible rather than
+# read as a claim about gh. Every over-normalised row is a spelling gh DROPS,
+# and in a predicate that asks "does ANY remote name this repo" a spurious match
+# only ever ADDS the binding requirement.
+__gsu "ssh.github.com scp"   github.com/go-to-k/cdkd git@ssh.github.com:go-to-k/cdkd.git          # gh: resolves
+__gsu "ssh.github.com ssh://" github.com/go-to-k/cdkd ssh://git@ssh.github.com/go-to-k/cdkd.git   # gh: resolves
+__gsu "ssh.github.com :443"  github.com/go-to-k/cdkd ssh://git@ssh.github.com:443/go-to-k/cdkd.git # gh: resolves
+__gsu "www.github.com https" github.com/go-to-k/cdkd https://www.github.com/go-to-k/cdkd.git      # gh: resolves
+__gsu "www.github.com scp"   github.com/go-to-k/cdkd git@www.github.com:go-to-k/cdkd.git          # gh: resolves
+__gsu "ssh.github.com https" github.com/go-to-k/cdkd https://ssh.github.com/go-to-k/cdkd.git      # gh: DROPS -- over-normalised, over-refuses
+__gsu "WWW upper https"      github.com/go-to-k/cdkd https://WWW.GitHub.com/go-to-k/cdkd.git      # gh: DROPS -- over-normalised, over-refuses
+# NOT aliased, and that is agreeing with gh rather than an oversight: these
+# resolve NOWHERE in gh, so a checkout whose only cdkd-naming remote sits at one
+# of them really is a sibling, and relaxing there is correct.
+__gsu "nope.github.com kept" nope.github.com/go-to-k/cdkd https://nope.github.com/go-to-k/cdkd.git
+__gsu "gist.github.com kept" gist.github.com/go-to-k/cdkd https://gist.github.com/go-to-k/cdkd.git
+__gsu "a.b.github.com kept"  a.b.github.com/go-to-k/cdkd https://a.b.github.com/go-to-k/cdkd.git
+# The suffix must ANCHOR: a host merely CONTAINING the alias text is not one.
+__gsu "evil suffix not alias" ssh.github.com.evil.example/go-to-k/cdkd https://ssh.github.com.evil.example/go-to-k/cdkd.git
+__gsu "notwww not alias"     notwww.github.com/go-to-k/cdkd https://notwww.github.com/go-to-k/cdkd.git
 # REFUSALS: a local path names no forge, and a single-segment path is not a repo.
 __gsu "local path refuses"   '' /srv/local/mirror
 __gsu "no host refuses"      '' cdkd:cdkd
 __gsu "single segment refuses" '' https://github.com/cdkd
 __gsu "empty refuses"        '' ''
 __gsu_ran=$((pass + fail - __gsu_start))
-if [ "$__gsu_ran" -ne 22 ]; then
+if [ "$__gsu_ran" -ne 39 ]; then
   fail=$((fail + 1))
-  fail_log="${fail_log}FAIL gate_slug_from_url block ran $__gsu_ran cases, expected exactly 22\n"
+  fail_log="${fail_log}FAIL gate_slug_from_url block ran $__gsu_ran cases, expected exactly 39\n"
 else
   pass=$((pass + 1)); printf 'ok   gate_slug_from_url block ran all %s cases\n' "$__gsu_ran"
 fi

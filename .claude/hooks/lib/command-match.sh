@@ -4556,7 +4556,24 @@ gate_slug_from_url() {
       *) break ;;
     esac
   done
-  path="${path%.git}"
+  # CASE-INSENSITIVELY, because the fold happens further down and an upper-case
+  # suffix otherwise SURVIVES into the slug. Measured: `.../go-to-k/CDKD.GIT`
+  # keyed as `github.com/go-to-k/cdkd.git` while the same repo spelled normally
+  # keyed as `github.com/go-to-k/cdkd`, so the two compared unequal and a
+  # checkout naming THIS repo that way read as foreign -- the same defect as the
+  # host aliases below, one segment over.
+  #
+  # It is a LATENT bug rather than a theoretical one, and the reason it survived
+  # is worth keeping: this repo's own suite has a case for it
+  # ("a CASE-variant spelling of THIS repo"), and that case is GREEN IN CI while
+  # RED in a local worktree. The fixture upper-cases `remote.origin.url`, and CI
+  # checks out `https://github.com/go-to-k/cdkd` with no `.git` suffix -- so
+  # there is nothing for the strip to miss and the assertion passes over the
+  # defect. A local clone carries the suffix and fails. Do not "fix" that case
+  # by pinning a URL; the environment difference is what it detects.
+  case "$path" in
+    *.[Gg][Ii][Tt]) path="${path%.*}" ;;
+  esac
   path="${path%/}"
 
   # The WHOLE path, not its last two segments. Collapsing to `<owner>/<name>`
@@ -4573,6 +4590,45 @@ gate_slug_from_url() {
   # where case happens to matter.
   host=$(printf '%s' "$host" | tr 'A-Z' 'a-z')
   path=$(printf '%s' "$path" | tr 'A-Z' 'a-z')
+
+  # gh ALIASES TWO github.com HOSTS, and keeping them verbatim made the same
+  # repository key two different ways (go-to-k/cdkd#3385). `ssh.github.com` is
+  # GitHub's documented SSH-over-443 host -- the standard workaround where port
+  # 22 is blocked -- and `www.github.com` is the ordinary web spelling, so both
+  # appear in real remotes. Without this, a checkout whose `upstream` names THIS
+  # repo through one of them produced a slug that compared unequal,
+  # `gate_target_is_foreign` answered FOREIGN, and `verify-pr-gate` dropped the
+  # go-to-k/cdkd#2686 sha binding in a checkout that IS cdkd. Measured on the
+  # real hook against `origin/main`: all three alias spellings exited 0 while
+  # the plain `github.com` control exited 2.
+  #
+  # ONLY these two prefixes, and only under `github.com`. `nope.github.com` and
+  # `gist.github.com` resolve NOWHERE in gh (measured), so leaving them
+  # unaliased is agreeing with gh, not an oversight -- a checkout whose only
+  # cdkd-naming remote is at `nope.github.com` really is a sibling as far as gh
+  # is concerned, and relaxing there is correct.
+  #
+  # DELIBERATELY NOT PER-SCHEME, though gh is. Measured on gh 2.92.0:
+  # `git@ssh.github.com:` and `ssh://git@ssh.github.com/` resolve while
+  # `https://ssh.github.com/` does not, and `https://www.github.com/` resolves
+  # while `https://WWW.GitHub.com/` does not (gh trims a LITERAL lowercase
+  # `www.` before it lowercases). Reproducing that per-scheme, per-case table
+  # would buy nothing here and could only be wrong in the unsafe direction: the
+  # two spellings this over-normalises are ones gh DROPS, and in every consumer
+  # a spurious match makes a checkout read as THIS repo, which ADDS the binding
+  # requirement rather than removing it. The over-refusal is named in the
+  # spelling table in `command-match.test.sh` so it cannot be mistaken for a
+  # claim that gh accepts them.
+  #
+  # That safety argument is specific to a predicate that asks "does ANY remote
+  # name this repo". It does NOT hold for a design that RANKS remotes and
+  # compares a winner, where an over-accepted remote outranking gh's real
+  # choice makes the comparison EQUAL and RELAXES -- measured on
+  # go-to-k/cdkd#3372, which is why that design was abandoned. Do not carry this
+  # paragraph over to a caller that picks a winner.
+  case "$host" in
+    ssh.github.com | www.github.com) host=github.com ;;
+  esac
 
   printf '%s/%s' "$host" "$path"
 }
