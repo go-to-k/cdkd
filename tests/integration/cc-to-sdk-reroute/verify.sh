@@ -125,6 +125,22 @@ LAYER0=$(record '.provisionedBy')
 [ "${LAYER0}" = "sdk" ] || { echo "FAIL: fresh deploy recorded provisionedBy=${LAYER0}, expected sdk" >&2; exit 1; }
 echo "    OK: created on the SDK route (${P0})"
 
+# MaximumMessageSize (issue #3413) — read back OFF AWS at every phase, because
+# the member was a silent drop until it was wired and a green deploy says
+# nothing about whether the value reached the topic. A strict capture: a probe
+# failure aborts under set -e rather than reading as "unset".
+max_size() { # usage: max_size <topic-arn> -> the live MaximumMessageSize, or "None"
+  aws sns get-topic-attributes --topic-arn "$1" --region "${REGION}" \
+    --query 'Attributes.MaximumMessageSize' --output text
+}
+assert_max_size() { # usage: assert_max_size <phase> <topic-arn> <expected>
+  local got
+  got="$(max_size "$2")"
+  [ "${got}" = "$3" ] || { echo "FAIL: ${1}: MaximumMessageSize on AWS is ${got}, expected $3 (the SDK provider's wire for issue #3413 did not land)" >&2; exit 1; }
+}
+assert_max_size "phase 1 (SDK create)" "${P0}" 1048576
+echo "    OK: MaximumMessageSize=1048576 reached AWS through CreateTopic"
+
 echo "==> Phase 2: force the resource onto Cloud Control (--recreate-via-cc-api)"
 # Seeds the sticky cc-api state the exemption has to escape from. Deliberately
 # NOT a binary swap against a released cdkd: seeding via the auto-route would
@@ -156,6 +172,10 @@ LAYER1=$(record '.provisionedBy')
 D_SEED=$(aws sns get-topic-attributes --topic-arn "${P1}" --region "${REGION}" \
   --query 'Attributes.DisplayName' --output text)
 [ "${D_SEED}" = "seeded-on-cc" ] || { echo "FAIL: the CC recreate did not reach AWS (DisplayName=${D_SEED}); the record says cc-api but nothing was provisioned" >&2; exit 1; }
+# Cloud Control forwards the full property map, so the member survives the
+# recreate too — and this is the record the flip in phase 5 must NOT read as a
+# drop (the both-bags gate consults the recorded bag as well as the desired).
+assert_max_size "phase 2 (CC recreate)" "${P1}" 1048576
 echo "    OK: pinned to Cloud Control, id ${P1}, CC write confirmed live"
 
 # IDENTITY WITNESS. With a fixed name the ARN survives a destroy + recreate, so
@@ -221,12 +241,41 @@ SUBS_AFTER=$(aws sns list-subscriptions-by-topic --topic-arn "${P2}" --region "$
 DISPLAY=$(aws sns get-topic-attributes --topic-arn "${P2}" --region "${REGION}" \
   --query 'Attributes.DisplayName' --output text)
 [ "${DISPLAY}" = "after-reroute" ] || { echo "FAIL: the update did not reach AWS (DisplayName=${DISPLAY})" >&2; exit 1; }
+# The same deploy carried 1048576 -> 524288, so this is the SDK provider's
+# UPDATE arm for the member (SetTopicAttributes), not only its create arm.
+assert_max_size "phase 5 (SDK update)" "${P2}" 524288
 echo "    OK: same id ${P2}, record flipped to sdk, unmanaged subscription intact, update applied in place"
+
+echo "==> Phase 5b: REMOVE MaximumMessageSize from the template (issue #3413 reset arm)"
+# The only change in this deploy is the dropped member (DisplayName is held at
+# the flip's value), so the provider call it triggers is the removal arm. SNS
+# refuses the '' the string members are cleared with, so the arm must send the
+# 262144 default — and a topic that has ever set the attribute keeps REPORTING
+# it, so "reset" is observable as the default value, never as absence.
+env CDKD_TEST_PHASE=removed \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+P3=$(record '.physicalId')
+LAYER3=$(record '.provisionedBy')
+[ "${LAYER3}" = "sdk" ] || { echo "FAIL: the removal deploy left provisionedBy=${LAYER3}, expected sdk" >&2; exit 1; }
+[ "${P3}" = "${P2}" ] || { echo "FAIL: the removal deploy changed the physical id (${P2} -> ${P3})" >&2; exit 1; }
+assert_max_size "phase 5b (SDK removal)" "${P3}" 262144
+D_REMOVED=$(aws sns get-topic-attributes --topic-arn "${P3}" --region "${REGION}" \
+  --query 'Attributes.DisplayName' --output text)
+[ "${D_REMOVED}" = "after-reroute" ] || { echo "FAIL: the removal deploy touched DisplayName (${D_REMOVED}); the arm under test was not isolated" >&2; exit 1; }
+# A record that no longer carries the member must not read the 262144 reset as
+# drift — that is the readCurrentState fold the reset depends on.
+DRIFT_OUT=$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" 2>&1 || true)
+printf '%s' "${DRIFT_OUT}" | grep -q 'MaximumMessageSize' && {
+  echo "FAIL: cdkd drift reports MaximumMessageSize after the template removal — the reset-to-default is being read as drift:" >&2
+  printf '%s\n' "${DRIFT_OUT}" | grep 'MaximumMessageSize' | sed 's/^/  /' >&2
+  exit 1
+}
+echo "    OK: member removed, live value reset to 262144, no drift reported"
 
 echo "==> Phase 6: Destroy (now SDK-routed) + gone-probe"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
-assert_gone "SNS topic ${P2} survived destroy" \
-  aws sns get-topic-attributes --topic-arn "${P2}" --region "${REGION}"
+assert_gone "SNS topic ${P3} survived destroy" \
+  aws sns get-topic-attributes --topic-arn "${P3}" --region "${REGION}"
 echo "    OK: destroyed clean"
 
 echo "PASS: cc-to-sdk-reroute (physicalId parity observed on a live resource)"

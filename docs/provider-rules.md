@@ -2106,7 +2106,13 @@ To admit a type:
 1. Confirm the type's `silentDrop` map is empty in
    `property-coverage.generated.ts`. A type with a real drop must not be
    admitted; the per-resource condition would refuse every resource anyway,
-   making the entry dead weight.
+   making the entry dead weight. **And keep it empty**: the daily schema
+   refresh re-adds a drop the moment AWS publishes a property the provider
+   does not write (`AWS::SNS::Topic` gained `MaximumMessageSize` that way on
+   2026-09-18, issue [#3413](https://github.com/go-to-k/cdkd/issues/3413)),
+   so a refresh landing a drop on an admitted type owes the wiring in the
+   same cycle — otherwise `cdkd diff` renders `sticky` for a resource that
+   `cdkd deploy --allow-unsupported-properties` would flip.
 2. Read the CFn schema's `primaryIdentifier` and the provider's `create()`
    return, and write what BOTH store into `physicalIdForm` — in words a
    reviewer can check, not "verified".

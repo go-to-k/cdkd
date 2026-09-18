@@ -15,7 +15,7 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 ## Summary
 
 - Provider classes classified: **84**
-- Declared properties: **1138** (**1136** with read evidence)
+- Declared properties: **1139** (**1137** with read evidence)
 - Fully wired classes: **82**
 - Allow-listed classes (visible, non-blocking): **2**
 - Classes with a whole-bag blind spot (recorded, never an excuse): **23**
@@ -145,7 +145,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `ServiceDiscoveryProvider` | servicediscovery-provider.ts | wired | 11 | 11 |
 | `SNSSubscriptionProvider` | sns-subscription-provider.ts | wired | 10 | 10 |
 | `SNSTopicPolicyProvider` | sns-topic-policy-provider.ts | wired | 2 | 2 |
-| `SNSTopicProvider` | sns-topic-provider.ts | wired | 13 | 13 |
+| `SNSTopicProvider` | sns-topic-provider.ts | wired | 14 | 14 |
 | `SQSQueuePolicyProvider` | sqs-queue-policy-provider.ts | wired | 2 | 2 |
 | `SQSQueueProvider` | sqs-queue-provider.ts | wired | 16 | 16 |
 | `SSMParameterProvider` | ssm-parameter-provider.ts | wired | 9 | 9 |

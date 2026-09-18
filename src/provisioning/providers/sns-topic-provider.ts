@@ -44,6 +44,17 @@ import type {
  * polling overhead (1s->2s->4s->8s) for an operation that completes immediately.
  * This SDK provider eliminates that polling and returns instantly.
  */
+/**
+ * The value SNS enforces for a topic that never set `MaximumMessageSize`
+ * (256 KiB, the standard maximum), and therefore what a template REMOVAL of
+ * the member resets the attribute to — SNS refuses the `''` the other
+ * `SetTopicAttributes` removals send (`MaximumMessageSize:  is not an integer
+ * between 1024 and 1048576 bytes`, measured us-east-1 2026-09-18). A fresh
+ * topic REPORTS no value at all, which `readCurrentState` folds; see there.
+ * Exported for the unit tests that pin both halves (issue #3413).
+ */
+export const SNS_MAXIMUM_MESSAGE_SIZE_DEFAULT = '262144';
+
 export class SNSTopicProvider implements ResourceProvider {
   private snsClient: SNSClient;
   private logger = getLogger().child('SNSTopicProvider');
@@ -64,6 +75,7 @@ export class SNSTopicProvider implements ResourceProvider {
         'DeliveryStatusLogging',
         'Subscription',
         'FifoThroughputScope',
+        'MaximumMessageSize',
       ]),
     ],
   ]);
@@ -131,6 +143,13 @@ export class SNSTopicProvider implements ResourceProvider {
       }
       if (properties['FifoThroughputScope']) {
         topicAttributes['FifoThroughputScope'] = properties['FifoThroughputScope'] as string;
+      }
+      // Issue #3413. `!= null`, not truthiness: the value is a byte count
+      // (1024..1048576 measured live, us-east-1 2026-09-18), never a legitimate
+      // 0, but a numeric member must not ride a string-shaped gate. CreateTopic
+      // accepts it in `Attributes` (measured), so no follow-up call is needed.
+      if (properties['MaximumMessageSize'] != null) {
+        topicAttributes['MaximumMessageSize'] = stringifyValue(properties['MaximumMessageSize']);
       }
 
       // Build tags
@@ -353,8 +372,20 @@ export class SNSTopicProvider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating SNS topic ${logicalId}: ${physicalId}`);
 
-    // Update mutable topic attributes via SetTopicAttributes
-    const mutableAttributes: Array<{ name: string; prop: string; serialize?: boolean }> = [
+    // Update mutable topic attributes via SetTopicAttributes.
+    //
+    // `resetValue` is what a REMOVED member is reset to. The default arm sends
+    // `''`, which SNS reads as "clear" for the string / policy attributes; a
+    // NUMERIC attribute refuses it (`MaximumMessageSize: '' is not an integer
+    // between 1024 and 1048576 bytes`, measured us-east-1 2026-09-18), so a
+    // removal has to send the service default explicitly — the same shape
+    // `SQS_ATTRIBUTE_REMOVAL_RESET` carries for the queue's numeric members.
+    const mutableAttributes: Array<{
+      name: string;
+      prop: string;
+      serialize?: boolean;
+      resetValue?: string;
+    }> = [
       { name: 'DisplayName', prop: 'DisplayName' },
       { name: 'KmsMasterKeyId', prop: 'KmsMasterKeyId' },
       { name: 'ContentBasedDeduplication', prop: 'ContentBasedDeduplication' },
@@ -363,6 +394,15 @@ export class SNSTopicProvider implements ResourceProvider {
       { name: 'FifoThroughputScope', prop: 'FifoThroughputScope' },
       { name: 'ArchivePolicy', prop: 'ArchivePolicy', serialize: true },
       { name: 'DataProtectionPolicy', prop: 'DataProtectionPolicy', serialize: true },
+      // Issue #3413. 262144 (256 KiB) is SNS's standard maximum and what a
+      // topic that never set the attribute enforces; a fresh topic REPORTS no
+      // value at all, so the reset makes the attribute appear at the default
+      // rather than disappear — `readCurrentState` folds that (see there).
+      {
+        name: 'MaximumMessageSize',
+        prop: 'MaximumMessageSize',
+        resetValue: SNS_MAXIMUM_MESSAGE_SIZE_DEFAULT,
+      },
     ];
 
     for (const attr of mutableAttributes) {
@@ -371,7 +411,7 @@ export class SNSTopicProvider implements ResourceProvider {
       if (JSON.stringify(newVal) !== JSON.stringify(oldVal)) {
         let value: string;
         if (newVal === undefined || newVal === null) {
-          value = '';
+          value = attr.resetValue ?? '';
         } else if (attr.serialize && typeof newVal !== 'string') {
           value = JSON.stringify(newVal);
         } else {
@@ -771,6 +811,27 @@ export class SNSTopicProvider implements ResourceProvider {
     const isFifo = attrs['FifoTopic'] === 'true';
     if (isFifo) {
       result['FifoThroughputScope'] = attrs['FifoThroughputScope'] ?? '';
+    }
+
+    // MaximumMessageSize (issue #3413) — AWS reports the attribute only once
+    // it has been SET (a fresh topic carries no value; measured us-east-1
+    // 2026-09-18), and a template REMOVAL resets it to the default rather than
+    // unsetting it (SNS refuses `''`). So a topic whose template never declared
+    // the member can legitimately report 262144, and emitting that would be
+    // permanent phantom drift against a record with no key. Surface the value
+    // when the record declares the member (any value, so a console-side change
+    // AND a drift --revert both work) or when the live value is NOT the
+    // default (a console-side ADD). A record with no key facing the default
+    // reads as no drift, which is what the template says.
+    const liveMaxSize = attrs['MaximumMessageSize'];
+    if (liveMaxSize !== undefined) {
+      const n = Number(liveMaxSize);
+      if (
+        properties?.['MaximumMessageSize'] !== undefined ||
+        liveMaxSize !== SNS_MAXIMUM_MESSAGE_SIZE_DEFAULT
+      ) {
+        result['MaximumMessageSize'] = Number.isFinite(n) ? n : liveMaxSize;
+      }
     }
 
     // JSON-document attributes — AWS returns a JSON string; cdkd state

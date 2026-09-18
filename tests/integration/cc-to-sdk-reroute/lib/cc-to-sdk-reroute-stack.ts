@@ -8,6 +8,29 @@ const DISPLAY_NAME_BY_PHASE: Record<string, string> = {
   seed: 'seeded-on-cc',
   pinned: 'pinned-on-cc',
   flip: 'after-reroute',
+  // The removal phase keeps the flip's DisplayName on purpose: the ONLY change
+  // that deploy carries is the dropped MaximumMessageSize, so the provider
+  // call it triggers is the removal arm and nothing else.
+  removed: 'after-reroute',
+};
+
+/**
+ * `MaximumMessageSize` by phase (issue #3413). AWS published the member in
+ * the 2026-09-18 schema refresh and it was a silent drop on the one type that
+ * carries the `'sdk-coverage'` exemption — whose admission premise is an EMPTY
+ * silentDrop map. Wiring it restores the premise; this fixture is where the
+ * wire is observed: created on the SDK route (base), carried through the
+ * Cloud Control recreate (seed / pinned), UPDATED by the SDK provider on the
+ * flip (1048576 -> 524288), then REMOVED (`removed` leaves it undeclared),
+ * which must reset the live value to SNS's 262144 default rather than send
+ * the `''` SNS refuses. An undefined entry means "not declared".
+ */
+const MAXIMUM_MESSAGE_SIZE_BY_PHASE: Record<string, number | undefined> = {
+  base: 1048576,
+  seed: 1048576,
+  pinned: 1048576,
+  flip: 524288,
+  removed: undefined,
 };
 
 /**
@@ -41,10 +64,20 @@ export class CcToSdkRerouteStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
+    const phase = process.env.CDKD_TEST_PHASE ?? 'base';
     const topic = new sns.Topic(this, 'RerouteTopic', {
       topicName: `${this.stackName}-topic`,
-      displayName: DISPLAY_NAME_BY_PHASE[process.env.CDKD_TEST_PHASE ?? 'base'] ?? 'before-reroute',
+      displayName: DISPLAY_NAME_BY_PHASE[phase] ?? 'before-reroute',
     });
+    // The L2 has no prop for the member yet, so it rides the L1 override; an
+    // undefined phase value leaves the property undeclared (the removal shape).
+    const maximumMessageSize = MAXIMUM_MESSAGE_SIZE_BY_PHASE[phase];
+    if (maximumMessageSize !== undefined) {
+      (topic.node.defaultChild as sns.CfnTopic).addPropertyOverride(
+        'MaximumMessageSize',
+        maximumMessageSize
+      );
+    }
 
     new cdk.CfnOutput(this, 'TopicArn', { value: topic.topicArn });
   }
