@@ -114,6 +114,23 @@ invisible to BOTH until issue
 no identity of its own (it renders its argument), so the verdicts live at the
 call sites; it is a site anyway, so a NEW way of filling that file has to decide.
 
+**An annotation is a CLAIM, and this fence cannot check that a claim is true** —
+go-to-k/cdkd#3378, which is the same limitation the `reads-caller` verdict's own
+note records one paragraph down. Three of the four INI call sites were backed
+behaviourally elsewhere by `local-start-api-profile-creds.test.ts`; the fourth,
+`local-run-task.ts`'s, was not, because its gate was three lines inline in
+`localRunTaskCommand` with no unit seam and the sibling
+`local-run-task-profile-creds.test.ts` covered `resolveSidecarCredentials`'s
+PRECEDENCE rather than the gate. The close was a SEAM rather than a
+command-level harness, and which seam matters: the claim is a property of the
+COMPOSITION (that `sidecarCredentials` on the `!assumedCredentials` path can
+only have come from the `--profile` arm), so extracting the `if` alone would
+have re-tested the same three booleans. `resolveTaskCredentialChannels` composes
+the resolve and the gate, and its cases publish a `--role-arn` role AND an
+`--assume-task-role` result, then read the written file's BYTES — a mock records
+what the caller passed, which is the half this fence already sees. Prefer that
+shape for the remaining annotations: a verdict nothing exercises is a comment.
+
 **The INI shape matches BOTH halves of the key pair** where the env shape
 matches only the access-key id, and that asymmetry is deliberate: on the env
 channel one helper always writes the three keys together, while an INI writer

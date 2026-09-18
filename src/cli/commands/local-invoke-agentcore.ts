@@ -13,6 +13,7 @@ import {
   parseStackRegion,
 } from '../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
+import { displayIdent, displaySafe, ROLE_ARN_MAX_CODE_POINTS } from '../../utils/display-safe.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { CdkdError, withErrorHandling } from '../../utils/error-handler.js';
@@ -1148,6 +1149,11 @@ export function sigv4NoCredentialsRefusal(args: {
 }): CdkdError {
   const exportPair = `set AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY in your shell before running cdkd (the snapshot cdkd puts back is taken before it assumes the role, so exporting them afterwards is too late)`;
   const profileRemedy = args.profileAlreadyPassed ? '' : `pass --profile <name>, `;
+  // cdkd-profile-display: `profileRemedy` is a LITERAL, not the user's value --
+  // either the empty string or the fixed advice `pass --profile <name>, `, in
+  // which `<name>` is a placeholder the reader substitutes. This function takes
+  // two booleans and nothing else, so no argv can reach either interpolation
+  // below. Its doc comment above says why it is PURE, which is the same fact.
   return new CdkdError(
     args.assumedRolePublished
       ? `--sigv4: no AWS credentials available to sign the request as YOU. ` +
@@ -1197,9 +1203,13 @@ export async function resolveHostCredentialsForSigV4(
       return await assumeAgentCoreExecutionRole(assumeRoleArn, region);
     } catch (err) {
       logger.warn(
-        `--assume-role: STS AssumeRole(${assumeRoleArn}) failed for --sigv4 signing: ` +
-          `${err instanceof Error ? err.message : String(err)}. ` +
-          `Falling back to ${options.profile ? `--profile ${options.profile}` : 'shell credentials'}.`
+        assumeRoleFallbackWarning({
+          assumeRoleArn,
+          purpose: '--sigv4 signing',
+          error: err,
+          profile: options.profile,
+          fallbackWithoutProfile: 'shell credentials',
+        })
       );
     }
   }
@@ -1425,9 +1435,13 @@ async function resolveAgentCoreCodeImageFromS3(
       credentials = await assumeAgentCoreExecutionRole(assumeRoleArn, region);
     } catch (err) {
       logger.warn(
-        `--assume-role: STS AssumeRole(${assumeRoleArn}) failed for the fromS3 bundle download: ` +
-          `${err instanceof Error ? err.message : String(err)}. ` +
-          `Falling back to ${options.profile ? `--profile ${options.profile}` : 'the default credentials'}.`
+        assumeRoleFallbackWarning({
+          assumeRoleArn,
+          purpose: 'the fromS3 bundle download',
+          error: err,
+          profile: options.profile,
+          fallbackWithoutProfile: 'the default credentials',
+        })
       );
     }
   }
@@ -1738,7 +1752,7 @@ export async function applyAgentCoreCredentialEnv(
       assumeSucceeded = true;
     } catch (err) {
       logger.warn(
-        `--assume-role: STS AssumeRole(${args.assumeRoleArn}) failed: ${err instanceof Error ? err.message : String(err)}. ` +
+        `--assume-role: STS AssumeRole(${displayIdent(args.assumeRoleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}) failed: ${displaySafe(err instanceof Error ? err.message : String(err))}. ` +
           "Falling back to the developer's shell credentials."
       );
     }
@@ -1751,6 +1765,71 @@ export async function applyAgentCoreCredentialEnv(
       dockerEnv['AWS_PROFILE'] = args.profileCredsFile.profileName;
     }
   }
+}
+
+/**
+ * The `--assume-role: STS AssumeRole(...) failed` warning, for the two sites
+ * that emit the FALLBACK form of it — the `--sigv4` signing path and the fromS3 bundle download.
+ *
+ * ONE builder rather than two near-identical template literals, and that is
+ * go-to-k/cdkd#3390's test review rather than tidiness. The two were twins, and
+ * a twin is where a sanitizing rule goes half-applied: dropping `displayIdent`
+ * from the fromS3 copy alone reddened only the source-shape fence, because the
+ * `--sigv4` copy was the one with a behavioural case. As one PURE function both
+ * sites inherit whatever this is tested to do, and there is one subject to test
+ * rather than a second one somebody has to remember exists.
+ *
+ * TWO untrusted values, and both take `displayIdent` (issue
+ * [#3377](https://github.com/go-to-k/cdkd/issues/3377) for the first, this PR's
+ * security review for the second):
+ *
+ * - `profile` is user-supplied argv, and `ConsoleLogger.formatMessage`
+ *   sanitizes only a call's EXTRA ARGS, never the message itself — so the
+ *   message text is the last place it can be made safe. A MESSAGE, not a
+ *   command to paste, so `displayIdent` and not `isPasteableIdent`;
+ *   `resolveProfileCredentials` in `local-start-api.ts` is the site that needs
+ *   both spellings and shows the difference.
+ * - `assumeRoleArn` is the WIDER boundary of the two, which is why it is here
+ *   at all: nothing validates it before `assumeAgentCoreExecutionRole` (whose
+ *   own throw lands in the very `catch` that calls this), and
+ *   `resolveAssumeRoleArn` can source it from a DEPLOYED STATE RECORD rather
+ *   than from argv. Every character of a legitimate ARN is in `PLAIN_IDENT`, so
+ *   it renders bare exactly as before. cdk-local's twin of this line flattens
+ *   the same value for the same reason; cdkd had nothing.
+ *
+ * `error` takes `displaySafe` — the DENYLIST, since an SDK error message is
+ * free-form text rather than an identifier, which is the line
+ * `display-safe.ts`'s header draws. The first cut stringified it and sanitized
+ * NOTHING, and go-to-k/cdkd#3390's round-2 security review showed that was the
+ * hole the other two guards leave open: STS answers an unparseable RoleArn with
+ * a `ValidationError` that ECHOES THE SUBMITTED VALUE VERBATIM, so the
+ * attacker-controlled ARN comes back through the error string and lands on the
+ * same line the `displayIdent` two expressions to its left was added to
+ * protect. A C1 byte, `U+0085`, `U+2028` and the bidi overrides all survive an
+ * XML 1.0 response body. `formatError` sanitizes a `cause` for exactly this
+ * reason and cannot help here, because this is a logger MESSAGE and
+ * `ConsoleLogger.formatMessage` sanitizes only a call's EXTRA ARGS.
+ */
+export function assumeRoleFallbackWarning(args: {
+  assumeRoleArn: string;
+  purpose: string;
+  error: unknown;
+  profile: string | undefined;
+  fallbackWithoutProfile: string;
+}): string {
+  const fallback = args.profile
+    ? `--profile ${displayIdent(args.profile)}`
+    : args.fallbackWithoutProfile;
+  return (
+    // cdkd-raw-beside-safe: `args.purpose` is a CALLER LITERAL -- this
+    // function has two call sites and each passes a fixed string
+    // (`'--sigv4 signing'` / `'the fromS3 bundle download'`). No argv and no
+    // remote value reaches it, so it is the one operand on this line that
+    // cannot carry anything. The other two both take a helper.
+    `--assume-role: STS AssumeRole(${displayIdent(args.assumeRoleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}) failed for ` +
+    `${args.purpose}: ${displaySafe(args.error instanceof Error ? args.error.message : String(args.error))}. ` +
+    `Falling back to ${fallback}.`
+  );
 }
 
 /**
@@ -1771,7 +1850,7 @@ export function resolveAssumeRoleArn(
     if (loaded) {
       const fromState = resolveExecutionRoleArnFromState(loaded, resolved.logicalId, 'RoleArn');
       if (fromState) {
-        getLogger().debug(`--assume-role: resolved RoleArn from state: ${fromState}`);
+        getLogger().debug(`--assume-role: resolved RoleArn from state: ${displayIdent(fromState)}`);
         return fromState;
       }
     }
@@ -1964,7 +2043,7 @@ async function assumeAgentCoreExecutionRole(
     const creds = response.Credentials;
     if (!creds?.AccessKeyId || !creds.SecretAccessKey || !creds.SessionToken) {
       throw new CdkdError(
-        `AssumeRole(${roleArn}) returned no usable credentials.`,
+        `AssumeRole(${displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}) returned no usable credentials.`,
         'LOCAL_INVOKE_AGENTCORE_ASSUMEROLE_NO_CREDS'
       );
     }

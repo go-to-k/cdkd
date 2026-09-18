@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vite-plus/test';
 import {
   UNREPRODUCIBLE_LOCK_CLAUSE,
+  UNREPRODUCIBLE_LOCK_VALUES,
   buildForceUnlockCommand,
   buildLockContentionMessage,
   forceQuitRecoveryClause,
@@ -88,6 +89,131 @@ describe('buildForceUnlockCommand (issue #2170)', () => {
     // name. Suggesting nothing is the honest answer.
     expect(buildForceUnlockCommand('MyStack', '\u0000\u0001')).toBe('');
     expect(buildForceUnlockCommand('\u0000', 'us-east-1')).toBe('');
+  });
+
+  it('emits NO command when the PROFILE is the value sanitization altered (issue go-to-k/cdkd#3377)', () => {
+    // The profile used to be the one value in this command that reached an
+    // operator's terminal through `shellQuote` ALONE. Quoting is the wrong
+    // instrument for this class: inside `'...'` an ESC or a C1 CSI byte is
+    // still an ESC, and it redraws the line. Exactness is the test the stack
+    // and the region beside it already take, and for the same reason -- a
+    // profile whose rendering changed names a DIFFERENT profile, i.e. a
+    // different ACCOUNT.
+    //
+    // The needle is asserted on the RETURN VALUE of the function under test,
+    // not through any renderer: this module's output is embedded in a larger
+    // message, and asserting one layer out would let that layer's own
+    // sanitization answer for this one.
+    for (const hostile of ['\u001b', '\u0085', '\u009b', '\u2028', '\u202e', '\u2066']) {
+      expect(
+        buildForceUnlockCommand('MyStack', 'us-east-1', { profile: `pro${hostile}d` }),
+        `U+${hostile.codePointAt(0)!.toString(16)} still produced a command`
+      ).toBe('');
+    }
+    // A profile that sanitizes to NOTHING is caught by the same test -- `''`
+    // is not `' '` -- so it needs no clause of its own.
+    expect(buildForceUnlockCommand('MyStack', 'us-east-1', { profile: ' ' })).toBe('');
+  });
+
+  it('leaves an EXACT profile alone, including one needing quotes', () => {
+    // The other direction, without which the case above is satisfied by a
+    // function that suppresses everything. A space is not a control character:
+    // it survives `displaySafe` unchanged, so the value is EXACT and quoting
+    // (not suppression) is the right answer -- the behaviour the pre-existing
+    // `'my prod'` case pins, restated here as the paired floor.
+    expect(buildForceUnlockCommand('MyStack', 'us-east-1', { profile: 'prod' })).toBe(
+      'cdkd force-unlock MyStack --stack-region us-east-1 --profile prod'
+    );
+    expect(buildForceUnlockCommand('MyStack', 'us-east-1', { profile: 'my prod' })).toContain(
+      `--profile 'my prod'`
+    );
+    // And an EMPTY profile still means "none": it emits no fragment and must
+    // NOT take the whole command down with it.
+    expect(buildForceUnlockCommand('MyStack', 'us-east-1', { profile: '' })).toBe(
+      'cdkd force-unlock MyStack --stack-region us-east-1'
+    );
+  });
+
+  it('refuses a forged BUCKET and PREFIX too, not just the profile (issue go-to-k/cdkd#3377)', () => {
+    // The blocker go-to-k/cdkd#3390's security review found: the first cut
+    // sanitized `--profile` and left `--state-bucket` / `--state-prefix` on
+    // `shellQuote` alone, two lines below it. The BUCKET is third-party
+    // plantable -- `config-loader.ts` resolves it from a repo's `cdk.json`
+    // `context.cdkd.stateBucket` -- while the prefix and the profile come from
+    // argv; all three are sanitized anyway, since argv is untrusted text on a
+    // line an operator pastes.
+    //
+    // A case per FRAGMENT, deliberately: they share one helper today, and a
+    // profile-only case stays green if a later edit re-splits them. Enumerating
+    // the destinations is the rule; one case for three of them is not it.
+    for (const hostile of ['\u001b', '\u0085', '\u009b', '\u2028', '\u202e']) {
+      const label = `U+${hostile.codePointAt(0)!.toString(16)}`;
+      expect(
+        buildForceUnlockCommand('MyStack', 'us-east-1', { stateBucket: `buck${hostile}et` }),
+        `${label} in --state-bucket still produced a command`
+      ).toBe('');
+      expect(
+        buildForceUnlockCommand('MyStack', 'us-east-1', { statePrefix: `pre${hostile}fix` }),
+        `${label} in --state-prefix still produced a command`
+      ).toBe('');
+    }
+  });
+
+  it('keeps a LEGITIMATE non-ASCII value, which asciiOnly would have suppressed', () => {
+    // The other direction, and the reason the three recovery fragments take the
+    // DENYLIST while `stackName` and `region` take `asciiOnly`. A stack name
+    // comes from an S3 key and a region from a key segment -- both have a known
+    // ASCII charset. A profile name is a user's own label with no such
+    // guarantee, and this repo argues elsewhere (at the INI section header
+    // `writeProfileCredentialsFile` writes) that a non-ASCII one is legitimate.
+    // Under `asciiOnly` every character of `prod-café` past the `é` is inexact,
+    // so the WHOLE command vanishes -- stack, region and bucket included -- for
+    // a value that pastes perfectly well once quoted.
+    expect(buildForceUnlockCommand('MyStack', 'us-east-1', { profile: 'prod-café' })).toBe(
+      "cdkd force-unlock MyStack --stack-region us-east-1 --profile 'prod-café'"
+    );
+    expect(
+      buildForceUnlockCommand('MyStack', 'us-east-1', { stateBucket: 'cdkd-state-café' })
+    ).toContain("--state-bucket 'cdkd-state-café'");
+  });
+
+  it('names every value that can suppress, in EVERY no-command sentence', () => {
+    // A guard gaining a third, fourth and fifth suppression cause while the
+    // sentences still said "the name or region" told a user their STACK NAME
+    // was unrenderable when it was their profile. Both review rounds of
+    // go-to-k/cdkd#3390 found one stale copy each -- round 1 the two in this
+    // module, round 2 a third in `src/cli/commands/state.ts` -- which is why
+    // the enumeration is now ONE binding and this case asserts the binding AND
+    // that every sentence consumes it.
+    //
+    // Per WORD, not on the whole sentence: a reword that drops one term must
+    // red rather than pass on a substring of what is left.
+    for (const value of ['name', 'region', 'profile', 'state bucket', 'state prefix']) {
+      expect(UNREPRODUCIBLE_LOCK_VALUES, `the binding does not name ${value}`).toContain(value);
+    }
+    // The three consumers. A per-word check on the binding alone is satisfied
+    // by a sentence that stopped interpolating it -- which is exactly how the
+    // inline one went stale while the exported constant was correct, and the
+    // first cut of this case asserted only the constant and stayed green under
+    // a probe that reverted the inline sentence.
+    expect(UNREPRODUCIBLE_LOCK_CLAUSE).toContain(UNREPRODUCIBLE_LOCK_VALUES);
+    expect(forceQuitRecoveryClause('My\u001bStack', 'us-east-1')).toContain(
+      UNREPRODUCIBLE_LOCK_VALUES
+    );
+  });
+
+  it('puts the shared enumeration in the INLINE no-command sentence too', async () => {
+    // The third consumer, which needs a built message rather than a constant.
+    // Probe R5b reverted THIS sentence alone and the previous revision of the
+    // case above stayed green (42/42) -- a major go-to-k/cdkd#3390 round 2
+    // found, and the reason the value list is one binding now.
+    const message = await buildLockContentionMessage({
+      lockManager: lockManagerReturning(null),
+      stackName: 'My\u001bStack',
+      region: 'us-east-1',
+    });
+    expect(message).toContain('No recovery command can be shown');
+    expect(message).toContain(UNREPRODUCIBLE_LOCK_VALUES);
   });
 
   it('strips the control classes a C0-only denylist misses', () => {

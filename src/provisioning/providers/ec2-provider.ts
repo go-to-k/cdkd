@@ -3883,6 +3883,13 @@ export class EC2Provider implements ResourceProvider {
         if (iamInstanceProfile) {
           if (process.env['CDKD_NO_WAIT'] === 'true') {
             const profileRef = iamInstanceProfile.arn ?? iamInstanceProfile.name;
+            // cdkd-profile-display: a DIFFERENT SUBJECT that shares the word.
+            // `profileRef` is an `AWS::IAM::InstanceProfile` name or ARN out of
+            // the user's own CloudFormation template, not the `--profile <name>`
+            // CLI argument go-to-k/cdkd#3377 is about. It reaches this line
+            // through the same template-rendering path every other resource
+            // property does, and is governed by that path's rules rather than
+            // by the CLI-argument ones.
             this.logger.warn(
               `Skipped the IAM instance profile association check for ${logicalId} (${instanceId}) ` +
                 `because --no-wait leaves the instance in 'pending', where AssociateIamInstanceProfile ` +

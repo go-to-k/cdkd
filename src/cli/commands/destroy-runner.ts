@@ -614,6 +614,18 @@ export async function runDestroyForStack(
             /* best-effort: the recovery line below is the real guarantee */
           });
           process.stderr.write(
+            // cdkd-profile-display: the `ctx.profile` below is an ARGUMENT to
+            // `forceQuitRecoveryClause`, not a value this line interpolates.
+            // What is rendered is that helper's RETURN, and it sanitizes every
+            // `LockRecoveryContext` fragment itself -- `displaySafe` plus an
+            // EXACTNESS test, suppressing the whole command rather than naming a
+            // fragment whose rendering changed (issue go-to-k/cdkd#3377; the
+            // behavioural proof is in
+            // `tests/unit/state/lock-contention-message.test.ts`). Sanitizing
+            // here as well would be wrong, not merely redundant: the helper
+            // compares the fragment against the RAW value to decide whether the
+            // command can be shown at all, so a pre-sanitized argument would make
+            // every altered value compare EXACT and re-open the hole.
             `\nForce-quit: stack lock may not be released.` +
               `${forceQuitRecoveryClause(stackName, regionForState, {
                 profile: ctx.profile,
@@ -1037,6 +1049,18 @@ export async function runDestroyForStack(
           /* best-effort: the recovery line below is the real guarantee */
         });
         process.stderr.write(
+          // cdkd-profile-display: the `ctx.profile` below is an ARGUMENT to
+          // `forceQuitRecoveryClause`, not a value this line interpolates.
+          // What is rendered is that helper's RETURN, and it sanitizes every
+          // `LockRecoveryContext` fragment itself -- `displaySafe` plus an
+          // EXACTNESS test, suppressing the whole command rather than naming a
+          // fragment whose rendering changed (issue go-to-k/cdkd#3377; the
+          // behavioural proof is in
+          // `tests/unit/state/lock-contention-message.test.ts`). Sanitizing
+          // here as well would be wrong, not merely redundant: the helper
+          // compares the fragment against the RAW value to decide whether the
+          // command can be shown at all, so a pre-sanitized argument would make
+          // every altered value compare EXACT and re-open the hole.
           `\nForce-quit: stack lock may not be released.` +
             // Region-qualified for the same reason the contention messages are
             // (issue #2170), and it matters MORE here: by this point

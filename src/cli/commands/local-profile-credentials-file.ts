@@ -31,6 +31,8 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
+import { displayIdent } from '../../utils/display-safe.js';
+
 /**
  * Path inside the container where the credentials file is mounted. Fixed
  * (not user-configurable) so the env-var injection is stable. `/cdkd-aws/`
@@ -90,10 +92,51 @@ export async function writeProfileCredentialsFile(
   if (profileName === '') {
     throw new Error('writeProfileCredentialsFile: profile name must not be empty.');
   }
+  // TWO DIFFERENT QUESTIONS, and the fix for issue
+  // [#3377](https://github.com/go-to-k/cdkd/issues/3377) is the second of them.
+  //
+  // The predicate below asks what corrupts the ARTIFACT: `[` / `]` would open a
+  // second INI section in the file written a few lines down, and CR / LF would
+  // break the `-e AWS_PROFILE=<name>` docker-run env line `buildProfileCredentialsDockerArgs`
+  // emits. That is a write-side check, and it stays exactly as it was.
+  //
+  // `displayIdent` asks what corrupts the TERMINAL the refusal is printed on:
+  // ESC / the C1 range / the Trojan-Source bidi overrides, none of which this
+  // predicate rejects and none of which it should -- an ESC in a profile name
+  // does not corrupt the INI file at all. The two sets barely overlap: CR and
+  // LF are in BOTH, `[` and `]` are terminal-harmless, and everything ELSE
+  // `displayIdent` strips is file-harmless. ("Else" is load-bearing -- CR and
+  // LF are exactly the characters the first clause just put in both sets, so
+  // without it the sentence contradicts itself; go-to-k/cdkd#3390 review.) So
+  // the refusal has to sanitize the name IT IS REFUSING on its own account,
+  // which is what it did not do -- interpolating raw bytes that reached here
+  // precisely because they are unusual.
+  //
+  // One recorded RESIDUAL of this predicate, out of scope and non-silent: NUL
+  // is not rejected, so a profile name carrying one reaches the INI file and
+  // the `-e AWS_PROFILE=<name>` argv -- where Node itself refuses it, so the
+  // spawn FAILS rather than corrupting anything.
+  //
+  // `displayIdent` rather than `displaySafe`: a profile name is an untrusted
+  // IDENTIFIER, so it takes the ASCII allowlist, the length cap, and the
+  // JSON-quoted BOUNDARY for a value outside the plain-identifier set. It is
+  // NOT `isPasteableIdent` -- that is the check for a value going into a
+  // command cdkd tells an operator to RUN, and this sentence is a message.
+  // `local-start-api.ts`'s `resolveProfileCredentials` is the site that carries
+  // both, because it prints both shapes.
+  //
+  // The hand-written `'...'` quotes are GONE rather than kept around the
+  // rendering. `displayIdent` quotes conditionally -- bare for a plain
+  // identifier, JSON-quoted for anything else -- and every value that reaches
+  // this throw is non-plain by construction (CR / LF sanitize to a space and
+  // so read as ALTERED; `[` and `]` are outside `PLAIN_IDENT`), so the value
+  // always arrives already quoted and a second pair would only be ambiguous
+  // about which quote the name ends at.
   if (/[\r\n[\]]/.test(profileName)) {
     throw new Error(
-      `writeProfileCredentialsFile: profile name '${profileName}' contains a forbidden character ` +
-        `(any of CR, LF, '[', ']' would corrupt the INI file or the docker -e env var).`
+      `writeProfileCredentialsFile: profile name ${displayIdent(profileName)} contains a ` +
+        `forbidden character (any of CR, LF, '[', ']' would corrupt the INI file or the ` +
+        `docker -e env var).`
     );
   }
   const dir = await mkdtemp(path.join(tmpdir(), 'cdkd-profile-creds-'));
@@ -106,6 +149,13 @@ export async function writeProfileCredentialsFile(
   // item 7. A future call site passing the raw `process.env` triple — which
   // `--role-arn` has already overwritten — now fails this fence instead of
   // being silent.
+  // cdkd-profile-display: FILE BYTES, not a terminal. This is the INI section
+  // header the container's `fromIni({ profile: '<name>' })` matches on, so it
+  // must be the name the user passed, byte for byte -- a `displayIdent` pass
+  // here would make a legitimate non-ASCII profile unfindable inside the
+  // container. What corrupts THIS artifact is `[` / `]` / CR / LF, and the
+  // predicate above rejects all four before reaching this line (issue
+  // go-to-k/cdkd#3377 draws the line between the two questions).
   const lines: string[] = [
     `[${profileName}]`,
     `aws_access_key_id = ${creds.accessKeyId}`,
@@ -117,7 +167,21 @@ export async function writeProfileCredentialsFile(
   // Trailing newline for POSIX-text-file convention; some INI parsers
   // (including AWS SDK's older versions) reject files without a final
   // newline.
-  await writeFile(hostPath, lines.join('\n') + '\n', { mode: 0o600 });
+  //
+  // The write is wrapped because a FAILING one strands the tempdir: the caller
+  // only ever receives a `dispose` through the return below, so an ENOSPC or
+  // EACCES here leaves a `/tmp/cdkd-profile-creds-*` behind that nothing will
+  // ever remove (go-to-k/cdkd#3390 review). The dir is empty in that case — no
+  // credentials landed — so this is hygiene rather than a disclosure fix, but
+  // it is the one exit from this function that had no cleanup at all. The
+  // original error is re-thrown unchanged; the cleanup is best-effort so a
+  // failing `rm` cannot replace the real cause with its own.
+  try {
+    await writeFile(hostPath, lines.join('\n') + '\n', { mode: 0o600 });
+  } catch (err) {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+    throw err;
+  }
   return {
     hostPath,
     containerPath: CONTAINER_AWS_CREDENTIALS_PATH,
@@ -154,6 +218,13 @@ export function buildProfileCredentialsDockerArgs(
     '-e',
     `AWS_SHARED_CREDENTIALS_FILE=${file.containerPath}`,
     '-e',
+    // cdkd-profile-display: a `docker run` ARGUMENT, not a terminal line. It
+    // must agree byte-for-byte with the INI section header written above, or
+    // the SDK inside the container looks up a profile the file does not carry.
+    // The CR / LF half of `writeProfileCredentialsFile`'s validator exists for
+    // exactly this argument. Should this value ever be RENDERED in a failure
+    // message, that render is its own site and takes `displayIdent` --
+    // `docker-argv-redaction.ts` owns the display side of a docker argv.
     `AWS_PROFILE=${file.profileName}`,
   ];
 }

@@ -14,6 +14,7 @@ import {
   parseStackRegion,
 } from '../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
+import { displayIdent, displaySafe, ROLE_ARN_MAX_CODE_POINTS } from '../../utils/display-safe.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import {
@@ -622,7 +623,9 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
         const arn = resolveExecutionRoleArnFromState(stateForRoleHint, lambda.logicalId);
         if (arn) {
           resolvedAssumeRoleArn = arn;
-          logger.info(`--assume-role: auto-resolved execution role from cdkd state: ${arn}`);
+          logger.info(
+            `--assume-role: auto-resolved execution role from cdkd state: ${displayIdent(arn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}`
+          );
         } else {
           logger.warn(
             `--assume-role: could not resolve the execution role ARN from cdkd state for '${lambda.logicalId}'. ` +
@@ -1450,7 +1453,7 @@ export async function applyLambdaCredentialEnv(
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       logger.warn(
-        `--assume-role: STS AssumeRole(${args.assumeRoleArn}) failed: ${reason}. ` +
+        `--assume-role: STS AssumeRole(${displayIdent(args.assumeRoleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}) failed: ${displaySafe(reason)}. ` +
           "Falling back to the developer's shell credentials."
       );
     }
@@ -1511,7 +1514,9 @@ async function assumeLambdaExecutionRole(
     );
     const creds = response.Credentials;
     if (!creds?.AccessKeyId || !creds.SecretAccessKey || !creds.SessionToken) {
-      throw new Error(`AssumeRole(${roleArn}) returned no usable credentials.`);
+      throw new Error(
+        `AssumeRole(${displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}) returned no usable credentials.`
+      );
     }
     return {
       accessKeyId: creds.AccessKeyId,
@@ -1663,7 +1668,7 @@ function suggestAssumeRoleFromState(state: StackState, logicalId: string): void 
   const roleArn = resolveExecutionRoleArnFromState(state, logicalId);
   if (roleArn) {
     logger.info(
-      `Hint: the deployed function uses execution role ${roleArn}. ` +
+      `Hint: the deployed function uses execution role ${displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}. ` +
         `Re-run with --assume-role to invoke under the deployed function's narrow permissions.`
     );
   }

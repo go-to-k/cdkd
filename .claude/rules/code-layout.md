@@ -25,6 +25,7 @@ Per-area detail lives in the satellite files below. Each one is loaded only when
 | `src/synthesis/**` | [layout-synthesis.md](layout-synthesis.md) | app execution, assembly, macros |
 | `src/assets/**` | [layout-assets.md](layout-assets.md) | S3 / ECR publishing, asset storage |
 | `src/state/**`, `src/types/**` | [layout-state-types.md](layout-state-types.md) | state backend, locks, shared types |
+| `src/state/lock-contention-message.ts` | [lock-contention-message.md](lock-contention-message.md) | the lock-contention refusal and its `cdkd force-unlock` recovery hint |
 | `src/version.ts`, `vite.config.ts` | [layout-build.md](layout-build.md) | version injection, Vite+ config |
 | `scripts/**`, `docs/_generated/**` | [layout-scripts.md](layout-scripts.md) | coverage generators, their generated docs, CI critics |
 | `scripts/check-{pr,issue}-*.ts` | [layout-ci-checks.md](layout-ci-checks.md) | CI checks replacing retired gates |
