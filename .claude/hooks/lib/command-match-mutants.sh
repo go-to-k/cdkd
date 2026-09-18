@@ -34,6 +34,14 @@
 # if any does not --
 # a mutant the suite does not notice is a coverage hole, and this reports it.
 set -u
+# `--list-shard` prints the mutant names the current `CDKD_MUTANT_SHARD` would
+# run, one per line, and exits WITHOUT touching a suite. It exists so the shard
+# selector can be fenced at all: the selection's load-bearing property is
+# EXACT COVER across the four CI shards, which no per-shard run can observe,
+# and asserting it by actually running mutants would cost hours.
+# `command-match-mutants.test.sh` is the only caller.
+__list_shard=0
+if [ "${1:-}" = "--list-shard" ]; then __list_shard=1; shift; fi
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB="$HERE/command-match.sh"
 SUITE="$HERE/command-match.test.sh"
@@ -71,6 +79,39 @@ failset() {
   grep -E '^FAIL ' "$1" | grep -vE '^FAIL (latency|bounded walk)| took [0-9]+s' \
     | LC_ALL=C sed -E 's/ \(want .*$//' | LC_ALL=C sort -u
 }
+# THE SPEC IS VALIDATED BEFORE THE BASELINE SUITE RUNS, because that run costs
+# ~25 s locally and minutes on the macOS runner -- a typo in a CI matrix should
+# not buy a full suite before it is told (code review round 32). The SELECTION
+# itself stays below, beside the list it filters.
+if [ -n "${CDKD_MUTANT_SHARD:-}" ]; then
+  case "$CDKD_MUTANT_SHARD" in
+    *[!0-9/]*|*/*/*|/*|*/) _sh_bad=1 ;;
+    */*)                   _sh_bad=0 ;;
+    *)                     _sh_bad=1 ;;
+  esac
+  [ "$_sh_bad" = 0 ] || {
+    echo "CDKD_MUTANT_SHARD must be <index>/<total>, got '$CDKD_MUTANT_SHARD'" >&2; exit 2; }
+  # BASE 10 FORCED. A leading zero makes bash read the number as OCTAL, and
+  # `$((_sh_k % 08))` is not an error bash returns -- it ABORTS the enclosing
+  # `if` compound, so `MUTANTS` kept all 102 mutants, the script exited 0, and
+  # the only trace was one stderr line: the silent full run this whole block
+  # exists to prevent, reproducing the 60-minute CI cancellation it exists to
+  # remove (code review round 32, measured on `0/08`).
+  _sh_i=$((10#${CDKD_MUTANT_SHARD%%/*}))
+  _sh_n=$((10#${CDKD_MUTANT_SHARD##*/}))
+  [ "$_sh_n" -gt 0 ] 2>/dev/null || { echo "CDKD_MUTANT_SHARD total must be > 0" >&2; exit 2; }
+  [ "$_sh_i" -lt "$_sh_n" ] 2>/dev/null || {
+    echo "CDKD_MUTANT_SHARD index $_sh_i is outside a total of $_sh_n" >&2; exit 2; }
+fi
+
+# The baseline suite is the harness's first real cost, so listing mode stops
+# above it: a fence that had to pay for one could not run per case.
+if [ "$__list_shard" = 1 ]; then
+  MUTANTS_FOR_LIST=1
+else
+  MUTANTS_FOR_LIST=0
+fi
+if [ "$MUTANTS_FOR_LIST" = 0 ]; then
 base_out="$WORK/base.txt"
 cp "$LIB" "$WORK/command-match.sh"
 bash "$WORK/command-match.test.sh" > "$base_out" 2>&1
@@ -78,6 +119,7 @@ base_pass=$(sed -n 's/^Pass: \([0-9]*\).*/\1/p' "$base_out" | head -1)
 failset "$base_out" > "$WORK/base.fails"
 printf '%-16s %s\n' "unmutated" "$(tally "$base_out")"
 [ -n "$base_pass" ] || { echo "the unmutated suite printed no tally -- nothing below means anything" >&2; exit 1; }
+fi
 
 # Each mutant is a sed/python edit applied to a COPY. Keep them minimal: one
 # behaviour change each, so a red tells you which property that case pins.
@@ -429,20 +471,13 @@ MUTANTS="${*:-passthrough wholeseg wholeseg-raw empty-pair-collapse dq-backslash
 # index outside it, or a selection that comes back EMPTY exits 2 -- a shard
 # that silently runs nothing is a green tick over no measurement, which is the
 # failure mode this whole file exists to remove. The unsharded invocation is
-# unchanged, and an explicit mutant list on the command line still wins.
+# unchanged. An explicit mutant list on the command line is FILTERED by the
+# shard rather than overriding it -- `CDKD_MUTANT_SHARD=0/4 … a b c` runs one
+# of the three and shards 1..3 refuse as empty. An earlier revision of this
+# comment said the list "still wins", which it does not (test review round
+# 32 measured the drop). The composition is the useful one -- it is how a
+# single shard is reproduced by hand -- so the COMMENT is what was wrong.
 if [ -n "${CDKD_MUTANT_SHARD:-}" ]; then
-  case "$CDKD_MUTANT_SHARD" in
-    *[!0-9/]*|*/*/*|/*|*/) _sh_bad=1 ;;
-    */*)                   _sh_bad=0 ;;
-    *)                     _sh_bad=1 ;;
-  esac
-  [ "$_sh_bad" = 0 ] || {
-    echo "CDKD_MUTANT_SHARD must be <index>/<total>, got '$CDKD_MUTANT_SHARD'" >&2; exit 2; }
-  _sh_i=${CDKD_MUTANT_SHARD%%/*}
-  _sh_n=${CDKD_MUTANT_SHARD##*/}
-  [ "$_sh_n" -gt 0 ] 2>/dev/null || { echo "CDKD_MUTANT_SHARD total must be > 0" >&2; exit 2; }
-  [ "$_sh_i" -lt "$_sh_n" ] 2>/dev/null || {
-    echo "CDKD_MUTANT_SHARD index $_sh_i is outside a total of $_sh_n" >&2; exit 2; }
   _sh_sel=""; _sh_k=0
   for m in $MUTANTS; do
     [ $((_sh_k % _sh_n)) -eq "$_sh_i" ] && _sh_sel="$_sh_sel $m"
@@ -452,7 +487,16 @@ if [ -n "${CDKD_MUTANT_SHARD:-}" ]; then
   [ -n "$(printf '%s' "$MUTANTS" | tr -d ' ')" ] || {
     echo "CDKD_MUTANT_SHARD $CDKD_MUTANT_SHARD selected NO mutants of $_sh_k -- refusing to report a green over nothing" >&2
     exit 2; }
-  printf 'shard %s: %s of %s mutants\n' "$CDKD_MUTANT_SHARD" "$(printf '%s' "$MUTANTS" | wc -w | tr -d ' ')" "$_sh_k"
+  # PROGRESS GOES TO STDERR. In `--list-shard` mode stdout is a DATA channel --
+  # one mutant name per line -- and a progress line mixed into it made the
+  # fence count one name too many per shard (measured while writing that
+  # fence: `1 of 2` read as two selected).
+  printf 'shard %s: %s of %s mutants\n' "$CDKD_MUTANT_SHARD" "$(printf '%s' "$MUTANTS" | wc -w | tr -d ' ')" "$_sh_k" >&2
+fi
+
+if [ "$__list_shard" = 1 ]; then
+  for m in $MUTANTS; do printf '%s\n' "$m"; done
+  exit 0
 fi
 
 rc=0

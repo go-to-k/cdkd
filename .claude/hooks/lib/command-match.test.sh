@@ -803,9 +803,15 @@ r3_case "CP3: the process-substitution twin" 0 "$MERGE" \
   'cat <( (true)#)<<XX' 'gh pr merge 1' 'XX' ')'
 r3_case "CP4: the a=( ) spelling of the same close (no separate arm -- every ( at depth is one kind here)" 0 "$MERGE" \
   'x=$(a=(1)#)<<XX' 'gh pr merge 1' 'XX' ')'
-r3_case "CP-ctl1: a bare subshell with no # -- the heredoc is real (control)" 1 "$MERGE" \
+# CP-ctl1 and CP-ctl2 are PARSE-ERROR shapes in bash 5.x, bash 3.2 and zsh
+# alike, exactly as CP-ctl3 / CP-ctl4 are said to be four lines down (test
+# review round 32 measured all four; only the second pair carried the label).
+# They pin the READING the frame-kind arms implement, and no shell executes
+# the input -- which is the safe direction here, since nothing can run while
+# the matcher declines to match.
+r3_case "CP-ctl1: a bare subshell with no # -- the heredoc is real (control, a parse-error shape)" 1 "$MERGE" \
   'x=$( (true) )<<XX' 'gh pr merge 1 was refused' 'XX' ')'
-r3_case "CP-ctl2: a <( ) glue before the )# -- still not a comment (control)" 1 "$MERGE" \
+r3_case "CP-ctl2: a <( ) glue before the )# -- still not a comment (control, a parse-error shape)" 1 "$MERGE" \
   'x=$(diff <(echo)#)<<XX' 'gh pr merge 1 was refused' 'XX' ')'
 # The frame-KIND class had two of its four members pinned (CP1-CP4 for the bare
 # frame, CP-ctl2 for `<( )`); these are the other two, both in the allowing

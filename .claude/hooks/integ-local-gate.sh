@@ -196,7 +196,12 @@ LOCAL_SCOPE_REGEX='^src/local/|^src/cli/commands/local-[A-Za-z0-9_-]*\.ts$|^test
 # direction (code review rounds 24 and 25).
 bumps_cdk_local() {
   printf '%s\n' "$1" | awk '
-    /^diff --git / { in_pkg = ($0 ~ /^diff --git a\/(.*\/)?package\.json b\/(.*\/)?package\.json$/) ; next }
+    # The optional quotes are not decoration: git QUOTES a path containing a
+    # space (`diff --git "a/my dir/package.json" "b/my dir/package.json"`), and
+    # without them `in_pkg` stayed 0, so a bump in such a directory was
+    # invisible to this reader while every other shape behaved (code review
+    # round 32, measured across eight header spellings on BWK awk 20200816).
+    /^diff --git / { in_pkg = ($0 ~ /^diff --git "?a\/(.*\/)?package\.json"? "?b\/(.*\/)?package\.json"?$/) ; next }
     in_pkg && /^-[[:space:]]*"cdk-local":/ { minus = 1 }
     in_pkg && /^\+[[:space:]]*"cdk-local":/ { plus = 1 }
     END { exit (minus && plus) ? 0 : 1 }

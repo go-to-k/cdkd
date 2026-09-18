@@ -404,6 +404,24 @@ DIFF_EOF
 GH_STUB_FAIL="" GH_DIFF_FAIL="" run_case "gh pr merge <N>: a - in one manifest and a + in another fires (over-refusing)" 2 \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 999 --squash"}}' "$fixture_repo")"
 
+# 20d4. A manifest whose DIRECTORY NAME CARRIES A SPACE. git quotes such a
+#       path in the header (`diff --git "a/my dir/package.json" ...`), and the
+#       reader required the unquoted spelling, so `in_pkg` stayed 0 and a bump
+#       there was invisible -- a silent miss in a reader whose whole job is to
+#       notice one (code review round 32, measured across eight header
+#       spellings). The optional quotes in the pattern are what this pins.
+cat > "$GH_DIFF_PAYLOAD" <<'DIFF_EOF'
+diff --git "a/my dir/package.json" "b/my dir/package.json"
+--- "a/my dir/package.json"
++++ "b/my dir/package.json"
+@@ -101,7 +101,7 @@
+-    "cdk-local": "^0.147.7",
++    "cdk-local": "^0.148.4",
+     "chokidar": "^5.0.0",
+DIFF_EOF
+GH_STUB_FAIL="" GH_DIFF_FAIL="" run_case "gh pr merge <N>: a QUOTED manifest header (path with a space) still fires" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 999 --squash"}}' "$fixture_repo")"
+
 # 20e. `gh pr diff` FAILS while the file list is readable and out of scope
 #      -> the scope is decided from the file list alone (infra fail-open,
 #      like every sibling) -> 0.
