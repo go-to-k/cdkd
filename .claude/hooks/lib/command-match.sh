@@ -5131,32 +5131,27 @@ gate_slug_from_url() {
     ssh.github.com | www.github.com) host=github.com ;;
   esac
 
-  # KNOWN BOUND, PRE-EXISTING and deliberately not closed here: an ssh `Host`
-  # ALIAS whose name contains a DOT. gh resolves a remote's ssh host by running
-  # `ssh -G <host>` and reading the `hostname` it returns -- measured, an `ssh`
-  # wrapper on PATH logged `-G github-work` during a `gh repo view` -- so with
+  # AN SSH `Host` ALIAS IS NO LONGER A HOLE, and the way it closed is worth
+  # keeping. gh resolves a remote's ssh host by running `ssh -G <host>` and
+  # reading the `hostname` it returns -- measured, an `ssh` wrapper on PATH
+  # logged `-G github-work` during a `gh repo view` -- so with
   # `Host github.com-work / HostName github.com` in `~/.ssh/config`, the
   # standard multi-account recipe, `git@github.com-work:go-to-k/cdkd.git`
-  # resolves to THIS repo in gh while this keys it `github.com-work/go-to-k/cdkd`
-  # and the checkout reads FOREIGN.
+  # resolves to THIS repo in gh while this function keys it
+  # `github.com-work/go-to-k/cdkd`.
   #
-  # THE BOUND IS SYMMETRIC, and an earlier revision of this comment said it was
-  # not. "A dotless alias is already safe" holds only for the TARGET loop, where
-  # an unreadable remote RETURNS 1 (not foreign). The HOOK loop does
-  # `|| continue` and silently DROPS one, so an unreadable remote there just
-  # leaves the hook's identity incomplete. Measured, pre-existing on
-  # origin/main: a hook checkout with `origin` = a fork and
-  # `upstream = gh-work:go-to-k/cdkd.git` -- a DOTLESS alias, the standard
-  # multi-account fork setup -- against a real cdkd clone answers FOREIGN and
-  # drops the binding. So on the hook side BOTH spellings get through, and only
-  # a dotless alias as the hook's ONLY remote refuses.
+  # It is NOT closed here, by teaching this parser the alias -- an ssh alias is
+  # user-defined and unbounded, which is the enumeration
+  # `.claude/rules/hooks-class-fences.md` refuses. It is closed by BOTH loops in
+  # `gate_target_is_foreign` now answering NOT FOREIGN for a remote this
+  # function cannot read (go-to-k/cdkd#3389). An alias keys to something no
+  # clone matches, which is exactly "cannot read" -- so the unbounded set is
+  # handled by the one decidable question rather than by naming its members.
   #
-  # Closing the family means either an `ssh -G` SUBPROCESS PER REMOTE inside a
-  # PreToolUse hook against a 10 s budget, or making the hook loop fail closed
-  # like the target loop -- one line, no subprocess, but it then refuses the
-  # sibling flow for any cdkd checkout carrying an unreadable extra remote.
-  # That is a decision rather than a line in this function, so it is recorded
-  # and filed: go-to-k/cdkd#3389.
+  # What that cost was MEASURED, not argued: 52 checkouts / 64 distinct remotes
+  # on the maintainer's machine, all 64 readable, so the refusal fires on
+  # nothing real today. The `ssh -G` option -- a subprocess per remote inside a
+  # PreToolUse hook -- was rejected on that measurement rather than on taste.
 
   printf '%s/%s' "$host" "$path"
 }
@@ -5674,16 +5669,29 @@ gate_target_is_foreign() {
     url_line="${url_line#*	}"
     url_line="${url_line% (*)}"
     [ -n "$url_line" ] || continue
-    # `|| continue` HERE IS NOT THE TARGET LOOP'S RULE, and the block above
-    # describes that one. There, an unreadable remote RETURNS (not foreign);
-    # here it is DROPPED, which only leaves this gate's own identity
-    # incomplete. Keep them distinct when reading: the asymmetry is real, it is
-    # why a DOTLESS ssh alias is safe on the target side and not on this one,
-    # and it is recorded as a KNOWN BOUND on `gate_slug_from_url` and filed as
-    # go-to-k/cdkd#3389. Making this loop refuse too is one line and closes the
-    # family, at the cost of the go-to-k/cdkd#3209 sibling flow for any checkout
-    # carrying one unreadable extra remote -- that issue's call, not this line's.
-    slug=$(gate_slug_from_url "$url_line" 2>/dev/null) || continue
+    # SYMMETRIC WITH THE TARGET LOOP since go-to-k/cdkd#3389: an unreadable
+    # remote here answers NOT FOREIGN rather than being dropped. It used to
+    # `|| continue`, which left this gate's own identity INCOMPLETE -- so a
+    # remote naming THIS repo through a spelling the parser cannot read
+    # (an ssh `Host` alias, which gh expands by running `ssh -G <host>`; a URL
+    # form nobody has met yet) simply vanished from `hook_slug`, and a real
+    # clone of this repo then classified as foreign and the gate RELAXED. The
+    # asymmetry was the whole of that issue: a DOTLESS alias was safe on the
+    # target side and not on this one.
+    #
+    # THE COST WAS MEASURED BEFORE IT WAS PAID, which is why this is one line
+    # rather than an `ssh -G` subprocess per remote against a PreToolUse budget.
+    # Surveyed every git checkout on the maintainer's machine -- 52 checkouts,
+    # 64 distinct remotes -- and `gate_slug_from_url` reads ALL 64. So the
+    # go-to-k/cdkd#3209 sibling flow loses nothing real: what this refuses is a
+    # checkout carrying a remote URL this parser cannot read, of which there are
+    # none. Re-run `.claude/hooks/lib/` against a wider corpus before assuming
+    # that still holds; the refusal is loud and one `git remote` away from
+    # diagnosis, which is the direction this file errs in everywhere else.
+    if ! slug=$(gate_slug_from_url "$url_line" 2>/dev/null); then
+      GATE_FOREIGN_RETRACT="this gate's own checkout has a remote whose URL it cannot read ($url_line), so it cannot rule out that the target names the same repository"
+      return 1
+    fi
     case "$hook_slug" in
       "$slug"|"$slug "*|*" $slug"|*" $slug "*) ;;
       "") hook_slug="$slug" ;;

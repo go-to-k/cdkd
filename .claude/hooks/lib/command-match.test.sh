@@ -4633,13 +4633,45 @@ git init -q "$__gtf_tmp/noremote" 2>/dev/null
 __gtf "a target with NO remote -> foreign (gh can resolve nothing there)" 0 \
   "$__gtf_hooks_dir" "$__gtf_tmp/noremote" "gh pr merge 1 --squash"
 
+# THE HOOK SIDE IS SYMMETRIC TOO (go-to-k/cdkd#3389). Until that issue the hook
+# loop DROPPED an unreadable remote with `|| continue`, so a remote naming THIS
+# repo through a spelling the parser cannot read -- an ssh `Host` alias, which
+# gh expands by running `ssh -G <host>` -- vanished from the hook's identity and
+# a REAL CLONE of this repo then classified as foreign and the gate RELAXED.
+# The fixture is the standard multi-account fork setup: `origin` = a fork,
+# `upstream` = an ssh alias for this repo.
+mkdir -p "$__gtf_tmp/aliashook/.claude/hooks/lib" 2>/dev/null
+git init -q "$__gtf_tmp/aliashook" 2>/dev/null
+git -C "$__gtf_tmp/aliashook" remote add origin https://github.com/contributor/cdkd.git 2>/dev/null
+git -C "$__gtf_tmp/aliashook" remote add upstream "gh-work:go-to-k/cdkd.git" 2>/dev/null
+__gtf "an UNREADABLE remote on the HOOK side -> NOT foreign (fail closed)" 1 \
+  "$__gtf_tmp/aliashook/.claude/hooks" "$__gtf_tmp/canonical" "gh pr merge 1 --squash"
+
+# The CONTROL that keeps it from being "refuse everything": the same fork hook
+# checkout with every remote READABLE still relaxes a genuine sibling. Without
+# this, deleting the whole hook loop would satisfy the case above.
+__gtf "a READABLE fork hook checkout still relaxes a sibling -> foreign" 0 \
+  "$__gtf_tmp/forkhook/.claude/hooks" "$__gtf_tmp/forksib" "gh pr merge 1 --squash"
+
+# And the measured cost is zero only while the parser reads real remotes, so
+# pin the spelling families a real checkout uses. If one of these ever stops
+# normalising, this case reds BEFORE the refusal starts firing on real work.
+mkdir -p "$__gtf_tmp/realhook/.claude/hooks/lib" 2>/dev/null
+git init -q "$__gtf_tmp/realhook" 2>/dev/null
+git -C "$__gtf_tmp/realhook" remote add origin "$__gtf_slug" 2>/dev/null
+git -C "$__gtf_tmp/realhook" remote add https https://github.com/go-to-k/cdkd.git 2>/dev/null
+git -C "$__gtf_tmp/realhook" remote add scp git@github.com:go-to-k/cdkd.git 2>/dev/null
+git -C "$__gtf_tmp/realhook" remote add nosuffix https://github.com/go-to-k/cdkd 2>/dev/null
+__gtf "every REAL remote spelling stays readable -> NOT foreign" 1 \
+  "$__gtf_tmp/realhook/.claude/hooks" "$__gtf_tmp/canonical" "gh pr merge 1 --squash"
+
 rm -rf "$__gtf_tmp"
 # Equality, not a floor, for the reason every other block here uses equality:
 # a floor goes green when a case is deleted.
 __gtf_ran=$((pass + fail - __gtf_start))
-if [ "$__gtf_ran" -ne 42 ]; then
+if [ "$__gtf_ran" -ne 45 ]; then
   fail=$((fail + 1))
-  fail_log="${fail_log}FAIL gate_target_is_foreign block ran $__gtf_ran cases, expected exactly 42 -- a case vanished, or one was added without bumping the count\n"
+  fail_log="${fail_log}FAIL gate_target_is_foreign block ran $__gtf_ran cases, expected exactly 45 -- a case vanished, or one was added without bumping the count\n"
 else
   pass=$((pass + 1)); printf 'ok   gate_target_is_foreign block ran all %s cases\n' "$__gtf_ran"
 fi
