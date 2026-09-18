@@ -21,8 +21,8 @@ are installed with pnpm 11 through Vite+.
 
 The global `vp` CLI itself is pinned by `.mise.toml` via mise's HTTP backend
 against Vite+'s platform CLI tarball. `mise install` also installs
-[markgate](https://github.com/go-to-k/markgate), which the commit-gate hook
-depends on.
+[markgate](https://github.com/go-to-k/markgate), which the merge-time
+integ-destroy gate depends on.
 
 ```bash
 # Clone the repository
@@ -100,10 +100,11 @@ Most `local-*` tests are the exception on cost: they need only a local
 Docker daemon and touch no AWS resources (`local-invoke-from-state` is the
 one exception — it also deploys and destroys real AWS resources).
 
-Which verification a PR needs is derived mechanically from the paths it
-touches — the per-gate table lives in
-[docs/contributing.md](docs/contributing.md#when-is-an-integration-test-needed-and-which-one)
-(source of truth: the gate scopes in [`.markgate.yml`](.markgate.yml)).
+Which verification a PR needs follows from the paths it touches — the table
+lives in
+[docs/contributing.md](docs/contributing.md#when-is-an-integration-test-needed-and-which-one).
+Only the deletion-logic row is enforced by a merge gate; its path list is the
+`integ-destroy` scope in [`.markgate.yml`](.markgate.yml).
 When in doubt, open the PR and ask; the maintainer will pick and run the
 right tests.
 

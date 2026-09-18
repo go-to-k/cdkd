@@ -20,10 +20,9 @@ import { dirname, join } from 'node:path';
  *
  * WHY THIS FILE IS A SYNC FENCE RATHER THAN A BEHAVIOUR TEST. The correct fix
  * is a typed error at the throw site, but that site is in
- * `src/deployment/intrinsic-function-resolver.ts`, which
- * `.claude/hooks/integ-broad-gate.sh`'s `CROSS_CUTTING_REGEX` arms on ANY
- * touch — it has no hunk filter — so typing it turns a no-real-AWS change into
- * one needing a broad-set integ run. The fix therefore stayed on the CONSUMER
+ * `src/deployment/intrinsic-function-resolver.ts` — cross-cutting deploy code,
+ * so typing it turns a no-real-AWS change into one owing a broad-set integ
+ * run. The fix therefore stayed on the CONSUMER
  * side and matched the resolver's message, which made scrub a consumer of a
  * string another module owns. `.claude/rules/testing.md` is explicit about
  * that shape: a reword on the producing side makes the consumer silently stop

@@ -70,8 +70,8 @@ The `&&` is deliberate: unchained, a failed `fetch` still branches off a stale
 content, never by a commit subject.
 
 **`mise trust` is not optional** — `/check` step 0 owns the account (an
-untrusted `.mise.toml` fails `markgate set`, not the checks, so it surfaces
-last and names no cause; verify with `markgate status`, never an rc).
+untrusted `.mise.toml` breaks `vp` / `markgate`, not the checks, so it
+surfaces last and names no cause; verify with `markgate status`, never an rc).
 
 **Build BEFORE the first test run.** A new worktree has no `dist/`; a test
 spawning the built CLI fails with an assertion about its SUBJECT, and the main
@@ -410,8 +410,8 @@ plain resume re-edits, and a lane whose TRANSCRIPT is gone (`could not be
 resumed`, 3x in one run) restarts only from a prompt you kept SELF-CONTAINED
 and still hold.
 
-A subagent's Bash **bypasses the PreToolUse gate hooks** (it can `gh pr create`
-past `verify-pr-gate`) — enforce quality yourself; the parent gates the MERGE.
+A subagent's Bash **bypasses the PreToolUse hooks** (it can `gh pr create`
+with no checks run) — enforce quality yourself; the parent owns the MERGE.
 
 - **Forbid lane agents the FULL SUITE; run it yourself, serially.** Five
   concurrent full suites drove load to 195 and all three lanes were killed by
@@ -423,8 +423,8 @@ past `verify-pr-gate`) — enforce quality yourself; the parent gates the MERGE.
   SECTION first — §6's host-load paragraph owns the rest.
 - Budget two fan-out costs: a lane waiting inside a tool call is killed at 600s
   of silence (background long runs with a log redirect, poll with short
-  `tail`s), and a fix round re-touching an `integ-*` scope invalidates that
-  gate's marker — the gate working; budget the run.
+  `tail`s), and a fix round re-touching `integ-destroy` scope invalidates that
+  marker — the gate working; budget the run.
 
 **Guardrails every lane prompt must carry** (each learned the hard way):
 

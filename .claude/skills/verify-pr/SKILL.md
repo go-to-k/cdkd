@@ -6,9 +6,10 @@ argument-hint: "[PR-number]"
 
 # PR Readiness Verification
 
-Heavy pre-merge gate. Run before creating or merging a pull request — NOT
-before every commit (per-commit verification is `/check`, enforced by the
-`check-gate` hook).
+Heavy pre-merge check. Run before creating or merging a pull request — NOT
+before every commit (per-commit verification is `/check`). No hook or marker
+enforces this skill any more; the checklist below still applies IN FULL, and
+running it is the recommended procedure before `gh pr create` / `gh pr merge`.
 
 Steps 6, 8 and 10-12 live in `references/*.md`, read at the step that uses
 them, so the always-loaded payload stays small — and having them caps THIS
@@ -23,11 +24,10 @@ very end. Everything kept below is read on every invocation.
 Run each check and report pass/fail:
 
 0. **Worktree pre-flight**: `mise trust`, then
-   `[ -d node_modules ] || pnpm install`. `mise trust` is unconditional and
-   is what stops this skill's `markgate set` steps dying on an untrusted
-   `.mise.toml` with a config-parse error that names no cause — `/check`
-   step 0 carries the full account, including why the marker is verified by
-   `markgate status` rather than by an exit code.
+   `[ -d node_modules ] || pnpm install`. `mise trust` is unconditional —
+   an untrusted `.mise.toml` makes every `mise exec` in this run die with a
+   config-parse error that names no cause (`/check` step 0 carries the full
+   account).
    `git worktree add` does NOT copy `node_modules`, so a fresh worktree's
    typecheck/lint/build/test all fail with `tsc: command not found` etc. — and
    the failure is easy to miss when output is piped to `tail` (the exit code
@@ -52,9 +52,9 @@ Run each check and report pass/fail:
      nothing sits between the caller and the verdict (`/check` step 4 has the
      full rationale). Report test count.
    - Every scope / diff check in this skill uses `origin/main...HEAD`, never
-     `main...HEAD` — the gate hooks derive scope from `origin/main`, so an
-     unfetched local `main` makes this skill and the merge-blocking hook
-     disagree about what the branch touched.
+     `main...HEAD` — the `integ-destroy` gate derives its scope from
+     `origin/main`, so an unfetched local `main` makes this skill and the
+     merge-blocking gate disagree about what the branch touched.
    - **Test coverage check**: compare the diff's `src/` changes vs `tests/`
      changes; new/modified logic with no corresponding test update = **fail**
      — add the missing tests before proceeding.
@@ -97,24 +97,24 @@ Run each check and report pass/fail:
      `/verify-pr` does not auto-run `:regenerate`.
      `tests/unit/scripts/matrix-regen-coverage.test.ts` pins
      `gen:all-matrices` against `ci.yml`'s guards in both directions — keep
-     pointing at the aggregate. (The `provider-integ-gate.sh` hook blocks a
-     new `registry.register(...)` without integ coverage but does not enforce
-     matrix regeneration; this step closes that gap.)
+     pointing at the aggregate. (A new `registry.register(...)` also needs an
+     integ fixture covering it; nothing blocks on that, so check it here.)
 
-6. **Leftover resources + the integ gates** — read
+6. **Leftover resources + the integ runs** — read
    [references/leftover-and-integ-gates.md](references/leftover-and-integ-gates.md).
-   Always do the baseline state-bucket check; the `integ-destroy` /
-   `integ-broad` / `integ-local` blocks fire only when the diff touches their
-   scope, and that file carries the scope lists, the exit-code remedies and
-   the orphan spot-check.
+   Always do the baseline state-bucket check; the deletion / cross-cutting /
+   local-execution / schema-bump integ runs apply only when the diff touches
+   their scope, and that file carries the scope lists, the `integ-destroy`
+   exit-code remedies and the orphan spot-check.
 
 7. **No stale references**: grep for removed imports / old module names;
    `src/index.ts` exports consistent.
 
 8. **Code review** — read [references/code-review.md](references/code-review.md).
-   `/review-pr <N>` picks the tier, `pr-security-reviewer` is additive at any
-   tier, and every fix round gets re-reviewed — that file carries the rules and
-   the incidents behind them.
+   `/review-pr <N>` picks the reviewers — one by default, `pr-security-reviewer`
+   additive whenever a security surface is touched, 3-axis for a state-schema
+   bump or a security fix — and every fix round gets re-reviewed; that file
+   carries the rules and the incidents behind them.
 
 9. **Live-test changed behavior**
    - Unit tests verify code correctness; this verifies *feature* correctness
@@ -126,14 +126,14 @@ Run each check and report pass/fail:
      output mode; state-touching change → a real / test bucket; library
      change → a minimal repro importing the new path.
    - "Tests passed" is not "feature works." If you cannot live-test, say so
-     explicitly rather than skip silently — the gate exits non-zero so a
-     reviewer can decide.
+     explicitly rather than skip silently — report it as a FAILED row below so
+     a reviewer can decide, and do not open or merge the PR on it quietly.
 
 10. **Retrospective, residual-nit sweep, PR title + body freshness (steps
     10-12)** — read [references/wrap-up.md](references/wrap-up.md). All three
-    run once, at the end. The nit sweep is where a deferral gets CLASSIFIED, so
-    it gates the marker below: do not set `verify-pr` with a reviewer-flagged
-    item that is neither fixed, filed, nor recorded as won't-do.
+    run once, at the end. The nit sweep is where a deferral gets CLASSIFIED:
+    do not report the PR ready with a reviewer-flagged item that is neither
+    fixed, filed, nor recorded as won't-do.
 
 ## Output
 
@@ -151,8 +151,7 @@ Present results as a table:
 | docs consistency | pass/fail |
 | leftover resources | none/found |
 | integ-destroy marker (deletion-touching PRs only) | fresh/stale/n-a |
-| integ-broad marker (cross-cutting deploy/destroy PRs only) | fresh/stale/n-a |
-| integ-local marker (local-execution-touching PRs only) | fresh/stale/n-a |
+| broad / local / schema-migration integ run (when in scope) | run/n-a |
 | code review (incl. shared-utility callers) | pass/issues found |
 | live-test changed behavior | pass/skipped/issues found |
 | retrospective + rule proposals | done/skipped |
@@ -177,51 +176,22 @@ whose next step the user explicitly owns.
 
 ## Final Step
 
-After all checks pass, record THREE markers via
-[markgate](https://github.com/go-to-k/markgate) — `/verify-pr` supersets
-`/check` and `/check-docs`. Use `mise exec` (cdkd pins markgate via mise):
+After all checks pass, land the work:
 
 ```bash
-# 0. Unconditional; step 0 above says why an untrusted .mise.toml surfaces
-#    here rather than at the checks.
-mise trust
-
-# 1. Children FIRST: `check-gate` blocks the commit below unless both are
-#    fresh, and step 2 exists for runs that changed files in their scope.
-mise exec -- markgate set check
-mise exec -- markgate set docs
-
-# 2. Land the changes, then 3. BIND. Every `&&`, the `||`, `--verify` and
-#    `--show-toplevel` are load-bearing; hooks.md says why. Do not unchain
-#    this. After a rebase the push needs `--force-with-lease`.
-git add -A \
-  && { git diff --cached --quiet || git commit -m "..."; } \
-  && git push \
-  && git rev-parse --verify HEAD \
-       > "$(git rev-parse --show-toplevel)/.markgate-verify-pr-sha" \
-  && mise exec -- markgate set verify-pr
+git add -A
+git diff --cached --quiet || git commit -m "..."
+git push        # after a rebase: --force-with-lease
 ```
 
-**Anything that moves HEAD afterwards invalidates the binding, by design.**
-After a rebase or force-push (which `ship.md` prescribes), repeat the BIND once
-the tree is final -- still chained: the last two lines of the chain above when
-the tree is UNCHANGED, the whole chain with `--force-with-lease` when there is
-anything to commit. hooks.md: why it is named, not counted.
+**No marker is recorded.** `check`, `docs` and `verify-pr` no longer exist in
+`.markgate.yml`, so nothing mechanical consults this run — which makes the
+report the only record that it happened. Say plainly which rows passed.
 
-**The sentinel is the binding, `markgate verify` does not enforce it, and the
-ORDER above is forced from two directions** — the marker is bound to a COMMIT,
-and `check-gate` guards that commit. All of it, including why the binding is to
-the local HEAD rather than the PR's, is in
-[.claude/rules/hooks.md](../../rules/hooks.md) → "Two gates bind their marker to
-a COMMIT" (issue [#2686](https://github.com/go-to-k/cdkd/issues/2686)). Read it
-before touching either half.
+Two mechanical merge conditions remain, and this skill sets neither: CI
+(`ci-green-gate`, a live query — wait for green with
+`gh pr checks <N> --watch`) and, for a deletion-touching diff, the
+`integ-destroy` gate that `/run-integ` sets after a clean real-AWS destroy.
 
-The `verify-pr` marker is what `.claude/hooks/verify-pr-gate.sh` consults for
-`gh pr create` / `gh pr merge`. It is settable ONLY by this skill — setting it
-by hand to bypass the gate defeats the point. If a check legitimately cannot
-pass right now, say so in the report and DO NOT set the marker — the gate
-exits non-zero so the human can decide.
-
-Skip the whole sequence if any check failed. (The commit/push that used to be
-described here is now inside the chain above — doing it after the markers is
-what invalidated the binding.)
+Skip the commit/push if any check failed. If a check legitimately cannot pass
+right now, say so in the report and do not open or merge the PR.

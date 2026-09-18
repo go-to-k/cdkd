@@ -302,9 +302,9 @@ describe('no CLI command resolves a region without folding it', () => {
    * Lambda container it starts (issue
    * [#2103](https://github.com/go-to-k/cdkd/issues/2103)). It is a real
    * instance of exactly this defect class, found by this scanner. It is not
-   * fixed here because `src/cli/commands/local-*.ts` sits behind the
-   * `integ-local` merge gate, so folding it would pull a real-Docker
-   * `local-start-api` run onto a PR in a different command family.
+   * fixed here because `src/cli/commands/local-*.ts` is local-execution code,
+   * so folding it owes a real-Docker `local-start-api` run on a PR in a
+   * different command family.
    *
    * A path allow-list would go inert the moment the file is renamed or the
    * count changes, so this pins the COUNT and asserts it can only SHRINK. A new

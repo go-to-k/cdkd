@@ -85,9 +85,9 @@ that proved them.
   lane will not fix itself — most lanes never need it),
   and the probe's `MODE` / `LANE_TREE` / `MAIN_CHECKOUT` / `LAUNCH_BRANCH`. The
   lane creates its own worktree per §5 — or works in place — implements, runs `/check` +
-  `/check-docs`, opens the PR, dispatches its review tier (a lane may spawn
-  reviewer subagents), addresses findings, and drives CI to green — then
-  STOPS at merge-ready and reports back: PR number, HEAD sha, markers set,
+  `/check-docs`, opens the PR, dispatches its reviewers (§8-i's reviewer
+  policy), addresses findings, and drives CI to green — then
+  STOPS at merge-ready and reports back: PR number, HEAD sha,
   review verdicts, integ fixtures still needed, anything deferred. Its
   diffs, test logs and review round-trips never enter the parent context.
   A lane must NOT run a real-AWS integ or merge on its own — that is the
@@ -95,8 +95,8 @@ that proved them.
 - **Finishing (stage 9): the parent, one lane at a time.** Grant each
   merge-ready lane its turn — resume the lane agent (SendMessage) to run its
   named integ fixtures and merge while it holds the turn, or run `/run-integ`
-  and `gh pr merge` yourself FROM THAT LANE'S WORKTREE (merge gates read the
-  worktree the command runs from — §9). Post-merge (pull → rebuild
+  and `gh pr merge` yourself FROM THAT LANE'S WORKTREE (the `integ-destroy`
+  marker is read from the worktree the command runs from — §9). Post-merge (pull → rebuild
   → worktree cleanup) follows §9.
 - **Retro (stage 10): a subagent**, dispatched after the last merge with
   `references/retro.md` plus this run's key evidence (what you re-read, what
@@ -113,14 +113,14 @@ the user wants to watch); the stage files apply unchanged either way.
 | Before 0. Launch mode | `references/launch-mode.md` | The probe (the ONLY copy), reading its four values, why the parent runs it before stage 0, and the table mapping every IN-PLACE consequence to its stage |
 | 0. Safety screen | `references/triage.md` | Untrusted issues/comments: `author_association` via REST, CLAUDE.md's untrusted-content rule (§0 points at it rather than restating it), defer engage/minimize/block to the maintainer |
 | 1. List backlog | `references/triage.md` | REST listing (PR filter, `per_page=100`, `created_at`) |
-| 2. Collision landscape | `references/triage.md` | Worktree/branch/PR/ref-recency probes, their clone-locality blind spot, the contested cross-cutting file list (the ONLY copy — `tests/unit/scripts/cross-cutting-list-sync.test.ts` fences it against the gates) |
+| 2. Collision landscape | `references/triage.md` | Worktree/branch/PR/ref-recency probes, their clone-locality blind spot, the contested cross-cutting file list (the ONLY copy — `tests/unit/scripts/cross-cutting-list-sync.test.ts` fences it against the other copies) |
 | 3. Pick file-disjoint issues | `references/triage.md` | Lane count from the launch mode, batching as the DEFAULT (largest safe set), disjointness gate, freshness quarantine (§3-0), ranking rules (§3-a), naming the next session's verification before writing `next` (§3-b), premise checks against `origin/main` |
 | 4. Claim | `references/claim.md` | Claim comment BEFORE first edit, compare-and-swap re-read, tie-break by earliest timestamp, classification-line upgrade + labels on the same edit |
 | 5. Implement | `references/implement.md` | One tree per lane, owner probes before adopting one, build before first test, sibling-site sweeps (precondition minus remedy, shape not name, count before/after) |
 | 5-f. File what you find | `references/filing.md` | N sites = ONE issue, the dup-check window (mint vs fold into an umbrella), `Severity` / `Effort` as labels, the two `gh issue` gates |
-| 6. Gates + PR | `references/gates-and-pr.md` | `/check`, `/check-docs`, marker freshness per worktree, PR create |
+| 6. Checks + PR | `references/gates-and-pr.md` | `/check`, `/check-docs` (recommended, not hook-enforced — run them), commit, PR create |
 | 7. Main advanced | `references/gates-and-pr.md` | Rebase over parallel merges, re-grep what LANDED |
-| 8. Verify before merge | `references/verify.md` | `/verify-pr`, `/run-integ`, review tier + reviewer dispatch, live test |
+| 8. Verify before merge | `references/verify.md` | `/verify-pr`, `/run-integ`, reviewer policy + dispatch, live test |
 | 9. Ship | `references/ship.md` | Merge → pull → rebuild linked binary → worktree cleanup, owner probes before removing a worktree |
 | 10. Retro | `references/retro.md` | Net backlog effect (§10-0), promotion check on this run's `next` filings, where a lesson lands (§10-b/c), ship the retro PR (§10-d) |
 | Appendix | `references/gotchas.md` | Gotchas learned the hard way + the existing rules this skill leans on |
@@ -140,8 +140,8 @@ the user wants to watch); the stage files apply unchanged either way.
   IN-PLACE. (§5, `references/launch-mode.md`)
 - **Real-AWS integ runs and merges are SERIALIZED across lanes** — the parent
   grants the turn, one lane at a time; a lane subagent never starts either on
-  its own. Everything else (edits, unit tests, markers, PR create, reviews,
-  CI) runs concurrently, because markgate markers are per-worktree. (§9)
+  its own. Everything else (edits, unit tests, PR create, reviews,
+  CI) runs concurrently, because each lane has its own tree. (§9)
 - **Verification depth is never traded for cost** (CLAUDE.md → "Cost is not a
   tiebreaker"); ranking decides order, never rigor. (§3-a)
 - **English only in every published artifact** — issue bodies/comments, PR

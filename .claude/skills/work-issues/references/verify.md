@@ -73,28 +73,29 @@ by a probe or a trace, never by re-reading the diff:
 
 ### 8-b. Integ ordering vs review rounds and rebases
 
-**Run the integ LAST — after the final edit to any gate-scoped file**, not
-after the final edit you happened to think of. Review nits landing in gate
-scope stale the marker (two real-AWS re-runs on 2026-08-25 alone). Sequence:
-dispatch reviewers → apply EVERY finding including nits → rebase → integ →
-markers. `git diff origin/main...HEAD --name-only` against the gate's include
-list says in one command whether anything is still outstanding.
+**Run the integ LAST — after the final edit to any `integ-destroy`-scoped
+file**, not after the final edit you happened to think of. Review nits landing
+in that scope stale the marker (two real-AWS re-runs on 2026-08-25 alone).
+Sequence: dispatch reviewers → apply EVERY finding including nits → rebase →
+integ → marker. `git diff origin/main...HEAD --name-only` against the gate's
+`.markgate.yml` include list says in one command whether anything is still
+outstanding.
 
 - **A rebase can stale a `hash: diff` marker on its own** — the merge base
   moves, so an incoming change to a file this branch also touches invalidates
   it. Rebase BEFORE the integ; push first so CI runs alongside it — they are
   independent, so serializing them only spends wall-clock.
 - **Under iterative review rounds, DECLARE the tree final, in words, to
-  whoever is still editing it.** Every gate-scoped touch buys another
+  whoever is still editing it.** Every `integ-destroy`-scoped touch buys another
   real-AWS run — comment-only deltas included, since `hash: diff` digests the
   delta, not the behaviour (three runs on 2026-08-26, the third for zero
   non-comment lines). Tell the implementing
   agent to batch all remaining findings into ONE commit and report FINAL with
   no second pass. For reviewers, the reverse: dispatch a round scoped to the
   delta, ask for all findings at once — **and paste the delta's COMMIT
-  MESSAGE into the brief**: all four reviewer agents read `gh pr diff`, none
+  MESSAGE into the brief**: every reviewer agent reads `gh pr diff`, none
   reads `git log`, so a false claim in a commit message is invisible to the
-  whole tier (measured 2026-08-29: a blocker cited a function that never
+  whole round (measured 2026-08-29: a blocker cited a function that never
   existed).
 - **An EXEMPTION is the highest-risk edit a fence can receive — probe it in
   both directions before the round ends.** A carve-out is written while
@@ -124,8 +125,10 @@ code review, and a **live-test of the changed behavior** on top of `/check`.
 Unit tests passing is necessary but NOT sufficient:
 
 - **Deletion / DAG-order / state-cleanup change** → unmergeable until an
-  integ's **destroy** step completes cleanly (`integ-destroy`, plus
-  `integ-broad` for cross-cutting files). Run it via **`/run-integ <name>`**
+  integ's **destroy** step completes cleanly (`integ-destroy`;
+  a CROSS-CUTTING change takes a BROAD-set fixture — nothing
+  enforces that now, and a narrow one never reaches the multi-resource VPC /
+  Lambda / Custom-Resource paths). Run it via **`/run-integ <name>`**
   — never raw `cdkd deploy` / `cdkd destroy` from a shell (CLAUDE.md carries
   that rule and why), and **the bypass is not those two command NAMES: it is
   any real-AWS work outside a fixture** — `node dist/cli.js <anything>` and
@@ -140,8 +143,8 @@ Unit tests passing is necessary but NOT sufficient:
   the hour, 2026-09-14).
 - **Any diff with no `src/**` change** (docs, toolchain, CI, hooks, skills,
   tests, config) → exempt from the deploy/destroy tiers above, never from
-  `/verify-pr` step 9 and never from the `verify-pr` gate itself. This is the
-  easy tier to under-verify. **Never conclude a CI job cannot fail on your
+  `/verify-pr` step 9. Nothing blocks a merge on that step, which makes it
+  the easy tier to under-verify. **Never conclude a CI job cannot fail on your
   diff from the job's NAME** — a name bounds where it reads, not what it
   asserts; repo-wide fences (byte caps, corpus scans) live inside jobs with
   narrow-sounding names (go-to-k/cdkd#2236). What
@@ -286,7 +289,7 @@ aws s3 ls "s3://cdkd-state-<acct>/cdkd-bootstrap/"                       # which
 
 **A docker-dependent fixture is an environment blocker — prefer one reaching
 the same code without it** (on the merits, not availability). When docker is
-required (`integ-local`), verify registry reach FIRST (`docker pull
+required (any `local-*` fixture), verify registry reach FIRST (`docker pull
 hello-world` under a 120s cap) — `docker version` says nothing about registry
 networking. `/run-integ`'s "Important" section owns the rest: hang diagnosis,
 the do-NOT-restart-Docker rule, and that a run blocked before its assertions is
@@ -419,29 +422,27 @@ reach (auto-created `/aws/lambda/*` log groups, RETAIN resources, Secrets in
 recovery, KMS keys pending deletion), then run CLAUDE.md's post-integ
 leftover check — the `deployments/` events store legitimately survives it.
 
-`/verify-pr` sets `check` + `docs` + `verify-pr`; `/run-integ` sets the
-`integ-*` markers — together they unblock `gh pr merge`.
+**`/run-integ` records `integ-destroy`, the ONLY gate left on `gh pr merge`;
+green CI (`ci-green-gate`) is the other merge condition.** `/verify-pr` and
+`/review-pr` record nothing now — run them in full anyway.
 
-**`pr-review` is not on that list, and a LANE must never set it.** `/review-pr`
-writes it, run by the ORCHESTRATOR after its dispatched reviewers report and
-every blocker is addressed — a lane setting it is the "sub-agent self-review
-is not independent review" failure arriving through the marker
-(go-to-k/cdkd#2383, two of three lanes; twice more on 2026-09-04 — only the
-lane whose BRIEF named the prohibition obeyed, so put it there too). The merge
-gate cannot catch it: the sentinel is per-worktree and §9
-merges from the lane's worktree, so a lane setting it after its final push
-matches. The PARENT can, and it is a named step of its own round — read the
-marker BEFORE running `/review-pr`, since one already fresh there can only be
-the lane's (`mise exec -- markgate verify pr-review`, then
-`.markgate-pr-review-sha` against `git rev-parse HEAD`; a sha that is not HEAD
-is the tell). On a hit, review from scratch.
+**The independent review round is the ORCHESTRATOR's; a LANE's own reviewers
+never substitute for it.** Nothing mechanical separates the two now, so the
+rule rides in the BRIEF: a lane closing its own review round is the "sub-agent
+self-review is not independent review" failure (go-to-k/cdkd#2383, two of
+three lanes; twice more on 2026-09-04 — only the lane whose BRIEF named the
+prohibition obeyed). The parent runs its round after the lane reports
+merge-ready, and again after any later push.
 
 **And your own review round is not optional because the lane already ran one.**
 A lane's reviewers are its children — same brief, same framing — so what they
 cannot doubt is the premise the lane handed them (go-to-k/cdkd#2383: three
 lane rounds each found the next spelling of one defect; the independent round
-found the YAML merge key the lane's own tripwire did not fire on). Take the tier the
-heuristic gives for YOUR pass, and keep the LATE rounds independent too —
+found the YAML merge key the lane's own tripwire did not fire on). **The
+reviewer set is FLAT, not a size ladder**: one reviewer by default, plus
+`pr-security-reviewer` on any secret / credential / redaction /
+process-launch surface, and all three axes only for a schema bump or a
+security fix. Take that set for YOUR pass, and keep the LATE rounds independent too —
 author-side round COUNT does not converge on the author's blind spot
 (go-to-k/cdkd#2519: lane rounds reported no blockers; later independent rounds
 kept finding deltas INSIDE the previous fix). Three rounds of

@@ -4,31 +4,45 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 /**
- * The "security / process-launch surface" entry list is duplicated in THREE
- * places, one of which is executable:
+ * The "security / process-launch surface" entry list is duplicated in TWO
+ * places, and NEITHER of them is executable any more:
  *
- *   1. `.claude/hooks/pr-review-gate.sh`  -- `UP_PATH_REGEX`, a live merge gate
- *   2. `.claude/skills/review-pr/references/bias-factors.md` -- the bullet list the hook calls
- *      its source of truth
- *   3. `.claude/agents/pr-security-reviewer.md` -- section 4
+ *   1. `.claude/skills/review-pr/references/bias-factors.md` -- the bullet list,
+ *      and now the source of truth by default rather than by deference
+ *   2. `.claude/agents/pr-security-reviewer.md` -- section 4
+ *
+ * A THIRD copy used to be the source of truth and was executable:
+ * `.claude/hooks/pr-review-gate.sh`'s `UP_PATH_REGEX`, a live merge gate that
+ * computed a review tier from the diff and BLOCKED `gh pr merge` until the
+ * tier's reviewers had cleared. That hook is gone with the rest of the
+ * `pr-review` markgate gate, and the cost is worth stating plainly rather than
+ * leaving implicit: **no mechanism decides the tier any more.** Nothing reads
+ * this list at merge time, nothing refuses a merge because a security surface
+ * went unreviewed, and the only remaining consumer is a session reading the two
+ * documents. The list still matters -- the policy is unchanged, the security
+ * reviewer is dispatched at ANY tier whenever a secret / credential /
+ * redaction / masking / sensitive-value-persistence / process-launch surface is
+ * touched -- but it is now enforced by a reader, so the two documents
+ * disagreeing means a reader is told two different things with nothing to
+ * break the tie. That is exactly why this fence survives the hook.
  *
  * `CLAUDE.md` used to carry it TWICE more -- a slash-separated form in the
  * `pr-review` gate bullet and a brace form in the "PR review pattern" bullet --
- * and both were compared here. It no longer spells the surface out; the bullets
- * point at the hook and the skill instead, so there is nothing left to compare.
- * Do not "restore" either copy: a hand-copy in the file every session loads is
- * the most expensive of the spellings and the least likely to be re-read.
+ * and both were compared here. It no longer spells the surface out, so there is
+ * nothing left to compare. Do not "restore" either copy: a hand-copy in the
+ * file every session loads is the most expensive of the spellings and the least
+ * likely to be re-read.
  *
  * Three failure modes, all silent, all fenced here:
  *
  *   - A listed entry stops existing. `src/local/lambda-authorizer.ts` outlived
  *     its move to cdk-local in PR #691, and `src/local-invoke/docker-runner.ts`
- *     outlived the PR #228 rename to `src/local/`. A dead alternative can never
- *     match, so the gate quietly stopped up-biasing the surface it named, and
+ *     outlived the PR #228 rename to `src/local/`. A dead entry can never
+ *     match anything, so it quietly stopped naming the surface it claimed, and
  *     the files that inherited the logic went unlisted (issue #1972).
- *   - The copies drift apart, so the hook and the skill disagree about the tier
- *     a PR needs -- the same class the down-bias list already carries a
- *     "keep in sync" comment for.
+ *   - The copies drift apart, so the skill and the reviewer's own definition
+ *     disagree about which files carry the surface -- the reviewer would then
+ *     be told to audit files the skill never flags, or the reverse.
  *   - The fence itself goes blind (issue #2006). Two extractors used to compare
  *     as a SORTED SET, and the `pr-security-reviewer.md` one matched any code
  *     span in the section rather than only enumeration items. So an entry
@@ -38,7 +52,7 @@ import { dirname, join } from 'node:path';
  *     drift it exists to catch.
  *
  * NOT fenced, and no test here should be read as covering it: **a live security
- * surface that was never added to ANY copy**. All three spellings agreeing
+ * surface that was never added to EITHER copy**. Both spellings agreeing
  * proves the copies say the same thing, never that what they say is complete --
  * `sigv4-verify.ts` and `docker-cmd.ts` were both missing from every copy at
  * once while their callers were listed. That one needs the (a)/(b)/(c) judgment
@@ -46,17 +60,15 @@ import { dirname, join } from 'node:path';
  * about itself.
  *
  * What the copies must prove is that they are the SAME LIST, and a list is an
- * ordered sequence with multiplicity -- not a set. All three spellings are in
- * the identical document order today, so the order is free signal and is
- * asserted; every extractor below therefore yields document order with
- * duplicates preserved, and the comparisons are sequence comparisons.
+ * ordered sequence with multiplicity -- not a set. Both spellings are in the
+ * identical document order today, so the order is free signal and is asserted;
+ * every extractor below therefore yields document order with duplicates
+ * preserved, and the comparisons are sequence comparisons.
  *
  * The `src/provisioning/providers/**` glob is a first-class member of that
  * sequence, not a special case skipped for parsing convenience. It is the
  * broadest and highest-blast-radius entry on the list, so an extractor that
- * dropped it would leave the entry that matters most unfenced. The hook spells
- * it as the regex `src/provisioning/providers/.*`; that is normalised to the
- * `/**` spelling the prose copies use.
+ * dropped it would leave the entry that matters most unfenced.
  *
  * HOW the prose copies are read, and why it is shaped this way. Every prose
  * extractor validates that its whole region IS an enumeration -- a positive
@@ -72,7 +84,6 @@ import { dirname, join } from 'node:path';
  */
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
-const HOOK = join(repoRoot, '.claude', 'hooks', 'pr-review-gate.sh');
 // The step-3 detail moved out of the orchestrator into its stage file when
 // `/review-pr` was split (go-to-k/cdkd#3170). The list is READ at step 3, so
 // the stage file is where it has to be in sync -- pointing this at SKILL.md
@@ -107,9 +118,11 @@ const ENTRY = 'src/[A-Za-z0-9_./-]+(?:\\*\\*)?';
  * The job no other assertion in this file does: the `names only paths that
  * exist` test consumes a list and asserts nothing was missing, so an extractor
  * returning `[]` passes it vacuously -- and that is a reachable state, not a
- * hypothetical. Simplify `UP_PATH_REGEX` to nothing but globs, or reword either
- * of the two prose anchors, and the corresponding extractor yields an empty
- * sequence. The sync tests would then compare empty against empty and agree.
+ * hypothetical. Reword either of the two prose anchors and the corresponding
+ * extractor yields an empty sequence. The sync test would then compare empty
+ * against empty and agree. With both copies now prose, this floor is the ONLY
+ * instrument that fails a blind parse, since there is no longer an executable
+ * copy that would red for a different reason.
  *
  * The surface currently holds 13 entries. The floor sits at 10 rather than 13
  * so a genuine one- or two-entry shrink (an implementation moving out to
@@ -163,25 +176,6 @@ function readEnumeration(region: string, itemSource: string, source: string): st
       `silently refill it (issue #2006). Region as parsed:\n  ${flat}`,
   ).toBe(true);
   return [...flat.matchAll(new RegExp(itemSource, 'g'))].map((m) => m[0]);
-}
-
-/** The hook's UP_PATH_REGEX alternations, in regex order. */
-function hookEntries(): string[] {
-  const sh = readFileSync(HOOK, 'utf8');
-  const m = sh.match(/^UP_PATH_REGEX='\^\((.+)\)\$'$/m);
-  expect(m, 'pr-review-gate.sh must define an anchored UP_PATH_REGEX').not.toBeNull();
-  const entries = m![1]!
-    .split('|')
-    // Normalise the glob BEFORE unescaping, never after. `providers/.*` is the
-    // regex spelling of the `/**` the prose copies use; the escaped
-    // `providers/\.*` is a plausible slip (every sibling alternation
-    // escapes its dot) that matches only literal dots and therefore no real
-    // file. Unescaping first would collapse the two into the same string and
-    // pass a gate that had silently stopped up-biasing every provider PR.
-    .map((alt) => (alt.endsWith('/.*') ? `${alt.slice(0, -2)}**` : alt))
-    .map((alt) => alt.replace(/\\\./g, '.'));
-  assertFloor(entries, 'pr-review-gate.sh UP_PATH_REGEX');
-  return entries;
 }
 
 /** The up-bias entry bullets in the skill, in document order. */
@@ -279,52 +273,50 @@ function agentEntries(): string[] {
  * Every copy, keyed by where it lives, for the shape-independent checks.
  *
  * No CLAUDE.md rows: neither the `pr-review` gate bullet nor the "PR review
- * pattern" bullet enumerates the surface any more -- both point at
- * `pr-review-gate.sh`'s `UP_PATH_REGEX` and the `/review-pr` skill. Nothing to
- * compare there; do not add either back.
+ * pattern" bullet enumerates the surface any more. Nothing to compare there; do
+ * not add either back. No hook row either -- `pr-review-gate.sh` is deleted,
+ * and the header above says what that costs.
  */
 function allCopies(): Record<string, string[]> {
   return {
-    'pr-review-gate.sh UP_PATH_REGEX': hookEntries(),
     'review-pr/references/bias-factors.md bullet list': skillEntries(),
     'pr-security-reviewer.md section 4': agentEntries(),
   };
 }
 
 describe('security-surface entry list', () => {
-  it('names only paths that exist (a dead entry can never fire)', () => {
+  it('names only paths that exist (a dead entry names nothing)', () => {
     // A `dir/**` glob is checked as its directory -- a glob whose directory was
-    // renamed away is as dead as a missing file, and the up-bias it claims to
-    // carry is the broadest one on the list.
-    const missing = hookEntries()
+    // renamed away is as dead as a missing file, and it is the broadest entry
+    // on the list.
+    const missing = skillEntries()
       .map((e) => (e.endsWith('/**') ? e.slice(0, -3) : e))
       .filter((p) => !existsSync(join(repoRoot, p)));
     expect(
       missing,
-      `UP_PATH_REGEX names path(s) that do not exist, so the merge gate can never ` +
-        `up-bias them: ${missing.join(', ')}. Either restore the file or replace ` +
-        `the entry with the path that inherited its logic (issue #1972).`,
+      `the /review-pr surface list names path(s) that do not exist, so a reviewer ` +
+        `sent to audit them finds nothing: ${missing.join(', ')}. Either restore ` +
+        `the file or replace the entry with the path that inherited its logic ` +
+        `(issue #1972).`,
     ).toEqual([]);
   });
 
-  it('is in sync between the hook regex and the /review-pr skill', () => {
-    const hook = hookEntries();
-    expect(
-      skillEntries(),
-      'pr-review-gate.sh UP_PATH_REGEX and review-pr/references/bias-factors.md disagree; the hook ' +
-        'comment declares the skill list its source of truth, so a PR would get a ' +
-        'different tier from the gate than from the skill. The comparison is ' +
-        'order- and duplicate-sensitive: the two copies must be the same LIST.',
-    ).toEqual(hook);
-  });
-
-  it('is in sync between the hook regex and the pr-security-reviewer definition', () => {
-    const hook = hookEntries();
+  it('is in sync between the /review-pr skill and the pr-security-reviewer definition', () => {
+    // bias-factors.md is the base side by default rather than by deference:
+    // with `pr-review-gate.sh` gone there is no executable copy left, so the
+    // list `/review-pr` reads while deciding the dispatch is the one the
+    // reviewer's own definition has to match. The comparison is order- and
+    // duplicate-sensitive: the two copies must be the same LIST, and a
+    // disagreement means a session is told two different things about which
+    // files carry the surface with nothing left to break the tie.
+    const skill = skillEntries();
     expect(
       agentEntries(),
-      'pr-security-reviewer.md section 4 lists a different surface sequence than the ' +
-        'gate, so the reviewer would be told to audit files the gate never flags.',
-    ).toEqual(hook);
+      'pr-security-reviewer.md section 4 lists a different surface sequence than ' +
+        'review-pr/references/bias-factors.md, so the reviewer would be told to audit ' +
+        'files the skill never flags (or the reverse). Nothing executable decides ' +
+        'this any more -- these two documents ARE the policy.',
+    ).toEqual(skill);
   });
 
   // Sequence equality already fails a duplicate that only ONE copy carries. This

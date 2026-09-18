@@ -1,45 +1,39 @@
-# Step 1 — fetch the PR stats and the touched files' history
+# Step 1 — read the diff and the touched files' history
 
 Read at step 1. Almost all of this is shell, and the history probe is the one
-step-3 trigger that cannot be read off `paths`.
+step-3 signal that cannot be read off `paths`.
+
+**Size no longer selects anything.** The reviewer count is flat (one by
+default), so LOC and file count are context for the reviewer prompts, not
+inputs to a threshold — do not re-derive a tier from them. What this step is
+still for is the `paths` list, which drives every step-3 trigger, and the
+history probe.
 
 Orchestrator: [../SKILL.md](../SKILL.md).
 
-1. **Fetch PR stats**:
+1. **Read the PR**:
 
    ```bash
    gh pr view <N> --json additions,deletions,changedFiles,title,headRefName,files \
      -q '{a: .additions, d: .deletions, fc: .changedFiles, title: .title, branch: .headRefName, paths: [.files[].path]}'
    ```
 
-   `loc = a + d`, **minus auto-generated LOC** — `docs/_generated/**` and
-   lockfiles inflate LOC without reviewer surface (reviewers audit the SCRIPT
-   that produced them):
-
-   ```bash
-   excluded=$(gh pr view <N> --json files \
-     -q '[.files[] | select(.path | test("^docs/_generated/|(^|/)pnpm-lock\\.yaml$|(^|/)package-lock\\.json$|(^|/)yarn\\.lock$")) | .additions + .deletions] | add // 0')
-   loc=$(( a + d - excluded ))
-   ```
-
-   (`fc` is NOT adjusted — a 12-file diff is still cross-cutting when 2 files
-   are generated; see the #404 row in references/output-template.md. The lockfile
-   patterns are `(^|/)`-anchored because the lockfile
-   lives at repo ROOT — a bare `/pnpm-lock\.yaml$` never matched it, PR #1082.
-   The same exclusion lives in `.claude/hooks/pr-review-gate.sh`; keep the two
-   regexes in sync.)
+   `paths` is the load-bearing field. Report `a`/`d`/`fc` in the
+   recommendation so a reader knows the diff's size, and remember that
+   `docs/_generated/**` and lockfiles inflate it without adding reviewer
+   surface (reviewers audit the SCRIPT that produced them, not the output).
 
    **Then gather each touched `src/` file's recent HISTORY in the same pass**
-   — the recent-defect up-bias in step 3 is the one trigger that cannot be read off
-   `paths`, so a step that does not fetch it leaves the trigger to be
+   — the recent-defect signal in step 3 is the one that cannot be read off
+   `paths`, so a step that does not fetch it leaves the signal to be
    remembered rather than evaluated. Measured on go-to-k/cdkd#2612: the loop
-   below scores its two `src/` files 2 and 3, and the tier was still raised
+   below scores its two `src/` files 2 and 3, and the decision was still made
    from standing memory rather than from a query.
 
    ```bash
    BASE=$(gh pr view <N> --json baseRefOid -q .baseRefOid)   # NOT plain HEAD --
    # run on the PR branch, an unanchored log counts the PR's OWN fix-back
-   # commits and a 2-fix-back PR self-trips the bias.
+   # commits and a 2-fix-back PR self-trips the signal.
    git fetch -q origin
    # The `if` is the point, not the `echo`. baseRefOid can be missing locally
    # (shallow clone; a base that exists only on the remote), and then `git log`
@@ -51,7 +45,7 @@ Orchestrator: [../SKILL.md](../SKILL.md).
        # `|| true` because `grep -c` exits 1 when the count is zero.
        n=$(git log --oneline -3 "$BASE" -- "$f" | grep -cE '^[a-f0-9]+ fix(\(|:)' || true)
        printf '%s\t%s\n' "$f" "$n"
-     done   # n >= 2 of the last 3 on a file = evaluate the step-3 bias
+     done   # n >= 2 of the last 3 on a file = evaluate the step-3 signal
    else
      echo "base $BASE is not local -- history probe VOID, not zero"
    fi

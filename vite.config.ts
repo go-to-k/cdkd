@@ -336,7 +336,7 @@ export default defineConfig({
       },
       // The `.claude/hooks/**` smoke tests, run under every bash on the
       // machine. Before issue #1477 no task and no CI job ran them at all,
-      // so a suite could rot unnoticed — `provider-integ-gate.test.sh` was
+      // so a suite could rot unnoticed — a per-gate suite was
       // failing 3 of its 17 cases under macOS's system bash 3.2, and
       // #1458 shipped a bash-4-only `mapfile` into the shared matcher that
       // only an explicit `/bin/bash` run would have caught. NOT part of

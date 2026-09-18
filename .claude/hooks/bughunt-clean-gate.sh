@@ -40,7 +40,7 @@
 # shellcheck source=lib/command-match.sh
 __hook_dir="${BASH_SOURCE[0]%/*}"
 # `%/*` leaves the string unchanged when the path has no slash (invoked as
-# `bash verify-pr-gate.sh` from inside the hooks dir), which would look for
+# `bash ci-green-gate.sh` from inside the hooks dir), which would look for
 # `<script-name>/lib/...`. Fall back to the cwd in that case.
 [ "$__hook_dir" = "${BASH_SOURCE[0]}" ] && __hook_dir="."
 if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \

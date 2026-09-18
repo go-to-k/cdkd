@@ -321,7 +321,7 @@ The `rollback-journal.json` object (issue
 NOT a field inside `StackState`. It carries its own `journalVersion` (starting
 at `1`), independent of `StackState.version` — a schema bump is deliberately
 avoided so old binaries reading state are unaffected and the
-`integ-schema-migration` gate is not triggered. It is written by the deploy
+schema-migration round-trip integ is not owed. It is written by the deploy
 engine whenever a deploy ends without a completed rollback (a `--no-rollback`
 failure, a SIGINT interruption, or before an automatic rollback), holds one
 `segment` per failed deploy attempt (each a verbatim `CompletedOperation[]`,

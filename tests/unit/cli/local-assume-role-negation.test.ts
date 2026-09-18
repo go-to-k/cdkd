@@ -63,7 +63,7 @@ const EXPLICIT_ARN = 'arn:aws:iam::111111111111:role/Explicit';
  *
  * `parse()` runs the registered action; the production ones boot Docker
  * containers and long-running servers, so each is replaced by a no-op (the
- * `cmd-parse-stub-gate` hook requires this for any `cmd.parse()` in a test).
+ * a no-op action stub is required for any `cmd.parse()` in a test, or Commander runs the real handler).
  * `preAction` hooks are NOT replaced and still run — which is deliberate, since
  * they are part of what these commands do to their option bag.
  */

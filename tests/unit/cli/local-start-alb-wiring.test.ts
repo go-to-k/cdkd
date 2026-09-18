@@ -69,7 +69,7 @@ import type { EmulatorStrategy } from '../../../src/cli/commands/ecs-service-emu
  * one is written from a round that found no plausible survivor.
  *
  * `parseAsync` rather than `parse`: the action is async, and
- * `cmd-parse-stub-gate` deliberately exempts the async spelling because the
+ * the stub convention deliberately exempts the async spelling because the
  * unhandled-rejection trap it guards is specific to the sync one. The action is
  * NOT stubbed here — running it is the entire point.
  */

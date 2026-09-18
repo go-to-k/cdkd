@@ -22,7 +22,7 @@ import { createLocalStartCloudFrontCommand } from '../../../src/cli/commands/loc
 describe('createLocalStartCloudFrontCommand', () => {
   // `cmd.parse([...])` runs the registered `.action(handler)` body. The
   // production handler boots a real local server; stub to a no-op so parse()
-  // only exercises Commander's option parser (the cmd-parse-stub-gate hook
+  // only exercises Commander's option parser (a no-op action stub
   // enforces this stub for any cmd.parse() in tests).
   const cmd = createLocalStartCloudFrontCommand();
   cmd.action(() => {});

@@ -2,9 +2,9 @@
 # verify.sh — cdkd state schema v9 -> v10 migration round-trip integ test
 # (issue #2944).
 #
-# Proves BOTH halves, because the `integ-schema-migration` gate only checks
-# that a clean `schema-v9-to-v10-migration` run happened — nothing but this
-# script stops it passing while the feature is dead.
+# Proves BOTH halves. "A clean `schema-v9-to-v10-migration` run happened" is
+# all any caller learns from the outside — nothing but this script stops that
+# run passing while the feature is dead.
 #
 # MIGRATION HALF (mirrors tests/integration/schema-v8-to-v9-migration):
 #   a state file written by the last v9 binary (@go-to-k/cdkd@0.288.7) is read

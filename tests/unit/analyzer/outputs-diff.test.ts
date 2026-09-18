@@ -7,7 +7,7 @@
  * 0 — while the apply wrote new outputs and republished the exports index.
  *
  * The fix deliberately does NOT share code with `DeployEngine.resolveOutputs`
- * (that file is in the `integ-broad` / `integ-destroy` gate scopes and was held
+ * (that file is in the `integ-destroy` gate scope and was held
  * by a parallel lane). The last describe block is the anti-drift fence that
  * trade requires: it watches the deploy-side semantics this module
  * mirrors, so an edit to either side that breaks parity fails here rather than

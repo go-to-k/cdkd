@@ -60,35 +60,26 @@
   path, then `git -C <main> stash push -m <label> -- <path>`; drop the stash
   only after confirming `stash@{0}`'s message is yours — parallel lanes stash
   too. A blocked call runs NOTHING, preamble included — §6 has the rule.
-- **An IN-PLACE run ends with the Stop hook still calling its lane unmerged,
-  and the remedy it names is one this mode forbids.**
-  `stop-unmerged-lane-warn.sh` enumerates worktrees ahead of `origin/main`,
-  and a squash-merged branch reads as ahead forever; the warning's "remove its
-  worktree" half is forbidden here (SKILL.md "Launch mode"). Expected, not a
+- **An IN-PLACE run ends with its lane branch still reading as unmerged, and
+  the obvious remedy is one this mode forbids.** A squash-merged branch stays
+  ahead of `origin/main` forever, so the tree looks like a live lane; removing
+  that worktree is forbidden here (SKILL.md "Launch mode"). Expected, not a
   defect: confirm the PR is MERGED and say so in the wrap. The tree is only
   clearable from inside by LEAVING the lane branch, which is exactly §9's
   IN-PLACE arm — its recipe, its `--no-guess`, and its
-  `LAUNCH_BRANCH`-carries-no-commits check all live there, and it silences the
-  hook without removing a tree this run does not own. Detach silences it too
-  but leaves the outer tool displaying a detached workspace; it is the fallback
-  for a run launched detached, not the default (go-to-k/cdkd#2417).
+  `LAUNCH_BRANCH`-carries-no-commits check all live there, and it clears the
+  appearance without removing a tree this run does not own. Detaching clears it
+  too but leaves the outer tool displaying a detached workspace; it is the
+  fallback for a run launched detached, not the default (go-to-k/cdkd#2417).
 - **A usage-limit interruption does not have to end the run: leave a one-shot
   checkpoint at the reset time**, scheduled when the limit is ANNOUNCED, not
   when it bites (the 2026-09-02 run resumed itself at the reset instant from
   an in-session one-shot cron and finished its lane — the alternative is not
   "resume later" but "re-derive later"; go-to-k/cdkd#2417).
-- **`pr-body-item-number-gate` scans a HEREDOC that writes the body file, in
-  the same command — before the file exists.** So a `cat > body.md <<'EOF' …
-  EOF` chained to `gh issue comment --body-file body.md` is judged on the
-  heredoc's text (the refusal even says "heredoc, not yet written"), while the
-  same `gh` call run on its own is judged on the file on disk. That is the
-  whole of it — measured 2026-09-15, and written down in the hook itself, in
-  the block above its heredoc extraction rather than in its header; a
-  2026-09-02 run guessed instead that the gate scans every body-file argument
-  once any text in the command trips it, or that command SIZE matters, and
-  both are wrong. Writing the file with `Write` and passing it in a separate
-  call is the way through; a `#N` that must survive takes the qualified
-  `owner/repo#N` form the gate allows.
+- **Qualify every issue/PR reference you publish as `owner/repo#N`.** Nothing
+  refuses a bare `#N` any longer, and a bare one renders against whichever repo
+  reads it — which matters most in a comment or body that gets mirrored to a
+  sibling repo (§10-c carries the same rule for this skill's own files).
 - **An agent KILLED by a usage limit or a 429 keeps its context — `SendMessage`
   it, never re-dispatch.** Measured at both grains: a REVIEWER had read the
   whole diff before dying and finished its round in 148 s on resume instead of
@@ -96,8 +87,8 @@
   its read-only-rules lines re-stated), and three killed LANES across
   go-to-k/cdkd#3103 / go-to-k/cdkd#3139 (2026-09-14) came back the same way.
   **Read the TREE, and the DIFF, before the message** — a killed lane may
-  already have committed, pushed and opened the PR, and one had `verify-pr`
-  bound to a superseded sha. **Uncommitted changes there are as likely to be
+  already have committed, pushed and opened the PR, and one had its review
+  round closed against a sha its last push had superseded. **Uncommitted changes there are as likely to be
   the round's real fix as an abandoned probe**, and the two are
   indistinguishable without reading them: `git diff` decides, and a restore
   taken on the probe assumption destroys work no commit holds (2026-09-16,

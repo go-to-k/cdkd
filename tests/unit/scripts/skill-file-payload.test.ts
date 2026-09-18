@@ -127,7 +127,7 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // go-to-k/cdkd#2417 until 2026-09-02, while SKILL.md had been 11,548 B
     // since c416ecb5. Nothing was wrong with the reasoning -- only nothing
     // checked it, which is the same failure the corpus figures had.
-    orchestratorBytes: 11_952,
+    orchestratorBytes: 11_958,
     // MEASURED on the MERGED tree, never derived. This record has now collided
     // on a rebase twice: go-to-k/cdkd#2717 SHRANK the corpus (retiring nine
     // gates let four work-issues stage files drop text about restrictions that
@@ -423,9 +423,14 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // and two clauses of the new bullet itself. implement.md 29,940 -> 29,999
     // (+59), no other file touched, reconciling 200,814 -> 200,873.
     //
-    // implement.md is now the LARGEST, with 1 B of cap left; triage.md is
-    // runner-up. Neither cap moved and the floor below still clears
-    // `corpus - runnerUp` by 321 B, which is now the binding direction.
+    // RE-MEASURED 2026-09-18 by the agent-tooling shrink, which reworded every
+    // reference file that described a retired hook or marker: corpus
+    // 200,873 -> 199,838, SKILL.md 11,952 -> 11,958, and the top two swapped --
+    // verify.md is now the LARGEST with 6 B of cap left and implement.md the
+    // runner-up with 10 B. Every file that grew mid-edit was compressed back
+    // under the 30,000 B per-file cap in the same pass rather than the cap
+    // being moved. Neither cap moved and the floor below still clears
+    // `corpus - runnerUp` by 1,334 B, which is the binding direction.
     //
     // A SECOND lesson from that run had nowhere to land and is NOT here:
     // `.claude/rules/testing.md` is at its `tests/**` payload cap exactly, so
@@ -433,8 +438,8 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // thereby dead -- say which of equivalent / unreachable / defensive it is)
     // is a checklist row on go-to-k/cdkd#2940 instead, with its measured cost.
     //
-    // Cap headroom, in size order: implement.md 1 B, triage.md 6 B,
-    // verify.md 39 B. All three open with a compression pass, not an
+    // Cap headroom, in size order: verify.md 6 B, implement.md 10 B,
+    // triage.md 21 B. All three open with a compression pass, not an
     // addition.
     //
     // go-to-k/cdkd#2341's third lesson is deliberately NOT here. It targets
@@ -443,9 +448,9 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // a narrative. It stays on that issue as a stated residual behind
     // go-to-k/cdkd#2424's stage split, which is the structural answer this
     // record has now predicted twice.
-    corpusBytes: 200_873,
-    largest: { file: 'implement.md', bytes: 29_999 },
-    runnerUp: { file: 'triage.md', bytes: 29_994 },
+    corpusBytes: 199_838,
+    largest: { file: 'verify.md', bytes: 29_994 },
+    runnerUp: { file: 'implement.md', bytes: 29_990 },
   },
 };
 

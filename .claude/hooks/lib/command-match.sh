@@ -2582,17 +2582,24 @@ GATE_QUOTED_VALUE='("[^"]*"|'"'"'[^'"'"']*'"'"')'
 # ── A shell WORD, for the gates that extract with PERL ─────────────────────
 #
 # `GATE_PATH_TOKEN` and `_GATE_WORD_CHAR` are bash EREs, usable only from
-# `[[ =~ ]]`. ONE gate -- pr-body-item-number -- pulls a `--body-file` / `-F`
-# path or an inline `--body` value out of RAW command text with `perl -0777`
-# instead, because it needs a GLOBAL scan over a multi-line slurp and
-# `[[ =~ ]]` gives neither. Do not trust that count from this comment: the
-# header undercounted its own consumers once and the fence
-# `tests/unit/scripts/gate-perl-word-consumers.test.ts` now derives the set from
+# `[[ =~ ]]`. NO gates consume this prelude today. A gate that needs a GLOBAL
+# scan over a multi-line slurp of RAW command text -- which `[[ =~ ]]` cannot
+# give -- reaches for it instead of writing a fourth copy of the value class.
+# Do not trust that count from this comment: the header undercounted its own
+# consumers once and the fence
+# `tests/unit/scripts/gate-perl-word-consumers.test.ts` derives the set from
 # the hooks directory and fails when the two disagree.
+#
+# **It is NOT dead machinery at zero consumers**, which is the question a
+# reader arrives with. `unresolved-target-class.test.sh` and
+# `lib/command-match.test.sh` both interpolate it, so deleting it breaks two
+# live class fences; and the three measured fail-open holes below are why the
+# next gate that scans raw text must take this rather than roll its own.
 #
 # It was FIVE until go-to-k/cdkd#2717 retired gh-body-english,
 # issue-dup-check and issue-classification-label to CI, and then
-# issue-deferral-criteria outright. Their subject is a body
+# issue-deferral-criteria outright. The last one, pr-body-item-number, went
+# with the agent-tooling shrink. Their subject is a body
 # PUBLISHED to GitHub, which a workflow receives whole in the event payload --
 # so the extraction problem this constant exists to solve does not arise there
 # either, for the same reason it does not arise for a `gate_argv` consumer
@@ -4803,11 +4810,13 @@ cmd_last_cd_target() {
 # These hooks fire on EVERY Bash call the session makes, including ones that
 # target a SIBLING repository -- deliberate policy (CLAUDE.md: "cdkd's gate
 # policy is applied to that repo's commands ... never route around it"). The
-# integ gates then `cd` to the resolved target tree and ask markgate about a
-# gate named for cdkd: `integ-local`, `integ-destroy`, `integ-broad`,
-# `integ-schema-migration`. A repo that spells the same gate differently --
-# cdk-local names its Docker local-execution gate `integ` -- fails that verify
-# NO MATTER WHAT, so the merge became unsatisfiable by any legitimate action.
+# integ gate then `cd`s to the resolved target tree and asks markgate about a
+# gate named for cdkd: `integ-destroy`. A repo that spells the same gate
+# differently -- cdk-local names its Docker local-execution gate `integ` --
+# fails that verify NO MATTER WHAT, so the merge became unsatisfiable by any
+# legitimate action. (cdkd declared four such gates when this was written; the
+# other three were retired with the rest of the marker layer, and the mechanism
+# is kept because the class returns the moment a second one is added.)
 #
 # Measured 2026-08-26 with markgate 0.4.1: NO PER-GATE query distinguishes
 # "this repo does not declare that gate" from "the marker is stale".
@@ -4841,13 +4850,16 @@ cmd_last_cd_target() {
 # GATE_MARKER_ALIASES rows: <host>/<owner>/<repo>|<cdkd gate>|<that repo's gate>|<how to refresh it there>
 # The slug carries the HOST on purpose -- see gate_repo_slug.
 #
-# Only same-PURPOSE pairs belong here. `integ-destroy` / `integ-broad` /
-# `integ-schema-migration` deliberately have NO row: neither sibling has a
-# destroy path, a broad real-AWS matrix, or a state schema, so mapping any of
-# them onto cdk-local's Docker `integ` (or cdk-real-drift's read-only one) would
-# accept a marker that never exercised the code being gated.
+# Only same-PURPOSE pairs belong here. `integ-destroy` deliberately has NO row:
+# neither sibling has a destroy path, so their `integ` never exercised a delete,
+# and mapping it onto cdk-local's Docker `integ` (or cdk-real-drift's read-only
+# one) would accept a marker that never exercised the code being gated.
+#
+# The table is EMPTY today. It carried one row -- cdk-local's `integ` standing
+# in for cdkd's `integ-local` -- until `integ-local` was retired with the rest
+# of the marker layer. Empty is a valid state: `gate_resolve_marker_gate` then
+# answers `canonical` or `none` and never `alias`.
 GATE_MARKER_ALIASES='
-github.com/go-to-k/cdk-local|integ-local|integ|/run-integ local-<test> (cdk-local'"'"'s /run-integ sets its integ marker after a clean Docker run with an empty container / network sweep)
 '
 
 # gate_markgate_declares <repo-top> <gate-name>

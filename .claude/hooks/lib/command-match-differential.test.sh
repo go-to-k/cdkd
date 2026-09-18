@@ -618,7 +618,8 @@ ALLOWED="$TMPDIR/allowed.tsv"
 #             resolves, `gh pr --web "view" N` errors `unknown flag`).
 #             Ids 240 / 241 / 242 carry the cells -- a long flag, a short one,
 #             and the ISSUE group, the last one landing on the two carrier
-#             constants `pr-body-item-number-gate` reads.
+#             constants the retired `pr-body-item-number-gate` read (they stay
+#             in the library: the differential prices the MATCHER, not a gate).
 #
 # Ids 243-245 are the CONTROLS and declare NO cell, which is the half that
 # prices the change: `gh pr --search "merge" list` and

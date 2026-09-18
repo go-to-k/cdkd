@@ -253,20 +253,33 @@ PR, never the sha.
 
 ### 10-b. Where the fix belongs — pick ONE
 
+- **A row in `docs/tooling-backlog.md`** — the DEFAULT for anything about the
+  tooling itself (a hook, a markgate gate, a rule, a skill, a CI fence, the
+  integ harness). It is not a GitHub issue: the tracker is for cdkd behaviour a
+  user can hit, and a row graduates to an issue only when someone starts
+  working it. **A rule that was ALREADY in the text and got violated anyway
+  goes here on its FIRST occurrence** — the observation is recorded, and
+  nothing is built on it.
 - **A hook** (`.claude/hooks/`) — or a test under `tests/unit/**` when the
-  subject is a committed file — whenever the failure is mechanically
-  detectable. Strongest, and the RIGHT answer whenever the rule was ALREADY in
-  the text and got violated anyway: that proves the sentence is not
-  load-bearing, and another sentence will not make it so. Escalate rather than
-  restate.
+  subject is a committed file — on the SECOND occurrence of that same failure,
+  and only when it is mechanically detectable. The escalation rule is intact:
+  a sentence violated despite being stated is not load-bearing and another
+  sentence will not make it so — it is now BOUNDED by the second-occurrence
+  bar, because a mechanism built for a one-off costs every future run more
+  than the failure did. Two things that never reach this rung: a hook failing
+  OPEN on an exotic shell shape (quoting, heredocs, `$( )`, `bash -c`, `eval`,
+  case arms, redirections), which is accepted as-is; and anything that would
+  BLOCK where the harm does not complete at the moment of the action and land
+  on a third party's artifact (`docs/tooling-backlog.md` carries the
+  criterion). "Cost is not a tiebreaker" governs verifying PRODUCT changes and
+  does not reach here.
 - **This skill's stage files** when the lesson is about running THIS flow. The
   edit target is the `references/<stage>.md` where the lesson fires — never
   the SKILL.md orchestrator, unless the stage list itself changed; its own
   byte cap is 10-c's, and for the same reason.
-- **Another skill**, but only one this run actually exercised — every skill
-  sits in the `check` gate's scope, so any edit invalidates that marker.
+- **Another skill**, but only one this run actually exercised.
 - **`CLAUDE.md` / `.claude/rules/**`** when it applies to any work in this
-  repo, not just this flow (in both gates' scope).
+  repo, not just this flow.
 - **Memory** when the lesson is judgmental and cross-repo. Weakest enforcement
   — the landing spot when nothing above can hold the rule, not the default.
 
@@ -397,9 +410,9 @@ git fetch origin && git switch -c "$B" origin/main
 
 - `chore:` prefix — `.claude/**` is not `src/**`; CI refuses a `fix:` / `feat:`
   PR TITLE here (go-to-k/cdkd#2717).
-- Scope does not exempt you from the markers (CLAUDE.md, "Before every
-  commit") — a fresh worktree starts with none, and `/verify-pr` sets all
-  three in one pass; run it before the commit. A
+- Scope does not exempt you from the checks — run `/check`, `/check-docs` and
+  `/verify-pr` before the commit exactly as a `src/**` lane does; nothing
+  blocks this PR if you skip them, which is the only difference. A
   tooling-only PR gets §8's live-test exemption — the prose arm for a
   SKILL.md / rule edit, the command arm as soon as it lands in
   `.claude/hooks/**`. **There, run the WHOLE harness — `bash
@@ -407,8 +420,11 @@ git fetch origin && git switch -c "$B" origin/main
   TALLY, not the rc**: a hooks edit re-triggers the path-filtered `hooks.yml`,
   so a fence a PEER left inert surfaces as YOUR red CI (2026-08-29: a
   settings-only PR had broken a `main` suite sitting outside that path filter).
-- Take the tier `/review-pr`'s heuristic gives and do not argue it down —
-  agent-instruction files are deliberately not down-biased (CLAUDE.md).
+- Take the reviewer set `/review-pr` gives (one reviewer by default; the
+  security reviewer on a secret / credential / redaction / process-launch
+  surface; all three axes for a schema bump or a security fix) and do not argue
+  it down — a wrong rule in an agent-instruction file propagates to every
+  future session (CLAUDE.md).
 - **Merge it before the wrap report, then remove the worktree**
   (`git worktree remove .claude/worktrees/<name> && git worktree prune` —
   §9's closing check is "every worktree THIS run added is gone", and §10 must

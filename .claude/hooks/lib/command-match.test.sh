@@ -2490,50 +2490,56 @@ want_cd "" "prose carrier: no cd before the verb resolves to nothing" \
 # no allow-list, so adding a case there makes the PR carrying the fix unopenable.
 # This one needs no non-English text at all -- it asserts an exit code.
 #
-# RE-POINTED by go-to-k/cdkd#2717, which retired `gh-body-english-gate.sh` to
-# CI. The subject was that hook and the constant it consumed
-# (`GATE_RE_GH_PROSE_CARRIER`); it is now `pr-body-item-number-gate.sh` and
-# `GATE_RE_GH_BODY_CARRIER`, chosen because that gate survives, sources this
-# library, and fails CLOSED on the same shape. The PROPERTY under test is
-# unchanged: a library that is otherwise complete but predates a constant the
-# gate interpolates must make the gate REFUSE, not wave the command through.
+# RE-POINTED TWICE, and the re-pointing is the maintenance this case asks for
+# rather than a sign it should go. go-to-k/cdkd#2717 retired
+# `gh-body-english-gate.sh` to CI, so the subject moved to
+# `pr-body-item-number-gate.sh` / `GATE_RE_GH_BODY_CARRIER`; the agent-tooling
+# shrink retired that gate too, so it is now
+# `post-merge-orphan-push-gate.sh` / `GATE_RE_GIT_PUSH`. That gate was chosen
+# because it survives, sources this library, fails CLOSED on the same shape, and
+# is deliberately NOT repo-opt-in-scoped -- so the polarity arm below reaches a
+# real verdict from a `/tmp` cwd instead of short-circuiting on the opt-in
+# check. The PROPERTY under test is unchanged: a library that is otherwise
+# complete but predates a constant the gate interpolates must make the gate
+# REFUSE, not wave the command through.
 #
 # The old form guarded on `[ -f .../gh-body-english-gate.sh ]`, so deleting that
 # hook made these two cases SILENTLY SKIP -- the count fell 596 -> 594 and the
 # only symptom was the mid-file CASE_FLOOR, whose own message is off by one and
 # read "only 546 cases ran, expected at least 546". A guard that turns a missing
 # subject into a skip is the vacuous-pass shape `.claude/rules/testing.md`
-# warns about; the file is now REQUIRED, so a future retirement reds here with
-# the reason instead of quietly shrinking the suite.
+# warns about; the file is REQUIRED, so a retirement reds here with the reason
+# instead of quietly shrinking the suite -- which is exactly what it did during
+# the shrink, and how this re-point got made.
 _gate_hook_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if [ ! -f "$_gate_hook_dir/pr-body-item-number-gate.sh" ]; then
+if [ ! -f "$_gate_hook_dir/post-merge-orphan-push-gate.sh" ]; then
   fail=$((fail + 1))
-  printf 'FAIL %s\n' "fail-closed fixture: pr-body-item-number-gate.sh is gone -- re-point this case at another surviving gate that sources the library, do not delete it"
-  fail_log+="FAIL fail-closed fixture: pr-body-item-number-gate.sh is missing; the fail-closed arm is now unfenced\n"
+  printf 'FAIL %s\n' "fail-closed fixture: post-merge-orphan-push-gate.sh is gone -- re-point this case at another surviving gate that sources the library, do not delete it"
+  fail_log+="FAIL fail-closed fixture: post-merge-orphan-push-gate.sh is missing; the fail-closed arm is now unfenced\n"
 else
   _fc_tmp="$(mktemp -d)"
   mkdir -p "$_fc_tmp/lib"
-  cp "$_gate_hook_dir/pr-body-item-number-gate.sh" "$_fc_tmp/"
-  grep -v '^GATE_RE_GH_BODY_CARRIER=' "$_gate_hook_dir/lib/command-match.sh" \
+  cp "$_gate_hook_dir/post-merge-orphan-push-gate.sh" "$_fc_tmp/"
+  grep -v '^GATE_RE_GIT_PUSH=' "$_gate_hook_dir/lib/command-match.sh" \
     > "$_fc_tmp/lib/command-match.sh"
   _fc_payload='{"cwd":"/tmp","tool_name":"Bash","session_id":"fc","tool_input":{"command":"gh issue create --title x --body y"}}'
-  printf '%s' "$_fc_payload" | bash "$_fc_tmp/pr-body-item-number-gate.sh" >/dev/null 2>&1
+  printf '%s' "$_fc_payload" | bash "$_fc_tmp/post-merge-orphan-push-gate.sh" >/dev/null 2>&1
   _fc_rc=$?
   if [ "$_fc_rc" -eq 2 ]; then
-    pass=$((pass + 1)); printf 'OK   %s\n' "fail-closed: a library without GATE_RE_GH_BODY_CARRIER refuses"
+    pass=$((pass + 1)); printf 'OK   %s\n' "fail-closed: a library without GATE_RE_GIT_PUSH refuses"
   else
-    fail=$((fail + 1)); printf 'FAIL %s\n' "fail-closed: a library without GATE_RE_GH_BODY_CARRIER refuses"
+    fail=$((fail + 1)); printf 'FAIL %s\n' "fail-closed: a library without GATE_RE_GIT_PUSH refuses"
     fail_log+="FAIL fail-closed arm: expected rc=2, got rc=$_fc_rc\n"
   fi
   # Polarity: the SAME fixture with the constant present must pass the command
   # through (rc=0), or the case above would pass on any breakage at all.
   cp "$_gate_hook_dir/lib/command-match.sh" "$_fc_tmp/lib/command-match.sh"
-  printf '%s' "$_fc_payload" | bash "$_fc_tmp/pr-body-item-number-gate.sh" >/dev/null 2>&1
+  printf '%s' "$_fc_payload" | bash "$_fc_tmp/post-merge-orphan-push-gate.sh" >/dev/null 2>&1
   _fc_rc=$?
   if [ "$_fc_rc" -eq 0 ]; then
-    pass=$((pass + 1)); printf 'OK   %s\n' "fail-closed: the same fixture WITH the constant passes an english body"
+    pass=$((pass + 1)); printf 'OK   %s\n' "fail-closed: the same fixture WITH the constant passes a non-push command"
   else
-    fail=$((fail + 1)); printf 'FAIL %s\n' "fail-closed: the same fixture WITH the constant passes an english body"
+    fail=$((fail + 1)); printf 'FAIL %s\n' "fail-closed: the same fixture WITH the constant passes a non-push command"
     fail_log+="FAIL fail-closed polarity: expected rc=0, got rc=$_fc_rc\n"
   fi
   rm -rf "$_fc_tmp"

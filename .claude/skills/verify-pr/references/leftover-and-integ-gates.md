@@ -1,15 +1,21 @@
-# Step 6 — Leftover resources and the integ gates
+# Step 6 — Leftover resources and the integ runs
 
-Read at step 6 of `/verify-pr`. Most of this file is CONDITIONAL: the three
-integ gates below (`integ-destroy`, `integ-broad`, `integ-local`) each fire only
-when the diff touches their scope, so a typical run reads the first block and
-skips the rest. That is why it lives here rather than in the orchestrator, which
-is loaded on every invocation.
+Read at step 6 of `/verify-pr`. Most of this file is CONDITIONAL: each integ
+block below applies only when the diff touches its scope, so a typical run reads
+the first block and skips the rest. That is why it lives here rather than in the
+orchestrator, which is loaded on every invocation.
 
-`tests/unit/scripts/cross-cutting-list-sync.test.ts` reads THIS file in three
-places, each by an anchor phrase immediately followed by a bullet run or a
-fenced snippet. Rewording one of those phrases, or changing a bullet's
-`- \`value\`` shape, fails that suite. Do not "tidy" them.
+Only ONE of them is still a gate. `integ-destroy` blocks `gh pr merge` on a
+stale marker; the cross-cutting, local-execution and schema-bump runs below are
+now UNENFORCED — nothing stops the merge, so the decision to run them is yours,
+and CLAUDE.md's "cost is not a tiebreaker" is what settles it.
+
+`tests/unit/scripts/cross-cutting-list-sync.test.ts` used to read THIS file in
+three places, each by an anchor phrase immediately followed by a bullet run or a
+fenced snippet. Its scope is now `integ-destroy` alone, so those anchors are no
+longer read and nothing fails when one is reworded — the lists below are kept in
+step with their siblings by hand. The anchor shapes are left intact anyway,
+because restoring the comparison means restoring them.
 
 **Do not repeat one of those phrases elsewhere in this file either.** ONE of the
 three extractors — the canonical-broad-set one — spans lines lazily
@@ -27,7 +33,7 @@ reproduce their opening line.
 
 The two of them share that opening, so the extractor reads whichever comes
 first. Removing the cross-cutting snippet therefore makes it read the
-`integ-local` one, which is caught downstream by `expandPathRegex`'s shape
+local-execution one, which is caught downstream by `expandPathRegex`'s shape
 refusal rather than by the extractor itself — a thinner margin than it looks.
 Keep them in this order.
 
@@ -40,8 +46,10 @@ Keep them in this order.
 ## Deletion-touching PRs
 
 Changes under `src/provisioning/providers/**`, `src/cli/commands/destroy.ts`,
-`src/analyzer/dag-builder.ts`, etc.: the `integ-destroy` gate physically blocks
-`gh pr merge` on a stale marker. Verify it here so failures surface early:
+`src/analyzer/dag-builder.ts`, etc.: `gh pr merge` is blocked while the
+`integ-destroy` marker is stale (the one surviving markgate gate — its full
+scope is the `include:` list in `.markgate.yml`). Check it here so a failure
+surfaces early rather than at the merge:
 
 ```bash
 mise exec -- markgate verify integ-destroy
@@ -80,12 +88,12 @@ change touches. When the PR diff touches ANY of:
 - `src/deployment/retryable-errors.ts`
 - `src/deployment/rollback-executor.ts`
 
-...you MUST run a **broad integ** in addition to the feature integ. (Both lists
-in this step are duplicated across several files and fenced against the hook by
-`tests/unit/scripts/cross-cutting-list-sync.test.ts`, so editing one copy alone
-fails CI.) The canonical broad set (keep in sync with
-`.claude/hooks/integ-broad-gate.sh`'s block message, which
-`cross-cutting-list-sync.test.ts` compares every other copy against):
+...you MUST run a **broad integ** in addition to the feature integ. Nothing
+blocks the merge if you skip it — that is precisely why it is spelled out here.
+(Nothing compares these lists across files any more: the fence that did was
+scoped to the retired broad gate, so a copy edited alone now drifts silently.)
+The canonical broad set (keep in sync with `/run-integ`'s "Choosing the
+fixture" section and `/pick-integ`'s BROAD set):
 
 - `bench-cdk-sample` (39-resource VPC+NAT+CF+Lambda+SQS)
 - `lambda`
@@ -98,8 +106,8 @@ fails CI.) The canonical broad set (keep in sync with
 - `export`
 
 Cross-cutting code affects EVERY user's deploy/destroy; the broad integ is the
-only structural defense against a regression that surfaces on stacks unlike your
-fixture (the PR #348 / issue #343 incident).
+only defense against a regression that surfaces on stacks unlike your fixture
+(the PR #348 / issue #343 incident).
 
 ```bash
 # Detection: only fires when the diff actually touches cross-cutting code.
@@ -113,22 +121,30 @@ Both integs must pass; both refresh the same `integ-destroy` marker.
 
 ## Local-execution-touching PRs
 
-`src/local/**`, `src/cli/commands/local-*.ts`, `tests/integration/local-*/**`:
-the `integ-local` gate blocks the merge on a stale marker, but reads the LOCAL
-working-tree digest — merged from a parent worktree still on pre-PR `main`, it
-passes silently. `/verify-pr` runs in the PR's own worktree, closing that gap:
+When the diff touches `src/local/**`, `src/cli/commands/local-*.ts` or
+`tests/integration/local-*/**`, run a matching local integ before the merge —
+nothing blocks on it:
 
 ```bash
 if git diff origin/main...HEAD --name-only | grep -qE '^src/local/|^src/cli/commands/local-|^tests/integration/local-'; then
-  mise exec -- markgate verify integ-local
+  echo "Local-execution code touched — run /run-integ local-<test> before merging."
 fi
 ```
 
-Non-zero → run `/run-integ local-<test>` matching the changed surface
-(`local-start-api` for HTTP-server / authorizer / container-pool,
-`local-invoke` for Lambda-runtime / ZIP-asset, `local-run-task` for ECS,
-`local-invoke-container` for container-Lambda, `local-invoke-layers` for
-Layers). The integ skill sets `integ-local` itself.
+Pick the fixture matching the changed surface: `local-start-api` for
+HTTP-server / authorizer / container-pool, `local-invoke` for Lambda-runtime /
+ZIP-asset, `local-run-task` for ECS, `local-invoke-container` for
+container-Lambda, `local-invoke-layers` for Layers. Confirm `/run-integ`'s
+post-run Docker sweep came back empty. `local-invoke-from-state` is worth
+knowing about: it exercises the local path AND refreshes `integ-destroy`.
+
+## State-schema-bump PRs
+
+A PR that bumps `StackState.version` must prove the round-trip with
+`/run-integ schema-v<N>-to-v<N+1>-migration` before merging. The S3 state
+schema is the real user contract and transparent auto-migration is absolute —
+a user must do NOTHING on upgrade — so this is a design constraint to satisfy
+while writing the bump, not a box to tick at the end.
 
 ## Orphan spot-check
 

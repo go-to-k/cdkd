@@ -40,7 +40,7 @@
 # shellcheck source=lib/command-match.sh
 __hook_dir="${BASH_SOURCE[0]%/*}"
 # `%/*` leaves the string unchanged when the path has no slash (invoked as
-# `bash verify-pr-gate.sh` from inside the hooks dir), which would look for
+# `bash ci-green-gate.sh` from inside the hooks dir), which would look for
 # `<script-name>/lib/...`. Fall back to the cwd in that case.
 [ "$__hook_dir" = "${BASH_SOURCE[0]}" ] && __hook_dir="."
 if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
@@ -161,8 +161,8 @@ fi
 # `git push -u origin` shape, whose branch field is empty) read back as
 # `remote=origin, branch=0`, and the branch was then compared against a real
 # head ref and passed. Measured -- it reddened this suite's `-u`-without-branch
-# case on the first attempt. The same fold is fixed in `stop-warn.sh` in this
-# lane; it is worth knowing as a class rather than as two incidents.
+# case on the first attempt. A since-retired Stop hook carried the identical
+# fold; it is worth knowing as a class rather than as one incident.
 parse_push_tail() {
   local push_args="$1"
   # A redirect is not a segment separator, so it can still trail the args.

@@ -59,7 +59,7 @@ function verifyScripts(): string[] {
  * WHY THIS CLASS IS HERE. The rule below is about bash, not about AWS, so the
  * population was never `tests/integration/**` on purpose — that is just where
  * the near-miss happened to be found. `.claude/hooks/**` was outside it, and
- * `pr-review-gate.test.sh` carried the exact defect for months
+ * a merge-gate suite carried the exact defect for months
  * (go-to-k/cdkd#2336): `trap cleanup EXIT` at the top, then a second
  * `trap '...' EXIT` 400 lines later that re-implemented most of `cleanup`
  * rather than calling it. It shipped a FALSE RED — a full `run-tests.sh` pass
@@ -183,22 +183,24 @@ describe('a shell fixture never drops its teardown handler', () => {
     // A single floor over the hooks total does NOT close that: narrowing the
     // pathspec to `.claude/hooks/*-gate.sh` yields 38, which clears any floor
     // set from the 99 total, while silently dropping all 48 `*.test.sh` —
-    // including `pr-review-gate.test.sh`, the file this class was added for. So
+    // including the suite this class was added for. So
     // the two sub-populations that can independently vanish are floored
     // independently.
     //
-    // BOTH FLOORS LOWERED BY go-to-k/cdkd#2717, which retired ten gates and
-    // their suites — the deliberate-drop case, not a glob that stopped matching.
+    // BOTH FLOORS LOWERED TWICE, and both times for the deliberate-drop case
+    // rather than a glob that stopped matching: go-to-k/cdkd#2717 retired ten
+    // gates and their suites, and the agent-tooling shrink retired the whole
+    // marker layer plus the commit-time content lints.
     //
     // RE-DERIVED from the tree rather than carried, with the ONE-pathspec form
     // `hookScripts()` above mandates (a git pathspec's `*` crosses `/`, so the
     // second pathspec adds nothing -- ONE invocation dedupes, it was two separate
     // calls that double-counted): `git ls-files
-    // '.claude/hooks/*.sh'` minus `lib/testdata/` gives 79 = 39 `*.test.sh` +
-    // 29 `*-gate.sh` + 11 others. An earlier
+    // '.claude/hooks/*.sh'` minus `lib/testdata/` gives 36 = 19 `*.test.sh` +
+    // 10 `*-gate.sh` + 7 others. An earlier
     // revision of this comment said 40 and 30, and built a story on it -- that
     // the `-gate.sh` floor "failed at EQUALITY (30 is not > 30)". It did not;
-    // 29 is simply below 30, an ordinary shortfall. The wrong number produced a
+    // 29 was simply below 30, an ordinary shortfall. The wrong number produced a
     // wrong explanation, which is the argument for deriving rather than
     // recalling (go-to-k/cdkd#2717 review).
     //
@@ -208,8 +210,8 @@ describe('a shell fixture never drops its teardown handler', () => {
     // this fence has no opinion about.
     const hooks = hookScripts();
     expect(verifyScripts().length).toBeGreaterThan(50);
-    expect(hooks.filter((f) => f.endsWith('.test.sh')).length).toBeGreaterThan(35);
-    expect(hooks.filter((f) => f.endsWith('-gate.sh')).length).toBeGreaterThan(26);
+    expect(hooks.filter((f) => f.endsWith('.test.sh')).length).toBeGreaterThan(16);
+    expect(hooks.filter((f) => f.endsWith('-gate.sh')).length).toBeGreaterThan(8);
     const counts = scripts.map((p) => trapActions(readFileSync(join(REPO_ROOT, p), 'utf-8'), 'EXIT'));
     expect(counts.filter((a) => a.length > 0).length).toBeGreaterThan(20);
     // ...and the legitimate re-installers are SEEN rather than parsed away. If

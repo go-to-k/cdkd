@@ -1,20 +1,18 @@
 ---
-description: cdkd merge-time live-query gates (ci-green-gate, pr-review-gate) - what "the target PR" means, and the repo-slug forwarding that decides it
+description: cdkd's merge-time live-query gate (ci-green-gate) - what "the target PR" means, and the repo-slug forwarding that decides it
 paths:
   - '.claude/hooks/ci-green-gate.sh'
   - '.claude/hooks/ci-green-gate.test.sh'
-  - '.claude/hooks/pr-review-gate.sh'
-  - '.claude/hooks/pr-review-gate.test.sh'
 ---
 
-# Which pull request the merge-time gates judge
+# Which pull request the merge-time gate judges
 
-Split out of [hooks.md](hooks.md) by go-to-k/cdkd#3273, when the entry it grew
-took the `lib/command-match.sh` payload past its 120,000 B cap — the same
-precedent as [hooks-cwd-detector.md](hooks-cwd-detector.md) and
-[hooks-branch-gate.md](hooks-branch-gate.md). hooks.md keeps a one-line pointer
-in its "CI-green merge gate" section; this file's `paths:` glob is narrow, so
-the detail is a token toll only on a session touching these two gates.
+Split out of [hooks.md](hooks.md) by go-to-k/cdkd#3273. hooks.md keeps a
+one-line pointer in its `ci-green-gate.sh` entry; this file's `paths:` glob is
+narrow, so the detail is a token toll only on a session touching that gate. It
+covered `pr-review-gate` as well until that gate was retired with the rest of
+the marker layer; the sentences below that still name it record a MEASUREMENT
+taken through it, and are kept for that reason.
 
 ## A PR NUMBER DOES NOT NAME A PULL REQUEST
 
@@ -27,7 +25,6 @@ argv-recording `gh` — the argv is the measurement, and gh resolving a
 ```
 gh pr merge 42 -R go-to-k/cdk-local --squash
   ci-green-gate   ->  gh pr checks 42          # so: CDKD's PR 42's CI state
-  pr-review-gate  ->  gh pr view 42 --json …   # so: CDKD's PR 42's size, headRefOid
 ```
 
 A wrong ANSWER rather than a silent pass, and wrong in BOTH directions — a
@@ -36,16 +33,8 @@ one. The first direction is the dangerous one, and the cross-repo merge flow it
 needs is the one [hooks.md](hooks.md)'s "Working on a sibling repo from a cdkd
 session" section describes as routine.
 
-For `pr-review-gate` the blast radius is wider than the tier: the sentinel is
-compared against the `headRefOid` that lookup returned, so a marker bound to the
-real PR reads as stale and one bound to the other repo's HEAD reads as fresh.
-Its fix-back heuristic needed no separate change — it takes `owner` / `repo`
-from the PR's own `url`, which now comes from the right PR.
-
-Both gates resolve the slug with the shared `gate_gh_repo_slug` (either flag
-slot, and after the verb too) and forward `-R <slug>`. `verify-pr-gate` was
-never affected: it REFUSES to relax when a command names another repo rather
-than reading which one.
+The gate resolves the slug with the shared `gate_gh_repo_slug` (either flag
+slot, and after the verb too) and forwards `-R <slug>`.
 
 ## Two ways the FIX reproduced the defect, caught in review
 
@@ -65,7 +54,7 @@ correct and each re-opened the exact hole go-to-k/cdkd#3273 is about.
   cannot be wrong that way, it is `gate_target_dir_strict`'s posture, and it
   costs nothing real: gh acts on ONE repo, so no legitimate command names two.
   Two IDENTICAL slugs are not ambiguous and behave like one — pinned in both
-  gates, in both directions.
+  directions.
 - **A trailing comment was read as a repository.** The walk tokenised the raw
   segment, so the apostrophe in `gh pr merge 42 --squash # don't wait` opened a
   quote, the split truncated, and the truncation was reported as rc 2 — a
@@ -75,25 +64,23 @@ correct and each re-opened the exact hole go-to-k/cdkd#3273 is about.
 
 ## The call is BOUNDED, and that became load-bearing here
 
-`pr-review-gate` has wrapped its `gh` calls in `gate_bounded` since
-go-to-k/cdkd#2638; `ci-green-gate` did not, and go-to-k/cdkd#3273 is what made
-that matter. A hook killed by its registered timeout emits NO exit 2, which
-propagates as a non-blocking error — a SILENT PASS on a merge gate. That was
-tolerable while nothing in the COMMAND TEXT could choose what `gh` talks to.
-Forwarding a slug ends it: measured, `gh pr checks <n> -R <unroutable host>/o/r`
-takes 30 s against that hook's registered 20 s.
+`ci-green-gate` did not wrap its `gh` calls in `gate_bounded`, and
+go-to-k/cdkd#3273 is what made that matter. A hook killed by its registered
+timeout emits NO exit 2, which propagates as a non-blocking error — a SILENT
+PASS on a merge gate. That was tolerable while nothing in the COMMAND TEXT
+could choose what `gh` talks to. Forwarding a slug ends it: measured,
+`gh pr checks <n> -R <unroutable host>/o/r` takes 30 s against that hook's
+registered 20 s.
 
-`gate_bounded` therefore MOVED from `pr-review-gate.sh` into
-`lib/command-match.sh` — one shared mechanism rather than 70 lines of perl
-copied — with one addition: it discards the wrapped command's stderr by design
-(so the wrapper can still speak), and `ci-green-gate` PARSES that stderr, since
-"no checks reported" arrives there and is the only discriminator between "no CI
-yet" and "a check failed" (both rc=1). `GATE_BOUNDED_KEEP_STDERR=1` is the
-opt-in; it defaults OFF, so `pr-review-gate`'s behaviour is byte-for-byte
-unchanged. A timeout with a slug named REFUSES; with none it keeps today's
-infra fail-open.
+`gate_bounded` therefore lives in `lib/command-match.sh` — one shared mechanism
+rather than 70 lines of perl copied — with one addition: it discards the wrapped
+command's stderr by design (so the wrapper can still speak), and `ci-green-gate`
+PARSES that stderr, since "no checks reported" arrives there and is the only
+discriminator between "no CI yet" and "a check failed" (both rc=1).
+`GATE_BOUNDED_KEEP_STDERR=1` is the opt-in; it defaults OFF. A timeout with a
+slug named REFUSES; with none it keeps today's infra fail-open.
 
-## Three consequences, before touching either gate
+## Three consequences, before touching the gate
 
 - **An unreadable slug REFUSES** — `-R "$VAR"`, a substitution, a trailing `-R`
   with no value. Falling back to the cwd there is the defect with an extra
@@ -105,23 +92,23 @@ infra fail-open.
   for the ordinary cwd-relative merge — an unrelated GitHub outage must not
   block those. With a slug named, an unreadable answer BLOCKS: "that repo is
   unreachable from here" and "GitHub is down" are the same answer, and the gate
-  then knows nothing at all about the PR it would be clearing. In
-  `ci-green-gate` that is TWO shapes, because rc alone does not cover it —
-  rc > 1 (transport), and **rc=1 with no tab-separated rows**, which is what
-  `gh pr checks <n> -R <unreachable>` returns and what the `not_green` awk would
-  otherwise read as "nothing is red". Both branches are narrow by construction:
-  neither can fire for a command that names no repo.
+  then knows nothing at all about the PR it would be clearing. That is TWO
+  shapes, because rc alone does not cover it — rc > 1 (transport), and **rc=1
+  with no tab-separated rows**, which is what `gh pr checks <n> -R <unreachable>`
+  returns and what the `not_green` awk would otherwise read as "nothing is red".
+  Both branches are narrow by construction: neither can fire for a command that
+  names no repo.
 - **A short-flag CLUSTER carrying `R` (`-cR <slug>`, `-sR<slug>`) is a DECLARED
-  residue**, not a closed case. `gh` honours it (measured 2026-09-16 on 2.92.0,
-  recorded in `verify-pr-gate.sh`), and the caller then judges the cwd repo
-  exactly as it did before. It is left because the cluster is not decidable
-  from the text: only a per-flag ARITY table separates `-sR <slug>`
-  (`--squash --repo <slug>`) from `-tRelease` (`--subject Release`), and that is
-  the enumeration [hooks-class-fences.md](hooks-class-fences.md) refuses.
-  Over-refusing it was considered and rejected — on a MERGE gate a wrong
-  refusal is not cheap. Filed as go-to-k/cdkd#3301. A repo arriving through
-  `GH_REPO`, a URL selector or an `upstream` remote is the same kind of
-  residue and is go-to-k/cdkd#3235's subject.
+  residue**, not a closed case. `gh` honours it (measured 2026-09-16 on 2.92.0),
+  and the caller then judges the cwd repo exactly as it did before. It is left
+  because the cluster is not decidable from the text: only a per-flag ARITY
+  table separates `-sR <slug>` (`--squash --repo <slug>`) from `-tRelease`
+  (`--subject Release`), and that is the enumeration
+  [hooks-class-fences.md](hooks-class-fences.md) refuses. Over-refusing it was
+  considered and rejected — on a MERGE gate a wrong refusal is not cheap. Filed
+  as go-to-k/cdkd#3301. A repo arriving through `GH_REPO`, a URL selector or an
+  `upstream` remote is the same kind of residue and is go-to-k/cdkd#3235's
+  subject.
 
 ## Three more residues, all PRE-EXISTING and all in the refusing direction
 
@@ -162,9 +149,9 @@ asserts its own premise first — a PATH that still resolved perl would make all
 three vacuous. Restoring the hardcoded redirect reds exactly the no-checks
 case, rc 2 → 0, which is the fail-open itself.
 
-## The suites: an exit code cannot say WHICH
+## The suite: an exit code cannot say WHICH
 
-**The argv-recording blocks are the load-bearing part of both suites.** A
+**The argv-recording block is the load-bearing part of the suite.** A
 wrong-repo answer is byte-identical to a correct one from outside — same exit
 codes, same messages, same cwd — so every case that does not read the trace is
 satisfied by the defect. That is exactly how #3273 survived a gate whose own
@@ -173,13 +160,8 @@ suite was green.
 - `ci-green-gate.test.sh` — the `argv-bin` shim records `$*`; `want_pr_number`
   reads the NUMBER out of it and `want_pr_repo` the `-R`. They are independent
   facts about the same question and neither implies the other.
-- `pr-review-gate.test.sh` — records `pr view` argv for the same reason its
-  graphql half has since go-to-k/cdkd#2638. The NUMBER-LESS arm
-  (`gh pr merge --auto -R <slug>`) is a separate `gh pr view` invocation in the
-  hook, so it carries its own case: a fix applied to one arm and not the other
-  is the sibling-site miss `/work-issues` warns about.
 - The unreadable-slug cases assert **exit 2 AND an empty argv trace**. Exit 2
-  alone is also what a stale marker produces, so the empty trace is what says
+  alone is also what an infra refusal produces, so the empty trace is what says
   the gate refused rather than queried the wrong repo and happened to find it
   red.
 - Each block carries the CONTROL that keeps the change narrow: a command naming

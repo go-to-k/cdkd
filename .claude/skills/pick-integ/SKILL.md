@@ -27,8 +27,9 @@ truncated, and the wrap-up names exactly which tests were not run.
 
 1. **Ledger** `docs/_generated/integ-last-run.tsv` (committed, one row per
    test; written by `/run-integ` on every run):
-   - **Stale**: age > the integ-gate TTL (**14 days**) — past that the gate
-     markers expire, so a clean result no longer proves today's AWS behavior.
+   - **Stale**: age > the `integ-destroy` gate TTL (**14 days**) — past that
+     the marker expires, so a clean result no longer proves today's AWS
+     behavior.
    - **Expiring soon**: age **12–14d**. The ledger accumulates in
      sweep-shaped cohorts (one sweep stamps 100+ rows with one timestamp), so
      a strict `>14d` boolean answers "nothing" or "everything" — always
@@ -172,7 +173,8 @@ past drops orphans). Treat a large sweep as a **multi-session relay**:
   cooldown on (`export` recreates one FIXED S3 bucket, and S3's same-name
   cooldown of UP TO ~58 min answers `OperationAborted` before phase 1 —
   measured at 10 min apart, go-to-k/cdkd#2796). Record it as such and queue
-  the fixture fix. A gate needing a refresh takes a SIBLING from the broad
+  the fixture fix. A run whose only purpose is to refresh the `integ-destroy`
+  marker takes a SIBLING from the broad
   set above instead; the SWEEP does not — the `FAIL` row keeps it a
   candidate, so re-schedule it after the window rather than counting it
   covered.

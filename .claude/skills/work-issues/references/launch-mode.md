@@ -181,7 +181,7 @@ tree:
 | 7 | `main` is checked out in the main checkout, so the post-merge `git checkout main && git pull` cannot run here — pull through `git -C "<MAIN_CHECKOUT>"` | §9 |
 | 8 | The post-merge rebuild targets the MAIN checkout for the same reason | §9 |
 | 9 | The retro branch is created in THIS tree too, so the `LAUNCH_BRANCH` restore is the run's LAST step — after the retro PR merges, not inside §9's per-lane cleanup | §10-d |
-| 10 | Serial lanes SHARE this tree's markers (under `git rev-parse --git-dir`) and its gitignored root sentinels — both per-worktree, so lane 2 inherits lane 1's. `integ-broad` is bound ONLY to `.markgate-broad-integ-test`, which no branch switch touches, so it reads FRESH for code its run never saw (2026-09-04). Re-run a broad fixture per LANE | §8 |
+| 10 | Serial lanes SHARE this tree's markgate markers (under `git rev-parse --git-dir`) and its gitignored root sentinels — both per-worktree, so lane 2 inherits lane 1's `integ-destroy` marker. Its `hash: diff` scope narrows that but does not close it, and a marker measured on lane 1's stack says nothing about lane 2's: run the integ per LANE (2026-09-04 measured the same inheritance on the retired broad gate) | §8 |
 
 "Four things and nothing else" was the previous count, and it was wrong in the
 direction that matters: this file is not always loaded, SKILL.md is, so an

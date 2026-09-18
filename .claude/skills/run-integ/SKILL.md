@@ -21,7 +21,10 @@ verify, clean up.
 
 ## Steps
 
-1. **Build first**: `vp run build` so `dist/` is current.
+1. **Rebase, then build**: `git fetch origin` and rebase the branch onto
+   current `origin/main` BEFORE the run — a real-AWS run against a stale base
+   verifies code that is not what will merge, and nothing warns you about it.
+   Then `vp run build` so `dist/` is current.
 
 2. **List available tests**: `ls tests/integration/` — never a hardcoded list.
 
@@ -103,14 +106,14 @@ verify, clean up.
    wait "$VPID"; RC=$?
    kill "$WPID" 2>/dev/null
    grep -c WATCHDOG_FIRED "$LOG" || echo "watchdog did not fire"
-   echo "verify.sh rc=$RC"   # the verdict steps 6-13 read; nothing else carries it out
+   echo "verify.sh rc=$RC"   # the verdict steps 6-11 read; nothing else carries it out
    ```
 
    The `grep` and the `rc` line are load-bearing (`kill -9` surfaces as
-   rc=137, otherwise just a crash). **Steps 6-13 are LATER calls that read
+   rc=137, otherwise just a crash). **Steps 6-11 are LATER calls that read
    this output** — a marker or a `PASS` ledger row chained into this call was
    written before any verdict existed (2026-09-14, the go-to-k/cdkd#3118
-   lane: a FAILED run had `integ-local` set and `PASS` recorded in the same
+   lane: a FAILED run had a marker set and `PASS` recorded in the same
    call, undone by a clean re-run).
 
 6. **Verify cleanup**:
@@ -173,7 +176,7 @@ verify, clean up.
    when the destroy step finished with **0 errors**, step 6 found **0
    leftovers**, and step 7 was skipped or re-checked clean. `mise trust` is
    UNCONDITIONAL and is part of the pasted block rather than a caveat above
-   it: an untrusted `.mise.toml` makes every `markgate set` in this skill die
+   it: an untrusted `.mise.toml` makes the `markgate set` below die
    with a config-parse error naming no cause, and here that discards a
    real-AWS run that cannot be cheaply repeated. (`/check` step 0 carries the
    full account; on an already-trusted config it is a no-op.)
@@ -204,13 +207,14 @@ verify, clean up.
    any success condition failed, do NOT set the marker — the
    `integ-destroy-gate.sh` hook blocking `gh pr merge` is the point.
 
-10. **Set the `integ-local` markgate marker (only for `local-*` tests, on
-    full clean success)** — for any test name starting `local-`. Required
-    cleanup verification BEFORE setting it (in addition to step 9's
-    conditions):
+10. **Post-run Docker sweep (mandatory for every `local-*` test)** — for any
+    test name starting `local-`, on top of step 6's AWS checks. A local run
+    leaves containers and networks behind exactly the way a deploy leaves AWS
+    resources behind, and the run is not clean until all three listings come
+    back empty:
 
     ```bash
-    # All three MUST return empty, else show the orphan IDs and do not set.
+    # All three MUST return empty, else show the orphan IDs and clean them up.
     # `-a`, not bare `docker ps`: a print-and-exit task container is already
     # `Exited` when this runs, so a running-only sweep reports clean over a
     # real orphan (caught twice in a row while gating #2183).
@@ -226,84 +230,18 @@ verify, clean up.
     `docker network inspect $(docker network ls -q) --format '{{.Name}} {{range .IPAM.Config}}{{.Subnet}}{{end}} {{len .Containers}}'`
     and remove the holder ONLY at 0 attached containers.
 
-    When clean: `mise exec -- markgate set integ-local`. Same 14d TTL and
-    same no-bypass rule as `integ-destroy`. The two are independent: a
-    `lambda` run does not refresh `integ-local`, and a `local-invoke` run
-    does not refresh `integ-destroy` — except `local-invoke-from-state`,
-    which exercises a real deploy + destroy and can set BOTH.
+    A purely local run never touches AWS, so it cannot satisfy step 9's
+    destroy conditions and does not set the `integ-destroy` marker;
+    `local-invoke-from-state` is the exception — it exercises a real deploy +
+    destroy as well, so it both sweeps clean here AND qualifies for step 9.
 
-11. **Set the `integ-broad` markgate marker (only for BROAD integ tests, on
-    full clean success)**: A test is "broad"
-    iff its name is one of:
-
-    ```text
-    bench-cdk-sample
-    lambda
-    microservices
-    drift-revert
-    drift-revert-vpc
-    multi-stack-deps
-    multi-resource
-    remove-protection
-    export
-    ```
-
-    **Only FIVE of the nine carry a `verify.sh`; from an agent session the
-    other four cannot be run at all** (step 5's dispatch note). Runnable from
-    a session: **`lambda`**, `drift-revert`, `drift-revert-vpc`,
-    `remove-protection`, `export`. Human-driven shell only:
-    `bench-cdk-sample`, `microservices`, `multi-stack-deps`,
-    `multi-resource`. `lambda` is the cheap default — ~100 s, 9-resource DAG
-    across SQS / IAM / Lambda / LayerVersion / DynamoDB Table + GlobalTable.
-    Re-derive the split with `ls tests/integration/<name>/verify.sh` if a
-    fixture has since gained one. (All six copies of this list are compared
-    by `tests/unit/scripts/cross-cutting-list-sync.test.ts`.)
-
-    When the test name is in the broad set AND the destroy finished cleanly
-    (same conditions as `integ-destroy`), ALSO record the sentinel and flip
-    the marker:
-
-    ```bash
-    # Sentinel content is informational; the integ-broad gate's include scope
-    # is just this file, so writing the test name flips its digest naturally.
-    printf '%s ran at %s\n' "<test-name>" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      > .markgate-broad-integ-test
-    mise exec -- markgate set integ-broad
-    ```
-
-    `integ-broad-gate.sh` blocks `gh pr merge` for PRs touching
-    cross-cutting deploy/destroy code (the hook's `CROSS_CUTTING_REGEX`).
-    Same 14d TTL, same no-bypass rule. **Narrow feature integs do NOT set
-    this marker** — a 2-stack feature fixture flips `integ-destroy` but a
-    cross-cutting change needs the broad VPC / Lambda / multi-resource
-    coverage (the PR #348 incident's structural fix).
-
-12. **Set the `integ-schema-migration` markgate marker (only for
-    `schema-v*-to-v*-migration` tests, on full clean success)**: a schema
-    version bump MUST be transparently auto-migrated and verified by a
-    real-AWS round-trip (deploy under vN → swap binary → read works → next
-    write upgrades silently → destroy clean). A test qualifies iff its name
-    matches `schema-v<N>-to-v<N+1>-migration`. When it does AND the destroy
-    finished cleanly:
-
-    ```bash
-    mise exec -- markgate set integ-schema-migration
-    ```
-
-    `integ-schema-migration-gate.sh` blocks `gh pr merge` for any PR bumping
-    the `StackState.version` literal in `src/types/state.ts` (precise
-    `gh pr diff` grep — non-bump edits pass). Same 14d TTL, same no-bypass
-    rule. Non-migration tests do NOT set it. See
-    `feedback_schema_version_migration_integ_required.md` for the checklist +
-    the absolute transparent-auto-migration requirement.
-
-13. **Record the run in the integ ledger (MANDATORY — every run, pass OR
+11. **Record the run in the integ ledger (MANDATORY — every run, pass OR
     fail)**: `docs/_generated/integ-last-run.tsv` is a COMMITTED update-type
     ledger (one row per test) feeding `/pick-integ`. Write it on EVERY
-    invocation, right after the marker steps (or right after a failure).
+    invocation, right after step 9 (or right after a failure).
 
     Columns (TAB): `test  last_run_iso  result  duration_s  flow  note`.
-    `result` is `PASS` only at the same bar as the markers (destroy 0
+    `result` is `PASS` only at the same bar as step 9's marker (destroy 0
     errors / 0 orphans; verify.sh exit 0), else `FAIL`. `last_run_iso` is
     UTC; `flow` is `verify.sh` or `standard`.
 
@@ -339,11 +277,59 @@ verify, clean up.
     `git status --porcelain -- docs/_generated/`, never the normalizer's own
     output.
 
+## Choosing the fixture
+
+Which fixture to run is a coverage judgement, not a marker lookup. Three
+recommendations, each about what the change actually exercises:
+
+- **A cross-cutting deploy/destroy change → run a BROAD fixture.** A test is "broad"
+  iff its name is one of:
+
+  ```text
+  bench-cdk-sample
+  lambda
+  microservices
+  drift-revert
+  drift-revert-vpc
+  multi-stack-deps
+  multi-resource
+  remove-protection
+  export
+  ```
+
+  **Only FIVE of the nine carry a `verify.sh`; from an agent session the
+  other four cannot be run at all** (step 5's dispatch note). Runnable from
+  a session: **`lambda`**, `drift-revert`, `drift-revert-vpc`,
+  `remove-protection`, `export`. Human-driven shell only:
+  `bench-cdk-sample`, `microservices`, `multi-stack-deps`,
+  `multi-resource`. `lambda` is the cheap default — ~100 s, 9-resource DAG
+  across SQS / IAM / Lambda / LayerVersion / DynamoDB Table + GlobalTable.
+  Re-derive the split with `ls tests/integration/<name>/verify.sh` if a
+  fixture has since gained one. (Nothing compares the copies of this list any
+  more — the fence that did was scoped to the retired broad gate — so a copy
+  edited alone drifts silently. `/pick-integ` and `/verify-pr` carry the others.)
+
+  **A narrow feature fixture is NOT a substitute**: a 2-stack feature fixture
+  destroys cleanly without ever reaching the broad VPC / Lambda /
+  multi-resource / Custom-Resource paths a cross-cutting change can break
+  (the PR #348 incident).
+
+- **A local-execution change → run a `local-*` fixture** and complete step
+  10's Docker sweep. A cross-cutting `src/local/` change wants at least
+  `local-invoke` + `local-start-api`.
+
+- **A state schema version bump → run the matching
+  `schema-v<N>-to-v<N+1>-migration` fixture.** A bump MUST be transparently
+  auto-migrated, and only a real-AWS round-trip proves it (deploy under vN →
+  swap binary → read works → next write upgrades silently → destroy clean).
+  See `feedback_schema_version_migration_integ_required.md` for the checklist
+  + the absolute transparent-auto-migration requirement.
+
 ## Important
 
 - **Run `/review-pr` (and apply its fixes) BEFORE this skill when both are
-  planned for the same PR** — the integ markers are digest-bound to their src
-  scopes, so a post-integ review fix stales the marker and forces a full
+  planned for the same PR** — the `integ-destroy` marker is digest-bound to its
+  src scope, so a post-integ review fix stales the marker and forces a full
   real-AWS re-run (recurred on the #1282 PR).
 - Always `--region us-east-1`; always destroy after deploy; if deploy fails,
   still attempt destroy to clean up partial state.

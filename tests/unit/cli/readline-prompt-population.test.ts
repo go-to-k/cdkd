@@ -127,7 +127,7 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
     why:
       'The issue #2259 per-stack destroy prompt. Keeps its own inline guard: it ' +
       'has a default-YES bare form alongside a default-NO --remove-protection ' +
-      'form, and it sits in the integ-destroy AND integ-broad gate scopes, so ' +
+      'form, and it sits in the integ-destroy gate scope, so ' +
       'folding it would buy a real-AWS run for a pure refactor.',
   },
   'src/cli/commands/state.ts': {

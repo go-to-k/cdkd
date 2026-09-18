@@ -90,7 +90,7 @@ describe('release-please v0 fence', () => {
     expect(h1Versions, 'H1 version headers must be H2').toEqual([]);
     // Floored AT the measurement (878 at the normalization), not under it.
     // A floor far below its subject fences only total disappearance — the
-    // shape check-scope-checker-inputs.test.ts already ruled on, and the
+    // shape a since-retired scope fence already ruled on, and the
     // first cut here was 100 against 878, which an 88% collapse would have
     // passed. At-measurement is safe BECAUSE the count only ever grows (one
     // header per release), so it can never false-red; and it buys a property
