@@ -224,7 +224,16 @@ const gh = (args: readonly string[]): unknown => {
     // OUTSIDE the retried block: a malformed response is not transient, and
     // retrying it only repeats the same bytes. It also stopped a parse error
     // whose text happened to contain a transient-looking word from retrying.
-    return JSON.parse(out) as unknown;
+    // GUARDED: Node embeds the offending SOURCE in a JSON parse error, and
+    // `out` is `gh` output carrying fork-chosen workflow and job names. `main`
+    // catches nothing, so an unguarded parse puts those bytes on a terminal —
+    // the venue `parseSnapshot` and `snapshotGeneratedAt` are both wrapped
+    // against, and the last one in this pair left open.
+    try {
+      return JSON.parse(out) as unknown;
+    } catch {
+      throw new Error(`gh ${safeText(args.slice(0, 2).join(' '))} returned output that is not JSON`);
+    }
   }
   throw new Error(ghFailure(args, lastError));
 };

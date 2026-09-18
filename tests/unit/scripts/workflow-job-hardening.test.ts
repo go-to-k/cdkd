@@ -386,7 +386,20 @@ export const auditWorkflowHardening = (dir: string): Audit => {
  * workflow sort first: a file that will not parse, or whose top level is not a
  * mapping, is the one a reader can act on with no further information.
  */
-const KIND_RANK: readonly FindingKind[] = [
+/**
+ * THE PREMISE BELOW WAS WRONG IN ITS FIRST FORM. It said a fork cannot
+ * manufacture these kinds for someone else's workflow — but a fork owns
+ * `.github/workflows/` in its own PR, so twenty-five files it deliberately
+ * breaks are twenty-five findings of the FIRST-ranked kind, and the genuine one
+ * is buried by the ranking added to prevent burial (measured). The ranking is
+ * still right for ORDER; the protection is that `boundedList` splits the cap
+ * between the kinds PRESENT before it splits between workflows, which a fork
+ * cannot undo by adding files of one kind.
+ */
+// `satisfies`, so a kind ADDED to the union without a rank is a compile error;
+// `readonly FindingKind[]` catches only a REMOVED one, and a new kind would get
+// `indexOf === -1` and sort ahead of everything.
+const KIND_RANK = [
   'unparseable',
   'top-level-not-a-mapping',
   'no-jobs',
@@ -396,13 +409,14 @@ const KIND_RANK: readonly FindingKind[] = [
   'timeout-not-a-positive-integer',
   'timeout-at-or-above-default',
   'no-timeout',
-];
+] as const satisfies readonly FindingKind[];
 
-const render = (findings: readonly Finding[]): Safe[] =>
-  boundedList(
-    [...findings]
-      .sort((a, b) => KIND_RANK.indexOf(a.kind) - KIND_RANK.indexOf(b.kind))
-      .map(
+const render = (findings: readonly Finding[]): Safe[] => {
+  const ordered = [...findings].sort(
+    (a, b) => KIND_RANK.indexOf(a.kind) - KIND_RANK.indexOf(b.kind),
+  );
+  return boundedList(
+    ordered.map(
       (f) =>
         // Every interpolated part is `Safe` by `Finding`'s own type, and `kind`
         // is a literal union. The cast is a boundary; `boundedList`'s summary
@@ -411,8 +425,13 @@ const render = (findings: readonly Finding[]): Safe[] =>
         // types buy is that no FOURTH renderer can be written without one.
         (`${f.workflow}${f.job === undefined ? '' : ` / ${f.job}`}: ${f.kind}` +
           `${f.detail === undefined ? '' : ` (${f.detail})`}`) as Safe,
-      ),
+    ),
+    // The KINDS, so the cap is split between them first. A fork owns
+    // `.github/workflows/` in its own PR, so it can produce any number of
+    // findings of the top-ranked kind — see `boundedList`.
+    ordered.map((f) => f.kind),
   );
+};
 
 /**
  * Copy the real workflow directory somewhere writable, hand it to `mutate`, and
@@ -1325,11 +1344,26 @@ describe('the caps are literals, not whatever the constants say', () => {
     expect(forged[0]?.startsWith('zz-twin.yml / "a ')).toBe(true);
   });
 
-  // EXACT, not a prefix match. Every fixture in this file puts all its findings
-  // in ONE workflow, so exactly one group exists and none can be crowded out —
-  // the `(not all shown for: …)` tail is unreachable here. An earlier revision
-  // loosened these four to a `toMatch` alternation when that tail was added,
-  // which also made them tolerate an INVERTED silent-group filter.
+  // THE CAP CASES BELOW assert the tail EXACTLY. An earlier revision of this
+  // note said the `(not all shown for: …)` tail was "unreachable here" — false
+  // even as it was written: those cases exceed the cap in ONE workflow, so that
+  // workflow is partially dropped and therefore named, which is why their
+  // assertions require the tail. What is true is narrower: no group is
+  // STARVED, so the starved count is the only part that varies.
+  it('a fork flooding the TOP kind cannot bury a finding of another kind', () => {
+    // The sibling's case, here too: a fork owns this directory in its own PR,
+    // so twenty-five files it breaks are twenty-five `unparseable` findings —
+    // the kind this file ranks FIRST. Splitting the cap between the KINDS
+    // present is what keeps another kind's line visible, and it only works
+    // because `render` passes the kinds to `boundedList`.
+    const audit = auditMutatedCopy((dir) => {
+      for (let i = 0; i < 25; i += 1) writeFileSync(join(dir, `zz-fork${i}.yml`), 'jobs: [\n');
+      writeFileSync(join(dir, 'zz-real.yml'), 'name: X\npermissions: {}\njobs:\n  a:\n    runs-on: x\n');
+    });
+    const lines = render(audit.findings);
+    expect(lines.some((l) => l.startsWith('zz-real.yml') && l.includes('no-timeout'))).toBe(true);
+  });
+
   it('a workflow that will not PARSE survives a flood from twenty-five others', () => {
     // THE TWELFTH VENUE, and the one the round-9 sort was supposed to have
     // closed. It lifted `too-tight` in the sibling and nothing here, so a fork
@@ -1347,6 +1381,30 @@ describe('the caps are literals, not whatever the constants say', () => {
     const lines = render(audit.findings);
     expect(lines[0]?.startsWith('ci.yml')).toBe(true);
     expect(lines[0]).toContain('unparseable');
+  });
+
+  it('every rank in the table is load-bearing, not just the first', () => {
+    // FIVE OF NINE RANKS WERE FREE: the only flood fixture wrote
+    // `jobs:\n  a:\n    runs-on: x`, which yields exactly two kinds, so lifting
+    // any of the other five to rank 0 stayed green. One file per kind fixes it.
+    const audit = auditMutatedCopy((dir) => {
+      writeFileSync(join(dir, 'zz-a-broken.yml'), 'jobs: [\n');
+      writeFileSync(join(dir, 'zz-b-seq.yml'), '- a\n');
+      writeFileSync(join(dir, 'zz-c-nojobs.yml'), 'name: X\npermissions: {}\n');
+      writeFileSync(join(dir, 'zz-d-permstr.yml'), 'permissions: write-all\njobs:\n  a:\n    timeout-minutes: 5\n');
+      writeFileSync(join(dir, 'zz-e-noperm.yml'), 'jobs:\n  a:\n    timeout-minutes: 5\n');
+      writeFileSync(join(dir, 'zz-f-jobstr.yml'), 'permissions: {}\njobs:\n  a: hello\n');
+      writeFileSync(join(dir, 'zz-g-badnum.yml'), 'permissions: {}\njobs:\n  a:\n    timeout-minutes: 2.5\n');
+      writeFileSync(join(dir, 'zz-h-default.yml'), 'permissions: {}\njobs:\n  a:\n    timeout-minutes: 360\n');
+      writeFileSync(join(dir, 'zz-i-none.yml'), 'permissions: {}\njobs:\n  a:\n    runs-on: x\n');
+    });
+    const order = render(audit.findings)
+      .filter((l) => l.startsWith('zz-'))
+      .map((l) => l.slice(l.lastIndexOf(': ') + 2).replace(/ \(.*$/, ''));
+    // Each kind's first appearance, in table order.
+    const firstSeen: string[] = [];
+    for (const kind of order) if (!firstSeen.includes(kind)) firstSeen.push(kind);
+    expect(firstSeen).toEqual([...KIND_RANK].filter((k) => order.includes(k)));
   });
 
   it('an unparseable file outranks a top-level that is not a mapping', () => {
@@ -1612,7 +1670,7 @@ describe('the twins are exercised against hostile trees, not only clean ones', (
     // the cap — 20 workflows get a line and 20 are crowded out entirely, which
     // is exactly what the summary names. The other three cap cases put all
     // their findings in ONE workflow and assert the bare form.
-    expect(lines.at(-1)).toMatch(/^… and 20 more \(not all shown for: .*and 15 more; \d+ show no line at all\)$/);
+    expect(lines.at(-1)).toMatch(/^… and 20 more \(not all shown for: .*and 15 more; \d+ workflows? shows? no line at all\)$/);
   });
 });
 

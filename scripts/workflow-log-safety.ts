@@ -321,7 +321,7 @@ const groupKey = (line: string): string => {
   return line;
 };
 
-export const boundedList = (lines: readonly Safe[]): Safe[] => {
+export const boundedList = (lines: readonly Safe[], kinds?: readonly string[]): Safe[] => {
   if (lines.length <= MAX_RENDERED_FINDINGS) return [...lines];
   // ROUND-ROBIN BY WORKFLOW, not the first 20. Taking a prefix lets ONE file
   // fill the cap, and a fork controls how many findings its own file produces:
@@ -339,26 +339,59 @@ export const boundedList = (lines: readonly Safe[]): Safe[] => {
   // as complete. An earlier revision fixed the same defect by swapping an
   // `Array#includes` for a `Set`, and labelled it "by identity", which is not
   // what a `Set<string>` does. Indices are the only thing here that is unique.
+  // KEYED BY (KIND, WORKFLOW), NOT WORKFLOW ALONE. Sharing the cap between
+  // workflows is not enough, because a fork OWNS `.github/workflows/` in its own
+  // PR: twenty-five files it deliberately breaks are twenty-five findings of
+  // whatever kind the caller ranks FIRST, each in its own group, and the genuine
+  // finding is crowded out by the very mechanism meant to protect it —
+  // measured, with the real `hooks.yml` line neither kept nor named.
+  //
+  // The premise the callers' rank tables were written on ("a fork cannot
+  // manufacture these kinds for someone else's workflow") is therefore false,
+  // and is corrected there. What a fork cannot do is stop ANOTHER kind from
+  // being present, so the cap is split between the kinds that are present first
+  // and shared between workflows inside each — a flood of one kind can no
+  // longer consume the budget of another.
   const groups = new Map<string, number[]>();
   for (const [index, line] of lines.entries()) {
-    const key = groupKey(line);
+    const key = `${kinds?.[index] ?? ''}\u0000${groupKey(line)}`;
     const bucket = groups.get(key);
     if (bucket === undefined) groups.set(key, [index]);
     else bucket.push(index);
   }
-  const keptIndices: number[] = [];
-  const queues = [...groups.values()];
-  for (let round = 0; keptIndices.length < MAX_RENDERED_FINDINGS; round += 1) {
-    let took = false;
-    for (const queue of queues) {
-      if (keptIndices.length >= MAX_RENDERED_FINDINGS) break;
-      const index = queue[round];
-      if (index === undefined) continue;
-      keptIndices.push(index);
-      took = true;
-    }
-    if (!took) break;
+  // Kinds in the caller's order, each with its own queues of (kind, workflow).
+  const byKind = new Map<string, number[][]>();
+  for (const [key, queue] of groups) {
+    const kind = key.slice(0, key.indexOf('\u0000'));
+    const bucket = byKind.get(kind);
+    if (bucket === undefined) byKind.set(kind, [queue]);
+    else bucket.push(queue);
   }
+  const keptIndices: number[] = [];
+  // Each kind gets an equal share, and whatever a kind does not use is left for
+  // the rounds below — a kind with one finding takes one slot, not a fifth of
+  // the cap.
+  const share = Math.max(1, Math.floor(MAX_RENDERED_FINDINGS / byKind.size));
+  const taken = new Set<number>();
+  const drain = (queues: readonly number[][], limit: number): void => {
+    for (let round = 0; ; round += 1) {
+      let took = false;
+      for (const queue of queues) {
+        if (keptIndices.length >= limit || keptIndices.length >= MAX_RENDERED_FINDINGS) return;
+        const index = queue[round];
+        if (index === undefined || taken.has(index)) continue;
+        keptIndices.push(index);
+        taken.add(index);
+        took = true;
+      }
+      if (!took) return;
+    }
+  };
+  for (const queues of byKind.values()) {
+    drain(queues, keptIndices.length + share);
+  }
+  // A second pass spends anything left over, in the same order.
+  for (const queues of byKind.values()) drain(queues, MAX_RENDERED_FINDINGS);
   const keptSet = new Set<number>(keptIndices);
   const kept = keptIndices.map((index) => lines[index] as Safe);
   // NAME WHAT WAS DROPPED ENTIRELY. Round-robin guarantees a SHARE to every
@@ -386,20 +419,30 @@ export const boundedList = (lines: readonly Safe[]): Safe[] => {
   // a real `ci.yml` unreadable-workflow finding was dropped from the log AND
   // unnamed, where the narrower filter had named it. Ranking by kept-count
   // ascending puts the ones a reader most needs to know about at the front.
+  // The WORKFLOW half of the composite key: a reader wants the file name, not
+  // the kind it was bucketed under, and the same workflow may appear under two
+  // kinds — it is named once.
+  const workflowOf = (key: string): string => key.slice(key.indexOf('\u0000') + 1);
   const withKeptCount = [...groups.entries()].map(
-    ([key, queue]) => [key, queue.filter((i) => keptSet.has(i)).length] as const,
+    ([key, queue]) => [workflowOf(key), queue.filter((i) => keptSet.has(i)).length] as const,
   );
-  const incomplete = withKeptCount
-    .filter(([key, count]) => count < (groups.get(key)?.length ?? 0))
+  const total = new Map<string, number>();
+  for (const [key, queue] of groups) {
+    total.set(workflowOf(key), (total.get(workflowOf(key)) ?? 0) + queue.length);
+  }
+  const keptPer = new Map<string, number>();
+  for (const [name, count] of withKeptCount) keptPer.set(name, (keptPer.get(name) ?? 0) + count);
+  const incomplete = [...keptPer.entries()]
+    .filter(([name, count]) => count < (total.get(name) ?? 0))
     .sort((a, b) => a[1] - b[1])
-    .map(([key]) => key);
+    .map(([name]) => name);
   // HOW MANY SHOW NO LINE AT ALL, counted separately from the names. Ranking
   // starved groups first is not enough on its own: past five of them the names
   // run out, and a genuine workflow is then neither shown nor named — measured
   // at 25 fork files, where an earlier revision of this comment claimed the
   // naming was a promise. It is not; this count is. A reader who sees a
   // non-zero figure knows the class is present and can re-run locally.
-  const starved = withKeptCount.filter(([, count]) => count === 0).length;
+  const starved = [...keptPer.values()].filter((count) => count === 0).length;
   const dropped = `… and ${lines.length - kept.length} more` as Safe;
   return [
     ...kept,
@@ -411,7 +454,7 @@ export const boundedList = (lines: readonly Safe[]): Safe[] => {
       : (`${dropped} (not all shown for: ${incomplete.slice(0, 5).join(', ')}${
           // `>`, not `>=`: at exactly five the tail would read ", and 0 more".
           incomplete.length > 5 ? `, and ${incomplete.length - 5} more` : ''
-        }${starved === 0 ? '' : `; ${starved} show no line at all`})` as Safe),
+        }${starved === 0 ? '' : `; ${starved} workflow${starved === 1 ? ' shows' : 's show'} no line at all`})` as Safe),
   ];
 };
 
