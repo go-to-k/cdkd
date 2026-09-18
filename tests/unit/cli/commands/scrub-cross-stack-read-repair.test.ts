@@ -114,6 +114,11 @@ import { AwsClients, setAwsClients, resetAwsClients } from '../../../../src/util
 import { resetAccountInfoCache } from '../../../../src/deployment/intrinsic-function-resolver.js';
 import { clearRecordedSecretExpressions } from '../../../../src/deployment/secret-redaction.js';
 import { scrubStack } from '../../../../src/cli/commands/scrub.js';
+import { producerNameIsUnresolved } from '../../../../src/cli/commands/recreate-downstream-consumers.js';
+import {
+  redactSecretsForState,
+  SECRET_MASK,
+} from '../../../../src/deployment/secret-redaction.js';
 import type { StackState } from '../../../../src/types/state.js';
 import type { CloudFormationTemplate } from '../../../../src/types/resource.js';
 
@@ -376,7 +381,7 @@ describe('cdkd scrub repairs cross-stack read names (issue #3337)', () => {
     const expectedImports = structuredClone(imports);
     const expectedOutputReads = structuredClone(outputReads);
 
-    await scrub();
+    const res = await scrub();
 
     // Cloned BEFORE the run: comparing against the same array objects the
     // fixture still holds makes an in-place mutation compare equal to itself,
@@ -384,6 +389,11 @@ describe('cdkd scrub repairs cross-stack read names (issue #3337)', () => {
     // every other one.
     expect(savedState().imports).toEqual(expectedImports);
     expect(savedState().outputReads).toEqual(expectedOutputReads);
+    // ONE change -- the resource leaf. Without this pin, deleting the
+    // `outputReads` unchanged-entry guard reds nothing: every entry would count
+    // as changed, the state would be rewritten, and `--dry-run --fail` would
+    // exit 1 over clean state.
+    expect(res.recordsChanged).toBe(1);
   });
 
   /**
@@ -445,14 +455,18 @@ describe('cdkd scrub repairs cross-stack read names (issue #3337)', () => {
   });
 
   /**
-   * IDEMPOTENCY. A re-run scans a name that is ALREADY the expression against
-   * the union. `redactSecretsForState`'s token guard spares a needle lying
-   * strictly inside a complete `{{resolve:...}}` span, which is what stops the
-   * splice corruption `redactUnaccountedOutputs` carries a blocker note about
-   * (`{{resolve:secretsmanager:{{resolve:...}}/db:...}}`). Nothing here would
-   * red if that guard regressed.
+   * An already-redacted entry beside a repairable one. This does NOT exercise
+   * the token guard -- measured: disabling `strictlyInsideASpan` reds nothing
+   * here, because the needle in this fixture does not occur inside the
+   * persisted span. What it DOES fence is the imports unchanged-entry
+   * early-return, which nothing else reds.
+   *
+   * The guard's own hazard -- a union needle occurring INSIDE an already-stored
+   * expression, which would splice
+   * `{{resolve:secretsmanager:{{resolve:...}}/db:...}}` -- is covered by the
+   * case below.
    */
-  it('is idempotent — an already-redacted name is byte-identical on a re-run', async () => {
+  it('leaves an already-redacted name alone while repairing its sibling', async () => {
     state = makeState({
       imports: [
         { sourceStack: 'Producer', sourceRegion: REGION, exportName: `live-${SECRET_EXPR}` },
@@ -489,10 +503,77 @@ describe('cdkd scrub repairs cross-stack read names (issue #3337)', () => {
     await scrub();
 
     const [entry] = savedState().outputReads!;
-    // `producerNameIsUnresolved` tests for `{{resolve:` or the mask by
-    // containment; every value a `RecordedSecretValues` bag holds is one of
-    // those two by construction.
-    expect(entry!.sourceStack).toContain('{{resolve:');
+    // CALL THE REAL PREDICATE. An earlier revision asserted
+    // `toContain('{{resolve:')` instead, which fences nothing about the
+    // coupling and is STRICTER than the reporter: a MASK-ONLY needle redacts to
+    // `***`, which `producerNameIsUnresolved` accepts and that assertion
+    // rejects. Restating a predicate more narrowly than its owner is how a
+    // consumer drifts from it.
+    expect(producerNameIsUnresolved(entry!.sourceStack)).toBe(true);
+    // ...and the control: an ordinary name is NOT reported, so the assertion
+    // above is not satisfied by everything.
+    expect(producerNameIsUnresolved('OrdinaryProducer')).toBe(false);
+  });
+
+  /**
+   * THE MASK-ONLY OUTPUT SHAPE. A `RecordedSecretValues` bag can hold a needle
+   * whose value is `SECRET_MASK` rather than an expression (the go-to-k/cdkd#2274
+   * class, reachable into scrub's union through `recordMaskOnlyValue`), so the
+   * walk can write `***` into a name. The reporter accepts that too; nothing
+   * asserted it, and the assertion that used to stand here would have REJECTED
+   * it.
+   */
+  it('a mask-only needle writes a name the reporter still recognises', () => {
+    const masked = redactSecretsForState('stack-abc', new Map([['stack-abc', SECRET_MASK]]));
+    expect(masked).toBe(SECRET_MASK);
+    expect(producerNameIsUnresolved(masked as string)).toBe(true);
+  });
+
+  /**
+   * THE TOKEN-GUARD HAZARD ITSELF. `SECRET_ID` (`prod/db`) occurs INSIDE the
+   * persisted `{{resolve:secretsmanager:prod/db:...}}` span. Re-scanning it
+   * with `prod/db` as a needle would splice a nested expression into the name
+   * -- the corruption `redactUnaccountedOutputs` carries a blocker note about.
+   * `redactSecretsForState` spares a needle lying strictly inside a complete
+   * span, and this is what reds if that stops holding.
+   */
+  it('does not splice a needle that lies INSIDE an already-persisted expression', () => {
+    const stored = `producer-${SECRET_EXPR}`;
+    const spliced = redactSecretsForState(
+      stored,
+      new Map([[SECRET_ID, '{{resolve:ssm-secure:/other/param}}']])
+    );
+    expect(spliced).toBe(stored);
+  });
+
+  // NOTE: `[]` round-tripping is NOT fenced here. It survives via the
+  // pre-existing `...carriedState` spread, so it stays green under every
+  // mutation of the new code -- measured. The case is kept because the schema
+  // distinguishes `[]` ("reads nothing") from an absent key ("pre-v8 record"),
+  // and its sibling above IS the fence for the conditional spread.
+  it('leaves outputReads[].sourceRegion verbatim even when it carries the plaintext', async () => {
+    // Mirrors the imports case, and needs the ARN form for the same reason: a
+    // needle-bearing region reads as a cross-region producer and would
+    // otherwise refuse the stack before any walk runs.
+    const region = `${REGION}-${PLAINTEXT}`;
+    state = makeState({
+      resources: {
+        Db: {
+          physicalId: 'db-1',
+          resourceType: 'AWS::RDS::DBInstance',
+          properties: { MasterUserPassword: ARN_SECRET_EXPR },
+        },
+      },
+      outputReads: [
+        { sourceStack: `s-${PLAINTEXT}`, sourceRegion: region, outputName: 'Out' },
+      ],
+    });
+
+    await scrub(undefined, { MasterUserPassword: ARN_SECRET_EXPR });
+
+    const [entry] = savedState().outputReads!;
+    expect(entry!.sourceRegion).toBe(region);
+    expect(entry!.sourceStack).toBe(`s-${ARN_SECRET_EXPR}`);
   });
 
   it('round-trips an EMPTY imports / outputReads list as [] rather than dropping it', async () => {
@@ -526,7 +607,8 @@ describe('cdkd scrub repairs cross-stack read names (issue #3337)', () => {
 
     expect(stateBackend.saveState).not.toHaveBeenCalled();
     // Still COUNTED, so `--dry-run --fail` reddens on a record a real run would
-    // repair — which is what makes it usable as a standing CI gate.
-    expect(res.recordsChanged).toBeGreaterThan(0);
+    // repair — which is what makes it usable as a standing CI gate. Pinned
+    // exactly, like its three siblings.
+    expect(res.recordsChanged).toBe(1);
   });
 });

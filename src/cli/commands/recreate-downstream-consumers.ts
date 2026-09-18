@@ -100,7 +100,13 @@ export interface DownstreamConsumer {
  * reinstating the silent drop the reporting arm exists to remove, in the one
  * shape where the operator has least chance of noticing.
  */
-function producerNameIsUnresolved(sourceStack: string): boolean {
+// EXPORTED so a consumer of the value this predicate judges can call it rather
+// than restate it (go-to-k/cdkd#3337). `cdkd scrub`'s cross-stack repair writes
+// the `sourceStack` this reads, and its test asserted `toContain('{{resolve:')`
+// instead -- which fences nothing about the coupling and is STRICTER than this
+// function, since a mask-only needle redacts to `***`, which this accepts and
+// that rejected.
+export function producerNameIsUnresolved(sourceStack: string): boolean {
   return sourceStack.includes('{{resolve:') || sourceStack.includes(SECRET_MASK);
 }
 

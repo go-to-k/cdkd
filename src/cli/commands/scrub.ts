@@ -845,10 +845,18 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     if (scrubbed.recordsChanged > 0) {
       totalStacksScrubbed++;
       logger.info(
-        // `state record(s)`, not `resource record(s)`: this count has included
-        // outputs and orphans for some time and now includes cross-stack read
-        // entries too (go-to-k/cdkd#3337), none of which are resources.
-        `${options.dryRun ? 'Would scrub' : 'Scrubbed'} ${scrubbed.recordsChanged} state record(s) ` +
+        // `resource record(s)` is LOOSE -- this count has included outputs and
+        // orphans for some time and now includes cross-stack read entries too
+        // (go-to-k/cdkd#3337), none of which are resources. It is deliberately
+        // NOT renamed: three integ fixtures hard-fail `grep -qF` on this exact
+        // literal (`dynamic-ref-cross-region`, `cross-stack-secret-import` x2)
+        // and in each it is the phase's own discriminator, while NO unit test
+        // asserts either wording -- so a rename is invisible to CI and surfaces
+        // only on a real-AWS run. `.claude/rules/testing.md`'s rule about a
+        // fixture that greps cdkd's own output applies here, and the cosmetic
+        // gain does not pay for breaking three phase assertions. Rename it with
+        // those fixtures, their re-run, and this doc's example output together.
+        `${options.dryRun ? 'Would scrub' : 'Scrubbed'} ${scrubbed.recordsChanged} resource record(s) ` +
           `in ${stack.stackName}`
       );
     } else if (
