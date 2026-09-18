@@ -125,6 +125,13 @@ const SECRET_EXPR = `{{resolve:secretsmanager:${SECRET_ID}:SecretString:password
 const PLAINTEXT = 'live-db-password-3337';
 /** A value the reference used to resolve to, before a rotation. */
 const ROTATED_AWAY = 'old-db-password-3337';
+/**
+ * The ARN form NAMES its region, so `classifyReplaySecretRegion` returns
+ * `named-region` instead of `ambiguous` and scrub does not refuse a stack whose
+ * recorded producer region differs from its own.
+ */
+const ARN_SECRET_EXPR =
+  '{{resolve:secretsmanager:arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/db:SecretString:password}}';
 
 const logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} };
 
@@ -163,7 +170,7 @@ function makeState(extra: Partial<StackState>): StackState {
   };
 }
 
-function makeStackInfo(): unknown {
+function makeStackInfo(properties?: Record<string, unknown>): unknown {
   return {
     stackName: STACK,
     dependencyNames: [],
@@ -171,7 +178,7 @@ function makeStackInfo(): unknown {
       Resources: {
         Db: {
           Type: 'AWS::RDS::DBInstance',
-          Properties: { MasterUserPassword: SECRET_EXPR },
+          Properties: properties ?? { MasterUserPassword: SECRET_EXPR },
         },
       },
     } as CloudFormationTemplate,
@@ -214,8 +221,11 @@ afterEach(() => {
   else process.env['AWS_REGION'] = savedRegion;
 });
 
-async function scrub(opts?: { dryRun?: boolean }): Promise<{ recordsChanged: number }> {
-  return (await scrubStack(makeStackInfo() as never, REGION, stateBackend as never, lockManager as never, {
+async function scrub(
+  opts?: { dryRun?: boolean },
+  templateProperties?: Record<string, unknown>
+): Promise<{ recordsChanged: number }> {
+  return (await scrubStack(makeStackInfo(templateProperties) as never, REGION, stateBackend as never, lockManager as never, {
     dryRun: opts?.dryRun ?? false,
     logger: logger as never,
   })) as { recordsChanged: number };
@@ -239,9 +249,9 @@ describe('cdkd scrub repairs cross-stack read names (issue #3337)', () => {
     expect(savedState().imports).toEqual([
       { sourceStack: 'Producer', sourceRegion: REGION, exportName: `prod-${SECRET_EXPR}-export` },
     ]);
-    // Counted, so `--fail` sees it. Before this walk the record was carried
-    // untouched and the run reported clean.
-    expect(res.recordsChanged).toBeGreaterThan(0);
+    // EXACTLY one: the count is per changed ENTRY, not per changed field, and
+    // `toBeGreaterThan(0)` cannot see a regression that counts per field.
+    expect(res.recordsChanged).toBe(1);
   });
 
   it('rewrites both template-derived outputReads fields', async () => {
@@ -274,22 +284,43 @@ describe('cdkd scrub repairs cross-stack read names (issue #3337)', () => {
    * a deliberate decision.
    */
   it('leaves sourceRegion and imports[].sourceStack verbatim even when they carry the plaintext', async () => {
+    // `sourceRegion` CARRIES the needle here on purpose. With a plain
+    // `us-east-1` the assertion passes whether or not the walk touches the
+    // field, so the claim that BOTH verbatim fields are fenced would have been
+    // true of only one of them.
+    //
+    // THE ARN FORM IS REQUIRED TO REACH THIS STATE, and finding that out is
+    // half the case. `producerRegionsFromState` reads `sourceRegion`, so a
+    // value that is not this stack's region reads as a CROSS-REGION producer;
+    // with a name-form reference scrub then refuses the stack outright
+    // (`regionAmbiguousScrubSecretError`) before any walk runs, because a
+    // same-named secret in two regions is two independent values. An ARN names
+    // its own region, so the reference is resolved there and the refusal does
+    // not apply -- which is what lets the verbatim claim be asserted at all.
+    const region = `${REGION}-${PLAINTEXT}`;
     state = makeState({
+      resources: {
+        Db: {
+          physicalId: 'db-1',
+          resourceType: 'AWS::RDS::DBInstance',
+          properties: { MasterUserPassword: ARN_SECRET_EXPR },
+        },
+      },
       imports: [
         {
           sourceStack: `producer-${PLAINTEXT}`,
-          sourceRegion: REGION,
+          sourceRegion: region,
           exportName: `e-${PLAINTEXT}`,
         },
       ],
     });
 
-    await scrub();
+    await scrub(undefined, { MasterUserPassword: ARN_SECRET_EXPR });
 
     const [entry] = savedState().imports!;
     expect(entry!.sourceStack).toBe(`producer-${PLAINTEXT}`);
-    expect(entry!.sourceRegion).toBe(REGION);
-    expect(entry!.exportName).toBe(`e-${SECRET_EXPR}`);
+    expect(entry!.sourceRegion).toBe(region);
+    expect(entry!.exportName).toBe(`e-${ARN_SECRET_EXPR}`);
   });
 
   /**
@@ -304,24 +335,23 @@ describe('cdkd scrub repairs cross-stack read names (issue #3337)', () => {
     // is observed on a record this run actually WROTE. Without it the run
     // changes nothing, `scrubStack` never saves, and the case would pass
     // whether or not the walk ran at all.
+    // The REPAIRABLE sibling is what makes this case discriminate. Without it
+    // the case passes with the write-back deleted AND with the redactor made
+    // identity -- it would read as evidence for a feature that could be fully
+    // reverted. With it, "the rotated name survived" is asserted on the same
+    // saved list that PROVES the walk ran.
     state = makeState({
-      resources: {
-        Db: {
-          physicalId: 'db-1',
-          resourceType: 'AWS::RDS::DBInstance',
-          properties: { MasterUserPassword: PLAINTEXT },
-        },
-      },
       imports: [
         { sourceStack: 'Producer', sourceRegion: REGION, exportName: `e-${ROTATED_AWAY}-x` },
+        { sourceStack: 'Producer', sourceRegion: REGION, exportName: `live-${PLAINTEXT}` },
       ],
     });
 
     await scrub();
 
-    const [entry] = savedState().imports!;
-    expect(entry!.exportName).toBe(`e-${ROTATED_AWAY}-x`);
-    expect(entry!.exportName).toContain(ROTATED_AWAY);
+    const entries = savedState().imports!;
+    expect(entries[0]!.exportName).toBe(`e-${ROTATED_AWAY}-x`);
+    expect(entries[1]!.exportName).toBe(`live-${SECRET_EXPR}`);
   });
 
   /** A name carrying no secret is persisted verbatim — the control. */
@@ -343,11 +373,17 @@ describe('cdkd scrub repairs cross-stack read names (issue #3337)', () => {
       imports,
       outputReads,
     });
+    const expectedImports = structuredClone(imports);
+    const expectedOutputReads = structuredClone(outputReads);
 
     await scrub();
 
-    expect(savedState().imports).toEqual(imports);
-    expect(savedState().outputReads).toEqual(outputReads);
+    // Cloned BEFORE the run: comparing against the same array objects the
+    // fixture still holds makes an in-place mutation compare equal to itself,
+    // so a mutant that rewrote entries in place passed this case while redding
+    // every other one.
+    expect(savedState().imports).toEqual(expectedImports);
+    expect(savedState().outputReads).toEqual(expectedOutputReads);
   });
 
   /**
@@ -372,6 +408,111 @@ describe('cdkd scrub repairs cross-stack read names (issue #3337)', () => {
     const saved = savedState();
     expect('imports' in saved).toBe(false);
     expect('outputReads' in saved).toBe(false);
+  });
+
+  /**
+   * B1 (review): the change check is `sourceStack === ... && outputName === ...`.
+   * Flipping that `&&` to `||` left every earlier case green while a
+   * partially-secret entry kept its plaintext AND went uncounted -- i.e. scrub
+   * reporting clean on exactly the record this exists to repair.
+   */
+  it('repairs an outputReads entry where only ONE field carries the secret', async () => {
+    state = makeState({
+      outputReads: [
+        { sourceStack: `stack-${PLAINTEXT}`, sourceRegion: REGION, outputName: 'PlainOutput' },
+      ],
+    });
+
+    const res = await scrub();
+
+    expect(savedState().outputReads).toEqual([
+      { sourceStack: `stack-${SECRET_EXPR}`, sourceRegion: REGION, outputName: 'PlainOutput' },
+    ]);
+    // ONE entry changed, not one per field.
+    expect(res.recordsChanged).toBe(1);
+  });
+
+  it('counts a fully-changed outputReads entry once, not once per field', async () => {
+    state = makeState({
+      outputReads: [
+        { sourceStack: `s-${PLAINTEXT}`, sourceRegion: REGION, outputName: `o-${PLAINTEXT}` },
+      ],
+    });
+
+    const res = await scrub();
+
+    expect(res.recordsChanged).toBe(1);
+  });
+
+  /**
+   * IDEMPOTENCY. A re-run scans a name that is ALREADY the expression against
+   * the union. `redactSecretsForState`'s token guard spares a needle lying
+   * strictly inside a complete `{{resolve:...}}` span, which is what stops the
+   * splice corruption `redactUnaccountedOutputs` carries a blocker note about
+   * (`{{resolve:secretsmanager:{{resolve:...}}/db:...}}`). Nothing here would
+   * red if that guard regressed.
+   */
+  it('is idempotent — an already-redacted name is byte-identical on a re-run', async () => {
+    state = makeState({
+      imports: [
+        { sourceStack: 'Producer', sourceRegion: REGION, exportName: `live-${SECRET_EXPR}` },
+        { sourceStack: 'Producer', sourceRegion: REGION, exportName: `fix-${PLAINTEXT}` },
+      ],
+    });
+
+    const res = await scrub();
+
+    const entries = savedState().imports!;
+    // The already-redacted one is untouched...
+    expect(entries[0]!.exportName).toBe(`live-${SECRET_EXPR}`);
+    // ...and the repairable one produces the SAME spelling, so a second run
+    // would change nothing.
+    expect(entries[1]!.exportName).toBe(`fix-${SECRET_EXPR}`);
+    expect(res.recordsChanged).toBe(1);
+  });
+
+  /**
+   * The cross-file coupling go-to-k/cdkd#3337's verification plan asks for. A
+   * repaired `outputReads[].sourceStack` is ALSO the literal key
+   * `findDownstreamConsumers` matches on, and go-to-k/cdkd#3289 added a
+   * reporting arm so such an entry is surfaced in the DATA-LOSS prompt rather
+   * than silently dropped. The arm keys on `producerNameIsUnresolved`, so what
+   * must hold is that every shape this walk can write is recognised by it.
+   */
+  it('writes a sourceStack the downstream-consumer reporter recognises as unnameable', async () => {
+    state = makeState({
+      outputReads: [
+        { sourceStack: `stack-${PLAINTEXT}`, sourceRegion: REGION, outputName: 'Out' },
+      ],
+    });
+
+    await scrub();
+
+    const [entry] = savedState().outputReads!;
+    // `producerNameIsUnresolved` tests for `{{resolve:` or the mask by
+    // containment; every value a `RecordedSecretValues` bag holds is one of
+    // those two by construction.
+    expect(entry!.sourceStack).toContain('{{resolve:');
+  });
+
+  it('round-trips an EMPTY imports / outputReads list as [] rather than dropping it', async () => {
+    state = makeState({
+      resources: {
+        Db: {
+          physicalId: 'db-1',
+          resourceType: 'AWS::RDS::DBInstance',
+          properties: { MasterUserPassword: PLAINTEXT },
+        },
+      },
+      imports: [],
+      outputReads: [],
+    });
+
+    await scrub();
+
+    const saved = savedState();
+    expect(saved.imports).toEqual([]);
+    expect(saved.outputReads).toEqual([]);
   });
 
   it('writes nothing under --dry-run', async () => {

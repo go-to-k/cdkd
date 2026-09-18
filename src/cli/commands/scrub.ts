@@ -845,7 +845,10 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     if (scrubbed.recordsChanged > 0) {
       totalStacksScrubbed++;
       logger.info(
-        `${options.dryRun ? 'Would scrub' : 'Scrubbed'} ${scrubbed.recordsChanged} resource record(s) ` +
+        // `state record(s)`, not `resource record(s)`: this count has included
+        // outputs and orphans for some time and now includes cross-stack read
+        // entries too (go-to-k/cdkd#3337), none of which are resources.
+        `${options.dryRun ? 'Would scrub' : 'Scrubbed'} ${scrubbed.recordsChanged} state record(s) ` +
           `in ${stack.stackName}`
       );
     } else if (
@@ -5760,16 +5763,38 @@ export async function scrubStack(
     // The needle set is `allRecordedSecrets` — the union — for the same reason
     // `redactUnaccountedOutputs` uses it: a cross-stack NAME is not positioned
     // against any one resource's bag, so the per-resource scoping that protects
-    // `state.resources` has nothing to scope here. Filtered to
-    // `MIN_NEEDLE_LENGTH`, matching that call site: the floorless whole-value
-    // arm is sound only for a POSITION-SCOPED bag, and this one is not.
-    const crossStackNeedles = new Map(
-      [...allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets)].filter(
-        ([plaintext]) => plaintext.length >= MIN_NEEDLE_LENGTH
-      )
-    );
+    // `state.resources` has nothing to scope here.
+    //
+    // NO FLOOR IS APPLIED HERE, and an earlier revision applied one and said it
+    // matched `redactUnaccountedOutputs`. Both halves were wrong: that call site
+    // applies none either, and `allRecordedSecrets` has ALREADY dropped every
+    // sub-`MIN_NEEDLE_LENGTH` key before returning. A second copy of a
+    // security-relevant predicate is the hazard this repo documents most — the
+    // next reader sees callers filtering, removes the floor inside
+    // `allRecordedSecrets`, and silently un-floors the OTHER callers while this
+    // one stays safe. One floor, one place.
+    //
+    // A DELIBERATE DIVERGENCE FROM THE WRITE SIDE, so a later lane does not
+    // "fix" it in the fabrication direction: `DeployEngine.redactCrossStackReads`
+    // uses its own UNFILTERED union, so a sub-floor whole-value name is redacted
+    // on write and is NOT repaired here. That is the safe direction — scrub
+    // rewrites a record no deploy is re-deriving, so it must be the more
+    // conservative of the two.
+    //
+    // Scrub's union also includes `orphanSecrets`, which the write side's does
+    // not. A plaintext recorded ONLY by an orphan record therefore repairs here
+    // and would not be redacted by the next deploy's key normalizer, so that
+    // entry can re-take go-to-k/cdkd#3289's DUPLICATE shape. It needs a
+    // coincidental substring match to happen at all, and DUPLICATE is a doubled
+    // row rather than a disclosure, so it is recorded rather than designed
+    // around.
+    const crossStackNeedles = allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets);
+    // No empty-map short-circuit: `redactSecretsForState` already returns its
+    // input unchanged for an empty bag with no source, and the deploy-side twin
+    // deleted exactly this arm because a branch no probe can red is worse than
+    // no branch (go-to-k/cdkd#3289).
     const redactCrossStackName = (name: string): string =>
-      crossStackNeedles.size === 0 ? name : redactSecretsForState(name, crossStackNeedles);
+      redactSecretsForState(name, crossStackNeedles);
     const newImports = state.imports?.map((entry) => {
       const exportName = redactCrossStackName(entry.exportName);
       if (exportName === entry.exportName) return entry;
