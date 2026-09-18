@@ -7,6 +7,9 @@ import {
   forceQuitRecoveryClause,
 } from '../../../src/state/lock-contention-message.js';
 import type { LockManager } from '../../../src/state/lock-manager.js';
+import { Command } from 'commander';
+import { stateOptions } from '../../../src/cli/options.js';
+import { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 
 /**
  * A `getLockInfo`-only stand-in. The helper's parameter is
@@ -474,6 +477,46 @@ describe('buildLockContentionMessage (issue #2170)', () => {
     expect(withDefault).not.toContain('--state-prefix');
     const withCustom = buildForceUnlockCommand('S', 'us-east-1', { statePrefix: 'team-a' });
     expect(withCustom).toContain('--state-prefix team-a');
+  });
+
+  it("emits an EMPTY --state-prefix '' — the CLI accepts it and it keys records under /", () => {
+    // A truthiness test dropped it, and the pasted hint then resolved the
+    // default `cdkd/` prefix: a different record with the same name
+    // (go-to-k/cdkd#3363 review, on the shared `recoveryCommandFlags`).
+    expect(buildForceUnlockCommand('S', 'us-east-1', { statePrefix: '' })).toBe(
+      "cdkd force-unlock S --stack-region us-east-1 --state-prefix ''"
+    );
+  });
+
+  it("fences the PREMISE of that: the CLI hands '' through, and the backend keys on it verbatim", () => {
+    // Emitting `--state-prefix ''` and printing `/<stack>/state.json` are both
+    // right only while the option carries no argParser that rewrites an empty
+    // value (say, back to the default) and the backend uses the prefix as
+    // given. Either change would make the flag and the printed path wrong with
+    // nothing else going red (m8 of go-to-k/cdkd#3363's review).
+    const opt = stateOptions.find((o) => o.long === '--state-prefix');
+    expect(opt, '--state-prefix is no longer declared in stateOptions').toBeDefined();
+    // No argParser at all is the invariant: ANY rewrite (a trim, an empty-to-
+    // default) would desynchronise the emitted flag from the key it selects.
+    expect(opt!.parseArg).toBeUndefined();
+    for (const value of ['', ' padded ', 'a/b', 'custom']) {
+      const cmd = new Command().exitOverride();
+      for (const o of stateOptions) cmd.addOption(o);
+      cmd.action(() => {}); // no-op stub: only `opts()` is under test here
+      cmd.parse(['--state-prefix', value], { from: 'user' });
+      expect(cmd.opts()['statePrefix'], JSON.stringify(value)).toBe(value);
+    }
+    // And the backend keys on each of them verbatim, for both key layouts.
+    for (const prefix of ['', ' padded ', 'a/b', 'custom']) {
+      const backend = new S3StateBackend({} as never, { bucket: 'b', prefix }) as unknown as {
+        getLegacyStateKey(s: string): string;
+        getStateKey(s: string, r: string): string;
+      };
+      expect(backend.getLegacyStateKey('S'), JSON.stringify(prefix)).toBe(`${prefix}/S/state.json`);
+      expect(backend.getStateKey('S', 'us-east-1'), JSON.stringify(prefix)).toBe(
+        `${prefix}/S/us-east-1/state.json`
+      );
+    }
   });
 
   it('strips control characters from the holder fields', async () => {

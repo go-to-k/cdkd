@@ -8,7 +8,12 @@ import {
   displaySafe,
   truncateCodePoints,
 } from '../utils/display-safe.js';
-import { shellQuote } from './lock-contention-message.js';
+import {
+  recoveryCommandFlags,
+  sanitizeRecoveryValue,
+  shellQuote,
+} from './lock-contention-message.js';
+import type { LockRecoveryContext } from './lock-contention-message.js';
 import { describeRegionValueKind, isReadableBag } from '../types/state.js';
 import type { StackState } from '../types/state.js';
 
@@ -1288,24 +1293,91 @@ function stackClause(stackName: string | undefined, region: string | undefined):
  * `destroy-runner.ts`; since go-to-k/cdkd#3328 the first operand is the S3
  * KEY's region rather than the record body's, which is a key SEGMENT and so
  * still plantable) -- its stack name is the caller's, so the region alone is
- * what would aim a destructive command using a value cdkd does not own. This one is reached only with the caller's
- * synthesized stack and `pickStackRegion`'s answer, so substituting is safe and
- * omitting the region is the wider action. Two opposite precedents in one
- * module; neither is the general rule.
+ * what would aim a destructive command using a value cdkd does not own. This
+ * one is reached only with the caller's synthesized stack and
+ * `pickStackRegion`'s answer, so omitting the region is the wider action. Two
+ * opposite precedents in one module; neither is the general rule.
+ *
+ * **Substitution is GATED on the identity rendering EXACTLY, at
+ * `STACK_REF_MAX_CODE_POINTS`** (go-to-k/cdkd#3360, and the M0 finding of the
+ * go-to-k/cdkd#3363 review). The synthesized name is not validated: a prebuilt
+ * cloud assembly's manifest reaches `cdkd orphan` unread, so a name `safeIdentifier`
+ * would TRIM (`'prod-api '`) substitutes as a healthy sibling's, and one it would
+ * TRUNCATE (a 166-code-point nested name at the 128 default) becomes a command
+ * `cdkd state orphan` resolves to zero records and reports as a skip at exit 0.
+ * Since go-to-k/cdkd#3359 the legacy shape carries no `--stack-region`, so the
+ * name is the ONLY thing narrowing this DELETE. The template arm is the fallback,
+ * and the caller says where to take the name from instead
+ * ({@link rendersExactly} is the test, shared with the inspect line and the
+ * object path).
+ *
+ * `recovery` qualifies EVERY arm, the no-identity template included, the way
+ * {@link buildForceUnlockCommand} is qualified, through the same `recoveryCommandFlags`: `cdkd state orphan`
+ * re-resolves the bucket from the ambient profile, so a remedy pasted after
+ * `cdkd orphan --profile prod ...` would otherwise address the default
+ * profile's account. The template keeps them too: the identity is the hole,
+ * not the account, and an operator who fills only the hole would otherwise run
+ * an UNQUALIFIED delete — which `cdkd state orphan` reports as a skip at exit 0
+ * when the default bucket has no such record, and offers to delete when it has
+ * one (the M3 finding of the go-to-k/cdkd#3363 review).
  */
-function dropRecordCommand(stackName: string | undefined, region: string | undefined): string {
+function dropRecordCommand(
+  stackName: string | undefined,
+  region: string | undefined,
+  recovery?: LockRecoveryContext
+): string {
   if (stackName === undefined || stackName === '') {
-    return 'cdkd state orphan <stack> --stack-region <region>';
+    return [
+      'cdkd state orphan <stack> --stack-region <region>',
+      ...recoveryCommandFlags(recovery).flags,
+    ].join(' ');
   }
   // The `=== ''` arms duplicate the caller's normalisation deliberately: this
   // helper is module-private but its two siblings are reached from builders
   // that do NOT normalise, so a fourth caller added later inherits the floor
   // rather than the defect.
-  const flag =
-    region === undefined || region === ''
-      ? ''
-      : ` --stack-region ${shellQuote(safeIdentifier(region))}`;
-  return `cdkd state orphan ${shellQuote(safeIdentifier(stackName))}${flag}`;
+  const known = region === undefined || region === '' ? undefined : region;
+  const regionExact = known === undefined || rendersExactly(known);
+  if (!rendersExactly(stackName) || !regionExact) {
+    // A TEMPLATE, keyed to what IS trusted: an absent region stays absent (the
+    // flag would select nothing on a legacy record), an exact one is kept
+    // (it narrows the delete), only an altered one becomes a hole.
+    const flag =
+      known === undefined
+        ? ''
+        : regionExact
+          ? ` --stack-region ${shellQuote(known)}`
+          : ' --stack-region <region>';
+    return [`cdkd state orphan <stack>${flag}`, ...recoveryCommandFlags(recovery).flags].join(' ');
+  }
+  const flag = known === undefined ? '' : ` --stack-region ${shellQuote(known)}`;
+  return [
+    `cdkd state orphan ${shellQuote(stackName)}${flag}`,
+    ...recoveryCommandFlags(recovery).flags,
+  ].join(' ');
+}
+
+/**
+ * Whether an identity survives {@link safeIdentifier} UNCHANGED at the
+ * state-record grammar's cap, so a command or a key built from it addresses the
+ * record the message is about. The cap is `STACK_REF_MAX_CODE_POINTS`, not the
+ * 128 the prose uses: `cdkd orphan` reads a PREBUILT assembly's stack name
+ * unvalidated, so a manifest can carry one past 128 that is nonetheless the
+ * record's real key, and truncating it names nothing — the same bound
+ * `malformedDestroyResourcesRefusalMessage` uses, reached from a different
+ * source.
+ *
+ * What it covers: every identity the `cdkd orphan` properties refusal builds
+ * something PASTEABLE from — the drop command ({@link dropRecordCommand}), the
+ * `cdkd state show` line ({@link orphanInspectCommand}) and the object path
+ * ({@link orphanInspectClause}) — so no two of them can disagree about a name
+ * (go-to-k/cdkd#3363 review, M0 and M2). What it does NOT cover yet: the
+ * destroy refusal and the divergent-region refusal above still spell the same
+ * test inline, and the shared {@link inspectCommand} is ungated at 128 for its
+ * other callers.
+ */
+function rendersExactly(value: string): boolean {
+  return safeIdentifier(value, STACK_REF_MAX_CODE_POINTS) === value;
 }
 
 /** The remedy command {@link stackClause}'s message ends on. */
@@ -1679,18 +1751,26 @@ export function malformedResourcePropertiesRefusalMessage(
 export function malformedOrphanResourcePropertiesRefusalMessage(
   rawStackName: string | undefined,
   rawRegion: string | undefined,
-  logicalIds: readonly string[]
+  logicalIds: readonly string[],
+  /**
+   * The caller's `--profile` / resolved bucket / `--state-prefix`, threaded so
+   * the remedy and the object path name the bucket the record is actually in.
+   * Optional so the message stays buildable with the identity alone.
+   */
+  recovery?: LockRecoveryContext
 ): string {
-  // NORMALISE ONCE, here, rather than in each of the three helpers below.
-  // `pickStackRegion` returns `Promise<string>` and yields `''` -- never
-  // `undefined` -- for a v1-legacy record, and an empty string is not an
+  // NORMALISE ONCE, here, rather than in each of the helpers below.
+  // `cdkd orphan` hands `undefined` for a legacy record with no region since
+  // go-to-k/cdkd#3359 (it used to hand `pickStackRegion`'s loaded region,
+  // `''` when nothing else was known), but an empty string is still not an
   // identity: `displaySafe('')` is `<unrenderable>`, so every helper that
   // treats "absent" as `undefined` renders a placeholder that names no record
-  // AND collides with its own wrapping quotes. Hoisting protects
-  // `stackClause`, `inspectCommand` and `dropRecordCommand` together; guarding
-  // inside one of them fixes a third of the message (measured -- the first cut
-  // did exactly that, and the remaining two still rendered
-  // `('<unrenderable>')` and `--stack-region '<unrenderable>'`).
+  // AND collides with its own wrapping quotes. Hoisting protects every helper
+  // below together — `stackClause`, `dropRecordCommand`,
+  // `withheldIdentityClause` and `orphanInspectClause`; guarding inside one of
+  // them fixed only part of the message (measured -- the first cut did exactly
+  // that, and the other clauses still rendered `('<unrenderable>')` and
+  // `--stack-region '<unrenderable>'`).
   const stackName = rawStackName === '' ? undefined : rawStackName;
   const region = rawRegion === '' ? undefined : rawRegion;
   return (
@@ -1704,13 +1784,149 @@ export function malformedOrphanResourcePropertiesRefusalMessage(
     `container that is still not a map. Continuing would rewrite, save, and report success over ` +
     `a record 'cdkd deploy' then REFUSES. No state was written. Two ways out need no CDK app: ` +
     `repair the record by hand, or drop it whole with ` +
-    `'${dropRecordCommand(stackName, region)}', which leaves ` +
-    `the live AWS resources standing. A third works only while the CDK app STILL DECLARES the ` +
+    `'${dropRecordCommand(stackName, region, recovery)}', which leaves ` +
+    `the live AWS resources standing${withheldIdentityClause(stackName, region, recovery)}. A third works ` +
+    `only while the CDK app STILL DECLARES the ` +
     `named resource — this refusal covers just the records that would SURVIVE the save, so ` +
     `'cdkd orphan <its construct path>' removes it and repairs the rest; construct paths come ` +
     `from the synthesized template, so a resource the app no longer declares has none and must ` +
-    `take one of the first two. Inspect the record with: ${inspectCommand(stackName, region)}`
+    `take one of the first two. ${orphanInspectClause(stackName, region, recovery)}`
   );
+}
+
+/**
+ * The half-sentence that accompanies a TEMPLATE drop remedy when a stack name
+ * WAS known but it, or the region beside it, did not render exactly. The prose
+ * above it prints the sanitized spelling, and an operator filling the template
+ * from that spelling would be aiming at the healthy sibling the gate exists to
+ * protect (`'prod-api '` renders as `prod-api`; a padded region is the same
+ * misdirection one flag over), so the message says where to take them from
+ * instead: `cdkd state list --json`, which writes the raw name
+ * through `JSON.stringify` — `--long` renders through `displayIdent`, which
+ * trims, so it would hand back the same spelling. Empty when the command was
+ * substituted, and when no name was known at all — that arm's template already
+ * reads as a hole to fill.
+ */
+function withheldIdentityClause(
+  stackName: string | undefined,
+  region: string | undefined,
+  recovery?: LockRecoveryContext
+): string {
+  if (stackName === undefined) return '';
+  // The same `''` floor {@link dropRecordCommand} carries, so the two agree on
+  // whether a region was supplied at all. Unreachable through the one builder
+  // that calls this (it normalises `''` at entry) and kept for the reason
+  // `dropRecordCommand` gives: a later caller inherits the floor.
+  const known = region === '' ? undefined : region;
+  if (rendersExactly(stackName) && (known === undefined || rendersExactly(known))) return '';
+  // Qualified like the remedy it stands in for: a bare listing after
+  // `cdkd orphan --profile prod ...` would read the DEFAULT profile's bucket,
+  // and the name it hands back would then be a different bucket's.
+  const list = ['cdkd state list --json', ...recoveryCommandFlags(recovery).flags].join(' ');
+  return (
+    ` — the stack name or region above did not render exactly, so take them from ` +
+    `'${list}' (shell-quoted) rather than from this message`
+  );
+}
+
+/**
+ * The `cdkd state show` line the orphan properties refusal ends on for a record
+ * listed WITH a region — gated and qualified exactly as the drop command two
+ * sentences above it is, because it is the same identity in the same message.
+ * Gating only the drop command left the message contradicting itself: it said
+ * the name did not render exactly, pointed at `cdkd state list --json`, and then
+ * printed `cdkd state show prod-api ...` with the trimmed spelling of
+ * `'prod-api '`, naming the healthy sibling (the M2 finding of the
+ * go-to-k/cdkd#3363 review). Holes follow {@link dropRecordCommand}'s rule: an
+ * altered region makes both a hole, an altered name only the name.
+ *
+ * Built here rather than by widening {@link inspectCommand}, which serves four
+ * other builders whose identities come from different sources (and this one no
+ * longer calls it at all).
+ */
+function orphanInspectCommand(
+  stackName: string,
+  region: string,
+  recovery?: LockRecoveryContext
+): string {
+  const regionExact = rendersExactly(region);
+  const stack = regionExact && rendersExactly(stackName) ? shellQuote(stackName) : '<stack>';
+  const where = regionExact ? shellQuote(region) : '<region>';
+  return [
+    `cdkd state show ${stack} --stack-region ${where} --json`,
+    ...recoveryCommandFlags(recovery).flags,
+  ].join(' ');
+}
+
+/**
+ * The line {@link malformedOrphanResourcePropertiesRefusalMessage} ends on.
+ *
+ * A KNOWN stack with NO region is a legacy record (`<prefix>/<stack>/state.json`)
+ * that `listStacks` lists with no region — `cdkd orphan` hands this module the
+ * region the record is LISTED under since go-to-k/cdkd#3359, and that is
+ * `undefined` only for such a ref (its body names no region, or the probe that
+ * reads it could not). `cdkd state show` refuses such a record with or without
+ * `--stack-region` ("has only a legacy state record without a region"), and the
+ * migration it suggests is a `cdkd deploy`, which refuses this very record
+ * (go-to-k/cdkd#3191). So ending on `cdkd state show` would hand the operator a
+ * command that cannot serve them; the line names the S3 object instead. Teaching
+ * `state show` to read a legacy record was the alternative, declined as a wider
+ * change to a command that is not the one refusing.
+ *
+ * The object path is printed only when the stack name {@link rendersExactly}: a
+ * path with a sanitized or truncated segment names an object that does not
+ * exist. The name comes from the assembly, and `cdkd orphan` accepts a PREBUILT
+ * one whose manifest nothing validates, which is what makes an inexact name
+ * reachable at all (go-to-k/cdkd#3360); an S3 key's `Parent~Child` name, the
+ * case the destroy refusal's gate was written for, cannot appear here.
+ *
+ * With `recovery` the path carries the REAL prefix and names the bucket, the
+ * way the drop remedy above it is qualified; without it the prefix is a
+ * placeholder and the sentence says how to fill it.
+ */
+function orphanInspectClause(
+  stackName: string | undefined,
+  region: string | undefined,
+  recovery?: LockRecoveryContext
+): string {
+  if (stackName === undefined) {
+    // The same template the shared `inspectCommand` gives for no identity, but
+    // qualified: the identity is the hole, not the account.
+    const template = [
+      'cdkd state show <stack> --stack-region <region> --json',
+      ...recoveryCommandFlags(recovery).flags,
+    ].join(' ');
+    return `Inspect the record with: ${template}`;
+  }
+  if (region !== undefined) {
+    return `Inspect the record with: ${orphanInspectCommand(stackName, region, recovery)}`;
+  }
+  const lead =
+    `The record is listed with no region — a legacy 'state.json' whose body names none, or ` +
+    `one the listing could not read — which 'cdkd state show' cannot read and a 'cdkd deploy' ` +
+    `will not migrate while it is torn, so inspect the object directly`;
+  // The bucket and prefix are printed only when they render EXACTLY, the test
+  // `recoveryCommandFlags` applies to the same two values on the commands
+  // above (go-to-k/cdkd#3377): an altered one would name a different bucket or
+  // key space. Otherwise the sentence falls back to the placeholder forms.
+  const exactOrUndefined = (v: string | undefined): string | undefined =>
+    v !== undefined && sanitizeRecoveryValue(v).exact ? v : undefined;
+  const bucket = exactOrUndefined(recovery?.stateBucket);
+  const where = bucket
+    ? `in state bucket ${shellQuote(bucket)}`
+    : `in the state bucket ('cdkd state info' names it)`;
+  if (!rendersExactly(stackName)) {
+    return `${lead}: it is the legacy 'state.json' under this stack's name ${where}.`;
+  }
+  const prefix = exactOrUndefined(recovery?.statePrefix);
+  const key = shellQuote(`${prefix ?? '<prefix>'}/${stackName}/state.json`);
+  // The fill-in note only when no prefix was SUPPLIED: one that was supplied but
+  // did not render exactly is not the default, so the note would mislead.
+  const fill =
+    recovery?.statePrefix === undefined
+      ? ` (the prefix is 'cdkd' unless '--state-prefix' was given)`
+      : '';
+  return `${lead}: it is ${key} ${where}${fill}.`;
 }
 
 /**
@@ -1769,7 +1985,9 @@ export function refuseMalformedResourcePropertiesForOrphan(
   state: StackState,
   removedLogicalIds: readonly string[],
   stackName: string | undefined,
-  region: string | undefined
+  region: string | undefined,
+  /** See {@link malformedOrphanResourcePropertiesRefusalMessage}. */
+  recovery?: LockRecoveryContext
 ): void {
   const removed = new Set(removedLogicalIds);
   const unreadable = unreadableResourcePropertyBags(state).filter((id) => !removed.has(id));
@@ -1781,7 +1999,7 @@ export function refuseMalformedResourcePropertiesForOrphan(
   // `tests/unit/state/malformed-resources-bag.test.ts`'s UNMARKED table beside
   // its sibling, so a NINTH refusal still cannot join them silently.
   throw new CdkdError(
-    malformedOrphanResourcePropertiesRefusalMessage(stackName, region, unreadable),
+    malformedOrphanResourcePropertiesRefusalMessage(stackName, region, unreadable, recovery),
     STATE_RESOURCES_MALFORMED
   );
 }

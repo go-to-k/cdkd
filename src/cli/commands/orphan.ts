@@ -17,6 +17,7 @@ import { Synthesizer, synthesisStatusMessage } from '../../synthesis/synthesizer
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { buildLockContentionMessage } from '../../state/lock-contention-message.js';
+import type { LockRecoveryContext } from '../../state/lock-contention-message.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
@@ -177,7 +178,7 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
     const stackInfo = resolved.stack;
     const orphanLogicalIds = resolved.logicalIds;
 
-    const targetRegion = await pickStackRegion(
+    const { region: targetRegion, recordRegion } = await pickStackRegion(
       stateBackend,
       stackInfo.stackName,
       stackInfo.region,
@@ -191,6 +192,15 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
     // Acquire lock so a concurrent deploy can't observe the half-rewritten
     // state. Skip in --dry-run to keep dry-run a pure read.
     const owner = `${process.env['USER'] || 'unknown'}@${process.env['HOSTNAME'] || 'host'}:${process.pid}`;
+    // What a pasteable recovery command needs to reach THIS bucket: the lock
+    // contention hint and the properties refusal's drop remedy both carry it,
+    // because `cdkd force-unlock` / `cdkd state orphan` re-resolve the bucket
+    // from the ambient profile (go-to-k/cdkd#2170, go-to-k/cdkd#3363).
+    const recovery: LockRecoveryContext = {
+      profile: options.profile,
+      stateBucket,
+      statePrefix: options.statePrefix,
+    };
     if (!options.dryRun) {
       // Check the boolean (issue #2161): a bare `acquireLock` returns `false`
       // for a live foreign lock without throwing, so the discarded return let
@@ -208,11 +218,7 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
             lockManager,
             stackName: stackInfo.stackName,
             region: targetRegion,
-            recovery: {
-              profile: options.profile,
-              stateBucket,
-              statePrefix: options.statePrefix,
-            },
+            recovery,
           })
         );
       }
@@ -261,11 +267,19 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
       // can never be exempted, and the message leads with the two remedies that
       // need no CDK app. AT THE LOAD, above the rewrite walk and above the
       // `--dry-run` return.
+      //
+      // `recordRegion`, not `targetRegion`: the text ends on commands the
+      // operator pastes, and those select by the region the record is LISTED
+      // under. For a single legacy record with no region in its body the two
+      // differ — `targetRegion` is the synthesized region `getState` falls back
+      // from — and a `--stack-region` naming it selects nothing
+      // (go-to-k/cdkd#3359).
       refuseMalformedResourcePropertiesForOrphan(
         state,
         orphanLogicalIds,
         stackInfo.stackName,
-        targetRegion
+        recordRegion,
+        recovery
       );
 
       // Validate that every requested orphan exists in state — otherwise we
@@ -423,6 +437,26 @@ function resolveConstructPaths(
 }
 
 /**
+ * What {@link pickStackRegion} settled on: the region to LOAD and lock under,
+ * and the region the selected record is KEYED under in the listing.
+ */
+interface PickedStackRegion {
+  /** The region `getState` / the lock are called with. */
+  region: string;
+  /**
+   * The selected ref's own `region` — `undefined` for a legacy ref
+   * `listStacks` lists with none (its body names no region, or the probe
+   * reading it failed). For such a ref `region` is the synthesized region when
+   * there is one (`getState` falls back to the legacy key for any region) and
+   * `''` when there is not. A remedy command the operator pastes must
+   * use THIS one: `cdkd state orphan` / `cdkd state show` select a record by
+   * comparing `--stack-region` against the listing, so the synthesized region
+   * selects nothing there (go-to-k/cdkd#3359).
+   */
+  recordRegion: string | undefined;
+}
+
+/**
  * Decide which region's state to operate on. Mirrors the disambiguation
  * logic shared with `state resources` / `state show`: prefer the
  * synthesized stack's region, then `--stack-region`, then the single
@@ -433,11 +467,13 @@ async function pickStackRegion(
   stackName: string,
   synthRegion: string | undefined,
   flag: string | undefined
-): Promise<string> {
+): Promise<PickedStackRegion> {
   const refs = (await stateBackend.listStacks()).filter((r) => r.stackName === stackName);
   if (refs.length === 0) {
-    if (flag) return flag;
-    if (synthRegion) return synthRegion;
+    // No record is listed, so `getState` below finds none and throws before
+    // any remedy text renders; `recordRegion` only has to be well-typed here.
+    if (flag) return { region: flag, recordRegion: flag };
+    if (synthRegion) return { region: synthRegion, recordRegion: synthRegion };
     throw new Error(
       `No state found for stack '${stackName}'. Run 'cdkd state list' to see available stacks.`
     );
@@ -451,14 +487,15 @@ async function pickStackRegion(
           `Available regions: ${seen}.`
       );
     }
-    return flag;
+    return { region: flag, recordRegion: flag };
   }
   if (synthRegion) {
     const found = refs.find((r) => r.region === synthRegion);
-    if (found) return synthRegion;
+    if (found) return { region: synthRegion, recordRegion: synthRegion };
   }
   if (refs.length === 1) {
-    return refs[0]!.region ?? synthRegion ?? '';
+    const recordRegion = refs[0]!.region;
+    return { region: recordRegion ?? synthRegion ?? '', recordRegion };
   }
   const regions = refs.map((r) => r.region ?? '(legacy)').join(', ');
   throw new Error(
