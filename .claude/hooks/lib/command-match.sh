@@ -4615,10 +4615,20 @@ gate_slug_from_url() {
   # `www.` before it lowercases). Reproducing that per-scheme, per-case table
   # would buy nothing here and could only be wrong in the unsafe direction: the
   # two spellings this over-normalises are ones gh DROPS, and in every consumer
-  # a spurious match makes a checkout read as THIS repo, which ADDS the binding
-  # requirement rather than removing it. The over-refusal is named in the
-  # spelling table in `command-match.test.sh` so it cannot be mistaken for a
-  # claim that gh accepts them.
+  # THAT ASKS WHETHER A REMOTE NAMES *THIS* REPO, a spurious match makes a
+  # checkout read as THIS repo, which ADDS the binding requirement rather than
+  # removing it. The over-refusal is named in the spelling table in
+  # `command-match.test.sh` so it cannot be mistaken for a claim that gh accepts
+  # them.
+  #
+  # ONE CONSUMER IS NOT OF THAT SHAPE, and the qualifier above is there because
+  # the unqualified sentence was false for it: `gate_resolve_marker_gate` keys
+  # `GATE_MARKER_ALIASES` on the slug, so a spurious match REMOVES a refusal --
+  # it selects a sibling repo's gate where the unfolded slug would have refused
+  # with `none`. That is correct TODAY, because only a genuine cdk-local
+  # checkout can fold into cdk-local's row, so no cross-repo confusion is
+  # reachable. It stops being correct if the alias list ever widens to hosts
+  # that are not gh's own, so widen that list and this consumer together.
   #
   # That safety argument is specific to a predicate that asks "does ANY remote
   # name this repo". It does NOT hold for a design that RANKS remotes and
@@ -4629,6 +4639,22 @@ gate_slug_from_url() {
   case "$host" in
     ssh.github.com | www.github.com) host=github.com ;;
   esac
+
+  # KNOWN BOUND, PRE-EXISTING and deliberately not closed here: an ssh `Host`
+  # ALIAS whose name contains a DOT. gh resolves a remote's ssh host by running
+  # `ssh -G <host>` and reading the `hostname` it returns -- measured, an `ssh`
+  # wrapper on PATH logged `-G github-work` during a `gh repo view` -- so with
+  # `Host github.com-work / HostName github.com` in `~/.ssh/config`, the
+  # standard multi-account recipe, `git@github.com-work:go-to-k/cdkd.git`
+  # resolves to THIS repo in gh while this keys it `github.com-work/go-to-k/cdkd`
+  # and the checkout reads FOREIGN.
+  #
+  # A DOTLESS alias (`gh-work`) is already safe: the host test above refuses it,
+  # and an unreadable remote makes `gate_target_is_foreign` answer NOT foreign.
+  # Only the dotted spelling gets through. Closing it means an `ssh -G`
+  # SUBPROCESS PER REMOTE inside a PreToolUse hook against a 10 s budget, which
+  # is its own decision rather than a line in this function, so it is recorded
+  # and filed: go-to-k/cdkd#3389.
 
   printf '%s/%s' "$host" "$path"
 }
@@ -5221,6 +5247,35 @@ EOF
     url_line="${url_line#*	}"
     [ -n "$url_line" ] && [ "$url_line" != "base" ] || continue
     url_line=$(printf '%s' "$url_line" | tr 'A-Z' 'a-z')
+    # DROP THE HOST SEGMENT OF A 3-PART VALUE, because GH IGNORES IT. Measured
+    # on gh 2.92.0 with `origin` = `github.com/go-to-k/cdk-local` and only
+    # `gh-resolved` varying: `go-to-k/cdkd`, `github.com/go-to-k/cdkd`,
+    # `ssh.github.com/go-to-k/cdkd`, `nope.github.com/go-to-k/cdkd`,
+    # `gitlab.com/go-to-k/cdkd` and `totally.bogus.example/go-to-k/cdkd` ALL
+    # resolve to go-to-k/cdkd. gh takes the host from the REMOTE and reads only
+    # the owner/repo tail here, so any host in this value is decoration.
+    #
+    # Two things follow, and the first is why a host-ALIAS fold is the wrong
+    # instrument for this comparison. `gate_slug_from_url` folds
+    # `ssh.github.com` / `www.github.com` (go-to-k/cdkd#3385) and a `gh-resolved`
+    # value never passes through it, so normalising ONE side destroyed a match
+    # that existed before: hook `origin` = `git@ssh.github.com:.../cdkd` against
+    # `gh-resolved = ssh.github.com/go-to-k/cdkd` answered NOT-foreign before the
+    # fold and FOREIGN after it. Folding the two aliases here would fix that one
+    # spelling and leave `gitlab.com/...` and every other host still relaxing --
+    # a PRE-EXISTING hole, since this loop never read the host. Dropping the
+    # segment closes the class instead of a spelling.
+    #
+    # Direction: this can only make MORE values match, and a match here means
+    # NOT foreign, which REFUSES. So it is the strict direction throughout.
+    #
+    # THIRD time this comparison has been the one left un-normalised --
+    # go-to-k/cdkd#3256 added the case-fold above for the same reason, and
+    # go-to-k/cdkd#3385 the fold below. Whatever normalises a slug must be
+    # applied to this value too, or checked against gh's own treatment of it.
+    case "$url_line" in
+      */*/*) url_line="${url_line#*/}" ;;
+    esac
     # gh's `ghrepo.FromFullName` accepts `OWNER/REPO` *and* `HOST/OWNER/REPO`,
     # so both spellings are compared (go-to-k/cdkd#3351 round 4: the 3-part form
     # matched nothing and the gate exited 0).

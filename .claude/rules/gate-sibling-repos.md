@@ -248,12 +248,21 @@ the old shape as part of the same change, not as a follow-up.
   out a suffix-less URL) and RED in a local clone, so the direct
   `gate_slug_from_url` cases are what hold it.
 
-  Over-normalising is safe HERE only because every consumer asks "does this
-  remote name a repo I know": a spurious match makes a checkout read as THIS
-  repo, which ADDS a requirement. It is NOT safe in a design that ranks remotes
-  and compares a winner -- there an over-accepted remote outranking gh's real
-  choice makes the comparison EQUAL and RELAXES (measured, go-to-k/cdkd#3372).
-  Do not carry the argument to such a caller.
+  Over-normalising is safe in a consumer that asks "does this remote name
+  *THIS* repo": a spurious match makes a checkout read as this repo, which ADDS
+  a requirement. **`gate_resolve_marker_gate` is NOT of that shape** -- it keys
+  the alias table below on the slug, so a spurious match REMOVES a refusal,
+  selecting a sibling's gate where the unfolded slug answered `none`. That is
+  correct today only because just a genuine cdk-local checkout can fold into
+  cdk-local's row; it stops being correct if the alias list widens past gh's own
+  two hosts, so widen the list and this consumer together. The unqualified
+  version of this sentence was measured FALSE for that consumer, which is why
+  the qualifier is here.
+
+  It is also NOT safe in a design that ranks remotes and compares a winner --
+  there an over-accepted remote outranking gh's real choice makes the comparison
+  EQUAL and RELAXES (measured, go-to-k/cdkd#3372). Do not carry the argument to
+  such a caller.
 
 **The ordering trap above is fenced STATICALLY, in `markgate-gate-name-class.test.sh`
 fence 4**, which asserts that each of the four gates handles markgate rc-2 at an

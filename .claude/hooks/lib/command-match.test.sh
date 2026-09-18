@@ -3428,6 +3428,51 @@ __gtf "a PERCENT-ENCODED owner -> NOT foreign" 1 \
 git init -q "$__gtf_tmp/ghrescase" 2>/dev/null
 git -C "$__gtf_tmp/ghrescase" remote add origin https://github.com/go-to-k/cdk-local.git 2>/dev/null
 git -C "$__gtf_tmp/ghrescase" config remote.origin.gh-resolved Go-To-K/CDKD 2>/dev/null
+# A `gh-resolved` carrying a HOST ALIAS. The hook slug is folded by
+# `gate_slug_from_url` and a `gh-resolved` value never passes through it, so
+# folding one side alone DESTROYS a match -- measured, this case answered
+# NOT-foreign before the go-to-k/cdkd#3385 fold and FOREIGN with the fold applied
+# to the hook side only. It is the same class as the MIXED-CASE case below:
+# whatever normalises a slug must be applied to this comparison too.
+git init -q "$__gtf_tmp/ghresalias" 2>/dev/null
+git -C "$__gtf_tmp/ghresalias" remote add origin https://github.com/go-to-k/cdk-local.git 2>/dev/null
+git -C "$__gtf_tmp/ghresalias" config remote.origin.gh-resolved ssh.github.com/go-to-k/cdkd 2>/dev/null
+__gtf "a gh-resolved naming an ALIAS host -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/ghresalias" "gh pr merge 1 --squash"
+
+git init -q "$__gtf_tmp/ghreswww" 2>/dev/null
+git -C "$__gtf_tmp/ghreswww" remote add origin https://github.com/go-to-k/cdk-local.git 2>/dev/null
+git -C "$__gtf_tmp/ghreswww" config remote.origin.gh-resolved www.github.com/go-to-k/cdkd 2>/dev/null
+__gtf "a gh-resolved naming www.github.com -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/ghreswww" "gh pr merge 1 --squash"
+
+# ANY host, not just the two aliases: gh IGNORES the host segment of a 3-part
+# `gh-resolved` and takes it from the remote instead. Measured -- with `origin`
+# at cdk-local, a `gh-resolved` of `nope.github.com/go-to-k/cdkd`,
+# `gitlab.com/go-to-k/cdkd` and even
+# `totally.bogus.example/go-to-k/cdkd` ALL resolve to go-to-k/cdkd in gh. So
+# these must read as THIS repo (rc 1), and folding only the two aliases would
+# leave every one of them relaxing.
+git init -q "$__gtf_tmp/ghresnope" 2>/dev/null
+git -C "$__gtf_tmp/ghresnope" remote add origin https://github.com/go-to-k/cdk-local.git 2>/dev/null
+git -C "$__gtf_tmp/ghresnope" config remote.origin.gh-resolved nope.github.com/go-to-k/cdkd 2>/dev/null
+__gtf "a gh-resolved at a NON-alias host -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/ghresnope" "gh pr merge 1 --squash"
+
+git init -q "$__gtf_tmp/ghresforeignhost" 2>/dev/null
+git -C "$__gtf_tmp/ghresforeignhost" remote add origin https://github.com/go-to-k/cdk-local.git 2>/dev/null
+git -C "$__gtf_tmp/ghresforeignhost" config remote.origin.gh-resolved gitlab.com/go-to-k/cdkd 2>/dev/null
+__gtf "a gh-resolved at a NON-GitHub host -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/ghresforeignhost" "gh pr merge 1 --squash"
+
+# The CONTROL that keeps all of those honest: dropping the host must not make
+# a DIFFERENT repo match. Same shape, a repo this gate does not own.
+git init -q "$__gtf_tmp/ghresother" 2>/dev/null
+git -C "$__gtf_tmp/ghresother" remote add origin https://github.com/go-to-k/cdk-local.git 2>/dev/null
+git -C "$__gtf_tmp/ghresother" config remote.origin.gh-resolved github.com/go-to-k/some-other-repo 2>/dev/null
+__gtf "a gh-resolved naming ANOTHER repo -> foreign" 0 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/ghresother" "gh pr merge 1 --squash"
+
 __gtf "a MIXED-CASE gh-resolved -> NOT foreign" 1 \
   "$__gtf_hooks_dir" "$__gtf_tmp/ghrescase" "gh pr merge 1 --squash"
 
@@ -3523,9 +3568,9 @@ rm -rf "$__gtf_tmp"
 # Equality, not a floor, for the reason every other block here uses equality:
 # a floor goes green when a case is deleted.
 __gtf_ran=$((pass + fail - __gtf_start))
-if [ "$__gtf_ran" -ne 36 ]; then
+if [ "" -ne 41 ]; then
   fail=$((fail + 1))
-  fail_log="${fail_log}FAIL gate_target_is_foreign block ran $__gtf_ran cases, expected exactly 36 -- a case vanished, or one was added without bumping the count\n"
+  fail_log="${fail_log}FAIL gate_target_is_foreign block ran $__gtf_ran cases, expected exactly 41 -- a case vanished, or one was added without bumping the count\n"
 else
   pass=$((pass + 1)); printf 'ok   gate_target_is_foreign block ran all %s cases\n' "$__gtf_ran"
 fi
@@ -3575,9 +3620,16 @@ __gsu "deep path kept whole" gitlab.com/a/x/repo https://gitlab.com/a/x/repo.git
 # is what this file's `a CASE-variant spelling of THIS repo` case feeds, and
 # that case is GREEN IN CI (which checks out a suffix-less URL) and RED in a
 # local clone -- so these direct cases are what actually hold the behaviour.
-__gsu "upper .GIT suffix"    github.com/go-to-k/cdkd https://github.com/go-to-k/CDKD.GIT
-__gsu "whole URL upper"      github.com/go-to-k/cdkd HTTPS://GITHUB.COM/GO-TO-K/CDKD.GIT
-__gsu "mixed .Git suffix"    github.com/go-to-k/cdkd https://github.com/go-to-k/cdkd.Git
+# gh DROPS all three (measured): it does not strip an upper-case suffix either,
+# so `go-to-k/CDKD.GIT` is a repo name it fails to resolve, and the wholly
+# upper-cased URL is not even a known host to it. These are therefore
+# OVER-normalisations, kept because they make the same repository key ONCE --
+# and over-normalising is the strict direction here, since a spurious match
+# means "this IS my repo" and refuses. Do not read them as a claim that gh
+# accepts these spellings.
+__gsu "upper .GIT suffix"    github.com/go-to-k/cdkd https://github.com/go-to-k/CDKD.GIT   # gh: DROPS
+__gsu "whole URL upper"      github.com/go-to-k/cdkd HTTPS://GITHUB.COM/GO-TO-K/CDKD.GIT   # gh: DROPS
+__gsu "mixed .Git suffix"    github.com/go-to-k/cdkd https://github.com/go-to-k/cdkd.Git   # gh: DROPS
 # A repo whose NAME contains a dot keeps it: the strip is anchored to the
 # suffix, not to "the last dot segment".
 __gsu "dotted repo name"     github.com/go-to-k/my.repo https://github.com/go-to-k/my.repo.git
@@ -3609,15 +3661,31 @@ __gsu "a.b.github.com kept"  a.b.github.com/go-to-k/cdkd https://a.b.github.com/
 # The suffix must ANCHOR: a host merely CONTAINING the alias text is not one.
 __gsu "evil suffix not alias" ssh.github.com.evil.example/go-to-k/cdkd https://ssh.github.com.evil.example/go-to-k/cdkd.git
 __gsu "notwww not alias"     notwww.github.com/go-to-k/cdkd https://notwww.github.com/go-to-k/cdkd.git
+# The remaining anchoring direction: a TRAILING dot is a distinct host and must
+# not fold (prefix and suffix are covered above, this is the third edge).
+__gsu "trailing dot not alias" ssh.github.com./go-to-k/cdkd https://ssh.github.com./go-to-k/cdkd.git
+# The one input where `${path%.*}` yields an EMPTY segment. It must refuse, not
+# key an empty repo name.
+__gsu "bare .GIT refuses"    '' https://github.com/go-to-k/.GIT
+# The fold runs AFTER the case-fold, so an UPPER-CASE alias must fold too. Only
+# the `www` arm exercised that ordering; this is the `ssh` twin.
+__gsu "UPPER ssh alias folds" github.com/go-to-k/cdkd git@SSH.GitHub.Com:go-to-k/cdkd.git
+# scp form with NO userinfo, and the `git://` scheme -- two spellings git
+# accepts that had no alias case at all.
+__gsu "scp alias no userinfo" github.com/go-to-k/cdkd ssh.github.com:go-to-k/cdkd.git
+__gsu "git:// scheme alias"   github.com/go-to-k/cdkd git://ssh.github.com/go-to-k/cdkd.git
+# Alias + upper .GIT + trailing slash together: the three normalisations must
+# compose, not just work one at a time.
+__gsu "alias + .GIT + slash"  github.com/go-to-k/cdkd https://WWW.github.com/go-to-k/CDKD.GIT/
 # REFUSALS: a local path names no forge, and a single-segment path is not a repo.
 __gsu "local path refuses"   '' /srv/local/mirror
 __gsu "no host refuses"      '' cdkd:cdkd
 __gsu "single segment refuses" '' https://github.com/cdkd
 __gsu "empty refuses"        '' ''
 __gsu_ran=$((pass + fail - __gsu_start))
-if [ "$__gsu_ran" -ne 39 ]; then
+if [ "$__gsu_ran" -ne 45 ]; then
   fail=$((fail + 1))
-  fail_log="${fail_log}FAIL gate_slug_from_url block ran $__gsu_ran cases, expected exactly 39\n"
+  fail_log="${fail_log}FAIL gate_slug_from_url block ran $__gsu_ran cases, expected exactly 45\n"
 else
   pass=$((pass + 1)); printf 'ok   gate_slug_from_url block ran all %s cases\n' "$__gsu_ran"
 fi
