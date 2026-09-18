@@ -4424,6 +4424,32 @@ git -C "$__gtf_tmp/casevar" remote add origin "$__gtf_case_variant" 2>/dev/null
 __gtf "a CASE-variant spelling of THIS repo -> NOT foreign" 1 \
   "$__gtf_hooks_dir" "$__gtf_tmp/casevar" "gh pr merge 1 --squash"
 
+# THE SAME CASE VARIANT WITH THE `.git` SUFFIX PINNED, because the case above
+# inherits whatever spelling the runner cloned with and therefore proved
+# nothing where it mattered (go-to-k/cdkd#3387). `actions/checkout` writes an
+# `origin` of `https://github.com/<owner>/<repo>` with NO suffix, so in CI the
+# upper-cased URL had no `.GIT` for the trim to miss and the case passed; every
+# clone made the way GitHub's "Code" button offers -- `<url>.git` -- failed it,
+# because `gate_repo_slug` trimmed the suffix BEFORE folding. A wrong FOREIGN
+# answer is what lets `integ-schema-migration-gate` exit 0 on a cdkd checkout.
+#
+# Both spellings are asserted, and the pair is the point: the suffix-less one
+# passes under either ordering, so only the suffixed one discriminates.
+__gtf_suffixed="${__gtf_slug%.git}.git"
+git init -q "$__gtf_tmp/casevar_git" 2>/dev/null
+git -C "$__gtf_tmp/casevar_git" remote add origin \
+  "$(printf '%s' "$__gtf_suffixed" | tr 'a-z' 'A-Z')" 2>/dev/null
+__gtf "a CASE-variant spelling carrying .git -> NOT foreign (the fold must precede the trim)" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/casevar_git" "gh pr merge 1 --squash"
+
+# The lowercase control for the pair above: it passes under BOTH orderings, so
+# a green here with the suffixed case red is the signature of the defect rather
+# than of a broken fixture.
+git init -q "$__gtf_tmp/lower_git" 2>/dev/null
+git -C "$__gtf_tmp/lower_git" remote add origin "$__gtf_suffixed" 2>/dev/null
+__gtf "the same URL in lowercase -> NOT foreign (control, passes either ordering)" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/lower_git" "gh pr merge 1 --squash"
+
 # `insteadOf` rewriting: git resolves the shortcut, so the gate asks git.
 git init -q "$__gtf_tmp/insteadof" 2>/dev/null
 git -C "$__gtf_tmp/insteadof" remote add origin "cdkd:cdkd" 2>/dev/null
@@ -4572,9 +4598,9 @@ rm -rf "$__gtf_tmp"
 # Equality, not a floor, for the reason every other block here uses equality:
 # a floor goes green when a case is deleted.
 __gtf_ran=$((pass + fail - __gtf_start))
-if [ "$__gtf_ran" -ne 36 ]; then
+if [ "$__gtf_ran" -ne 38 ]; then
   fail=$((fail + 1))
-  fail_log="${fail_log}FAIL gate_target_is_foreign block ran $__gtf_ran cases, expected exactly 36 -- a case vanished, or one was added without bumping the count\n"
+  fail_log="${fail_log}FAIL gate_target_is_foreign block ran $__gtf_ran cases, expected exactly 38 -- a case vanished, or one was added without bumping the count\n"
 else
   pass=$((pass + 1)); printf 'ok   gate_target_is_foreign block ran all %s cases\n' "$__gtf_ran"
 fi

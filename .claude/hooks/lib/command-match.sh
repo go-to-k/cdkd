@@ -5033,6 +5033,32 @@ gate_slug_from_url() {
     *$'\n'*|*" "*|*$'\t'*) return 1 ;;
   esac
 
+  # CASE-FOLD BEFORE THE TRIMS, not after (go-to-k/cdkd#3387). GitHub treats
+  # host, owner and repo case-insensitively, and folding can only make two
+  # spellings compare EQUAL -- equal means "same repo, refuse to relax", the
+  # safe direction on a forge where case happens to matter. That argument is
+  # unchanged; what was wrong was the POSITION.
+  #
+  # Everything below is spelling-SENSITIVE, and `${path%.git}` is the one that
+  # bit: an `origin` of `HTTPS://GITHUB.COM/GO-TO-K/CDKD.GIT` kept its `.GIT`
+  # through the trim, folded to `github.com/go-to-k/cdkd.git`, and compared
+  # unequal to this repo's own `github.com/go-to-k/cdkd`. `gate_target_is_foreign`
+  # then answered FOREIGN for a checkout of cdkd itself, which is what lets
+  # `integ-schema-migration-gate` exit 0 -- a gate turned off by nothing more
+  # exotic than the case of a remote URL.
+  #
+  # The suite has carried a case for exactly this since go-to-k/cdkd#3351, and
+  # it passed: its fixture derives the URL from the repo the SUITE sits in, and
+  # `actions/checkout` writes an `origin` with NO `.git` suffix, so in CI there
+  # was nothing for the trim to miss. Every clone made the way GitHub's own
+  # "Code" button offers failed it. The case below it now pins the suffix
+  # explicitly rather than inheriting whatever the runner cloned.
+  #
+  # The DECODE stays above this (go-to-k/cdkd#3351 round 4) for the same reason
+  # the trims stay below: it must see the encoded spelling.
+  host=$(printf '%s' "$host" | tr 'A-Z' 'a-z')
+  path=$(printf '%s' "$path" | tr 'A-Z' 'a-z')
+
   # NOW normalise: collapse repeated separators, drop the `.git` suffix and any
   # empty tail -- the same trims gh applies after parsing.
   while :; do
@@ -5057,13 +5083,6 @@ gate_slug_from_url() {
     */*) ;;
     *) return 1 ;;
   esac
-
-  # Case-fold LAST, over the final spelling. GitHub treats host, owner and repo
-  # case-insensitively. Folding can only make two spellings compare EQUAL, and
-  # equal means "same repo, refuse to relax" -- the safe direction on a forge
-  # where case happens to matter.
-  host=$(printf '%s' "$host" | tr 'A-Z' 'a-z')
-  path=$(printf '%s' "$path" | tr 'A-Z' 'a-z')
 
   printf '%s/%s' "$host" "$path"
 }
