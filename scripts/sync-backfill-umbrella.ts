@@ -108,8 +108,9 @@ export const BLOCK_END = '<!-- backfill-types:end -->';
 /**
  * The label on the RETIRED per-type issues, read only by `--close-legacy`.
  *
- * Kept rather than deleted: the closed issues carry it, and it is how the
- * one-shot migration finds the ones still open. Nothing GENERATES it any more.
+ * Kept rather than deleted: it is how the one-shot migration finds the issues
+ * still open, and it stays on each one after the migration closes it. Nothing
+ * GENERATES it any more.
  */
 export const LEGACY_SUBISSUE_LABEL = 'backfill-type';
 
@@ -464,7 +465,13 @@ export function fetchLegacyIssues(run: Runner, repo: string): LegacyIssue[] {
 
 /** Whether an issue is one of the GENERATED per-type slices. */
 export function isGeneratedLegacyIssue(issue: LegacyIssue): boolean {
-  return issue.body.replace(/\r/g, '').split('\n').some((line) => line.startsWith(LEGACY_TYPE_MARKER_PREFIX));
+  // Anchored at the line START, which is where the retired renderer put it —
+  // body line 0. No CR handling is needed BECAUSE of that anchor: a CRLF body
+  // carries the `\r` at the line END, where this test never looks. (Stripping it
+  // first was written in and removed as dead: for a bare-CR body the strip
+  // deletes the separator instead of splitting on it, so it does not help there
+  // either.)
+  return issue.body.split('\n').some((line) => line.startsWith(LEGACY_TYPE_MARKER_PREFIX));
 }
 
 /**

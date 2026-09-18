@@ -486,10 +486,15 @@ under a minute, leaving 7,655 characters of provenance intact.
 What it rewrites is ONE region of ONE issue:
 
 - the **umbrella** — the single open issue carrying the `backfill-umbrella`
-  label, found by that label and never by a number. Its body holds a generated
-  block between `<!-- backfill-types:start -->` and `<!-- backfill-types:end -->`,
-  one row per resource type with silently-dropped properties left:
-  ``- [ ] `AWS::RDS::DBInstance` — 62 properties: `AllocatedStorage`, …``
+  label, found by that label and never by a number. Its body must hold the two
+  markers `<!-- backfill-types:start -->` and `<!-- backfill-types:end -->`, and
+  the job rewrites what sits between them: one row per resource type with
+  silently-dropped properties left,
+  ``- [ ] `AWS::RDS::DBInstance` — 62 properties: `AllocatedStorage`, …``.
+  **An umbrella that has never been synced carries neither marker, and the job
+  REFUSES rather than appending** — so the first coverage-map push after this
+  design lands fails the workflow until someone pastes the block in once
+  (`--render-block`, below).
 - **everything else on that page is yours.** The audit provenance, the procedure,
   which pull request closed which slice: all of it sits outside the two markers
   and is carried through byte for byte. Hand edits INSIDE the block are

@@ -165,6 +165,23 @@ export const PROPERTY_COVERAGE = new Map([
     expect(() => validatePlan([])).toThrow(ReconcileRefusal);
   });
 
+  it('refuses a plan naming one type twice, HERE and not only at the write', () => {
+    // The duplicate check lives in `validatePlan` precisely so the modes that
+    // reach no body get it: `--render-block` prints straight into a paste, and
+    // printing two rows for one type publishes a list nothing can reconcile.
+    // Asserted at this entry point because the sibling case drives
+    // `planBodyRewrite`, and review measured that deleting the call here left
+    // the whole file green.
+    expect(() =>
+      validatePlan({
+        types: [
+          { type: 'AWS::S3::Bucket', properties: ['A'] },
+          { type: 'AWS::S3::Bucket', properties: ['B'] },
+        ],
+      })
+    ).toThrow(/names AWS::S3::Bucket twice/);
+  });
+
   it('refuses an entry whose properties are missing or not strings', () => {
     // Valid JSON with the wrong shape is what a drifted renderer emits, and
     // every field here reaches a public page: a missing array would publish
@@ -221,6 +238,22 @@ describe('planBodyRewrite', () => {
     expect(first.body).toContain('Closed by PR #123');
     const second = planBodyRewrite(first.body, plan);
     expect(second.changed, 'a CRLF body reports as changed on every run, forever').toBe(false);
+  });
+
+  it('does not rewrite a block that differs only by a stray CR', () => {
+    // The generated region this script writes is CR-FREE by construction, so a
+    // CR inside it can only have come from somewhere else — and under a
+    // byte-exact comparison that page would be rewritten on EVERY push, forever,
+    // for content that already agrees with `main`. Compared after a CR strip,
+    // while the body written stays the raw splice.
+    //
+    // The sibling no-op case cannot see this: its second run is byte-identical,
+    // so it passes with or without the strip (measured in review).
+    const plan = planOf(['AWS::S3::Bucket', ['A']]);
+    const current = planBodyRewrite(bodyWith('x'), plan).body;
+    const withCr = current.replace('1 property:', '1 property:\r');
+    expect(withCr, 'the CR did not land — this case measures nothing').not.toBe(current);
+    expect(planBodyRewrite(withCr, plan).changed).toBe(false);
   });
 
   it('drops a type whose list has emptied and adds one that gained work', () => {
@@ -445,14 +478,30 @@ describe('the gh calls', () => {
     // the only thing distinguishing a bot-filed slice from a hand-labelled
     // issue. Closing the latter `not planned`, with a comment about a campaign
     // it is not part of, is the wrong-issue write this migration must not make.
+    // The first line is COPIED from a live generated issue (go-to-k/cdkd#2956,
+    // read 2026-09-19), not composed from the constant — the renderer that wrote
+    // those 45 bodies was deleted by this change, so nothing else pins the
+    // spelling against what is actually on GitHub. A drift makes the migration a
+    // green no-op: "0 closed, 45 skipped".
+    const LIVE_FIRST_LINE = '<!-- backfill-type: AWS::AutoScaling::AutoScalingGroup -->';
+    expect(
+      LIVE_FIRST_LINE.startsWith(LEGACY_TYPE_MARKER_PREFIX),
+      'the marker constant no longer matches the bodies the retired renderer published'
+    ).toBe(true);
+    expect(
+      isGeneratedLegacyIssue({ number: 9, title: 'live shape', body: `${LIVE_FIRST_LINE}\n\nbody` })
+    ).toBe(true);
+
     const generated = {
       number: 10,
       title: 'Backfill silent-drop properties: AWS::S3::Bucket',
       body: `${LEGACY_TYPE_MARKER_PREFIX}AWS::S3::Bucket -->\n\nGenerated.`,
     };
     expect(isGeneratedLegacyIssue(generated)).toBe(true);
-    // CRLF, because a body a human opened in the web UI comes back with it and
-    // a suffix-blind reader would call that issue hand-filed and skip it.
+    // CRLF still matches, and what carries that is the LINE-START anchor: the
+    // `\r` sits at the line END, where this test never looks. Stated because the
+    // obvious repair — matching the whole marker line, or its suffix — would
+    // break on exactly this input while every other case here stayed green.
     expect(isGeneratedLegacyIssue({ ...generated, body: generated.body.replace(/\n/g, '\r\n') })).toBe(
       true
     );
