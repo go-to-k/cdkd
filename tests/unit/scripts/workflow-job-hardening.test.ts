@@ -387,7 +387,8 @@ export const auditWorkflowHardening = (dir: string): Audit => {
  * mapping, is the one a reader can act on with no further information.
  */
 /**
- * THE PREMISE BELOW WAS WRONG IN ITS FIRST FORM. It said a fork cannot
+ * THIS TABLE DECIDES ORDER, NOT PROTECTION — and its first form said the
+ * opposite. It said a fork cannot
  * manufacture these kinds for someone else's workflow — but a fork owns
  * `.github/workflows/` in its own PR, so twenty-five files it deliberately
  * breaks are twenty-five findings of the FIRST-ranked kind, and the genuine one
@@ -606,6 +607,7 @@ const twinLabel = (workflow: Safe, job?: Safe, detail?: Safe): Safe =>
 
 const independentlyUnboundedJobs = (dir: string): Safe[] => {
   const out: Safe[] = [];
+  const outKinds: string[] = [];
   for (const workflow of workflowNamesIn(readdirSync(dir))) {
     let document: unknown;
     try {
@@ -614,6 +616,7 @@ const independentlyUnboundedJobs = (dir: string): Safe[] => {
       // The message is NOT rendered: it is the fork's own source. That it
       // failed to parse is the whole fact this twin needs.
       out.push(twinLabel(safeName(workflow), undefined, safeText('did not parse')));
+      outKinds.push('did-not-parse');
       continue;
     }
     // The empty-mapping half matters here as much as in the audit: `isMapping`
@@ -622,6 +625,7 @@ const independentlyUnboundedJobs = (dir: string): Safe[] => {
     // twin that is silent where the audit speaks is not a cross-check.
     if (!isMapping(document) || !isMapping(document['jobs']) || Object.keys(document['jobs']).length === 0) {
       out.push(twinLabel(safeName(workflow), undefined, safeText('no jobs mapping')));
+      outKinds.push('no-jobs-mapping');
       continue;
     }
     for (const [job, node] of Object.entries(document['jobs'])) {
@@ -631,27 +635,37 @@ const independentlyUnboundedJobs = (dir: string): Safe[] => {
         Number.isInteger(timeout) &&
         timeout >= 1 &&
         timeout < ACTIONS_DEFAULT_TIMEOUT_MINUTES;
-      if (!ok) out.push(twinLabel(safeName(workflow), safeJobId(job), safeJson(timeout)));
+      if (!ok) {
+        out.push(twinLabel(safeName(workflow), safeJobId(job), safeJson(timeout)));
+        outKinds.push('unbounded-job');
+      }
     }
   }
-  return boundedList(out);
+  // THE KINDS, as `render` passes them. Without them the twin puts every shape
+  // — a file that did not parse, one with no jobs mapping, a bad timeout value —
+  // into one unkinded bucket, so a fork flooding unparseable files buries the
+  // genuine unbounded-job line in the twin's own `toEqual([])` diff. A
+  // cross-check that degrades exactly when it matters is not a cross-check.
+  return boundedList(out, outKinds);
 };
 
 const independentlyUndeclaredPermissions = (dir: string): Safe[] => {
   const out: Safe[] = [];
+  const outKinds: string[] = [];
   for (const workflow of workflowNamesIn(readdirSync(dir))) {
     let document: unknown;
     try {
       document = parseYaml(readFileSync(join(dir, workflow), 'utf8'));
     } catch {
       out.push(twinLabel(safeName(workflow), undefined, safeText('did not parse')));
+      outKinds.push('did-not-parse');
       continue;
     }
     if (!isMapping(document) || !isMapping(document['permissions'])) {
       out.push(twinLabel(safeName(workflow)));
     }
   }
-  return boundedList(out);
+  return boundedList(out, outKinds);
 };
 
 const REAL = auditWorkflowHardening(WORKFLOW_DIR);
@@ -1350,6 +1364,23 @@ describe('the caps are literals, not whatever the constants say', () => {
   // workflow is partially dropped and therefore named, which is why their
   // assertions require the tail. What is true is narrower: no group is
   // STARVED, so the starved count is the only part that varies.
+  it("the TWINS split their cap by kind too, not just the audit", () => {
+    // The twins are the CROSS-CHECK, and they called `boundedList` with no
+    // kinds: every shape — a file that did not parse, one with no jobs mapping,
+    // a bad timeout value — went into one unkinded bucket, so a fork flooding
+    // unparseable files buried the genuine unbounded-job line in the twin's own
+    // `toEqual([])` diff. A cross-check that degrades exactly when it matters
+    // is not a cross-check.
+    const lines = withMutatedCopy(
+      (dir) => {
+        for (let i = 0; i < 25; i += 1) writeFileSync(join(dir, `zz-fork${i}.yml`), 'jobs: [\n');
+        writeFileSync(join(dir, 'zz-real.yml'), 'name: X\npermissions: {}\njobs:\n  a:\n    runs-on: x\n');
+      },
+      (dir) => independentlyUnboundedJobs(dir),
+    );
+    expect(lines.some((l) => l.startsWith('zz-real.yml'))).toBe(true);
+  });
+
   it('a fork flooding the TOP kind cannot bury a finding of another kind', () => {
     // The sibling's case, here too: a fork owns this directory in its own PR,
     // so twenty-five files it breaks are twenty-five `unparseable` findings —
@@ -1401,10 +1432,25 @@ describe('the caps are literals, not whatever the constants say', () => {
     const order = render(audit.findings)
       .filter((l) => l.startsWith('zz-'))
       .map((l) => l.slice(l.lastIndexOf(': ') + 2).replace(/ \(.*$/, ''));
-    // Each kind's first appearance, in table order.
+    // A LITERAL LIST, not one derived from `KIND_RANK`. Comparing against the
+    // table means both sides move together and ANY permutation passes — swapping
+    // `no-jobs` with `permissions-not-a-mapping`, or the two timeout kinds, was
+    // green. The sibling fence's twin of this case already used a literal and
+    // killed the analogous mutation; this one did not, which is the twin
+    // asymmetry this PR keeps finding.
     const firstSeen: string[] = [];
     for (const kind of order) if (!firstSeen.includes(kind)) firstSeen.push(kind);
-    expect(firstSeen).toEqual([...KIND_RANK].filter((k) => order.includes(k)));
+    expect(firstSeen).toEqual([
+      'unparseable',
+      'top-level-not-a-mapping',
+      'no-jobs',
+      'permissions-not-a-mapping',
+      'no-top-level-permissions',
+      'job-not-a-mapping',
+      'timeout-not-a-positive-integer',
+      'timeout-at-or-above-default',
+      'no-timeout',
+    ]);
   });
 
   it('an unparseable file outranks a top-level that is not a mapping', () => {
@@ -1670,7 +1716,11 @@ describe('the twins are exercised against hostile trees, not only clean ones', (
     // the cap — 20 workflows get a line and 20 are crowded out entirely, which
     // is exactly what the summary names. The other three cap cases put all
     // their findings in ONE workflow and assert the bare form.
-    expect(lines.at(-1)).toMatch(/^… and 20 more \(not all shown for: .*and 15 more; \d+ workflows? shows? no line at all\)$/);
+    // EXACT, not `\d+`: forty files against a cap of twenty starve exactly
+    // twenty, and a loose match would accept a count that double-counts.
+    expect(lines.at(-1)).toMatch(
+      /^… and 20 more \(not all shown for: .*and 15 more; 20 workflows show no line at all\)$/,
+    );
   });
 });
 

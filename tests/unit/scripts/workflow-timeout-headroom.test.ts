@@ -213,7 +213,8 @@ const RARELY_RUN: Readonly<Record<string, string>> = {
   // THE FENCE CAUGHT A REAL JOB THE DAY IT LANDED, which is what it is for, and
   // this entry is the documented second step of adding one. go-to-k/cdkd#3082
   // added `mutation-harness` to `hooks.yml` while this PR was in review. It has
-  // GREEN RUNS — 28 of them on 2026-09-18 — and an earlier revision of this
+  // GREEN RUNS — the count is deliberately not recorded here either, for the
+  // reason the docstring gives — and an earlier revision of this
   // comment said it had "none since", which was the same false reason the value
   // below had to be rewritten for. What blocks an entry is not the absence of
   // runs but the DAY they are in: the generator refuses a `--to` inside a day in
@@ -567,19 +568,20 @@ export const auditHeadroom = (
  * and `unreadable-workflow` is pushed LAST by `auditHeadroom` — so a fork that
  * breaks a real workflow and floods with its own files buried the one finding
  * saying a workflow stopped parsing, in the kept lines AND in the summary's five
- * names. Measured. A fork can manufacture any number of findings of the kinds it
- * controls, so the defence has to be that the kinds it CANNOT manufacture for
- * someone else's workflow sort first.
+ * names. Measured.
  *
- * `unreadable-workflow` leads: a workflow that will not parse is the one a
- * reader can act on with no further information.
+ * THIS TABLE DECIDES ORDER, NOT PROTECTION. An earlier revision justified it as
+ * "the kinds a fork cannot manufacture for someone else's workflow sort first";
+ * a fork owns `.github/workflows/` in its own PR, so it can manufacture any of
+ * them, and stating the false premise here while retracting it four lines below
+ * left a reader to work out which half to believe. What protects a genuine
+ * finding is `boundedList` splitting the CAP between the kinds present.
  *
- * WHAT THIS RANKING DOES NOT DO is keep a genuine finding visible on its own.
- * An earlier revision argued it did, from the premise that a fork cannot
- * manufacture the top kinds for someone else's workflow — false, because a fork
- * owns `.github/workflows/` in its own PR and twenty-five broken files are
- * twenty-five top-ranked findings. That is `boundedList`'s job: it splits the
- * cap between the kinds present before it splits between workflows.
+ * `unreadable-workflow` leads because a workflow that will not parse is the one
+ * a reader can act on with no further information.
+ *
+ * Twenty-five files a fork breaks are twenty-five top-ranked findings, which is
+ * how that premise was refuted.
  */
 // `satisfies`, so a kind ADDED to the union without a rank is a compile error.
 // `readonly FindingKind[]` only catches a REMOVED one: a new kind gets
@@ -947,6 +949,92 @@ describe('the auditor reports what it claims to', () => {
     const lines = render(auditHeadroom(new Map(), flood, {}));
     expect(lines).toHaveLength(21);
     expect(lines.at(-1)).toMatch(/^… and 4980 more( \(not all shown for: |$)/);
+  });
+
+  it('the starved count is per WORKFLOW, counted once and not only when absent', () => {
+    // THREE FORMULATIONS, and the case has to separate all three. Counting
+    // (kind, workflow) GROUPS double-counts a workflow starved under two kinds —
+    // measured saying "20 workflows" while 20 lines printed. Counting only
+    // workflows ABSENT from the output undercounts the case a fork
+    // manufactures: leave the workflow one line under a kind it controls and
+    // its starvation under another kind disappears.
+    const lines: Safe[] = [];
+    const kinds: string[] = [];
+    // Twenty filler workflows, one line each, which fill the cap.
+    for (let i = 0; i < 20; i += 1) {
+      lines.push(`f${String(i).padStart(2, '0')}.yml/j: too-tight` as Safe);
+      kinds.push('too-tight');
+    }
+    // Twenty more of a second kind, so the interleave splits the cap ten and
+    // ten and both tails are starved.
+    for (let i = 0; i < 20; i += 1) {
+      lines.push(`g${String(i).padStart(2, '0')}.yml/: unreadable-workflow` as Safe);
+      kinds.push('unreadable-workflow');
+    }
+    // `both.yml` is starved under BOTH kinds — one workflow, two groups.
+    lines.push('both.yml/j: too-tight' as Safe);
+    kinds.push('too-tight');
+    lines.push('both.yml/: unreadable-workflow' as Safe);
+    kinds.push('unreadable-workflow');
+    const summary = boundedList(lines, kinds).at(-1) ?? '';
+    // 22 starved GROUPS, 21 starved WORKFLOWS: `both.yml` is counted once.
+    expect(summary).toMatch(/; 21 workflows show no line at all\)$/);
+  });
+
+  it('a workflow shown under one kind is still counted when starved under another', () => {
+    // The undercounting formulation: `decoy.yml` keeps its
+    // `unreadable-workflow` line and loses its `too-tight` one, so a count of
+    // workflows ABSENT from the output reports zero while a real finding was
+    // dropped — the exact shape a fork manufactures.
+    const lines: Safe[] = [];
+    const kinds: string[] = [];
+    for (let i = 0; i < 19; i += 1) {
+      lines.push(`f${String(i).padStart(2, '0')}.yml/j: too-tight` as Safe);
+      kinds.push('too-tight');
+    }
+    lines.push('decoy.yml/j: too-tight' as Safe);
+    kinds.push('too-tight');
+    lines.push('decoy.yml/: unreadable-workflow' as Safe);
+    kinds.push('unreadable-workflow');
+    const out = boundedList(lines, kinds);
+    expect(out.some((l) => l.startsWith('decoy.yml/:'))).toBe(true);
+    // `decoy.yml` is starved under `too-tight` while shown under
+    // `unreadable-workflow`, so counting only workflows ABSENT from the output
+    // reports ZERO and this clause disappears entirely.
+    expect(out.at(-1)).toMatch(/; 1 workflow shows no line at all\)$/);
+  });
+
+  it('the cap FILLS when enough lines exist', () => {
+    // A per-kind "share" with a leftover pass under-filled the cap: the second
+    // pass restarted at round 0, found every queue's first index already taken,
+    // and returned — 11 lines kept of 20, nine findings that fit simply hidden.
+    // Interleaving the group ORDER by kind and making one plain pass removes
+    // the scheme that could under-fill.
+    const many = Array.from({ length: 30 }, (_, i) => `one.yml/j${i}: too-tight` as Safe);
+    const lines = boundedList(
+      [...many, 'two.yml/: unreadable-workflow' as Safe],
+      [...many.map(() => 'too-tight'), 'unreadable-workflow'],
+    );
+    expect(lines).toHaveLength(MAX_RENDERED_FINDINGS + 1);
+  });
+
+  it('one workflow cannot take half the cap because its kind is served first', () => {
+    // The share was spent DEPTH-FIRST: the first kind took its whole allocation
+    // before the second was touched, so one file with ten findings occupied half
+    // the output while five real workflows showed no line at all — a regression
+    // against the plain workflow round-robin that preceded it.
+    const lines: Safe[] = [];
+    const kinds: string[] = [];
+    for (let i = 0; i < 15; i += 1) {
+      lines.push(`a${String(i).padStart(2, '0')}.yml/j: not-in-snapshot` as Safe);
+      kinds.push('not-in-snapshot');
+    }
+    for (let i = 0; i < 10; i += 1) {
+      lines.push(`big.yml/j${i}: too-tight` as Safe);
+      kinds.push('too-tight');
+    }
+    const shown = boundedList(lines, kinds).slice(0, MAX_RENDERED_FINDINGS);
+    expect(new Set(shown.map((l) => l.slice(0, l.indexOf('/')))).size).toBe(16);
   });
 
   it('a fork flooding the TOP kind cannot bury a genuine finding of another', () => {
@@ -1451,7 +1539,11 @@ describe('the shared sanitisers constrain the shapes this fence renders', () => 
       lines.push(`aaa${String(i).padStart(2, '0')}.yml/b: too-tight` as Safe);
     }
     const summary = boundedList([...lines, 'zzz.yml/real: too-tight' as Safe]).at(-1) ?? '';
-    expect(summary).toMatch(/; \d+ workflows? shows? no line at all\)$/);
+    // AN EXACT COUNT, not `\d+`: a loose match accepts any value, which is how
+    // a version counting (kind, workflow) GROUPS instead of workflows went
+    // unnoticed — it double-counted and nothing red. 26 groups against a cap of
+    // 20 leaves six workflows with no line.
+    expect(summary).toMatch(/; 6 workflows show no line at all\)$/);
     // The genuine workflow is among the starved, and the count says so even
     // though the five names cannot reach it.
     expect(summary).not.toContain('zzz.yml');

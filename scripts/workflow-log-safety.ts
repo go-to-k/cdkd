@@ -352,6 +352,13 @@ export const boundedList = (lines: readonly Safe[], kinds?: readonly string[]): 
   // being present, so the cap is split between the kinds that are present first
   // and shared between workflows inside each — a flood of one kind can no
   // longer consume the budget of another.
+  //
+  // WHAT THAT DOES NOT COVER, stated rather than left to be inferred: a fork
+  // owns the workflow directory AND may edit the snapshot, so it can always
+  // flood the kind a genuine finding is IN. Within one kind the order is the
+  // caller's emit order, which is directory order, which the fork picks. The
+  // starved-group COUNT below is what stays honest there — it cannot be crowded
+  // out by adding files — and that is the reason it exists.
   const groups = new Map<string, number[]>();
   for (const [index, line] of lines.entries()) {
     const key = `${kinds?.[index] ?? ''}\u0000${groupKey(line)}`;
@@ -367,31 +374,45 @@ export const boundedList = (lines: readonly Safe[], kinds?: readonly string[]): 
     if (bucket === undefined) byKind.set(kind, [queue]);
     else bucket.push(queue);
   }
-  const keptIndices: number[] = [];
-  // Each kind gets an equal share, and whatever a kind does not use is left for
-  // the rounds below — a kind with one finding takes one slot, not a fifth of
-  // the cap.
-  const share = Math.max(1, Math.floor(MAX_RENDERED_FINDINGS / byKind.size));
-  const taken = new Set<number>();
-  const drain = (queues: readonly number[][], limit: number): void => {
-    for (let round = 0; ; round += 1) {
-      let took = false;
-      for (const queue of queues) {
-        if (keptIndices.length >= limit || keptIndices.length >= MAX_RENDERED_FINDINGS) return;
-        const index = queue[round];
-        if (index === undefined || taken.has(index)) continue;
-        keptIndices.push(index);
-        taken.add(index);
-        took = true;
-      }
-      if (!took) return;
+  // INTERLEAVE THE GROUP ORDER BY KIND, then round-robin over groups plainly.
+  // Two properties are wanted and they pull against each other: every (kind,
+  // workflow) group should get a line before any gets a second, and every KIND
+  // should get one early. Plain round-robin in rank order gives the first kind
+  // all its groups before the second is reached; a per-kind SHARE gives one
+  // workflow a whole block. Both were measured wrong, in the round that wrote
+  // them: the share was spent depth-first, so fifteen workflows showed no line
+  // while one took half the output, and the "leftover" pass was INERT — it
+  // restarted at round 0, found every queue's first index already taken, and
+  // returned, so the cap under-filled (11 lines kept of 20, nine findings that
+  // fit simply hidden).
+  //
+  // Interleaving the ORDER settles it: `kindA/w1, kindB/w1, kindA/w2, …`, then
+  // one plain pass. Every group is reached before any repeats, and the second
+  // kind is reached in position two rather than position twenty-six.
+  const queuesByKind = [...byKind.values()];
+  const ordered: number[][] = [];
+  for (let rank = 0; ; rank += 1) {
+    let found = false;
+    for (const queues of queuesByKind) {
+      const queue = queues[rank];
+      if (queue === undefined) continue;
+      ordered.push(queue);
+      found = true;
     }
-  };
-  for (const queues of byKind.values()) {
-    drain(queues, keptIndices.length + share);
+    if (!found) break;
   }
-  // A second pass spends anything left over, in the same order.
-  for (const queues of byKind.values()) drain(queues, MAX_RENDERED_FINDINGS);
+  const keptIndices: number[] = [];
+  for (let round = 0; keptIndices.length < MAX_RENDERED_FINDINGS; round += 1) {
+    let took = false;
+    for (const queue of ordered) {
+      if (keptIndices.length >= MAX_RENDERED_FINDINGS) break;
+      const index = queue[round];
+      if (index === undefined) continue;
+      keptIndices.push(index);
+      took = true;
+    }
+    if (!took) break;
+  }
   const keptSet = new Set<number>(keptIndices);
   const kept = keptIndices.map((index) => lines[index] as Safe);
   // NAME WHAT WAS DROPPED ENTIRELY. Round-robin guarantees a SHARE to every
@@ -402,11 +423,12 @@ export const boundedList = (lines: readonly Safe[], kinds?: readonly string[]): 
   // lines this function received — so listing them adds no new venue.
   // PARTIALLY dropped, not only entirely dropped. Naming just the groups with
   // NO kept line misses the case a fork reaches for next: leave the workflow
-  // one line and push the interesting one out of its group. The measurement
-  // that showed it — 19 fork files plus three fork-chosen snapshot keys under
-  // `hooks.yml` — no longer reproduces now that the cap is split by KIND first,
-  // which is the point: the general case stands, and the specific fixture that
-  // demonstrated it was closed by a later fix.
+  // one line and push the interesting one out of its group. STILL REPRODUCES
+  // at this revision — 19 fork files, `hooks.yml` with a `too-tight` and an
+  // `unreadable-workflow`: the workflow keeps one line and loses the other, and
+  // only the "lost ANY line" filter names it. An earlier revision of this note
+  // claimed the kind split had closed it, which was an unmeasured claim about
+  // the very measurement the note exists to record.
   //
   // CAPPED AT FIVE, and the cap is the point: a fork controls the number of
   // groups, so an uncapped list puts thousands of names on one line — the
@@ -419,30 +441,47 @@ export const boundedList = (lines: readonly Safe[], kinds?: readonly string[]): 
   // a real `ci.yml` unreadable-workflow finding was dropped from the log AND
   // unnamed, where the narrower filter had named it. Ranking by kept-count
   // ascending puts the ones a reader most needs to know about at the front.
-  // The WORKFLOW half of the composite key: a reader wants the file name, not
-  // the kind it was bucketed under, and the same workflow may appear under two
-  // kinds — it is named once.
+  // COUNTED PER (KIND, WORKFLOW) GROUP, which is how the cap is ALLOCATED.
+  // Collapsing to the workflow first made a group that got NOTHING invisible
+  // whenever the same workflow kept a line under another kind — and a fork can
+  // manufacture that other line. Measured: 19 fork files of tight bounds, the
+  // genuine `hooks.yml` finding, and ONE fork-chosen snapshot key under
+  // `hooks.yml`; the genuine line was dropped, `hooks.yml` was not among the
+  // five names, and `starved` read 0, so the summary's own promise — the "no
+  // line at all" clause — was absent entirely. A benign-looking summary over a
+  // dropped finding is worse than a noisy one.
+  //
+  // The NAME shown is still the workflow: a reader wants the file, not the
+  // bucket it was counted in.
   const workflowOf = (key: string): string => key.slice(key.indexOf('\u0000') + 1);
   const withKeptCount = [...groups.entries()].map(
-    ([key, queue]) => [workflowOf(key), queue.filter((i) => keptSet.has(i)).length] as const,
+    ([key, queue]) => [key, queue.filter((i) => keptSet.has(i)).length] as const,
   );
-  const total = new Map<string, number>();
-  for (const [key, queue] of groups) {
-    total.set(workflowOf(key), (total.get(workflowOf(key)) ?? 0) + queue.length);
+  const incomplete: string[] = [];
+  for (const [key, count] of [...withKeptCount].sort((a, b) => a[1] - b[1])) {
+    if (count >= (groups.get(key)?.length ?? 0)) continue;
+    const name = workflowOf(key);
+    // One name per workflow, at its BEST rank: a workflow starved under one
+    // kind is named even if another kind of its findings was shown.
+    if (!incomplete.includes(name)) incomplete.push(name);
   }
-  const keptPer = new Map<string, number>();
-  for (const [name, count] of withKeptCount) keptPer.set(name, (keptPer.get(name) ?? 0) + count);
-  const incomplete = [...keptPer.entries()]
-    .filter(([name, count]) => count < (total.get(name) ?? 0))
-    .sort((a, b) => a[1] - b[1])
-    .map(([name]) => name);
   // HOW MANY SHOW NO LINE AT ALL, counted separately from the names. Ranking
   // starved groups first is not enough on its own: past five of them the names
   // run out, and a genuine workflow is then neither shown nor named — measured
   // at 25 fork files, where an earlier revision of this comment claimed the
   // naming was a promise. It is not; this count is. A reader who sees a
   // non-zero figure knows the class is present and can re-run locally.
-  const starved = [...keptPer.values()].filter((count) => count === 0).length;
+  // DISTINCT WORKFLOWS, because that is the unit the sentence names. Counting
+  // (kind, workflow) GROUPS double-counts a workflow starved under two kinds —
+  // measured: 20 workflows across 2 kinds rendered 20 lines and reported "20
+  // workflows show no line at all", which is both wrong and self-contradicting.
+  // Counting workflows with NO line anywhere would undercount the other way: a
+  // workflow starved under one kind while shown under another is exactly the
+  // case a fork manufactures, so a workflow counts here if ANY of its groups
+  // was starved.
+  const starved = new Set(
+    withKeptCount.filter(([, count]) => count === 0).map(([key]) => workflowOf(key)),
+  ).size;
   const dropped = `… and ${lines.length - kept.length} more` as Safe;
   return [
     ...kept,

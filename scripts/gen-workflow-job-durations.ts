@@ -601,7 +601,7 @@ const main = (): void => {
   if (!Number.isInteger(windowDays) || windowDays <= 0) {
     throw new Error(
       `--from=${safeText(explicitFrom ?? '')} is not before --to=${to}; ` +
-        'a range must cover at least one whole day',
+        '`--from` must be strictly before `--to`',
     );
   }
   const from = explicitFrom ?? isoDay(new Date(Date.parse(`${to}T00:00:00Z`) - windowDays * 86400000));
