@@ -2775,7 +2775,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'TopicName',
         'TracingConfig',
       ]),
-      silentDrop: new Map<string, string>(),
+      silentDrop: new Map<string, string>([['MaximumMessageSize', 'not yet implemented by cdkd']]),
       createOnlyDrops: new Set<string>(),
     },
   ],
