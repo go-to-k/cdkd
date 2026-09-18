@@ -376,6 +376,14 @@ YT0oeCkjYiAkKApjZCBjaGlsZApnaXQgY29tbWl0IC1tIHkKKQo=
 KGVjaG8gaGkpI2IgJCgKY2QgY2hpbGQKZ2l0IGNvbW1pdCAtbSB5CikK
 eD0kKGVjaG8gXCAjYiApCmNkIC4uCmdpdCBjb21taXQgLW0geQopCg==
 eD0kKCBlY2hvIFcgOyBlY2hvIFwpI2IgKQpjZCAvdG1wCmdpdCBjb21taXQgLW0geQo=
+Pi9kZXYvbnVsbCBnaXQgY29tbWl0IC1tIHkK
+Mj4vZGV2L251bGwgZ2l0IGNvbW1pdCAtbSB5Cg==
+eD0xID4vZGV2L251bGwgZ2l0IGNvbW1pdCAtbSB5Cg==
+Mj4mMSBnaXQgY29tbWl0IC1tIHkK
+PnxvdXQgZ2l0IGNvbW1pdCAtbSB5Cg==
+Z2l0IGNvbW1pdCAtbSB5ID4vZGV2L251bGwK
+ZWNobyAiPi9kZXYvbnVsbCBnaXQgY29tbWl0IC1tIHkiCg==
+dHJ1ZSAmIGdpdCBjb21taXQgLW0geQo=
 CORPUS_EOF
 
 # --------------------------------------------------------------- observables
@@ -940,6 +948,18 @@ cat > "$ALLOWED" <<'ALLOWED_EOF'
 261	segcount	2	COMMENT_FRAME	a <( ) glue makes the <<X after it a real opener: its body is data (kind 1, not the kind-2 bail)
 264	segcount	3	COMMENT_FRAME	an escaped SPACE before a # is NOT glue: the # opens a comment, the span stays open and the lines join (the class go-to-k/cdkd#3303 owns)
 265	segcount	4	COMMENT_FRAME	an escaped ) before a # IS glue, so the span closes on its own line and the cd after it is its own segment
+266	m:GATE_RE_GIT_COMMIT	1	REDIR_LEADER	a leading `>` redirection no longer hides the verb from every gate
+266	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	REDIR_LEADER	a leading `>` redirection no longer hides the verb from every gate
+267	m:GATE_RE_GIT_COMMIT	1	REDIR_LEADER	the `2>` spelling, the same
+267	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	REDIR_LEADER	the `2>` spelling, the same
+268	m:GATE_RE_GIT_COMMIT	1	REDIR_LEADER	an assignment AND a redirection in front of the verb (the strip loop nests)
+268	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	REDIR_LEADER	an assignment AND a redirection in front of the verb (the strip loop nests)
+269	segcount	1	REDIR_LEADER	a `>&` dup is one operator, not a segment separator, so the verb keeps command position
+269	m:GATE_RE_GIT_COMMIT	1	REDIR_LEADER	a `>&` dup is one operator, not a segment separator, so the verb keeps command position
+269	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	REDIR_LEADER	a `>&` dup is one operator, not a segment separator, so the verb keeps command position
+270	segcount	1	REDIR_LEADER	a `>|` clobber override, the same
+270	m:GATE_RE_GIT_COMMIT	1	REDIR_LEADER	a `>|` clobber override, the same
+270	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	REDIR_LEADER	a `>|` clobber override, the same
 ALLOWED_EOF
 
 paste "$TMPDIR/old.tsv" "$TMPDIR/new.tsv" \
@@ -978,7 +998,7 @@ fi
 # so the "undeclared" arm is blind to it and these floors are the only thing
 # that sees it. Raise them with the measurement whenever the corpus grows; do
 # not leave slack "for headroom", which is precisely what defeated them.
-for spec in "NOW_MATCH:93" "NOW_MISS:14" "TARGET:17" "SEGCOUNT:16" "WIDE_TRIGGER:23" "MLSUBST:15" "MLBACKTICK:7" "LATERQ:18" "ACCEPTED_FR:13" "INQUOTE_BACKTICK:6" "DEQUOTE:44" "QUOTED_PAREN:5" "ANSI_C:2" "SUBST_HEREDOC:14" "COMMENT_FRAME:10" "DQ_VALUE:8"; do
+for spec in "NOW_MATCH:93" "NOW_MISS:14" "TARGET:17" "SEGCOUNT:16" "WIDE_TRIGGER:23" "MLSUBST:15" "MLBACKTICK:7" "LATERQ:18" "ACCEPTED_FR:13" "INQUOTE_BACKTICK:6" "DEQUOTE:44" "QUOTED_PAREN:5" "ANSI_C:2" "SUBST_HEREDOC:14" "COMMENT_FRAME:10" "REDIR_LEADER:12" "DQ_VALUE:8"; do
   cls="${spec%%:*}"; floor="${spec##*:}"
   seen=$(awk -F'\t' -v c="$cls" '$4==c' "$ALLOWED" | while IFS=$'\t' read -r id obs val rest; do
     awk -F'\t' -v i="$id" -v o="$obs" -v v="$val" '$1==i && $2==o && $3==v {print}' "$TMPDIR/diffs.tsv"

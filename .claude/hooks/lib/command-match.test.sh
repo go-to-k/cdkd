@@ -1086,6 +1086,40 @@ check "assignment inside a quoted mention" 1 "$COMMIT" 'echo "run GIT_EDITOR=tru
 # manufacture a verb out of nowhere.
 check "assignment with no verb after it" 1 "$COMMIT" "GIT_EDITOR=true vp run test"
 
+# --- A REDIRECTION MAY LEAD A SIMPLE COMMAND (go-to-k/cdkd#3204) -----------
+#
+# bash allows a redirection anywhere in a simple command, the command word
+# included, so ONE token in front of a guarded verb used to silence every
+# blocking gate at once. All four spellings below RUN the commit -- measured
+# with a stub `git` on PATH under bash 5.3.9, bash 3.2.57 and zsh 5.9 -- while
+# `gate_matches` answered no match on `origin/main` for each. Mutant
+# `redir-leader`.
+check "leading > redirection" 0 "$COMMIT" ">/dev/null git commit -m x"
+check "leading 2> redirection" 0 "$COMMIT" "2>/dev/null git commit -m x"
+check "leading < redirection" 0 "$COMMIT" "</dev/null git commit -m x"
+check "leading >> redirection" 0 "$COMMIT" ">>log git commit -m x"
+check "leading here-string" 0 "$COMMIT" "<<<data git commit -m x"
+check "a quoted redirection target carrying a space" 0 "$COMMIT" '>"/tmp/a b" git commit -m x'
+# The strip loop NESTS, so an assignment and a redirection together still land
+# on the verb -- each rule removes one leader and the loop runs to a fixpoint.
+check "assignment then redirection" 0 "$COMMIT" "x=1 >/dev/null git commit -m x"
+
+# THE OPERATOR CHARACTERS ARE NOT SEPARATORS WHEN THEY BELONG TO A
+# REDIRECTION, and fixing only `gate_strip_prefix` left these broken: the
+# segmenter split `2>&1 git commit` into `2>` and `1 git commit`, so the verb
+# lost its command position and the gate stayed silent even though the strip
+# was correct. Mutant `redir-operator-split`.
+check "a >& dup leader" 0 "$COMMIT" "2>&1 git commit -m x"
+check "a >| clobber leader" 0 "$COMMIT" ">|out git commit -m x"
+check "an &> merge leader" 0 "$COMMIT" "&>out git commit -m x"
+
+# Controls, and each fails in a different direction if the rule widens.
+check "a bare & is still a separator (control)" 0 "$COMMIT" "true & git commit -m x"
+check "a bare | is still a separator (control)" 0 "$COMMIT" "true | git commit -m x"
+check "a redirection AFTER the verb (control)" 0 "$COMMIT" "git commit -m x >/dev/null"
+check "a redirection inside an argument (control)" 1 "$COMMIT" 'echo ">/dev/null git commit"'
+check "a redirection with no verb after it (control)" 1 "$COMMIT" ">/dev/null vp run test"
+
 # --- Non-matches ----------------------------------------------------------
 check "different subcommand" 1 "$MERGE" "gh pr create --title x"
 check "substring inside a path" 1 "$COMMIT" "ls /tmp/git-commit-notes"

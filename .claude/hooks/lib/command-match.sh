@@ -1033,6 +1033,23 @@ gate_segments_raw() {
             }
             res = res substr(line, runstart, i - runstart) "\n"; runstart = i + 1; continue
           }
+          # AN `&` OR `|` THAT IS PART OF A REDIRECTION OPERATOR IS NOT A
+          # SEPARATOR. `2>&1 git commit -m x` split into `2>` and
+          # `1 git commit -m x`, and `>|out git commit -m x` into `>` and
+          # `out git commit -m x`, so the verb lost its command position and
+          # every blocking gate went silent -- the same fail-open as the
+          # leading redirection go-to-k/cdkd#3204 is about, one layer down,
+          # and invisible to a fix made only in `gate_strip_prefix` (measured:
+          # that function alone strips both correctly and the segmenter had
+          # already broken the text).
+          #
+          # Three spellings, decided by the character BESIDE the operator:
+          # `>&` / `<&` (a dup, `&` after the operator), `&>` / `&>>` (the
+          # merge spelling, `&` before it) and `>|` (clobber override). A bare
+          # `&` or `|` with none of that around it stays a separator, which is
+          # what keeps `a & b` and `a | b` splitting.
+          if ((c == "&" && (substr(line, i - 1, 1) ~ /[<>]/ || substr(line, i + 1, 1) == ">")) ||
+              (c == "|" && substr(line, i - 1, 1) == ">")) continue
           if (c == "&" || c == ";" || c == "|") { res = res substr(line, runstart, i - runstart) "\n"; runstart = i + 1; continue }
           if (c == "<" && substr(line, i + 1, 1) == "<") {
             # `<<<` is a here-string, not a heredoc opener.
@@ -1462,6 +1479,32 @@ gate_strip_prefix() {
   # shell parser never meets the `)`, which is what satisfies both. Measured
   # divergences that reached this repo are recorded on the uses below.
   local _gate_case_arm='^[[:space:]]*[^()|;&[:space:]]+\)[[:space:]]*(.*)$'
+  # A REDIRECTION MAY LEAD A SIMPLE COMMAND, and one token in front of a
+  # guarded verb used to silence every blocking gate at once
+  # (go-to-k/cdkd#3204). bash allows a redirection anywhere in a simple
+  # command, the command word included, so `>/dev/null git commit -m x`,
+  # `2>/dev/null …`, `</dev/null …` and `x=1 >/dev/null …` all RUN the commit
+  # -- measured with a stub `git` on PATH under bash 5.3.9, bash 3.2.57 and
+  # zsh 5.9 -- while `gate_matches` answered NOMATCH on `origin/main` for each.
+  # This is the class hooks-class-fences.md names: over-approximate the
+  # TRIGGER, stay strict on RESOLUTION. It lives in the STRIP list rather than
+  # in a verb regex so every gate gains it from one place.
+  #
+  # `<<` IS DELIBERATELY NOT AN OPERATOR HERE. A heredoc opener is owned by the
+  # heredoc machinery, and consuming its delimiter as a redirection TARGET
+  # would hand the body back as commands -- the fail-open this file spent
+  # go-to-k/cdkd#3040 closing. `<<<` (a here-string) is a real redirection with
+  # a word after it and IS stripped; the guard pattern is what separates them,
+  # because POSIX ERE alternation is leftmost-LONGEST rather than ordered, so a
+  # bare `<` alternative would otherwise match the first character of `<<X`.
+  #
+  # Both patterns are VARIABLES for this file's standing reason -- the `[[ ]]`
+  # parser must never meet the operator characters -- and neither carries a
+  # backslash inside a bracket expression. `>\|` escapes the ERE alternation
+  # metacharacter, which is an ordinary literal outside brackets in both
+  # engines.
+  local _gate_redir_heredoc='^[[:space:]]*[0-9]?<<[^<]'
+  local _gate_redir='^[[:space:]]*[0-9]?(<<<|&>>|&>|>>|>&|<&|>\||>|<)[[:space:]]*("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]]+)[[:space:]]+(.*)$'
   local _gate_open_group='^[[:space:]]*[({][[:space:]]*(.*)$'
   local _gate_close_group='^(.*[^[:space:]])[[:space:]]*[)}][[:space:]]*$'
   # Trim first: a segment split off after a separator starts with a space, and
@@ -1491,6 +1534,12 @@ gate_strip_prefix() {
     fi
     if [[ "$s" =~ ^[[:space:]]*case[[:space:]]+[^[:space:]]+[[:space:]]+in[[:space:]]+(.*)$ ]]; then
       s="${BASH_REMATCH[1]}"
+    fi
+    # The heredoc guard is tested FIRST and separately: a single `if` with both
+    # conditions would still strip when the opener sits after something else
+    # the loop has yet to remove, and the loop is what makes the prefixes nest.
+    if [[ ! "$s" =~ $_gate_redir_heredoc ]] && [[ "$s" =~ $_gate_redir ]]; then
+      s="${BASH_REMATCH[3]}"
     fi
     # Same construct, same variable treatment, same reason as the two loops at
     # the end of this function -- and it is here because it was MEASURED to
