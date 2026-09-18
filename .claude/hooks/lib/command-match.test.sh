@@ -4647,11 +4647,11 @@ git -C "$__gtf_tmp/aliashook" remote add upstream "gh-work:go-to-k/cdkd.git" 2>/
 __gtf "an UNREADABLE remote on the HOOK side -> NOT foreign (fail closed)" 1 \
   "$__gtf_tmp/aliashook/.claude/hooks" "$__gtf_tmp/canonical" "gh pr merge 1 --squash"
 
-# The CONTROL that keeps it from being "refuse everything": the same fork hook
-# checkout with every remote READABLE still relaxes a genuine sibling. Without
-# this, deleting the whole hook loop would satisfy the case above.
-__gtf "a READABLE fork hook checkout still relaxes a sibling -> foreign" 0 \
-  "$__gtf_tmp/forkhook/.claude/hooks" "$__gtf_tmp/forksib" "gh pr merge 1 --squash"
+# NOTE: the control for "it does not just refuse everything" is the PRE-EXISTING
+# case above -- "a FORK hook checkout still relaxes a real sibling" -- which
+# uses these same two fixtures. A second copy was written here and removed:
+# byte-identical arguments and expectation, so it could only ever red when the
+# original did.
 
 # And the measured cost is zero only while the parser reads real remotes, so
 # pin the spelling families a real checkout uses. If one of these ever stops
@@ -4662,16 +4662,22 @@ git -C "$__gtf_tmp/realhook" remote add origin "$__gtf_slug" 2>/dev/null
 git -C "$__gtf_tmp/realhook" remote add https https://github.com/go-to-k/cdkd.git 2>/dev/null
 git -C "$__gtf_tmp/realhook" remote add scp git@github.com:go-to-k/cdkd.git 2>/dev/null
 git -C "$__gtf_tmp/realhook" remote add nosuffix https://github.com/go-to-k/cdkd 2>/dev/null
-__gtf "every REAL remote spelling stays readable -> NOT foreign" 1 \
-  "$__gtf_tmp/realhook/.claude/hooks" "$__gtf_tmp/canonical" "gh pr merge 1 --squash"
+# The target is the SIBLING, expecting 0. Pointing it at the canonical clone
+# could not discriminate: there a working parse answers 1 (slug matches) and a
+# REFUSAL also answers 1, so the case was green either way -- measured, with
+# `gate_slug_from_url` mutated to refuse the scp form it stayed green. Against
+# the sibling a working parse answers 0 and any refusal answers 1, so the
+# spellings are actually pinned.
+__gtf "every REAL remote spelling stays readable -> sibling still foreign" 0 \
+  "$__gtf_tmp/realhook/.claude/hooks" "$__gtf_tmp/forksib" "gh pr merge 1 --squash"
 
 rm -rf "$__gtf_tmp"
 # Equality, not a floor, for the reason every other block here uses equality:
 # a floor goes green when a case is deleted.
 __gtf_ran=$((pass + fail - __gtf_start))
-if [ "$__gtf_ran" -ne 45 ]; then
+if [ "$__gtf_ran" -ne 44 ]; then
   fail=$((fail + 1))
-  fail_log="${fail_log}FAIL gate_target_is_foreign block ran $__gtf_ran cases, expected exactly 45 -- a case vanished, or one was added without bumping the count\n"
+  fail_log="${fail_log}FAIL gate_target_is_foreign block ran $__gtf_ran cases, expected exactly 44 -- a case vanished, or one was added without bumping the count\n"
 else
   pass=$((pass + 1)); printf 'ok   gate_target_is_foreign block ran all %s cases\n' "$__gtf_ran"
 fi

@@ -5131,27 +5131,40 @@ gate_slug_from_url() {
     ssh.github.com | www.github.com) host=github.com ;;
   esac
 
-  # AN SSH `Host` ALIAS IS NO LONGER A HOLE, and the way it closed is worth
-  # keeping. gh resolves a remote's ssh host by running `ssh -G <host>` and
-  # reading the `hostname` it returns -- measured, an `ssh` wrapper on PATH
-  # logged `-G github-work` during a `gh repo view` -- so with
+  # KNOWN BOUND, STILL OPEN: an ssh `Host` ALIAS whose name contains a DOT.
+  # gh resolves a remote's ssh host by running `ssh -G <host>` and reading the
+  # `hostname` it returns -- measured, an `ssh` wrapper on PATH logged
+  # `-G github-work` during a `gh repo view` -- so with
   # `Host github.com-work / HostName github.com` in `~/.ssh/config`, the
   # standard multi-account recipe, `git@github.com-work:go-to-k/cdkd.git`
   # resolves to THIS repo in gh while this function keys it
-  # `github.com-work/go-to-k/cdkd`.
+  # `github.com-work/go-to-k/cdkd` and the checkout reads FOREIGN.
   #
-  # It is NOT closed here, by teaching this parser the alias -- an ssh alias is
-  # user-defined and unbounded, which is the enumeration
-  # `.claude/rules/hooks-class-fences.md` refuses. It is closed by BOTH loops in
-  # `gate_target_is_foreign` now answering NOT FOREIGN for a remote this
-  # function cannot read (go-to-k/cdkd#3389). An alias keys to something no
-  # clone matches, which is exactly "cannot read" -- so the unbounded set is
-  # handled by the one decidable question rather than by naming its members.
+  # HALF OF THE FAMILY CLOSED, and the half is decided by whether the spelling
+  # PARSES, so read the two apart rather than as one bound:
+  #   - a DOTLESS alias (`gh-work:o/r.git`) fails the host test below, and
+  #     go-to-k/cdkd#3389 made BOTH loops in `gate_target_is_foreign` answer NOT
+  #     FOREIGN for a remote this function cannot read. Closed.
+  #   - a DOTTED alias PARSES -- successfully, to a slug no clone matches -- so
+  #     it is not "unreadable" and that refusal never fires for it. Measured on
+  #     that change's own head: dotless rc 1 (closed), dotted rc 0 (still
+  #     relaxes).
+  # An earlier revision of this comment claimed the whole family was closed, on
+  # the reasoning that "an alias keys to something no clone matches, which is
+  # exactly cannot-read". It is not: keying to a non-matching slug is a
+  # SUCCESSFUL parse. Review measured it before it shipped.
   #
-  # What that cost was MEASURED, not argued: 52 checkouts / 64 distinct remotes
-  # on the maintainer's machine, all 64 readable, so the refusal fires on
-  # nothing real today. The `ssh -G` option -- a subprocess per remote inside a
-  # PreToolUse hook -- was rejected on that measurement rather than on taste.
+  # What remains needs gh's own answer -- an `ssh -G` SUBPROCESS PER REMOTE
+  # inside a PreToolUse hook against a 10 s budget -- which is a cost decision
+  # and not a line in this function. It is NOT closable by teaching this parser
+  # the alias: an ssh alias is user-defined and unbounded, the enumeration
+  # `.claude/rules/hooks-class-fences.md` exists to refuse.
+  #
+  # What the closed half DID cost was measured rather than argued: 52 checkouts
+  # / 64 distinct remotes on the maintainer's machine, all 64 readable, so the
+  # refusal fires on nothing real there. The families it WOULD refuse, named so
+  # a reader meeting the refusal recognises it: `file://` remotes, absolute and
+  # relative local paths, and an unexpanded `insteadOf` shorthand (`gh:o/r`).
 
   printf '%s/%s' "$host" "$path"
 }
@@ -5587,7 +5600,7 @@ EOF
 # worktree), and it needs write access to the checkout, which is already game
 # over.
 gate_target_is_foreign() {
-  local hook_dir="$1" target_dir="$2" cmd="$3" verb_ere="$4"
+  local hook_dir="$1" target_dir="$2" cmd="$3" verb_ere="$4" hook_name
   local hook_common target_common hook_slug url
   GATE_FOREIGN_RETRACT=""
 
@@ -5666,6 +5679,13 @@ gate_target_is_foreign() {
   hook_slug=""
   while IFS= read -r url_line; do
     [ -n "$url_line" ] || continue
+    # The NAME, for the refusal message. `git remote -v` emits
+    # `<name>\t<url> (fetch|push)`, and the next line discards the name -- so
+    # without this the refusal can only print the URL. The target loop already
+    # names its remote, and a URL is the wrong thing to echo: an unreadable one
+    # is exactly the shape that might carry an embedded credential, and this
+    # message goes to stderr.
+    hook_name="${url_line%%	*}"
     url_line="${url_line#*	}"
     url_line="${url_line% (*)}"
     [ -n "$url_line" ] || continue
@@ -5689,7 +5709,7 @@ gate_target_is_foreign() {
     # that still holds; the refusal is loud and one `git remote` away from
     # diagnosis, which is the direction this file errs in everywhere else.
     if ! slug=$(gate_slug_from_url "$url_line" 2>/dev/null); then
-      GATE_FOREIGN_RETRACT="this gate's own checkout has a remote whose URL it cannot read ($url_line), so it cannot rule out that the target names the same repository"
+      GATE_FOREIGN_RETRACT="this gate's own checkout has a remote ($hook_name) whose URL it cannot read, so it cannot rule out that the target names the same repository"
       return 1
     fi
     case "$hook_slug" in
