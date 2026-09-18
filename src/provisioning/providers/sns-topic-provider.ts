@@ -37,6 +37,17 @@ import type {
 } from '../../types/resource.js';
 
 /**
+ * The value SNS enforces for a topic that never set `MaximumMessageSize`
+ * (256 KiB, the standard maximum), and therefore what a template REMOVAL of
+ * the member resets the attribute to — SNS refuses the `''` the other
+ * `SetTopicAttributes` removals send (`MaximumMessageSize:  is not an integer
+ * between 1024 and 1048576 bytes`, measured us-east-1 2026-09-18). A fresh
+ * topic REPORTS no value at all, which `readCurrentState` folds to this value;
+ * see there. Exported for the unit tests that pin both halves (issue #3413).
+ */
+export const SNS_MAXIMUM_MESSAGE_SIZE_DEFAULT = '262144';
+
+/**
  * AWS SNS Topic Provider
  *
  * Implements resource provisioning for AWS::SNS::Topic using the SNS SDK.
@@ -44,17 +55,6 @@ import type {
  * polling overhead (1s->2s->4s->8s) for an operation that completes immediately.
  * This SDK provider eliminates that polling and returns instantly.
  */
-/**
- * The value SNS enforces for a topic that never set `MaximumMessageSize`
- * (256 KiB, the standard maximum), and therefore what a template REMOVAL of
- * the member resets the attribute to — SNS refuses the `''` the other
- * `SetTopicAttributes` removals send (`MaximumMessageSize:  is not an integer
- * between 1024 and 1048576 bytes`, measured us-east-1 2026-09-18). A fresh
- * topic REPORTS no value at all, which `readCurrentState` folds; see there.
- * Exported for the unit tests that pin both halves (issue #3413).
- */
-export const SNS_MAXIMUM_MESSAGE_SIZE_DEFAULT = '262144';
-
 export class SNSTopicProvider implements ResourceProvider {
   private snsClient: SNSClient;
   private logger = getLogger().child('SNSTopicProvider');
@@ -813,26 +813,23 @@ export class SNSTopicProvider implements ResourceProvider {
       result['FifoThroughputScope'] = attrs['FifoThroughputScope'] ?? '';
     }
 
-    // MaximumMessageSize (issue #3413) — AWS reports the attribute only once
-    // it has been SET (a fresh topic carries no value; measured us-east-1
-    // 2026-09-18), and a template REMOVAL resets it to the default rather than
-    // unsetting it (SNS refuses `''`). So a topic whose template never declared
-    // the member can legitimately report 262144, and emitting that would be
-    // permanent phantom drift against a record with no key. Surface the value
-    // when the record declares the member (any value, so a console-side change
-    // AND a drift --revert both work) or when the live value is NOT the
-    // default (a console-side ADD). A record with no key facing the default
-    // reads as no drift, which is what the template says.
-    const liveMaxSize = attrs['MaximumMessageSize'];
-    if (liveMaxSize !== undefined) {
-      const n = Number(liveMaxSize);
-      if (
-        properties?.['MaximumMessageSize'] !== undefined ||
-        liveMaxSize !== SNS_MAXIMUM_MESSAGE_SIZE_DEFAULT
-      ) {
-        result['MaximumMessageSize'] = Number.isFinite(n) ? n : liveMaxSize;
-      }
-    }
+    // MaximumMessageSize (issue #3413) — emitted UNCONDITIONALLY, folding an
+    // absent attribute to the default, for the same reason the string members
+    // above emit `''`: the drift comparator's top-level walk visits the keys
+    // of the BASELINE (`observedProperties`, this method's own answer at
+    // deploy time), so a key this method omits is a key no console-side
+    // change can ever surface under. AWS reports the attribute only once it
+    // has been SET (a fresh topic carries no value; measured us-east-1
+    // 2026-09-18) and a template REMOVAL resets it to the default rather than
+    // unsetting it (SNS refuses `''`) — so absent and 262144 are the same
+    // live fact, and folding them makes every baseline carry the key: a
+    // reset-to-default compares equal to itself (no phantom drift), a
+    // console-side ADD compares unequal (drift, and `--revert` sends the
+    // default back, which SNS accepts). A number, like the SQS sibling, so a
+    // template's integer compares equal to the readback.
+    const liveMaxSize = attrs['MaximumMessageSize'] ?? SNS_MAXIMUM_MESSAGE_SIZE_DEFAULT;
+    const maxSizeNumber = Number(liveMaxSize);
+    result['MaximumMessageSize'] = Number.isFinite(maxSizeNumber) ? maxSizeNumber : liveMaxSize;
 
     // JSON-document attributes — AWS returns a JSON string; cdkd state
     // typically holds the parsed object after intrinsic resolution.

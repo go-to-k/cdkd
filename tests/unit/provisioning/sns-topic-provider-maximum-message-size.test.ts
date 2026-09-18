@@ -37,6 +37,7 @@ import {
   SNSTopicProvider,
   SNS_MAXIMUM_MESSAGE_SIZE_DEFAULT,
 } from '../../../src/provisioning/providers/sns-topic-provider.js';
+import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
 
 const TOPIC_ARN = 'arn:aws:sns:us-east-1:123456789012:my-topic';
 
@@ -175,21 +176,83 @@ describe('SNSTopicProvider MaximumMessageSize (issue #3413)', () => {
     expect(state?.['MaximumMessageSize']).toBe(262144);
   });
 
-  it('readCurrentState() omits the key when the record has none and the live value is the default (a reset, not drift)', async () => {
-    // The shape a template removal leaves behind: the reset made the attribute
-    // APPEAR at 262144 on a topic whose record no longer carries the member.
-    // Emitting it would be permanent phantom drift against every such topic.
-    const state = await readWith({ MaximumMessageSize: SNS_MAXIMUM_MESSAGE_SIZE_DEFAULT }, {});
-    expect(state).not.toHaveProperty('MaximumMessageSize');
+  it('readCurrentState() folds an ABSENT attribute (a fresh topic) to the 262144 default, as a number', async () => {
+    // Absent and 262144 are the same live fact — a topic that never set the
+    // attribute enforces the default and a removal resets to it — and the
+    // key must ALWAYS be present so the comparator (state-keys-only walk over
+    // the baseline this method captured at deploy) can ever visit it.
+    const state = await readWith({}, {});
+    expect(state?.['MaximumMessageSize']).toBe(262144);
   });
 
-  it('readCurrentState() omits the key when AWS reports no value (a fresh topic)', async () => {
-    const state = await readWith({}, { MaximumMessageSize: 1048576 });
-    expect(state).not.toHaveProperty('MaximumMessageSize');
+  it('readCurrentState() emits the key against a record with no member, both at the default and at a console-side value', async () => {
+    expect(
+      (await readWith({ MaximumMessageSize: SNS_MAXIMUM_MESSAGE_SIZE_DEFAULT }, {}))?.[
+        'MaximumMessageSize'
+      ]
+    ).toBe(262144);
+    expect((await readWith({ MaximumMessageSize: '524288' }, {}))?.['MaximumMessageSize']).toBe(
+      524288
+    );
   });
 
-  it('readCurrentState() surfaces a console-side ADD of a non-default value against a record with no key', async () => {
-    const state = await readWith({ MaximumMessageSize: '524288' }, {});
-    expect(state?.['MaximumMessageSize']).toBe(524288);
+  // The comparator is what the readback contract has to hold against, not the
+  // bag: `cdkd drift` compares this method's DEPLOY-TIME answer (the observed
+  // baseline) with its answer now, walking the baseline's keys. The first
+  // cut omitted the key on a reset-to-default and pinned only the bag, which
+  // left a console-side ADD after a removal undetectable (review of #3413).
+  const driftBetween = async (
+    baselineAttrs: Record<string, string>,
+    liveAttrs: Record<string, string>
+  ) => {
+    const baseline = (await readWith(baselineAttrs, {}))!;
+    const live = (await readWith(liveAttrs, {}))!;
+    return calculateResourceDrift(baseline, live).filter((d) =>
+      d.path.startsWith('MaximumMessageSize')
+    );
+  };
+
+  it('comparator: a template REMOVAL (reset to the default) is NOT drift', async () => {
+    expect(
+      await driftBetween(
+        { MaximumMessageSize: SNS_MAXIMUM_MESSAGE_SIZE_DEFAULT },
+        { MaximumMessageSize: SNS_MAXIMUM_MESSAGE_SIZE_DEFAULT }
+      )
+    ).toEqual([]);
+  });
+
+  it('comparator: a fresh topic later reset to the default is NOT drift (absent folds to the default)', async () => {
+    expect(await driftBetween({}, { MaximumMessageSize: SNS_MAXIMUM_MESSAGE_SIZE_DEFAULT })).toEqual(
+      []
+    );
+  });
+
+  it('comparator: a console-side ADD after a removal, or on a fresh topic, IS drift', async () => {
+    const baselines: Array<Record<string, string>> = [
+      {},
+      { MaximumMessageSize: SNS_MAXIMUM_MESSAGE_SIZE_DEFAULT },
+    ];
+    for (const baseline of baselines) {
+      const drifts = await driftBetween(baseline, { MaximumMessageSize: '1048576' });
+      expect(drifts).toHaveLength(1);
+      expect(drifts[0]).toMatchObject({
+        path: 'MaximumMessageSize',
+        stateValue: 262144,
+        awsValue: 1048576,
+      });
+    }
+  });
+
+  it('comparator: a console-side change back to the default on a declared value IS drift', async () => {
+    const drifts = await driftBetween(
+      { MaximumMessageSize: '1048576' },
+      { MaximumMessageSize: SNS_MAXIMUM_MESSAGE_SIZE_DEFAULT }
+    );
+    expect(drifts).toHaveLength(1);
+    expect(drifts[0]).toMatchObject({
+      path: 'MaximumMessageSize',
+      stateValue: 1048576,
+      awsValue: 262144,
+    });
   });
 });

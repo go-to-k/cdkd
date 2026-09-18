@@ -263,14 +263,27 @@ D_REMOVED=$(aws sns get-topic-attributes --topic-arn "${P3}" --region "${REGION}
   --query 'Attributes.DisplayName' --output text)
 [ "${D_REMOVED}" = "after-reroute" ] || { echo "FAIL: the removal deploy touched DisplayName (${D_REMOVED}); the arm under test was not isolated" >&2; exit 1; }
 # A record that no longer carries the member must not read the 262144 reset as
-# drift — that is the readCurrentState fold the reset depends on.
-DRIFT_OUT=$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" 2>&1 || true)
+# drift — that is the readCurrentState fold the reset depends on. The exit
+# code is checked BEFORE the negative grep: a drift run that failed for any
+# other reason (auth, region, a refusal) prints no property line either, and
+# would read as "no drift" (review of #3413). `--region` binds the SNS client
+# drift reads the topic through; `--stack-region` only selects the state key.
+set +e
+DRIFT_OUT=$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --stack-region "${REGION}" 2>&1)
+DRIFT_RC=$?
+set -e
+[ "${DRIFT_RC}" -eq 0 ] || {
+  echo "FAIL: cdkd drift exited ${DRIFT_RC} after the removal deploy (a failed run cannot vouch for 'no drift'):" >&2
+  printf '%s\n' "${DRIFT_OUT}" | tail -20 | sed 's/^/  /' >&2
+  exit 1
+}
 printf '%s' "${DRIFT_OUT}" | grep -q 'MaximumMessageSize' && {
   echo "FAIL: cdkd drift reports MaximumMessageSize after the template removal — the reset-to-default is being read as drift:" >&2
   printf '%s\n' "${DRIFT_OUT}" | grep 'MaximumMessageSize' | sed 's/^/  /' >&2
   exit 1
 }
-echo "    OK: member removed, live value reset to 262144, no drift reported"
+echo "    OK: member removed, live value reset to 262144, no drift reported (drift rc=0)"
 
 echo "==> Phase 6: Destroy (now SDK-routed) + gone-probe"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes

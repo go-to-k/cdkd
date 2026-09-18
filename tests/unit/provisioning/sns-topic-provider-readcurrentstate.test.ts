@@ -86,6 +86,9 @@ describe('SNSTopicProvider.readCurrentState', () => {
       // are set on the topic.
       DeliveryStatusLogging: [],
       Tags: [],
+      // Issue #3413: emitted unconditionally, an absent attribute folded to
+      // SNS's 262144 default, so the drift baseline always carries the key.
+      MaximumMessageSize: 262144,
     });
   });
 
@@ -335,12 +338,16 @@ describe('SNSTopicProvider.readCurrentState', () => {
         'DeliveryStatusLogging',
         'DisplayName',
         'KmsMasterKeyId',
+        'MaximumMessageSize',
         'SignatureVersion',
         'Tags',
         'TopicName',
         'TracingConfig',
       ].sort()
     );
+    // Issue #3413: the numeric member's placeholder is the service default,
+    // not '' — SNS refuses '' for it, and a fresh topic enforces 262144.
+    expect(result?.MaximumMessageSize).toBe(262144);
     expect(result?.DisplayName).toBe('');
     expect(result?.KmsMasterKeyId).toBe('');
     expect(result?.TracingConfig).toBe('');

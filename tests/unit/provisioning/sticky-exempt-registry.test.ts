@@ -8,6 +8,7 @@ import {
   type StickyExemptEntry,
 } from '../../../src/provisioning/provider-registry.js';
 import { registerAllProviders } from '../../../src/provisioning/register-providers.js';
+import { PROPERTY_COVERAGE_BY_TYPE } from '../../../src/provisioning/property-coverage.generated.js';
 
 /**
  * Hygiene fence over the sticky-CC exemption table (issue #2719).
@@ -66,6 +67,30 @@ describe('sticky-CC exemption table', () => {
   it('every entry declares a known mode', () => {
     for (const [type, e] of entries()) {
       expect(['cc-broken', 'sdk-coverage'], `${type} has mode ${e.mode}`).toContain(e.mode);
+    }
+  });
+
+  it("every 'sdk-coverage' entry's type has an EMPTY silentDrop map (the admission premise, issue #3413)", () => {
+    // The premise docs/provider-rules.md step 1 states is a MOVING one: the
+    // daily schema refresh regenerates `property-coverage.generated.ts`, and
+    // a property AWS publishes that the provider does not write lands as a
+    // drop with nothing turning the refresh PR red — measured on
+    // `AWS::SNS::Topic` / `MaximumMessageSize` (2026-09-18). A drop on an
+    // admitted type makes the both-bags gate live and `cdkd diff`'s sticky
+    // annotation reachable under --allow-unsupported-properties, so the
+    // refresh that lands it owes the wiring in the same cycle; this is what
+    // makes that a red check rather than a sentence.
+    const sdkCoverage = entries().filter(([, e]) => e.mode === 'sdk-coverage');
+    expect(sdkCoverage.length, 'no sdk-coverage entry — the assertion below would be vacuous').toBeGreaterThan(0);
+    for (const [type] of sdkCoverage) {
+      const coverage = PROPERTY_COVERAGE_BY_TYPE.get(type);
+      expect(coverage, `${type} has no property-coverage row`).toBeDefined();
+      expect(
+        [...coverage!.silentDrop.keys()],
+        `${type} is admitted as 'sdk-coverage' on the premise that it has NO silent drops, but ` +
+          `property-coverage.generated.ts now lists some. Wire them into the provider (or ` +
+          `declare them unhandledByDesign with a reason) in the same change that landed them.`
+      ).toEqual([]);
     }
   });
 
