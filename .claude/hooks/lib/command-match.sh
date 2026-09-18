@@ -5167,7 +5167,7 @@ gate_target_is_foreign() {
   #
   # It also preserves go-to-k/cdkd#3209, whose foreign fixtures carry ZERO
   # remotes rather than unparsable ones -- the distinction the `continue` lost.
-  local slug name url_line __gtf_seen
+  local slug name url_line __gtf_seen resolved_raw
   # THE HOOK SIDE READS EVERY REMOTE TOO, for the same reason the target side
   # does (go-to-k/cdkd#3351 round 6). Reading only `origin` here makes a
   # contributor working from a FORK -- `origin` = their fork, `upstream` = this
@@ -5183,6 +5183,15 @@ gate_target_is_foreign() {
     url_line="${url_line#*	}"
     url_line="${url_line% (*)}"
     [ -n "$url_line" ] || continue
+    # `|| continue` HERE IS NOT THE TARGET LOOP'S RULE, and the block above
+    # describes that one. There, an unreadable remote RETURNS (not foreign);
+    # here it is DROPPED, which only leaves this gate's own identity
+    # incomplete. Keep them distinct when reading: the asymmetry is real, it is
+    # why a DOTLESS ssh alias is safe on the target side and not on this one,
+    # and it is recorded as a KNOWN BOUND on `gate_slug_from_url` and filed as
+    # go-to-k/cdkd#3389. Making this loop refuse too is one line and closes the
+    # family, at the cost of the go-to-k/cdkd#3209 sibling flow for any checkout
+    # carrying one unreadable extra remote -- that issue's call, not this line's.
     slug=$(gate_slug_from_url "$url_line" 2>/dev/null) || continue
     case "$hook_slug" in
       "$slug"|"$slug "*|*" $slug"|*" $slug "*) ;;
@@ -5257,6 +5266,13 @@ EOF
     [ -n "$url_line" ] || continue
     url_line="${url_line#*	}"
     [ -n "$url_line" ] && [ "$url_line" != "base" ] || continue
+    # Keep the value AS CONFIGURED for the refusal message. Everything below
+    # normalises it -- case-folds it and drops its host -- so interpolating the
+    # working copy reports a value nobody wrote: a `gh-resolved` of
+    # `gitlab.com/go-to-k/cdkd` came out as "pointing a remote at
+    # go-to-k/cdkd", hiding the very segment that made it match. The reader of
+    # that message is trying to find the setting to change.
+    resolved_raw="$url_line"
     url_line=$(printf '%s' "$url_line" | tr 'A-Z' 'a-z')
     # DROP THE HOST SEGMENT OF A 3-PART VALUE, because GH IGNORES IT. Measured
     # on gh 2.92.0 with `origin` = `github.com/go-to-k/cdk-local` and only
@@ -5304,7 +5320,7 @@ EOF
     # falsified both copies.
     for slug in $hook_slug; do
       if [ "$url_line" = "${slug#*/}" ] || [ "$url_line" = "$slug" ]; then
-        GATE_FOREIGN_RETRACT="the target checkout has \`gh repo set-default\` pointing a remote at $url_line, so gh resolves this gate's own repository from there"
+        GATE_FOREIGN_RETRACT="the target checkout has \`gh repo set-default\` pointing a remote at $resolved_raw, so gh resolves this gate's own repository from there"
         return 1
       fi
     done

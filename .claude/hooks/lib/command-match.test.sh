@@ -3473,6 +3473,23 @@ git -C "$__gtf_tmp/ghresother" config remote.origin.gh-resolved github.com/go-to
 __gtf "a gh-resolved naming ANOTHER repo -> foreign" 0 \
   "$__gtf_hooks_dir" "$__gtf_tmp/ghresother" "gh pr merge 1 --squash"
 
+# The REFUSAL MESSAGE must name the value AS CONFIGURED. Everything in that loop
+# normalises the value -- case-folds it, drops its host -- so interpolating the
+# working copy reported "pointing a remote at go-to-k/cdkd" for a `gh-resolved`
+# of `gitlab.com/go-to-k/cdkd`, hiding the segment that made it match from the
+# one reader who needs it: someone hunting for the setting to change. Nothing
+# asserted any `GATE_FOREIGN_RETRACT` text before this case.
+GH_REPO="" gate_target_is_foreign "$__gtf_hooks_dir" "$__gtf_tmp/ghresforeignhost" \
+  "gh pr merge 1 --squash" "$GATE_RE_GH_PR_MERGE"
+case "$GATE_FOREIGN_RETRACT" in
+  *gitlab.com/go-to-k/cdkd*)
+    pass=$((pass + 1)); printf 'OK   the gh-resolved refusal names the value AS CONFIGURED\n' ;;
+  *)
+    fail=$((fail + 1))
+    fail_log="${fail_log}FAIL gh-resolved refusal text: want the raw 'gitlab.com/go-to-k/cdkd', got '$GATE_FOREIGN_RETRACT'\n"
+    printf 'FAIL gh-resolved refusal names the normalised value, not the configured one\n' ;;
+esac
+
 __gtf "a MIXED-CASE gh-resolved -> NOT foreign" 1 \
   "$__gtf_hooks_dir" "$__gtf_tmp/ghrescase" "gh pr merge 1 --squash"
 
@@ -3568,9 +3585,9 @@ rm -rf "$__gtf_tmp"
 # Equality, not a floor, for the reason every other block here uses equality:
 # a floor goes green when a case is deleted.
 __gtf_ran=$((pass + fail - __gtf_start))
-if [ "$__gtf_ran" -ne 41 ]; then
+if [ "$__gtf_ran" -ne 42 ]; then
   fail=$((fail + 1))
-  fail_log="${fail_log}FAIL gate_target_is_foreign block ran $__gtf_ran cases, expected exactly 41 -- a case vanished, or one was added without bumping the count\n"
+  fail_log="${fail_log}FAIL gate_target_is_foreign block ran $__gtf_ran cases, expected exactly 42 -- a case vanished, or one was added without bumping the count\n"
 else
   pass=$((pass + 1)); printf 'ok   gate_target_is_foreign block ran all %s cases\n' "$__gtf_ran"
 fi
