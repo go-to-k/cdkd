@@ -5142,7 +5142,7 @@ gate_slug_from_url() {
   #
   # HALF OF THE FAMILY CLOSED, and the half is decided by whether the spelling
   # PARSES, so read the two apart rather than as one bound:
-  #   - a DOTLESS alias (`gh-work:o/r.git`) fails the host test below, and
+  #   - a DOTLESS alias (`gh-work:o/r.git`) fails the host test above, and
   #     go-to-k/cdkd#3389 made BOTH loops in `gate_target_is_foreign` answer NOT
   #     FOREIGN for a remote this function cannot read. Closed.
   #   - a DOTTED alias PARSES -- successfully, to a slug no clone matches -- so
@@ -5163,8 +5163,14 @@ gate_slug_from_url() {
   # What the closed half DID cost was measured rather than argued: 52 checkouts
   # / 64 distinct remotes on the maintainer's machine, all 64 readable, so the
   # refusal fires on nothing real there. The families it WOULD refuse, named so
-  # a reader meeting the refusal recognises it: `file://` remotes, absolute and
-  # relative local paths, and an unexpanded `insteadOf` shorthand (`gh:o/r`).
+  # a reader meeting the refusal recognises it, each measured against this
+  # function rather than assumed: `file:///abs/path` (empty host), an absolute
+  # local path, a relative one, and an unexpanded `insteadOf` shorthand
+  # (`gh:o/r`). NOT the `file://` SCHEME as such --
+  # `file://localhost/home/u/repo` parses to `localhost/home/u/repo` through the
+  # `localhost` arm of the host test, so naming the scheme would have been
+  # wrong in the direction that matters here (it reads as "more is refused than
+  # is").
 
   printf '%s/%s' "$host" "$path"
 }

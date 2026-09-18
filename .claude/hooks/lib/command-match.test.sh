@@ -4647,6 +4647,22 @@ git -C "$__gtf_tmp/aliashook" remote add upstream "gh-work:go-to-k/cdkd.git" 2>/
 __gtf "an UNREADABLE remote on the HOOK side -> NOT foreign (fail closed)" 1 \
   "$__gtf_tmp/aliashook/.claude/hooks" "$__gtf_tmp/canonical" "gh pr merge 1 --squash"
 
+# THE REFUSAL IS TOTAL, and that is the property worth pinning rather than the
+# `-> foreign` twin this block's rule asks for elsewhere. A round-2 review
+# suggested that twin; writing it revealed it does not apply here. Once the
+# HOOK's own identity is unreadable the loop returns before any target is
+# considered, so the same checkout refuses to relax for a genuine SIBLING too
+# -- rc 1, not 0. That is the fail-closed rule working, and it is exactly why
+# the cost of this change had to be measured (52 checkouts / 64 remotes / 0
+# unreadable) rather than argued: an unreadable remote does not cost one
+# verdict, it costs every verdict that checkout makes.
+#
+# The discriminating control is therefore a DIFFERENT fixture, and it already
+# exists: `forkhook` above is the same shape with every remote READABLE, and it
+# relaxes this very sibling.
+__gtf "an unreadable HOOK remote refuses for EVERY target, sibling included" 1 \
+  "$__gtf_tmp/aliashook/.claude/hooks" "$__gtf_tmp/forksib" "gh pr merge 1 --squash"
+
 # NOTE: the control for "it does not just refuse everything" is the PRE-EXISTING
 # case above -- "a FORK hook checkout still relaxes a real sibling" -- which
 # uses these same two fixtures. A second copy was written here and removed:
@@ -4675,9 +4691,9 @@ rm -rf "$__gtf_tmp"
 # Equality, not a floor, for the reason every other block here uses equality:
 # a floor goes green when a case is deleted.
 __gtf_ran=$((pass + fail - __gtf_start))
-if [ "$__gtf_ran" -ne 44 ]; then
+if [ "$__gtf_ran" -ne 45 ]; then
   fail=$((fail + 1))
-  fail_log="${fail_log}FAIL gate_target_is_foreign block ran $__gtf_ran cases, expected exactly 44 -- a case vanished, or one was added without bumping the count\n"
+  fail_log="${fail_log}FAIL gate_target_is_foreign block ran $__gtf_ran cases, expected exactly 45 -- a case vanished, or one was added without bumping the count\n"
 else
   pass=$((pass + 1)); printf 'ok   gate_target_is_foreign block ran all %s cases\n' "$__gtf_ran"
 fi
