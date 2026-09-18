@@ -175,7 +175,10 @@ function makeState(extra: Partial<StackState>): StackState {
   };
 }
 
-function makeStackInfo(properties?: Record<string, unknown>): unknown {
+function makeStackInfo(
+  properties?: Record<string, unknown>,
+  outputs?: Record<string, unknown>
+): unknown {
   return {
     stackName: STACK,
     dependencyNames: [],
@@ -186,6 +189,7 @@ function makeStackInfo(properties?: Record<string, unknown>): unknown {
           Properties: properties ?? { MasterUserPassword: SECRET_EXPR },
         },
       },
+      ...(outputs && { Outputs: outputs }),
     } as CloudFormationTemplate,
   };
 }
@@ -228,9 +232,10 @@ afterEach(() => {
 
 async function scrub(
   opts?: { dryRun?: boolean },
-  templateProperties?: Record<string, unknown>
+  templateProperties?: Record<string, unknown>,
+  templateOutputs?: Record<string, unknown>
 ): Promise<{ recordsChanged: number }> {
-  return (await scrubStack(makeStackInfo(templateProperties) as never, REGION, stateBackend as never, lockManager as never, {
+  return (await scrubStack(makeStackInfo(templateProperties, templateOutputs) as never, REGION, stateBackend as never, lockManager as never, {
     dryRun: opts?.dryRun ?? false,
     logger: logger as never,
   })) as { recordsChanged: number };
@@ -544,6 +549,39 @@ describe('cdkd scrub repairs cross-stack read names (issue #3337)', () => {
       new Map([[SECRET_ID, '{{resolve:ssm-secure:/other/param}}']])
     );
     expect(spliced).toBe(stored);
+  });
+
+  /**
+   * THE UNION IS THE DECISION, so it needs a case. Every other fixture seeds
+   * its needle through a RESOURCE property, so narrowing
+   * `allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets)` to
+   * the per-resource map alone left the whole suite green -- the comment at the
+   * walk argues for the union and nothing pinned it.
+   *
+   * Here the secret reaches state ONLY through a template `Outputs` entry, so
+   * the needle lives in `outputSecrets` and nowhere else. A cross-stack name is
+   * positioned against no single resource's bag, which is exactly why the
+   * per-resource scoping that protects `state.resources` cannot apply to it.
+   */
+  it('repairs a name whose secret is recorded only by an OUTPUT, not by any resource', async () => {
+    state = makeState({
+      resources: {
+        Db: {
+          physicalId: 'db-1',
+          resourceType: 'AWS::RDS::DBInstance',
+          properties: { Engine: 'postgres' },
+        },
+      },
+      outputs: { DbSecret: PLAINTEXT },
+      imports: [
+        { sourceStack: 'Producer', sourceRegion: REGION, exportName: `e-${PLAINTEXT}` },
+      ],
+    });
+
+    await scrub(undefined, { Engine: 'postgres' }, { DbSecret: { Value: SECRET_EXPR } });
+
+    const [entry] = savedState().imports!;
+    expect(entry!.exportName).toBe(`e-${SECRET_EXPR}`);
   });
 
   // NOTE: `[]` round-tripping is NOT fenced here. It survives via the
