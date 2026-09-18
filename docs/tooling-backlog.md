@@ -54,7 +54,9 @@ separate the clauses, is in
 
 These are the issues currently on the tracker whose subject is the tooling
 rather than cdkd. They are listed here so the record survives, and are to be
-closed on the tracker.
+closed on the tracker. A finding recorded before anyone worked it has no issue
+to link, and carries `—` in the Issue column; a row whose item has SHIPPED says
+which PR took it, so nobody picks it up twice.
 
 | Issue | Title |
 | --- | --- |
@@ -130,7 +132,7 @@ closed on the tracker.
 | [#3132](https://github.com/go-to-k/cdkd/issues/3132) | hooks: run()'s continuation arm joins a backslash that ends a comment, or precedes a CR, and refuses an even run inside backticks |
 | [#3204](https://github.com/go-to-k/cdkd/issues/3204) | hooks: a leading redirection defeats every blocking gate (gate_strip_prefix strips no redirection) |
 | [#3205](https://github.com/go-to-k/cdkd/issues/3205) | hooks: a newline inside a bash -c string is joined away, so the second line's verb is never matched |
-| [#3213](https://github.com/go-to-k/cdkd/issues/3213) | test(integ): nothing lints that a verify.sh wc result is trimmed, so a fixture written on GNU coreutils fails unconditionally on macOS |
+| [#3213](https://github.com/go-to-k/cdkd/issues/3213) | test(integ): nothing lints that a verify.sh wc result is trimmed, so a fixture written on GNU coreutils fails unconditionally on macOS — SHIPPED by [#3304](https://github.com/go-to-k/cdkd/pull/3304) |
 | [#3217](https://github.com/go-to-k/cdkd/issues/3217) | chore(hooks): post-merge-sync-reminder reports "PR merge succeeded" over a merge that failed, when the caller masks the exit status |
 | [#3219](https://github.com/go-to-k/cdkd/issues/3219) | hooks: the $( ) heredoc latch drops a body bash's syntax-error recovery actually runs (malformed opener) |
 | [#3228](https://github.com/go-to-k/cdkd/issues/3228) | hooks: a # comment inside a multi-line $( ) swallows the next command line (the join replaces its newline) |
@@ -155,3 +157,5 @@ closed on the tracker.
 | [#3384](https://github.com/go-to-k/cdkd/issues/3384) | test(scripts): six subprocess-spawning suites declare no per-test timeout, so a loaded run flakes and inflates any mutation-table row measured at that moment |
 | [#3385](https://github.com/go-to-k/cdkd/issues/3385) | chore(hooks): gate_slug_from_url keeps the host, so a remote naming this repo through one of gh's github.com aliases reads as another repo and drops the verify-pr binding |
 | [#3387](https://github.com/go-to-k/cdkd/issues/3387) | fix(hooks): gate_repo_slug trims `.git` before it case-folds, so a case-variant remote reads as a FOREIGN repo |
+| [#3428](https://github.com/go-to-k/cdkd/issues/3428) | test(scripts): the wc-trim classifier declares two bounds that can ship an untrimmed `wc` with nothing else noticing, and neither has a case pinning it, so closing one or opening a third leaves the header and the docs asserting a stale set |
+| — | test(unit): `withretry-interrupt.test.ts` and `gen-handled-property-wiring.test.ts` each hold one case running at ~4 s against vitest's 5 s default under the full suite, and both timed out on runs that overlapped a build |
