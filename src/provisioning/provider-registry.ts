@@ -214,6 +214,14 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
       // backfill), so a resource using it takes the SDK path on a fresh
       // deploy, and there was no way for one already pinned to cc-api to
       // follow it there short of a destroy + recreate.
+      //
+      // "Empty" is a MOVING premise, not a fact about the type: the daily
+      // schema refresh re-adds a drop whenever AWS publishes a property the
+      // provider does not write (issue #3413: `MaximumMessageSize`, 2026-09-18,
+      // made the both-bags gate below live and `cdkd diff`'s sticky annotation
+      // reachable under --allow-unsupported-properties). A refresh that lands
+      // a drop on an admitted type owes the wiring in the same cycle, or the
+      // admission stops meaning what docs/provider-rules.md step 1 says.
       mode: 'sdk-coverage' as const,
       physicalIdForm:
         'both layers store the topic ARN: the schema primaryIdentifier is ' +

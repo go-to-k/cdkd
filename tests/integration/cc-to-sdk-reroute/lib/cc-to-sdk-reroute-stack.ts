@@ -8,6 +8,37 @@ const DISPLAY_NAME_BY_PHASE: Record<string, string> = {
   seed: 'seeded-on-cc',
   pinned: 'pinned-on-cc',
   flip: 'after-reroute',
+  // The removal phase keeps the flip's DisplayName on purpose: the ONLY change
+  // that deploy carries is the dropped MaximumMessageSize, so the provider
+  // call it triggers is the removal arm and nothing else.
+  removed: 'after-reroute',
+};
+
+/**
+ * `MaximumMessageSize` by phase (issue #3413). AWS published the member in
+ * the 2026-09-18 schema refresh and it was a silent drop on the one type that
+ * carries the `'sdk-coverage'` exemption — whose admission premise is an EMPTY
+ * silentDrop map. Wiring it restores the premise; this fixture is where the
+ * wire is observed: created on the SDK route (base), carried through the
+ * Cloud Control recreate (seed / pinned), UPDATED by the SDK provider on the
+ * flip (131072 -> 65536), then REMOVED (`removed` leaves it undeclared),
+ * which must reset the live value to SNS's 262144 default rather than send
+ * the `''` SNS refuses. An undefined entry means "not declared".
+ *
+ * Every declared value stays BELOW the 262144 default on purpose: the
+ * fixture's identity witness is an email subscription, and SNS refuses
+ * `Subscribe` for that protocol on a topic whose maximum exceeds 262144
+ * (`MaximumMessageSize greater than 262144 bytes is not supported for the
+ * following protocol: [email]`, measured us-east-1 2026-09-18 — the first run
+ * used 1048576 and died at the witness). Non-default values still exercise
+ * every arm; the removal phase is what reaches the default.
+ */
+const MAXIMUM_MESSAGE_SIZE_BY_PHASE: Record<string, number | undefined> = {
+  base: 131072,
+  seed: 131072,
+  pinned: 131072,
+  flip: 65536,
+  removed: undefined,
 };
 
 /**
@@ -41,10 +72,20 @@ export class CcToSdkRerouteStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
+    const phase = process.env.CDKD_TEST_PHASE ?? 'base';
     const topic = new sns.Topic(this, 'RerouteTopic', {
       topicName: `${this.stackName}-topic`,
-      displayName: DISPLAY_NAME_BY_PHASE[process.env.CDKD_TEST_PHASE ?? 'base'] ?? 'before-reroute',
+      displayName: DISPLAY_NAME_BY_PHASE[phase] ?? 'before-reroute',
     });
+    // The L2 has no prop for the member yet, so it rides the L1 override; an
+    // undefined phase value leaves the property undeclared (the removal shape).
+    const maximumMessageSize = MAXIMUM_MESSAGE_SIZE_BY_PHASE[phase];
+    if (maximumMessageSize !== undefined) {
+      (topic.node.defaultChild as sns.CfnTopic).addPropertyOverride(
+        'MaximumMessageSize',
+        maximumMessageSize
+      );
+    }
 
     new cdk.CfnOutput(this, 'TopicArn', { value: topic.topicArn });
   }

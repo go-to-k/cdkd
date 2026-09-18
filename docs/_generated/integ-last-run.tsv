@@ -38,7 +38,7 @@ cc-api-fallback-transitions	2026-09-17T06:59:38Z	FAIL	420	verify.sh	rc=1 FIXTURE
 cc-getatt-readback	2026-09-02T10:32:07Z	PASS	260	verify.sh	2 phases passed; 8 deleted 0 errors, 0 orphans (S3 AccessPoint, not EFS)
 cc-protection-flip	2026-09-17T06:56:41Z	PASS	900	verify.sh	rc=0; all 3 phases, CC protection flip over 5 types, 5 deleted 0 errors; orphan scan clean (state/RDS+DocDB global/NeptuneGraph/VerifiedPermissions)
 cc-protection-flip-eks	2026-07-31T04:30:02Z	PASS	2300	verify.sh	EKS blocked-destroy + --remove-protection flip (#1315); orph clean
-cc-to-sdk-reroute	2026-09-14T19:25:23Z	PASS	139	verify.sh	rc ok, orph clean, #3126 capture sweep
+cc-to-sdk-reroute	2026-09-18T15:52:59Z	PASS	125	verify.sh	rc ok, orph clean; final tree of PR 3425 (run 3): MaximumMessageSize create/CC-recreate/SDK-update/removal-reset arms + drift rc=0
 ci-cd	2026-08-09T14:25:56Z	PASS	57	verify.sh	issue #1386 nested sub-keys asserted live; rc ok, orph clean
 cloudfront-function-url	2026-07-31T06:11:38Z	PASS	209	verify.sh	regression run post-#1311/#1318; fire-and-forget create + delete-wait path clean; 7 del/0 err, 0 orphans
 cloudtrail-trail	2026-08-11T07:51:38Z	PASS	300	verify.sh	post-rebase onto #1575: KMSKeyId reset + CW-pair drift/revert both verified in one run; 11 del 0 err 0 orph

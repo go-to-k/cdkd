@@ -327,9 +327,6 @@
       "StorageClassConfiguration",
       "UnreferencedFileRemoval"
     ],
-    "AWS::SNS::Topic": [
-      "MaximumMessageSize"
-    ],
     "AWS::WAFv2::WebACL": [
       "ApplicationConfig",
       "DataProtectionConfig",
