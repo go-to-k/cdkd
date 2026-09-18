@@ -1610,57 +1610,27 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
       expect(warnings()).not.toContain('OnDemandThroughput.');
     });
 
-    // Shared by the two go-to-k/cdkd#3287 arms below. PROVISIONED, because the
-    // op has to be fired by a CAPACITY change: a ceiling-only edit fires no op
-    // at all (that IS go-to-k/cdkd#3287), so an op list built from one would be
-    // EMPTY and `every(...)` vacuously true -- passing exactly as well for an
-    // arm that never ran. Both cases shipped in that state and were measured so
-    // by the go-to-k/cdkd#3291 test review (probe D2).
-    const gsiUpdateOps = async (
-      desiredIndexes: unknown[],
-      previousIndexes: unknown[],
-      live?: { indexes?: unknown[] }
-    ) => {
-      primeGeneric({
-        billingMode: 'PROVISIONED',
-        ...(live?.indexes ? { indexes: live.indexes } : {}),
-      });
-      await provider.update(
-        'L',
-        TABLE_NAME,
-        RESOURCE_TYPE,
-        {
-          TableName: TABLE_NAME,
-          BillingMode: 'PROVISIONED',
-          ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
-          GlobalSecondaryIndexes: desiredIndexes,
-        },
-        {
-          TableName: TABLE_NAME,
-          BillingMode: 'PROVISIONED',
-          ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
-          GlobalSecondaryIndexes: previousIndexes,
-        }
-      );
-      return findCalls(UpdateTableCommand)
-        .flatMap((c) => c.input.GlobalSecondaryIndexUpdates ?? [])
-        .map((op) => op.Update)
-        .filter((a): a is NonNullable<typeof a> => a !== undefined);
-    };
-
     /**
-     * The CEILING sibling of `gsiUpdateOps`, on a PAY_PER_REQUEST table.
+     * The driver for every per-index CEILING case: a PAY_PER_REQUEST table.
      *
-     * A separate driver rather than a `billingMode` parameter, because the two
-     * modes are not interchangeable here: since the go-to-k/cdkd#3380 review's
-     * M1 the ceiling arms REFUSE on a PROVISIONED table (AWS accepts
-     * `OnDemandThroughput` only on PAY_PER_REQUEST, and the member rides the
-     * same action as the capacity, so sending it would take a valid capacity
-     * edit down). Every ceiling case driven through the PROVISIONED helper
-     * therefore passes for the WRONG REASON once that gate exists — the member
-     * is absent because the mode refused it, not because the assertion's own
-     * mechanism withheld it. Four such cases went RED when the gate landed and
-     * four more were left VACUOUS; they are all driven from here now.
+     * TWO properties of it are load-bearing, and both were bought by a review
+     * round rather than chosen.
+     *
+     * **PAY_PER_REQUEST, not PROVISIONED.** A PROVISIONED driver has to fire
+     * the action from a CAPACITY change, so the ceiling assertion rides an op
+     * that exists for another reason -- and `OnDemandThroughput` is a
+     * PAY_PER_REQUEST-only property, so the shape under test is one AWS would
+     * reject outright. The billing-mode question those cases kept raising is
+     * filed as go-to-k/cdkd#3392; the cases themselves belong on the mode the
+     * property is legal in.
+     *
+     * **The two index arrays must DIFFER.** `update()` gates the whole GSI
+     * branch on `JSON.stringify(desired) !== JSON.stringify(previous)`, so
+     * byte-identical arrays never reach `applyGsiUpdates` at all and a case
+     * asserting "no op" then passes over an arm that never ran. Where a case
+     * needs the ceiling itself UNCHANGED, it carries a SECOND index whose
+     * ceiling does change (go-to-k/cdkd#3380 round 2, A1 / A2 -- both shipped
+     * vacuous before it was measured).
      *
      * The GSIs carry NO `ProvisionedThroughput`, matching what a real
      * PAY_PER_REQUEST template declares.
@@ -1797,6 +1767,34 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
       ]);
     });
 
+    it('site 5 update: an UNEDITED malformed ceiling does NOT re-warn when another index changes', async () => {
+      // The anti-nag control for the RAW-on-drop fallback, and the reason that
+      // fallback is keyed on `dropped` rather than on "did anything change".
+      // gsi2 carries the edit, so `applyGsiUpdates` really runs; gsi1's
+      // still-broken `' 25 '` is IDENTICAL on both sides, so the raw compare is
+      // equal and the arm returns before the announcing forwarder. Without
+      // that, every deploy touching any OTHER index would re-warn about a
+      // template nobody edited.
+      //
+      // It shipped once as a version handing both sides byte-identical arrays,
+      // which never reached `applyGsiUpdates` at all (round 2, A1); this is the
+      // same repair its sibling took, not a deletion.
+      const updates = await gsiCeilingOps(
+        [
+          ppRequestGsi('gsi1', { MaxReadRequestUnits: ' 25 ' }),
+          ppRequestGsi('gsi2', { MaxReadRequestUnits: 90 }),
+        ],
+        [
+          ppRequestGsi('gsi1', { MaxReadRequestUnits: ' 25 ' }),
+          ppRequestGsi('gsi2', { MaxReadRequestUnits: 50 }),
+        ]
+      );
+      expect(updates).toEqual([
+        { IndexName: 'gsi2', OnDemandThroughput: { MaxReadRequestUnits: 90 } },
+      ]);
+      expect(warnings()).not.toContain(ON_DEMAND);
+    });
+
     it('site 5 update (SAME-NAME GSI Update action): a REMOVED ceiling sends nothing (go-to-k/cdkd#3373)', async () => {
       // The decision, pinned: omitting a member KEEPS the live maximum (only an
       // explicit `-1` removes one), and cdkd does NOT substitute the sentinel at
@@ -1865,6 +1863,33 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
       expect(updates).toEqual([]);
       expect(warnings()).toContain(ON_DEMAND);
       expect(warnings()).toContain('OnDemandThroughput.MaxWriteRequestUnits');
+      // ...and NOT the unknown-member advice (the go-to-k/cdkd#3380 round-3
+      // review's C3). Both members were just named as declared-but-rejected, so
+      // telling the user to "check the member names" one line later contradicts
+      // the advice above it. That branch is DEBUG when anything was dropped.
+      expect(warnings()).not.toContain('Check the member names');
+    });
+
+    it('site 5 update: an OnDemandThroughput whose known member is present-but-undefined is DROPPED and named (go-to-k/cdkd#3380 C5)', async () => {
+      // A key PRESENT with an `undefined` value satisfies `member in block` and
+      // coerces to `undefined`, so the narrowing's identity short-circuit used
+      // to keep it -- leaving a member the SDK serializes away, with nothing
+      // dropped and nothing warned. It now takes the drop arm like any other
+      // unusable spelling, so the surviving sibling still goes out and the user
+      // is told which member was lost.
+      const updates = await gsiCeilingOps(
+        [
+          ppRequestGsi('gsi1', {
+            MaxReadRequestUnits: undefined,
+            MaxWriteRequestUnits: 15,
+          }),
+        ],
+        [ppRequestGsi('gsi1', { MaxReadRequestUnits: 50, MaxWriteRequestUnits: 15 })]
+      );
+      expect(updates).toEqual([
+        { IndexName: 'gsi1', OnDemandThroughput: { MaxWriteRequestUnits: 15 } },
+      ]);
+      expect(warnings()).toContain(ON_DEMAND);
     });
 
     it('site 5 update: a CEILING-ONLY edit under PAY_PER_REQUEST now fires its own op (go-to-k/cdkd#3287, the headline shape)', async () => {

@@ -1021,6 +1021,133 @@ describe('DynamoDB providers - resolved secrets in provider warnings (issue #199
       expect(debugLog).not.toContain(SECRET_INDEX);
       expect(debugLog).toContain(SECRET_MASK);
     });
+
+    // The two cases above are satisfied by EITHER half of the fix, because the
+    // sink and `indexScopeAt` mask the same value by different routes -- so a
+    // refactor dropping one stays green (the go-to-k/cdkd#3380 round-3 test
+    // review). The two below discriminate: each picks a value only ONE half can
+    // reach.
+
+    // BELOW the 4-character `MIN_NEEDLE_LENGTH` floor, so the sink's substring
+    // scan cannot see it and only the whole-value mask inside `indexScopeAt`
+    // can. A 3-character index name is legal in DynamoDB.
+    it('masks a SHORT index name, which only indexScopeAt can reach', async () => {
+      const SHORT = 'ix3';
+      const shortBag: RecordedSecretValues = new Map([
+        [SHORT, '{{resolve:secretsmanager:tbl/gsishort:SecretString:v::}}'],
+      ]);
+      primeTable([]);
+      await provider.update(
+        'MyTable',
+        'plain-public-table',
+        'AWS::DynamoDB::Table',
+        { BillingMode: 'PROVISIONED', GlobalSecondaryIndexes: [] },
+        { BillingMode: 'PROVISIONED', GlobalSecondaryIndexes: [gsi(SHORT, 5)] },
+        { maskSecrets: createSecretMasker(shortBag) }
+      );
+
+      const debugLog = debugged.join('\n');
+      expect(debugLog).toContain('skipping its Delete (already removed)');
+      expect(debugLog).not.toContain(`GSI ${SHORT} `);
+      expect(debugLog).toContain(SECRET_MASK);
+    });
+
+    // The SINK's own half. `indexScopeAt` renders `on DynamoDB table
+    // <physicalId>` with the table name UNMASKED -- only the message-level sink
+    // covers it -- so a secret-bearing physical id is reachable by the sink
+    // alone.
+    it('masks the TABLE name in the same debug line, which only the sink can reach', async () => {
+      const SECRET_PHYSICAL = 'issue3380-gsi-debug-physical-plaintext';
+      const physBag: RecordedSecretValues = new Map([
+        [SECRET_PHYSICAL, '{{resolve:secretsmanager:tbl/gsiphys:SecretString:v::}}'],
+      ]);
+      mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+        if (command.constructor.name === 'DescribeTableCommand') {
+          return Promise.resolve({
+            Table: {
+              TableName: SECRET_PHYSICAL,
+              TableArn: `arn:aws:dynamodb:us-east-1:0:table/${SECRET_PHYSICAL}`,
+              TableStatus: 'ACTIVE',
+              BillingModeSummary: { BillingMode: 'PROVISIONED' },
+              ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+              GlobalSecondaryIndexes: [],
+            },
+          });
+        }
+        return Promise.resolve({});
+      });
+      await provider.update(
+        'MyTable',
+        SECRET_PHYSICAL,
+        'AWS::DynamoDB::Table',
+        { BillingMode: 'PROVISIONED', GlobalSecondaryIndexes: [] },
+        { BillingMode: 'PROVISIONED', GlobalSecondaryIndexes: [gsi('plain-public-index', 5)] },
+        { maskSecrets: createSecretMasker(physBag) }
+      );
+
+      const debugLog = debugged.join('\n');
+      expect(debugLog).toContain('skipping its Delete (already removed)');
+      expect(debugLog).not.toContain(SECRET_PHYSICAL);
+      expect(debugLog).toContain(SECRET_MASK);
+    });
+
+    // go-to-k/cdkd#3380 round-3 security review, S3: TWO more sites of the same
+    // class, both pre-existing on main and neither covered by the round that
+    // claimed to close it.
+    it('masks the index names in the pre-flip removal debug line (S3)', async () => {
+      // The BillingMode flip's own pre-removal, which names every index it is
+      // about to delete.
+      mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+        if (command.constructor.name === 'DescribeTableCommand') {
+          return Promise.resolve({
+            Table: {
+              TableName: 'plain-public-table',
+              TableArn: 'arn:aws:dynamodb:us-east-1:0:table/plain-public-table',
+              TableStatus: 'ACTIVE',
+              BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' },
+              GlobalSecondaryIndexes: [{ IndexName: SECRET_INDEX, IndexStatus: 'ACTIVE' }],
+            },
+          });
+        }
+        return Promise.resolve({});
+      });
+      await provider.update(
+        'MyTable',
+        'plain-public-table',
+        'AWS::DynamoDB::Table',
+        {
+          BillingMode: 'PROVISIONED',
+          ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+          GlobalSecondaryIndexes: [],
+        },
+        { BillingMode: 'PAY_PER_REQUEST', GlobalSecondaryIndexes: [gsi(SECRET_INDEX, 5)] },
+        { maskSecrets: createSecretMasker(bag()) }
+      );
+
+      const debugLog = debugged.join('\n');
+      expect(debugLog).toContain('before the BillingMode flip to PROVISIONED');
+      expect(debugLog).not.toContain(SECRET_INDEX);
+      expect(debugLog).toContain(SECRET_MASK);
+    });
+
+    it('masks the index name in runGsiOps per-op debug line (S3)', async () => {
+      // The op-by-op line every GSI Create / Delete / Update prints. It had no
+      // masker in scope at all until this round threaded one in.
+      primeTable([]);
+      await provider.update(
+        'MyTable',
+        'plain-public-table',
+        'AWS::DynamoDB::Table',
+        { BillingMode: 'PROVISIONED', GlobalSecondaryIndexes: [gsi(SECRET_INDEX, 5)] },
+        { BillingMode: 'PROVISIONED', GlobalSecondaryIndexes: [] },
+        { maskSecrets: createSecretMasker(bag()) }
+      );
+
+      const debugLog = debugged.join('\n');
+      expect(debugLog).toContain('created GSI');
+      expect(debugLog).not.toContain(SECRET_INDEX);
+      expect(debugLog).toContain(SECRET_MASK);
+    });
   });
 
   // Minor 2 (spec review): `create()` installed the masker but built no sink, so

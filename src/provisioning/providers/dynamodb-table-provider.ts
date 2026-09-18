@@ -281,7 +281,14 @@ function narrowOnDemandCeilings(declared: unknown): {
     const coerced = coerceCfnInteger(block[member]);
     // Already the exact integer cdkd would send: leave the key alone, so a
     // numeric template rebuilds nothing.
-    if (coerced === block[member]) continue;
+    //
+    // `&& coerced !== undefined` is the go-to-k/cdkd#3380 round-3 review's C5:
+    // a key PRESENT with an `undefined` value satisfies `member in block` and
+    // coerces to `undefined`, so the identity short-circuit kept it -- leaving a
+    // member the SDK serializes away, with nothing dropped and nothing warned.
+    // Falling through sends it to the drop arm, where it is announced like any
+    // other unusable spelling.
+    if (coerced === block[member] && coerced !== undefined) continue;
     rewritten ??= { ...block };
     if (coerced === undefined) {
       dropped.push({ member, raw: block[member] });
@@ -1951,7 +1958,11 @@ export class DynamoDBTableProvider implements ResourceProvider {
               `the flip either way. Nothing was removed.`
           );
         } else if (removable.length > 0) {
-          this.logger.debug(
+          // Through the masked `debug` sink in scope (the go-to-k/cdkd#3380
+          // round-3 security review, S3): these are index NAMES, resolved
+          // property values, and `logger.ts` masks nothing -- a name AWS echoes
+          // back is byte-identical to the resolved secret that created it.
+          debug(
             `Deleting GSI(s) ${removable.join(', ')} on DynamoDB table ${physicalId} before the ` +
               `BillingMode flip to PROVISIONED`
           );
@@ -1962,7 +1973,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
           await this.runGsiOps(
             physicalId,
             removable.map((name) => ({ Delete: { IndexName: name } })),
-            undefined
+            undefined,
+            maskSecrets
           );
           for (const name of removable) preFlipDeletedIndexNames.add(name);
           // A failure BETWEEN the deletes and the flip leaves the index gone
@@ -4185,7 +4197,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
       }
     }
 
-    await this.runGsiOps(physicalId, ops, desiredAttributeDefinitions);
+    await this.runGsiOps(physicalId, ops, desiredAttributeDefinitions, maskSecrets);
   }
 
   /**
@@ -4353,6 +4365,18 @@ export class DynamoDBTableProvider implements ResourceProvider {
    *    is issue [#3392](https://github.com/go-to-k/cdkd/issues/3392). Until
    *    then AWS validates the constraint, exactly as it does for the
    *    TABLE-level arm and for the `Create` action.
+   *
+   *    **That IS a behaviour change on this shape, stated rather than glossed**
+   *    (round 3's C4). Before #3287 neither `Update` arm sent the member, so a
+   *    PROVISIONED table declaring a per-index ceiling deployed GREEN with the
+   *    ceiling silently ignored. Now the same-name arm sends it once the
+   *    ceiling CHANGES, AWS rejects the `UpdateTable`, and the co-resident
+   *    capacity / warm edits fail with it; the adopted-index arm has no
+   *    recorded previous side to gate on, so it re-fails every deploy until the
+   *    template is edited. Loud and recording nothing beats silent and lost,
+   *    which is why it ships this way rather than behind the withdrawn skip —
+   *    but it is a change, and #3392 is what makes it a cdkd-worded refusal
+   *    before any call instead of an AWS rejection after one.
    *  - **The change detector compares the NARROWED blocks WHEN NOTHING WAS
    *    DROPPED, and the RAW ones otherwise** — the one place it differs from its
    *    `ProvisionedThroughput` sibling two arms up. `'200'` and `200` are the
@@ -4452,18 +4476,32 @@ export class DynamoDBTableProvider implements ResourceProvider {
     const send = this.coerceOnDemandCeilingsForSend(scope, gsi.OnDemandThroughput, maskSecrets);
     if (!isPlainCapacityBlock(send)) return send;
     if (!ON_DEMAND_CEILING_MEMBERS.some((member) => member in send)) {
-      // WARN, not debug (the go-to-k/cdkd#3380 round-2 review, C3): the
-      // "every dropped member is already announced" licence does NOT cover the
-      // shape this arm exists for. `narrowOnDemandCeilings` never DROPS an
-      // unknown member -- it preserves the name -- so a typo'd
-      // `MaxReadRequestUnit` produces no drop warning at all, and before the
-      // per-member gate the op at least reached AWS and failed loudly. Without
-      // a warning here that template would lose its ceiling in silence.
-      warn(
-        `${scope}: declares an OnDemandThroughput with no member DynamoDB accepts ` +
-          `(${ON_DEMAND_CEILING_MEMBERS.join(' / ')}), so no ceiling op was sent. Check the ` +
-          `member names.`
-      );
+      // Two ways to reach here, and they need DIFFERENT levels (the
+      // go-to-k/cdkd#3380 round-3 review's C3, correcting round 2's C3).
+      //
+      // Every member was DROPPED: {@link warnUnusableOnDemandCeiling} has just
+      // named each one and said why, so a second line telling the user to
+      // "check the member names" would contradict the advice one line above it.
+      // DEBUG.
+      //
+      // NOTHING was dropped and no grammar member is present: the block carries
+      // only names the grammar does not know (a typo'd `MaxReadRequestUnit`, an
+      // unresolved intrinsic). The narrowing PRESERVES such a name rather than
+      // dropping it, so nothing announced anything at all -- and before the
+      // per-member gate the op at least reached AWS and failed loudly. WARN, or
+      // that template loses its ceiling in silence.
+      if (narrowOnDemandCeilings(gsi.OnDemandThroughput).dropped.length > 0) {
+        debug(
+          `${scope}: every declared OnDemandThroughput member was unusable, so no ceiling op ` +
+            `was sent`
+        );
+      } else {
+        warn(
+          `${scope}: declares an OnDemandThroughput with no member DynamoDB accepts ` +
+            `(${ON_DEMAND_CEILING_MEMBERS.join(' / ')}), so no ceiling op was sent. Check the ` +
+            `member names.`
+        );
+      }
       return undefined;
     }
     if (liveCeilingAlreadyMatches(live?.OnDemandThroughput, send)) {
@@ -5221,8 +5259,17 @@ export class DynamoDBTableProvider implements ResourceProvider {
   private async runGsiOps(
     physicalId: string,
     ops: GlobalSecondaryIndexUpdate[],
-    desiredAttributeDefinitions: AttributeDefinition[] | undefined
+    desiredAttributeDefinitions: AttributeDefinition[] | undefined,
+    // The caller's masker (the go-to-k/cdkd#3380 round-3 security review, S3).
+    // The per-op debug line below names an index NAME -- a RESOLVED property
+    // value -- and `logger.ts` masks nothing, so a resolved secret used as an
+    // index name printed in plaintext under `--verbose`. Defaults to IDENTITY
+    // so existing callers and unit tests are unchanged.
+    maskSecrets: SecretMasker = (text) => text
   ): Promise<void> {
+    // ONE sink for this method, per `.claude/rules/provider-masking.md`: the
+    // next debug line added here is masked by construction.
+    const debug = (message: string): void => this.logger.debug(maskSecrets(message));
     for (const op of ops) {
       const input: UpdateTableCommandInput = {
         TableName: physicalId,
@@ -5243,8 +5290,12 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // every GSI status, not just the table.
       await this.waitForTableAndIndexesActive(physicalId);
       const verb = op.Create ? 'created' : op.Delete ? 'deleted' : 'updated';
-      this.logger.debug(
-        `${verb} GSI ${op.Create?.IndexName ?? op.Delete?.IndexName ?? op.Update?.IndexName} on DynamoDB table ${physicalId}`
+      debug(
+        `${verb} ${this.indexScopeAt(
+          op.Create?.IndexName ?? op.Delete?.IndexName ?? op.Update?.IndexName,
+          physicalId,
+          maskSecrets
+        )}`
       );
     }
   }
