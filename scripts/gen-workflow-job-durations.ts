@@ -126,25 +126,6 @@ interface Snapshot {
 }
 
 /**
- * One `gh` call, retried on a TRANSIENT failure.
- *
- * The walk makes thousands of requests over tens of minutes, and a single
- * dropped connection used to throw away all of it — measured: a `dial tcp ...
- * operation timed out` on request ~1700 killed a run that had nothing else
- * wrong with it, and the snapshot was never written. Retrying only helps a
- * failure that is actually transient, so the classification is explicit and
- * anything else rethrows immediately: a rate limit, a 404, a bad flag and a
- * parse error are all states where trying again is just slower.
- */
-// ANCHORED. A bare `503` substring-matched the COMMAND TEXT: a hard 404 on run
-// `35035035035` classified as transient and burned four attempts and 20 s of
-// sleeps — the opposite of what the docstring above promises, and ~0.9% of run
-// ids contain `503`. `/EOF/i` matched a job named `eof-check` the same way.
-// `5\d\d`, not `50[23]`: GitHub returns 504 Gateway Timeout, and a 504 at
-// request ~1700 aborts a tens-of-minutes walk that writes nothing — exactly the
-// scenario this retry exists for. `TLS handshake timeout` and `connection
-// refused` were missing for the same reason.
-/**
  * A `gh` failure, with the fork-controlled parts constrained.
  *
  * Node's `execFileSync` message begins `Command failed: gh <argv…>`, and this
@@ -180,9 +161,37 @@ export const nextWindow = (days: number): number | null => {
 /** Attempts per `gh` call, including the first. See the loop below. */
 const ATTEMPTS = 3;
 
-const TRANSIENT =
+// ANCHORED. A bare `503` substring-matched the COMMAND TEXT: a hard 404 on run
+// `35035035035` classified as transient and burned four attempts and 20 s of
+// sleeps — the opposite of what the docstring above promises, and ~0.9% of run
+// ids contain `503`. `/EOF/i` matched a job named `eof-check` the same way.
+// `5\d\d`, not `50[23]`: GitHub returns 504 Gateway Timeout, and a 504 at
+// request ~1700 aborts a tens-of-minutes walk that writes nothing — exactly the
+// scenario this retry exists for. `TLS handshake timeout` and `connection
+// refused` were missing for the same reason.
+/**
+ * Which `gh` failures are worth retrying.
+ *
+ * EXPORTED TO BE FENCED, on the same reasoning as `nextWindow` and
+ * `walkMayStop`: its own comment records TWO measured defects — a bare `503`
+ * substring-matching a run id, and `/EOF/i` matching a job named `eof-check` —
+ * and both were found by reading rather than by a case, because the classifier
+ * sat inside a function that makes network calls.
+ */
+export const TRANSIENT =
   /dial tcp|operation timed out|connection re(set|fused)|TLS handshake timeout|\bEOF\b|\bHTTP 5\d\d\b|timeout awaiting/;
 
+/**
+ * One `gh` call, retried on a TRANSIENT failure.
+ *
+ * The walk makes thousands of requests over tens of minutes, and a single
+ * dropped connection used to throw away all of it — measured: a `dial tcp ...
+ * operation timed out` on request ~1700 killed a run that had nothing else
+ * wrong with it, and the snapshot was never written. Retrying only helps a
+ * failure that is actually transient, so the classification is explicit and
+ * anything else rethrows immediately: a rate limit, a 404, a bad flag and a
+ * parse error are all states where trying again is just slower.
+ */
 const gh = (args: readonly string[]): unknown => {
   let lastError: unknown;
   // ONE constant, because encoding "three attempts" in three places produced
@@ -576,6 +585,10 @@ const main = (): void => {
   // (it reads the newest `to`, not the stamp), but a refusal here names the
   // cause at the moment it is caused rather than in a CI failure three steps
   // later. Half the fence's window, so regenerating never lands on the boundary.
+  // HALF the fence's 90-day window. Nothing links the two constants
+  // mechanically, so lowering the fence's window alone would leave the
+  // generator writing snapshots the fence refuses on sight; the fence asserts
+  // the relation from its side, where both numbers are visible.
   if (requestedTo !== undefined && Date.parse(`${requestedTo}T00:00:00Z`) < Date.now() - 45 * 86400000) {
     throw new Error(
       `--to=${safeText(requestedTo)} is more than 45 days ago; the fence that reads this ` +

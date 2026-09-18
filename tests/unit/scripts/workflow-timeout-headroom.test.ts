@@ -27,6 +27,16 @@
  * a scheduled workflow that files issues by itself; the cost is one more
  * generated artifact and a refresh someone must run.
  *
+ * WHAT THIS FENCE CANNOT SEE, stated where a reader meets the design rather
+ * than left to be discovered: the snapshot is a COMMITTED FILE a PR may edit,
+ * and lowering ONE entry's `max` disables `too-tight` for that job while
+ * clearing every floor — the counts are unchanged, and `MIN_LONGEST_MAX` is
+ * held by whichever job is longest, not by the one that was edited. The floors
+ * catch a WHOLESALE gutting (every `max` set to 1) and nothing narrower. It is
+ * not closable offline, because the file being edited is the fence's only
+ * evidence about durations; what closes it is review of the diff, where a
+ * one-line `max` change is conspicuous.
+ *
  * THE SNAPSHOT IS A LOWER BOUND, AND THE MULTIPLE IS SIZED FOR THAT. It records
  * the longest JOB seen in a closed range, never a run's wall clock (a run
  * carries queue time and every other job in it, and `timeout-minutes` bounds
@@ -83,6 +93,7 @@ import {
   displayNameToKey,
   invokedDirectly,
   nextWindow,
+  TRANSIENT,
   refuseInsideTestRunner,
   resolveJobKey,
   walkMayStop,
@@ -342,10 +353,23 @@ export const parseSnapshot = (text: string, where: string): Record<string, JobSa
         `${where}: ${safeKey(key)} has a max that is not a positive number; regenerate it`,
       );
     }
+    // `to` IS REFUSED BY SHAPE, for the same reason `max: 0` is: it is read
+    // back as a DATE, and a hand-edited or truncated snapshot is exactly what
+    // this refusal exists for. Coercing a missing `to` to `''` and carrying on
+    // was a MISSED DETECTION, not an untidiness — `oldestRangeEnd` uses `''` as
+    // its "nothing seen yet" sentinel, so ONE entry without a `to` RESET the
+    // accumulator and discarded every older date before it. Measured: entries
+    // dated 2020-01-01, then one with no `to`, then 2026-09-16, report the
+    // snapshot as fresh; the year-old maximum is then compared against a live
+    // bound and `too-tight` never fires.
+    const to = value['to'];
+    if (typeof to !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+      throw new Error(`${where}: ${safeKey(key)} has no YYYY-MM-DD range end; regenerate it`);
+    }
     jobs[key] = {
       max: value['max'],
       from: String(value['from'] ?? ''),
-      to: String(value['to'] ?? ''),
+      to,
     };
   }
   return jobs;
@@ -575,7 +599,7 @@ export const auditHeadroom = (
  * a fork owns `.github/workflows/` in its own PR, so it can manufacture any of
  * them, and stating the false premise here while retracting it four lines below
  * left a reader to work out which half to believe. What protects a genuine
- * finding is `boundedList` splitting the CAP between the kinds present.
+ * finding is `boundedList` interleaving the kinds in its group order.
  *
  * `unreadable-workflow` leads because a workflow that will not parse is the one
  * a reader can act on with no further information.
@@ -746,6 +770,12 @@ describe('no workflow job is bounded too tightly to survive its own longest run'
     // target is met. The band above admits 901 for the same reason it admits
     // 900, so it is not the bound the argument needs.
     expect(MIN_LONGEST_MAX).toBeLessThan(15 * 60);
+    // The generator refuses a `--to` older than 45 days; this fence refuses a
+    // population older than 90. Nothing links them mechanically, so the
+    // relation is asserted from the side where both are visible — otherwise
+    // lowering this window alone leaves the generator writing snapshots the
+    // fence refuses on sight.
+    expect(MAX_SNAPSHOT_AGE_DAYS).toBeGreaterThanOrEqual(45 * 2);
     // The snapshot floors are PINNED TO `MIN_DECLARED`, not banded separately.
     // A proportional band cannot tell 12 from 18 — both clear a 21-entry
     // snapshot — so at 12 the round-1 defect, four jobs vanishing, passed the
@@ -1045,8 +1075,8 @@ describe('the auditor reports what it claims to', () => {
     // in its own group, and the genuine `too-tight` was buried by the ranking
     // added to prevent burial. Measured: neither kept nor named.
     //
-    // `boundedList` splits the cap between the KINDS present before it splits
-    // between workflows, which a fork cannot undo by adding files of one kind.
+    // `boundedList` interleaves the kinds in its group order, so a fork cannot
+    // undo it by adding files of one kind.
     const unreadable = Array.from({ length: 25 }, (_, i) => safeName(`zz-fork${i}.yml`));
     const lines = render(auditHeadroom(tree(60), snap(3600), {}, unreadable));
     expect(lines.some((l) => l.startsWith('w.yml/j') && l.includes('min against'))).toBe(true);
@@ -1437,6 +1467,20 @@ describe('the shared sanitisers constrain the shapes this fence renders', () => 
   it.each([
     // THE CANONICAL MEMBERS, which the first version of this class omitted
     // while reaching for the exotic ones a review had just named.
+    // THE `/\s/` ROW, pinned for its EXTENT and not merely its existence.
+    // Replacing it with `code === 0x2028 || code === 0x2029` was GREEN: U+2028
+    // was the only member any case carried, while NBSP and the BOM — the two
+    // the row's own docstring names as its reason — went on surviving. Measured
+    // under that mutant: `safeName('ci.yml\u00a0x.yml')` rendered as ordinary
+    // text, which is the padding threat the blank class exists for.
+    ['U+00A0 NO-BREAK SPACE', '\u00a0'],
+    ['U+FEFF ZERO WIDTH NO-BREAK SPACE', '\ufeff'],
+    ['U+1680 OGHAM SPACE MARK', '\u1680'],
+    ['U+2000 EN QUAD (range start)', '\u2000'],
+    ['U+200A HAIR SPACE (range end)', '\u200a'],
+    ['U+2029 PARAGRAPH SEPARATOR', '\u2029'],
+    ['U+205F MEDIUM MATHEMATICAL SPACE', '\u205f'],
+    ['U+3000 IDEOGRAPHIC SPACE', '\u3000'],
     ['U+00AD SOFT HYPHEN', '\u00ad'],
     ['U+034F COMBINING GRAPHEME JOINER', '\u034f'],
     ['U+FE00 VARIATION SELECTOR-1 (range start)', '\ufe00'],
@@ -1674,8 +1718,13 @@ describe('the shared sanitisers constrain the shapes this fence renders', () => 
       if (!part.startsWith('"')) continue;
       expect(() => JSON.parse(part) as unknown).not.toThrow();
     }
-    // And distinct files stay distinct: a single collapsed token would name one.
-    expect(summary).toMatch(/and \d+ more/);
+    // And distinct files stay distinct. `toMatch(/and \d+ more/)` was here and
+    // asserted nothing: `boundedList` prefixes `… and N more` for ANY oversized
+    // input, so it matched whether or not a single name was emitted — emptying
+    // the name list reds ten other cases and neither row of this one. The names
+    // themselves are what a collapsed token would reduce to one.
+    const namesShown = summary.slice(summary.indexOf(': ') + 2).split(';')[0] ?? '';
+    expect(namesShown.split(', ').filter((n) => n.startsWith('"')).length).toBeGreaterThan(1);
   });
 
   it('the SIBLING renderer\'s two shapes are one group', () => {
@@ -1822,6 +1871,39 @@ describe('the snapshot is refused when it is too old to describe this tree', () 
     // false — so without the explicit arm they would all report `ok`, which is
     // the `NaN < 2` shape this whole fence exists because of.
     expect(auditSnapshotAge(stamp, now)).toBe('unreadable');
+  });
+});
+
+describe('a gh failure is retried only when retrying can help', () => {
+  // The classifier's own comment records two MEASURED defects and no case ever
+  // reached it: a bare `503` substring-matched a run id, so a hard 404 on run
+  // `35035035035` burned four attempts, and `/EOF/i` matched a job named
+  // `eof-check`. Both are the shape `nextWindow` and `walkMayStop` were
+  // extracted for, in the one helper the doctrine skipped.
+  it.each([
+    ['a dropped connection', 'dial tcp 140.82.114.6:443: i/o timeout'],
+    ['an operation timeout', 'Post "https://api.github.com": operation timed out'],
+    ['a reset connection', 'read: connection reset by peer'],
+    ['a refused connection', 'dial: connection refused'],
+    ['a TLS handshake timeout', 'net/http: TLS handshake timeout'],
+    ['an EOF as its own word', 'unexpected EOF'],
+    ['a 502', 'HTTP 502: Bad Gateway'],
+    ['a 504', 'HTTP 504: Gateway Timeout'],
+  ])('%s is transient', (_what, text) => {
+    expect(TRANSIENT.test(text)).toBe(true);
+  });
+
+  it.each([
+    ['a 404 on a run id containing 503', 'HTTP 404: Not Found (repos/x/actions/runs/35035035035)'],
+    ['a job named eof-check', 'job eof-check failed'],
+    ['a rate limit', 'HTTP 403: API rate limit exceeded'],
+    ['an unknown flag', 'unknown flag: --bogus'],
+    ['a 400', 'HTTP 400: Bad Request'],
+  ])('%s is NOT transient', (_what, text) => {
+    // Retrying these is only slower, and the first two are the measured
+    // defects: a run id and a job name are fork- or API-supplied text that a
+    // loose pattern reads as a network failure.
+    expect(TRANSIENT.test(text)).toBe(false);
   });
 });
 
@@ -2106,8 +2188,26 @@ describe('the snapshot is refused rather than half-read', () => {
   });
 
   it('a well-formed snapshot parses', () => {
-    expect(parseSnapshot('{"jobs":{"a/b":{"max":5,"from":"x","to":"y"}}}', '<probe>')).toEqual({
-      'a/b': { max: 5, from: 'x', to: 'y' },
+    const body = '{"jobs":{"a/b":{"max":5,"from":"2026-09-02","to":"2026-09-16"}}}';
+    expect(parseSnapshot(body, '<probe>')).toEqual({
+      'a/b': { max: 5, from: '2026-09-02', to: '2026-09-16' },
     });
+  });
+
+  it.each([
+    ['absent', '{"jobs":{"a/b":{"max":5}}}'],
+    ['null', '{"jobs":{"a/b":{"max":5,"to":null}}}'],
+    ['a number', '{"jobs":{"a/b":{"max":5,"to":20260916}}}'],
+    ['not a date', '{"jobs":{"a/b":{"max":5,"to":"y"}}}'],
+    ['empty', '{"jobs":{"a/b":{"max":5,"to":""}}}'],
+  ])('a range end that is %s is refused', (_what, body) => {
+    // THE SENTINEL COLLISION THIS REFUSAL CLOSES. `to` was coerced with
+    // `String(value['to'] ?? '')`, and `oldestRangeEnd` uses `''` for "nothing
+    // seen yet" — so ONE entry without a `to` reset the accumulator and threw
+    // away every older date before it. Measured: 2020-01-01, then a `to`-less
+    // entry, then 2026-09-16 reported the snapshot as FRESH, and a year-old
+    // maximum was then compared against a live bound. A missed detection, not
+    // an untidiness, which is why it is a refusal rather than a coercion.
+    expect(() => parseSnapshot(body, '<probe>')).toThrow(/no YYYY-MM-DD range end/);
   });
 });

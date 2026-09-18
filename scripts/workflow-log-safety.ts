@@ -349,9 +349,11 @@ export const boundedList = (lines: readonly Safe[], kinds?: readonly string[]): 
   // The premise the callers' rank tables were written on ("a fork cannot
   // manufacture these kinds for someone else's workflow") is therefore false,
   // and is corrected there. What a fork cannot do is stop ANOTHER kind from
-  // being present, so the cap is split between the kinds that are present first
-  // and shared between workflows inside each — a flood of one kind can no
-  // longer consume the budget of another.
+  // being present, so the GROUP ORDER interleaves the kinds — `kindA/w1,
+  // kindB/w1, kindA/w2, …` — and one plain round-robin then runs over it. A
+  // flood of one kind can no longer consume another's budget. (An earlier
+  // revision allocated a per-kind SHARE instead; that under-filled the cap and
+  // spent a kind's allocation depth-first on one workflow, and is gone.)
   //
   // WHAT THAT DOES NOT COVER, stated rather than left to be inferred: a fork
   // owns the workflow directory AND may edit the snapshot, so it can always

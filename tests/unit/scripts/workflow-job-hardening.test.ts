@@ -381,21 +381,18 @@ export const auditWorkflowHardening = (dir: string): Audit => {
  * genuine `unparseable` line appears neither in the twenty kept lines nor among
  * the five names the summary can carry. Measured against this file.
  *
- * A fork can manufacture any number of findings of the kinds it controls, so
- * the defence is that the kinds it cannot manufacture for SOMEONE ELSE'S
- * workflow sort first: a file that will not parse, or whose top level is not a
- * mapping, is the one a reader can act on with no further information.
- */
-/**
  * THIS TABLE DECIDES ORDER, NOT PROTECTION — and its first form said the
- * opposite. It said a fork cannot
+ * opposite, in a paragraph that sat here asserting the premise the next one
+ * retracted, so a reader had to work out which half to believe. (Three stacked
+ * blocks preceded the table and only the last attached to it; the middle one is
+ * gone.) It said a fork cannot
  * manufacture these kinds for someone else's workflow — but a fork owns
  * `.github/workflows/` in its own PR, so twenty-five files it deliberately
  * breaks are twenty-five findings of the FIRST-ranked kind, and the genuine one
  * is buried by the ranking added to prevent burial (measured). The ranking is
  * still right for ORDER; the protection is that `boundedList` splits the cap
- * between the kinds PRESENT before it splits between workflows, which a fork
- * cannot undo by adding files of one kind.
+ * the kinds in its group order, which a fork cannot undo by adding files of one
+ * kind.
  */
 // `satisfies`, so a kind ADDED to the union without a rank is a compile error;
 // `readonly FindingKind[]` catches only a REMOVED one, and a new kind would get
@@ -605,9 +602,25 @@ const twinLabel = (workflow: Safe, job?: Safe, detail?: Safe): Safe =>
     detail === undefined ? '' : `: ${detail}`
   }` as Safe;
 
+/**
+ * PAIRS, NOT PARALLEL ARRAYS. The first cut pushed a line to `out` and its kind
+ * to a second array, and one branch — the only REAL finding shape of the
+ * permissions twin — pushed to `out` alone. `boundedList` reads `kinds?.[index]`
+ * positionally, so every line after the gap inherited its NEIGHBOUR's kind and
+ * the last got `''`: a genuine `ci.yml` finding was pooled with 25 fork groups
+ * instead of getting its own bucket, and the cap dropped it — the exact burial
+ * the kind split was added to prevent. A shape that cannot desync is the fix.
+ */
+type TwinFinding = { readonly line: Safe; readonly kind: string };
+
+const renderTwin = (found: readonly TwinFinding[]): Safe[] =>
+  boundedList(
+    found.map((f) => f.line),
+    found.map((f) => f.kind),
+  );
+
 const independentlyUnboundedJobs = (dir: string): Safe[] => {
-  const out: Safe[] = [];
-  const outKinds: string[] = [];
+  const found: TwinFinding[] = [];
   for (const workflow of workflowNamesIn(readdirSync(dir))) {
     let document: unknown;
     try {
@@ -615,8 +628,7 @@ const independentlyUnboundedJobs = (dir: string): Safe[] => {
     } catch {
       // The message is NOT rendered: it is the fork's own source. That it
       // failed to parse is the whole fact this twin needs.
-      out.push(twinLabel(safeName(workflow), undefined, safeText('did not parse')));
-      outKinds.push('did-not-parse');
+      found.push({ line: twinLabel(safeName(workflow), undefined, safeText('did not parse')), kind: 'did-not-parse' });
       continue;
     }
     // The empty-mapping half matters here as much as in the audit: `isMapping`
@@ -624,8 +636,7 @@ const independentlyUnboundedJobs = (dir: string): Safe[] => {
     // loop and the twin reports NOTHING while the audit reports `no-jobs`. A
     // twin that is silent where the audit speaks is not a cross-check.
     if (!isMapping(document) || !isMapping(document['jobs']) || Object.keys(document['jobs']).length === 0) {
-      out.push(twinLabel(safeName(workflow), undefined, safeText('no jobs mapping')));
-      outKinds.push('no-jobs-mapping');
+      found.push({ line: twinLabel(safeName(workflow), undefined, safeText('no jobs mapping')), kind: 'no-jobs-mapping' });
       continue;
     }
     for (const [job, node] of Object.entries(document['jobs'])) {
@@ -636,8 +647,7 @@ const independentlyUnboundedJobs = (dir: string): Safe[] => {
         timeout >= 1 &&
         timeout < ACTIONS_DEFAULT_TIMEOUT_MINUTES;
       if (!ok) {
-        out.push(twinLabel(safeName(workflow), safeJobId(job), safeJson(timeout)));
-        outKinds.push('unbounded-job');
+        found.push({ line: twinLabel(safeName(workflow), safeJobId(job), safeJson(timeout)), kind: 'unbounded-job' });
       }
     }
   }
@@ -646,26 +656,24 @@ const independentlyUnboundedJobs = (dir: string): Safe[] => {
   // into one unkinded bucket, so a fork flooding unparseable files buries the
   // genuine unbounded-job line in the twin's own `toEqual([])` diff. A
   // cross-check that degrades exactly when it matters is not a cross-check.
-  return boundedList(out, outKinds);
+  return renderTwin(found);
 };
 
 const independentlyUndeclaredPermissions = (dir: string): Safe[] => {
-  const out: Safe[] = [];
-  const outKinds: string[] = [];
+  const found: TwinFinding[] = [];
   for (const workflow of workflowNamesIn(readdirSync(dir))) {
     let document: unknown;
     try {
       document = parseYaml(readFileSync(join(dir, workflow), 'utf8'));
     } catch {
-      out.push(twinLabel(safeName(workflow), undefined, safeText('did not parse')));
-      outKinds.push('did-not-parse');
+      found.push({ line: twinLabel(safeName(workflow), undefined, safeText('did not parse')), kind: 'did-not-parse' });
       continue;
     }
     if (!isMapping(document) || !isMapping(document['permissions'])) {
-      out.push(twinLabel(safeName(workflow)));
+      found.push({ line: twinLabel(safeName(workflow)), kind: 'no-permissions' });
     }
   }
-  return boundedList(out, outKinds);
+  return renderTwin(found);
 };
 
 const REAL = auditWorkflowHardening(WORKFLOW_DIR);
@@ -1384,9 +1392,9 @@ describe('the caps are literals, not whatever the constants say', () => {
   it('a fork flooding the TOP kind cannot bury a finding of another kind', () => {
     // The sibling's case, here too: a fork owns this directory in its own PR,
     // so twenty-five files it breaks are twenty-five `unparseable` findings —
-    // the kind this file ranks FIRST. Splitting the cap between the KINDS
-    // present is what keeps another kind's line visible, and it only works
-    // because `render` passes the kinds to `boundedList`.
+    // the kind this file ranks FIRST. Interleaving the kinds in the group order
+    // is what keeps another kind's line visible, and it only works because
+    // `render` passes the kinds to `boundedList`.
     const audit = auditMutatedCopy((dir) => {
       for (let i = 0; i < 25; i += 1) writeFileSync(join(dir, `zz-fork${i}.yml`), 'jobs: [\n');
       writeFileSync(join(dir, 'zz-real.yml'), 'name: X\npermissions: {}\njobs:\n  a:\n    runs-on: x\n');
