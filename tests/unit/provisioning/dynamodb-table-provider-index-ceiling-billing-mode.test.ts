@@ -181,6 +181,85 @@ describe('AWS::DynamoDB::Table: per-GSI OnDemandThroughput vs the billing mode (
     expect(updateInputs()).toHaveLength(0);
   });
 
+  it('says WHICH of the two refusal shapes fired, and what was left untouched', async () => {
+    // The two message branches the refusal owns, neither of which any other
+    // case reads (the go-to-k/cdkd#3401 test review, nit 4). `modeNote` is
+    // what tells a user reading the error that their template declares no flip
+    // at all -- without it the sentence "the table's billing mode is
+    // PROVISIONED" reads as an accusation about a `BillingMode` line they do
+    // not have. And the closing sentence must NOT claim "nothing was applied":
+    // `applyTagDiff` has already run by the time this throws.
+    primeDescribe('PROVISIONED');
+    const steady = await provider
+      .update(
+        'MyTable',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          KeySchema: KEY_SCHEMA,
+          AttributeDefinitions: ATTRS,
+          GlobalSecondaryIndexes: [{ ...GSI_BASE, OnDemandThroughput: CEILING }],
+        },
+        { KeySchema: KEY_SCHEMA, AttributeDefinitions: ATTRS }
+      )
+      .catch((error: unknown) => (error as Error).message);
+    expect(steady).toContain('already PROVISIONED in AWS and this update sends no BillingMode');
+    expect(steady).toContain('No BillingMode flip and no index change were applied.');
+    expect(steady).not.toContain('Nothing was applied');
+
+    // ...and the FLIP shape omits that note, because there the template really
+    // does carry the `BillingMode` line the message asks the user to change.
+    vi.clearAllMocks();
+    primeDescribe('PAY_PER_REQUEST');
+    const flip = await provider
+      .update(
+        'MyTable',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          KeySchema: KEY_SCHEMA,
+          AttributeDefinitions: ATTRS,
+          BillingMode: 'PROVISIONED',
+          ProvisionedThroughput: { ReadCapacityUnits: 3, WriteCapacityUnits: 4 },
+          GlobalSecondaryIndexes: [{ ...GSI_BASE, OnDemandThroughput: CEILING }],
+        },
+        {
+          KeySchema: KEY_SCHEMA,
+          AttributeDefinitions: ATTRS,
+          BillingMode: 'PAY_PER_REQUEST',
+          GlobalSecondaryIndexes: [GSI_BASE],
+        }
+      )
+      .catch((error: unknown) => (error as Error).message);
+    expect(flip).not.toContain('already PROVISIONED in AWS');
+  });
+
+  it('renders an UNNAMEABLE index name rather than handing it to the masker', async () => {
+    // `IndexName` reaches this walk from an unchecked template, so a NUMERIC
+    // name really does arrive -- and the real masker is a
+    // `String.prototype.replace` call that THROWS on a number, which would take
+    // the whole deploy down from a diagnostic path. The fallback shares
+    // `indexScopeAt`'s wording; nothing else read it (the test review's nit 4).
+    primeDescribe('PROVISIONED');
+    const message = await provider
+      .update(
+        'MyTable',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          KeySchema: KEY_SCHEMA,
+          AttributeDefinitions: ATTRS,
+          GlobalSecondaryIndexes: [{ ...GSI_BASE, IndexName: 2024, OnDemandThroughput: CEILING }],
+        },
+        { KeySchema: KEY_SCHEMA, AttributeDefinitions: ATTRS },
+        // A masker that is a real `String.replace` call, not the identity.
+        { maskSecrets: (text: string) => text.replace(/s3cr3t/g, '<redacted>') }
+      )
+      .catch((error: unknown) => (error as Error).message);
+    expect(message).toContain('<unnamed index>');
+    expect(message).not.toContain('2024');
+  });
+
   it('REFUSES when the RECORD and the template both say PAY_PER_REQUEST but AWS is PROVISIONED', async () => {
     // Row 4: the shape `billingMode` alone FALSELY ACCEPTS. Reachable from an
     // out-of-band console flip or a `cdkd import` whose recorded properties

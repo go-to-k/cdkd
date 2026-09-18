@@ -38,17 +38,32 @@ const SUBJECT = fileURLToPath(
  * A fence saying "no `SecretMasker` parameter carries an initializer" is
  * trivially satisfied by a file with no `SecretMasker` parameters at all — a
  * rename, a refactor that stops threading the capability, or a walk that
- * silently stops matching. Taken as a LITERAL from a source the walk does not
- * read (`grep -c 'maskSecrets: SecretMasker$'` on the tree this shipped with),
- * so the fence cannot compute its own expectation.
+ * silently stops matching. It is a LITERAL, so the fence cannot compute its own
+ * expectation from the pool it guards.
  *
- * Sixteen: the twelve issue #3364 converted, plus the four issue #3291 and its
- * siblings had already made required (`indexCapacityForSend`,
- * `indexCeilingForSend`, `coerceOnDemandCeilingsForSend`,
- * `warnUnusableOnDemandCeiling`). A raise is fine; a DROP means the walk stopped
- * seeing parameters it used to see.
+ * NINETEEN, and the number had to be MEASURED against the walk rather than
+ * transcribed from a grep (the go-to-k/cdkd#3401 test review). `grep -c
+ * 'maskSecrets: SecretMasker$'` answers 16 — it is line-anchored, so it misses
+ * the three parameters declared on a single line with their siblings — while
+ * the walk sees all 19. A floor of 16 therefore carried three parameters of
+ * SLACK: four would have to disappear before it noticed. A raise is fine; a
+ * DROP means the walk stopped seeing parameters it used to see.
  */
-const MIN_MASKER_PARAMETERS = 16;
+const MIN_MASKER_PARAMETERS = 19;
+
+/**
+ * Is this type annotation the masker capability, under EITHER spelling?
+ *
+ * The alias by name, or its structural expansion `(<ident>: string) => string`
+ * — whitespace-normalized, so a line-wrapped signature still matches. Nothing
+ * narrower would do: the two are interchangeable to the compiler, so a fence
+ * that sees only one of them is one keystroke from inert.
+ */
+function isMaskerType(node: ts.TypeNode): boolean {
+  const text = node.getText().replace(/\s+/g, ' ').trim();
+  if (text === 'SecretMasker') return true;
+  return /^\(\s*[A-Za-z_$][\w$]*\s*:\s*string\s*\)\s*=>\s*string$/.test(text);
+}
 
 interface MaskerParameter {
   readonly owner: string;
@@ -88,7 +103,13 @@ function collectMaskerParameters(): MaskerParameter[] {
       // `mask` / `maskFn` is the same capability and the same hole, and a
       // name-keyed walk would miss it (the #2176 lesson — a sweep keyed on the
       // known copies' spellings missed two).
-      if (node.type.getText() === 'SecretMasker') {
+      //
+      // ...and match the ALIAS's expansion as well as its name. A test reviewer
+      // respelled one parameter `(text: string) => string`, which is what
+      // `SecretMasker` IS (`src/deployment/secret-redaction.ts`), re-added the
+      // identity default, and the fence stayed silent — an alias-name-only test
+      // is evadable in one edit that changes nothing about the hazard.
+      if (isMaskerType(node.type)) {
         const { line } = sf.getLineAndCharacterOfPosition(node.getStart());
         found.push({
           owner: ownerOf(node),

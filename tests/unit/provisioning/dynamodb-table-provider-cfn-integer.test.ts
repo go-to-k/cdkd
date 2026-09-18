@@ -1957,6 +1957,57 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
       ]);
     });
 
+    it('site 5 update: does NOT write the -1 sentinel back into the declared GSI block (go-to-k/cdkd#3401 finding 1)', async () => {
+      // The per-index half of the copy-not-mutate invariant. Same mechanism as
+      // its table-level twin in `dynamodb-table-provider-ondemand-throughput
+      // .test.ts`: `narrowOnDemandCeilings` returns an all-integer block BY
+      // IDENTITY, so a merge-in-place would write `-1` into `gsi.OnDemandThroughput`
+      // -- the object inside the bag the engine records as state, and a value
+      // `DescribeTable` can never report back.
+      //
+      // The block is bound ONCE and inspected after the call.
+      const declaredCeiling: Record<string, unknown> = { MaxReadRequestUnits: 50 };
+      primeGeneric({
+        billingMode: 'PAY_PER_REQUEST',
+        indexes: [
+          {
+            ...LIVE_GSI('gsi1'),
+            OnDemandThroughput: { MaxReadRequestUnits: 50, MaxWriteRequestUnits: 60 },
+          },
+        ],
+      });
+      await provider.update(
+        'L',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          TableName: TABLE_NAME,
+          BillingMode: 'PAY_PER_REQUEST',
+          GlobalSecondaryIndexes: [ppRequestGsi('gsi1', declaredCeiling)],
+        },
+        {
+          TableName: TABLE_NAME,
+          BillingMode: 'PAY_PER_REQUEST',
+          GlobalSecondaryIndexes: [
+            ppRequestGsi('gsi1', { MaxReadRequestUnits: 50, MaxWriteRequestUnits: 60 }),
+          ],
+        }
+      );
+
+      const ops = findCalls(UpdateTableCommand)
+        .flatMap((c) => c.input.GlobalSecondaryIndexUpdates ?? [])
+        .map((op) => op.Update)
+        .filter((a): a is NonNullable<typeof a> => a !== undefined);
+      expect(ops).toEqual([
+        {
+          IndexName: 'gsi1',
+          OnDemandThroughput: { MaxReadRequestUnits: 50, MaxWriteRequestUnits: -1 },
+        },
+      ]);
+      expect(declaredCeiling).toEqual({ MaxReadRequestUnits: 50 });
+      expect(Object.keys(declaredCeiling)).toEqual(['MaxReadRequestUnits']);
+    });
+
     it('site 5 update: a DECLARED null resets nothing -- only an ABSENT key is a removal (go-to-k/cdkd#3401 finding 4)', async () => {
       // A bare `OnDemandThroughput:` YAML key resolves to `null`, and the
       // truthiness gates elsewhere in this file read that as absent. The
@@ -1997,12 +2048,26 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
       // holds. Pinned because the arm is easy to reach by accident: a `?.`
       // slip on the previous side would make every adopted index clear its
       // live ceiling.
+      //
+      // `gsi2` is the CONTROL the test review asked for (go-to-k/cdkd#3401):
+      // without it the assertion is satisfied by `applyGsiUpdates` throwing or
+      // never reaching the arm, which is how the case first read. gsi2 takes an
+      // ORDINARY same-name ceiling edit, so exactly one op must come back --
+      // proving the arm ran and emitted for the index it should while emitting
+      // nothing for the adopted one.
       const updates = await gsiCeilingOps(
-        [ppRequestGsi('gsi1')],
-        [],
-        { indexes: [{ ...LIVE_GSI('gsi1'), OnDemandThroughput: { MaxReadRequestUnits: 200 } }] }
+        [ppRequestGsi('gsi1'), ppRequestGsi('gsi2', { MaxReadRequestUnits: 90 })],
+        [ppRequestGsi('gsi2', { MaxReadRequestUnits: 50 })],
+        {
+          indexes: [
+            { ...LIVE_GSI('gsi1'), OnDemandThroughput: { MaxReadRequestUnits: 200 } },
+            { ...LIVE_GSI('gsi2'), OnDemandThroughput: { MaxReadRequestUnits: 50 } },
+          ],
+        }
       );
-      expect(updates).toEqual([]);
+      expect(updates).toEqual([
+        { IndexName: 'gsi2', OnDemandThroughput: { MaxReadRequestUnits: 90 } },
+      ]);
     });
 
     it('site 5 update: survives a NUMERIC IndexName with a masker in play', async () => {

@@ -233,6 +233,53 @@ describe('DynamoDBTableProvider OnDemandThroughput wiring', () => {
       });
     });
 
+    it('does NOT write the -1 sentinel back into the caller\'s properties bag (go-to-k/cdkd#3401 finding 1)', async () => {
+      // `withOnDemandCeilingRemovals` must COPY. The hazard is not theoretical:
+      // `narrowOnDemandCeilings` returns its input BY IDENTITY when nothing
+      // needed rewriting, so `coerceOnDemandCeilingsForSend` hands back the
+      // very object the template declared -- and the deploy engine RECORDS
+      // that bag as state. A merge-in-place would persist `MaxWriteRequestUnits: -1`,
+      // which `DescribeTable` can never report (the reset reads back as
+      // ABSENCE), so every later `cdkd diff` / `drift` would report a
+      // permanent phantom and `--revert` would hold a change to push.
+      //
+      // A test reviewer measured the gap: swapping `{ ...base }` for `base`
+      // left all 1274 dynamodb cases green.
+      //
+      // The desired bag is bound ONCE and inspected afterwards -- re-reading a
+      // factory would inspect a fresh literal and assert nothing
+      // (`assertion-on-a-factory-produced-object-is-vacuous`).
+      const desiredCeiling: Record<string, unknown> = { MaxReadRequestUnits: 10 };
+      const desired = { OnDemandThroughput: desiredCeiling };
+
+      mockSend.mockResolvedValueOnce({
+        Table: {
+          TableName: TABLE_NAME,
+          TableArn: TABLE_ARN,
+          TableStatus: 'ACTIVE',
+          BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' },
+          OnDemandThroughput: { MaxReadRequestUnits: 10, MaxWriteRequestUnits: 5 },
+        },
+      });
+      mockSend.mockResolvedValueOnce({}); // UpdateTable
+      primeDescribeTable(); // waitForTableActiveAfterUpdate
+
+      await provider.update('L', TABLE_NAME, RESOURCE_TYPE, desired, {
+        OnDemandThroughput: { MaxReadRequestUnits: 10, MaxWriteRequestUnits: 5 },
+      });
+
+      // The WIRE carried the sentinel...
+      expect(findCalls(UpdateTableCommand)[0]!.input.OnDemandThroughput).toEqual({
+        MaxReadRequestUnits: 10,
+        MaxWriteRequestUnits: -1,
+      });
+      // ...and the caller's own object did not gain it. `toEqual` alone would
+      // pass against a bag that gained an `undefined`-valued key, so the key
+      // set is asserted too.
+      expect(desiredCeiling).toEqual({ MaxReadRequestUnits: 10 });
+      expect(Object.keys(desiredCeiling)).toEqual(['MaxReadRequestUnits']);
+    });
+
     it('makes NO removal call on a deploy that FLIPS the table to PROVISIONED (go-to-k/cdkd#3401 M0)', async () => {
       // Condition 4 of `onDemandCeilingRemovals`, and condition 3 does NOT
       // subsume it -- believing it did was a merge blocker.
