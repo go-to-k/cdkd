@@ -76,36 +76,66 @@ import { readFileSync } from 'node:fs';
 export const SUBJECT = 'src/deployment/intrinsic-function-resolver.ts';
 
 /**
- * Functions that mask by VALUE.
+ * Functions a render may reach: they mask by VALUE **and** sanitize for a
+ * terminal.
  *
  * Deliberately short, and adding to it is a security decision: everything here
  * is trusted to render a secret unreadable. `stringifyAttributeForLog` and
  * `stringifyParameterForLog` are NOT here — they are encoders that redact on a
  * NAME, so they must themselves sit inside a masker.
+ *
+ * ## The second property, and why it lives in THIS list
+ *
+ * Until go-to-k/cdkd#3426 the list meant "masks" alone, and two entries —
+ * `maskSecretsForLog` and `maskThenStripThenMask` — answered only the SECRET
+ * question. A render reaching one of them was certified here while carrying
+ * whatever `ESC` / CR / `U+2028` a template-supplied name put in it, which is
+ * how ten `const logged* = this.maskSecretsForLog(...)` bindings came to render
+ * a live terminal-rewriting sequence on the DEFAULT `Fn::ImportValue` path.
+ *
+ * Patching that at the ten render sites would have been the fifth round of one
+ * enumeration (go-to-k/cdkd#3408 ran four). What ended it is that this list now
+ * carries BOTH properties, so the walk below — which already resolves an
+ * interpolated IDENTIFIER to its declaration and judges the initializer —
+ * answers the control-character question by the same mechanism, at the binding
+ * as well as at the render. The resolver deleted `maskSecretsForLog` in that
+ * change: its escaping call sites now call `displayMasked`, and the bare masker
+ * (`maskSecretsRaw`) plus `maskThenStripThenMask` are reachable only from
+ * inside the builder.
+ *
+ * So the rule for a new entry is TWO questions, not one: does it render a
+ * secret unreadable, and is its result safe to put on a terminal?
  */
 export const MASKERS = [
-  'maskSecretsForLog',
   'maskValueLeaves',
-  'maskThenStripThenMask',
   // A local closure in `resolveParameters` masking against the INHERITED-secret
-  // bag ALONE — NOT `maskSecretsForLog`'s contract, which masks the inherited
-  // bag AND `context.recordedSecretValues`. It is listed because it is the RIGHT
+  // bag ALONE — NOT `displayMasked`'s contract, which masks the inherited bag
+  // AND `context.recordedSecretValues`. It is listed because it is the RIGHT
   // masker at its three sites: they print a parent-supplied parameter value at
   // the seam where it first enters the child, before any `{Ref: <Param>}` has
   // copied it into the child's own bag, so the inherited bag is the only bag
-  // that can hold the needle. Entry-wide it is WEAKER than the others, so a
-  // FOURTH call site is a security decision — check that its value's needle can
-  // only be in the inherited bag before adding one.
+  // that can hold the needle. Entry-wide it is WEAKER than the others about
+  // BAGS, so a FOURTH call site is a security decision — check that its value's
+  // needle can only be in the inherited bag before adding one. It satisfies the
+  // list's second property in its own body (mask, strip, mask, `displaySafe`),
+  // since go-to-k/cdkd#3426.
   'maskInherited',
   // The DISPLAY builder (go-to-k/cdkd#3408). `displaySafe(maskThenStripThenMask(v))`
-  // — so every path through it passes `maskSecretsForLog`, twice, which makes
-  // it strictly stronger than the plain masker it replaced at 84 sites and
+  // — so every path through it passes the needle-and-twin mask, twice, which
+  // makes it strictly stronger than the bare masker it replaced at 84 sites and
   // unable to be weaker at any input. Listing it is a security decision under
   // this list's own rule, and it is the one that lets the sibling scanner
   // (`tests/unit/deployment/resolver-display-masked-population.test.ts`) demand
   // it INSTEAD of a bare masker at every interpolation: without the entry here,
   // routing a render through it would trade a strip-coverage failure for a
   // mask-coverage one.
+  //
+  // Since go-to-k/cdkd#3426 the resolver has no OTHER exit from the masking
+  // machinery: `maskSecretsRaw` and `maskThenStripThenMask` were dropped from
+  // this list AND confined to this builder's own composition, so a binding of
+  // either is a finding wherever it is interpolated. `maskThenStripThenMask` in
+  // particular reads like the whole answer while omitting `displaySafe`, and
+  // therefore `U+2028` / `U+2029` and the bidi overrides.
   'displayMasked',
   // The LOG-TWIN display route (go-to-k/cdkd#3408). `displayMasked(logTextOfLeaf(v))`
   // — so it is `displayMasked` plus a twin resolution, and inherits that
@@ -303,7 +333,27 @@ export function isMasked(node: ts.Node, src: ts.SourceFile, depth = 0): boolean 
       const recv = node.expression.expression;
       const NAMESPACES = new Set(['JSON', 'Object', 'Array', 'String', 'Number', 'Math']);
       if (!(ts.isIdentifier(recv) && NAMESPACES.has(recv.text))) {
-        return isMasked(recv, src, depth + 1);
+        // THE RECEIVER **AND** EVERY VALUE-BEARING ARGUMENT, since
+        // go-to-k/cdkd#3426 review round 3. The receiver-only rule credited
+        // `displayMasked(v, ctx).replace('@', this.logTextOfLeaf(v, ctx))` as
+        // masked and reported NOTHING — not even the weaker verdict — because
+        // the argument was invisible to both walks at once. Measured on the
+        // real subject: adding the argument test leaves 137 / 172 / 0 findings
+        // / 0 stale byte-identical, and flips that shape to a finding. The
+        // subject already writes `this.displayMasked(physicalId,
+        // context).slice(0, 64)` at three sites, so the hole was one argument
+        // away from live code.
+        //
+        // Deliberately NOT applied to `reachesRawMasker`'s twin arm: that is
+        // where round 1's two measured false positives came from
+        // (`describeAvailableOutputs(Object.keys(cfnOutputs), context)` and a
+        // masker passed as a CALLBACK). Here the direction is opposite — a
+        // bare argument makes the call LESS masked, never more — so the
+        // asymmetry is the point rather than an oversight.
+        const valueArgs = node.arguments.filter((a) => !carriesNoValue(a));
+        return (
+          isMasked(recv, src, depth + 1) && valueArgs.every((a) => isMasked(a, src, depth + 1))
+        );
       }
     }
     // A PLAIN-FUNCTION call is an ENCODER, masked iff everything it encodes is:
@@ -351,6 +401,234 @@ export function isMasked(node: ts.Node, src: ts.SourceFile, depth = 0): boolean 
   return false;
 }
 
+/**
+ * Does this expression REACH a {@link RAW_MASKERS} function — directly, or
+ * through a local binding?
+ *
+ * The mirror image of {@link isMasked}, and deliberately its DUAL rather than
+ * its negation: `isMasked` asks "is every path covered", so it takes the AND of
+ * a conditional's arms, while this asks "does any path touch the raw
+ * machinery", so it takes the OR. One raw arm of a ternary is a raw render.
+ *
+ * It stops at a {@link MASKERS} call: a raw masker INSIDE the builder
+ * (`displayMasked(logTextOfLeaf(v))` — which is what `displayLeaf` is) is the
+ * sanctioned composition, not a finding. That is the whole reason this is a
+ * separate walk rather than a name grep: the offending shape is the raw masker
+ * ESCAPING the builder, and only a walk that knows where the builder sits can
+ * tell the two apart.
+ *
+ * Identifier resolution is its OWN (`taintSourcesOf`) rather than `isMasked`'s,
+ * which is what makes the BINDING shape visible: `const x = this.maskSecretsRaw(v)`
+ * followed by `${x}` sixty lines later is one hop from the render, and that hop
+ * is why go-to-k/cdkd#3426 needed no second scanner. The two resolvers differ
+ * on purpose and in OPPOSITE directions — `isMasked` refuses a `let` because a
+ * reassignment makes the initializer stop describing what is read, while a
+ * reassignable binding is MORE suspicious here, not less (see
+ * {@link taintSourcesOf}).
+ *
+ * ## WHAT THIS DOES NOT REACH, and why the arms that would were WITHDRAWN
+ *
+ * The shapes below are NOT followed: a value carried through a callback
+ * (`.map(cb)`), an object or array literal, a spread, an `await`, a `new`, or a
+ * binding chain deeper than the cap. A render reaching a masking answer that
+ * way is reported as `unmasked-unannotated` — still a finding, but one an
+ * exclusion marker can silence.
+ *
+ * Arms for all of those were written (go-to-k/cdkd#3426 review round 1) and
+ * withdrawn one round later, because every axis of round 2 found a defect
+ * INSIDE them: an unmemoized exponential at the raised depth cap (48.8 s on one
+ * real expression, verdict `false` at every cap), `filter` / `find` / `sort`
+ * credited as carriers when their callback's value does not build the result,
+ * a nested-function guard that missed `function` declarations, an object
+ * literal tainting a read of an unrelated SIBLING key, and a taint resolver
+ * that was fail-open on `+=` while over-reporting through a shadowed name.
+ * Two of them reported FALSE POSITIVES on the real subject.
+ *
+ * `.claude/skills/work-issues/references/verify.md` §8-h names that shape:
+ * blockers CONCENTRATING in one added part mean WITHDRAW the addition rather
+ * than bound it. So the walk is back to the shape that drew no findings, and
+ * the coverage the arms were meant to add is provided by cheaper mechanisms
+ * that have no dataflow model to get wrong:
+ *
+ *  - the CONTAINMENT fence in
+ *    `tests/unit/deployment/resolver-display-masked-population.test.ts`, which
+ *    asserts from the AST that `maskSecretsRaw` is referenced only inside
+ *    `maskThenStripThenMask` and that helper only inside `displayMasked` —
+ *    exact reference counts, no inference;
+ *  - that same file's line rules, which forbid interpolating the raw maskers
+ *    directly, whatever the enclosing expression;
+ *  - and the behavioural suites, which read the emitted BYTES.
+ *
+ * Widening this walk again means answering round 2's nine findings first. It is
+ * not the cheapest place to buy coverage.
+ */
+export function reachesRawMasker(node: ts.Node, src: ts.SourceFile, depth = 0): boolean {
+  // SIX, the same bound `isMasked` uses, and go-to-k/cdkd#3426's review round 2
+  // is why it is not higher. Raised to 24 to follow longer binding chains, it
+  // became an unmemoized exponential over a genuine cycle (`let result` plus
+  // its own reassignments re-expand per hop): MEASURED on one real expression
+  // in this subject at 5 ms / 214 ms / 1.9 s / 48.8 s for caps 6 / 14 / 18 / 24,
+  // with the verdict `false` at every one of them. A CI gate that can take a
+  // minute on a shape nobody notices adding is worse than a shallower walk.
+  if (depth > 6) return false;
+  if (
+    ts.isParenthesizedExpression(node) ||
+    ts.isAsExpression(node) ||
+    ts.isNonNullExpression(node)
+  ) {
+    return reachesRawMasker(node.expression, src, depth + 1);
+  }
+  if (ts.isCallExpression(node)) {
+    const name = calleeName(node);
+    // The builder ENDS the walk in both directions: reaching it is safe, and
+    // whatever it wraps is its business.
+    if (name && (MASKERS as readonly string[]).includes(name)) return false;
+    if (name && (RAW_MASKERS as readonly string[]).includes(name)) return true;
+    if (ts.isPropertyAccessExpression(node.expression)) {
+      const recv = node.expression.expression;
+      // The SAME set `isMasked` uses. Keeping the two literal copies in step is
+      // a known cost; diverging them is worse, because a value `isMasked`
+      // credits and this walk does not (or the reverse) makes the two verdicts
+      // disagree about one expression.
+      const NAMESPACES = new Set(['JSON', 'Object', 'Array', 'String', 'Number', 'Math']);
+      if (!(ts.isIdentifier(recv) && NAMESPACES.has(recv.text))) {
+        // A METHOD CALL is decided on its RECEIVER ALONE — the same split
+        // `isMasked` makes, for the same reason, and the arguments are
+        // deliberately NOT consulted. "Any tainted argument taints the result"
+        // was the first cut and it reported TWO false positives on the real
+        // subject the moment the walk got stronger: `describeAvailableOutputs(
+        // Object.keys(cfnOutputs), context)`, where the taint arrived through
+        // `cfnOutputs`' own lookup call and the RESULT is re-masked per key,
+        // and `resolveSSMReference(parts, true, 'ssm-secure', context,
+        // nameLogText)`, where a raw masker is passed as a CALLBACK and the
+        // result is a parameter record. A fence that reds on correct code is
+        // one the next author deletes.
+        //
+        // What carries the weight instead is the two lists naming every
+        // masking answer this file returns — so a method whose result is one
+        // is caught by NAME rather than by dataflow. That is a CLAIM, not a
+        // fenced invariant, and go-to-k/cdkd#3426's review round 2 falsified
+        // the first version of it: `logTwinOfProduct` and
+        // `resolveDynamicReferencesWithLogTwin` both returned masked,
+        // unstripped text from neither list. They are listed now. The residual
+        // is a FUTURE method that does the same; `RAW_MASKERS`' own doc says
+        // what to check when adding one.
+        return reachesRawMasker(recv, src, depth + 1);
+      }
+    }
+    // A NAMESPACED or FREE function call IS an encoder — `JSON.stringify(x)`,
+    // `displayAwsMessage(x)`, `stringifyValue(x)` all carry their input out —
+    // so a tainted argument taints the result.
+    return node.arguments.some((a) => reachesRawMasker(a, src, depth + 1));
+  }
+  if (ts.isPropertyAccessExpression(node)) {
+    return reachesRawMasker(node.expression, src, depth + 1);
+  }
+  if (ts.isConditionalExpression(node)) {
+    return (
+      reachesRawMasker(node.whenTrue, src, depth + 1) ||
+      reachesRawMasker(node.whenFalse, src, depth + 1)
+    );
+  }
+  if (ts.isBinaryExpression(node)) {
+    return (
+      reachesRawMasker(node.left, src, depth + 1) || reachesRawMasker(node.right, src, depth + 1)
+    );
+  }
+  if (ts.isTemplateExpression(node)) {
+    return node.templateSpans.some((s) => reachesRawMasker(s.expression, src, depth + 1));
+  }
+  if (ts.isIdentifier(node)) {
+    return taintSourcesOf(node).some((e) => reachesRawMasker(e, src, depth + 1));
+  }
+  return false;
+}
+
+/**
+ * Every expression a local binding can hold, for the TAINT walk only.
+ *
+ * Deliberately NOT {@link resolveBinding}, and the difference is one word in
+ * each direction. `resolveBinding` answers "what does this name definitely
+ * hold", so a `let` is a REFUSAL there — a reassignment makes the initializer
+ * stop describing what the interpolation reads, and crediting it would be a
+ * fail-OPEN for the masked verdict. This walk asks "can this name hold
+ * something raw", where a reassignable binding is MORE suspicious, not less:
+ * refusing it is the fail-open. `intrinsic-function-resolver.ts` has such a
+ * binding today (`let loggedRegionText = this.logTextOfLeaf(region, context)`),
+ * and with the `const`-only resolver a bare render of it reported the weaker,
+ * SILENCEABLE verdict — measured during go-to-k/cdkd#3426's review.
+ *
+ * So this returns the declaration's initializer AND every assignment to the
+ * name inside the enclosing function: a name is tainted if ANY of them reaches
+ * the raw machinery, which is the union a reader of the render has to worry
+ * about.
+ *
+ * BOUNDS, stated rather than implied away. A PARAMETER and a DESTRUCTURING
+ * pattern both return nothing, so a raw value arriving that way is invisible to
+ * this verdict — it is still covered by the `unmasked-unannotated` one unless
+ * someone annotates it. Neither shape carries a masker result in the subject
+ * today, and the RUNTIME fence
+ * (`tests/unit/deployment/importvalue-binding-control-chars.test.ts`) is what
+ * covers the value-flow question a syntactic walk cannot close.
+ */
+function taintSourcesOf(node: ts.Identifier): ts.Expression[] {
+  const name = node.text;
+  const out: ts.Expression[] = [];
+  let cur: ts.Node | undefined = node.parent;
+  while (cur) {
+    if (isScopeBoundary(cur)) {
+      if (ts.isFunctionLike(cur)) {
+        for (const p of cur.parameters) {
+          // A parameter shadows anything outer; there is no initializer to
+          // judge, so stop rather than credit an outer binding of the name.
+          if (bindsName(p.name, name)) return out;
+        }
+      }
+      const { simple, patterns } = declaredDirectlyIn(cur, name);
+      if (patterns > 0) return out;
+      if (simple.length > 0) {
+        for (const decl of simple) if (decl.initializer) out.push(decl.initializer);
+        // Every REASSIGNMENT in the scope that declares the name, so a `let`
+        // written once and overwritten later is judged on both values.
+        //
+        // `+=` counts, and that is a MEASURED fix rather than completeness for
+        // its own sake: `let t = ''; t += this.maskSecretsRaw(v)` is how a
+        // masker result reaches a render by string building, and matching only
+        // `=` reported it untainted (go-to-k/cdkd#3426 review round 2).
+        const ASSIGNMENT_KINDS = new Set<ts.SyntaxKind>([
+          ts.SyntaxKind.EqualsToken,
+          ts.SyntaxKind.PlusEqualsToken,
+        ]);
+        const scopeOfDeclaration = cur;
+        const collectAssignments = (n: ts.Node): void => {
+          // Do NOT descend into a nested scope that REDECLARES the name: its
+          // `x = raw(v)` writes a different binding, and crediting it here
+          // tainted an outer `x` that never held the value (measured, same
+          // round).
+          if (n !== scopeOfDeclaration && isScopeBoundary(n)) {
+            const inner = declaredDirectlyIn(n, name);
+            if (inner.simple.length > 0 || inner.patterns > 0) return;
+            if (ts.isFunctionLike(n) && n.parameters.some((p) => bindsName(p.name, name))) return;
+          }
+          if (
+            ts.isBinaryExpression(n) &&
+            ASSIGNMENT_KINDS.has(n.operatorToken.kind) &&
+            ts.isIdentifier(n.left) &&
+            n.left.text === name
+          ) {
+            out.push(n.right);
+          }
+          ts.forEachChild(n, collectAssignments);
+        };
+        collectAssignments(scopeOfDeclaration);
+        return out;
+      }
+    }
+    cur = cur.parent;
+  }
+  return out;
+}
+
 /** Every value-bearing sub-expression of a message argument. */
 function valueOperands(node: ts.Node, out: ts.Node[] = []): ts.Node[] {
   if (ts.isTemplateExpression(node)) {
@@ -369,11 +647,87 @@ function valueOperands(node: ts.Node, out: ts.Node[] = []): ts.Node[] {
   return out;
 }
 
+/**
+ * Functions that return a MASKING ANSWER and nothing more — masked text that is
+ * NOT safe to put on a terminal (go-to-k/cdkd#3426).
+ *
+ * The distinction {@link MASKERS} now carries needs a name for the other side,
+ * because the two failures read identically at a render site and have opposite
+ * remedies. A value that reached one of these has already had its secrets
+ * removed; what it has NOT had is the control-character strip, so the fix is
+ * never an exclusion marker (the marker answers "this carries no resolved
+ * value", which is false here by construction) but the display builder.
+ *
+ * `maskSecretsInText` is the module-level masker in `secret-redaction.ts`, on
+ * the list for the same reason — `maskInherited` composes it into a sanitizing
+ * closure, and anything else reaching it directly is a raw render.
+ *
+ * ## It is the COMPLEMENT of {@link MASKERS}, and that is a checkable claim
+ *
+ * go-to-k/cdkd#3426's review measured the first cut billing itself as a
+ * complement while five masked-but-unsanitized answers sat on NEITHER list, so
+ * a render reaching one of them took the weaker, SILENCEABLE verdict. They are
+ * here now. What that claim means precisely: every private method of
+ * `IntrinsicFunctionResolver` that RETURNS masked text (or a collection or
+ * closure of it) is on one of the two lists.
+ *
+ * Deliberately on NEITHER, because they return something else, and listed so
+ * the next audit compares against a decision rather than re-deriving one:
+ * `describeAvailableOutputs`, `subPlaceholderWarning` and
+ * `describeFailureObserved` COMPOSE a sentence whose every operand already
+ * went through the builder; `positionalNameMask` returns a TRANSFORM; and
+ * `logTwinBag` returns the bag itself.
+ *
+ * `splitLogTwins` returns an ARRAY and `dynamicReferenceNameLogText` returns a
+ * CLOSURE — neither is a string. They are listed anyway, on the DIRECT-call
+ * justification that covers every other entry: a render naming one of them, or
+ * a local binding taking its result, is caught. What is NOT caught is the value
+ * carried out of them by a callback or an element read — the arms that followed
+ * those were withdrawn (see {@link reachesRawMasker}), so the list's coverage
+ * here is the call, not the carry.
+ */
+export const RAW_MASKERS = [
+  'maskSecretsRaw',
+  'maskNeedlesForLog',
+  'maskThenStripThenMask',
+  'registeredLogTwin',
+  'logTextOfLeaf',
+  'logTwinText',
+  'nameLogText',
+  'outputNameLogText',
+  'maskSecretsInText',
+  // The five go-to-k/cdkd#3426's review found on neither list. Each returns a
+  // twin (or `SECRET_MASK`) with no strip: `regionLogText` and
+  // `straddleSafeTwin` a string, `productLogTwin` a string joined from a
+  // product's twins, `splitLogTwins` an array of them, and
+  // `dynamicReferenceNameLogText` a closure returning one.
+  'regionLogText',
+  'straddleSafeTwin',
+  'productLogTwin',
+  'splitLogTwins',
+  'dynamicReferenceNameLogText',
+  // Round 2 found two more, both returning an OBJECT whose `.twin` member is
+  // the masking answer: `logTwinOfProduct` (which `productLogTwin` is a
+  // one-line wrapper around, so the pair sat on opposite sides of the list)
+  // and `resolveDynamicReferencesWithLogTwin`. Neither has a live raw render
+  // today — both twins reach `logTwinText` and then the builder — but a render
+  // of `.twin` took the silenceable verdict, measured.
+  'logTwinOfProduct',
+  'resolveDynamicReferencesWithLogTwin',
+] as const;
+
 export interface Finding {
   readonly line: number;
   readonly kind: 'throw' | 'log';
   readonly expr: string;
-  readonly reason: 'unmasked-unannotated';
+  /**
+   * `raw-masker-render` is the STRONGER verdict and is NOT annotatable: the
+   * expression reached the masking machinery, so it is by definition a value
+   * that can carry a resolved secret, and an exclusion marker claiming
+   * otherwise is false. `unmasked-unannotated` is the original verdict —
+   * nothing masked this and nobody wrote down why.
+   */
+  readonly reason: 'unmasked-unannotated' | 'raw-masker-render';
 }
 
 export interface Site {
@@ -408,7 +762,16 @@ export const BANDS = {
   // (measured by `resolver-mask-coverage.test.ts`'s instrument case). Issue
   // #3150 added six masks (161 -> 167) and moved the masks floor by the same
   // delta: the same cut left 157 masked expressions, above the old floor of 155.
-  statements: { min: 131, max: 165 },
+  // go-to-k/cdkd#3426 RAISED the statements floor from 131 to 133, and the
+  // reason is the injection above rather than the population (still 137). That
+  // change rewrote several doc comments between `resolveFindInMap` and
+  // `displayMasked`, which moved the first `*` + `/` AFTER the injection point
+  // EARLIER — so the same cut now swallows 5 statements instead of 7, landing
+  // on 132 and clearing a floor of 131. A floor calibrated against a cut whose
+  // reach depends on comment layout goes inert whenever the comments move,
+  // which is why `resolver-display-masked-population.test.ts` asserts no stray
+  // opener exists at all and why this one is re-measured per change.
+  statements: { min: 133, max: 165 },
   maskedExprs: { min: 161, max: 200 },
   markers: { min: 98, max: 140 },
 } as const;
@@ -558,22 +921,39 @@ export function scan(source?: string, fileName = SUBJECT): ScanResult {
     statements++;
     const operands = messageArgs.flatMap((a) => valueOperands(a));
     const bare: string[] = [];
+    // The RAW-MASKER verdict is taken over EVERY operand, masked ones included,
+    // and that is the point (go-to-k/cdkd#3426): a value can be masked — so
+    // `isMasked` credits it and it never reaches `bare` — while still carrying
+    // the `ESC` / CR the mask makes no claim about. Judging only the bare
+    // operands would reproduce the hole this verdict exists to close, since the
+    // ten binding sites were all MASKED.
+    const rawRenders: string[] = [];
     for (const op of operands) {
+      if (reachesRawMasker(op, src)) rawRenders.push(norm(op.getText(src)));
       if (isMasked(op, src)) {
         maskedExprs++;
         continue;
       }
       bare.push(norm(op.getText(src)));
     }
+    const line = src.getLineAndCharacterOfPosition(statementNode.getStart(src)).line + 1;
+    // Reported whether or not the site carries a marker: an exclusion says "this
+    // value carries no resolved secret", which cannot be true of a value that
+    // went through the masking machinery, so the marker is not an answer here.
+    for (const expr of rawRenders) {
+      findings.push({ line, kind, expr, reason: 'raw-masker-render' });
+    }
     if (bare.length === 0) return;
 
     const markers = markersFor(statementNode);
     for (const m of markers) if (bare.includes(m.expr)) consumed.add(m.pos);
     const names = markers.map((m) => m.expr);
-    const line = src.getLineAndCharacterOfPosition(statementNode.getStart(src)).line + 1;
     const unannotated = bare.filter((b) => !names.includes(b));
     sites.push({ line, kind, bare, annotated: names });
     for (const expr of unannotated) {
+      // Not reported TWICE: a raw render already has its own, more specific
+      // finding with the remedy that actually applies.
+      if (rawRenders.includes(expr)) continue;
       findings.push({ line, kind, expr, reason: 'unmasked-unannotated' });
     }
   };
@@ -673,6 +1053,17 @@ export function bandViolations(result: ScanResult): string[] {
 if (process.argv[1]?.endsWith('check-resolver-mask-coverage.ts')) {
   const result = scan();
   for (const f of result.findings) {
+    if (f.reason === 'raw-masker-render') {
+      console.error(
+        `${SUBJECT}:${f.line} [${f.kind}] renders a BARE MASKER result: \${${f.expr}}\n` +
+          `    that value is masked but NOT control-stripped, so a template-supplied name can carry\n` +
+          `    ESC / CR / U+2028 into this line and redraw the reader's terminal (go-to-k/cdkd#3426).\n` +
+          `    render through this.displayMasked(value, context) -- or this.displayLeaf(value, context)\n` +
+          `    for a log-twin leaf. An ${EXCLUSION_TAG} marker does NOT answer this: the value reached\n` +
+          `    the masking machinery, so it is exactly the kind that can carry a resolved secret.`
+      );
+      continue;
+    }
     console.error(
       `${SUBJECT}:${f.line} [${f.kind}] unmasked and unannotated: \${${f.expr}}\n` +
         `    add: // ${EXCLUSION_TAG}(${f.expr}): <why this carries no resolved value>`
@@ -693,9 +1084,11 @@ if (process.argv[1]?.endsWith('check-resolver-mask-coverage.ts')) {
         `in the same commit that widened the population, or find what stopped being scanned.`
     );
   }
+  const rawRenders = result.findings.filter((f) => f.reason === 'raw-masker-render').length;
   console.error(
     `\n${result.statements} throw/log statement(s); ${result.maskedExprs} masked expression(s); ` +
-      `${result.sites.length} site(s) with a bare expression; ${result.findings.length} unannotated; ` +
+      `${result.sites.length} site(s) with a bare expression; ` +
+      `${result.findings.length - rawRenders} unannotated; ${rawRenders} bare-masker render(s); ` +
       `${result.markers} marker(s), ${result.unconsumedMarkers.length} stale.`
   );
   process.exit(

@@ -2,7 +2,8 @@
 description: cdkd secret-redaction layout notes (dynamic-reference redaction, masking retry loggers, region classification, cdkd scrub)
 paths:
   - 'src/deployment/secret-redaction.ts'
-  # Owns `maskSecretsForLog`; unclaimed until #2748 (the #2615 class).
+  # Owns `maskSecretsRaw` + the `displayMasked` builder; unclaimed until #2748
+  # (the #2615 class).
   - 'src/deployment/intrinsic-function-resolver.ts'
   - 'src/deployment/masking-retry-logger.ts'
   - 'src/deployment/secret-region-classification.ts'
@@ -67,12 +68,29 @@ Index of every area: [code-layout.md](code-layout.md).
     recorded secret", so 97 interpolations of its result were masked but not
     CONTROL-STRIPPED, and a template-supplied name could redraw a terminal.
     Three review rounds each fixed the sites they found and the next round
-    found more, so the rule is now enforced by shape rather than by
-    enumeration — `tests/unit/deployment/resolver-display-masked-population.test.ts`
-    fails on any `${this.maskSecretsForLog(...)}`. `displayLeaf` is the same
-    thing for the log-twin route (`logTextOfLeaf`), which the `origin` builders
-    use. Both are in `MASKERS` in `scripts/check-resolver-mask-coverage.ts`, on
-    the strength of delegating to the masker. That masking itself is unchanged:
+    found more. A FOURTH found the class had MOVED to the BINDING shape
+    (`const loggedExportName = <masker>(...)`, interpolated later), invisible to
+    a line-shaped scanner — a LIVE `Fn::ImportValue` exposure, measured
+    (go-to-k/cdkd#3426). **There is now no bare masker to bind**: the
+    `maskSecretsForLog` name is GONE, its 20 escaping call sites call the
+    builder, and the masking answer (`maskSecretsRaw`) plus the strip-and-mask
+    composition are each confined to one caller —
+    `tests/unit/deployment/resolver-display-masked-population.test.ts` asserts
+    that containment from the AST, and the render rule is enforced by
+    `scripts/check-resolver-mask-coverage.ts`, whose walk already RESOLVES an
+    interpolated identifier to its declaration. Its `MASKERS` list therefore
+    means "masks AND sanitizes"; `RAW_MASKERS` is the other side, and a render
+    reaching one DIRECTLY or through a local binding is reported with the
+    builder as the remedy — an exclusion marker cannot silence THAT verdict,
+    since the marker answers the SECRET question. The walk is deliberately
+    `isMasked`'s dual and no wider: arms following a value through a callback,
+    a literal, a spread or an `await` were written and WITHDRAWN when every
+    review axis found a defect inside them (an exponential depth cap, carriers
+    that carry nothing, two false positives on the real subject), so those
+    shapes take the weaker, annotatable verdict and the containment fence plus
+    the direct-interpolation line rules are what cover them.
+    `displayLeaf` is the same thing for the log-twin route (`logTextOfLeaf`),
+    which the `origin` builders use. That masking itself is unchanged:
     log twin (#3150, `***` if a needle hits the raw
     text too), else masks `context.inheritedSecrets` FIRST, then
     `context.recordedSecretValues` (#1903 round 2: on a nested-stack
@@ -112,7 +130,7 @@ Index of every area: [code-layout.md](code-layout.md).
     one cap per resolution** (#2563, #2814; see
     `allSettledKeepingFirstRejection`).
   - **The mask is only as good as the CALLER'S BAG** (issue #2748; the whole
-    mechanism is in `evaluateConditions`' own comment). `maskSecretsForLog`
+    mechanism is in `evaluateConditions`' own comment). The masker
     no-ops on absent bags, so masking the LINE left a live `cdkd diff` printing
     the password — two callers passed context literals with no bag. Close a bag
     gap at the CALLEE, by INVENTING a private map, so the next caller cannot

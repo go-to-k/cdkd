@@ -3,6 +3,7 @@ import type { CloudFormationTemplate, TemplateResource } from '../types/resource
 import { TemplateParser } from './template-parser.js';
 import { extractLambdaVpcDeleteDeps } from './lambda-vpc-deps.js';
 import { defensiveDependsOnToSkip } from './cdk-defensive-deps.js';
+import { displayIdent } from '../utils/display-safe.js';
 import { getLogger } from '../utils/logger.js';
 import { DependencyError } from '../utils/error-handler.js';
 import { splitGetAttStringForm } from '../deployment/secret-redaction.js';
@@ -57,7 +58,22 @@ export class DagBuilder {
     resourceIds.forEach((logicalId) => {
       const resource = this.parser.getResource(template, logicalId);
       graph.setNode(logicalId, resource);
-      this.logger.debug(`Added node: ${logicalId} (${resource?.Type})`);
+      // `displayIdent` for the TYPE too, not `displaySafe`: a resource type is
+      // the PLAIN_IDENT grammar that helper documents (`AWS::S3::Bucket`,
+      // `Custom::my-thing_v2@x`), which is the argument this method already
+      // makes for the logical id beside it. And the ABSENT case is SPELLED
+      // rather than passed through: an absent type rendered as `''`, so a
+      // resource without one printed `Added node: Foo ()`, which reads as an
+      // empty type rather than a missing one.
+      //
+      // `== null`, covering `null` as well as `undefined`, because the same
+      // argument this method makes about logical ids applies to the VALUE:
+      // cdkd parses the template as JSON, so `"Type": null` is a shape a
+      // hand-written or migrated file really carries, and it would otherwise
+      // render as `<unrenderable>` rather than as the missing type it is
+      // (go-to-k/cdkd#3426 review round 2).
+      const typeText = resource?.Type == null ? '<no Type>' : displayIdent(resource.Type);
+      this.logger.debug(`Added node: ${displayIdent(logicalId)} (${typeText})`);
     });
 
     this.logger.debug(`Total nodes: ${resourceIds.length}`);
@@ -91,7 +107,7 @@ export class DagBuilder {
         if (skip?.has(depId)) {
           relaxedEdgeCount++;
           this.logger.debug(
-            `Skipped CDK-defensive DependsOn edge: ${depId} -> ${logicalId} (default; opt out with --no-aggressive-vpc-parallel)`
+            `Skipped CDK-defensive DependsOn edge: ${displayIdent(depId)} -> ${displayIdent(logicalId)} (default; opt out with --no-aggressive-vpc-parallel)`
           );
           continue;
         }
@@ -99,15 +115,33 @@ export class DagBuilder {
         if (graph.hasNode(depId)) {
           graph.setEdge(depId, logicalId); // depId -> logicalId (logicalId depends on depId)
           edgeCount++;
-          this.logger.debug(`Added edge: ${depId} -> ${logicalId}`);
+          this.logger.debug(`Added edge: ${displayIdent(depId)} -> ${displayIdent(logicalId)}`);
         } else if (parameterNames.has(depId)) {
           // `Ref` to a template Parameter, not a resource — no graph edge and
           // no warning. (Common in nested-stack children whose Parameters are
           // supplied by the parent via Properties.Parameters.)
-          this.logger.debug(`Skipped Parameter reference: ${logicalId} -> ${depId}`);
+          this.logger.debug(
+            `Skipped Parameter reference: ${displayIdent(logicalId)} -> ${displayIdent(depId)}`
+          );
         } else {
+          // SANITIZED, and this line is why the whole file is
+          // (go-to-k/cdkd#3426). A logical id reads like a value CloudFormation
+          // validated, and it is not one: cdkd parses the template as JSON, so a
+          // Resources KEY or a `DependsOn` entry is only as constrained as the
+          // file — and a `DependsOn` naming something absent is exactly the case
+          // that reaches a user. Measured on `node dist/cli.js`: an id carrying
+          // `ESC[2K` + CR put a live terminal-rewriting sequence on this warn, at
+          // DEFAULT verbosity, while the resolver's sibling message beside it was
+          // already sanitized — the same "guard defeated by its own neighbour"
+          // shape, one module over.
+          //
+          // `displayIdent` rather than `displayMasked`: this module holds no
+          // secrets bag (it never sees a resolved value), and an id is an
+          // IDENTIFIER, so the positive allowlist plus the quoted boundary is the
+          // right rule. An ordinary id renders byte-identically.
           this.logger.warn(
-            `Resource ${logicalId} depends on ${depId}, but ${depId} not found in template`
+            `Resource ${displayIdent(logicalId)} depends on ${displayIdent(depId)}, but ` +
+              `${displayIdent(depId)} not found in template`
           );
         }
       }
@@ -141,7 +175,9 @@ export class DagBuilder {
     if (!alg.isAcyclic(graph)) {
       const cycles = this.findCycles(graph);
       throw new DependencyError(
-        `Circular dependency detected in template. Cycles: ${cycles.map((c) => c.join(' -> ')).join('; ')}`
+        `Circular dependency detected in template. Cycles: ${cycles
+          .map((c) => c.map((n) => displayIdent(n)).join(' -> '))
+          .join('; ')}`
       );
     }
 
@@ -184,12 +220,16 @@ export class DagBuilder {
         // This should not happen if graph is acyclic, but check anyway
         const remaining = graphCopy.nodes();
         throw new DependencyError(
-          `Circular dependency detected. Remaining nodes: ${remaining.join(', ')}`
+          `Circular dependency detected. Remaining nodes: ${remaining
+            .map((n) => displayIdent(n))
+            .join(', ')}`
         );
       }
 
       this.logger.debug(
-        `Level ${levelNum}: ${readyNodes.length} resources - ${readyNodes.join(', ')}`
+        `Level ${levelNum}: ${readyNodes.length} resources - ${readyNodes
+          .map((n) => displayIdent(n))
+          .join(', ')}`
       );
       levels.push(readyNodes);
 
@@ -354,7 +394,7 @@ export class DagBuilder {
         graph.setEdge(policyId, logicalId);
         added++;
         this.logger.debug(
-          `Added implicit edge (custom resource policy): ${policyId} -> ${logicalId}`
+          `Added implicit edge (custom resource policy): ${displayIdent(policyId)} -> ${displayIdent(logicalId)}`
         );
       }
     }
@@ -395,7 +435,9 @@ export class DagBuilder {
       if (graph.hasEdge(depId, dependentId)) continue;
       graph.setEdge(depId, dependentId);
       added++;
-      this.logger.debug(`Added implicit edge (lambda vpc): ${depId} -> ${dependentId}`);
+      this.logger.debug(
+        `Added implicit edge (lambda vpc): ${displayIdent(depId)} -> ${displayIdent(dependentId)}`
+      );
     }
 
     if (added > 0) {

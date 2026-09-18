@@ -29,6 +29,9 @@ import { describe, it, expect } from 'vite-plus/test';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
+import { IntrinsicFunctionResolver } from '../../../src/deployment/intrinsic-function-resolver.js';
+import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+
 const scrubSource = readFileSync(
   fileURLToPath(new URL('../../../src/cli/commands/scrub.ts', import.meta.url)),
   'utf8'
@@ -86,7 +89,15 @@ describe('scrub abandoned-scan origin (go-to-k/cdkd#3160)', () => {
       [
         'a Ref to something not in state',
         'Ref MyBucket not found',
-        'throw markNonRetryable(new Error(`Ref ${logicalId} not found`))',
+        // The interpolated NAME moved to a sanitized binding in
+        // go-to-k/cdkd#3426 (`loggedLogicalId = this.displayMasked(logicalId,
+        // context)`). The message TEMPLATE is unchanged, but what the pattern
+        // MATCHES is not: the builder strips control characters and trims, so
+        // an id carrying a CR or padding now produces a message this pattern
+        // accepts where it did not before — the classification delta the case
+        // below pins. Re-pinned rather than loosened: a needle that stopped
+        // naming the binding would go green on the next reword too.
+        'throw markNonRetryable(new Error(`Ref ${loggedLogicalId} not found`))',
       ],
       [
         'a Fn::GetAtt to a resource not in state',
@@ -119,6 +130,66 @@ describe('scrub abandoned-scan origin (go-to-k/cdkd#3160)', () => {
         ).toBe(true);
       });
     }
+
+    it('a HOSTILE or PADDED logical id now takes the same exclusion — the go-to-k/cdkd#3426 delta', () => {
+      // A CLASSIFICATION CHANGE, pinned because it moves a unit across the exit
+      // code: `count` gates `cdkd scrub --dry-run --fail`, `warn` does not.
+      //
+      // Before go-to-k/cdkd#3426 the resolver interpolated the RAW logical id,
+      // so an id carrying a CR produced `Ref Prod\rEvil not found`, which
+      // `^Ref \S+ not found$` cannot match (`\s` includes CR) — the unit was
+      // COUNTED. The id now renders through the display builder, which deletes
+      // the control character and trims, so the message matches and the unit
+      // WARNS, exactly as a plain dangling `Ref` already did.
+      //
+      // Both spellings are asserted, and that is the point: the pair states the
+      // delta rather than the endpoint, so a future change that restores the
+      // raw spelling reds here instead of silently moving the gate back.
+      const ESC = String.fromCharCode(0x1b);
+      expect(
+        excluded(`Ref Prod${ESC}[2K\rEvil not found`),
+        'the PRE-sanitization spelling: whitespace in the id keeps it out of the pattern'
+      ).toBe(false);
+      expect(
+        excluded('Ref Prod[2KEvil not found'),
+        'the spelling the sanitized render actually produces — now excluded, i.e. WARN not COUNT'
+      ).toBe(true);
+      // A PADDED id reaches the same place through `displaySafe`'s trim.
+      expect(excluded('Ref   Padded   not found'), 'padded, as raised before the trim').toBe(false);
+      expect(excluded('Ref Padded not found'), 'padded, as the builder renders it').toBe(true);
+    });
+
+    it("and the spelling is the RESOLVER's own, not one this test assumed", async () => {
+      // The case above feeds hand-written strings to the shipped patterns,
+      // which pins the CLASSIFIER and assumes the renderer. That assumption is
+      // exactly what `displayMasked`'s composition order decides: it strips
+      // (DELETES) before it sanitizes (REPLACES), so a CR vanishes rather than
+      // becoming a space. Flip that order and `Ref Prod [2K Evil not found`
+      // stops matching `\\S+`, the gate delta silently reverses, and the case
+      // above stays green because it never asked the resolver anything.
+      //
+      // So this one drives the real throw and feeds ITS message to the shipped
+      // predicate (go-to-k/cdkd#3426 review round 2, test m9).
+      const ESC = String.fromCharCode(0x1b);
+      const template: CloudFormationTemplate = { Resources: {} };
+      const resolver = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false });
+      // Through the PUBLIC entry point, so no test-only seam exists in `src/`
+      // and the message is the one a deploy would raise.
+      const err = await resolver
+        .resolve({ Ref: `Prod${ESC}[2K\rEvil` }, { template, resources: {} })
+        .then(
+          () => undefined,
+          (e: unknown) => e as Error
+        );
+      const message = err instanceof Error ? err.message : String(err ?? '');
+
+      // BOUND THE ARM: the refusal must be the `Ref ... not found` one.
+      expect(message, 'the Ref refusal did not fire').toMatch(/^Ref .* not found$/);
+      expect(message, 'a raw ESC survived into the thrown message').not.toContain(ESC);
+      expect(excluded(message), 'the message the resolver really raises is the excluded one').toBe(
+        true
+      );
+    });
   });
 
   describe('AWS-authored rejections are NOT excluded', () => {
