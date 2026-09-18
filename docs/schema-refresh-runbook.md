@@ -479,7 +479,8 @@ rather than waiting for tomorrow.
 `src/provisioning/property-coverage.generated.ts`, so on a quiet week it may not
 run for days — and if it failed on the last such push, the campaign's checklist
 keeps its previous contents until the next one. A dispatch closes that gap.
-Measured on 2026-09-09: a dispatch took the umbrella from 285 rows to 288 in
+Measured on 2026-09-09, on the flat per-property checklist this job wrote before
+the per-type restructure: a dispatch took the umbrella from 285 rows to 288 in
 under a minute, leaving 7,655 characters of provenance intact.
 
 What it rewrites is ONE region of ONE issue:
@@ -500,13 +501,21 @@ for every other type, and the row for the type disappears on its own once the
 coverage map says it is done.
 
 The per-type issues labelled `backfill-type` are **legacy**. go-to-k/cdkd#2949
-generated one per resource type and this job reconciled them; they were folded
-back into the block above because 44 of the repository's 240 open issues were
-bot-filed slices of one campaign, which no reader of a public issue count can
-tell from defects. The label survives on those closed issues; nothing generates
-it any more, and the one-shot migration that closed them is
-`REPO=<owner/repo> node scripts/sync-backfill-umbrella.ts --close-legacy`
-(`--dry-run` first — it lists what it would close and writes nothing).
+generated one per resource type and this job reconciled them; their content was
+folded back into the block above because 44 of the repository's 240 open issues
+were bot-filed slices of one campaign, which no reader of a public issue count
+can tell from defects. Nothing generates the label any more, and the issues are
+retired by a one-shot migration run by hand:
+
+```bash
+REPO=<owner/repo> node scripts/sync-backfill-umbrella.ts --close-legacy --dry-run
+REPO=<owner/repo> node scripts/sync-backfill-umbrella.ts --close-legacy
+```
+
+It closes each one as `not planned` — the properties are still unwired; what
+ended is the issue — and SKIPS any labelled issue whose body carries no
+`<!-- backfill-type: … -->` marker, since that is something a person filed rather
+than a generated slice. The label stays on what it closes.
 
 ### When the reconciler refuses
 

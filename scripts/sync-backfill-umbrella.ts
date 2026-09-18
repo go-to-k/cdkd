@@ -80,7 +80,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -165,7 +165,31 @@ export function validatePlan(plan: unknown): Plan {
       );
     }
   }
-  return { types };
+  const validated = { types };
+  assertNoDuplicateTypes(validated);
+  return validated;
+}
+
+/**
+ * Refuse a plan naming one type twice.
+ *
+ * Called from BOTH {@link validatePlan} — so every CLI mode gets it, including
+ * `--render-block`, which reaches no body and would otherwise print two rows for
+ * one type straight into a paste — and {@link planBodyRewrite}, whose callers
+ * may hand it a plan they built themselves. One implementation, two entries: the
+ * property is about the DOCUMENT, not about the write.
+ */
+export function assertNoDuplicateTypes(plan: Plan): void {
+  const seen = new Set<string>();
+  for (const entry of plan.types) {
+    if (seen.has(entry.type)) {
+      throw new ReconcileRefusal(
+        `the plan names ${entry.type} twice. Refusing to publish two rows for one type — ` +
+          'nothing here can say which property list is the live one.'
+      );
+    }
+    seen.add(entry.type);
+  }
 }
 
 /**
@@ -255,16 +279,7 @@ export function planBodyRewrite(
   plan: Plan,
   allowEmptyPlan = false
 ): { body: string; changed: boolean } {
-  const seen = new Set<string>();
-  for (const entry of plan.types) {
-    if (seen.has(entry.type)) {
-      throw new ReconcileRefusal(
-        `the plan names ${entry.type} twice. Refusing to publish two rows for one type — ` +
-          'nothing here can say which property list is the live one.'
-      );
-    }
-    seen.add(entry.type);
-  }
+  assertNoDuplicateTypes(plan);
 
   const { start, end } = locateBlock(body);
   const current = body.slice(start + BLOCK_START.length, end);
@@ -272,7 +287,14 @@ export function planBodyRewrite(
   if (plan.types.length === 0 && !allowEmptyPlan) {
     // Read off the block that is actually published, not off a count kept
     // elsewhere: what an empty plan would DESTROY is these rows.
-    const rows = current.split('\n').filter((line) => line.trimStart().startsWith('- [ ] ')).length;
+    //
+    // `[x]` COUNTS. Every row is rendered unchecked and the design says a tick
+    // would be overwritten — which means a hand-ticked block is a state this
+    // system EXPECTS to meet, and a guard matching `- [ ] ` alone is blind to
+    // exactly it: a reader who ticked the rows off would have the whole
+    // checklist wiped by the empty plan this refusal exists to stop (found in
+    // review, probed).
+    const rows = current.split('\n').filter((line) => /^\s*- \[[ xX]\] /.test(line)).length;
     if (rows > 0) {
       throw new ReconcileRefusal(
         `the plan carries no resource types while the umbrella's checklist holds ${rows} row(s). ` +
@@ -292,7 +314,16 @@ export function planBodyRewrite(
         'truncating the list, because a list that stops partway reads as finished.'
     );
   }
-  return { body: next, changed: next !== body };
+  // CR-INSENSITIVE, while the body written is the raw splice. The two differ
+  // only if something hands the generated region back with CRLF — which would
+  // otherwise report as changed on every push, forever, rewriting a page whose
+  // content already agrees with `main`. Measured on this repository:
+  // go-to-k/cdkd#2762's body comes back with no CR at all after years of
+  // web-UI edits, so this closes a loop nothing is known to open rather than
+  // fixing an observed one. A real content change still differs after the
+  // strip, so nothing is hidden by it.
+  const strip = (s: string) => s.replace(/\r/g, '');
+  return { body: next, changed: strip(next) !== strip(body) };
 }
 
 /** How a command is run — injectable so the tests never reach GitHub. */
@@ -316,17 +347,24 @@ const ghRunner: Runner = (args) =>
  */
 export function fetchUmbrellaBody(run: Runner, repo: string, parent: number): string {
   const raw = run(['issue', 'view', String(parent), '--repo', repo, '--json', 'body', '--jq', '.body']);
-  if (raw === '') {
+  // `gh --jq` terminates its output with a newline that is not part of the
+  // field. Left on, it would sit inside the body on every write — appending one
+  // blank line per run, forever, and reporting `changed` each time.
+  //
+  // STRIPPED BEFORE the emptiness test, not after. An empty body reaches this
+  // function as `"\n"`, never as `""`, so testing first put the refusal on a
+  // shape production `gh` does not emit: the run then failed one step later on
+  // the missing marker, with a message describing the wrong problem (found in
+  // review, probed against the real command's output).
+  const body = raw.endsWith('\n') ? raw.slice(0, -1) : raw;
+  if (body === '') {
     throw new ReconcileRefusal(
       `issue #${parent} reported an EMPTY body. An empty answer and a failed read are the same ` +
         'string here, and rewriting from either one would publish a page with nothing but the ' +
         'generated block on it.'
     );
   }
-  // `gh --jq` terminates its output with a newline that is not part of the
-  // field. Left on, it would sit inside the body on every write — appending one
-  // blank line per run, forever, and reporting `changed` each time.
-  return raw.endsWith('\n') ? raw.slice(0, -1) : raw;
+  return body;
 }
 
 /**
@@ -352,7 +390,20 @@ export function writeUmbrellaBody(
 export interface LegacyIssue {
   number: number;
   title: string;
+  body: string;
 }
+
+/**
+ * The marker every GENERATED per-type issue body opens with.
+ *
+ * The retired design keyed an issue to its resource type by this comment, and it
+ * is the only thing that distinguishes a bot-filed slice from an issue a human
+ * happened to label `backfill-type`. `--close-legacy` closes by LABEL, so
+ * without this test a hand-labelled issue would be closed `not planned` with a
+ * comment about a campaign it is not part of — the wrong-issue write the old
+ * design refused from the other direction (found in review).
+ */
+export const LEGACY_TYPE_MARKER_PREFIX = '<!-- backfill-type: ';
 
 /**
  * The comment every retired per-type issue is closed with.
@@ -382,7 +433,7 @@ export function fetchLegacyIssues(run: Runner, repo: string): LegacyIssue[] {
     '--limit',
     String(LEGACY_LIST_LIMIT),
     '--json',
-    'number,title',
+    'number,title,body',
   ]);
   const parsed: unknown = JSON.parse(raw);
   if (!Array.isArray(parsed)) {
@@ -390,7 +441,30 @@ export function fetchLegacyIssues(run: Runner, repo: string): LegacyIssue[] {
     // close", and here that difference is the whole outcome of the migration.
     throw new ReconcileRefusal(`gh issue list returned ${typeof parsed}, not an array.`);
   }
+  // VALIDATED, not cast. Every field below decides which public issue gets
+  // closed, and an entry missing `number` would reach `gh issue close undefined`
+  // — which fails, but only after the entries before it were already closed.
+  for (const issue of parsed) {
+    if (
+      typeof issue !== 'object' ||
+      issue === null ||
+      !Number.isInteger(issue.number) ||
+      issue.number <= 0 ||
+      typeof issue.title !== 'string' ||
+      typeof issue.body !== 'string'
+    ) {
+      throw new ReconcileRefusal(
+        `gh issue list returned ${JSON.stringify(issue)}, which is not an issue. Refusing to ` +
+          'close anything from a listing this script cannot read.'
+      );
+    }
+  }
   return parsed as LegacyIssue[];
+}
+
+/** Whether an issue is one of the GENERATED per-type slices. */
+export function isGeneratedLegacyIssue(issue: LegacyIssue): boolean {
+  return issue.body.replace(/\r/g, '').split('\n').some((line) => line.startsWith(LEGACY_TYPE_MARKER_PREFIX));
 }
 
 /**
@@ -430,6 +504,23 @@ const USAGE =
   '       sync-backfill-umbrella.ts <plan.json> --render-block\n' +
   '       REPO=<owner/repo> sync-backfill-umbrella.ts --close-legacy [--dry-run]';
 
+/**
+ * Every flag this CLI understands.
+ *
+ * An unknown flag is REFUSED rather than ignored, and the case that makes it
+ * matter is `--close-legacy --dry-runn`: silently dropping the typo turns the
+ * operator's rehearsal into the real pass across ~44 public issues. The two MODE
+ * flags are mutually exclusive for the same reason — a run carrying both would
+ * silently do whichever the code tests first, which is not a thing to leave to
+ * reading order when one of them writes.
+ */
+export const KNOWN_CLI_FLAGS = new Set([
+  '--dry-run',
+  '--allow-empty-plan',
+  '--render-block',
+  '--close-legacy',
+]);
+
 /** Read and validate the plan a positional argument names. */
 function readPlan(planPath: string): Plan {
   const parsed: unknown = JSON.parse(readFileSync(planPath, 'utf8'));
@@ -445,20 +536,47 @@ function readPlan(planPath: string): Plan {
 /** The one-shot migration: close what the retired per-type design left open. */
 function closeLegacy(repo: string, dryRun: boolean): void {
   const issues = fetchLegacyIssues(ghRunner, repo);
+  if (issues.length === LEGACY_LIST_LIMIT) {
+    // Announced BEFORE the closes, not after: printed at the end it describes
+    // work the operator has already watched scroll past, and the tail of a
+    // forty-line log is where a line goes unread.
+    //
+    // Not a refusal: closing is idempotent and additive, so a truncated page
+    // costs a second REAL pass rather than a wrong answer — unlike the per-type
+    // design's listing, where a dropped issue looked NEW and got duplicated. A
+    // dry re-run returns the same page, so it is the real pass that advances.
+    console.log(
+      `the listing came back at its limit of ${LEGACY_LIST_LIMIT} — there may be more. Once this ` +
+        'pass has really closed these, run it again for the rest.'
+    );
+  }
+  let closed = 0;
+  const skipped: number[] = [];
   for (const issue of issues) {
+    if (!isGeneratedLegacyIssue(issue)) {
+      // SKIPPED, not closed, and named rather than counted: a labelled issue
+      // with no generated marker is something a human filed or labelled, and
+      // closing it `not planned` with a comment about a campaign it is not part
+      // of is the wrong-issue write this migration must not make. It is also not
+      // a reason to refuse the whole pass, which would strand 44 correct closes
+      // behind one mislabelled issue.
+      skipped.push(issue.number);
+      continue;
+    }
     console.log(`${dryRun ? '[dry-run] ' : ''}close #${issue.number} ${issue.title}`);
     if (!dryRun) closeLegacyIssue(ghRunner, repo, issue.number);
+    closed++;
   }
-  if (issues.length === LEGACY_LIST_LIMIT) {
-    // Not a refusal: closing is idempotent and additive, so a truncated page
-    // costs a second pass rather than a wrong answer — unlike the per-type
-    // design's listing, where a dropped issue looked NEW and got duplicated.
+  if (skipped.length > 0) {
     console.log(
-      `the listing came back at its limit of ${LEGACY_LIST_LIMIT} — re-run to close the rest.`
+      `SKIPPED #${skipped.join(', #')}: labelled '${LEGACY_SUBISSUE_LABEL}' but carrying no ` +
+        `'${LEGACY_TYPE_MARKER_PREFIX.trim()}' marker, so not a generated slice. Close or ` +
+        'unlabel by hand if that is wrong.'
     );
   }
   console.log(
-    `sync-backfill-umbrella: ${issues.length} legacy issue(s) ${dryRun ? 'would be ' : ''}closed.`
+    `sync-backfill-umbrella: ${closed} legacy issue(s) ${dryRun ? 'would be ' : ''}closed` +
+      `${skipped.length > 0 ? `, ${skipped.length} skipped` : ''}.`
   );
 }
 
@@ -487,6 +605,24 @@ function main(): void {
   const legacy = args.includes('--close-legacy');
   const repo = process.env['REPO'];
   const parent = Number(process.env['PARENT']);
+
+  const unknown = args.filter((a) => a.startsWith('-') && !KNOWN_CLI_FLAGS.has(a));
+  if (unknown.length > 0) {
+    console.error(
+      `sync-backfill-umbrella: unrecognized flag(s): ${unknown.join(', ')} — known flags are ` +
+        `${[...KNOWN_CLI_FLAGS].join(', ')}. Refusing to run an invocation this script did not ` +
+        'understand: a typo in --dry-run turns a rehearsal into the real pass.'
+    );
+    process.exitCode = 2;
+    return;
+  }
+  if (renderOnly && legacy) {
+    console.error(
+      'sync-backfill-umbrella: --render-block and --close-legacy are different jobs; pass one.'
+    );
+    process.exitCode = 2;
+    return;
+  }
 
   try {
     // Renders the block and exits, reaching neither GitHub nor a token. This is
@@ -537,8 +673,15 @@ function main(): void {
       return;
     }
 
+    // Removed on the way out, including after a failed write: the file holds a
+    // copy of a public issue body, and the predecessor left one behind in the
+    // runner's tmpdir on every run.
     const scratch = mkdtempSync(join(tmpdir(), 'backfill-umbrella-'));
-    writeUmbrellaBody(ghRunner, repo, parent, rewrite.body, scratch);
+    try {
+      writeUmbrellaBody(ghRunner, repo, parent, rewrite.body, scratch);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
     console.log(`sync-backfill-umbrella: rewrote the generated block of #${parent}.`);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

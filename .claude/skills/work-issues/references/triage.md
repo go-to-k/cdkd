@@ -42,7 +42,7 @@ backlog.** They were the ~44 generated per-type slices of the silent-drop
 backfill campaign (go-to-k/cdkd#2949), FOLDED BACK into one generated checklist
 in the umbrella issue: 44 of 240 open issues were bot-filed slices of one
 campaign, which a public issue count cannot tell from unfixed defects. They are
-closed and the label is legacy. The filter stays because a reopened slice is
+retired and the label is legacy. The filter stays because such a slice is
 still no decision a triage pass can make, and its `created_at` is whenever the
 map last moved, so §3-0's quarantine and rule 7's ranking read it wrong.
 

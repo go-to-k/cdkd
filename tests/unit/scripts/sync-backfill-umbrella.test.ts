@@ -29,14 +29,17 @@ import { parse as parseYaml } from 'yaml';
 import {
   BLOCK_END,
   BLOCK_START,
+  KNOWN_CLI_FLAGS,
   LEGACY_CLOSE_COMMENT,
   LEGACY_LIST_LIMIT,
   LEGACY_SUBISSUE_LABEL,
+  LEGACY_TYPE_MARKER_PREFIX,
   MAX_BODY_CHARS,
   ReconcileRefusal,
   closeLegacyIssue,
   fetchLegacyIssues,
   fetchUmbrellaBody,
+  isGeneratedLegacyIssue,
   planBodyRewrite,
   renderChecklistBlock,
   validatePlan,
@@ -253,6 +256,18 @@ describe('planBodyRewrite', () => {
       expect(done.body, 'the human half was taken with the rows').toContain('## Procedure');
     });
 
+    it('counts a HAND-TICKED row, which is the state this design expects to meet', () => {
+      // Every row is rendered unchecked and the design says a tick would be
+      // overwritten — so a reader ticking rows off is anticipated, and a guard
+      // matching `- [ ] ` alone is blind to exactly that state: the empty plan
+      // this refusal exists to stop would wipe a checklist somebody had just
+      // worked through. Found in review, by probing the ticked body.
+      const live = planBodyRewrite(bodyWith('x'), planOf(['AWS::S3::Bucket', ['A']])).body;
+      const ticked = live.replace('- [ ] `AWS::S3::Bucket`', '- [x] `AWS::S3::Bucket`');
+      expect(ticked, 'the tick did not land — this case measures nothing').toContain('- [x] ');
+      expect(() => planBodyRewrite(ticked, { types: [] })).toThrow(/--allow-empty-plan/);
+    });
+
     it('accepts an empty plan against a block with no rows, without the flag', () => {
       // Nothing to destroy, so there is nothing to confirm. Without this arm the
       // steady state AFTER a completed campaign would fail on every run.
@@ -361,8 +376,19 @@ describe('the gh calls', () => {
     // A failed read and a genuinely empty issue are the same string here, and
     // rewriting from either publishes a page with nothing on it but the
     // generated block.
-    const { run } = recorder(['']);
-    expect(() => fetchUmbrellaBody(run, 'go-to-k/cdkd', 2762)).toThrow(ReconcileRefusal);
+    //
+    // BOTH shapes. `"\n"` is what the real command emits for an empty body —
+    // `gh --jq` always terminates its output — so a refusal tested against `""`
+    // alone sat on a shape production never produces, and the run failed one
+    // step later complaining about a missing marker (found in review, probed
+    // against the real output).
+    for (const raw of ['\n', '']) {
+      const { run } = recorder([raw]);
+      expect(
+        () => fetchUmbrellaBody(run, 'go-to-k/cdkd', 2762),
+        `an empty body arriving as ${JSON.stringify(raw)} was accepted`
+      ).toThrow(/EMPTY body/);
+    }
   });
 
   it('passes the rewritten body by FILE, never as an argument', () => {
@@ -388,16 +414,60 @@ describe('the gh calls', () => {
     // `--state open`, unlike the per-type reconciler's `--state all`: this pass
     // closes what is open and has no reason to see — or to touch — an issue
     // somebody already closed.
-    const { run, calls } = recorder(['[{"number":10,"title":"t"}]']);
-    expect(fetchLegacyIssues(run, 'go-to-k/cdkd')).toEqual([{ number: 10, title: 't' }]);
+    const { run, calls } = recorder(['[{"number":10,"title":"t","body":"b"}]']);
+    expect(fetchLegacyIssues(run, 'go-to-k/cdkd')).toEqual([{ number: 10, title: 't', body: 'b' }]);
     expect(calls[0]).toContain(LEGACY_SUBISSUE_LABEL);
     expect(calls[0]![calls[0]!.indexOf('--state') + 1]).toBe('open');
     expect(calls[0]![calls[0]!.indexOf('--limit') + 1]).toBe(String(LEGACY_LIST_LIMIT));
+    // The BODY is fetched, or nothing can tell a generated slice from an issue
+    // a human labelled — and this pass closes what it is handed.
+    expect(calls[0]).toContain('number,title,body');
   });
 
   it('refuses a listing that is not an array rather than reading it as empty', () => {
     const { run } = recorder(['{"message":"Not Found"}']);
     expect(() => fetchLegacyIssues(run, 'go-to-k/cdkd')).toThrow(ReconcileRefusal);
+  });
+
+  it('refuses an ENTRY it cannot read, rather than closing the ones before it', () => {
+    // An unvalidated cast reaches `gh issue close undefined`, which fails — but
+    // only after every entry ahead of the bad one has already been closed.
+    for (const bad of ['[{"title":"t","body":"b"}]', '[{"number":0,"title":"t","body":"b"}]', '[{"number":10,"title":"t"}]']) {
+      const { run } = recorder([bad]);
+      expect(() => fetchLegacyIssues(run, 'go-to-k/cdkd'), `${bad} was accepted`).toThrow(
+        ReconcileRefusal
+      );
+    }
+  });
+
+  it('tells a GENERATED slice from an issue somebody merely labelled', () => {
+    // The retired design keyed each issue to its type by this marker, and it is
+    // the only thing distinguishing a bot-filed slice from a hand-labelled
+    // issue. Closing the latter `not planned`, with a comment about a campaign
+    // it is not part of, is the wrong-issue write this migration must not make.
+    const generated = {
+      number: 10,
+      title: 'Backfill silent-drop properties: AWS::S3::Bucket',
+      body: `${LEGACY_TYPE_MARKER_PREFIX}AWS::S3::Bucket -->\n\nGenerated.`,
+    };
+    expect(isGeneratedLegacyIssue(generated)).toBe(true);
+    // CRLF, because a body a human opened in the web UI comes back with it and
+    // a suffix-blind reader would call that issue hand-filed and skip it.
+    expect(isGeneratedLegacyIssue({ ...generated, body: generated.body.replace(/\n/g, '\r\n') })).toBe(
+      true
+    );
+    expect(isGeneratedLegacyIssue({ number: 11, title: 'my own issue', body: 'no marker' })).toBe(
+      false
+    );
+    // Not mid-line: this repository's own documentation quotes the marker while
+    // explaining the mechanism, and a review can quote a body back.
+    expect(
+      isGeneratedLegacyIssue({
+        number: 12,
+        title: 'about the campaign',
+        body: `see the ${LEGACY_TYPE_MARKER_PREFIX}AWS::S3::Bucket --> marker`,
+      })
+    ).toBe(false);
   });
 
   it('closes a legacy issue as NOT PLANNED, saying where its content went', () => {
@@ -451,9 +521,19 @@ describe('cross-file fences', () => {
     const runbook = readFileSync(join(REPO_ROOT, 'docs/schema-refresh-runbook.md'), 'utf8');
     expect(runbook).toContain(BLOCK_START);
     expect(runbook).toContain(BLOCK_END);
-    expect(runbook, 'the runbook still documents the retired per-type sub-issues as live').toContain(
-      'legacy'
+    // And the two recipes a reader needs when it refuses, by the spellings the
+    // CLI answers to. A bare `toContain('legacy')` stood here and tested
+    // nothing: the word appears in a 500-line file for any number of reasons,
+    // while the failure message claimed it fenced the per-type set's retirement
+    // (found in review).
+    expect(runbook, 'the runbook does not name the mode that prints the block').toContain(
+      '--render-block'
     );
+    expect(runbook, 'the runbook does not name the one-shot migration').toContain('--close-legacy');
+    expect(
+      runbook,
+      'the runbook no longer says the `backfill-type` label is legacy'
+    ).toMatch(/`backfill-type`[^.]*\*\*legacy\*\*/);
   });
 
   it('excludes the label from EVERY backlog listing in /work-issues, not just the first', () => {
@@ -775,9 +855,16 @@ esac
     // The one-shot migration, run by hand after the fold-back merges. Both arms:
     // the dry run is what an operator uses to see the blast radius first, and a
     // dry run that closed anything would be discovered on ~44 public issues.
+    const generated = (number: number, type: string) => ({
+      number,
+      title: `Backfill silent-drop properties: ${type}`,
+      body: `${LEGACY_TYPE_MARKER_PREFIX}${type} -->\n\nGenerated.`,
+    });
     const box = sandbox(bodyWith('x'), [
-      { number: 10, title: 'Backfill silent-drop properties: AWS::S3::Bucket' },
-      { number: 11, title: 'Backfill silent-drop properties: AWS::SQS::Queue' },
+      generated(10, 'AWS::S3::Bucket'),
+      generated(11, 'AWS::SQS::Queue'),
+      // A human's issue that merely wears the label. It must survive the pass.
+      { number: 12, title: 'my own note about the campaign', body: 'no marker here' },
     ]);
     try {
       const dry = spawnCli(box, ['--close-legacy', '--dry-run'], { REPO: 'go-to-k/cdkd' });
@@ -792,10 +879,41 @@ esac
       expect(calls).toContain('gh issue close 11');
       expect(calls).toContain('--reason not planned');
       expect(calls).toContain(LEGACY_CLOSE_COMMENT);
+      // The hand-labelled issue is SKIPPED and NAMED, not closed with a comment
+      // about a campaign it is not part of.
+      expect(calls, 'a hand-labelled issue was closed').not.toContain('gh issue close 12');
+      expect(res.stdout).toContain('SKIPPED #12');
       // It never touches the umbrella on this path: the migration closes issues
       // and nothing else.
       expect(calls, 'the migration rewrote a body').not.toContain('issue edit');
-      expect(res.stdout).toContain('2 legacy issue(s) closed.');
+      expect(res.stdout).toContain('2 legacy issue(s) closed, 1 skipped.');
+    } finally {
+      rmSync(box.dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it('refuses an unrecognized flag instead of ignoring it', () => {
+    // `--close-legacy --dry-runn` is the case: a dropped typo turns the
+    // operator's rehearsal into the real pass across ~44 public issues. Both
+    // halves asserted — the refusal, and that the stub `gh` was never reached,
+    // since an exit code alone cannot say whether anything was closed first.
+    const box = sandbox(bodyWith('x'), [
+      { number: 10, title: 't', body: `${LEGACY_TYPE_MARKER_PREFIX}AWS::S3::Bucket -->` },
+    ]);
+    try {
+      const res = spawnCli(box, ['--close-legacy', '--dry-runn'], { REPO: 'go-to-k/cdkd' });
+      expect(res.status).toBe(2);
+      expect(res.stderr).toContain('unrecognized flag(s): --dry-runn');
+      expect(existsSync(box.log), 'the typo run still reached gh').toBe(false);
+      // And the two MODES are exclusive, rather than resolved by reading order.
+      const both = spawnCli(box, ['--render-block', '--close-legacy'], { REPO: 'go-to-k/cdkd' });
+      expect(both.status).toBe(2);
+      expect(both.stderr).toContain('different jobs');
+      // Every flag the usage line advertises is in the known set, or the refusal
+      // above rejects the documented invocation.
+      for (const flag of ['--dry-run', '--allow-empty-plan', '--render-block', '--close-legacy']) {
+        expect(KNOWN_CLI_FLAGS.has(flag), `${flag} is documented but not known`).toBe(true);
+      }
     } finally {
       rmSync(box.dir, { recursive: true, force: true });
     }

@@ -297,8 +297,9 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // filing.md's claim about them was corrected from a false universal to the
     // enumerated one it now fences. Round 2 added retro.md's folded-finding
     // count to that set -- it selects issues whose body gained a `- [ ] ` row,
-    // which after a sync is every generated sub-issue -- and widened the fence's
-    // population to both files.
+    // which after a sync was every generated sub-issue -- and widened the
+    // fence's population to both files. (Those rows live in the umbrella's own
+    // body since the fold-back; see the RE-MEASURED entry below.)
     //
     // The go-to-k/cdkd#3005 / go-to-k/cdkd#3029 retro then grew it by 1,156 B
     // and swapped the leaders TWICE inside its own review round (the lead
@@ -450,7 +451,7 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // record has now predicted twice.
     //
     // RE-MEASURED by the backfill fold-back, which retired the ~44 generated
-    // per-type issues into one umbrella checklist: corpus 199,838 -> 200,230,
+    // per-type issues into one umbrella checklist: corpus 199,838 -> 200,227,
     // across the three files that described that set as live (filing.md's §5-f
     // carve-out, now the record of a REVERSED exemption; retro.md's
     // folded-finding count, which gained the umbrella's own label because the
@@ -459,7 +460,7 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // the per-file cap and was compressed back under in the same pass — three
     // rounds of it — rather than the cap being moved. It has single-digit
     // headroom now, as verify.md and implement.md already did.
-    corpusBytes: 200_230,
+    corpusBytes: 200_227,
     largest: { file: 'verify.md', bytes: 29_994 },
     runnerUp: { file: 'implement.md', bytes: 29_990 },
   },
