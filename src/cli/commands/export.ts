@@ -848,6 +848,81 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
       propertiesOverlay: { FunctionName: functionName },
     };
   },
+  // Issue #3414. AWS re-published the type on 2026-09-18 as `FULLY_MUTABLE`
+  // with a full handler set (it had no `handlers` block and was
+  // NON_PROVISIONABLE when `typeIsImportUnsupported` was measured, so the
+  // pre-flight used to refuse it before the identifier was ever resolved) and
+  // a COMPOSITE primaryIdentifier `[ApiId, ApiKeyId]` where it had been the
+  // single `ApiKeyId`. With the refusal gone, a stack carrying a key reached
+  // the "add an entry to COMPOSITE_ID_SPLITTERS" throw below.
+  //
+  // Three id shapes reach this splitter, and all three are decoded because a
+  // refusal here blocks the WHOLE export:
+  //   1. `<apiId>|<apiKeyId>` — what `AppSyncProvider.createApiKey` packs
+  //      (`packCompositeId`, same order as the new CFn identifier) AND what the
+  //      Cloud Control route stores now that the identifier is composite;
+  //   2. the key ARN `arn:<partition>:appsync:<region>:<account>:apis/<apiId>/apikey/<apiKeyId>`
+  //      — CloudFormation's `Ref` for the type, so the `PhysicalResourceId` a
+  //      `--migrate-from-cloudformation` import records verbatim;
+  //   3. the bare `<apiKeyId>` — what `cdkd import --resource Key=<apiKeyId>`
+  //      records verbatim (`AppSyncProvider.import` stores `knownPhysicalId` as
+  //      given for every child type); the parent comes from the recorded
+  //      `ApiId` property, the way `AWS::ApiGateway::Resource`'s bare form
+  //      recovers `RestApiId`. NOT a Cloud Control shape: the type was
+  //      NON_PROVISIONABLE before the flip, so CC never wrote a bare id.
+  // `ApiKeyId` is `readOnlyProperties`, so the overlay narrows to `ApiId` —
+  // writing the read-only field into Properties is rejected at changeset-create.
+  // Both segments are AWS-minted ids, so a `|` inside one cannot occur and the
+  // arity test is exact rather than "at least". An `arn:`-prefixed value that
+  // is NOT the key ARN shape above is refused rather than shipped as a bare
+  // key id — a mis-spelled ARN (`apikeys`, a wrong service) has no `|`, so
+  // without the guard it would fall through to shape 3 and only CreateChangeSet
+  // would notice.
+  'AWS::AppSync::ApiKey': (physicalId, properties) => {
+    const trimmed = physicalId.trim();
+    if (!trimmed) {
+      throw new Error(
+        "empty physical id for AWS::AppSync::ApiKey (expected 'apiId|apiKeyId', the key ARN, or a bare apiKeyId)"
+      );
+    }
+    const arnMatch = /^arn:[^:]+:appsync:[^:]*:[^:]*:apis\/([^/|]+)\/apikey\/([^/|]+)$/.exec(
+      trimmed
+    );
+    if (arnMatch) {
+      const [, apiId, apiKeyId] = arnMatch as unknown as [string, string, string];
+      return {
+        resourceIdentifier: { ApiId: apiId, ApiKeyId: apiKeyId },
+        propertiesOverlay: { ApiId: apiId },
+      };
+    }
+    if (trimmed.startsWith('arn:')) {
+      throw new Error(
+        `'${physicalId}' looks like an ARN but is not an AppSync API key ARN ` +
+          `(expected arn:<partition>:appsync:<region>:<account>:apis/<apiId>/apikey/<apiKeyId>)`
+      );
+    }
+    const parts = trimmed.split('|');
+    if (parts.length > 2) {
+      throw new Error(
+        `expected 'apiId|apiKeyId', the key ARN, or a bare apiKeyId, got ${parts.length} parts: '${physicalId}'`
+      );
+    }
+    if (parts.length === 2) {
+      const [apiId, apiKeyId] = parts as [string, string];
+      if (!apiId.trim() || !apiKeyId.trim()) {
+        throw new Error(`empty part in 'apiId|apiKeyId': '${physicalId}'`);
+      }
+      return {
+        resourceIdentifier: { ApiId: apiId, ApiKeyId: apiKeyId },
+        propertiesOverlay: { ApiId: apiId },
+      };
+    }
+    const apiId = readStringProperty(properties, 'ApiId', 'AWS::AppSync::ApiKey');
+    return {
+      resourceIdentifier: { ApiId: apiId, ApiKeyId: trimmed },
+      propertiesOverlay: { ApiId: apiId },
+    };
+  },
 };
 
 /**
@@ -1322,6 +1397,19 @@ interface CompositePhysicalIdIdentifier {
    */
   readonly field: string;
   /**
+   * SINGLE fields the live schema may report INSTEAD of {@link field} for
+   * which cdkd's physicalId already IS the identifier value verbatim. When the
+   * schema names one of these, `resolveCompositeId` takes the ordinary
+   * single-key path (physicalId as the value) rather than refusing the type by
+   * name as a schema change. Exists for a type whose identifier AWS moved
+   * recently and whose two published sources disagreed while it moved
+   * (`AWS::AppSync::GraphQLApi`, `ApiId` -> `Arn`, issue #3327 / #3414): the
+   * OLD answer is not wrong, it is the value cdkd stores for a record it
+   * deployed. An ARN-shaped physicalId (a record adopted from CloudFormation)
+   * is excluded from the bypass by `resolveCompositeId`.
+   */
+  readonly physicalIdIsIdentifierFor?: readonly string[];
+  /**
    * Recover the identifier VALUE from cdkd state. Throws with an actionable
    * message when state does not carry it — the export is then blocked for that
    * resource instead of sending CFn something wrong.
@@ -1398,6 +1486,24 @@ interface CompositePhysicalIdIdentifier {
  * | `AWS::AppSync::Resolver` | `ResolverArn` | `attributes.ResolverArn` |
  * | `AWS::S3Tables::Table` | `TableARN` | `attributes.TableARN` |
  * | `AWS::EC2::SecurityGroupIngress` | `Id` | `attributes.Id` (issue #1761) |
+ * | `AWS::AppSync::GraphQLApi` | `Arn` (2026-09-18) | `attributes.Arn` (issue #3414) |
+ *
+ * The GraphQLApi row is the one whose identifier AWS RE-DECLARED under cdkd:
+ * the 2026-09-17 public bundle flipped it from `ApiId` to `Arn` (issue #3327
+ * recorded the two published sources disagreeing at the time), and by
+ * 2026-09-18 `describe-type` in us-east-1 answers `["/properties/Arn"]` with a
+ * full handler set. cdkd's physicalId is the bare `apiId`, which is NOT the ARN
+ * and cannot be turned into one without account + partition, so the entry
+ * reads the `Arn` attribute `AppSyncProvider.create` records. Because the
+ * flip is recent and the two sources disagreed, the entry ALSO declares
+ * `physicalIdIsIdentifierFor: ['ApiId']`: a schema that reports the OLD
+ * single field is not a schema change that needs a code edit — for a record
+ * cdkd deployed, the physicalId already IS that value — so `resolveCompositeId`
+ * takes the plain single-key path for it instead of refusing by name. The
+ * bypass excludes an ARN-shaped physicalId (a `--migrate-from-cloudformation`
+ * record stores CloudFormation's `PhysicalResourceId`, the ARN), which under
+ * a pre-flip registry keeps the loud cross-check refusal rather than shipping
+ * an ARN as `ApiId`.
  *
  * The SG-ingress row is measured the same way as the rest, and separately
  * against a real CloudFormation stack because the three strings that name one
@@ -1411,11 +1517,26 @@ interface CompositePhysicalIdIdentifier {
  * `sgr-02345615af6d2db0d`, with `Ref` and `Fn::GetAtt .Id` both returning that
  * same value.
  *
- * All four declare a `read` handler, so CFn genuinely does accept them for
- * IMPORT — unlike `AWS::Glue::Table`, the type issue #1659's title names, which
- * CFn rejects outright (see {@link typeIsImportUnsupported}).
+ * All five declare a `read` handler. For four of them CFn genuinely does accept
+ * the IMPORT — unlike `AWS::Glue::Table`, the type issue #1659's title names,
+ * which CFn rejects outright (see {@link typeIsImportUnsupported}). The fifth,
+ * `AWS::AppSync::GraphQLApi`, is measured REFUSED despite its read handler
+ * (see {@link CFN_IMPORT_REFUSED_DESPITE_REGISTRY}), so its row below is
+ * reachable only under `--skip-import-support-preflight`.
  */
 const COMPOSITE_PHYSICAL_ID_IDENTIFIERS: Record<string, CompositePhysicalIdIdentifier> = {
+  // cdkd stores the bare `<apiId>` (appsync-provider.ts's `createGraphQLApi`)
+  // and records the API ARN as the `Arn` attribute. See the table above for
+  // why the entry tolerates a schema that still reports `ApiId`. Reachable
+  // ONLY under `--skip-import-support-preflight`: the measured refusal list
+  // blocks the type before identifier resolution by default.
+  'AWS::AppSync::GraphQLApi': recordedArnIdentifier({
+    resourceType: 'AWS::AppSync::GraphQLApi',
+    field: 'Arn',
+    physicalIdShape: '<apiId>',
+    arnServiceSegment: 'appsync',
+    physicalIdIsIdentifierFor: ['ApiId'],
+  }),
   // cdkd stores `<apiId>|<name>` (appsync-provider.ts's `createDataSource`);
   // the ARN is recorded as an attribute since issue #1681.
   'AWS::AppSync::DataSource': recordedArnIdentifier({
@@ -2114,8 +2235,10 @@ function recordedArnIdentifier(options: {
   field: string;
   physicalIdShape: string;
   arnServiceSegment: string;
+  physicalIdIsIdentifierFor?: readonly string[];
 }): CompositePhysicalIdIdentifier {
-  const { resourceType, field, physicalIdShape, arnServiceSegment } = options;
+  const { resourceType, field, physicalIdShape, arnServiceSegment, physicalIdIsIdentifierFor } =
+    options;
 
   /**
    * Is this value usable AS the type's CFn identifier?
@@ -2138,6 +2261,7 @@ function recordedArnIdentifier(options: {
 
   return {
     field,
+    ...(physicalIdIsIdentifierFor && { physicalIdIsIdentifierFor }),
     resolve: ({ logicalId, physicalId, attributes }) => {
       // Trimmed on RETURN as well as in the guard — a padded / newline-suffixed
       // ARN is otherwise shipped with the whitespace and CFn rejects the
@@ -2154,8 +2278,11 @@ function recordedArnIdentifier(options: {
           ? `attributes.${field} is recorded as '${recorded.trim()}', which is not a ` +
             `${arnServiceSegment} ARN`
           : `attributes.${field} is missing or empty`;
+      // "composite" vs "bare": `AWS::AppSync::GraphQLApi` stores a single
+      // segment, and a message calling `<apiId>` a composite misdescribes it.
+      const shapeWord = physicalIdShape.includes('|') ? 'the composite' : 'the bare';
       throw new Error(
-        `cdkd's physical id for ${resourceType} is the composite '${physicalIdShape}', but ` +
+        `cdkd's physical id for ${resourceType} is ${shapeWord} '${physicalIdShape}', but ` +
           `CloudFormation IMPORT identifies the resource by its ${field}, which cdkd state does ` +
           `not record usably for '${logicalId}' (${recordedNote}). Re-deploy the stack once so ` +
           `cdkd records ${field}, then re-run cdkd export.`
@@ -4233,6 +4360,28 @@ export async function buildImportPlan(
       // `resolveResourceIdentifier` takes the entry rather than re-fetching it.
       // A failure here means no usable schema AND no fallback entry, which the
       // catch reports with `fetchPrimaryIdentifier`'s own remediation message.
+      // The measured list needs no schema, so it is consulted BEFORE the
+      // DescribeType fetch: a type on it has no PRIMARY_IDENTIFIER_FALLBACK
+      // row, and a fetch failure (permissions, throttle) would otherwise
+      // report `could not resolve resource identifier` in place of the
+      // refusal that actually applies.
+      const measuredRefusal = cfnRefusesImportDespiteRegistry(resourceType);
+      if (!options.skipImportSupportPreflight && measuredRefusal !== undefined) {
+        blocked.push({
+          logicalId,
+          resourceType,
+          reason:
+            `AWS CloudFormation does not support ${resourceType} in IMPORT changesets, ` +
+            `${measuredRefusal}. Its registry schema passes cdkd's read-handler pre-flight, so ` +
+            `without this list CreateChangeSet would reject the whole export with ` +
+            `"ResourceTypes [${resourceType}] are not supported for Import" after the stack was ` +
+            `locked. Remove the resource from the stack before exporting (it stays in AWS and can ` +
+            `be re-declared in CloudFormation afterwards), or destroy it first and let ` +
+            `CloudFormation create it fresh. If AWS has since added IMPORT support for this ` +
+            `type, re-run with --skip-import-support-preflight and please open a cdkd issue.`,
+        });
+        continue;
+      }
       const schemaInfo = await cachedTypeSchemaInfo(resourceType, cfnClient, identifierCache);
       if (!options.skipImportSupportPreflight && typeIsImportUnsupported(schemaInfo)) {
         blocked.push({
@@ -4431,9 +4580,26 @@ async function resolveResourceIdentifier(
   // Consulted on BOTH branches (i.e. before either can run): "cdkd's id is
   // composite" and "the CFn identifier is multi-field" are independent facts,
   // and conflating them is the #1659 defect.
-  const compositeIdentifier = Object.hasOwn(COMPOSITE_PHYSICAL_ID_IDENTIFIERS, resourceType)
+  const registered = Object.hasOwn(COMPOSITE_PHYSICAL_ID_IDENTIFIERS, resourceType)
     ? COMPOSITE_PHYSICAL_ID_IDENTIFIERS[resourceType]
     : undefined;
+  // A schema reporting one of the entry's `physicalIdIsIdentifierFor` fields
+  // as the WHOLE identifier is the "physicalId is the identifier" case the
+  // entry exists to bypass — so it is not a schema change to refuse, and the
+  // single-key path below is the right one. Decided BEFORE the cross-check,
+  // which would otherwise name it as a change. The bypass is scoped to a
+  // physicalId that is NOT an ARN: a record adopted through
+  // `--migrate-from-cloudformation` stores CloudFormation's `PhysicalResourceId`,
+  // which for the API is its ARN, and shipping an ARN as `ApiId` would be a
+  // wrong identifier — so under a pre-flip registry such a record keeps the
+  // cross-check's loud refusal instead.
+  const compositeIdentifier =
+    registered &&
+    entry.fields.length === 1 &&
+    registered.physicalIdIsIdentifierFor?.includes(entry.fields[0]!) &&
+    !physicalId.trim().startsWith('arn:')
+      ? undefined
+      : registered;
   if (compositeIdentifier) {
     if (entry.fields.length !== 1 || entry.fields[0] !== compositeIdentifier.field) {
       throw new Error(
@@ -4536,6 +4702,14 @@ async function cachedTypeSchemaInfo(
  * legacy types) and a `handlers` block whose keys are only create / update /
  * delete (`AWS::EC2::NetworkAclEntry`).
  *
+ * That list is a MEASUREMENT, not a contract, and AWS moves types off it:
+ * `AWS::AppSync::ApiKey` was re-published `FULLY_MUTABLE` with a full handler
+ * set by 2026-09-18 (issue #3414), so it now passes this pre-flight and is
+ * resolved by its `COMPOSITE_ID_SPLITTERS` entry instead. The refusal reads
+ * the LIVE response, so such a move needs no edit here — only the resolution
+ * that the refusal used to shadow. `AWS::AppSync::GraphQLSchema` is still on
+ * the list as of that date (no `handlers` block, `NON_PROVISIONABLE`).
+ *
  * **Why the verdict needs TWO agreeing fields.** Reading "the `handlers` key is
  * missing" as a refusal on its own makes any partial or unusual response block
  * an export that works today — the one regression this pre-flight could cause,
@@ -4553,6 +4727,43 @@ async function cachedTypeSchemaInfo(
  */
 function typeIsImportUnsupported(entry: PrimaryIdentifierCacheEntry): boolean {
   return entry.importSupport === 'unsupported';
+}
+
+/**
+ * Types CloudFormation REFUSES in an IMPORT changeset although their registry
+ * schema passes {@link typeIsImportUnsupported} — a `read` handler declared,
+ * `ProvisioningType: FULLY_MUTABLE` — so the registry heuristic lets them
+ * through and `CreateChangeSet` answers `ResourceTypes [<T>] are not
+ * supported for Import` after the lock, the prompt and the template
+ * preprocessing have already happened. The heuristic is NECESSARY (a type
+ * with no read handler is never importable) but the 2026-09-18 measurement
+ * showed it is not SUFFICIENT: AWS's supported-for-import list is a separate
+ * fact the registry does not carry.
+ *
+ * Each entry is a dated measurement, and the map is the `blocked` message's
+ * evidence. `--skip-import-support-preflight` bypasses this set together with
+ * the heuristic, for the same reason it exists there: AWS may add support
+ * without cdkd noticing, and the changeset is then the authority.
+ *
+ * | Type | measured |
+ * |---|---|
+ * | `AWS::AppSync::GraphQLApi` | us-east-1, 2026-09-18, the `export` integ fixture: registry `[read, create, update, delete, list]` / `FULLY_MUTABLE` / identifier `Arn`; `CreateChangeSet --change-set-type IMPORT` carrying the API (resolved to its ARN) rejected with `ResourceTypes [AWS::AppSync::GraphQLApi] are not supported for Import`. `AWS::AppSync::ApiKey` is NOT here: a standalone IMPORT changeset carrying one key with `{ApiId, ApiKeyId}` reached `CREATE_COMPLETE` the same day. (issue #3414) |
+ */
+const CFN_IMPORT_REFUSED_DESPITE_REGISTRY: ReadonlyMap<string, string> = new Map([
+  [
+    'AWS::AppSync::GraphQLApi',
+    'measured in us-east-1 on 2026-09-18: the registry schema declares a read handler and ' +
+      'FULLY_MUTABLE, yet CreateChangeSet --change-set-type IMPORT rejected the type',
+  ],
+]);
+
+/**
+ * The dated measurement behind a {@link CFN_IMPORT_REFUSED_DESPITE_REGISTRY}
+ * entry, or `undefined` when CloudFormation has not been measured refusing the
+ * type. Exported for unit tests.
+ */
+export function cfnRefusesImportDespiteRegistry(resourceType: string): string | undefined {
+  return CFN_IMPORT_REFUSED_DESPITE_REGISTRY.get(resourceType);
 }
 
 /**
@@ -4584,7 +4795,7 @@ async function fetchPrimaryIdentifier(
         // JSON-pointer prefix to get the property name.
         const fields = primary.map((p) => p.replace(/^\/properties\//, ''));
         // A missing `handlers` block is how the legacy types (Glue::Table,
-        // Route53::RecordSet, AppSync::ApiKey) render, so its absence is
+        // Route53::RecordSet, AppSync::GraphQLSchema) render, so its absence is
         // meaningful — but only in combination with NON_PROVISIONABLE, per
         // `typeIsImportUnsupported`'s two-agreeing-fields rule.
         // The `!== null` is load-bearing (`hasOwnProperty.call(null, …)`
@@ -7292,11 +7503,12 @@ export function createExportCommand(): Command {
     .option(
       '--skip-import-support-preflight',
       'Skip the pre-flight that refuses resource types whose CloudFormation registry ' +
-        'schema says CFn cannot IMPORT them (no read handler AND NON_PROVISIONABLE), and ' +
-        'let CreateChangeSet answer instead. The pre-flight is a registry HEURISTIC, not ' +
-        "AWS's supported-for-import list, so this is the escape hatch for a type AWS has " +
-        'since made importable. Expect the changeset to be rejected if the heuristic was ' +
-        'right.',
+        'schema says CFn cannot IMPORT them (no read handler AND NON_PROVISIONABLE), AND ' +
+        "cdkd's short list of types measured refused by CreateChangeSet despite their " +
+        'registry schema (AWS::AppSync::GraphQLApi), and let CreateChangeSet answer ' +
+        "instead. Neither check is AWS's supported-for-import list, so this is the escape " +
+        'hatch for a type AWS has since made importable. Expect the changeset to be ' +
+        'rejected if the check was right.',
       false
     )
     .option(

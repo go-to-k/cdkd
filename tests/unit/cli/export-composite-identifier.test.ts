@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
   buildImportPlan,
+  cfnRefusesImportDespiteRegistry,
   COMPOSITE_PHYSICAL_ID_IDENTIFIER_TYPES,
   hasCompositePhysicalIdIdentifier,
   resolveCompositePhysicalIdIdentifier,
@@ -263,18 +264,20 @@ describe('resolveCompositePhysicalIdIdentifier (issue #1659)', () => {
     ).toThrow(/no composite-physicalId identifier registered for AWS::S3::Bucket/);
   });
 
-  it('hasCompositePhysicalIdIdentifier covers exactly the four measured types', () => {
-    // Size-asserted, not just membership: a fifth entry added later without a
+  it('hasCompositePhysicalIdIdentifier covers exactly the five measured types', () => {
+    // Size-asserted, not just membership: a sixth entry added later without a
     // measurement row in the table's doc comment would otherwise pass here.
-    expect(COMPOSITE_PHYSICAL_ID_IDENTIFIER_TYPES).toHaveLength(4);
+    expect(COMPOSITE_PHYSICAL_ID_IDENTIFIER_TYPES).toHaveLength(5);
     expect([...COMPOSITE_PHYSICAL_ID_IDENTIFIER_TYPES].sort()).toEqual([
       'AWS::AppSync::DataSource',
+      'AWS::AppSync::GraphQLApi',
       'AWS::AppSync::Resolver',
       'AWS::EC2::SecurityGroupIngress',
       'AWS::S3Tables::Table',
     ]);
     for (const t of [
       'AWS::AppSync::DataSource',
+      'AWS::AppSync::GraphQLApi',
       'AWS::AppSync::Resolver',
       'AWS::S3Tables::Table',
       'AWS::EC2::SecurityGroupIngress',
@@ -466,7 +469,25 @@ const SCHEMAS: Record<string, SchemaStub> = {
     handlers: { create: {}, read: {}, delete: {}, list: {} },
     provisioningType: 'IMMUTABLE',
   },
+  // Issue #3414 — both AppSync shapes measured us-east-1 2026-09-18. The API's
+  // identifier moved from `ApiId` to `Arn` (issue #3327); the key moved from
+  // the single `ApiKeyId` to the composite `[ApiId, ApiKeyId]` AND gained the
+  // handler set that takes it past the IMPORT pre-flight for the first time.
+  'AWS::AppSync::GraphQLApi': {
+    primaryIdentifier: ['/properties/Arn'],
+    handlers: { create: {}, read: {}, update: {}, delete: {}, list: {} },
+    provisioningType: 'FULLY_MUTABLE',
+  },
+  'AWS::AppSync::ApiKey': {
+    primaryIdentifier: ['/properties/ApiId', '/properties/ApiKeyId'],
+    handlers: { create: {}, read: {}, update: {}, delete: {}, list: {} },
+    provisioningType: 'FULLY_MUTABLE',
+  },
 };
+
+const GRAPHQL_API_ID = 'abcdefghijklmnopqrstuvwxyz';
+const GRAPHQL_API_ARN = `arn:aws:appsync:us-east-1:123456789012:apis/${GRAPHQL_API_ID}`;
+const API_KEY_ID = 'da2-abcdefghijklmnopqrstuvwxyz';
 
 /** Records one entry per DescribeType call the plan builder issues. */
 const describeTypeCalls: string[] = [];
@@ -1212,5 +1233,265 @@ describe('buildImportPlan — a redaction mask never reaches the import identifi
       /import identifier cdkd resolved for this resource is the redaction mask/
     );
     expect(plan.blocked[0]!.reason).toMatch(/masked physical id/);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Issue #3414 — the two AppSync types AWS re-declared in September 2026.
+// -----------------------------------------------------------------------------
+
+describe('resolveCompositePhysicalIdIdentifier — AWS::AppSync::GraphQLApi (issue #3414)', () => {
+  it('resolves the API from the recorded Arn attribute, not the bare apiId physicalId', () => {
+    const resolved = resolveCompositePhysicalIdIdentifier(
+      'AWS::AppSync::GraphQLApi',
+      ctx({ physicalId: GRAPHQL_API_ID, attributes: { Arn: GRAPHQL_API_ARN } })
+    );
+    expect(resolved).toEqual({ field: 'Arn', value: GRAPHQL_API_ARN });
+    // The defect: the single-key path would have shipped the apiId as `Arn`.
+    expect(resolved.value).not.toBe(GRAPHQL_API_ID);
+  });
+
+  it('accepts a physicalId that is already the API ARN (a record adopted from CloudFormation)', () => {
+    expect(
+      resolveCompositePhysicalIdIdentifier(
+        'AWS::AppSync::GraphQLApi',
+        ctx({ physicalId: GRAPHQL_API_ARN, attributes: {} })
+      ).value
+    ).toBe(GRAPHQL_API_ARN);
+  });
+
+  it('refuses a bare apiId with no recorded Arn, naming the remedy', () => {
+    expect(() =>
+      resolveCompositePhysicalIdIdentifier(
+        'AWS::AppSync::GraphQLApi',
+        ctx({ logicalId: 'Api', physicalId: GRAPHQL_API_ID, attributes: {} })
+      )
+    ).toThrow(/'Api'.*attributes\.Arn is missing or empty.*Re-deploy the stack/s);
+  });
+
+  it('refuses an ARN for another service recorded under Arn', () => {
+    expect(() =>
+      resolveCompositePhysicalIdIdentifier(
+        'AWS::AppSync::GraphQLApi',
+        ctx({
+          physicalId: GRAPHQL_API_ID,
+          attributes: { Arn: 'arn:aws:lambda:us-east-1:123456789012:function:not-an-api' },
+        })
+      )
+    ).toThrow(/attributes\.Arn is recorded as '.*', which is not a appsync ARN/);
+  });
+});
+
+describe('buildImportPlan — AWS::AppSync::GraphQLApi / ::ApiKey (issue #3414)', () => {
+  it('sends the recorded Arn for the API and overlays NOTHING (Arn is readOnly)', async () => {
+    const state = stateWith({
+      Api: {
+        resourceType: 'AWS::AppSync::GraphQLApi',
+        physicalId: GRAPHQL_API_ID,
+        attributes: { ApiId: GRAPHQL_API_ID, Arn: GRAPHQL_API_ARN },
+      },
+    });
+    const template = {
+      Resources: {
+        Api: {
+          Type: 'AWS::AppSync::GraphQLApi',
+          Properties: { Name: 'my-api', AuthenticationType: 'API_KEY' },
+        },
+      },
+    };
+    // Under the bypass flag: the measured refusal below blocks the API by
+    // default, and the identifier resolution is what this case pins.
+    const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack', {
+      recreateImportUnsupported: true,
+      skipImportSupportPreflight: true,
+    });
+    expect(plan.blocked).toEqual([]);
+    expect(plan.phase1Imports).toHaveLength(1);
+    expect(plan.phase1Imports[0]!.resourceIdentifier).toEqual({ Arn: GRAPHQL_API_ARN });
+    expect(plan.phase1Imports[0]!.propertiesOverlay).toEqual({});
+  });
+
+  it('blocks the API up front from the MEASURED refusal list although its registry passes the read-handler pre-flight', async () => {
+    // us-east-1, 2026-09-18, the `export` integ fixture: registry FULLY_MUTABLE
+    // with a full handler set, and CreateChangeSet --change-set-type IMPORT
+    // still answered `ResourceTypes [AWS::AppSync::GraphQLApi] are not
+    // supported for Import` — after the lock. The heuristic is necessary, not
+    // sufficient, so the type is blocked before any of that happens.
+    expect(cfnRefusesImportDespiteRegistry('AWS::AppSync::GraphQLApi')).toMatch(/2026-09-18/);
+    // The key is NOT on the list: a standalone IMPORT changeset carrying one
+    // reached CREATE_COMPLETE the same day.
+    expect(cfnRefusesImportDespiteRegistry('AWS::AppSync::ApiKey')).toBeUndefined();
+    const state = stateWith({
+      Api: {
+        resourceType: 'AWS::AppSync::GraphQLApi',
+        physicalId: GRAPHQL_API_ID,
+        attributes: { Arn: GRAPHQL_API_ARN },
+      },
+    });
+    const template = {
+      Resources: { Api: { Type: 'AWS::AppSync::GraphQLApi', Properties: { Name: 'my-api' } } },
+    };
+    const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');
+    expect(plan.phase1Imports).toEqual([]);
+    expect(plan.blocked).toHaveLength(1);
+    expect(plan.blocked[0]!.reason).toMatch(/measured in us-east-1 on 2026-09-18/);
+    expect(plan.blocked[0]!.reason).toMatch(/--skip-import-support-preflight/);
+    // The registry stub DOES declare a read handler, so the older heuristic
+    // did not fire — the case that made the list necessary.
+    expect(plan.blocked[0]!.reason).not.toMatch(/declares no 'read' handler/);
+  });
+
+  it('takes the plain single-key path when the registry still reports the OLD `ApiId` identifier', async () => {
+    // The tolerance the entry declares via `physicalIdIsIdentifierFor`: the two
+    // AWS-published sources disagreed while the identifier moved (issue #3327),
+    // and a schema answering `ApiId` is not a change to refuse — cdkd's
+    // physicalId IS that value. Note the state carries NO Arn attribute, so a
+    // resolve through the entry would have blocked; the path must be the
+    // single-key one.
+    const state = stateWith({
+      Api: { resourceType: 'AWS::AppSync::GraphQLApi', physicalId: GRAPHQL_API_ID },
+    });
+    const template = {
+      Resources: { Api: { Type: 'AWS::AppSync::GraphQLApi', Properties: { Name: 'my-api' } } },
+    };
+    const plan = await buildImportPlan(
+      state,
+      template,
+      cfnClientFor({
+        ...SCHEMAS,
+        'AWS::AppSync::GraphQLApi': {
+          primaryIdentifier: ['/properties/ApiId'],
+          handlers: { create: {}, read: {}, update: {}, delete: {}, list: {} },
+          provisioningType: 'FULLY_MUTABLE',
+        },
+      }),
+      'MyStack',
+      { recreateImportUnsupported: true, skipImportSupportPreflight: true }
+    );
+    expect(plan.blocked).toEqual([]);
+    expect(plan.phase1Imports[0]!.resourceIdentifier).toEqual({ ApiId: GRAPHQL_API_ID });
+  });
+
+  it('does NOT bypass the drift guard for an ARN-shaped physicalId under the old `ApiId` registry', async () => {
+    // A `--migrate-from-cloudformation` record stores CloudFormation's
+    // PhysicalResourceId — the API ARN. Shipping that as `ApiId` would be a
+    // wrong identifier, so the tolerance is scoped to a non-ARN physicalId and
+    // this record keeps the loud cross-check refusal (review of #3414).
+    const state = stateWith({
+      Api: { resourceType: 'AWS::AppSync::GraphQLApi', physicalId: GRAPHQL_API_ARN },
+    });
+    const template = {
+      Resources: { Api: { Type: 'AWS::AppSync::GraphQLApi', Properties: {} } },
+    };
+    const plan = await buildImportPlan(
+      state,
+      template,
+      cfnClientFor({
+        ...SCHEMAS,
+        'AWS::AppSync::GraphQLApi': {
+          primaryIdentifier: ['/properties/ApiId'],
+          handlers: { create: {}, read: {}, update: {}, delete: {}, list: {} },
+          provisioningType: 'FULLY_MUTABLE',
+        },
+      }),
+      'MyStack',
+      { recreateImportUnsupported: true, skipImportSupportPreflight: true }
+    );
+    expect(plan.phase1Imports).toEqual([]);
+    expect(plan.blocked).toHaveLength(1);
+    expect(plan.blocked[0]!.reason).toMatch(/registry schema changed under cdkd/);
+  });
+
+  it('still refuses by name when the registry reports a field the entry does NOT tolerate', async () => {
+    // `physicalIdIsIdentifierFor` is a LIST, not a blanket "any single field":
+    // a third spelling is a genuine schema change and keeps the drift guard.
+    const state = stateWith({
+      Api: {
+        resourceType: 'AWS::AppSync::GraphQLApi',
+        physicalId: GRAPHQL_API_ID,
+        attributes: { Arn: GRAPHQL_API_ARN },
+      },
+    });
+    const template = {
+      Resources: { Api: { Type: 'AWS::AppSync::GraphQLApi', Properties: {} } },
+    };
+    const plan = await buildImportPlan(
+      state,
+      template,
+      cfnClientFor({
+        ...SCHEMAS,
+        'AWS::AppSync::GraphQLApi': {
+          primaryIdentifier: ['/properties/Name'],
+          handlers: { create: {}, read: {}, update: {}, delete: {}, list: {} },
+          provisioningType: 'FULLY_MUTABLE',
+        },
+      }),
+      'MyStack',
+      { recreateImportUnsupported: true, skipImportSupportPreflight: true }
+    );
+    expect(plan.phase1Imports).toEqual([]);
+    expect(plan.blocked).toHaveLength(1);
+    expect(plan.blocked[0]!.reason).toMatch(/registry schema changed under cdkd/);
+  });
+
+  it('resolves the key through its COMPOSITE_ID_SPLITTERS entry once the pre-flight admits it', async () => {
+    // The pre-#3414 shape: the type was NON_PROVISIONABLE with no handlers, so
+    // the pre-flight blocked it BEFORE the identifier was resolved and the
+    // missing splitter never fired. With the live handler set it reaches the
+    // composite path — and the throw this test would have hit is the one the
+    // issue reports.
+    const state = stateWith({
+      Key: {
+        resourceType: 'AWS::AppSync::ApiKey',
+        physicalId: `${GRAPHQL_API_ID}|${API_KEY_ID}`,
+        properties: { ApiId: GRAPHQL_API_ID, Description: 'dev' },
+        attributes: { ApiKey: API_KEY_ID },
+      },
+    });
+    const template = {
+      Resources: {
+        Key: {
+          Type: 'AWS::AppSync::ApiKey',
+          Properties: { ApiId: { 'Fn::GetAtt': ['Api', 'ApiId'] }, Description: 'dev' },
+        },
+      },
+    };
+    const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');
+    expect(plan.blocked).toEqual([]);
+    expect(plan.phase1Imports).toHaveLength(1);
+    expect(plan.phase1Imports[0]!.resourceIdentifier).toEqual({
+      ApiId: GRAPHQL_API_ID,
+      ApiKeyId: API_KEY_ID,
+    });
+    // `ApiKeyId` is readOnlyProperties — never written into Properties.
+    expect(plan.phase1Imports[0]!.propertiesOverlay).toEqual({ ApiId: GRAPHQL_API_ID });
+  });
+
+  it('still blocks the key on the pre-#3414 registry shape (no handlers, NON_PROVISIONABLE)', async () => {
+    // The pre-flight keeps reading the LIVE response, so a region whose
+    // registry has not moved yet gets the old refusal, not the splitter.
+    const state = stateWith({
+      Key: {
+        resourceType: 'AWS::AppSync::ApiKey',
+        physicalId: `${GRAPHQL_API_ID}|${API_KEY_ID}`,
+        properties: { ApiId: GRAPHQL_API_ID },
+      },
+    });
+    const template = { Resources: { Key: { Type: 'AWS::AppSync::ApiKey', Properties: {} } } };
+    const plan = await buildImportPlan(
+      state,
+      template,
+      cfnClientFor({
+        ...SCHEMAS,
+        'AWS::AppSync::ApiKey': {
+          primaryIdentifier: ['/properties/ApiKeyId'],
+          provisioningType: 'NON_PROVISIONABLE',
+        },
+      }),
+      'MyStack'
+    );
+    expect(plan.phase1Imports).toEqual([]);
+    expect(plan.blocked).toHaveLength(1);
+    expect(plan.blocked[0]!.reason).toMatch(/not supported for Import/);
   });
 });

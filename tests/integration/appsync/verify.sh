@@ -529,6 +529,98 @@ assert_eq "removed versioned DS deltaSyncConfig cleared" "NONE" "${DELTA_CFG}"
 assert_eq "retained versioned DS versioned" "True" \
   "$(datasource_query VersionedItemsDataSource 'dataSource.dynamodbConfig.versioned')"
 
+# --- Phase 3b: cdkd export --dry-run identifier resolution (issue #3414) ------
+# AWS re-declared the AppSync identifiers in September 2026 (GraphQLApi:
+# `ApiId` -> `Arn`; ApiKey: `ApiKeyId` -> `[ApiId, ApiKeyId]`, plus the read
+# handler that takes the key past the IMPORT pre-flight for the first time),
+# and `cdkd export` had no resolution for either. This stack cannot be
+# exported end to end — `AWS::AppSync::GraphQLSchema` still has no read
+# handler and is NON_PROVISIONABLE, and CloudFormation REFUSES
+# `AWS::AppSync::GraphQLApi` for IMPORT although its registry declares a read
+# handler (measured 2026-09-18 by the `export` fixture; cdkd blocks it from a
+# measured list) — but the plan builder resolves every OTHER resource's
+# identifier before it reports the blockers, and a resolution failure is
+# reported as a blocker of its own ("could not resolve resource identifier").
+# So the assertion is on the blocked list: exactly those two, and no
+# DataSource / Resolver / ApiKey line among them — the key's composite
+# `[ApiId, ApiKeyId]` resolution is what would have thrown before #3414.
+# `block migration` is the sentinel that proves the parse is live; if it ever
+# stops appearing (AWS makes both importable), the command exits 0 and the
+# plan lines are asserted directly instead.
+echo "==> Phase 3b: cdkd export --dry-run resolves every AppSync identifier"
+set +e
+EXPORT_OUT="$(node "${LOCAL_DIST}" export "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --stack-region "${REGION}" \
+  --dry-run \
+  --yes 2>&1)"
+EXPORT_RC=$?
+set -e
+# cdkd's logger colors every line unconditionally (not TTY-gated), so a
+# captured line reads `\e[31m  - GraphQLApi (...)...\e[0m` and any
+# line-ANCHORED grep below would silently never match (review of #3414 proved
+# the first cut's `^\s+- ` exclusion inert this way). Strip the escapes once
+# and run every assertion in this block against the plain text.
+EXPORT_OUT="$(printf '%s\n' "${EXPORT_OUT}" | sed $'s/\x1b\\[[0-9;]*m//g')"
+if [ "${EXPORT_RC}" -eq 0 ]; then
+  if ! printf '%s\n' "${EXPORT_OUT}" | grep -qE 'Import plan for CloudFormation stack'; then
+    echo "FAIL: export --dry-run exited 0 without printing an import plan" >&2
+    printf '%s\n' "${EXPORT_OUT}" | sed 's/^/  /' >&2
+    exit 1
+  fi
+  printf '%s\n' "${EXPORT_OUT}" | grep -qE '\(AWS::AppSync::GraphQLApi\).*Arn=arn:aws:appsync:' \
+    || { echo "FAIL: export plan did not resolve the GraphQLApi identifier from the recorded Arn" >&2; exit 1; }
+  printf '%s\n' "${EXPORT_OUT}" | grep -qE "\(AWS::AppSync::ApiKey\).*ApiId=${API_ID}, ApiKeyId=da2-" \
+    || { echo "FAIL: export plan did not resolve the ApiKey composite identifier" >&2; exit 1; }
+else
+  if ! printf '%s\n' "${EXPORT_OUT}" | grep -q 'block migration'; then
+    echo "FAIL: export --dry-run failed for a reason other than blocked resources (rc=${EXPORT_RC})" >&2
+    printf '%s\n' "${EXPORT_OUT}" | sed 's/^/  /' >&2
+    exit 1
+  fi
+  for blocker in 'GraphQLSchema (AWS::AppSync::GraphQLSchema)' 'GraphQLApi (AWS::AppSync::GraphQLApi)'; do
+    if ! printf '%s\n' "${EXPORT_OUT}" | grep -qF -- "- ${blocker}"; then
+      echo "FAIL: the blocked list does not name ${blocker} (an expected blocker)" >&2
+      printf '%s\n' "${EXPORT_OUT}" | sed 's/^/  /' >&2
+      exit 1
+    fi
+  done
+  # "exactly those two" is a COUNT, not the absence of a few strings: the
+  # thrown message carries the number of blocked resources, so pin it at two
+  # — a third blocker with any wording the loop below does not know (a masked
+  # id, a row missing from state) would otherwise pass silently.
+  if ! printf '%s\n' "${EXPORT_OUT}" | grep -q '2 resource(s) block migration'; then
+    echo "FAIL: unexpected blocker count (expected exactly GraphQLSchema + GraphQLApi):" >&2
+    printf '%s\n' "${EXPORT_OUT}" | grep -E 'block migration|^\s+- ' | sed 's/^/  /' >&2
+    exit 1
+  fi
+  # Blocked lines render as `  - <logicalId> (<type>): <reason>`; drop the two
+  # expected blockers BY LOGICAL ID so a genuine ApiKey / DataSource /
+  # Resolver failure cannot hide behind a type name quoted in their reasons.
+  # Break-test: the exclusion must actually REMOVE the two lines (it did not,
+  # before the ANSI strip above), or the loop below is comparing the whole
+  # output and the comment two lines up is a lie.
+  OTHER_LINES="$(printf '%s\n' "${EXPORT_OUT}" | grep -vE '^\s+- (GraphQLSchema|GraphQLApi) \(')"
+  if printf '%s\n' "${OTHER_LINES}" | grep -qE '^\s+- (GraphQLSchema|GraphQLApi) \('; then
+    echo "FAIL: the blocked-line exclusion did not remove the expected blockers (ANSI or format drift)" >&2
+    exit 1
+  fi
+  if [ "$(printf '%s\n' "${EXPORT_OUT}" | grep -cE '^\s+- (GraphQLSchema|GraphQLApi) \(')" != "2" ]; then
+    echo "FAIL: expected exactly two anchored blocker lines in the plain output (format drift?)" >&2
+    printf '%s\n' "${EXPORT_OUT}" | grep -E -- '- ' | sed 's/^/  /' >&2
+    exit 1
+  fi
+  for unresolved in 'could not resolve resource identifier' 'COMPOSITE_ID_SPLITTERS' \
+    'AWS::AppSync::ApiKey' 'AWS::AppSync::DataSource' 'AWS::AppSync::Resolver'; do
+    if printf '%s\n' "${OTHER_LINES}" | grep -qF -- "${unresolved}"; then
+      echo "FAIL: export --dry-run reports an unresolved identifier (${unresolved}):" >&2
+      printf '%s\n' "${OTHER_LINES}" | grep -F -- "${unresolved}" | sed 's/^/  /' >&2
+      exit 1
+    fi
+  done
+  echo "==> Phase 3b: only GraphQLSchema + GraphQLApi block the export (ApiKey / DataSource / Resolver identifiers resolved)"
+fi
+
 # --- Phase 4: destroy -------------------------------------------------------
 echo "==> Phase 4: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \

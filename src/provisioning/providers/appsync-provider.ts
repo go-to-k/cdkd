@@ -3643,8 +3643,22 @@ export class AppSyncProvider implements ResourceProvider {
     const explicit = resolveExplicitPhysicalId(input, null);
     if (explicit) {
       try {
-        await this.getClient().send(new GetGraphqlApiCommand({ apiId: explicit }));
-        return { physicalId: explicit, attributes: {} };
+        const response = await this.getClient().send(new GetGraphqlApiCommand({ apiId: explicit }));
+        // The same attribute set `createGraphQLApi` records (issue #1728's
+        // rule for the children, applied to the parent by issue #3414): an
+        // adopted API's `Arn` is what `cdkd export` sends CloudFormation as
+        // the type's identifier now that AWS declares it by ARN, and a record
+        // written with `attributes: {}` blocked that export until the API's
+        // next update happened to heal it. `definedAttributes` drops any
+        // member the read did not report rather than recording `''`.
+        return {
+          physicalId: explicit,
+          attributes: definedAttributes({
+            ApiId: explicit,
+            Arn: response.graphqlApi?.arn,
+            GraphQLUrl: response.graphqlApi?.uris?.['GRAPHQL'],
+          }),
+        };
       } catch (err) {
         if (err instanceof AppSyncNotFoundException) return null;
         throw err;

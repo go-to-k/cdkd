@@ -214,6 +214,19 @@ export class ExportStack extends cdk.Stack {
       integration: new apigwv2_integ.HttpLambdaIntegration('EchoIntegration', handler),
     });
 
+    // No AppSync resources, on purpose (issue #3414), and — like the SG-ingress
+    // note below — deliberately NOT spelled as type literals, because the integ
+    // coverage-matrix generator reads fully-qualified type names out of this
+    // file as claimed coverage. A GraphQL API + API key pair was added to prove
+    // the identifiers AWS re-declared in September 2026 against a real IMPORT
+    // changeset, and the run measured (us-east-1, 2026-09-18) that
+    // CloudFormation refuses the API type for IMPORT outright although its
+    // registry schema declares a read handler. The key alone imports (a
+    // standalone IMPORT changeset carrying one reached CREATE_COMPLETE the same
+    // day), but it cannot live in a stack without its API, so neither can live
+    // here until CloudFormation accepts the API. `cdkd export` now blocks the
+    // API up front from a measured list rather than failing at CreateChangeSet.
+
     // ── EC2 networking (composite-id splitters, issue #1771) ───────
     // A VPC + Internet Gateway + attachment + route table + default route is
     // the shape essentially every real public-subnet stack has, and it is

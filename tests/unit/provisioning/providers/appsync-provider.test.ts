@@ -109,7 +109,12 @@ describe('AppSyncProvider import', () => {
 
     const result = await provider.import(makeInput({ knownPhysicalId: 'abc123' }));
 
-    expect(result).toEqual({ physicalId: 'abc123', attributes: {} });
+    // Issue #3414: the response's `apiId` echo is not what is recorded — the
+    // explicit id is — and a read that reports no `arn` / `uris` records
+    // neither key rather than `''` (the `definedAttributes` rule), so this
+    // minimal response yields only `ApiId`. The full set is pinned in
+    // `appsync-child-ref-arns.test.ts`.
+    expect(result).toEqual({ physicalId: 'abc123', attributes: { ApiId: 'abc123' } });
     expect(mockSend).toHaveBeenCalledTimes(1);
     expect(mockSend.mock.calls[0][0]).toBeInstanceOf(GetGraphqlApiCommand);
     expect(mockSend.mock.calls[0][0].input).toEqual({ apiId: 'abc123' });

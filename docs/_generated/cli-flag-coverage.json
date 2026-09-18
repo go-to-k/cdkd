@@ -73,6 +73,7 @@
     {
       "flag": "--dry-run",
       "integs": [
+        "appsync",
         "cross-stack-secret-import",
         "ec2-instance",
         "export",
