@@ -147,8 +147,8 @@ for you", which was already false.
 **The remedy is a TEMPLATE, not a substituted command, and the asymmetry with
 the `cdkd state show` line in the same message is the decision.** `state
 orphan` DELETES a record; `state show` reads one. The `region` the destroy
-refusal is handed is `state.region ?? ctx.baseRegion`, and `state.region` is
-record-BODY content `getState` does not check against the key it loaded from —
+refusal is handed is `state.region ?? ctx.baseRegion`, which WAS record-BODY
+content `getState` did not check against the key it loaded from —
 measured 2026-09-17 against the shipped binary, a record planted at
 `.../us-east-1/state.json` carrying `"region": "eu-west-1"` rendered a
 pasteable `cdkd state orphan <stack> --stack-region eu-west-1`, aiming a
@@ -171,6 +171,23 @@ either does not, the text names no removal target at all and sends the reader
 to `cdkd state list --long`. Same call `buildForceUnlockCommand` makes when a
 value would render misleadingly.
 
-The divergence itself — the runner also LOCKS, SAVES and DELETES against the
-body region, and reports `✓ State deleted` when nothing is there — is
-go-to-k/cdkd#3328, not this rule.
+The divergence itself — the runner also LOCKED, SAVED and DELETED against the
+body region, and reported `✓ State deleted` when nothing was there — was
+go-to-k/cdkd#3328, not this rule, and it is FIXED: `S3StateBackend.getState`
+normalizes a region-scoped record's `region` to its KEY's region and warns on a
+body that disagreed (`adoptKeyRegion`), so every `state.region` consumer —
+these messages included — now gets the key's.
+
+**That issue also added a SECOND refusal to this runner, immediately below the
+`resources` one and above the count**, and the ordering is load-bearing in both
+directions: `refuseDivergentRecordRegionForDestroy` reads the bag's SIZE, so it
+must sit below the guard that proves the bag can be counted, and it must stay
+above the empty-stack fast path for the reason this whole rule exists. It fires
+only on divergent AND resource-bearing, because adopting the key is right for
+the record's identity and undecidable for "where are the resources" — and this
+runner reads a `*NotFound` as ALREADY DELETED, so the wrong answer is a stack
+reported destroyed with every resource left live elsewhere. **The template stays anyway**,
+and a later edit must not read the fix as licence to substitute: a key segment
+is bucket-plantable in its own right (`cdkd/<stack>/<anything>/state.json`
+lists as a region), and a legacy record still falls through to
+`ctx.baseRegion`. The value is still not one cdkd owns.

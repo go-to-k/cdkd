@@ -16,6 +16,15 @@ import { NoSuchKey } from '@aws-sdk/client-s3';
 
 const errorSpy = vi.hoisted(() => vi.fn());
 const warnSpy = vi.hoisted(() => vi.fn());
+/**
+ * The CHILD logger's warns, kept apart from `warnSpy` deliberately.
+ *
+ * `S3StateBackend` logs through `getLogger().child('S3StateBackend')` while
+ * `state.ts` logs through `getLogger()`, and a dozen cases below assert
+ * `warnSpy`'s calls as an EXACT list — folding the backend's warns into it
+ * would red every one of them the moment the backend says anything.
+ */
+const childWarnSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/utils/logger.js', () => ({
   reserveStdoutForPayload: vi.fn(),
@@ -25,7 +34,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
     info: vi.fn(),
     warn: warnSpy,
     error: errorSpy,
-    child: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
+    child: () => ({ debug: vi.fn(), info: vi.fn(), warn: childWarnSpy, error: vi.fn() }),
   }),
 }));
 
@@ -246,6 +255,7 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
     vi.clearAllMocks();
     errorSpy.mockReset();
     warnSpy.mockReset();
+    childWarnSpy.mockReset();
     walkSpy.mockReset();
     exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
       throw new Error('process.exit-mock');
@@ -317,6 +327,32 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
 
     expectRendered(error);
     expect(out).toContain('MyStack');
+  });
+
+  it('state show prints the KEY\'s region, and warns, when the body names another (go-to-k/cdkd#3328)', async () => {
+    // The user-visible half of the normalization, over the REAL backend: the
+    // record is read from `cdkd/MyStack/us-east-1/state.json` and its body says
+    // eu-west-1. Before the fix the `Region:` row printed the BODY's value —
+    // the misdirection channel, on the command an operator runs to decide which
+    // region to point a destroy at.
+    //
+    // This harness pins `us-east-1` everywhere (the listing key, the bucket
+    // region, the client's own region), so the assertion below discriminates
+    // against the BODY's value and not against a `?? baseRegion` fallback.
+    // `state-key-region-authority.test.ts` runs the three-distinct-region
+    // version that separates those two.
+    bucket.state = record({ region: 'eu-west-1' });
+
+    const { out, error } = await runState(['show', 'MyStack']);
+
+    expectRendered(error);
+    expect(out).toContain('Region: us-east-1');
+    // Nowhere in the RENDERED record, and not in the warn either — the warn
+    // names only the value's kind.
+    expect(out).not.toContain('eu-west-1');
+    const warned = childWarnSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
+    expect(warned).toContain("carries a 'region' of its own (a string)");
+    expect(warned).not.toContain('eu-west-1');
   });
 
   it('state show --show-nested walks past a null resource ENTRY', async () => {

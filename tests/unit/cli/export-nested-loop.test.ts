@@ -9,6 +9,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { readAtKeyRegion } from '../_state-read-double.js';
 /**
  * Issue [#2275](https://github.com/go-to-k/cdkd/issues/2275): the confirmation
  * prompt this file drives now REFUSES a non-interactive stdin
@@ -299,7 +300,11 @@ function buildCfnClient(overrides?: {
   };
 }
 
-function buildStateBackend(initialStates: Record<string, StackState>): {
+function buildStateBackend(
+  initialStates: Record<string, StackState>,
+  /** Reject to drive the state-deletion FAILURE block (go-to-k/cdkd#3328 round 4). */
+  deleteStateFn?: (stackName: string, region: string) => Promise<void>
+): {
   backend: S3StateBackend;
   deleted: Array<{ stackName: string; region: string }>;
 } {
@@ -308,9 +313,13 @@ function buildStateBackend(initialStates: Record<string, StackState>): {
     async getState(stackName: string, region: string) {
       const s = initialStates[`${stackName}|${region}`];
       if (!s) return null;
-      return { state: s, etag: '"mock"', migrationPending: undefined };
+      // Through the shared mirror, not a literal record: `getState` adopts the
+      // KEY's region and reports a divergent body separately (#3328), and the
+      // walker's region-mismatch refusal reads the REPORT.
+      return readAtKeyRegion(s, region);
     },
     async deleteState(stackName: string, region: string) {
+      if (deleteStateFn) await deleteStateFn(stackName, region);
       deleted.push({ stackName, region });
     },
   } as unknown as S3StateBackend;
@@ -446,6 +455,87 @@ describe('runPerStackImportLoop (issue #464 PR B2) — leaf-only happy path', ()
 
     // State deletion: leaf-first → root alone.
     expect(deleted).toEqual([{ stackName: 'Root', region: 'us-east-1' }]);
+  });
+
+  it('sanitizes every record-derived value in the state-deletion FAILURE block (go-to-k/cdkd#3328)', async () => {
+    // The block round 4 hardened and round 5 found unfenced. Its per-failure
+    // warn and its multi-line SUMMARY both render a stack name minted from the
+    // record's own keys, and the summary's rows look like
+    // `  - cdkd/<stack>/<region>/state.json: <reason>` and end by telling the
+    // operator to orphan every record listed — so a planted newline forges a
+    // row naming a healthy stack, and an AWS message can forge one too.
+    // A CFn-LEGAL name: a hostile one is refused by `cdkd2cfnStackName` long
+    // before the deletion block, so the fixture would never reach the code it
+    // means to fence (measured — that refusal was the third unfenced raw
+    // rendering, and it is sanitized in the same change).
+    const hostile = 'Root';
+    const root = makeState({
+      stackName: hostile,
+      region: 'us-east-1',
+      resources: { MyBucket: { resourceType: 'AWS::S3::Bucket', physicalId: 'my-bucket-123' } },
+    });
+    const { backend: stateBackend } = buildStateBackend(
+      { [`${hostile}|us-east-1`]: root },
+      () => {
+        throw new Error('denied\n  - cdkd/OtherStack/us-east-1/state.json: AccessDenied');
+      }
+    );
+    const { manager: lockManager } = buildLockManager();
+    const { client: cfnClient } = buildCfnClient();
+    const rootTemplate = {
+      Resources: {
+        MyBucket: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'my-bucket-123' } },
+      },
+    };
+    const tree: CdkdStateStackTree = {
+      stackName: hostile,
+      region: 'us-east-1',
+      state: root,
+      nestedChildren: new Map(),
+    };
+
+    const thrown = await runPerStackImportLoop({
+      lockRecovery: { stateBucket: 'bkt' },
+      rootStackName: hostile,
+      rootRegion: 'us-east-1',
+      rootStackInfoNestedTemplates: {},
+      rootTemplateFormat: 'json',
+      tree,
+      rootTemplate,
+      cfnStackNameOverrides: { childMap: new Map() },
+      rootParameters: [],
+      deps: {
+        cfnClient,
+        stateBackend,
+        lockManager,
+        uploadOpts: { stateBucket: STATE_BUCKET },
+        lockOwner: 'tester@host:1234',
+      },
+      options: {
+        dryRun: false,
+        yes: true,
+        includeNonImportable: false,
+        recreateImportUnsupported: true,
+      },
+    }).catch((e: unknown) => e);
+
+    const summary = (thrown as Error).message;
+    const warned = warnSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+    // NO line of either surface may read as one of the summary's own rows for a
+    // stack this run never touched — the forged-row harm, from both the NAME
+    // and the AWS message.
+    for (const text of [summary, warned]) {
+      const forged = text
+        .split('\n')
+        .filter((line) => /^\s*- cdkd\/(ProdStack|OtherStack)\//.test(line));
+      expect(forged, `forged rows in: ${text}`).toEqual([]);
+    }
+    // Not vacuous: the block really ran and really named the failure.
+    expect(summary).toContain('state.json');
+    expect(warned).toContain('Failed to delete cdkd state');
+    // And the remedy carries the region flag, whose omission drops the record
+    // for that name in EVERY region.
+    expect(summary).toContain('--stack-region <region>');
   });
 });
 

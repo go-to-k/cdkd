@@ -727,6 +727,13 @@ async function destroyCommand(
                 providerRegistry,
                 baseAwsClients: awsClients,
                 baseRegion: region,
+                // `getState` adopted the KEY's region into the record above, so
+                // this is the only place the divergence is still visible; the
+                // runner refuses on it when the record still lists resources
+                // (issue #3328).
+                ...(stateResult.divergentBodyRegion !== undefined && {
+                  divergentBodyRegion: stateResult.divergentBodyRegion,
+                }),
                 ...(options.profile && { profile: options.profile }),
                 stateBucket,
                 statePrefix: options.statePrefix,

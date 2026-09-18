@@ -766,11 +766,23 @@ export interface StatefulProbeClients {
    *
    * DEFENCE IN DEPTH, stated precisely rather than implied: today's single
    * caller passes the PERSISTED `state.region` of the record it fetched under
-   * the same `stackRegion` key the client is built for, so the two normally
-   * agree and the refuse arm is not reached. Normally, not always — a record
-   * written by hand or by another tool can carry a different region, and that
-   * is the case the arm exists for. It also guards the inference itself: this
-   * function is exported, and the next caller need not share that derivation.
+   * the same `stackRegion` key the client is built for, so the two agree and
+   * the refuse arm is not reached FROM THERE. It used to be reachable — a
+   * record written by hand or by another tool could carry a different region,
+   * and that was the case the arm was described as existing for — but since
+   * issue [#3328](https://github.com/go-to-k/cdkd/issues/3328)
+   * `S3StateBackend.getState` normalizes a region-scoped record's `region` to
+   * its KEY's region, so a divergent body can no longer reach this parameter
+   * through `deploy.ts`. What keeps the arm is the second half, which was
+   * already stated and is now the whole of it: this function is EXPORTED and
+   * the next caller need not derive its region the same way — so the arm
+   * guards the not-found-means-gone inference, not one record shape.
+   *
+   * The case this field can no longer EXPRESS — a record whose body named
+   * another region — is reported separately, by
+   * {@link StatefulProbeClients.expectedRegionDiverged}, and that split is
+   * deliberate: the divergent value is record-body content and the refusal arm
+   * below renders its comparand.
    *
    * ONE live path reaches the ABSENT case rather than merely the hand-written
    * one, and it is recorded here rather than left for a reader to derive: a
@@ -785,6 +797,27 @@ export interface StatefulProbeClients {
    * weaker.
    */
   expectedRegion?: string | undefined;
+
+  /**
+   * The record this probe is deciding for named a region OTHER than the S3 key
+   * it was read from, so cdkd cannot attribute a not-found to any region
+   * (issue [#3328](https://github.com/go-to-k/cdkd/issues/3328), review round
+   * 2). Forces the same fail-closed outcome the mismatch arm reaches.
+   *
+   * A BOOLEAN, not the region: the mismatch arm renders its comparand in a
+   * default-verbosity warn, and the divergent value is body content anyone
+   * able to write one state key chooses — routing it there would put an
+   * attacker-chosen string into a line telling the operator to "fix the region
+   * mismatch", which is the misdirection channel #3328 exists to close.
+   *
+   * It exists because {@link StatefulProbeClients.expectedRegion} can no longer
+   * carry the case: `getState` now normalizes a record's `region` to its key's,
+   * so that comparand and the client region agree by construction and the
+   * mismatch arm is unreachable from `deploy.ts`. Before the normalization a
+   * divergent body WAS the mismatch and the arm fired; this keeps that outcome
+   * rather than silently dropping a data guard.
+   */
+  expectedRegionDiverged?: boolean;
 }
 
 /**
@@ -1071,10 +1104,48 @@ export async function probeStatefulRecreateTargetsAsync(
           //     probe's contract is that it never does — so a failed check
           //     falls back to the arm this whole branch is an exception to.
           let regionVerified = true;
+          // The record's own region CONTRADICTED the key it was read from, so
+          // cdkd does not know which region its resources are in and a
+          // not-found cannot be attributed to either (issue
+          // [#3328](https://github.com/go-to-k/cdkd/issues/3328), review round
+          // 2). This is the same fail-closed outcome the mismatch arm below
+          // reaches, and it exists because that arm can no longer reach it from
+          // `deploy.ts`: `getState` now normalizes the record's `region` to the
+          // key's, so `expectedRegion` and the client region agree by
+          // construction and the compare always passes. Before that
+          // normalization a divergent body WAS the mismatch, and this branch is
+          // what kept the data guard on.
+          //
+          // It is a FLAG rather than the divergent value because the value is
+          // record-body content: the mismatch arm's warn renders its comparand,
+          // and routing a planted region through it would put an
+          // attacker-chosen string into a default-verbosity line telling the
+          // operator to "fix the region mismatch" — the misdirection channel
+          // #3328 closes. So this arm names no region at all.
+          if (clients.expectedRegionDiverged) {
+            regionVerified = false;
+            logger.warn(
+              `--recreate-via-cc-api / --recreate-via-sdk-provider: CloudWatch Logs reported ` +
+                `${target.logicalId} (log group ${target.physicalId}) missing, but this stack's ` +
+                `state record names a region that is not the one its S3 key holds, so cdkd ` +
+                `cannot attribute that not-found to any region — run 'cdkd state show' with ` +
+                `--verbose to see what the record claims, and repair it. Re-run with ` +
+                `--force-stateful-recreation if the log group really is disposable (that flag ` +
+                `clears the data guard for every target in the run). Until then it is treated ` +
+                `as NOT provably empty.`
+            );
+          }
           // FOLDED before the guard, as `CloudControlProvider` does: a
           // whitespace-only recorded region carries no information, so the
           // check must treat it as absent rather than compare against it.
-          const recordedRegion = foldRegion(clients.expectedRegion);
+          //
+          // Skipped entirely on the divergence arm above: the two comparands
+          // agree by construction there (the record's region IS the key's
+          // after normalization), so the compare could only pass and would
+          // spend a `config.region()` round trip to say nothing.
+          const recordedRegion = clients.expectedRegionDiverged
+            ? undefined
+            : foldRegion(clients.expectedRegion);
           if (recordedRegion) {
             // Both sides trimmed and lower-cased through the local
             // `foldRegion`, the same pair `CloudControlProvider` applies before

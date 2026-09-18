@@ -12,6 +12,7 @@ import {
 import {
   STATE_SCHEMA_VERSION_CURRENT,
   STATE_SCHEMA_VERSIONS_READABLE,
+  describeRegionValueKind,
   type StackState,
 } from '../types/state.js';
 import type { StateBackendConfig } from '../types/config.js';
@@ -25,7 +26,7 @@ import type { FailedOperation } from '../deployment/rollback-executor.js';
 import { getLogger } from '../utils/logger.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
 import { LISTING_ENCODING_TYPE, decodeListingKey } from '../utils/s3-listing-keys.js';
-import { displaySafe } from '../utils/display-safe.js';
+import { displaySafe, truncateCodePoints, IDENT_MAX_CODE_POINTS } from '../utils/display-safe.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { UNRENDERABLE } from './lock-contention-message.js';
 import { StateError, normalizeAwsError } from '../utils/error-handler.js';
@@ -370,11 +371,33 @@ export class S3StateBackend {
    *
    * Note: S3 returns ETag with surrounding quotes (e.g., `"abc123"`). We
    * preserve the quotes — they are required for `IfMatch` conditions.
+   *
+   * On the region-scoped path the returned `state.region` is ALWAYS the
+   * region of the key it was read from, whatever the body said — see
+   * {@link adoptKeyRegion}, which also reports a body that disagreed via
+   * `divergentBodyRegion`.
    */
   async getState(
     stackName: string,
     region: string
-  ): Promise<{ state: StackState; etag: string; migrationPending?: boolean } | null> {
+  ): Promise<{
+    state: StackState;
+    etag: string;
+    migrationPending?: boolean;
+    /**
+     * The `region` the BODY carried, present only when the region-scoped
+     * record named one that is not the key's — i.e. exactly when
+     * {@link adoptKeyRegion} replaced it. Never `undefined` when the key is
+     * present, so `!== undefined` is the divergence test.
+     *
+     * Typed `unknown` because the body is unvalidated past its root: the
+     * value reaching here has been a number and an object, not only a
+     * region-shaped string. It is RAW — a consumer that renders it owes it
+     * the same `displaySafe` every other body-derived value in this file
+     * takes.
+     */
+    divergentBodyRegion?: unknown;
+  } | null> {
     await this.ensureClientForBucket();
     const newKey = this.getStateKey(stackName, region);
 
@@ -415,11 +438,21 @@ export class S3StateBackend {
       }
 
       const bodyString = await response.Body.transformToString();
-      const state = this.parseStateBody(bodyString, stackName);
+      const parsed = this.parseStateBody(bodyString, stackName);
+      const { state, divergentBodyRegion } = this.adoptKeyRegion(
+        parsed,
+        region,
+        shownStackName,
+        shownRegionName
+      );
       this.logger.debug(
         `Retrieved state: ${shownStackName} (${shownRegionName}), ETag: ${response.ETag}`
       );
-      return { state, etag: response.ETag };
+      return {
+        state,
+        etag: response.ETag,
+        ...(divergentBodyRegion !== undefined && { divergentBodyRegion }),
+      };
     } catch (error) {
       if (!isNoSuchKey(error)) {
         if (error instanceof StateError) throw error;
@@ -1219,6 +1252,127 @@ export class S3StateBackend {
     return displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE;
   }
 
+  /**
+   * Make the S3 KEY's region the region of the record read from it, and report
+   * a body that named a different one.
+   *
+   * The key is the authority, and that is not a new rule: `saveState`
+   * normalizes the body it writes against the same `region` argument
+   * `getStateKey` builds the key from, and has done since `83e5ddb66` — the
+   * commit that introduced the region-scoped layout (schema v2, PR
+   * [#57](https://github.com/go-to-k/cdkd/pull/57)). Key and body therefore
+   * agree by construction for every record any cdkd version has ever written,
+   * so this makes the READ symmetric with a write rule that already held
+   * rather than inventing a second one — and a divergence means the record was
+   * written by something that is not cdkd.
+   *
+   * It is not cosmetic. `region` is what `destroy-runner.ts` locks, saves and
+   * `deleteState`s against (`state.region ?? ctx.baseRegion`), and what
+   * `DeleteContext.expectedRegion` carries so a provider can tell "the
+   * resource is genuinely gone" from "I looked in the wrong region"
+   * (`src/provisioning/region-check.ts`). A divergent body aimed all of that
+   * at a region the record does not live in, and `cdkd state destroy` reported
+   * `✓ State deleted` having deleted nothing (issue
+   * [#3328](https://github.com/go-to-k/cdkd/issues/3328)). Normalizing HERE
+   * fixes every consumer at once, with no region threaded through any of them.
+   *
+   * REFUSING instead was rejected deliberately: this is the shared read path
+   * for deploy, destroy, rollback AND the recovery commands (`cdkd state
+   * orphan`, `cdkd state destroy`), which is the same reason `parseStateBody`
+   * validates nothing inside a well-formed root. A refusal would strand the
+   * record it was asked to clean up, leaving `aws s3 rm` as the only remedy.
+   *
+   * It REPLACES rather than defaults, which is the half `??` cannot do:
+   * `state.region ?? ctx.baseRegion` falls through only for `null` /
+   * `undefined`, so a `"region": ""` built the key `cdkd/<stack>//state.json`
+   * and a `"region": 123` reached `acquireLock` / `deleteState` as a region.
+   *
+   * **An ABSENT region is normalized too, and silently.** A body carrying no
+   * `region` makes no claim to contradict, and the key it was read from names
+   * one — which is the answer `legacyProbeBelongsTo` already gives one layout
+   * over, where a body naming no region belongs to ANY region (issue
+   * [#2550](https://github.com/go-to-k/cdkd/issues/2550)): "any region" plus
+   * "read under this key" is this key's region. It is also strictly better than
+   * what absence used to reach, which was `ctx.baseRegion` at the destroy —
+   * the CLI's region, which need not be the key's at all.
+   *
+   * **`null` and `''` are NOT folded in with absent here, unlike in
+   * `legacyProbeBelongsTo`**, and the difference is the key: the legacy key
+   * names no region, so a falsy field there has to mean "any". This key names
+   * one, so nothing needs inferring and the only question left is whether the
+   * body AGREES — which `null` and `''` do not. They are also two of the shapes
+   * `export.ts`'s nested-child refusal keys on, and folding them in would drop
+   * that refusal silently.
+   *
+   * The divergent value is REPORTED to the caller rather than only logged
+   * because one caller refuses on it: `walkCdkdStateStackTree` (`export.ts`)
+   * fails a nested child whose recorded region is not its parent's, and
+   * normalizing the state without reporting would have made that refusal
+   * unreachable rather than fixed.
+   */
+  private adoptKeyRegion(
+    state: StackState,
+    region: string,
+    shownStackName: string,
+    shownRegionName: string
+  ): { state: StackState; divergentBodyRegion?: unknown } {
+    const raw = (state as { region?: unknown }).region;
+    // The overwhelmingly common case: every record cdkd wrote. Returned as-is
+    // so the healthy path allocates nothing.
+    //
+    // STRICT equality, deliberately: `'US-EAST-1'` or `' us-east-1'` against a
+    // key of `us-east-1` is reported as a divergence, which on the destroy
+    // means a refusal over a record that is arguably fine. Accepted, and
+    // narrower than it looks — `saveState` writes the key's spelling verbatim,
+    // so no cdkd-written record can hold either — and the alternative is worse:
+    // a folding comparand here would have to agree with every consumer of the
+    // value, and `getStateKey` does not fold. `confirmDeleteTargetIdentity`
+    // folds because it compares two AWS-supplied regions, not a record against
+    // its own key.
+    if (raw === region) return { state };
+    if (raw === undefined) return { state: { ...state, region } };
+
+    // The VALUE is withheld from this warn, which prints at default verbosity.
+    // It is body content, and a region a record supplies is precisely the
+    // misdirection channel #3328 is about: a line reading
+    // `body region 'eu-west-1'` hands the operator a region to re-run a
+    // destructive command against. What is safe is its KIND — a bounded token,
+    // one of ten — which is the same judgement `probeLegacyState` reaches one
+    // branch over, for the reason its comment gives (it spells its own, pinned
+    // verbatim by a unit case; `describeRegionValueKind`'s doc says why the two
+    // are not collapsed).
+    const kind = describeRegionValueKind(raw);
+    this.logger.warn(
+      `State record for stack '${shownStackName}' carries a 'region' of its own (${kind}) that ` +
+        `is not the region of the S3 key it was read from ('${shownRegionName}'). cdkd stamps ` +
+        `the key's region into every record it writes, so this record was not written by cdkd. ` +
+        `Continuing against '${shownRegionName}' — the key is authoritative. Re-run with ` +
+        `--verbose to see the recorded value, where it has one to show.`
+    );
+    // Sanitized even at debug, for the reason `tryGetLegacy`'s sibling gives:
+    // debug is quieter than warn, not a different terminal. CAPPED as well: a
+    // planted `region` is unvalidated body content of any length, and an
+    // uncapped one floods the stream it is meant to explain.
+    //
+    // The EMPTY answer is spelled out rather than shown as `''` or
+    // `<unrenderable>`, because `displaySafe` maps BOTH `null` and `''` to the
+    // empty string — the two shapes the warn above singles out by kind — and a
+    // debug line that adds nothing for them would make the warn's
+    // "--verbose to see it" a false promise. The KIND is the whole answer for
+    // those two, and this says so instead of implying a value was withheld.
+    const shownBodyRegion = truncateCodePoints(
+      displaySafe(raw, { asciiOnly: true }),
+      IDENT_MAX_CODE_POINTS
+    );
+    this.logger.debug(
+      `State record for stack '${shownStackName}' carries body region ` +
+        (shownBodyRegion.text === ''
+          ? `${kind}, which renders as nothing — its kind above is the whole of it.`
+          : `'${shownBodyRegion.text}'${shownBodyRegion.truncated ? ' [cut]' : ''}.`)
+    );
+    return { state: { ...state, region }, divergentBodyRegion: raw };
+  }
+
   private async probeLegacyState(stackName: string): Promise<LegacyStateProbe> {
     try {
       const response = await this.s3Client.send(
@@ -1361,6 +1515,40 @@ export class S3StateBackend {
             `not '${displaySafe(region, { asciiOnly: true }) || UNRENDERABLE}' — skipping legacy fallback.`
         );
         return null;
+      }
+
+      // The gate above SHORT-CIRCUITS on a falsy region, so `''` / `0` / `false`
+      // reach here as a DEFINED `state.region` that names no region at all — and
+      // that field is what `destroy-runner.ts` locks, saves and deletes against
+      // (`state.region ?? ctx.baseRegion`, which `''` is not nullish enough to
+      // escape). A `""` built the key `cdkd/<stack>//state.json` and a `0` built
+      // `cdkd/<stack>/0/state.json`, neither of which `listStacks` can see
+      // afterwards — the same two failures `adoptKeyRegion` replaces one branch
+      // over, arriving by the path it deliberately does not touch (go-to-k/cdkd#3328,
+      // review round 1).
+      //
+      // The repair is to DROP the field rather than adopt the caller's region:
+      // the legacy key names no region, so `undefined` is the honest value, and
+      // it is what the gate above already decided this record means (it accepted
+      // it from ANY region, which is `legacyProbeBelongsTo`'s `no-region` —
+      // go-to-k/cdkd#2550). Every consumer's `?? baseRegion` then reaches its
+      // fallback, which is the pre-v2 behaviour for a record that predates the
+      // region-scoped layout. Adopting `region` instead would arm
+      // `DeleteContext.expectedRegion` for a population
+      // `cloud-control-provider.ts`'s `confirmDeleteTargetIdentity` documents as
+      // arriving WITHOUT one.
+      const legacyRegion = (state as { region?: unknown }).region;
+      // ABSENT is the common legacy record and needs no rewrite — returned by
+      // identity so the ordinary path allocates nothing.
+      if (legacyRegion !== undefined && (typeof legacyRegion !== 'string' || legacyRegion === '')) {
+        this.logger.debug(
+          `Legacy state for stack '${this.displayName(stackName)}' names no usable region ` +
+            `(${describeRegionValueKind(legacyRegion)}); reading it as region-less.`
+        );
+        // `region` is OPTIONAL on `StackState`, so the rest object is already
+        // assignable — no cast.
+        const { region: _dropped, ...withoutRegion } = state;
+        return { state: withoutRegion, etag: response.ETag };
       }
 
       return { state, etag: response.ETag };

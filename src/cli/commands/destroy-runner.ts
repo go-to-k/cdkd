@@ -35,6 +35,7 @@ import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { slowCcOperationTimeoutMs } from '../../provisioning/slow-cc-operation-timeouts.js';
 import { shouldRetainResource, type ResourceState, type StackState } from '../../types/state.js';
 import {
+  refuseDivergentRecordRegionForDestroy,
   refuseMalformedOutputsForDestroy,
   refuseMalformedResourcesForDestroy,
 } from '../../state/malformed-resources-bag.js';
@@ -93,6 +94,24 @@ export interface DestroyRunnerContext {
    * destroy and restores `baseAwsClients` afterwards.
    */
   baseRegion: string;
+
+  /**
+   * `S3StateBackend.getState`'s divergence report for the record being
+   * destroyed: the `region` its BODY carried when that was not the region of
+   * the key it was read from, and `undefined` otherwise — which is every
+   * record cdkd has ever written (issue
+   * [#3328](https://github.com/go-to-k/cdkd/issues/3328)).
+   *
+   * Threaded rather than re-derived because it CANNOT be re-derived here: by
+   * the time the record reaches this function its `region` is already the
+   * key's, so the two halves agree and the divergence is invisible. The runner
+   * refuses on it when the record still lists resources —
+   * `refuseDivergentRecordRegionForDestroy` carries why.
+   *
+   * A caller that did not load the record through `getState` leaves it unset,
+   * which is the pre-#3328 behaviour: no refusal.
+   */
+  divergentBodyRegion?: unknown;
 
   /** Caller's --profile, if any. */
   profile?: string;
@@ -513,6 +532,20 @@ export async function runDestroyForStack(
   // separates them — which is why this cannot be folded into the
   // `resourceCount === 0` test below.
   refuseMalformedResourcesForDestroy(state, stackName, regionForState);
+  // BELOW the bag guard (which proves the bag can be counted) and ABOVE the
+  // delete loop and every `deleteState` (issue #3328, review round 1). NOT
+  // "above the fast path" as a discriminating claim — the guard returns early
+  // on a zero count, which is that path's own condition, so the two can never
+  // disagree; what the placement buys is that no delete is issued and no record
+  // removed before the verdict. `getState` adopts the KEY's region, which is right for the lock
+  // and the record — but a record whose BODY named a different one is the one
+  // shape that gives two answers to "where are the resources", and the delete
+  // loop below reads a `*NotFound` as ALREADY DELETED. Without this the wrong
+  // answer is a whole stack reported destroyed, its record removed, and every
+  // resource still live in the other region. Narrow by construction: divergent
+  // AND resource-bearing, so the resource-less recovery destroy this issue's
+  // own repro exercises still runs.
+  refuseDivergentRecordRegionForDestroy(state, stackName, regionForState, ctx.divergentBodyRegion);
   const resourceCount = Object.keys(state.resources).length;
   // A stack that still has `DeletionPolicy: Retain` resources standing in AWS
   // is NOT empty (issue #2934), even with no rows in `resources`. The record of

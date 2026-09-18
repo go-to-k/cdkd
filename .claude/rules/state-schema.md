@@ -11,7 +11,7 @@ paths:
 interface StackState {
   version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10; // 1 = legacy, 2 = region-prefixed, 3 = +observedProperties, 4 = +imports[], 5 = +deletionPolicy/updateReplacePolicy, 6 = +parentStack/parentLogicalId/parentRegion (nested-stack adoption), 7 = +provisionedBy on ResourceState (CC API greenfield fallback, #614), 8 = +outputReads[] (Fn::GetStackOutput downstream-consumer enumeration, #668), 9 = +exportNames[] (which outputs keys are exports, #2193), 10 = +observedBaselineRefused on ResourceState (the import baseline refusal, carried so later writers honour it, #2944)
   stackName: string;
-  region?: string;      // Required on version >= 2 (load-bearing for the S3 key)
+  region?: string;      // Required on version >= 2 (load-bearing for the S3 key). On READ the KEY wins: `getState` replaces this field with the region of the key the record came from and warns on a body that disagreed (#3328) -- it is written from the key too, so the two agree on anything cdkd wrote
   resources: Record<string, ResourceState>;
   outputs: Record<string, unknown>; // Resolved Output values — NOT coerced to string (see below)
   imports?: StateImportEntry[]; // v4+: Fn::ImportValue refs recorded for strong-reference destroy refusal
