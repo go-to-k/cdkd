@@ -203,13 +203,17 @@ Then split the filed count by what the §5-f window did with each finding:
 # Folded INTO an existing issue rather than filed as new. `updatedAt` alone
 # cannot answer this — §4's claim comments touch every taken issue — so count
 # the issues whose BODY gained a checklist row.
-# The `backfill-type` exclusion matters MORE here than in triage: this counts
-# issues whose body gained a `- [ ]` row, and a coverage-map sync rewrites every
-# generated sub-issue with a body that is nothing but such rows. Without it a
-# run that touched none of them reports up to 44 findings folded.
+# The label exclusions matter MORE here than in triage: this counts issues whose
+# body gained a `- [ ]` row, and a coverage-map sync rewrites the umbrella's
+# generated block with a body region that is nothing but such rows — up to 44 of
+# them in one edit. `backfill-umbrella` is the one that fires today; the legacy
+# `backfill-type` slices carried the same hazard one issue each, and a reopened
+# one still would. Without both, a run that touched neither reports dozens of
+# findings folded.
 gh issue list --state open --limit 200 --json number,title,updatedAt,labels \
   --jq '.[] | select(.updatedAt > "<this run start ISO>")
-        | select([.labels[].name] | index("backfill-type") | not) | .number' \
+        | select([.labels[].name] | index("backfill-type") | not)
+        | select([.labels[].name] | index("backfill-umbrella") | not) | .number' \
 | while read -r n; do
     gh issue view "$n" --json body -q '.body' \
       | grep -qE '^[[:space:]]*- \[ \]' && echo "$n"

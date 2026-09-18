@@ -448,7 +448,18 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // a narrative. It stays on that issue as a stated residual behind
     // go-to-k/cdkd#2424's stage split, which is the structural answer this
     // record has now predicted twice.
-    corpusBytes: 199_838,
+    //
+    // RE-MEASURED by the backfill fold-back, which retired the ~44 generated
+    // per-type issues into one umbrella checklist: corpus 199,838 -> 200,230,
+    // across the three files that described that set as live (filing.md's §5-f
+    // carve-out, now the record of a REVERSED exemption; retro.md's
+    // folded-finding count, which gained the umbrella's own label because the
+    // rows moved into that one body; triage.md). NEITHER leader moved, and
+    // triage.md is the calibration to carry forward: its rewrite went 326 B OVER
+    // the per-file cap and was compressed back under in the same pass — three
+    // rounds of it — rather than the cap being moved. It has single-digit
+    // headroom now, as verify.md and implement.md already did.
+    corpusBytes: 200_230,
     largest: { file: 'verify.md', bytes: 29_994 },
     runnerUp: { file: 'implement.md', bytes: 29_990 },
   },

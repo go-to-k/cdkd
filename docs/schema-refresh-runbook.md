@@ -104,9 +104,9 @@ Daily, on `bot/cfn-schema-refresh/<YYYY-MM-DD>`:
 Nothing that encodes a judgement is touched: no `unhandledByDesign`, no
 `bogusTolerated`, no `NESTED_KEY_ALLOW_LIST`, no provider code.
 
-The **standing backfill issues are not written by this job**. A separate
-workflow, `backfill-umbrella-sync.yml`, reconciles them — one sub-issue per
-resource type — whenever
+The **standing backfill checklist is not written by this job**. A separate
+workflow, `backfill-umbrella-sync.yml`, rewrites it — one row per resource type,
+inside the umbrella issue's body — whenever
 `src/provisioning/property-coverage.generated.ts` changes on `main`: a refresh
 merge, a hand-written backfill, a revert. Driving it from `main` is what keeps
 them describing something that actually exists: written during the refresh
@@ -130,10 +130,10 @@ deploy-time warning — the value was never silently lost, but it did not work
 either.
 
 Newly unaccounted **writable** properties are listed in the pull request. They
-reach the standing backfill issues when this PR MERGES, not when the job runs —
-`backfill-umbrella-sync.yml` reconciles them from `main`, into the sub-issue for
-each property's own resource type, opening one if that type had none. Wiring
-them into an SDK provider is separate, unhurried work.
+reach the standing backfill checklist when this PR MERGES, not when the job runs
+— `backfill-umbrella-sync.yml` rewrites the umbrella's generated block from
+`main`, into the row for each property's own resource type, adding one if that
+type had none. Wiring them into an SDK provider is separate, unhurried work.
 
 **Writable** matters here: a schema property AWS computes and returns
 (`readOnlyProperties` — an `Arn`, a `DomainName`) can never be a dropped value,
@@ -467,7 +467,7 @@ rather than a convenience.
 
 ```bash
 gh workflow run cfn-schema-refresh.yml      # capture, compare, open or update the PR
-gh workflow run backfill-umbrella-sync.yml  # re-reconcile the campaign's issues from main
+gh workflow run backfill-umbrella-sync.yml  # re-render the campaign's checklist from main
 ```
 
 `cfn-schema-refresh` behaves exactly as a scheduled run: no drift means no pull
@@ -477,53 +477,71 @@ rather than waiting for tomorrow.
 
 `backfill-umbrella-sync` normally fires only on a push to `main` that touches
 `src/provisioning/property-coverage.generated.ts`, so on a quiet week it may not
-run for days — and if it failed on the last such push, the campaign's issues keep
-their previous contents until the next one. A dispatch closes that gap. Measured
-on 2026-09-09, before the restructure below: a dispatch took the umbrella from
-285 rows to 288 in under a minute, leaving 7,655 characters of provenance intact.
+run for days — and if it failed on the last such push, the campaign's checklist
+keeps its previous contents until the next one. A dispatch closes that gap.
+Measured on 2026-09-09: a dispatch took the umbrella from 285 rows to 288 in
+under a minute, leaving 7,655 characters of provenance intact.
 
-What it reconciles, since go-to-k/cdkd#2949, is a SET of issues rather than one
-block:
+What it rewrites is ONE region of ONE issue:
 
-- the **parent** — the single open issue carrying the `backfill-umbrella` label.
-  It is READ, for its number, and never written. GitHub renders the sub-issue
-  list and its completion count natively, so the job publishes no second copy in
-  the body; everything on that page is human-written.
-- one **sub-issue per resource type**, labelled `backfill-type`. Every line of
-  those bodies is generated: hand edits are overwritten on the next sync, and
-  COMMENTS are never touched, so anything a person wants to keep goes in a
-  comment. They close when their type runs out of silently-dropped properties and
-  reopen if it regains one.
+- the **umbrella** — the single open issue carrying the `backfill-umbrella`
+  label, found by that label and never by a number. Its body holds a generated
+  block between `<!-- backfill-types:start -->` and `<!-- backfill-types:end -->`,
+  one row per resource type with silently-dropped properties left:
+  ``- [ ] `AWS::RDS::DBInstance` — 62 properties: `AllocatedStorage`, …``
+- **everything else on that page is yours.** The audit provenance, the procedure,
+  which pull request closed which slice: all of it sits outside the two markers
+  and is carried through byte for byte. Hand edits INSIDE the block are
+  overwritten on the next sync, and the checkboxes are always rendered unchecked
+  — what removes a row is the property leaving `silentDrop`, not a tick.
 
-A pull request should write `Closes` on a sub-issue only if it takes that type to
-zero, and `Refs` otherwise. A premature `Closes` loses nothing — the next sync
-reopens the issue with what is left — but it reads, briefly, as a finished type.
+A pull request wiring a type writes `Refs`, not `Closes`: the umbrella stays open
+for every other type, and the row for the type disappears on its own once the
+coverage map says it is done.
+
+The per-type issues labelled `backfill-type` are **legacy**. go-to-k/cdkd#2949
+generated one per resource type and this job reconciled them; they were folded
+back into the block above because 44 of the repository's 240 open issues were
+bot-filed slices of one campaign, which no reader of a public issue count can
+tell from defects. The label survives on those closed issues; nothing generates
+it any more, and the one-shot migration that closed them is
+`REPO=<owner/repo> node scripts/sync-backfill-umbrella.ts --close-legacy`
+(`--dry-run` first — it lists what it would close and writes nothing).
 
 ### When the reconciler refuses
 
-Unlike the parent-lookup warnings, every one of these **fails the run** and
-writes nothing. They guard mutations across dozens of public issues, where a
+Unlike the umbrella-lookup warnings, every one of these **fails the run** and
+writes nothing. They guard a write onto the campaign's only public page, where a
 green run that changed nothing would be no notification at all.
 
-- `the plan carries no resource types while N sub-issue(s) are open` — a finished
-  campaign and a coverage-map parse that stopped recognising `silentDrop` produce
-  the same empty plan, and the second would mass-close everything. If the
-  campaign really is complete, confirm it once:
-  `PARENT=<n> REPO=<owner/repo> node scripts/sync-backfill-subissues.ts plan.json --allow-empty-plan`.
-- `Creating one issue per type from here would duplicate every one of them` —
-  labelled issues exist but none carries a readable `<!-- backfill-type: … -->`
-  marker. Something stripped the markers; restore one and re-run rather than
-  letting the job mint a second full set.
-- `#A and #B both carry the marker for <type>` — close or unlabel one.
-- `past GitHub's limit of 100 sub-issues under one parent` — the campaign has
-  outgrown this shape and needs a different one.
+- `the plan carries no resource types while the umbrella's checklist holds N
+  row(s)` — a finished campaign and a coverage-map parse that stopped recognising
+  `silentDrop` produce the same empty plan, and the second would wipe the whole
+  checklist. If the campaign really is complete, confirm it once:
+  `PARENT=<n> REPO=<owner/repo> node scripts/sync-backfill-umbrella.ts plan.json --allow-empty-plan`.
+- `the umbrella issue's body carries no '<!-- backfill-types:start -->' marker`
+  (or no `<!-- backfill-types:end -->`) — the block has no region to be written
+  into, which is also the state a brand-new umbrella is in. Paste the block in
+  once, where it belongs on the page, and every run after that rewrites it:
+
+  ```bash
+  node scripts/diagnose-schema-refresh.mjs --umbrella-types > /tmp/plan.json
+  node scripts/sync-backfill-umbrella.ts /tmp/plan.json --render-block
+  ```
+
+- `the umbrella issue's body carries '…' N times` — a copy-paste left two
+  markers; the region is ambiguous and splicing one pair would strand the other's
+  content on the page. Leave exactly one of each.
+- `the rewritten body would be N characters, past GitHub's limit` — the campaign
+  has outgrown this shape and needs a different one. Nothing is truncated,
+  because a list that stops partway reads as finished.
 
 To see what a run WOULD do without touching anything:
 
 ```bash
-node scripts/diagnose-schema-refresh.mjs --umbrella-subissues > /tmp/plan.json
-REPO=<owner/repo> PARENT=<parent issue number> \
-  node scripts/sync-backfill-subissues.ts /tmp/plan.json --dry-run
+node scripts/diagnose-schema-refresh.mjs --umbrella-types > /tmp/plan.json
+REPO=<owner/repo> PARENT=<umbrella issue number> \
+  node scripts/sync-backfill-umbrella.ts /tmp/plan.json --dry-run
 ```
 
 ### What a dispatch will not fix

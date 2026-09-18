@@ -38,18 +38,18 @@ without it the call returned 79 of 180 open issues on 2026-09-06, hiding the
 OLD end rule 7 ranks FIRST. `created_at` feeds §3-0 and §3-a rule 7.)
 
 **The `backfill-type` exclusion is not noise-trimming — those issues are not
-backlog.** They are the ~44 per-resource-type slices of the silent-drop backfill
-campaign, and `.github/workflows/backfill-umbrella-sync.yml` CREATES, updates,
-reopens and closes every one of them from `main`'s coverage map
-(go-to-k/cdkd#2949). Nothing about them is a decision a triage pass can make: the
-backlog cannot close one, filing against one is a no-op, and their `created_at`
-is whenever the map last moved, so §3-0's freshness quarantine and rule 7's
-oldest-first ranking both read them wrong. Without the filter they would
-outnumber the real backlog's oldest cohort and dominate every shortlist.
+backlog.** They were the ~44 generated per-type slices of the silent-drop
+backfill campaign (go-to-k/cdkd#2949), FOLDED BACK into one generated checklist
+in the umbrella issue: 44 of 240 open issues were bot-filed slices of one
+campaign, which a public issue count cannot tell from unfixed defects. They are
+closed and the label is legacy. The filter stays because a reopened slice is
+still no decision a triage pass can make, and its `created_at` is whenever the
+map last moved, so §3-0's quarantine and rule 7's ranking read it wrong.
 
-To WORK one, go to it deliberately — `gh issue list --label backfill-type` — and
-take the type whose provider you intend to wire. §4's claim comment still
-applies; the sync never touches comments.
+To WORK the campaign, take the umbrella deliberately (`gh issue list --label
+backfill-umbrella`) and wire the type you intend to. Write `Refs`, never
+`Closes`: it stays open for the other types, and the row disappears when the
+coverage map says this one is done. §4's claim comment still applies.
 
 If everything is maintainer-authored, proceed; otherwise apply §0.
 
@@ -298,7 +298,7 @@ CUT=$(date -u -v-60M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '60 min ago' 
 # §1's listing with the gate applied. DOUBLE quotes — `gh api --jq` takes no
 # `--arg`, so the cutoff expands into the filter. The `backfill-type` exclusion
 # is carried too: this is the listing that actually produces the eligible set,
-# so dropping it here puts all ~44 generated sub-issues back on the shortlist
+# so dropping it here puts any reopened legacy slice back on the shortlist
 # however carefully §1 filtered them.
 gh api --paginate 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
   --jq ".[] | select(.pull_request | not) | select(.created_at < \"$CUT\")

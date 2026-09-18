@@ -315,18 +315,8 @@ export interface SilentDropGroup {
 }
 /** The remaining silent-drop properties, grouped by owning resource type. */
 export declare function parseSilentDropByType(generatedSource: string): SilentDropGroup[];
-/** The opening half of the `backfill-type` marker a sub-issue is keyed by. */
-export declare const SUBISSUE_TYPE_MARKER_PREFIX: string;
-/** The closing half of the `backfill-type` marker. */
-export declare const SUBISSUE_TYPE_MARKER_SUFFIX: string;
-/** The whole marker line identifying a per-type backfill sub-issue. */
-export declare function subIssueTypeMarker(type: string): string;
-/** The `Effort` band a type's remaining property count implies. */
-export declare function subIssueEffort(count: number): 'small (S)' | 'medium (M)' | 'large (L)';
-/** One per-type sub-issue's generated body. */
-export declare function renderSubIssueBody(group: SilentDropGroup): string;
-/** The JSON reconciliation plan `--umbrella-subissues` emits. */
-export declare function renderSubIssuePlan(generatedSource: string): string;
+/** The JSON per-type plan `--umbrella-types` emits. */
+export declare function renderUmbrellaTypePlan(generatedSource: string): string;
 /** Modes that render one committed file, exit, and must fail non-zero. */
 export declare const RENDER_ONLY_FLAGS: ReadonlySet<string>;
 /**
