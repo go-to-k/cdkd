@@ -163,8 +163,13 @@ const MIN_FILES_WITH_CITATIONS = 30;
  * resolving. The rest is the reason line, which is why each entry carries one.
  */
 const EXEMPT_CITATIONS: Record<string, string> = {
-  'gate-sibling-repos.md :: /Users/goto/pc/github/cdk-local/src/types/state.ts':
-    'absolute path into a sibling checkout; present only on a developer machine, never in CI.',
+  // The `gate-sibling-repos.md` entry for an absolute cdk-local path is GONE
+  // (go-to-k/cdkd#3351). The sentence names the sibling's `src/types/state.ts`
+  // without a machine-local prefix now, so there is nothing to exempt -- and the
+  // exemption had already outlived its own path, which is how this fence found
+  // it: correcting the stale `/Users/goto/pc/...` prefix orphaned the entry AND
+  // created an unexempted dangling citation in one edit. A committed rule file
+  // should not cite a path that exists on one developer's machine at all.
   'docs-page-template.md :: ../src/x.ts':
     'deliberate placeholder illustrating a relative link that must NOT escape docs/.',
 };

@@ -12,7 +12,27 @@
 
 set -u
 
+# The gate consults `gate_target_is_foreign` since go-to-k/cdkd#3351, whose
+# allowlist reads `GH_REPO` from the ENVIRONMENT: inherited, it retracts the
+# relaxation in every case at once. verify-pr-gate.test.sh carries the same line
+# with a measured reason (with `GH_REPO=x` exported that suite reported 69/10).
+#
+# `GH_HOST` is unset alongside it because gh honours it too and this suite must
+# not depend on the caller's environment -- but note the allowlist does NOT read
+# it, so unsetting it here fences nothing on its own. An earlier revision of
+# this comment claimed it did; that is the shape of claim this whole PR exists
+# to stop making.
+unset GH_REPO GH_HOST
+
 HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/integ-schema-migration-gate.sh"
+HOOKS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_REAL="$HOOKS_DIR/lib/command-match.sh"
+
+# `run-tests.sh` runs each SUITE under both bashes and exports HOOK_BASH, but the
+# hook is `#!/usr/bin/env bash` and takes whatever is first on PATH -- so without
+# this the hook has never run under bash 3.2 locally, only in CI (go-to-k/cdkd#2715).
+# "Passes under 3.2" was true of the test and false of the thing under test.
+HOOK_RUN="${HOOK_BASH:+$HOOK_BASH }$HOOK"
 
 # go-to-k/cdkd#2236: a fixture repo must DECLARE the gate the hook asks about,
 # the way the real repo does. The gates now read the target repo's own
@@ -127,7 +147,7 @@ run_case() {
     rm -f "$GH_MOCK_DIFF"
   fi
   local got
-  printf '%s' "$payload" | "$HOOK" >/dev/null 2>&1
+  printf '%s' "$payload" | $HOOK_RUN >/dev/null 2>&1
   got=$?
 
   local cwd_ok=1
@@ -216,14 +236,79 @@ run_case "state.ts helper-only addition passes through" 0 \
 
 # --- PR touches state.ts AND bumps the version literal type -------
 
-# Canonical schema bump: literal type expansion
-BUMP_DIFF='diff --git a/src/types/state.ts b/src/types/state.ts
+# THE FIXTURE IS DERIVED FROM THE REAL FILE, NOT HAND-DRAWN (go-to-k/cdkd#3351).
+# Until that issue the two bump fixtures below spelled `version: 1 | 2 | 3;` and
+# `export const STATE_SCHEMA_VERSION = 5;`. Neither shape has ever existed in
+# `src/types/state.ts` -- `git log --all -S'  version: 1 | 2'` over that file is
+# EMPTY -- they are the flattened `interface StackState` rendering from
+# CLAUDE.md. So the gate's regexes and this suite's fixtures were written from
+# the same prose and agreed with each other perfectly while matching nothing the
+# repo can actually produce: every case passed, and five real schema bumps
+# merged with the gate reporting "non-bump edit".
+#
+# Reading the real declarations makes that failure unrepresentable: a fixture
+# that cannot be produced from the file under test cannot silently stop
+# describing it. Same shape as the PARSER FENCE in integ-local-gate.test.sh,
+# which asserts against the real `.markgate.yml` this repo ships.
+SCHEMA_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/src/types/state.ts"
+
+UNION_OLD=$(grep -m1 '^export type StateSchemaVersion = ' "$SCHEMA_SRC" 2>/dev/null || true)
+CONST_OLD=$(grep -m1 '^export const STATE_SCHEMA_VERSION_CURRENT' "$SCHEMA_SRC" 2>/dev/null || true)
+SCHEMA_N=$(printf '%s' "$CONST_OLD" | sed -E 's/.*=[[:space:]]*([0-9]+);.*/\1/')
+
+# FLOOR 1: refuse to run on an empty derivation. Without this a rename in
+# state.ts yields a diff carrying no +/- version line at all, every BLOCK case
+# below silently becomes a PASS case, and the suite reports green over a gate
+# that fires on nothing -- which is EXACTLY the failure being fixed here.
+case "$SCHEMA_N" in
+  '' | *[!0-9]*)
+    echo "FATAL: could not derive the schema version from $SCHEMA_SRC" >&2
+    echo "  union line: ${UNION_OLD:-<not found>}" >&2
+    echo "  const line: ${CONST_OLD:-<not found>}" >&2
+    echo "  Did the declarations get renamed? Re-derive them -- do NOT hand-write" >&2
+    echo "  a fixture, which is how this suite came to test a file that does not exist." >&2
+    exit 1
+    ;;
+esac
+SCHEMA_NEXT=$((SCHEMA_N + 1))
+
+# `[|]`, never `\|`. POSIX leaves a backslash-escaped ordinary character
+# UNDEFINED in an ERE, so `\|` is at the implementation's discretion; a bracket
+# expression is unambiguous everywhere and costs nothing.
+#
+# WHAT WAS AND WAS NOT MEASURED, because an earlier revision of this comment got
+# it wrong in the direction this whole PR is about. It asserted that GNU sed 4.9
+# and busybox read `\|` as ALTERNATION and corrupt the fixture -- stated as a
+# measurement, and never measured: no GNU sed exists on the machine it was
+# written on. Review then measured all three (BSD on macOS, GNU sed 4.9 on
+# `debian:stable-slim`, busybox on `alpine:3`) and they AGREE, treating `\|` as
+# a literal pipe and producing the identical correct fixture.
+#
+# So this is a portability HARDENING against an undefined construct, not a fix
+# for an observed divergence. Keeping the spelling and deleting the false
+# justification is the honest disposition; inventing a measurement to defend a
+# correct change is the same defect as the doc-derived regex, one layer up.
+UNION_NEW=$(printf '%s' "$UNION_OLD" | sed -E "s/ [|] ${SCHEMA_N};\$/ | ${SCHEMA_N} | ${SCHEMA_NEXT};/")
+CONST_NEW=$(printf '%s' "$CONST_OLD" | sed -E "s/=[[:space:]]*${SCHEMA_N};\$/= ${SCHEMA_NEXT};/")
+
+# FLOOR 2: the bump must actually CHANGE the line. A rename leaving both greps
+# matching the same text would otherwise produce a vacuous "bump" whose + and -
+# lines are identical, and the gate would be tested against a no-op.
+if [ "$UNION_NEW" = "$UNION_OLD" ] || [ "$CONST_NEW" = "$CONST_OLD" ]; then
+  echo "FATAL: the derived v${SCHEMA_N} -> v${SCHEMA_NEXT} bump changed nothing." >&2
+  echo "  union: $UNION_OLD" >&2
+  echo "  const: $CONST_OLD" >&2
+  exit 1
+fi
+
+# Canonical schema bump: the UNION declaration.
+BUMP_DIFF="diff --git a/src/types/state.ts b/src/types/state.ts
 index abc..def 100644
 --- a/src/types/state.ts
 +++ b/src/types/state.ts
-@@ -10,3 +10,3 @@
--  version: 1 | 2 | 3 | 4 | 5;
-+  version: 1 | 2 | 3 | 4 | 5 | 6;'
+@@ -146,1 +146,1 @@
+-${UNION_OLD}
++${UNION_NEW}"
 
 run_case "version bump + marker stale BLOCKS" 2 \
   '{"tool_input":{"command":"gh pr merge 400 --squash"}}' \
@@ -235,36 +320,91 @@ MARKGATE_MOCK_VERDICT="fresh" run_case "version bump + marker fresh passes" 0 \
   '{"files":[{"path":"src/types/state.ts"}]}' \
   "$BUMP_DIFF"
 
-# STATE_SCHEMA_VERSION constant variant: another form of version bump
-CONST_BUMP_DIFF='diff --git a/src/types/state.ts b/src/types/state.ts
+# The CONSTANT variant: the other line a bump edits, and a SEPARATE regex
+# alternative. Kept as its own case because the two shipped patterns were wrong
+# for two DIFFERENT reasons -- the union one looked for `version:` where the file
+# spells `StateSchemaVersion =`, and the constant one required `=` adjacent to
+# `STATE_SCHEMA_VERSION` where `_CURRENT:` intervenes -- so one case cannot
+# stand in for the other.
+CONST_BUMP_DIFF="diff --git a/src/types/state.ts b/src/types/state.ts
 index abc..def 100644
 --- a/src/types/state.ts
 +++ b/src/types/state.ts
-@@ -2,1 +2,1 @@
--export const STATE_SCHEMA_VERSION = 5;
-+export const STATE_SCHEMA_VERSION = 6;'
+@@ -148,1 +148,1 @@
+-${CONST_OLD}
++${CONST_NEW}"
 
-run_case "STATE_SCHEMA_VERSION bump + marker stale BLOCKS" 2 \
+run_case "STATE_SCHEMA_VERSION_CURRENT bump + marker stale BLOCKS" 2 \
   '{"tool_input":{"command":"gh pr merge 402 --squash"}}' \
   '{"files":[{"path":"src/types/state.ts"}]}' \
   "$CONST_BUMP_DIFF"
 
-# --- Mixed PR: state.ts bumped AND non-state files also touched ---
-
-MIXED_DIFF='diff --git a/src/types/state.ts b/src/types/state.ts
+# --- THE NEGATIVE CONTROL THIS GATE SHIPPED WITHOUT (go-to-k/cdkd#3351) ------
+#
+# The DOC shape must NOT arm the gate. `CLAUDE.md` renders StackState with the
+# union flattened into the field:
+#
+#   version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
+#
+# `src/types/state.ts` has never spelled it that way. The original regexes
+# matched THIS line and nothing in the real file, so this case is the exact
+# inverse of the defect: it passes only while the patterns are derived from the
+# source rather than from the prose describing it. If someone "fixes" a future
+# miss by pattern-matching CLAUDE.md again, this case reds.
+#
+# It is a DIFF the gate would otherwise treat as a bump -- a + and a - line,
+# inside the state.ts block -- so it isolates the shape and nothing else.
+DOC_SHAPE_DIFF='diff --git a/src/types/state.ts b/src/types/state.ts
 index abc..def 100644
 --- a/src/types/state.ts
 +++ b/src/types/state.ts
-@@ -10,3 +10,3 @@
--  version: 1 | 2 | 3 | 4 | 5;
-+  version: 1 | 2 | 3 | 4 | 5 | 6;
+@@ -10,1 +10,1 @@
+-  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
++  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;'
+
+run_case "the CLAUDE.md doc-snippet shape alone does NOT arm the gate" 0 \
+  '{"tool_input":{"command":"gh pr merge 403 --squash"}}' \
+  '{"files":[{"path":"src/types/state.ts"}]}' \
+  "$DOC_SHAPE_DIFF"
+
+# --- The `[^=<>]*` narrowing, pinned (go-to-k/cdkd#3351 round 2) -------------
+#
+# The constant pattern spans everything between `STATE_SCHEMA_VERSION_CURRENT`
+# and the first `=`. With a bare `[^=]*` that span reaches ACROSS a `>=`, so an
+# ordinary JSDoc line mentioning the constant and a comparison MATCHES -- a
+# false positive in a file whose own header promises comment edits never arm the
+# gate. Measured: this diff arms under `[^=]*` and does not under `[^=<>]*`.
+# Fail-closed, so it costs a spurious block rather than a bypass, but the header
+# would be telling the next reader something untrue.
+JSDOC_COMPARISON_DIFF='diff --git a/src/types/state.ts b/src/types/state.ts
+index abc..def 100644
+--- a/src/types/state.ts
++++ b/src/types/state.ts
+@@ -120,2 +120,2 @@
+- * `STATE_SCHEMA_VERSION_CURRENT` is stamped whenever version >= 2.
++ * `STATE_SCHEMA_VERSION_CURRENT` is stamped whenever version >= 2 (reworded).'
+
+run_case "a JSDoc line carrying >= near the constant does NOT arm the gate" 0 \
+  '{"tool_input":{"command":"gh pr merge 404 --squash"}}' \
+  '{"files":[{"path":"src/types/state.ts"}]}' \
+  "$JSDOC_COMPARISON_DIFF"
+
+# --- Mixed PR: state.ts bumped AND non-state files also touched ---
+
+MIXED_DIFF="diff --git a/src/types/state.ts b/src/types/state.ts
+index abc..def 100644
+--- a/src/types/state.ts
++++ b/src/types/state.ts
+@@ -146,1 +146,1 @@
+-${UNION_OLD}
++${UNION_NEW}
 diff --git a/src/state/s3-state-backend.ts b/src/state/s3-state-backend.ts
 index abc..def 100644
 --- a/src/state/s3-state-backend.ts
 +++ b/src/state/s3-state-backend.ts
 @@ -50,1 +50,1 @@
 -    // unchanged
-+    // adjusted comment'
++    // adjusted comment"
 
 run_case "mixed PR with version bump BLOCKS" 2 \
   '{"tool_input":{"command":"gh pr merge 500 --squash"}}' \
@@ -406,12 +546,16 @@ x2236_mk_repo "$x2236_emptycfg" "https://github.com/go-to-k/cdk-local.git" check
 #   consulting a marker at all, which is what the no-equivalent refusal must do.
 x2236_case() {
   local name="$1" want="$2" verdict="$3" mg="$4" want_txt="$5" repo="$6"
+  # Optional 7th arg: override the command. Needed since go-to-k/cdkd#3351 to
+  # drive the allowlist half of the foreign relaxation, which reads the command
+  # text rather than the target directory.
+  local command="${7:-gh pr merge 1 --squash}"
   local out got detail=""
   : > "$CWD_TRACE_FILE"
   printf '{"files":[{"path":"src/types/state.ts"}]}' > "$GH_MOCK_FILES"
   printf '%s' "$BUMP_DIFF" > "$GH_MOCK_DIFF"
-  out=$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 1 --squash"}}' "$repo" \
-    | MARKGATE_MOCK_VERDICT="$verdict" "$HOOK" 2>&1)
+  out=$(printf '{"cwd":"%s","tool_input":{"command":"%s"}}' "$repo" "$command" \
+    | MARKGATE_MOCK_VERDICT="$verdict" $HOOK_RUN 2>&1)
   got=$?
   [ "$got" = "$want" ] || detail="$detail; want exit $want, got $got"
   if [ "$mg" = "NOT_CALLED" ] && [ -s "$CWD_TRACE_FILE" ]; then
@@ -433,9 +577,76 @@ x2236_case() {
 }
 
 x2236_case "target declaring integ-schema-migration consults that marker" 2 stale CALLED - "$x2236_declares"
-x2236_case "sibling declaring only its own gate is NOT accepted on it" 2 fresh NOT_CALLED "declares no gate" "$x2236_other"
-x2236_case "checkout with no .markgate.yml refuses actionably" 2 fresh NOT_CALLED "GATE_MARKER_ALIASES" "$x2236_bare"
+# --- The foreign relaxation (go-to-k/cdkd#3351) ------------------------------
+#
+# These two REFUSED until #3351, and the refusal was unclearable: the target
+# declares no `integ-schema-migration` and no sibling gate attests to a state
+# schema round trip, so no action that repo could take would satisfy it. It was
+# also UNREACHABLE in practice -- the gate's regexes matched nothing, so no
+# sibling merge ever got this far. Correcting the regexes made it reachable and
+# cdk-local the live case, so the go-to-k/cdkd#3209 precedent applies: a
+# requirement only cdkd defines is required only where it is defined.
+#
+# markgate is NOT_CALLED on both: the relaxation happens before the verify.
+x2236_case "foreign sibling declaring only its own gate is RELAXED" 0 fresh NOT_CALLED - "$x2236_other"
+x2236_case "foreign checkout with no .markgate.yml is RELAXED" 0 fresh NOT_CALLED - "$x2236_bare"
+
+# THE FAIL-OPEN GUARD, and the reason the relaxation needs the ALLOWLIST rather
+# than the directory comparison alone. `gh pr merge <N> --repo go-to-k/cdkd`
+# issued from a SIBLING checkout resolves a CDKD pull request, while the target
+# directory is still the sibling. Relaxing on the directory alone would let a
+# real cdkd schema bump merge with the marker never consulted. The identical
+# spelling was measured going 2 -> 0 on verify-pr-gate before go-to-k/cdkd#3209
+# built this allowlist.
+# The stderr needle is the RETRACT REASON, not the generic refusal: a reader who
+# hits this needs to know the relaxation was withdrawn by a repo override, not
+# that they should add a GATE_MARKER_ALIASES row. Nothing asserted any of the
+# three retract messages reached a user until go-to-k/cdkd#3351 round 2.
+x2236_case "foreign target + --repo naming cdkd still REFUSES, and says why" 2 fresh NOT_CALLED \
+  "carries a repo override" "$x2236_other" "gh pr merge 1 --squash --repo go-to-k/cdkd"
+x2236_case "foreign target + a CLUSTERED -R still REFUSES" 2 fresh NOT_CALLED \
+  "declares no gate" "$x2236_other" "gh pr merge 1 -sdR go-to-k/cdkd"
+x2236_case "foreign target + a PR URL selector still REFUSES" 2 fresh NOT_CALLED \
+  "declares no gate" "$x2236_other" "gh pr merge https://github.com/go-to-k/cdkd/pull/1 --squash"
 x2236_case "unparsable config keeps the cdkd gate name (fail closed)" 2 stale CALLED "integ-schema-migration" "$x2236_emptycfg"
+
+# --- The identity is computed BEFORE this process changes its cwd -------------
+#
+# `.claude/settings.json` invokes the hook as
+# `${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/integ-schema-migration-gate.sh`, so in
+# production the script's own path is RELATIVE whenever that variable is unset.
+# The identity block therefore runs ABOVE the hook's `cd "$target_dir"`, or
+# `$__hook_dir` resolves from inside the TARGET, the hook's "own" repo becomes
+# the target, every target classifies as cdkd, and the relaxation inverts into a
+# no-op -- the unclearable sibling refusal silently back.
+#
+# NOTHING FENCED THAT until go-to-k/cdkd#3351's review: every case above invokes
+# `$HOOK` by ABSOLUTE path, so `__hook_dir` is already resolved and the ordering
+# cannot matter. Measured -- moving the call below the `cd` left this suite at
+# 27/0 while the production spelling went 0 -> 2.
+#
+# So this case must use a RELATIVE invocation from a cwd that is NOT the target,
+# which is the same discriminator verify-pr-gate.test.sh records for its own
+# copy of this block.
+rel_home="$TMPDIR/rel-home"
+x2236_mk_repo "$rel_home" "https://github.com/go-to-k/cdkd.git" check integ-schema-migration
+mkdir -p "$rel_home/.claude/hooks/lib"
+cp "$HOOK" "$rel_home/.claude/hooks/integ-schema-migration-gate.sh"
+cp "$LIB_REAL" "$rel_home/.claude/hooks/lib/command-match.sh"
+chmod +x "$rel_home/.claude/hooks/integ-schema-migration-gate.sh"
+
+printf '{"files":[{"path":"src/types/state.ts"}]}' > "$GH_MOCK_FILES"
+printf '%s' "$BUMP_DIFF" > "$GH_MOCK_DIFF"
+rel_rc=$(cd "$rel_home" && printf '{"cwd":"%s","tool_input":{"command":"gh -C %s pr merge 1 --squash"}}' \
+  "$rel_home" "$x2236_other" \
+  | MARKGATE_MOCK_VERDICT=fresh ${HOOK_BASH:+$HOOK_BASH }./.claude/hooks/integ-schema-migration-gate.sh >/dev/null 2>&1; echo $?)
+if [ "$rel_rc" = "0" ]; then
+  pass=$((pass + 1)); printf 'OK   a RELATIVE invocation resolves its own repo BEFORE the cd\n'
+else
+  fail=$((fail + 1))
+  fail_log="${fail_log}FAIL relative invocation: got $rel_rc, want 0 -- the identity block has moved below the cd, so the foreign target reads as cdkd\n"
+  printf 'FAIL a RELATIVE invocation resolves its own repo BEFORE the cd (got %s)\n' "$rel_rc"
+fi
 
 # --- Summary ------------------------------------------------------
 

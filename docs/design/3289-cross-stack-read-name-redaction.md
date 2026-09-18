@@ -113,7 +113,12 @@ would carry every such consumer, which is noise rather than a warning.
 
 `StateImportEntry` / `StateOutputReadEntry` keep all three `string` fields;
 only values change, so `integ-schema-migration-gate.sh` (which activates on a
-diff touching the version literal in `src/types/state.ts`) does not fire.
+diff touching the `StateSchemaVersion` union or the
+`STATE_SCHEMA_VERSION_CURRENT` constant in `src/types/state.ts`) does not fire.
+That parenthetical described the gate's INTENT rather than its behaviour when
+this file was written: the patterns it actually carried matched neither
+declaration, and go-to-k/cdkd#3351 corrected them. The conclusion is unchanged
+either way -- this change edits no version declaration.
 Precedent: `orphans`, and the go-to-k/cdkd#1934 change that began persisting
 expressions in place of plaintext, both shipped without a bump.
 

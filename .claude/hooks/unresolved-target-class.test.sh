@@ -248,6 +248,13 @@ mk_repo() { # <dir>
   echo "// base" > "$d/src/types/state.ts"
   echo one > "$d/f.txt"
   : > "$d/README.md"
+  # EMPTY on purpose. An empty config is UNPARSABLE, so
+  # `gate_resolve_marker_gate` fails closed to `canonical` and
+  # integ-schema-migration-gate consults markgate and blocks -- which is what
+  # keeps it in EXPECTED_EXERCISED below. A config declaring OTHER gates, or an
+  # absent one, resolves to `none`, and since go-to-k/cdkd#3351 a foreign target
+  # at `none` relaxes; these fixtures are throwaway repos, hence foreign, so the
+  # gate would go quiet here.
   touch "$d/.markgate.yml"
   "$REAL_GIT" -C "$d" add -A >/dev/null 2>&1
   "$REAL_GIT" -C "$d" -c user.email=t@t -c user.name=t commit -q -m base
@@ -335,7 +342,12 @@ stage_nosrc_violation "$nosrc"; stage_nosrc_violation "$nosrc_spaced"
 SHIM="$TMPDIR/bin"; mkdir -p "$SHIM"
 export GH_VIEW="$TMPDIR/v.json" GH_DIFF="$TMPDIR/d.txt" GH_CHECKS="$TMPDIR/c.tsv" GH_LIST="$TMPDIR/l.json"
 printf '{"files":[{"path":"src/deployment/deploy-engine.ts"},{"path":"src/local/x.ts"},{"path":"src/types/state.ts"}],"additions":2000,"deletions":100,"changedFiles":30,"headRefOid":"abc123","headRefName":"feat/x"}' > "$GH_VIEW"
-printf 'diff --git a/src/types/state.ts b/src/types/state.ts\n-  version: 1 | 2 | 3 | 4 | 5;\n+  version: 1 | 2 | 3 | 4 | 5 | 6;\n' > "$GH_DIFF"
+# Spelled as `src/types/state.ts` actually spells it, so integ-schema-migration-gate
+# stays EXERCISED here (go-to-k/cdkd#3351). The previous `version: 1 | 2 | ... | 5;`
+# shape has never existed in that file; it armed only the gate's equally-fictional
+# regexes, so this fence's EXPECTED_EXERCISED row for that gate was satisfied by a
+# diff no real PR could produce.
+printf 'diff --git a/src/types/state.ts b/src/types/state.ts\n-export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5;\n+export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6;\n-export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 5;\n+export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 6;\n' > "$GH_DIFF"
 printf 'check-build-test\tfail\t2m\thttps://x\n' > "$GH_CHECKS"
 printf '[{"number":263,"mergedAt":"2026-05-11T03:00:00Z","headRefName":"main","title":"t"}]' > "$GH_LIST"
 cat > "$SHIM/mise" <<'M'

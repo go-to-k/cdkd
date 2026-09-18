@@ -68,6 +68,11 @@ require_hook() {
 side_repo="$TMPDIR/side-repo"
 main_repo="$TMPDIR/main-repo"
 git init -q -b feature/x "$side_repo"
+# A REMOTE, because since go-to-k/cdkd#3351 repo identity is settled on the slug
+# and a checkout with none cannot be identified at all. Every real cdkd worktree
+# has an `origin`; a bare `git init` was standing in for one and made the
+# fixture unrepresentative of the thing it models.
+git -C "$side_repo" remote add origin https://github.com/go-to-k/cdkd.git
 git -C "$side_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 # A SECOND commit, so the "foreign" sha below is a REAL object in this repo and
 # an ANCESTOR of HEAD -- which is exactly what a previous lane's sentinel holds.
@@ -562,6 +567,12 @@ common_of() {
 
 foreign_repo="$TMPDIR/foreign-repo"
 git init -q -b feature/z "$foreign_repo"
+# A SIBLING's remote. It is INERT for the verdict -- measured: removing it
+# changes no case, because a target with NO remote relaxes anyway. It is here so
+# the fixture RESEMBLES a real sibling checkout, not because the slug test needs
+# it; `side_repo`'s remote IS load-bearing (removing that one reds 18 cases).
+# Said plainly because the first version of this comment claimed the opposite.
+git -C "$foreign_repo" remote add origin https://github.com/go-to-k/cdk-local.git
 git -C "$foreign_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 touch "$foreign_repo/.markgate.yml"
 # NO sentinel -- this IS the siblings' state, not a contrivance.

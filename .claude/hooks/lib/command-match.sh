@@ -4437,11 +4437,53 @@ gate_markgate_declared_gates() {
 #   https://github.com/o/r(.git)      scp-like  git@github.com:o/r(.git)
 #   ssh://git@github.com/o/r(.git)
 gate_repo_slug() {
-  local url host path rest
+  local url
   url=$(git -C "$1" config --get remote.origin.url 2>/dev/null) || return 1
+  gate_slug_from_url "$url"
+}
+
+# gate_slug_from_url <url>
+#   The normalisation half of `gate_repo_slug`, split out by go-to-k/cdkd#3351 so
+#   a caller can ask the same question about a remote OTHER than `origin`.
+#   `gate_target_is_foreign` must, because gh prefers an `upstream` remote over
+#   `origin` -- an origin-only test answers about the wrong repository for the
+#   ordinary fork setup.
+gate_slug_from_url() {
+  local url host path rest
+  url="$1"
   [ -n "$url" ] || return 1
-  url="${url%.git}"
-  url="${url%/}"
+  # Trailing whitespace, a query/fragment tail, and a trailing slash are all
+  # spellings git accepts and gh resolves identically; none changes the repo.
+  # Measured relaxing before this (go-to-k/cdkd#3351 round 2): `.../cdkd.git/`,
+  # `.../cdkd.git?x=1` and `.../cdkd.git ` each failed to compare equal and the
+  # gate exited 0 on the real v10 bump.
+  # BOUND THE INPUT FIRST. The strip loops below are char-at-a-time, so each
+  # `${url%?}` copies the string and the pass is QUADRATIC: review measured
+  # 40,000 trailing spaces on one URL taking 38.9 s, and a PreToolUse hook that
+  # outruns its 10 s budget is KILLED -- which disarms every gate at once, the
+  # worst outcome available here. No real git URL is anywhere near this long, so
+  # refusing is free, and a refusal means "unreadable", which the caller turns
+  # into "not foreign".
+  [ "${#url}" -le 512 ] || return 1
+
+  # ORDER IS LOAD-BEARING, and having it backwards was a round-4 blocker. gh
+  # parses the URL -- which DECODES the path -- and only then trims `.git` and
+  # an empty tail. Stripping first means anything this pass removes can be
+  # smuggled past it percent-encoded: `.../cdkd%2Egit` survived as
+  # `github.com/go-to-k/cdkd.git`, compared unequal, and the gate exited 0 on
+  # the real v10-bump PR while `gh repo view` there answered go-to-k/cdkd. One
+  # encoded byte reopened the round-2 second-clone blocker.
+  #
+  # So: query/fragment off the RAW string (gh drops those before decoding too),
+  # then split host from path, then DECODE, and only then normalise.
+  url="${url%%\?*}"
+  url="${url%%#*}"
+  while :; do
+    case "$url" in
+      *[[:space:]]) url="${url%?}" ;;
+      *) break ;;
+    esac
+  done
 
   case "$url" in
     *://*)
@@ -4460,7 +4502,13 @@ gate_repo_slug() {
       ;;
   esac
 
-  host="${host#*@}"          # strip any user@
+  # `##*@`, the LONGEST match, because Go's `net/url` -- what gh parses remotes
+  # with -- takes userinfo at the LAST `@` in the authority. The shortest-match
+  # `#*@` left everything after the first one in the host, so a URL with two
+  # `@`s produced a slug that compared unequal and the gate exited 0 on the real
+  # v10-bump PR. Not only an attack: `https://alice@example.com@github.com/o/r`
+  # -- an email as the HTTPS username -- is a spelling people really have.
+  host="${host##*@}"         # strip userinfo, at the LAST @ as gh does
   host="${host%%:*}"         # strip any :port
   case "$host" in
     ""|*/*|*" "*) return 1 ;;
@@ -4470,26 +4518,62 @@ gate_repo_slug() {
   esac
 
   path="${path#/}"
-  # The WHOLE path, not its last two segments. Collapsing to `<owner>/<name>`
-  # is the same conflation the host fix targets, one level up: it keys
-  # `github.com/o/r/sub/deep` as `github.com/sub/deep`, and it makes the GitLab
-  # subgroups `gitlab.com/a/x/repo` and `gitlab.com/b/x/repo` IDENTICAL. Inert
-  # today (no non-flat-forge row exists), but the whole point of this key is
-  # that two different repositories can never share one.
+
+  # DECODE FIRST (go-to-k/cdkd#3351 round 4). Everything below removes
+  # characters, so a decode placed after it lets an encoded `.`, `/` or space
+  # survive into the slug. gh decodes the path before trimming, and this now
+  # matches that order.
   #
-  # The "at least two segments" test is STRUCTURAL. It used to be spelled
-  # `[ "$owner" != "$name" ]`, which refuses any repo whose name equals its
-  # owner -- measured: `https://github.com/prettier/prettier.git` returned 1,
-  # and the caller then printed "origin remote missing or not host-qualified",
-  # which is simply false for that remote. Fail-closed, so never a hazard, but a
-  # wrong diagnosis sends the next reader hunting the wrong thing.
+  # `%` -> `\x` + `printf %b` is the bash 3.2 decode. A path already carrying a
+  # backslash would be eaten by it, so that is REFUSED rather than guessed --
+  # and a refusal means "unreadable", which the caller reads as "not foreign".
+  case "$path" in
+    *\\*) return 1 ;;
+    *%*) path=$(printf '%b' "${path//%/\\x}") ;;
+  esac
+  # A decode that produced a newline or a NUL is not something to compare; a
+  # space is not legal in a repo path either.
+  # `$'\n'`, never `$(printf '\n')`: command substitution STRIPS trailing
+  # newlines, so that spelling yields an EMPTY string, the pattern collapses to
+  # `**`, and EVERY path is refused -- measured, it refused the plain
+  # `https://github.com/go-to-k/cdkd.git`. A guard that refuses everything reads
+  # as fail-closed and is really just broken.
+  case "$path" in
+    *$'\n'*|*" "*|*$'\t'*) return 1 ;;
+  esac
+
+  # NOW normalise: collapse repeated separators, drop the `.git` suffix and any
+  # empty tail -- the same trims gh applies after parsing.
+  while :; do
+    case "$path" in
+      *//*) path="$(printf '%s' "$path" | sed 's|//*|/|g')" ;;
+      *) break ;;
+    esac
+  done
+  while :; do
+    case "$path" in
+      */) path="${path%/}" ;;
+      *) break ;;
+    esac
+  done
+  path="${path%.git}"
+  path="${path%/}"
+
+  # The WHOLE path, not its last two segments. Collapsing to `<owner>/<name>`
+  # keys `github.com/o/r/sub/deep` as `github.com/sub/deep` and makes the GitLab
+  # subgroups `gitlab.com/a/x/repo` and `gitlab.com/b/x/repo` IDENTICAL.
   case "$path" in
     */*) ;;
     *) return 1 ;;
   esac
-  case "$path" in
-    *//*|*" "*) return 1 ;;
-  esac
+
+  # Case-fold LAST, over the final spelling. GitHub treats host, owner and repo
+  # case-insensitively. Folding can only make two spellings compare EQUAL, and
+  # equal means "same repo, refuse to relax" -- the safe direction on a forge
+  # where case happens to matter.
+  host=$(printf '%s' "$host" | tr 'A-Z' 'a-z')
+  path=$(printf '%s' "$path" | tr 'A-Z' 'a-z')
+
   printf '%s/%s' "$host" "$path"
 }
 
@@ -4688,6 +4772,416 @@ gate_refuse_unevaluable_marker() {
     echo "  $diagnose status $mgate"
   } >&2
   exit 2
+}
+
+# =============================================================================
+# Repo identity: is the command's TARGET this hook's own repo?
+# (extracted from verify-pr-gate.sh by go-to-k/cdkd#3351; the measurements
+# quoted here were taken for go-to-k/cdkd#3209, which wrote it)
+# =============================================================================
+#
+# A gate may carry a requirement that only THIS repo defines -- a sentinel file
+# it writes, a markgate gate name it declares. Applied to a sibling checkout
+# such a requirement is unclearable by any legitimate action, which is the
+# failure go-to-k/cdkd#2236 catalogues. These helpers answer "is the target
+# provably NOT this repo", so a caller can take a relaxed path there and its
+# strict path everywhere else.
+#
+# WHY `BASH_SOURCE` IS RIGHT FOR THIS AND WAS WRONG FOR THE MARKER LOOKUP:
+# go-to-k/cdkd#559 moved the marker STORE to the payload cwd, because a marker
+# is per-worktree state and the question is "which tree is this command acting
+# on". Identity asks the opposite question -- "which repo do these hook FILES
+# belong to" -- and the only honest answer is where the file being executed
+# lives. Reading the cwd here would classify by where the SHELL stands.
+#
+# gate_git_common_dir <dir>
+#   Canonical `--git-common-dir` for <dir>, or rc 1. `--path-format=absolute`
+#   is load-bearing, not tidiness: the bare form prints a path relative to the
+#   directory `-C` named, so the `cd` below would resolve it against THIS
+#   process's cwd instead. Measured 2026-09-16 -- a main checkout answers
+#   `.git`, and `-C <repo>/.claude` answers `../.git`; a linked worktree happens
+#   to answer absolutely, which is exactly how this would have looked correct in
+#   the tree it was written in.
+#
+#   The `cd` + `pwd -P` canonicalisation is DEFENSIVE AND UNFENCED, and saying
+#   why it is there is not the same as having measured that it does anything:
+#   the usual reason given, that macOS resolves `/var` to `/private/var`, was
+#   checked and is NOT one. Measured 2026-09-16 on git 2.49, the flag above
+#   already prints `/private/var/...` for a main checkout, a linked worktree and
+#   a relative `GIT_DIR`, and deleting this line changed no verdict. It stays
+#   because a path git DID return unresolved would compare unequal to itself in
+#   the RELAXING direction; do not cite a measurement for it.
+gate_git_common_dir() {
+  local __d
+  __d=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+  [ -n "$__d" ] || return 1
+  __d=$(cd "$__d" 2>/dev/null && pwd -P) || return 1
+  [ -n "$__d" ] || return 1
+  printf '%s\n' "$__d"
+}
+
+# Set by gate_cmd_names_no_other_repo to the REASON it refused, so a caller's
+# message can say what stopped the relaxation. Deliberately assigned EMPTY at
+# column 0: `gate_require_const`'s membership rule is "interpolated outside a
+# comment AND assigned at column 0 with a NON-EMPTY value", so an empty
+# initialiser keeps this out of GATE_LIB_BASE_CONSTS -- same class as
+# GATE_MISSING_CONSTS. Listing it there would make gate_require_const refuse on
+# every command.
+GATE_FOREIGN_RETRACT=""
+
+# gate_cmd_names_no_other_repo <command> <verb-ere>
+#   rc 0 when the command PROVABLY names no repo other than the one its target
+#   directory is in; rc 1 otherwise, with GATE_FOREIGN_RETRACT set.
+#
+# THE FIRST FIX WAS A DENYLIST AND IT IS WHY THIS ONE IS NOT. A regex for
+# `-R` / `--repo` over `strip_noncommand_spans` output closed two spellings and
+# one review round produced five more that gh honours and it did not see:
+# `GH_REPO=<slug> gh ...` and `export GH_REPO=...` (the assignment is stripped
+# before the segment is read, and it need not even be in this segment),
+# `gh pr merge https://github.com/<owner>/<repo>/pull/<N>` (a URL selector needs
+# no flag at all), `gh pr merge N "--repo" <slug>` and `--re"po"` (stripping a
+# quoted span deletes the flag NAME with it). Enumerating spellings has no
+# termination proof; REFUSE the construct rather than model it.
+#
+# So this is an ALLOWLIST: relax only when the command provably names no other
+# repo, and treat every shape it cannot read as naming one.
+#
+#   - the hook's own environment carries no `GH_REPO` (a hook inherits the
+#     session's, and gh honours it over the local repo);
+#   - the RAW command text contains no `GH_REPO` anywhere -- raw, because
+#     `env "GH_REPO=x" gh ...` hides it from the stripper, and whole-command,
+#     because `export GH_REPO=x; gh ...` puts it in a different segment;
+#   - every TOKEN of every matched segment is LITERALLY READABLE
+#     (`gate_word_is_literal`): a `$VAR`, a substitution, a brace expansion, a
+#     backslash or an unbalanced quote is a shape this cannot model, so it stops
+#     the relaxation instead of passing through it;
+#   - and no token NAMES A REPO. Two shapes, both tested on the token with its
+#     QUOTE CHARACTERS REMOVED (`$noq`): `--repo*`, and `-R*` or a combined
+#     short-flag CLUSTER containing `R` (`-[!-]*R*`). gh's `-R` is an ordinary
+#     cobra short flag, so it clusters: measured 2026-09-16,
+#     `gh pr view -cR go-to-k/cdkd 3214` and the glued `-cRgo-to-k/cdkd` BOTH
+#     resolve the cdkd PR from a non-repo directory, and `-sdR <slug>` /
+#     `-sR<slug>` are the same shape on `pr merge`. A prefix-only `-R*` test let
+#     every one of those through. `-tRelease` -- a `--title` short flag whose
+#     VALUE begins with `R` -- is refused by that cluster pattern. Deliberate:
+#     over-refusal falls back to the caller's STRICT path, which is the
+#     direction this whole guard errs in.
+#     `$noq` is the ONLY form tested because it SUBSUMES the other two: deleting
+#     quote characters can expose a prefix but never hide one. Measured -- `$noq`
+#     alone keeps the suite green, `gate_unquote`'s output alone loses the
+#     `--re"po"` case (the library's unquote is not a shell and leaves
+#     `--re"po`), and the RAW token alone loses that and `"--repo"` as well.
+#   - and no token is a URL / PR SELECTOR: the token's FIRST whitespace-delimited
+#     word carries `://` or `/pull/<digits>`. gh resolves the repo from such a
+#     selector with no flag at all.
+#   - and the arguments do not arrive from stdin (`xargs`), where the command
+#     text cannot name the target repo at all.
+#
+# RESIDUAL CLASS, and the pointers to it must not be dropped again. This
+# allowlist reads the COMMAND TEXT, so it is blind to every channel that names a
+# repo WITHOUT appearing in argv:
+#
+#   - an `upstream` remote in the target checkout -- gh prefers it over
+#     `origin`, so a plain `git remote add upstream <other repo>` re-points
+#     resolution with nothing in the command at all
+#     (go-to-k/cdkd#3235, OPEN);
+#   - `gh repo set-default`, which writes a `gh-resolved` entry into the
+#     target's git config (go-to-k/cdkd#3256, OPEN);
+#   - a `gh alias` expanding to a flagged form, and `GH_REPO` / `GH_HOST`
+#     assembled at run time or sourced from a file (go-to-k/cdkd#2354, OPEN).
+#
+# For `gate_target_is_foreign` specifically, the first two are closed by the
+# repo-slug conjunct below, which reads the TARGET'S REMOTES rather than the
+# command: `insteadOf` by letting `git ls-remote --get-url` expand it, and
+# `gh-resolved` by reading that key directly. **Closed there, not everywhere** --
+# an earlier revision of this paragraph said "#3235 is CLOSED", which was true
+# only of the spellings the normaliser happened to know, and three more were
+# measured bypassing it in one review round. What actually closes the class is
+# the REFUSAL on an unreadable remote, not the list of shapes understood.
+#
+# `gh alias` and a run-time-assembled `GH_REPO` / `GH_HOST` (go-to-k/cdkd#2354)
+# remain open, and they defeat the gate at the MATCHER rather than here.
+#
+# All three were recorded on `verify-pr-gate.sh` before go-to-k/cdkd#3351 moved
+# this code, and that move deleted every reference from the repo -- re-attached
+# HERE, where the predicate now lives, because a bound whose issue number no
+# longer appears anywhere stops being a bound and becomes a surprise.
+#
+# CONSEQUENCE DEPENDS ON THE CALLER, and this function cannot bound it. For
+# `verify-pr-gate` a wrong "foreign" verdict drops a sentinel and still verifies
+# the marker; for `integ-schema-migration-gate` it SKIPS THE GATE ENTIRELY.
+# Weigh a new caller against the harsher reading, not the milder one.
+gate_cmd_names_no_other_repo() {
+  local cmd="$1" verb_ere="$2" seg tok noq argv
+  GATE_FOREIGN_RETRACT=""
+
+  if [ -n "${GH_REPO:-}" ]; then
+    GATE_FOREIGN_RETRACT="GH_REPO is set in this session's environment"
+    return 1
+  fi
+  case "$cmd" in
+    *GH_REPO*)
+      GATE_FOREIGN_RETRACT="the command carries a GH_REPO assignment"
+      return 1
+      ;;
+  esac
+
+  while IFS= read -r seg; do
+    [ -n "$seg" ] || continue
+    while IFS= read -r tok; do
+      [ -n "$tok" ] || continue
+      noq=${tok//\"/}
+      noq=${noq//\'/}
+      case "$noq" in
+        gh) break ;;
+        xargs)
+          GATE_FOREIGN_RETRACT="the gh command's arguments arrive from stdin through xargs, so the command text cannot name the target repo"
+          return 1
+          ;;
+      esac
+    done <<EOF
+$(gate_argv "$seg" 2>/dev/null)
+EOF
+  done < <(gate_segments_raw "$cmd")
+
+  while IFS= read -r seg; do
+    gate_verb_span "$seg" "$verb_ere" >/dev/null 2>&1 || continue
+
+    if ! argv=$(gate_argv "$seg"); then
+      GATE_FOREIGN_RETRACT="the gh command cannot be split into words (an unbalanced quote?)"
+      return 1
+    fi
+    while IFS= read -r tok; do
+      [ -n "$tok" ] || continue
+      if ! gate_word_is_literal "$tok"; then
+        GATE_FOREIGN_RETRACT="the gh command carries an argument this gate cannot read literally ($tok)"
+        return 1
+      fi
+
+      noq=${tok//\"/}
+      noq=${noq//\'/}
+      case "$noq" in
+        -R* | --repo* | -[!-]*R*)
+          GATE_FOREIGN_RETRACT="the gh command carries a repo override ($tok)"
+          return 1
+          ;;
+      esac
+
+      case "${noq%%[[:space:]]*}" in
+        *://* | */pull/[0-9]*)
+          GATE_FOREIGN_RETRACT="the gh command names a pull request by URL ($tok)"
+          return 1
+          ;;
+      esac
+    done <<EOF
+$argv
+EOF
+  done < <(gate_segments "$cmd")
+  return 0
+}
+
+# gate_target_is_foreign <hook-dir> <target-dir> <command> <verb-ere>
+#   rc 0 when the target is PROVABLY a different repository from the one these
+#   hook files live in AND the command names no other repo; rc 1 otherwise.
+#
+# CALL IT BEFORE THE HOOK `cd`s TO THE TARGET. <hook-dir> is relative in
+# production (`${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/...`), so resolving it
+# from inside the target directory makes the hook's "own" repo the TARGET and
+# every target then classifies as this repo -- the relaxation silently inverts.
+#
+# Pass <target-dir>, NEVER the payload cwd. They differ exactly for the two
+# spellings CLAUDE.md prescribes -- `gh -C <path> pr ...` and
+# `cd <path> && gh pr ...` -- and reading the cwd here would classify by where
+# the SHELL stands instead of where the command runs: a `gh -C <own repo>`
+# issued from a sibling checkout would take the relaxed path.
+#
+# FAIL CLOSED: if EITHER common dir cannot be resolved, the answer is "not
+# foreign", so the caller keeps its strict path. An unresolvable identity never
+# relaxes.
+#
+# KNOWN BOUND, stated rather than chased: "fail closed" covers an UNRESOLVABLE
+# identity, not a RESOLVABLE WRONG one. If the hook file is reached through a
+# symlinked `.claude` (or `.claude/hooks`) whose physical location sits inside a
+# DIFFERENT repository, `git -C` follows the symlink, the hook's "own" repo
+# becomes that other one, and every genuine target classifies foreign. Not this
+# repo's shape (both are real directories in the main tree and in every
+# worktree), and it needs write access to the checkout, which is already game
+# over.
+gate_target_is_foreign() {
+  local hook_dir="$1" target_dir="$2" cmd="$3" verb_ere="$4"
+  local hook_common target_common hook_slug url
+  GATE_FOREIGN_RETRACT=""
+
+  hook_common=$(gate_git_common_dir "$hook_dir") || return 1
+  target_common=$(gate_git_common_dir "$target_dir") || return 1
+  [ "$hook_common" != "$target_common" ] || return 1
+
+  # A DIFFERENT CHECKOUT IS NOT A DIFFERENT REPOSITORY, and conflating the two
+  # is a total bypass of any gate that relaxes on this answer
+  # (go-to-k/cdkd#3351 review). The comparison above is on `--git-common-dir`,
+  # so a SECOND CLONE of this very repo compares unequal and reads as foreign --
+  # measured: a checkout whose `origin` is literally `github.com/go-to-k/cdkd`,
+  # with its `.markgate.yml` removed so the marker plan resolves to `none`,
+  # relaxed. gh resolves the real cdkd PR from there and the merge lands ungated,
+  # with no `-R`, no `GH_REPO` and no URL for the allowlist to see.
+  #
+  # This bound was ACCEPTABLE for verify-pr-gate, which is where the directory
+  # test came from: there foreignness drops only the sha BINDING and the marker
+  # must still verify, so a second clone loses lane-inheritance protection and
+  # nothing else. Read as a general predicate it is not acceptable at all, and
+  # this function is now general. Do not re-derive the bound from that gate's
+  # KNOWN BOUNDS list without re-reading what its caller does with the answer.
+  #
+  # So identity is settled on the REPO SLUG, and against EVERY remote rather
+  # than `origin`: gh prefers an `upstream` remote over `origin`, so the
+  # ordinary fork setup (`git remote add upstream <this repo>` in a sibling
+  # checkout) resolves THIS repo's pull requests while `origin` names the
+  # sibling -- measured on go-to-k/cdkd#3235, whose record this function is
+  # now the home of.
+  #
+  # FAIL CLOSED on the HOOK side: an unresolvable hook slug (no `origin`, a
+  # local filesystem remote, a malformed URL) answers "not foreign", because a
+  # gate that cannot identify ITSELF cannot claim the target is something else.
+  #
+  # The TARGET side is deliberately NOT symmetric, and the asymmetry is
+  # measured rather than stylistic. A first cut also required the target to
+  # resolve to at least one slug, on the instinct that "I cannot tell what this
+  # is" should never relax. That regressed go-to-k/cdkd#3209: `verify-pr-gate`'s
+  # foreign fixtures are bare `git init` directories with no remote, and the
+  # rule put cdkd's own sentinel requirement back onto a foreign checkout --
+  # the unclearable refusal #3209 exists to remove.
+  #
+  # Re-deriving the hazard rather than keeping the instinct: to be dangerous the
+  # target must be a place gh resolves a pull request in THIS repo from. With no
+  # remote and no flag gh resolves nothing at all (it errors), and every flagged
+  # or env-driven spelling is the allowlist's job below. So the hazard is a
+  # remote NAMING this repo -- which is exactly what the loop tests -- and not
+  # the absence of remotes.
+  # AN UNREADABLE REMOTE IS NOT A MISSING ONE, and collapsing the two was the
+  # round-2 blocker. The first cut skipped a remote whose URL would not
+  # normalise (`|| continue`), so every spelling this parser does not know read
+  # as "no evidence" and the target relaxed. Measured on the real hook against
+  # the real v10-bump PR, with no `-R`, no `GH_REPO` and no URL selector: an
+  # `insteadOf` shortcut, a `pushurl` on a non-GitHub fetch URL, and a
+  # case-variant host/path each exited 0.
+  #
+  # Enumerating the spellings has no termination proof -- this file says so
+  # about its own allowlist, and two rounds proved it again here. So the
+  # predicate INVERTS: an existing remote this parser cannot read makes the
+  # target NOT foreign. That is decidable and terminates, and it costs nothing
+  # real, because the only thing it refuses to relax is a checkout whose remotes
+  # cannot be understood.
+  #
+  # It also preserves go-to-k/cdkd#3209, whose foreign fixtures carry ZERO
+  # remotes rather than unparsable ones -- the distinction the `continue` lost.
+  local slug name url_line __gtf_seen
+  # THE HOOK SIDE READS EVERY REMOTE TOO, for the same reason the target side
+  # does (go-to-k/cdkd#3351 round 6). Reading only `origin` here makes a
+  # contributor working from a FORK -- `origin` = their fork, `upstream` = this
+  # repo, the ordinary open-source setup on a public repo -- compute a hook slug
+  # that no canonical clone matches, so a real clone of THIS repo classifies as
+  # foreign and the gate relaxes. Measured rc 0.
+  #
+  # Widening is free in the safe direction: an extra hook slug can only make a
+  # target MATCH, and a match always refuses to relax.
+  hook_slug=""
+  while IFS= read -r url_line; do
+    [ -n "$url_line" ] || continue
+    url_line="${url_line#*	}"
+    url_line="${url_line% (*)}"
+    [ -n "$url_line" ] || continue
+    slug=$(gate_slug_from_url "$url_line" 2>/dev/null) || continue
+    case "$hook_slug" in
+      "$slug"|"$slug "*|*" $slug"|*" $slug "*) ;;
+      "") hook_slug="$slug" ;;
+      *) hook_slug="$hook_slug $slug" ;;
+    esac
+  done <<EOF
+$(git -C "$hook_dir" remote -v 2>/dev/null)
+EOF
+  if [ -z "$hook_slug" ]; then
+    GATE_FOREIGN_RETRACT="this gate's own repository could not be identified (no readable remote), so it cannot tell whether the target is a different one"
+    return 1
+  fi
+
+  # READ THE SOURCE gh READS, rather than reconstructing it. Three review rounds
+  # each found this gate's URL set narrower than gh's, one shape at a time --
+  # first `origin` only, then a hand-built set of `ls-remote --get-url` +
+  # `pushurl`. `git remote -v` ends that: it is what gh itself parses, it is
+  # already `insteadOf` AND `pushInsteadOf` expanded, and it lists EVERY url
+  # value as a fetch or push line, including the extra ones
+  # `git remote set-url --add` writes -- which `ls-remote --get-url` hides,
+  # since that prints only the FIRST url. Measured: with a browser-copied
+  # `.../tree/main` URL first and the real one added second, `--get-url` printed
+  # only the decoy while `gh repo view` answered go-to-k/cdkd, and the gate
+  # exited 0 on the real v10-bump PR.
+  #
+  # It also costs one `git` spawn for the whole walk instead of three per
+  # remote (measured 22.6 ms each, i.e. 4.5 s of the hook's 10 s budget at 200
+  # remotes -- and a hook killed by that budget disarms every gate at once).
+  # BOUND THE WALK. `gate_slug_from_url` forks two `tr` subshells per line, so
+  # the cost is linear in remotes and a checkout with enough of them outruns the
+  # hook's 10 s PreToolUse budget -- measured at 1000 remotes / 9.7 s, and a
+  # KILLED hook is silent, which lets the merge proceed. Past the cap the answer
+  # is "not foreign", the fail-closed direction, so the only thing refused is a
+  # checkout nobody has in practice. An earlier revision of this comment claimed
+  # a "flat 42 ms" cost; that was measured with ONE remote and is false.
+  __gtf_seen=0
+  while IFS= read -r url_line; do
+    [ -n "$url_line" ] || continue
+    __gtf_seen=$((__gtf_seen + 1))
+    # 200 LINES, and `git remote -v` prints a fetch AND a push line per remote,
+    # so the real bound is ~100 remotes. Stated as lines because that is what is
+    # counted; an earlier comment said "remotes" and overstated it by 2x.
+    if [ "$__gtf_seen" -gt 200 ]; then
+      GATE_FOREIGN_RETRACT="the target checkout declares more remote URLs than this gate will examine, so it cannot rule out that one names the same repository"
+      return 1
+    fi
+    # `<name>\t<url> (fetch|push)`.
+    name="${url_line%%	*}"
+    url_line="${url_line#*	}"
+    url_line="${url_line% (*)}"
+    [ -n "$url_line" ] || continue
+    if ! slug=$(gate_slug_from_url "$url_line" 2>/dev/null); then
+      GATE_FOREIGN_RETRACT="the target checkout has a remote ($name) whose URL this gate cannot read, so it cannot rule out that it names the same repository"
+      return 1
+    fi
+    case " $hook_slug " in
+      *" $slug "*)
+        GATE_FOREIGN_RETRACT="the target checkout has a remote ($name) naming $slug, so it is the SAME repository as this gate's, in a different directory"
+        return 1 ;;
+    esac
+  done <<EOF
+$(git -C "$target_dir" remote -v 2>/dev/null)
+EOF
+
+  # `gh repo set-default` writes `remote.<name>.gh-resolved`, which gh prefers
+  # over every URL (go-to-k/cdkd#3256). It holds `owner/repo` or the literal
+  # `base`, not a URL, so it is compared against the hook slug's path tail --
+  # CASE-FOLDED, like every other comparison here. It was the one comparison
+  # left raw, and `Go-To-K/CDKD` walked past it (measured).
+  while IFS= read -r url_line; do
+    [ -n "$url_line" ] || continue
+    url_line="${url_line#*	}"
+    [ -n "$url_line" ] && [ "$url_line" != "base" ] || continue
+    url_line=$(printf '%s' "$url_line" | tr 'A-Z' 'a-z')
+    # gh's `ghrepo.FromFullName` accepts `OWNER/REPO` *and* `HOST/OWNER/REPO`,
+    # so both spellings are compared (go-to-k/cdkd#3351 round 4: the 3-part form
+    # matched nothing and the gate exited 0).
+    # gh's `ghrepo.FromFullName` accepts `OWNER/REPO` and `HOST/OWNER/REPO`, so
+    # both spellings of every hook slug are candidates.
+    for slug in $hook_slug; do
+      if [ "$url_line" = "${slug#*/}" ] || [ "$url_line" = "$slug" ]; then
+        GATE_FOREIGN_RETRACT="the target checkout has \`gh repo set-default\` pointing a remote at $url_line, so gh resolves this gate's own repository from there"
+        return 1
+      fi
+    done
+  done <<EOF
+$(git -C "$target_dir" config --get-regexp '^remote\..*\.gh-resolved$' 2>/dev/null | tr ' ' '\t')
+EOF
+
+  gate_cmd_names_no_other_repo "$cmd" "$verb_ere" || return 1
+  return 0
 }
 
 # =============================================================================

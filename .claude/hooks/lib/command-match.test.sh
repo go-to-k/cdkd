@@ -3214,6 +3214,376 @@ if [ "$__gmc_count" -ne 15 ]; then
 else
   pass=$((pass + 1)); printf 'ok   gate_missing_const block ran all %s cases\n' "$__gmc_count"
 fi
+# =============================================================================
+# gate_target_is_foreign (go-to-k/cdkd#3351)
+# =============================================================================
+#
+# Extracted from verify-pr-gate.sh so integ-schema-migration-gate could reuse it
+# rather than grow a second copy -- `.claude/rules/hooks.md` records that
+# hand-copied gate parsers reintroduced one hole at 24 sites.
+#
+# THE FIRST CASE IS THE POINT OF FENCING IT HERE. "target IS this repo, so the
+# strict path applies" is UNCONSTRUCTIBLE from either consuming gate's suite:
+# both build throwaway `git init` fixtures, which are foreign by construction,
+# and the real cdkd checkout always declares `integ-schema-migration`, so the
+# schema gate can never reach a non-foreign `mode = none`. A green suite over
+# there therefore says nothing about the arm that keeps cdkd itself gated.
+__gtf_start=$((pass + fail))
+# THIS FILE IS ONE LEVEL DEEPER THAN THE GATE SUITES. They live in
+# `.claude/hooks/`, so their `dirname/../..` is the repo root; this one lives in
+# `.claude/hooks/lib/`, where the same spelling lands on `.claude`. Copying it
+# made BOTH paths unresolvable, `gate_git_common_dir` failed on each, and the
+# fail-closed `return 1` satisfied the "NOT foreign" case for entirely the wrong
+# reason -- it went green while measuring nothing. Only the `-> foreign` case
+# reds on that, which is why the two are kept as a PAIR.
+__gtf_hooks_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+__gtf_repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+__gtf_tmp="$(mktemp -d)"
+git init -q "$__gtf_tmp/foreign" 2>/dev/null
+# A remote from creation: since go-to-k/cdkd#3351 foreignness is decided on the
+# repo SLUG, so a fixture with no remote is unidentifiable and correctly refuses.
+git -C "$__gtf_tmp/foreign" remote add origin https://github.com/go-to-k/cdk-local.git 2>/dev/null
+
+# Guard the fixture itself: if either path stops resolving to a git repo, every
+# case below degrades into the vacuous pass described above.
+if ! git -C "$__gtf_repo_dir" rev-parse --git-dir >/dev/null 2>&1 \
+  || [ ! -d "$__gtf_hooks_dir" ]; then
+  fail=$((fail + 1))
+  fail_log="${fail_log}FAIL gate_target_is_foreign fixture: repo=$__gtf_repo_dir hooks=$__gtf_hooks_dir did not resolve -- the cases below would pass vacuously\n"
+  printf 'FAIL gate_target_is_foreign fixture did not resolve\n'
+fi
+
+__gtf() { # name, want-rc, hook_dir, target_dir, command
+  local name="$1" want="$2" got
+  GH_REPO="" gate_target_is_foreign "$3" "$4" "$5" "$GATE_RE_GH_PR_MERGE"
+  got=$?
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %s\n' "$name"
+  else
+    fail=$((fail + 1))
+    fail_log="${fail_log}FAIL $name (want rc $want, got $got)\n"
+    printf 'FAIL %s (want rc %s, got %s)\n' "$name" "$want" "$got"
+  fi
+}
+
+__gtf "target IS this repo -> NOT foreign (the strict path is kept)" 1 \
+  "$__gtf_hooks_dir" "$__gtf_repo_dir" "gh pr merge 1 --squash"
+__gtf "a different repo -> foreign" 0 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/foreign" "gh pr merge 1 --squash"
+# FAIL CLOSED: an identity that cannot be resolved is never foreign, so the
+# caller keeps whatever it does for its own repo.
+__gtf "target is not a git repo -> NOT foreign (fail closed)" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp" "gh pr merge 1 --squash"
+__gtf "hook dir is not a git repo -> NOT foreign (fail closed)" 1 \
+  "$__gtf_tmp" "$__gtf_tmp/foreign" "gh pr merge 1 --squash"
+
+# THE HOOK-SIDE SLUG ARM, which the case above does NOT reach -- there
+# `gate_git_common_dir` returns first, so the `gate_repo_slug` failure is never
+# exercised. Measured: deleting that arm's `return 1` left THIS suite, the
+# schema gate's and verify-pr-gate's all green while a hook checkout with no
+# `origin` began classifying a real clone of this repo as foreign, which for
+# `integ-schema-migration-gate` is `exit 0` on a genuine schema bump.
+# A repo, so the common-dir comparison succeeds; no remote, so the slug does not.
+git init -q "$__gtf_tmp/hooknoremote" 2>/dev/null
+__gtf "hook repo with NO origin -> NOT foreign (fail closed)" 1 \
+  "$__gtf_tmp/hooknoremote" "$__gtf_tmp/foreign" "gh pr merge 1 --squash"
+# The ALLOWLIST half: a foreign target stops being foreign the moment the
+# command can name some OTHER repo, because then the target directory no longer
+# says which repo the merge lands on.
+__gtf "foreign + --repo -> NOT foreign (the command names another repo)" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/foreign" "gh pr merge 1 --repo go-to-k/cdkd"
+__gtf "foreign + clustered -R -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/foreign" "gh pr merge 1 -sdR go-to-k/cdkd"
+__gtf "foreign + a PR URL selector -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/foreign" "gh pr merge https://github.com/go-to-k/cdkd/pull/1"
+__gtf "foreign + an unreadable argument -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/foreign" 'gh pr merge "$N" --squash'
+
+# --- The retract arms that red on NOTHING without these ----------------------
+#
+# Measured in go-to-k/cdkd#3351's review: deleting `-R*` from the case label, or
+# the `GH_REPO` env test, or the `GH_REPO`-in-text test, or the `xargs` test,
+# left this block GREEN. Each is covered by `verify-pr-gate.test.sh`, but the
+# stated reason for extracting the predicate was that it be fenced ONCE, here --
+# and an equality guard reading "exactly N cases" implies exactly that.
+#
+# BARE `-R` is its own case because the cluster pattern does not cover it:
+# `-[!-]*R*` requires a character between the dash and the R, so `-R <slug>`
+# and the glued `-Rgo-to-k/cdkd` are matched only by the `-R*` label.
+__gtf "foreign + a BARE -R -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/foreign" "gh pr merge 1 -R go-to-k/cdkd"
+__gtf "foreign + a GLUED -R<slug> -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/foreign" "gh pr merge 1 -Rgo-to-k/cdkd"
+__gtf "foreign + GH_REPO in the command text -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/foreign" "GH_REPO=go-to-k/cdkd gh pr merge 1 --squash"
+__gtf "foreign + an EARLIER-SEGMENT GH_REPO export -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/foreign" "export GH_REPO=go-to-k/cdkd; gh pr merge 1 --squash"
+__gtf "foreign + arguments piped through xargs -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/foreign" "printf 1 | xargs gh pr merge --squash"
+
+# `GH_REPO` in the ENVIRONMENT, which no command text can show. Set only around
+# this one call so the rest of the block is unaffected.
+if GH_REPO=go-to-k/cdkd gate_target_is_foreign \
+     "$__gtf_hooks_dir" "$__gtf_tmp/foreign" "gh pr merge 1 --squash" "$GATE_RE_GH_PR_MERGE"; then
+  fail=$((fail + 1))
+  fail_log="${fail_log}FAIL GH_REPO in the environment must retract the relaxation\n"
+  printf 'FAIL foreign + GH_REPO in the ENVIRONMENT -> should NOT be foreign\n'
+else
+  pass=$((pass + 1)); printf 'OK   foreign + GH_REPO in the ENVIRONMENT -> NOT foreign\n'
+fi
+
+# --- REPO identity, not DIRECTORY identity (go-to-k/cdkd#3351 review) --------
+#
+# `--git-common-dir` alone says "a different checkout", which is not "a
+# different repository". Every case below was MEASURED relaxing before the slug
+# conjunct landed, and each is a total bypass of any gate that exits 0 on this
+# answer -- none of them carries a flag, an env var or a URL, so the allowlist
+# cannot see any of them.
+__gtf_slug="$(git -C "$__gtf_repo_dir" config --get remote.origin.url 2>/dev/null)"
+
+# A SECOND CLONE of this very repo. Directory differs, repository does not.
+git init -q "$__gtf_tmp/clone2" 2>/dev/null
+git -C "$__gtf_tmp/clone2" remote add origin "$__gtf_slug" 2>/dev/null
+__gtf "a second clone of THIS repo -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/clone2" "gh pr merge 1 --squash"
+
+# The ordinary fork setup: gh prefers `upstream` over `origin`, so this checkout
+# resolves THIS repo's pull requests while `origin` names the sibling.
+git init -q "$__gtf_tmp/fork" 2>/dev/null
+git -C "$__gtf_tmp/fork" remote add origin https://github.com/go-to-k/cdk-local.git 2>/dev/null
+git -C "$__gtf_tmp/fork" remote add upstream "$__gtf_slug" 2>/dev/null
+__gtf "a sibling with an upstream remote naming THIS repo -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/fork" "gh pr merge 1 --squash"
+
+# Same remote, SSH spelling: the slug normaliser must see through the scheme,
+# or the conjunct is one `git remote add` away from being bypassed again.
+git init -q "$__gtf_tmp/ssh" 2>/dev/null
+git -C "$__gtf_tmp/ssh" remote add origin https://github.com/go-to-k/cdk-local.git 2>/dev/null
+git -C "$__gtf_tmp/ssh" remote add upstream git@github.com:go-to-k/cdkd.git 2>/dev/null
+__gtf "an upstream remote in SSH spelling -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/ssh" "gh pr merge 1 --squash"
+
+# --- The spellings gh resolves that a URL parser does not (round-2 blockers) --
+#
+# Each was MEASURED exiting 0 on the real v10-bump PR with no `-R`, no
+# `GH_REPO` and no URL selector. They are cases rather than a widened parser
+# because the parser is the thing that kept losing: what closes the class is the
+# REFUSAL on a remote that does not read, and `unreadable` below is its fence.
+__gtf_case_variant="$(printf '%s' "$__gtf_slug" | tr 'a-z' 'A-Z')"
+git init -q "$__gtf_tmp/casevar" 2>/dev/null
+git -C "$__gtf_tmp/casevar" remote add origin "$__gtf_case_variant" 2>/dev/null
+__gtf "a CASE-variant spelling of THIS repo -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/casevar" "gh pr merge 1 --squash"
+
+# `insteadOf` rewriting: git resolves the shortcut, so the gate asks git.
+git init -q "$__gtf_tmp/insteadof" 2>/dev/null
+git -C "$__gtf_tmp/insteadof" remote add origin "cdkd:cdkd" 2>/dev/null
+git -C "$__gtf_tmp/insteadof" config "url.${__gtf_slug%.git}.insteadOf" "cdkd:cdkd" 2>/dev/null
+__gtf "an insteadOf shortcut expanding to THIS repo -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/insteadof" "gh pr merge 1 --squash"
+
+# `pushurl`: gh falls back to it, and `^remote\..*\.url$` cannot match it.
+git init -q "$__gtf_tmp/pushurl" 2>/dev/null
+git -C "$__gtf_tmp/pushurl" remote add origin "/srv/mirror/thing" 2>/dev/null
+git -C "$__gtf_tmp/pushurl" config remote.origin.pushurl "$__gtf_slug" 2>/dev/null
+__gtf "a pushurl naming THIS repo -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/pushurl" "gh pr merge 1 --squash"
+
+# `gh repo set-default` writes `gh-resolved`, which gh prefers over every URL.
+git init -q "$__gtf_tmp/ghresolved" 2>/dev/null
+git -C "$__gtf_tmp/ghresolved" remote add origin https://github.com/go-to-k/cdk-local.git 2>/dev/null
+git -C "$__gtf_tmp/ghresolved" config remote.origin.gh-resolved go-to-k/cdkd 2>/dev/null
+__gtf "gh-resolved pointing at THIS repo -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/ghresolved" "gh pr merge 1 --squash"
+
+# --- Round 3: the URL set gh reads is not the one a hook reconstructs --------
+#
+# Each measured relaxing the gate on the real v10-bump PR. They are why the
+# enumeration now comes from `git remote -v` -- the source gh itself parses --
+# rather than from a hand-built set.
+
+# `set-url --add`: `ls-remote --get-url` prints only the FIRST url, so a
+# browser-copied decoy in front hid the real one.
+git init -q "$__gtf_tmp/addurl" 2>/dev/null
+git -C "$__gtf_tmp/addurl" remote add origin "${__gtf_slug%.git}/tree/main" 2>/dev/null
+git -C "$__gtf_tmp/addurl" remote set-url --add origin "$__gtf_slug" 2>/dev/null
+__gtf "a SECOND url added to one remote -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/addurl" "gh pr merge 1 --squash"
+
+# `pushInsteadOf` rewrites the PUSH url with no `pushurl` key to read.
+git init -q "$__gtf_tmp/pushio" 2>/dev/null
+git -C "$__gtf_tmp/pushio" remote add origin https://example.com/decoy/repo 2>/dev/null
+git -C "$__gtf_tmp/pushio" config "url.${__gtf_slug}.pushInsteadOf" https://example.com/decoy/repo 2>/dev/null
+__gtf "a pushInsteadOf rewrite naming THIS repo -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/pushio" "gh pr merge 1 --squash"
+
+# gh parses the URL and DECODES the path; a percent-encoded owner is a working
+# remote that a byte compare reads as a different repository.
+git init -q "$__gtf_tmp/pctenc" 2>/dev/null
+git -C "$__gtf_tmp/pctenc" remote add origin https://github.com/go%2Dto%2Dk/cdkd.git 2>/dev/null
+__gtf "a PERCENT-ENCODED owner -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/pctenc" "gh pr merge 1 --squash"
+
+# `gh-resolved` was the one comparison left unfolded.
+git init -q "$__gtf_tmp/ghrescase" 2>/dev/null
+git -C "$__gtf_tmp/ghrescase" remote add origin https://github.com/go-to-k/cdk-local.git 2>/dev/null
+git -C "$__gtf_tmp/ghrescase" config remote.origin.gh-resolved Go-To-K/CDKD 2>/dev/null
+__gtf "a MIXED-CASE gh-resolved -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/ghrescase" "gh pr merge 1 --squash"
+
+# `gh-resolved = base` is gh's "no override" value and must NOT refuse.
+git init -q "$__gtf_tmp/ghbase" 2>/dev/null
+git -C "$__gtf_tmp/ghbase" remote add origin https://github.com/go-to-k/cdk-local.git 2>/dev/null
+git -C "$__gtf_tmp/ghbase" config remote.origin.gh-resolved base 2>/dev/null
+__gtf "gh-resolved = base -> foreign (it names no override)" 0 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/ghbase" "gh pr merge 1 --squash"
+
+# --- Round 4: percent-encoding smuggles past the trims, and gh's 3-part form --
+#
+# Every character the normaliser strips can be delivered ENCODED. gh decodes the
+# path FIRST and trims after, so a decode placed after the trims lets the
+# stripped byte survive: `.../cdkd%2Egit` normalised to `...cdkd.git`, compared
+# unequal, and the gate exited 0 on the real v10-bump PR. One encoded byte
+# reopened the round-2 second-clone blocker, which is why the ORDER is fenced
+# here rather than the individual spellings.
+__gtf_enc=0
+for __gtf_u in \
+  "${__gtf_slug%.git}%2Egit" \
+  "${__gtf_slug%.git}%2F" \
+  "${__gtf_slug}%2f"; do
+  __gtf_enc=$((__gtf_enc + 1))
+  git init -q "$__gtf_tmp/enc$__gtf_enc" 2>/dev/null
+  git -C "$__gtf_tmp/enc$__gtf_enc" remote add origin "$__gtf_u" 2>/dev/null
+  __gtf "a PERCENT-ENCODED trim ($__gtf_u) -> NOT foreign" 1 \
+    "$__gtf_hooks_dir" "$__gtf_tmp/enc$__gtf_enc" "gh pr merge 1 --squash"
+done
+
+# gh's `ghrepo.FromFullName` accepts HOST/OWNER/REPO as well as OWNER/REPO.
+git init -q "$__gtf_tmp/ghres3" 2>/dev/null
+git -C "$__gtf_tmp/ghres3" remote add origin https://github.com/go-to-k/cdk-local.git 2>/dev/null
+git -C "$__gtf_tmp/ghres3" config remote.origin.gh-resolved "${__gtf_hook_slug:-github.com/go-to-k/cdkd}" 2>/dev/null
+__gtf "a 3-PART gh-resolved -> NOT foreign" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/ghres3" "gh pr merge 1 --squash"
+
+# A checkout with more remotes than the walk will examine must FAIL CLOSED
+# rather than run past the hook's 10 s budget -- a killed hook is silent, and
+# silence lets the merge through.
+git init -q "$__gtf_tmp/manyremotes" 2>/dev/null
+__gtf_n=0
+while [ "$__gtf_n" -lt 205 ]; do
+  git -C "$__gtf_tmp/manyremotes" remote add "zz$__gtf_n" "https://example.com/filler/r$__gtf_n" 2>/dev/null
+  __gtf_n=$((__gtf_n + 1))
+done
+__gtf "more remotes than the walk examines -> NOT foreign (fail closed)" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/manyremotes" "gh pr merge 1 --squash"
+
+# --- The HOOK side reads every remote too (round 6) --------------------------
+#
+# A contributor working from a FORK -- `origin` = their fork, `upstream` = this
+# repo, the ordinary open-source setup on a public repo -- computed a hook slug
+# no canonical clone matched, so a real clone of THIS repo classified as foreign
+# and the gate relaxed. Measured rc 0 before this.
+mkdir -p "$__gtf_tmp/forkhook/.claude/hooks/lib" 2>/dev/null
+git init -q "$__gtf_tmp/forkhook" 2>/dev/null
+git -C "$__gtf_tmp/forkhook" remote add origin https://github.com/contributor/cdkd.git 2>/dev/null
+git -C "$__gtf_tmp/forkhook" remote add upstream "$__gtf_slug" 2>/dev/null
+git init -q "$__gtf_tmp/canonical" 2>/dev/null
+git -C "$__gtf_tmp/canonical" remote add origin "$__gtf_slug" 2>/dev/null
+__gtf "a FORK hook checkout still recognises a canonical clone -> NOT foreign" 1 \
+  "$__gtf_tmp/forkhook/.claude/hooks" "$__gtf_tmp/canonical" "gh pr merge 1 --squash"
+# ...and a genuine sibling still relaxes from that same fork checkout, so the
+# widening did not simply refuse everything.
+git init -q "$__gtf_tmp/forksib" 2>/dev/null
+git -C "$__gtf_tmp/forksib" remote add origin https://github.com/go-to-k/cdk-local.git 2>/dev/null
+__gtf "a FORK hook checkout still relaxes a real sibling -> foreign" 0 \
+  "$__gtf_tmp/forkhook/.claude/hooks" "$__gtf_tmp/forksib" "gh pr merge 1 --squash"
+
+# THE FENCE FOR THE STRUCTURAL FIX. A remote that exists but does not normalise
+# must refuse -- that, not the list of shapes above, is what makes the class
+# terminate. Deleting the refusal reds THIS case and none of the others.
+git init -q "$__gtf_tmp/unreadable" 2>/dev/null
+git -C "$__gtf_tmp/unreadable" remote add origin "/srv/local/mirror" 2>/dev/null
+__gtf "an UNREADABLE remote -> NOT foreign (fail closed)" 1 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/unreadable" "gh pr merge 1 --squash"
+
+# A target with NO remote still RELAXES, and that asymmetry is deliberate.
+# Requiring the target to resolve to a slug was tried and REGRESSED
+# go-to-k/cdkd#3209: `verify-pr-gate`'s foreign fixtures are bare `git init`
+# directories, so the rule put cdkd's own sentinel requirement back onto a
+# foreign checkout -- the unclearable refusal that issue exists to remove
+# (measured: its two relative-invocation cases went 0/0 -> 2/2).
+# The hazard is a remote NAMING this repo, not the absence of remotes: with no
+# remote and no flag gh resolves nothing at all, and every flagged or
+# env-driven spelling is the allowlist's job.
+git init -q "$__gtf_tmp/noremote" 2>/dev/null
+__gtf "a target with NO remote -> foreign (gh can resolve nothing there)" 0 \
+  "$__gtf_hooks_dir" "$__gtf_tmp/noremote" "gh pr merge 1 --squash"
+
+rm -rf "$__gtf_tmp"
+# Equality, not a floor, for the reason every other block here uses equality:
+# a floor goes green when a case is deleted.
+__gtf_ran=$((pass + fail - __gtf_start))
+if [ "$__gtf_ran" -ne 36 ]; then
+  fail=$((fail + 1))
+  fail_log="${fail_log}FAIL gate_target_is_foreign block ran $__gtf_ran cases, expected exactly 36 -- a case vanished, or one was added without bumping the count\n"
+else
+  pass=$((pass + 1)); printf 'ok   gate_target_is_foreign block ran all %s cases\n' "$__gtf_ran"
+fi
+
+
+# --- gate_slug_from_url, directly -------------------------------------------
+#
+# It had NO direct case: it was reached only transitively, so a normalisation
+# arm could break while every caller-level case stayed green. Each spelling
+# below is one gh accepts.
+__gsu() { # name, want-slug ('' = must refuse), url
+  local got
+  if got=$(gate_slug_from_url "$3" 2>/dev/null); then :; else got=''; fi
+  if [ "$got" = "$2" ]; then
+    pass=$((pass + 1)); printf 'OK   slug: %s\n' "$1"
+  else
+    fail=$((fail + 1))
+    fail_log="${fail_log}FAIL slug: $1 (want '$2', got '$got')\n"
+    printf 'FAIL slug: %s (want %s, got %s)\n' "$1" "${2:-<refuse>}" "${got:-<refuse>}"
+  fi
+}
+__gsu_start=$((pass + fail))
+__gsu "https"              github.com/go-to-k/cdkd https://github.com/go-to-k/cdkd.git
+__gsu "no .git suffix"     github.com/go-to-k/cdkd https://github.com/go-to-k/cdkd
+__gsu "scp-like"           github.com/go-to-k/cdkd git@github.com:go-to-k/cdkd.git
+__gsu "ssh scheme"         github.com/go-to-k/cdkd ssh://git@github.com/go-to-k/cdkd.git
+__gsu "case folded"        github.com/go-to-k/cdkd https://GitHub.com/GO-TO-K/CDKD.git
+__gsu "trailing slash"     github.com/go-to-k/cdkd https://github.com/go-to-k/cdkd.git/
+__gsu "query tail"         github.com/go-to-k/cdkd https://github.com/go-to-k/cdkd.git?x=1
+__gsu "fragment tail"      github.com/go-to-k/cdkd https://github.com/go-to-k/cdkd.git#f
+__gsu "trailing space"     github.com/go-to-k/cdkd "https://github.com/go-to-k/cdkd.git "
+__gsu "doubled slash"      github.com/go-to-k/cdkd https://github.com//go-to-k//cdkd.git
+__gsu "user@host"          github.com/go-to-k/cdkd https://u@github.com/go-to-k/cdkd.git
+# TWO `@`s: Go's net/url -- what gh parses remotes with -- takes userinfo at the
+# LAST one. A shortest-match strip left `b@github.com` in the host, compared
+# unequal, and the gate exited 0 on the real v10-bump PR. The second spelling is
+# an ACCIDENT class, not only an attack: an email as the HTTPS username.
+__gsu "two @ (last wins)"  github.com/go-to-k/cdkd https://a@b@github.com/go-to-k/cdkd.git
+__gsu "email as username"  github.com/go-to-k/cdkd https://alice@example.com@github.com/go-to-k/cdkd.git
+__gsu "scp-like two @"     github.com/go-to-k/cdkd user@corp.com@github.com:go-to-k/cdkd.git
+__gsu "empty userinfo @@"  github.com/go-to-k/cdkd https://@@github.com/go-to-k/cdkd.git
+__gsu "user:pass@"         github.com/go-to-k/cdkd https://u:p@github.com/go-to-k/cdkd.git
+__gsu "port"               github.com/go-to-k/cdkd https://github.com:443/go-to-k/cdkd.git
+__gsu "deep path kept whole" gitlab.com/a/x/repo https://gitlab.com/a/x/repo.git
+# REFUSALS: a local path names no forge, and a single-segment path is not a repo.
+__gsu "local path refuses"   '' /srv/local/mirror
+__gsu "no host refuses"      '' cdkd:cdkd
+__gsu "single segment refuses" '' https://github.com/cdkd
+__gsu "empty refuses"        '' ''
+__gsu_ran=$((pass + fail - __gsu_start))
+if [ "$__gsu_ran" -ne 22 ]; then
+  fail=$((fail + 1))
+  fail_log="${fail_log}FAIL gate_slug_from_url block ran $__gsu_ran cases, expected exactly 22\n"
+else
+  pass=$((pass + 1)); printf 'ok   gate_slug_from_url block ran all %s cases\n' "$__gsu_ran"
+fi
+
+
 __gmc_tail_start=$((pass + fail))
 
 # THE TWO MESSAGES THIS HELPER EMITS, held to the same shape rule as the hook
