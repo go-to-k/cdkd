@@ -1,4 +1,32 @@
-import { describe, expect, it, beforeEach, afterEach } from 'vite-plus/test';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vite-plus/test';
+
+/**
+ * The STS hop `--assume-role` takes, stubbed to FAIL — the only shape in
+ * `applyLambdaCredentialEnv` where the forwarded triple is what the container
+ * keeps (see the case that uses it). The client is built inside the command
+ * module, so the SDK PACKAGE is the mock, not `src/utils/aws-clients.js`.
+ */
+const stsConstructions = vi.hoisted(() => ({ count: 0 }));
+
+vi.mock('@aws-sdk/client-sts', () => ({
+  STSClient: vi.fn(function STSClient(this: unknown) {
+    stsConstructions.count++;
+    return {
+      // Rejecting from `send` is how production fails: `assumeLambdaExecutionRole`
+      // awaits `sts.send(new AssumeRoleCommand(...))` inside a `try` whose
+      // `catch` is the fall-through under test. A mock that returned an empty
+      // response would take a DIFFERENT arm (the `no usable credentials` throw
+      // one frame in), so this is the call site's shape, not the type's.
+      send: () =>
+        Promise.reject(
+          new Error('AccessDenied: User is not authorized to perform sts:AssumeRole')
+        ),
+      destroy: () => {},
+    };
+  }),
+  AssumeRoleCommand: vi.fn(function AssumeRoleCommand(this: unknown) {}),
+  GetCallerIdentityCommand: vi.fn(function GetCallerIdentityCommand(this: unknown) {}),
+}));
 
 import {
   resetAwsClientDefaults,
@@ -115,11 +143,24 @@ describe('a --role-arn assumed role never reaches an emulated container (issue #
         expect(env['AWS_SESSION_TOKEN']).toBeUndefined();
       });
 
-      it('forwards the caller identity, not the role, with AWS_PROFILE EXPORTED', () => {
-        // `AWS_PROFILE` in the environment rather than `--profile` on the
-        // command line: `options.profile` is unset, so no profile credentials
-        // are resolved and no overlay runs. Before the fix this shape got the
-        // role even though the user had named an identity.
+      it('does not gate the restore on AWS_PROFILE, and does not forward it either', () => {
+        // HONEST LABEL (issue go-to-k/cdkd#3250 item 3). This was written as a
+        // third "profile-selection polarity", and measured it is not one:
+        // `forwardAwsEnv` never reads `AWS_PROFILE`, so deleting the export
+        // below leaves the case byte-identical to the one above it and it could
+        // not red on the go-to-k/cdkd#3130 regression.
+        //
+        // It is kept, and re-pointed at what it CAN discriminate. Two plausible
+        // "fixes" would red here and nowhere else: skipping the restore when a
+        // profile looks selected (the shape that made the class look mitigated
+        // — the flag mitigates it, the exported variable does not), and adding
+        // `AWS_PROFILE` to the pass-through list, which would send the
+        // container's SDK looking for a profile no file inside it defines.
+        //
+        // The flag-vs-variable distinction itself lives one layer up, in each
+        // handler's `options.profile ? await resolveProfileCredentials(...) :
+        // undefined`, and that expression sits inline in a command body with no
+        // unit seam — stated here rather than asserted somewhere it is not.
         process.env['AWS_PROFILE'] = 'dev';
         simulateAssumedRole({ accessKeyId: CALLER_AKID, secretAccessKey: CALLER_SECRET });
         const env: Record<string, string> = {};
@@ -130,6 +171,7 @@ describe('a --role-arn assumed role never reaches an emulated container (issue #
         expect(env['AWS_ACCESS_KEY_ID']).not.toBe(ROLE_AKID);
         expect(env['AWS_SECRET_ACCESS_KEY']).not.toBe(ROLE_SECRET);
         expect(env['AWS_SESSION_TOKEN']).toBeUndefined();
+        expect(env['AWS_PROFILE'], 'AWS_PROFILE must not be forwarded').toBeUndefined();
       });
 
       it('STRIPS the triple when the caller had no static credentials (SSO / IMDS)', () => {
@@ -169,11 +211,17 @@ describe('a --role-arn assumed role never reaches an emulated container (issue #
 
   // --- The `--profile` FLAG shape, through the real precedence chain --------
 
-  it('gives the container the --profile identity, never the role, when --profile is passed', async () => {
-    // The third profile-selection shape. `--profile` resolves its own
-    // credentials (through `ignoreAssumedRole: true`) and the overlay applies
-    // them after the forward — so the assertion is that the role does not
-    // survive either step, in either field.
+  it('lets the --profile overlay OUTRANK the restored caller identity', async () => {
+    // HONEST LABEL (issue go-to-k/cdkd#3250 item 3). This was written as the
+    // third profile-selection polarity, and measured it cannot red on the
+    // go-to-k/cdkd#3130 regression: `applyProfileCredentialsOverlay`
+    // unconditionally overwrites all three keys, so the role is gone whether or
+    // not `forwardAwsEnv` restored anything.
+    //
+    // What it DOES discriminate is PRECEDENCE, which is a real decision this
+    // work made: both the restore and the overlay produce a caller identity,
+    // the flag is the more specific of the two, and it is applied last on
+    // purpose. Reversing that order, or dropping the overlay, reds here.
     simulateAssumedRole({ accessKeyId: CALLER_AKID, secretAccessKey: CALLER_SECRET });
     const dockerEnv: Record<string, string> = {};
 
@@ -209,6 +257,67 @@ describe('a --role-arn assumed role never reaches an emulated container (issue #
     expect(dockerEnv['AWS_SECRET_ACCESS_KEY']).toBe('PROFILE-SECRET');
     expect(dockerEnv['AWS_SHARED_CREDENTIALS_FILE']).toBe('/cdkd-aws/credentials');
     expect(dockerEnv['AWS_PROFILE']).toBe('dev');
+  });
+
+  it('falls back to the CALLER, not the role, when --assume-role\'s STS hop fails', async () => {
+    // Issue go-to-k/cdkd#3250 item 3: the arm where the distinction genuinely
+    // lives. `applyLambdaCredentialEnv` degrades rather than hard-errors when
+    // `sts:AssumeRole` is refused — a config gap, not a cdkd bug — and with no
+    // `--profile` to overlay, the forwarded triple is the LAST word on what the
+    // container runs as. Before go-to-k/cdkd#3130 that triple was cdkd's deploy
+    // role, so the documented "falls back to the developer's shell credentials"
+    // handed the emulated function MORE permission than the failed assume asked
+    // for.
+    //
+    // This is a WIRING assertion the `forwardAwsEnv` cases above cannot make:
+    // they prove the copy restores, not that this fall-through goes through the
+    // copy. A rewrite reading `process.env` directly here passes every one of
+    // them and reds this.
+    simulateAssumedRole({ accessKeyId: CALLER_AKID, secretAccessKey: CALLER_SECRET });
+    const dockerEnv: Record<string, string> = {};
+    const before = stsConstructions.count;
+
+    await applyLambdaCredentialEnv(dockerEnv, {
+      assumeRoleArn: 'arn:aws:iam::111122223333:role/FunctionExecutionRole',
+      region: 'us-east-1',
+    });
+
+    // BOUND THE ARM before asserting on its outcome. If production silently
+    // stopped honouring `assumeRoleArn`, this case would take the ordinary
+    // no-assume path — which produces the identical env bag — and stay green
+    // while asserting nothing about the fall-through it is named for.
+    expect(
+      stsConstructions.count - before,
+      'the STS hop must have been attempted, or this is not the fall-through case'
+    ).toBe(1);
+    expect(dockerEnv['AWS_ACCESS_KEY_ID']).toBe(CALLER_AKID);
+    expect(dockerEnv['AWS_ACCESS_KEY_ID']).not.toBe(ROLE_AKID);
+    expect(dockerEnv['AWS_SECRET_ACCESS_KEY']).toBe(CALLER_SECRET);
+    expect(Object.values(dockerEnv)).not.toContain(ROLE_SESSION);
+  });
+
+  it('STRIPS rather than falling back to the role when the STS hop fails and the caller had none', async () => {
+    // The same fall-through over an SSO / IMDS caller: there is nothing to put
+    // back, so the container gets no triple at all and resolves its own. The
+    // negative control for the case above — without it, "the caller's key is
+    // present" is satisfiable by a code path that simply never strips.
+    simulateAssumedRole(undefined);
+    const dockerEnv: Record<string, string> = {};
+    const before = stsConstructions.count;
+
+    await applyLambdaCredentialEnv(dockerEnv, {
+      assumeRoleArn: 'arn:aws:iam::111122223333:role/FunctionExecutionRole',
+      region: 'us-east-1',
+    });
+
+    expect(
+      stsConstructions.count - before,
+      'the STS hop must have been attempted, or this is not the fall-through case'
+    ).toBe(1);
+    for (const key of CREDENTIAL_KEYS) {
+      expect(dockerEnv[key], `${key} must not be forwarded`).toBeUndefined();
+    }
+    expect(Object.values(dockerEnv)).not.toContain(ROLE_AKID);
   });
 
   // --- The helper's own contract -------------------------------------------

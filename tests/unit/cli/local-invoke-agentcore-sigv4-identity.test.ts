@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test';
 
-import { resolveHostCredentialsForSigV4 } from '../../../src/cli/commands/local-invoke-agentcore.js';
+import {
+  resolveHostCredentialsForSigV4,
+  sigv4NoCredentialsRefusal,
+} from '../../../src/cli/commands/local-invoke-agentcore.js';
 import {
   resetAwsClientDefaults,
   setAssumedRoleCredentials,
@@ -167,6 +170,104 @@ describe('resolveHostCredentialsForSigV4: the agent is signed for by its CALLER,
     expect(err, 'expected a refusal, not credentials').toBeInstanceOf(CdkdError);
     expect((err as CdkdError).code).toBe('LOCAL_INVOKE_AGENTCORE_SIGV4_NO_CREDENTIALS');
     expect((err as CdkdError).message).not.toContain(ROLE_KEY);
+
+    // Issue go-to-k/cdkd#3250 item 5. The refusal fires with
+    // `AWS_ACCESS_KEY_ID` SET in this process -- cdkd set it, above -- so a
+    // message that only says "set AWS_ACCESS_KEY_ID" describes cdkd as broken
+    // rather than as refusing. It has to name WHICH value it declines and WHY.
+    // The assertion is on the exclusion, not on "the message is long": a
+    // reworded remedy is free, dropping the exclusion is not.
+    const message = (err as CdkdError).message;
+    expect(message, 'must name the flag whose credentials it declines').toContain('--role-arn');
+    expect(message, 'must say the variable is already set, and by whom').toMatch(
+      /AWS_ACCESS_KEY_ID is set in this process, but cdkd set it/
+    );
+    // The remedy has to say WHEN, because the snapshot is taken before the
+    // assume: exporting the pair after cdkd starts is not a remedy at all.
+    expect(message).toContain('before running cdkd');
+    expect(message).toContain('--profile');
+    expect(message).toContain('--assume-role');
+    // ORDER, not just presence (review round 1). This branch fires only for a
+    // caller who has no static pair BY DESIGN -- SSO, an instance role, a
+    // container role -- so leading with "mint an access key pair" tells exactly
+    // the user who should not do that to do it first.
+    expect(
+      message.indexOf('--assume-role'),
+      'the role-assuming remedies must come before the export-a-key-pair one'
+    ).toBeLessThan(message.indexOf('AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY'));
+    // The chain enumeration must not be false for the shape it is reached in
+    // most easily besides SSO: an EXPORTED `AWS_PROFILE` with no `--profile`
+    // flag also leaves the snapshot empty.
+    expect(message, 'the chain list must cover an exported profile too').toContain(
+      'a profile you exported'
+    );
+  });
+
+  it('keeps the PLAIN refusal when no role was assumed, so the exclusion is not claimed falsely', async () => {
+    // The other direction, and the one that keeps the case above from being
+    // satisfied by a message that always blames `--role-arn`. With no role
+    // published, `AWS_ACCESS_KEY_ID` is genuinely absent and the remedy is the
+    // whole answer.
+    delete process.env['AWS_ACCESS_KEY_ID'];
+    delete process.env['AWS_SECRET_ACCESS_KEY'];
+    delete process.env['AWS_SESSION_TOKEN'];
+    delete process.env['AWS_PROFILE'];
+
+    const err = await resolveHostCredentialsForSigV4(
+      {} as never,
+      NO_ASSUME_ROLE,
+      undefined,
+      'us-east-1'
+    ).then(
+      (creds) => creds,
+      (e: unknown) => e
+    );
+
+    expect(err, 'expected a refusal, not credentials').toBeInstanceOf(CdkdError);
+    const message = (err as CdkdError).message;
+    expect(message).toContain('no AWS credentials available to sign the request.');
+    expect(message, 'must not blame a role that was never assumed').not.toContain('--role-arn');
+    expect(message).toContain('--profile');
+    // The opposite remedy ORDER from the assumed-role branch, and for the
+    // opposite reason: with no role in play the caller simply has no
+    // credentials, so exporting a pair IS the simplest answer.
+    expect(message.indexOf('AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY')).toBeLessThan(
+      message.indexOf('--profile')
+    );
+  });
+
+  it('drops the --profile remedy when a --profile was already passed, in BOTH branches', () => {
+    // The "advice you have already followed" defect, one arm over: reaching the
+    // refusal with `options.profile` set means that profile did not yield a
+    // usable pair, so telling the user to pass it is noise.
+    //
+    // Driven through the pure helper rather than through
+    // `resolveHostCredentialsForSigV4`, and that is not a shortcut: the only
+    // routes to this throw with `options.profile` set go through
+    // `resolveProfileCredentials`, which transacts with AWS, and the suite's
+    // network fence refuses them. The same reason this file covers no other
+    // `--profile` shape. All four combinations are covered here; the two cases
+    // above additionally pin that the live path reaches the right branch.
+    for (const assumedRolePublished of [true, false]) {
+      const passed = sigv4NoCredentialsRefusal({
+        assumedRolePublished,
+        profileAlreadyPassed: true,
+      }).message;
+      expect(
+        passed,
+        `must not suggest the flag the user already passed (assumedRolePublished=${assumedRolePublished})`
+      ).not.toContain('--profile');
+      expect(passed, 'the other two remedies still apply').toContain('--assume-role');
+      expect(passed).toContain('AWS_ACCESS_KEY_ID');
+
+      // The control: without the flag, the same branch DOES offer it. Without
+      // this half, a helper that never mentions `--profile` passes above.
+      const notPassed = sigv4NoCredentialsRefusal({
+        assumedRolePublished,
+        profileAlreadyPassed: false,
+      }).message;
+      expect(notPassed).toContain('pass --profile <name>');
+    }
   });
 
   it('is a no-op path when no role was assumed: the caller IS the environment', async () => {

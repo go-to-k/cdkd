@@ -338,10 +338,14 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   // Four literal paths (go-to-k/cdkd#3121): the helper module and the three
   // analyzer-side drift canonicalizers that rebuild by its rule.
   ['own-keys.md', 4], // literal list: EXACT, see below
-  // Five literal paths (go-to-k/cdkd#3130): the helper module, the role-arn
-  // module that snapshots the caller's triple, and the three `cdkd local`
-  // command files that copy it into a container.
-  ['local-caller-identity.md', 5], // literal list: EXACT, see below
+  // Seven literal paths (go-to-k/cdkd#3130, widened by go-to-k/cdkd#3250 item
+  // 7): the helper module, the role-arn module that snapshots the caller's
+  // triple, the three `cdkd local` command files that copy it into a
+  // container, and the INI channel this file now also owns -- the
+  // credentials-FILE writer bind-mounted into the container, plus
+  // `local-run-task.ts`, the one call site of that writer no other entry
+  // reaches.
+  ['local-caller-identity.md', 7], // literal list: EXACT, see below
   ['local-engine-role-leak.md', 6], // literal list: EXACT -- the state-source
   //  shim, the four `local start-*` commands cdkd's restore does not cover,
   //  and `local-run-task.ts`, which the restore DOES cover but channel 4

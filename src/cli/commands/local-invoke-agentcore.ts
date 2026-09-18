@@ -107,7 +107,9 @@ import {
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 import {
   applyCallerIdentityCredentials,
+  AWS_CREDENTIAL_ENV_KEYS,
   callerEnvCredentials,
+  envCredentialsAreAssumedRole,
 } from '../../utils/caller-credentials.js';
 
 interface LocalInvokeAgentCoreOptions {
@@ -380,6 +382,11 @@ async function localInvokeAgentCoreCommand(
     const profileCredentials = options.profile
       ? await resolveProfileCredentials(options.profile)
       : undefined;
+    // cdkd-local-env-identity: `--profile`, resolved by
+    // `resolveProfileCredentials` through
+    // `awsClientDefaults({ ignoreAssumedRole: true })` — the caller's own chain,
+    // never the `--role-arn` role. The same identity the env-var overlay writes;
+    // the mounted file is the additive channel for `fromIni({ profile })`.
     if (options.profile && profileCredentials) {
       profileCredsFile = await writeProfileCredentialsFile(options.profile, profileCredentials);
     }
@@ -1111,6 +1118,52 @@ export async function buildSigV4HeadersIfRequested(
 }
 
 /**
+ * The `--sigv4` refusal, as a pure function of the two facts that decide its
+ * wording (issue [#3250](https://github.com/go-to-k/cdkd/issues/3250) item 5).
+ *
+ * NAMING THE EXCLUSION. On a `--role-arn` run over a caller with no static
+ * triple, `AWS_ACCESS_KEY_ID` IS set in this process — cdkd set it, to the
+ * role — so "set AWS_ACCESS_KEY_ID" alone reads as a bug report about cdkd
+ * rather than as the refusal it is. The message has to say which value it
+ * declines and why.
+ *
+ * THE REMEDY ORDER DIFFERS PER BRANCH, deliberately. The assumed-role branch
+ * fires precisely when the caller has no static pair BY DESIGN — SSO, an
+ * instance role, a container role — so leading with "mint an access key pair"
+ * tells the one user who should not do that to do it first. The role-less
+ * branch is the opposite: there the pair genuinely is the simplest answer.
+ * `--profile` is dropped from either list when one was already passed and did
+ * not produce a usable pair — the same already-followed-advice defect, one arm
+ * over.
+ *
+ * PURE, and separate from its caller, for a reason the caller cannot give: the
+ * `--profile` arm of {@link resolveHostCredentialsForSigV4} transacts with AWS,
+ * so the unit suite's network fence refuses every route that reaches this throw
+ * with `options.profile` set. As a helper, all four combinations are testable
+ * with no network at all.
+ */
+export function sigv4NoCredentialsRefusal(args: {
+  assumedRolePublished: boolean;
+  profileAlreadyPassed: boolean;
+}): CdkdError {
+  const exportPair = `set AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY in your shell before running cdkd (the snapshot cdkd puts back is taken before it assumes the role, so exporting them afterwards is too late)`;
+  const profileRemedy = args.profileAlreadyPassed ? '' : `pass --profile <name>, `;
+  return new CdkdError(
+    args.assumedRolePublished
+      ? `--sigv4: no AWS credentials available to sign the request as YOU. ` +
+          `AWS_ACCESS_KEY_ID is set in this process, but cdkd set it: it holds the --role-arn ` +
+          `assumed role, and this signature is what the emulated agent sees as its INVOKER, so ` +
+          `cdkd deliberately will not sign as that role. Your own credentials carried no static ` +
+          `triple before the assume — an SSO / IAM Identity Center, EC2 instance or ECS ` +
+          `container chain, or a profile you exported rather than passed — so there is nothing ` +
+          `to put back. To fix: ${profileRemedy}pass --assume-role <arn>, or ${exportPair}.`
+      : `--sigv4: no AWS credentials available to sign the request. To fix: ` +
+          `${exportPair}, ${profileRemedy}or pass --assume-role <arn>.`,
+    'LOCAL_INVOKE_AGENTCORE_SIGV4_NO_CREDENTIALS'
+  );
+}
+
+/**
  * Resolve credentials for host-side SigV4 signing. Precedence:
  *   1. `--assume-role` → STS temp creds (warn + fall through on STS failure);
  *   2. `--profile` → profile creds (sessionToken when the profile carries one);
@@ -1175,11 +1228,10 @@ export async function resolveHostCredentialsForSigV4(
       ...(shellCredentials.sessionToken && { sessionToken: shellCredentials.sessionToken }),
     };
   }
-  throw new CdkdError(
-    `--sigv4: no AWS credentials available to sign the request. ` +
-      `Set AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY, pass --profile <name>, or pass --assume-role <arn>.`,
-    'LOCAL_INVOKE_AGENTCORE_SIGV4_NO_CREDENTIALS'
-  );
+  throw sigv4NoCredentialsRefusal({
+    assumedRolePublished: envCredentialsAreAssumedRole(),
+    profileAlreadyPassed: options.profile !== undefined,
+  });
 }
 
 /**
@@ -1869,13 +1921,12 @@ export function platformToArchitecture(platform: string): 'x86_64' | 'arm64' {
  * which drives the `--role-arn` cases without the image + docker pipeline.
  */
 export function forwardAwsEnv(env: Record<string, string>): void {
-  const passThrough = [
-    'AWS_ACCESS_KEY_ID',
-    'AWS_SECRET_ACCESS_KEY',
-    'AWS_SESSION_TOKEN',
-    'AWS_REGION',
-    'AWS_DEFAULT_REGION',
-  ] as const;
+  // The credential triple comes from `AWS_CREDENTIAL_ENV_KEYS` rather than a
+  // local copy so this site and the fence that watches it cannot disagree about
+  // the population (issue #3250 item 4 — the constant documented that guarantee
+  // while nothing imported it). The two region keys are this command's own
+  // concern and stay here.
+  const passThrough = [...AWS_CREDENTIAL_ENV_KEYS, 'AWS_REGION', 'AWS_DEFAULT_REGION'] as const;
   const regionKeys = new Set<string>(['AWS_REGION', 'AWS_DEFAULT_REGION']);
   for (const key of passThrough) {
     const value = process.env[key];
