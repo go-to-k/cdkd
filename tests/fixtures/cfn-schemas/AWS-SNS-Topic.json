@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::SNS::Topic",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-18",
   "properties": [
     "ArchivePolicy",
     "ContentBasedDeduplication",
@@ -10,6 +10,7 @@
     "FifoThroughputScope",
     "FifoTopic",
     "KmsMasterKeyId",
+    "MaximumMessageSize",
     "SignatureVersion",
     "Subscription",
     "Tags",
@@ -69,6 +70,7 @@
       "ContentBasedDeduplication": "scalar",
       "ArchivePolicy": "object",
       "FifoThroughputScope": "scalar",
+      "MaximumMessageSize": "scalar",
       "Tags": "array",
       "TopicName": "scalar",
       "TopicArn": "scalar",
