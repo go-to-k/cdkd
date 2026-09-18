@@ -386,13 +386,20 @@ export const boundedList = (lines: readonly Safe[]): Safe[] => {
   // a real `ci.yml` unreadable-workflow finding was dropped from the log AND
   // unnamed, where the narrower filter had named it. Ranking by kept-count
   // ascending puts the ones a reader most needs to know about at the front.
-  const incomplete = [...groups.entries()]
-    .filter(([, queue]) => !queue.every((index) => keptSet.has(index)))
-    .sort(
-      (a, b) =>
-        a[1].filter((i) => keptSet.has(i)).length - b[1].filter((i) => keptSet.has(i)).length,
-    )
+  const withKeptCount = [...groups.entries()].map(
+    ([key, queue]) => [key, queue.filter((i) => keptSet.has(i)).length] as const,
+  );
+  const incomplete = withKeptCount
+    .filter(([key, count]) => count < (groups.get(key)?.length ?? 0))
+    .sort((a, b) => a[1] - b[1])
     .map(([key]) => key);
+  // HOW MANY SHOW NO LINE AT ALL, counted separately from the names. Ranking
+  // starved groups first is not enough on its own: past five of them the names
+  // run out, and a genuine workflow is then neither shown nor named — measured
+  // at 25 fork files, where an earlier revision of this comment claimed the
+  // naming was a promise. It is not; this count is. A reader who sees a
+  // non-zero figure knows the class is present and can re-run locally.
+  const starved = withKeptCount.filter(([, count]) => count === 0).length;
   const dropped = `… and ${lines.length - kept.length} more` as Safe;
   return [
     ...kept,
@@ -404,7 +411,7 @@ export const boundedList = (lines: readonly Safe[]): Safe[] => {
       : (`${dropped} (not all shown for: ${incomplete.slice(0, 5).join(', ')}${
           // `>`, not `>=`: at exactly five the tail would read ", and 0 more".
           incomplete.length > 5 ? `, and ${incomplete.length - 5} more` : ''
-        })` as Safe),
+        }${starved === 0 ? '' : `; ${starved} show no line at all`})` as Safe),
   ];
 };
 

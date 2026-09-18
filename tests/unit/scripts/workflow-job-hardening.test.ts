@@ -372,9 +372,37 @@ export const auditWorkflowHardening = (dir: string): Audit => {
  * The cap is the second half of that contract — a fork workflow with a thousand
  * jobs would otherwise render a thousand lines.
  */
+/**
+ * Render order, most actionable first.
+ *
+ * THIS RENDERER HAD NO ORDER AT ALL, and the cap it shares with the sibling
+ * fence made that exploitable: a fork breaks a real workflow so it does not
+ * parse, adds twenty-five files of its own with two findings each, and the
+ * genuine `unparseable` line appears neither in the twenty kept lines nor among
+ * the five names the summary can carry. Measured against this file.
+ *
+ * A fork can manufacture any number of findings of the kinds it controls, so
+ * the defence is that the kinds it cannot manufacture for SOMEONE ELSE'S
+ * workflow sort first: a file that will not parse, or whose top level is not a
+ * mapping, is the one a reader can act on with no further information.
+ */
+const KIND_RANK: readonly FindingKind[] = [
+  'unparseable',
+  'top-level-not-a-mapping',
+  'no-jobs',
+  'permissions-not-a-mapping',
+  'no-top-level-permissions',
+  'job-not-a-mapping',
+  'timeout-not-a-positive-integer',
+  'timeout-at-or-above-default',
+  'no-timeout',
+];
+
 const render = (findings: readonly Finding[]): Safe[] =>
   boundedList(
-    findings.map(
+    [...findings]
+      .sort((a, b) => KIND_RANK.indexOf(a.kind) - KIND_RANK.indexOf(b.kind))
+      .map(
       (f) =>
         // Every interpolated part is `Safe` by `Finding`'s own type, and `kind`
         // is a literal union. The cast is a boundary; `boundedList`'s summary
@@ -383,7 +411,7 @@ const render = (findings: readonly Finding[]): Safe[] =>
         // types buy is that no FOURTH renderer can be written without one.
         (`${f.workflow}${f.job === undefined ? '' : ` / ${f.job}`}: ${f.kind}` +
           `${f.detail === undefined ? '' : ` (${f.detail})`}`) as Safe,
-    ),
+      ),
   );
 
 /**
@@ -786,7 +814,13 @@ describe('the audit fails against real code', () => {
   it.each([
     ['a colon', 'x: and ci.yml y no-timeout'],
     ['a slash', 'x ci.yml / check-build-test y'],
-    ['a parenthesis', 'x (and ci.yml y'],
+    ['an opening parenthesis', 'x (and ci.yml y'],
+    // `)` IS THE CHARACTER THE THREAT USES — it closes the rendered
+    // `(<detail>)` early so the tail reads as a finding of its own, and it is
+    // what the module's docstring names. The row above covers only `(`, so
+    // admitting `)` alone stayed green: the same disjunction shape this table
+    // was written to retire, one member down.
+    ['a closing parenthesis', 'x ) and ci.yml y'],
   ])('a detail whose only excluded character is %s is quoted', (_what, detail) => {
     // ONE FIXTURE PER EXCLUDED CHARACTER. The case below carries `:`, `(` and
     // `)` at once, so admitting any ONE of them into `DETAIL` left it green —
@@ -1296,6 +1330,39 @@ describe('the caps are literals, not whatever the constants say', () => {
   // the `(not all shown for: …)` tail is unreachable here. An earlier revision
   // loosened these four to a `toMatch` alternation when that tail was added,
   // which also made them tolerate an INVERTED silent-group filter.
+  it('a workflow that will not PARSE survives a flood from twenty-five others', () => {
+    // THE TWELFTH VENUE, and the one the round-9 sort was supposed to have
+    // closed. It lifted `too-tight` in the sibling and nothing here, so a fork
+    // that breaks a real workflow and adds files of its own buried the genuine
+    // `unparseable` line in the kept lines AND in the five names. Measured:
+    // `ci.yml` appeared nowhere. A fork can manufacture any number of its own
+    // findings, so the kinds it cannot manufacture for someone else's workflow
+    // are what must sort first.
+    const audit = auditMutatedCopy((dir) => {
+      writeFileSync(join(dir, 'ci.yml'), 'jobs: [\n');
+      for (let i = 0; i < 25; i += 1) {
+        writeFileSync(join(dir, `aaa${String(i).padStart(2, '0')}.yml`), 'jobs:\n  a:\n    runs-on: x\n');
+      }
+    });
+    const lines = render(audit.findings);
+    expect(lines[0]?.startsWith('ci.yml')).toBe(true);
+    expect(lines[0]).toContain('unparseable');
+  });
+
+  it('an unparseable file outranks a top-level that is not a mapping', () => {
+    // The order WITHIN the lifted set, claimed by `KIND_RANK`'s comment and
+    // pinned by nothing until now — swapping the first two entries stayed green
+    // because no case carried both kinds. A file that will not parse at all is
+    // the more actionable of the two.
+    const audit = auditMutatedCopy((dir) => {
+      writeFileSync(join(dir, 'zz-notmap.yml'), '- a\n- b\n');
+      writeFileSync(join(dir, 'zz-broken.yml'), 'jobs: [\n');
+    });
+    const lines = render(audit.findings).filter((l) => l.startsWith('zz-'));
+    expect(lines[0]).toContain('unparseable');
+    expect(lines[1]).toContain('top-level-not-a-mapping');
+  });
+
   it('exactly 20 findings are rendered whole, 21 are capped', () => {
     // The `>` in `boundedList` — with `>=` the twentieth list loses a line to a
     // "… and 0 more" that says nothing. No case sat at the boundary before.
@@ -1545,7 +1612,7 @@ describe('the twins are exercised against hostile trees, not only clean ones', (
     // the cap — 20 workflows get a line and 20 are crowded out entirely, which
     // is exactly what the summary names. The other three cap cases put all
     // their findings in ONE workflow and assert the bare form.
-    expect(lines.at(-1)).toMatch(/^… and 20 more \(not all shown for: .*and 15 more\)$/);
+    expect(lines.at(-1)).toMatch(/^… and 20 more \(not all shown for: .*and 15 more; \d+ show no line at all\)$/);
   });
 });
 

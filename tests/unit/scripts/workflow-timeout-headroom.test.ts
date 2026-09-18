@@ -122,11 +122,12 @@ const MIN_HEADROOM = 2;
 // band below is deliberately tight, so adding a job turns this ratchet; the
 // comment on the assertion documents the two steps, and this is the first time
 // the flow ran for real rather than as prose.
+// 19, AND NOT A ROUND NUMBER LIKE 12. At 12 the round-1 defect — four jobs
+// vanishing because the generator keyed them by display name — cleared the
+// floor with room to spare, so the floor could not have caught the failure that
+// made this fence necessary. This note sat orphaned between two constants after
+// the ratchet commit inserted its own above `MIN_DECLARED`, still saying 18.
 const MIN_DECLARED = 19;
-// 18, not 12. At 12 the round-1 defect — four jobs vanishing because the
-// generator keyed them by display name — cleared the floor with room to spare,
-// so the floor could not have caught the very failure that made this fence
-// necessary.
 /**
  * The longest job in an honest snapshot, in seconds.
  *
@@ -175,13 +176,25 @@ const MIN_COMPARED = 19;
  *
  * It holds one entry again, and the difference from the first cut is the only
  * thing this docstring is really about. `hooks.yml/mutation-harness` landed on
- * `main` from go-to-k/cdkd#3082 while this PR was in review; the snapshot now
- * covers 21 of 22, and the reason recorded is "no successful run on main yet",
- * which is CHECKABLE and self-retiring — the `exemption-now-covered` arm fails
- * the moment the job gains data, and `exemption-for-absent-job` fails if it
- * goes away. "Gated on an issue event" was neither: it was a story that would
- * have been true forever. An empty list is a pleasant state, not the invariant;
- * a true, expiring reason is.
+ * `main` from go-to-k/cdkd#3082 while this PR was in review, so the snapshot
+ * covers 21 of 22.
+ *
+ * THE FIRST REASON WRITTEN HERE WAS ALREADY FALSE WHEN IT WAS WRITTEN — "no
+ * successful run on main yet", recorded at 07:56Z, when the job had been
+ * succeeding since the 06:41Z merge run and has 28 successes that day. That is
+ * round 1's defect, reproduced in the commit that claimed to retire it, and it
+ * is why this docstring insists the reason be CHECKED rather than plausible.
+ *
+ * The reason recorded now is checkable and does expire: the job's successful
+ * runs are all inside 2026-09-18, and the generator refuses a `--to` inside a
+ * day in progress, so no completable range contains one. On 2026-09-19 that
+ * stops being true and a regeneration gives the job an entry.
+ *
+ * AND THE RETIREMENT IS NOT AUTOMATIC, which an earlier revision also
+ * overclaimed. `exemption-now-covered` keys on the SNAPSHOT, not on the API, so
+ * it fires after someone regenerates — not the moment the job gains data.
+ * `exemption-for-absent-job` fires if the job disappears. Both are real, and
+ * neither watches GitHub.
  *
  * The mechanism stays because a genuinely never-run job is possible. Adding an
  * entry needs a reason that survives being checked — run
@@ -203,7 +216,8 @@ const RARELY_RUN: Readonly<Record<string, string>> = {
   // false reason is the round-1 defect of this very PR, and the arms that
   // refuse a stale exemption are what stop this one outliving its cause — it
   // fails the moment the job gains data or disappears.
-  'hooks.yml/mutation-harness': 'added in go-to-k/cdkd#3082; no successful run on main yet',
+  'hooks.yml/mutation-harness':
+    'merged 2026-09-18; every successful run is inside that day, which is not yet complete',
 };
 
 interface JobSample {
@@ -538,6 +552,29 @@ export const auditHeadroom = (
   return findings;
 };
 
+/**
+ * Render order, most actionable first.
+ *
+ * LIFTING ONE KIND WAS NOT ENOUGH. The first version raised `too-tight` alone,
+ * and `unreadable-workflow` is pushed LAST by `auditHeadroom` — so a fork that
+ * breaks a real workflow and floods with its own files buried the one finding
+ * saying a workflow stopped parsing, in the kept lines AND in the summary's five
+ * names. Measured. A fork can manufacture any number of findings of the kinds it
+ * controls, so the defence has to be that the kinds it CANNOT manufacture for
+ * someone else's workflow sort first.
+ *
+ * `unreadable-workflow` leads: a workflow that will not parse is the one a
+ * reader can act on with no further information.
+ */
+const KIND_RANK: readonly FindingKind[] = [
+  'unreadable-workflow',
+  'too-tight',
+  'not-in-snapshot',
+  'snapshot-job-not-declared',
+  'exemption-now-covered',
+  'exemption-for-absent-job',
+];
+
 const render = (findings: readonly Finding[]): string[] =>
   // THROUGH `boundedList`, not a bare `.map`. Per-field clamping bounds a LINE;
   // nothing in `auditHeadroom` bounds the COUNT, and a fork may add keys to the
@@ -565,7 +602,7 @@ const render = (findings: readonly Finding[]): string[] =>
     // THIS line, which is the site a future editor reads before deleting the
     // sort — so the correction is here now, at the definition.
     [...findings]
-      .sort((a, b) => Number(b.kind === 'too-tight') - Number(a.kind === 'too-tight'))
+      .sort((a, b) => KIND_RANK.indexOf(a.kind) - KIND_RANK.indexOf(b.kind))
       .map(
       (f) =>
         (f.kind === 'too-tight'
@@ -664,10 +701,24 @@ describe('no workflow job is bounded too tightly to survive its own longest run'
     // A proportional band cannot tell 12 from 18 — both clear a 21-entry
     // snapshot — so at 12 the round-1 defect, four jobs vanishing, passed the
     // floor that exists to catch exactly that. Every declared job must have an
-    // entry (the `not-in-snapshot` arm enforces it), so the three floors are
+    // entry (the `not-in-snapshot` arm enforces it), so the three floors were
     // one number by construction and moving one alone is the error.
+    //
+    // AN EXEMPT JOB BREAKS THAT EQUALITY, and one exists today: a declared job
+    // with no entry is exactly what `RARELY_RUN` permits, so the real invariant
+    // is `MIN_SNAPSHOT >= MIN_DECLARED - |RARELY_RUN|`. The equality below still
+    // holds because the gap is 1 against 4 of slack — but at three exemptions
+    // and 25 declared jobs it would be unsatisfiable by any constant, so the
+    // assertion that follows pins the equality AND the headroom that makes it
+    // safe.
     expect(MIN_SNAPSHOT).toBe(MIN_DECLARED);
     expect(MIN_COMPARED).toBe(MIN_DECLARED);
+    // And the headroom that keeps the equality SATISFIABLE: every exemption is
+    // a declared job with no entry, so the snapshot is smaller than the tree by
+    // exactly `|RARELY_RUN|`, and the floor must still clear it.
+    expect(Object.keys(SNAPSHOT).length).toBeGreaterThanOrEqual(
+      MIN_DECLARED - Object.keys(RARELY_RUN).length,
+    );
   });
 });
 
@@ -846,6 +897,35 @@ describe('the auditor reports what it claims to', () => {
     expect(lines.at(-1)).toMatch(/^… and 4980 more( \(not all shown for: |$)/);
   });
 
+  it('an UNREADABLE workflow outranks a flood of fork findings', () => {
+    // `auditHeadroom` appends `unreadable-workflow` LAST, so lifting only
+    // `too-tight` left it the first kind crowded out — a fork breaks a real
+    // workflow, floods with its own snapshot keys, and the line saying a
+    // workflow stopped parsing appears neither in the kept lines nor among the
+    // five names. The rank table is what closes it.
+    const snapshot: Record<string, JobSample> = {};
+    for (let i = 0; i < 30; i += 1) snapshot[`aaa${String(i).padStart(2, '0')}.yml/j`] = { max: 1, from: 'a', to: 'b' };
+    const lines = render(auditHeadroom(new Map(), snapshot, {}, [safeName('ci.yml')]));
+    expect(lines[0]).toContain('ci.yml');
+    expect(lines[0]).toContain('unreadable-workflow');
+  });
+
+  it('an unreadable workflow outranks a too-tight bound', () => {
+    // THE ORDER WITHIN THE LIFTED SET, which the comment on `KIND_RANK` claims
+    // and nothing pinned: swapping the first two entries left every case green,
+    // because no case had both kinds at once. A workflow that will not parse is
+    // actionable with no further information; a tight bound needs the reader to
+    // go and look at durations.
+    const lines = render(
+      auditHeadroom(tree(60), snap(3600), {}, [safeName('ci.yml')]),
+    );
+    expect(lines[0]).toContain('unreadable-workflow');
+    // The `too-tight` line renders its NUMBERS rather than its kind — that is
+    // the branch's own contract, asserted elsewhere — so the second line is
+    // identified by them.
+    expect(lines[1]).toContain('min against');
+  });
+
   it('the actionable kind is rendered first', () => {
     // ORDER, which is one of the two things the sort buys. The other is
     // burial-prevention once the groups outnumber the cap — see the case below,
@@ -865,9 +945,14 @@ describe('the auditor reports what it claims to', () => {
     // fork controls the number of FILES, so 21 groups against a cap of 20 means
     // one gets nothing — and it is chosen by insertion order, which is
     // directory order, which the fork also picks. No fixed budget can promise a
-    // particular LINE survives that. What it can promise is that the starved
-    // workflow is NAMED, and that is what this pins: `incomplete` is ranked by
-    // kept-count ascending, so the group that got nothing leads the list.
+    // particular LINE survives that, and NAMING IS NOT A PROMISE EITHER: past
+    // five starved groups the names run out, measured at 25 fork files, where
+    // the genuine workflow was neither shown nor named. An earlier revision of
+    // this comment claimed the naming as the guarantee.
+    //
+    // What IS promised, and what the sibling case pins, is the COUNT: the tail
+    // says how many groups show no line at all. Here, with one starved group,
+    // the ranking does put it at the head of the names.
     //
     // An earlier revision of this case put the fork's jobs in the SNAPSHOT,
     // where `auditHeadroom` emits them after the declared loop, so the genuine
@@ -1162,6 +1247,11 @@ describe('the shared sanitisers constrain the shapes this fence renders', () => 
   it.each([
     // THE CANONICAL MEMBERS, which the first version of this class omitted
     // while reaching for the exotic ones a review had just named.
+    ['U+00AD SOFT HYPHEN', '\u00ad'],
+    ['U+034F COMBINING GRAPHEME JOINER', '\u034f'],
+    ['U+FE00 VARIATION SELECTOR-1 (range start)', '\ufe00'],
+    ['U+FE08 VARIATION SELECTOR-9 (interior)', '\ufe08'],
+    ['U+FE0F VARIATION SELECTOR-16 (range end)', '\ufe0f'],
     ['U+206A INHIBIT SYMMETRIC SWAPPING (range start)', '\u206a'],
     ['U+206F NOMINAL DIGIT SHAPES (range end)', '\u206f'],
     ['U+E0100 VARIATION SELECTOR-17 (range start)', '\u{e0100}'],
@@ -1248,6 +1338,23 @@ describe('the shared sanitisers constrain the shapes this fence renders', () => 
     expect(lines.at(-1)).toContain('hooks.yml');
   });
 
+  it('past five starved groups the COUNT is what survives, not the names', () => {
+    // THE BOUNDARY THE NAMING CLAIM DIED AT. With more starved groups than the
+    // five the summary can name, a genuine workflow is neither shown nor named —
+    // and a reader who only had the names would conclude nothing was lost. The
+    // count is fork-independent: it cannot be crowded out by adding files.
+    const lines: Safe[] = [];
+    for (let i = 0; i < 25; i += 1) {
+      lines.push(`aaa${String(i).padStart(2, '0')}.yml/a: too-tight` as Safe);
+      lines.push(`aaa${String(i).padStart(2, '0')}.yml/b: too-tight` as Safe);
+    }
+    const summary = boundedList([...lines, 'zzz.yml/real: too-tight' as Safe]).at(-1) ?? '';
+    expect(summary).toMatch(/; \d+ show no line at all\)$/);
+    // The genuine workflow is among the starved, and the count says so even
+    // though the five names cannot reach it.
+    expect(summary).not.toContain('zzz.yml');
+  });
+
   it('the crowded-out list is itself capped, with a count for the rest', () => {
     // THE BURIAL ONE LAYER UP. A fork controls the number of groups, so an
     // uncapped name list puts thousands of names on a single log line — which
@@ -1259,7 +1366,7 @@ describe('the shared sanitisers constrain the shapes this fence renders', () => 
     );
     const summary = lines.at(-1) ?? '';
     expect(summary).toContain('… and 7 more');
-    expect(summary).toContain('and 2 more)');
+    expect(summary).toContain('and 2 more;');
     // EXACTLY FIVE names must NOT carry the tail: `>` -> `>=` renders
     // ", and 0 more", which reads as information and is noise.
     const atFive = boundedList(
@@ -1317,6 +1424,10 @@ describe('the shared sanitisers constrain the shapes this fence renders', () => 
     }
     const summary = boundedList([...flood, 'zzz.yml/only: too-tight' as Safe]).at(-1) ?? '';
     expect(summary).toContain('not all shown for: zzz.yml');
+    // ANCHORED, not a substring: `toContain('1 show…')` is satisfied by
+    // "21 show…", so a count of every group rather than the starved ones
+    // survived. Exactly one group here gets no line.
+    expect(summary).toMatch(/; 1 show no line at all\)$/);
   });
 
   it('a workflow crowded out entirely is NAMED, not silently absent', () => {
@@ -1364,7 +1475,8 @@ describe('the shared sanitisers constrain the shapes this fence renders', () => 
     const lines = names.map((n) => `${n}/j: too-tight` as Safe);
     const summary = boundedList(lines).at(-1) ?? '';
     // Each named group is a COMPLETE JSON string, not a prefix of one.
-    for (const part of summary.slice(summary.indexOf(': ') + 2, -1).split(', ')) {
+    const namesOnly = summary.slice(summary.indexOf(': ') + 2).split(';')[0] ?? '';
+    for (const part of namesOnly.split(', ')) {
       if (!part.startsWith('"')) continue;
       expect(() => JSON.parse(part) as unknown).not.toThrow();
     }
@@ -1407,6 +1519,22 @@ describe('the shared sanitisers constrain the shapes this fence renders', () => 
     // one is present. Without the colon `a.yml` counts twice, making 21 groups,
     // and the last workflow loses its line.
     expect(lines.some((l) => l.startsWith('w18.yml'))).toBe(true);
+  });
+
+  it('the round-robin ADVANCES, so no line is kept twice', () => {
+    // `queue[round]` -> `queue[0]` was green: every fixture in this file has at
+    // least 20 groups, so the loop never reaches round 1 and the index is never
+    // exercised. Measured on the mutant — 3 groups of 10 lines keep 20 lines
+    // but only 3 DISTINCT ones, the first of each repeated seven times, while
+    // the tail still says `… and 10 more`. That is the burial this function
+    // exists to prevent, achieved through its own round-robin.
+    const lines: Safe[] = [];
+    for (const wf of ['a.yml', 'b.yml', 'c.yml']) {
+      for (let i = 0; i < 10; i += 1) lines.push(`${wf}/j${i}: too-tight` as Safe);
+    }
+    const kept = boundedList(lines).slice(0, MAX_RENDERED_FINDINGS);
+    expect(kept).toHaveLength(MAX_RENDERED_FINDINGS);
+    expect(new Set(kept).size).toBe(MAX_RENDERED_FINDINGS);
   });
 
   it('a flood from one workflow cannot take the whole cap', () => {
