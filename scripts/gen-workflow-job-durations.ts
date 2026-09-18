@@ -298,9 +298,10 @@ const declaredJobKeys = (): string[] => {
     let doc: unknown;
     try {
       doc = parseYaml(readFileSync(join(WORKFLOW_DIR, file), 'utf8'));
-    } catch (error) {
-      // The parse error QUOTES the offending source, so it is named, never
-      // rendered — the same rule the fence applies to the same class of error.
+    } catch {
+      // NO BINDING, because the error must not be rendered: it QUOTES the
+      // offending source, which on `pull_request` is a fork's own bytes. A
+      // bound name is an invitation to interpolate it in the next edit.
       throw new Error(
         `${safeName(file)} does not parse, so its jobs cannot be enumerated; fix the workflow`,
       );
@@ -577,7 +578,8 @@ const main = (): void => {
   // the exact outcome the guard was added to prevent, reached around it.
   if (!Number.isInteger(windowDays) || windowDays <= 0) {
     throw new Error(
-      `--from=${safeText(explicitFrom ?? '')} is not before --to=${to}; the range is inverted or empty`,
+      `--from=${safeText(explicitFrom ?? '')} is not before --to=${to}; ` +
+        'a range must cover at least one whole day',
     );
   }
   const from = explicitFrom ?? isoDay(new Date(Date.parse(`${to}T00:00:00Z`) - windowDays * 86400000));

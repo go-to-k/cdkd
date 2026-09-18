@@ -94,6 +94,19 @@ export const flatten = (text: string): string => {
       // an ordinary line while surviving every check above. Measured on
       // U+2800 and U+3164; the rest of the class is here because enumerating
       // bad shapes one at a time is how this file reached a tenth venue.
+      // THE CANONICAL MEMBERS FIRST. An earlier revision of this list reached
+      // for U+2800 and U+17B4 — the code points a review had just named — and
+      // omitted ZERO WIDTH SPACE and its neighbours, which are the ones an
+      // attacker reaches for first and the ones every other tool lists.
+      // Measured surviving `flatten` unchanged: U+200B, U+200C, U+200D, U+2060,
+      // U+2061, U+2064. JS `\s` covers `\u2000-\u200a`, so it stops one code
+      // point short of ZWSP, and the bidi rows added later start at U+200E —
+      // the gap was exactly the three in between.
+      code === 0x00ad ||
+      code === 0x034f ||
+      (code >= 0xfe00 && code <= 0xfe0f) ||
+      (code >= 0x200b && code <= 0x200d) ||
+      (code >= 0x2060 && code <= 0x2064) ||
       code === 0x115f ||
       code === 0x1160 ||
       code === 0x17b4 ||
@@ -162,7 +175,7 @@ export const safeJobId = (id: string): Safe =>
   // written from `safeName` and inherited the shape without the case.
   //
   // Cast scoped to the quoting branch alone, for the reason given on `safeName`.
-  JOB_ID.test(id) ? safeText(id) : (JSON.stringify(safeText(id)) as Safe);
+  JOB_ID.test(id) ? safeText(id) : quoteClamped(id);
 
 /**
  * A `<file>/<job>` key, each half by the helper that constrains it.
@@ -208,7 +221,7 @@ export const safeKey = (key: string): Safe => {
 const RANGE = /^\d{4}-\d{2}-\d{2}\.\.\d{4}-\d{2}-\d{2}$/;
 
 export const safeRange = (range: string): Safe =>
-  RANGE.test(range) ? safeText(range) : (JSON.stringify(safeText(range)) as Safe);
+  RANGE.test(range) ? safeText(range) : quoteClamped(range);
 
 /**
  * A free-form DETAIL, always quoted.
@@ -230,14 +243,16 @@ export const safeRange = (range: string): Safe =>
  * them needs `:` or `/` or a parenthesis. A forged finding needs all three,
  * because the line it must imitate is `<file> / <job>: <kind> (<detail>)`. So
  * the safe set excludes exactly those, and a detail carrying one is quoted.
- * Unconditional quoting was tried first and is worse: it puts quotes around
- * fourteen machine-generated strings that could never forge anything, which is
- * the noise that gets a rule switched off.
+ * Unconditional quoting was tried first and is worse: it put quotes around
+ * every machine-generated detail this pair emits — fourteen cases changed
+ * colour — and none of them could forge anything, which is the noise that gets
+ * a rule switched off. (The enumeration above is of SHAPES, not of sites: a
+ * `safeJson` of a mapping or an array is reachable too, and is quoted.)
  */
 const DETAIL = /^[A-Za-z0-9_"'.,=<> -]*$/;
 
 export const safeDetail = (detail: string): Safe =>
-  DETAIL.test(detail) ? safeText(detail) : (JSON.stringify(safeText(detail)) as Safe);
+  DETAIL.test(detail) ? safeText(detail) : quoteClamped(detail);
 
 /** How many findings a renderer emits before the rest are summarised. */
 export const MAX_RENDERED_FINDINGS = 20;
@@ -268,7 +283,10 @@ export const boundedList = (lines: readonly Safe[]): Safe[] => {
   // neither is its own group, which is the safe direction.
   const groups = new Map<string, Safe[]>();
   for (const line of lines) {
-    const cut = line.search(/[ /]/);
+    // `:` in the separator class as well, or one fork FILE takes two shares:
+    // the two renderers emit `a.yml / j: kind` and `a.yml: kind`, which split
+    // into `a.yml` and `a.yml:` — different groups for the same workflow.
+    const cut = line.search(/[ /:]/);
     const key = cut < 0 ? line : line.slice(0, cut);
     const bucket = groups.get(key);
     if (bucket === undefined) groups.set(key, [line]);
@@ -287,12 +305,58 @@ export const boundedList = (lines: readonly Safe[]): Safe[] => {
     }
     if (!took) break;
   }
+  // NAME WHAT WAS DROPPED ENTIRELY. Round-robin guarantees a SHARE to every
+  // group that fits, and a fork controls the NUMBER of groups: 21 fork files
+  // with one finding each leave one group with no line at all, and a reader
+  // cannot tell a workflow that had nothing to report from one whose report was
+  // crowded out. The group names are already `Safe` — they are prefixes of
+  // lines this function received — so listing them adds no new venue.
+  const silent = [...groups.entries()]
+    .filter(([, queue]) => !queue.some((line) => kept.includes(line)))
+    .map(([key]) => key);
+  const dropped = `… and ${lines.length - kept.length} more` as Safe;
   return [
     ...kept,
-    // The only string this function builds itself, and it carries nothing
-    // fork-controlled — a subtraction of two lengths.
-    `… and ${lines.length - kept.length} more` as Safe,
+    // The only strings this function builds itself carry nothing
+    // fork-controlled beyond those names — a subtraction of two lengths and a
+    // join of keys that were already sanitised upstream.
+    silent.length === 0
+      ? dropped
+      : (`${dropped} (nothing shown for: ${silent.slice(0, 5).join(', ')}${
+          silent.length > 5 ? `, and ${silent.length - 5} more` : ''
+        })` as Safe),
   ];
+};
+
+/**
+ * Quote a string so the result is ALWAYS well-formed JSON and within the cap.
+ *
+ * ORDER IS THE WHOLE POINT, and getting it wrong is a forgery rather than an
+ * aesthetic slip. `JSON.stringify` ESCAPES, so a field clamped after quoting
+ * loses its CLOSING QUOTE — the value never terminates, and everything after it
+ * on the line reads as part of it. Measured on a `timeout-minutes` string of
+ * 120 characters rendering
+ *
+ *     zz-evil.yml / a: "......ci.yml / check-build-test: no-timeout......…
+ *
+ * with no closing quote. Clamping BEFORE quoting has the opposite failure: the
+ * output is well-formed but can be twice the cap, because each escaped
+ * character grows. So the inner text is shrunk until the QUOTED form fits, and
+ * the ellipsis goes INSIDE the quotes where it cannot be mistaken for content.
+ *
+ * Both mistakes were live in this file at once: `safeJson` clamped after
+ * quoting, and the first fix for `safeDetail` did the same thing in the round
+ * that was correcting it.
+ */
+export const quoteClamped = (text: string): Safe => {
+  const flat = flatten(text);
+  const whole = JSON.stringify(flat);
+  if (whole.length <= MAX_FIELD_LENGTH) return whole as Safe;
+  let inner = flat.slice(0, MAX_FIELD_LENGTH);
+  while (inner.length > 0 && JSON.stringify(`${inner}…`).length > MAX_FIELD_LENGTH) {
+    inner = inner.slice(0, -1);
+  }
+  return JSON.stringify(`${inner}…`) as Safe;
 };
 
 export const safeName = (name: string): Safe =>
@@ -300,4 +364,4 @@ export const safeName = (name: string): Safe =>
   // would let a future edit return `name` raw from the passing branch and still
   // typecheck — the brand silently switched off at the one site whose job is to
   // be paranoid about names.
-  WORKFLOW_NAME.test(name) ? safeText(name) : (JSON.stringify(safeText(name)) as Safe);
+  WORKFLOW_NAME.test(name) ? safeText(name) : quoteClamped(name);

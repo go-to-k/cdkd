@@ -137,7 +137,9 @@ const MIN_DECLARED = 18;
  * under 15 minutes, the floor is held by an unrelated and variable job, and a
  * docs build peaking at 880 s reds an HONEST snapshot with a message pointing
  * at this constant. An earlier revision of this comment claimed the opposite,
- * that 900 left "room for the suite to get faster"; 900 IS #3282's target.
+ * that 900 left "room for the suite to get faster" — but 900 s is the 15
+ * minutes go-to-k/cdkd#3282 wants hook-suites to come "comfortably under", so
+ * a floor there is a floor at the target.
  */
 const MIN_LONGEST_MAX = 600;
 
@@ -343,7 +345,7 @@ export const auditSnapshotAge = (
 };
 
 /**
- * The newest day any entry's range covers, or `''` when there are none.
+ * The OLDEST day any entry's range ends on, or `''` when there are none.
  *
  * THE STAMP IS NOT THE DATA'S AGE, and keying the guard on `generatedAt` alone
  * missed the reading that matters. `generatedAt` is refreshed by EVERY run, so
@@ -353,14 +355,21 @@ export const auditSnapshotAge = (
  * (it must be a complete UTC day) and not from below, so nothing stops a walk
  * of a range from last year.
  *
- * `to` is the field that carries the population's age, and the maximum over
- * entries is the right one: a single quiet workflow with an older window must
- * not make the whole snapshot read as stale.
+ * THE MINIMUM, AND THE FIRST VERSION'S REASON FOR THE MAXIMUM WAS UNPRODUCIBLE.
+ * It said a quiet workflow with an older window must not make the whole
+ * snapshot read as stale — but the generator writes the SAME `to` for every
+ * workflow (`{ from: usedFrom, to }`: only the start is narrowed), so the
+ * committed artifact has exactly one distinct `to` and the two reducers agree
+ * on anything this generator produces. They differ only on a snapshot that was
+ * PARTIALLY refreshed — hand-edited, or merged from two runs — and there the
+ * minimum is the one that notices, which is what a staleness guard is for.
  */
-export const latestRangeEnd = (snapshot: Readonly<Record<string, JobSample>>): string => {
-  let latest = '';
-  for (const sample of Object.values(snapshot)) if (sample.to > latest) latest = sample.to;
-  return latest;
+export const oldestRangeEnd = (snapshot: Readonly<Record<string, JobSample>>): string => {
+  let oldest = '';
+  for (const sample of Object.values(snapshot)) {
+    if (oldest === '' || sample.to < oldest) oldest = sample.to;
+  }
+  return oldest;
 };
 
 const loadSnapshot = (): Record<string, JobSample> =>
@@ -512,10 +521,11 @@ const render = (findings: readonly Finding[]): string[] =>
   // Interpolation is unguarded BY CONTRACT: `finding` sanitised every string
   // field, and the rest are numbers.
   boundedList(
-    // `too-tight` FIRST, because the cap keeps the first 20 and `auditHeadroom`
-    // emits in file-name order: a fork adding `aaa.yml` with 20 unbounded jobs
-    // pushes the genuine `hooks.yml` finding past the cap, which is the burial
-    // the cap was added to prevent, achieved through the cap.
+    // `too-tight` FIRST so the reader meets the ACTIONABLE kind at the top.
+    // This was introduced as burial-prevention, and it is no longer that: the
+    // cap became round-robin by workflow, which holds a place for every file
+    // that has a finding whatever the order. Kept for what it still does, with
+    // a case below that asserts the order rather than the burial.
     [...findings]
       .sort((a, b) => Number(b.kind === 'too-tight') - Number(a.kind === 'too-tight'))
       .map(
@@ -546,7 +556,7 @@ describe('no workflow job is bounded too tightly to survive its own longest run'
     // and only the second one is about the population the verdicts rest on —
     // see `latestRangeEnd`. `to` is `YYYY-MM-DD`, which `Date.parse` reads as
     // UTC midnight, so the same guard answers both.
-    expect(auditSnapshotAge(latestRangeEnd(SNAPSHOT), Date.now())).toBe('ok');
+    expect(auditSnapshotAge(oldestRangeEnd(SNAPSHOT), Date.now())).toBe('ok');
   });
 
   it('the real tree reports nothing', () => {
@@ -794,16 +804,30 @@ describe('the auditor reports what it claims to', () => {
     for (let i = 0; i < 5000; i += 1) flood[`x.yml/j${i}`] = { max: 1, from: 'a', to: 'b' };
     const lines = render(auditHeadroom(new Map(), flood, {}));
     expect(lines).toHaveLength(21);
-    expect(lines.at(-1)).toBe('… and 4980 more');
+    expect(lines.at(-1)).toMatch(/^… and 4980 more( \(nothing shown for: |$)/);
+  });
+
+  it('the actionable kind is rendered first', () => {
+    // WHAT THE SORT STILL BUYS, now that the cap shares round-robin. Deleting
+    // the sort no longer buries anything, so the burial case below stopped
+    // discriminating it — this one does, and it asserts the property a reader
+    // actually gets: the line they must act on is the first one.
+    const declared = new Map<string, number | undefined>([
+      ['aaa.yml/absent', 60],
+      ['zzz.yml/tight', 60],
+    ]);
+    const lines = render(auditHeadroom(declared, { 'zzz.yml/tight': { max: 3600, from: 'a', to: 'b' } }, {}));
+    expect(lines[0]).toContain('zzz.yml/tight');
+    expect(lines[0]).toContain('min against');
   });
 
   it('a real finding survives a flood designed to bury it', () => {
-    // THE CAP IS ORDER-EVADABLE WITHOUT THIS. `boundedList` keeps the FIRST 20
-    // and `auditHeadroom` emits in file-name order, so a fork adding `aaa.yml`
-    // with 20 unbounded jobs pushes the genuine `hooks.yml` finding past the
-    // cap — burial achieved THROUGH the mechanism added to prevent burial.
-    // Sorting `too-tight` first is what holds, and deleting the sort left every
-    // other case green.
+    // ORDERING, NOT BURIAL-PREVENTION — and an earlier revision of this comment
+    // claimed the latter. It was true when `boundedList` kept the FIRST 20; it
+    // stopped being true when the cap became round-robin by workflow, which
+    // holds a place for every file that has a finding whatever the order.
+    // What the sort still buys is that the reader meets the actionable kind
+    // FIRST, which is what the case below asserts.
     const declared = new Map<string, number | undefined>();
     for (let i = 0; i < 40; i += 1) declared.set(`aaa.yml/j${i}`, 60);
     declared.set('zzz.yml/real', 60);
@@ -1059,11 +1083,34 @@ describe('the walk stops only when it can no longer learn anything', () => {
 
 describe('the shared sanitisers constrain the shapes this fence renders', () => {
   it.each([
+    // THE CANONICAL MEMBERS, which the first version of this class omitted
+    // while reaching for the exotic ones a review had just named.
+    ['U+200B ZERO WIDTH SPACE (range start)', '\u200b'],
+    ['U+200C ZERO WIDTH NON-JOINER (interior)', '\u200c'],
+    ['U+200D ZERO WIDTH JOINER (range end)', '\u200d'],
+    ['U+2060 WORD JOINER (range start)', '\u2060'],
+    ['U+2062 INVISIBLE TIMES (interior)', '\u2062'],
+    ['U+2064 INVISIBLE PLUS (range end)', '\u2064'],
     ['U+2800 BRAILLE PATTERN BLANK', '\u2800'],
     ['U+3164 HANGUL FILLER', '\u3164'],
     ['U+115F HANGUL CHOSEONG FILLER', '\u115f'],
+    ['U+1160 HANGUL JUNGSEONG FILLER', '\u1160'],
+    ['U+17B4 KHMER VOWEL INHERENT AQ', '\u17b4'],
+    ['U+17B5 KHMER VOWEL INHERENT AA', '\u17b5'],
     ['U+180E MONGOLIAN VOWEL SEPARATOR', '\u180e'],
     ['U+FFA0 HALFWIDTH HANGUL FILLER', '\uffa0'],
+    // BOTH ENDS OF EVERY RANGE, plus an interior point — the doctrine the
+    // sibling fence adopted in its own round 3 and applied to its four ranges.
+    // The two ranges ADDED here were not covered by it, so each could be
+    // deleted outright or shrunk to a single code point with every case green:
+    // the one-place-not-the-other shape, this time between an old rule and the
+    // new code it should have governed.
+    ['U+FFF9 INTERLINEAR ANNOTATION ANCHOR (range start)', '\ufff9'],
+    ['U+FFFA INTERLINEAR ANNOTATION SEPARATOR (interior)', '\ufffa'],
+    ['U+FFFB INTERLINEAR ANNOTATION TERMINATOR (range end)', '\ufffb'],
+    ['U+E0000 (tag range start)', '\u{e0000}'],
+    ['U+E0040 (tag range interior)', '\u{e0040}'],
+    ['U+E007F CANCEL TAG (range end)', '\u{e007f}'],
   ])('%s renders blank but is not whitespace, so it is flattened', (_what, ch) => {
     // BLANK IS NOT THE SAME AS WHITESPACE, and `/\s/` matches none of these.
     // Each one RENDERS as a space, so a fork pads a forged finding with them
@@ -1102,6 +1149,36 @@ describe('the shared sanitisers constrain the shapes this fence renders', () => 
     expect(safeKey('a.yml/deep/er')).toBe('a.yml/"deep/er"');
   });
 
+  it('a workflow crowded out entirely is NAMED, not silently absent', () => {
+    // ROUND-ROBIN GIVES EVERY GROUP A SHARE ONLY WHILE THE GROUPS FIT. A fork
+    // controls the NUMBER of files, so 21 of them with one finding each leave
+    // one workflow with no line at all — and a reader cannot tell a workflow
+    // that had nothing to report from one whose report was crowded out. Naming
+    // them costs nothing: the keys are prefixes of lines already sanitised.
+    const lines = boundedList(
+      Array.from({ length: 21 }, (_, i) => `w${String(i).padStart(2, '0')}.yml/j: too-tight` as Safe),
+    );
+    expect(lines).toHaveLength(MAX_RENDERED_FINDINGS + 1);
+    expect(lines.at(-1)).toContain('nothing shown for: w20.yml');
+  });
+
+  it('one workflow cannot take two shares of the cap', () => {
+    // The two renderers emit `a.yml / j: kind` and `a.yml: kind`, which a
+    // separator class of `[ /]` alone splits into `a.yml` and `a.yml:` — two
+    // groups for one file, so a fork that produces both shapes gets twice the
+    // share every other workflow gets.
+    // Sized so the two spellings are the ONLY thing that decides whether every
+    // workflow fits: 19 other files plus `a.yml` is 20 groups and the cap is
+    // 20, so nothing is crowded out — unless `a.yml` counts twice, at which
+    // point it is 21 and a real workflow loses its line.
+    const lines = boundedList([
+      ...Array.from({ length: 5 }, (_, i) => `a.yml/j${i}: too-tight` as Safe),
+      ...Array.from({ length: 5 }, () => 'a.yml: no-jobs' as Safe),
+      ...Array.from({ length: 19 }, (_, i) => `w${String(i).padStart(2, '0')}.yml/j: too-tight` as Safe),
+    ]);
+    expect(lines.at(-1)).not.toContain('nothing shown for');
+  });
+
   it('a flood from one workflow cannot take the whole cap', () => {
     // SORTING IS NOT ENOUGH, which round 5 assumed. A fork controls how many
     // findings ITS file produces, so 25 findings of the WINNING kind fill the
@@ -1118,24 +1195,24 @@ describe('the shared sanitisers constrain the shapes this fence renders', () => 
 
 describe('the snapshot is refused when it is too old to describe this tree', () => {
   it.each([
-    ['the newest end wins', { a: 2, b: 2, c: 2 }, ['2026-01-01', '2026-09-16', '2026-05-05'], '2026-09-16'],
+    ['the oldest end wins', { a: 2, b: 2, c: 2 }, ['2026-01-01', '2026-09-16', '2026-05-05'], '2026-01-01'],
     ['a single entry', { a: 2 }, ['2026-03-03'], '2026-03-03'],
-  ])('latestRangeEnd: %s', (_what, shape, ends, expected) => {
-    // A quiet workflow's older window must not make the whole snapshot read as
-    // stale, so this is a MAXIMUM. Taking the minimum, or the first entry, both
-    // survived until these rows existed.
+  ])('oldestRangeEnd: %s', (_what, shape, ends, expected) => {
+    // A MINIMUM: on a partially refreshed snapshot the oldest entry is the one
+    // that says how old the population really is. Taking the maximum, or the
+    // first entry, both survived until these rows existed.
     const snapshot = Object.fromEntries(
       Object.keys(shape).map((k, i) => [`w.yml/${k}`, { max: 1, from: 'a', to: ends[i] ?? '' }]),
     );
-    expect(latestRangeEnd(snapshot)).toBe(expected);
+    expect(oldestRangeEnd(snapshot)).toBe(expected);
   });
 
-  it('latestRangeEnd: an empty snapshot has no end, and that is not a fresh one', () => {
+  it('oldestRangeEnd: an empty snapshot has no end, and that is not a fresh one', () => {
     // `''` parses to NaN, which `auditSnapshotAge` reports as `unreadable` —
     // never as `ok`. A guard that answered "fresh" for "no data" would be the
     // `NaN < 2` shape again.
-    expect(latestRangeEnd({})).toBe('');
-    expect(auditSnapshotAge(latestRangeEnd({}), Date.now())).toBe('unreadable');
+    expect(oldestRangeEnd({})).toBe('');
+    expect(auditSnapshotAge(oldestRangeEnd({}), Date.now())).toBe('unreadable');
   });
 
   it('a fresh STAMP over an ancient POPULATION is still stale', () => {
@@ -1146,7 +1223,7 @@ describe('the snapshot is refused when it is too old to describe this tree', () 
     const now = Date.parse('2026-09-18T00:00:00Z');
     const ancient = { 'w.yml/j': { max: 1, from: '2024-01-01', to: '2024-01-14' } };
     expect(auditSnapshotAge(new Date(now - 1000).toISOString(), now)).toBe('ok');
-    expect(auditSnapshotAge(latestRangeEnd(ancient), now)).toBe('stale');
+    expect(auditSnapshotAge(oldestRangeEnd(ancient), now)).toBe('stale');
   });
 
   const at = (iso: string) => Date.parse(iso);

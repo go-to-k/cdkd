@@ -138,6 +138,8 @@ import {
   MAX_FIELD_LENGTH,
   MAX_RENDERED_FINDINGS,
   boundedList,
+  flatten,
+  quoteClamped,
   safeDetail,
   safeJobId,
   safeName,
@@ -219,8 +221,22 @@ const safeJson = (value: unknown): Safe => {
   // line carrying a raw NEL and a raw RLO through exactly this function, while
   // the assertion one line above it pinned the absence of U+202E in a sibling
   // field. Returning `Safe` is what makes that unrepresentable.
+  //
+  // AND THE ORDER IS LOAD-BEARING. `safeText(JSON.stringify(v))` stringifies
+  // first and clamps second, so a string of 120-odd characters loses its
+  // CLOSING QUOTE — the field never terminates and everything after it on the
+  // line reads as part of it. Measured rendering
+  //   zz-evil.yml / a: "......ci.yml / check-build-test: no-timeout......…
+  // through the twin below, which is the one detail site that does not
+  // re-sanitise. `quoteClamped` shrinks the inner text until the QUOTED form
+  // fits, so the result is always well-formed and always within the cap.
   try {
-    return safeText(JSON.stringify(value) ?? typeof value);
+    const json = JSON.stringify(value);
+    if (json === undefined) return safeText(typeof value);
+    // Short enough to pass through whole: `360`, `"write-all"`, `2.5` are
+    // already well-formed and re-quoting them would only add noise. Only the
+    // CLAMP is dangerous, so only the clamping path re-quotes.
+    return flatten(json).length <= MAX_FIELD_LENGTH ? safeText(json) : quoteClamped(json);
   } catch {
     return safeText(typeof value);
   }
@@ -398,10 +414,13 @@ const findingsForAddedFile = (name: string, body: string): Safe[] => {
   // The WHOLE name, not a prefix. An earlier cut cut at the first dot, so
   // `ci.yml_ but actually.yml` filtered on `ci` and also matched every real
   // `ci.yml` finding — a filter that selects more than its subject.
-  // `safeText(name)` only: the raw-`name` clause it used to carry was DEAD,
-  // subsumed by this one for every name, which made it a second equivalent arm
-  // rather than the guard it looked like.
-  return render(audit.findings.filter((f) => f.workflow.includes(safeText(name))));
+  // EQUALITY against `safeName(name)`, not `includes(safeText(name))`. The
+  // audit sanitises with `safeName`, so equality is exact — and the substring
+  // form was coupled to the CLAMP ARITHMETIC: it assumed the quoted form
+  // contains the unquoted one, which stopped being true when quoting began
+  // shrinking the inner text so the closing quote survives. A filter that
+  // silently selects NOTHING turns a forgery case into a green one.
+  return render(audit.findings.filter((f) => f.workflow === safeName(name)));
 };
 
 /**
@@ -685,15 +704,65 @@ describe('the audit fails against real code', () => {
     const detail = finding?.detail ?? '';
     expect(detail).not.toContain(String.fromCodePoint(0x202e));
     expect(detail).not.toContain(String.fromCodePoint(0x85));
-    // `+ 3`: the clamp keeps 120 characters and appends an ellipsis, and
-    // `safeDetail` then QUOTES — a parse error carries `:` and `/`, so it can
-    // never take the unquoted branch. An earlier revision allowed `+ 1`, which
-    // was right when this field was only flattened.
-    expect(detail.length).toBeLessThanOrEqual(MAX_FIELD_LENGTH + 3);
-    // AND it is quoted, which is the half that stops a pure-ASCII parse error
-    // — no control byte anywhere — from reading as a finding about another
-    // job. The two assertions above are satisfied by flattening alone, which
-    // is how `safeText` survived here for a whole round.
+    // WITHIN THE CAP, whatever the escaping. `quoteClamped` shrinks the inner
+    // text until the QUOTED form fits, so this is the constant's own bound and
+    // not the bound plus whatever `JSON.stringify` added. Two earlier revisions
+    // were wrong in both directions: `+ 1` was right only while the field was
+    // merely flattened, and `+ 3` conceded the overshoot instead of fixing it.
+    expect(detail.length).toBeLessThanOrEqual(MAX_FIELD_LENGTH);
+    expect(() => JSON.parse(detail) as unknown).not.toThrow();
+    // AND it is quoted. NOTE WHAT THIS CASE DOES *NOT* PIN: its fixture
+    // carries U+202E and U+0085, so it is quoted because control bytes fail
+    // ANY class — the `:` and `/` exclusions that are `DETAIL`'s whole purpose
+    // contribute nothing here, and widening the class to admit them left this
+    // green. The case below is the one that pins them.
+    expect(detail.startsWith('"')).toBe(true);
+  });
+
+  it('an oversized timeout VALUE stays well-formed through the twin', () => {
+    // THE BLOCKER'S OWN ARM, and nothing pinned it. `safeJson` used to
+    // stringify first and clamp second, so a `timeout-minutes` string longer
+    // than the cap lost its CLOSING QUOTE — the field never terminated and the
+    // rest of the line read as part of it. The twin is the site that matters:
+    // it renders the detail LAST and does not re-sanitise.
+    //
+    // Pure ASCII on purpose: nothing here for `flatten` to remove, so only the
+    // quoting arithmetic decides.
+    const value = `${'.'.repeat(64)}ci.yml / check-build-test: no-timeout${'.'.repeat(64)}`;
+    const lines = withMutatedCopy(
+      (dir) =>
+        writeFileSync(
+          join(dir, 'zz-long.yml'),
+          `name: X\npermissions: {}\njobs:\n  a:\n    runs-on: x\n    timeout-minutes: ${JSON.stringify(value)}\n`,
+        ),
+      (dir) => independentlyUnboundedJobs(dir),
+    );
+    const line = lines.find((l) => l.startsWith('zz-long.yml')) ?? '';
+    const detail = line.slice(line.indexOf(': ') + 2);
+    expect(detail.length).toBeLessThanOrEqual(MAX_FIELD_LENGTH);
+    // WELL-FORMED, which is the property a dropped closing quote destroys.
+    expect(() => JSON.parse(detail) as unknown).not.toThrow();
+  });
+
+  it('a PURE-ASCII parse error is quoted too, which is what the shape test is for', () => {
+    // THE EXCLUSION `DETAIL` EXISTS FOR, pinned by nothing until now: widening
+    // the class to admit `:`, `/` and parentheses — the three characters its
+    // own comment says are excluded because the line to imitate is
+    // `<file> / <job>: <kind> (<detail>)` — left all 212 cases green.
+    //
+    // An unresolved alias gives a message with no control byte anywhere, so
+    // flattening is a no-op and only the shape test decides. The first fixture
+    // tried here was quoted because of a `]`, not a `:`, which is the same
+    // wrong-reason trap one level up — a case must be chosen for the character
+    // it actually pins.
+    const audit = auditMutatedCopy((dir) =>
+      writeFileSync(join(dir, 'zz-alias2.yml'), 'name: X\npermissions: {}\njobs: *nope\n'),
+    );
+    const finding = audit.findings.find((f) => f.workflow === 'zz-alias2.yml');
+    expect(finding?.kind).toBe('unparseable');
+    const detail = finding?.detail ?? '';
+    expect(detail).not.toContain(String.fromCodePoint(0x0a));
+    expect(detail).not.toContain(String.fromCodePoint(0x202e));
     expect(detail.startsWith('"')).toBe(true);
   });
 
@@ -1034,7 +1103,7 @@ describe('a finding cannot forge a line in the log', () => {
     const lines = render(audit.findings);
     expect(audit.findings).toHaveLength(40);
     expect(lines).toHaveLength(MAX_RENDERED_FINDINGS + 1);
-    expect(lines.at(-1)).toBe(`… and ${40 - MAX_RENDERED_FINDINGS} more`);
+    expect(lines.at(-1)).toMatch(new RegExp(`^… and ${40 - MAX_RENDERED_FINDINGS} more( \\(nothing shown for: |$)`));
 
     const long = 'x'.repeat(500);
     const clamped = findingsForAddedFile(
@@ -1118,8 +1187,17 @@ describe('the caps are literals, not whatever the constants say', () => {
     // round 2, letting a 304-character name through while the constant beside
     // it was documented as "the longest string a rendered finding may carry".
     expect(safeName(`${'x'.repeat(500)}.yml`)).toHaveLength(121);
-    // The quoting branch adds the two quotes on top of the same clamp.
-    expect(safeName(`${'x'.repeat(500)} not a workflow`)).toHaveLength(123);
+    // The quoting branch clamps the INNER text so the whole quoted field fits,
+    // rather than clamping first and adding quotes on top: an earlier revision
+    // asserted 123 here, which is this constant's own bound exceeded by the
+    // escaping, and the same arithmetic dropped a CLOSING QUOTE when the input
+    // contained characters `JSON.stringify` escapes.
+    expect(safeName(`${'x'.repeat(500)} not a workflow`)).toHaveLength(120);
+    // Well-formed whatever the input: 200 backslashes escape to 400 characters
+    // and must still come back as parseable JSON inside the bound.
+    const escaped = safeName(`${'\\'.repeat(200)} not a workflow`);
+    expect(escaped.length).toBeLessThanOrEqual(MAX_FIELD_LENGTH);
+    expect(() => JSON.parse(escaped) as unknown).not.toThrow();
   });
 
   it('at most 21 lines are rendered, whatever the finding count', () => {
@@ -1129,7 +1207,7 @@ describe('the caps are literals, not whatever the constants say', () => {
     );
     expect(audit.findings).toHaveLength(40);
     expect(render(audit.findings)).toHaveLength(21);
-    expect(render(audit.findings).at(-1)).toBe('… and 20 more');
+    expect(render(audit.findings).at(-1)).toMatch(/^… and 20 more( \(nothing shown for: |$)/);
   });
 
   it('the twins sanitise what they emit, not just the audit', () => {
@@ -1170,7 +1248,7 @@ describe('the caps are literals, not whatever the constants say', () => {
       writeFileSync(join(dir, 'zz-21.yml'), `name: X\npermissions: {}\njobs:\n${jobs(21)}`),
     );
     expect(render(at21.findings)).toHaveLength(21);
-    expect(render(at21.findings).at(-1)).toBe('… and 1 more');
+    expect(render(at21.findings).at(-1)).toMatch(/^… and 1 more( \(nothing shown for: |$)/);
   });
 
   it('the twins are capped too', () => {
@@ -1400,7 +1478,7 @@ describe('the twins are exercised against hostile trees, not only clean ones', (
       (dir) => independentlyUndeclaredPermissions(dir),
     );
     expect(lines).toHaveLength(21);
-    expect(lines.at(-1)).toBe('… and 20 more');
+    expect(lines.at(-1)).toMatch(/^… and 20 more( \(nothing shown for: |$)/);
   });
 });
 
