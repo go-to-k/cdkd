@@ -422,7 +422,11 @@ GSI_CEILING_OK=""
 for _ in $(seq 1 24); do
   GSI_CEILING_NOW=$(aws dynamodb describe-table --table-name "${GSI_CEILING_TABLE}" --region "${REGION}" \
     --query "Table.GlobalSecondaryIndexes[?IndexName=='${GSI_CEILING_INDEX}'].OnDemandThroughput | [0]" --output json)
-  if [ "$(echo "${GSI_CEILING_NOW}" | jq -r '.MaxReadRequestUnits // "absent"')" = "${GSI_CEILING_UPDATED_READ}" ]; then
+  # `has(...)`, matching the baseline probe above rather than `// "absent"`:
+  # the two spellings disagree on a JSON `null`, and a phase that reads its own
+  # value differently from the phase it is compared against is the shape a
+  # readback change slips through.
+  if [ "$(echo "${GSI_CEILING_NOW}" | jq -r 'if has("MaxReadRequestUnits") then .MaxReadRequestUnits | tostring else "absent" end')" = "${GSI_CEILING_UPDATED_READ}" ]; then
     GSI_CEILING_OK="yes"
     break
   fi
