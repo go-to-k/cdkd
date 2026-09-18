@@ -154,7 +154,8 @@ const MIN_COMPARED = 19;
 /**
  * Jobs with no snapshot entry that are EXPECTED to have none.
  *
- * EMPTY, and the emptiness is the point. The first cut of this file listed five
+ * ONE ENTRY, AND THE REASON IS WHAT MATTERS — not the count. The first cut of
+ * this file listed five
  * jobs here with reasons like "gated on an issue or comment event" — and every
  * one of those reasons was FALSE. They had no entry because the generator keyed
  * on the Actions API's display name while this fence keys on the YAML job id,
@@ -170,8 +171,17 @@ const MIN_COMPARED = 19;
  *
  * So this list absorbed a generator defect and gave it a plausible story, which
  * is exactly the failure the fence exists to catch, reproduced inside the fence.
- * With both causes fixed the snapshot covers 21 of 21 jobs and nothing needs
- * exempting.
+ * With both causes fixed the list went EMPTY and the snapshot covered 21 of 21.
+ *
+ * It holds one entry again, and the difference from the first cut is the only
+ * thing this docstring is really about. `hooks.yml/mutation-harness` landed on
+ * `main` from go-to-k/cdkd#3082 while this PR was in review; the snapshot now
+ * covers 21 of 22, and the reason recorded is "no successful run on main yet",
+ * which is CHECKABLE and self-retiring — the `exemption-now-covered` arm fails
+ * the moment the job gains data, and `exemption-for-absent-job` fails if it
+ * goes away. "Gated on an issue event" was neither: it was a story that would
+ * have been true forever. An empty list is a pleasant state, not the invariant;
+ * a true, expiring reason is.
  *
  * The mechanism stays because a genuinely never-run job is possible. Adding an
  * entry needs a reason that survives being checked — run
@@ -540,11 +550,20 @@ const render = (findings: readonly Finding[]): string[] =>
   // Interpolation is unguarded BY CONTRACT: `finding` sanitised every string
   // field, and the rest are numbers.
   boundedList(
-    // `too-tight` FIRST so the reader meets the ACTIONABLE kind at the top.
-    // This was introduced as burial-prevention, and it is no longer that: the
-    // cap became round-robin by workflow, which holds a place for every file
-    // that has a finding whatever the order. Kept for what it still does, with
-    // a case below that asserts the order rather than the burial.
+    // `too-tight` FIRST: BURIAL-PREVENTION, and also ordering.
+    //
+    // A previous revision of this comment demoted it to ordering alone, on the
+    // ground that the round-robin cap holds a place for every file whatever the
+    // order. That holds only while the groups FIT: a fork controls the number
+    // of files, and with more groups than the cap one loses its line entirely,
+    // decided by order. Measured — 20 fork files with one finding each plus a
+    // genuine `too-tight`, unsorted: the genuine line is dropped. The demotion
+    // came from generalising a narrower measurement (20 findings inside ONE
+    // file, a single group, genuinely unaffected).
+    //
+    // The retraction reached the two case comments a round before it reached
+    // THIS line, which is the site a future editor reads before deleting the
+    // sort — so the correction is here now, at the definition.
     [...findings]
       .sort((a, b) => Number(b.kind === 'too-tight') - Number(a.kind === 'too-tight'))
       .map(
@@ -586,7 +605,8 @@ describe('no workflow job is bounded too tightly to survive its own longest run'
     // Floors: a snapshot that silently became `{}`, or a walk that stopped
     // matching, would make every case above pass by having nothing to check.
     // Both halves are here for shape, and NEITHER is fenced: with every job
-    // carrying both a bound and an entry, `compared` is identically `DECLARED`
+    // carrying both a bound and an entry, `compared` was identically `DECLARED`
+    // until a job arrived without an entry (21 against 22 today)
     // and `MIN_COMPARED` duplicates `MIN_DECLARED`. An earlier revision claimed
     // the synthetic cases pinned them; they do not. It is kept because the day
     // a job loses its entry, this is the count that notices.
@@ -829,8 +849,8 @@ describe('the auditor reports what it claims to', () => {
   it('the actionable kind is rendered first', () => {
     // ORDER, which is one of the two things the sort buys. The other is
     // burial-prevention once the groups outnumber the cap — see the case below,
-    // and the note on the sort itself about a revision that demoted it to this
-    // half alone.
+    // and the note at the sort itself, which now carries the retraction of a
+    // revision that demoted it to this half alone.
     const declared = new Map<string, number | undefined>([
       ['aaa.yml/absent', 60],
       ['zzz.yml/tight', 60],

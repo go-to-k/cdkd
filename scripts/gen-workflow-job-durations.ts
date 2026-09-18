@@ -53,9 +53,16 @@
  * all. But a job cannot outlast the run that contains it, so a run
  * whose WALL CLOCK is already below the longest job seen for that workflow
  * cannot change any maximum. Runs are therefore walked longest-first and the
- * walk stops when the run duration drops below every current maximum. That
- * prunes by an inequality that always holds, so the reported maxima are exactly
- * the population's — `--no-prune` re-derives them the slow way to check.
+ * walk stops when the run duration drops below every current maximum AND every
+ * declared job of that workflow has been seen at least once (`walkMayStop`).
+ *
+ * BOTH CONDITIONS, because the first alone is sound for a MAXIMUM and unsound
+ * for COVERAGE: a job not yet seen has no entry in the running maxima, so it was
+ * never in the minimum the walk compares against, and a job appearing only in
+ * shorter runs was dropped from the snapshot entirely. An earlier revision of
+ * this paragraph stated the one-condition rule and said "the reported maxima are
+ * exactly the population's", which is the sentence the loop's own comment names
+ * as having blurred the two. `--no-prune` re-derives them the slow way to check.
  */
 
 import { mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
@@ -401,8 +408,8 @@ const runsInRange = (file: string, from: string, to: string): RunRow[] | null =>
  * Only `success` is reachable here, and that is a STATED LIMIT rather than a
  * choice. `failure` and `cancelled` are accepted below, but `runsInRange`
  * filters `--status success` at the RUN level and no workflow here uses
- * `continue-on-error`, so such a job never arrives — measured 0 of 6746 job
- * records. An earlier revision of this comment claimed the opposite, that
+ * `continue-on-error`, so such a job never arrives — measured 0 of 6,746 job
+ * records at the time, and 0 of the committed artifact's 4,590. An earlier revision of this comment claimed the opposite, that
  * including them captured "a job killed at its own bound"; it captures nothing.
  *
  * The consequence is worth stating plainly because it bounds what this fence

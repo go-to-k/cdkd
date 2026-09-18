@@ -176,7 +176,11 @@ export const safeJobId = (id: string): Safe =>
   // this in go-to-k/cdkd#3272 round 2 and has a case for it; this helper was
   // written from `safeName` and inherited the shape without the case.
   //
-  // Cast scoped to the quoting branch alone, for the reason given on `safeName`.
+  // NO CAST on either branch — both call a function returning `Safe`, and the
+  // return annotation is what refuses a raw id. An earlier revision described a
+  // cast "scoped to the quoting branch alone", true while that branch read
+  // `JSON.stringify(safeText(id)) as Safe`; `safeName` was corrected when
+  // `quoteClamped` replaced it and this neighbour was not.
   JOB_ID.test(id) ? safeText(id) : quoteClamped(id);
 
 /**
@@ -326,9 +330,9 @@ export const boundedList = (lines: readonly Safe[]): Safe[] => {
   // Sorting is the caller's business; fair SHARE of the cap is this function's,
   // and it is here so both fences inherit it.
   //
-  // The group is the text before the first space or `/` — every line either
-  // fence renders begins `<workflow>/...` or `<workflow> / ...`. A line with
-  // neither is its own group, which is the safe direction.
+  // The group is `groupKey`'s answer: a quoted name whole, otherwise the text
+  // before the first space, `/` or `:` — all three load-bearing, see its
+  // docstring. A line with none of them is its own group, the safe direction.
   // GROUPS HOLD INDICES, NOT LINES. Two fork job ids long enough to clamp to
   // the same rendered text produce two IDENTICAL lines, and a `Set` of strings
   // cannot tell them apart — so one could be dropped while the group still read
