@@ -5075,8 +5075,32 @@ gate_target_is_foreign() {
   # It also preserves go-to-k/cdkd#3209, whose foreign fixtures carry ZERO
   # remotes rather than unparsable ones -- the distinction the `continue` lost.
   local slug name url_line __gtf_seen
-  if ! hook_slug=$(gate_repo_slug "$hook_dir"); then
-    GATE_FOREIGN_RETRACT="this gate's own repository could not be identified (no usable \`origin\` remote), so it cannot tell whether the target is a different one"
+  # THE HOOK SIDE READS EVERY REMOTE TOO, for the same reason the target side
+  # does (go-to-k/cdkd#3351 round 6). Reading only `origin` here makes a
+  # contributor working from a FORK -- `origin` = their fork, `upstream` = this
+  # repo, the ordinary open-source setup on a public repo -- compute a hook slug
+  # that no canonical clone matches, so a real clone of THIS repo classifies as
+  # foreign and the gate relaxes. Measured rc 0.
+  #
+  # Widening is free in the safe direction: an extra hook slug can only make a
+  # target MATCH, and a match always refuses to relax.
+  hook_slug=""
+  while IFS= read -r url_line; do
+    [ -n "$url_line" ] || continue
+    url_line="${url_line#*	}"
+    url_line="${url_line% (*)}"
+    [ -n "$url_line" ] || continue
+    slug=$(gate_slug_from_url "$url_line" 2>/dev/null) || continue
+    case "$hook_slug" in
+      "$slug"|"$slug "*|*" $slug"|*" $slug "*) ;;
+      "") hook_slug="$slug" ;;
+      *) hook_slug="$hook_slug $slug" ;;
+    esac
+  done <<EOF
+$(git -C "$hook_dir" remote -v 2>/dev/null)
+EOF
+  if [ -z "$hook_slug" ]; then
+    GATE_FOREIGN_RETRACT="this gate's own repository could not be identified (no readable remote), so it cannot tell whether the target is a different one"
     return 1
   fi
 
@@ -5122,10 +5146,11 @@ gate_target_is_foreign() {
       GATE_FOREIGN_RETRACT="the target checkout has a remote ($name) whose URL this gate cannot read, so it cannot rule out that it names the same repository"
       return 1
     fi
-    if [ "$slug" = "$hook_slug" ]; then
-      GATE_FOREIGN_RETRACT="the target checkout has a remote ($name) naming $hook_slug, so it is the SAME repository as this gate's, in a different directory"
-      return 1
-    fi
+    case " $hook_slug " in
+      *" $slug "*)
+        GATE_FOREIGN_RETRACT="the target checkout has a remote ($name) naming $slug, so it is the SAME repository as this gate's, in a different directory"
+        return 1 ;;
+    esac
   done <<EOF
 $(git -C "$target_dir" remote -v 2>/dev/null)
 EOF
@@ -5143,10 +5168,14 @@ EOF
     # gh's `ghrepo.FromFullName` accepts `OWNER/REPO` *and* `HOST/OWNER/REPO`,
     # so both spellings are compared (go-to-k/cdkd#3351 round 4: the 3-part form
     # matched nothing and the gate exited 0).
-    if [ "$url_line" = "${hook_slug#*/}" ] || [ "$url_line" = "$hook_slug" ]; then
-      GATE_FOREIGN_RETRACT="the target checkout has \`gh repo set-default\` pointing a remote at ${hook_slug#*/}, so gh resolves this gate's own repository from there"
-      return 1
-    fi
+    # gh's `ghrepo.FromFullName` accepts `OWNER/REPO` and `HOST/OWNER/REPO`, so
+    # both spellings of every hook slug are candidates.
+    for slug in $hook_slug; do
+      if [ "$url_line" = "${slug#*/}" ] || [ "$url_line" = "$slug" ]; then
+        GATE_FOREIGN_RETRACT="the target checkout has \`gh repo set-default\` pointing a remote at $url_line, so gh resolves this gate's own repository from there"
+        return 1
+      fi
+    done
   done <<EOF
 $(git -C "$target_dir" config --get-regexp '^remote\..*\.gh-resolved$' 2>/dev/null | tr ' ' '\t')
 EOF

@@ -3477,6 +3477,27 @@ done
 __gtf "more remotes than the walk examines -> NOT foreign (fail closed)" 1 \
   "$__gtf_hooks_dir" "$__gtf_tmp/manyremotes" "gh pr merge 1 --squash"
 
+# --- The HOOK side reads every remote too (round 6) --------------------------
+#
+# A contributor working from a FORK -- `origin` = their fork, `upstream` = this
+# repo, the ordinary open-source setup on a public repo -- computed a hook slug
+# no canonical clone matched, so a real clone of THIS repo classified as foreign
+# and the gate relaxed. Measured rc 0 before this.
+mkdir -p "$__gtf_tmp/forkhook/.claude/hooks/lib" 2>/dev/null
+git init -q "$__gtf_tmp/forkhook" 2>/dev/null
+git -C "$__gtf_tmp/forkhook" remote add origin https://github.com/contributor/cdkd.git 2>/dev/null
+git -C "$__gtf_tmp/forkhook" remote add upstream "$__gtf_slug" 2>/dev/null
+git init -q "$__gtf_tmp/canonical" 2>/dev/null
+git -C "$__gtf_tmp/canonical" remote add origin "$__gtf_slug" 2>/dev/null
+__gtf "a FORK hook checkout still recognises a canonical clone -> NOT foreign" 1 \
+  "$__gtf_tmp/forkhook/.claude/hooks" "$__gtf_tmp/canonical" "gh pr merge 1 --squash"
+# ...and a genuine sibling still relaxes from that same fork checkout, so the
+# widening did not simply refuse everything.
+git init -q "$__gtf_tmp/forksib" 2>/dev/null
+git -C "$__gtf_tmp/forksib" remote add origin https://github.com/go-to-k/cdk-local.git 2>/dev/null
+__gtf "a FORK hook checkout still relaxes a real sibling -> foreign" 0 \
+  "$__gtf_tmp/forkhook/.claude/hooks" "$__gtf_tmp/forksib" "gh pr merge 1 --squash"
+
 # THE FENCE FOR THE STRUCTURAL FIX. A remote that exists but does not normalise
 # must refuse -- that, not the list of shapes above, is what makes the class
 # terminate. Deleting the refusal reds THIS case and none of the others.
@@ -3502,9 +3523,9 @@ rm -rf "$__gtf_tmp"
 # Equality, not a floor, for the reason every other block here uses equality:
 # a floor goes green when a case is deleted.
 __gtf_ran=$((pass + fail - __gtf_start))
-if [ "$__gtf_ran" -ne 34 ]; then
+if [ "$__gtf_ran" -ne 36 ]; then
   fail=$((fail + 1))
-  fail_log="${fail_log}FAIL gate_target_is_foreign block ran $__gtf_ran cases, expected exactly 34 -- a case vanished, or one was added without bumping the count\n"
+  fail_log="${fail_log}FAIL gate_target_is_foreign block ran $__gtf_ran cases, expected exactly 36 -- a case vanished, or one was added without bumping the count\n"
 else
   pass=$((pass + 1)); printf 'ok   gate_target_is_foreign block ran all %s cases\n' "$__gtf_ran"
 fi
