@@ -447,6 +447,11 @@ describe('classifyWcTrim', () => {
       ['wc\'s stdout replaced by a heredoc', "ls | wc -l 1<<EOF | tr -d ' '\nx\nEOF"],
       // A `{name}` descriptor written first is a redirection, not the command word.
       ['an untrimmed wc after a named-descriptor redirection written first', "N=$(ls | {fd}>f wc -l)"],
+      // The duplication target is one word: its `-`, or the rest of a file name,
+      // is never read as the command.
+      ['an untrimmed wc after a descriptor move written first', "N=$(ls | 3>&1- wc -l)"],
+      ['an untrimmed wc after a file-named duplication written first', "N=$(ls | >&1file wc -l)"],
+      ['a move of stdout written before the wc word', "ls | 3>&1- wc -l | tr -d ' '"],
       ['wc\'s stdout redirected before the wc word, descriptor written', "ls | 1>count.txt wc -l | tr -d ' '"],
       ['wc\'s stdout and stderr redirected before the wc word', "ls | &>count.txt wc -l | tr -d ' '"],
     ])('%s', (_label, stmt) => {
@@ -601,6 +606,9 @@ describe('classifyWcTrim', () => {
       ['a tab-indented line under << right after such an opener (body text)', 'cat <<EOF # \\\n\tEOF\nwc -l </dev/null', []],
       ['a continued <<- terminator whose second line is tab-indented', 'cat <<-EOF # \\\nE\\\n\tOF\nwc -l </dev/null\nEOF', []],
       ['a non-terminator right after such an opener, then the real terminator', 'cat <<EOF # \\\nx\nEOF\nwc -l </dev/null', [4]],
+      // A continuation inside a duplication target still moves the line.
+      ['a wc after a duplication target continued onto its line', '3>&1\\\n wc -l', [2]],
+      ['a wc after a duplication target continued twice', 'x=1 3>&\\\n1\\\n- wc -l', [3]],
       // A no-break space is part of the delimiter word, so the terminator line
       // must carry it too; the file after it is code again.
       ['a delimiter holding a no-break space', "cat <<'EOF'\u00a0x\ndata\nEOF\u00a0x\nwc -l </dev/null", [4]],

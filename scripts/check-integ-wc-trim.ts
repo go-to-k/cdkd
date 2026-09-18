@@ -409,8 +409,8 @@ const isCode = (f: Frame): f is CodeFrame =>
 
 /**
  * The target of a `>&` / `<&` starting at `from` (just past the `&`), when it
- * is a bare descriptor (`1`, `1-`) or `-` that ends the word; `null` for any
- * other word. Bash removes a line continuation anywhere in a word before
+ * is a bare descriptor (`1`, `1-`) or `-` that ends the word, with the index
+ * just past it; `null` for any other word. Bash removes a line continuation anywhere in a word before
  * reading it, so continuations may sit before, inside or after the target and
  * are dropped from the result. The word must END there: `>&1file`,
  * `>&1$(...)` and `>&1>(...)` name a FILE; a backtick is not an end, since it
@@ -418,7 +418,7 @@ const isCode = (f: Frame): f is CodeFrame =>
  * only. One forward pass — a backtracking pattern here was quadratic in a run
  * of continuations.
  */
-function readDupTarget(src: string, from: number): string | null {
+function readDupTarget(src: string, from: number): { text: string; end: number } | null {
   let k = from;
   const skipContinuations = () => {
     while (src[k] === '\\' && src[k + 1] === '\n') k += 2;
@@ -447,7 +447,7 @@ function readDupTarget(src: string, from: number): string | null {
   const endsWord =
     c === undefined || c === ' ' || c === '\t' || c === '\n' || c === '|' || c === ';' || c === '&' || c === ')' ||
     ((c === '<' || c === '>') && src[k + 1] !== '(');
-  return endsWord ? text : null;
+  return endsWord ? { text, end: k } : null;
 }
 
 /** Index just past the `)` closing a `((` / `$((` that starts at `open` (the first `(`). */
@@ -1313,18 +1313,30 @@ export function classifyWcTrim(content: string): WcTrimClassification {
       // `2>&"$X"`, `>&1file`) may be any of those once expanded, so it counts
       // as one.
       const isDup = src[k] === '&';
-      const dupTarget = isDup ? readDupTarget(src, k + 1) : null;
+      const dupRead = isDup ? readDupTarget(src, k + 1) : null;
+      const dupTarget = dupRead?.text ?? null;
       const fromFd = dupTarget !== null && dupTarget !== '-' ? Number.parseInt(dupTarget, 10) : null;
       const movesFromStdout = fromFd === 1 && dupTarget!.endsWith('-') && fd !== 1;
       const unreadTarget = isDup && dupTarget === null;
       if ((fd === 1 && fromFd !== 1) || movesFromStdout || (namedFd && dupTarget === '-') || unreadTarget) {
         markStdoutAway(f);
       }
-      if (src[k] === '&') {
-        k++;
-        const fd = /^(\d+|-)/.exec(src.slice(k));
-        i = k + (fd ? fd[0].length : 0) - 1;
-        if (!fd) f.pendingRedirect = true;
+      if (isDup) {
+        // Step over exactly the descriptor read above; any other word (`1file`,
+        // `'1-'`) is the redirection's target, never a command word of its own.
+        if (dupRead) {
+          // Line continuations inside it still move the physical line.
+          for (let n = k + 1; n < dupRead.end; n++) {
+            if (src[n] === '\n') {
+              line++;
+              lineStart = n + 1;
+            }
+          }
+          i = dupRead.end - 1;
+        } else {
+          i = k;
+          f.pendingRedirect = true;
+        }
         continue;
       }
       i = k - 1;
