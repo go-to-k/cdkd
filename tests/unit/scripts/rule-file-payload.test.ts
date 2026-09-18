@@ -287,6 +287,21 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   // is the gate's vocabulary, its body-CHANNEL precedence and its mutation
   // tallies, none of which a lane needs unless it has that gate open.
   ['hooks-class-fences.md', 6], // literal list: EXACT, see below
+  // Four literal paths, the shared matcher and its three suites -- EXACT, like
+  // the other literal-list satellites here. Split off hooks.md when the
+  // go-to-k/cdkd#3040 rounds took the `main-tree-edit-gate.sh` payload 1 B past
+  // its 95,000 B cap. The subject is the MATCHER, not that gate: the gate
+  // consumes `gate_segments_marked` and never reads a heredoc delimiter, so
+  // this glob deliberately omits it -- which is what buys the headroom rather
+  // than any text being summarised away.
+  ['hooks-command-match-heredoc.md', 4], // literal list: EXACT, see below
+  // Twenty literal paths, ten gates and their ten suites -- EXACT. Split off
+  // hooks.md in the same change, for the OTHER half of the same overrun: the
+  // `lib/command-match.sh` payload was over its 120,000 B cap once projected
+  // onto origin/main. The roster is per-hook vocabulary; a lane editing the
+  // shared matcher these gates source does not need any of it, and the
+  // STOPPING RULE that decides whether a new gate may exist stays in hooks.md.
+  ['hooks-foot-gun-gates.md', 20], // literal list: EXACT, see below
   // +1 (go-to-k/cdkd#2650): command-match-mutants.sh. The file already
   // DESCRIBED that harness while nothing made it load on an edit to it.
   ['hooks-main-tree-branch.md', 2], // literal list: EXACT, see below
@@ -938,6 +953,15 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // to the parent's 15,222 alone, which 18,000 catches.
   ['.github/workflows/pr-content-checks.yml', 18_000, 30_000], // measured 22_878 on 2026-09-07
   ['.claude/hooks/branch-gate.sh', 62_000, 100_000], // measured 75_670 on 2026-09-07
+  // Representative path for `hooks-foot-gun-gates.md` (go-to-k/cdkd#3040) --
+  // without a row naming one of its ten gates the satellite sits under no
+  // budget at all and could go dark or grow unnoticed. Payload is hooks.md +
+  // that satellite + hooks-authoring.md. The floor is set ABOVE the
+  // gut-the-satellite bound (70,473 B), which is what makes it discriminate
+  // the satellite emptying; as on the sibling rows it cannot also discriminate
+  // hooks-authoring.md going dark (bound 80,363 B), and that residual is named
+  // rather than papered over.
+  ['.claude/hooks/pr-body-item-number-gate.sh', 72_000, 92_000], // measured 82_696 on 2026-09-17
   // The shared matcher pulls hooks.md AND the class-fence satellite, which is
   // the only path that loads both. hooks.md outgrew the 120,000 per-file cap on
   // its own, so the two CLASS fences moved to a satellite of their own rather
@@ -1661,7 +1685,18 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 // Neither branch's figure is the merged one. That is the whole reason this
 // count is asserted rather than described: two correct increments compose to a
 // number neither author wrote.
-const CORPUS_FILE_COUNT = 72; // + state-malformed-properties-orphan.md (go-to-k/cdkd#3318): the
+const CORPUS_FILE_COUNT = 74; // + hooks-command-match-heredoc.md AND
+                              //  hooks-foot-gun-gates.md (go-to-k/cdkd#3040): 72 + 2, taken
+                              //  from main`s own figure at the rebase rather than from either
+                              //  branch`s count, which is what the note above says goes wrong.
+                              //  Twenty-nine rounds of matcher documentation took
+                              //  `main-tree-edit-gate.sh` 1 B past its 95,000 B cap and
+                              //  `lib/command-match.sh` past its 120,000 B cap once projected
+                              //  onto origin/main; nothing was summarised or deleted -- the
+                              //  heredoc-latch detail moved to a glob of the matcher and its
+                              //  three suites, the ten one-shot foot-gun gate entries to a
+                              //  glob of those gates and their suites, each behind a pointer.
+                              // + state-malformed-properties-orphan.md (go-to-k/cdkd#3318): the
                               //  `properties` container's THIRD reader, `cdkd orphan`, which runs
                               //  no diff and so is described by neither section of
                               //  `state-malformed-properties.md`. Listing `src/cli/commands/orphan.ts`

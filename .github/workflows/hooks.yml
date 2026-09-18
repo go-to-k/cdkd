@@ -95,11 +95,42 @@ jobs:
 
       - run: bash .claude/hooks/run-tests.sh
 
-      # The shared matcher's mutation harness. NOT picked up by run-tests.sh,
-      # which globs `lib/*.test.sh`, so without this step nothing would run it
-      # and it would be a fence exercised only by hand -- the shape
-      # .claude/rules/hooks-class-fences.md records as "is anything RUNNING
-      # it?". It exits non-zero when a mutant fails to reduce the pass count,
-      # i.e. when a deliberate break goes unnoticed by every case.
-      - name: Mutation harness for lib/command-match.sh
+  # The shared matcher's mutation harness. NOT picked up by run-tests.sh, which
+  # globs `lib/*.test.sh`, so without this nothing would run it and it would be
+  # a fence exercised only by hand -- the shape
+  # .claude/rules/hooks-class-fences.md records as "is anything RUNNING it?".
+  # It exits non-zero when a mutant fails to red a case the unmutated run
+  # passed, i.e. when a deliberate break goes unnoticed by every case.
+  #
+  # ITS OWN JOB, AND SHARDED, because it outgrew the step it used to be. On
+  # 2026-09-17 this workflow was CANCELLED at the 60-minute cap with
+  # `run-tests.sh` finished in 15m21s and the harness still running after
+  # 44m53s -- it runs the WHOLE suite per mutant, so its cost is
+  # (mutants x cases) and both factors only grow. Sharing one cap with the
+  # suites meant the suites' own growth ate the harness's budget, and a
+  # cancelled job reads as a flake: re-run, cancelled again.
+  #
+  # Four shards, strided rather than contiguous (see the harness's own note):
+  # the mutant list is grouped by machine, so contiguous slices would put one
+  # machine's whole arm set on one runner. `fail-fast: false` because a shard
+  # that reds names WHICH mutant went unnoticed, and cancelling its siblings
+  # would throw away the rest of that answer.
+  #
+  # Raising the shard count is the lever when this comes due again; making the
+  # suite itself faster is go-to-k/cdkd#3282 and would remove the need.
+  mutation-harness:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - name: Mutation harness for lib/command-match.sh (shard ${{ matrix.shard }}/4)
+        env:
+          CDKD_MUTANT_SHARD: ${{ matrix.shard }}/4
         run: bash .claude/hooks/lib/command-match-mutants.sh

@@ -352,8 +352,17 @@ gate_segments_raw() {
         #   )
         #   echo POISON > <tracked>
         #
-        # `subst_open` carries the same arm; the two must agree about what opens
-        # and closes a span, and where they disagree the disagreement IS the
+        # `subst_open` carries the same arm, and the two must agree about what
+        # opens and closes a span -- where they disagree, the disagreement IS
+        # the fail-open. They do NOT agree about `)` today: `subst_open` and
+        # `flush_line` have it in the class (a `)` closing a BARE `( )` starts
+        # a comment) and this walk does not, because porting the member here
+        # needs the frame KIND `subst_open` keeps in `K[]` -- without it the
+        # `$(x)#` glue breaks. go-to-k/cdkd#3081 owns the port; measured, the
+        # residue is a `(echo hi)# note )` line whose `cd` is marked
+        # top-level (code review round 25). Two sentences were spliced here on
+        # `main` and the second one resumes now:
+        #
         # SKIPPING TO THE NEXT `;` IS THE RIGHT UNIT HERE, and "skip to end of
         # line" was wrong for a reason worth writing down: `run()` joins a
         # continued substitution with `;` rather than a newline, so this scan
@@ -457,21 +466,61 @@ gate_segments_raw() {
     # and the commit would stop matching. `;` is the same separator in a form
     # that survives being put on one line, and the enclosing command is
     # unaffected because neutralise() turns it into a placeholder there anyway.
-    function subst_open(line,   i, n, c, depth, bt, sc, SCH, q) {
-      depth = 0; bt = 0; q = ""; n = length(line)
+    function subst_open(line,   i, n, c, depth, bt, sc, SCH, q, sj, K, SQ, ppd, PK) {
+      depth = 0; bt = 0; q = ""; sj = 0; n = length(line)
       sc = chars_of(line, SCH)
       for (i = 1; i <= n; i++) {
         c = (sc ? SCH[i] : substr(line, i, 1))
-        if (c == "\\") { i++; continue }
+        # A backslash is LITERAL inside a single-quoted span, so the skip
+        # below must not run there: `\047a\\\047` ate the closing quote and
+        # left the span open for the rest of the line. The header of
+        # `close_paren` records the same ordering as measured-wrong there; the
+        # two machines agree again (code review round 24). Direction was safe
+        # -- staying quoted longer only reports OPEN -- so this is the rule,
+        # not a fix for a live miss.
+        if (q == "\047") { if (c == "\047") q = ""; continue }
+        # An escaped `)` IS WORD GLUE, and the record is deliberately for
+        # that character ALONE. Round 23 gave this walk the `)` comment-class
+        # member that `close_paren` does not have, so `echo \\)#b $(` read the
+        # `#` as a comment (the raw previous character is a `)`), reported
+        # the span CLOSED, and the `cd` on the next line was marked top-level
+        # although all three shells keep it in the child -- a regression this
+        # branch introduced, and the glue record undoes it for the member
+        # that caused it (SO7, spec review round 29).
+        #
+        # IT IS NOT WIDENED TO EVERY ESCAPED CHARACTER, and rounds 30 and 31
+        # are why. The wide version modelled bash 5.x and zsh, whose ordinary
+        # lexer glues `\\ #`; bash 3.2`s `$( )` PRE-SCAN does not, and it is
+        # the only shell that runs the resulting shape -- measured through the
+        # real `main-tree-edit-gate`, `x=$(echo \\ #b )` / `cd ..` / `)` / a
+        # write went rc 2 -> 0 with 3.2 writing the tracked file in the
+        # protected tree. Two attempts to serve BOTH readings (a bail here, a
+        # flag in `close_paren` marking the logical line) each measured their
+        # own new fail-opens -- a mark the gate`s compensation path cannot
+        # read, and a quoted tail after the `#` that flips data and commands
+        # between the readings, which no marking can express. So this walk
+        # reads that class exactly as origin/main reads it and the gap is
+        # FILED rather than half-closed: go-to-k/cdkd#3303 carries all four
+        # shapes with their bytes. A `)` has no such divergence -- all three
+        # shells glue it -- which is what keeps this narrow record safe.
+        if (c == "\\") { i++; if (substr(line, i, 1) == ")") sj = i; continue }
         # QUOTE-AWARE, for the same reason `close_paren` is. A `)` inside a
-        # quoted span is DATA, and counting it as a closer made this function
+        # quoted span -- EITHER quote -- is DATA, and counting it as a closer
+        # made this function
         # report a substitution as CLOSED when it is still open, so the line was
         # never joined with the next one. Measured on
         # `x=$(echo \047a)b\047` + newline + `cd /tmp)` + newline + a write:
         # the `cd` was emitted as a TOP-LEVEL segment although it runs in the
         # substitution child, the base moved, and `main-tree-edit-gate` returned
         # 0 while bash really overwrote the tracked file. The states are the
-        # same three `close_paren` tracks, including ANSI-C.
+        # same three `close_paren` tracks, including ANSI-C, and since round 26
+        # so are the ARMS: the double-quote branch below reads `(` `)` `#`
+        # `<(` as data and keeps only `$(`, a backtick and a `\\` structural,
+        # which is what lets `echo "$(` still open a substitution while
+        # `n=$(grep -c ")" f` no longer closes one. Until then the dq branch
+        # fell through to every structural arm and that `)` popped the frame,
+        # so a `cd` on the next line was marked top-level -- the shape
+        # go-to-k/cdkd#3261 was filed for, and which this walk now answers.
         # ONLY THE SINGLE-QUOTE STATES SUPPRESS. Bash expands `$( )` and
         # backticks INSIDE double quotes, so `echo "$(` opens a substitution
         # exactly as the bare spelling does. Skipping the whole double-quoted
@@ -480,18 +529,46 @@ gate_segments_raw() {
         # disappeared from the stream -- caught by the differential fence as a
         # LOST `m:GATE_RE_GIT_COMMIT` cell rather than by any hand-picked case.
         if (q == "") {
-          if (c == "$" && substr(line, i + 1, 1) == "\047") { q = "d"; i++; continue }
+          # `$$` FIRST: the second `$` is the PID\047s, and what follows is a
+          # PLAIN span where an escaped quote CLOSES. `close_paren` and
+          # `flush_line` both carry this step-over and each records it as a
+          # measured fail-open; this walk was the third machine and was
+          # missed when that claim was written (code review round 25).
+          # `$$` FIRST -- but `$$` + a quote is AMBIGUOUS and reports OPEN.
+          # bash reads the PID then a PLAIN span; zsh reads `$` then an ANSI-C
+          # span, so stepping over traded a bash fail-open for a zsh one: the
+          # real `main-tree-edit-gate` went 2 -> 0 on `x=$$\047a\\047b\047$(` /
+          # `cd sub` / `)` / a write, which zsh runs in the PARENT (security
+          # review round 27). Where the shells disagree this file takes the
+          # refusing direction, and here that is reporting the substitution
+          # still OPEN. That covers the `$$\047` on the OPENER line, which is
+          # where this walk decides whether to join at all; a `$$\047` INSIDE an
+          # already-open `$( )` is read by `close_paren` and `flush_line` after
+          # the join, and their own step-overs still model bash alone --
+          # `x=$(echo $$\047a\\\047b\047` / `cd sub` / `)` is marked top-level on
+          # origin/main and here alike (security review round 28, filed).
+          if (c == "$" && substr(line, i + 1, 1) == "$") {
+            if (substr(line, i + 2, 1) == "\047") return 1
+            i++; continue }
+          if (c == "$" && substr(line, i + 1, 1) == "\047") { q = "A"; i++; continue }
           if (c == "\047") { q = "\047"; continue }
           if (c == "\"") { q = "\""; continue }
-        } else if (q == "d") {
-          if (c == "\047") q = ""
-          continue
-        } else if (q == "\047") {
+        } else if (q == "A") {
           if (c == "\047") q = ""
           continue
         } else if (q == "\"") {
           if (c == "\"") { q = ""; continue }
-          # fall through: substitutions are live inside double quotes
+          # Inside double quotes only a `$(`, a backtick and a `\\` are
+          # STRUCTURAL -- everything else, `(` `)` `#` `<(` included, is data
+          # (security review round 26). The old fall-through let a `)` pop the
+          # frame and, once round 25 stopped the `#` arm running in quotes, a
+          # `#` comment carrying an unbalanced `)` reported the span CLOSED:
+          # `gh pr comment 1 --body "$(` / `# 1) first` / a verb / `)"` had its
+          # verb swallowed as data, which all three shells RUN and origin/main
+          # matched -- 474 records.
+          if (c == "`") { bt = 1 - bt; continue }
+          if (c == "$" && substr(line, i + 1, 1) == "(") { depth++; K[depth] = 1; SQ[depth] = q; q = ""; i++; continue }
+          continue
         }
         # BACKTICK PARITY, tracked SEPARATELY from the paren depth
         # (go-to-k/cdkd#2156 review round 1). The first version of this function
@@ -524,9 +601,43 @@ gate_segments_raw() {
         # substitution, where the marking treats its `cd` as child-context and
         # refuses. Under-reporting would hand the `cd` to the consumer as
         # top-level, which is the direction this comment exists to close.
-        if (c == "#" && (i == 1 || substr(line, i - 1, 1) ~ /[ \t;&|(]/)) break
+        # ONLY outside quotes. This arm sits after the `q == "\"" ` branch
+        # falls through -- substitutions are live inside double quotes -- so
+        # without the test a `#` in a QUOTED argument ends the scan, and
+        # round 23 adding `)` to the class made `x="a )#"$(` do it: the
+        # substitution read as CLOSED and the `cd` in its child resolved as
+        # top-level (code review round 25; `close_paren` and `flush_line`
+        # both test the quote state, this was the third machine).
+        # THE TWO BASHES DISAGREE ABOUT AN ESCAPED CLASS MEMBER INSIDE AN OPEN
+        # `$( )`, and round 29 modelled one of them. bash 5.x and zsh read
+        # `\ #` as the continuation of a word, so the `)` after it CLOSES the
+        # substitution; bash 3.2`s `$( )` scanner reads the `#` as a comment
+        # and swallows that `)`. Measured through the real
+        # `main-tree-edit-gate` against a fixture repo with cwd in the main
+        # tree, `x=$(echo \ #b )` + newline + `cd ..` + newline + `)` +
+        # `echo hi > <tracked>` went rc 2 -> 0 at round 29 while bash 3.2
+        # really writes the tracked file in the PROTECTED tree (security
+        # review round 30; the other escaped class members are syntax errors
+        # under 3.2, so the live half of the class is the escaped SPACE).
+        # Where the shells disagree this walk takes the REFUSING direction, as
+        # it does for `$$` before a quote: reporting the span still OPEN keeps
+        # the body inside the substitution, where the marking treats its `cd`
+        # as child context and the write resolves against the un-moved base.
+        #
+        # THIS WALK DOES NOT BAIL ON THE AMBIGUITY, and round 30 first wrote
+        # that it did. A `return 1` here never releases: the trigger text
+        # stays in the JOINED line, so every re-scan meets it again, one
+        # `\ #` swallowed every following line into one logical line (cost
+        # quadratic in the join), and the bodies were drained only at the very
+        # end -- BEHIND the `cd` that the ordered walk pairs them with. Its
+        # class also had a `)` that `close_paren`s does not, so `\)#` bailed
+        # here while nothing flagged the line, and `x=$( echo W > tracked ;
+        # echo \)#b )` / `cd /tmp` / a write went rc 2 -> 0 (code review round
+        # 31, both measured with `gate_segments_marked` and through the gate).
+        # The flag in `close_paren` carries the whole fix; this arm is gone.
+        if (c == "#" && q == "" && (i == 1 || (sj != i - 1 && substr(line, i - 1, 1) ~ /[ \t;&|()]/))) break
         if (c == "`") { bt = 1 - bt; continue }
-        if (c == "$" && substr(line, i + 1, 1) == "(") { depth++; i++; continue }
+        if (c == "$" && substr(line, i + 1, 1) == "(") { depth++; K[depth] = 1; SQ[depth] = q; q = ""; i++; continue }
         # PROCESS SUBSTITUTION OPENS A SPAN TOO. `flush_line` was taught to
         # dual-emit `<( )` and `>( )` in the same change that taught it `$( )`,
         # but this line-JOINER was not -- so a process substitution spanning
@@ -536,9 +647,33 @@ gate_segments_raw() {
         # took `main-tree-edit-gate` from 2 to 0 with the tracked file really
         # written. `flush_line` and `subst_open` have to agree about what opens
         # a span; when they disagree the disagreement IS the fail-open.
-        if ((c == "<" || c == ">") && substr(line, i + 1, 1) == "(") { depth++; i++; continue }
-        if (c == "(" && depth > 0) { depth++; continue }
-        if (c == ")" && depth > 0) { depth--; continue }
+        if ((c == "<" || c == ">") && substr(line, i + 1, 1) == "(") { depth++; K[depth] = 1; SQ[depth] = q; q = ""; i++; continue }
+        if (c == "(" && depth > 0) { depth++; K[depth] = 0; SQ[depth] = q; continue }
+        if (c == ")" && depth > 0) { if (K[depth] == 1) sj = i; q = SQ[depth]; depth--; continue }
+        # A PAREN OUTSIDE EVERY SUBSTITUTION STILL HAS A KIND, and until now
+        # this walk tracked none: the two arms above are gated on `depth > 0`,
+        # so at depth 0 a `)` reached the `#` test as a RAW previous
+        # character, which the class above matches. The `#` then ended the
+        # scan and a `$(` LATER ON THE SAME LINE was never seen -- the span
+        # read CLOSED, the following lines were not joined, and the body`s
+        # `cd` was emitted top-level. Measured on a fixture repo,
+        # `a=(x)#b $(` + newline + `cd child` + newline + `)` + a write is
+        # rc=0 through `main-tree-edit-gate`, while BOTH bashes open the
+        # substitution, run the `cd` in its child (logged from `child/` via a
+        # side channel) and write the tracked file in the PARENT; zsh
+        # parse-errors on the shape, so nothing runs there. The kind is read
+        # off the character before the `(`, as `last_heredoc_opener` reads
+        # it: `=` is an `a=( )` array assignment whose `)` is part of the
+        # WORD, so the `#` glues; anything else is the subshell OPERATOR
+        # whose `)` does start a comment, which is the reading round 23 added
+        # the class member for. `<( )` / `>( )` never reach here -- the arms
+        # above take them -- so the kind-1 case has no member. Where the
+        # shells disagree this walk takes the OPEN direction, per its own
+        # policy note above: over-reporting OPEN keeps the body inside the
+        # substitution, where the marking treats its `cd` as child context.
+        # SO8 with the kind-0 control SO-ctl3 (code review round 30).
+        if (c == "(") { ppd++; PK[ppd] = (i > 1 && substr(line, i - 1, 1) == "=") ? 2 : 0; continue }
+        if (c == ")" && ppd > 0) { if (PK[ppd] == 2) sj = i; ppd--; continue }
       }
       return (depth > 0 || bt)
     }
@@ -549,6 +684,236 @@ gate_segments_raw() {
         if (u == t) return j
       }
       return 0
+    }
+    # The delimiter of the LAST QUOTED heredoc opener (`<<\047EOF\047` /
+    # `<<"EOF"`, optional `-`) that sits in COMMAND context on <text>, or ""
+    # when there is none OR when the scan cannot be sure. Applied to a PHYSICAL
+    # line that has not been through flush_line yet -- the line run() is about
+    # to join into a still-open `$(` body, where a heredoc opened here is
+    # followed by BODY lines that must not be joined as commands.
+    #
+    # heredoc_word(rest): `rest` starts at the `<<`. Returns the delimiter WORD
+    # as bash reads it -- quote removal applied, everything else kept:
+    # `<<\047EOF\047x` is EOFx, `<<E"O"F` is EOF, `<<\047a"b\047` is a"b,
+    # `<<\\EOF` is EOF, `<<EOF.x` is EOF.x, and inside double quotes a
+    # backslash is removed only before `$`, a backtick, `"` or `\\` -- so
+    # `<<"E\\xF"` is E\\xF (review round 8). Sets HW_QUOTED to 1 when ANY quoting
+    # was seen (bash then performs no expansion in the body) and HW_LEN to the
+    # characters consumed. Returns "" for a word it cannot read -- an
+    # unterminated quote, an expansion inside the word, nothing after the
+    # `<<` -- which both callers treat as "not modelled" (review round 7 of
+    # go-to-k/cdkd#3040: the regex read `\047EOF\047` out of `<<\047EOF\047x`
+    # and latched on a decoy `EOF` line, dropping the verb bash runs).
+    function heredoc_word(rest,   j, n, c, w, k) {
+      HW_QUOTED = 0; HW_LEN = 0; w = ""
+      n = length(rest)
+      j = 3
+      if (substr(rest, j, 1) == "-") j++
+      while (j <= n && substr(rest, j, 1) ~ /[ \t]/) j++
+      while (j <= n) {
+        c = substr(rest, j, 1)
+        if (c ~ /[ \t;&|()<>]/) break
+        if (c == "\047") { k = index(substr(rest, j + 1), "\047"); if (k == 0) return ""
+                           w = w substr(rest, j + 1, k - 1); j += k + 1; HW_QUOTED = 1; continue }
+        if (c == "\"") { j++
+                         while (j <= n) { c = substr(rest, j, 1)
+                           if (c == "\"") break
+                           if (c == "\\") { if (substr(rest, j + 1, 1) ~ /[$`"\\]/) { j++; w = w substr(rest, j, 1); j++ }
+                                            else { w = w c; j++ }; continue }
+                           if (c == "$" || c == "`") return ""
+                           w = w c; j++ }
+                         if (j > n) return ""
+                         j++; HW_QUOTED = 1; continue }
+        if (c == "\\") { if (j == n) return ""; w = w substr(rest, j + 1, 1); j += 2; HW_QUOTED = 1; continue }
+        if (c == "$" || c == "`") return ""
+        w = w c; j++
+      }
+      HW_LEN = j - 1
+      return w
+    }
+    # WHY ONLY A QUOTED DELIMITER, and why "" on doubt. Two review rounds of
+    # go-to-k/cdkd#3040 each measured shapes bash EXECUTES that the previous
+    # cut dropped as heredoc body -- a new fail-open in the matcher every
+    # blocking gate sources, and the class this file exists to avoid. Nearly
+    # all of them lived in the UNQUOTED-delimiter arm, where bash expands the
+    # body and a `$(` inside it runs: a body line carrying `$(`, a multi-line
+    # `$(` spanning body lines, a literal `<<Y` on such a line overwriting the
+    # latch. The rest were quoting-state slips on the opener line itself. So
+    # this function answers a NARROWER question than "is there an opener":
+    # it latches only where bash provably performs NO expansion (a quoted
+    # delimiter), and it returns "" -- meaning run() treats the following
+    # lines as commands, exactly as origin/main did -- the moment the line
+    # holds anything it does not model. An unquoted `<<EOF` body is therefore
+    # still read as commands: a prose body in that spelling can still refuse a
+    # command falsely, which is a LOUD, fixable outcome (write the delimiter
+    # quoted, or use --body-file), while every miss here is silent.
+    #
+    # The quoting walk is the three states close_paren keeps, with a
+    # PER-DEPTH STACK rather than one saved outer state: a `$(` and a bare `(`
+    # push the enclosing quote and start fresh, the matching `)` pops it, and
+    # a backtick saves and restores across its own span. A single `outer`
+    # restored only at depth 0 lost the `"` on the way out of a nested
+    # `"$(echo "$(a)" "<<X"` and read the quoted `<<X` as an opener (code
+    # review round 2, 1c2 / 1d2 / 1e3b). `$\047` is ANSI-C only OUTSIDE double
+    # quotes, as close_paren has it. `${...}` and `$((...))` are skipped whole,
+    # and a `#` at word start ends the scan, because a `<<` inside any of them
+    # is not an opener. A backtick frame is skipped the same way, TEXTUALLY:
+    # bash ends a backtick substitution at the next unescaped backtick on any
+    # line, a quote inside it protecting nothing (security round 16: a `\047`
+    # inside the frame desynchronised the quote state, and the line closing
+    # bash\047s quote ran a verb), so nothing inside the frame is read -- not a
+    # quote, not an opener (round 14: the body of such an opener is not
+    # modelled) -- and the frame close is the only thing looked for. Not
+    # sticky: once the frame closes the substitution is a plain `$( )` again
+    # and a later heredoc in it is real (N1). Round 15 had traded the
+    # opener-time bail for the end-of-line check alone, which sees the frame
+    # only while it is still OPEN there -- a backtick closing after the opener
+    # on the same line latched, and all three shells ran the next line (X20a
+    # / X20b / X20c, three reviewers at once). The `${...}` skip bails when the
+    # span holds a quote, a backtick or a backslash: it runs to the first `}`,
+    # and `${a:-"}` puts that brace inside a double quote bash keeps open
+    # across lines (K1, all three shells). Finally the FRAME of the opener is recorded -- the
+    # substitution depth -- and the
+    # answer is "" whenever the line goes on to do something bash does not
+    # read as "body follows on the next line": a NEW `$(` still open at end
+    # of line (bash defers that body until the substitution closes, round 2,
+    # 1g); the opener FRAME itself closing on the same line, as in
+    # `y=$(cat <<\047EOF\047) ; z=$(` or `x=$(echo $(cat <<\047X\047)`, where
+    # bash 3.2 and zsh run the next line as the new substitution and bash 5
+    # reads it as the body -- version-dependent, so it is not modelled
+    # (round 3, code review) -- and that bail, like the two for an
+    # unterminated `$((` / `${`, is STICKY: each returns before the rest of
+    # the line is scanned, so a backtick or `$(` opened after the `)` would
+    # otherwise be missing from the carried state and the next line would
+    # latch inside it (security review round 15); and a `#` after a `)` is a comment like one
+    # after a space ONLY when that `)` closed a bare `( )` -- `(true)#` is a
+    # comment on bash 3.2.57, bash 5 and zsh (round 3; an earlier claim that
+    # 3.2 rejects it was wrong) -- while the `)` closing a `$( )` or `$(( ))`
+    # ends a WORD, so `$(true)#"` glues the `#` and the `"` opens a quote the
+    # scan must see (G1 / G2, security round 16, all three shells ran the
+    # line closing it). The per-depth stack records which kind each frame is
+    # and `gp` the position of the last character consumed as WORD GLUE: the
+    # `)` closing a `$( )`, the second `)` of `$(( ))`, and the character an
+    # unquoted backslash escaped -- `\)#"` and `\ #"` are one word too, and
+    # testing the raw previous character read them as comments (code review
+    # round 17, both bashes ran the closing line; W1 / W5). The `$(( ))` end
+    # is found by a paren walk, not the first `))`: `$((2*(1+1)))` has three
+    # closers and the first-`))` landing left one to pop the enclosing frame
+    # (A7 / A8, same round), and the walk BAILS when the span holds a quote,
+    # a backtick or a backslash, since bash finds the close honouring quotes
+    # and landing inside a string inverted the carried quote state (AQ1,
+    # round 18) -- the same rule the `${...}` skip takes. A backtick is not in the comment class: a
+    # closing one ends a word too (H2), and inside a frame nothing is read
+    # at all. Third, an
+    # UNQUOTED opener ANYWHERE on the line
+    # is a bail too, not merely "not latched": in `cat <<A <<\047B\047` bash
+    # reads the A body FIRST and expands it, so recording only the quoted B
+    # dropped the expanded body a verb runs in (round 3, security).
+    #
+    # THE LEXER STATE CARRIES ACROSS THE LINES OF ONE SUBSTITUTION. Round 3
+    # scanned each physical line from a fresh state, and security round 4
+    # measured five shapes where that lost what bash carries: an unquoted
+    # opener on line 1 whose expanded body is line 2 onward, a quote or
+    # backtick left open at the end of line 1 that makes a `<<\047X\047` on
+    # line 2 DATA, and a nested `$(` opened on line 1 whose `)` on line 2
+    # closes the opener frame. Each latched from the fresh line-2 scan. So the
+    # quote, backtick and frame state live in `lho_*` globals that run()
+    # resets when a substitution closes; each physical line is scanned ONCE
+    # (linear in the substitution, where re-reading the accumulated text was
+    # quadratic and measured 1.5x the already-quadratic join at 200 lines).
+    # The unquoted-opener bail is STICKY for the rest of the substitution --
+    # its expanded body has no modelled end -- while the per-line answers
+    # (an opener recorded on THIS line, its frame, the end-of-line checks)
+    # are locals, so an earlier opener whose body run() already dropped is
+    # never re-found (the round-1 joined-scan fail-open, S2).
+    function lho_reset() { lho_iq = ""; lho_depth = 0; lho_bt = 0; lho_btq = ""; lho_bail = 0; split("", lho_OQ); split("", lho_OK) }
+    function last_heredoc_opener(text,   j, n, c, d, rest, out, of, k, gp, s, m, e) {
+      if (lho_bail) return ""
+      out = ""; of = 0; gp = 0
+      n = length(text)
+      for (j = 1; j <= n; j++) {
+        c = substr(text, j, 1)
+        if (lho_bt) { if (c == "\\") { j++; continue }
+                      if (c == "`") { lho_bt = 0; lho_iq = lho_btq }; continue }
+        if (lho_iq == "A") { if (c == "\\") { j++; continue }
+                             if (c == "\047") lho_iq = ""; continue }
+        if (lho_iq == "\047") { if (c == lho_iq) lho_iq = ""; continue }
+        if (c == "\\") { j++; gp = j; continue }
+        if (c == "$") { d = substr(text, j + 1, 1)
+                        if (d == "$") { j++; continue }
+                        if (d == "\047" && lho_iq == "") { lho_iq = "A"; j++; continue }
+                        if (d == "(" && substr(text, j + 2, 1) == "(") {
+                          m = 0; k = j + 3
+                          while (k <= n) { e = substr(text, k, 1)
+                            if (e == "(") m++
+                            else if (e == ")") { if (m == 0) break; m-- }
+                            k++ }
+                          if (k > n || substr(text, k + 1, 1) != ")") { lho_bail = 1; return "" }
+                          if (substr(text, j + 3, k - j - 3) ~ /["\047`\\]/) { lho_bail = 1; return "" }
+                          gp = k + 1; j = gp; continue }
+                        if (d == "(") { lho_depth++; lho_OQ[lho_depth] = lho_iq; lho_OK[lho_depth] = 1; lho_iq = ""; j++; continue }
+                        if (d == "{") { k = index(substr(text, j + 2), "}"); if (k == 0) { lho_bail = 1; return "" }
+                          s = substr(text, j + 2, k - 1); if (s ~ /["\047`\\]/) { lho_bail = 1; return "" }
+                          j = j + 1 + k; continue }
+                        continue }
+        if (c == "`" && (lho_iq == "" || lho_iq == "\"")) { lho_btq = lho_iq; lho_iq = ""; lho_bt = 1; continue }
+        if (lho_iq != "") { if (c == lho_iq) lho_iq = ""; continue }
+        if (c == "\"" || c == "\047") { lho_iq = c; continue }
+        # A bare `(` is an OPERATOR -- a subshell -- so the `)` closing it
+        # is one too and a `#` after it is a comment. `<( )` and `>( )`
+        # process substitution are WORDS instead, and `x=$(diff <(echo)#"`
+        # glues the `#`, leaving a quote open that all three shells carry
+        # to the next line (code review round 20; `flush_line` already had
+        # this at its own `<( )` landing and only this walk was left out).
+        # The kind is read off the character before the `(`.
+        #
+        # An `a=( )` array assignment is kind 2 because THE SHELLS
+        # DISAGREE: bash glues the `#` to the word, zsh reads it as a
+        # comment, and a Bash tool call here runs under zsh -- modelling
+        # either alone is a fail-open in the other (round 21 measured the
+        # glue reading dropping a line zsh RUNS). A `)#` closing such a
+        # frame is the sticky bail this file uses wherever shells disagree,
+        # as for the opener frame closing on its own line: the rest of the
+        # substitution is read as commands. AE1 / AE2.
+        if (c == "(") { lho_depth++; lho_OQ[lho_depth] = ""
+                       lho_OK[lho_depth] = (j > 1 && substr(text, j - 1, 1) ~ /[<>]/) ? 1 : \
+                                          ((j > 1 && substr(text, j - 1, 1) == "=") ? 2 : 0); continue }
+        if (c == ")") { if (lho_depth > 0) { if (out != "" && lho_depth <= of) { lho_bail = 1; return "" }
+                                             if (lho_OK[lho_depth] == 2 && substr(text, j + 1, 1) == "#") { lho_bail = 1; return "" }
+                                             if (lho_OK[lho_depth] == 1) gp = j; lho_iq = lho_OQ[lho_depth]; lho_depth-- }; continue }
+        if (c == "#" && (j == 1 || (gp != j - 1 && substr(text, j - 1, 1) ~ /[ \t;&|()]/))) break
+        if (c == "<" && substr(text, j + 1, 1) == "<") {
+          if (substr(text, j + 2, 1) == "<") { j += 2; continue }
+          rest = substr(text, j)
+          d = heredoc_word(rest)
+          # Only a QUOTED delimiter is latched: bash expands an unquoted body,
+          # and a word carrying a `$` or a backtick is REFUSED rather than
+          # modelled -- bash takes such a word literally (measured on 5.x and
+          # 3.2: `cat <<E$y` ends at the literal line `E$y`), so this is a
+          # deliberate over-refusal, not a gap. Both are the STICKY bail --
+          # the rest of the substitution is commands.
+          if (d == "" || !HW_QUOTED) { lho_bail = 1; return "" }
+          out = d; of = lho_depth
+          j += HW_LEN - 1
+          continue
+        }
+      }
+      if (lho_iq != "") return ""
+      # No latch when a backtick frame opened after the opener is still open
+      # here, or when a new `$(` opened after it: bash delimits a backtick
+      # substitution TEXTUALLY, so the first unescaped backtick on any body
+      # line -- a `\140foo\140` mention in quoted prose -- closes it and the
+      # rest of that body runs as commands (security round 14, all three
+      # shells); and bash defers a body that a later `$(` owns (round 2, 1g).
+      # Not sticky: the next line is read as commands, and a later heredoc in
+      # the substitution is real. An opener INSIDE a backtick frame never
+      # reaches this line -- the frame is skipped above. The quote state the
+      # frame close restores (`lho_iq = lho_btq`) has no discriminating case:
+      # every shape tried lands in the refusing direction through the
+      # unbalanced-quote return or the segmenter\047s own quote tracking
+      # (test review round 17) -- unfenced, and safe.
+      if (out != "" && lho_depth + lho_bt > of) return ""
+      return out
     }
     # `q` is deliberately GLOBAL across lines: a quoted span survives a newline,
     # and a `--body "…multi-line…"` argument is ONE span. Resetting it per line
@@ -566,8 +931,8 @@ gate_segments_raw() {
     # in the pending run); a branch that emits something DIFFERENT flushes the
     # run first, appends its own text, and restarts the run after whatever it
     # consumed. `emitrun` is that flush.
-    function flush_line(line,   i, n, c, res, rest, d, runstart, fc, FCH) {
-      res = ""; n = length(line); pending_tag = ""; runstart = 1
+    function flush_line(line,   i, n, c, res, rest, d, runstart, fc, FCH, hc, fgp) {
+      res = ""; n = length(line); pending_tag = ""; runstart = 1; hc = 0; fgp = 0
       fc = chars_of(line, FCH)
       for (i = 1; i <= n; i++) {
         c = (fc ? FCH[i] : substr(line, i, 1))
@@ -575,7 +940,28 @@ gate_segments_raw() {
           # An escaped character outside quotes is LITERAL: `echo a\; git commit`
           # is ONE echo, and splitting on that `;` blocked it (go-to-k/cdkd#2130
           # test review).
-          if (c == "\\") { i++; continue }   # both chars stay in the run
+          if (c == "\\") { i++; fgp = i; continue }   # both chars stay in the run
+          # A `#` at WORD START comments out the rest of the line, so a
+          # `<<` after it is not an opener: `x=$(echo) #<<\047X\047` with a bare
+          # `X` later latched that delimiter and dropped the commands
+          # between -- which all three shells RUN (security review round
+          # 18). origin/main escaped it only because its identifier-PREFIX
+          # latch could not read a quoted word, so reading the word
+          # properly (round 7) is what made the comment reachable. Only
+          # the LATCH is suppressed, not the separator scan: a separator
+          # inside a comment already over-segments, which is the loud
+          # direction. WORD START is the RULE `last_heredoc_opener` uses
+          # -- a boundary character not consumed as word glue -- because
+          # `\#` and `$(echo)#` are ONE word and their `<<` IS an opener
+          # (measured: no shell runs the line after either). The two GLUE
+          # SETS differ, and deliberately: each records what its own walk
+          # consumed, so that one has `$(( ))` -- which this walk reaches
+          # through `close_paren` -- and an `a=( )`, which it BAILS on
+          # because the shells disagree. This arm meets that shape too and
+          # answers it as a COMMENT, which is the refusing direction here:
+          # suppressing the latch only reads more lines as commands.
+          if (c == "#" && (i == 1 || (fgp != i - 1 \
+              && (fc ? FCH[i - 1] : substr(line, i - 1, 1)) ~ /[ \t;&|()]/))) { hc = 1; continue }
           if ((c == "\"" || c == "'"'"'") && c != ignore_q && ignore_q != "BOTH") { q = c; continue }
           # ANSI-C span, the same state `close_paren` tracks. Without it this
           # machine opened a PLAIN span on the quote and the escaped quote
@@ -612,7 +998,7 @@ gate_segments_raw() {
             if (cp > 0) {
               extra = extra substr(line, i + 2, cp - i - 2) "\n"
               res = res substr(line, runstart, i - runstart) neutralise(substr(line, i, cp - i + 1)); runstart = cp + 1
-              i = cp
+              i = cp; fgp = i
               continue
             }
             res = res substr(line, runstart, i - runstart) "\n"; runstart = i + 2; i++; continue
@@ -632,7 +1018,7 @@ gate_segments_raw() {
             if (cp > 0) {
               extra = extra substr(line, i + 2, cp - i - 2) "\n"
               res = res substr(line, runstart, i - runstart) neutralise(substr(line, i, cp - i + 1)); runstart = cp + 1
-              i = cp
+              i = cp; fgp = i
               continue
             }
             res = res substr(line, runstart, i - runstart) "\n"; runstart = i + 2; i++; continue
@@ -652,12 +1038,19 @@ gate_segments_raw() {
             # `<<<` is a here-string, not a heredoc opener.
             if (substr(line, i + 2, 1) == "<") { i += 2; continue }   # verbatim
             rest = substr(line, i)
-            if (match(rest, /^<<-?[ \t]*("[^"]+"|'"'"'[^'"'"']+'"'"'|[A-Za-z_][A-Za-z0-9_]*)/)) {
-              d = substr(rest, RSTART, RLENGTH)
-              sub(/^<<-?[ \t]*/, "", d)
-              gsub(/["'"'"']/, "", d)
-              if (d != "") pending_tag = d
-            }
+            # The delimiter is the whole WORD as bash reads it (heredoc_word);
+            # a word the walk cannot read sets no tag, and the line stays a
+            # command line (review round 7 of go-to-k/cdkd#3040).
+            d = heredoc_word(rest)
+            # An UNQUOTED word is latched only when it is a whole identifier.
+            # origin/main latched the identifier PREFIX of any unquoted word
+            # (`<<EOF.x` gave it the tag `EOF`, a decoy), so this set is a
+            # strict subset of what main latched: this arm drops a body
+            # whatever its quoting, and an unquoted body is EXPANDED by bash,
+            # so a wider latch drops a `$(git push)` (review round 8). The
+            # identifier gap itself is the accepted top-level one hooks.md
+            # records; it is not widened.
+            if (!hc && d != "" && (HW_QUOTED || d ~ /^[A-Za-z_][A-Za-z0-9_]*$/)) pending_tag = d
             continue
           }
           continue
@@ -731,8 +1124,8 @@ gate_segments_raw() {
       return res
     }
     # One full pass. Runs twice at most: see the END rule.
-    function run(   i, line, t, acc, rounds, batch, elines, nlines, ei, __seg, psub) {
-      q = ""; tag = ""; pending = ""; acc = ""; extra = ""; psub = ""
+    function run(   i, line, t, acc, rounds, batch, elines, nlines, ei, __seg, psub, ptag, pd, phys) {
+      q = ""; tag = ""; pending = ""; acc = ""; extra = ""; psub = ""; ptag = ""; phys = ""; lho_reset()
       __bodies = ""; __pend_seg = ""
       for (i = 1; i <= total; i++) {
         line = lines[i]
@@ -743,16 +1136,103 @@ gate_segments_raw() {
           acc = acc "\n"
           continue
         }
+        # Inside a heredoc body that opened INSIDE a still-open `$(`: data too.
+        # The join below turns each body line into a `;`-separated command of
+        # the substitution, and drain_extra then flushes those as commands in
+        # their own right -- so a `gh pr merge` quoted in the prose of an issue
+        # body written as `--body "$(cat <<EOF ... EOF)"` matched
+        # GATE_RE_GH_PR_MERGE and integ-local-gate refused `gh issue create`
+        # (go-to-k/cdkd#3040). The terminator line is dropped with the body:
+        # the joined line then carries an opener with no terminator, so the
+        # top-level `tag` latch below does not fire for it FROM THIS LINE --
+        # terminated() searches only lines AFTER the one being flushed. It USED
+        # to fire through a different route: drain_extra() re-flushed the body
+        # and left `pending_tag` set, and a bare delimiter belonging to some
+        # LATER top-level heredoc then satisfied the look-ahead
+        # (go-to-k/cdkd#3066, pre-existing on origin/main and WIDENED by an
+        # earlier cut of this latch -- a body carrying a backtick used to
+        # reach drain_extra and keep the verb after the `)` matched; the
+        # latch dropped it). drain_extra now saves and restores
+        # `pending_tag` around its flushes, which closes both.
+        #
+        # Every line under the latch is dropped, and that is safe ONLY because
+        # last_heredoc_opener latches on a QUOTED delimiter alone: bash performs
+        # no expansion in that body, so nothing in it runs. An UNQUOTED
+        # `<<EOF` body is expanded -- a `$(git commit)` in it executes -- and a
+        # first cut that let such lines fall through to the join was broken
+        # twice over (a multi-line `$(` spanning body lines, a literal `<<Y`
+        # on a fallen-through line overwriting this latch; security review of
+        # go-to-k/cdkd#3040, rounds 1 and 2). So an unquoted body is not
+        # latched at all and is read as commands, exactly as origin/main read
+        # it. The top-level `tag` branch above keeps its own pre-existing
+        # policy of dropping every body line whatever the delimiter; that gap
+        # is accepted and documented in hooks.md, and it is not widened here.
+        if (ptag != "") {
+          t = line
+          gsub(/^[ \t]+|[ \t]+$/, "", t)
+          if (t == ptag) { ptag = ""; continue }
+          # A body line that BEGINS with the delimiter and carries a `)` after
+          # it is where bash 5 and 3.2 end BOTH the heredoc and the
+          # substitution: `E);git commit -m C` runs C and every line after it
+          # at top level (security review round 9 of go-to-k/cdkd#3040; zsh
+          # keeps reading the body). Dropping it dropped those commands, so
+          # the latch ends here and the line falls through to the join, where
+          # its `)` closes the frame. A bare `)` elsewhere in a body is left
+          # alone: bash 3.2 alone closes on it, and that gap is recorded in
+          # hooks.md rather than modelled.
+          if (index(t, ptag) != 1 || index(substr(t, length(ptag) + 1), ")") == 0) continue
+          # Only what FOLLOWS the delimiter is handed to the join: the
+          # delimiter text is data bash has consumed, and one carrying a quote
+          # (`<<"a\047b"` then `a\047b);verb`) would open a quoted span in
+          # subst_open and fold the verb into it (security review round 10).
+          # Sliced from the line with only its LEADING whitespace removed: `t`
+          # is trimmed on both sides, and a closing line ending in an escaped
+          # space (`E);echo \ `) lost the space and read as a `\`-continuation
+          # that glued the next line onto it (round 11).
+          sub(/^[ \t]+/, "", line); line = substr(line, length(ptag) + 1)
+          ptag = ""
+        }
         if (pending != "") { line = pending line; pending = "" }
-        if (line ~ /\\$/) {               # `\`-continuation: join with the next line
+        # `\`-continuation: join with the next line -- only when the trailing
+        # run of backslashes is ODD. An even run is escaped backslashes and the
+        # line ends there; bash runs the next line as a command, and gluing it
+        # onto this one as an argument silenced every gate (security review
+        # round 12 of go-to-k/cdkd#3040; the same parity rule already lives in
+        # _gate_odd_trailing_bs for the structural dequoter).
+        if (match(line, /\\+$/) && RLENGTH % 2 == 1) {
           sub(/\\$/, "", line)
           pending = line
           continue
         }
+        # The PHYSICAL line, before the join below. The opener scan must see
+        # only this line: scanning the JOINED text re-finds an opener whose
+        # heredoc already closed, and with any bare delimiter line still ahead
+        # -- a second heredoc with the same delimiter inside the substitution,
+        # or a top-level one after the `)` -- terminated() satisfies the
+        # look-ahead and the latch swallows the real commands in between.
+        # Measured (security review of go-to-k/cdkd#3040, S2 / S2b): a
+        # `git push` between two `<<\047EOF\047` bodies in one `$( )`, and a
+        # `git commit` before a `)` that a LATER top-level heredoc followed,
+        # both run by bash and both NOMATCH with the joined scan.
+        phys = line
         # A `$(` still open at end of line CONTINUES on the next one; join so
         # close_paren can see the closer. See subst_open above.
         if (psub != "") { line = psub ";" line; psub = "" }
-        if (subst_open(line)) { psub = line; continue }
+        if (subst_open(line)) {
+          psub = line
+          # Did THIS line open a heredoc inside the substitution? Latch onto its
+          # delimiter only when the terminator really arrives as a bare later
+          # line -- the same fail-open guard the top-level `tag` uses, so a
+          # `<<X` in prose with no terminator blanks nothing.
+          # The scan keeps its lexer state across the lines of ONE substitution
+          # (security round 4: an unquoted opener, an open quote or backtick, a
+          # nested frame all carry from line 1 to line 2); it is reset below
+          # the moment a line does not continue one.
+          pd = last_heredoc_opener(phys)
+          if (pd != "" && terminated(pd, i + 1) > 0) ptag = pd
+          continue
+        }
+        lho_reset()
         # A line that ends INSIDE a quoted span is not a segment boundary: the
         # span continues. Emitting "\n" here promoted every line of a quoted
         # `--body "…"` to a segment START, so prose in a PR body or an issue
@@ -832,7 +1312,7 @@ gate_segments_raw() {
     # resolves them against the base as it stood when the enclosing command ran
     # -- earlier than the truth when a `cd` precedes the substitution ON THE
     # SAME LINE, which is the LOUD direction, and never later.
-    function drain_extra(   out, rounds, batch, nlines, elines, ei, flushed, nf, fl, fi, saved_q) {
+    function drain_extra(   out, rounds, batch, nlines, elines, ei, flushed, nf, fl, fi, saved_q, saved_pt) {
       # `q` IS GLOBAL AND LIVE ACROSS LINES. It carries "this line ended inside
       # a quoted span", which is what stops each line of a multi-line
       # `--body "..."` being promoted to a segment start. Draining a body runs
@@ -845,6 +1325,16 @@ gate_segments_raw() {
       # restore it: the bodies are a separate scan, not a continuation of the
       # quoting on the enclosing line.
       saved_q = q
+      # `pending_tag` IS GLOBAL AND LIVE ACROSS LINES TOO, and the same
+      # argument applies (go-to-k/cdkd#3066): a `cat <<EOF` in a flushed body
+      # sets it, run() then tests it for the ENCLOSING line, and terminated()
+      # finds the bare `EOF` of any LATER top-level heredoc -- so every line
+      # between, a real `git commit` included, is dropped as that body. The
+      # heredoc the opener belongs to was consumed inside the substitution;
+      # the latch was answering for a different one. Measured on origin/main:
+      # `x=$(cat <<EOF` / p / EOF / `)` / `git commit -m x` / `cat <<EOF` / q
+      # / EOF -- bash runs the commit, NOMATCH. Saved here, restored below.
+      saved_pt = pending_tag
       out = ""
       rounds = 0
       while (extra != "" && rounds < 8) {
@@ -927,6 +1417,7 @@ gate_segments_raw() {
       # rule ORs in.
       if (q != "") body_q_open = 1
       q = saved_q
+      pending_tag = saved_pt
       return out
     }
     { line = $0; sub(/\r$/, "", line); lines[NR] = line }

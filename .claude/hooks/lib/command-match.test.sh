@@ -83,6 +83,859 @@ check "real invocation on a line AFTER the heredoc is still caught" 0 "$MERGE" "
 # The heredoc-opening line itself carries a real command and must be kept.
 check "the heredoc-opening line's own verb is still seen" 0 "$COMMIT" "$heredoc_msg"
 
+# --- Heredoc bodies INSIDE a command substitution (go-to-k/cdkd#3040) -------
+#
+# The top-level `tag` latch never saw these: a `$(` still open at end of line
+# makes run() JOIN the following lines with `;` into one logical line BEFORE
+# any heredoc is recognised, so the body lines arrived in drain_extra as
+# `;`-separated commands of the substitution. Measured live: `gh issue create
+# --body "$(cat <<'EOF' ... EOF)"` whose prose quoted `gh pr merge` was refused
+# by integ-local-gate, and the issue could only be filed via `--body-file`.
+subst_heredoc_prose=$(printf '%s\n' \
+  'gh issue create --repo o/r --title "t" --body "$(cat <<'"'"'EOF'"'"'' \
+  '## What happened' \
+  'so `gh pr merge` is not gated by the scope regex.' \
+  'EOF' \
+  ')"')
+check "a heredoc body inside \$( ) is data, not commands" 1 "$MERGE" "$subst_heredoc_prose"
+
+# The body was extracted as commands AND its backtick spans were then taken as
+# nested substitutions -- two segments reading `gh pr merge`. Both gone.
+subst_heredoc_bt=$(printf '%s\n' \
+  'x="$(cat <<'"'"'EOF'"'"'' \
+  'run `gh pr merge 1` then `gh pr merge 2`' \
+  'EOF' \
+  ')"')
+check "backticks inside that body are not substitutions either" 1 "$MERGE" "$subst_heredoc_bt"
+
+# The fail-CLOSED half, each the direction that would silently disarm a gate:
+# a real verb AFTER the terminator inside the same substitution is still seen,
+# a real verb on the SAME line after the substitution closes is still seen, and
+# an opener with NO terminator latches nothing (the prose after it is scanned).
+subst_heredoc_then_real=$(printf '%s\n' \
+  'x="$(cat <<'"'"'EOF'"'"'' \
+  'prose' \
+  'EOF' \
+  'gh pr merge 7 --squash)"')
+check "a verb after the terminator, still inside \$( ), is caught" 0 "$MERGE" "$subst_heredoc_then_real"
+
+subst_heredoc_same_line=$(printf '%s\n' \
+  'x="$(cat <<'"'"'EOF'"'"'' \
+  'prose' \
+  'EOF' \
+  ')" && gh pr merge 1')
+check "a verb after the substitution closes is caught" 0 "$MERGE" "$subst_heredoc_same_line"
+
+subst_unterminated=$(printf '%s\n' \
+  'x="$(echo <<EOF is prose' \
+  'gh pr merge 1)"')
+check "an unterminated opener inside \$( ) does not swallow" 0 "$MERGE" "$subst_unterminated"
+# The case above spells its opener UNQUOTED, which since round 2 never reaches
+# the terminator look-ahead at all (an unquoted opener is a bail on its own),
+# so it stopped fencing that guard -- code review round 3 measured the guard
+# deleted with the suite green. This QUOTED twin is the fence: bash 3.2 runs
+# the commit (no terminator, the `)` closes the substitution), and with
+# `terminated()` no longer consulted the latch swallows it.
+subst_unterminated_q=$(printf '%s\n' \
+  'x=$(cat <<'"'"'X'"'"'' \
+  'body' \
+  ')' \
+  'git commit -m y')
+check "a QUOTED opener with no terminator is not latched (terminated() guard)" 0 "$COMMIT" "$subst_unterminated_q"
+
+# --- Security review of go-to-k/cdkd#3040: three shapes bash RUNS that the ---
+# --- first cut of the body-skip swallowed. Each was measured with a stub  ---
+# --- `git` on PATH: real bash executes the verb, origin/main matched it,  ---
+# --- and the first cut answered NO MATCH -- a NEW fail-open.             ---
+#
+# S1: with an UNQUOTED delimiter the body undergoes expansion, so the `$( )`
+# inside it executes. Round 2 settled HOW this stays matched: an unquoted
+# delimiter is never latched at all (see the block further down), so the body
+# is read as commands and the substitution is scanned on the ordinary path.
+# The quoted twin (S1q) is the control: no expansion, so dropped.
+subst_unquoted_expands=$(printf '%s\n' \
+  'x="$(cat <<EOF' \
+  '$(git commit -m y)' \
+  'EOF' \
+  ')"')
+check "S1: \$( ) in an UNQUOTED-delimiter body inside \$( ) is run, so it matches" 0 "$COMMIT" "$subst_unquoted_expands"
+subst_quoted_no_expand=$(printf '%s\n' \
+  'x="$(cat <<'"'"'EOF'"'"'' \
+  '$(git commit -m y)' \
+  'EOF' \
+  ')"')
+check "S1q: the same body under a QUOTED delimiter is not expanded, so it does not" 1 "$COMMIT" "$subst_quoted_no_expand"
+
+# S2 / S2b: the opener scan must see the PHYSICAL line, not the joined `$(`
+# text. Scanning the join re-found an opener whose heredoc had already closed,
+# and any bare delimiter line still ahead -- a second same-delimiter heredoc in
+# the substitution, or a top-level one after the `)` -- satisfied the
+# look-ahead, so the latch swallowed the real commands in between.
+subst_two_heredocs=$(printf '%s\n' \
+  'out=$(' \
+  'cat <<'"'"'EOF'"'"'' \
+  'm1' \
+  'EOF' \
+  'echo start' \
+  'git push origin HEAD' \
+  'cat <<'"'"'EOF'"'"'' \
+  'm2' \
+  'EOF' \
+  ')')
+check "S2: a verb between two same-delimiter heredocs in one \$( ) is caught" 0 "$GATE_RE_GIT_PUSH" "$subst_two_heredocs"
+subst_then_toplevel_heredoc=$(printf '%s\n' \
+  'x="$(cat <<'"'"'EOF'"'"'' \
+  'a' \
+  'EOF' \
+  'echo start' \
+  'git commit -m y' \
+  ')"' \
+  'cat <<'"'"'EOF'"'"'' \
+  'b' \
+  'EOF')
+check "S2b: a verb inside \$( ) is caught when a top-level heredoc follows the )" 0 "$COMMIT" "$subst_then_toplevel_heredoc"
+
+# S3 / S3d: the opener scan is quote-aware. A `<<X` INSIDE a quoted span on the
+# opener line plus a bare `X` line later is prose, not a heredoc, and the verb
+# between them runs.
+subst_quoted_mention_sq=$(printf '%s\n' \
+  'x="$(echo '"'"'<<X'"'"'' \
+  'git commit -m y' \
+  'X' \
+  ')"')
+check "S3: a single-quoted <<X mention on the opener line is not an opener" 0 "$COMMIT" "$subst_quoted_mention_sq"
+subst_quoted_mention_dq=$(printf '%s\n' \
+  'x="$(echo "see <<X"' \
+  'git commit -m y' \
+  'X' \
+  ')"')
+check "S3d: a double-quoted <<X mention on the opener line is not an opener" 0 "$COMMIT" "$subst_quoted_mention_dq"
+
+# --- Round 2 (security + code review): the quote walk needs a STACK. ---------
+# A single saved outer state, restored only at depth 0, lost the `"` on the way
+# out of a NESTED substitution -- so a `"<<X"` still inside bash's double-quoted
+# string read as an opener, and with a bare `X` later the commit between was
+# dropped. Each below: bash runs the commit, origin/main matched, the round-1
+# cut did not. The quoting is now pushed per `$(` / bare `(` and popped at the
+# matching `)`; a backtick saves and restores across its own span; `$'` is
+# ANSI-C only outside double quotes; `${...}` / `$((...))` are skipped whole;
+# a `#` at word start ends the scan; and an opener followed by a NEW `$(` still
+# open at end of line is discarded, because bash defers that body until the
+# substitution closes (1g).
+r2_case() { # <label> <expect> <line1> [line2...]  -- lines joined by newline
+  local label="$1" want="$2"; shift 2
+  check "$label" "$want" "$COMMIT" "$(printf '%s\n' "$@")"
+}
+r2_case "1c2: a backtick inside double quotes before \"<<X\" keeps the dq state" 0 \
+  'x="$(echo "`echo hi`" "<<X"' 'git commit -m y' 'X' ')"'
+r2_case "1d2: a nested \$( ) inside double quotes before \"<<X\" keeps the dq state" 0 \
+  'x="$(echo "$(echo a)" "<<X"' 'git commit -m y' 'X' ')"'
+r2_case "1e3b: a bare subshell ( ) inside \$( ) does not close the substitution early" 0 \
+  'x="$( (echo a); echo "<<X"' 'git commit -m y' 'X' ')"'
+r2_case "1g: a quoted opener followed by a NEW \$( open at end of line is not latched" 0 \
+  'a=$(echo a) && cat <<'"'"'X'"'"' && b=$(' 'git commit -m y' 'X' 'echo b)'
+r2_case "q2i: a backtick substitution whose dq text holds \$(true) <<X" 0 \
+  'x=`echo "$(true) <<X"' 'git commit -m y' 'X' '`'
+r2_case "q2j: \$'a' inside double quotes is not ANSI-C, so the later \"<<X\" is still quoted" 0 \
+  'x="$(echo "$'"'"'a'"'"'" "<<X"' 'git commit -m y' 'X' ')"'
+r2_case "q3c: a multi-line \$( inside an UNQUOTED body is scanned (body not latched)" 0 \
+  'x="$(cat <<EOF' '$(' 'git commit -m y' ')' 'EOF' ')"'
+r2_case "4a: a literal <<Y on an unquoted body line cannot become the latch" 0 \
+  'x="$(cat <<EOF' 'see $(true) <<Y' 'EOF' 'git commit -m y' 'Y' ')"'
+r2_case "#-comment: a <<X after # on the opener line is not an opener" 0 \
+  'x="$(echo a # <<X' 'git commit -m y' 'X' ')"'
+r2_case "\${...}: a <<X inside a parameter expansion is not an opener" 0 \
+  'x="$(echo ${y:-<<X}' 'git commit -m y' 'X' ')"'
+r2_case "\$((...)): a <<X inside arithmetic is not an opener" 0 \
+  'x="$(echo $((1<<X))' 'git commit -m y' 'X' ')"'
+# C1 (test review round 2): the `)` of a CLOSED substitution must restore the
+# enclosing double quote, so the `<<X` after it is still quoted text and the
+# NEW `$(cat` at end of line is where the next lines belong. The one survivor
+# of the author's own mutation set: with the restore arm deleted the commit
+# was dropped -- a fail-open -- and no case saw it.
+r2_case "C1: a <<X after a closed \$( ) inside double quotes is still quoted" 0 \
+  'x="$(true) <<X $(cat' 'git commit -m y' 'X' ')"'
+# B1 (test review round 2, re-pinned in round 14): the backtick arm keeps the
+# quote STATE right across a backtick span -- with it deleted, the `"` after
+# the backtick was read as closing the dq and the line bailed on the
+# unbalanced quote. What the arm no longer does is LATCH a heredoc opened
+# inside a backtick frame: bash delimits a backtick substitution textually,
+# so a `\`foo\`` mention on a body line closes it and the rest of the body
+# runs (security round 14, all three shells; P01 / P03 below). The scan
+# therefore reads NOTHING inside a backtick frame (round 16) -- the opener
+# is never seen -- and its prose body is read as commands: origin/main
+# parity, a false refusal, never a miss. A backtick frame still open at the
+# end of the opener's line (opened AFTER the opener) is the end-of-line
+# check's job (`lho-ol-check`).
+check "B1: a quoted heredoc inside a backtick substitution inside double quotes is read as commands (parity)" 0 "$MERGE" \
+  "$(printf '%s\n' 'x="`cat <<'"'"'EOF'"'"'' 'gh pr merge 1 was refused' 'EOF' '`"')"
+check "P03: a backtick mention on a body line closes the backtick substitution, and the line after it runs" 0 "$MERGE" \
+  "$(printf '%s\n' 'gh issue create --repo o/r --title t --body "`cat <<'"'"'E'"'"'' 'see `foo` first' 'gh pr merge 1 was refused' 'E' '`"')"
+check "P01: the same without the enclosing double quotes" 0 "$MERGE" \
+  "$(printf '%s\n' 'x=`cat <<'"'"'E'"'"'' 'see `foo` first' 'gh pr merge 1 was refused' 'E' '`')"
+
+# --- The QUOTED-delimiter twins of the arms above (round 2, author's matrix) --
+# Once the latch became quoted-only, every bare `<<X` case above answers 0
+# whatever the scan does -- a bare word is never an opener -- so seven of the
+# nine arms survived deletion with the suite green. Each arm below is fenced by
+# the spelling it actually decides: a QUOTED delimiter that bash does NOT read
+# as a heredoc (comment / `${}` / `$(( ))` / `$'` inside dq -- verified by
+# running each shape), where the deleted arm latches and drops the commit; and
+# for the stack arms, a REAL heredoc after a `)` that must restore the outer
+# quoting, where the deleted arm reads `; cat <<'X'` as quoted text and scans
+# the body as commands. Deleting an arm reds exactly its case.
+# Two of the arms share one case: `$(` SAVES the enclosing quote and `)`
+# RESTORES it, and `stack pop` reds when either half goes; there is no shape
+# that tells the halves apart, since a save nobody restores is a no-op.
+# The `$'` twin carries a trailing `# ... "` on purpose: with the arm deleted
+# the scan leaves the string one `"` early, so every later `"` flips parity and
+# the line ends inside a quote -- which the bail-on-doubt answers with "no
+# opener", the same verdict as the intact arm. Only a `#` the intact scan stops
+# at, holding one `"` the deleted arm keeps reading, re-syncs the two and
+# makes the fail-open observable (bash 5 and zsh run the commit; bash 3.2
+# rejects the line as a syntax error and runs nothing -- safe either way). Both this
+# twin and the `${}` one carry a SPACE after the delimiter: round 6 added a
+# word-boundary bail (`<<\047EOF\047x` is delimiter `EOFx`), and a `"` or
+# `}` right after the closing quote now bails before either arm is asked.
+r2_case "#-comment (quoted): a <<'X' after # on the opener line is not an opener" 0 \
+  'x="$(echo a # <<'"'"'X'"'"'' 'git commit -m y' 'X' ')"'
+r2_case "\${...} (quoted): a <<'X' inside a parameter expansion is not an opener" 0 \
+  'x="$(echo ${y:-<<'"'"'X'"'"' }' 'git commit -m y' 'X' ')"'
+r2_case "\$((...)) (quoted): a <<\"2\" inside arithmetic is a shift, not an opener" 0 \
+  'x="$(echo $((1<<"2"))' 'git commit -m y' '2' ')"'
+# The `$((` skip's fail-open twin is now caught by the frame-close bail (round
+# 3: a `)` at or below the opener frame), so what the arm still decides is the
+# REFUSING direction: a bare `<<` shift inside arithmetic ahead of a real
+# quoted opener must not trip the unquoted-opener bail and turn the body
+# back into commands. Deleting the arm reds this case alone.
+check "\$((...)) (bare shift): \$((1<<2)) before a quoted opener is arithmetic, not an unquoted opener" 1 "$MERGE" \
+  "$(printf '%s\n' 'x="$(echo $((1<<2)); cat <<'"'"'EOF'"'"'' 'gh pr merge 1 was refused' 'EOF' ')"')"
+r2_case "\$'a' (quoted): \$' inside double quotes is literal, so the <<'X' after it is still quoted" 0 \
+  'x="$(echo "$'"'"'a'"'"' <<'"'"'X'"'"' " # the comment holds one "' 'git commit -m y' 'X' ')"'
+check "stack pop: the ) of a nested \$( ) inside dq restores the dq, so the ; cat <<'X' after the closing quote is a real opener" 1 "$MERGE" \
+  "$(printf '%s\n' 'x="$(echo "$(true)" ; cat <<'"'"'X'"'"'' 'gh pr merge 1 was refused' 'X' ')"')"
+check "stack push: a bare ( ) inside \$( ) pushes its own frame, so its ) does not pop the \$( frame" 1 "$MERGE" \
+  "$(printf '%s\n' 'x="$( (echo a); cat <<'"'"'X'"'"'' 'gh pr merge 1 was refused' 'X' ')"')"
+
+# --- Round 3 (security + code + test review): the FRAME, not the depth -------
+# Every shape below was measured through real bash with a stub `git` on PATH:
+# bash runs the verb, origin/main matched, and the round-2 cut answered NO
+# MATCH. All are fail-opens in the shared matcher; the fix for each is named.
+#
+# Security: two openers on one line, the FIRST unquoted. bash reads the bodies
+# in order and EXPANDS the unquoted one, so a `$(git commit)` on an A-body line
+# runs; the scan recorded only the last QUOTED delimiter (B) and the latch
+# dropped every line through B, the expanded body included. An unquoted opener
+# anywhere on the line is now a bail (`return ""`), not merely "not recorded".
+r3_case() { local label="$1" want="$2" re="$3"; shift 3; check "$label" "$want" "$re" "$(printf '%s\n' "$@")"; }
+r3_case "d01: unquoted A then quoted B on one line -- verb in the EXPANDED A body" 0 "$COMMIT" \
+  'x=$(cat <<A <<'"'"'B'"'"'' '$(git commit -m y)' 'A' 'bbb' 'B' ')'
+r3_case "d02: same, a backtick push in the A body" 0 "$GATE_RE_GIT_PUSH" \
+  'x=$(cat <<A <<'"'"'B'"'"'' '`git push origin main`' 'A' 'bbb' 'B' ')'
+r3_case "d07: same, a decoy line before the verb in the A body" 0 "$COMMIT" \
+  'x=$(cat <<A <<'"'"'B'"'"'' 'notdelim' '$(git commit -m x)' 'A' 'bbb' 'B' ')'
+r3_case "d03: quoted A then unquoted B -- the unquoted one is a bail wherever it sits" 0 "$COMMIT" \
+  'x=$(cat <<'"'"'A'"'"' <<B' 'aaa' 'A' '$(git commit -m y)' 'B' ')'
+r3_case "d04: two QUOTED openers -- both bodies are still data (control)" 1 "$MERGE" \
+  'x=$(cat <<'"'"'A'"'"' <<'"'"'B'"'"'' 'gh pr merge 1 was refused' 'A' 'gh pr merge 2 was refused' 'B' ')'
+r3_case "d05: two QUOTED openers, verb after both terminators is still a segment" 0 "$MERGE" \
+  'x=$(cat <<'"'"'A'"'"' <<'"'"'B'"'"'' 'aaa' 'A' 'bbb' 'B' 'gh pr merge 1)'
+# Code review: the `ol` bail compared NET depth, so a line whose opener FRAME
+# closes and then opens another `$(` ended at the recorded depth and latched.
+# Which shell reads the next line as the new substitution and which as the
+# heredoc body is VERSION-DEPENDENT (bash 3.2 and zsh run the commit, bash 5
+# reads a body; the backtick twin runs it in all three), so the scan bails
+# the moment the opener frame closes -- a `)` at or below the recorded depth
+# -- rather than modelling it; an opener inside a backtick frame is never
+# seen at all (round 14; the frame is skipped whole since round 16), so the
+# backtick half of this rule is gone.
+r3_case "c1: opener frame closes, a new \$( opens -- \$( form" 0 "$COMMIT" \
+  'y=$(cat <<'"'"'EOF'"'"') ; z=$(' 'git commit -m y' 'EOF' ')'
+r3_case "c1b: opener frame closes, a new \$( opens -- backtick form (a CONTROL: no mutant of the matrix reds it)" 0 "$COMMIT" \
+  'y=`cat <<'"'"'EOF'"'"'` ; z=$(' 'git commit -m y' 'EOF' ')'
+r3_case "c1c: a NESTED opener frame closes while the outer stays open" 0 "$COMMIT" \
+  'x=$(echo $(cat <<'"'"'X'"'"')' 'git commit -m y' 'X' ')'
+# Code review: `)#` starts a comment like ` #` does -- measured on bash 3.2.57,
+# bash 5 and zsh alike (a round-4 report said 3.2 rejects it; round 6
+# re-measured and it runs). The class had every separator but `)`.
+r3_case "c2: a # right after ) is a comment, so the quoted <<X in it is not an opener" 0 "$COMMIT" \
+  'x="$( (echo a)# <<'"'"'X'"'"'' 'git commit -m y' 'X' ')"'
+# Code review: two arms that existed and were fenced by nothing -- the `<<<`
+# here-string skip and the unbalanced-quote bail. Deleting either was green.
+r3_case "c3a: a here-string <<<'X' is not an opener" 0 "$COMMIT" \
+  'x=$(cat <<<'"'"'X'"'"'' 'git commit -m y' 'X' ')'
+# Since round 7 an unreadable word bails anyway, so c3a passes with the `<<<`
+# skip deleted; what the skip still decides is the REFUSING direction -- a
+# here-string ahead of a real quoted heredoc must not bail the body back
+# into commands. Deleting the skip reds this case alone.
+check "c3a2: a here-string before a real quoted heredoc on the same line does not bail its body" 1 "$MERGE" \
+  "$(printf '%s\n' 'x=$(cat <<<'"'"'X'"'"' ; cat <<'"'"'Y'"'"'' 'gh pr merge 1 was refused' 'Y' ')')"
+r3_case "c3b: a quoted opener followed by an UNBALANCED double quote is a bail" 0 "$COMMIT" \
+  'x=$(cat <<'"'"'X'"'"' "' 'abc' '" ; git commit -m y' 'X' ')'
+# Test review: the round-2 `$'` twin fenced the dq CONDITION of the ANSI-C arm
+# and not the arm: with the whole arm deleted, `$'a\''` read as a plain
+# single-quoted span one quote out of phase, the `'<<'X'` after it read as an
+# opener, and a trailing `# '` re-synced the parity so the line did not bail.
+r3_case "t1: \$'a\\'' is ANSI-C, so the '<<' after it is a quoted span, not an opener" 0 "$COMMIT" \
+  'x="$(echo $'"'"'a\'"'"''"'"' '"'"'<<'"'"'X'"'"' # '"'"'' 'git commit -m y' 'X' ')"'
+
+# --- Round 4 (security review): the scan must CARRY state across lines -----
+# Round 3 scanned each physical line of an open `$( )` on its own, so every
+# bail it added held for one line only. bash carries the lexer state across
+# lines: an unquoted opener on line 1 makes line 2 onward its EXPANDED body;
+# a quote or backtick left open at the end of line 1 makes a `<<'X'` on line
+# 2 data; a nested `$(` opened on line 1 is what the `)` on line 2 closes.
+# Each of these latched from the fresh line-2 scan and dropped a verb bash
+# runs (measured through a stub `git`; origin/main matched all five). The
+# scan now reads every physical line of the open substitution and records an
+# opener only from the LAST one.
+r3_case "s1: an unquoted opener on line 1 -- the quoted opener on line 2 is inside its expanded body" 0 "$COMMIT" \
+  'x=$(cat <<A' 'cat <<'"'"'B'"'"'' '$(git commit -m y)' 'A' 'B' ')'
+r3_case "s2: same, a backtick push in the A body" 0 "$GATE_RE_GIT_PUSH" \
+  'x=$(cat <<A' 'cat <<'"'"'B'"'"'' '`git push origin main`' 'A' 'B' ')'
+r3_case "s3: a double quote left open on line 1 makes the <<'X' on line 2 data" 0 "$COMMIT" \
+  'x=$(echo "abc' '<<'"'"'X'"'"' "a"' '" ; git commit -m y ; echo "' 'X' '")'
+r3_case "s4: a single quote left open on line 1 makes the <<\"X\" on line 2 data" 0 "$COMMIT" \
+  'x=$(echo '"'"'abc' '<<"X" '"'"'a'"'"'' ''"'"' ; git commit -m y ; echo '"'"'' 'X' ''"'"')'
+r3_case "s5: a backtick left open on line 1 makes the <<'X' on line 2 data" 0 "$COMMIT" \
+  'x=$(echo `abc' '<<'"'"'X'"'"' `a`' '` ; git commit -m y ; echo `' 'X' '`)'
+r3_case "s6: a nested \$( opened on line 1 is closed by the ) after the opener on line 2" 0 "$COMMIT" \
+  'x=$(echo $(cat' '<<'"'"'X'"'"')' 'git commit -m y' 'X' ')'
+# Controls for the carried scan: an earlier line's `#` comment ends at ITS
+# newline, so the quoted opener on the next line still latches; and a quoted
+# heredoc that already closed on an earlier line is not re-found by the scan
+# of the accumulated text (the round-1 S2 shape, kept green here on purpose).
+check "s7: a # comment on line 1 of the substitution does not swallow line 2's real opener" 1 "$MERGE" \
+  "$(printf '%s\n' 'x=$(echo a # not an opener' "cat <<'EOF'" 'gh pr merge 1 was refused' 'EOF' ')')"
+check "s8: a quoted heredoc closed on an earlier line is not re-found -- the push after it is a segment" 0 "$GATE_RE_GIT_PUSH" \
+  "$(printf '%s\n' 'out=$(' "cat <<'EOF'" 'm1' 'EOF' 'git push origin HEAD' ')')"
+
+# Code review round 4: the `#` class had `)` (round 3) but not the backtick,
+# so `` x=`#<<'X' `` read the comment as an opener inside the backtick frame
+# and latched it -- all three shells run the commit. Round 14 retired that
+# class member, and since round 16 nothing inside a backtick frame is read
+# at all, so this case pins that skip.
+r3_case "s10: a <<'X' after # inside a backtick frame is not latched (the frame is skipped)" 0 "$COMMIT" \
+  'x=`#<<'"'"'X'"'"'' 'git commit -m y' 'X' '`'
+# The carried state is per SUBSTITUTION: it resets when a line closes one, so
+# the sticky unquoted-opener bail from a first `$( )` does not leak into a
+# later one and turn its quoted body back into commands.
+check "s11: the sticky bail from a closed substitution does not leak into the next one" 1 "$MERGE" \
+  "$(printf '%s\n' 'x=$(cat <<A' 'body' 'A' ')' "y=\$(cat <<'B'" 'gh pr merge 1 was refused' 'B' ')')"
+
+# --- Round 6 (/review-pr 3-axis + security): pending_tag and the delimiter WORD
+# Security: this latch WIDENED go-to-k/cdkd#3066. A `cat <<EOF` in a flushed
+# substitution body sets the GLOBAL `pending_tag`; run() then tests it for the
+# ENCLOSING line, and terminated() finds the bare `EOF` of any LATER top-level
+# heredoc, so every line between -- a real `git push` -- is dropped as that
+# body. origin/main had it for a plain body; a body carrying a backtick or
+# `$(` went through drain_extra there and the verb after the `)` was still
+# matched, while the latch dropped that body and lost the match (bash 3.2,
+# 5 and zsh all run the push; main MATCH, the round-5 tree NOMATCH).
+# drain_extra now saves and restores `pending_tag` the way it does `q`, which
+# is the fix #3066 itself asked for and closes both variants.
+r3_case "f01: a backtick in a quoted body, then a LATER top-level heredoc reusing the delimiter -- the push between is a segment" 0 "$GATE_RE_GIT_PUSH" \
+  'x="$(cat <<'"'"'E'"'"'' '`echo z`' 'E' ')"' 'git push origin main' 'cat <<E' 'zz' 'E'
+r3_case "y5: same, gh pr merge between" 0 "$MERGE" \
+  'x="$(cat <<'"'"'E'"'"'' '`echo z`' 'E' ')"' 'gh pr merge 1 --squash' 'cat <<E' 'zz' 'E'
+r3_case "zA: #3066 with a plain quoted body -- pre-existing on origin/main, closed here" 0 "$GATE_RE_GIT_PUSH" \
+  'x="$(cat <<'"'"'E'"'"'' 'prose' 'E' ')"' 'git push origin main' 'cat <<E' 'zz' 'E'
+r3_case "3066: the issue shape itself, UNQUOTED body, commit before a later top-level heredoc" 0 "$COMMIT" \
+  'x=$(cat <<EOF' 'p' 'EOF' ')' 'git commit -m x' 'cat <<EOF' 'q' 'EOF'
+check "3066 control: the later top-level heredoc body is still data" 1 "$MERGE" \
+  "$(printf '%s\n' 'x="$(cat <<'"'"'E'"'"'' 'prose' 'E' ')"' 'cat <<E' 'gh pr merge 1 was refused' 'E')"
+# Code review rounds 6 and 7: the delimiter is the whole WORD as bash reads it
+# after quote removal (`heredoc_word`). `<<'EOF'x` is `EOFx` -- bash 3.2 and 5
+# run the line after a decoy `EOF` -- and `<<"EO"F` is `EOF`, so the line
+# after a decoy `EO` is still body; the round-2 regex took the quoted span
+# alone. `<<'a"b'` is `a"b` with the inner quote kept -- stripping every
+# quote made it `ab`, which the body's prose then terminated early. All three
+# are MODELLED now rather than bailed, so a body under such a delimiter stays
+# data (P2, P3) instead of being refused as commands. Shells measured: P1 runs
+# the commit on bash 3.2, 5 and zsh; P2 and P3 run nothing on any of them
+# (P3 is a syntax error on 3.2).
+r3_case "P1: <<'EOF'x -- the delimiter is EOFx, so a bare EOF line is not the terminator" 0 "$COMMIT" \
+  'x=$(cat <<'"'"'EOF'"'"'x' 'body' 'EOFx' 'git commit -m y' 'EOF' ')'
+check "P2: <<\"EO\"F -- the delimiter is EOF, so a decoy EO line does not end the body before the verb" 1 "$MERGE" \
+  "$(printf '%s\n' 'x=$(cat <<"EO"F' 'body' 'EO' 'gh pr merge 1 was refused' 'EOF' ')')"
+check "P2t: the top-level twin of P2" 1 "$MERGE" \
+  "$(printf '%s\n' 'cat <<E"O"F $(echo y)' 'p' 'EO' 'gh pr merge 1 was refused' 'EOF')"
+check "P3: <<'a\"b' keeps the inner quote, so an ab line does not end the body early" 1 "$MERGE" \
+  "$(printf '%s\n' 'x=$(cat <<'"'"'a"b'"'"'' 'body' 'ab' 'gh pr merge 1 was refused' 'a"b' ')')"
+# Round 7 (/review-pr, second pass). Security + code: the TOP-LEVEL arm in
+# flush_line had the same two defects, and the round-6 pending_tag restore
+# made them reachable where drain_extra used to reset the wrong tag by
+# accident -- `cat <<'EOF'x $(echo y)` set `pending_tag = EOF`, and a later
+# bare `EOF` swallowed the push between (all three shells run it; origin/main
+# matched). Both arms read the word through heredoc_word now.
+r3_case "D5: top-level <<'EOF'x with a substitution on the line -- the push before a later bare EOF is a segment" 0 "$GATE_RE_GIT_PUSH" \
+  'cat <<'"'"'EOF'"'"'x $(echo y)' 'p' 'EOFx' 'git push' 'cat <<'"'"'EOF'"'"'' 'q' 'EOF'
+r3_case "D7: top-level <<EOF.x -- not an identifier, so nothing is latched and the push after the body is a segment" 0 "$GATE_RE_GIT_PUSH" \
+  'cat <<EOF.x $(echo y)' 'p' 'EOF.x' 'git push' 'cat <<'"'"'EOF'"'"'' 'q' 'EOF'
+r3_case "D8: top-level <<E\"O\"F -- quote removal gives EOF" 0 "$GATE_RE_GIT_PUSH" \
+  'cat <<E"O"F $(echo y)' 'p' 'EOF' 'git push' 'cat <<'"'"'E'"'"'' 'q' 'E'
+r3_case "D9: top-level <<-'EOF'x" 0 "$GATE_RE_GIT_PUSH" \
+  'cat <<-'"'"'EOF'"'"'x $(echo y)' 'p' 'EOFx' 'git push' 'cat <<'"'"'EOF'"'"'' 'q' 'EOF'
+check "D-ctl: a top-level <<'EOF'x body is still data" 1 "$MERGE" \
+  "$(printf '%s\n' 'cat <<'"'"'EOF'"'"'x' 'gh pr merge 1 was refused' 'EOFx')"
+check "D-bs: <<\\EOF is a quoted delimiter EOF, body is data" 1 "$MERGE" \
+  "$(printf '%s\n' 'x=$(cat <<\EOF' 'gh pr merge 1 was refused' 'EOF' ')')"
+# Test review: a delimiter the walk cannot read has no modelled body end, so
+# its bail is STICKY like the unquoted one -- a per-line bail let a <<'B' on
+# the next line, inside that body, latch and drop the verb after the real
+# terminator (all three shells run it; origin/main matched).
+r3_case "D-sticky: <<'EOF'\$x is unreadable, and the <<'B' on the next line must not latch" 0 "$COMMIT" \
+  'x=$(cat <<'"'"'EOF'"'"'$x' 'cat <<'"'"'B'"'"'' 'EOF$x' 'git commit -m y' 'B' ')'
+# Test review: the pending_tag restore also REMOVES a false refusal. A heredoc
+# opened on the substitution's CLOSING line -- `x=$(echo a) ; cat <<EOF` --
+# had its tag cleared by the body flush (flush_line resets pending_tag), so
+# the prose after it was read as commands on origin/main.
+check "R1: a heredoc opened on the line that closes a substitution keeps its tag through the drain" 1 "$MERGE" \
+  "$(printf '%s\n' 'x=$(echo a) ; cat <<EOF' 'gh pr merge 1 was refused' 'EOF')"
+# Round 8 (/review-pr, third pass). Security + code: inside double quotes a
+# backslash is removed only before `$`, a backtick, `"` or `\` -- `<<"E\xF"`
+# is the delimiter `E\xF`, and the round-7 walk gave `ExF`, so a decoy `ExF`
+# line ended the latch early and the verb after the real terminator, which
+# all three shells run, was dropped (origin/main matched).
+r3_case "B1a: <<\"E\\xF\" keeps the backslash -- a decoy ExF line is not the terminator" 0 "$COMMIT" \
+  'x=$(cat <<"E\xF"' 'body' 'E\xF' 'git commit -m y' 'ExF' ')'
+r3_case "B1b: the top-level twin of B1a" 0 "$GATE_RE_GIT_PUSH" \
+  'cat <<"E\xF"' 'body' 'E\xF' 'git push' 'ExF'
+check "B1c: a real E\\xF terminator ends the body -- the fix also removes a false refusal (the old walk waited for ExF)" 1 "$MERGE" \
+  "$(printf '%s\n' 'x=$(cat <<"E\xF"' 'gh pr merge 1 was refused' 'E\xF' ')')"
+# Security: the top-level arm latches an UNQUOTED word only when it is a
+# whole identifier; origin/main latched the identifier PREFIX of any word that has one. That arm drops a
+# body whatever its quoting, and bash EXPANDS an unquoted body, so `<<EOF.x`
+# latched by the round-7 walk dropped a `$(git push)` main still matched.
+r3_case "B2a: top-level <<EOF.x is unquoted and not an identifier -- its expanded body is scanned" 0 "$GATE_RE_GIT_PUSH" \
+  'cat <<EOF.x' '$(git push)' 'EOF.x'
+r3_case "B2b: top-level <<E-x likewise" 0 "$GATE_RE_GIT_PUSH" \
+  'cat <<E-x' '$(git push)' 'E-x'
+check "B2c: top-level <<'EOF.x' is QUOTED, so its body is data -- fenced by hw-toplevel-ident-only" 1 "$MERGE" \
+  "$(printf '%s\n' 'cat <<'"'"'EOF.x'"'"'' 'gh pr merge 1 was refused' 'EOF.x')"
+# origin/main latched the identifier PREFIX of `<<EOF.x` -- the tag `EOF` --
+# so a later bare `EOF` line dropped the expanded body; B2a has no such line
+# and passes on main, this one fences the closed main fail-open.
+r3_case "B2d: top-level <<EOF.x with a decoy bare EOF line -- main latched the prefix and dropped the expanded body" 0 "$GATE_RE_GIT_PUSH" \
+  'cat <<EOF.x' '$(git push)' 'EOF.x' 'EOF'
+# Round 9 (/review-pr, fourth pass). Security: inside `$( )` bash 5 and 3.2
+# end BOTH the heredoc and the substitution on a body line that begins with
+# the delimiter and carries a `)` -- `E);git commit -m C` runs C, and every
+# line after it at top level (zsh keeps reading the body). The latch dropped
+# all of it; origin/main matched. Such a line now ends the latch and falls
+# through to the join, where its `)` closes the frame.
+r3_case "Pc10: a body line E);<verb> closes the heredoc AND the substitution -- both verbs are segments" 0 "$COMMIT" \
+  'x=$(cat <<'"'"'E'"'"'' 'body' 'E);git commit -m C' 'git commit -m B' 'E' ')'
+r3_case "Pc11: E) && <verb> likewise" 0 "$COMMIT" \
+  'x=$(cat <<'"'"'E'"'"'' 'body' 'E) && git commit -m C' 'E' ')'
+r3_case "Pc17: E) ; x=\$( -- the verb on the next line is a segment either way" 0 "$COMMIT" \
+  'x=$(cat <<'"'"'E'"'"'' 'body' 'E) ; x=$(' 'git commit -m B' 'E' ')'
+check "Pc-ctl1: a body line carrying a ) that does not begin with the delimiter is still data" 1 "$MERGE" \
+  "$(printf '%s\n' 'x=$(cat <<'"'"'E'"'"'' 'gh pr merge 1 was refused (see #3)' 'E' ')')"
+check "Pc-ctl2: a body line beginning with the delimiter but carrying no ) is still data" 1 "$MERGE" \
+  "$(printf '%s\n' 'x=$(cat <<'"'"'E'"'"'' 'E;gh pr merge 1' 'E' ')')"
+# Round 10: the fall-through hands the join only what FOLLOWS the delimiter.
+# A delimiter carrying a quote (`<<"a'b"`) re-lexed as an open quoted span in
+# subst_open and folded the verbs after `a'b)` into it -- bash 5 runs both.
+r3_case "X5: a delimiter carrying a quote does not re-open a quoted span on the fall-through line" 0 "$COMMIT" \
+  'x=$(cat <<"a'"'"'b"' 'body' 'a'"'"'b);git commit -m C' 'git commit -m B' 'a'"'"'b' ')'
+check "X5-ctl: the same delimiter over a plain body keeps it data" 1 "$MERGE" \
+  "$(printf '%s\n' 'x=$(cat <<"a'"'"'b"' 'gh pr merge 1 was refused' 'a'"'"'b' ')')"
+# Round 11: the remainder is sliced from the line with only its LEADING
+# whitespace removed. Round 10 sliced the both-sides-trimmed copy, so a closing
+# line ending in an escaped space lost it and read as a `\`-continuation that
+# glued the verb on the next line onto `echo` (bash 5 and 3.2 run the verb).
+r3_case "T1: a closing line ending in an escaped space is not a line continuation" 0 "$MERGE" \
+  'x=$(cat <<'"'"'E'"'"'' 'body' 'E);echo \ ' 'gh pr merge 1' 'E' ')'
+check "T1-ctl: a closing line ending in a REAL continuation glues the next line -- the verb is an argument (control)" 1 "$MERGE" \
+  "$(printf '%s\n' 'x=$(cat <<'"'"'E'"'"'' 'body' 'E);echo \' 'gh pr merge 1' 'E' ')')"
+# Round 12 (security): the continuation arm read ANY trailing backslash as a
+# continuation. bash continues only on an ODD run -- `echo \\` is an escaped
+# backslash and the line ends -- so the verb on the next line, which all three
+# shells run, was glued onto `echo` as an argument and no gate saw it. Pre-
+# existing on origin/main and independent of heredocs; fixed here because it
+# sits beside the arm the last three rounds worked on.
+r3_case "E1: an EVEN run of trailing backslashes is not a continuation -- the next line is a command" 0 "$MERGE" \
+  'echo \\' 'gh pr merge 1'
+r3_case "E2: four trailing backslashes likewise" 0 "$MERGE" \
+  'echo \\\\' 'gh pr merge 1'
+check "E3: an ODD run is a real continuation, the verb is an argument (control)" 1 "$MERGE" \
+  "$(printf '%s\n' 'echo \\\' 'gh pr merge 1')"
+r3_case "E4: the same on a closing body line inside \$( )" 0 "$MERGE" \
+  'x=$(cat <<'"'"'E'"'"'' 'body' 'E);echo \\' 'gh pr merge 1' 'E' ')'
+# Round 15 (security): the frame-close bail returned without scanning the
+# rest of the line and without the sticky flag, so a backtick opened AFTER
+# the `)` was missing from the carried state; the next line then latched an
+# opener that sat inside that backtick, and the body line closing the
+# backtick -- which all three shells run -- was dropped. The three early
+# returns (frame close, unterminated `$((`, unterminated `${`) are sticky now.
+r3_case "X19b: opener frame closes and a backtick opens after it -- the next line's opener is inside the backtick" 0 "$MERGE" \
+  'x=$(cat <<'"'"'E'"'"') ; echo `' 'E' 'cat <<'"'"'F'"'"'' '`; gh pr merge 1 --squash' 'F'
+r3_case "X19c: the nested-frame twin" 0 "$MERGE" \
+  'x=$(echo $(cat <<'"'"'E'"'"') `' 'E' 'cat <<'"'"'F'"'"'' '`; gh pr merge 1' 'F'
+# Round 15 (test review), re-pointed in round 16: `x=\`#\`` is a backtick
+# frame holding a `#`, and the real quoted heredoc after the frame closes is
+# data. Since round 16 nothing inside a frame is read, so what this pins is
+# the frame CLOSING on the same line (`lho-bt-skip-off` never closes one and
+# reds it); the `#` class member it once fenced is H2's job now.
+check "H1: a # right after an opening backtick is not a comment once the backtick closes on the same line" 1 "$MERGE" \
+  "$(printf '%s\n' 'y=$(x=`#` ; cat <<'"'"'X'"'"'' 'gh pr merge 1 was refused' 'X' ')')"
+# Round 16 (spec, code and test review, one finding): round 15 dropped the
+# opener-time backtick bail for the end-of-line check, which sees a backtick
+# frame only while it is still OPEN at the end of the line. A backtick that
+# closes AFTER the opener on the same line left `lho_bt` at 0 there, the
+# opener latched, and all three shells ran the next line (the backtick's
+# heredoc has no body: "delimited by end-of-file"). The scan now skips a
+# backtick frame wholesale -- textually, the way bash delimits it -- so an
+# opener inside one is never seen. Mutant `lho-bt-fallthrough` reads the
+# frame's text again and reds X20a / X20b / X20c; Q1 below is `lho-bt-quoted`.
+r3_case "X20a: a backtick closing after the opener on the same line -- the opener is inside it" 0 "$MERGE" \
+  'x=$(echo `cat <<'"'"'E'"'"' ` ; true' 'gh pr merge 1' 'E' ')'
+r3_case "X20b: the assignment twin" 0 "$MERGE" \
+  'x=$(y=`cat <<'"'"'E'"'"' `' 'gh pr merge 1' 'E' ')'
+r3_case "X20c: the carried-state twin -- the frame opened on the line before" 0 "$MERGE" \
+  'x=$(echo `abc' '<<'"'"'X'"'"' `' 'gh pr merge 1' 'X' ')'
+# The skip is NOT sticky (test review round 16 asked for this control): a
+# backtick frame that closes on a LATER line leaves a plain `$( )`, and a
+# real quoted heredoc after the close is data in all three shells.
+r3_case "N1: a backtick frame closing on a later line, then a real quoted heredoc -- its body is data" 1 "$MERGE" \
+  'x=$(y=`cat <<'"'"'E'"'"'' 'a` ; cat <<'"'"'X'"'"'' 'gh pr merge 1 was refused' 'X' ')'
+# Round 16 (security): bash ends a backtick substitution at the next
+# unescaped backtick whatever quotes sit inside it, while the scan honoured a
+# quote there -- one `'"'"'` inside the frame closed it at the wrong backtick, and
+# the line closing bash's quote ran the verb (bash 5.3 and 3.2; zsh does
+# not). The skip above reads no quote inside the frame.
+r3_case "Q1: a quote inside a backtick frame protects nothing -- the frame ends at the next backtick" 0 "$MERGE" \
+  'x=$(echo `a '"'"'`'"'"' `' 'cat <<'"'"'E'"'"'' "' ; gh pr merge 1" 'E' ')'
+# Round 16 (security): the `)` closing a `$( )` or a `$(( ))` ends a WORD, so
+# a `#` right after it is glued (`$(true)#"` opens a quote bash keeps open
+# across lines), while the `)` closing a bare `( )` is an operator and the
+# `#` after it a comment -- all three shells, both directions. The scan read
+# every `)#` as a comment, stopped, missed the quote, latched the next line's
+# opener and dropped the line closing the quote. Mutant `lho-hash-glue`.
+r3_case "G1: \$(true)# glues the # -- the quote after it is real" 0 "$MERGE" \
+  'x=$(echo $(true)#"' 'cat <<'"'"'E'"'"'' '" ; gh pr merge 1' 'E' ')'
+r3_case "G2: \$((1))# glues the # -- the arithmetic close ends a word too" 0 "$MERGE" \
+  'x=$(echo $((1))#"' 'cat <<'"'"'E'"'"'' '" ; gh pr merge 1' 'E' ')'
+r3_case "G3: the single-quote twin of G1" 0 "$MERGE" \
+  'x=$(echo $(true)#'"'" 'cat <<'"'"'E'"'"'' "' ; gh pr merge 1" 'E' ')'
+r3_case "G-ctl: (true)# after a BARE subshell is a comment -- the heredoc after it is real (control)" 1 "$MERGE" \
+  'x=$( (true)#"' 'cat <<'"'"'E'"'"'' '" ; gh pr merge 1 was refused' 'E' ')'
+r3_case "H2: a closing backtick ends a word too -- \`a\`# glues the # (pins the class without the backtick)" 0 "$MERGE" \
+  'x=$(echo `a`#"' 'cat <<'"'"'E'"'"'' '" ; gh pr merge 1' 'E' ')'
+# Round 16 (security): the `${...}` skip runs to the first `}` whatever
+# quotes sit inside, and `${a:-"}` puts that brace inside a double quote
+# bash keeps open across lines: the scan reported a clean end of line,
+# latched the next opener and dropped the line closing the quote (all three
+# shells; the single-quote, backtick and backslash spellings measured the
+# same). A quote, backtick or backslash inside the span is the sticky bail.
+# Mutant `lho-brace-quote-bail`.
+r3_case "K1: \${a:-\"} -- a quote inside the brace span keeps the line open" 0 "$MERGE" \
+  'x=$(echo ${a:-"}' 'cat <<'"'"'E'"'"'' '"} ; gh pr merge 1' 'E' ')'
+r3_case "K2: the backslash twin" 0 "$MERGE" \
+  'x=$(echo ${a:-\}' 'cat <<'"'"'E'"'"'' '} ; gh pr merge 1' 'E' ')'
+# One case per class member (test review round 17: deleting the apostrophe or
+# the backtick from the class left the suite green while both spellings run
+# -- the apostrophe in all three shells, the backtick in both bashes).
+r3_case "K3: the single-quote twin" 0 "$MERGE" \
+  'x=$(echo ${a:-'"'"'}' 'cat <<'"'"'E'"'"'' "'} ; gh pr merge 1" 'E' ')'
+r3_case "K4: the backtick twin" 0 "$MERGE" \
+  'x=$(echo ${a:-`}' 'cat <<'"'"'E'"'"'' '`} ; gh pr merge 1' 'E' ')'
+r3_case "K-ctl: a plain \${a} before a real quoted heredoc -- its body is data (control)" 1 "$MERGE" \
+  'x=$(echo ${a} ; cat <<'"'"'E'"'"'' 'gh pr merge 1 was refused' 'E' ')'
+# Round 16 (code and test review): the round-15 sticky flag on an
+# unterminated `$((` was unfenced. bash reads `$((1 +` across the line break
+# and the heredoc opened after the `))` on the next line as data; the sticky
+# bail refuses its prose instead -- origin/main parity, the safe direction --
+# and the non-sticky return would pop the outer frame on that `))` and latch
+# the opener at depth 0. Mutant `lho-arith-not-sticky`. The `${` twin cannot
+# be fenced by a running shape: a `${a` left open at a line end is a bad
+# substitution in all three shells, so nothing runs either way.
+r3_case "AR1: an arithmetic span left open at the line end is a sticky bail -- the heredoc after its close is read as commands (parity)" 0 "$MERGE" \
+  'x=$(echo $((1 +' '2)); cat <<'"'"'X'"'"'' 'gh pr merge 1 was refused' 'X' ')'
+# Round 17 (code review): the `#` test read the RAW previous character, but
+# an unquoted backslash had already consumed it as a literal -- `\)#"`,
+# `\ #"`, `\;#"`, `\(#"` are one word, the `"` is real, and both bashes ran
+# the line closing it (W5's `\ #"` on bash 5.3 and zsh; 3.2 rejects it).
+# `gp` now records the escaped character too (W1 / W5 / W6 / W7; W-ctl).
+# Mutant `lho-bs-glue`.
+r3_case "W1: an escaped ) before # is word glue, not a bare-frame close" 0 "$MERGE" \
+  'x=$(echo \)#"' 'cat <<'"'"'E'"'"'' '" ; gh pr merge 1' 'E' ')'
+r3_case "W5: an escaped space before # is word glue" 0 "$MERGE" \
+  'x=$(echo a\ #"' 'cat <<'"'"'E'"'"'' '" ; gh pr merge 1' 'E' ')'
+r3_case "W6: an escaped ; before # is word glue" 0 "$MERGE" \
+  'x=$(echo a\;#"' 'cat <<'"'"'E'"'"'' '" ; gh pr merge 1' 'E' ')'
+r3_case "W7: an escaped ( before # is word glue" 0 "$MERGE" \
+  'x=$(echo \(#"' 'cat <<'"'"'E'"'"'' '" ; gh pr merge 1' 'E' ')'
+r3_case "W-ctl: an escaped ) then a SPACE before # -- a comment, the heredoc after it is real (control)" 1 "$MERGE" \
+  'x=$(echo \) #"' 'cat <<'"'"'E'"'"'' '" ; gh pr merge 1 was refused' 'E' ')'
+# Round 17 (code review): the `$(( ))` end was the FIRST `))`, one closer
+# short of `$((2*(1+1)))`; the leftover `)` popped the enclosing frame, and
+# when that frame was a bare `( )` the `#` after it read as a comment. The
+# end is a paren walk now. Mutant `lho-arith-first-close` (A7 reds; A8 stays
+# green under it because the leftover `)` pops the outer `$(`, whose kind
+# still glues -- kept as the direct spelling's own pin).
+r3_case "A7: \$((2*(1+1)))# inside a bare subshell -- the third ) is the arithmetic close, the # is glued" 0 "$MERGE" \
+  'x=$( ( $((2*(1+1)))#"' 'cat <<'"'"'E'"'"'' '" ; gh pr merge 1' 'E' ') )'
+r3_case "A8: \$((2*(1+1)))# directly inside \$( )" 0 "$MERGE" \
+  'x=$(echo $((2*(1+1)))#"' 'cat <<'"'"'E'"'"'' '" ; gh pr merge 1' 'E' ')'
+r3_case "A-ctl: \$((2*(1+1))) then a real quoted heredoc -- its body is data (control)" 1 "$MERGE" \
+  'x=$(echo $((2*(1+1))) ; cat <<'"'"'E'"'"'' 'gh pr merge 1 was refused' 'E' ')'
+# Round 17 (test review): the backslash skip inside a backtick frame had no
+# case -- with it gone, `\`` inside the frame closed it and the `<<'E'` after
+# the real close was latched over the line all three shells run. Mutant
+# `lho-bt-escape-off`.
+r3_case "BS1: an escaped backtick inside a backtick frame does not close it" 0 "$MERGE" \
+  'x=$(echo `a \`b\` ; cat <<'"'"'E'"'"'' '` ; gh pr merge 1' 'E' ')'
+# Round 18 (security): a `#` at word start comments out the rest of the line,
+# so a `<<` after it is not an opener -- but the TOP-LEVEL latch read the word
+# anyway, dropped the commands up to a later bare delimiter, and all three
+# shells RUN them. origin/main escaped it only because its identifier-PREFIX
+# latch could not read a QUOTED word, so reading the word properly (round 7)
+# is what made the comment reachable. Mutant `ptag-comment-off`.
+r3_case "CM1: a quoted <<X inside a top-level # comment is not an opener" 0 "$MERGE" \
+  'x=$(echo) #<<'"'"'X'"'"'' 'gh pr merge 1' 'X'
+r3_case "CM2: the bare-subshell twin" 0 "$MERGE" \
+  'x=$( (echo) ) #<<'"'"'X'"'"'' 'gh pr merge 1' 'X'
+r3_case "CM3: a line that STARTS with the comment" 0 "$MERGE" \
+  '#<<'"'"'X'"'"'' 'gh pr merge 1' 'X'
+# Both directions: a `#` GLUED to the previous word is not a comment and the
+# heredoc after it IS real -- no shell runs the line then (measured), so the
+# body must still be dropped.
+r3_case "CM-ctl1: \$(echo)# is one word -- the heredoc after it is real (control)" 1 "$MERGE" \
+  'x=$(echo)#<<'"'"'X'"'"'' 'gh pr merge 1 was refused' 'X'
+r3_case "CM-ctl2: an escaped # is one word too (control)" 1 "$MERGE" \
+  'echo \#<<'"'"'X'"'"'' 'gh pr merge 1 was refused' 'X'
+# Round 19 (spec and code review, one finding): the class above was written
+# `[ \\t...]` -- in an awk regexp constant `\\` is a LITERAL BACKSLASH, so it
+# held `\` and the letter `t` and NOT a tab, while all five sibling classes
+# spell it `\t`. Both polarities of round 18's own subject were wrong: a tab
+# before the `#` was not a comment (fail-open, all three shells run the next
+# line) and a letter-glued `cat#` was (false refusal). One character; these
+# four cases pin both directions, and `ptag-comment-class` is the mutant.
+r3_case "CM4: a TAB before the # is word start too" 0 "$MERGE" \
+  'echo a	#<<'"'"'X'"'"'' 'gh pr merge 1' 'X'
+r3_case "CM5: the TAB twin after a closed \$( )" 0 "$MERGE" \
+  'x=$(echo)	#<<'"'"'X'"'"'' 'gh pr merge 1' 'X'
+r3_case "CM-ctl3: a LETTER before the # is glue -- the heredoc after it is real (control)" 1 "$MERGE" \
+  'cat#<<'"'"'X'"'"'' 'gh pr merge 1 was refused' 'X'
+# CM-ctl2 (`\#`) cannot discriminate the GLUE half: the backslash arm consumes
+# the `#` itself, so the word-start test is never reached (code review round
+# 19). Nor can CM-ctl4, whose escaped character is not in the boundary class --
+# it pins the arm's OTHER half, that an escaped character is still scanned.
+r3_case "CM-ctl4: an escaped character before the # is glue (control)" 1 "$MERGE" \
+  'echo a\b#<<'"'"'X'"'"'' 'gh pr merge 1 was refused' 'X'
+# The two other glue positions, each with a shape that discriminates it (test
+# review round 19): an escaped SPACE (a class member, so without the backslash
+# arm's `fgp` the `#` would read as a comment) and the `<( )` landing. Both are
+# data in all three shells; the SPACE twin of the second RUNS and is CM6.
+r3_case "CM-ctl5: an escaped SPACE before the # is glue (control)" 1 "$MERGE" \
+  'echo a\ #<<'"'"'X'"'"'' 'gh pr merge 1 was refused' 'X'
+r3_case "CM-ctl6: a <( ) landing before the # is glue (control)" 1 "$MERGE" \
+  'diff <(echo)#<<'"'"'X'"'"'' 'gh pr merge 1 was refused' 'X'
+r3_case "CM6: a <( ) then a SPACE before the # -- a comment" 0 "$MERGE" \
+  'diff <(echo) #<<'"'"'X'"'"'' 'gh pr merge 1' 'X'
+# Round 20 (test review): only the SPACE and TAB members of the class above
+# had a case; deleting any of `)` `(` `;` `&` `|` from it left the suite green
+# while each is a live shape -- `(echo)#<<'X'`, `echo a ;#<<'X'`, `true &#<<'X'`
+# and `echo a |#<<'X'` all RUN the next line in bash 5.x, bash 3.2 and zsh, and
+# the latch would drop it. One case per member, the way CM4 pinned the tab;
+# mutants `ptag-comment-class-<member>`.
+r3_case "CM7: a ) before the # is word start at top level too" 0 "$MERGE" \
+  '(echo)#<<'"'"'X'"'"'' 'gh pr merge 1' 'X'
+r3_case "CM9: a ; before the #" 0 "$MERGE" \
+  'echo a ;#<<'"'"'X'"'"'' 'gh pr merge 1' 'X'
+r3_case "CM10: an & before the #" 0 "$MERGE" \
+  'true &#<<'"'"'X'"'"'' 'gh pr merge 1' 'X'
+r3_case "CM11: a | before the #" 0 "$MERGE" \
+  'echo a |#<<'"'"'X'"'"'' 'gh pr merge 1' 'X'
+# CM8 pins the `(` member in the REFUSING direction: no shell runs this one
+# (`(#` opens a subshell bash never closes), so the latch would only drop
+# prose -- but the member has to be in the class for the shapes that do.
+r3_case "CM8: a ( before the # (refusing direction -- no shell runs it)" 0 "$MERGE" \
+  '(#<<'"'"'X'"'"'' 'gh pr merge 1 is prose here' 'X'
+# Round 20 (code review): the walk classed EVERY bare `(` as an operator, so
+# the `)` closing one recorded no word glue and a `#` after it read as a
+# comment. `<( )` and `>( )` are words and bash glues the `#` to them:
+# `x=$(diff <(echo)#"` leaves a quote open that all three shells carry to the
+# next line, and the line closing it RUNS. `flush_line` already knew this at
+# its own `<( )` landing; only this walk was left out. Mutant
+# `lho-frame-kind-word` (PS1 / PS2). PS3's `a=( )` took the same reading until
+# round 21 measured the shells disagreeing about it; it is the kind-2 bail
+# now, which `lho-array-frame-glue` pins alongside AE1 / AE2.
+r3_case "PS1: <( ) is a WORD -- the # after it is glued" 0 "$MERGE" \
+  'x=$(diff <(echo)#"' '<<'"'"'X'"'"'' '" ; gh pr merge 1' 'X' ')'
+r3_case "PS2: the >( ) twin" 0 "$MERGE" \
+  'x=$(diff >(true)#"' '<<'"'"'X'"'"'' '" ; gh pr merge 1' 'X' ')'
+r3_case "PS3: an a=( ) frame bails on its )# -- its body is read as commands" 0 "$MERGE" \
+  'x=$(a=(1)#"' '<<'"'"'X'"'"'' '" ; gh pr merge 1' 'X' ')'
+r3_case "PS-ctl1: <( ) then a SPACE before the # -- a comment (control)" 1 "$MERGE" \
+  'x=$(diff <(echo) #"' '<<'"'"'X'"'"'' '" ; gh pr merge 1 was refused' 'X' ')'
+r3_case "PS-ctl2: a BARE subshell ) before the # -- still a comment (control)" 1 "$MERGE" \
+  'x=$( ( true )#"' '<<'"'"'X'"'"'' '" ; gh pr merge 1 was refused' 'X' ')'
+# kind 1 has to be pinned against kind 2 as well (test review round 22: PS1 and
+# PS2 pass under either reading, so "the # is GLUED" was unverified). Here the
+# glue is what makes `<<'X'` part of the same word and therefore a real opener
+# whose body is data; the kind-2 bail would read the line as commands. No shell
+# runs the body, so this is the allowing direction. Mutant `lho-frame-kind-bail`.
+r3_case "PS-ctl3: a <( ) glue makes the <<X after it a real opener (kind 1, not kind 2)" 1 "$MERGE" \
+  'x=$(diff <(echo)#<<'"'"'X'"'"'' 'gh pr merge 1 was refused' 'X' ')'
+# Round 23 (code review): a `)#` whose enclosing `$( )` CLOSES on the same line
+# was a fail-open all the way through. `subst_open` spelled the comment class
+# without `)`, so it read past the `#`, counted the final `)`
+# and reported the span CLOSED -- which means `last_heredoc_opener`, whose own
+# class is right, never ran: it is called only inside `if (subst_open(line))`.
+# `flush_line` then latched the `<<'X'` at TOP level and dropped the next line,
+# which bash 5.x and zsh RUN. That walk records the frame kind now, as the
+# opener scan has since round 20: a `)` closing a BARE `( )` starts a comment,
+# one closing a `$( )` / `<( )` / `>( )` is word glue, and an `a=( )` is
+# neither -- leaving it a comment there is the REFUSING direction, because the
+# span then reads as open and the lines join into commands. `close_paren` is
+# NOT given the same treatment: the security review measured that version
+# closing only 256 of the 295 shapes while turning 413 into fail-opens of its
+# own, so the change stops at the walk that decides whether the line joins.
+# Mutants `so-hash-class-rparen` and `so-frame-glue`.
+r3_case "CP1: a )# closing the substitution on the same line" 0 "$MERGE" \
+  'x=$( (true)#)<<XX' 'gh pr merge 1' 'XX' ')'
+r3_case "CP2: the arithmetic twin" 0 "$MERGE" \
+  'x=$( ((1))#)<<XX' 'gh pr merge 1' 'XX' ')'
+r3_case "CP3: the process-substitution twin" 0 "$MERGE" \
+  'cat <( (true)#)<<XX' 'gh pr merge 1' 'XX' ')'
+r3_case "CP4: the a=( ) spelling of the same close (no separate arm -- every ( at depth is one kind here)" 0 "$MERGE" \
+  'x=$(a=(1)#)<<XX' 'gh pr merge 1' 'XX' ')'
+# CP-ctl1 and CP-ctl2 are PARSE-ERROR shapes in bash 5.x, bash 3.2 and zsh
+# alike, exactly as CP-ctl3 / CP-ctl4 are said to be four lines down (test
+# review round 32 measured all four; only the second pair carried the label).
+# They pin the READING the frame-kind arms implement, and no shell executes
+# the input -- which is the safe direction here, since nothing can run while
+# the matcher declines to match.
+r3_case "CP-ctl1: a bare subshell with no # -- the heredoc is real (control, a parse-error shape)" 1 "$MERGE" \
+  'x=$( (true) )<<XX' 'gh pr merge 1 was refused' 'XX' ')'
+r3_case "CP-ctl2: a <( ) glue before the )# -- still not a comment (control, a parse-error shape)" 1 "$MERGE" \
+  'x=$(diff <(echo)#)<<XX' 'gh pr merge 1 was refused' 'XX' ')'
+# The frame-KIND class had two of its four members pinned (CP1-CP4 for the bare
+# frame, CP-ctl2 for `<( )`); these are the other two, both in the allowing
+# direction -- the `)` of a `$( )` or a `>( )` is word glue, so the `#` after it
+# is not a comment and the `<<XX` IS a real opener whose body is data. No shell
+# runs these. Mutants `so-frame-kind-dollar` and `so-frame-kind-gt`.
+r3_case "CP-ctl3: a \$( ) glue before the )# -- not a comment (control)" 1 "$MERGE" \
+  'x=$(echo $(true)#)<<XX' 'gh pr merge 1 was refused' 'XX' ')'
+r3_case "CP-ctl4: the >( ) twin (control)" 1 "$MERGE" \
+  'x=$(diff >(true)#)<<XX' 'gh pr merge 1 was refused' 'XX' ')'
+# The three refuse-on-expansion-character arms get their cases. bash does NOT
+# expand a heredoc delimiter word -- measured on 5.x and 3.2, `cat <<E$y` with
+# `y=INNER` is terminated by the literal line `E$y` and the body is data -- so
+# this is a DELIBERATE OVER-REFUSAL, not a modelling gap: cdkd declines to latch
+# a delimiter carrying a `$` or a backtick rather than encode a rule about them.
+# (Round 23 called the word "not knowable from the text", which is false and
+# would send a later round modelling an expansion that does not happen; test
+# review round 24 measured it.) The body then reads as commands: origin/main
+# parity, a false refusal at worst. Only the double-quoted arm
+# carries a mutant (`hw-dq-dollar-bail`, HW3): with the unquoted bail gone the
+# identifier test refuses `E$y` anyway, so HW1 / HW2 document the shapes
+# without discriminating that arm -- measured, the mutant reports NOT
+# DISCRIMINATED.
+r3_case "HW1: an unquoted \$ in the delimiter word is refused, though bash takes it literally" 0 "$MERGE" \
+  'x=$(cat <<E$y' 'gh pr merge 1' 'E$y' ')'
+r3_case "HW2: a backtick in the delimiter word is refused the same way" 0 "$MERGE" \
+  'x=$(cat <<E`y`' 'gh pr merge 1' 'E' ')'
+r3_case "HW3: the double-quoted twin of HW1" 0 "$MERGE" \
+  'x=$(cat <<"E$y"' 'gh pr merge 1' 'E$y' ')'
+# Round 21 (test review): the TWIN of the class round 20 fenced -- this one is
+# `last_heredoc_opener`'s own, and five of its seven members had no case, so
+# deleting any of TAB `;` `&` `|` `(` left the suite green. Four are live: the
+# shapes below RUN the next line in bash 5.x, bash 3.2 and zsh, and the latch
+# would drop it. LH-ctl pins the `(` member in the refusing direction (no shell
+# runs `(#`); mutants `lho-hash-class-<member>`.
+r3_case "LH1: a TAB before the # inside \$( )" 0 "$MERGE" \
+  'x=$(echo a	#<<'"'"'X'"'"'' 'gh pr merge 1' 'X' ')'
+r3_case "LH2: a ; before the #" 0 "$MERGE" \
+  'x=$(echo a ;#<<'"'"'X'"'"'' 'gh pr merge 1' 'X' ')'
+r3_case "LH3: an & before the #" 0 "$MERGE" \
+  'x=$(true &#<<'"'"'X'"'"'' 'gh pr merge 1' 'X' ')'
+r3_case "LH4: a | before the #" 0 "$MERGE" \
+  'x=$(echo a |#<<'"'"'X'"'"'' 'gh pr merge 1' 'X' ')'
+r3_case "LH-ctl: a ( before the # (refusing direction -- no shell runs it)" 0 "$MERGE" \
+  'x=$(echo a (#<<'"'"'X'"'"'' 'gh pr merge 1 is prose here' 'X' ')'
+# Round 21 (code review): the `=` member of the frame-kind class models BASH,
+# which glues the `#` to an `a=( )` word -- and zsh reads it as a comment, so
+# gluing dropped a line zsh RUNS (a Bash tool call here runs under zsh). Such a
+# frame is kind 2 and a `)#` closing it is the sticky bail, the same answer this
+# file gives everywhere the shells disagree. Mutant `lho-array-frame-glue`.
+r3_case "AE1: a=( ) then # -- the shells disagree, so it bails" 0 "$MERGE" \
+  'x=$(a=(1)#<<'"'"'X'"'"'' 'gh pr merge 1' 'X' ')'
+r3_case "AE2: the subscripted twin" 0 "$MERGE" \
+  'x=$(y[1]=(1)#<<'"'"'X'"'"'' 'gh pr merge 1' 'X' ')'
+# Round 18 (code review): the `$(( ))` paren walk counted every `(` / `)`,
+# while bash finds the close honouring quotes -- a `))` inside a double quote
+# is not the end, and landing there inverted the scan's quote state for the
+# rest of the substitution (both bashes ran the line closing it). A quote,
+# backtick or backslash inside the span is the sticky bail, as in `${...}`.
+# Mutant `lho-arith-quote-bail`.
+r3_case "AQ1: a quoted )) inside \$(( )) is not its close" 0 "$MERGE" \
+  'x=$( false && echo "((" $(( "))" ))#"' 'cat <<'"'"'EOF'"'"'' '"; gh pr merge 1; : "' 'EOF' '")'
+# One case per member of the arithmetic bail class too (test review round 21:
+# only the double quote was pinned). Each RUNS the closing line in all three
+# shells, and each is MATCHED with its member deleted as well -- the `)#` glue
+# path reaches the same verdict, so the members carry no discriminating mutant
+# and the class is defence in depth rather than the thing that decides these.
+# Measured, not assumed: a per-member mutant reports NOT DISCRIMINATED.
+r3_case "AQ2: a single quote inside \$(( ))" 0 "$MERGE" \
+  'x=$( false && echo "((" $(( '"'"')'"'"' ))#"' 'cat <<'"'"'EOF'"'"'' '"; gh pr merge 1; : "' 'EOF' '")'
+r3_case "AQ3: a backtick inside \$(( ))" 0 "$MERGE" \
+  'x=$( false && echo "((" $(( `echo 1` ))#"' 'cat <<'"'"'EOF'"'"'' '"; gh pr merge 1; : "' 'EOF' '")'
+r3_case "AQ4: a backslash inside \$(( ))" 0 "$MERGE" \
+  'x=$( false && echo "((" $(( 1\ ))#"' 'cat <<'"'"'EOF'"'"'' '"; gh pr merge 1; : "' 'EOF' '")'
+# Round 18 (test review): the walk's "the next character must be a )" arm had
+# no case -- shells abandon an unclosed `$((` and re-read it as `$( (`, and
+# this shape ran the body line in all three. Mutant `lho-arith-second-close`.
+r3_case "A9: \$((1) is not an arithmetic span -- the shells run the body line" 0 "$MERGE" \
+  'x=$( $((1) ; cat <<'"'"'E'"'"'' 'gh pr merge 1' 'E' ') )'
+
+# --- The UNQUOTED delimiter is DELIBERATELY not latched (round 2) ------------
+# Two review rounds of go-to-k/cdkd#3040 each measured shapes bash executes
+# that the unquoted-delimiter arm dropped: a `$(git commit)` on a body line, a
+# multi-line `$(` spanning body lines, a literal `<<Y` on a fallen-through line
+# overwriting the latch. bash EXPANDS an unquoted body, so nothing short of a
+# full parse can say what runs in it. The latch therefore fires on a QUOTED
+# delimiter alone, and an unquoted prose body is read as commands exactly as
+# origin/main read it -- a LOUD false refusal (write the delimiter quoted, or
+# use --body-file), never a silent miss. This case pins that decision: it
+# MATCHES, and a "fix" making it not match has to re-answer the review rounds.
+subst_bare_delim=$(printf '%s\n' \
+  'gh issue create --body "$(cat <<EOF' \
+  'gh pr merge 1 was refused' \
+  'EOF' \
+  ')"')
+check "an UNQUOTED delimiter (<<EOF) inside \$( ) is NOT latched: origin/main parity" 0 "$MERGE" "$subst_bare_delim"
+# The `-` of `<<-` is its own grammar arm and was unfenced (test review):
+# deleting it left the suite green.
+subst_dash_delim=$(printf '%s\n' \
+  'x="$(cat <<-'"'"'EOF'"'"'' \
+  "$(printf '\tgh pr merge 1 was refused')" \
+  "$(printf '\tEOF')" \
+  ')"')
+check "<<- with an indented terminator inside \$( ) is stripped" 1 "$MERGE" "$subst_dash_delim"
+
+# The opener on the line AFTER the `$(` -- the shape an agent most often writes
+# (`--body "$(` newline `cat <<'EOF'` ...) -- and a heredoc inside a BACKTICK
+# substitution. Both were false positives on origin/main and are fixed by the
+# same latch; neither had a case.
+subst_opener_next_line=$(printf '%s\n' \
+  'gh issue create --body "$(' \
+  '  cat <<'"'"'EOF'"'"'' \
+  'gh pr merge 1 was refused' \
+  'EOF' \
+  ')"')
+check "an opener on the line after the \$( is caught by the latch" 1 "$MERGE" "$subst_opener_next_line"
+subst_backtick_heredoc=$(printf '%s\n' \
+  'x=`cat <<'"'"'EOF'"'"'' \
+  'gh pr merge 1 was refused' \
+  'EOF' \
+  '`')
+# Round 14: NOT stripped -- a backtick frame bails (see B1 / P01 / P03).
+check "a heredoc inside a BACKTICK substitution is read as commands (parity)" 0 "$MERGE" "$subst_backtick_heredoc"
+
 # --- Reviewer-found regressions of the FIRST cut (all must MATCH) ---------
 #
 # The first stripper treated `<<<`, a `<<EOF` mentioned in prose, and an
@@ -161,6 +1014,37 @@ cd_check "without a verb every cd is followed (back-compat)" "/tmp/after" \
 # so the path is simply there, and a quoted mention still never starts a segment.
 cd_check "a fully-quoted cd path resolves" "/tmp/a b" \
   'cd "/tmp/a b" && gh pr merge 1'
+
+# `subst_open`'s own comment class is the THIRD instance of the shape rounds 20
+# and 21 fenced at the other two sites, and it arrived with only the member
+# round 23 added (`)`) pinned (test review round 24). Each member below decides
+# whether the comment ends the line: without it the `)` inside the comment is
+# counted, the substitution reads as CLOSED, and the `cd` that runs in its CHILD
+# is resolved as the TOP-LEVEL target -- the fail-open the function exists to
+# close. `cmd_last_cd_target` is the observable, because the verb matches either
+# way; mutants `so-hash-class-<member>`.
+cd_check "SO1: a SPACE before the # keeps the substitution open" "" \
+  "$(printf '%s\n' 'x=$(' 'echo hi # note )' 'cd /tmp' ')' 'git commit -m x')" "$COMMIT"
+cd_check "SO2: a TAB before the #" "" \
+  "$(printf '%s\n' 'x=$(' 'echo hi	# note )' 'cd /tmp' ')' 'git commit -m x')" "$COMMIT"
+cd_check "SO3: a ; before the #" "" \
+  "$(printf '%s\n' 'x=$(' 'echo hi ;# note )' 'cd /tmp' ')' 'git commit -m x')" "$COMMIT"
+cd_check "SO4: an & before the #" "" \
+  "$(printf '%s\n' 'x=$(' 'true &# note )' 'cd /tmp' ')' 'git commit -m x')" "$COMMIT"
+cd_check "SO5: a | before the #" "" \
+  "$(printf '%s\n' 'x=$(' 'echo hi |# note )' 'cd /tmp' ')' 'git commit -m x')" "$COMMIT"
+cd_check "SO6: a # at the START of the line (reached through the join\047s `;`, not the i == 1 arm)" "" \
+  "$(printf '%s\n' 'x=$(' '# note )' 'cd /tmp' ')' 'git commit -m x')" "$COMMIT"
+# The seventh member, `(`, carries NO case here and no mutant: measured, a
+# `(` before the `#` resolves the same target with the member present or
+# absent, and every shape that would separate them is a syntax error in all
+# three shells (test review round 25 built `so-hash-class-lparen` and got
+# NOT DISCRIMINATED). CM8 and LH-ctl pin the same member at the other two
+# sites, where the observable is the latch rather than the resolved target.
+# It is not wholly inert: the one shape that changes anything (`$(# note )`
+# on a body line) changes segment ORDER and no mark, and is a parse error in
+# all three shells -- said here so a later round does not read
+# "undiscriminable" as "no observable difference at all".
 
 # --- Round-2 review regressions (quoted VALUES must survive) --------------
 #
@@ -2506,6 +3390,171 @@ fi
 # passes. Both builds agree on the number -- 556 under bash 3.2 and under 5.3
 # -- so no case is version-gated and a strict floor cannot fail on one runner
 # while passing on the other.
+
+# `gate_segments_marked` marks a segment 1 when it is SUBSHELL-DERIVED -- a `cd`
+# there cannot move the caller -- and 0 at top level. Which mark a `cd` carries
+# is what decides the tree every gate resolves its markers in, so it is the
+# observable for anything that changes where a substitution is thought to end.
+mark_of() { # name, segment-text, expected-mark, command
+  local name="$1" seg="$2" want="$3" cmd="$4" got
+  got="$(gate_segments_marked "$cmd" | awk -F'\t' -v s="$seg" '$2 == s {print $1; exit}')"
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %s\n' "$name"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (want mark "%s", got "%s")\n' "$name" "$want" "$got"
+    fail_log+="FAIL $name\n  command: $cmd\n"
+  fi
+}
+
+mark_last() { # name, expected-LAST-line, command
+  local name="$1" want="$2" cmd="$3" got
+  got="$(gate_segments_marked "$cmd" | tail -1)"
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %s\n' "$name"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (want "%s", got "%s")\n' "$name" "$want" "$got"
+    fail_log+="FAIL $name\n  command: $cmd\n"
+  fi
+}
+
+mark_check() { # name, expected-first-line, command
+  local name="$1" want="$2" cmd="$3" got
+  got="$(gate_segments_marked "$cmd" | head -1)"
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %s\n' "$name"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (want "%s", got "%s")\n' "$name" "$want" "$got"
+    fail_log+="FAIL $name\n  command: $cmd\n"
+  fi
+}
+
+# `subst_open`'s `#` arm must not run inside quotes (code review round 25). It
+# sits after the double-quote branch falls through -- substitutions are live in
+# double quotes -- so a `#` in a QUOTED argument ended the scan; round 23 adding
+# `)` to that class made `x="a )#"$(` do it, and the `cd` running in the
+# substitution child resolved as the TOP-LEVEL target. SQ2 is the pre-existing
+# half and the commonest `gh` spelling in this repo. `close_paren` and
+# `flush_line` both test the quote state; this was the third machine.
+# Mutant `so-hash-in-quotes`.
+mark_check "SQ1: a )# inside a double-quoted argument does not end the scan" "1	cd /tmp" \
+  "$(printf '%s\n' 'x="a )#"$(' 'cd /tmp' ')')"
+mark_check "SQ2: a # in a --body argument does not either" "1	cd /tmp" \
+  "$(printf '%s\n' 'gh pr comment 1 --body "closes #3040" $(' 'cd /tmp' ')')"
+mark_check "SQ-ctl: the same shape with no # (control)" "1	cd /tmp" \
+  "$(printf '%s\n' 'x="a )"$(' 'cd /tmp' ')')"
+# Round 24 reordered the single-quote arm ahead of the backslash skip; this is
+# the shape that discriminates it (code review round 25 supplied it): a `\`
+# inside `'"'"'...'"'"' is literal, so the span stays open and the `$(` that follows is
+# inside it. Reverted, the backslash eats the closing quote and the `cd` is
+# read as top-level. Mutant `so-sq-before-backslash`.
+mark_check "SQ3: a backslash inside a single-quoted span is literal" "1	cd /tmp" \
+  "$(printf '%s\n' 'x='"'"'a\'"'"'$(' 'cd /tmp' ')')"
+# `$$` followed by a QUOTE is ambiguous and reports the span OPEN (security
+# review round 27). bash reads the PID then a plain span; zsh reads `$` then
+# an ANSI-C span, and round 25's plain step-over traded a bash fail-open for
+# a zsh one -- the real `main-tree-edit-gate` went 2 -> 0 on the zsh shape.
+# Reporting OPEN keeps the body inside the substitution, so its `cd` is child
+# context under either reading. SQ10 is the shape that regressed and the one
+# `so-pid-step-over` reds; SQ4 cannot pin the ambiguity RULE, because under
+# both readings its own input ends OPEN -- it is the whole-arm control, and
+# `so-pid-arm-whole` is its mutant (test review round 29 measured SQ4 green
+# under the sixteen `so-*` mutants THAT HEAD CARRIED, the c1b shape -- a
+# historical figure, not a running tally: the set is larger now).
+mark_of "SQ4: the \$\$ arm exists at all (a whole-arm control -- both readings end OPEN here)" "cd /tmp" "1" \
+  "$(printf '%s\n' 'x=$$'"'"'a\'"'"'$(' 'cd /tmp' ')')"
+mark_of "SQ10: the zsh reading of an ambiguous \$\$ quote does not move the caller either" "cd sub" "1" \
+  "$(printf '%s\n' "x=\$\$'a\\'b'\$(" 'cd sub' ')')"
+# The two quote-OPENING arms, which no case notices either (test review
+# round 26): both are on origin/main, both fail-open-directed, and both are
+# cited as the rationale for arms around them -- the single-quote arm
+# implements the founding measurement written directly above it, and the
+# ANSI-C arm is what SQ4 steps over. Deleting either leaves the suite green
+# without these. The observable is the LAST segment -- the `cd` -- because
+# the body segment before it is marked either way.
+# Mutants `so-sq-open-arm` and `so-ansic-arm`.
+mark_last "SQ5: a ) inside a single-quoted span is data, not a closer" "1	cd /tmp" \
+  "$(printf '%s\n' "x=\$(echo 'a)b'" 'cd /tmp' ')')"
+mark_last "SQ6: the ANSI-C twin, where an escaped quote does not end the span" "1	cd /tmp" \
+  "$(printf '%s\n' "x=\$(echo \$'a\\')b'" 'cd /tmp' ')')"
+# Round 26 (security): round 25 stopping the `#` arm inside quotes exposed the
+# other half of the same desync -- `subst_open` kept the OUTER quote state
+# inside `$( )`, so a `#` comment carrying an unbalanced `)` reported the
+# span CLOSED and the verb line was swallowed as data. All three shells run
+# it and origin/main matched: 474 records. The walk saves and restores `q`
+# per frame now, and inside double quotes only a `$(`, a backtick and a `\`
+# are structural. Mutants `so-frame-quote-save` and `so-dq-structural`.
+check "SQ7: a # comment with an unbalanced ) inside a --body substitution" 0 "$MERGE" \
+  "$(printf '%s\n' 'gh pr comment 1 --body "$(' '# 1) first' 'gh pr merge 1' ')"')"
+mark_last "SQ8: a ) inside a double-quoted span inside \$( ) is data" "1	cd /tmp" \
+  "$(printf '%s\n' 'x=$(echo "a #)"' 'cd /tmp' ')')"
+# The RESTORE half of the per-frame save: once the inner `$( )` closes, the
+# walk must be back INSIDE the outer double quote, or the `#)` after it
+# reads as a comment and the trailing `$(` opens a span the join then ends
+# early -- `cd /tmp` becomes a TOP-LEVEL segment marked 0 although all three
+# shells run it in the child. Mutant `so-frame-quote-save`.
+mark_of "SQ9: the quote state is restored when an inner \$( ) closes" "cd /tmp" "1" \
+  "$(printf '%s\n' 'echo "$(true) #)"$(' 'cd /tmp' ')')"
+
+# The escaped character before the `#` is WORD GLUE here too (spec review
+# round 29): round 23 gave this walk the `)` class member without the glue
+# record `last_heredoc_opener` has kept since round 17, so `echo \)#b $(`
+# read a comment where all three shells keep the substitution open, and the
+# `cd` on the next line was marked TOP-LEVEL -- the resolution base moving
+# for every gate that resolves a target. SO-ctl2 is the real comment.
+# Mutant `so-bs-glue`.
+mark_of "SO7: an escaped ) before the # is glue, so the span stays open" "cd sub" "1" \
+  "$(printf '%s\n' 'echo \)#b $(' 'cd sub' ')')"
+# SO-ctl2's input is a PARSE ERROR in bash -- a `)` in that position -- so it
+# pins the reading of a shape no shell executes (test review round 30). It is
+# kept because the reading is what `so-hash-class-rparen` measures, and the
+# direction is safe (nothing runs); SO-ctl3 below is the executable spelling
+# of the same control.
+mark_of "SO-ctl2: an UNESCAPED ) before the # is a comment (control, a parse-error shape)" "cd sub" "0" \
+  "$(printf '%s\n' 'echo a )#b $(' 'cd sub' ')')"
+
+# A paren OUTSIDE every substitution has a KIND too, and this walk tracked
+# none: both frame arms are gated on `depth > 0`, so at depth 0 the `)` of an
+# `a=( )` reached the `#` test as a raw previous character, the scan ended,
+# and the `$(` later on the SAME line was never seen (code review round 30).
+# Measured in a fixture repo: BOTH bashes open that substitution and run the
+# `cd` in its child -- logged from `child/` through a side channel, since a
+# marker inside `$( )` is captured -- and then write the tracked file in the
+# PARENT, while `main-tree-edit-gate` answered rc=0. zsh takes the OTHER
+# reading -- it runs `cd child` in the parent and then dies on the line-3
+# `)` -- so mark 1 is right for the two bashes and is the refusing direction
+# for zsh, which is the order this file settles a disagreement in. (An
+# earlier revision of this comment said zsh parse-errors and therefore runs
+# nothing; it runs the `cd` first, measured through a log-file side channel.)
+# SO-ctl3 is the kind-0 twin and it is a REAL comment: all three shells run
+# its `cd child` in the PARENT shell before the same line-3 error, which is
+# exactly what mark 0 says. Mutant `so-depth0-frame`.
+mark_of "SO8: the ) of an a=( ) at depth 0 glues the #, so the \$( opens" "cd child" "1" \
+  "$(printf '%s\n' 'a=(x)#b $(' 'cd child' ')')"
+mark_of "SO-ctl3: the ) of a bare ( ) at depth 0 still starts a comment" "cd child" "0" \
+  "$(printf '%s\n' '(echo hi)#b $(' 'cd child' ')')"
+
+# THE GLUE RECORD IS FOR AN ESCAPED `)` ALONE, and CP-BS2 is the control that
+# holds it there. Rounds 30 and 31 measured what widening it costs: bash 5.x
+# and zsh glue `\ #` while bash 3.2`s `$( )` pre-scan reads a comment, and
+# bash 3.2 is the only shell that runs the shape that separates them, so the
+# wide reading took `x=$(echo \ #b )` / `cd ..` / `)` / a write from rc=2 to
+# rc=0. Both attempts to serve both readings measured new fail-opens of their
+# own, so that class now reads exactly as origin/main reads it and
+# go-to-k/cdkd#3303 owns it. CP-BS2 pins the OTHER half: an escaped `)` is
+# glue in all three shells, so this line must read as origin/main reads it --
+# bodies first, and a `cd` that IS honoured. Mutant `so-bs-glue` reds SO7,
+# `so-bs-glue-wide` (the widened record) reds this one.
+mark_of "CP-BS2: an escaped ) is glue, and the cd after the span is still honoured" "cd /tmp" "0" \
+  "$(printf '%s\n' 'x=$( echo W > tracked ; echo \)#b )' 'cd /tmp' 'echo z > f')"
+# The other side of the same record, and the shape that prices widening it.
+# An escaped SPACE before the `#` must NOT be glue: the `#` opens a comment,
+# the span stays open, and the `cd` on the next line is child context -- which
+# is what origin/main answers and what bash 3.2, the only shell that runs this
+# shape, does. Under the widened record the span closes on line 1 and that
+# `cd` is marked 0, which is the rc 2 -> 0 rounds 30 and 31 measured through
+# the real gate. Mutant `so-bs-glue-wide`.
+mark_of "SO9: an escaped SPACE before a # is NOT glue, so the cd stays child context" "cd .." "1" \
+  "$(printf '%s\n' 'x=$(echo \ #b )' 'cd ..' ')')"
 
 # --- gate_segments_marked's SEGMENT-COUNT bound (go-to-k/cdkd#2650) ----------
 # The marking forks `printf | awk` PER SEGMENT, so its cost is linear in the

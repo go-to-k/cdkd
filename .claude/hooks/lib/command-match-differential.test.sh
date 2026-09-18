@@ -356,6 +356,26 @@ Z2ggaXNzdWUgLVIgby9yIC0tanNvbiB1cmwgImNyZWF0ZSIgLS10aXRsZSB4
 Z2ggcHIgLS1zZWFyY2ggIm1lcmdlIiBsaXN0
 Z2ggcHIgLVIgby9yIC0tanNvbiAibWVyZ2UiIHZpZXcgNDI=
 Z2ggcHIgLXNSIG8vciAibWVyZ2UiIDQy
+Z2ggaXNzdWUgY3JlYXRlIC0tcmVwbyBvL3IgLS10aXRsZSAidCIgLS1ib2R5ICIkKGNhdCA8PCdFT0YnCnNvIGBnaCBwciBtZXJnZWAgaXMgbm90IGdhdGVkLgpFT0YKKSI=
+eD0iJChjYXQgPDwnRU9GJwpnaXQgY29tbWl0IC1tIHkKRU9GCiki
+eD0iJChjYXQgPDwnRU9GJwpwcm9zZQpFT0YKZ2ggcHIgbWVyZ2UgNyAtLXNxdWFzaCki
+eD0iJChjYXQgPDwnRU9GJwpwcm9zZQpFT0YKKSIgJiYgZ2ggcHIgbWVyZ2UgMQ==
+eD0iJChlY2hvIDw8RU9GIGlzIHByb3NlCmdoIHByIG1lcmdlIDEpIg==
+eD0kKGNhdCA8PCdYJwpib2R5CikKZ2l0IGNvbW1pdCAtbSB5Cg==
+eD0kKGNhdCA8PEEgPDwnQicKJChnaXQgY29tbWl0IC1tIHkpCkEKYmJiCkIKKQo=
+eT0kKGNhdCA8PCdFT0YnKSA7IHo9JCgKZ2l0IGNvbW1pdCAtbSB5CkVPRgopCg==
+eD0kKGNhdCA8PEVPRgpwCkVPRgopCmdpdCBjb21taXQgLW0geApjYXQgPDxFT0YKcQpFT0YK
+eD0iJChjYXQgPDwnRScKYGVjaG8gemAKRQopIgpnaXQgcHVzaCBvcmlnaW4gbWFpbgpjYXQgPDxFCnp6CkUK
+eD0kKGRpZmYgPChlY2hvKSMiCmNhdCA8PCdFJwoiIDsgZ2l0IGNvbW1pdCAtbSB5CkUKKQo=
+eD0kKGE9KDEpIzw8J1gnCmdpdCBjb21taXQgLW0geQpYCikK
+eD0kKCAodHJ1ZSkjKTw8WFgKZ2l0IGNvbW1pdCAtbSB5ClhYCikK
+eD0kKGRpZmYgPChlY2hvKSMpPDxYWApnaXQgY29tbWl0IC1tIHkKWFgKKQo=
+eD0kKGNhdCA8PCdFT0YnO3RydWUKYm9keQpFT0YKZ2l0IGNvbW1pdCAtbSB5CkVPRjt0cnVlCikK
+eD0kKGRpZmYgPChlY2hvKSM8PCdYJwpnaXQgY29tbWl0IC1tIHkKWAopCg==
+YT0oeCkjYiAkKApjZCBjaGlsZApnaXQgY29tbWl0IC1tIHkKKQo=
+KGVjaG8gaGkpI2IgJCgKY2QgY2hpbGQKZ2l0IGNvbW1pdCAtbSB5CikK
+eD0kKGVjaG8gXCAjYiApCmNkIC4uCmdpdCBjb21taXQgLW0geQopCg==
+eD0kKCBlY2hvIFcgOyBlY2hvIFwpI2IgKQpjZCAvdG1wCmdpdCBjb21taXQgLW0geQo=
 CORPUS_EOF
 
 # --------------------------------------------------------------- observables
@@ -896,6 +916,30 @@ cat > "$ALLOWED" <<'ALLOWED_EOF'
 241	m:GATE_RE_GH_PR_WRITE	1	DQ_VALUE	gh pr -q .x "merge" 42 -- the same behind a SHORT flag
 242	m:GATE_RE_GH_LABEL_CARRIER	1	DQ_VALUE	gh issue -R o/r --json url "create" -- the ISSUE group takes the same rule
 242	m:GATE_RE_GH_BODY_CARRIER	1	DQ_VALUE	gh issue -R o/r --json url "create" -- the ISSUE group takes the same rule
+246	segcount	2	SUBST_HEREDOC	a heredoc body inside $( ) is data: its prose lines are no longer segments
+247	segcount	1	SUBST_HEREDOC	the same with a verb as the body: one segment, not three
+247	m:GATE_RE_GIT_COMMIT	0	SUBST_HEREDOC	a verb that appears ONLY inside the heredoc body no longer matches
+247	m:GATE_RE_GIT_COMMIT_OR_PUSH	0	SUBST_HEREDOC	a verb that appears ONLY inside the heredoc body no longer matches
+248	segcount	2	SUBST_HEREDOC	body dropped; the verb after the terminator inside $( ) is still a segment
+249	segcount	2	SUBST_HEREDOC	body dropped; the verb after the substitution closes is still a segment
+251	segcount	3	SUBST_HEREDOC	a QUOTED opener with no terminator latches nothing: the verb after the ) is a segment (the baseline never drained a substitution)
+252	segcount	6	SUBST_HEREDOC	cat <<A <<B-quoted: an unquoted opener is a bail, every body line is a segment (baseline: no substitution drain)
+252	m:GATE_RE_GIT_COMMIT	1	SUBST_HEREDOC	the verb in the EXPANDED A body matches (bash runs it; baseline never scanned inside $( ))
+252	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	SUBST_HEREDOC	the verb in the EXPANDED A body matches (bash runs it; baseline never scanned inside $( ))
+253	segcount	3	SUBST_HEREDOC	the opener frame closes before a new $( opens: bail, the next line is a segment
+253	m:GATE_RE_GIT_COMMIT	1	SUBST_HEREDOC	the verb on the line after a closed opener frame matches (bash 3.2 / zsh run it)
+253	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	SUBST_HEREDOC	the verb on the line after a closed opener frame matches (bash 3.2 / zsh run it)
+255	segcount	3	SUBST_HEREDOC	quoted body with a backtick, then a LATER top-level heredoc reusing the delimiter: body dropped, the push between is a segment, the later body is data (pending_tag no longer leaks, go-to-k/cdkd#3066)
+256	segcount	4	COMMENT_FRAME	a <( ) glue before a # keeps the quote open: the body is data and the line closing it is a segment
+257	m:GATE_RE_GIT_COMMIT	1	COMMENT_FRAME	an a=( ) frame bails on its )# -- the shells disagree, so the lines read as commands
+257	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	COMMENT_FRAME	an a=( ) frame bails on its )# -- the shells disagree, so the lines read as commands
+258	segcount	5	COMMENT_FRAME	a )# whose $( ) closes on the same line is a comment: subst_open reports OPEN and the lines join
+258	m:GATE_RE_GIT_COMMIT	1	COMMENT_FRAME	the verb after such a )# matches (bash 5.x and zsh run it)
+258	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	COMMENT_FRAME	the verb after such a )# matches (bash 5.x and zsh run it)
+260	segcount	5	COMMENT_FRAME	a `;` right after the delimiter is part of the WORD, so the later bare EOF does not terminate it
+261	segcount	2	COMMENT_FRAME	a <( ) glue makes the <<X after it a real opener: its body is data (kind 1, not the kind-2 bail)
+264	segcount	3	COMMENT_FRAME	an escaped SPACE before a # is NOT glue: the # opens a comment, the span stays open and the lines join (the class go-to-k/cdkd#3303 owns)
+265	segcount	4	COMMENT_FRAME	an escaped ) before a # IS glue, so the span closes on its own line and the cd after it is its own segment
 ALLOWED_EOF
 
 paste "$TMPDIR/old.tsv" "$TMPDIR/new.tsv" \
@@ -934,7 +978,7 @@ fi
 # so the "undeclared" arm is blind to it and these floors are the only thing
 # that sees it. Raise them with the measurement whenever the corpus grows; do
 # not leave slack "for headroom", which is precisely what defeated them.
-for spec in "NOW_MATCH:93" "NOW_MISS:14" "TARGET:17" "SEGCOUNT:16" "WIDE_TRIGGER:23" "MLSUBST:15" "MLBACKTICK:7" "LATERQ:18" "ACCEPTED_FR:13" "INQUOTE_BACKTICK:6" "DEQUOTE:44" "QUOTED_PAREN:5" "ANSI_C:2" "DQ_VALUE:8"; do
+for spec in "NOW_MATCH:93" "NOW_MISS:14" "TARGET:17" "SEGCOUNT:16" "WIDE_TRIGGER:23" "MLSUBST:15" "MLBACKTICK:7" "LATERQ:18" "ACCEPTED_FR:13" "INQUOTE_BACKTICK:6" "DEQUOTE:44" "QUOTED_PAREN:5" "ANSI_C:2" "SUBST_HEREDOC:14" "COMMENT_FRAME:10" "DQ_VALUE:8"; do
   cls="${spec%%:*}"; floor="${spec##*:}"
   seen=$(awk -F'\t' -v c="$cls" '$4==c' "$ALLOWED" | while IFS=$'\t' read -r id obs val rest; do
     awk -F'\t' -v i="$id" -v o="$obs" -v v="$val" '$1==i && $2==o && $3==v {print}' "$TMPDIR/diffs.tsv"
