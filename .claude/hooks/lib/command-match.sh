@@ -4649,11 +4649,22 @@ gate_slug_from_url() {
   # resolves to THIS repo in gh while this keys it `github.com-work/go-to-k/cdkd`
   # and the checkout reads FOREIGN.
   #
-  # A DOTLESS alias (`gh-work`) is already safe: the host test above refuses it,
-  # and an unreadable remote makes `gate_target_is_foreign` answer NOT foreign.
-  # Only the dotted spelling gets through. Closing it means an `ssh -G`
-  # SUBPROCESS PER REMOTE inside a PreToolUse hook against a 10 s budget, which
-  # is its own decision rather than a line in this function, so it is recorded
+  # THE BOUND IS SYMMETRIC, and an earlier revision of this comment said it was
+  # not. "A dotless alias is already safe" holds only for the TARGET loop, where
+  # an unreadable remote RETURNS 1 (not foreign). The HOOK loop does
+  # `|| continue` and silently DROPS one, so an unreadable remote there just
+  # leaves the hook's identity incomplete. Measured, pre-existing on
+  # origin/main: a hook checkout with `origin` = a fork and
+  # `upstream = gh-work:go-to-k/cdkd.git` -- a DOTLESS alias, the standard
+  # multi-account fork setup -- against a real cdkd clone answers FOREIGN and
+  # drops the binding. So on the hook side BOTH spellings get through, and only
+  # a dotless alias as the hook's ONLY remote refuses.
+  #
+  # Closing the family means either an `ssh -G` SUBPROCESS PER REMOTE inside a
+  # PreToolUse hook against a 10 s budget, or making the hook loop fail closed
+  # like the target loop -- one line, no subprocess, but it then refuses the
+  # sibling flow for any cdkd checkout carrying an unreadable extra remote.
+  # That is a decision rather than a line in this function, so it is recorded
   # and filed: go-to-k/cdkd#3389.
 
   printf '%s/%s' "$host" "$path"
@@ -5276,11 +5287,21 @@ EOF
     case "$url_line" in
       */*/*) url_line="${url_line#*/}" ;;
     esac
-    # gh's `ghrepo.FromFullName` accepts `OWNER/REPO` *and* `HOST/OWNER/REPO`,
-    # so both spellings are compared (go-to-k/cdkd#3351 round 4: the 3-part form
-    # matched nothing and the gate exited 0).
-    # gh's `ghrepo.FromFullName` accepts `OWNER/REPO` and `HOST/OWNER/REPO`, so
-    # both spellings of every hook slug are candidates.
+    # `${slug#*/}` is the hook slug with ITS host removed, which is the
+    # comparison that matters now that the value's own host is gone: both sides
+    # are `owner/repo`. gh's `ghrepo.FromFullName` accepts `OWNER/REPO` and
+    # `HOST/OWNER/REPO`, and go-to-k/cdkd#3351 round 4 added the 3-part handling
+    # after that form matched nothing and the gate exited 0 -- the drop above
+    # supersedes it by normalising instead of comparing two spellings.
+    #
+    # The full-slug arm is kept but is now UNREACHABLE for any value gh can
+    # resolve: a 3-part value has been reduced to 2 parts, so only a >= 4-segment
+    # value could still match it, and gh rejects those outright (measured:
+    # `expected the "[HOST/]OWNER/REPO" format`). It is harmless -- an extra
+    # match means NOT foreign, which refuses -- and left in place so a future
+    # change to the drop above cannot silently lose the comparison.
+    # A duplicate of this sentence sat here twice; the PR that dropped the host
+    # falsified both copies.
     for slug in $hook_slug; do
       if [ "$url_line" = "${slug#*/}" ] || [ "$url_line" = "$slug" ]; then
         GATE_FOREIGN_RETRACT="the target checkout has \`gh repo set-default\` pointing a remote at $url_line, so gh resolves this gate's own repository from there"

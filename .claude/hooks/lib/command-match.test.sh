@@ -3568,7 +3568,7 @@ rm -rf "$__gtf_tmp"
 # Equality, not a floor, for the reason every other block here uses equality:
 # a floor goes green when a case is deleted.
 __gtf_ran=$((pass + fail - __gtf_start))
-if [ "" -ne 41 ]; then
+if [ "$__gtf_ran" -ne 41 ]; then
   fail=$((fail + 1))
   fail_log="${fail_log}FAIL gate_target_is_foreign block ran $__gtf_ran cases, expected exactly 41 -- a case vanished, or one was added without bumping the count\n"
 else
