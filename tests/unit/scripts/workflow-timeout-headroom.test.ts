@@ -118,7 +118,11 @@ const MIN_HEADROOM = 2;
  * directory walk that stopped matching fails here rather than making every other
  * case pass by having nothing to check. Pinned from both sides below.
  */
-const MIN_DECLARED = 18;
+// RATCHETED 18 -> 19 when go-to-k/cdkd#3082 added a 22nd job mid-review. The
+// band below is deliberately tight, so adding a job turns this ratchet; the
+// comment on the assertion documents the two steps, and this is the first time
+// the flow ran for real rather than as prose.
+const MIN_DECLARED = 19;
 // 18, not 12. At 12 the round-1 defect — four jobs vanishing because the
 // generator keyed them by display name — cleared the floor with room to spare,
 // so the floor could not have caught the very failure that made this fence
@@ -144,8 +148,8 @@ const MIN_DECLARED = 18;
  */
 const MIN_LONGEST_MAX = 600;
 
-const MIN_SNAPSHOT = 18;
-const MIN_COMPARED = 18;
+const MIN_SNAPSHOT = 19;
+const MIN_COMPARED = 19;
 
 /**
  * Jobs with no snapshot entry that are EXPECTED to have none.
@@ -176,7 +180,21 @@ const MIN_COMPARED = 18;
  * the data alone. Both staleness directions are fenced: an exemption whose job
  * gains data fails, and so does one whose job disappears.
  */
-const RARELY_RUN: Readonly<Record<string, string>> = {};
+const RARELY_RUN: Readonly<Record<string, string>> = {
+  // THE FENCE CAUGHT A REAL JOB THE DAY IT LANDED, which is what it is for, and
+  // this entry is the documented second step of adding one. go-to-k/cdkd#3082
+  // added `mutation-harness` to `hooks.yml` while this PR was in review; it has
+  // no successful run inside the snapshot's range (2026-09-02..09-16) and none
+  // since, so it cannot have an entry until the generator is re-run after a
+  // green run of it exists.
+  //
+  // The reason is TRUE, which is the whole requirement this list carries: not
+  // "rarely run" but "too new to have data". An entry with a plausible-sounding
+  // false reason is the round-1 defect of this very PR, and the arms that
+  // refuse a stale exemption are what stop this one outliving its cause — it
+  // fails the moment the job gains data or disappears.
+  'hooks.yml/mutation-harness': 'added in go-to-k/cdkd#3082; no successful run on main yet',
+};
 
 interface JobSample {
   readonly max: number;
