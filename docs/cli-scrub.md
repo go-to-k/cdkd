@@ -729,6 +729,38 @@ value-matched rather than positioned for as long as the parameter stays
 unresolvable. Declare the export name literally, or give the parameter a
 `Default` the template resolves from, if you want that key positioned instead.
 
+## Cross-stack read names
+
+`state.imports` and `state.outputReads` record which producer a stack read a
+cross-stack value from. Three of their fields come from the TEMPLATE and can
+carry a secret when an `Fn::Sub` assembled the name around a resolved
+`{{resolve:...}}` reference: `imports[].exportName`,
+`outputReads[].sourceStack` and `outputReads[].outputName`. Scrub repairs those
+three the same way it repairs any other stored value — by matching against the
+plaintexts this run recorded.
+
+`sourceRegion` and `imports[].sourceStack` are left exactly as stored. The
+first is an AWS region. The second is the literal key `cdkd destroy` matches a
+producer against when it refuses to delete a stack another stack still imports
+from, so rewriting it would drop that protection.
+
+### What this does not repair
+
+A name whose secret has since been **rotated** is left as it is. Scrub learns
+which plaintexts to look for by re-resolving your template, so it holds the
+secret's CURRENT value, while the stored name holds the one it had when that
+record was written — a value nothing in the run can see. Rotating again does
+not help; a redeploy that re-resolves the reference rewrites the record.
+
+A name that is never re-resolved is the case this repair exists for: a stable
+stack resolves its cross-stack reference once and the resource never changes
+again, so no later deploy would rewrite it.
+
+As everywhere else in this command, repairing a record does not un-expose a
+value that was already stored in plaintext — and the state bucket is
+versioned, so the pre-repair body remains readable in prior object versions
+until those are swept. Rotate the secret.
+
 ### What scrub deliberately does not do here
 
 `state.outputs` is re-applied VERBATIM to other stacks — cdkd's exports index

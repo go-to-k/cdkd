@@ -66,15 +66,24 @@ already makes for the region. A duplicate row is not cosmetic — it doubles an
 entry in the destroy refusal and in the recreate prompt. That case is CLOSED by
 this change; it is listed because removing the normalizer re-opens it.
 
-**ROTATED** and **NEVER-AGAIN** are the real residual, and they are what
-`cdkd scrub` is owed for (go-to-k/cdkd#3337). The population is narrower than
-"everything written before this fix" — SAME-VALUE repairs itself — but wider
-than "never re-resolved again", which is what an earlier draft of this file and
-of that issue both said. ROTATED is the harder of the two: scrub cannot reach
-it either, since scrub derives its needles by re-resolving the live template and
-therefore holds the CURRENT value, not the stale one on disk. Closing it needs
-something that recognises a value that WAS a secret without holding it, which
-the value scan structurally cannot do; stated as open rather than designed here.
+**ROTATED** and **NEVER-AGAIN** were the real residual, and they are what
+`cdkd scrub` was owed for. The population is narrower than "everything written
+before this fix" — SAME-VALUE repairs itself — but wider than "never
+re-resolved again", which is what an earlier draft of this file and of
+go-to-k/cdkd#3337 both said.
+
+**NEVER-AGAIN is CLOSED** by go-to-k/cdkd#3337: `cdkd scrub` walks the three
+template-derived names and rewrites any that matches a plaintext the run
+recorded, so a reference no later deploy re-resolves — the ordinary shape for a
+stable stack — is repaired without one.
+
+**ROTATED remains OPEN**, and is the harder of the two for a reason no walk
+placed in scrub can get around: scrub derives its needles by re-resolving the
+live template and therefore holds the CURRENT value, while the stored name
+holds the one it had when the record was written. Closing it needs something
+that recognises a value that WAS a secret without holding it, which the value
+scan structurally cannot do. `tests/unit/cli/commands/scrub-cross-stack-read-repair.test.ts`
+asserts the limit rather than leaving it to be met as a silent miss.
 
 One narrowing in the safe direction, measured in review: the union runs only on
 the NON-terminal-success saves. An ordinary successful deploy replaces both
