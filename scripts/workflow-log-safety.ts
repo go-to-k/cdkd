@@ -103,6 +103,8 @@ export const flatten = (text: string): string => {
       // point short of ZWSP, and the bidi rows added later start at U+200E —
       // the gap was exactly the three in between.
       code === 0x00ad ||
+      (code >= 0x206a && code <= 0x206f) ||
+      (code >= 0xe0100 && code <= 0xe01ef) ||
       code === 0x034f ||
       (code >= 0xfe00 && code <= 0xfe0f) ||
       (code >= 0x200b && code <= 0x200d) ||
@@ -269,6 +271,43 @@ export const MAX_RENDERED_FINDINGS = 20;
  * forges no line — every one is sanitised — but it buries the real finding,
  * which is the same harm one layer up.
  */
+/**
+ * Which workflow a rendered line belongs to.
+ *
+ * A QUOTED NAME IS ONE TOKEN, not a prefix. Cutting at the first space, slash
+ * or colon works for a bare `a.yml / j: kind`, and merges every quoted name
+ * that shares a prefix: `"zz alpha.yml"`, `"zz beta.yml"` and `"zz gamma.yml"`
+ * all cut to `"zz`, so two of the three are dropped under one key and the
+ * summary cannot name them. It also emits partial tokens like `"ci.yml_`, which
+ * breaks the quoting invariant every other value here maintains.
+ *
+ * So a line that STARTS with a quote is grouped by its whole JSON string,
+ * scanned with the escape rule rather than by searching for the next quote.
+ * Everything else cuts at the first separator — space, slash and colon, all
+ * three load-bearing: without the colon a file takes two shares (the two
+ * renderers emit `a.yml / j: kind` and `a.yml: kind`), and without the space a
+ * quoted name would split again.
+ */
+const groupKey = (line: string): string => {
+  if (!line.startsWith('"')) {
+    // The SPACE is now EQUIVALENT and kept for shape: a quoted name takes the
+    // branch above, so the only lines reaching here are bare
+    // `a.yml / j: kind` / `a.yml: kind`, where the `/` or `:` always cuts
+    // first. Deleting it kills no case, and the honest label is better than a
+    // case contrived to pin a member that cannot matter.
+    const cut = line.search(/[ /:]/);
+    return cut < 0 ? line : line.slice(0, cut);
+  }
+  for (let i = 1; i < line.length; i += 1) {
+    if (line[i] === '\\') {
+      i += 1;
+      continue;
+    }
+    if (line[i] === '"') return line.slice(0, i + 1);
+  }
+  return line;
+};
+
 export const boundedList = (lines: readonly Safe[]): Safe[] => {
   if (lines.length <= MAX_RENDERED_FINDINGS) return [...lines];
   // ROUND-ROBIN BY WORKFLOW, not the first 20. Taking a prefix lets ONE file
@@ -283,11 +322,7 @@ export const boundedList = (lines: readonly Safe[]): Safe[] => {
   // neither is its own group, which is the safe direction.
   const groups = new Map<string, Safe[]>();
   for (const line of lines) {
-    // `:` in the separator class as well, or one fork FILE takes two shares:
-    // the two renderers emit `a.yml / j: kind` and `a.yml: kind`, which split
-    // into `a.yml` and `a.yml:` — different groups for the same workflow.
-    const cut = line.search(/[ /:]/);
-    const key = cut < 0 ? line : line.slice(0, cut);
+    const key = groupKey(line);
     const bucket = groups.get(key);
     if (bucket === undefined) groups.set(key, [line]);
     else bucket.push(line);
@@ -311,8 +346,19 @@ export const boundedList = (lines: readonly Safe[]): Safe[] => {
   // cannot tell a workflow that had nothing to report from one whose report was
   // crowded out. The group names are already `Safe` — they are prefixes of
   // lines this function received — so listing them adds no new venue.
-  const silent = [...groups.entries()]
-    .filter(([, queue]) => !queue.some((line) => kept.includes(line)))
+  // PARTIALLY dropped, not only entirely dropped. Naming just the groups with
+  // NO kept line misses the case a fork reaches for next: leave the workflow
+  // one line and push the interesting one out of its group. Measured — 19 fork
+  // files plus three fork-chosen snapshot keys under `hooks.yml` dropped that
+  // workflow's `unreadable-workflow` line while `hooks.yml` kept a line, so it
+  // was not named and the reader could not learn a real workflow had stopped
+  // parsing.
+  //
+  // CAPPED AT FIVE, and the cap is the point: a fork controls the number of
+  // groups, so an uncapped list puts thousands of names on one line — the
+  // burial this function exists to stop, achieved through its own summary.
+  const incomplete = [...groups.entries()]
+    .filter(([, queue]) => !queue.every((line) => kept.includes(line)))
     .map(([key]) => key);
   const dropped = `… and ${lines.length - kept.length} more` as Safe;
   return [
@@ -320,10 +366,10 @@ export const boundedList = (lines: readonly Safe[]): Safe[] => {
     // The only strings this function builds itself carry nothing
     // fork-controlled beyond those names — a subtraction of two lengths and a
     // join of keys that were already sanitised upstream.
-    silent.length === 0
+    incomplete.length === 0
       ? dropped
-      : (`${dropped} (nothing shown for: ${silent.slice(0, 5).join(', ')}${
-          silent.length > 5 ? `, and ${silent.length - 5} more` : ''
+      : (`${dropped} (not all shown for: ${incomplete.slice(0, 5).join(', ')}${
+          incomplete.length > 5 ? `, and ${incomplete.length - 5} more` : ''
         })` as Safe),
   ];
 };
@@ -360,8 +406,10 @@ export const quoteClamped = (text: string): Safe => {
 };
 
 export const safeName = (name: string): Safe =>
-  // The cast is scoped to the quoting branch alone. Spanning the whole ternary
-  // would let a future edit return `name` raw from the passing branch and still
-  // typecheck — the brand silently switched off at the one site whose job is to
-  // be paranoid about names.
+  // NEITHER BRANCH CASTS any more: both call a function that returns `Safe`, so
+  // the RETURN ANNOTATION is what refuses a raw `name`. An earlier revision of
+  // this comment described a cast "scoped to the quoting branch alone" — true
+  // while the branch read `JSON.stringify(safeText(name)) as Safe`, and
+  // falsified by the round that replaced it with `quoteClamped`, in that
+  // round's own commit.
   WORKFLOW_NAME.test(name) ? safeText(name) : quoteClamped(name);

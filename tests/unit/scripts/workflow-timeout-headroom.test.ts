@@ -97,6 +97,7 @@ import {
   MAX_RENDERED_FINDINGS,
   boundedList,
   flatten,
+  quoteClamped,
   safeJobId,
   safeKey,
   safeName,
@@ -554,7 +555,7 @@ describe('no workflow job is bounded too tightly to survive its own longest run'
     expect(auditSnapshotAge(snapshotGeneratedAt(), Date.now())).toBe('ok');
     // AND the DATA's age, not just the stamp's. These are different questions
     // and only the second one is about the population the verdicts rest on —
-    // see `latestRangeEnd`. `to` is `YYYY-MM-DD`, which `Date.parse` reads as
+    // see `oldestRangeEnd`. `to` is `YYYY-MM-DD`, which `Date.parse` reads as
     // UTC midnight, so the same guard answers both.
     expect(auditSnapshotAge(oldestRangeEnd(SNAPSHOT), Date.now())).toBe('ok');
   });
@@ -804,14 +805,14 @@ describe('the auditor reports what it claims to', () => {
     for (let i = 0; i < 5000; i += 1) flood[`x.yml/j${i}`] = { max: 1, from: 'a', to: 'b' };
     const lines = render(auditHeadroom(new Map(), flood, {}));
     expect(lines).toHaveLength(21);
-    expect(lines.at(-1)).toMatch(/^… and 4980 more( \(nothing shown for: |$)/);
+    expect(lines.at(-1)).toMatch(/^… and 4980 more( \(not all shown for: |$)/);
   });
 
   it('the actionable kind is rendered first', () => {
-    // WHAT THE SORT STILL BUYS, now that the cap shares round-robin. Deleting
-    // the sort no longer buries anything, so the burial case below stopped
-    // discriminating it — this one does, and it asserts the property a reader
-    // actually gets: the line they must act on is the first one.
+    // ORDER, which is one of the two things the sort buys. The other is
+    // burial-prevention once the groups outnumber the cap — see the case below,
+    // and the note on the sort itself about a revision that demoted it to this
+    // half alone.
     const declared = new Map<string, number | undefined>([
       ['aaa.yml/absent', 60],
       ['zzz.yml/tight', 60],
@@ -821,13 +822,32 @@ describe('the auditor reports what it claims to', () => {
     expect(lines[0]).toContain('min against');
   });
 
+  it('a real finding survives a flood of MANY WORKFLOWS, not just many jobs', () => {
+    // THE CASE THAT REFUTES "round-robin makes the sort cosmetic". Round-robin
+    // holds a place for every group only while the groups FIT: a fork controls
+    // the number of FILES, and 21 groups against a cap of 20 means one loses
+    // its line entirely — decided by order, which is what the sort fixes.
+    // Measured with the sort deleted: the genuine finding is absent from the
+    // kept lines AND from the five names the summary can fit.
+    const declared = new Map<string, number | undefined>([['zzz.yml/real', 60]]);
+    const snapshot: Record<string, JobSample> = { 'zzz.yml/real': { max: 3600, from: 'a', to: 'b' } };
+    for (let i = 0; i < 20; i += 1) snapshot[`aaa${String(i).padStart(2, '0')}.yml/j`] = { max: 1, from: 'a', to: 'b' };
+    const lines = render(auditHeadroom(declared, snapshot, {}));
+    expect(lines.some((l) => l.includes('zzz.yml/real'))).toBe(true);
+  });
+
   it('a real finding survives a flood designed to bury it', () => {
-    // ORDERING, NOT BURIAL-PREVENTION — and an earlier revision of this comment
-    // claimed the latter. It was true when `boundedList` kept the FIRST 20; it
-    // stopped being true when the cap became round-robin by workflow, which
-    // holds a place for every file that has a finding whatever the order.
-    // What the sort still buys is that the reader meets the actionable kind
-    // FIRST, which is what the case below asserts.
+    // BURIAL-PREVENTION, AND ALSO ORDERING. A previous revision of this comment
+    // demoted it to ordering alone, on the ground that round-robin holds a
+    // place for every file whatever the order. That is true only while the
+    // groups FIT: a fork controls the number of files, and with 21 groups
+    // against a cap of 20 one group loses its line entirely — which one is
+    // decided by order. Measured: 20 fork files with one finding each plus a
+    // genuine `too-tight`, unsorted, drops the genuine one and does not even
+    // name it among the five in the summary.
+    //
+    // The demotion came from generalising a narrower measurement (20 findings
+    // inside ONE file, which is a single group and genuinely unaffected).
     const declared = new Map<string, number | undefined>();
     for (let i = 0; i < 40; i += 1) declared.set(`aaa.yml/j${i}`, 60);
     declared.set('zzz.yml/real', 60);
@@ -906,11 +926,21 @@ describe('the auditor reports what it claims to', () => {
     // workflow file, and a range from the committed snapshot, which a PR can
     // edit. go-to-k/cdkd#3272 found this class FOUR times, each inside the fix
     // for the previous one, so a fifth venue is the default assumption.
+    //
+    // WHAT THIS CASE PINS IS FLATTENING, NOT QUOTING. Both assertions below are
+    // satisfied by `flatten` alone, and the forgery the title names needs
+    // neither byte — a pure-ASCII payload reads as a second finding with every
+    // control character removed. The quoting halves are pinned by the hostile
+    // FILE-half and hostile-range cases nearby, so this is redundant rather
+    // than false; the note is here because a comment claiming more than its
+    // assertions check is how three defects in this PR stayed green.
     const hostile = `x${String.fromCodePoint(0x0a)}  ci.yml / check-build-test: FORGED${String.fromCodePoint(0x202e)}`;
     const lines = render(build(hostile));
     expect(lines).toHaveLength(1);
     expect(lines[0]).not.toContain(String.fromCodePoint(0x0a));
     expect(lines[0]).not.toContain(String.fromCodePoint(0x202e));
+    // And the quoting, so the title is not a claim this case declines to make.
+    expect(lines[0]).toContain('"');
   });
 
   it.each([
@@ -1085,6 +1115,10 @@ describe('the shared sanitisers constrain the shapes this fence renders', () => 
   it.each([
     // THE CANONICAL MEMBERS, which the first version of this class omitted
     // while reaching for the exotic ones a review had just named.
+    ['U+206A INHIBIT SYMMETRIC SWAPPING (range start)', '\u206a'],
+    ['U+206F NOMINAL DIGIT SHAPES (range end)', '\u206f'],
+    ['U+E0100 VARIATION SELECTOR-17 (range start)', '\u{e0100}'],
+    ['U+E01EF VARIATION SELECTOR-256 (range end)', '\u{e01ef}'],
     ['U+200B ZERO WIDTH SPACE (range start)', '\u200b'],
     ['U+200C ZERO WIDTH NON-JOINER (interior)', '\u200c'],
     ['U+200D ZERO WIDTH JOINER (range end)', '\u200d'],
@@ -1132,6 +1166,57 @@ describe('the shared sanitisers constrain the shapes this fence renders', () => 
     expect(safeRange(range).startsWith('"')).toBe(quoted);
   });
 
+  it('a clipped field CARRIES the clip marker, so it cannot read as whole', () => {
+    // Deleting the `…` from `quoteClamped` left every case green, while
+    // `safeText`'s identical marker has been pinned since its own round. A
+    // field that was cut and does not say so is a field a reader trusts as
+    // complete — the same failure as a dropped closing quote, one step milder.
+    const clipped = quoteClamped(`x${'y'.repeat(500)}`);
+    expect(clipped.endsWith('…"')).toBe(true);
+    expect(() => JSON.parse(clipped) as unknown).not.toThrow();
+  });
+
+  it('a value whose QUOTED form is exactly the cap is not clipped', () => {
+    // The `<=` boundary. With `<` a field that fits exactly is clipped anyway,
+    // losing two characters and gaining a marker that says it was cut when it
+    // was not — measured on 118 characters, whose quoted form is exactly 120.
+    const exact = quoteClamped('x'.repeat(MAX_FIELD_LENGTH - 2));
+    expect(exact).toHaveLength(MAX_FIELD_LENGTH);
+    expect(exact).not.toContain('…');
+  });
+
+  it('a workflow that kept a line but LOST one is still named', () => {
+    // NAMING ONLY THE ENTIRELY-SILENT GROUPS MISSES THE NEXT MOVE: leave a
+    // workflow one line and push the interesting one out of its own group. A
+    // fork controls both — it adds files, and the snapshot keys under a real
+    // workflow are fork-editable. Measured before the fix: `hooks.yml` kept a
+    // line, so it was not named, and a reader could not learn that one of its
+    // findings had been dropped.
+    const lines = boundedList([
+      'hooks.yml/a: too-tight' as Safe,
+      'hooks.yml/b: too-tight' as Safe,
+      ...Array.from({ length: 19 }, (_, i) => `w${String(i).padStart(2, '0')}.yml/j: too-tight` as Safe),
+    ]);
+    expect(lines).toContain('hooks.yml/a: too-tight');
+    expect(lines.at(-1)).toContain('hooks.yml');
+  });
+
+  it('the crowded-out list is itself capped, with a count for the rest', () => {
+    // THE BURIAL ONE LAYER UP. A fork controls the number of groups, so an
+    // uncapped name list puts thousands of names on a single log line — which
+    // is the harm `boundedList` exists to prevent, reproduced inside its own
+    // summary. Neither the five-name cap nor the `and N more` tail was pinned:
+    // widening the slice, deleting the tail, and doing both were all green.
+    const lines = boundedList(
+      Array.from({ length: 27 }, (_, i) => `w${String(i).padStart(2, '0')}.yml/j: too-tight` as Safe),
+    );
+    const summary = lines.at(-1) ?? '';
+    expect(summary).toContain('… and 7 more');
+    expect(summary).toContain('and 2 more)');
+    // Five names, not twenty-seven.
+    expect(summary.split(', ').filter((part) => part.includes('.yml')).length).toBe(5);
+  });
+
   it('a long but legal job id is still clamped', () => {
     // `safeJobId`'s PASSING branch returned the raw id, so 5,000 legal
     // characters reached the line unclamped — the bound `MAX_FIELD_LENGTH`
@@ -1159,7 +1244,26 @@ describe('the shared sanitisers constrain the shapes this fence renders', () => 
       Array.from({ length: 21 }, (_, i) => `w${String(i).padStart(2, '0')}.yml/j: too-tight` as Safe),
     );
     expect(lines).toHaveLength(MAX_RENDERED_FINDINGS + 1);
-    expect(lines.at(-1)).toContain('nothing shown for: w20.yml');
+    expect(lines.at(-1)).toContain('not all shown for: w20.yml');
+  });
+
+  it('a QUOTED workflow name is one group, however many spaces it carries', () => {
+    // The SPACE member of the grouping class, which the `:` and `/` cases do
+    // not reach. A quoted name renders as `"a.yml x" / j: …`, so without the
+    // space two names that differ only after their first space fall into
+    // different groups and one fork file takes many shares.
+    const quoted = Array.from(
+      { length: 10 },
+      (_, i) => `"zz alpha${i}.yml" / j: too-tight` as Safe,
+    );
+    const lines = boundedList([
+      ...quoted,
+      ...Array.from({ length: 19 }, (_, i) => `w${String(i).padStart(2, '0')}.yml/j: too-tight` as Safe),
+    ]);
+    // ALL TEN survive. Cutting at the first space collapses them into one group
+    // keyed `"zz`, which takes ONE share between them — nine real workflows
+    // silently lose their line to a shared prefix a fork chooses.
+    for (const line of quoted) expect(lines).toContain(line);
   });
 
   it('one workflow cannot take two shares of the cap', () => {
@@ -1176,7 +1280,10 @@ describe('the shared sanitisers constrain the shapes this fence renders', () => 
       ...Array.from({ length: 5 }, () => 'a.yml: no-jobs' as Safe),
       ...Array.from({ length: 19 }, (_, i) => `w${String(i).padStart(2, '0')}.yml/j: too-tight` as Safe),
     ]);
-    expect(lines.at(-1)).not.toContain('nothing shown for');
+    // 20 groups against a cap of 20: every workflow keeps a line, so the last
+    // one is present. Without the colon `a.yml` counts twice, making 21 groups,
+    // and the last workflow loses its line.
+    expect(lines.some((l) => l.startsWith('w18.yml'))).toBe(true);
   });
 
   it('a flood from one workflow cannot take the whole cap', () => {

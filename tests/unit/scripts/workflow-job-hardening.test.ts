@@ -113,9 +113,11 @@
  *   - `findingsForAddedFile`'s filter is EQUIVALENT while the real tree is
  *     clean, since every synthetic case adds one bad file to a directory that
  *     reports nothing. It earns its place only in the failing case it exists
- *     for, and a diagnostic property cannot be fenced by a green suite. Its
- *     filter also cannot match a name whose quoting ESCAPED a character, which
- *     is why the quote case below goes around it.
+ *     for, and a diagnostic property cannot be fenced by a green suite. (Its
+ *     filter USED to miss a name whose quoting escaped a character, which is
+ *     why the quote case below goes around it; the filter compares against
+ *     `safeName(name)` now and would match. The case is left as it is — it
+ *     asserts on the whole finding list, which is strictly stronger.)
  *
  * The probes at the bottom come in two kinds, and the split is deliberate per
  * `.claude/rules/testing.md` ("a checker must also prove it FAILS — against
@@ -500,7 +502,16 @@ const deleteUniqueLine = (dir: string, workflow: string, needle: string): void =
     // instance of this class in this file, and the third to appear inside the
     // code that fixed the previous one.
     throw new Error(
-      `probe anchor ${JSON.stringify(safeText(needle))} matched ${hits.length} lines in ` +
+      // `quoteClamped`, not `JSON.stringify(safeText(...))`: the order is safe
+      // here (well-formed), but clamping BEFORE quoting lets the escaping push
+      // the field past the cap — measured at 225 characters against 120 on a
+      // fork-controlled `ci.yml` line. This was the last site still carrying
+      // the pre-`quoteClamped` spelling.
+      //
+      // NOT PINNED: reverting it kills no case. This message belongs to the
+      // PROBE HARNESS rather than to a rendered finding, so no case asserts its
+      // length, and inventing one would pin the harness rather than the fence.
+      `probe anchor ${quoteClamped(needle)} matched ${hits.length} lines in ` +
         `${safeName(workflow)}; a probe whose anchor is absent or ambiguous proves nothing ` +
         '— re-anchor it',
     );
@@ -719,6 +730,34 @@ describe('the audit fails against real code', () => {
     expect(detail.startsWith('"')).toBe(true);
   });
 
+  it.each([
+    ['exactly at the cap passes through unquoted', MAX_FIELD_LENGTH - 2, false],
+    ['one character over is re-quoted', MAX_FIELD_LENGTH - 1, true],
+  ])('safeJson: a value %s', (_what, len, reQuoted) => {
+    // THE BRANCH BOUNDARY, and the decision to measure the FLATTENED length.
+    // `<=` -> `<` and `flatten(json).length` -> `json.length` were both green:
+    // the first re-quotes a value that already fits, the second measures a
+    // length `safeText` would not have produced. Pure ASCII, so flattening is
+    // a no-op and only the arithmetic decides.
+    const out = safeJson('y'.repeat(len));
+    expect(out.startsWith('"\\"')).toBe(reQuoted);
+  });
+
+  it('safeJson measures the FLATTENED length, not the raw one', () => {
+    // The two lengths differ exactly when flattening COLLAPSES something, and
+    // the characters that reach `flatten` are the ones `JSON.stringify` does
+    // NOT escape — U+202E among them, while a NUL comes back as the six
+    // printable characters `\u0000` and collapses nothing. A run of 300 RLOs is
+    // over the cap raw and three characters flattened, so it must take the
+    // SHORT branch: that is what `safeText` would produce, and measuring the
+    // raw length re-quotes a value that did not need it.
+    const value = `y${String.fromCodePoint(0x202e).repeat(300)}y`;
+    const out = safeJson(value);
+    expect(flatten(JSON.stringify(value)).length).toBeLessThanOrEqual(MAX_FIELD_LENGTH);
+    expect(JSON.stringify(value).length).toBeGreaterThan(MAX_FIELD_LENGTH);
+    expect(out.startsWith('"\\"')).toBe(false);
+  });
+
   it('an oversized timeout VALUE stays well-formed through the twin', () => {
     // THE BLOCKER'S OWN ARM, and nothing pinned it. `safeJson` used to
     // stringify first and clamp second, so a `timeout-minutes` string longer
@@ -922,7 +961,10 @@ describe('the audit fails against real code', () => {
     // edit away from being the fifth instance of the forgery this file has
     // already had four of. Assert on the COUNT, and keep the raw line out.
     const duplicated = [...counts].find(([, n]) => n > 1);
-    expect([...counts].filter(([, n]) => n > 1)).toHaveLength(1);
+    // `.length`, not the ARRAY: `toHaveLength` on the pairs hands the matcher
+    // the raw lines, and a failure prints them — which is the venue the comment
+    // above says it is avoiding. Safe today only because chai truncates.
+    expect([...counts].filter(([, n]) => n > 1).length).toBe(1);
     expect(() =>
       auditMutatedCopy((dir) => deleteUniqueLine(dir, 'ci.yml', duplicated?.[0] ?? '')),
     ).toThrow(/matched [2-9][0-9]* lines in ci\.yml/);
@@ -1065,11 +1107,12 @@ describe('a finding cannot forge a line in the log', () => {
     // No `/` in the name — that would make it a path rather than a file name,
     // and the probe would die creating it rather than measuring anything.
     const name = 'zz" ci.yml: check-build-test no-timeout #.yml';
-    // NOT through `findingsForAddedFile`: its filter looks for `safeText(name)`
-    // inside the rendered field, and escaping turns the interior `"` into `\"`,
-    // so the needle no longer occurs — the filter cannot see a name of exactly
-    // the shape this case is about. The real tree reports nothing, so the whole
-    // list IS this file's findings.
+    // NOT through `findingsForAddedFile`, though it would now work: the filter
+    // compared with `includes(safeText(name))` when this case was written, and
+    // escaping turns the interior `"` into `\"`, so the needle did not occur.
+    // Asserting on the whole finding list is stronger anyway — the real tree
+    // reports nothing, so the list IS this file's findings — so the case stays
+    // as it is rather than being routed through a helper it does not need.
     const audit = auditMutatedCopy((dir) =>
       writeFileSync(join(dir, name), 'name: X\npermissions: {}\njobs:\n  a:\n    runs-on: x\n'),
     );
@@ -1103,7 +1146,7 @@ describe('a finding cannot forge a line in the log', () => {
     const lines = render(audit.findings);
     expect(audit.findings).toHaveLength(40);
     expect(lines).toHaveLength(MAX_RENDERED_FINDINGS + 1);
-    expect(lines.at(-1)).toMatch(new RegExp(`^… and ${40 - MAX_RENDERED_FINDINGS} more( \\(nothing shown for: |$)`));
+    expect(lines.at(-1)).toMatch(new RegExp(`^… and ${40 - MAX_RENDERED_FINDINGS} more \\(not all shown for: [^,)]+\\)$`));
 
     const long = 'x'.repeat(500);
     const clamped = findingsForAddedFile(
@@ -1207,7 +1250,7 @@ describe('the caps are literals, not whatever the constants say', () => {
     );
     expect(audit.findings).toHaveLength(40);
     expect(render(audit.findings)).toHaveLength(21);
-    expect(render(audit.findings).at(-1)).toMatch(/^… and 20 more( \(nothing shown for: |$)/);
+    expect(render(audit.findings).at(-1)).toMatch(/^… and 20 more \(not all shown for: [^,)]+\)$/);
   });
 
   it('the twins sanitise what they emit, not just the audit', () => {
@@ -1233,6 +1276,11 @@ describe('the caps are literals, not whatever the constants say', () => {
     expect(forged[0]?.startsWith('zz-twin.yml / "a ')).toBe(true);
   });
 
+  // EXACT, not a prefix match. Every fixture in this file puts all its findings
+  // in ONE workflow, so exactly one group exists and none can be crowded out —
+  // the `(not all shown for: …)` tail is unreachable here. An earlier revision
+  // loosened these four to a `toMatch` alternation when that tail was added,
+  // which also made them tolerate an INVERTED silent-group filter.
   it('exactly 20 findings are rendered whole, 21 are capped', () => {
     // The `>` in `boundedList` — with `>=` the twentieth list loses a line to a
     // "… and 0 more" that says nothing. No case sat at the boundary before.
@@ -1248,7 +1296,7 @@ describe('the caps are literals, not whatever the constants say', () => {
       writeFileSync(join(dir, 'zz-21.yml'), `name: X\npermissions: {}\njobs:\n${jobs(21)}`),
     );
     expect(render(at21.findings)).toHaveLength(21);
-    expect(render(at21.findings).at(-1)).toMatch(/^… and 1 more( \(nothing shown for: |$)/);
+    expect(render(at21.findings).at(-1)).toMatch(/^… and 1 more \(not all shown for: [^,)]+\)$/);
   });
 
   it('the twins are capped too', () => {
@@ -1478,7 +1526,11 @@ describe('the twins are exercised against hostile trees, not only clean ones', (
       (dir) => independentlyUndeclaredPermissions(dir),
     );
     expect(lines).toHaveLength(21);
-    expect(lines.at(-1)).toMatch(/^… and 20 more( \(nothing shown for: |$)/);
+    // FORTY FILES, so this is the one case in this file with more groups than
+    // the cap — 20 workflows get a line and 20 are crowded out entirely, which
+    // is exactly what the summary names. The other three cap cases put all
+    // their findings in ONE workflow and assert the bare form.
+    expect(lines.at(-1)).toMatch(/^… and 20 more \(not all shown for: .*and 15 more\)$/);
   });
 });
 

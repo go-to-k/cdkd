@@ -344,6 +344,12 @@ export const walkMayStop = (
   runSeconds: number,
 ): boolean => {
   if (!declaredHere.every((key) => maxima.has(key))) return false;
+  // NOT DEAD FROM THIS FUNCTION'S SIDE, though it is unreachable from its only
+  // production caller: `declaredJobKeys` throws on a jobless workflow, so
+  // `declaredHere` is never empty there and the line above already returned.
+  // It stays because the guard belongs to the ARITHMETIC — `Math.min()` of
+  // nothing is `Infinity`, which would make every run prunable — and this is an
+  // exported function with cases of its own that reach it directly.
   if (maxima.size === 0) return false;
   return runSeconds <= Math.min(...maxima.values());
 };
@@ -613,7 +619,20 @@ const main = (): void => {
       }
     }
     ranges.set(file, { from: usedFrom, to });
-    const doc: unknown = parseYaml(readFileSync(join(WORKFLOW_DIR, file), 'utf8'));
+    // GUARDED, not relying on `declaredJobKeys` having parsed the same file
+    // earlier: that is a property of statement ORDER, which is exactly what the
+    // fence's own `snapshotGeneratedAt` refuses to rely on. The message names
+    // the file and never the parse error, which quotes the fork's source.
+    //
+    // NOT PINNED, like everything else inside `main`: reaching it needs the
+    // network walk this file deliberately leaves untested. The pure parts are
+    // extracted precisely so the untested remainder is small and boring.
+    let doc: unknown;
+    try {
+      doc = parseYaml(readFileSync(join(WORKFLOW_DIR, file), 'utf8'));
+    } catch {
+      throw new Error(`${safeName(file)} stopped parsing mid-walk; fix the workflow and re-run`);
+    }
     const byDisplay = displayNameToKey(file, doc);
     const declaredHere = [...declared].filter((k) => k.startsWith(`${file}/`));
     const maxima = new Map<string, number>();
