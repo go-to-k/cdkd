@@ -1201,15 +1201,22 @@ only where bash would run it:
 
 The trim may sit on the line after the `|`, after a comment, or after the body
 of a heredoc the pipeline opened. It refuses a trim that is not the very next
-stage, a `||` fallback, a tab, extra arguments after the trim, and a trim that
-sits only in a trailing comment. It also refuses a redirection that replaces or
-closes the trim's own stdin — `<file`, `0<f`, `<<EOF`, `<<-EOF`, `<<<x`, `<>f`,
-`<&3`, `<&-`, `3<&0-` — because the count then never reaches `tr`. An output
-redirection written after a blank (`> out`, `2>/dev/null`), one on another
-descriptor (`3<file`), a duplication of stdin onto itself (`<&0`) and a new
-descriptor opened from it (`{fd}<&0`) keep it. A descriptor joined to the trim
-argument with no blank (`tr -d ' '2>x`, `tr -d ' '{fd}<&0`) is part of that
-argument — bash then deletes ` 2` — and is refused for the same reason.
+stage, a `||` fallback, a trim on a later pipeline (after `;`, `&`, `&&` or a
+newline), a tab, extra arguments after the trim, and a trim that sits only in a
+trailing comment. A redirection keeps the trim only when the count still flows
+from `wc`'s stdout into `tr`'s stdin:
+
+| Redirection | Verdict |
+| --- | --- |
+| on `wc`'s own stdout, before or after the `wc` word: `>count.txt`, `>>f`, `>\|f`, `>&2`, `1>&2`, `&>f`, `>&-`, a move of it (`3>&1-`), or a quoted or expanded target (`3>&'1-'`) | refused: the count goes elsewhere and `tr` reads nothing |
+| on `tr`'s stdin: `<file`, `0<f`, `<<EOF`, `<<-EOF`, `<<<x`, `<>f`, `<&3`, `<&-`, `3<&0-` | refused: the count never reaches `tr` |
+| a descriptor joined to the trim argument with no blank: `tr -d ' '2>x`, `tr -d ' '{fd}<&0` | refused: it is part of the argument, so bash deletes ` 2` |
+| a descriptor before `&>` / `&>>`: `tr -d ' ' 2&>R` | refused: `&>` starts a word, so `2` is an argument to `tr` |
+| a quoted or expanded duplication target on either stage (`2>&"1"`, `3<&'0-'`), or a named descriptor closed (`{fd}>&-`, `{fd}<&-`) | refused: it may move or close the descriptor the count travels on |
+| another descriptor with a plain target, after a blank: `2>/dev/null` or `2>&1` on either stage, `3<file`, and `tr`'s own output (`> out`) | kept |
+| a descriptor duplicated or moved onto itself (`<&0` on `tr`, `>&1` or `>&1-` on `wc`), or a new one (`{fd}<&0`) | kept |
+
+Some refused spellings do keep the count on the pipe (a quoted `>&"1"`, or saving and restoring stdout with `3>&1 >f >&3`); write them in the plain form.
 
 It is not a full bash parser. A `wc` reached through a variable (`${WC} -l`),
 `eval`, an alias, or as an argument of another command (`xargs wc`,
@@ -1223,8 +1230,8 @@ do not write either:
 
 | Shape | What goes wrong |
 | --- | --- |
-| a heredoc inside a `$(...)` in `wc`'s own arguments | its body can read as the trim |
 | a `$'...'` escape spelling the command (`$'\x77c'`) | the command is never recognised as `wc` |
+| a quoted `<<-` delimiter that starts with a tab (`cat <<-"<TAB>EOF"`) | the rest of the file is read as heredoc text |
 
 Two more hide a `wc` from the classifier but are still reported by the test's
 word check: a parenthesis quoted inside arithmetic (`(( a["("] ))`) and a

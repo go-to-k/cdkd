@@ -8,6 +8,7 @@ import {
   MIN_ALLOW_REASON_LENGTH,
   classifyWcTrim,
 } from '../../../scripts/check-integ-wc-trim.js';
+import { uncountedWcWords } from '../../uncounted-wc-words.js';
 
 /**
  * Regression guard for issue #3213: a `wc` result in a `tests/integration`
@@ -28,6 +29,10 @@ import {
  *  4. bash, through a BSD-padding `wc` shim: the untrimmed `=` comparison
  *     really fails and both trims really fix it, for each input form — so the
  *     CONVENTION is proven on a GNU host too, where the real `wc` never shows it.
+ *
+ * How the classifier's running time GROWS is guarded separately, in
+ * `integ-verify-wc-trim-growth.test.ts`: timings taken in this file would be
+ * taken in the heap its other cases leave behind.
  */
 
 const REPO_ROOT = join(import.meta.dirname, '../../..');
@@ -53,102 +58,6 @@ function trackedShellFiles(): string[] {
 }
 
 const TAB = '\t';
-
-/**
- * GROWTH, measured against a LINEAR REFERENCE in the same run: a guard on the
- * complexity class that recurred in review (a per-item `filter`, a
- * backtracking regex, a per-opener scan to the end of the file, a strip over a
- * growing accumulator, a per-`wc` stage re-walk, a per-character frame search).
- * Each finished under vitest's default at the sizes its shape happened to be
- * tested at, so a timeout could not see it.
- *
- * Doubling the input and bounding the time ratio on its own is not stable
- * enough to pin: measured here, six competing busy loops red a correct
- * implementation, because contention does not scale the two sizes alike. So
- * each candidate's ratio is divided by the ratio of a plainly linear corpus
- * measured the same way — the contention then cancels. The candidate spread is
- * 4x, not 2x: at 2x a fully quadratic regression scores about 4 / 2 = 2 against
- * a linear 1, and the size constant decides whether it is caught (measured on
- * the strip this PR replaced: n = 48,000 passed, n = 96,000 red); at 4x it
- * scores about 16 / 4 = 4, unmistakable at every size measured.
- *
- * WHAT IT DOES AND DOES NOT BUY. It separates a fully quadratic pass from a
- * linear one ON THE SHAPES LISTED BELOW. A growth an order milder (n log n)
- * passes, and only those shapes are measured: a shape one character away can
- * escape it — the classifier had a per-character frame search that the
- * unquoted deep-`${` shape passed and the quoted one, 100x slower, did not
- * measure until it was added. The set is open, not closed. Each generator
- * starts with an untrimmed `wc` and the case asserts it is reported, so an
- * empty classification cannot pass by being fast.
- */
-// Bounds chosen from measurement, not taste: under six competing busy loops a
-// correct implementation reached 1.54 relative and a 1.33 reference exponent,
-// while the quadratic implementations this replaced measure well above.
-const MAX_RELATIVE_GROWTH = 1.8;
-
-/** This process's CPU time for one call, in milliseconds. */
-const cpuMs = (run: () => void) => {
-  const started = process.cpuUsage();
-  run();
-  const spent = process.cpuUsage(started);
-  return (spent.user + spent.system) / 1000;
-};
-
-/** The candidate spread: `large` is this many times `small`. */
-const SPREAD = 4;
-
-/** Median of three ratios, each from interleaved best-of-three samples. */
-const growthRatio = (measure: (text: string) => void, make: (n: number) => string, n: number): number => {
-  const small = make(n);
-  const large = make(SPREAD * n);
-  measure(small);
-  const ratios = [0, 1, 2].map(() => {
-    let a = Infinity;
-    let b = Infinity;
-    // Interleaved: a busy period that lands on one size lands on both.
-    for (let run = 0; run < 3; run++) {
-      a = Math.min(a, cpuMs(() => measure(small)));
-      b = Math.min(b, cpuMs(() => measure(large)));
-    }
-    // A floor on the denominator: a sub-millisecond baseline is noise, not growth.
-    return b / Math.max(a, 1);
-  });
-  return ratios.sort((x, y) => x - y)[1]!;
-};
-
-/** A corpus the classifier walks once, with no heredoc, substitution or index work. */
-const LINEAR_REFERENCE = (n: number) => `${Array.from({ length: n }, (_, k) => `echo line ${k}`).join('\n')}\n`;
-
-/**
- * The reference's OWN growth, as an exponent over a 4x spread (1.0 is linear).
- * Dividing by the reference cancels work the two share, so a regression in
- * shared code would cancel itself out; this is what notices that. Measured:
- * 0.82 quiet and up to 1.33 under six competing busy loops, against 1.81 with a
- * quadratic line-index build; the verdict is the median of three.
- */
-const MAX_REFERENCE_EXPONENT = 1.4;
-const referenceExponent = (): number => {
-  const n = 8_000;
-  const spread = SPREAD;
-  const small = LINEAR_REFERENCE(n);
-  const large = LINEAR_REFERENCE(spread * n);
-  classifyWcTrim(small);
-  const exponents = [0, 1, 2].map(() => {
-    let a = Infinity;
-    let b = Infinity;
-    for (let run = 0; run < 3; run++) {
-      a = Math.min(a, cpuMs(() => classifyWcTrim(small)));
-      b = Math.min(b, cpuMs(() => classifyWcTrim(large)));
-    }
-    return Math.log(b / Math.max(a, 1)) / Math.log(spread);
-  });
-  return exponents.sort((x, y) => x - y)[1]!;
-};
-let referenceRatio: number | undefined;
-const relativeGrowth = (measure: (text: string) => void, make: (n: number) => string, n: number): number => {
-  referenceRatio ??= growthRatio(classifyWcTrim, LINEAR_REFERENCE, 8_000);
-  return growthRatio(measure, make, n) / referenceRatio;
-};
 
 describe('classifyWcTrim', () => {
   describe('flags an untrimmed wc', () => {
@@ -295,7 +204,7 @@ describe('classifyWcTrim', () => {
       ['a blank line between the pipe and the trim', "N=$(wc -l </dev/null |\n\n  tr -d ' ')", 'space'],
       ['a line continuation between the pipe and the trim', "N=$(wc -l </dev/null | \\\n  tr -d ' ')", 'space'],
       ['a line continuation after the trim argument', "N=$(wc -l </dev/null | tr -d ' ' \\\n  | head -1)", 'space'],
-      // Argument shapes the stage scan must read through to find the real `|`.
+      // Argument shapes the lexer must read through to find the real `|`.
       ['a quoted ) inside a substitution argument', "N=$(wc -l $(printf '%s' ')') | tr -d ' ')", 'space'],
       ['a double-quoted ) inside a substitution argument', 'N=$(wc -l $(printf "%s" ")") | tr -d \' \')', 'space'],
       ['a substitution nested in a substitution argument', "N=$(wc -l $(echo $(echo x) ) | tr -d ' ')", 'space'],
@@ -339,9 +248,33 @@ describe('classifyWcTrim', () => {
       ['a heredoc on another descriptor after the trim', "ls | wc -l | tr -d ' ' 3<<'A'\nx\nA", 'space'],
       ['an appending &>> redirect after the trim', "ls | wc -l | tr -d ' ' &>> out.txt", 'space'],
       ['a quoted redirect target after the trim', "ls | wc -l | tr -d ' ' > \"count file.txt\"", 'space'],
-      ['&> before the pipe into the trim', "wc -l &>/dev/null | tr -d ' '", 'space'],
+      // A no-break space is text to bash, so the target is one word.
+      ['a redirect target holding a no-break space after the trim', "wc -l </dev/null | tr -d ' ' >a\u00a0b", 'space'],
+      ['a redirect target starting with a no-break space', "wc -l </dev/null | tr -d ' ' >\u00a0f", 'space'],
+      ['a redirect target starting with an escaped space', "wc -l </dev/null | tr -d ' ' >\\ f", 'space'],
+      // Inside a word a `#` is text, including after a line continuation.
+      ['a redirect target holding a # after the trim', "wc -l </dev/null | tr -d ' ' 2>count#log", 'space'],
+      ['a redirect target continued onto a line starting with #', "wc -l </dev/null | tr -d ' ' 2>count\\\n#log", 'space'],
+      // Redirections on the wc stage that leave its STDOUT on the pipe.
+      ['stdout duplicated onto itself on the wc stage', "wc -l </dev/null >&1 | tr -d ' '", 'space'],
+      ['stdout duplicated onto itself, with a blank after the &', "wc -l </dev/null >& 1 | tr -d ' '", 'space'],
+      ['stdout duplicated onto itself, then a line continuation before the pipe', "wc -l </dev/null >&1\\\n | tr -d ' '", 'space'],
+      ['stdout duplicated onto itself, then two line continuations', "wc -l </dev/null >&1\\\n\\\n | tr -d ' '", 'space'],
+      ['stdout duplicated onto itself, a line continuation before the descriptor', "wc -l </dev/null >&\\\n1 | tr -d ' '", 'space'],
+      ['stdout moved onto itself, a line continuation inside the target', "wc -l </dev/null >&1\\\n- | tr -d ' '", 'space'],
+      // Moving a descriptor onto itself leaves it open (bash keeps the pipe).
+      ['stdout moved onto itself on the wc stage', "wc -l </dev/null >&1- | tr -d ' '", 'space'],
+      ['an output redirect on another descriptor on the wc stage', "wc -l </dev/null 3>/dev/null | tr -d ' '", 'space'],
+      ['a new named descriptor opened on the wc stage', "wc -l </dev/null {fd}>/dev/null | tr -d ' '", 'space'],
       ['<&3 before the pipe into the trim', "wc -l <&3 | tr -d ' '", 'space'],
       ['a comment right after the pipe, then the trim', "wc -l </dev/null |# c\ntr -d ' '", 'space'],
+      ['a comment right after |&, then the trim', "wc -l </dev/null |&# c\ntr -d ' '", 'space'],
+      // A stdout redirection on an EARLIER command does not carry over to wc.
+      ['a bare redirection, then ; and a trimmed wc', ">f; wc -l </dev/null | tr -d ' '", 'space'],
+      ['a bare redirection, then a newline and a trimmed wc', ">f\nwc -l </dev/null | tr -d ' '", 'space'],
+      ['a bare redirection, then & and a trimmed wc', ">f & wc -l </dev/null | tr -d ' '", 'space'],
+      ['a bare redirection piped into a trimmed wc', ">f | wc -l </dev/null | tr -d ' '", 'space'],
+      ['a stdout redirection on another command before the wc', "echo x >f; wc -l </dev/null | tr -d ' '", 'space'],
       ['|& into the trim', "wc -l </dev/null |& tr -d ' '", 'space'],
       ['a shift in the arguments before a line-broken trim', "wc -l $((1<<2)) </dev/null |\ntr -d ' '", 'space'],
       // A `<<` inside a substitution, backticks or `${...}` in wc's arguments
@@ -396,6 +329,11 @@ describe('classifyWcTrim', () => {
       // A trailing `-` MOVES stdin onto another descriptor, closing fd 0.
       ['stdin moved onto another descriptor', "ls | wc -l | tr -d ' ' 3<&0-"],
       ['stdin moved onto a new named descriptor', "ls | wc -l | tr -d ' ' {fd}<&0-"],
+      ['a quoted move of the trim\'s stdin', "ls | wc -l | tr -d ' ' 3<&'0-'"],
+      // A backslash-newline inside a redirection target continues the COMMAND:
+      // the next line's redirection is still the trim's. Read as a text
+      // backslash ending the target, the newline would end the stage and pass.
+      ['a redirection continued onto a line that replaces the trim\'s stdin', "wc -l </dev/null | tr -d ' ' 2>/dev/null\\\n 0</dev/null"],
       // `{name}<&-` closes the descriptor the variable holds, which may be fd 0.
       ['a named descriptor closed on input', "ls | wc -l | tr -d ' ' {fd}<&-"],
       ['a named descriptor closed on output', "ls | wc -l | tr -d ' ' {fd}>&-"],
@@ -417,6 +355,9 @@ describe('classifyWcTrim', () => {
       // trim-looking line) starts after the command's line; `cat` is next.
       ['an opener inside an array substitution, its body holding trim-looking text', "a=($(cat <<'EOF')) | wc -l |\ntr -d ' '\nEOF\ncat"],
       ['a trim followed by a redirection with no target, which bash rejects', "ls | wc -l | tr -d ' ' >"],
+      // A `#` that STARTS the target word opens a comment: the redirection has
+      // no target, which bash rejects.
+      ['a redirection whose target would start with #', "ls | wc -l | tr -d ' ' >#x"],
       // The trim must START the next stage: a later `tr -d ' '` elsewhere in the
       // file cannot stand in for it.
       ['a nine-character stage, with a tr -d on a later line', "N=$(ls | wc -l | abcdefghi)\nX=$(echo | tr -d ' ')"],
@@ -450,6 +391,64 @@ describe('classifyWcTrim', () => {
       // -d and a space.
       ['the trim words handed to a different command', 'N=$(ls | wc -l | cat tr -d " ")'],
       ['a tr on the next line, a separate command', "N=$(wc -l <file\ntr -d ' ')"],
+      // A separator ends the wc's pipeline, so a `| tr` on a LATER pipeline is
+      // not its trim. The two cases above cannot show that: their `)` ends the
+      // stage wherever the separator is read.
+      ['a trim on the next pipeline, after a newline', "wc -l </dev/null\necho x | tr -d ' '"],
+      ['a trim on the next pipeline, after ;', "wc -l </dev/null; echo x | tr -d ' '"],
+      ['a trim on the next pipeline, after &', "wc -l </dev/null & echo x | tr -d ' '"],
+      ['a trim on the next pipeline, after &&', "wc -l </dev/null && echo x | tr -d ' '"],
+      ['a trim on the next pipeline, after a subshell closes', "(wc -l </dev/null) ; echo x | tr -d ' '"],
+      // Fail-closed: a `)` ends the wc's stage, so a trim after the subshell is
+      // read as the subshell's next stage, not wc's (bash would trim it).
+      ['a trim after the subshell holding the wc (fail-closed)', "(wc -l </dev/null) | tr -d ' '"],
+      // A heredoc body inside a substitution in wc's OWN arguments belongs to
+      // that substitution: its `)` and trim-looking text do not end the stage.
+      ['a quoted heredoc in an argument whose body closes the substitution early', "wc -l $(cat <<'EOF'\n) | tr -d ' '\nEOF\n)"],
+      ['an unquoted heredoc in an argument whose body closes the substitution early', "wc -l $(cat <<EOF\n) | tr -d ' '\nEOF\n)"],
+      ['the same, inside a capture', "N=$(wc -l $(cat <<'EOF'\n) | tr -d ' '\nEOF\n))"],
+      // Redirecting wc's OWN stdout sends the padded count to the file and gives
+      // `tr` nothing: a trim after it trims nothing (the bash case below shows it).
+      ['wc\'s stdout sent to a file before the pipe', "N=$(printf 'a\\nb\\n' | wc -l >count.txt | tr -d ' ')"],
+      ['wc\'s stdout appended to a file', "ls | wc -l >>count.txt | tr -d ' '"],
+      ['wc\'s stdout clobbering a file', "ls | wc -l >|count.txt | tr -d ' '"],
+      ['wc\'s stdout sent to stderr', "ls | wc -l >&2 | tr -d ' '"],
+      ['wc\'s stdout sent to stderr, descriptor written', "ls | wc -l 1>&2 | tr -d ' '"],
+      ['wc\'s stdout and stderr sent to a file', "wc -l &>/dev/null | tr -d ' '"],
+      ['wc\'s stdout and stderr appended to a file', "ls | wc -l &>>count.txt | tr -d ' '"],
+      ['wc\'s stdout sent to a file after stderr joins it', "ls | wc -l 2>&1 >count.txt | tr -d ' '"],
+      ['wc\'s stdout opened read-write on a file', "ls | wc -l 1<>count.txt | tr -d ' '"],
+      ['wc\'s stdout closed', "ls | wc -l >&- | tr -d ' '"],
+      // A MOVE of stdout onto another descriptor closes fd 1 behind it
+      // (bash: `wc: write error: Bad file descriptor`).
+      ['wc\'s stdout moved onto another descriptor', "ls | wc -l 3>&1- | tr -d ' '"],
+      ['wc\'s stdout moved onto a new named descriptor', "ls | wc -l {fd}>&1- | tr -d ' '"],
+      // Quote removal and expansion happen before the redirection: a target
+      // that is not a bare descriptor may be a move of stdout.
+      ['a single-quoted move of wc\'s stdout', "ls | wc -l 3>&'1-' | tr -d ' '"],
+      ['a double-quoted move of wc\'s stdout', "ls | wc -l 3>&\"1-\" | tr -d ' '"],
+      ['a duplication target read from a variable', "ls | wc -l 2>&\"$X\" | tr -d ' '"],
+      ['a quoted move of stdout through an input duplication', "ls | wc -l 3<&'1-' | tr -d ' '"],
+      // `>&WORD` with a word that is not a descriptor names a FILE for stdout and stderr.
+      ['wc\'s stdout sent to a file whose name starts with a digit', "ls | wc -l >&1file | tr -d ' '"],
+      ['the same file name finished by a backtick substitution', "ls | wc -l >&1`printf file` | tr -d ' '"],
+      ['the same file name finished by a $( ) substitution', "ls | wc -l >&1$(printf file) | tr -d ' '"],
+      // A no-break space is part of the word to bash, not a separator.
+      ['the same file name continued past a no-break space', "ls | wc -l >&1\u00a0file | tr -d ' '"],
+      ['the same file name continued by a process substitution', "ls | wc -l >&1>(:) | tr -d ' '"],
+      ['the same file name continued across a line continuation', "ls | wc -l >&1\\\nfile | tr -d ' '"],
+      ['a move of stdout split by a line continuation', "ls | wc -l 3>&1\\\n- | tr -d ' '"],
+      ['a line continuation inside the operator (a fail-closed bound)', "ls | wc -l >\\\n&1 | tr -d ' '"],
+      // Fail-closed bounds: these do end on the pipe, and are refused anyway.
+      ['a quoted self-duplication of wc\'s stdout (a fail-closed bound)', "ls | wc -l >&\"1\" | tr -d ' '"],
+      ['wc\'s stdout saved and restored (a fail-closed bound)', "ls | wc -l 3>&1 >/dev/null >&3 | tr -d ' '"],
+      ['a named descriptor closed on the wc stage (it may hold stdout)', "ls | wc -l {fd}>&- | tr -d ' '"],
+      ['wc\'s stdout redirected BEFORE the wc word', "ls | >count.txt wc -l | tr -d ' '"],
+      ['wc\'s stdout replaced by a heredoc', "ls | wc -l 1<<EOF | tr -d ' '\nx\nEOF"],
+      // A `{name}` descriptor written first is a redirection, not the command word.
+      ['an untrimmed wc after a named-descriptor redirection written first', "N=$(ls | {fd}>f wc -l)"],
+      ['wc\'s stdout redirected before the wc word, descriptor written', "ls | 1>count.txt wc -l | tr -d ' '"],
+      ['wc\'s stdout and stderr redirected before the wc word', "ls | &>count.txt wc -l | tr -d ' '"],
     ])('%s', (_label, stmt) => {
       expect(classifyWcTrim(`${stmt}\n`).violations).toHaveLength(1);
     });
@@ -602,6 +601,9 @@ describe('classifyWcTrim', () => {
       ['a tab-indented line under << right after such an opener (body text)', 'cat <<EOF # \\\n\tEOF\nwc -l </dev/null', []],
       ['a continued <<- terminator whose second line is tab-indented', 'cat <<-EOF # \\\nE\\\n\tOF\nwc -l </dev/null\nEOF', []],
       ['a non-terminator right after such an opener, then the real terminator', 'cat <<EOF # \\\nx\nEOF\nwc -l </dev/null', [4]],
+      // A no-break space is part of the delimiter word, so the terminator line
+      // must carry it too; the file after it is code again.
+      ['a delimiter holding a no-break space', "cat <<'EOF'\u00a0x\ndata\nEOF\u00a0x\nwc -l </dev/null", [4]],
       [
         'two heredoc bodies on one line, the first quoted, in the order written',
         "cmd <<'A' <<'B'\n$(ls | wc -l)\nA\n$(ls | wc -l)\nB\nwc -l </dev/null",
@@ -628,84 +630,20 @@ describe('classifyWcTrim', () => {
       expect(c.invocations).toEqual([]);
     });
 
-    // Every generator opens with an untrimmed `wc` on line 1, which the case
-    // asserts is reported: a classifier that returns nothing is fast, not right.
-    const SENTINEL = 'wc -l </dev/null\n';
-    it.each([
-      ['unterminated openers packed bytes apart', (n: number) => SENTINEL + '$(<<Z\n'.repeat(n), 8_000, () => 1],
-      [
-        'nested unterminated openers inside a terminated outer body',
-        (n: number) => `${SENTINEL}cat <<E\n${'$(cat <<Z\n'.repeat(n)}E\n`,
-        8_000,
-        () => 1,
-      ],
-      ['openers whose comments end in a backslash', (n: number) => SENTINEL + '$(<<Z # \\\n'.repeat(n), 16_000, () => 1],
-      [
-        'deeply nested parameter expansions',
-        (n: number) => `${SENTINEL}echo ${'${X:-'.repeat(n)}${'x'.repeat(n)}${'}'.repeat(n)}\n`,
-        8_000,
-        () => 1,
-      ],
-      [
-        // One character from the previous shape: the quote pushes a frame the
-        // classifier once searched past per character.
-        'deeply nested parameter expansions around a double-quoted word',
-        (n: number) => `${SENTINEL}echo ${'${X:-'.repeat(n)}"${'x'.repeat(n)}"${'}'.repeat(n)}\n`,
-        8_000,
-        () => 1,
-      ],
-      [
-        'many wc stages whose arguments hold a shift',
-        (n: number) => `${SENTINEL}${Array.from({ length: n }, () => "wc -l $((1<<2)) </dev/null |\ntr -d ' '").join('\n')}\n`,
-        2_000,
-        () => 1,
-      ],
-      [
-        // Stages nest, so re-walking each one from its `wc` was quadratic.
-        'wc stages nested in one another',
-        (n: number) => `${SENTINEL}${'wc $('.repeat(n)}${')'.repeat(n)}\n`,
-        16_000,
-        (n: number) => n + 1,
-      ],
-      [
-        // No other case is `<<-` at all, which is why the strip over a growing
-        // accumulator had nowhere to fail.
-        'a long <<- delimiter reached through continued lines',
-        (n: number) => {
-          const delimiter = 'D'.repeat(n);
-          const body = Array.from({ length: Math.ceil(n / 2) }, () => '\tx\\').join('\n');
-          return `${SENTINEL}cat <<-${delimiter} # \\\n${body}\n\t${delimiter}\n`;
-        },
-        48_000,
-        () => 1,
-      ],
-    ])('grows about linearly on %s', (_label, make, n, violations) => {
-      const c = classifyWcTrim(make(n));
-      expect(c.violations[0]?.line).toBe(1);
-      expect(c.violations).toHaveLength(violations(n));
-      expect(relativeGrowth(classifyWcTrim, make, n)).toBeLessThan(MAX_RELATIVE_GROWTH);
-    }, 120_000);
-
-    it('grows about linearly on the reference corpus the other cases divide by', () => {
-      // Without this, a regression in code the reference SHARES cancels itself
-      // out of every ratio above.
-      expect(referenceExponent()).toBeLessThan(MAX_REFERENCE_EXPONENT);
-    }, 120_000);
-
     it.each([
       ['unterminated openers packed bytes apart', (n: number) => '$(<<Z\n'.repeat(n)],
       ['nested unterminated openers inside a terminated outer body', (n: number) => `cat <<E\n${'$(cat <<Z\n'.repeat(n)}E\n`],
       ['openers whose comments end in a backslash', (n: number) => '$(<<Z # \\\n'.repeat(n)],
     ])('reads %s without finding an invocation', (_label, make) => {
       expect(classifyWcTrim(make(32_000)).invocations).toEqual([]);
-    });
+    }, 60_000);
 
     it('sees every wc stage when many carry a shift in their arguments', () => {
       const body = Array.from({ length: 32_000 }, () => "wc -l $((1<<2)) </dev/null |\ntr -d ' '").join('\n');
       const c = classifyWcTrim(`${body}\n`);
       expect(c.violations).toEqual([]);
       expect(c.invocations).toHaveLength(32_000);
-    });
+    }, 60_000);
 
     it.each([
       // The index's two defining properties: the FIRST match at or after the
@@ -780,6 +718,27 @@ describe('classifyWcTrim', () => {
     // echo as if it were part of the `wc` command.
     const c = classifyWcTrim('echo "lines: $(wc -l <"${F}") done"\n');
     expect(c.violations.map((v) => v.stage)).toEqual(['wc -l <"${F}"']);
+  });
+
+  it('reports a stage cut at the separator or comment that ends it', () => {
+    const c = classifyWcTrim('wc -l </dev/null # note | tr\nwc -l </dev/null; ls\n');
+    expect(c.violations.map((v) => v.stage)).toEqual(['wc -l </dev/null', 'wc -l </dev/null']);
+  });
+
+  it('caps a long stage, marking the cut only when text was cut', () => {
+    const cap = 200;
+    const long = `wc -l ${'a'.repeat(cap)}`;
+    expect(classifyWcTrim(`${long}\n`).violations[0]!.stage).toBe(`${long.slice(0, cap)}...`);
+    // Whitespace past the cap is not text: nothing was cut.
+    const short = `wc -l ${'a'.repeat(cap - 16)}`;
+    expect(classifyWcTrim(`${short}${' '.repeat(40)}\n`).violations[0]!.stage).toBe(short);
+    expect(classifyWcTrim(`${short}${'\t'.repeat(40)}\n`).violations[0]!.stage).toBe(short);
+    // The cut never splits a surrogate pair.
+    const astral = `wc -l ${'a'.repeat(cap - 7)}\u{1F600}rest`;
+    const stage = classifyWcTrim(`${astral}\n`).violations[0]!.stage;
+    expect(stage).toBe(`${astral.slice(0, cap - 1)}...`);
+    // No lone surrogate anywhere in the reported text.
+    expect(stage).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
   });
 
   it('ends a stage at the backtick that closes its substitution', () => {
@@ -979,67 +938,6 @@ describe('tree-wide (issue #3213)', () => {
 });
 
 describe('the tree stays inside what the classifier reads (issue #3213)', () => {
-  /**
-   * The WORD `wc` (bare or as a path's last segment) outside a comment, on a
-   * line where the classifier recorded no invocation: a `wc` reached some way
-   * it does not read — through a variable (`COUNTER=wc; ${COUNTER} -l`),
-   * `eval`, an alias, or as an argument of `xargs` / `find -exec`. Returns the
-   * 1-based lines.
-   */
-  function uncountedWcWords(content: string): number[] {
-    const c = classifyWcTrim(content);
-    // Line lookup by binary search over precomputed line starts: O(n log n) in
-    // the file, not quadratic, since a fork PR can add a long fixture.
-    const lineStarts = [0];
-    for (let k = 0; k < content.length; k++) if (content[k] === '\n') lineStarts.push(k + 1);
-    const lineOf = (offset: number) => {
-      let lo = 0;
-      let hi = lineStarts.length - 1;
-      while (lo < hi) {
-        const mid = (lo + hi + 1) >> 1;
-        if (lineStarts[mid]! <= offset) lo = mid;
-        else hi = mid - 1;
-      }
-      return lo + 1;
-    };
-    // Earliest real comment start per line.
-    const commentStart = new Map<number, number>();
-    for (const h of c.commentOffsets) {
-      const line = lineOf(h);
-      if (!commentStart.has(line) || h < commentStart.get(line)!) commentStart.set(line, h);
-    }
-    // Ranges are disjoint, and matches arrive in increasing offset order, so a
-    // pointer that only moves forward answers "inside a range?" in linear time.
-    const sweep = (ranges: Array<[number, number]>) => {
-      const sorted = [...ranges].sort((a, b) => a[0] - b[0]);
-      let k = 0;
-      return (offset: number) => {
-        while (k < sorted.length && sorted[k]![1] <= offset) k++;
-        return k < sorted.length && sorted[k]![0] <= offset;
-      };
-    };
-    // A counted invocation covers every letter of its WORD, so `"wc"`,
-    // `$'wc'` and `/usr/bin/wc` all match by range, not by the word's first index.
-    const inCounted = sweep(c.invocations.map((i): [number, number] => [i.offset, i.wordEnd]));
-    const inDataBody = sweep(c.dataHeredocBodies);
-    const out = new Set<number>();
-    // Anchored on the letters themselves (no leading character class that can
-    // backtrack across a long line); the boundary is checked by hand.
-    for (const m of content.matchAll(/wc(?![A-Za-z0-9_-])/g)) {
-      const offset = m.index;
-      const before = content[offset - 1];
-      // `/wc` ends a path; any other word character before it makes a longer word.
-      if (before !== undefined && before !== '/' && /[A-Za-z0-9_.-]/.test(before)) continue;
-      // Each sweep is monotone in the offset, so skipping a call is harmless.
-      if (inCounted(offset) || inDataBody(offset)) continue;
-      const line = lineOf(offset);
-      const hash = commentStart.get(line);
-      if (hash !== undefined && hash < offset) continue;
-      out.add(line);
-    }
-    return [...out];
-  }
-
   it('finds a wc the classifier does not read, in each spelling that reaches one', () => {
     // Controls: without them an empty tree-wide result could mean the helper
     // matches nothing at all.
@@ -1085,25 +983,9 @@ describe('the tree stays inside what the classifier reads (issue #3213)', () => 
     expect(uncountedWcWords('echo awc\n')).toEqual([]);
   });
 
-  it.each([
-    ['many commented lines', (n: number) => `eval 'wc -l'\n${Array.from({ length: n }, (_, k) => `# line ${k}: count with wc -l and trim it`).join('\n')}\n`],
-    ['many counted invocations', (n: number) => `eval 'wc -l'\n${Array.from({ length: n }, () => "wc -l </dev/null | tr -d ' '").join('\n')}\n`],
-  ])('grows about linearly on %s', (_label, make) => {
-    // The first recurrence of the super-linear class lived in THIS helper. The
-    // uncounted `wc` on line 1 is asserted, so an empty result cannot pass.
-    expect(uncountedWcWords(make(16_000))).toEqual([1]);
-    // 16,000 lines: at 4,000 the baseline is ~8 ms, where scheduler noise
-    // alone reached 2.4x once.
-    expect(relativeGrowth((text) => void uncountedWcWords(text), make, 16_000)).toBeLessThan(MAX_RELATIVE_GROWTH);
-  }, 120_000);
-
-  it('stays fast on long fixtures: no quadratic blowup in lines, line length, or counted ranges', () => {
-    // Both shapes were super-linear in an earlier revision: a per-match scan of
-    // every comment, each doing a linear line lookup (cubic in lines), and a
-    // leading character class that let the
-    // regex backtrack across a line (quadratic in its length). Each input below
-    // runs in milliseconds now and took well over the 5 s default under the
-    // quadratic form, so a regression fails here rather than creeping.
+  it('reads long fixtures correctly: many lines, a long line, many counted ranges', () => {
+    // The same four shapes are measured for GROWTH in
+    // integ-verify-wc-trim-growth.test.ts; this case pins the answers on them.
     const lines = Array.from({ length: 20_000 }, (_, k) => `# line ${k}: count with wc -l and trim it`).join('\n');
     expect(uncountedWcWords(`${lines}\n`)).toEqual([]);
     expect(uncountedWcWords(`echo ${'=a/'.repeat(32_000)}\n`)).toEqual([]);
@@ -1115,7 +997,8 @@ describe('the tree stays inside what the classifier reads (issue #3213)', () => 
     expect(uncountedWcWords(`${bodies}\n`)).toEqual([]);
     // The path form is still recognised on a long line.
     expect(uncountedWcWords(`echo ${'a/'.repeat(1_000)}wc\n`)).toEqual([1]);
-  });
+    // A bound on a hang, not on speed: growth is the other file's job.
+  }, 60_000);
 
   it('every wc word in the tree is a counted invocation, comment text, or data heredoc text', () => {
     const hits = trackedShellFiles().flatMap((rel) =>
@@ -1127,7 +1010,8 @@ describe('the tree stays inside what the classifier reads (issue #3213)', () => 
         'Call wc directly as a command (and trim it); if the word is only text (an error message, a quoted string), ' +
         'reword it — the word wc may appear only in a comment or a heredoc whose delimiter is quoted; or extend scripts/check-integ-wc-trim.ts to read the new shape.',
     ).toEqual([]);
-  });
+    // Reads every tracked shell file: a bound on a hang, not on speed.
+  }, 60_000);
 });
 
 describe('real-code probes (issue #3213)', () => {
@@ -1245,6 +1129,15 @@ describe('bash behavior (the convention itself, through a BSD-padding wc)', () =
     const r = runWithBsdWc(`N="$(${form} | ${trim})"\n[ "\${N}" = "1" ] && echo EQUAL || echo NOT-EQUAL\n`);
     expect(r.stdout).toContain('EQUAL');
     expect(r.stdout).not.toContain('NOT-EQUAL');
+  }, 60_000);
+
+  it('a redirect of wc\'s own stdout leaves the PADDED count in the file, whatever follows the pipe', () => {
+    const r = runWithBsdWc(
+      "N=\"$(printf 'a\\n' | wc -l >count.txt | tr -d ' ')\"\n" +
+        'printf "captured=[%s] file=[%s]\\n" "${N}" "$(cat count.txt)"\n',
+    );
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('captured=[] file=[       1]\n');
   }, 60_000);
 
   it('an ARITHMETIC comparison accepts the padded value (why the fence is wider than the defect, and says so)', () => {

@@ -24,7 +24,10 @@
  * must be the VERY NEXT pipeline stage after `wc` (a newline or a comment may
  * follow the `|`, as bash allows), its argument must be exactly one of those
  * two (single- or double-quoted), and the `tr` stage must end right after it —
- * `tr -d ' ' -c` keeps the spaces and deletes the digits.
+ * `tr -d ' ' -c` keeps the spaces and deletes the digits. Nothing may take the
+ * count off the pipe in between: a redirection of `wc`'s stdout
+ * (`wc -l >f | tr -d ' '`, which leaves the padded count in `f`) or of `tr`'s
+ * stdin (`| tr -d ' ' <f`) makes the site untrimmed.
  *
  * WHY EVERY `wc`, NOT ONLY A STRING COMPARISON
  *
@@ -100,10 +103,13 @@
  *     - `$'...'` escapes are read as the escaped character, not decoded
  *       (`$'\x77c'` is not seen). Fail-open, and NOT backstopped: the file
  *       never spells `wc`.
- *     - A heredoc body inside a substitution in `wc`'s OWN arguments is read
- *       as code by the stage scan, so its text can end the stage early and
- *       read as a trim. Fail-open, and NOT backstopped: the `wc` word is
- *       counted.
+ *     - Only a duplication or move of fd 1 onto itself (`>&1`, `1>&1`,
+ *       `1<&1`, `>&1-`; a blank may follow the `&`) is read as leaving `wc`'s
+ *       stdout on the pipe. Any other redirection of fd 1, and
+ *       any duplication target that is not a bare descriptor (`2>&"$X"`), is
+ *       refused — including ones that end up on the pipe after all: a quoted
+ *       `>&"1"`, a save-and-restore such as `3>&1 >f >&3`, or a line
+ *       continuation inside the operator itself (`>\` then `&1`). Fail-closed.
  *     - CRLF line endings are not read (a heredoc terminator followed by `\r`
  *       never matches). Unreachable while `check-source-control-bytes.ts`
  *       rejects CR tree-wide.
@@ -112,11 +118,11 @@
  *       compares the tab-stripped line against the raw delimiter and misses
  *       it, and the rest of the file is read as data. Fail-open, and NOT
  *       backstopped: a data body is exempt from the tree invariant.
- *    On COST rather than verdicts: the unit test bounds how the classifier's
- *    running time grows with the input on a listed set of shapes (a fork PR
- *    can add a tracked fixture of any size). That set is open — a shape one
- *    character from a measured one has escaped it before — so a new shape
- *    belongs in that list when it is found, not in this comment.
+ *    On COST rather than verdicts: `integ-verify-wc-trim-growth.test.ts` bounds
+ *    how the classifier's running time grows with the input on a listed set of
+ *    shapes (a fork PR can add a tracked fixture of any size). That set is
+ *    open — a shape one character from a measured one has escaped it before —
+ *    so a new shape belongs in that list when it is found, not in this comment.
  *    The tree invariant: every `wc` word in a tracked integ shell file must be
  *    a counted invocation, comment text, or text in a heredoc whose delimiter
  *    is quoted.
@@ -147,7 +153,10 @@ export interface WcInvocation {
   stage: string;
   inputForm: WcInputForm;
   trim: WcTrim;
-  /** The `wc` sits in a `$(...)` / backtick nested inside a double-quoted string. */
+  /**
+   * The `wc` sits in a `$(...)` / backtick nested inside a double-quoted string.
+   * Descriptive only: no verdict reads it.
+   */
   quotedSubstitution: boolean;
   /** Carries a valid `allow-untrimmed-wc` marker. */
   allowed: boolean;
@@ -234,7 +243,9 @@ function trimAfter(
     if (bodyEnd !== undefined) i = bodyEnd;
     else if (src[i] === ' ' || src[i] === '\t' || src[i] === '\n') i++;
     else if (src[i] === '\\' && src[i + 1] === '\n') i += 2;
-    else if (src[i] === '#' && /[\s|]/.test(src[i - 1]!)) {
+    // Every position reached here starts a word (after `|`, `|&`, a blank, a
+    // newline, a continuation or a heredoc body), so a `#` opens a comment.
+    else if (src[i] === '#') {
       const nl = src.indexOf('\n', i);
       if (nl === -1) return null;
       i = nl;
@@ -298,7 +309,14 @@ function trimAfter(
     i += r[0].length;
     if (!dup) {
       skipBlanks();
-      const target = /^(?:'[^']*'|"(?:\\.|[^"\\])*"|[^\s;&|()<>`#'"])+/.exec(src.slice(i));
+      // Bash splits words on space, tab and newline only: a no-break space is
+      // text. A backslash escapes the next character — a newline included, which
+      // continues the word onto the next line rather than ending the stage. A
+      // `#` opens a comment only at the start of a word; inside one it is text.
+      const target =
+        /^(?:'[^']*'|"(?:\\.|[^"\\])*"|\\[\s\S]|[^ \t\n;&|()<>`#'"\\])(?:'[^']*'|"(?:\\.|[^"\\])*"|\\[\s\S]|[^ \t\n;&|()<>`'"\\])*/.exec(
+          src.slice(i),
+        );
       if (!target) return null;
       i += target[0].length;
     }
@@ -348,6 +366,11 @@ interface CodeFrame {
   pendingRedirect: boolean;
   /** An input redirection written BEFORE the command word (`</dev/null wc`). */
   leadInput: 'redirect' | 'here-string' | null;
+  /**
+   * A redirection of stdout written BEFORE the command word (`>f wc`). Cleared
+   * at each separator, the only way to reach a later command word.
+   */
+  leadStdout: boolean;
   /** The command runner (`env`, `exec` ...) whose options are being read. */
   runner: string | null;
   /** The next word is the value of a runner option (`exec -a NAME`). */
@@ -384,6 +407,49 @@ interface PendingHeredoc {
 const isCode = (f: Frame): f is CodeFrame =>
   f.kind === 'code' || f.kind === 'sub' || f.kind === 'bt' || f.kind === 'arr';
 
+/**
+ * The target of a `>&` / `<&` starting at `from` (just past the `&`), when it
+ * is a bare descriptor (`1`, `1-`) or `-` that ends the word; `null` for any
+ * other word. Bash removes a line continuation anywhere in a word before
+ * reading it, so continuations may sit before, inside or after the target and
+ * are dropped from the result. The word must END there: `>&1file`,
+ * `>&1$(...)` and `>&1>(...)` name a FILE; a backtick is not an end, since it
+ * may open a substitution; and bash splits words on space, tab and newline
+ * only. One forward pass — a backtracking pattern here was quadratic in a run
+ * of continuations.
+ */
+function readDupTarget(src: string, from: number): string | null {
+  let k = from;
+  const skipContinuations = () => {
+    while (src[k] === '\\' && src[k + 1] === '\n') k += 2;
+  };
+  while (src[k] === ' ' || src[k] === '\t' || (src[k] === '\\' && src[k + 1] === '\n')) k += src[k] === '\\' ? 2 : 1;
+  let text = '';
+  if (src[k] === '-') {
+    text = '-';
+    k++;
+  } else {
+    for (;;) {
+      skipContinuations();
+      const c = src[k];
+      if (c === undefined || c < '0' || c > '9') break;
+      text += c;
+      k++;
+    }
+    if (text === '') return null;
+    if (src[k] === '-') {
+      text += '-';
+      k++;
+    }
+  }
+  skipContinuations();
+  const c = src[k];
+  const endsWord =
+    c === undefined || c === ' ' || c === '\t' || c === '\n' || c === '|' || c === ';' || c === '&' || c === ')' ||
+    ((c === '<' || c === '>') && src[k + 1] !== '(');
+  return endsWord ? text : null;
+}
+
 /** Index just past the `)` closing a `((` / `$((` that starts at `open` (the first `(`). */
 function skipArithmetic(src: string, open: number): number {
   let depth = 0;
@@ -409,7 +475,8 @@ function readHeredocDelimiter(
   // Inside a backtick substitution a backtick ends the word too
   // (`` `cat <<'EOF'` `` closes it); elsewhere it is part of the delimiter
   // (``cat <<E`OF` ``).
-  while (k < src.length && !/[\s;&|()<>]/.test(src[k]!) && !(inBacktick && src[k] === '`')) {
+  // Bash splits words on space, tab and newline only: a no-break space is text.
+  while (k < src.length && !/[ \t\n;&|()<>]/.test(src[k]!) && !(inBacktick && src[k] === '`')) {
     let c = src[k]!;
     if (c === '$' && (src[k + 1] === "'" || src[k + 1] === '"')) {
       k++;
@@ -446,6 +513,11 @@ export function classifyWcTrim(content: string): WcTrimClassification {
     if (end > start) heredocBodies.set(start, end);
   };
   const deferredTrims: Array<{ index: number; stageEnd: number; terminator: string; inBacktick: boolean }> = [];
+  /**
+   * Invocations whose OWN stdout is redirected (`wc -l >f | tr`, `>&2`, `&>f`):
+   * the count goes to the file and `tr` reads nothing, so no trim applies.
+   */
+  const stdoutAway = new Set<number>();
 
   const newCode = (kind: CodeFrame['kind']): CodeFrame => ({
     kind,
@@ -454,6 +526,7 @@ export function classifyWcTrim(content: string): WcTrimClassification {
     afterPipe: false,
     pendingRedirect: false,
     leadInput: null,
+    leadStdout: false,
     runner: null,
     runnerValue: false,
     cond: false,
@@ -597,6 +670,7 @@ export function classifyWcTrim(content: string): WcTrimClassification {
         trim: null,
         quotedSubstitution: dqAncestor(),
       });
+      if (f.leadStdout) stdoutAway.add(f.open.index);
       f.afterPipe = false;
       f.leadInput = null;
     } else if (ASSIGNMENT_RE.test(raw) || (w.literal !== null && !w.quoted && RESERVED_PREFIX_WORDS.has(w.literal))) {
@@ -611,6 +685,16 @@ export function classifyWcTrim(content: string): WcTrimClassification {
   };
 
   /**
+   * A redirection of stdout in `f`: it belongs to the `wc` stage the frame is
+   * reading, or to the command to come. (One after another command's word is
+   * cleared with that command before any later `wc` could read it.)
+   */
+  const markStdoutAway = (f: CodeFrame) => {
+    if (f.open) stdoutAway.add(f.open.index);
+    else f.leadStdout = true;
+  };
+
+  /**
    * Ends the `wc` stage this frame is reading at `end`, the separator that ended
    * it. The reported stage text is capped, since it only names the site.
    */
@@ -619,12 +703,22 @@ export function classifyWcTrim(content: string): WcTrimClassification {
     if (!open) return;
     f.open = null;
     // Slice only what is reported: stages nest, so slicing each whole stage
-    // would be quadratic on `wc $(wc $(...))`.
-    const capped = end - open.start > MAX_STAGE_CHARS;
-    const text = src.slice(open.start, capped ? open.start + MAX_STAGE_CHARS : end).trim();
+    // would be quadratic on `wc $(wc $(...))`. The text is cut only when
+    // something other than trailing whitespace lies past the cap.
+    const cut = open.start + MAX_STAGE_CHARS;
+    // Past the end of the file `nextSolid` is undefined, which compares false.
+    const capped = nextSolid[cut]! < end;
+    // Never between the halves of a surrogate pair.
+    const keep = capped && /[\uD800-\uDBFF]/.test(src[cut - 1]!) ? cut - 1 : cut;
+    const text = src.slice(open.start, Math.min(end, keep)).trim();
     invocations[open.index]!.stage = capped ? `${text}...` : text;
     deferredTrims.push({ index: open.index, stageEnd: end, terminator, inBacktick: f.kind === 'bt' });
   };
+
+  /** `nextSolid[k]`: the first index at or after `k` that is not whitespace. */
+  const nextSolid = new Int32Array(src.length + 1);
+  nextSolid[src.length] = src.length;
+  for (let k = src.length - 1; k >= 0; k--) nextSolid[k] = /\s/.test(src[k]!) ? nextSolid[k + 1]! : k;
 
   // Physical line of an offset, by binary search over precomputed line starts.
   const lineStarts = [0];
@@ -983,6 +1077,7 @@ export function classifyWcTrim(content: string): WcTrimClassification {
       f.commandPosition = f.kind !== 'arr';
       f.pendingRedirect = false;
       f.leadInput = null;
+      f.leadStdout = false;
       f.runner = null;
       f.runnerValue = false;
       i = startHeredocs(i + 1, f) - 1;
@@ -1123,12 +1218,14 @@ export function classifyWcTrim(content: string): WcTrimClassification {
       f.afterPipe = !double;
       f.commandPosition = true;
       f.leadInput = null;
+      f.leadStdout = false;
       continue;
     }
     if (c === '&') {
       if (src[i + 1] === '>') {
-        // `&>file` / `&>>file`
+        // `&>file` / `&>>file` send stdout (and stderr) to the file.
         endWord(f, i);
+        markStdoutAway(f);
         i++;
         if (src[i + 1] === '>') i++;
         f.pendingRedirect = true;
@@ -1140,6 +1237,7 @@ export function classifyWcTrim(content: string): WcTrimClassification {
       f.commandPosition = true;
       f.afterPipe = false;
       f.leadInput = null;
+      f.leadStdout = false;
       continue;
     }
     if (c === ';') {
@@ -1149,6 +1247,7 @@ export function classifyWcTrim(content: string): WcTrimClassification {
       f.commandPosition = true;
       f.afterPipe = false;
       f.leadInput = null;
+      f.leadStdout = false;
       continue;
     }
     if (c === '<' || c === '>') {
@@ -1162,8 +1261,13 @@ export function classifyWcTrim(content: string): WcTrimClassification {
           ? w.literal
           : null;
       const onStdin = c === '<' && (descriptor === null || Number(descriptor) === 0);
-      if (w && !w.redirectTarget && !w.quoted && w.literal !== null && /^\d+$/.test(w.literal)) {
-        // `2>&1`: the digits are the redirection's file descriptor, not a word.
+      const namedFd = descriptor !== null && descriptor.startsWith('{');
+      // The descriptor redirected: 0 or 1 by default, a number when written,
+      // and NaN — equal to none — for `{name}`, which opens a new one.
+      const fd = descriptor === null ? (c === '<' ? 0 : 1) : Number(descriptor);
+      if (w && descriptor !== null) {
+        // `2>&1`, `{fd}>f`: the digits or name are the redirection's file
+        // descriptor, not a word — so they use up no command position.
         f.word = null;
         f.commandPosition = w.commandPosition;
         f.afterPipe = w.afterPipe;
@@ -1180,6 +1284,7 @@ export function classifyWcTrim(content: string): WcTrimClassification {
           k++;
         }
         while (src[k] === ' ' || src[k] === '\t') k++;
+        if (fd === 1) markStdoutAway(f);
         const d = readHeredocDelimiter(src, k, f.kind === 'bt');
         if (d.end > k) {
           pending.push({ delimiter: d.delimiter, stripTabs, quoted: d.quoted, frame: f });
@@ -1200,6 +1305,21 @@ export function classifyWcTrim(content: string): WcTrimClassification {
       }
       let k = i + 1;
       while (src[k] === '<' || src[k] === '>' || src[k] === '|') k++;
+      // Stdout redirected away from the pipe: anything on fd 1 except a
+      // duplication or move of fd 1 onto itself (`>&1`, `>&1-`); a MOVE of fd 1
+      // onto another descriptor (`3>&1-`), which closes fd 1 behind it; and
+      // `{name}>&-`, which closes the descriptor the variable holds — possibly
+      // fd 1. A duplication target that is not a bare descriptor (`3>&'1-'`,
+      // `2>&"$X"`, `>&1file`) may be any of those once expanded, so it counts
+      // as one.
+      const isDup = src[k] === '&';
+      const dupTarget = isDup ? readDupTarget(src, k + 1) : null;
+      const fromFd = dupTarget !== null && dupTarget !== '-' ? Number.parseInt(dupTarget, 10) : null;
+      const movesFromStdout = fromFd === 1 && dupTarget!.endsWith('-') && fd !== 1;
+      const unreadTarget = isDup && dupTarget === null;
+      if ((fd === 1 && fromFd !== 1) || movesFromStdout || (namedFd && dupTarget === '-') || unreadTarget) {
+        markStdoutAway(f);
+      }
       if (src[k] === '&') {
         k++;
         const fd = /^(\d+|-)/.exec(src.slice(k));
@@ -1224,7 +1344,9 @@ export function classifyWcTrim(content: string): WcTrimClassification {
     }
   }
   for (const d of deferredTrims) {
-    invocations[d.index]!.trim = trimAfter(src, d.stageEnd, d.terminator, d.inBacktick, heredocBodies);
+    invocations[d.index]!.trim = stdoutAway.has(d.index)
+      ? null
+      : trimAfter(src, d.stageEnd, d.terminator, d.inBacktick, heredocBodies);
   }
 
   // Allow markers: a real comment trailing the wc's own line, or a FULL-LINE
