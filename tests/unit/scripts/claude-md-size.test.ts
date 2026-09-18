@@ -53,9 +53,9 @@ import { dirname, join } from 'node:path';
  *      issue or PR that established them, where they stay dated. CLAUDE.md's
  *      `aws-cdk-lib` bullet is the worked example of this split.
  *   2. Check whether a HOOK already delivers the rule at the moment of the
- *      action. `verify-pr-gate.sh`, `ci-green-gate.sh`, `worktree-owner-gate.sh`
- *      and the one-shot foot-gun gates all print an actionable block, so
- *      CLAUDE.md needs the pointer, not the full text.
+ *      action. `ci-green-gate.sh`, `worktree-owner-gate.sh`,
+ *      `integ-destroy-gate.sh` and the other surviving gates print an
+ *      actionable block, so CLAUDE.md needs the pointer, not the full text.
  *   3. Move PATH-TRIGGERED detail to `.claude/rules/` -- but only if a `paths:`
  *      glob genuinely fires when the rule is needed. It must fire on the file
  *      whose editing needs the rule, NOT on the file that documents it.
@@ -122,8 +122,21 @@ const MAX_INJECTED_CONTEXT_BYTES = 58_200;
  *
  * Genuinely retiring a rule is legal -- lower this by exactly one, in the
  * commit that retires it, and say which.
+ *
+ * LOWERED 29 -> 27 by the agent-tooling shrink, which is TWO in one commit, so
+ * both are named. The marker-gate bullets (`Before every commit`, `Before
+ * opening or merging any PR`, `integ-broad`, `integ-local`,
+ * `integ-schema-migration`, `pr-review`, and the gate-liveness probe paragraph)
+ * described mechanisms that no longer exist. SEVEN went; FIVE replaced them --
+ * the recommended-procedure bullet, the blocking-criterion bullet, the
+ * tooling-backlog bullet, the reviewer-count bullet, and the one that keeps the
+ * broad / local / schema-bump integ runs as recommendations. Net -2, and the
+ * arithmetic is spelled out because a floor whose job is to force a correct
+ * accounting is worth nothing if its own note miscounts. No DIRECTIVE
+ * was dropped without its mechanism going with it -- that is the distinction
+ * this floor exists to force someone to state.
  */
-const MIN_WORKFLOW_RULE_BULLETS = 29;
+const MIN_WORKFLOW_RULE_BULLETS = 27;
 
 /**
  * Paths the harness INJECTS into the system prompt rather than reading through

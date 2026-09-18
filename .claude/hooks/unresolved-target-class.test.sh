@@ -123,10 +123,10 @@ if [ -z "$REGISTERED" ]; then
   exit 1
 fi
 
-if [ "${#HOOKS[@]}" -ge 30 ]; then
-  ok "population: ${#HOOKS[@]} hooks enumerated from .claude/settings.json (floor 30)"
+if [ "${#HOOKS[@]}" -ge 10 ]; then
+  ok "population: ${#HOOKS[@]} hooks enumerated from .claude/settings.json (floor 10)"
 else
-  ng "population: only ${#HOOKS[@]} hooks enumerated from .claude/settings.json, expected >= 30 -- the enumeration is broken, every case below is vacuous"
+  ng "population: only ${#HOOKS[@]} hooks enumerated from .claude/settings.json, expected >= 10 -- the enumeration is broken, every case below is vacuous"
 fi
 
 missing_file=""
@@ -249,12 +249,13 @@ mk_repo() { # <dir>
   echo one > "$d/f.txt"
   : > "$d/README.md"
   # EMPTY on purpose. An empty config is UNPARSABLE, so
-  # `gate_resolve_marker_gate` fails closed to `canonical` and
-  # integ-schema-migration-gate consults markgate and blocks -- which is what
-  # keeps it in EXPECTED_EXERCISED below. A config declaring OTHER gates, or an
-  # absent one, resolves to `none`, and since go-to-k/cdkd#3351 a foreign target
-  # at `none` relaxes; these fixtures are throwaway repos, hence foreign, so the
-  # gate would go quiet here.
+  # `gate_resolve_marker_gate` fails closed to `canonical` and a markgate-backed
+  # gate consults markgate and blocks -- which is what keeps `integ-destroy-gate`
+  # in EXPECTED_EXERCISED below. A config declaring OTHER gates, or an absent
+  # one, resolves to `none`; these fixtures are throwaway repos, hence foreign,
+  # and a gate that relaxes at `none` for a foreign target would go quiet here
+  # (go-to-k/cdkd#3351 gave one gate that relaxation -- `integ-destroy` did NOT
+  # inherit it, which is why this fixture still works).
   touch "$d/.markgate.yml"
   "$REAL_GIT" -C "$d" add -A >/dev/null 2>&1
   "$REAL_GIT" -C "$d" -c user.email=t@t -c user.name=t commit -q -m base
@@ -321,9 +322,12 @@ stage_violations() { # <dir>
 # src file was staged -- the direct COMPLEMENT of what the fixture above stages,
 # so one tree could not satisfy both, which is why that gate had no literal
 # control and sat outside fence 3 (go-to-k/cdkd#2156). That gate is retired to
-# CI (go-to-k/cdkd#2717); the fixture STAYS because `gh-label-validity-gate`'s
-# only literal control rides it, and because the complement shape is what any
-# future staged-file gate will need.
+# CI (go-to-k/cdkd#2717), and the last gate whose literal control rode this
+# fixture went with the agent-tooling shrink. It STAYS anyway: the complement
+# shape -- a commit staging NO `src/**` file -- is what any future staged-file
+# gate needs, and it is cheap. Deleting fixture setup to match one retired gate
+# is how another gate's population gets silently emptied, which the note above
+# `stage_violations` records catching once already.
 stage_nosrc_violation() { # <dir>
   local d="$1"
   echo two > "$d/f.txt"
@@ -342,11 +346,13 @@ stage_nosrc_violation "$nosrc"; stage_nosrc_violation "$nosrc_spaced"
 SHIM="$TMPDIR/bin"; mkdir -p "$SHIM"
 export GH_VIEW="$TMPDIR/v.json" GH_DIFF="$TMPDIR/d.txt" GH_CHECKS="$TMPDIR/c.tsv" GH_LIST="$TMPDIR/l.json"
 printf '{"files":[{"path":"src/deployment/deploy-engine.ts"},{"path":"src/local/x.ts"},{"path":"src/types/state.ts"}],"additions":2000,"deletions":100,"changedFiles":30,"headRefOid":"abc123","headRefName":"feat/x"}' > "$GH_VIEW"
-# Spelled as `src/types/state.ts` actually spells it, so integ-schema-migration-gate
-# stays EXERCISED here (go-to-k/cdkd#3351). The previous `version: 1 | 2 | ... | 5;`
-# shape has never existed in that file; it armed only the gate's equally-fictional
-# regexes, so this fence's EXPECTED_EXERCISED row for that gate was satisfied by a
-# diff no real PR could produce.
+# A schema-bump diff spelled as `src/types/state.ts` actually spells it. The gate
+# it armed is retired, so nothing in EXPECTED_EXERCISED depends on it now; it
+# stays because `GH_DIFF` is ONE shared payload and a gate reading the PR diff
+# needs a realistic one. Keep it realistic if you edit it: the previous
+# `version: 1 | 2 | ... | 5;` shape had never existed in that file, and a fence
+# row satisfied by a diff no real PR could produce is the vacuous-pass shape
+# this suite exists to refuse (go-to-k/cdkd#3351).
 printf 'diff --git a/src/types/state.ts b/src/types/state.ts\n-export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5;\n+export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6;\n-export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 5;\n+export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 6;\n' > "$GH_DIFF"
 printf 'check-build-test\tfail\t2m\thttps://x\n' > "$GH_CHECKS"
 printf '[{"number":263,"mergedAt":"2026-05-11T03:00:00Z","headRefName":"main","title":"t"}]' > "$GH_LIST"
@@ -544,20 +550,22 @@ exercised_count=$(printf '%s' "$exercised_list" | wc -w | tr -d ' ')
 # PER-HOOK baseline, recorded from measurement rather than predicted. An
 # aggregate floor cannot say WHICH gate went quiet, and a floor set below the
 # current value tolerates exactly the drop it exists to reveal: the previous
-# `>= 6` against an actual 9 stayed green with check-gate AND branch-gate
+# `>= 6` against an actual 9 stayed green with two of the blocking gates
 # reduced to `exit 0`.
-# go-to-k/cdkd#2717 RETIRED four names that used to sit in this list --
-# commit-prefix-scope-gate, internal-pr-labels-gate, issue-dup-check-gate,
-# pr-title-prefix-scope-gate and gh-pr-edit-deprecation-gate. The baseline SHRINKS here, which is the one
-# direction the comment above warns about, so the reason is recorded rather
-# than left to be inferred: those gates no longer exist to block anything, and
+#
+# The baseline has SHRUNK TWICE, which is the one direction the comment above
+# warns about, so both reasons are recorded rather than left to be inferred --
 # a baseline naming a deleted file fails for a reason that has nothing to do
-# with the class this fence measures. Their subject was the PR DIFF or the PR
-# TITLE, which a CI job reads directly, so they moved to `.github/workflows/`
-# rather than being dropped -- see go-to-k/cdkd#2717 for the criterion
-# (a PreToolUse refusal is justified only when the harm completes at the moment
-# of the action and the actor cannot undo it).
-EXPECTED_EXERCISED="branch-gate bughunt-clean-gate check-gate ci-green-gate cmd-parse-stub-gate dirty-path-restore-gate gh-label-validity-gate integ-broad-gate integ-destroy-gate integ-local-gate integ-schema-migration-gate main-tree-branch-gate post-merge-orphan-push-gate pr-review-gate provider-docs-gate provider-integ-gate ref-segment-audit-gate roundtrip-test-gate state-destroy-force-gate verify-pr-gate"
+# with the class this fence measures. go-to-k/cdkd#2717 moved five gates whose
+# subject was the PR DIFF or the PR TITLE into `.github/workflows/`, where CI
+# reads the artifact directly. The agent-tooling shrink then retired the whole
+# marker layer plus the commit-time content lints, leaving only the gates that
+# clear the criterion in `.claude/rules/hooks.md`: the harm completes at the
+# moment of the action AND lands irreversibly on a third party's artifact, on
+# another session's work, or on the maintainer's AWS account. What is left here
+# is every SURVIVING hook that judges a git/gh verb against a target tree, and
+# it may not shrink again without the same kind of note.
+EXPECTED_EXERCISED="branch-gate bughunt-clean-gate ci-green-gate dirty-path-restore-gate integ-destroy-gate main-tree-branch-gate post-merge-orphan-push-gate"
 missing=""
 for want in $EXPECTED_EXERCISED; do
   case " $exercised_list " in *" $want "*) ;; *) missing="$missing $want" ;; esac
@@ -570,7 +578,7 @@ fi
 
 # --- the OTHER direction: every registered hook is exercised OR declared -----
 #
-# go-to-k/cdkd#2156. The baseline above only says "these 25 must not go quiet".
+# go-to-k/cdkd#2156. The baseline above only says "these must not go quiet".
 # On its own that lets a hook sit outside the fence forever, which is exactly
 # where ten of them sat: the go-to-k/cdkd#2027 lane raised this population from
 # 7 to 16, NAMED the remaining ten, and left them uncovered because no literal
@@ -581,34 +589,23 @@ fi
 #
 # The check is a partition: registered == exercised + declared. A new hook
 # lands in NEITHER list and fails, which is the case a floor cannot catch.
-# `flatten-before-rebase-gate` is unexercisable here for a PRESENT-TENSE reason
-# and a counterfactual one, and only the first is why it sits in this list.
-# PRESENT: neither CMD_TEMPLATES nor NOSRC_TEMPLATES contains a `rebase`
-# template, and neither fixture stages a branch with 2+ commits touching an
-# append-shaped file -- so there is no literal control for this gate to block,
-# whatever its posture. Adding one means teaching both template sets a git
-# HISTORY shape they do not have, which is a change to this fence rather than
-# to that hook. COUNTERFACTUAL, stated so the next reader does not "fix" it the
-# quick way: even given such a control, that gate stands DOWN on an unreadable
-# target where fence 3's six spellings require a refusal, because its miss
-# costs one avoidable changelog conflict while a wrong refusal lands on someone
-# already fighting a rebase. So moving it into EXPECTED_EXERCISED today would
-# red fence 3 permanently.
+# A hook lands in DECLARED_UNEXERCISED for one of two kinds of reason, and only
+# the FIRST kind belongs there: a PRESENT-TENSE one -- no template in
+# CMD_TEMPLATES / NOSRC_TEMPLATES produces a command this gate judges, so there
+# is no literal control for it to block whatever its posture. A COUNTERFACTUAL
+# reason ("even given a control it would stand down") is worth WRITING so the
+# next reader does not "fix" the row the quick way, but it is never the reason
+# for the row. The retired `flatten-before-rebase-gate` was the worked example:
+# no fixture stages a branch with 2+ commits touching an append-shaped file, and
+# separately it stood down on an unreadable target where fence 3's six spellings
+# require a refusal.
+#
 DECLARED_UNEXERCISED='
 broad-process-kill-gate           gates pkill / killall, not a git/gh verb
-commit-msg-heredoc-gate           verdict is the command SHAPE, target-independent
-flatten-before-rebase-gate        no rebase template exists to block -- see the note above
-gated-command-preamble-gate       verdict is the command SHAPE, target-independent
-integ-coverage-matrix-gate        needs the real repo toolchain (node + the regen script) in the target
-integ-stale-base-detector         NON-BLOCKING: it refuses nothing, so it has no refusal to exercise
 main-tree-dirty-detector          PostToolUse, non-blocking by design
 main-tree-edit-gate               fires on a WRITE-shaped command, not a git/gh verb
 main-tree-git-cwd-detector        PostToolUse, non-blocking by design
-post-merge-sync-reminder          PostToolUse, non-blocking by design
-pr-body-item-number-gate          verdict is the published BODY, not the target tree
 restore-backup                    non-blocking by design (it snapshots, never refuses)
-stop-unmerged-lane-warn           Stop hook, no command to gate
-stop-warn                         Stop hook, no command to gate
 worktree-owner-gate               Edit|Write|NotebookEdit matcher, no Bash command
 '
 unpartitioned=""
@@ -778,9 +775,8 @@ for hook in "$HOOKS_DIR"/*.sh; do
   # collected first, then looked for on an `=~`.
   #
   # But "mentions a GATE_ constant" alone is far too broad, and the difference
-  # is not cosmetic: four hooks -- integ-local-gate, post-merge-orphan-push-gate,
-  # and (until go-to-k/cdkd#2717 retired them to CI) commit-prefix-scope-gate and
-  # pr-title-prefix-scope-gate -- assign a
+  # is not cosmetic: several hooks -- `post-merge-orphan-push-gate` today, and
+  # three since-retired ones when this was measured -- assign a
   # `GATE_RE_*` and pass it as an ARGUMENT to `gate_target_dir_strict`, never
   # matching it themselves, while indexing BASH_REMATCH out of their own local
   # patterns. Those are correct code. Flagging them would make a clean state
@@ -870,7 +866,7 @@ else
   ok "fence 4 (guard the guard): the scan detects all 8 coupling spellings and clears all three non-coupling ones"
 fi
 
-if [ "$scanned" -lt 20 ]; then
+if [ "$scanned" -lt 9 ]; then
   ng "fence 4: only $scanned hooks load command-match.sh -- the scan is not seeing the hook directory, so a green result here would mean nothing"
 elif [ -z "$coupled" ]; then
   ok "fence 4: none of the $scanned matcher-using hooks index a shared pattern positionally"

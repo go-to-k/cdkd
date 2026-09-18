@@ -13,7 +13,7 @@ state quickly.
 Run these sequentially and report results:
 
 0. **Worktree pre-flight**: `git fetch -q origin || echo 'FETCH FAILED --
-   budget verdicts below are LOCAL-only'` first, then `mise trust` and
+   budget verdicts below are LOCAL-only'` first, then
    `[ -d node_modules ] || pnpm install --frozen-lockfile`. The fetch is
    BEST-EFFORT and must not fail the step (offline, or no `origin`, exits
    128), but its failure is not free either: say so in the report, because
@@ -41,27 +41,6 @@ Run these sequentially and report results:
    broken fixture tsconfig. (`/verify-pr` step 0 has the same pre-flight; this
    copy exists because `/check` is usually the FIRST skill run in a fresh
    worktree.)
-
-   **`mise trust` belongs here for the same reason, and its failure is worse
-   because it lands on the LAST step rather than the first.** A fresh
-   worktree's `.mise.toml` is untrusted, `node_modules` says nothing about
-   that, and every check below passes — then the marker step's
-   `mise exec -- markgate set check` dies with a config-PARSE error that names
-   no file and never says "trust". The natural next move is to go and read
-   `.mise.toml`, which is a dead end, and the lane cannot commit until it
-   guesses. It is unconditional rather than guarded on a probe: `mise trust`
-   on an already-trusted config is a no-op that prints
-   `No untrusted config files found.`
-
-   **Verify the marker by `markgate status`, never by an exit code** — the
-   `mise ERROR` lines go to stderr and a pipeline's rc hides them, so a failed
-   `markgate set` reads as a success and the next `git commit` is the first
-   thing that disagrees.
-
-   Every other skill that records a marker inherits this — `/check-docs`,
-   `/verify-pr`, `/run-integ` and `/review-pr` all end in
-   `mise exec -- markgate set`, so each carries a one-line pointer back here
-   rather than a fifth copy of the paragraph.
 
 1. `vp check --fix` — typecheck + lint + Prettier, with auto-fix. Then
    `vp run check` — the EXACT command CI's `check-build-test` job runs. The
@@ -112,10 +91,10 @@ Run these sequentially and report results:
    with `pwd` correct throughout. The tells: the `RUN <root>` header far above the
    summary, and a stray `vp run: cdk-local#test` line at the end. **The
    MECHANISM is unconfirmed — do not repeat a guess as fact** (ruled out:
-   workspace links, an unpinned `vp`). Acting on the wrong summary sets the
-   `check` marker (and through `requires`, `verify-pr`) over a suite that
-   never ran — so assert the root in the same command that produces the
-   verdict, and read the suite's own rc, not the trailing grep's:
+   workspace links, an unpinned `vp`). Acting on the wrong summary means
+   reporting a pass over a suite that never ran — so assert the root in the
+   same command that produces the verdict, and read the suite's own rc, not
+   the trailing grep's:
 
    ```bash
    # Subshell so the `exit`s are safe to paste into an interactive shell.
@@ -194,8 +173,8 @@ Run these sequentially and report results:
    It is contention-dependent, not sticky — re-running usually lands right. A
    single-FILE run reported the right project every time in the same window,
    so it can confirm which project you are addressing — **but it does NOT
-   substitute for this step**: the marker requires a full-suite run that
-   passed AND was rooted here.
+   substitute for this step**: what this step attests to is a full-suite run
+   that passed AND was rooted here.
 
 ## Output
 
@@ -209,29 +188,7 @@ Report as a table:
 | tests (N files, M tests) (`vp test run`) | pass/fail |
 
 If all pass, confirm "All checks passed." If any fail, show the error output
-and STOP — do not write the commit-gate marker.
+and STOP — fix the failures and re-run before committing.
 
-## Commit-gate marker (on success only)
-
-After all four checks pass, record the marker so the `check-gate` hook allows
-the next `git commit`. The marker captures the working-tree state; subsequent
-edits invalidate it.
-
-**Merely CREATING a file inside a gate's scope stales that gate** — an
-untracked file counts (the digest covers the scope's file SET; measured:
-creating `tests/_probe.ts` flipped `markgate verify check` rc 0→1, deleting
-it flipped it back; `docs` stayed 0 throughout because `tests/**` is not in
-its scope). Correct behaviour, but the symptom is a `check-gate` refusal that
-reads as "my markers randomly expired" — **re-run the skill; do not
-investigate**. `/verify-pr` re-sets both markers in one shot.
-
-Run from the repo root (`mise exec` because cdkd pins markgate via mise):
-
-```bash
-mise trust                          # unconditional; see step 0
-mise exec -- markgate set check
-mise exec -- markgate status | grep '^check' \
-  || echo 'NO check LINE — markgate status itself failed' >&2
-```
-
-Skip this step if any check failed.
+Run these checks before committing. They attest to the working-tree state at
+the time of the run, so re-run after any further edit.

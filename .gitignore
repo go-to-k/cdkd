@@ -20,8 +20,8 @@ node_modules
 # The ROOT lockfile and `assets/demo-gif`'s are committed and must stay
 # tracked, hence the anchored fixture-only pattern. The npm twin
 # `package-lock.json` is ignored by the sibling `tests/integration/.gitignore`;
-# this rule lives HERE because `check-scope-checker-inputs.test.ts` counts
-# only the top-level `.gitignore` as a rule source.
+# this rule lives HERE because the two files are read separately and only the
+# top-level one is a rule source for a root-relative pattern.
 tests/integration/*/pnpm-lock.yaml
 
 # Build output
@@ -68,17 +68,12 @@ tests/benchmark/results-*.md
 .claude/scheduled_tasks.lock
 .claude/worktrees/
 
-# markgate pr-review sentinel (records the PR HEAD sha that /review-pr last
-# verified; bound to the `pr-review` markgate gate's include scope so a
-# new push to the PR invalidates the marker automatically)
+# Retired marker sentinels. Nothing writes these any more -- the `pr-review`,
+# `verify-pr` and `integ-broad` gates were removed with the rest of the marker
+# layer -- but the patterns stay so a checkout that still carries one from
+# before the shrink does not turn up as an untracked file forever.
 .markgate-pr-review-sha
 .markgate-verify-pr-sha
-
-# markgate integ-broad sentinel (records the test name + timestamp of the
-# last broad real-AWS integ run, e.g. bench-cdk-sample; updated by
-# /run-integ for tests in the broad set; bound to the `integ-broad`
-# markgate gate's include scope so /verify-pr's cross-cutting check
-# can enforce a broad integ in addition to the feature-specific one)
 .markgate-broad-integ-test
 
 # bug-hunt cleanup sentinel (lists the stacks a /hunt-bugs session deployed

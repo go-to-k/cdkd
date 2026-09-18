@@ -21,7 +21,7 @@ describe('createLocalStartAgentCoreCommand', () => {
   // `cmd.parse([...])` runs the registered `.action(handler)` body. The
   // production handler boots a real Docker container + WebSocket bridge; stub to
   // a no-op so parse() only exercises Commander's option parser (the
-  // cmd-parse-stub-gate hook enforces this stub for any cmd.parse() in tests).
+  // a no-op action stub is required for any cmd.parse() in tests).
   const cmd = createLocalStartAgentCoreCommand();
   cmd.action(() => {});
 

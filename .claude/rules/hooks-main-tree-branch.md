@@ -288,7 +288,7 @@ its own PR), but the CONSEQUENCE is gone: issue
 [#2402](https://github.com/go-to-k/cdkd/issues/2402) taught `branch-gate.sh`
 to block a detached HEAD in the MAIN checkout while a detached LINKED
 worktree stays allowed (the lane-clearing state
-`stop-unmerged-lane-warn.sh` prescribes). Re-measured: rc=2 detached in the
+`git switch --detach origin/main` leaves behind). Re-measured: rc=2 detached in the
 main checkout, rc=0 in a linked worktree.
 
 **The one-entry `main_tree_of` memo was dead until the same date**: read via

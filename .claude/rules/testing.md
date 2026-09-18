@@ -234,9 +234,8 @@ Commander tree via `buildProgram()` (`src/cli/program.ts`); a flag counts when
 the target command OR any ancestor declares it, matching Commander's lookup. The
 check carries coverage floors (totals plus one per supported call shape) so a
 parser regression fails loudly instead of passing vacuously — two iterations of
-this lint were green while skipping most of the tree. The
-`state-destroy-force-gate.sh` hook remains the commit-time guard for the
-specific `state destroy --force` case.
+this lint were green while skipping most of the tree. It covers
+`state destroy --force` too: that subcommand takes `--yes` only.
 
 ### `verify.sh` version literals (mandatory)
 

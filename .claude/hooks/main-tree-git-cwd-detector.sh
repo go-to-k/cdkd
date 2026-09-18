@@ -116,8 +116,7 @@
 # ── THE `vp run build` EXEMPTION (go-to-k/cdkd#2094) ──────────────────
 #
 # One main-tree verification command is MANDATED rather than mistaken:
-# the post-merge rebuild. `post-merge-sync-reminder.sh` fires after
-# every `gh pr merge`, and `/work-issues` section 9 spells the step out
+# the post-merge rebuild. `/work-issues` section 9 spells the step out
 # — `git pull` in the MAIN tree, then `vp run build` there, because the
 # artifact other projects consume is the main tree's `dist/`. Before
 # this exemption the hook fired on that step every single time, on a

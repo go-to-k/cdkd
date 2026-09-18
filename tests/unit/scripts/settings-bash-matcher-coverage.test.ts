@@ -19,7 +19,8 @@ import { dirname, join } from 'node:path';
  * alternatives lived in each hook's per-hook `if:` condition, and the asymmetry
  * was between hooks that spelled the `cd` twin there and hooks that did not --
  * `branch-gate` and `bughunt-clean-gate` carried `Bash(cd * && git commit*)`
- * while `check-gate` carried only `Bash(git commit*) or Bash(git -C * commit*)`.
+ * while the sibling's commit-marker gate carried only
+ * `Bash(git commit*) or Bash(git -C * commit*)`.
  *
  * cdkd is immune for a different reason than "coarse matchers": it carries ZERO
  * `if:` fields (0 of 32, measured the same day). They were removed under
@@ -86,8 +87,12 @@ describe('.claude/settings.json PreToolUse gate reachability', () => {
     expect(bash.length).toBeGreaterThanOrEqual(1);
 
     const gateCount = bash.reduce((n, e) => n + (e.hooks?.length ?? 0), 0);
-    // 32 gates registered against Bash as of 2026-08-19.
-    expect(gateCount).toBeGreaterThanOrEqual(20);
+    // An ANTI-VACUITY floor, not a roster: it catches a parse that stops
+    // matching, which would make every assertion below pass over nothing. It
+    // was 20 against 32 registered gates on 2026-08-19; the agent-tooling
+    // shrink took the Bash roster to 9, so the floor moved with it. Lower it
+    // only alongside a deliberate deregistration, and say which hook went.
+    expect(gateCount).toBeGreaterThanOrEqual(7);
   });
 
   it('never reintroduces a per-hook `if:` condition', () => {
@@ -159,14 +164,17 @@ describe('.claude/settings.json PreToolUse gate reachability', () => {
     // job reads directly, so it moved to `.github/workflows/` where a check
     // cannot go silently inert the way that hook measurably did.
     //
-    // It is REPLACED here rather than dropped, because the list's job is to be a
-    // floor of at least three: a two-name list shrinks the thing that catches a
-    // removal every time a removal happens, which is the one direction this
-    // assertion must not move. `ci-green-gate` is the substitute -- it is a
-    // merge-time refusal whose absence puts red on `main`, the same severity
-    // class as the other two, and it takes a command spelling (`gh pr merge`)
-    // that the `cd <worktree> && ...` form reaches exactly as #2016 described.
-    const mustBeCoarse = ['check-gate', 'verify-pr-gate', 'ci-green-gate'];
+    // A name is REPLACED here rather than dropped, because the list's job is to
+    // be a floor of at least three: a shorter list shrinks the thing that
+    // catches a removal every time a removal happens, which is the one
+    // direction this assertion must not move. `check-gate` and `verify-pr-gate`
+    // were the two survivors of #2016's trio until the marker layer itself was
+    // retired; `integ-destroy-gate` and `branch-gate` are their substitutes --
+    // a merge-time refusal whose absence leaks real AWS resources, and a
+    // commit/push refusal whose absence puts commits on `main`. Both take a
+    // command spelling (`gh pr merge`, `git commit`) that the
+    // `cd <worktree> && ...` form reaches exactly as #2016 described.
+    const mustBeCoarse = ['ci-green-gate', 'integ-destroy-gate', 'branch-gate'];
 
     const coarseGates = new Set<string>();
     for (const entry of preToolUseEntries()) {

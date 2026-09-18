@@ -62,7 +62,7 @@
     },
     {
       "tag": "cross-cutting-deploy-destroy",
-      "description": "Broad real-AWS regression set (39+ resource VPC+NAT+CF+Lambda+SQS or comparable breadth). Refreshes the integ-broad gate."
+      "description": "Broad real-AWS regression set (39+ resource VPC+NAT+CF+Lambda+SQS or comparable breadth). The run to make when a change is cross-cutting rather than feature-local."
     },
     {
       "tag": "custom-resource-async-poll",
@@ -2251,7 +2251,7 @@
     },
     {
       "scenario": "cross-cutting-deploy-destroy",
-      "description": "Broad real-AWS regression set (39+ resource VPC+NAT+CF+Lambda+SQS or comparable breadth). Refreshes the integ-broad gate.",
+      "description": "Broad real-AWS regression set (39+ resource VPC+NAT+CF+Lambda+SQS or comparable breadth). The run to make when a change is cross-cutting rather than feature-local.",
       "fixtures": [
         "bench-ccapi",
         "bench-cdk-sample",

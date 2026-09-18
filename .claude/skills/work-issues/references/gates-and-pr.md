@@ -1,25 +1,23 @@
 <!-- Part of the /work-issues skill. Stage files: triage.md (§0–§3), claim.md (§4), implement.md (§5), filing.md (§5-f), gates-and-pr.md (§6–§7), verify.md (§8), ship.md (§9), retro.md (§10), gotchas.md (appendix). A bare §N points into the file that holds that section. READ THIS FILE IN FULL when your run enters this stage. -->
 
-## 6. Gates + PR (per lane)
+## 6. Checks + PR (per lane)
 
-**Before the session's FIRST commit, run CLAUDE.md's gate-liveness probe.**
-Ordinary git output means the gates are not firing ONLY if something was there
-to trip; with the markers already fresh — or the tree still CLEAN, which is
-where a retro branch starts — it proves nothing, so use CLAUDE.md's shape
-probe. Until the probe is CONCLUSIVE, every gate step below is self-enforced:
-run each by hand and say so in the report.
+**Nothing blocks a commit on these checks any more — no hook, no marker — so
+they are entirely self-enforced.** `/check` and `/check-docs` are still the
+required procedure and their checklists still apply IN FULL; run them
+proactively and say in the lane report that you did. CI and `integ-destroy`
+are the only two mechanical merge conditions left (§8-i, §9).
 
-From inside the worktree, run the local quality checks and record the markers:
+From inside the worktree, run the local quality checks:
 
 ```
-/check          # typecheck, lint, build, tests → sets the `check` marker
+/check          # typecheck, lint, build, tests
 /check-docs      # only if the lane touched README.md / CLAUDE.md / docs/ / .claude/rules/**
 ```
 
-**Run the SKILL; do not hand-roll its command list and set the marker
-yourself.** The marker attests that `/check` ran; setting it after a private
-typecheck/lint/build/test sequence records something that did not happen, and
-the gap is silent because the commands you did run all pass — `/check` step 1
+**Run the SKILL; do not hand-roll its command list.** A private
+typecheck/lint/build/test sequence is not `/check`, and the gap is silent
+because the commands you did run all pass — `/check` step 1
 adds `vp check --fix` plus `vp run check`, where Prettier lives (measured:
 three hand-rolled rounds while `vp run format:check` was failing the whole
 time).
@@ -31,31 +29,26 @@ as CI's `format:check` minutes later. Run `git add -u` after `--fix`, and
 confirm with `git status --porcelain` — matching `^ M` is not enough (a file
 both staged and reformatted shows `MM`); test for a non-empty second column.
 
-**Start every marker and gate command with an explicit `cd <worktree> &&`.**
+**Start every verification command with an explicit `cd <worktree> &&`.**
 "Repo root" means the WORKTREE's root, and a shell cwd does not reliably
-persist between tool calls. The marker store is PER-WORKTREE (CLAUDE.md →
-multi-session uncommitted-work safety) — a marker recorded in the main
-checkout is simply ABSENT from the lane, surfacing as a `check-gate` refusal
-reading "you never ran /check" seconds after you ran it.
+persist between tool calls. The `integ-destroy` marker store is PER-WORKTREE
+(CLAUDE.md → multi-session uncommitted-work safety) — a marker recorded in the
+main checkout is simply ABSENT from the lane, and §9 merges from the lane's
+own tree for that reason.
 
-**A gated command carries no SIDE-EFFECTING preamble in its Bash call, and
-"gated" means EVERY PreToolUse hook.** The leading `cd <worktree> &&` is fine;
-nothing that WRITES may share the call — a denial aborts the whole string
-BEFORE any of it runs, including hooks unrelated to the merge flow (a
-`cp <snapshot> && python3 <<'EOF'` was refused by an unrelated gate because
-the heredoc quoted an SDK command name — the restore never ran). Enforced by
-`.claude/hooks/gated-command-preamble-gate.sh`, added after the written rule
-was violated twice in one lane (per §10-b: a rule violated despite being
-stated is escalated, not restated). The gate blocks preambles whose loss is
-SILENT (`markgate set`, a write redirect, `cp` / `mv`); it allows `cd`, reads,
-and `git add` (whose loss fails loudly). Consequences, each seen live: both
-`markgate set`s in `markgate set check && markgate set docs && git commit …`
-are discarded with the refusal, and the retry reads as "the marker will not
-stick"; a body file written in the same call as a refused `gh pr create`
-leaves NO file behind, and a `>>` retry appends to nothing and ships a
-fragment (go-to-k/cdk-local#525 opened with no `Closes` line). Write the file
-in one call, run the gated command in the next; re-create rather than append
-after any refusal.
+**A hook-gated command carries no SIDE-EFFECTING preamble in its Bash call,
+and "gated" means EVERY surviving PreToolUse hook.** The leading
+`cd <worktree> &&` is fine; nothing that WRITES may share the call — a denial
+aborts the whole string BEFORE any of it runs, including hooks unrelated to
+the merge flow (a `cp <snapshot> && python3 <<'EOF'` was refused by an
+unrelated gate because the heredoc quoted an SDK command name — the restore
+never ran). The dangerous preambles are the ones whose loss is SILENT (a
+`markgate set integ-destroy`, a write redirect, `cp` / `mv`); `cd`, reads and `git add` fail
+loudly instead. Consequence seen live: a body file written in the same call as
+a refused `gh pr create` leaves NO file behind, and a `>>` retry appends to
+nothing and ships a fragment (go-to-k/cdk-local#525 opened with no `Closes`
+line). Write the file in one call, run the gated command in the next;
+re-create rather than append after any refusal.
 
 - **Its worst signature is a file left MID-PROBE** — a blocked `cp` restore
   leaves the probe mutation in place, and the symptom (three tests failing in
@@ -65,9 +58,9 @@ after any refusal.
 - **Its next-worst is a STALE file left by an earlier LANE** — `/tmp/pr-body.md`
   and a squash `commit-msg.txt` are conventional and shared, and a session's
   lanes run serially through one scratchpad, so the post-refusal retry consumes
-  whatever the last writer left. A gate naming text you do not recognise is the
-  lucky case: usually NOTHING names it and a plausible file of the right shape
-  ships (2026-09-10: lane 2 committed lane 1's message after `check-gate`
+  whatever the last writer left. A refusal naming text you do not recognise is
+  the lucky case: usually NOTHING names it and a plausible file of the right
+  shape ships (2026-09-10: lane 2 committed lane 1's message after a refusal
   discarded the write). Name consumable files per LANE — not per session, the
   granularity that fails here — as §5 does for probe files and §9 for the
   squash message, and re-read the file where you consume it.
@@ -85,8 +78,7 @@ All green, then commit (conventional-commit; `fix:` for a user-visible fix,
 `chore:` for `.claude/**` / tooling). The prefix that MATTERS is the PR
 TITLE's: squash-merging makes it the subject release-please reads, and since
 go-to-k/cdkd#2717 a `fix:`/`feat:` title with no `src/**` change is refused in
-CI on every push. `check-gate` requires fresh markers. Push, open the PR with
-`Closes #<n>`.
+CI on every push. Push, open the PR with `Closes #<n>`.
 
 **Whoever writes the PR BODY last owns re-checking it — a lane rewriting the
 body silently reverts the orchestrator's edits to it.** `gh pr edit
@@ -129,14 +121,14 @@ true diff and rebase:
 
 ```bash
 git diff --stat $(git merge-base origin/main <branch>)..<branch>       # the real change
-# FLATTEN TO ONE COMMIT FIRST -- recipe in references/ship.md (§9); the
-# flatten-before-rebase-gate hook refuses this line otherwise.
+# FLATTEN TO ONE COMMIT FIRST -- recipe in references/ship.md (§9). Skipping
+# it re-conflicts the integ ledger once per commit.
 git -C "<LANE_TREE>" rebase origin/main   # the path the launch-mode probe recorded
 ```
 
-Re-run gates, `git push --force-with-lease`.
+Re-run the checks, `git push --force-with-lease`.
 
-**Re-run the SUITE after the rebase, not just the gates — and rebuild first.**
+**Re-run the SUITE after the rebase, not just the quick checks — and rebuild first.**
 A pre-rebase green attests to a tree that no longer exists: the rebase pulls
 in every peer commit merged since the fork, including test files your run
 never executed (measured across three lanes: one green before, RED after —

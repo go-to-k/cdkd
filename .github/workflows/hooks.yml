@@ -10,7 +10,8 @@ name: Hook suites
 # without a newer bash first on PATH they execute under 3.2, where bash 4+
 # syntax (`mapfile`, `declare -A`, `${var^}`) is a runtime error. Issue
 # #1458 shipped exactly that into the shared matcher, and issue #1477
-# found `provider-integ-gate.test.sh` failing 3 of 17 cases there. A Linux
+# found a per-hook suite failing 3 of 17 cases there (that gate has since
+# been retired; the measurement is what the runner image is chosen for). A Linux
 # runner would resolve both `bash` and `/bin/bash` to the same 5.x binary
 # and prove nothing about that path.
 on:

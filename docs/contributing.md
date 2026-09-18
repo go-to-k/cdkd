@@ -97,18 +97,19 @@ one exception — it also deploys and destroys real AWS resources).
 
 ### When is an integration test needed, and which one?
 
-Which verification a PR needs is derived mechanically from the paths it
-touches. The path lists are the gate scopes in
-[`.markgate.yml`](https://github.com/go-to-k/cdkd/blob/main/.markgate.yml) —
-the maintainer's merge gates read exactly those, so the file is the source of
-truth. In summary:
+Which verification a PR needs follows from the paths it touches. Only the
+first row is enforced by a merge gate — its path list is the `integ-destroy`
+scope in
+[`.markgate.yml`](https://github.com/go-to-k/cdkd/blob/main/.markgate.yml),
+which is the source of truth for that row. The rest are expected of the
+change, not blocked on:
 
-| Your PR touches | Required verification (gate) |
+| Your PR touches | Verification |
 | --- | --- |
-| Deletion logic — `src/provisioning/providers/**`, destroy commands, rollback / retry code | An integration test that completes deploy **and destroy** cleanly (`integ-destroy`) |
-| Cross-cutting deploy/destroy code — `src/deployment/deploy-engine.ts`, `src/analyzer/dag-builder.ts`, intrinsic resolution, provider registration | A broad multi-resource test in addition to any feature-specific one (`integ-broad`; the test-name set is listed in `.markgate.yml`) |
-| Local execution — `src/local/**`, `src/cli/commands/local-*.ts` | A `local-*` test — Docker-based, most need no AWS account (`integ-local`) |
-| A state schema version bump in `src/types/state.ts` | The `schema-v<N>-to-v<N+1>-migration` round-trip test (`integ-schema-migration`) |
+| Deletion logic — `src/provisioning/providers/**`, destroy commands, rollback / retry code | An integration test that completes deploy **and destroy** cleanly. **Gated** (`integ-destroy`) |
+| Cross-cutting deploy/destroy code — `src/deployment/deploy-engine.ts`, `src/analyzer/dag-builder.ts`, intrinsic resolution, provider registration | A broad multi-resource test in addition to any feature-specific one |
+| Local execution — `src/local/**`, `src/cli/commands/local-*.ts` | A `local-*` test — Docker-based, most need no AWS account |
+| A state schema version bump in `src/types/state.ts` | The `schema-v<N>-to-v<N+1>-migration` round-trip test |
 | None of the above | No integration test — unit tests and CI are enough |
 
 When in doubt, open the PR and ask; the maintainer will pick and run the

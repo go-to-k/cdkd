@@ -936,7 +936,7 @@ vp run integ-coverage
 
 This regenerates both `docs/integ-coverage.md` (human-readable report) and `docs/_generated/integ-coverage.json` (machine-readable matrix). Run it after adding a new provider or new integ fixture; the file is checked into the repo so reviewers can see coverage shifts in the PR diff. **CI hard-fails when the committed snapshot is stale**: the `check-build-test` job in `.github/workflows/ci.yml` runs `vp run integ-coverage` and fails on a non-empty `git diff` of these two files, so a forgotten regeneration cannot reach main.
 
-The hook `.claude/hooks/provider-integ-gate.sh` blocks `git commit` when a new `registry.register('AWS::Foo::Bar', ...)` is staged without a matching integ fixture (literal type id, `Cfn<Type>(` L1 class, or a sidecar entry in `.claude/integ-coverage-allowlist.json`). The sidecar is JSON: `{"AWS::Foo::Bar": "rationale"}` — kept outside `src/provisioning/register-providers.ts` so allow-list edits do not trigger the `integ-broad-gate`'s real-AWS broad integ requirement. See the hook's docstring for the full resolution paths.
+A new `registry.register('AWS::Foo::Bar', ...)` is expected to arrive with a matching integ fixture — the matrix recognises one by the literal type id, by a `Cfn<Type>(` L1 class, or by a sidecar entry in `.claude/integ-coverage-allowlist.json`. The sidecar is JSON: `{"AWS::Foo::Bar": "rationale"}`, kept outside `src/provisioning/register-providers.ts` so an allow-list edit is not a change to provider registration. Nothing blocks the commit; the regenerated matrix is where a missing fixture shows up in the PR diff.
 
 ### CLI Flag Coverage (visibility report)
 

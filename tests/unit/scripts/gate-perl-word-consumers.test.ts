@@ -6,9 +6,17 @@ import { dirname, join } from 'node:path';
 /**
  * `GATE_PERL_WORD` in `.claude/hooks/lib/command-match.sh` is one shared shell
  * literal that a BLOCKING gate interpolates into `perl -0777` programs. It was
- * five gates until go-to-k/cdkd#2717 retired four of them; the constant stays
- * shared because the assertions below are what would notice a second consumer
- * arriving and disagreeing with the header.
+ * five gates until go-to-k/cdkd#2717 retired four of them, and ZERO since the
+ * agent-tooling shrink retired the fifth.
+ *
+ * Zero consumers does NOT make the constant dead, and it does not make this
+ * file dead either. Two live CLASS FENCES interpolate the prelude
+ * (`unresolved-target-class.test.sh`, `lib/command-match.test.sh`), so deleting
+ * it breaks them; and the value class it defines closed three MEASURED
+ * fail-open holes, so the next gate that scans raw command text with perl must
+ * take this rather than write a fourth copy. What these assertions are for is
+ * the moment that gate ARRIVES: they notice it and fail if the header does not
+ * name it.
  *
  * Two failure modes are invisible from any single file, and both were live:
  *
@@ -74,6 +82,11 @@ describe('GATE_PERL_WORD consumers', () => {
     // here: the point is that the two agree, so adding a second consumer must
     // update the sentence, not this file.
     const words: Record<number, string> = {
+      // ZERO is a real state, not a stopping point -- see the file header for
+      // why the constant outlives its last consumer. `NO` rather than `ZERO`
+      // because the header block has to read as English: "NO gates consume
+      // this prelude today".
+      0: 'NO',
       1: 'ONE',
       2: 'TWO',
       3: 'THREE',
@@ -95,10 +108,12 @@ describe('GATE_PERL_WORD consumers', () => {
     // literal `ONE gates`. The NUMBER WORD is what discriminates -- a header
     // claiming ONE while two files consume it still fails -- so accepting the
     // singular costs nothing and stops the fence from forcing ungrammatical
-    // prose into the file it guards. Retiring the LAST consumer is a different
-    // question: `words` has no entry for 0, so `word` is undefined and the
-    // assertion above fails first, which is the right place to stop and decide
-    // whether the constant should still exist.
+    // prose into the file it guards. Retiring the LAST consumer used to fail
+    // here on a missing `words[0]` -- deliberately, as the place to stop and
+    // decide whether the constant should still exist. That decision was made
+    // (it stays; two class fences interpolate it), so 0 now spells `NO` and the
+    // fence keeps watching for the NEXT consumer instead of blocking on the
+    // last.
     // SCOPED to the block that carries the claim, not the whole file. Searching
     // the file was already loose and became vacuous the moment the count hit
     // ONE: `\bONE\s+gates?\b` case-insensitively also matches the unrelated

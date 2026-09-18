@@ -38,7 +38,7 @@ Read every changed file end-to-end. For each, ask:
 ## What NOT to check
 
 - Whether tests pass (CI handles that).
-- Whether the change matches its spec, IN DEPTH — that is `pr-spec-reviewer.md`'s axis. But you cannot tell whether it was dispatched: nothing in your inputs names the tier, and "am I the only reviewer" does not answer it either (the security add-on runs at every tier and defers spec except on a security-surface acceptance item or filed-issue claim, so you can both defer to nobody). So do a SECONDARY pass and label it that way.
+- Whether the change matches its spec, IN DEPTH — that is `pr-spec-reviewer.md`'s axis. But you cannot tell whether it was dispatched: nothing in your inputs names which reviewers ran, and "am I the only reviewer" does not answer it either (the security add-on runs alongside whatever else was dispatched and defers spec except on a security-surface acceptance item or filed-issue claim, so you can both defer to nobody). So do a SECONDARY pass and label it that way.
 
   Secondary means: read `Closes #N` / `Refs #N` off the PR body first (`gh pr view <N> --json body`) — **`Refs` is an issue the PR explicitly disclaims closing, so demanding full satisfaction from it manufactures blockers** — and raise a spec finding only where the code plainly contradicts a `Closes` issue's stated acceptance. Do NOT rule on whether a `Closes` is "earned"; that is the spec axis's bar and it has calibration you do not.
 

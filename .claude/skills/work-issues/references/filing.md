@@ -9,9 +9,23 @@ LANDS (one issue, a row folded into an umbrella that already covers it, or
 nothing because it is this lane's to fix). Read it whenever the sweep turns
 up something the current issue does not cover.
 
+**A finding about the TOOLING is not an issue at all — it is a ROW in
+`docs/tooling-backlog.md`.** Hooks, markgate gates, `.claude/rules/**`,
+`.claude/skills/**`, CI fences and the integ harness are all tooling: no user
+can hit them by running the CLI, so the issue tracker (cdkd behaviour a user
+CAN hit) is the wrong home. Write the row when you observe the weakness, and
+build nothing on that first observation — a new hook, gate, CI fence, rule
+paragraph or test-of-prose is added only on the SECOND occurrence of the same
+failure. A row graduates to an issue when someone actually starts working it.
+One accepted case that is NOT even a row: a hook failing OPEN on an exotic
+shell shape (quoting, heredocs, `$( )`, `bash -c`, `eval`, case arms,
+redirections). The hooks steer a cooperative agent; they are not a security
+boundary, and `main` is protected server-side by a GitHub ruleset. Everything
+below is about a cdkd DEFECT.
+
 **N sites of one root cause is ONE issue and ONE PR, never N issues.** Split
 into N, each site pays the full fixed cost — triage, claim, worktree, review
-tier, integ run, merge, release — for the same edit N times; swept together
+round, integ run, merge, release — for the same edit N times; swept together
 that cost is paid once, the reviewer sees the whole class, and sites 2..N
 cannot sit open while site 1's fix drifts away. Two boundaries:
 
@@ -153,20 +167,11 @@ frozen-scope `next` was filed while the owning lane was still open
 lines stay exactly as written, and the same two values ride the command:
 
 ```bash
-# A LITERAL path, and no shell variable anywhere in this command. Substitute
-# `<issue-slug>` per FINDING, not per lane -- the root cause plus your branch.
-# Two reasons, and the second is the one that bites: parallel lanes share /tmp,
-# AND the gate prefers a READABLE file at that path over the heredoc below it.
-# Measured: with a file already there carrying `Dup-check:`, a command whose
-# heredoc omits that line exits 0 and then overwrites it, filing the
-# marker-less body. Reusing one slug for a second finding is exactly how that
-# happens. The REVERSE is reachable too, and it costs a FALSE BLOCK: run that
-# same slug a THIRD time with a properly marked heredoc and the gate returns
-# rc=2, because it reads the STALE marker-less file on disk in preference to
-# the heredoc about to replace it -- the refusal is about a stale READABLE
-# file, not a missing marker (measured 2026-09-01, here and in cdk-local).
-# Nor does a marker-less file need a gated writer: a plain
-# `cat > /tmp/wi-issue-body-x.md` carries no `gh` verb, so no gate sees it.
+# Substitute `<issue-slug>` per FINDING, not per lane -- the root cause plus
+# your branch. Parallel lanes share /tmp, so a reused slug means the second
+# finding's `cat` lands on the first one's file and whichever body loses the
+# race is the one that gets filed. Nothing inspects the body before `gh` sends
+# it, so a wrong or marker-less body reaches GitHub and has to be edited back.
 cat > /tmp/wi-issue-body-<issue-slug>.md <<'BODY' &&
 <one paragraph: the root cause, and where the evidence for it is>
 
@@ -181,34 +186,27 @@ gh issue create -t 'fix(provider): ...' \
   --label severity:high --label effort:large
 ```
 
-**The path no longer has to be LITERAL** (go-to-k/cdkd#2717). `issue-dup-check-gate`
-refused a `--body-file` path holding a `$` or backtick — it could not open one
-to look for the `Dup-check:` line and failed closed (measured 2026-08-31:
-`B=$(mktemp)` + `--body-file "$B"` was rc=2 in all three repos). That gate is
-retired to CI and the restriction went with it: re-measured 2026-09-07, all
-four surviving body-reading gates return **rc=0** for the `$VAR` form, so
-`mktemp` is safe on the mint path too. An old transcript's rc=2 was true of a
-gate set that no longer exists — do not re-derive the rule from it.
+**The path no longer has to be LITERAL** (go-to-k/cdkd#2717). The body-reading
+PreToolUse gates that once refused a `--body-file` path holding a `$` or
+backtick — they could not open one to look for the `Dup-check:` line and failed
+closed (measured 2026-08-31: `B=$(mktemp)` + `--body-file "$B"` was rc=2 in all
+three repos) — are retired, and the restriction went with them, so `mktemp` is
+safe on the mint path too. An old transcript's rc=2 was true of a gate set that
+no longer exists — do not re-derive the rule from it.
 
 **The `&&` on the `cat` line is the same load-bearing chaining the FOLD recipe
 uses**, one scale down: an unchained `cat` that fails (unwritable path, full
-disk) leaves whatever sat at that literal slug path, and the gate reads THAT
-file, passes it, and files a body this finding never wrote — the
-stale-readable-file failure measured above in the other direction. Verified
-2026-09-01 against all four gates with the chained payload (`issue-dup-check`,
-`issue-classification-label`, `gh-body-english`, `gated-command-preamble`):
-each rc=0, and deleting the `Dup-check:` line returns rc=2 — so the rc=0 is
-them passing a good command, not failing to parse the `&&`.
+disk) leaves whatever sat at that literal slug path, and `gh` then files a body
+this finding never wrote — the stale-readable-file failure measured above in
+the other direction. Nothing reads the body for you any more: CI comments on a
+missing `Dup-check:` line only once the issue EXISTS, so the `&&` is the whole
+protection.
 
 **The `cat` is not filler.** The two-line form — create an empty file, then
 point `--body-file` at it — files an issue with NO body: no `Dup-check:`, no
-classification, nothing for §3 to rank. It is refused, but for the expected
-reason and only because the path is readable and empty; write the body rather
-than leaving the gate to notice. `heredoc -> file -> --body-file` in ONE call
-is the mandated shape for `gh issue create` (`gated-command-preamble-gate`
-refuses it for `git commit` / `gh pr create` / `gh pr merge` and deliberately
-skips this verb), and the delimiter is QUOTED so backticks and `$` stay
-literal.
+classification, nothing for §3 to rank, and nothing stops it. `heredoc -> file
+-> --body-file` in ONE call is the shape to use for `gh issue create`, and the
+delimiter is QUOTED so backticks and `$` stay literal.
 
 Prose is invisible to `gh issue list`; the label makes §3's ranking rule 3 a
 listing-time filter, which is what let it move ABOVE the title-prefix
@@ -257,6 +255,6 @@ threat model is unchanged and is what actually carries the rule: it is
 FORGETTING the search, not defeating a gate. Folding is not CHEAPER than
 minting (one command vs three); the gate makes minting non-free rather than
 folding cheap. Two consequences: a folded row carries no `Session-fit` /
-`Severity`, so §3's ranking cannot see it, and `gh issue edit` passes through
-the `#N` item-number gate that `gh issue create` bodies get — keep bare `#N`
-out of a folded row yourself. Registration is not execution.
+`Severity`, so §3's ranking cannot see it, and nothing screens a bare `#N` in
+either a created or an edited body — write `owner/repo#N` yourself so the row
+still resolves when the umbrella is read from another repo.

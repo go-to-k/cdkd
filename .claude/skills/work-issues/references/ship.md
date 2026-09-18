@@ -6,21 +6,13 @@ With subagent lanes, this stage is the PARENT's serialization point: grant one
 merge-ready lane at a time its turn — resume that lane agent (SendMessage) to
 run its named integ fixtures and merge while it holds the turn, or run
 `/run-integ` and `gh pr merge` yourself FROM THAT LANE'S WORKTREE. The
-worktree matters mechanically: merge-gate verdicts (pr-review sha sentinel,
-verify-pr / integ markers) are computed against the tree the command runs
-from, so a merge from the main tree consults the WRONG store — CLAUDE.md's
-wrong-tree cwd race (go-to-k/cdkd#2363): false GREEN for a verification,
-false RED for a merge. The
-sentinels are GITIGNORED, so a fresh worktree has none and `markgate set` on a
-sentinel-bound gate refuses (`dead scope: include matches nothing ...`) —
-write the sentinel first (`/run-integ` step 11), never bypass. Ordering, not
-just presence: REWRITING a sentinel after its marker is set stales that
-marker, so a second broad run's `.markgate-broad-integ-test` write must be
-followed by another `markgate set integ-broad`. **`.markgate-verify-pr-sha`
-carries the same rule from the other direction** (go-to-k/cdkd#2686): it is
-bound to a COMMIT, so the flatten / rebase / force-push this file prescribes
-below invalidates it — rewrite the sentinel and re-set `verify-pr` once the tree
-is final, or `gh pr merge` refuses mid-ship. Never two
+worktree matters mechanically: the `integ-destroy` marker is computed against
+the tree the command runs from, so a merge from the main tree consults the
+WRONG store — CLAUDE.md's wrong-tree cwd race (go-to-k/cdkd#2363): false GREEN
+for a verification, false RED for a merge. It is `hash: diff` over this
+branch's delta against `origin/main`, so the flatten / rebase / force-push
+this file prescribes below can stale it — run the integ AFTER the tree is
+final (`references/verify.md` §8-b), never before. Never two
 lanes' integs or merges concurrently; everything after the merge stays with
 the parent.
 
@@ -117,17 +109,13 @@ git rebase origin/main                                   # at most one conflict
 message the lane writes, so likeliest to hold a backtick or an apostrophe, and
 inside `-m "..."` the shell EVALUATES a backtick and drops the word while still
 creating the commit (measured 2026-09-09 on this file's own retro commit:
-`` `next` `` vanished, zsh printed `command not found: next`).
-`commit-msg-heredoc-gate` refuses only the HEREDOC spelling of that defect. The
+`` `next` `` vanished, zsh printed `command not found: next`). Nothing refuses
+either spelling for you. The
 per-branch name is the other half, and this step prescribed a FIXED path from
 go-to-k/cdkd#2878 (2026-09-09) until the next day, when a lane committing from
 a conventionally-named message file shipped the PREVIOUS lane's message — its
-own write having been discarded with the `check-gate` refusal that killed the
+own write having been discarded with the refusal that killed the
 call, caught by `git commit --amend`. §6 carries the general rule.
-
-Enforced by `.claude/hooks/flatten-before-rebase-gate.sh` (refuses `git rebase
-<upstream>` on a 2+-commit branch touching an append-shaped file).
-`CDKD_SKIP_FLATTEN_GATE=1` for a deliberate history-preserving rebase.
 
 Resolve the ledger by keep-both, then normalize — its rows record real-AWS
 RUNS, so taking upstream whole drops this lane's own row. Two rows for one test
@@ -334,14 +322,14 @@ Chained end to end for the same reason, plus one of its own: an unchained
 name to guess at.
 
 **Three end states, and only one is quiet.** Staying on the lane branch leaves
-a squash-merged tip the unmerged-lane Stop hook warns about every turn.
-Detaching silences that but is VISIBLE-SURPRISING in the outer tool's UI
-(flagged live by the maintainer). `LAUNCH_BRANCH` restored is both: the
-workspace looks untouched, and the Stop hook is silent provided that tip
-carries no commits of its own (checkable with
+a squash-merged tip standing in the workspace, which reads as unfinished work
+to the next session. Detaching removes that but is VISIBLE-SURPRISING in the
+outer tool's UI (flagged live by the maintainer). `LAUNCH_BRANCH` restored is
+both: the workspace looks untouched, and nothing of this run is left behind
+provided that tip carries no commits of its own (checkable with
 `git rev-list --count origin/main..<LAUNCH_BRANCH>`; non-zero means the branch
 was already a lane — restore it anyway, it is still not yours to move, and say
-in the wrap that the warning is about the outer tool's work).
+in the wrap that those commits are the outer tool's work).
 
 Concretely, and stated so the fence has prose to permit: never `git pull` into
 `<LAUNCH_BRANCH>`, never `git merge --ff-only origin/main` onto it, never

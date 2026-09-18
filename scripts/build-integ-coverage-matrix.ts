@@ -29,8 +29,7 @@
  *   (or: vp run integ-coverage)
  *
  * Used by:
- *   - .claude/hooks/provider-integ-gate.sh (consumes the json output
- *     to know which integs cover a given resource type).
+ *   - CI, which regenerates the matrix and fails on a stale committed copy.
  *   - Manual invocation when adding a new provider / integ fixture.
  *
  * Known limitations (decisions made during PR #404 review — review the
@@ -409,10 +408,9 @@ export function parseRegisteredTypes(content: string): string[] {
  *
  * Why a sidecar (and not inline `// allow-no-integ:` comments on the
  * `registry.register(...)` lines): `src/provisioning/register-providers.ts`
- * is in the `integ-broad-gate.sh` cross-cutting scope. Editing inline
- * comments there would force a real-AWS broad integ run on every
- * allow-list update. The sidecar keeps allow-list edits decoupled from
- * the gate.
+ * is cross-cutting provider-registration code, and a reviewer reads a diff
+ * to it as a routing change. The sidecar keeps a pure allow-list edit out of
+ * that file, so it is reviewed as the metadata change it is.
  *
  * Mirrors the hook's parsing rule: rationale must be a non-empty
  * string (whitespace-only does NOT exempt the type, so the matrix and

@@ -34,7 +34,7 @@ const SHIMS = ['start-service', 'start-alb', 'start-cloudfront', 'start-agentcor
  * The `cdkd local` tree with every subcommand's action stubbed out.
  *
  * The stub replaces the ACTION only; `preAction` hooks still run, which is the
- * point — the fold under test IS a hook (the `cmd-parse-stub-gate` hook requires
+ * point — the fold under test IS a hook (a no-op action stub is required
  * this stub for any `cmd.parse()` in a test).
  */
 function localTree(): Command {

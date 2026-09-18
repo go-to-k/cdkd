@@ -174,10 +174,10 @@ eventually touches:
 **At most one lane per cross-cutting file.** Everything else is usually
 disjoint. Map each candidate to its target file first.
 
-**Deliberately NOT the `integ-broad` gate's scope** — edit contention vs
-runtime blast radius: it CONTAINS that scope plus `src/cli/commands/export.ts`,
-and `cross-cutting-list-sync.test.ts` fences containment, not equality. A file
-added to the gate is added here too.
+**Deliberately NOT an integ scope** — edit contention vs runtime blast radius:
+this list says who may EDIT a file, not which fixture a change has to run.
+No fence compares its sibling copies any more, so a file added to a
+broad-run scope has to be added here by hand.
 
 ## 3. Pick FILE-DISJOINT issues
 
@@ -380,10 +380,9 @@ gh issue view <n> --json body -q .body | grep -iE 'Session-fit:|Severity:|Effort
   naming `secret`, `credential`, `token`, `redact`, `leak`, `privilege`,
   `injection`, or a path the security add-on reviewer covers. Do NOT re-list
   those paths here — the canonical list is `/review-pr`'s security-surface
-  bullets (mirrored into `pr-review-gate.sh`, `pr-security-reviewer.md` and
-  `CLAUDE.md`, fenced by
-  `tests/unit/scripts/security-surface-list-sync.test.ts`); a fifth copy would
-  be a fifth thing to rot (go-to-k/cdkd#1972 was exactly that). When in doubt,
+  bullets (mirrored into `pr-security-reviewer.md` and `CLAUDE.md`, fenced by
+  `tests/unit/scripts/security-surface-list-sync.test.ts`); another copy would
+  be one more thing to rot (go-to-k/cdkd#1972 was exactly that). When in doubt,
   treat it as security — the cost is one queue position. Rule 1 above rule 2
   means a security umbrella is not deferred — split it, take the concrete
   sites, file the remainder.
@@ -394,8 +393,8 @@ gh issue view <n> --json body -q .body | grep -iE 'Session-fit:|Severity:|Effort
 - **Area**: the title's scope; when generic, the files the body names. Judge
   by the command the user runs, not the directory the code lives in.
   `local` is the `cdkd local *` surface — a `(local)` title scope, or a body
-  naming what CLAUDE.md's `integ-local` entry scopes (do NOT copy that list
-  here — see the next bullet); AGENT-TOOLING is a body naming only
+  naming the local-execution code (`src/local/**` and the `cdkd local`
+  commands); AGENT-TOOLING is a body naming only
   `.claude/**` or `CLAUDE.md`. Rule 5 DEMOTES rather than excludes, and only
   among candidates already tied on rules 1–4; rule 3's precondition still
   applies, so a `high`-`Severity` `local` or agent-tooling issue outranks a
@@ -423,8 +422,9 @@ talked into by a ranking before:
   bug.
 - **Ranking never lowers verification depth** — priority decides ORDER, never
   rigor (CLAUDE.md → "Cost is not a tiebreaker"). A security issue moves the
-  other way: dispatch `pr-security-reviewer` in addition to whatever tier its
-  size gives — urgency starts it sooner, never checks it less.
+  other way: it takes all three review axes AND `pr-security-reviewer`
+  (`references/verify.md` §8-i) — urgency starts it sooner, never checks it
+  less.
 
 ### 3-b. Before writing `next`, NAME the next session's verification
 

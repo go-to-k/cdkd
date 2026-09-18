@@ -4,153 +4,83 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 /**
- * TWO hand-duplicated lists live behind the `integ-broad` gate, and both had
- * already drifted before this fence existed.
+ * `integ-destroy` -- the only surviving markgate gate -- spells its scope in TWO
+ * places, and both are executable:
  *
- * 1. The CROSS-CUTTING FILE list -- the paths whose modification forces a broad
- *    real-AWS integ run. FOUR spellings, one of them executable:
- *      a. `.claude/hooks/integ-broad-gate.sh` -- `CROSS_CUTTING_REGEX`, the live
- *         merge gate, and therefore the source of truth every other copy is
- *         compared against.
- *      b. `.claude/skills/verify-pr/references/leftover-and-integ-gates.md` --
- *         the bullet list. Step 6 moved out of SKILL.md when that skill was
- *         split into orchestrator + references/ (go-to-k/cdkd#2930); the
- *         anchors are unchanged, only the file holding them.
- *      c. the same file -- a VERBATIM copy of the regex, in the detection
- *         snippet a few lines below the bullet list.
- *      d. `.claude/skills/pick-integ/SKILL.md` step 2 -- the changed-path table.
+ *   a. `.claude/hooks/integ-destroy-gate.sh`, whose three ACTIVATION patterns
+ *      (`strict_delete` / `filtered_delete` / `provider_pattern`) decide whether
+ *      a `gh pr merge` is blocked at all;
+ *   b. `.markgate.yml`'s `integ-destroy.include`, the list the marker's
+ *      `hash: diff` digest is taken over and therefore what decides whether that
+ *      marker is STALE.
  *
- *    `CLAUDE.md` used to be a fifth: it enumerated the paths inline in its
- *    `integ-broad` workflow entry. It no longer carries the list -- the entry
- *    points at the hook instead -- so there is nothing there to compare. Do not
- *    "restore" it; a hand-copy in the file every session loads is the most
- *    expensive of the copies and the least likely to be re-read.
+ * Neither half gates anything on its own, so a file present in one and absent
+ * from the other silently disarms the gate -- and the two directions fail
+ * differently, which is why both are asserted by name:
  *
- * 2. The BROAD-SET TEST-NAME list -- which integ fixtures are broad enough to
- *    refresh the marker. Six spellings live in files: the hook's header
- *    comment, the hook's block message, `.markgate.yml`'s `integ-broad`
- *    comment, `/run-integ` step 11, `/verify-pr` step 6 (in the reference file
- *    named above, not SKILL.md), and `/pick-integ` step 2. The fence also compares `BROAD_SET_PIN` below. `CLAUDE.md`
- *    carried one more and no longer does, for the same reason.
+ *   - **In `.markgate.yml` only (no hook pattern): INERT.** The marker goes
+ *     stale for the file, but the hook's own diff guard passes the PR through
+ *     before ever consulting the marker. An invalidated marker nobody reads.
+ *     This is what `retry.ts` would have been if issue #2042 had been fixed in
+ *     `.markgate.yml` alone.
+ *   - **In the hook only (no include entry): FAIL-OPEN, and the worse of the
+ *     two.** The hook activates and blocks, `markgate verify` runs -- but the
+ *     digest never saw the file, so it returns 0 and the merge proceeds with NO
+ *     destroy verification at all. `destroy-runner.ts` and `region-check.ts`
+ *     were both in this state on main, found by an audit prompted by the first
+ *     direction's fix.
  *
- * Why a fence rather than the "keep in sync" comments the copies already carry:
- * both lists were measurably out of sync when this file was written. The
- * cross-cutting list was missing `src/deployment/retry.ts` /
- * `retryable-errors.ts` from every copy (go-to-k/cdkd#2042) and
- * `rollback-executor.ts` besides, while the broad-set list stood at 9 entries
- * everywhere EXCEPT the hook's own header comment, which had 8 and omitted
- * `export`. A comment asking for sync is not a mechanism.
+ * A gate that has silently stopped gating is indistinguishable from a working
+ * one from the outside, which is why this is compared mechanically rather than
+ * left to the "keep in sync" comments both files carry.
  *
- * WHAT THIS DOES NOT PROVE, and no assertion here should be read as covering
- * it: that the list is COMPLETE. All copies agreeing proves only that they say
- * the same thing -- exactly the state that held while three genuinely
- * cross-cutting files were absent from all of them at once. Completeness is the
- * judgment call the `integ-broad` entry in CLAUDE.md describes, and it needs a
- * human noticing that a file sits under every mutating AWS call. A FURTHER copy
- * added without being wired in here is likewise invisible; the extractor list
- * above is itself hand-maintained.
+ * Two further things are pinned here, each closing a hole the two-list
+ * comparison cannot see on its own:
  *
- * ONE MORE COPY IS FENCED DIFFERENTLY, and the difference is the point.
- * `.claude/skills/work-issues/references/triage.md` section 2 carries a cross-cutting file
- * list of its own, and it answers a DIFFERENT question: not "does this change
- * need a broad real-AWS integ before merge" (runtime blast radius) but "does
- * this file admit only one lane at a time" (edit contention). So it is compared
- * by CONTAINMENT rather than by equality -- it must be a SUPERSET of the gate
- * scope, and today it is the gate scope plus `src/cli/commands/export.ts`,
- * which is contested without being gate-relevant.
+ *   - **`DESTROY_SCOPE_PIN` and `DESTROY_STRICT_PIN`, literal arrays.** The sync
+ *     comparison proves the copies AGREE; it cannot prove the agreed-upon list
+ *     is right, and a coordinated edit satisfies it perfectly. Deleting an entry
+ *     from BOTH halves leaves the whole suite green -- the `names only paths
+ *     that exist` test does not fire (the survivors all exist) and the floor
+ *     leaves room for a silent multi-entry shrink. The pin is the one copy that
+ *     must be edited CONSCIOUSLY.
+ *   - **The hook's own header enumeration**, compared against `strict_delete`
+ *     alone. Nothing else here reads a hook HEADER, and it went stale exactly
+ *     that way on go-to-k/cdkd#2720.
  *
- * Containment is the right relation because the two errors do not cost the
- * same. Over-inclusion there serializes one pair of lanes that could have run
- * in parallel; under-inclusion lets two lanes edit one file and costs one of
- * them its uncommitted work. Asserting EQUALITY would force a choice between
- * dropping `export.ts` (losing real contention information) and pushing it into
- * the merge gate (forcing a broad integ on export-only PRs) -- which is why an
- * earlier revision of this comment excluded the copy outright rather than
- * folding it in. go-to-k/cdkd#2076 settled it the other way: exclusion left the
- * exact drift the gate scope's own history predicts, since go-to-k/cdkd#2042
- * added `retry.ts` / `retryable-errors.ts` / `rollback-executor.ts` to both
- * integ gates while that list kept none of them.
+ * WHAT THIS DOES NOT PROVE, and no assertion here should be read as covering it:
+ * that the scope is COMPLETE. Both halves agreeing proves only that they say the
+ * same thing -- exactly the state that held while `retry.ts`,
+ * `retryable-errors.ts` and `rollback-executor.ts` were absent from every copy
+ * at once (go-to-k/cdkd#2042) while their callers were listed. Completeness is
+ * the judgment call the `integ-destroy` entry in CLAUDE.md describes, and it
+ * needs a human noticing that a file sits under every deleting AWS call.
  *
- * That same file used to carry a SECOND, divergent copy in its triage heuristic
- * -- one that named `destroy-runner.ts` and `export.ts`, omitted `deploy.ts` and
- * `destroy.ts`, and still labelled itself "the section-2 list". It is gone: the
- * triage bullet now points at section 2 instead of restating it, so there is
- * one list in that file and a reference cannot drift from its referent.
- *
- * HOW the prose copies are read, stated as MEASURED rather than as intended.
- * Every extractor is a PREFIX SCAN from a fixed anchor: it consumes consecutive
- * entry-shaped lines and stops at the first line that is not one. Three
- * consequences, each checked against the real files rather than reasoned about:
- *
- *   - It never accepts a non-entry line AS an entry. Every captured line must
- *     match the entry shape exactly, so a prose sentence cannot refill the slot
- *     of a deleted entry -- the failure the `pr-review-gate` fence (issue #2006)
- *     was rewritten to close.
- *   - An interleaved sentence TRUNCATES the list; it does not refuse it.
- *     Measured: a sentence inserted before the 6th of 11 bullets yields 5
- *     entries, which the FLOOR rejects. A smaller truncation that clears the
- *     floor is rejected by the sequence comparison instead. An earlier revision
- *     of this comment claimed the parse "fails rather than contributing a
- *     partial list" -- it does not, and the difference matters because it names
- *     the wrong assertion as the one holding.
- *   - A sentence AFTER the final entry is invisible and harmless (measured: 5
- *     passed): it contributes nothing and the list is still complete.
- *
- * An extractor whose ANCHOR gets reworded is the case that does refuse: the
- * anchor match fails and the extractor asserts on the spot, rather than
- * returning `[]` -- which would compare equal to another `[]` and report green
- * having compared nothing.
+ * `CLAUDE.md` used to carry a THIRD, prose copy of this scope, compared against
+ * both halves. It no longer spells the scope out -- the entry points at the hook
+ * and `.markgate.yml` instead -- so there is nothing there to drift. Do not
+ * reintroduce one; a hand-copy in the file every session loads is the most
+ * expensive of the copies and the least likely to be re-read.
  */
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
-const BROAD_HOOK = join(repoRoot, '.claude', 'hooks', 'integ-broad-gate.sh');
 const DESTROY_HOOK = join(repoRoot, '.claude', 'hooks', 'integ-destroy-gate.sh');
-// Step 6's content, and therefore all three anchors below, lives in the
-// reference file rather than SKILL.md since the go-to-k/cdkd#2930 split. The
-// error messages still say "verify-pr" so a failure names the skill a reader
-// is looking for; `VERIFY_PR_LABEL` is what they interpolate.
-const VERIFY_PR = join(
-  repoRoot,
-  '.claude',
-  'skills',
-  'verify-pr',
-  'references',
-  'leftover-and-integ-gates.md'
-);
-const VERIFY_PR_LABEL = 'verify-pr/references/leftover-and-integ-gates.md';
-const PICK_INTEG = join(repoRoot, '.claude', 'skills', 'pick-integ', 'SKILL.md');
-const WORK_ISSUES = join(
-  repoRoot,
-  '.claude',
-  'skills',
-  'work-issues',
-  'references',
-  'triage.md'
-);
-const RUN_INTEG = join(repoRoot, '.claude', 'skills', 'run-integ', 'SKILL.md');
 const MARKGATE_YML = join(repoRoot, '.markgate.yml');
 
 const read = (p: string): string => readFileSync(p, 'utf8');
 
 /**
- * Floors, asserted INSIDE each extractor so no call site can forget one.
+ * Floor, asserted INSIDE each extractor so no call site can forget it.
  *
- * These three constants floor four lists: cross-cutting 12 and work-issues
- * contention 13 (both MIN_PATHS = 8), the integ-destroy scope 13
- * (MIN_DESTROY_SCOPE = 9) and the broad set 9 (MIN_TESTS = 7), leaving four,
- * five, four and two entries of slack.
- *
- * That slack is not what guards a shrink -- every one of those lists is ALSO
- * pinned against a literal array below, so dropping an entry fails the pin
- * long before the floor notices. The floors earn their place in the
- * copy-vs-base comparisons: two extractors that BOTH stop parsing compare
- * [] to [] and agree. The pin fails on that input too -- its base is one of
- * these extractors -- so what the floor adds is WHERE the failure lands: in
- * the extractor, naming the file that went blind, rather than as an
- * empty-vs-pin mismatch that names only the base.
+ * It floors the 13-entry `integ-destroy` scope at 9, leaving four entries of
+ * slack. That slack is not what guards a shrink -- the scope is ALSO pinned
+ * against a literal array below, so dropping an entry fails the pin long before
+ * the floor notices. The floor earns its place in the two-halves comparison:
+ * two extractors that BOTH stop parsing compare [] to [] and agree. The pin
+ * fails on that input too -- its base is one of these extractors -- so what the
+ * floor adds is WHERE the failure lands: in the extractor, naming the file that
+ * went blind, rather than as an empty-vs-pin mismatch that names only the base.
  */
-const MIN_PATHS = 8;
-const MIN_TESTS = 7;
 const MIN_DESTROY_SCOPE = 9;
 
 function assertFloor(entries: readonly string[], source: string, floor: number): void {
@@ -166,86 +96,11 @@ function assertFloor(entries: readonly string[], source: string, floor: number):
 /** Sorted copy, duplicates preserved: the copies are lists, not sets. */
 const canonical = (entries: readonly string[]): string[] => [...entries].sort();
 
-/**
- * PINS -- the literal contents of each gated list.
- *
- * These are deliberately one more copy of lists this file exists to
- * de-duplicate, and that is the point rather than an oversight. The sync
- * comparisons prove the copies AGREE; they cannot prove the agreed-upon list is
- * right, and a coordinated edit satisfies them perfectly. Measured before these
- * were added, when there were four prose copies rather than today's three:
- * deleting `src/deployment/deploy-engine.ts` from the hook regex AND every one
- * of them left the whole suite GREEN -- the `names only paths that exist` test
- * does not fire (the survivors all exist) and `MIN_PATHS = 8` leaves
- * room for a silent four-entry shrink. The narrow predecessor of this pin
- * protected only the three entries issue #2042 added, so it had exactly the hole
- * its own docblock disclosed for entries never added, plus one it did not: a
- * REMOVAL was invisible too.
- *
- * The pin is the one copy that must be edited CONSCIOUSLY. Shrinking a gate's
- * scope is a real decision -- it is how a file stops being verified against real
- * AWS -- so it should cost a test edit whose diff says which protection is being
- * dropped. Growing one costs the same edit, which is cheap and correct.
- *
- * What a pin still cannot do: prove the list is COMPLETE. A live cross-cutting
- * file never added to any copy is invisible to every assertion here -- which is
- * not hypothetical, since `retry.ts`, `retryable-errors.ts` and
- * `rollback-executor.ts` were all missing from all of them at once while their
- * callers were listed. That judgment lives in the CLAUDE.md `integ-broad` entry.
- */
 const PIN_RATIONALE =
   'This list is PINNED. If you are adding an entry, add it here too. If you are REMOVING one, ' +
   'say in the PR body why that file no longer needs real-AWS verification -- a shrinking gate ' +
   'scope is how a file silently stops being verified, and every copy agreeing does not make it ' +
   'right.';
-
-const CROSS_CUTTING_PIN = [
-  'src/analyzer/dag-builder.ts',
-  'src/analyzer/template-parser.ts',
-  'src/cli/commands/deploy.ts',
-  'src/cli/commands/destroy-runner.ts',
-  'src/cli/commands/destroy.ts',
-  'src/deployment/deploy-engine.ts',
-  'src/deployment/intrinsic-function-resolver.ts',
-  'src/deployment/retry.ts',
-  'src/deployment/retryable-errors.ts',
-  'src/deployment/rollback-executor.ts',
-  'src/provisioning/provider-registry.ts',
-  'src/provisioning/register-providers.ts',
-];
-
-/**
- * The `/work-issues` section-2 CONTENTION list, pinned as literals.
- *
- * Deliberately NOT written as `[...CROSS_CUTTING_PIN, '<extra>']`. A table
- * driven off the very constant it is validating against cannot see a DELETION:
- * removing an entry from `CROSS_CUTTING_PIN` would silently remove it from the
- * expected contention list too, and both assertions would stay green while the
- * file lost an entry. The containment test below compares against the LIVE gate
- * regex, so the two guards fail for different reasons -- this one on a shrink of
- * the prose list, that one on the gate growing past it.
- */
-const CONTENTION_PIN = [
-  'src/analyzer/dag-builder.ts',
-  'src/analyzer/template-parser.ts',
-  'src/cli/commands/deploy.ts',
-  'src/cli/commands/destroy-runner.ts',
-  'src/cli/commands/destroy.ts',
-  'src/cli/commands/export.ts',
-  'src/deployment/deploy-engine.ts',
-  'src/deployment/intrinsic-function-resolver.ts',
-  'src/deployment/retry.ts',
-  'src/deployment/retryable-errors.ts',
-  'src/deployment/rollback-executor.ts',
-  'src/provisioning/provider-registry.ts',
-  'src/provisioning/register-providers.ts',
-];
-
-const CONTENTION_RATIONALE =
-  'The `/work-issues` section-2 contested-file list decides whether two issues can be worked as ' +
-  'parallel lanes. It is PINNED: adding an entry is cheap and correct, but REMOVING one means ' +
-  'two lanes may now edit that file at once, so say in the PR body why it stopped being ' +
-  'contested.';
 
 const DESTROY_SCOPE_PIN = [
   'src/analyzer/dag-builder.ts',
@@ -297,235 +152,20 @@ const STRICT_PIN_RATIONALE =
   'The STRICT bucket of integ-destroy-gate.sh changed. Adding an entry is cheap and correct. ' +
   'MOVING one out -- to filtered_delete or provider_pattern -- means changes to that file only ' +
   'trip the gate when their diff text happens to carry delete vocabulary, so say in the PR body ' +
-  'why that file\'s changes always will. REMOVING one drops it from the gate entirely.';
-
-const BROAD_SET_PIN = [
-  'bench-cdk-sample',
-  'drift-revert',
-  'drift-revert-vpc',
-  'export',
-  'lambda',
-  'microservices',
-  'multi-resource',
-  'multi-stack-deps',
-  'remove-protection',
-];
-
-// ---------------------------------------------------------------------------
-// Cross-cutting FILE list
-// ---------------------------------------------------------------------------
-
-/**
- * Expand an anchored path ERE of the shape the two regex copies use:
- *   ^src/deployment/(deploy-engine|retry)\.ts$|^src/provisioning/register-providers\.ts$
- *
- * Splitting on `|` is depth-aware, since the alternation character is also the
- * separator INSIDE each group. Every alternative must match the path shape --
- * an unrecognised one makes the parse FAIL rather than get skipped, so a
- * reworked regex cannot silently contribute fewer entries.
- */
-function expandPathRegex(re: string, source: string): string[] {
-  const alternatives: string[] = [];
-  let depth = 0;
-  let current = '';
-  for (const ch of re) {
-    if (ch === '(') {
-      depth += 1;
-      current += ch;
-    } else if (ch === ')') {
-      depth -= 1;
-      current += ch;
-    } else if (ch === '|' && depth === 0) {
-      alternatives.push(current);
-      current = '';
-    } else {
-      current += ch;
-    }
-  }
-  alternatives.push(current);
-
-  const out: string[] = [];
-  for (const alt of alternatives) {
-    const m = /^\^([A-Za-z0-9_./-]+)(?:\(([A-Za-z0-9_|.-]+)\))?\\\.ts\$$/.exec(alt);
-    expect(
-      m,
-      `${source}: alternative ${JSON.stringify(alt)} is not an anchored ` +
-        `^<prefix>(<a|b>)\\.ts$ path shape. The extractor refuses rather than skips, so a ` +
-        `reworded regex surfaces here instead of as a quietly shorter list.`,
-    ).not.toBeNull();
-    const prefix = m![1];
-    const group = m![2];
-    if (group === undefined) {
-      out.push(`${prefix}.ts`);
-    } else {
-      for (const member of group.split('|')) out.push(`${prefix}${member}.ts`);
-    }
-  }
-  assertFloor(out, source, MIN_PATHS);
-  return out;
-}
-
-/** (a) the live gate: `CROSS_CUTTING_REGEX='...'` in the hook. */
-function pathsFromHookRegex(): string[] {
-  const m = /^CROSS_CUTTING_REGEX='([^']+)'$/m.exec(read(BROAD_HOOK));
-  expect(m, 'integ-broad-gate.sh: no CROSS_CUTTING_REGEX=\'...\' assignment found').not.toBeNull();
-  return expandPathRegex(m![1], 'integ-broad-gate.sh CROSS_CUTTING_REGEX');
-}
-
-/** (b) the `/verify-pr` step-6 bullet list. */
-function pathsFromVerifyPrBullets(): string[] {
-  const m = /When the PR diff touches ANY of:\n((?:\s*- `[^`]+`\n)+)/.exec(read(VERIFY_PR));
-  expect(
-    m,
-    `${VERIFY_PR_LABEL}: could not find the "When the PR diff touches ANY of:" bullet list. ` +
-      'The anchor was reworded or the first bullet no longer has the `- `<path>`` shape. ' +
-      '(An interleaved sentence LATER in the list does not reach here -- it truncates the ' +
-      'scan, and the floor or the sequence comparison is what rejects that.)',
-  ).not.toBeNull();
-  const out = m![1]
-    .split('\n')
-    .filter((l) => l.trim() !== '')
-    .map((line) => {
-      const entry = /^\s*- `([^`]+)`$/.exec(line);
-      expect(entry, `${VERIFY_PR_LABEL}: bullet ${JSON.stringify(line)} is not a plain path`).not
-        .toBeNull();
-      return entry![1];
-    });
-  assertFloor(out, `${VERIFY_PR_LABEL} bullet list`, MIN_PATHS);
-  return out;
-}
-
-/** (c) the `/verify-pr` step-6 detection snippet -- a second copy of the regex. */
-function pathsFromVerifyPrRegex(): string[] {
-  const m = /git diff origin\/main\.\.\.HEAD --name-only \| grep -qE '([^']+)'/.exec(
-    read(VERIFY_PR),
-  );
-  expect(m, `${VERIFY_PR_LABEL}: no \`git diff ... | grep -qE '...'\` detection snippet found`).not
-    .toBeNull();
-  return expandPathRegex(m![1], `${VERIFY_PR_LABEL} detection regex`);
-}
-
-/**
- * (d) the `/pick-integ` changed-path table row.
- *
- * This copy additionally uses a per-directory brace spelling that stands for
- * several entries (`src/cli/commands/{deploy,destroy,destroy-runner}.ts` and
- * `src/provisioning/{provider-registry,register-providers}.ts`). It is a second
- * spelling of the same list, not a second list, so it is expanded rather than
- * skipped -- skipping it would drop five of the twelve entries and leave the
- * copy that names the most paths the least fenced.
- */
-function pathsFromPickInteg(): string[] {
-  const m = /^\s*\|\s*((?:`[^`]+`(?:, )?)+)\s*\|\s*\*\*BROAD set\*\*/m.exec(read(PICK_INTEG));
-  expect(
-    m,
-    'pick-integ/SKILL.md: could not find the BROAD-set table row. Its first cell must be ' +
-      'nothing but comma-separated `path` items.',
-  ).not.toBeNull();
-  const out: string[] = [];
-  for (const item of m![1].split(', ')) {
-    const entry = /^`([^`]+)`$/.exec(item);
-    expect(entry, `pick-integ/SKILL.md: cell item ${JSON.stringify(item)} is not a \`path\``).not
-      .toBeNull();
-    const path = entry![1];
-    const brace = /^([A-Za-z0-9_./-]+)\/\{([A-Za-z0-9_,.-]+)\}\.ts$/.exec(path);
-    if (brace === null) {
-      out.push(path);
-    } else {
-      for (const member of brace[2].split(',')) out.push(`${brace[1]}/${member}.ts`);
-    }
-  }
-  assertFloor(out, 'pick-integ/SKILL.md BROAD-set row', MIN_PATHS);
-  return out;
-}
-
-/**
- * (e) the `/work-issues` section-2 CONTENTION list.
- *
- * Same prefix scan as the others, with one addition the other prose copies do
- * not need: these bullets carry an explanatory clause after the path and are
- * hard-wrapped, so a bullet spans several lines. The scan therefore accepts two
- * line shapes and stops at the first BLANK line -- an entry line
- * (`- \`<path>\` -- ...`) and a two-space-indented continuation. Anything else
- * inside the span makes the parse FAIL rather than truncate, because unlike the
- * gate copies this list's terminator is a blank line rather than a shape
- * change, and a silently short list here would compare as a subset failure with
- * a misleading name.
- */
-function pathsFromWorkIssuesContested(): string[] {
-  const m =
-    /\*\*cross-cutting deploy\/destroy\*\* ones that almost every non-trivial fix\s+eventually\s+touches:\n\n((?:.+\n)+)/.exec(
-      read(WORK_ISSUES),
-    );
-  expect(
-    m,
-    'work-issues/references/triage.md: could not find the section-2 contested-file list. Its anchor ' +
-      'sentence ("...cross-cutting deploy/destroy ones that almost every non-trivial fix ' +
-      'eventually touches:") was reworded, or a blank line now separates it from the bullets. ' +
-      'The extractor asserts here rather than returning [], which would compare equal to ' +
-      'another [] and report green having compared nothing.',
-  ).not.toBeNull();
-  const out: string[] = [];
-  for (const line of m![1].split('\n')) {
-    if (line === '') break;
-    const entry = /^- `([^`]+)` /.exec(line);
-    if (entry !== null) {
-      out.push(entry[1]);
-      continue;
-    }
-    expect(
-      /^ {2}\S/.test(line),
-      `work-issues/references/triage.md: line ${JSON.stringify(line)} inside the contested-file list is ` +
-        'neither a "- `<path>` ..." entry nor a two-space-indented continuation of one. Keep ' +
-        'one path per bullet so the list stays machine-readable.',
-    ).toBe(true);
-  }
-  assertFloor(out, 'work-issues/references/triage.md section-2 contested list', MIN_PATHS);
-  return out;
-}
+  "why that file's changes always will. REMOVING one drops it from the gate entirely.";
 
 // ---------------------------------------------------------------------------
 // integ-destroy: the hook's ACTIVATION patterns vs the marker's include scope
 // ---------------------------------------------------------------------------
 
 /**
- * TWO copies of one gate's scope: the hook's activation patterns and the
- * marker's include list. Both are executable, and a mismatch between them in
- * EITHER direction silently disarms the gate. Both are compared here, against
- * each other and against `DESTROY_SCOPE_PIN`.
- *
- * There used to be a THIRD, a prose enumeration in CLAUDE.md's `integ-destroy`
- * entry, compared against both halves. CLAUDE.md no longer spells the scope out
- * -- the entry points at the hook and `.markgate.yml` instead -- so there is no
- * prose copy left to drift. Do not reintroduce one.
- *
- * Both executable failure modes have shipped:
- *
- *   - In `.markgate.yml` only (no hook pattern): the marker goes stale for the
- *     file, but the hook's diff guard passes the PR through before ever
- *     consulting the marker. Invalidated marker, gate never reads it. This is
- *     what `retry.ts` would have been if issue #2042 had been fixed in
- *     `.markgate.yml` alone.
- *   - In the hook only (no include entry): the FAIL-OPEN, and the worse of the
- *     two. The hook activates and blocks, `markgate verify` runs -- but the
- *     marker's `hash: diff` digest never saw the file, so it returns 0 and the
- *     merge proceeds with NO destroy verification. `destroy-runner.ts` and
- *     `region-check.ts` were both in this state on main, found by an audit
- *     prompted by the first direction's fix.
- *
- * A gate that has silently stopped gating is indistinguishable from a working
- * one from the outside, which is why this is compared mechanically rather than
- * left to the "keep in sync" comments both files carry.
- */
-
-/**
  * Expand a FINITE ERE into the literal strings it matches.
  *
- * More general than `expandPathRegex` above because the destroy hook's patterns
- * use two shapes that one does not: an optional group (`destroy(-runner)?\.ts`)
- * and a wildcard (`providers/.*\.ts`). It refuses anything it does not
- * understand rather than skipping it, so a pattern reworked into a shape this
- * cannot read fails loudly instead of contributing a shorter list.
+ * The destroy hook's patterns use two shapes a plain alternation split cannot
+ * read: an optional group (`destroy(-runner)?\.ts`) and a wildcard
+ * (`providers/.*\.ts`). This refuses anything it does not understand rather
+ * than skipping it, so a pattern reworked into a shape it cannot read fails
+ * loudly instead of contributing a shorter list.
  */
 function expandFiniteEre(src: string, source: string): string[] {
   let i = 0;
@@ -606,9 +246,23 @@ function destroyHookScope(): string[] {
   return out;
 }
 
-/** `.markgate.yml`'s `integ-destroy.include` list. */
+/**
+ * `.markgate.yml`'s `integ-destroy.include` list.
+ *
+ * The block terminator is "the next two-space-indented key, OR the end of the
+ * file" -- `integ-destroy` is the LAST (and only) gate in the file now that
+ * `check`, `docs`, `verify-pr`, `pr-review`, `integ-broad`, `integ-local` and
+ * `integ-schema-migration` are gone, so a terminator requiring a following key
+ * matches nothing and the extractor returns `[]`. That is not a hypothetical:
+ * the previous revision's `^ {2}[a-z][a-z-]*:$` terminator did exactly that the
+ * moment `integ-local` was deleted from under it, and the only thing that
+ * turned the silent empty list into a failure was `MIN_DESTROY_SCOPE`.
+ * `(?![\s\S])` is the end-of-input assertion (JavaScript has no `\Z`).
+ */
 function destroyIncludeScope(): string[] {
-  const m = /^ {2}integ-destroy:\n([\s\S]*?)^ {2}[a-z][a-z-]*:$/m.exec(read(MARKGATE_YML));
+  const m = /^ {2}integ-destroy:\n([\s\S]*?)(?=^ {2}[a-z][a-z-]*:$|(?![\s\S]))/m.exec(
+    read(MARKGATE_YML),
+  );
   expect(m, '.markgate.yml: could not locate the integ-destroy gate block').not.toBeNull();
   const out = [...m![1].matchAll(/^\s+- "([^"]+)"$/gm)].map((e) => normalizeGlob(e[1]));
   assertFloor(out, '.markgate.yml integ-destroy.include', MIN_DESTROY_SCOPE);
@@ -628,7 +282,7 @@ function destroyIncludeScope(): string[] {
  * the wrong bucket teaches the next reader the wrong one.
  *
  * Why it needs a fence at all, when the other copies of this gate's scope
- * already have one: none of the extractors above reads a hook HEADER, so this
+ * already have one: neither extractor above reads a hook HEADER, so this
  * enumeration went stale in exactly the shape the docblock at the top of this
  * file admits ("a FURTHER copy added without being wired in here is likewise
  * invisible"). Measured on go-to-k/cdkd#2720: `provider-registry.ts` was added
@@ -675,160 +329,6 @@ function destroyStrictBasenamesFromPattern(): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// Broad-SET test-name list
-// ---------------------------------------------------------------------------
-
-function assertTestNames(entries: readonly string[], source: string): string[] {
-  for (const name of entries) {
-    expect(name, `${source}: ${JSON.stringify(name)} is not an integ test name`).toMatch(
-      /^[a-z0-9]+(?:-[a-z0-9]+)*$/,
-    );
-  }
-  assertFloor(entries, source, MIN_TESTS);
-  return [...entries];
-}
-
-/** The hook's header comment -- the copy that was measurably stale (8 vs 9). */
-function testsFromHookComment(): string[] {
-  const m = /the test name is in the broad set \(([^)]+)\)/.exec(read(BROAD_HOOK));
-  expect(m, 'integ-broad-gate.sh: no "broad set (...)" header enumeration found').not.toBeNull();
-  const names = m![1]
-    .replace(/\n#\s*/g, ' ')
-    .split(/,\s+/)
-    .map((s) => s.trim());
-  return assertTestNames(names, 'integ-broad-gate.sh header comment');
-}
-
-/** The hook's block message -- one `/run-integ <name>` line per broad test. */
-function testsFromHookMessage(): string[] {
-  const names = [...read(BROAD_HOOK).matchAll(/^\s*\/run-integ ([a-z0-9-]+)/gm)].map((m) => m[1]);
-  return assertTestNames(names, 'integ-broad-gate.sh block message');
-}
-
-/** `.markgate.yml`'s `integ-broad` comment block. */
-function testsFromMarkgateYml(): string[] {
-  const m = /broad-integ set \(keep in sync[\s\S]*?:\n((?:\s*#\s{3}[a-z0-9-]+\n)+)/.exec(
-    read(MARKGATE_YML),
-  );
-  expect(m, '.markgate.yml: no integ-broad "broad-integ set" comment enumeration found').not
-    .toBeNull();
-  const names = m![1]
-    .split('\n')
-    .filter((l) => l.trim() !== '')
-    .map((l) => l.replace(/^\s*#\s+/, '').trim());
-  return assertTestNames(names, '.markgate.yml integ-broad comment');
-}
-
-/** `/run-integ` step 11's fenced list. */
-function testsFromRunInteg(): string[] {
-  const m = /A test is "broad"\s*\n\s*iff its name is one of:\s*\n\s*```text\n([\s\S]*?)```/.exec(
-    read(RUN_INTEG),
-  );
-  expect(m, 'run-integ/SKILL.md: no broad-set ```text fence found after the "iff" sentence').not
-    .toBeNull();
-  const names = m![1]
-    .split('\n')
-    .map((l) => l.trim())
-    .filter((l) => l !== '');
-  return assertTestNames(names, 'run-integ/SKILL.md step 11 fence');
-}
-
-/** `/verify-pr` step 6's canonical-broad-set bullet list. */
-function testsFromVerifyPr(): string[] {
-  const m = /The canonical broad set \(keep in sync[\s\S]*?\):\n((?:\s*- `[a-z0-9-]+`[^\n]*\n)+)/
-    .exec(read(VERIFY_PR));
-  expect(m, `${VERIFY_PR_LABEL}: no "canonical broad set" bullet list found`).not.toBeNull();
-  const names = m![1]
-    .split('\n')
-    .filter((l) => l.trim() !== '')
-    .map((l) => {
-      const entry = /^\s*- `([a-z0-9-]+)`/.exec(l);
-      expect(entry, `${VERIFY_PR_LABEL}: broad-set bullet ${JSON.stringify(l)} has no name`).not
-        .toBeNull();
-      return entry![1];
-    });
-  return assertTestNames(names, `${VERIFY_PR_LABEL} broad set`);
-}
-
-/** `/pick-integ`'s BROAD-set table cell. */
-function testsFromPickInteg(): string[] {
-  const m = /\*\*BROAD set\*\* \(((?:`[a-z0-9-]+`(?:, )?)+)\)/.exec(read(PICK_INTEG));
-  expect(m, 'pick-integ/SKILL.md: no "**BROAD set** (...)" enumeration found').not.toBeNull();
-  const names = m![1].split(', ').map((item) => {
-    const entry = /^`([a-z0-9-]+)`$/.exec(item);
-    expect(entry, `pick-integ/SKILL.md: broad-set item ${JSON.stringify(item)} is malformed`).not
-      .toBeNull();
-    return entry![1];
-  });
-  return assertTestNames(names, 'pick-integ/SKILL.md broad set');
-}
-
-// ---------------------------------------------------------------------------
-
-describe('cross-cutting file list stays in sync across its four copies', () => {
-  it('every copy names the same paths as the live gate regex', () => {
-    const gate = canonical(pathsFromHookRegex());
-    // No CLAUDE.md row: its `integ-broad` entry no longer enumerates the paths,
-    // it points at integ-broad-gate.sh's CROSS_CUTTING_REGEX. Nothing to compare
-    // there -- do not add one back.
-    const copies: Array<[string, string[]]> = [
-      [`${VERIFY_PR_LABEL} bullet list`, pathsFromVerifyPrBullets()],
-      [`${VERIFY_PR_LABEL} detection regex`, pathsFromVerifyPrRegex()],
-      ['pick-integ/SKILL.md BROAD-set row', pathsFromPickInteg()],
-    ];
-    for (const [name, entries] of copies) {
-      expect(
-        canonical(entries),
-        `${name} disagrees with integ-broad-gate.sh's CROSS_CUTTING_REGEX. The regex is the ` +
-          `live merge gate, so it is the side that is right by construction -- update the copy.`,
-      ).toEqual(gate);
-    }
-  });
-
-  it('names only paths that exist', () => {
-    const missing = pathsFromHookRegex().filter((p) => !existsSync(join(repoRoot, p)));
-    expect(
-      missing,
-      `these cross-cutting entries name files that no longer exist, so the gate alternative can ` +
-        `never match and the surface it was written for is silently ungated`,
-    ).toEqual([]);
-  });
-
-  it('holds exactly the pinned scope', () => {
-    expect(canonical(pathsFromHookRegex()), PIN_RATIONALE).toEqual(canonical(CROSS_CUTTING_PIN));
-  });
-});
-
-describe('work-issues contention list CONTAINS the integ-broad gate scope', () => {
-  it('names every file the live gate regex names', () => {
-    const contested = new Set(pathsFromWorkIssuesContested());
-    const missing = pathsFromHookRegex().filter((p) => !contested.has(p));
-    expect(
-      missing,
-      `these files are in integ-broad-gate.sh's CROSS_CUTTING_REGEX but not in ` +
-        `/work-issues section 2's contested-file list. A file with enough runtime blast radius ` +
-        `to force a broad real-AWS integ is also one most fixes touch, so it admits only one ` +
-        `lane at a time -- and a lane that does not know that will edit it alongside another. ` +
-        `This is a CONTAINMENT check, not an equality one: the contested list may name more ` +
-        `(it names src/cli/commands/export.ts, which no gate scopes), never fewer.`,
-    ).toEqual([]);
-  });
-
-  it('holds exactly the pinned contention list', () => {
-    expect(canonical(pathsFromWorkIssuesContested()), CONTENTION_RATIONALE).toEqual(
-      canonical(CONTENTION_PIN),
-    );
-  });
-
-  it('names only paths that exist', () => {
-    const missing = pathsFromWorkIssuesContested().filter((p) => !existsSync(join(repoRoot, p)));
-    expect(
-      missing,
-      `these contested-file entries name files that no longer exist, so a lane mapping its ` +
-        `issue to a target file can never match them and the entry silently protects nothing`,
-    ).toEqual([]);
-  });
-});
 
 describe('integ-destroy hook activation and marker scope name the same files', () => {
   it('neither half names a file the other omits', () => {
@@ -893,208 +393,5 @@ describe('integ-destroy hook activation and marker scope name the same files', (
         'documented as strict but actually hunk-filtered is a fail-open for every change whose ' +
         'diff text carries none of the delete vocabulary -- so the two must agree.',
     ).toEqual(canonical(fromPattern));
-  });
-});
-
-describe('broad-integ test-name list stays in sync across its six copies', () => {
-  it('every copy names the same tests', () => {
-    const base = canonical(testsFromHookMessage());
-    // No CLAUDE.md row: its `integ-broad` entry no longer enumerates the broad
-    // set, it points at integ-broad-gate.sh, which is what /run-integ consults.
-    // Nothing to compare there -- do not add one back.
-    const copies: Array<[string, string[]]> = [
-      ['integ-broad-gate.sh header comment', testsFromHookComment()],
-      ['.markgate.yml integ-broad comment', testsFromMarkgateYml()],
-      ['run-integ/SKILL.md step 11', testsFromRunInteg()],
-      [`${VERIFY_PR_LABEL} step 6`, testsFromVerifyPr()],
-      ['pick-integ/SKILL.md step 2', testsFromPickInteg()],
-    ];
-    for (const [name, entries] of copies) {
-      expect(
-        canonical(entries),
-        `${name} disagrees with the block message in integ-broad-gate.sh about which integ ` +
-          `fixtures count as broad. This list drifted before: the hook's own header comment sat ` +
-          `at 8 entries, omitting \`export\`, while every other copy had 9.`,
-      ).toEqual(base);
-    }
-  });
-
-  it('holds exactly the pinned broad set', () => {
-    expect(canonical(testsFromHookMessage()), PIN_RATIONALE).toEqual(canonical(BROAD_SET_PIN));
-  });
-
-  it('names only fixtures that exist', () => {
-    const missing = testsFromHookMessage().filter(
-      (t) => !existsSync(join(repoRoot, 'tests', 'integration', t)),
-    );
-    expect(
-      missing,
-      'these broad-set names have no fixture directory under tests/integration/, so /run-integ ' +
-        'can never flip the integ-broad marker with them',
-    ).toEqual([]);
-  });
-});
-
-/**
- * The stale-base DETECTOR's scope list is a SUPERSET, not another copy.
- *
- * `.claude/hooks/integ-stale-base-detector.sh` warns before a real-AWS integ
- * that a rebase could stale the marker the run is about to earn — and it names
- * BOTH markers, `integ-destroy` and `integ-broad`. So its `scope_re` is the
- * UNION of the two gates' scopes, and asserting equality against the
- * cross-cutting list alone would be wrong in the direction that matters: it
- * would force the detector to stop warning about `src/provisioning/providers/**`,
- * which is `integ-destroy`'s scope and the commonest reason a rebase stales a
- * marker (measured on go-to-k/cdkd#2589, where go-to-k/cdkd#2565 arriving from
- * main did exactly that).
- *
- * A superset assertion is the honest fence: every cross-cutting path must be
- * covered, extra ones are the design. The detector refuses nothing, so a list
- * that drifts costs a slightly-wrong nudge rather than a gate failure — which
- * is why this is one assertion and not the five the blocking gates get.
- */
-describe('integ-stale-base-detector scope superset', () => {
-  const DETECTOR = join(repoRoot, '.claude', 'hooks', 'integ-stale-base-detector.sh');
-
-  it("covers every path the broad gate's regex names", () => {
-    const m = /^scope_re='([^']+)'$/m.exec(read(DETECTOR));
-    expect(
-      m,
-      "integ-stale-base-detector.sh: no scope_re='...' assignment found. The anchor was " +
-        'reworded — fix this extractor rather than deleting the assertion, or it compares ' +
-        'nothing and passes.',
-    ).not.toBeNull();
-    // MATCH each path against the regex rather than expanding the regex into
-    // paths. `expandPathRegex` deliberately REFUSES anything that is not an
-    // anchored `^<prefix>(<a|b>)\.ts$` shape, and the detector's list contains a
-    // directory prefix (`^src/provisioning/providers/`) by design — it covers
-    // integ-destroy's scope too. Matching is also the more faithful question:
-    // what the hook does with `scope_re` is grep paths with it.
-    const detectorRe = new RegExp(m![1]);
-    const crossCutting = pathsFromHookRegex();
-    // NOT a length floor on `crossCutting`: `pathsFromHookRegex` already
-    // asserts its own (MIN_PATHS = 8), so a second one here can only fire at
-    // exactly 8 and is dead. The real vacuous case for a MATCH test is the
-    // opposite -- a regex matching everything (`.`, or a trailing empty
-    // alternative like `^src/…/|`) satisfies every path while fencing nothing.
-    // Guard that by requiring a path the detector must NOT match.
-    expect(
-      detectorRe.test('docs/README.md'),
-      "the detector's scope_re matches an obviously out-of-scope path, so it " +
-        'matches everything and this superset check fences nothing — look for a ' +
-        'bare `.` or a trailing empty alternative in the regex',
-    ).toBe(false);
-
-    const missing = crossCutting.filter((p) => !detectorRe.test(p));
-    expect(
-      missing,
-      'these cross-cutting paths are in integ-broad-gate.sh but NOT in the detector, so a ' +
-        'rebase pulling one in would print the reassuring "probably survive" arm while the ' +
-        'integ-broad marker actually goes stale — the detector telling you the opposite of ' +
-        'the truth is worse than it staying silent.',
-    ).toEqual([]);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// integ-local: the hook's ACTIVATION scope vs the marker's include scope
-// ---------------------------------------------------------------------------
-
-/**
- * The same two-list hazard the integ-destroy section above fences, for the
- * `integ-local` gate — which had no fence at all until go-to-k/cdkd#3040 added
- * a SECOND activation mechanism to the hook. The hook now decides scope two
- * ways: a path regex (`LOCAL_SCOPE_REGEX`) and a CONTENT test on the diff
- * (`bumps_cdk_local`, which fires on a change to the `"cdk-local":` line of a
- * `package.json`). `.markgate.yml`'s `integ-local.include` has to cover BOTH,
- * and the second is the one a path-list comparison cannot see: `package.json`
- * sits in the include list purely so that a cdk-local bump STALES the marker.
- * Drop it and the hook activates against a marker a previous local integ
- * left fresh — the hook-only FAIL-OPEN, the worse direction — with every
- * per-gate suite still green, because `integ-local-gate.test.sh` drives a
- * stub markgate that never reads the include list.
- *
- * So the assertions are paired by MECHANISM, not merged into one set:
- *   - every path glob the hook's regex activates on is in the include list,
- *     and every non-manifest include entry is one the regex activates on;
- *   - `package.json` is in the include list IF AND ONLY IF the hook carries
- *     the content test — the two halves of one decision, and either alone is
- *     a defect (include-only: a marker that stales for nothing; hook-only:
- *     the fail-open above).
- *
- * The regex is NOT expanded the way the destroy hook's patterns are: it is
- * split on `|` and each alternative compared VERBATIM against the hand-paired
- * table below, so a respelling of an alternative reds even when it would
- * still match the same paths -- a deliberately cruder fence, since the three
- * alternatives are anchored prefixes with nothing to expand.
- */
-const LOCAL_HOOK = join(repoRoot, '.claude', 'hooks', 'integ-local-gate.sh');
-
-/** `.markgate.yml`'s `integ-local.include` list. */
-function localIncludeScope(): string[] {
-  const m = /^ {2}integ-local:\n([\s\S]*?)^ {2}[a-z][a-z-]*:$/m.exec(read(MARKGATE_YML));
-  expect(m, '.markgate.yml: could not locate the integ-local gate block').not.toBeNull();
-  const out = [...m![1].matchAll(/^\s+- "([^"]+)"$/gm)].map((e) => e[1]);
-  assertFloor(out, '.markgate.yml integ-local.include', 4);
-  return out;
-}
-
-/** The hook's `LOCAL_SCOPE_REGEX`, as the path prefixes it activates on. */
-function localHookPathScope(): string[] {
-  const src = read(LOCAL_HOOK);
-  const m = /^LOCAL_SCOPE_REGEX='([^']+)'$/m.exec(src);
-  expect(m, "integ-local-gate.sh: no LOCAL_SCOPE_REGEX='...' assignment found").not.toBeNull();
-  const out = m![1].split('|');
-  assertFloor(out, 'integ-local-gate.sh LOCAL_SCOPE_REGEX', 3);
-  return out;
-}
-
-/**
- * Map one include glob to the regex alternative that activates on it. The
- * three path globs and the three alternatives are hand-paired here on purpose:
- * a generic glob-to-ERE translation would be a fourth parser to keep honest.
- * Only the two MEMBERSHIP sets are asserted — the include list equals the
- * table's globs, the hook regex equals the table's alternatives — so a glob
- * moved onto a different row would still pass; the row layout is a reading
- * aid for whoever edits one side, not something the test enforces.
- */
-const LOCAL_PATH_PAIRS: ReadonlyArray<readonly [glob: string, ereAlternative: string]> = [
-  ['src/local/**', '^src/local/'],
-  ['src/cli/commands/local-*.ts', '^src/cli/commands/local-[A-Za-z0-9_-]*\\.ts$'],
-  ['tests/integration/local-*/**', '^tests/integration/local-'],
-];
-
-describe('integ-local: hook activation scope vs .markgate.yml include scope', () => {
-  it('every path glob the hook activates on is in the include list, and vice versa', () => {
-    const include = localIncludeScope();
-    const hook = localHookPathScope();
-
-    const includePaths = include.filter((g) => g !== 'package.json');
-    expect(
-      [...includePaths].sort(),
-      'the non-manifest include entries must be exactly the three path globs the pairs table names',
-    ).toEqual(LOCAL_PATH_PAIRS.map(([g]) => g).sort());
-    expect(
-      [...hook].sort(),
-      'the hook regex alternatives must be exactly the three the pairs table names',
-    ).toEqual(LOCAL_PATH_PAIRS.map(([, e]) => e).sort());
-  });
-
-  it('package.json is in the include list IF AND ONLY IF the hook carries the cdk-local content test', () => {
-    const include = localIncludeScope();
-    const src = read(LOCAL_HOOK);
-    const hookHasContentTest =
-      /^bumps_cdk_local\(\) \{$/m.test(src) && /"cdk-local":/.test(src) && /bumps_cdk_local "\$/.test(src);
-    const includeHasManifest = include.includes('package.json');
-
-    expect(
-      includeHasManifest,
-      hookHasContentTest
-        ? 'the hook fires on a cdk-local bump but .markgate.yml does not stale the marker on ' +
-            'package.json: the merge would be judged by a marker a previous local integ left ' +
-            'fresh (hook-only fail-open, go-to-k/cdkd#3040)'
-        : '.markgate.yml stales the integ-local marker on package.json but no hook reads that ' +
-            'signal: the include entry is dead weight and should go with the content test',
-    ).toBe(hookHasContentTest);
   });
 });

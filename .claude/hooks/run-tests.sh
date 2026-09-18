@@ -7,7 +7,7 @@
 # (`mapfile`, `declare -A`, `${var^}`, `${var,,}`) is a runtime error.
 # Issue #1458 shipped a `mapfile` in the shared helper that would have
 # silently left quoted `cd` paths unresolved under 3.2, and issue #1477
-# found `provider-integ-gate.test.sh` itself failing there — both found
+# found a per-gate suite failing there (that gate has since been retired) — both found
 # only by running the suites under `/bin/bash` explicitly.
 #
 # Running the SUITE under 3.2 is not the same as running the HOOK under it: a

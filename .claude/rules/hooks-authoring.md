@@ -17,22 +17,23 @@ The `if:` fields silently never fired (go-to-k/cdkd#1455 / #1476 — see "The
 go-to-k/cdk-real-drift#1788 bypass class (measured 2026-08-19 via
 go-to-k/cdkd#2016: that repo's matcher was the coarse `Bash` too — the
 asymmetry was per-hook `if:` conditions; cdkd carries 0 `if:` fields across
-every Bash hook it registers, and `check-gate` / `verify-pr-gate` answer rc=2
-for the bare and the `cd <wt> && ...` spellings alike). The 0 is the
+every Bash hook it registers, and the blocking gates answer rc=2 for the bare
+and the `cd <wt> && ...` spellings alike). The 0 is the
 load-bearing half; the hook COUNT that used to sit beside it is gone rather
-than re-incremented, because go-to-k/cdkd#2717 retired ten of them — nine in
-one change and one later — and a hand-maintained number in a rules file is the
+than re-incremented, because two rounds of retirement have moved that number
+twice — and a hand-maintained number in a rules file is the
 shape that goes stale
 silently — `jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") |
 .hooks[].command' .claude/settings.json | wc -l` answers it. This matters
 because `/work-issues` writes commands in exactly that form. **Fenced by
 `tests/unit/scripts/settings-bash-matcher-coverage.test.ts`**: fails on any
 per-hook `if:`, any command-narrowed `Bash(...)` matcher, and the removal of
-`check-gate` / `verify-pr-gate` / `ci-green-gate` from the coarse
+`ci-green-gate` / `integ-destroy-gate` / `branch-gate` from the coarse
 entry, with a parser floor so "found nothing" cannot pass as "everything
-matches". That third name was `non-english-text-gate` until go-to-k/cdkd#2717
-moved it to CI; it is SUBSTITUTED rather than dropped, since a list whose job
-is to catch a removal must not shrink each time one happens.
+matches". Those three names are SUBSTITUTED as the roster changes rather than
+dropped, since a list whose job is to catch a removal must not shrink each time
+one happens — it held `non-english-text-gate`, then `check-gate` and
+`verify-pr-gate`, before each was retired.
 
 # Writing a hook's refusal message
 

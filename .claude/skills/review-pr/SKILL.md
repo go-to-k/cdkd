@@ -1,18 +1,18 @@
 ---
 name: review-pr
-description: Recommend the right reviewer count for a PR based on size + bias factors. Outputs a concrete plan (inline spot-check / 1 reviewer / 3-axis parallel) plus ready-to-paste Agent dispatch prompts when reviewers are warranted.
+description: Recommend the right reviewer set for a PR from what it touches. Outputs a concrete plan (1 reviewer by default, plus the security reviewer or all three axes when a trigger fires) with ready-to-paste Agent dispatch prompts.
 argument-hint: "<PR-number>"
 ---
 
 # PR Review Recommendation
 
 Decide how much review rigor a PR warrants and surface the dispatch prompts.
-The tiers say what a PR needs AT MINIMUM.
+The recommendation says what a PR needs AT MINIMUM.
 
-**The recommended tier is a FLOOR, not a cap, and wall-clock / token cost is
+**The recommended set is a FLOOR, not a cap, and wall-clock / token cost is
 never a reason to come in under it or to stop at it** (CLAUDE.md → "Cost is
-not a tiebreaker"): when unsure which tier applies, take the higher one.
-Reviewers are read-only agents that run in parallel.
+not a tiebreaker"): when unsure, add the axis. Reviewers are read-only agents
+that run in parallel.
 
 The skill itself never spawns reviewers — it reads PR stats, applies the
 heuristic, and prints a recommendation; the **main session orchestrator**
@@ -26,7 +26,8 @@ This file is a thin orchestrator. The per-stage detail lives under
 `references/`, and **reading a stage's file at stage entry is MANDATORY, not
 optional** — the one-line summaries below are routing, not the procedure. Each
 file carries the trigger lists, the shell, and the measured incidents behind
-them, and a step executed from the summary alone will get the tier wrong.
+them, and a step executed from the summary alone will get the reviewer set
+wrong.
 
 Splitting it was forced rather than stylistic: at 22,994 B this file sat 6 bytes
 under its cap, and go-to-k/cdkd#3169 measured the cost — six drafts of one
@@ -41,54 +42,40 @@ can only accept edits which shrink it accumulates more of those.
    apply it BEFORE opening a round on a head you have not reviewed. Skip the
    wait only on the conditions it names.
 
-1. **Fetch PR stats** — `loc`, `fc`, `paths`, minus auto-generated LOC, plus the
+1. **Read the PR** — `paths` above all, plus `loc` / `fc` for context and the
    touched `src/` files' recent history. Commands and their traps:
    [references/pr-stats.md](references/pr-stats.md). The history probe is
-   mandatory: it is the one step-3 trigger not readable off `paths`.
+   mandatory: it is the one step-3 signal not readable off `paths`.
 
-2. **Base tier** from `(loc, fc)`:
+2. **Default: ONE reviewer** (`pr-code-reviewer`, a single code-quality pass).
+   **Size selects nothing** — the old LOC / file-count ladder is gone, so a
+   4000-LOC PR and a 40-LOC PR both start here, and a docs-only or test-only
+   diff is not discounted below it.
 
-   | Condition | Base tier |
-   |-----------|-----------|
-   | `loc < 300` OR `fc < 5` | **inline** (spot-check by the orchestrator) |
-   | `300 <= loc < 1000` AND `5 <= fc < 10` | **1-reviewer** (single code-quality pass) |
-   | `loc >= 1000` OR `fc >= 10` | **3-axis** (spec + code + test in parallel) |
+3. **Triggers** from the `paths` list —
+   [references/bias-factors.md](references/bias-factors.md), read at this step
+   and AUTHORITATIVE for every list below; this summary is routing.
 
-   The boundary overlap is intentional: a 200-LOC / 12-file PR is 3-axis via
-   file count (cross-cutting risk regardless of LOC).
+   - **Security add-on** (`pr-security-reviewer`, additive to whatever else
+     runs): a security / process-launch surface, `src/provisioning/providers/**`,
+     or a PR that IS a security fix. **A security blocker stops the merge like
+     any other.**
+   - **All three axes** (spec + code + test in parallel): a state-schema bump,
+     or a security fix. Nothing else reaches 3-axis by rule — but the set is a
+     floor, so add an axis whenever the judgement signals in that file fire.
 
-3. **Bias factors** from the `paths` list —
-   [references/bias-factors.md](references/bias-factors.md), read at this step.
-   Up-bias (security / process-launch surface, `src/provisioning/providers/**`,
-   more than one fix-back round, a recent defect in the code being edited),
-   down-bias (pure inert docs, test-only) — only when ALL paths fall in those
-   buckets, and **agent-instruction files are NOT docs**, which is the arm a
-   `.claude/**`-only diff gets wrong. Both fire → up wins.
-
-   The **security reviewer is ADDITIVE, not a rung on the size ladder**:
-   dispatch it at ANY tier, `inline` included, whenever a security /
-   process-launch surface is touched or the PR is a security fix — and **a
-   security blocker blocks the marker like any other, at every tier including
-   `inline`**. That second half is the one `inline` needs stated here: step 6,
-   where verdicts are synthesized, is read only at `1-reviewer` / `3-axis`, so
-   an `inline` run that dispatches the security reviewer would otherwise have
-   the dispatch rule and not the do-not-merge rule.
-   [references/bias-factors.md](references/bias-factors.md) is AUTHORITATIVE
-   for which paths trigger it; this summary is routing.
-
-4. **Apply the bias**: inline+up→1-reviewer; 1-reviewer+up→3-axis; 3-axis+up
-   →3-axis (clamp); 3-axis+down→1-reviewer; 1-reviewer+down→inline;
-   inline+down→inline (clamp).
+4. **Resolve the set**: default one reviewer → plus `pr-security-reviewer` when
+   its trigger fired → all three axes when a schema bump or security fix is in
+   play (a 3-axis security fix dispatches four reviewers, not three).
 
 5. **Render the recommendation** — format in
    [references/output-template.md](references/output-template.md).
 
-6. **Dispatch reviewers + set the marker** (only for `1-reviewer` / `3-axis`) —
+6. **Dispatch reviewers and synthesize** —
    [references/dispatch-and-marker.md](references/dispatch-and-marker.md).
-   NEVER set the marker without dispatching the reviewers first.
+   NEVER report a round closed without dispatching the reviewers first.
 
 ## Output template
 
-The recommendation format, the per-tier dispatch prompts, and the dry-run
-calibration set are in
+The recommendation format and the per-reviewer dispatch prompts are in
 [references/output-template.md](references/output-template.md).

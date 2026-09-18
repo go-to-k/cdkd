@@ -31,7 +31,7 @@ describe('createLocalStartAlbCommand', () => {
   // `cmd.parse([...])` runs the registered `.action(handler)` body. The
   // production handler hits real synthesis / docker; stub to a no-op so
   // parse() only exercises Commander's option parser. The
-  // cmd-parse-stub-gate hook enforces this stub for any cmd.parse() in
+  // a no-op action stub is required for any cmd.parse() in
   // tests.
   const cmd = createLocalStartAlbCommand();
   cmd.action(() => {});

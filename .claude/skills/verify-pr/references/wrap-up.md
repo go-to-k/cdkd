@@ -1,7 +1,7 @@
 # Steps 10-12 — Retrospective, residual-nit sweep, PR freshness
 
-Read at step 10 of `/verify-pr`, after the live-test and before the Final Step's
-marker chain. All three run once, at the end of the run.
+Read at step 10 of `/verify-pr`, after the live-test and before the Final Step.
+All three run once, at the end of the run.
 
 ## 10. Retrospective + rules update
 
@@ -11,8 +11,8 @@ marker chain. All three run once, at the end of the run.
   pre-action checklist), **memory** (judgmental — weakest). Surface the
   proposals before merging; write agreed code/skill/hook artifacts in the same
   PR.
-- The retrospective is itself covered by the `verify-pr` marker — skipping it
-  sets the marker on incomplete work.
+- The retrospective is part of the checklist, not an optional coda — reporting
+  "PR is ready to merge" without it reports on incomplete work.
 
 ## 11. Residual review-nit sweep
 
@@ -21,8 +21,8 @@ Mandatory — a multi-PR session once left ~9 reviewer-flagged nits unfiled at
 
 For every reviewer output this session (including re-reviews), walk the
 "Minor / Nit / Informational" section. For EACH item, confirm ONE of these
-BEFORE setting the `verify-pr` marker (same buckets as CLAUDE.md's
-Remaining-work taxonomy):
+BEFORE reporting the PR ready (same buckets as CLAUDE.md's Remaining-work
+taxonomy):
 
 - (a) **Fixed in this PR** — point at the fix commit / file:line.
 - (b) **TODO (issue #N)** — an issue exists AND the PR body references it. The
@@ -44,13 +44,13 @@ Remaining-work taxonomy):
   reviewer found lives in a file this session just reviewed, so the context
   test in `.claude/rules/session-report.md` → Session-fit makes it `now`
   unless that rule's reason (a), external input, fires — file an issue only
-  then, and write the reason. A `now` item must be fixed before the marker
-  is set, or re-classified with the reason recorded.
+  then, and write the reason. A `now` item must be fixed before the PR is
+  reported ready, or re-classified with the reason recorded.
 - (c) **Won't-do (decided + recorded)** — the PR body or a comment names the nit
   and why shipping as-is is right.
 
 If none holds for any nit, FIX it — (a) is the default; (b) is reached only
-through a `next` reason written in the issue body. Do not set `verify-pr`
+through a `next` reason written in the issue body. Do not report the PR ready
 until every reviewer-flagged item is on one of the three paths.
 
 Also walk the transcript for memory-rule candidates — each written as a memory

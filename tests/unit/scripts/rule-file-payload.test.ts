@@ -237,7 +237,7 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   // Widening, not narrowing: no path was dropped.
   ['docker-argv-redaction.md', 8], // literal list: EXACT, see below
   ['docs-page-template.md', 63], // `docs/**`; measured 79 tracked files (80%, per the convention above)
-  ['hooks.md', 68],
+  ['hooks.md', 41],
   // ONE literal path: the module the file is about (issue
   // go-to-k/cdkd#3192). EXACT, like the other wildcard-free lists. Narrow on
   // purpose -- `src/cli/commands/scrub.ts` and `import.ts` also hold these
@@ -280,7 +280,7 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   // Review caught it; that is the gap, not a fence. Floor at ~80% per the
   // convention above: this satellite is the AUTHORING half of hooks.md and
   // must never be narrowed to the handful of hooks a lane happens to edit.
-  ['hooks-authoring.md', 74],
+  ['hooks-authoring.md', 31],
   // Two literal paths, the gate and its suite -- EXACT, like the other
   // two-path satellites below. Split off hooks.md when that file crossed the
   // per-file cap a second time this session (go-to-k/cdkd#2707); the content
@@ -295,24 +295,18 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   // this glob deliberately omits it -- which is what buys the headroom rather
   // than any text being summarised away.
   ['hooks-command-match-heredoc.md', 4], // literal list: EXACT, see below
-  // Twenty literal paths, ten gates and their ten suites -- EXACT. Split off
-  // hooks.md in the same change, for the OTHER half of the same overrun: the
-  // `lib/command-match.sh` payload was over its 120,000 B cap once projected
-  // onto origin/main. The roster is per-hook vocabulary; a lane editing the
-  // shared matcher these gates source does not need any of it, and the
-  // STOPPING RULE that decides whether a new gate may exist stays in hooks.md.
-  ['hooks-foot-gun-gates.md', 20], // literal list: EXACT, see below
   // +1 (go-to-k/cdkd#2650): command-match-mutants.sh. The file already
   // DESCRIBED that harness while nothing made it load on an edit to it.
   ['hooks-main-tree-branch.md', 2], // literal list: EXACT, see below
   ['hooks-branch-gate.md', 2], // literal list: EXACT, see below
   ['hooks-cwd-detector.md', 2], // literal list: EXACT, see below
-  ['hooks-merge-target.md', 4], // literal list: EXACT, see below
-  // go-to-k/cdkd#3273 split the "which pull request do the merge-time gates
-  // judge" entry out of hooks.md. Its four globs are the two live-query gates
-  // and their suites -- the suites because the argv-recording blocks ARE the
-  // fence for that question, and a session editing one of them needs to read
-  // why an exit-code-only case is satisfied by the defect.
+  ['hooks-merge-target.md', 2], // literal list: EXACT, see below
+  // go-to-k/cdkd#3273 split the "which pull request does the merge-time gate
+  // judge" entry out of hooks.md. Its two globs are `ci-green-gate` and its
+  // suite -- the suite because the argv-recording block IS the fence for that
+  // question, and a session editing it needs to read why an exit-code-only
+  // case is satisfied by the defect. It covered `pr-review-gate` too until the
+  // marker layer was retired, which is where the other two globs went.
   ['hooks-gate-name-fence.md', 1], // literal list: EXACT, see below
   // go-to-k/cdkd#3273 moved the gate-name fence's entry out of
   // hooks-class-fences.md: its subject is the markgate-backed hooks, not the
@@ -325,8 +319,7 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   // escaped-whitespace refusal), so it has to load when that file changes.
   // +1 again: main-tree-edit-oracle.test.sh, the differential oracle this file
   // now explains -- its tolerances and its self-check are described here.
-  ['hooks-stop.md', 4], // literal list: EXACT, see below
-  ['gate-sibling-repos.md', 8], // literal list: EXACT, see below
+  ['gate-sibling-repos.md', 2], // literal list: EXACT, see below
   ['proxy-support.md', 3], // literal list: EXACT, see below
   ['layout-analyzer.md', 12],
   ['layout-cli-diff.md', 2], // literal list: EXACT, see below -- `diff.ts` + `diff-recursive.ts`
@@ -966,36 +959,28 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // what matters here -- narrowing the satellite's glob drops this from 22,878
   // to the parent's 15,222 alone, which 18,000 catches.
   ['.github/workflows/pr-content-checks.yml', 18_000, 30_000], // measured 22_878 on 2026-09-07
-  ['.claude/hooks/branch-gate.sh', 62_000, 100_000], // measured 75_670 on 2026-09-07
-  // Representative path for `hooks-foot-gun-gates.md` (go-to-k/cdkd#3040) --
-  // without a row naming one of its ten gates the satellite sits under no
-  // budget at all and could go dark or grow unnoticed. Payload is hooks.md +
-  // that satellite + hooks-authoring.md. The floor is set ABOVE the
-  // gut-the-satellite bound (70,473 B), which is what makes it discriminate
-  // the satellite emptying; as on the sibling rows it cannot also discriminate
-  // hooks-authoring.md going dark (bound 80,363 B), and that residual is named
-  // rather than papered over.
-  ['.claude/hooks/pr-body-item-number-gate.sh', 72_000, 92_000], // measured 82_696 on 2026-09-17
+  ['.claude/hooks/branch-gate.sh', 26_000, 43_000], // measured 32_553 on 2026-09-18
   // The shared matcher pulls hooks.md AND the class-fence satellite, which is
   // the only path that loads both. hooks.md outgrew the 120,000 per-file cap on
   // its own, so the two CLASS fences moved to a satellite of their own rather
   // than the cap being raised -- a cap that moves when it fires is not a cap.
-  ['.claude/hooks/lib/command-match.sh', 64_000, 120_000], // measured 77_676 on 2026-09-07
-  // The four `integ-*` gates were the heaviest UNBUDGETED paths once
-  // `gate-sibling-repos.md` split out of hooks.md: this row is the only one
-  // that names them, so without it the satellite sits under no budget at all
-  // and could go dark or grow unnoticed. Payload is hooks.md + the satellite.
-  // Deliberately NOT added to the command-match row above: that path already
-  // carries hooks.md + hooks-class-fences.md and has ~15 KB of headroom, which
-  // adding a third file would spend down to about 1 KB.
-  ['.claude/hooks/integ-local-gate.sh', 64_000, 103_000], // measured 78_279 on 2026-09-07
+  ['.claude/hooks/lib/command-match.sh', 50_000, 81_000], // measured 61_149 on 2026-09-18
+  // `integ-destroy-gate.sh` is the only path that reaches
+  // `gate-sibling-repos.md`, which split out of hooks.md: without this row that
+  // satellite sits under no budget at all and could go dark or grow unnoticed.
+  // Payload is hooks.md + the satellite + hooks-authoring.md. It named
+  // `integ-local-gate.sh` until the marker layer was retired and `integ-destroy`
+  // became the only markgate gate. Deliberately NOT folded into the
+  // command-match row above: that path already carries hooks.md +
+  // hooks-class-fences.md, and adding a third file would spend its headroom.
+  ['.claude/hooks/integ-destroy-gate.sh', 29_000, 47_000], // measured 35_596 on 2026-09-18
   // The cwd-race detector's entry moved out of hooks.md when the #2363
   // widening pushed that file past the 120,000 B per-file cap (the #2236
   // precedent). This path is the representative one for the satellite
   // (its two globs are the hook and its .test.sh, per the REACH_FLOORS
   // entry above); without this row the satellite would sit under no
   // budget. Payload is hooks.md + hooks-cwd-detector.md.
-  ['.claude/hooks/main-tree-git-cwd-detector.sh', 61_000, 99_000], // measured 74_955 on 2026-09-07
+  ['.claude/hooks/main-tree-git-cwd-detector.sh', 27_000, 45_000], // measured 34_053 on 2026-09-18
   // go-to-k/cdkd#3273's entry took `lib/command-match.sh`'s payload to
   // 121,483 B against its 120,000 B cap, so "which pull request do the
   // merge-time gates judge" moved to its own satellite -- the same #2236
@@ -1003,12 +988,12 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // the two gates and their suites, per the REACH_FLOORS entry). Payload is
   // hooks.md + hooks-merge-target.md + hooks-authoring.md, the last because
   // its glob covers every hook.
-  ['.claude/hooks/ci-green-gate.sh', 66_000, 105_000], // measured 91_620 on 2026-09-17
+  ['.claude/hooks/ci-green-gate.sh', 24_000, 39_000], // measured 29_608 on 2026-09-18
   // The gate-name fence's entry moved out of hooks-class-fences.md in the same
   // change, for the same cap. Representative path for it (its ONE glob is its
   // own suite, per the REACH_FLOORS entry above). Payload is hooks.md +
   // hooks-class-fences.md + hooks-gate-name-fence.md + hooks-authoring.md.
-  ['.claude/hooks/markgate-gate-name-class.test.sh', 80_000, 125_000], // measured 113_552 on 2026-09-17
+  ['.claude/hooks/markgate-gate-name-class.test.sh', 42_000, 69_000], // measured 52_217 on 2026-09-18
   // main-tree-edit-gate's entry, and its main-tree-dirty-detector backstop,
   // moved out of hooks.md on 2026-09-05 when go-to-k/cdkd#2614's entry took
   // that file to 80,352 B -- past the 80,000 B per-file cap, which had only
@@ -1050,7 +1035,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // `pulls in N B` off the failure) and check the HISTORY before explaining why
   // an old figure differs -- a hand-summed answer also has to reproduce
   // `globToRegExp`, and the obvious approximation picks a different file set.
-  ['.claude/hooks/main-tree-edit-gate.sh', 78_000, 95_000], // measured 86_991 on 2026-09-08
+  ['.claude/hooks/main-tree-edit-gate.sh', 26_000, 43_000], // measured 32_538 on 2026-09-18
   // main-tree-branch-gate's entry moved out of hooks.md on 2026-09-01, when the
   // argument-parse rewrite's measured before/after table pushed that file to
   // 122,862 B -- past the same 120,000 B per-file cap, and one line past the
@@ -1058,7 +1043,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // globs are the hook and its suite, per the REACH_FLOORS entry above);
   // without this row the satellite would sit under no budget at all. Payload is
   // hooks.md + hooks-main-tree-branch.md.
-  ['.claude/hooks/main-tree-branch-gate.sh', 70_000, 111_000], // measured 85_174 on 2026-09-07
+  ['.claude/hooks/main-tree-branch-gate.sh', 35_000, 57_000], // measured 43_214 on 2026-09-18
   //   The comment here read "measured 124,200" and the payload was already
   //   124,758 when it was written -- 558 B behind on the day it shipped, because
   //   the satellite kept being edited after the figure was taken. Re-measured at
@@ -1068,12 +1053,6 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   //   moved with the measurement rather than the measurement being trimmed to
   //   the band: 140,000 left 4,862 B of headroom over the new figure, which is
   //   the landmine shape the retired corpus ceiling's own history names.
-  // The Stop-hook entries moved out of hooks.md when issues #2391 / #2396 --
-  // the nudge-cadence rule, the channel table and stop-warn's own suite --
-  // pushed that file to 122,559 B, past the same cap. Representative path for
-  // the satellite (its four globs are the two hooks and their suites, per the
-  // REACH_FLOORS entry above). Payload is hooks.md + hooks-stop.md.
-  ['.claude/hooks/stop-warn.sh', 65_000, 104_000], // measured 79_357 on 2026-09-07
   // Second review round, 2026-08-25: three heavy paths still carried no budget
   // at all. `masked-retry-logger.ts` is the 2nd-heaviest path in the repo and
   // was covered only by prose, in the `region-check.ts` row's claim to speak
@@ -1699,14 +1678,20 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 // Neither branch's figure is the merged one. That is the whole reason this
 // count is asserted rather than described: two correct increments compose to a
 // number neither author wrote.
-const CORPUS_FILE_COUNT = 75; // + lock-contention-message.md (go-to-k/cdkd#3390): the
+const CORPUS_FILE_COUNT = 73; // 75 - 2, the agent-tooling shrink: hooks-stop.md and
+                              //  hooks-foot-gun-gates.md were DELETED because the hooks
+                              //  they documented were, and a satellite describing a
+                              //  mechanism that no longer exists is not payload. The 75 is
+                              //  MAIN's figure at the rebase, not this branch's 74 -- per
+                              //  the note above, a branch that counts from its own base
+                              //  composes wrongly, and main had added
+                              //  lock-contention-message.md meanwhile.
+                              // 75: + lock-contention-message.md (go-to-k/cdkd#3390): the
                               //  `layout-state-types.md` entry for ONE file had grown to
                               //  ~10 KB inside a satellite globbed at all of `src/state/**`
                               //  and `src/types/**`, so the go-to-k/cdkd#3377 fix pushed
                               //  `src/state/malformed-resources-bag.ts` over its cap. Fifth
                               //  time this class has bought a satellite rather than a cap.
-                              //  74 -> 75 taken from main's own figure at the rebase, per
-                              //  the note above -- main had meanwhile added two of its own.
                               // 74: + hooks-command-match-heredoc.md AND
                               //  hooks-foot-gun-gates.md (go-to-k/cdkd#3040): 72 + 2, taken
                               //  from main`s own figure at the rebase rather than from either
@@ -2053,7 +2038,29 @@ const CORPUS_FILE_COUNT = 75; // + lock-contention-message.md (go-to-k/cdkd#3390
                               //  than against main, and a pointer always costs the index file
                               //  something. Measured on the tree that ships this line. That
                               //  makes 45.
-const CORPUS_BYTES_MIN = 1_146_000; // RE-DERIVED UPWARD 1_098_000 -> 1_146_000 (2026-09-18,
+const CORPUS_BYTES_MIN = 1_081_000; // RE-DERIVED **DOWNWARD** 1_146_000 -> 1_081_000
+                                    // (2026-09-18, the agent-tooling shrink). This is the one
+                                    // direction this floor exists to refuse, so read the reason
+                                    // before copying the move: the corpus did not lose text to
+                                    // summarising, it lost two SATELLITES and most of `hooks.md`
+                                    // because the hooks they documented were DELETED. Text that
+                                    // describes a mechanism which no longer exists is not payload
+                                    // worth preserving, and keeping the floor would have forced
+                                    // prose about retired gates to be retained to satisfy a number.
+                                    // A lowering is legitimate ONLY when the code the text
+                                    // describes went away in the same commit; a lowering to fund
+                                    // "tightening the wording" is the deletion this floor catches.
+                                    // Measured ON THE MERGE with main, not on the branch (the
+                                    // CORPUS_FILE_COUNT note above says why a branch figure
+                                    // composes wrongly): 1,120,647 B over 73 files, largest
+                                    // satellite `layout-provisioning.md` at 74,091 B. Slack is
+                                    // 39,647 B and `corpus - largest` = 1,046,556 B sits
+                                    // 34,444 B under the floor, so the largest-satellite case
+                                    // still discriminates with room. The branch alone measured
+                                    // 1,114,923 B over 72 files.
+                                    //
+                                    // Superseded history follows.
+                                    // RE-DERIVED UPWARD 1_098_000 -> 1_146_000 (2026-09-18,
                                     // go-to-k/cdkd#3302's SECOND rebase): the largest-satellite
                                     // case went RED again -- the corpus had grown to 1,180,425 B
                                     // (71 files) while the floor stayed at 1,098,000, so its slack

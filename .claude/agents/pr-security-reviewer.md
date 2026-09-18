@@ -9,7 +9,8 @@ tools: Read, Glob, Grep, Bash
 You find the security defect the generic code reviewer misses because it does not
 systematically trace how a sensitive value FLOWS. The caller provides a PR number.
 You are dispatched only for security-sensitive PRs (secret handling, credential /
-process-launch surfaces, deletion logic), IN ADDITION to the size-tier panel.
+process-launch surfaces, deletion logic), IN ADDITION to whatever other
+reviewers the PR resolved to.
 
 ## Inputs you read
 
@@ -90,7 +91,7 @@ command, a template, or a query.
 
 ## What NOT to check
 
-- Whether tests pass (CI), or whether the change matches its spec in depth — a design doc, or the bodies of the issues it says it closes (spec reviewer). One exception, because you are dispatched at EVERY tier including `inline`, where no other reviewer is. If the PR declares `Closes #N` whose stated acceptance touches a security surface — **or FILES an issue whose claim does** — read it and say whether the code does what it claims. There is no keyword for "filed", so find them: scan the PR body (`gh pr view <N> --json body`) and the branch's commit messages for issue links that are neither `Closes` nor `Refs`, then open the issue itself (`gh issue view <M> --repo <owner/repo>`) — `gh pr view` will not show it to you. If neither exists, SAY SO rather than staying silent: a pass that iterates zero times reads exactly like one that found nothing. Do NOT rule on whether a `Closes` is "earned" — that is the spec axis's bar and it has calibration you do not. Label any finding `spec (secondary)`, defer to `pr-spec-reviewer` if that axis ran, and cap it at `minor` unless it is independently a security defect, since the parent sorts on severity alone.
+- Whether tests pass (CI), or whether the change matches its spec in depth — a design doc, or the bodies of the issues it says it closes (spec reviewer). One exception, because you may be the only reviewer besides the default code pass, which is told not to rule on it. If the PR declares `Closes #N` whose stated acceptance touches a security surface — **or FILES an issue whose claim does** — read it and say whether the code does what it claims. There is no keyword for "filed", so find them: scan the PR body (`gh pr view <N> --json body`) and the branch's commit messages for issue links that are neither `Closes` nor `Refs`, then open the issue itself (`gh issue view <M> --repo <owner/repo>`) — `gh pr view` will not show it to you. If neither exists, SAY SO rather than staying silent: a pass that iterates zero times reads exactly like one that found nothing. Do NOT rule on whether a `Closes` is "earned" — that is the spec axis's bar and it has calibration you do not. Label any finding `spec (secondary)`, defer to `pr-spec-reviewer` if that axis ran, and cap it at `minor` unless it is independently a security defect, since the parent sorts on severity alone.
 - General code quality unrelated to security (code reviewer) — but if a code
   smell IS the security defect, flag it.
 - Documentation prose.

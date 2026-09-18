@@ -27,39 +27,9 @@
           },
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/check-gate.sh",
-            "timeout": 10,
-            "statusMessage": "Checking /check marker..."
-          },
-          {
-            "type": "command",
             "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/integ-destroy-gate.sh",
             "timeout": 10,
             "statusMessage": "Checking integ-destroy marker..."
-          },
-          {
-            "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/integ-local-gate.sh",
-            "timeout": 10,
-            "statusMessage": "Checking integ-local marker..."
-          },
-          {
-            "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/integ-broad-gate.sh",
-            "timeout": 10,
-            "statusMessage": "Checking integ-broad marker..."
-          },
-          {
-            "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/integ-schema-migration-gate.sh",
-            "timeout": 10,
-            "statusMessage": "Checking integ-schema-migration marker..."
-          },
-          {
-            "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/pr-review-gate.sh",
-            "timeout": 15,
-            "statusMessage": "Checking pr-review marker..."
           },
           {
             "type": "command",
@@ -69,99 +39,15 @@
           },
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/integ-stale-base-detector.sh",
-            "timeout": 10,
-            "statusMessage": "Checking the branch is not behind origin/main before an integ..."
-          },
-          {
-            "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/verify-pr-gate.sh",
-            "timeout": 10,
-            "statusMessage": "Checking verify-pr marker..."
-          },
-          {
-            "type": "command",
             "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/bughunt-clean-gate.sh",
             "timeout": 10,
             "statusMessage": "Checking for un-destroyed bug-hunt resources..."
           },
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/commit-msg-heredoc-gate.sh",
-            "timeout": 10,
-            "statusMessage": "Checking commit message format..."
-          },
-          {
-            "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/gated-command-preamble-gate.sh",
-            "timeout": 10,
-            "statusMessage": "Checking for a side-effecting preamble on a gated command..."
-          },
-          {
-            "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/pr-body-item-number-gate.sh",
-            "timeout": 10,
-            "statusMessage": "Checking body file for bare #N auto-link trap..."
-          },
-          {
-            "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/gh-label-validity-gate.sh",
-            "timeout": 10,
-            "statusMessage": "Checking gh label validity..."
-          },
-          {
-            "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/roundtrip-test-gate.sh",
-            "timeout": 10,
-            "statusMessage": "Checking new SDK provider has round-trip test..."
-          },
-          {
-            "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/provider-docs-gate.sh",
-            "timeout": 10,
-            "statusMessage": "Checking new provider registration has docs entries..."
-          },
-          {
-            "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/provider-integ-gate.sh",
-            "timeout": 10,
-            "statusMessage": "Checking new provider registration has integ coverage..."
-          },
-          {
-            "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/ref-segment-audit-gate.sh",
-            "timeout": 10,
-            "statusMessage": "Checking new REF_RETURNS_SEGMENT_AFTER_PIPE entries have unit tests..."
-          },
-          {
-            "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/integ-coverage-matrix-gate.sh",
-            "timeout": 15,
-            "statusMessage": "Checking integ-coverage matrix is in sync..."
-          },
-          {
-            "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/cmd-parse-stub-gate.sh",
-            "timeout": 10,
-            "statusMessage": "Checking test files for cmd.parse without action stub..."
-          },
-          {
-            "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/state-destroy-force-gate.sh",
-            "timeout": 10,
-            "statusMessage": "Checking staged verify.sh for state destroy --force..."
-          },
-          {
-            "type": "command",
             "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/broad-process-kill-gate.sh",
             "timeout": 10,
             "statusMessage": "Checking for a machine-wide pkill/killall..."
-          },
-          {
-            "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/flatten-before-rebase-gate.sh",
-            "timeout": 10,
-            "statusMessage": "Checking whether the branch should be flattened before rebasing..."
           },
           {
             "type": "command",
@@ -217,12 +103,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/post-merge-sync-reminder.sh",
-            "timeout": 5,
-            "statusMessage": "Post-merge sync reminder check"
-          },
-          {
-            "type": "command",
             "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/main-tree-dirty-detector.sh",
             "timeout": 10,
             "statusMessage": "Checking main-tree tracked-file dirtiness..."
@@ -232,22 +112,6 @@
             "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/main-tree-git-cwd-detector.sh",
             "timeout": 10,
             "statusMessage": "Checking for main-tree git cwd-race..."
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/stop-warn.sh",
-            "timeout": 10,
-            "statusMessage": "Checking working tree and /check marker..."
-          },
-          {
-            "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/stop-unmerged-lane-warn.sh"
           }
         ]
       }

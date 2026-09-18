@@ -1,10 +1,44 @@
 ---
-description: cdkd PreToolUse safety hooks (commit / PR / push guards beyond the markgate gate family)
+description: cdkd PreToolUse safety hooks — the blocking criterion and the surviving roster
 paths:
   - '.claude/hooks/**'
   - '.claude/settings.json'
   - '.markgate.yml'
 ---
+
+# When a hook may BLOCK, and when it may exist at all
+
+**A PreToolUse gate may block only when the harm completes at the moment of the
+action AND lands irreversibly on a THIRD PARTY's artifact, on ANOTHER SESSION's
+work, or on the MAINTAINER's AWS account. Everything else becomes a sentence in
+CLAUDE.md, a CI unit test, or nothing.**
+
+Both clauses are load-bearing. Irreversibility ALONE gets the answer wrong: you
+cannot un-mint an issue number or un-send its notifications, yet a duplicate
+issue is the filer's own and closes cleanly, so it belongs in CI. A bare `#N` in
+a published body writes a permanent `referenced` event on a THIRD PARTY's issue
+— same irreversibility, different owner.
+
+Read it as two questions — is the harm reversible, and whose artifact does it
+land on — never as one about severity or how annoying the mistake is.
+
+**A hook that fails OPEN on an exotic shell shape is accepted as-is.** Quoting,
+heredocs, `$( )`, `bash -c`, `eval`, case arms and redirections can all steer a
+command past a gate's matcher. That is a known and tolerated property: these
+hooks steer a COOPERATIVE agent away from foot-guns, they are not a security
+boundary, and `main` is protected server-side by a GitHub ruleset. A newly found
+parser miss is NOT issue-worthy. If one bites twice in practice, record the
+first occurrence in [../../docs/tooling-backlog.md](../../docs/tooling-backlog.md)
+and fix it on the second.
+
+**Adding tooling is not covered by "cost is not a tiebreaker".** That rule
+governs verifying PRODUCT changes. A new hook, fence, rule paragraph or
+test-of-prose is added only on the SECOND occurrence of the same failure; the
+first goes to `docs/tooling-backlog.md`.
+
+Authoring a hook — why every Bash gate stays unconditional, and why an unquoted
+`cat >&2 <<EOF` EXECUTES the advice it means to print:
+[hooks-authoring.md](hooks-authoring.md).
 
 # Running the hook suites
 
@@ -12,1051 +46,234 @@ paths:
 vp run test:hooks     # or: bash .claude/hooks/run-tests.sh
 ```
 
-- **EVERY hook ships a `*.test.sh` suite** (`run-tests.sh` is the runner;
-  `stop-warn` got one via issue #2396 and `post-merge-sync-reminder`, the last
-  one without, via go-to-k/cdkd#3266), plus
-  the CLASS fences with no same-named `.sh` — `markgate-gate-name-class`
-  and `unresolved-target-class`. The counts that used to
-  sit here went stale twice and are gone:
-  `ls .claude/hooks/*.sh | grep -v '\.test\.sh$' | wc -l`. Why the exception
-  ENDED: that hook hand-rolled its `gh ... pr merge` ERE, the ERE went silent
-  on every between-slot flag spelling, and with no suite nothing could say so.
+- **EVERY hook ships a `*.test.sh` suite** (`run-tests.sh` is the runner), plus
+  the CLASS fences with no same-named `.sh` — `markgate-gate-name-class` and
+  `unresolved-target-class`. Count them rather than trusting a number here:
+  `ls .claude/hooks/*.sh | grep -v '\.test\.sh$' | wc -l`.
 - **The runner executes every suite under BOTH bashes** — PATH `bash`
   (Homebrew 5.x) and `/bin/bash` (macOS system **3.2**). Hooks are
-  `#!/usr/bin/env bash`, so without newer bash first on PATH they run under
-  3.2, where bash-4+ syntax (`mapfile`, `declare -A`, `${var^}`, `${var,,}`)
-  is a runtime error (#1458 shipped exactly that into `lib/command-match.sh`;
-  #1477 found `provider-integ-gate.test.sh` failing 3 of 17 cases there —
-  neither detectable from a bash-5-only run).
-- **Running the SUITE under 3.2 does not run the HOOK under 3.2** — the hooks
-  are `#!/usr/bin/env bash`, so a bare `bash "$HOOK"` takes whatever comes
-  first on PATH. `run-tests.sh` exports `HOOK_BASH` alongside each shell for
-  exactly this; a suite ignoring it advertises 3.2 coverage of its test rather
-  than of its subject. That hid a live fail-open until CI, the only runner
-  with 3.2 as both `bash` and `/bin/bash`: the two engines disagreed about a
-  bracket expression in `gate_strip_prefix` (go-to-k/cdkd#2650; the class is
-  written up in [hooks-class-fences.md](hooks-class-fences.md)). Reproduce the
-  runner by putting 3.2 FIRST on PATH, not by invoking the suite with
-  `/bin/bash`. go-to-k/cdkd#2715 lists the suites still missing the shim.
+  `#!/usr/bin/env bash`, so bash-4+ syntax (`mapfile`, `declare -A`, `${var^}`)
+  is a runtime error under 3.2 and is not visible from a bash-5-only run.
+- **Running the SUITE under 3.2 does not run the HOOK under 3.2.**
+  `run-tests.sh` exports `HOOK_BASH` alongside each shell for exactly this; a
+  suite ignoring it advertises 3.2 coverage of its test rather than of its
+  subject.
 - **A suite that exits 0 while printing a non-zero `fail: N` tally is a
-  failure** — tally-not-exit-code is how the 3.2 breakage stayed invisible.
-- **Deliberately NOT part of `vp run check` / `vp run verify`** (throwaway
-  git repos, ~6 min). `.github/workflows/hooks.yml` runs it on `macos-latest`
-  (the only runner image with bash 3.2) on any `.claude/hooks/**` PR.
+  failure** — tally-not-exit-code is how a 3.2 breakage once stayed invisible.
+- **Deliberately NOT part of `vp run check` / `vp run verify`** (throwaway git
+  repos, ~6 min). `.github/workflows/hooks.yml` runs it on `macos-latest` (the
+  only runner image with bash 3.2) on any `.claude/hooks/**` PR.
 
-Authoring a hook — why every Bash gate stays unconditional, and why an unquoted `cat >&2 <<EOF` EXECUTES the advice it means to print: [hooks-authoring.md](hooks-authoring.md).
+# The surviving roster
 
-# When a check may BLOCK at PreToolUse, and when it belongs in CI
+## Third-party artifacts
 
-**A PreToolUse gate may block only when the harm completes at the moment of the
-action AND lands on a THIRD PARTY's artifact, where the actor cannot undo it.
-Everything else goes to CI, or nowhere.**
+- **`ci-green-gate.sh`** — blocks `gh pr merge` unless EVERY GitHub Actions
+  check on the target PR reports `pass` or `skipping`; `fail`, `pending` and
+  "no checks reported" exit 2 with the failing names. A red `main` is a shared
+  artifact every other lane then builds on. LIVE-query, not a marker, because
+  CI status changes on every push. `gh` transport errors fail OPEN (an outage
+  must not block merges), but not under an explicit `-R`.
+  `CDKD_SKIP_CI_GREEN_GATE=1` is the documented bypass for a repo with no CI —
+  never for merging a red PR. A PR NUMBER DOES NOT NAME A PULL REQUEST: the
+  gate forwards a `-R` / `--repo` slug and REFUSES an unreadable one. Full
+  entry in [hooks-merge-target.md](hooks-merge-target.md).
 
-Both clauses are load-bearing, and the second is the one that was missing. The
-earlier wording already said "the actor cannot undo it" -- irreversibility was
-never implicit -- and a first attempt to add the second clause only restated it
-("lands SOMEWHERE the actor cannot undo it"), which reads as the same test with
-a location noun and still yields the wrong answer below. The discriminator has
-to name WHOSE artifact, and it now does. Irreversibility ALONE gets
-`issue-dup-check` wrong: you
-cannot un-mint an issue number or un-send its notifications, so by that test it
-should BLOCK, and it correctly moved to CI instead. What separates it from
-`pr-body-item-number` is WHOSE artifact carries the residue. A duplicate issue
-is the filer's own and closes cleanly; a bare `#N` writes a permanent
-`referenced` event on a THIRD PARTY's issue. The spec review of
-go-to-k/cdkd#2717 caught that second test deciding a disposition while only the
-first was written down.
+- **`post-merge-orphan-push-gate.sh`** — blocks `git push origin <branch>` when
+  `gh pr list --head <branch> --state merged` matches. After a merge,
+  `delete_branch_on_merge` removes the branch and a near-simultaneous push
+  SUCCEEDS by re-creating it as an orphan ref no PR tracks, so the commits
+  silently never reach main (the PR #263 incident). ONLY the merged state, ONLY
+  `origin`, ONLY `git push`; judges EVERY push in the command, not the first.
+  Fails open without `gh`. Deliberately NOT repo-opt-in-scoped — the hazard
+  exists in any repo with PRs.
 
-That is the stopping rule go-to-k/cdkd#2717 was opened for. The guard layer had
-reached 19% of the size of the product it guards, with 42 of 47 hooks blocking,
-and every single one defensible on its own — 37 cite a concrete incident in
-their own header. What was missing was not justification for any one hook but a
-predicate that can say NO to the next one before it is written.
+## The maintainer's AWS account
 
-Read the rule as two questions -- is the harm reversible, and whose artifact
-does it land on -- rather than as one about severity or how annoying the
-mistake is:
+- **`integ-destroy-gate.sh`** — blocks `gh pr merge` until `/run-integ` has
+  recorded a real-AWS run whose destroy finished with 0 errors and 0 orphans.
+  Leaked AWS resources bill the maintainer and are not undone by reverting the
+  PR. The only surviving markgate gate; scope and 14-day TTL in
+  `.markgate.yml`. A PR touching none of its scope passes even with a stale
+  marker (the TTL would otherwise block every merge).
 
-- A bare `#N` in a published body writes a `referenced` event on a THIRD
-  PARTY's issue and sends them a notification. Editing your body afterwards
-  retracts neither. **Blocks** (`pr-body-item-number-gate`).
-- A missing `severity:` label is added later with no residue. **CI** — and CI
-  does better than the gate could, because it can APPLY the label where a hook
-  could only refuse.
-- A `feat:` title on a PR touching no `src/**` is caught before merge either
-  way. **CI**, which additionally re-checks on every push; the hook fired once,
-  at `gh pr create`, and never saw a web-UI retitle at all.
+- **`bughunt-clean-gate.sh`** — blocks `git commit`, `gh pr create` and
+  `gh pr merge` while `/hunt-bugs` still has un-destroyed AWS resources in its
+  sentinel. `.claude/skills/hunt-bugs/bughunt-track.sh add` records each
+  deployed stack; only `clear` releases it, run after destroy + orphan-zero
+  verification. Parallel-safe per-owner sentinel directory
+  (`.markgate-bughunt-pending.d/`, one file per owner) at the shared main-tree
+  root, so one agent's `clear` can never release another's pending resources.
+  Verb-scoped: `gh pr create` / `gh pr merge` AGGREGATE across owners (merging
+  publishes a shared artifact), `git commit` blocks only on the CALLER's file
+  (a commit creates no AWS resources, and blocking a third party hands them a
+  remediation they must not follow).
 
-Applying it retired ten gates (go-to-k/cdkd#2717), nine in one change and
-`issue-deferral-criteria` once go-to-k/cdkd#2711 released the `REACH_FLOORS` row
-its removal had to edit: **three deleted outright** — `closes-paren-form`,
-`vp-run-test-path` and `issue-deferral-criteria` — and seven
-moved to `.github/workflows/`: `non-english-text`, `commit-prefix-scope` and
-`pr-title-prefix-scope` (the last two are one check now, since squash-only
-merging makes the PR title the release subject), `internal-pr-labels`,
-`issue-classification-label`, `issue-dup-check` and `gh-body-english`.
+## Another session's work
 
-**One of the three deletions got a CI successor afterwards, and the correction is
-worth reading before applying the rule again.** `closes-paren-form` was deleted
-on the criterion and the criterion holds — but what the deletion LEFT was a
-prose row in `/verify-pr` step 11 (`references/wrap-up.md`), and a skill step is exactly
-the instruction that gets skipped under time pressure, which is the argument the
-gate's own header made for existing. go-to-k/cdkd#2736 gave it
-`scripts/check-pr-closes-paren.ts`, which WARNS from `pr-content-checks.yml` and
-never fails a PR on what it FINDS — it still exits 2, and reds, when it could
-not look at all. So the rule's third option — "or nowhere" — is the one to reach for
-last: a class measured live four times (go-to-k/cdkd#509 through #514) needs
-something mechanical even when it does not deserve a gate. `vp-run-test-path`
-took the other answer and stands: its own suite is what catches the mistake.
+- **`worktree-owner-gate.sh`** — PreToolUse (`Edit|Write|NotebookEdit`). Each
+  LINKED worktree gets one owning session, recorded as `<session_id> <UTC time>`
+  in `<worktree git dir>/session-owner`; a write from another session exits 2.
+  The SENTINEL ITSELF is gated — writing that file IS taking the worktree. A
+  claim younger than `CDKD_WORKTREE_OWNER_TTL_HOURS` (default 12) means the
+  owner is **presumed LIVE**: a live session and a dead one produce identical
+  evidence, so ASK THE MAINTAINER before any hand-off.
+  `CDKD_SKIP_WORKTREE_OWNER_GATE=1` is the deliberate bypass. Fails OPEN on
+  anything unresolvable.
 
-**`gh-pr-edit-deprecation-gate` was deleted on a MEASUREMENT, not on the tier.**
-It blocked `gh pr edit --title` / `--body` because a Projects-classic GraphQL
-deprecation made them exit non-zero with the mutation silently unapplied. MEASURED 2026-09-07 on gh 2.92.0 against a live PR: `gh pr edit --body` exited 0 AND the body was actually replaced. The Projects-classic GraphQL deprecation that made it fail silently is FIXED upstream. **`--title` was NOT measured** -- it is inferred from sharing the same `updatePullRequest` mutation, which is why the retraction says so rather than claiming both arms were observed.
-The gate was guarding history, exactly as its own header allowed for ("If a
-future gh release fixes the deprecation, this gate can be removed"). Every
-sentence in this repo saying that spelling fails silently was retracted in the
-same change — do not reinstate one from an old transcript.
+- **`dirty-path-restore-gate.sh`** — blocks `git checkout -- <path>` /
+  `git restore <path>` when a NAMED path has uncommitted changes. Born from a
+  session that discarded ~228 lines another session had written; `git checkout
+  --` writes no reflog entry and creates no stash, so nothing in git holds a
+  copy. Narrow by design: only path-scoped restores, only when a named path is
+  actually dirty, `--staged` passes. Bypass `CDKD_ALLOW_DIRTY_RESTORE=1`,
+  honoured from the process env AND a leading assignment in the command text.
 
-**The tenth and last member of the DELETE list is gone too**:
-`issue-deferral-criteria-gate`, retired once go-to-k/cdkd#2711 released the
-`REACH_FLOORS` row its removal had to edit. Its subject was whether a sentence
-of prose gives a PR-shaped reason for deferring work — a rhetorical property, so
-the gate was 1,005 lines and its suite 990 more, spent refusing an issue whose
-justification line is slightly wrong. Nothing replaced it: unlike
-`closes-paren-form`, the class it guarded is not mechanically decidable, so
-there is no CI successor to write, and the rule's third option — "or nowhere" —
-is the honest answer here. `Session-fit`'s criteria are still stated in
-[session-report.md](session-report.md), where a reviewer reads them.
+- **`restore-backup.sh`** — PreToolUse, **non-blocking**. Before
+  `git checkout -- <path>`, `git restore`, `git reset --hard`, `git clean -f*`
+  or `git stash`, snapshots the tree into
+  `<resolved git dir>/wipe-backups/<UTC ts>-<verb>/`. Always exits 0. Recover
+  with `git apply --include=<path> <snap>/tracked.patch` for one file or
+  `git apply --3way <snap>/tracked.patch` for the tree — the plain form fails
+  once any other change in the whole-tree patch is still present.
 
-Two consequences worth carrying forward:
+- **`main-tree-branch-gate.sh`** — blocks branch-switching commands in the MAIN
+  worktree, a shared checkout slot other agents depend on; inside any
+  `.claude/worktrees/<x>/` subtree everything passes. Full entry in
+  [hooks-main-tree-branch.md](hooks-main-tree-branch.md).
 
-- **A CI check cannot go silently inert the way a hook can.** `non-english-text-gate`
-  spent months returning 0 before scanning anything while its own suite
-  certified it green, because the suite's `gh` stub was more permissive than
-  real `gh`. A workflow step that does not run is a missing check on the PR.
-- **Moving a check to CI deletes the shell parsing, which was most of the
-  code.** These gates were large because a PreToolUse hook receives command
-  TEXT and had to find the artifact inside it — heredocs, `--body-file`, `-F`,
-  glued flags, quoting. CI is handed the artifact. `gh-body-english-gate` alone
-  was 1,467 lines whose own header called "no shell parsing" its load-bearing
-  decision after six review rounds each shipped a defect.
+- **`main-tree-edit-gate.sh`** — blocks mutating a git-tracked file in a
+  worktree currently on `main` / `master` (matcher `Edit|Write|Bash`), with
+  **`main-tree-dirty-detector.sh`** as its non-blocking PostToolUse backstop for
+  the write targets a static scan cannot resolve. Full entry in
+  [hooks-main-tree-edit.md](hooks-main-tree-edit.md).
 
-**Do not read this as "hooks were a mistake."** The blocking gates below have
-prevented measured incidents and should keep doing so. The rule bounds the SET,
-it does not disparage the members.
-# The bash-first experiment must stay OFF (`env.CLAUDE_CODE_THRIFTY_SONIC`)
+- **`branch-gate.sh`** — blocks `git commit` / `git push` when the TARGET
+  working tree is on `main` / `master`, and when the MAIN checkout is on a
+  detached HEAD. Full entry in [hooks-branch-gate.md](hooks-branch-gate.md).
 
-`.claude/settings.json` pins `env.CLAUDE_CODE_THRIFTY_SONIC: "0"`. It is
-load-bearing for this harness, not a preference. With the flag ON, Claude Code
-appends a system-reminder telling the agent to read AND write files through
-`cat` / `sed -i` / heredocs rather than the Read / Edit / Write tools. Three
-surfaces are keyed to those tools and go silently inert:
+- **`broad-process-kill-gate.sh`** — blocks a machine-wide `pkill` / `killall`.
+  A pattern kill reaches every other agent's processes on the same machine, and
+  their work is gone at the moment the signal lands.
 
-- **`worktree-owner-gate.sh`** (matcher `Edit|Write|NotebookEdit`) stops firing
-  entirely — a Bash heredoc write claims no worktree and is refused by nothing,
-  which is the multi-session uncommitted-work guard gone.
-- the **PostToolUse `Write|Edit` → `vp run lint:fix`** entry never runs, so a
-  `.ts` written through Bash surfaces its formatting breakage at `/check`.
-- **every `paths:`-scoped file in this directory, this one included** — a
-  rule loads when a matching file enters context through the file tools, so
-  a `cat`-read subsystem gets none of its notes. No count is quoted here:
-  `grep -l '^paths:' .claude/rules/*.md | wc -l`, for the same reason the
-  counts at the top of this file are gone.
+- **`main-tree-git-cwd-detector.sh`** — PostToolUse (`Bash`), **never blocks**.
+  Reactive backstop for the cwd-RACE class: a command whose verdict is taken as
+  evidence running in the MAIN tree while feature worktrees are active. It
+  reports a FALSE GREEN the agent cannot otherwise see, which is why it is not
+  a rule restatement. Full entry in
+  [hooks-cwd-detector.md](hooks-cwd-detector.md).
 
-`main-tree-edit-gate.sh` survives (its matcher lists `Bash`) but degrades to the
-best-effort literal-path scan its own header describes. The 2026-08-09
-uncommitted-work class loses its SNAPSHOT too, not only its owner claim:
-`restore-backup.sh` and `dirty-path-restore-gate.sh` are scoped to git VERBS
-(`git checkout -- <path>`, `git restore`, `git reset --hard`), so an overwrite
-spelled `cat > f` or `sed -i` never reaches either one.
-
-Two properties of the pin worth stating rather than discovering. It is a repo
-**DEFAULT, not an unescapable one**: `.claude/settings.local.json` outranks the
-committed file and the fence never reads it, so a contributor who wants the
-experiment can take it locally — what the pin removes is the SILENT version,
-where a server-side cohort decides it and nobody chose anything. That file is listed in
-`.gitignore` for the same reason the pin is committed: a CHECKED-IN
-`settings.local.json` carrying `"1"` would beat the pin for everyone with the
-fence still green, which is a local escape hatch turning into a silent
-repo-wide one. And `env` exports the variable into **every Bash subprocess this
-session spawns**, a nested `claude` and CI scripts included, not just the
-session itself — and it BEATS an inherited value rather than merely defaulting
-one: measured 2026-09-07, launching with `CLAUDE_CODE_THRIFTY_SONIC=1` in the
-environment answers ABSENT inside a directory pinning `"0"`, while the same
-launch from a directory with no project settings answers PRESENT.
-
-Measured on Claude Code 2.1.263: the native binary parses the variable as a
-tri-state bool, and an explicitly set value SHORT-CIRCUITS the server-side
-cohort assignment — `if (env.CLAUDE_CODE_THRIFTY_SONIC !== undefined) return it`
-sits ahead of the `forced` / `cohort` branches. So pinning it in the REPO's
-settings decides the question for every clone and every contributor, which a
-maintainer's `~/.claude/settings.json` cannot do. Probe it by flipping the value
-to `"1"` and running `claude -p` with a prompt that asks whether the phrase
-`Do your work through the Bash tool` is in context: `"1"` answers PRESENT,
-`"0"` and the unset baseline answer ABSENT. **The unset baseline is not the
-discriminator** — only the `"1"` arm is.
-
-`tests/unit/scripts/settings-bash-first-optout.test.ts` fences the pin and the
-reason, but it asserts a JSON string and can never assert vendor behavior: a
-rename, a default flip, or removal of that short-circuit turns the pin into a
-no-op with the fence still green. So its VERSION case pins the Claude Code line
-the measurement was taken on (issue
-[#2737](https://github.com/go-to-k/cdkd/issues/2737)) — **when the installed
-MAJOR.MINOR moves off the recorded one, re-run BOTH probe arms above and update
-the two constants together.** It is a REMINDER, not a detector: only running the
-probe observes the vendor's behavior, and what a test can do is refuse to let
-the measurement go quietly out of date. Compared at MAJOR.MINOR because patches
-land often enough that an exact pin would red an unrelated commit most weeks,
-and a red that frequent gets discharged by editing the constant instead of
-re-probing; the bound that buys is a behavior change shipped inside a patch
-release, which passes silently. Where no `claude` binary answers — CI — there is
-no installed version to disagree with, so the case asserts that the receipt is
-well-formed AND that this file still names the same version: bumping one copy of
-the measurement without the other reds even there (`CDKD_CLAUDE_BIN` is the seam
-that probes that arm).
-
-# Other PreToolUse safety hooks
-
-These one-shot hooks block known foot-guns at the source. The per-hook roster
--- `commit-msg-heredoc-gate`, `provider-docs-gate`, `pr-body-item-number-gate`,
-`cmd-parse-stub-gate`, `integ-coverage-matrix-gate`, `state-destroy-force-gate`,
-`ref-segment-audit-gate`, `gated-command-preamble-gate`,
-`flatten-before-rebase-gate` and `broad-process-kill-gate` -- is in
-[hooks-foot-gun-gates.md](hooks-foot-gun-gates.md), which loads when you touch
-one of them or its suite. The rule ABOVE decides whether a new one may exist;
-read it there, not from the roster.
-
-## Bug-hunt cleanup safety
-
-- **`.claude/hooks/bughunt-clean-gate.sh`** — blocks `git commit`,
-  `gh pr create`, and `gh pr merge` (incl. `cd <path> &&` / `gh -C <path>`
-  forms) while `/hunt-bugs` still has un-destroyed AWS resources tracked in
-  the sentinel. The skill records every deployed stack via
-  `.claude/skills/hunt-bugs/bughunt-track.sh add <Stack>...`; only
-  `bughunt-track.sh clear` releases the gate, run ONLY after destroy +
-  orphan-zero verification (`bughunt-track.sh verify`).
-  **Parallel-safe per-owner sentinel (the SPOF fix)**: a directory
-  `.markgate-bughunt-pending.d/` with ONE file per owner (owner key =
-  `$CDKD_BUGHUNT_OWNER` if set, else the per-worktree toplevel). `add` /
-  `verify` / `clear` touch ONLY the caller's own file, so one agent's `clear`
-  can NEVER release another agent's pending resources (the old single-file
-  `rm -f` could).
-  **The block decision is verb-scoped (issue #1615)**: `gh pr create` /
-  `gh pr merge` AGGREGATE across all owner files (plus the legacy flat
-  `.markgate-bughunt-pending`) — merging publishes a shared artifact, so
-  cross-owner contention fails toward over-block, never premature release.
-  `git commit` blocks ONLY on the CALLER's own file (a commit creates no AWS
-  resources, and blocking a third party hands them a remediation they must
-  not follow — destroying stacks they do not own is cross-session trespass);
-  other owners' pending stacks get a NON-blocking notice on stderr. The
-  legacy flat sentinel has no owner attribution, so it conservatively blocks
-  `git commit` for every caller; a chained `git commit && gh pr create` takes
-  the stricter repo-wide path. No file locking (each owner writes only its
-  own file; append is atomic — also dodges macOS's missing `flock`). The
-  directory lives at the **shared main-tree root**
-  (`git rev-parse --path-format=absolute --git-common-dir`), so a
-  feature-worktree commit still sees a main-tree-armed sentinel; keep one
-  hunt's calls in the same worktree (or set `CDKD_BUGHUNT_OWNER`). Shared
-  command-position matcher; a plain sentinel-file gate, not a markgate
-  marker (pending-resource state is not content-digest-based). Smoke test:
-  `bughunt-clean-gate.test.sh` (23 cases, incl. the per-owner isolation
-  scenario: two owners arm → pr merge blocks while a non-owner commit passes →
-  A clears → pr merge STILL blocks on B → both clear → releases).
-
-## Branch / push safety
-
-**Repo opt-in scope (issue #1259).** The five main-tree / branch hooks here
-(`branch-gate.sh`, `main-tree-branch-gate.sh`, `main-tree-edit-gate.sh`,
+**Repo opt-in scope.** The main-tree / branch hooks (`branch-gate.sh`,
+`main-tree-branch-gate.sh`, `main-tree-edit-gate.sh`,
 `main-tree-dirty-detector.sh`, `main-tree-git-cwd-detector.sh`) fire ONLY in
 repos carrying `.markgate.yml` at the repo root — a cdkd session regularly
 touches unrelated personal repos where committing to main is the normal
-single-writer workflow (2026-07-27: `main-tree-edit-gate` blocked a
-user-requested append to a personal blog draft).
-`post-merge-orphan-push-gate.sh` is deliberately NOT scoped this way:
-re-creating a deleted merged branch is a hazard in any repo with PRs, and it
-already fails open without `gh`.
+single-writer workflow.
 
-- **`.claude/hooks/branch-gate.sh`** — blocks `git commit` and `git push`
-  when the **target git working tree** is on `main` / `master`, and (since
-  issue [#2402](https://github.com/go-to-k/cdkd/issues/2402)) when the MAIN
-  checkout is on a DETACHED HEAD; a detached LINKED worktree still passes
-  (the lane-clearing state `stop-unmerged-lane-warn.sh` prescribes). **The
-  full entry is in [hooks-branch-gate.md](hooks-branch-gate.md)** (moved
-  2026-09-03: this file is loaded WHOLE on every `.claude/hooks/**` touch and
-  was at its byte cap; that entry is only wanted when the gate itself is
-  under the knife).
+Two non-hook entries complete `.claude/settings.json`: the PostToolUse
+`Write|Edit` → `vp run lint:fix` runner, and an inline PreCompact `printf` that
+asks for current work state to be recorded before compaction.
 
-- **`.claude/hooks/main-tree-branch-gate.sh`** — blocks branch-switching
-  commands in the MAIN worktree so concurrent agents do not race on the
-  shared checkout slot; inside any `.claude/worktrees/<x>/` subtree
-  everything passes. **The full entry — allowed/blocked spellings, the
-  measured before/after tables, the retired `git checkout <sha>` rationale —
-  is in [hooks-main-tree-branch.md](hooks-main-tree-branch.md)** (moved
-  2026-09-01, same byte-cap reason).
+## The bash-first experiment must stay OFF
 
-- **`.claude/hooks/post-merge-orphan-push-gate.sh`** — blocks
-  `git push <remote> <branch>` (incl. `-u` / `--set-upstream` /
-  `git -C <path> push`) when `<remote>` is `origin` AND
-  `gh pr list --head <branch> --state merged` returns a matching
-  `headRefName`. Closes the PR #263 incident: merge → GitHub's
-  `delete_branch_on_merge` removes the branch → a near-simultaneous
-  `git push` SUCCEEDS by re-creating it as an orphan ref no PR tracks, so
-  the commits silently never reach main. Cwd-aware; branch parsed from the
-  command line or derived from `symbolic-ref --short HEAD` against the
-  resolved target. Scope guards: ONLY the MERGED state (closed-not-merged
-  passes — the branch may be revived), ONLY `origin`, ONLY `git push`. Fails
-  open when `gh` is missing or unauthenticated (stderr note). **It took the
-  LEFTMOST ` push` in the whole command until 2026-08-31** — a greedy
-  `(.*)$` made the first occurrence win; measured, a quoted MENTION steered
-  the branch to `feat/x"` and a two-push chain was judged on the first. It
-  now parses each push from the SEGMENT that matched and judges EVERY push.
-  Smoke test: `post-merge-orphan-push-gate.test.sh` (26 cases via `$GH_BIN`
-  mock, six through a HEAD-AWARE mock recording which branch was asked about —
-  an exit code alone cannot say which push was judged; three fail against the
-  pre-fix hook). The block names the merged PR and prints the "replay on a
-  fresh branch" recipe.
+`.claude/settings.json` pins `env.CLAUDE_CODE_THRIFTY_SONIC: "0"`, and it is
+load-bearing rather than a preference. With the flag ON, the agent is told to
+read and WRITE files through `cat` / `sed -i` / heredocs, and three surfaces go
+silently inert: `worktree-owner-gate.sh` (matcher `Edit|Write|NotebookEdit`)
+stops firing entirely, the PostToolUse `vp run lint:fix` entry never runs, and
+**every `paths:`-scoped file in this directory, this one included** goes unread
+— a rule loads when a matching file enters context through the file tools.
+`main-tree-edit-gate.sh` survives (its matcher lists `Bash`) but degrades to a
+best-effort literal-path scan, and `restore-backup.sh` /
+`dirty-path-restore-gate.sh` are scoped to git VERBS, so an overwrite spelled
+`cat > f` reaches neither.
 
-- **`.claude/hooks/main-tree-edit-gate.sh`** — blocks *mutating a
-  git-tracked file* in a worktree currently on `main` / `master` (matcher
-  `Edit|Write|Bash`), and **`main-tree-dirty-detector.sh`** is its
-  non-blocking PostToolUse backstop for the write targets a static scan
-  cannot resolve. Full entries — the detection model, the Bash arm's literal
-  targets, the go-to-k/cdkd#2614 move to the shared `cd` resolver, the
-  go-to-k/cdkd#2650 ordered walk over `gate_segments_marked` with its two input
-  bounds, and all three suites (including the differential ORACLE, which
-  executes its corpus and compares the gate against what bash actually did) —
-  in [hooks-main-tree-edit.md](hooks-main-tree-edit.md), which loads when you
-  touch either hook, either suite, the oracle, or the shared matcher.
+Measured on Claude Code 2.1.263: an explicitly set value SHORT-CIRCUITS the
+server-side cohort assignment, so pinning it in the REPO's settings decides the
+question for every clone — a maintainer's `~/.claude/settings.json` cannot.
+Probe by flipping the value to `"1"` and running `claude -p` with a prompt
+asking whether `Do your work through the Bash tool` is in context: `"1"` answers
+PRESENT, `"0"` and the unset baseline answer ABSENT; only the `"1"` arm
+discriminates. It is a repo DEFAULT, not unescapable —
+`.claude/settings.local.json` outranks it and is gitignored.
+`tests/unit/scripts/settings-bash-first-optout.test.ts` fences the pin and pins
+the Claude Code MAJOR.MINOR the measurement was taken on; when the installed
+version moves off it, re-run BOTH probe arms and update the two constants
+together.
 
-- **`.claude/hooks/main-tree-git-cwd-detector.sh`** — PostToolUse (`Bash`)
-  REACTIVE backstop for the cwd-RACE class: a command whose verdict is taken
-  as evidence running in the MAIN tree while feature worktrees are active.
-  Full entry (three command families, the #2094 `vp run build` exemption,
-  the unresolvable-`cd` silence, suite notes) in
-  [hooks-cwd-detector.md](hooks-cwd-detector.md).
+## Shared machinery
 
-## CI-green merge gate (live-query, not markgate)
+Every Bash gate parses the command itself through
+`.claude/hooks/lib/command-match.sh`: heredoc bodies and quoted spans are
+NEUTRALISED (to a placeholder, never deleted — the verb EREs carry value
+sub-patterns), the command list is SEGMENTED on `&&`, `||`, `;`, `|`, a bare
+`&`, newlines, subshells, brace groups and `$( )` / backtick substitutions, and
+the verb is matched at the START of a segment with leading `VAR=value`
+assignments and `env` / `command` / `nohup` / `time` / `timeout` / `exec`
+wrappers stripped and `bash -c "<cmd>"` unwrapped. `gh` has TWO `-R` slots and
+both are absorbed. Failure direction is the whole design: dropping too much
+makes a gate SILENTLY NOT FIRE, dropping too little is a loud, fixable false
+positive. The `$( )`-heredoc latch has its own write-up in
+[hooks-command-match-heredoc.md](hooks-command-match-heredoc.md).
 
-**`ci-green-gate.sh` blocks `gh pr merge` unless EVERY GitHub Actions check on
-the target PR reports `pass` or `skipping`** — `fail`, `pending`, or "no checks
-reported" exits 2 with the failing check names. Born from PR #1231
-(2026-07-27): the merge was chained after a `gh pr checks` DISPLAY, the
-printed `check-build-test fail` scrolled past, main went red until fix-forward
-#1232. CI status is LIVE external state, so this is a stateless live-query
-hook like `pr-review-gate.sh`. Same cwd-aware resolution + PR-number token
-walk as `pr-review-gate.sh`. `gh` transport errors fail OPEN (a GitHub outage
-must not block merges); a parsable checks answer is enforced strictly. `CDKD_SKIP_CI_GREEN_GATE=1` is the documented bypass for a repo with no CI —
-never for merging a red PR.
+**Every Bash-targeting `PreToolUse` entry uses the coarse `Bash` matcher and no
+per-hook `if:` condition.** The absent `if:` is the load-bearing half: each gate
+parses the command itself, which is what lets it catch the `cd <path> && ...`
+and `gh -C <path>` spellings. `if:` in project settings never fired at all, and
+its matching was purely textual and quote-blind. Do NOT reintroduce it.
 
-**A PR NUMBER DOES NOT NAME A PULL REQUEST**, and until go-to-k/cdkd#3273 both
-this gate and `pr-review-gate` recovered the number and never the REPO, so they
-judged whatever repo the SHELL was in. Both forward a `-R` / `--repo` slug now,
-an unreadable one REFUSES, and the infra fail-open does not survive an explicit
-`-R`. **Full entry in [hooks-merge-target.md](hooks-merge-target.md)** (split
-out for the byte-cap reason
-[hooks-cwd-detector.md](hooks-cwd-detector.md) records). Smoke test:
-`ci-green-gate.test.sh` (stubbed `gh` for all-pass / skipping / fail /
-pending / no-checks / infra-error / unresolvable-repo + the cdkd#563
-quoted-body cases).
+**Every gate that sources the helper fails CLOSED when it cannot load**
+(`exit 2`, with `declare -F` liveness checks and `gate_require_const` for the
+constants it reads); the non-blocking detectors and `restore-backup` skip
+instead. **One gate takes a matcher carve-out** — `main-tree-edit-gate`, whose
+`Edit` and `Write` arms must not be refused by a library failure, since those
+are the tools the library is repaired with. Any future check added to that hook
+belongs INSIDE the `Bash` arm.
 
-## Integ base freshness (non-blocking)
+**An unreadable target directory is a REFUSAL in every blocking gate.** A hook
+receives command TEXT, not the shell's expansion, so `git -C "$W" commit`
+arrives unexpanded — the gates were once weakest on exactly the spelling this
+repo's instructions prescribe. `gate_target_dir_strict` returns 2 rather than
+guessing; four shapes must NOT be refused (an absolute `-C` or `cd` moots an
+earlier unreadable one, a `cd` AFTER the verb never steered the command, and a
+LEADING literal `~` is expanded). `cmd_last_cd_target` follows every `cd` in
+command position **that precedes the verb** — following trailing cds let the
+standing `gh pr merge … && cd <repo> && git pull` redirect marker lookups to the
+main tree.
 
-**`.claude/hooks/integ-stale-base-detector.sh`** — PreToolUse (`Bash`),
-**never blocks**. Warns, before a real-AWS integ fixture is spent, that the
-branch is behind `origin/main`, because a rebase after the run moves the merge
-base and can stale the very marker the run was spent to earn.
+**Markgate markers are per-worktree**, stored in
+`<worktree>/.git/worktrees/<name>/markgate/`, so parallel lanes can verify and
+commit concurrently; run `markgate set` from the worktree where the gated
+command will be invoked. **A hand-typed `markgate` is not the one the hooks
+run** — `.mise.toml` pins the version and every gate resolves it through mise,
+so spell any hand check `mise exec -- markgate ...`.
 
-An ESCALATION, not a new rule: verify.md §8-b already says "Rebase BEFORE the
-integ", and go-to-k/cdkd#2589 followed it and still paid twice — six review
-rounds ran over ~2 h, `main` advanced, and the rebase moved the merge base past
-go-to-k/cdkd#2565 (`src/provisioning/providers/**`), flipping `integ-destroy`
-to `mismatch` after two integs had run. The re-run was CORRECT; nothing said so
-when the run STARTED. The rule reads as a sequence; the shape is a loop.
+The class fences whose subject is EVERY hook at once are in
+[hooks-class-fences.md](hooks-class-fences.md) (unresolved-target sweep) and
+[hooks-gate-name-fence.md](hooks-gate-name-fence.md) (gate names).
 
-**Placement is the design**: beside `markgate set` the run is already spent, so
-this fires on the fixture INVOCATION — the last moment a rebase is free.
-**Non-blocking on purpose**, unlike `integ-destroy-gate.sh`: a deliberate run
-on an old base (a bisect, a repro) is legitimate and a wrong refusal costs more
-than the waste. It guards a SPEND, not a merge.
-
-Two arms with opposite advice: when main's advance touches integ-gate scope it
-names the FILE count and says rebase first, else it says the marker will
-probably survive. It counts FILES and SAYS files — an earlier revision printed
-"N of those COMMITS", so one commit touching five provider files read as "5 of
-those commits" under "1 commit(s) behind". It scopes with `HEAD...origin/main`
-(three dots — the question is what MAIN brought), and does NOT `git fetch`, so
-it under-reports on a stale ref — the safe direction for a nudge.
-
-**It arms on BOTH invocation shapes** — `verify.sh` AND the standard
-`node dist/cli.js deploy` flow. Requiring a `verify.sh` left it silent for
-`bench-cdk-sample` / `microservices` / `multi-resource` / `multi-stack-deps`,
-the four broad-set fixtures that have none — exactly the runs that refresh
-`integ-broad`. **BOTH halves of the decision are PER SEGMENT** (`gate_segments`,
-2026-09-05): arming and read-verb suppression used to scan the WHOLE command,
-so one read verb anywhere `exit 0`ed the lot and `git status && bash
-.../verify.sh`, `echo start && …`, `cat README.md && …` and `ls && node
-…/cli.js deploy` were all SILENT — every one a shape a real run writes, and a
-warn hook quiet on those is indistinguishable from a working one. A read verb
-now suppresses only its own segment. Two nits fixed with it: the `&&` branch of
-`(^|[|;&]|&&)` was DEAD (`[|;&]` matches the second `&` first), and `(bash|sh)`
-was unanchored so `finish verify.sh` armed. A path inside an arbitrary quoted
-string is a documented false positive costing a stray note, not a block. Repo
-opt-in; an unloadable library exits 0 here rather than 2, since this hook
-refuses nothing; declared unexercisable in `unresolved-target-class.test.sh`.
-
-Smoke test: `integ-stale-base-detector.test.sh` (22 cases, real git fixtures,
-honouring `HOOK_BASH` so the HOOK runs under 3.2 — it ignored it at first, and
-`HOOK_BASH=/nonexistent` still reported 11/11). Probed, all re-taken
-2026-09-06 with BOTH halves of each tally: silent stub 11 pass / 11 fail,
-`in_scope` forced true 20 / 2, forced false 20 / 2. The numbers here said
-9/10, 8/11 and 10/9 — none of which sums to the 22 cases named one sentence
-earlier, which is the cheapest way to catch a stale tally: read it against the
-case count beside it. The SUITE header had the right ones throughout, so prefer
-it; 3-dot-to-2-dot fails exactly the
-lane-carries-its-own-commit case, which the suite could not see until that
-fixture existed (it survived at 11/11 before); read-verb test deleted fails
-exactly the 4 silence cases; read-verb test back to PER-COMMAND fails exactly
-the 4 earlier-segment cases; `(bash|sh)` unanchored fails exactly 1.
-
-## Markgate gate hooks (cwd-aware)
-
-The seven markgate-backed gates (`check-gate.sh`, `verify-pr-gate.sh`,
-`integ-destroy-gate.sh`, `integ-broad-gate.sh`, `integ-local-gate.sh`,
-`integ-schema-migration-gate.sh`, `pr-review-gate.sh`) are **cwd-aware**
-post-#559: each reads the payload's `cwd`, parses leading `cd <path>` and the
-last `git -C` / `gh -C` flag, and `cd`s to the resolved target before
-`markgate verify` — restoring per-worktree marker isolation (pre-#559 every
-gate landed in the main tree, the root cause in
-`feedback_cross_agent_main_tree_contention.md`).
-
-### Two gates bind their marker to a COMMIT, and the binding lives in the hook
-
-`pr-review` and `verify-pr` each write a gitignored root sentinel
-(`.markgate-pr-review-sha`, `.markgate-verify-pr-sha`) and compare it in the
-hook. **That comparison is the enforcement — `markgate verify` does not do it.**
-`verify` digests the gate's SCOPE, so REWRITING a sentinel stales the marker,
-but a sentinel nobody rewrote keeps its digest whatever the branch moved to:
-`verify` reports `match` for a sentinel naming a different commit entirely
-(measured, issue [#2681](https://github.com/go-to-k/cdkd/issues/2681), whose
-whole subject is a comment that claimed the opposite and would have made
-deleting the real check look like a safe simplification).
-
-Why each needs it:
-
-- `pr-review` — bound to the PR's `headRefOid`, so a new push invalidates it.
-- `verify-pr` — bound to the LOCAL HEAD, because this gate also guards
-  `gh pr create`, where there is no PR to ask yet. Required only when the
-  target is THIS repo (go-to-k/cdkd#3209 — see "Working on a sibling repo"
-  below; every cdkd worktree still owes it). Added by issue
-  [#2686](https://github.com/go-to-k/cdkd/issues/2686): the parent has no
-  `include:` of its own, so once set in a worktree it never stales by itself —
-  it is only MASKED by a stale child, and `/check` + `/check-docs` un-mask it.
-  In the IN-PLACE worktree mode CLAUDE.md prescribes, lane N inherited lane
-  N-1's green. Measured twice, a day apart, in different worktrees: a parent an
-  hour older than children four minutes old, `verify` rc=0, `gh pr create`
-  unblocked.
-
-**The ORDER in `/verify-pr`'s final step is forced from two directions, and
-getting either wrong deadlocks or false-blocks.** `check-gate` refuses the
-commit unless `check` and `docs` are fresh, so those two are set FIRST — after
-the commit is too late for exactly the runs that produced changes to commit, and
-an agent facing a blocking gate starts improvising around it. The sentinel and
-`markgate set verify-pr` come LAST, after the push: written before the commit,
-HEAD moves past the binding and the next `gh pr create` refuses a PR that is
-genuinely ready. Both halves were live defects in the change that added the
-binding. The commit itself is guarded (`git diff --cached --quiet ||`) because a
-CLEAN tree is the normal case on a re-run after a rebase, where a bare
-`commit && push` chain exits 1 and never pushes.
-
-**It is ONE `&&` chain, and unchaining it re-opens the class**: if a gate
-refuses the commit, unchained execution continues, the push sends nothing, and
-the bind records the OLD head — a green for work that was never committed.
-
-The re-bind after a rebase is written out as the two COMMANDS rather than cited
-as "the last N lines". A count into a wrapped `&&` block goes stale the moment
-anyone reflows it, and the miscount executes: `> <sentinel> && markgate set
-verify-pr` is a bare redirect bash accepts, which TRUNCATES the sentinel to zero
-bytes, exits 0, and lets the marker be set — a block whose cause is off-screen.
-Measured (go-to-k/cdkd#2686 round-5 review).
-
-The sentinel is written from the repo TOP (`$(git rev-parse --show-toplevel)/…`):
-the cwd-relative spelling run from a subdirectory writes a file the hook never
-reads, and `.gitignore`'s entry has no leading slash, so the stray copy is
-invisible — a permanent block with an off-screen cause.
-
-Anything that moves HEAD afterwards invalidates the binding by design, including
-the flatten / rebase / force-push `work-issues/references/ship.md` prescribes
-before merge.
-
-The read uses `git rev-parse --verify HEAD`, not the bare form: in a repo with
-no commits the bare spelling prints the literal string `HEAD` on STDOUT, which
-would make the emptiness guard beside it dead code and let a sentinel containing
-`HEAD` compare equal. Both halves are pinned by
-`.claude/hooks/verify-pr-gate.test.sh`, which also carries the case the issue
-asked for — a FRESH marker plus a FOREIGN sha must BLOCK, and must say so
-rather than reporting staleness the children do not have.
-
-**A hand-typed `markgate` is not the one the hooks run.** `.mise.toml` pins
-0.4.1 and every gate resolves it through mise, but a Homebrew `markgate` 0.2.0
-earlier on `PATH` wins for a bare invocation and cannot parse this repo's
-`hash: diff` gates: `markgate verify check` exits 2 with
-`unknown hash "diff"` against a perfectly fresh marker (measured 2026-09-04).
-That is a false BLOCK, and it reads as a stale marker. Spell any hand check
-`mise exec -- markgate ...`.
-
-**An unreadable target directory is a REFUSAL in every blocking gate** (issue
-[#2027](https://github.com/go-to-k/cdkd/issues/2027)). A hook receives command
-TEXT, not the shell's expansion, so `git -C "$W" add -A && git -C "$W" commit
--F <file>` arrives with `$W` UNEXPANDED — the gates were weakest on precisely
-the spelling this repo's own instructions prescribe. Measured on
-`check-gate.sh`: that payload exited 0, the literal-path twin 2. (The issue's
-leading theory was wrong: `mise exec` on an untrusted `.mise.toml` exits
-**1**, not 0 — the untrusted worktree was never the fail-open.)
-
-**One root cause, 24 sites, three flavours** (measured across all 38 hooks,
-each a literal-path control that blocks paired with the respelled twin; the
-per-gate roll-call is in the #2027 issue thread, all fixed):
-
-- **Silent bail — 12 blocking gates**: a hand-rolled `-C <path>` scan with no
-  `$`/backtick guard turned `"$W"` into a literal path, the gate's own
-  `rev-parse` probe failed, exit 0 over a tree it never looked at.
-- **Silent wrong-tree judgement — 11 gates** via the library's
-  `gate_target_dir`, which DROPS an unreadable token and falls back to the
-  payload cwd (its comment claimed "fails CLOSED"; measured not:
-  `provider-docs-gate` exits 2 for `git -C <abs> commit`, **0** for
-  `git -C "$W" commit` with the violation staged in the target).
-- **No target reading at all — `bughunt-clean-gate`** (resolved only a `cd`,
-  never `-C`).
-- **Non-blocking, deliberately left falling back — `restore-backup`**: it
-  refuses nothing, and a snapshot silently NOT TAKEN is worse than a
-  wrong-tree one.
-- **Correctly out of scope**: `worktree-owner-gate` (already-expanded
-  `file_path`), `post-merge-sync-reminder` (no directory),
-  `gh-body-english-gate` (ignored `-C` for `--body-file` resolution — RIGHT:
-  `-C` changes gh's repo, not the shell's cwd; retired to CI by
-  go-to-k/cdkd#2717, kept in this roll-call because the roll-call is a RECORD of
-  what the #2027 audit examined, and rewriting history to match the current
-  hook set would make the audit unreproducible), the two PostToolUse detectors
-  (silent pass on unresolvable target is documented intent).
-
-**A WIDER hole sat on top: the verb regexes were hand-copied too**, with no
-quoted flag-value alternative — `git -C "/path/my worktree" commit`,
-`git -C "$(git rev-parse --show-toplevel)" commit` and ``git -C `pwd` commit``
-matched NO VERB in any gate, exit 0: a fully determinate commit on `main` with
-zero markers. `lib/command-match.sh` had recorded that shape as fixed once
-before (go-to-k/cdk-local#542); the per-gate copies reintroduced it. Every
-gate now takes its verb from the library constants, and the loader guards
-refuse when `gate_matches` is undefined — a missing library returns 127, which
-`if !` reads as "no match". Three more space-path instances only the class
-fence found: `git worktree list --porcelain | awk '{print $2}'` truncates such
-a path (3 hooks), `main-tree-branch-gate`'s token walker read `dir` as the
-subcommand, and `dirty-path-restore-gate` / `non-english-text-gate` (the
-latter retired to CI by go-to-k/cdkd#2717) carried their own
-quoted-alternative-less `-C` patterns.
-
-**The fix is one shared resolver, not 24 conditionals**:
-`gate_target_dir_strict` (returns 2 instead of guessing when the target
-carries a `$` or backtick) + `gate_refuse_unresolved_target`. Four shapes
-must NOT be refused, each found by a red test: an **absolute** `-C` moots an
-earlier unreadable `cd`; an **absolute `cd`** likewise; a `cd` **after** the
-verb never steered the command (the standing `git commit … && cd <repo> &&
-git pull`); a literal `~` is expanded — only when LEADING (no shell expands
-`/tmp/~/x`). The `-C` scan is ANCHORED to the segment's leading flags, so
-argument prose is not read as a target (before that, `git commit -m "repro:
-git -C $W commit failed"` was refused with a remedy that could not clear it).
-**The segmenter DUAL-EMITS**: splitting at `$(` / backtick truncated the
-ENCLOSING command (`git -C $(git rev-parse --show-toplevel) commit` became
-`git -C `, no verb, exit 0); now the span stays inline (neutralised, wrapped
-as one quoted token) while the body is queued for its own pass, so
-`out=$(git commit)` still fires. **The opt-in bound is answered from the
-hook's OWN checkout** (`${BASH_SOURCE[0]}`, cwd fallback for a vendored
-copy) rather than the payload cwd — which consulted the cwd precisely when
-the target was unknown. This does not reintroduce
-[#559](https://github.com/go-to-k/cdkd/issues/559): the marker STORE is
-still resolved from the payload cwd, and each worktree carries its own
-`.claude/hooks` and `.markgate.yml` (verified).
-
-**`check-gate.sh` fails closed on three MORE conditions**: a target that
-resolves but is not a git repo or cannot be entered; a markgate failing a
-`--version` probe; and `markgate verify` exiting **>= 2** — its "could not
-read the config" code, distinct from 1 = stale (verified on markgate 0.2.0 and
-0.4.1: stale marker, absent gate and empty config are all 1; only malformed
-YAML is 2). The `--version` probe makes #2027's environment legible: in a
-fresh untrusted worktree `mise exec` exits 1 and the old hook said
-`run /check first` — a remedy through the same untrusted mise. The message
-names a VERIFICATION command rather than `mise trust` alone, because
-`mise trust` as an agent Bash call can abort inside this environment's
-shell-snapshot wrapper. The permissions branch has **no test case**: the state
-is not constructible without root, and a fabricated case would fence nothing.
-
-`main-tree-git-cwd-detector` carried the same hand-rolled scan and it was
-**unreachable** (its `GIT_VERB` requires every token between `git` and the
-verb to start with `-`; the `-C` VALUE broke the match). The dead branch was
-removed, no behaviour change; the SEPARATE gap (no warning on
-`git -C <main-tree> commit`) remains a different change.
-
-**Fenced at the CLASS level, not per hook** — see
-[hooks-class-fences.md](hooks-class-fences.md) for the three fences, their
-populations and their floors.
-
-**"Scope" is TWO lists per gate, and they can disagree silently** (issue
-[#2042](https://github.com/go-to-k/cdkd/issues/2042)): `.markgate.yml`'s
-`include` decides what makes the MARKER stale; the hook's activation patterns
-decide whether `gh pr merge` consults it at all. Include-only = an
-invalidated marker no hook reads; hook-only = **FAIL-OPEN** (gate activates,
-the digest never saw the file, `markgate verify` returns 0, the merge
-proceeds unverified) — the dangerous direction, indistinguishable from a
-working gate. `destroy-runner.ts` / `region-check.ts` sat in that state, and
-the retry pair plus `rollback-executor.ts` were in neither list, until
-#2042's audit. Both directions fenced by
-`tests/unit/scripts/cross-cutting-list-sync.test.ts`; the per-gate file
-lists live in `.markgate.yml`'s `integ-destroy.include` and the hooks' own
-activation patterns. The only gate SCOPE list CLAUDE.md still carries is the
-`check` / `docs` rough guide, which says of itself that it is not
-authoritative — not the two integ gates', and since the hook-pointer pass not
-`integ-local`'s or `integ-schema-migration`'s either. Nothing in that guide is
-fenced, so read the `include:` lists rather than it. Its `pr-review` entry does
-also carry that gate's agent-instruction path list, which is a bias EXEMPTION
-rather than a scope and is stated there because the decision behind it is what
-a lane re-litigates; it is an unfenced copy like any other, so check it against
-`pr-review-gate.sh`'s comment before relying on a membership.
-
-**PR-diff scope guards (integ-destroy / integ-broad / integ-local).** The
-three integ gates first check whether the merged PR's diff touches their
-scope (via `gh pr view <N> --json files`) before consulting the marker —
-`integ-destroy-gate` against its delete-logic patterns, `integ-broad-gate`
-against `CROSS_CUTTING_REGEX`, `integ-local-gate` against
-`^src/local/|^src/cli/commands/local-*\.ts$|^tests/integration/local-` **plus
-a second question a path list cannot answer** (go-to-k/cdkd#3040): when no
-path matches, the PR's diff (`gh pr diff <N>`) is read for a CHANGE to the
-`"cdk-local":` line of a `package.json` — a `-` and a `+` line both, inside a
-`package.json` file block. cdk-local IS the local-execution engine
-(`src/local/**` is largely shims over it), so a version bump moves what
-`cdkd local` does with zero lines under any scope path — measured on
-go-to-k/cdkd#3053, two user-visible deltas in a diff of manifest + lockfile +
-tests, merged ungated. The test is deliberately that narrow: a lockfile-only
-re-resolve (its rows are spelled `cdk-local:` unquoted), an unrelated dep
-bump beside the line, and prose in a README all stay out of scope, because
-`^package\.json$` in the regex would fire on every dependabot PR, which is the
-shape that gets a gate disabled rather than obeyed. `gh pr diff` failing
-decides scope from the file list alone (the sibling gates' infra fail-open).
-A PR touching none of a gate's scope passes even with a stale marker — the
-integ markers carry a 14d TTL, so without the guard an expired marker would
-block EVERY merge. The three are scoped by different mechanisms:
-`integ-destroy` by this branch's delta against `origin/main` (markgate 0.4
-`hash: diff`); `integ-local` by its file-scope content; `integ-broad` by a
-sentinel file a pull cannot touch. `integ-local-gate` — the only gate also
-firing on `git merge` — additionally scope-checks `git merge [flags] <ref>`
-(issue #1204) via `git diff --name-only HEAD...<ref>` and the same cdk-local
-question over `git diff HEAD...<ref>`, so the routine post-squash
-`git merge --ff-only origin/main` passes even with a stale marker; the
-merge-ref parse is a token walk and bails to the unconditional verify on
-`--abort` / `--continue` / `--quit`, octopus (2+ refs), or an unresolvable
-ref. Number-less `gh pr merge` falls through to the unconditional verify.
-
-**Convention shift (post-#559)**: run `markgate set <gate>` from the same
-worktree (cwd) where the gated command will be invoked — each worktree has its
-own markgate state dir (`<worktree>/.git/worktrees/<name>/markgate/`; main tree
-`<main>/.git/markgate/`), so parallel agents no longer collide. Main-tree-only
-workflows behave as before; the old "set marker from main tree, merge from
-anywhere" pattern no longer works.
-
-Smoke tests at `.claude/hooks/<gate>.test.sh` cover cwd-aware resolution
-against fixture worktrees (markgate mocked via a PATH shim with a
-`$CWD_TRACE_FILE` asserting the hook cd'd to the correct target). **Every
-gate test file carries 2 quoted-body false-positive cases per cdkd#563**
-(`gh issue create --body "...<trigger>..."` / `echo "..."` shapes) — proof
-the matcher does not fire on a trigger inside an argument body.
-
-**The `if:` layer is GONE (issue #1455, reopened): project-settings hooks
-carrying `if:` never fired at all.** The #1476 verification measured that
-EVERY Bash-entry hook with an `if:` was never invoked — `git commit` /
-`gh pr merge` ran with no gate consulted — while no-`if:` entries in the SAME
-file fired normally, and the same `if:` strings DID work via the
-`settings.local.json` hot-reload path (the poisoning variable was never
-pinned). `if:` was removed from all 29 hooks in the Bash entry; the in-script
-matcher is the SOLE filter. **Do NOT reintroduce `if:` without the
-restart-verified protocol**: change the setting → FRESH session → run the
-#1476 probe shapes → only then trust it. A hot-reload measurement does NOT
-transfer to project settings.
-
-Historical probe (hot-reload path, gitignored `settings.local.json`): on
-`true && echo "... gh pr merge 999 ..."`, `Bash(*gh pr merge*)` FIRED and
-`Bash(gh pr merge*)` did not. `if:` matching was purely TEXTUAL and
-quote-blind — a contains pattern fired inside a quoted `echo` string; that is
-why the in-script matcher became the precision filter it now is alone.
-
-**Command-position matching (issue #1455 — supersedes the line-start
-anchoring).** The old line-start anchor (tolerating one leading
-`cd <path> &&`) dodged the quoted false positive by POSITION at the cost of a
-false NEGATIVE of the same shape: any command in front (`echo done; gh pr
-merge`) and the gate never fired — PR #1451's own `gh pr create` slipped past
-`verify-pr-gate` exactly that way, and the same hole sat in all six
-merge-time gates. The fix:
-`cmd_matches_verb <command> <verb-ere>` in `.claude/hooks/lib/command-match.sh`
-(1) NEUTRALISES the spans that are DATA — heredoc bodies, then quoted spans —
-then (2) matches the verb in COMMAND POSITION (line start or immediately
-after a `&&` / `||` / `;` / `|` control operator). `<(…)` / `>(…)` process
-substitution is a segment opener too, so a verb inside one arms the gates.
-
-- **A neutralised quoted span leaves a PLACEHOLDER, not a deletion** — the
-  verb EREs carry value sub-patterns, so deleting a quoted value made
-  `gh -C "$WT" pr merge` (the documented worktree shape) fail to match in
-  **nine** gates (the round-2 blocker).
-- **Failure direction is the whole design**: dropping too much makes a gate
-  SILENTLY NOT FIRE; dropping too little is a loud, fixable false positive.
-  Review rounds caught the dangerous direction repeatedly: `<<<` here-strings
-  and a quoted `<<EOF` mention treated as real openers with no terminator
-  check (state latched, every remaining line dropped, all six merge-time gates
-  off); per-line quote stripping turning a multi-line quoted argument into a
-  NEW hard block; deleted-not-placeheld spans; an escaped `\"` desyncing the
-  quote state machine. So the implementation rejects `<<<`, ignores `<<X`
-  inside a quoted span, strips a heredoc only when its terminator is actually
-  found, honours backslash escapes, and runs a whole-text quote state machine.
-  Heredocs are removed BEFORE quotes — a heredoc body is prose and routinely
-  holds an unbalanced apostrophe.
-- The quote pass emits kept stretches as runs (char-at-a-time was quadratic:
-  ~3s on a 200 KB command, twice per gate; now 28ms at 2 KB, ~2s at 200 KB).
-  And it captures the stripped text before grepping rather than piping into
-  `grep -q` — under `set -o pipefail` a large command surfaces `grep -q`'s
-  early exit as SIGPIPE (141), read as "no match", another silent miss.
-- **Heredoc bodies are stripped too — required, not a refinement**: the commit
-  introducing the helper was itself blocked by `integ-broad-gate` because its
-  `git commit -F -` body quoted a chained merge command. The stripper keeps
-  the OPENING line and drops through the terminator, handling `<<-` and
-  quoted / unquoted delimiters. **A heredoc INSIDE a `$( )` was not covered
-  until go-to-k/cdkd#3040**: a `$(` still open at end of line makes the
-  segmenter JOIN the following lines with `;` into one logical line BEFORE any
-  heredoc is recognised, so the body of `--body "$(cat <<'EOF' … EOF)"`
-  arrived in the substitution drain as `;`-separated commands, and prose
-  quoting `gh pr merge` refused `gh issue create` under `integ-local-gate`
-  (the backtick spans in that prose were then taken as nested substitutions
-  too). The join now latches onto the opener's delimiter under the same
-  terminator look-ahead the top-level `tag` uses and drops the body lines,
-  terminator included; a verb AFTER the terminator, inside the substitution
-  or after it closes, is still a segment, and an opener with no terminator
-  latches nothing — the fail-closed half, pinned in `command-match.test.sh`
-  and priced as `SUBST_HEREDOC` in the differential. go-to-k/cdkd#3066
-  (a LATER top-level heredoc reusing the delimiter: the body's re-flush in
-  `drain_extra` left `pending_tag` set and the top-level latch swallowed the
-  verb up to that later terminator, on `origin/main` too) closed with it —
-  `drain_extra` saves and restores `pending_tag` as it does `q`.
-  The three load-bearing properties of that latch — the PHYSICAL-line opener
-  scan, the quote-aware per-depth stack with its bail set, and the
-  QUOTED-DELIMITER-ONLY rule — plus the deliberate asymmetry between the two
-  heredoc paths, are in
-  [hooks-command-match-heredoc.md](hooks-command-match-heredoc.md), which
-  loads when you touch the matcher or one of its three suites.
-- The `cd <path> &&` special case disappears — it is just a verb after `&&`.
-- **A `gh` command has TWO flag slots, and only the left one was absorbed until
-  go-to-k/cdkd#3242.** `gh` takes `-R` / `--repo` before the GROUP word *and*
-  between the group word and the verb, resolving from either identically
-  (measured on gh 2.92.0 outside a repo: `gh pr -R go-to-k/cdkd view 3214`
-  answered the cdkd PR). `GATE_GH_C` covered the left slot only, so
-  `gh pr -R <slug> merge <n>` matched NOTHING and **no gate fired at all** —
-  verify-pr, ci-green, bughunt-clean, pr-review and the four integ gates, plus
-  `pr-body-item-number`, which is the one gate the blocking criterion above says
-  must never sit out. `GATE_GH_V` is the same constant in the right slot, so the
-  stopping rule is unchanged: a bare token in first position is the subcommand,
-  and `gh pr list` / `gh pr view` still match nothing. Fenced as a FAMILY in
-  `lib/command-match.test.sh` — the population read out of the library's own
-  `GATE_RE_GH_*` assignments, so a constant written without the absorber fails —
-  plus a flag-POSITION axis in the differential's generated corpus.
-
-**Two gaps in the old anchor — issue
-[#2093](https://github.com/go-to-k/cdkd/issues/2093), CLOSED by the #2129
-convergence.** The anchor `(^|[|;&][[:space:]]*)` lacked `(`, so a verb in
-**subshell** or **command-substitution** position never armed any gate; and an
-**unbalanced apostrophe** (`echo don't; git commit -m y`) swallowed the rest
-of the command. Severity was NOT uniform: a missed warning in the two
-detectors, a **gate bypass** in the eleven blocking gates — `(git commit -m
-x)` committed ungated. Deliberately not fixed in the measuring PR (adding `(`
-strictly widens every sourcing hook); #2129 paid the named price — every suite
-re-run under bash 5.x AND 3.2, plus a never-match mutant over all 32
-suite-carrying gates (zero survivors).
-
-**The mechanism that replaced the anchor.** A Bash tool call is a COMMAND
-LIST, so it is SEGMENTED — on `&&`, `||`, `;`, `|`, a bare `&`, a newline, a
-subshell or brace group, and a `$(...)` or backtick substitution (a backtick
-in a DOUBLE-quoted span runs and was unsegmented until go-to-k/cdkd#2339; in
-SINGLE quotes it does not run, unsegmented by design) — with the verb
-anchored at the START of a segment. Leading `VAR=value` assignments and
-`env` / `command` / `nohup` / `time` / `timeout` / `exec` / `then` / `do`
-wrappers are stripped first, and `bash -c "<cmd>"` is unwrapped. Separator
-characters inside quoted spans are NEUTRALISED and swapped back rather than
-the span being blanked, so segments carry their ORIGINAL text and
-`cd "<worktree>" && git commit` / `git -C "/a b" commit` keep their paths
-(blanking was tried in the siblings and erased exactly those — target-dir
-resolution fell back to the payload cwd, fail-open). Measured on
-`branch-gate.sh` against a checkout on `main`, every one of these went
-rc 0 -> 2: `(git commit -m x)`, `true && (git commit -m x)`,
-`out=$(git commit -m x)`, the backtick form, `echo don't; git commit -m y`,
-`bash -c "git commit -m x"`, `GIT_EDITOR=true git commit -m x`, and the
-`env` / `command` / `nohup` wrappers.
-
-Two load-bearing properties: a heredoc opener counts only when its delimiter
-actually appears later (look-ahead) — latching onto any `<<WORD` blanks every
-remaining line, fail open; and an UNTERMINATED quote makes the segmenter
-re-run treating that character as literal (what turns `echo don't; git commit
--m y` from silence into a block). Segments are emitted through an `if`, never
-`[ -n … ] && printf` — under a caller's `set -e` the trailing false test
-aborts the function and drops every remaining segment.
-
-The shared matcher has its own suite at
-`.claude/hooks/lib/command-match.test.sh` (its own `CASE_FLOOR` is the count;
-the number was carried here stale through three changes and is no longer
-restated). **Every gate that sources the helper fails
-CLOSED when it cannot load** (`exit 2`, with a `declare -F gate_matches`
-check for a truncated file — the liveness check covers all three exported
-functions); the three non-blocking detectors skip instead (a missed backup /
-reminder / warning is a smaller harm than refusing an operation they only
-observe). **One gate fails closed for `Bash` and not for its other arms** —
-`main-tree-edit-gate`, whose matcher also takes Edit and Write, so a LOAD-time
-refusal took away the tools the library is repaired with (go-to-k/cdkd#2717;
-[hooks-main-tree-edit.md](hooks-main-tree-edit.md) has it). A carve-out for a
-MATCHER, not a softening: a Bash-only gate still refuses outright, and so does
-that gate's `Bash` arm.
-
-**`declare -F` covers FUNCTIONS only; issue 2729 added the CONSTANT half**:
-every hook that sources the library calls
-`gate_require_const <names it reads>` beside that chain, which also checks
-`GATE_LIB_BASE_CONSTS` — the constants the library itself interpolates, several
-BARE inside function bodies, so a hook can depend on one without naming it.
-Five read none of their own and pass no arguments. The non-blocking split
-applies: `restore-backup` and the three detectors use
-`gate_require_const_soft`, exiting 0 while saying what is missing.
-
-**The constant half takes the SAME matcher carve-out, and it was written
-without one first.** `main-tree-edit-gate`'s `gate_require_const` call sat
-ahead of the tool-arm split, so a library that could not define the helper
-refused `Edit` and `Write` as well — measured live during this change's own
-rebase, when a merge conflict in the library left `Bash`, `Edit` and `Write`
-all refused and the repair needed the maintainer's shell. That is the exact
-state the paragraph above records as already fixed once for the `declare -F`
-chain: a second liveness check placed ahead of the split re-opens it. Any
-future check added to that hook belongs INSIDE the `Bash` arm.
-
-**NOT fenced as a class yet** — the fence built alongside this change was split
-out into go-to-k/cdkd#2826 after four review rounds each measured the previous
-round's fix reporting a green tally over a live fail-open. **What holds the
-calls in place meanwhile is FOUR suites and review, not thirty-one.**
-Measured by deleting the `gate_require_const` line from each hook and re-running
-that hook's own suite: `main-tree-branch-gate`, `restore-backup` and
-`main-tree-edit-gate` redden; the other 27 report an identical tally before and
-after — because a suite that never stages a library missing the constant cannot
-see the call go away. `post-merge-sync-reminder` was a 28th until
-go-to-k/cdkd#3266 gave it a suite at all; its two constant cases are built to
-the shape below, and its own header records why rc-0-and-silent cannot be the
-assertion. So
-a hook added before go-to-k/cdkd#2826 lands can read a library constant with no
-`gate_require_const` and nothing will say so — and so can an existing one whose
-call is deleted. The three that catch it stage a stripped library and assert the
-refusal by the CONSTANT'S NAME; that is the shape to copy if the fence is
-delayed.
-
-The path is derived with pure-bash `${BASH_SOURCE[0]%/*}` rather
-than `dirname` (no PATH lookup), `.` fallback for the no-slash case. Count
-the sharing hooks with
-`grep -l 'lib/command-match.sh' .claude/hooks/*.sh | grep -v '\.test\.sh' | wc -l`
-rather than trusting a number here. (SUFFIX-anchored: a bare `grep -v test`
-answers 30, eating `roundtrip-test-gate.sh`.) Two smoke cases that
-previously asserted the chained shape was an "accepted false-negative"
-(`branch-gate.test.sh`, `pr-review-gate.test.sh`) now assert it is CAUGHT.
-
-**`cmd_last_cd_target` resolves the target worktree the same way.** It
-follows every `cd` in command position **that precedes the verb**, against a
-caller-passed base dir, so chained relative cds compose
-(`cd /abs/one && cd sub` → `/abs/one/sub`). Stopping at the verb is
-load-bearing: following trailing cds let one hijack the lookup —
-`gh pr merge <N> --squash --delete-branch && cd <repo> && git pull`, the
-standing post-merge step, silently redirected all seven markgate gates to the
-main tree's store. A `cd` whose path is entirely quoted resolves to NOTHING
-and the caller falls back to the payload cwd — recovering it from the raw
-command was tried and removed (pairing quoted mentions by order resolved the
-WRONG directory).
-
-One consequence of neutralising: a pattern needing a quoted VALUE must read
-the raw command after the verb is confirmed in command position.
-`pr-title-prefix-scope-gate` was the worked example — it did exactly that for
-the `gh api …/pulls/<N>` endpoint, because matching `pulls/[0-9]+` against
-neutralised text found only a placeholder and let a mislabelled `fix:` title
-edit through (the PR #562 incident). **That gate is retired to CI
-(go-to-k/cdkd#2717) and the CONSEQUENCE is not**: it is a property of the
-matcher, not of any one caller, so the next gate needing a quoted value has to
-re-derive it. The example is kept for that reason rather than replaced with a
-live one, since no surviving gate currently reads a quoted value this way.
-
-See `feedback_cross_agent_main_tree_contention.md` for the motivating session
-history; cdkd#562 for the original anchoring fix; cdkd#1455 for its
-replacement.
-
-## Working on a sibling repo from a cdkd session (issue 1961)
+## Working on a sibling repo from a cdkd session
 
 The hooks a session runs come from ONE repo's `.claude/settings.json` —
 whichever repo the session started in — and fire on **every** Bash call,
-including commands targeting another repository. Post-#559 the marker lookup
-is target-correct while the POLICY stays session-correct; the two disagree
-exactly where the gate scripts have diverged (cdkd 41 hook scripts, cdk-local
-19, cdk-real-drift 11).
+including commands targeting another repository. The marker lookup is
+target-correct while the POLICY stays session-correct.
 
 **A cdkd session working in cdk-local or cdk-real-drift gets cdkd's policy
-applied to it — expected, not a bug in the target** (cdk-real-drift's
-`verify-pr-gate` exempts a no-`src/**` PR; cdkd's blocks unconditionally).
-**When it happens: complete the TARGET repo's own checklist and set its
-markers legitimately, then retry. Never route around the block, and do not
-"fix" the target repo to match cdkd.**
+applied to it — expected, not a bug in the target. Complete the TARGET repo's
+own checklist and set its markers legitimately, then retry. Never route around
+the block, and do not "fix" the target repo to match cdkd.** Do not port cdkd's
+stricter gates down to a sibling, or a sibling's exemptions up into cdkd.
 
-**That remedy is SUFFICIENT for `verify-pr` only since go-to-k/cdkd#3209.** The
-gate also compared `<target top>/.markgate-verify-pr-sha`, a cdkd-only sentinel
-`/verify-pr` writes here and neither sibling has ever written, so a mirror PR in
-cdk-local or cdk-real-drift was refused for a FILE FORMAT rather than a marker —
-unclearable by any checklist, while `work-issues/references/retro.md` 10-c
-MANDATES a cdkd session open exactly those PRs. It is now required only when the
-target IS this repo (canonicalised `--git-common-dir` equal to the hook file's,
-so every cdkd worktree still owes it); a foreign target clears on `markgate
-verify verify-pr` in its own tree. So set the TARGET's own markers — writing
-cdkd's sentinel into a sibling is not the remedy, it is the "do not fix the
-target repo to match cdkd" half of the rule above, and the hand-written
-attestation go-to-k/cdkd#3209 exists to replace.
-
-**Do not port cdkd's stricter gates down to a sibling, or a sibling's
-exemptions up into cdkd.** The obvious convergence — give cdkd the
-docs/tooling exemption — is demonstrably wrong: a `.claude/hooks/**`-only PR
-touches no `src/**`, so that exemption would have waived `/verify-pr` for the
-change that introduced a remote-code-execution path. cdkd's agent-instruction
-files are load-bearing in a way a sibling's are not — which is why
-`CLAUDE.md`, `.claude/rules/**`, `.claude/skills/**` (all skills since issue
-#2364), `.claude/hooks/**` and `docs/**` (both since issue #2381) sit inside
-cdkd's gate scopes at all.
-
-**Delegation was tried and abandoned (PR 1970).** Each gate handing its
-decision to `<target-repo>/.claude/hooks/<same-name>` works — and introduces
-arbitrary code execution: the target directory is named by the command itself
-(a `cd`, a `-C` flag, the payload `cwd`), so any directory the agent can be
-induced to touch that carries an executable at that path gets it run with the
-session's environment. Reproduced with a planted hook and a plain
-`git checkout`, which read `AWS_*` / `GH_TOKEN`-shaped variables. Not
-patchable from inside the design — every trust signal from the target repo is
-forgeable; trust would need a maintainer-maintained allow-list. Read the
-closed PR before proposing delegation again; it records two more defects (an
-exit status of 128+N from a signal-killed hook propagates as a non-blocking
-error and turns a block into a pass; `git -C ""` silently resolves the hook
-process's own cwd).
+**Delegation was tried and abandoned** (PR 1970). Each gate handing its decision
+to `<target-repo>/.claude/hooks/<same-name>` introduces arbitrary code
+execution: the target directory is named by the command itself, so any directory
+the agent can be induced to touch that carries an executable at that path gets
+it run with the session's environment — reproduced with a planted hook and a
+plain `git checkout`, which read `AWS_*` / `GH_TOKEN`-shaped variables. Not
+patchable from inside the design. Read the closed PR before proposing it again.
 
 The cross-repo gate-aliasing design — why a sibling took a refusal it could
-never clear, why the mapping is a declared per-repo table rather than
-discovery, and how `gate_resolve_marker_gate` chooses between the canonical
+never clear, and how `gate_resolve_marker_gate` chooses between the canonical
 gate, an alias and a refusal — is in
-[gate-sibling-repos.md](gate-sibling-repos.md), which loads when you touch
-any of the four `integ-*` gate scripts or their suites.
-
-## Class fences
-
-The suites whose subject is EVERY hook at once: the unresolved-target-directory
-sweep (issue 2027) is in [hooks-class-fences.md](hooks-class-fences.md), loaded
-when you touch it or the shared matcher, and the gate-name fence (issue 2198)
-in [hooks-gate-name-fence.md](hooks-gate-name-fence.md), loaded on its own
-suite alone — its subject is the markgate-backed hooks rather than the matcher.
-A third, for constant liveness, is designed and
-measured but NOT in the tree: go-to-k/cdkd#2826.
-
-## Stop hooks
-
-`stop-warn.sh` (uncommitted work) and `stop-unmerged-lane-warn.sh` (committed
-but unmerged) fire on `Stop` rather than on a tool call. The output-channel
-table, the shared nudge-cadence rule and the per-hook entries are in
-[hooks-stop.md](hooks-stop.md), which loads when you touch either hook or its
-suite.
-
-## Uncommitted-work safety (multi-session)
-
-Two hooks added after the 2026-08-09 two-sessions-one-worktree incident: the
-second session found ~228 lines of uncommitted changes it had not written and
-ran `git checkout --` on them — the first session's finished, tested provider
-fix plus its regression tests. `git checkout --` writes no reflog entry and
-creates no stash, so nothing in git held a copy. The two hooks address two
-INDEPENDENT layers; either alone would have prevented the loss.
-
-- **`.claude/hooks/dirty-path-restore-gate.sh`** — PreToolUse (`Bash`),
-  **blocking**, wired immediately BEFORE `restore-backup.sh`. Refuses
-  `git checkout -- <path>` / `git restore <path>` when a NAMED path
-  currently has uncommitted changes — `restore-backup.sh` makes the
-  operation RECOVERABLE, this one makes it DELIBERATE. Born from PR #1700
-  (2026-08-12): undoing a mutation probe with `git checkout -- <file>` also
-  discarded ~200 lines of finished, unrelated review fixes in
-  the same file — intent and effect are indistinguishable in the command,
-  and the effect is silent. Scope deliberately narrow: ONLY path-scoped
-  restores (a branch switch / `-b` never matches — no `--`), ONLY when a
-  named path is actually dirty, and `git restore --staged` passes (index
-  only). `git reset --hard` / `git clean -f` / `git stash` are NOT gated here
-  — their blast radius is evident and `restore-backup.sh` snapshots them; this
-  gate targets the one spelling whose blast radius is wider than it looks. The
-  refusal names the offending paths, the scratch-copy alternative, and the
-  `wipe-backups` recovery command.
-  **Bypass `CDKD_ALLOW_DIRTY_RESTORE=1`, honored from BOTH channels since
-  issue #2368**: the hook's process env AND a leading assignment in the
-  command text — an agent's Bash call can only deliver it as TEXT, since a
-  PreToolUse hook is spawned with the session env and a `VAR=1` prefix never
-  reaches its process; pre-#2368 the advertised remediation silently failed
-  and the suite CERTIFIED the failure. The text channel goes through
-  `strip_noncommand_spans` + command position (a quoted mention does not
-  bypass), the value must be exactly `1`, and `restore-backup.sh` still
-  snapshots under either channel. Cwd-aware — the first draft's pre-filter
-  matched the literal `git checkout`, silently skipping every
-  `git -C <path> checkout`. Smoke test:
-  `dirty-path-restore-gate.test.sh` (64 cases against real throwaway
-  repos — no git mocking; the two text-channel cases fail against the
-  pre-#2368 hook).
-
-- **`.claude/hooks/restore-backup.sh`** — PreToolUse (`Bash`),
-  **non-blocking**. Before `git checkout -- <path>` / `git checkout .`,
-  `git restore`, `git reset --hard`, `git clean -f*`, or `git stash`,
-  snapshots the working tree into
-  `<resolved git dir>/wipe-backups/<UTC ts>-<verb>/` (`tracked.patch` from
-  `git diff HEAD --binary`, `COMMAND`, plus `untracked.tar` for `clean`,
-  whose targets a diff cannot capture). Always exits 0 and never prompts;
-  skips entirely when `git status --porcelain` is empty. Cwd-aware; snapshots
-  land in the **per-worktree** git dir (`.git/worktrees/<name>/`), matching
-  markgate's marker store. Deliberately does NOT match `git checkout <branch>`
-  / `-b` (a branch switch is not a restore — `main-tree-branch-gate.sh`'s
-  territory). **Recovery**:
-  `git apply --include=<path> <snap>/tracked.patch` for one file, or
-  `git apply --3way <snap>/tracked.patch` for the tree — the plain
-  `git apply` form fails with "patch does not apply" once any other change in
-  the whole-tree patch is still present, so the hook prints the two forms
-  that were verified against a real wipe-and-recover replay. Smoke test:
-  `restore-backup.test.sh` (14 cases against a real throwaway repo, incl. the
-  end-to-end wipe-then-recover proof and the cdkd#563 quoted-body cases).
-
-- **`.claude/hooks/worktree-owner-gate.sh`** — PreToolUse
-  (`Edit|Write|NotebookEdit`), **blocking**. Each LINKED worktree gets one
-  owning session: the first file write claims it by recording
-  `<session_id> <UTC time>` in `<worktree git dir>/session-owner`; a write
-  from a different `session_id` exits 2 naming the owner, the worktree, and
-  the release command. Scope: only linked worktrees (the main tree is
-  `main-tree-edit-gate.sh`'s); only file-writing tools (Bash write targets
-  cannot be resolved statically, and read-only Bash must never block); repo
-  opt-in via `.markgate.yml` at the TARGET's own toplevel. Fails OPEN on
-  anything unresolvable (no `session_id`, path outside a repo, unreadable) —
-  it catches an honest mistake, not a security boundary. An owner idle
-  longer than `CDKD_WORKTREE_OWNER_TTL_HOURS` (default 12) is taken over
-  silently. `CDKD_SKIP_WORKTREE_OWNER_GATE=1` is the deliberate hand-off
-  bypass. Smoke test: `worktree-owner-gate.test.sh` (24 cases).
-
-  **The sentinel is itself gated (2026-08-10).** `session-owner` lives INSIDE
-  the git dir, which has no work tree, so `git rev-parse --show-toplevel`
-  failed on it, the opt-in check fell through, and a Write targeting the
-  sentinel passed unguarded — taking another session's worktree was a single
-  `Write`. That is exactly how it went wrong: a session judged from a recent
-  claim plus a stale-looking diff that the owner had been `/clear`-ed,
-  overwrote the file, and drove a lane a LIVE agent was working. The fix
-  recovers the worktree root from `<git dir>/gitdir` so the opt-in consults
-  the WORKTREE's own `.markgate.yml`; the ordinary ownership branch then
-  applies to the sentinel like any other file. The refusal states that
-  writing the file IS taking the worktree, that a claim younger than the TTL
-  means the owner is **presumed LIVE**, that a live session and a dead one
-  produce identical evidence (a recent claim, an unfamiliar diff, a `/clear`
-  you did not observe), and that the operator must ASK THE MAINTAINER before
-  handing off — especially when `git -C <worktree> status --short` is
-  non-empty. **Never infer that an owning session is dead** (memory rule
-  `feedback_never_infer_dead_worktree_owner.md`).
+[gate-sibling-repos.md](gate-sibling-repos.md).

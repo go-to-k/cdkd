@@ -44,4 +44,4 @@ AWS_REGION=us-east-1 STATE_BUCKET=<bucket> bash verify.sh
 ```
 
 A clean run flips the `integ-destroy` marker (real destroy at the end) but not
-`integ-broad` (narrow feature fixture).
+the broad real-AWS set (this is a narrow feature fixture).

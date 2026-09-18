@@ -7,7 +7,7 @@
  * resolves in both directions. `MIN_REFERENCE_FILES` and
  * `MIN_REFERENCE_CORPUS_BYTES` are deliberately NOT among them — they live
  * inside a loop over `SPLIT_SKILLS`, which holds `work-issues` alone, and both
- * are calibrated to that skill (6 files / 168,980 B). review-pr's ~23 KB corpus
+ * are calibrated to that skill (6 files / 168,980 B). review-pr's ~27 KB corpus
  * cannot join them without per-skill numbers, and the issue is explicit that it
  * must not be added to that list.
  *
@@ -26,6 +26,28 @@
  *
  * The three caps in `skill-file-payload.test.ts` are UPPER bounds, and an upper
  * bound reads every deletion as an improvement. These are the lower ones.
+ *
+ * WHAT THIS FILE NO LONGER FENCES, and why. The skill used to resolve a SIZE
+ * TIER (`inline` / `1-reviewer` / `3-axis`) from LOC and file count, bias it up
+ * or down from the paths, and bind a `pr-review` markgate marker to the PR's
+ * head sha — all of which this file pinned row by row. The reviewer policy is
+ * now FLAT (one reviewer by default; the security reviewer added by trigger;
+ * all three axes only for a state-schema bump or a security fix), and the
+ * `pr-review` gate, its sentinel and `pr-review-gate.sh` are gone, so none of
+ * that machinery exists to pin. The threshold rows, the bias-arithmetic rows,
+ * the ladder-monotonicity case and every marker case were DELETED rather than
+ * re-pointed — a fence over a deleted mechanism is worse than no fence, because
+ * it keeps reading as coverage.
+ *
+ * What survived is the split-integrity core (step numbering, per-step
+ * reachability, per-file content anchors, the byte floor) plus the governance
+ * rules the split duplicated across files and nothing else pins: the security
+ * add-on's trigger AND its consequence, the verdict-sort arms, the `Closes`
+ * question's owner, and the mandatory-read / cost-floor statements. The
+ * anti-vacuity discipline is unchanged and is the point of the file: every
+ * bounded section fails when its markers cannot be found, every prose needle is
+ * whitespace-normalized and CONTIGUOUS across the clause it pins, and no needle
+ * is left unbounded where the text it watches could survive somewhere else.
  */
 import { describe, it, expect } from 'vite-plus/test';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
@@ -41,61 +63,67 @@ const orchestrator = readFileSync(`${skillDir}SKILL.md`, 'utf8');
  * The ANCHOR is the point, not the filename: a link proves a file exists, and
  * only content proves the instruction is still in it. Each phrase is the thing
  * the step cannot be executed without — the query that decides whose turn it
- * is, the flag that excludes generated LOC, the roster that forces a tier up,
- * the rule that the marker follows dispatch, the format the recommendation is
- * rendered in. A reworded file is expected to update its anchor here; a GUTTED
- * one cannot.
+ * is, the history probe that feeds the recency signal, the roster that adds the
+ * security reviewer, the block the 3-axis set is emitted from, the instruction
+ * that reviewers are actually dispatched. A reworded file is expected to update
+ * its anchor here; a GUTTED one cannot.
  */
 const STAGES = [
   { step: 0, file: 'round-completion.md', anchor: 'said()' },
   { step: 1, file: 'pr-stats.md', anchor: 'git rev-parse --verify -q' },
   { step: 3, file: 'bias-factors.md', anchor: 'security / process-launch surface' },
-  { step: 5, file: 'output-template.md', anchor: 'If final tier is `3-axis`' },
-  { step: 6, file: 'dispatch-and-marker.md', anchor: '.markgate-pr-review-sha' },
+  { step: 5, file: 'output-template.md', anchor: 'If the PR resolved to `3-axis`' },
+  {
+    step: 6,
+    file: 'dispatch-and-marker.md',
+    // The filename still says `marker` — the file is cross-referenced by it —
+    // but the marker it was named for no longer exists, so the anchor is the
+    // DISPATCH instruction, which is what the step is now for. Anchoring on
+    // the stale half of the filename would pin nothing.
+    anchor: 'dispatches the recommended reviewers via the Agent tool',
+  },
 ] as const;
 
 /**
  * The two steps whose content stays INLINE, with the thing each is useless
  * without. They have no stage file, so the `STAGES` loop never looks at them —
  * and the step-numbering assertion above passes on a step reduced to its
- * heading, which would leave the base tier or the bias mapping silently gone.
+ * heading, which would leave the default set or the resolution order silently
+ * gone.
  */
 const INLINE_STEPS = [
-  // EVERY row and EVERY arm, not one of each: a table reduced to its header
-  // satisfies a single-row needle, and the bias mapping is six arms of which
-  // any one alone proves nothing about the other five.
   {
     step: 2,
-    // FULL ROWS. Needling the condition cell alone left two mutations green:
-    // swapping the tier column of rows 2 and 3, and blanking all three tier
-    // cells. A base-tier table whose conditions are intact and whose verdicts
-    // are gone or transposed is worse than a missing table, because it still
-    // reads as authoritative.
+    // BOTH DIRECTIONS. The default is a floor AND a ceiling for size: pinning
+    // only "one reviewer by default" leaves "…but drop to none for a docs-only
+    // diff" free to reappear, which is the exact discount the flat policy
+    // removed. One needle per direction, each contiguous across its clause.
     needles: [
-      '`loc < 300` OR `fc < 5` | **inline**',
-      '`300 <= loc < 1000` AND `5 <= fc < 10` | **1-reviewer**',
-      '`loc >= 1000` OR `fc >= 10` | **3-axis**',
+      'Default: ONE reviewer** (`pr-code-reviewer`',
+      'Size selects nothing',
+      'a docs-only or test-only diff is not discounted below it',
     ],
   },
   {
     step: 4,
+    // The resolution ORDER, arm by arm. `flat()` strips the whitespace around
+    // `→`, so a needle pins both sides of an arm without encoding where the
+    // line happens to wrap — and a contiguous arm cannot be satisfied by the
+    // two halves surviving a reversal.
     needles: [
-      'inline+up→1-reviewer',
-      '1-reviewer+up→3-axis',
-      '3-axis+up→3-axis (clamp)',
-      '3-axis+down→1-reviewer',
-      '1-reviewer+down→inline',
-      'inline+down→inline (clamp)',
+      'default one reviewer→plus `pr-security-reviewer` when its trigger fired',
+      'fired→all three axes when a schema bump or security fix is in play',
+      'a 3-axis security fix dispatches four reviewers, not three',
     ],
   },
 ] as const;
 
 /**
- * Measured 2026-09-16, smallest stage file 3,929 B (`pr-stats.md`; the others
- * run to 6,968 B). A floor well under that, because its job is to catch a file
- * emptied to a stub — a gutted file is its heading and intro, about 300 B —
- * never to police prose length: a stage file that legitimately halves still
- * clears it.
+ * Measured 2026-09-18, smallest stage file 3,535 B (`output-template.md`; the
+ * others run to 5,838 B). A floor well under that, because its job is to catch
+ * a file emptied to a stub — a gutted file is its heading and intro, about
+ * 300 B — never to police prose length: a stage file that legitimately halves
+ * still clears it.
  *
  * An earlier revision of this comment quoted five per-file sizes taken BEFORE
  * the round-1 fixes grew them, and one of the five matched no file at any
@@ -135,9 +163,9 @@ function stepBlockOf(step: number): string | null {
  */
 function flat(text: string): string {
   // Whitespace around `→` is stripped too, so a needle can pin BOTH sides of a
-  // bias arm without encoding where the line happens to wrap. Pinning only the
-  // left side let the clamp be rewritten to `3-axis+up →inline (clamp)` -- a
-  // silent top-tier downgrade -- while staying green.
+  // resolution arm without encoding where the line happens to wrap. Pinning
+  // only the left side let an arm be rewritten to `default one reviewer →only
+  // for a schema bump` -- a silent narrowing -- while staying green.
   return text.replace(/\s+/g, ' ').replace(/\s*→\s*/g, '→');
 }
 
@@ -159,13 +187,13 @@ function sectionOf(body: string, marker: string, endMarker: string): string {
  * The EXECUTABLE lines of a markdown file's fenced bash blocks — comments and
  * fences stripped.
  *
- * Needed because a whole-file needle is position-blind: replacing the marker
- * binding's head-sha guard with an unconditional `markgate set` while leaving
- * `# (historically guarded on $SHA = "$(git rev-parse HEAD)")` behind kept the
- * assertion green (measured). The guard has to be asserted where it RUNS.
+ * Needed because a whole-file needle is position-blind: a probe that deleted a
+ * live command and left `# (we also read the review threads)` behind kept the
+ * assertion green (measured, on the marker block this helper used to serve).
+ * The command has to be asserted where it RUNS.
  *
  * ONE block, selected by a marker, not every block joined: the first cut joined
- * all of them, so gutting the marker block and appending a second
+ * all of them, so gutting the real block and appending a second
  * "counter-example" block kept both needles green — position blindness one
  * level up from the flaw it was added to fix.
  */
@@ -237,25 +265,110 @@ describe('/review-pr split integrity (go-to-k/cdkd#3170)', () => {
     });
   }
 
-  it('the one BEHAVIOUR change the split carries is present: inline asks the spec question', () => {
-    // go-to-k/cdkd#3170's second scope comment, which called this out as the
-    // one change the split should carry rather than pure relocation: `inline`
-    // is the most common tier and was the only one with no spec owner at all.
+  /**
+   * The step-0 query, asserted on the lines that RUN. All three GitHub comment
+   * surfaces have to be read: a contributor answering from "Files changed" —
+   * GitHub's default — writes only a review body or a review-thread reply, and
+   * `issues/<N>/comments` never shows either. Dropping one surface makes the
+   * skill conclude "they never replied" and review a head the author has
+   * already moved past, which is the exact failure step 0 exists to prevent.
+   */
+  it('step 0 reads all three comment surfaces, in the lines that run', () => {
+    const block = bashBlockContaining(
+      readFileSync(`${skillDir}references/round-completion.md`, 'utf8'),
+      'said()'
+    );
+    expect(block, "no bash block in round-completion.md defines `said()`").not.toBe('');
+    for (const surface of [
+      `issues/$PR/comments`,
+      `pulls/$PR/comments`,
+      `pulls/$PR/reviews`,
+    ]) {
+      expect(
+        block,
+        `the step-0 query no longer reads ${surface} on an executable line. A surface named ` +
+          'only in a comment is one the query does not consult, and a missing surface reads as ' +
+          '"they have not replied" — the skill then reviews a head the author moved past.'
+      ).toContain(surface);
+    }
+  });
+
+  it('the one BEHAVIOUR change the split carries is present: the orchestrator asks the spec question', () => {
+    // go-to-k/cdkd#3170's second scope comment called this out as the one
+    // change the split should carry rather than pure relocation. It used to
+    // live in the `inline` dispatch block; with `inline` gone, the DEFAULT
+    // single-reviewer set is where it has to be, because the dispatched code
+    // reviewer is explicitly forbidden to rule on it.
     const template = readFileSync(`${skillDir}references/output-template.md`, 'utf8');
-    const inlineBlock = template.match(/\*\*If final tier is `inline`\*\*[\s\S]*?```[\s\S]*?```/);
-    expect(inlineBlock, 'the inline dispatch block was renamed or removed').not.toBeNull();
+    // BOTH ends explicit. An unfound end marker returns '' and REDS, rather
+    // than silently widening the "section" to the rest of the file — the first
+    // cut of a sibling case searched forward for a `## ` heading this file does
+    // not have, covered 93% of it, and the mutation it claimed to catch stayed
+    // green.
+    const orchestratorCheck = sectionOf(
+      template,
+      '**With the default single reviewer, the ORCHESTRATOR still asks the `Closes`',
+      '**If the PR resolved to `3-axis`**'
+    );
+    expect(
+      orchestratorCheck,
+      'the orchestrator `Closes` check could not be bounded — its opening sentence or the ' +
+        '3-axis block that follows it was renamed or removed'
+    ).not.toBe('');
+    // The emitted snippet, not just the sentence introducing it: a block the
+    // orchestrator never emits asks nobody anything.
+    expect(
+      flat(orchestratorCheck),
+      'the `Closes` check is no longer emitted as its own block. A sentence saying the ' +
+        'orchestrator asks the question, with no snippet to emit, is not an instruction.'
+    ).toContain('Orchestrator check (not delegated):');
     // Both halves, because the bare word `Closes` survives deleting the
     // TRIGGER line while leaving the explanation behind it — measured: a probe
-    // that removed the `Closes #N` line alone left this case GREEN.
+    // that removed the `Closes #N` line alone left the predecessor of this case
+    // GREEN.
     for (const needle of ['Closes #N', 'EARNED']) {
       expect(
-        flat(inlineBlock![0]),
-        `the \`inline\` block no longer contains ${JSON.stringify(needle)}, so it has stopped ` +
-          'asking whether a declared `Closes` is earned. No reviewer is dispatched at this ' +
-          "tier, so nothing else asks it — `1-reviewer` has the code reviewer's secondary " +
-          'pass and `3-axis` has the real axis, and `inline` has nobody.'
+        flat(orchestratorCheck),
+        `the orchestrator check no longer contains ${JSON.stringify(needle)}, so it has stopped ` +
+          'asking whether a declared `Closes` is earned. The dispatched code reviewer is told ' +
+          'not to rule on it and the security reviewer refuses it outright, so nothing else asks.'
       ).toContain(needle);
     }
+  });
+
+  it('the orchestrator check tells the reader to read the issue THREAD', () => {
+    // go-to-k/cdkd#3170's own scope came from its COMMENTS, and that PR's first
+    // round shipped without it for exactly that reason — the body was read and
+    // the thread was not. The instruction is the part most likely to be
+    // trimmed as wordy, so it is needled separately from the `Closes` pair.
+    const template = readFileSync(`${skillDir}references/output-template.md`, 'utf8');
+    const orchestratorCheck = sectionOf(
+      template,
+      'Orchestrator check (not delegated):',
+      '**If the PR resolved to `3-axis`**'
+    );
+    expect(orchestratorCheck, 'the orchestrator-check block could not be bounded').not.toBe('');
+    expect(
+      flat(orchestratorCheck),
+      'the orchestrator check no longer says to read acceptance items the issue THREAD added. ' +
+        "An issue's scope is not always in its body, which is how go-to-k/cdkd#3170's own first " +
+        'round shipped two blockers.'
+    ).toContain('thread added by comment');
+  });
+
+  it('adding reviewers may never REMOVE the spec question', () => {
+    // The surviving half of the old ladder-monotonicity case. The ladder it was
+    // written against (`inline+up→1-reviewer`) is gone, but the property is not
+    // about the ladder: the code reviewer is forbidden to rule on `Closes` and
+    // the security reviewer refuses it, so if the question were handed to
+    // "whoever was dispatched", dispatching MORE reviewers would drop it.
+    const template = flat(readFileSync(`${skillDir}references/output-template.md`, 'utf8'));
+    expect(
+      template,
+      'output-template.md no longer records WHY the orchestrator keeps the `Closes` question ' +
+        'when reviewers are dispatched. Without the reason, the next author reads the check as ' +
+        'redundant with the reviewer it sits next to and deletes it.'
+    ).toContain('would REMOVE a check, which adding reviewers must never do');
   });
 
   it('step 6 can represent a verdict the two-bucket sort cannot', () => {
@@ -267,12 +380,10 @@ describe('/review-pr split integrity (go-to-k/cdkd#3170)', () => {
     // that the strings `No spec declared` and `spec (secondary)` appeared, and
     // review found the asymmetry: rewriting an arm to "`spec (secondary)`
     // blocks like any other finding" keeps the label and reverses the rule,
-    // and the case stayed green. That is the same hole the `inline` case above
-    // closed on its own side — a bare token survives the edit that guts it.
-    // SCOPED to the step-6 block, not the whole file. File-wide needles stayed
-    // green with the entire verdict-sort list moved out of the step into a
-    // trailing comment — the same unbounded-needle mistake the `inline` case
-    // avoids by matching inside its own emitted block.
+    // and the case stayed green. A bare token survives the edit that guts it.
+    // SCOPED to the step-6 synthesis section, not the whole file. File-wide
+    // needles stayed green with the entire verdict-sort list moved out of the
+    // step into a trailing comment.
     // BOTH ends given explicitly. The first cut searched forward for a `## `
     // heading, and this file has none — so the "section" ran to EOF, covered
     // 93% of the file, and the mutation the comment claimed to catch (the whole
@@ -281,17 +392,27 @@ describe('/review-pr split integrity (go-to-k/cdkd#3170)', () => {
     const dispatch = sectionOf(
       readFileSync(`${skillDir}references/dispatch-and-marker.md`, 'utf8'),
       'waits for all, and synthesizes:',
-      'For `inline`, the marker is NOT set'
+      '**Security add-on dispatch**'
     );
     expect(dispatch, 'the step-6 synthesis section could not be bounded').not.toBe('');
     const ARMS = [
       {
-        // The arm the whole gate rests on, and it deleted GREEN before this.
+        // The arm the whole review rests on, and it deleted GREEN before this.
         arm: 'any blocker',
-        // CONTIGUOUS: `the marker is NOT set` also occurs in the `inline`
-        // sentence lower down, so the two halves as separate needles stayed
-        // green when the arm was reversed to "set the marker anyway".
-        needles: ['Any **blocker** surviving the pre-filters→the marker is NOT set'],
+        // CONTIGUOUS across the verdict: the two halves as separate needles
+        // stayed green when the arm was reversed to "merge anyway".
+        needles: ['Any **blocker** surviving the pre-filters→**do not merge**'],
+      },
+      {
+        // The clean arm. With no marker to set, an explicit STATEMENT is the
+        // only record that a round happened at all, so it carries the same
+        // weight the marker block used to — and the head sha is what makes a
+        // later push visibly un-reviewed.
+        arm: 'every finding minor / nit / clean',
+        needles: [
+          'the review round is CLOSED',
+          'naming the head sha you reviewed and which reviewers ran',
+        ],
       },
       {
         arm: 'No spec declared',
@@ -314,7 +435,7 @@ describe('/review-pr split integrity (go-to-k/cdkd#3170)', () => {
           // blocker the primary axis never examined (measured).
           'when BOTH hold',
           // ...and the fall-through, without which a discounted-only run never
-          // reaches the arm that sets the marker.
+          // reaches the arm that closes the round.
           'FALL THROUGH',
         ],
       },
@@ -334,22 +455,20 @@ describe('/review-pr split integrity (go-to-k/cdkd#3170)', () => {
 
   /**
    * The SECURITY-governance rules, which the split raised from 2 copies to 4
-   * and which nothing pinned. Measured by probe: deleting "NEVER set the marker
-   * without dispatching the reviewers first", replacing the head-sha equality
-   * guard with an unconditional `markgate set`, deleting the whole security
-   * add-on dispatch paragraph, or deleting the ANY-tier rule from any of its
-   * copies — every one left the suite GREEN before these cases existed. Only a
-   * wholesale deletion of the bash block reds, via the `.markgate-pr-review-sha`
-   * anchor, and a weakened guard keeps that filename.
+   * and which nothing else pins. Measured by probe on the predecessor of this
+   * file: deleting the "dispatch before you close the round" rule, deleting the
+   * whole security add-on dispatch paragraph, or deleting the additive rule
+   * from any of its copies — every one left the suite GREEN before these cases
+   * existed. There is no marker left to notice any of it.
    */
   const SECURITY_ARMS = [
     {
       file: 'references/dispatch-and-marker.md',
-      what: 'the marker follows dispatch, and a security blocker blocks',
+      what: 'dispatch precedes the verdict, and a security blocker stops the merge',
       needles: [
-        'NEVER set the marker without dispatching the reviewers first',
+        'NEVER report a round closed without dispatching the reviewers first',
         'fold its findings in',
-        'a security blocker blocks the marker like any other',
+        'a security blocker stops the merge like any other',
         // The rationale paragraphs are the only record of WHY the discount may
         // not be re-keyed on the label or on severity -- one word away, per B1.
         'Condition 2 is what makes this safe',
@@ -358,49 +477,63 @@ describe('/review-pr split integrity (go-to-k/cdkd#3170)', () => {
     },
     {
       file: 'SKILL.md',
-      what: 'the ANY-tier security reviewer, and that its blocker blocks',
-      // The needle STARTS at `not a rung on the size ladder**: ` on purpose.
-      // Three bare tokens (`ADDITIVE`, '`inline` included', 'blocks the
-      // marker…') all SURVIVE the one-line reversal `dispatch it at ANY tier`
-      // → `do NOT dispatch it at ANY tier — only at 3-axis` (measured, 21/21
-      // green), which removes the security reviewer from every tier below
-      // 3-axis. And the obvious repair is itself a substring trap:
-      // 'dispatch it at ANY tier, `inline` included' occurs INSIDE the negated
-      // sentence too, so it stays green as well — the same shape as the
-      // `!=`/`=` flip on the marker guard.
+      what: 'the additive security reviewer, and that its blocker blocks',
+      // The needle runs from the reviewer's NAME through `additive to whatever
+      // else runs` on purpose. Bare tokens (`pr-security-reviewer`, `security
+      // fix`) all SURVIVE the one-line narrowing `additive to whatever else
+      // runs` → `only when the 3-axis set runs`, which removes the security
+      // reviewer from the default set — i.e. from most PRs. Contiguity is what
+      // catches that, exactly as it did for the deleted ANY-tier wording.
       needles: [
-        'not a rung on the size ladder**: dispatch it at ANY tier, `inline` included',
-        'blocks the marker like any other',
+        'Security add-on** (`pr-security-reviewer`, additive to whatever else runs)',
+        'A security blocker stops the merge like any other',
       ],
     },
     {
       file: 'references/bias-factors.md',
-      what: 'the additive rule at its authoritative copy',
+      what: 'the additive rule and the two 3-axis cases at their authoritative copy',
       needles: [
-        'NOT part of the tier ladder',
+        'Dispatch `pr-security-reviewer` alongside the default whenever any of these holds',
         'security fix',
         // The belonging test is the ONLY defence against the surface list
         // rotting by omission, and `security-surface-list-sync.test.ts` names
         // it as ITS backstop while passing happily without it.
         '(a) verifies or mints',
-        // The whole DOWN-bias section deleted green, taking with it the arm
-        // SKILL.md itself calls the one a `.claude/**`-only diff gets wrong --
-        // which is this PR's own shape.
-        'Down-bias triggers',
-        'Agent-instruction files are deliberately NOT here',
-        'never about budget',
+        // 3-axis is now the only escalation the rules resolve, so its
+        // population has to be pinned in BOTH directions: `exactly two cases`
+        // stops it widening into a size proxy again, and the schema-bump arm
+        // stops it narrowing to security alone.
+        'exactly two cases',
+        'a **state-schema bump** (`StackState.version`)',
+        // The FLOOR half. The old down-bias section deleted green, taking with
+        // it the arm SKILL.md itself calls the one a `.claude/**`-only diff
+        // gets wrong; these are its replacement, and a cap with no floor
+        // rewards the inverse regression.
+        'There is no size ladder: LOC and file count do NOT move the count in either direction',
+        'Agent-instruction files never get a discount',
+        'the low-risk premise is false',
       ],
     },
     {
       file: 'references/output-template.md',
       what: 'the security add-on dispatch block step 5 actually emits',
-      // 'at ANY tier' carried contiguously for the same reason as above.
-      needles: ['security add-on trigger fired**, append (at ANY tier', 'pr-security-reviewer.md'],
+      // The trigger list carried contiguously with the `append` instruction:
+      // a block whose trigger is intact but which is never appended dispatches
+      // nobody, and the reverse reads as unconditional.
+      needles: [
+        'security add-on trigger fired** (a secret / credential',
+        'whichever set resolved, same parallel batch',
+        'pr-security-reviewer.md',
+      ],
     },
     {
       file: 'references/pr-stats.md',
-      what: 'both halves of step 1 — the LOC exclusion and the history probe',
-      needles: ['docs/_generated/', 'git rev-parse --verify -q'],
+      what: 'both halves of step 1 — what the step is FOR, and the history probe',
+      // The LOC-exclusion arithmetic this used to pin existed only to feed the
+      // size ladder and went with it. What replaced it is the statement of what
+      // the step now reads for, which is what stops the size fields quietly
+      // becoming inputs again.
+      needles: ['Size no longer selects anything', '`paths` is the load-bearing field', 'git rev-parse --verify -q'],
     },
     {
       file: 'references/round-completion.md',
@@ -418,52 +551,23 @@ describe('/review-pr split integrity (go-to-k/cdkd#3170)', () => {
     },
   ] as const;
 
-  it('the marker binding still guards on the PR head, where it RUNS', () => {
-    // Asserted against the EXECUTABLE lines of the block that actually binds.
-    const block = bashBlockContaining(
-      readFileSync(`${skillDir}references/dispatch-and-marker.md`, 'utf8'),
-      '.markgate-pr-review-sha'
-    );
-    expect(block, 'no bash block writes the pr-review sentinel').not.toBe('');
-    const bash = flat(block);
-
-    // The SPACE before `=` is load-bearing. `= "$(git rev-parse HEAD)"` is a
-    // SUBSTRING of `!= "$(git rev-parse HEAD)"`, so flipping the guard to bind
-    // the marker only when the PR head DISAGREES with local HEAD — worse than
-    // deleting it — stayed green (measured).
-    expect(
-      bash,
-      'the marker block no longer guards on the PR head EQUALLING local HEAD. Without it the ' +
-        'marker survives a later push, and a PR merges on a review that never saw its diff.'
-    ).toContain('" = "$(git rev-parse HEAD)"');
-
-    // ...and the binding must sit INSIDE that guard. Keeping the `if` while
-    // moving `markgate set` below the `fi` leaves both needles on executable
-    // lines and binds on any head (measured).
-    const guarded = bash.slice(bash.indexOf('; then'), bash.indexOf('else'));
-    expect(
-      guarded,
-      '`markgate set pr-review` is no longer inside the head-sha guard, so the guard is inert.'
-    ).toContain('markgate set pr-review');
-  });
-
   /**
    * DERIVED, not listed — every `pr-*-reviewer` agent on disk must be reachable
-   * from the dispatch templates, and each tier must name the right NUMBER.
+   * from the dispatch templates, and each set must name the right NUMBER.
    *
    * This is the structural answer to a defect the needle tables kept missing:
    * they cannot see the absence of a thing nobody listed. Measured — the
    * `3-axis` block could be degraded to dispatch a SINGLE reviewer and all 20
    * cases stayed green, because `pr-spec-reviewer.md` and `pr-test-reviewer.md`
-   * appeared in no needle anywhere. The top tier silently becoming the tier
-   * below it is the same shape as the round-3 tier-column swap: conditions
-   * intact, verdict gutted, still reading as authoritative.
+   * appeared in no needle anywhere. The top set silently becoming the default
+   * one is the same shape as the round-3 tier-column swap: the trigger intact,
+   * the verdict gutted, still reading as authoritative.
    *
    * Reading the agents off the FILESYSTEM is what stops this going stale: a new
    * reviewer agent is a deliberate decision about the dispatch templates, not a
    * silent no-op.
    */
-  it('every reviewer agent is dispatched, and each tier names the right number', () => {
+  it('every reviewer agent is dispatched, and each set names the right number', () => {
     const template = readFileSync(`${skillDir}references/output-template.md`, 'utf8');
     const agents = readdirSync(fileURLToPath(new URL('../../../.claude/agents/', import.meta.url)))
       .filter((f) => /^pr-.*-reviewer\.md$/.test(f))
@@ -474,47 +578,54 @@ describe('/review-pr split integrity (go-to-k/cdkd#3170)', () => {
     for (const agent of agents) {
       expect(
         template,
-        `${agent} exists but references/output-template.md never names it, so no tier ` +
+        `${agent} exists but references/output-template.md never names it, so no set ` +
           'dispatches it. A reviewer nobody dispatches is a review axis that silently does ' +
           'not happen.'
       ).toContain(agent);
     }
 
-    // The SIZE tiers name an exact count. `pr-security-reviewer` is ADDITIVE
-    // and deliberately outside this ladder, so it is excluded from both counts.
-    const ladder = (block: string): number =>
+    // `pr-security-reviewer` is ADDITIVE and deliberately outside both counts:
+    // it rides along with whichever set resolved, so counting it would make the
+    // default set look like two and the 3-axis set like four.
+    const dispatched = (block: string): number =>
       agents.filter((a) => a !== 'pr-security-reviewer.md' && block.includes(a)).length;
-    // Markers taken verbatim from the file — the `1-reviewer` one opens
-    // `Then, **if final tier is ...` with a lowercase `if`, and a start marker
-    // that does not match yields '' and a count of 0, which reads as a
-    // regression rather than as a broken probe.
-    const threeAxis = sectionOf(template, '**If final tier is `3-axis`**', '**If final tier is `inline`**');
-    const oneReviewer = sectionOf(template, '**if final tier is `1-reviewer`**', '**If final tier is `3-axis`**');
+    // Markers taken verbatim from the file, and a start marker that does not
+    // match yields '' and a count of 0 — which reads as a regression rather
+    // than as a broken probe, so both sections are asserted non-empty first.
+    const threeAxis = sectionOf(
+      template,
+      '**If the PR resolved to `3-axis`**',
+      "**The `Closes` question is the ORCHESTRATOR's"
+    );
+    const defaultSet = sectionOf(
+      template,
+      'Then, **unless the PR resolved to 3-axis**, emit the default single reviewer:',
+      '**With the default single reviewer'
+    );
     expect(threeAxis, 'the 3-axis block could not be bounded').not.toBe('');
-    expect(oneReviewer, 'the 1-reviewer block could not be bounded').not.toBe('');
+    expect(defaultSet, 'the default single-reviewer block could not be bounded').not.toBe('');
     expect(
-      ladder(threeAxis),
+      dispatched(threeAxis),
       'the `3-axis` block no longer dispatches exactly three reviewers (spec + code + test). ' +
-        'Degrading it to fewer makes the top tier the tier below it, which is what ' +
-        '`pr-review-gate.sh` refuses to be talked down from.'
+        'Degrading it to fewer makes the top set the default set, silently — and with the ' +
+        '`pr-review` gate gone, nothing downstream would notice.'
     ).toBe(3);
     // PRESENCE of three names is not THREE DISPATCHES, and the difference is
     // the likelier edit: an author trimming this block writes "escalate if
     // needed" before they delete a filename. Rewriting it to "emit the block
     // ONCE for the code reviewer, escalate to the other two only if asked"
-    // keeps all three names, keeps `ladder()` at 3, and stays green (measured)
-    // -- the top tier becomes one unconditional reviewer plus two conditional
-    // ones. Nothing downstream sees it either: `pr-review-gate.sh` checks the
-    // marker exists and is bound to HEAD, never how many reviewers ran.
+    // keeps all three names, keeps `dispatched()` at 3, and stays green
+    // (measured) -- the top set becomes one unconditional reviewer plus two
+    // conditional ones, and nothing downstream counts reviewers.
     expect(
       flat(threeAxis),
       'the `3-axis` block no longer says the reviewers are dispatched TOGETHER. Three names ' +
         'present in the block is not three dispatches ordered — a block that escalates to two ' +
-        'of them conditionally reads as 3-axis and behaves as 1-reviewer.'
+        'of them conditionally reads as 3-axis and behaves as one reviewer.'
     ).toContain('the same block three times in ONE parallel message');
     expect(
-      ladder(oneReviewer),
-      'the `1-reviewer` block no longer dispatches exactly one reviewer.'
+      dispatched(defaultSet),
+      'the default block no longer dispatches exactly one reviewer.'
     ).toBe(1);
   });
 
@@ -531,32 +642,4 @@ describe('/review-pr split integrity (go-to-k/cdkd#3170)', () => {
       }
     });
   }
-
-  it('the ladder stays monotonic — 1-reviewer asks the Closes question too', () => {
-    // Biasing UP may never REMOVE a check. `inline` asks whether a declared
-    // `Closes` is earned; the code reviewer dispatched at `1-reviewer` is told
-    // not to rule on it, so the orchestrator has to keep asking. Deleting that
-    // clause left every other case green.
-    const template = flat(readFileSync(`${skillDir}references/output-template.md`, 'utf8'));
-    expect(
-      template,
-      'the `1-reviewer` block no longer tells the ORCHESTRATOR to ask the `Closes` question ' +
-        'itself. The dispatched code reviewer is explicitly forbidden to rule on it, so ' +
-        '`inline+up→1-reviewer` silently REMOVES a check — a bias step may never do that.'
-    ).toContain('At `1-reviewer`, the ORCHESTRATOR still asks the `Closes` question itself');
-  });
-
-  it('the inline spec question tells the reader to read the issue THREAD', () => {
-    // go-to-k/cdkd#3170's own scope came from its COMMENTS, and this PR's first
-    // round shipped without it for exactly that reason — the body was read and
-    // the thread was not. The instruction is the part most likely to be
-    // trimmed as wordy, so it is needled separately from the `Closes` pair.
-    const template = readFileSync(`${skillDir}references/output-template.md`, 'utf8');
-    expect(
-      flat(template),
-      'the inline block no longer says to read acceptance items the issue THREAD added. An ' +
-        "issue's scope is not always in its body, which is how this PR's own first round " +
-        'shipped two blockers.'
-    ).toContain('thread added by comment');
-  });
 });

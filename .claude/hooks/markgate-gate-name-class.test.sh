@@ -6,35 +6,33 @@
 # Every per-hook suite for a markgate-backed gate asserted an EXIT CODE, and a
 # few asserted the cwd markgate ran in. None asserted the QUESTION the gate
 # asked. Measured 2026-08-25 by rewriting each hook's `markgate verify <gate>`
-# to `verify BOGUS-GATE` and running that hook's own suite:
+# to `verify BOGUS-GATE` and running that hook's own suite: every one stayed
+# GREEN, `integ-destroy-gate` at 20/20 among them.
 #
-#     verify-pr-gate      Pass: 22  Fail: 0
-#     check-gate          Pass: 33  Fail: 0
-#     integ-destroy-gate  Pass: 20  Fail: 0
-#     integ-broad-gate    24 pass, 0 fail
+# The class is not theoretical. A gate swapped onto another repo-wide marker
+# passes whenever THAT marker is fresh -- it merges a PR whose own verification
+# never ran -- and its own suite stays green. A gate pointed at the wrong marker
+# is indistinguishable, from the outside, from a gate working correctly: same
+# exit codes, same messages, same cwd. Only the argv separates them.
 #
-# The verify-pr case is not theoretical. Swapping `verify verify-pr` for
-# `verify check` makes that gate pass whenever `/check` alone is fresh -- it
-# merges a PR whose `/verify-pr` checklist never ran -- and its suite stayed
-# green. A gate pointed at the wrong marker is indistinguishable, from the
-# outside, from a gate working correctly: same exit codes, same messages, same
-# cwd. Only the argv separates them.
+# `integ-destroy` is the only markgate gate left, so the table holds one row.
+# The fence is deliberately NOT retired for that: its whole value is catching
+# the SECOND one, written by someone who never read this file.
 #
 # WHY THE POPULATION IS DERIVED FROM BEHAVIOUR
 #
 # Not from the hook text, in any spelling. All three textual predicates were
-# tried on origin/main and all three are wrong:
+# tried and all three are wrong:
 #
-#   - `grep -l 'markgate verify'` matches 4 of the 8, and EVERY hit is a comment
-#     or a message string rather than a live call site. Gates invoke the binary as
-#     `"${markgate[@]}" verify <gate>`, and `stop-warn.sh` builds that array as
-#     `markgate=(markgate)` or `markgate=(mise exec -- markgate)`, so no literal
-#     `markgate verify` appears on any line of it.
-#   - `grep -l markgate` finds 20, because almost every gate reads
+#   - `grep -l 'markgate verify'` misses gates that invoke the binary as
+#     `"${markgate[@]}" verify <gate>`, where no literal `markgate verify`
+#     appears on any line.
+#   - `grep -l markgate` finds ~20, because almost every gate reads
 #     `.markgate.yml` for the repo opt-in check. Those verify nothing.
 #   - Stripping comments first does NOT exclude `main-tree-git-cwd-detector.sh`:
 #     it carries `markgate[[:space:]]+(set|verify)` inside a REGEX STRING, since
-#     detecting markgate commands is its job. That is live code.
+#     detecting markgate commands is its job. That is live code, and it is the
+#     one DECLARED non-verifier below.
 #
 # So the CANDIDATE list comes from `.claude/settings.json` -- what the repo
 # DECLARES as a hook, which is the only authoritative statement of it -- and
@@ -54,29 +52,30 @@
 #
 # WHAT EACH FENCE CATCHES -- read this before trusting a green run:
 #
-#   fence 1  every hook in the table asks about the gate the table names.
-#            Catches a gate repointed at another marker.
+#   fence 1  every hook in the table asks about the gate the table names, and
+#            about NOTHING ELSE. Catches a gate repointed at another marker,
+#            and a gate that ACQUIRES a second one.
 #   fence 2  the table and the observed population agree in BOTH directions.
 #            Catches a new markgate-backed hook added with no table entry, and
 #            a table entry for a hook that no longer verifies anything.
-# The matcher accepts `status` as well as `verify`, but NOT for the reason an
-# earlier version of this comment gave. It claimed `check-gate` asks its
-# question with `markgate status <gate>` and that a `verify`-only fence reports
-# it as reaching nothing. That is false: `check-gate.sh` asks with
-# `verify check` / `verify docs`, and its `status` call (`gate_reason`) runs
-# only AFTER a verify returns non-zero, to pull the parenthesised staleness
-# reason into the refusal. The shim's default `MG_VERDICT=fresh` never produces
-# that, so the `status` arm has never executed here -- re-keying both matchers
-# to `^verify` alone leaves the file 3/3 green.
-#
-# What actually made `check-gate` unreachable was the `--version` probe below,
-# and the two were conflated. The `status` alternative stays because that call
-# IS live in production (a stale marker reaches it) and a future probe may drive
-# a stale verdict; it is kept as coverage, not as an explanation.
-#
-#   fence 3  the probes actually REACH the markgate call. Four gates scope-check
-#            the PR diff first and return before verifying anything; a fence
+#   fence 3  the probes actually REACH the markgate call. A gate scope-checks
+#            the PR diff first and returns before verifying anything; a fence
 #            that never reaches the call would report green over nothing.
+#   fence 4  the markgate rc-2 branch sits at an EARLIER line than the alias
+#            refusal. Static by necessity -- see gate-sibling-repos.md.
+#
+# The matcher accepts `status` as well as `verify`. That call IS live in
+# production (a stale marker reaches it) and a future probe may drive a stale
+# verdict, so it is kept as coverage rather than as an explanation of anything.
+#
+# THE VACUITY FLOORS ARE NEARLY DEGENERATE NOW, and that is worth stating
+# rather than discovering. With one gate in the table, "the table was read" and
+# "a hook was observed verifying" can only be floored at 1, so they catch a
+# total breakage (the table unreadable, the harness reaching nothing) and
+# nothing subtler. The one floor that still discriminates is fence 2's
+# CANDIDATE floor, which counts hooks parsed out of settings.json rather than
+# markgate callers -- keep that one calibrated to the registered roster. Raise
+# all three the moment a second markgate gate is added.
 
 set -u
 
@@ -98,32 +97,12 @@ git init -q -b feat/lane "$REPO"
 git -C "$REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 # Repo opt-in: every one of these gates is scoped to repos carrying a
 # `.markgate.yml`, so without this the whole suite passes through untested.
-# EMPTY on purpose, and integ-schema-migration-gate depends on it: an empty
-# config is UNPARSABLE, `gate_resolve_marker_gate` fails closed to `canonical`,
-# and the gate therefore consults markgate. A config DECLARING other gates --
-# or an absent one -- resolves to `none`, and since go-to-k/cdkd#3351 a foreign
-# target at `none` RELAXES, which would take that gate below this fence's
-# reachability floor: it would go quiet in the suite built to notice a gate
-# going quiet.
+# EMPTY on purpose: an empty config is UNPARSABLE, `gate_resolve_marker_gate`
+# fails closed to `canonical`, and the gate therefore consults markgate. A
+# config DECLARING other gates -- or an absent one -- resolves to `none`, and a
+# gate that refuses or relaxes at `none` would go quiet in the suite built to
+# notice a gate going quiet.
 touch "$REPO/.markgate.yml"
-
-# `stop-warn` resolves its repo from `${BASH_SOURCE[0]}` -- its OWN checkout --
-# not from the payload, and exits 0 when that repo has no uncommitted changes.
-# So its reachability depended on whether the developer's tree happened to be
-# dirty: locally it reached markgate, on a clean CI checkout it did not, and the
-# suite reported the gate as verifying nothing. That is the fence asserting the
-# ENVIRONMENT rather than the code, which is the failure this whole file exists
-# to catch. A COPY of the hook in a fixture repo makes `$REPO` the fixture, and
-# the fixture is dirty by construction.
-STOP_REPO="$TMPDIR_T/stop-repo"
-mkdir -p "$STOP_REPO/.claude/hooks"
-git init -q -b feat/lane "$STOP_REPO"
-git -C "$STOP_REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
-touch "$STOP_REPO/.markgate.yml"
-cp "$HOOKS_DIR/stop-warn.sh" "$STOP_REPO/.claude/hooks/stop-warn.sh"
-printf 'uncommitted\n' > "$STOP_REPO/dirty.txt"
-git -C "$STOP_REPO" add dirty.txt
-printf 'changed\n' >> "$STOP_REPO/dirty.txt"
 
 # --- shims ------------------------------------------------------------------
 SHIM="$TMPDIR_T/bin"
@@ -188,24 +167,15 @@ export PATH="$SHIM:$PATH"
 #
 # Columns: hook | expected gate name(s), space-separated | probe verb key
 TABLE="
-check-gate|check docs|commit
-verify-pr-gate|verify-pr|prcreate
 integ-destroy-gate|integ-destroy|prmerge-destroy
-integ-broad-gate|integ-broad|prmerge-broad
-integ-local-gate|integ-local|prmerge-local
-integ-schema-migration-gate|integ-schema-migration|prmerge-schema
-pr-review-gate|pr-review|prmerge-review
-stop-warn|check|stop
 "
 
 # Hooks that reference markgate but verify nothing, with the reason. Fence 2
 # consults this so a deliberate non-verifier does not have to be a table entry.
 # `main-tree-git-cwd-detector` carries `markgate[[:space:]]+(set|verify)` inside
 # a REGEX -- detecting markgate commands is its job -- so it must never be
-# expected to verify one itself. `gated-command-preamble-gate` is the same
-# class: it matches `markgate[[:space:]]+set` to recognise a preamble whose loss
-# would be SILENT, and verifies no gate of its own.
-NON_VERIFIERS="main-tree-git-cwd-detector gated-command-preamble-gate"
+# expected to verify one itself.
+NON_VERIFIERS="main-tree-git-cwd-detector"
 
 payload_for() {
   local key="$1" cmd
@@ -213,9 +183,6 @@ payload_for() {
     commit)         cmd='git commit -m x' ;;
     prcreate)       cmd='gh pr create --title t --body b' ;;
     prmerge-*)      cmd='gh pr merge 1 --squash' ;;
-    # `stop-warn` is a Stop hook: no tool_input at all, so every verb payload
-    # above leaves it untouched and it would look like a non-verifier.
-    stop)           printf '{"cwd":"%s","stop_hook_active":false}' "$REPO"; return 0 ;;
     *)              cmd='git commit -m x' ;;
   esac
   printf '{"cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd"
@@ -225,10 +192,6 @@ payload_for() {
 scope_env_for() {
   case "$1" in
     prmerge-destroy) printf 'src/provisioning/providers/s3-bucket-provider.ts' ;;
-    prmerge-broad)   printf 'src/deployment/deploy-engine.ts' ;;
-    prmerge-local)   printf 'src/local/docker-runner.ts' ;;
-    prmerge-schema)  printf 'src/types/state.ts' ;;
-    prmerge-review)  printf 'src/a.ts src/b.ts src/c.ts src/d.ts src/e.ts src/f.ts src/g.ts src/h.ts src/i.ts src/j.ts' ;;
     *)               printf '' ;;
   esac
 }
@@ -243,20 +206,14 @@ json_for() {
     files_json="$files_json{\"path\":\"$f\"},"
   done
   case "$1" in
-    # >= 10 changed files forces pr-review-gate to the 3-axis tier, so it
-    # consults its marker instead of passing the PR through as `inline`.
-    prmerge-review) printf '{"additions":2000,"deletions":100,"changedFiles":12,"headRefOid":"deadbeef","headRefName":"feat/lane","files":[{"path":"src/a.ts"},{"path":"src/b.ts"},{"path":"src/c.ts"},{"path":"src/d.ts"},{"path":"src/e.ts"},{"path":"src/f.ts"},{"path":"src/g.ts"},{"path":"src/h.ts"},{"path":"src/i.ts"},{"path":"src/j.ts"},{"path":"src/k.ts"},{"path":"src/l.ts"}]}' ;;
     *)              printf '{"headRefOid":"deadbeef","headRefName":"feat/lane","state":"OPEN","mergeStateStatus":"CLEAN","additions":10,"deletions":1,"changedFiles":1,"files":[%s{"path":"src/a.ts"}]}' "$files_json" ;;
   esac
 }
 
-# Which copy of the hook to run. Only `stop-warn` differs, and only because it
-# reads its OWN checkout rather than the payload -- see the fixture above.
+# Which copy of the hook to run. Every gate in the table reads the payload's
+# cwd, so the checkout under test is always the fixture repo.
 hook_path_for() {
-  case "$1" in
-    stop-warn) printf '%s' "$STOP_REPO/.claude/hooks/stop-warn.sh" ;;
-    *)         printf '%s' "$HOOKS_DIR/$1.sh" ;;
-  esac
+  printf '%s' "$HOOKS_DIR/$1.sh"
 }
 
 # drive <hook-basename> <probe-key> -> writes argv lines to $MG_ARGS
@@ -307,7 +264,7 @@ while IFS='|' read -r hook gates key; do
   fi
 done <<< "$(printf '%s' "$TABLE" | sed '/^$/d')"
 
-if [ "$declared" -lt 8 ]; then
+if [ "$declared" -lt 1 ]; then
   ng "fence 3: the table declares only $declared hooks; it is not being read, so fences 1 and 2 mean nothing"
 elif [ -n "$unreached" ]; then
   ng "fence 3: these hooks never reached their markgate call, so nothing below asserts anything about them:$(printf '%b' "$unreached")\n    Usually the gate scope-checks the PR diff first -- give its probe an in-scope file in scope_env_for()."
@@ -362,7 +319,7 @@ d = json.load(open(sys.argv[1]))
 names = sorted(set(re.findall(r"\.claude/hooks/([a-z0-9-]+)\.sh", json.dumps(d))))
 print(" ".join(names))
 ' "$REPO_ROOT/.claude/settings.json")
-if [ "$(printf '%s' "$CANDIDATES" | wc -w | tr -d ' ')" -lt 20 ]; then
+if [ "$(printf '%s' "$CANDIDATES" | wc -w | tr -d ' ')" -lt 10 ]; then
   ng "fence 2: settings.json yielded only $(printf '%s' "$CANDIDATES" | wc -w | tr -d ' ') hook candidates; the parse is broken, so every comparison below is vacuous"
 fi
 
@@ -425,7 +382,7 @@ done
 
 observed_count=0
 for _o in $observed; do observed_count=$((observed_count + 1)); done
-if [ "$observed_count" -lt 8 ]; then
+if [ "$observed_count" -lt 1 ]; then
   ng "fence 2: only $observed_count hooks were observed verifying a marker; the drive harness is not reaching them, so this comparison is vacuous"
 elif [ -z "$missing_from_table$stale_in_table$mentions_markgate" ]; then
   ok "fence 2: the table and the $observed_count observed markgate callers agree in both directions"
@@ -441,21 +398,22 @@ fi
 # A gate that reaches its ALIAS refusal first reports an rc-2 as staleness and
 # sends the reader to burn a Docker / real-AWS run for nothing.
 #
-# WHY THIS IS STATIC AND CLASS-LEVEL RATHER THAN A PER-GATE CASE. Only
-# `integ-local` has an alias row today, so only its suite can reach the alias
-# branch at all: measured 2026-08-26, moving the rc-2 block below the alias
-# block in `integ-destroy-gate.sh` left destroy 24/24 AND local 46/46 GREEN,
-# while the identical mutation in `integ-local-gate.sh` went red. The three
-# alias-less gates therefore carry a live ordering trap that no behavioural test
-# can currently see -- and it springs precisely when someone adds the first
-# alias row for one of them, which is the moment nobody re-reads the ordering.
+# WHY THIS IS STATIC AND CLASS-LEVEL RATHER THAN A PER-GATE CASE. No gate has
+# an alias row today (`GATE_MARKER_ALIASES` is empty), so no suite can reach the
+# alias branch at all: measured 2026-08-26 while `integ-local` still existed and
+# still had the only row, moving the rc-2 block below the alias block in
+# `integ-destroy-gate.sh` left destroy 24/24 GREEN while the identical mutation
+# in the alias-carrying gate went red. `integ-destroy-gate` therefore carries a
+# live ordering trap that no behavioural test can see -- and it springs
+# precisely when someone adds the first alias row for it, which is the moment
+# nobody re-reads the ordering.
 #
 # So this asserts on SOURCE ORDER, which is exactly what the trap is about, and
 # it fences the case that does not exist yet. That is the only kind of fence
 # that can catch this one.
 order_bad=""
 order_checked=0
-for gate_file in integ-local-gate integ-destroy-gate integ-broad-gate integ-schema-migration-gate; do
+for gate_file in integ-destroy-gate; do
   src="$HOOKS_DIR/$gate_file.sh"
   [ -f "$src" ] || { order_bad="$order_bad\n    - $gate_file.sh not found"; continue; }
   rc2_line=$(grep -n '^if \[ "\$status" -eq 2 \]; then' "$src" | head -1 | cut -d: -f1)
@@ -474,12 +432,12 @@ for gate_file in integ-local-gate integ-destroy-gate integ-broad-gate integ-sche
   fi
 done
 
-if [ "$order_checked" -lt 4 ]; then
-  ng "fence 4: only $order_checked of 4 gates were actually compared, so this assertion is vacuous:$(printf '%b' "$order_bad")"
+if [ "$order_checked" -lt 1 ]; then
+  ng "fence 4: only $order_checked of the markgate-backed gates were actually compared, so this assertion is vacuous:$(printf '%b' "$order_bad")"
 elif [ -n "$order_bad" ]; then
   ng "fence 4: a gate handles markgate rc-2 after its alias refusal:$(printf '%b' "$order_bad")"
 else
-  ok "fence 4: all 4 gates handle markgate rc-2 BEFORE their alias refusal"
+  ok "fence 4: all $order_checked markgate-backed gate(s) handle rc-2 BEFORE the alias refusal"
 fi
 
 echo
