@@ -226,6 +226,22 @@ if ! printf '%s' "${DESTROY1_LOG}" | grep -q "is not empty"; then
 fi
 echo "    OK: destroy failed with the guard error (CFn DELETE_FAILED parity)"
 
+# The remedy's pasteable command must name THIS bucket, rendered BARE: a real
+# directory-bucket name is clean, so the shared renderer neither quotes nor
+# suppresses it (issue #3270 — the quoted / suppressed arms need a name AWS
+# refuses to create, so they are unit-pinned). The sentinel is the remedy's
+# lead-in, a different substring from the parsed command, so a reworded or
+# suppressed command fails HERE instead of reading as "no command expected".
+if ! printf '%s' "${DESTROY1_LOG}" | grep -qF "Delete all objects first"; then
+  echo "FAIL: guard error lacks its 'Delete all objects first' remedy" >&2
+  exit 1
+fi
+if ! printf '%s' "${DESTROY1_LOG}" | grep -qF "aws s3 rm s3://${BUCKET} --recursive"; then
+  echo "FAIL: guard remedy does not carry the bare 'aws s3 rm s3://${BUCKET} --recursive' command" >&2
+  exit 1
+fi
+echo "    OK: guard remedy names the bucket in a bare pasteable command"
+
 # Guarded data must be intact and the state file must survive.
 aws s3api head-object --bucket "${BUCKET}" --key "guard/keep-me.txt" --region "${REGION}" >/dev/null
 aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/null

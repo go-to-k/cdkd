@@ -25,6 +25,9 @@ import { LISTING_ENCODING_TYPE, decodeListingKey } from '../../utils/s3-listing-
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { S3_AUTO_DELETE_OBJECTS_TAG, hasCdkAutoDeleteTag } from '../data-delete-intent.js';
 import { generateResourceName } from '../resource-name.js';
+import { renderDisableCommand } from '../replacement-protection-advice.js';
+import { displayIdent, displaySafe } from '../../utils/display-safe.js';
+import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
@@ -35,6 +38,78 @@ import type {
   CreateContext,
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+
+/**
+ * What `delete()` throws for a non-empty bucket with no auto-empty opt-in
+ * (issue [#1344](https://github.com/go-to-k/cdkd/issues/1344)), with the bucket
+ * name rendered safely (issue
+ * [#3270](https://github.com/go-to-k/cdkd/issues/3270)).
+ *
+ * `bucketName` on the delete path is the STATE-borne physical id, which for
+ * this type is the TEMPLATE-chosen name, and this message is THROWN from
+ * `delete()` — so it reaches the operator's terminal AND the durable
+ * `deployments/*.jsonl` store. It used to interpolate the name BARE into
+ * `aws s3 rm s3://<name> --recursive`, so a name carrying `;`, a backtick,
+ * `$(...)` or a newline APPENDED a command to a recursive delete when pasted.
+ *
+ * The command goes through the shared `renderDisableCommand`
+ * (`displaySafe(asciiOnly)`, then `shellQuote`, then SUPPRESS the whole command
+ * when sanitizing CHANGED the value, since a command naming the sanitized name
+ * would empty a DIFFERENT bucket). Three things are specific to this site:
+ *
+ *  - **The quoted unit is the ASSEMBLED `s3://<name>` argument**, not the name:
+ *    `aws s3 rm` has no `--bucket <name>` form, and quoting only the name would
+ *    put a quote in the middle of a word. `shellQuote` leaves `:` and `/` bare,
+ *    so a clean name renders exactly as before.
+ *  - **The NAME is compared against its own sanitized form HERE, before the
+ *    shared renderer sees it.** The renderer's changed-by-sanitizing test runs
+ *    over the assembled argument, where the `s3://` prefix shields a LEADING
+ *    space of the name from the sanitizer's trim — so without this check a
+ *    padded name would be shown in a command while the prose beside it named
+ *    the trimmed one.
+ *  - **A name containing `/` is suppressed here**, which the shared renderer
+ *    cannot know to do: `s3://a/b` addresses the prefix `b` in bucket `a`, a
+ *    DIFFERENT bucket, and both characters pass sanitizing and quoting
+ *    unchanged. An empty name is suppressed for the same reason (`s3://` names
+ *    no bucket at all).
+ *  - **No `maskSecrets` is passed.** `DeleteContext` carries no masker by
+ *    contract (issue [#2007](https://github.com/go-to-k/cdkd/issues/2007) tracks
+ *    the threading), and an identity masker would claim a check that never ran.
+ *
+ * The PROSE name goes through `displayIdent`, because this message is
+ * persisted: a control byte or a newline in it would otherwise forge lines in
+ * the events store even with the command suppressed. A clean name is a plain
+ * identifier, which `displayIdent` renders unchanged.
+ *
+ * The caller marks the refusal NON-RETRYABLE: it is a deterministic verdict,
+ * and `delete()` wraps it in a message carrying the LOGICAL id, which the
+ * destroy runner and the deploy engine's replacement delete classify as
+ * "already deleted" by SUBSTRING (`NotFoundException` there, a bare `NotFound`
+ * here). A logical id containing the needle would otherwise have its non-empty
+ * bucket read as gone; both classifiers skip a marked error.
+ */
+function notEmptyRefusalMessage(bucketName: string): string {
+  const nameable =
+    bucketName !== '' &&
+    !bucketName.includes('/') &&
+    displaySafe(bucketName, { asciiOnly: true }) === bucketName;
+  const command = nameable
+    ? renderDisableCommand({
+        before: 'aws s3 rm',
+        identifier: `s3://${bucketName}`,
+        after: '--recursive',
+      })
+    : '';
+  const remedy = command
+    ? `Delete all objects first (e.g. ${command}) and destroy again.`
+    : 'Delete all objects first, via the console, and destroy again: the bucket name cdkd ' +
+      'recorded cannot be reproduced safely on a command line, so any command shown here would ' +
+      'act on a different bucket.';
+  return (
+    `bucket ${displayIdent(bucketName)} is not empty. Matching CloudFormation, cdkd does not ` +
+    `delete a non-empty directory bucket without an explicit opt-in. ${remedy}`
+  );
+}
 
 /**
  * SDK Provider for AWS::S3Express::DirectoryBucket
@@ -429,11 +504,7 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
         const msg = describeAwsFailure(error).detail;
         if (msg.includes('not empty') || msg.includes('BucketNotEmpty')) {
           if (!allowAutoEmpty) {
-            throw new Error(
-              `bucket ${bucketName} is not empty. Matching CloudFormation, cdkd does not ` +
-                `delete a non-empty directory bucket without an explicit opt-in. Delete all ` +
-                `objects first (e.g. aws s3 rm s3://${bucketName} --recursive) and destroy again.`
-            );
+            throw markNonRetryable(new Error(notEmptyRefusalMessage(bucketName)));
           }
           this.logger.info(
             `Directory bucket ${bucketName} not empty (attempt ${attempt}/${maxAttempts}), emptying (auto-delete opt-in present)...`

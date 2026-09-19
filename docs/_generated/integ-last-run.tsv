@@ -253,7 +253,7 @@ route53	2026-08-22T19:12:07Z	PASS	267	verify.sh	issue 2176 masking sweep; rc 0, 
 s3-analytics-inventory	2026-08-13T00:49:56Z	PASS	135	verify.sh	1707/1717/1718 live after review round 3; 49 assertions, 0 orphans
 s3-asset-deploy	2026-09-01T14:53:10Z	PASS	180	verify.sh	PR#2398 arm 3/6: asset-storage file/ZIP upload path, rc 0, 0 orphans
 s3-cloudfront	2026-09-14T21:21:26Z	PASS	252	verify.sh	#3125 gating: CloudFront DomainName arm consumer; 5 deleted 0 err 0 orph
-s3-directory-bucket	2026-08-13T11:19:53Z	PASS	-	verify.sh	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
+s3-directory-bucket	2026-09-19T11:42:56Z	PASS	73	verify.sh	rc ok, orph clean; #3270 bare-command assert live
 s3-event-notification	2026-09-09T10:40:58Z	PASS	420	verify.sh	rc ok, orph clean
 s3-lifecycle	2026-09-17T15:06:47Z	PASS	560	verify.sh	gating the go-to-k/cdkd#3330 merge at 377226670 (flattened + rebased onto main): rc=0, watchdog silent, all 3 phases incl. phase 0c; 7 deleted 0 errors; post-run scan clean (0 state.json, 0 buckets, 0 topics). Run AFTER the 205-site sweep, so it exercises the converted EC2/S3/eventbridge delete-retry classifiers on the real API
 s3-object-lock	2026-09-11T16:46:29Z	PASS	54	verify.sh	rc ok, orph clean; DefaultEventHold live-asserted (PR 3002)
