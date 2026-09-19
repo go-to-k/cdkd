@@ -1324,8 +1324,13 @@ cdkd deploy MyStack --strict-getatt
 
 When a template requests an attribute that is neither captured in the state
 record's `attributes` nor constructible by the resolver's per-type mappings,
-cdkd falls back to the resource's **physical ID**. What happens next depends on
-whether the fallback value is knowably wrong for the attribute's name:
+cdkd first re-reads the resource's attributes from AWS once — a state record
+written by an older release, or before AWS assigned the value, can simply lack
+one — and uses and records the value when the read supplies it (see
+["Cannot resolve" a GetAtt on a resource an older cdkd deployed](troubleshooting.md#cannot-resolve-a-getatt-on-a-resource-an-older-cdkd-deployed)).
+Otherwise it falls back to the resource's **physical ID**. What happens next
+depends on whether the fallback value is knowably wrong for the attribute's
+name:
 
 | Attribute name | Fallback value | Result |
 | --- | --- | --- |
