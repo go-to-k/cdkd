@@ -43,6 +43,7 @@ import { displaySafe } from '../../utils/display-safe.js';
 import {
   findNestedTemplateTreeDefect,
   isAbsoluteAssetPath,
+  listNestedTemplateRows,
   renderNestedTemplateTreeDefect,
 } from '../../utils/nested-template-cycle.js';
 
@@ -210,7 +211,7 @@ export class NestedStackProvider implements ResourceProvider {
 
     const resourceCount = Object.keys(childTemplate.Resources ?? {}).length;
     this.logger.info(
-      `Deploying nested stack ${childStackName} (logicalId=${logicalId}, ${resourceCount} resource(s))`
+      `Deploying nested stack ${displaySafe(childStackName)} (logicalId=${displaySafe(logicalId)}, ${resourceCount} resource(s))`
     );
 
     await this.runChildDeploy(
@@ -272,7 +273,7 @@ export class NestedStackProvider implements ResourceProvider {
 
     const resourceCount = Object.keys(childTemplate.Resources ?? {}).length;
     this.logger.info(
-      `Updating nested stack ${childStackName} (logicalId=${logicalId}, ${resourceCount} resource(s))`
+      `Updating nested stack ${displaySafe(childStackName)} (logicalId=${displaySafe(logicalId)}, ${resourceCount} resource(s))`
     );
 
     // The child's own DeployEngine handles CREATE / UPDATE / DELETE per
@@ -331,7 +332,7 @@ export class NestedStackProvider implements ResourceProvider {
     const childStateData = await ctx.stateBackend.getState(childStackName, childRegion);
     if (!childStateData) {
       this.logger.debug(
-        `Nested stack ${childStackName} has no state — treating delete as idempotent success.`
+        `Nested stack ${displaySafe(childStackName)} has no state — treating delete as idempotent success.`
       );
       return;
     }
@@ -347,7 +348,7 @@ export class NestedStackProvider implements ResourceProvider {
     refuseMalformedResourcesForDestroy(childStateData.state, childStackName, childRegion);
     const resourceCount = Object.keys(childStateData.state.resources).length;
     this.logger.info(
-      `Destroying nested stack ${childStackName} (logicalId=${logicalId}, ${resourceCount} resource(s))`
+      `Destroying nested stack ${displaySafe(childStackName)} (logicalId=${displaySafe(logicalId)}, ${resourceCount} resource(s))`
     );
 
     // Switch the ALS context so any grandchildren the child contains
@@ -520,7 +521,7 @@ export class NestedStackProvider implements ResourceProvider {
       if (childResult.interrupted) causes.push('was interrupted');
       return {
         outcome: 'skipped',
-        reason: `nested stack ${childStackName} ${causes.join(' and ')}`,
+        reason: `nested stack ${displaySafe(childStackName)} ${causes.join(' and ')}`,
       };
     }
   }
@@ -978,7 +979,7 @@ export class NestedStackProvider implements ResourceProvider {
       const n = rewriteTemplateAssetReferences(template, assetRedirect);
       if (n > 0) {
         this.logger.debug(
-          `Rewrote ${n} asset reference(s) to cdkd asset storage in nested template ${templatePath}`
+          `Rewrote ${n} asset reference(s) to cdkd asset storage in nested template ${displaySafe(templatePath)}`
         );
       }
     }
@@ -991,11 +992,11 @@ export class NestedStackProvider implements ResourceProvider {
   ): Record<string, string> {
     const dir = path.dirname(childTemplatePath);
     const result: Record<string, string> = {};
-    for (const [grandLogicalId, resource] of Object.entries(childTemplate.Resources ?? {})) {
-      if (resource?.Type !== 'AWS::CloudFormation::Stack') continue;
-      const meta = resource.Metadata as Record<string, unknown> | undefined;
-      const assetPath = meta?.['aws:asset:path'];
-      if (typeof assetPath !== 'string' || assetPath.length === 0) continue;
+    // `listNestedTemplateRows` is shared with the pre-deploy tree validation
+    // ON PURPOSE: that walk is only a guard while it follows exactly the rows
+    // this loop follows, and a second hand-written copy is how the two came to
+    // disagree about an array-valued `Resources`.
+    for (const { logicalId: grandLogicalId, assetPath } of listNestedTemplateRows(childTemplate)) {
       // CDK emits relative asset paths for nested templates (they're
       // siblings of the parent template in the same cdk.out directory).
       // An absolute path indicates the synth output was hand-modified or

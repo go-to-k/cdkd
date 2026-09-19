@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  MAX_NESTING_DEPTH,
   findNestedTemplateTreeDefect,
+  listNestedTemplateRows,
   renderNestedTemplateTreeDefect,
 } from '../../../src/utils/nested-template-cycle.js';
 
@@ -174,6 +176,91 @@ describe('findNestedTemplateTreeDefect', () => {
     expect(findNestedTemplateTreeDefect({ Child: join(dir, 'dir1', 'x.json') })).toBeUndefined();
   });
 
+  it('does not let a subtree proven clean under one spelling vouch for another spelling of the same file', () => {
+    // `out/d -> ../other/real`. Children resolve LEXICALLY, so t.json's row
+    // `../a.json` is a leaf (other/a.json) when t.json is reached as
+    // other/real/t.json, and closes a cycle (out/a.json) when it is reached as
+    // out/d/t.json. Row X walks the first spelling clean; row Y must still be
+    // walked through the second.
+    const dir = tmp();
+    mkdirSync(join(dir, 'out'));
+    mkdirSync(join(dir, 'other', 'real'), { recursive: true });
+    symlinkSync(join('..', 'other', 'real'), join(dir, 'out', 'd'), 'dir');
+    const c = writeTemplate(join(dir, 'out'), 'c.json', {
+      X: '../other/real/t.json',
+      Y: 'a.json',
+    });
+    writeTemplate(join(dir, 'out'), 'a.json', { T: 'd/t.json' });
+    writeTemplate(join(dir, 'other', 'real'), 't.json', { U: '../a.json' });
+    writeTemplate(join(dir, 'other'), 'a.json', {});
+
+    const defect = findNestedTemplateTreeDefect({ C: c });
+
+    expect(defect?.kind).toBe('cycle');
+    expect(defect?.chain.map((h) => h.logicalId)).toEqual(['C', 'Y', 'T', 'U']);
+  });
+
+  it('follows an ARRAY-valued Resources exactly as the deploy does', () => {
+    // `Object.entries` indexes an array as '0', '1', ..., and the provider
+    // follows those rows, so a walk that skipped them accepted this cycle.
+    const dir = tmp();
+    const a = join(dir, 'a.json');
+    writeFileSync(
+      a,
+      JSON.stringify({
+        Resources: [
+          { Type: 'AWS::CloudFormation::Stack', Metadata: { 'aws:asset:path': 'a.json' } },
+        ],
+      })
+    );
+
+    expect(findNestedTemplateTreeDefect({ Child: a })).toEqual({
+      kind: 'cycle',
+      chain: [
+        { logicalId: 'Child', templatePath: a },
+        { logicalId: '0', templatePath: a },
+      ],
+    });
+  });
+
+  it('walks every entry row, not only the first', () => {
+    const dir = tmp();
+    const fine = writeTemplate(dir, 'fine.json', {});
+    const loop = writeTemplate(dir, 'loop.json', { Loop: 'loop.json' });
+
+    const defect = findNestedTemplateTreeDefect({ First: fine, Second: loop });
+
+    expect(defect?.chain.map((h) => h.logicalId)).toEqual(['Second', 'Loop']);
+  });
+
+  it('stops quietly at a row that points into a directory that does not exist', () => {
+    const dir = tmp();
+    const a = writeTemplate(dir, 'a.json', { Gone: 'no-such-dir/x.json' });
+
+    expect(findNestedTemplateTreeDefect({ Child: a })).toBeUndefined();
+  });
+
+  it(`refuses a chain of more than ${MAX_NESTING_DEPTH} DISTINCT templates instead of overflowing the stack`, () => {
+    const dir = tmp();
+    const count = MAX_NESTING_DEPTH + 40;
+    writeTemplate(dir, `t${count}.json`, {});
+    for (let i = count - 1; i >= 0; i--) writeTemplate(dir, `t${i}.json`, { N: `t${i + 1}.json` });
+
+    const defect = findNestedTemplateTreeDefect({ Child: join(dir, 't0.json') });
+
+    expect(defect?.kind).toBe('too-deep');
+    expect(defect?.chain).toHaveLength(MAX_NESTING_DEPTH + 1);
+  });
+
+  it(`accepts a chain of exactly ${MAX_NESTING_DEPTH} templates`, () => {
+    const dir = tmp();
+    const last = MAX_NESTING_DEPTH - 1;
+    writeTemplate(dir, `t${last}.json`, {});
+    for (let i = last - 1; i >= 0; i--) writeTemplate(dir, `t${i}.json`, { N: `t${i + 1}.json` });
+
+    expect(findNestedTemplateTreeDefect({ Child: join(dir, 't0.json') })).toBeUndefined();
+  });
+
   it('uses a seeded ancestor: a child naming the template above the entry rows is refused at once', () => {
     const dir = tmp();
     const root = writeTemplate(dir, 'root.json', { Child: 'a.json' });
@@ -241,6 +328,29 @@ describe('findNestedTemplateTreeDefect', () => {
   });
 });
 
+describe('listNestedTemplateRows', () => {
+  it('returns no rows for a template with no usable Resources container', () => {
+    for (const template of [null, undefined, 7, 'text', {}, { Resources: null }, { Resources: 7 }]) {
+      expect(listNestedTemplateRows(template)).toEqual([]);
+    }
+  });
+
+  it('returns the rows that name a child template, in template order', () => {
+    expect(
+      listNestedTemplateRows({
+        Resources: {
+          B: { Type: 'AWS::CloudFormation::Stack', Metadata: { 'aws:asset:path': 'b.json' } },
+          Topic: { Type: 'AWS::SNS::Topic' },
+          A: { Type: 'AWS::CloudFormation::Stack', Metadata: { 'aws:asset:path': '/abs/a.json' } },
+        },
+      })
+    ).toEqual([
+      { logicalId: 'B', assetPath: 'b.json' },
+      { logicalId: 'A', assetPath: '/abs/a.json' },
+    ]);
+  });
+});
+
 describe('renderNestedTemplateTreeDefect', () => {
   it('names the stack, every hop, the closing row and the repeated file', () => {
     const text = renderNestedTemplateTreeDefect(
@@ -260,8 +370,11 @@ describe('renderNestedTemplateTreeDefect', () => {
     expect(text).toContain(
       "'Child' (/out/a.json) -> 'ToB' (/out/b.json) -> 'BackToA' (/out/a.json)"
     );
+    // The OWNING stack of the closing row, derived the way the provider
+    // derives a child's name: one `~<logicalId>` per hop above it.
     expect(text).toContain(
-      "Nested stack 'BackToA' resolves to a template that is already on that nesting chain"
+      "Nested stack 'BackToA' (declared in stack 'Parent~Child~ToB') resolves to a template " +
+        'that is already on that nesting chain'
     );
     expect(text).toContain('Refusing to deploy any level of it.');
   });
@@ -317,6 +430,31 @@ describe('renderNestedTemplateTreeDefect', () => {
     expect(text).toContain('... 33 more ...');
     expect(text).toContain("'Closer' (/out/t0.json)");
     expect(text).not.toContain("'L20'");
+  });
+
+  it('renders a chain of exactly 8 hops in full and elides from 9', () => {
+    const hops = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({ logicalId: `L${i}`, templatePath: `/out/t${i}.json` }));
+
+    const eight = renderNestedTemplateTreeDefect({ kind: 'cycle', chain: hops(8) }, 'P', 'deploy');
+    const nine = renderNestedTemplateTreeDefect({ kind: 'cycle', chain: hops(9) }, 'P', 'deploy');
+
+    expect(eight).not.toContain(' more ...');
+    expect(eight).toContain("'L4' (/out/t4.json)");
+    expect(nine).toContain('... 1 more ...');
+    expect(nine).not.toContain("'L4' (/out/t4.json)");
+  });
+
+  it('says why a too-deep tree is refused', () => {
+    const text = renderNestedTemplateTreeDefect(
+      { kind: 'too-deep', chain: [{ logicalId: 'Child', templatePath: '/out/a.json' }] },
+      'P',
+      'deploy'
+    );
+
+    expect(text).toContain(`nests more than ${MAX_NESTING_DEPTH} levels deep`);
+    expect(text).toContain('S3 caps a key at 1024 bytes');
+    expect(text).toContain('Refusing to deploy.');
   });
 
   it('names the rows leading to an absolute path and the path itself', () => {

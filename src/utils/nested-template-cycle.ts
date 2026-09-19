@@ -43,6 +43,11 @@ export interface NestedTemplateHop {
 
 export type NestedTemplateTreeDefect =
   | {
+      kind: 'too-deep';
+      /** The first `MAX_NESTING_DEPTH + 1` rows of a chain that is still descending. */
+      chain: NestedTemplateHop[];
+    }
+  | {
       kind: 'cycle';
       /**
        * Entry row first; the LAST hop is the row that closed the cycle, and its
@@ -68,19 +73,23 @@ export function isAbsoluteAssetPath(p: string): boolean {
 }
 
 /**
- * What "the same template" means: the file's name inside its REAL directory.
+ * What "the same template" means ON A CHAIN: the file's name inside its REAL
+ * directory.
  *
  * The directory is `realpath`ed because a symlinked DIRECTORY (`d -> .`) makes
  * every level's joined path a new, longer string (`d/a.json`, `d/d/a.json`,
  * ...) for one and the same file, which a comparison of resolved path strings
- * never sees repeat.
+ * never sees repeat. There are finitely many (real directory, name) pairs, so
+ * an endless descent must repeat one, however it is spelled.
  *
- * The FILE's own symlink is deliberately not followed. A template's children
- * resolve against the directory it was REACHED in, so one real file reached in
- * two directories is two different subtrees; keying on the real directory plus
- * the name makes everything below a node a function of its identity, which is
- * what lets a clean subtree be remembered. There are finitely many such pairs,
- * so the walk still terminates.
+ * It is NOT what decides a template's children. Those resolve LEXICALLY
+ * against the directory the template was reached in (`path.join` folds `d/..`
+ * without following the link), so one identity reached through two spellings
+ * can have two different subtrees. That is why the clean-subtree memo in
+ * `findNestedTemplateTreeDefect` is keyed on the lexical path instead, and why
+ * an identity repeat is a conservative refusal rather than an exact one: with
+ * a symlinked directory AND a `..` row it can refuse a tree that would have
+ * terminated. Such an assembly is hand-built by definition.
  *
  * Falls back to `path.resolve` for a directory that does not exist; the walk
  * stops there anyway.
@@ -96,39 +105,66 @@ export function templateIdentity(templatePath: string): string {
   return path.join(realDir, path.basename(templatePath));
 }
 
+/** One `AWS::CloudFormation::Stack` row that names a child template file. */
+export interface NestedTemplateRow {
+  logicalId: string;
+  /** `Metadata['aws:asset:path']`, verbatim: relative in a CDK assembly. */
+  assetPath: string;
+}
+
 /**
- * The nested-stack rows of one template, as the provider would index them.
- * Unreadable or unparseable input yields `undefined`: reporting that is the
- * job of the site that actually loads the template, with its own message, and
- * a walk that cannot descend cannot loop.
+ * The nested-stack rows of a parsed template that name a child template file.
+ *
+ * THE ONE SPELLING, shared by this module's walk and by
+ * `NestedStackProvider.indexGrandchildTemplates`, because the walk is only a
+ * guard if it follows exactly the rows the deploy follows. Two hand-written
+ * copies disagreed on an ARRAY-valued `Resources`: `Object.entries` indexes an
+ * array as `'0'`, `'1'`, ..., the deploy followed those rows, and a walk that
+ * skipped them accepted a cyclic tree. So this takes whatever `Object.entries`
+ * takes, and does not pre-judge the container's shape.
  */
-function readNestedRows(
-  templatePath: string
-): Array<{ logicalId: string; assetPath: string }> | undefined {
+export function listNestedTemplateRows(template: unknown): NestedTemplateRow[] {
+  if (template === null || typeof template !== 'object') return [];
+  const resources = (template as { Resources?: unknown }).Resources;
+  if (resources === null || resources === undefined) return [];
+  const rows: NestedTemplateRow[] = [];
+  for (const [logicalId, resource] of Object.entries(resources as object)) {
+    const row = resource as { Type?: unknown; Metadata?: unknown } | null | undefined;
+    if (row?.Type !== NESTED_STACK_TYPE) continue;
+    const meta = row.Metadata as Record<string, unknown> | null | undefined;
+    const assetPath = meta?.['aws:asset:path'];
+    if (typeof assetPath !== 'string' || assetPath.length === 0) continue;
+    rows.push({ logicalId, assetPath });
+  }
+  return rows;
+}
+
+/**
+ * The rows of the template FILE at `templatePath`. Unreadable or unparseable
+ * input yields `undefined`: reporting that is the job of the site that
+ * actually loads the template, with its own message, and a walk that cannot
+ * descend cannot loop.
+ */
+function readNestedRows(templatePath: string): NestedTemplateRow[] | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(fs.readFileSync(templatePath, 'utf-8'));
   } catch {
     return undefined;
   }
-  if (parsed === null || typeof parsed !== 'object') return undefined;
-  const resources = (parsed as { Resources?: unknown }).Resources;
-  if (resources === null || typeof resources !== 'object' || Array.isArray(resources)) {
-    return [];
-  }
-  const rows: Array<{ logicalId: string; assetPath: string }> = [];
-  for (const [logicalId, resource] of Object.entries(resources as Record<string, unknown>)) {
-    if (resource === null || typeof resource !== 'object') continue;
-    const row = resource as { Type?: unknown; Metadata?: unknown };
-    if (row.Type !== NESTED_STACK_TYPE) continue;
-    const meta = row.Metadata;
-    if (meta === null || typeof meta !== 'object') continue;
-    const assetPath = (meta as Record<string, unknown>)['aws:asset:path'];
-    if (typeof assetPath !== 'string' || assetPath.length === 0) continue;
-    rows.push({ logicalId, assetPath });
-  }
-  return rows;
+  return listNestedTemplateRows(parsed);
 }
+
+/**
+ * Deeper than this cannot deploy at all, so it is refused rather than walked.
+ * A child's state key is `cdkd/<root>~<id>~<id>.../<region>/state.json`; each
+ * level adds at least two bytes (`~` plus a one-character logical id) and S3
+ * caps a key at 1024 bytes. The bound exists so a hostile chain of tens of
+ * thousands of DISTINCT templates is a readable refusal instead of a
+ * `RangeError` from the recursion below. It is not a cycle heuristic: a cycle
+ * is refused at its first repeat, long before this.
+ */
+export const MAX_NESTING_DEPTH = 512;
 
 /**
  * Walk every nested template reachable from `nestedTemplates` (logical id ->
@@ -147,19 +183,23 @@ export function findNestedTemplateTreeDefect(
 ): NestedTemplateTreeDefect | undefined {
   const onChain = new Set<string>();
   for (const p of ancestorTemplatePaths) onChain.add(templateIdentity(p));
-  // Templates whose whole subtree was already walked clean. Sound for ANY
-  // later chain: a descendant of N equal to an ancestor of N closes a cycle
-  // through N, and the first walk of N's subtree would have followed it back
-  // to N. Without this a tree of diamonds is walked 2^depth times.
+  // LEXICAL paths whose whole subtree was already walked to its leaves, i.e.
+  // proven FINITE. Keyed on the lexical path, not on the identity, because a
+  // template's content and its children's paths are both functions of the
+  // lexical path and of nothing else (see `templateIdentity`). Skipping a
+  // finite subtree can never hide an endless descent, whatever chain it is
+  // reached on. Without this a tree of diamonds is walked 2^depth times.
   const clean = new Set<string>();
   const chain: NestedTemplateHop[] = [];
 
   const visit = (logicalId: string, templatePath: string): NestedTemplateTreeDefect | undefined => {
     const identity = templateIdentity(templatePath);
+    const lexical = path.resolve(templatePath);
     chain.push({ logicalId, templatePath: identity });
     try {
       if (onChain.has(identity)) return { kind: 'cycle', chain: [...chain] };
-      if (clean.has(identity)) return undefined;
+      if (chain.length > MAX_NESTING_DEPTH) return { kind: 'too-deep', chain: [...chain] };
+      if (clean.has(lexical)) return undefined;
       const rows = readNestedRows(templatePath);
       if (rows === undefined) return undefined;
       onChain.add(identity);
@@ -180,7 +220,7 @@ export function findNestedTemplateTreeDefect(
       } finally {
         onChain.delete(identity);
       }
-      clean.add(identity);
+      clean.add(lexical);
       return undefined;
     } finally {
       chain.pop();
@@ -230,13 +270,25 @@ export function renderNestedTemplateTreeDefect(
     `CDK emits an acyclic nested template tree with relative asset paths, so this ` +
     `indicates the synth output was hand-modified or generated by a non-CDK toolchain. ` +
     `Refusing to ${action}.`;
+  // The stack that DECLARES the last row: every hop above it appends one
+  // `~<logicalId>`, the same derivation the provider uses for a child's name.
+  const owner = (chain: readonly NestedTemplateHop[]): string =>
+    displaySafe([stackName, ...chain.slice(0, -1).map((h) => h.logicalId)].join('~'));
   if (defect.kind === 'cycle') {
     const closing = defect.chain[defect.chain.length - 1]!;
     return (
       `The nested template tree under stack '${displaySafe(stackName)}' contains a cycle: ` +
       `${renderChain(defect.chain)}. Nested stack '${displaySafe(closing.logicalId)}' ` +
-      `resolves to a template that is already on that nesting chain, so its ` +
-      `Metadata['aws:asset:path'] closes a cycle. ${provenance}`
+      `(declared in stack '${owner(defect.chain)}') resolves to a template that is already ` +
+      `on that nesting chain, so its Metadata['aws:asset:path'] closes a cycle. ${provenance}`
+    );
+  }
+  if (defect.kind === 'too-deep') {
+    return (
+      `The nested template tree under stack '${displaySafe(stackName)}' nests more than ` +
+      `${MAX_NESTING_DEPTH} levels deep: ${renderChain(defect.chain)}. No tree that deep can ` +
+      `deploy, because each level lengthens the child's state key and S3 caps a key at 1024 ` +
+      `bytes. ${provenance}`
     );
   }
   return (

@@ -40,6 +40,8 @@ ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 STATE_BUCKET="${STATE_BUCKET:-cdkd-state-${ACCOUNT_ID}}"
 STACK="NestedStackDeep"
 GRANDCHILD_STACK="NestedStackDeep~Child~Grandchild"
+# What NestedStackProvider logs immediately before it builds a child engine.
+CHILD_DEPLOY_MARKER="Deploying nested stack"
 CHANGED_VALUE="cdkd-nested-stack-deep-grandchild-CHANGED"
 
 CYCLIC_ASSEMBLY=""
@@ -106,7 +108,8 @@ destroy_runaway_levels() { (
         "${STACK}~"?*) ;;
         *) continue ;;
       esac
-      ${CDKD} state destroy "${name}" --region "${AWS_REGION}" --stack-region "${AWS_REGION}" --state-bucket "${STATE_BUCKET:-}" --yes >/dev/null 2>&1
+      # </dev/null: the loop's stdin is the key list, which the command must not eat.
+      ${CDKD} state destroy "${name}" --region "${AWS_REGION}" --stack-region "${AWS_REGION}" --state-bucket "${STATE_BUCKET:-}" --yes </dev/null >/dev/null 2>&1
     done
 ) }
 
@@ -202,8 +205,21 @@ if ! echo "${CYCLE_OUT}" | grep -q "'Child' (.*) -> 'Grandchild' (.*)"; then
 fi
 echo "  OK: refused (rc=${CYCLE_RC}) naming the cycle"
 
-# Nothing of the cyclic tree may have deployed: every deployed level writes a
-# state record under `cdkd/${STACK}~...` before descending.
+# The refusal must land BEFORE the first child engine starts, not at the first
+# repeat partway down. The provider logs "${CHILD_DEPLOY_MARKER} <child>" right
+# before it builds a child engine, so that line must be absent here. Step 1
+# asserts the same line IS printed by an ordinary deploy, so a reworded log
+# cannot turn this into a check that passes by matching nothing.
+if echo "${CYCLE_OUT}" | grep -q "${CHILD_DEPLOY_MARKER}"; then
+  echo "FAIL: a child engine was started before the cyclic tree was refused:"
+  echo "${CYCLE_OUT}" | grep "${CHILD_DEPLOY_MARKER}"
+  exit 1
+fi
+echo "  OK: no child engine was started"
+
+# No nested state record either. In THIS fixture that is a weaker signal than
+# the check above: a level's record is written when its first resource
+# completes, and each level's only resource waits on the nested row below it.
 NESTED_KEYS="$(list_nested_state_keys)"
 if [[ -n "${NESTED_KEYS}" && "${NESTED_KEYS}" != "None" ]]; then
   echo "FAIL: the refused deploy still wrote nested state record(s):"
@@ -223,10 +239,17 @@ ${CDKD} destroy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET
 # --------------------------------------------------------------------
 echo ""
 echo "==> Step 1: deploy ${STACK} (parent -> Child -> Grandchild)"
+# Captured as well as shown: Step 0's "no child engine was started" check keys
+# on a log line, and this is the positive control proving that line exists.
+STEP1_LOG="${CYCLIC_ASSEMBLY}/step1-deploy.log"
 ${CDKD} deploy ${STACK} \
   --region "${AWS_REGION}" \
   --state-bucket "${STATE_BUCKET}" \
-  --yes
+  --yes 2>&1 | tee "${STEP1_LOG}"
+if ! grep -q "${CHILD_DEPLOY_MARKER} ${GRANDCHILD_STACK}" "${STEP1_LOG}"; then
+  echo "FAIL: an ordinary nested deploy no longer logs '${CHILD_DEPLOY_MARKER} <child>' — Step 0's child-engine check would pass vacuously; update CHILD_DEPLOY_MARKER"
+  exit 1
+fi
 
 # --------------------------------------------------------------------
 # Step 2: recursive diff against the just-deployed tree must be clean.

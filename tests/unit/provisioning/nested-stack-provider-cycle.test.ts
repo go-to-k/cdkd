@@ -50,7 +50,18 @@ vi.mock('../../../src/deployment/deploy-engine.js', () => ({
 }));
 
 vi.mock('../../../src/cli/commands/destroy-runner.js', () => ({
-  runDestroyForStack: vi.fn(),
+  // Reports one SKIPPED resource, so `delete()` takes its `outcome: 'skipped'`
+  // arm, whose `reason` interpolates the derived child stack name.
+  runDestroyForStack: vi.fn(async (stackName: string) => ({
+    stackName,
+    cancelled: false,
+    skippedEmpty: false,
+    deletedCount: 0,
+    retainedCount: 0,
+    skippedCount: 1,
+    errorCount: 0,
+    interrupted: false,
+  })),
 }));
 
 function makeContext(nestedTemplates: Record<string, string>): NestedStackProviderContext {
@@ -207,6 +218,86 @@ describe('NestedStackProvider — nested-template cycle (issue #3247)', () => {
     expect(engineDeploys).toEqual([]);
   });
 
+  it('refuses a cycle spelled through an ARRAY-valued Resources, which the deploy would follow as rows 0, 1, ...', async () => {
+    const dir = tmp();
+    const child = join(dir, 'child.json');
+    writeFileSync(
+      child,
+      JSON.stringify({
+        Resources: [
+          { Type: 'AWS::CloudFormation::Stack', Metadata: { 'aws:asset:path': 'child.json' } },
+        ],
+      })
+    );
+    const provider = new NestedStackProvider();
+
+    const err = await capture(() =>
+      withNestedStackContext(makeContext({ Child: child }), () =>
+        provider.create('Child', 'AWS::CloudFormation::Stack', {})
+      )
+    );
+
+    expect(err.message).toContain(`'Child' (${child}) -> '0' (${child})`);
+    expect(engineDeploys).toEqual([]);
+  });
+
+  it('follows exactly the rows the pre-deploy walk follows (one shared row reader)', () => {
+    // The guard is only a guard while both sides agree on what a row is. An
+    // array-valued Resources is the shape they once disagreed on.
+    const provider = new NestedStackProvider();
+    const index = (
+      provider as unknown as {
+        indexGrandchildTemplates(t: unknown, p: string): Record<string, string>;
+      }
+    ).indexGrandchildTemplates.bind(provider);
+
+    expect(
+      index(
+        {
+          Resources: [
+            { Type: 'AWS::CloudFormation::Stack', Metadata: { 'aws:asset:path': 'g.json' } },
+          ],
+        },
+        '/out/child.json'
+      )
+    ).toEqual({ '0': '/out/g.json' });
+  });
+
+  it('keeps the per-level absolute-path backstop: non-retryable and display-safe', () => {
+    // Unreachable through create()/update() now that the up-front walk reports
+    // the same defect first, so it is driven directly.
+    const provider = new NestedStackProvider();
+    const index = (
+      provider as unknown as {
+        indexGrandchildTemplates(t: unknown, p: string): Record<string, string>;
+      }
+    ).indexGrandchildTemplates.bind(provider);
+    const forged = `G${String.fromCharCode(0x1b)}[2KFORGED`;
+
+    let err: Error | undefined;
+    try {
+      index(
+        {
+          Resources: {
+            [forged]: {
+              Type: 'AWS::CloudFormation::Stack',
+              Metadata: { 'aws:asset:path': `/abs/${forged}.json` },
+            },
+          },
+        },
+        '/out/child.json'
+      );
+    } catch (e) {
+      err = e as Error;
+    }
+
+    expect(err?.message).toContain('which is absolute');
+    expect(err?.message).toContain('Refusing to load.');
+    expect(isMarkedNonRetryable(err)).toBe(true);
+    expect([...err!.message].filter((ch) => ch.codePointAt(0)! < 0x20)).toEqual([]);
+    expect(err!.message).toContain('FORGED');
+  });
+
   it('still deploys a diamond: two sibling rows naming one template', async () => {
     const dir = tmp();
     writeTemplate(dir, 'shared.json', {});
@@ -236,6 +327,94 @@ describe('NestedStackProvider — nested-template cycle (issue #3247)', () => {
       'Parent~Child~Mid',
       'Parent~Child~Mid~Grand',
     ]);
+  });
+
+  describe('template-controlled text in the other deploy-path throws', () => {
+    const forged = `X${String.fromCharCode(0x1b)}[2K${String.fromCharCode(0x0d)}FORGED`;
+    const controls = (text: string): string[] =>
+      [...text].filter((ch) => ch.codePointAt(0)! < 0x20);
+
+    it('create(): nested template path missing from the index', async () => {
+      const err = await capture(() =>
+        withNestedStackContext({ ...makeContext({}), parentStackName: `Parent~${forged}` }, () =>
+          new NestedStackProvider().create(forged, 'AWS::CloudFormation::Stack', {})
+        )
+      );
+      expect(err.message).toContain('Nested template file not found');
+      expect(controls(err.message)).toEqual([]);
+      expect(err.message.match(/FORGED/g)).toHaveLength(2);
+    });
+
+    it('update(): nested template path missing from the index', async () => {
+      const err = await capture(() =>
+        withNestedStackContext(makeContext({}), () =>
+          new NestedStackProvider().update(forged, 'arn', 'AWS::CloudFormation::Stack', {}, {})
+        )
+      );
+      expect(err.message).toContain('on update');
+      expect(controls(err.message)).toEqual([]);
+      expect(err.message).toContain('FORGED');
+    });
+
+    it('create(): a child template that cannot be parsed', async () => {
+      const dir = tmp();
+      const child = join(dir, 'child.json');
+      // JSON.parse quotes the offending input back in its message.
+      writeFileSync(child, `${forged}{`);
+      const err = await capture(() =>
+        withNestedStackContext(makeContext({ Child: child }), () =>
+          new NestedStackProvider().create('Child', 'AWS::CloudFormation::Stack', {})
+        )
+      );
+      expect(err.message).toContain('Failed to parse nested template');
+      expect(controls(err.message)).toEqual([]);
+    });
+
+    it('create(): a child template that cannot be read', async () => {
+      const dir = tmp();
+      const err = await capture(() =>
+        withNestedStackContext(makeContext({ Child: join(dir, `${forged}.json`) }), () =>
+          new NestedStackProvider().create('Child', 'AWS::CloudFormation::Stack', {})
+        )
+      );
+      expect(err.message).toContain('Failed to read nested template');
+      expect(controls(err.message)).toEqual([]);
+      expect(err.message).toContain('FORGED');
+    });
+
+    it('create(): a non-scalar child Parameter', async () => {
+      const dir = tmp();
+      const child = writeTemplate(dir, 'child.json', {});
+      const err = await capture(() =>
+        withNestedStackContext(makeContext({ Child: child }), () =>
+          new NestedStackProvider().create('Child', 'AWS::CloudFormation::Stack', {
+            Parameters: { [forged]: { Ref: 'Unresolved' } },
+          })
+        )
+      );
+      expect(err.message).toContain('resolved to a non-scalar value');
+      expect(controls(err.message)).toEqual([]);
+      expect(err.message).toContain('FORGED');
+    });
+
+    it('delete(): the skip reason naming the derived child stack', async () => {
+      const result = await withNestedStackContext(makeContext({}), () =>
+        new NestedStackProvider().delete(forged, 'arn', 'AWS::CloudFormation::Stack')
+      );
+      const reason = (result as { reason: string }).reason;
+      expect(reason).toContain('skipped 1 resource(s)');
+      expect(controls(reason)).toEqual([]);
+      expect(reason).toContain('FORGED');
+    });
+
+    it('getAttribute(): an attribute outside the recorded Outputs map', async () => {
+      const err = await capture(() =>
+        new NestedStackProvider().getAttribute('arn', 'AWS::CloudFormation::Stack', forged)
+      );
+      expect(err.message).toContain('is not in the recorded Outputs map');
+      expect(controls(err.message)).toEqual([]);
+      expect(err.message).toContain('FORGED');
+    });
   });
 
   it('renders template-controlled text display-safely in the refusal', async () => {
