@@ -335,6 +335,91 @@ describe('S3DirectoryBucketProvider', () => {
       await expect(p).rejects.not.toThrow(/Matching CloudFormation/);
     });
 
+    /**
+     * Issue [#3270](https://github.com/go-to-k/cdkd/issues/3270): the refusal
+     * used to paste the STATE-borne name BARE into
+     * `aws s3 rm s3://<name> --recursive`. Both outcomes of the shared renderer
+     * are pinned, plus the clean control — a fence satisfied by "quote
+     * everything" or "always suppress" would prove only half the rule:
+     *
+     *  - printable-ASCII shell metacharacters survive sanitizing, so the command
+     *    is still shown, with the assembled `s3://<name>` argument SHELL-QUOTED;
+     *  - a control byte, a newline and a non-ASCII character CHANGE under
+     *    sanitizing, so the whole command is SUPPRESSED (naming the sanitized
+     *    value would empty a different bucket), and so is a name carrying `/`,
+     *    which would re-target `s3://a/b` at bucket `a`.
+     */
+    describe('not-empty refusal renders the state-borne name safely (issue #3270)', () => {
+      const refusalFor = async (bucketName: string): Promise<string> => {
+        const notEmpty = new Error('The bucket you tried to delete is not empty');
+        notEmpty.name = 'BucketNotEmpty';
+        mockSend.mockRejectedValueOnce(notEmpty); // the single DeleteBucketCommand attempt
+        const error = await provider
+          .delete('DirectoryBucket', bucketName, 'AWS::S3Express::DirectoryBucket')
+          .then(
+            () => undefined,
+            (e: unknown) => e
+          );
+        expect(error).toBeInstanceOf(Error);
+        // The guard fires on the FIRST not-empty answer, without touching data.
+        expect(mockSend).toHaveBeenCalledTimes(1);
+        return (error as Error).message;
+      };
+
+      it('renders a CLEAN name bare, byte-identical to the pre-fix message', async () => {
+        expect(await refusalFor('my-bucket--use1-az4--x-s3')).toBe(
+          'Failed to delete S3 Express Directory Bucket DirectoryBucket: ' +
+            'bucket my-bucket--use1-az4--x-s3 is not empty. Matching CloudFormation, cdkd does ' +
+            'not delete a non-empty directory bucket without an explicit opt-in. Delete all ' +
+            'objects first (e.g. aws s3 rm s3://my-bucket--use1-az4--x-s3 --recursive) and ' +
+            'destroy again.'
+        );
+      });
+
+      it.each([
+        ['a semicolon', 'x;rm -rf ~', `'s3://x;rm -rf ~'`],
+        ['a backtick', 'x`id`', `'s3://x\`id\`'`],
+        ['a command substitution', 'x$(id)', `'s3://x$(id)'`],
+        ['a space', 'x --include y', `'s3://x --include y'`],
+        ['a single quote', `x';id;'`, `'s3://x'\\'';id;'\\'''`],
+      ])(
+        'shell-quotes the whole s3:// argument for a name carrying %s',
+        async (_label, name, arg) => {
+          const message = await refusalFor(name);
+          expect(message).toContain(`(e.g. aws s3 rm ${arg} --recursive)`);
+          // The ONLY occurrence of the command: no bare copy beside the quoted one.
+          expect(message.split('aws s3 rm')).toHaveLength(2);
+          expect(message).not.toContain(`s3://${name} `);
+        }
+      );
+
+      it.each([
+        ['a control byte (ESC)', 'x[2Jy'],
+        ['a newline', 'x\nrm -rf ~'],
+        ['a carriage return', 'x\rrm -rf ~'],
+        ['a non-ASCII character', 'bücket'],
+        ['a C1 control byte', 'xy'],
+        ['a slash, which would re-target s3://a/b at bucket a', 'a/b'],
+        ['surrounding whitespace, which sanitizing trims', ' x '],
+      ])('SUPPRESSES the whole command for a name carrying %s', async (_label, name) => {
+        const message = await refusalFor(name);
+        expect(message).not.toContain('aws s3 rm');
+        expect(message).not.toContain('s3://');
+        expect(message).toContain('cannot be reproduced safely on a command line');
+        // Still the CFn-parity guard, still classified by the same substring.
+        expect(message).toContain('is not empty. Matching CloudFormation');
+        // Persisted to `deployments/*.jsonl`: nothing outside printable ASCII
+        // may survive ANYWHERE in the message, prose included.
+        expect(message).toMatch(/^[ -~]*$/);
+      });
+
+      it('suppresses the command for an EMPTY name rather than pasting a bare s3://', async () => {
+        const message = await refusalFor('');
+        expect(message).not.toContain('s3://');
+        expect(message).toContain('bucket <unrenderable> is not empty');
+      });
+    });
+
     it('should handle bucket not found (idempotent)', async () => {
       const error = new Error('NoSuchBucket');
       error.name = 'NoSuchBucket';
