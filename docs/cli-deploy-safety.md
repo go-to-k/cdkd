@@ -906,8 +906,9 @@ The same walk refuses an absolute `aws:asset:path` at any depth, which would
 point outside the assembly directory, and a tree nested more than 512 levels
 deep, which could not deploy anyway: each level lengthens the child's state key,
 and S3 caps a key at 1024 bytes. A tree with more than 10,000 nested-stack rows to
-follow is refused as well; only symlinked directories, which give one template
-file many paths, produce one.
+follow is refused as well. That is far beyond any CDK-generated assembly; in
+practice it takes symlinked directories, which give one template file many
+paths.
 
 The parent stack's own resources and its file assets are not covered by this
 check: they start before the nested stack's row is reached.

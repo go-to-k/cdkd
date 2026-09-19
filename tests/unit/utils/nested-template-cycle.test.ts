@@ -265,12 +265,15 @@ describe('findNestedTemplateTreeDefect', () => {
   it('refuses a tree that symlinked directories multiply without ever repeating on one chain', () => {
     // `d1 -> .` and `d2 -> .` give every template three lexical spellings per
     // level, so the path-keyed memo cannot collapse them, and no chain repeats
-    // an identity because each level is a different file. Finite, but 3^40
-    // rows: without a budget the walk never returns.
+    // an identity because each level is a different file. The memo does
+    // collapse the '' step, so the spellings double (not triple) per level.
+    // Sized just past the budget on that base so that a LOST budget lets the walk
+    // finish and return `undefined`, failing the assertion below, rather than
+    // spinning a synchronous walk no test timeout can interrupt.
     const dir = tmp();
     symlinkSync('.', join(dir, 'd1'), 'dir');
     symlinkSync('.', join(dir, 'd2'), 'dir');
-    const levels = 40;
+    const levels = Math.ceil(Math.log2(MAX_ROWS_FOLLOWED)) + 1;
     writeTemplate(dir, `t${levels}.json`, {});
     for (let i = levels - 1; i >= 0; i--) {
       const next = `t${i + 1}.json`;
@@ -280,6 +283,25 @@ describe('findNestedTemplateTreeDefect', () => {
     const defect = findNestedTemplateTreeDefect({ Child: join(dir, 't0.json') });
 
     expect(defect?.kind).toBe('too-large');
+  });
+
+  it(`accepts a tree that follows exactly ${MAX_ROWS_FOLLOWED} rows and refuses one more`, () => {
+    // One wide template whose rows all name a single leaf: the entry row, the
+    // first leaf visit, and then one row per memo hit. Pins the budget's value
+    // (a shrunken budget would refuse a legitimate wide assembly) and that a
+    // memo hit costs one row.
+    const wide = (rows: number): string => {
+      const dir = tmp();
+      writeTemplate(dir, 'leaf.json', {});
+      const map: Record<string, string> = {};
+      for (let i = 0; i < rows; i++) map[`R${i}`] = 'leaf.json';
+      return writeTemplate(dir, 'wide.json', map);
+    };
+
+    expect(findNestedTemplateTreeDefect({ Child: wide(MAX_ROWS_FOLLOWED - 1) })).toBeUndefined();
+    expect(findNestedTemplateTreeDefect({ Child: wide(MAX_ROWS_FOLLOWED) })?.kind).toBe(
+      'too-large'
+    );
   });
 
   it('uses a seeded ancestor: a child naming the template above the entry rows is refused at once', () => {
@@ -476,6 +498,9 @@ describe('renderNestedTemplateTreeDefect', () => {
     expect(text).toContain(`has more than ${MAX_ROWS_FOLLOWED} nested-stack rows to follow`);
     expect(text).toContain("the walk stopped at 'Child' (/out/a.json)");
     expect(text).toContain('Refusing to deploy.');
+    // A genuinely huge tree need not be hand-modified, so this arm does not
+    // carry the provenance sentence the other refusals do.
+    expect(text).not.toContain('hand-modified');
   });
 
   it('elides the owning stack name of a long chain the way it elides the chain', () => {

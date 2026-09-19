@@ -317,8 +317,9 @@ export function renderNestedTemplateTreeDefect(
     return (
       `The nested template tree under stack '${displaySafe(stackName)}' has more than ` +
       `${MAX_ROWS_FOLLOWED} nested-stack rows to follow (the walk stopped at ` +
-      `${renderChain(defect.chain)}). Symlinked directories can give one template file many ` +
-      `paths, which multiplies the tree without ever repeating on one chain. ${provenance}`
+      `${renderChain(defect.chain)}). That is far beyond any CDK-generated assembly. Symlinked ` +
+      `directories can give one template file many paths, which multiplies the tree without ` +
+      `ever repeating on one chain. Refusing to ${action}.`
     );
   }
   if (defect.kind === 'too-deep') {
