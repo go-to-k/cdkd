@@ -31,7 +31,7 @@ import {
 /**
  * Enforcement for `scripts/check-docs-error-strings.ts` — this test IS the CI
  * gate (there is no `vp run audit:*` task), matching the arrangement used by
- * `check-verification-depth-rule.ts` and `check-source-control-bytes.ts`.
+ * `check-source-control-bytes.ts`.
  *
  * The script's own header states what it does and does not claim. What this
  * file adds is the pair of properties a checker cannot establish about itself:

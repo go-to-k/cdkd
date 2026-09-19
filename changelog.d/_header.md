@@ -144,8 +144,8 @@ describes, all of which outlive a bullet.
 Enforced only by review. A CI check could require an entry from a `src/**`
 diff, and deliberately is not added: a missing bullet harms nobody at the
 moment of the merge and is repaired by an edit, which is below this repo's bar
-for a blocking gate. What IS fenced is that the four copies of this rule agree
-(`tests/unit/scripts/changelog-entry-policy-sync.test.ts`).
+for a blocking gate. The other copies of this rule — CLAUDE.md's changelog
+paragraph and `/check-docs` — are kept in step by hand.
 
 Note for anyone editing THIS section: a line starting with `- ` at column 0
 reads as a changelog ENTRY to the uniqueness fence, which would key it and

@@ -1,32 +1,114 @@
 ---
-description: cdkd CLI layer layout (command tree, config/stack matching, `cdkd state` subcommands, events, gc, rollback)
+description: cdkd CLI layer layout (command tree, config/stack matching, events, gc, rollback)
 paths:
   - 'src/cli/**'
 ---
 
 # Key Files and Directories - src/cli
 
-`cdkd diff`: [layout-cli-diff.md](layout-cli-diff.md). `cdkd state` / `cdkd orphan`: [layout-cli-state.md](layout-cli-state.md). `cdkd import` / `cdkd export`: [layout-cli-import-export.md](layout-cli-import-export.md). `cdkd drift`: [layout-drift.md](layout-drift.md). `cdkd scrub`: [layout-deployment-secrets.md](layout-deployment-secrets.md).
-
+Per-command detail: [layout-cli-diff.md](layout-cli-diff.md) (`cdkd diff`),
+[layout-cli-state.md](layout-cli-state.md) (`cdkd state` / `cdkd orphan`),
+[layout-cli-import-export.md](layout-cli-import-export.md),
+[layout-drift.md](layout-drift.md),
+[layout-deployment-secrets.md](layout-deployment-secrets.md) (`cdkd scrub`).
 Index of every area: [code-layout.md](code-layout.md).
 
-## Core Directories
+## The split that decides where a command belongs
 
-- **src/cli/** - CLI command implementations (deploy, destroy, diff, drift, events, gc, synth, list/ls, bootstrap, force-unlock, import, export, publish-assets, state, local), config resolution. `region-options.ts` holds the shared region-normalization helpers (issue [#2065](https://github.com/go-to-k/cdkd/issues/2065)) — most handlers route through it, while the four `cdkd local *` commands that own their own handler (`invoke` / `invoke-agentcore` / `run-task` / `start-api`) and `bootstrap-destroy.ts` call `canonicalizeRegion` directly for reasons recorded at each site: `foldRegionOption(options)` at each handler's entry canonicalizes `--region` AND the two `AWS_REGION` / `AWS_DEFAULT_REGION` env vars (the env half is what the AWS SDK's own resolution chain reads, which no fold at a cdkd read site can reach), `namedCliRegion(...)` answers "which region did the user NAME" with `undefined` when they named none, and `rawCliRegion(...)` preserves the exact spelling for the bootstrap marker's second probe alone. The fourth export, `adoptDeprecatedRegionFlag(cmd)` (issue [#2522](https://github.com/go-to-k/cdkd/issues/2522)), serves the OTHER four `cdkd local *` commands — the `start-service` / `start-alb` / `start-cloudfront` / `start-agentcore` ENGINE shims, whose handler belongs to cdk-local: it splices cdk-local's visible `--region` out, adds cdkd's hidden `deprecatedRegionOption` in its place, and folds `--region` + `--stack-region` (capturing the RAW `--stack-region` spelling first) in a `preAction` hook — the only cdkd-owned point that runs BEFORE cdk-local's handler builds an SDK client. So "the four `cdkd local *` commands call `canonicalizeRegion` directly" describes half the family; the other half never touches the helper. `tests/unit/cli/cli-region-fold.test.ts` fences the shape across every file in `src/cli/commands/`.
+- **Top-level commands** (`deploy`, `destroy`, `diff`, `synth`, `list`,
+  `import`, `orphan`) require a CDK app — they synthesize a template to know
+  what they operate on.
+- **`cdkd state ...`**, `cdkd drift`, `cdkd events` and `cdkd rollback` are
+  STATE-driven: no synth, so they still work when the CDK app is missing.
+  `drift` compares state-recorded properties against each provider's optional
+  `readCurrentState` (Cloud Control covers the rest).
+- The two `orphan` commands differ in GRANULARITY: `cdkd orphan
+  <constructPath>...` is per-resource and rewrites every sibling reference
+  (`Ref` / `Fn::GetAtt` / `Fn::Sub` / dependencies) so the next deploy does not
+  re-create the orphan; `cdkd state orphan <stack>...` drops the whole state
+  record without touching siblings. Both delete ONLY cdkd state — the AWS
+  resources stay.
 
-  **Top-level vs `state` subcommand split**: top-level commands (`deploy`, `destroy`, `diff`, `synth`, `list`, `import`, `orphan`) require a CDK app — they synthesize a template to know what they're operating on. The `cdkd state ...` subcommand family (`state info`, `state list`, `state resources`, `state show`, `state orphan`, `state destroy`, `state migrate`) operates on the S3 state bucket only and does NOT need the CDK code; it's the right place to inspect / clean up state when the CDK app is missing or you don't want to synth. `cdkd drift <stack>` is also state-driven (no synth), since it compares state-recorded properties to the AWS-current snapshot returned by each provider's optional `readCurrentState` method — a CC-API fallback covers the majority of resource types out of the box; SDK Providers add their own `readCurrentState` incrementally. The two `orphan` commands operate at **different granularities** (this is the breaking change in PR #92): `cdkd orphan <constructPath>...` is **per-resource** (mirrors upstream `cdk orphan --unstable=orphan`) and rewrites every sibling reference (Ref / Fn::GetAtt / Fn::Sub / dependencies) so the next deploy doesn't re-create the orphan; `cdkd state orphan <stack>...` is **whole-stack** and removes the entire state record without touching siblings. Both orphan variants delete ONLY cdkd state; AWS resources are left intact (use `destroy` / `state destroy` to delete them).
+## Important files
 
-  The `state` subcommand family (`info` / `list` / `resources` / `show` / `orphan` / `destroy` / `migrate`) and the per-resource `cdkd orphan <constructPath>` counterpart: [layout-cli-state.md](layout-cli-state.md).
-
-## Important Files
-
-- **src/cli/config-loader.ts** - Config resolution (cdk.json, env vars for `--app` and `--state-bucket`)
-- **src/cli/stack-matcher.ts** - Shared stack-name matcher used by deploy/diff/destroy/list. Routes patterns by whether they contain `/` (display-path) or not (physical name) and returns a deduplicated union.
-- **src/cli/program.ts** - `buildProgram()` — builds the full `cdkd` Commander tree (every `create*Command()` factory, `.name` / `.description` / `.version`). Split out of `index.ts` for the same reason `pipe-close-handler.ts` was: importing `index.ts` runs `main()` as a side effect, so tooling could not read the command tree without executing the CLI. `index.ts`'s `main()` now calls it. The consumer that motivated the split is `scripts/check-integ-cli-flags.ts` (via `tests/unit/scripts/integ-cli-flags.test.ts`), which validates every integ-fixture CLI invocation against the option set of the subcommand that actually declares the flag — a check that needs the REAL tree, because `--help` omits hidden options and `src/cli/options.ts` is a flat global list carrying no command attachment (the `cdkd import --region` bug, issue #1097).
-- **src/cli/pipe-close-handler.ts** - `installPipeCloseHandler()` — attaches an `'error'` listener to `process.stdout` / `process.stderr` so a downstream consumer closing the pipe early (`cdkd state list | grep -q`, `... | head`) exits the CLI cleanly (`process.exit(0)` on EPIPE) instead of crashing with an unhandled-`'error'` stack trace; non-EPIPE stream errors re-throw unchanged. Called once at the top of `main()` in `src/cli/index.ts`. Kept in its own module (not inline in `index.ts`) so it stays unit-testable — importing `index.ts` runs `main()` as a side effect.
-- **src/cli/commands/diff-recursive.ts** - Recursive nested-stack diff helpers backing `cdkd diff --recursive`, plus `diff.ts`'s thin glue over them: [layout-cli-diff.md](layout-cli-diff.md).
-- **src/cli/commands/events.ts** + **src/state/deployment-events-store.ts** + **src/types/deployment-events.ts** - Structured deployment events (issue [#808](https://github.com/go-to-k/cdkd/issues/808)) — cdkd's `DescribeStackEvents` equivalent. `deployment-events.ts` defines the `DeploymentEvent` / `DeploymentEventRecorder` types + `extractDeploymentEventError` (walks the thrown error's `.cause` chain for AWS error code / request id). `deployment-events-store.ts` owns `DeploymentEventsStore` (the buffering JSONL recorder injected into `DeployEngineOptions.eventRecorder` / `DestroyRunnerContext.eventRecorder` — best-effort async flush, never blocks the run, warns once on S3 failure) and `DeploymentEventsReader` (the read side: region discovery via raw key listing so it survives destroy, run listing, single-run JSONL parse). `events.ts` is the state-driven (no synth, no lock) `cdkd events <stack> [--run <id>] [--format json] [--stack-region <r>]` command. S3 layout: `cdkd/{stackName}/{region}/deployments/{runId}.jsonl` + `deployments/index.json` (last N runs, last-writer-wins; SEPARATE key family from `state.json` — no state schema bump). Events carry error + metadata only, never resource properties. The per-resource + rollback events are emitted by `DeployEngine` (`provisionResource` / the shared `src/deployment/rollback-executor.ts`) + `destroy-runner.ts`'s delete loop; the run-level RUN_STARTED / RUN_FINISHED + `finalize()` are owned by `deploy.ts` / `destroy.ts` via the shared `src/cli/commands/deployment-events-run.ts` bracket helpers (`startRunRecorder` — returns `undefined` under `--dry-run` so no recorder / events; `recordRunOutcome` / `recordRunFailed`). Since issue #1183 the standalone `cdkd rollback` command ALSO opens a recorder (`command: 'rollback'`, an additive `DeploymentRunCommand` literal) and emits `ROLLBACK_*` events under its own runId. The reader's index-fallback (when `index.json` is missing / corrupt) derives each run's result from its own JSONL's last `RUN_FINISHED` event and reports `UNKNOWN` (a `DeploymentRunSummaryResult` value) for a stream with none — never fabricating `FAILED`. **Retention / purge (issue [#885](https://github.com/go-to-k/cdkd/issues/885)):** the `deployments/` prefix is kept bounded two ways — (1) the writer self-bounds at `finalize()` via `pruneSupersededRunFiles`, deleting `{runId}.jsonl` streams that fell out of the 20-run index window (best-effort inside the same write-chain link, never blocks the run; concurrency-safe because it only deletes ids strictly older than the oldest retained, time-sortable id); (2) `cdkd events prune <stack>` (`createEventsPruneCommand` / `eventsPruneCommand`) is the explicit user-initiated purge (`--all` / `--keep <N>` / `--older-than <dur>` / default keep-20, `-y` to skip the confirm), routed through `DeploymentEventsReader.pruneRuns` which deletes the matching streams + rewrites (or removes, when empty) `index.json`. Both batch-delete via the new `S3StateBackend.deleteRawObjects(keys)` (chunked to the 1,000-key `DeleteObjects` ceiling, idempotent). `runIdTimestampMs` parses a run id's compact-ISO prefix back to epoch ms for the `--older-than` cutoff. (3) `cdkd destroy --purge-events` (destroy-only flag) deletes a stack's event history right after a CLEAN, non-interrupted destroy via the exported `purgeEventsAfterDestroy(reader, stack, region, {purgeEvents, runResult, interrupted}, logger)` gating helper in `destroy.ts` — best-effort warn-on-failure; skipped on a failed/interrupted destroy so those events stay as post-mortem; called AFTER the run's `eventRecorder.finalize()` so this run's own events are included in the purge. `state destroy` does not take the flag (`cdkd events prune <stack> --all` is the equivalent). Full guide in [docs/deployment-events.md](../../docs/deployment-events.md).
-
-- **src/cli/commands/rollback.ts** - `cdkd rollback [STACK]` (issue [#1183](https://github.com/go-to-k/cdkd/issues/1183)): the state-driven, **synth-free** command that reverts a stack to its pre-deploy state after a failed `--no-rollback` / interrupted deploy (the cdkd equivalent of `cdk rollback` / CFn `RollbackStack`). Loads the `rollback-journal.json` (written by the deploy engine at failure time), prints a per-segment plan, and replays it newest-first via `src/deployment/rollback-executor.ts`, saving state after each op and popping each cleanly-replayed segment; when the oldest segment was the first-ever deploy and state ends empty, `state.json` is deleted too. Reuses `setupStateBackend` / `resolveSingleRegion` (exported from `state.ts`) + `startRunRecorder` (`command: 'rollback'`). Flags: `--force`, `--orphan <logicalId>` (repeatable), `--revert-failed` (issue #1198 — opt-in replay of the segment's journaled `failedOperations` BEFORE its completed ops: failed UPDATE force-reverted to `previousState` with the ATTEMPTED properties as the diff's previous side, failed CREATE deleted only when a state record matches — and then under its `DeletionPolicy` (issue #1362: `Retain` orphans, `Snapshot` snapshots-then-deletes with `--skip-final-snapshot` as the opt-out), failed DELETE a no-op; off by default because the failed resource's remote state is unknown; usable in the DEFAULT deploy flow since issue #1208 — a CLEAN automatic rollback settles the journal to a failed-only segment (`operations: []` + `failedOperations`, `reason: auto-rollback-clean`) instead of deleting it, and the next deploy's journal note points at `--revert-failed` for that shape), `--skip-final-snapshot` (issue [#1358](https://github.com/go-to-k/cdkd/issues/1358) — data-loss opt-out for a rolled-back CREATE under `DeletionPolicy: Snapshot`, which otherwise snapshots then deletes; the command also builds stack-region-pinned `AwsClients` for the pre-delete snapshot calls when the target stack's region differs from the CLI's), `--stack-region`, `--role-arn`, `--state-bucket`. Exit codes: 0 clean / 2 partial (journal kept, idempotent re-run) / 1 hard error. No-arg picks the single journaled stack (else lists candidates via a `listRawKeys` scan for `rollback-journal.json`).
-- **src/cli/commands/gc.ts** - `cdkd gc` (issue [#1012](https://github.com/go-to-k/cdkd/issues/1012)): garbage-collects unreferenced objects/images from ONE region's cdkd-owned asset storage (names from the bootstrap marker, never the naming convention; CDK bootstrap storage untouched). Scans EVERY state file in the whole state bucket for `{S3Bucket,S3Key}` pairs / `s3://` URIs / https URLs / ECR tag+digest URIs; guards: lock.json abort, malformed-state abort, `--older-than` age guard (default 30d), `ExpectedBucketOwner` on every S3 call; `--dry-run` plan, y/N confirm, chunked `DeleteObjects` (1,000) / `BatchDeleteImage` (100). Shares `src/cli/commands/state-file-keys.ts` (whole-bucket state/lock key listing + `stack (region)` descriptor, extracted from `bootstrap-destroy.ts`) so the two commands' state discovery cannot drift. Since issue [#3179](https://github.com/go-to-k/cdkd/issues/3179) section C the descriptor renders through `displayIdent` and the SPLIT is available structurally as `parseStateKey`, so no caller re-parses the rendered form; a value going into a command cdkd tells an operator to RUN takes `isPasteableIdent` as well, because `--state-bucket=attacker` is plain-identifier-clean and still an option when pasted. **The predicate now has a SECOND consumer outside this file's own family** (go-to-k/cdkd#3377): `resolveProfileCredentials` in `src/cli/commands/local-start-api.ts` gates its `aws sso login --profile <name>` hint on it, because a user-supplied `--profile ~evil` / `-rf` is the same shape one flag over. So `isPasteableIdent` is the repo's answer for a PASTEABLE value generally rather than for a state-key segment specifically -- `PASTEABLE_STATE_IDENT`'s name is narrower than its job -- and an edit tightening either half must ask what it costs that caller too. Its cap is `STACK_REF_MAX_CODE_POINTS`, which is looser than a profile name needs and harmless, since every character it admits is already plain. Since issue [#2052](https://github.com/go-to-k/cdkd/issues/2052) it ALSO sweeps the STATE bucket's abandoned `custom-resource-responses/{requestId}.json` placeholders, which nothing collected before. Two things about that arm are decisions rather than mechanics. It adds no staleness clock of its own -- the LOCK guard already refuses the whole run while any stack holds one, and every deploy that can write such a key holds one for its duration, so `--older-than` (inclusive-KEEP at the boundary) is the second layer rather than the first. And the lock guard moved AHEAD of the bootstrap-marker check for it: the placeholders live in the state bucket, which exists whether or not the region opted in to ASSET storage, so the "not opted in" early return would have made the sweep unreachable for exactly the accounts that have placeholders and no marker. The prefix is ONE binding shared with the producer (`CUSTOM_RESOURCE_RESPONSE_PREFIX` in `src/state/state-prefix.ts`, re-exported by `state-file-keys.ts`), fenced by `tests/unit/state/custom-resource-response-prefix-sync.test.ts` -- a sweeper pointed at a drifted prefix finds nothing and exits 0, which is indistinguishable from a clean bucket.
-- **src/cli/commands/pin-cc-api-reachability.ts** - Pure decision behind `--pin-cc-api`'s pre-flight (issue [#2719](https://github.com/go-to-k/cdkd/issues/2719)). Answers one question over the run's stacks: which pinned logical ids match NO stack (an error -- the flag declines a routing change and prints nothing on success, so an id that matched nowhere is indistinguishable from one that worked) and which match SOME but not all (normal under `--all`, reported ONCE naming the stacks it applies to, never once per non-matching stack). Extracted from `deploy.ts` because living inline left it untested: a review round moved the partial-match signal between log levels and nothing would have caught it moving back.
+- **src/cli/config-loader.ts** - config resolution (cdk.json, env vars for
+  `--app` and `--state-bucket`).
+- **src/cli/stack-matcher.ts** - shared stack-name matcher for deploy / diff /
+  destroy / list; routes a pattern by whether it contains `/` (display path) or
+  not (physical name) and returns a deduplicated union.
+- **src/cli/region-options.ts** - shared region normalization
+  ([#2065](https://github.com/go-to-k/cdkd/issues/2065)). `foldRegionOption`
+  canonicalizes `--region` AND the `AWS_REGION` / `AWS_DEFAULT_REGION` env vars
+  — the env half is what the AWS SDK's own resolution chain reads, which no fold
+  at a cdkd read site can reach. `namedCliRegion` answers "which region did the
+  user NAME" (`undefined` when none); `rawCliRegion` preserves the spelling for
+  the bootstrap marker's second probe alone. `adoptDeprecatedRegionFlag(cmd)`
+  serves the four `cdkd local start-*` ENGINE shims whose handler belongs to
+  cdk-local: it splices cdk-local's `--region` out, adds cdkd's hidden
+  deprecated option, and folds in a `preAction` hook — the only cdkd-owned point
+  running BEFORE cdk-local builds an SDK client. `cli-region-fold.test.ts`
+  fences the shape across `src/cli/commands/`.
+- **src/cli/program.ts** - `buildProgram()` builds the whole Commander tree.
+  Split from `index.ts` because importing that file runs `main()` as a side
+  effect, so tooling could not read the tree without executing the CLI.
+- **src/cli/pipe-close-handler.ts** - `installPipeCloseHandler()` exits 0 on
+  EPIPE when a downstream consumer closes the pipe early; non-EPIPE stream
+  errors re-throw. Its own module so it stays unit-testable.
+- **src/cli/commands/events.ts** (+ `src/state/deployment-events-store.ts`,
+  `src/types/deployment-events.ts`) - structured deployment events, cdkd's
+  `DescribeStackEvents` equivalent. The store is a buffering JSONL recorder with
+  a best-effort async flush that NEVER blocks the run; the reader discovers
+  regions by raw key listing so it survives a destroy. S3 layout
+  `cdkd/{stack}/{region}/deployments/{runId}.jsonl` + `deployments/index.json`
+  (last N runs, last-writer-wins) — a SEPARATE key family from `state.json`, so
+  no state-schema bump. **Events carry error + metadata only, never resource
+  properties.** Per-resource and rollback events come from `DeployEngine` /
+  `rollback-executor.ts` / `destroy-runner.ts`; the run-level RUN_STARTED /
+  RUN_FINISHED bracket lives in `deployment-events-run.ts` (`startRunRecorder`
+  returns `undefined` under `--dry-run`, so a dry run records nothing). When
+  `index.json` is missing or corrupt the reader derives each run's result from
+  its own JSONL's last `RUN_FINISHED` and reports `UNKNOWN` for a stream with
+  none — never fabricating `FAILED`. Retention has three arms
+  ([#885](https://github.com/go-to-k/cdkd/issues/885)): the writer self-bounds at
+  `finalize()`, `cdkd events prune <stack>` is the explicit purge, and
+  `cdkd destroy --purge-events` runs only after a CLEAN, non-interrupted destroy
+  (a failed one keeps its events as post-mortem). Guide:
+  [docs/deployment-events.md](../../docs/deployment-events.md).
+- **src/cli/commands/rollback.ts** - `cdkd rollback [STACK]`
+  ([#1183](https://github.com/go-to-k/cdkd/issues/1183)): synth-free revert after
+  a failed `--no-rollback` or interrupted deploy. Replays
+  `rollback-journal.json` newest-first through `rollback-executor.ts`, saving
+  state after each op and popping each cleanly-replayed segment; when the oldest
+  segment was the first-ever deploy and state ends empty, `state.json` is deleted
+  too. `--revert-failed` opts into replaying the segment's journaled
+  `failedOperations` BEFORE its completed ops (a failed CREATE is deleted only
+  when a state record matches, and then under its `DeletionPolicy` — `Retain`
+  orphans, `Snapshot` snapshots then deletes unless `--skip-final-snapshot`); it
+  is off by default because the failed resource's remote state is unknown. Exit
+  codes: 0 clean, 2 partial (journal kept, re-run is idempotent), 1 hard error.
+- **src/cli/commands/gc.ts** - `cdkd gc` garbage-collects unreferenced objects /
+  images from ONE region's cdkd-owned asset storage, with names read from the
+  bootstrap marker rather than the naming convention (CDK bootstrap storage is
+  never touched). It scans EVERY state file in the bucket for asset references;
+  guards are a lock.json abort, a malformed-state abort, the `--older-than` age
+  guard (default 30d, inclusive-KEEP at the boundary) and `ExpectedBucketOwner`
+  on every S3 call. It shares `state-file-keys.ts` with `bootstrap-destroy.ts` so
+  the two commands' state discovery cannot drift. It also sweeps abandoned
+  `custom-resource-responses/{requestId}.json` placeholders; that arm runs BEFORE
+  the bootstrap-marker check, because the placeholders live in the STATE bucket,
+  which exists whether or not the region opted in to asset storage. The prefix is
+  ONE binding shared with the producer (`CUSTOM_RESOURCE_RESPONSE_PREFIX` in
+  `src/state/state-prefix.ts`) — a sweeper pointed at a drifted prefix finds
+  nothing and exits 0, indistinguishable from a clean bucket.
+- **`isPasteableIdent`** (with `parseStateKey` / `displayIdent`) is the repo's
+  answer for any value cdkd renders into a command it tells an operator to RUN,
+  not just a state-key segment: `--state-bucket=attacker` is plain-identifier
+  clean and still an option when pasted. Its second consumer is
+  `resolveProfileCredentials` in `local-start-api.ts`, gating an
+  `aws sso login --profile <name>` hint, so tightening either half must ask what
+  it costs that caller (go-to-k/cdkd#3377).
+- **src/cli/commands/pin-cc-api-reachability.ts** - the pure decision behind
+  `--pin-cc-api`'s pre-flight: which pinned logical ids match NO stack (an error
+  — the flag prints nothing on success, so an id that matched nowhere is
+  otherwise invisible) and which match some but not all (normal under `--all`,
+  reported ONCE naming the stacks, never once per non-matching stack).

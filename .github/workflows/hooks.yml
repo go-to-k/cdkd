@@ -99,7 +99,7 @@ jobs:
   # The shared matcher's mutation harness. NOT picked up by run-tests.sh, which
   # globs `lib/*.test.sh`, so without this nothing would run it and it would be
   # a fence exercised only by hand -- the shape
-  # .claude/rules/hooks-class-fences.md records as "is anything RUNNING it?".
+  # the question "is anything RUNNING it?".
   # It exits non-zero when a mutant fails to red a case the unmutated run
   # passed, i.e. when a deliberate break goes unnoticed by every case.
   #

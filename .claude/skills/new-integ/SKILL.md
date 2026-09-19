@@ -76,37 +76,10 @@ The user provides a kebab-case test name (e.g., `ses-email-identity`,
    an equality fence are in
    [.claude/rules/testing.md](../../rules/testing.md).
 
-   **`tsconfig.json`** (ESNext / NodeNext, with `rewriteRelativeImportExtensions`
-   so the `.ts`-suffixed relative imports type-check):
-   ```json
-   {
-     "compilerOptions": {
-       "target": "ESNext",
-       "module": "NodeNext",
-       "lib": ["ES2023"],
-       "declaration": true,
-       "strict": true,
-       "noImplicitAny": true,
-       "strictNullChecks": true,
-       "noImplicitThis": true,
-       "alwaysStrict": true,
-       "noUnusedLocals": false,
-       "noUnusedParameters": false,
-       "noImplicitReturns": true,
-       "noFallthroughCasesInSwitch": false,
-       "inlineSourceMap": true,
-       "inlineSources": true,
-       "experimentalDecorators": true,
-       "strictPropertyInitialization": false,
-       "typeRoots": ["./node_modules/@types"],
-       "moduleResolution": "NodeNext",
-       "rewriteRelativeImportExtensions": true,
-       "erasableSyntaxOnly": true,
-       "verbatimModuleSyntax": true
-     },
-     "exclude": ["node_modules", "cdk.out"]
-   }
-   ```
+   **`tsconfig.json`** — copy it verbatim from the reference fixture chosen in
+   step 3 (`tests/integration/dynamodb-gsi-update/tsconfig.json`). It is ESNext /
+   NodeNext with `rewriteRelativeImportExtensions: true`, which is what makes the
+   `.ts`-suffixed relative imports type-check; do not hand-write a shorter one.
 
    **`bin/app.ts`** — entry point. Import the stack WITH the `.ts` extension and
    wire the env from `CDK_DEFAULT_ACCOUNT` / `CDK_DEFAULT_REGION`:
@@ -171,13 +144,12 @@ The user provides a kebab-case test name (e.g., `ses-email-identity`,
      cannot match empty, and a WARN containing `teardown sweep refused`.
      **Write YOUR OWN scope's shortest literal prefix plus `?*`** — `Cdkd?*` is
      what the already-guarded fixtures happen to need and is NOT a house
-     pattern: 36 of the 213 fixtures with a literal `STACK=` use a name that
-     does not start with `Cdkd` (`EventBridgeStack`, `CognitoStack`, …), and
-     copying `Cdkd?*` into one of those makes the guard refuse PERMANENTLY and
-     silently, so the sweep never runs, the orphans leak and the run still
-     exits 0. See
+     pattern. Plenty of fixtures use a stack name that does not start with
+     `Cdkd` (`EventBridgeStack`, `CognitoStack`, ...), and copying `Cdkd?*` into
+     one of those makes the guard refuse PERMANENTLY and silently, so the sweep
+     never runs, the orphans leak and the run still exits 0. See
      [docs/integ-fixture-conventions.md](../../../docs/integ-fixture-conventions.md).
-     Convention only — nothing checks it yet (#2621, checker on #2690).
+     Convention only — nothing checks it yet.
    - **Phase 1 — deploy**, then a **functional assertion that the feature
      actually works and reached AWS** (curl the endpoint / put an object and
      confirm the handler fired / read the property back via the AWS API). A clean

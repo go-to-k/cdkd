@@ -42,11 +42,11 @@ anything (a peer may be mid-probe).
 
 This section is the one a reviewer executes from, so it carries EVERY arm — a duty stated only in the intro is forbidden by the "Nothing else" below and is therefore inert. That has now happened three times on this file; if you add a duty above, add it here in the same edit.
 
-For each D-decision and C-fix in the design doc — or, when there is none, for each acceptance item in each `Closes`-declared issue — verify the implementation matches with a file:line citation. AND, independently of both, for each issue this PR FILED, re-verify its repro against the code. Nothing else. Do NOT comment on:
+For each D-decision and C-fix in the design doc — or, when there is none, for each acceptance item in each `Closes`-declared issue — verify the implementation matches with a file:line citation. AND, independently of both, for each issue this PR FILED, re-verify its repro against the code. **Also report any `docs/**`, README or CLAUDE.md sentence that the diff makes false or incomplete** — cite the file:line and the sentence. Nothing else. Do NOT comment on:
 
 - Code quality / style / lint (separate reviewer)
 - Test passing / coverage (separate reviewer)
-- Documentation prose
+- Documentation style or wording the diff does not falsify
 - Type correctness
 
 ## Report format

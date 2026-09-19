@@ -314,7 +314,7 @@ run_msg_case "stale message keeps the orphan precondition" stale \
 # So the message names the command that answers the question without any
 # hand-expansion. Asserted on the hook's OWN stderr rather than on a
 # re-statement: a case driving a predicate the suite declares stays green when
-# the text is reverted (.claude/rules/hooks-authoring.md).
+# the text is reverted (.claude/rules/hooks.md).
 N_EXPLAIN='mise exec -- markgate status integ-destroy --explain'
 N_SCOPE='writes the `scope:` block'
 N_CAUSE='does not stale this marker by itself'
@@ -370,7 +370,7 @@ run_msg_case "stale message says what --explain can and cannot settle (#3010)" s
 
 # --- An UNQUOTED heredoc is invisible to every needle above ---
 #
-# `.claude/rules/hooks-authoring.md`: `cat >&2 <<EOF` (no quotes) expands
+# `.claude/rules/hooks.md`: `cat >&2 <<EOF` (no quotes) expands
 # `$( )` and backticks in the BODY at refusal time, so every backtick span is
 # executed and deleted and the reader gets `command not found` lines instead of
 # the advice. This PR adds two backtick-dense heredocs, and measured, swapping

@@ -1,5 +1,5 @@
 ---
-description: cdkd S3 state schema (StackState v1-v9 interface, observedProperties / deletionPolicy / parentStack / provisionedBy / outputReads / exportNames semantics)
+description: cdkd S3 state schema - StackState v1-v10 and per-field semantics
 paths:
   - 'src/state/**'
   - 'src/types/state.ts'
@@ -7,350 +7,102 @@ paths:
 
 # State Schema
 
+The S3 state record is the user contract: **migration must be transparent** — a reader tolerates every older shape and the user does nothing on upgrade.
+
 ```typescript
 interface StackState {
-  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10; // 1 = legacy, 2 = region-prefixed, 3 = +observedProperties, 4 = +imports[], 5 = +deletionPolicy/updateReplacePolicy, 6 = +parentStack/parentLogicalId/parentRegion (nested-stack adoption), 7 = +provisionedBy on ResourceState (CC API greenfield fallback, #614), 8 = +outputReads[] (Fn::GetStackOutput downstream-consumer enumeration, #668), 9 = +exportNames[] (which outputs keys are exports, #2193), 10 = +observedBaselineRefused on ResourceState (the import baseline refusal, carried so later writers honour it, #2944)
+  // bumps: 2 region-prefixed key, 3 observedProperties, 4 imports, 5 deletion/updateReplace policy, 6 parent* (nested stacks), 7 provisionedBy, 8 outputReads, 9 exportNames, 10 observedBaselineRefused
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
   stackName: string;
-  region?: string;      // Required on version >= 2 (load-bearing for the S3 key). On READ the KEY wins: `getState` replaces this field with the region of the key the record came from and warns on a body that disagreed (#3328) -- it is written from the key too, so the two agree on anything cdkd wrote
+  region?: string;      // required on v2+ (the S3 key); on READ the KEY wins and a disagreeing body warns
   resources: Record<string, ResourceState>;
-  outputs: Record<string, unknown>; // Resolved Output values — NOT coerced to string (see below)
-  imports?: StateImportEntry[]; // v4+: Fn::ImportValue refs recorded for strong-reference destroy refusal
-  outputReads?: StateOutputReadEntry[]; // v8+: Fn::GetStackOutput refs (informational; NO destroy-time refusal — weak reference by design)
-  exportNames?: string[];         // v9+: the keys of `outputs` that are Export.Name aliases — the ONLY names Fn::ImportValue may bind to; undefined = pre-v9 record (every key importable until its next deploy), [] = exports nothing
-  skippedOutputs?: Record<string, string>; // #2740
-  orphans?: StackOrphanRecord[];  // #2934: rollback-orphaned Retain resources, each carrying the discarded ResourceState verbatim; informational to a reader that does not know it, so NO schema bump
-  parentStack?: string;        // v6+: populated on nested-stack child state records (undefined on top-level)
-  parentLogicalId?: string;    // v6+: child's AWS::CloudFormation::Stack logical id in the parent's template
-  parentRegion?: string;       // v6+: parent's region (always equals `region` until cross-region nested stacks ship)
+  outputs: Record<string, unknown>; // resolved Output values — NOT coerced to string
+  imports?: StateImportEntry[];   // v4+: Fn::ImportValue refs; drive the destroy-time strong-reference refusal
+  outputReads?: StateOutputReadEntry[]; // v8+: Fn::GetStackOutput refs; informational, no destroy refusal
+  exportNames?: string[];         // v9+: which `outputs` keys are Export.Name aliases — the ONLY names Fn::ImportValue may bind to; undefined = not known, [] = exports nothing
+  skippedOutputs?: Record<string, string>; // no bump
+  orphans?: StackOrphanRecord[];  // no bump: rollback-orphaned Retain resources the next deploy re-adopts, carrying the discarded ResourceState verbatim
+  parentStack?: string;           // v6+: nested-stack CHILD records only (undefined = top-level); child key is cdkd/{parentStack}~{parentLogicalId}/{region}/state.json
+  parentLogicalId?: string;       // v6+: the child's AWS::CloudFormation::Stack logical id in the parent
+  parentRegion?: string;          // v6+: parent's region (equals `region` until cross-region nested stacks ship)
   lastModified: number;
 }
 
 interface StateImportEntry {
-  sourceStack: string;   // The producer stack whose Output was imported
-  sourceRegion: string;  // The producer's region (load-bearing for state-key lookup)
-  exportName: string;    // Export.Name. REDACTED #3289 -> may hold a {{resolve:}} expression
+  sourceStack: string;   // producer stack whose Output was imported
+  sourceRegion: string;  // producer's region (load-bearing for state-key lookup)
+  exportName: string;    // Export.Name; REDACTED, so it may hold a {{resolve:}} expression
 }
 
 interface StateOutputReadEntry {
-  sourceStack: string;   // Producer stack. REDACTED #3289 -- so a MATCH on it must handle an expression
-  sourceRegion: string;  // The producer's region (load-bearing for state-key lookup)
-  outputName: string;    // Outputs.<Name>, NOT Export.Name. REDACTED #3289 (docs/design/3289-*.md: why 3 of 6)
+  sourceStack: string;   // producer stack; REDACTED, so a MATCH on it must handle an expression
+  sourceRegion: string;  // producer's region
+  outputName: string;    // Outputs.<Name>, NOT Export.Name; REDACTED
 }
 
 interface ResourceState {
-  physicalId: string;                           // AWS physical ID
-  resourceType: string;                         // e.g., "AWS::S3::Bucket"
-  properties: Record<string, unknown>;          // Resolved template values cdkd SENT (a provider-narrowed bag, or an --allow-unsupported-properties silent drop, is absent — #1591 / #2750)
+  physicalId: string;
+  resourceType: string;
+  properties: Record<string, unknown>;          // resolved values cdkd SENT (a narrowed or silently dropped property is absent)
   observedProperties?: Record<string, unknown>; // AWS-current snapshot at deploy time (drift baseline)
-  attributes?: Record<string, unknown>;         // For Fn::GetAtt resolution
-  dependencies?: string[];                      // For proper deletion order
-  metadata?: Record<string, unknown>;           // Additional metadata
-  deletionPolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate'; // v5+: template attribute recorded at deploy time
-  updateReplacePolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate'; // v5+: template attribute recorded at deploy time
-  provisionedBy?: 'sdk' | 'cc-api';         // v7+: which provisioning layer owns this resource (absent = pre-v7 record, SDK-managed then; NOT pinned — routing re-decides)
-  observedBaselineRefused?: true;           // v10+: `cdkd import` refused to capture a baseline here; no later writer may synthesize one from `properties` (absent = not refused)
+  attributes?: Record<string, unknown>;         // for Fn::GetAtt resolution
+  dependencies?: string[];                      // for deletion order
+  metadata?: Record<string, unknown>;
+  deletionPolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate';      // v5+
+  updateReplacePolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate'; // v5+
+  provisionedBy?: 'sdk' | 'cc-api';         // v7+: routing layer (absent = pre-v7 = SDK-managed; NOT pinned — routing re-decides)
+  observedBaselineRefused?: true;           // v10+: import refused a baseline; no writer may synthesize one from `properties`
 }
 ```
 
-**`exportNames`** (schema v9+, issue
-[#2193](https://github.com/go-to-k/cdkd/issues/2193)) is the missing half of
-the `outputs` bag. That bag is keyed by output NAME, and an output carrying
-`Export:` is ADDITIONALLY aliased under its export name in the same bag (see
-`src/deployment/outputs-export-alias.ts`) — so before v9 nothing in the record
-said which keys were exports, and the four readers that derive "what does
-this stack export" from it (the exports index on `updateForStack` and on
-rebuild, the resolver's `state.json` fallback scan, and the local-command
-loader's `Fn::ImportValue` fallback scan in
-`src/cli/commands/local-state-loader.ts`) took EVERY key. A
-plain `CfnOutput('VpcId')` in an unrelated stack was therefore indexed as the
-producer of export `VpcId`, last writer wins, and a consumer's
-`Fn::ImportValue: VpcId` bound to whichever stack deployed most recently —
-silently, and with a value CloudFormation would never hand out (its export
-namespace is separate, and it refuses a second producer of one name).
+## `exportNames` (v9+)
 
-All four readers now go through ONE predicate, `importableOutputKeys(state)`
-in `src/types/state.ts`: `exportNames` when the record carries it, intersected
-with the bag; every key when it does not. It FAILS CLOSED on a hand-edited
-record. The discriminator is the FIELD, not
-`version` — `undefined` means NOT KNOWN (a pre-v9 record, or a v9 partial save
-that carried a pre-v9 bag forward) and keeps the legacy rule so no existing
-cross-stack reference breaks on upgrade; `[]` means KNOWN to export nothing.
-Two writer rules follow, and both are fenced by
-`tests/unit/deployment/deploy-engine-cross-stack-read-writers.test.ts`: a save
-that RE-RESOLVES outputs (the success path, the no-change refresh; #2771's
-partial persist writes the merged set, and its keep-whole arm carries the kept bag's set) writes the set, `[]` included — unlike `imports` / `outputReads`, an empty
-array is NOT omitted, because absent and empty are different records here;
-and a save that CARRIES a bag forward (`outputs: currentState.outputs` on the
-five failure-path saves, `cdkd import` over an existing record) spreads
-`exportNamesCarriedFrom(previous)` next to it, never inventing `[]` for a bag
-whose set it does not know. The no-change deploy path additionally persists
-the set (and re-feeds the exports index with the exports only) whenever the
-EFFECTIVE export set changed even though the outputs VALUES did not — compared
-as `importableOutputKeys(currentState)` against the set this save writes. Two
-shapes reach it: a pre-v9 record whose every-key legacy set differs from the
-real exports (its first migration, evicting the plain-name entries a pre-v9
-deploy published — without which a producer whose template never changes would
-pollute the index forever), and a SELF-NAMED export toggled on a v9 record
-(`Export.Name` equal to the output key rewrites the same key with the same
-value, so the bag is byte-equal but `exportNames` flips between `[]` and
-`[<key>]`). It is kept OUT of the "outputs value changed" branch so it does not
-flip that log line or the persisted-bag choice. Duplicate producers of one export name (two stacks both EXPORTING
-it) keep the index's latest-writer policy but now WARN, on update and on
-rebuild; CloudFormation refuses the second producer outright.
+`outputs` is keyed by output NAME, and an output carrying `Export:` is ADDITIONALLY aliased under its export name in the same bag (`src/deployment/outputs-export-alias.ts`) — so before v9 nothing said which keys were exports.
 
-**`outputs`** values are `unknown`, NOT `string`. `DeployEngine.resolveOutputs`
-returns `Record<string, unknown>` and persists whatever
-`IntrinsicFunctionResolver.resolve` produced for the Output's `Value` — there
-is no stringification step anywhere on that path. Most Outputs do resolve to a
-string, but an `Fn::GetAtt` that CloudFormation defines as a LIST persists a
-JSON **array** into `state.outputs` whenever it is used as the Output value
-directly instead of being wrapped in `Fn::Join` — `AWS::Route53::HostedZone`'s
-`NameServers` is the shipped case (PR #1868 made the provider preserve the SDK
-array through create / update / `getAttribute`, so the list shape now survives
-into state). Two consequences worth stating because both have been assumed
-otherwise: code reading a `state.outputs` value back must not assume `string`
-(narrow before use), and a doc or a type annotation spelling this field
-`Record<string, string>` is wrong (issue
-[#1876](https://github.com/go-to-k/cdkd/issues/1876)). An output the resolver
-could not resolve is stored as `undefined` and therefore drops out of the
-persisted JSON entirely — absence means "not resolved" (a no-change save keeps
-that key's old value, #2771).
+Every reader goes through ONE predicate, `importableOutputKeys(state)` in `src/types/state.ts`: `exportNames` intersected with the bag when the record carries it, every key when it does not. The discriminator is the FIELD, not `version` — `undefined` means NOT KNOWN and keeps the legacy rule so no cross-stack reference breaks on upgrade; `[]` means KNOWN to export nothing. A save that RE-RESOLVES outputs writes the set, `[]` included — unlike `imports` / `outputReads`, an empty array is NOT omitted. A save that CARRIES a bag forward spreads `exportNamesCarriedFrom(previous)`.
 
-**Do not verify any of this from the deploy summary.** `cdkd deploy`'s
-`Outputs:` block prints each value with `String(value)`
-(`src/cli/commands/deploy.ts`), so a persisted ARRAY renders comma-joined with
-no brackets — byte-identical to a genuine comma-separated string, which is
-exactly the observation that makes a reader conclude the value was coerced.
-(`buildDisplayOutputs` in `src/deployment/deploy-engine.ts` does NOT stringify;
-it only selects the template's declared Output keys and drops `undefined` ones,
-so an unresolved output is absent from the block rather than printed.) The
-persisted shape is visible in `state.json` itself, or via `cdkd state show`,
-whose `formatAttributeValue` passes non-scalars through `JSON.stringify`.
+## `outputs`
 
-**`deletionPolicy` / `updateReplacePolicy`** (schema v5+) are the CFn template
-attributes recorded at deploy time so the next `cdkd deploy` / `cdkd diff` can
-detect attribute-only flips that have no AWS API impact but still matter to
-cdkd's destroy-time `DeletionPolicy: Retain` skip (and to anyone reading the
-diff). Pre-v5, removing `removalPolicy: RemovalPolicy.DESTROY` from a CDK
-construct (= `DeletionPolicy` flips from `Delete` to `Retain` in the synth
-template) silently surfaced as `No changes detected` because `DiffCalculator`
-only compared `Properties`. v5 widens the diff comparator to walk these two
-attribute fields too; the UPDATE classification still fires when only these
-change, and the deploy engine refreshes the cdkd state record without
-calling any provider (there is no per-resource AWS API for either attribute).
-The destroy paths consume the recorded value through the shared
-`shouldRetainResource(deletionPolicy)` helper in `src/types/state.ts`:
-`cdkd destroy` (synth-driven, `DeployEngine` DELETE branch) uses
-`state.deletionPolicy ?? template.Resources[<id>].DeletionPolicy` so state
-wins and the template stays a back-compat fallback; `cdkd state destroy`
-(template-less, `destroy-runner.ts`) reads `state.deletionPolicy` only —
-pre-v5 state on `cdkd state destroy` therefore stays at the pre-fix
-"delete every resource in state" behavior until a redeploy under v5
-populates the field. The `Snapshot` value is honored too (issue
-[#1352](https://github.com/go-to-k/cdkd/issues/1352)) — NOT via
-`shouldRetainResource` (which only covers the two Retain variants) but via
-the final-snapshot gating at the same two destroy sites:
-`src/provisioning/final-snapshot.ts` defines the atomic-parameter type set
-(RDS DBInstance / DBCluster, Neptune / DocDB clusters, ElastiCache
-CacheCluster → `DeleteContext.finalSnapshotIdentifier`) and the pre-delete
-snapshot+wait set (`createPreDeleteFinalSnapshot`: EC2 Volume, Redshift
-Cluster, ElastiCache ReplicationGroup — issue #1353); a Snapshot-tagged
-type on the cc-api route (or one CFn itself would refuse the attribute on)
-is refused (`FINAL_SNAPSHOT_UNSUPPORTED`). `--skip-final-snapshot`
-(deploy / destroy / state destroy) is the explicit data-loss opt-out.
-`UpdateReplacePolicy: Snapshot` is honored on the deploy engine's
-replacement / recreate delete sites via the shared
-`prepareFinalSnapshotForDelete` (issue #1354); the rollback executor's
-delete-new honors only the atomic SDK-routed shape (scope decision recorded
-on #1354).
+Values are `unknown`, NOT `string`: `resolveOutputs` persists whatever the intrinsic resolver produced, so an `Fn::GetAtt` CloudFormation defines as a LIST persists a JSON **array**. Narrow before use; a type or doc spelling this `Record<string, string>` is wrong. An unresolvable output is stored as `undefined` and drops out of the JSON, so absence means "not resolved" and a no-change save keeps its old value.
 
-**`provisionedBy`** (schema v7+, issue
-[#614](https://github.com/go-to-k/cdkd/issues/614)) is the per-resource
-provisioning-layer label: `'sdk'` (cdkd's preferred fast path, direct
-synchronous AWS SDK calls per resource type) or `'cc-api'` (the Cloud
-Control API fallback path, async polling create/update/delete via the
-unified CloudControlClient). Pre-#614 every resource was implicitly
-SDK-managed, and the absent / `undefined` field on v6-and-earlier state
-records carries exactly that provenance — but it does NOT pin routing:
-rule 2 below gates on a RECORDED `'cc-api'` alone, so an absent field
-re-enters the matrix and can still be auto-routed to Cloud Control by
-rule 4 (the pre-#614 outcome for that resource). v7 writers always emit
-the field explicitly so the routing decision is durable across deploys.
-Fuller treatment in
-[docs/state-management.md](../../docs/state-management.md)'s `version: 7`
-section.
+## `deletionPolicy` / `updateReplacePolicy` (v5+)
 
-Routing decision matrix (`ProviderRegistry.getProviderFor`, called by
-the deploy / drift / destroy / state-show paths):
+The CFn template attributes recorded at deploy time, so the next `deploy` / `diff` detects attribute-only flips that have no AWS API impact: `DiffCalculator` walks both, an UPDATE fires when only they change, and the engine refreshes the record without calling a provider.
 
-1. Custom Resources (`Custom::*` / `AWS::CloudFormation::CustomResource`)
-   → Custom Resource provider, recorded as `'sdk'`.
-2. Existing-state `provisionedBy: 'cc-api'` (sticky) → Cloud Control,
-   UNLESS `wouldReturnToSdkProvider` says this resource may leave (see
-   below), in which case the decision falls through to rules 3-7 and the
-   record flips to `'sdk'`.
-3. SDK Provider registered AND no silent-drop properties (after
-   `--allow-unsupported-properties` filter) → SDK Provider.
-4. SDK Provider registered AND template uses silent-drop properties
-   NOT covered by the allow set → Cloud Control (auto-route, info log).
-5. SDK Provider registered AND every silent-drop property IS in the
-   allow set → SDK Provider (the user explicitly accepted the silent
-   drop, warn log).
-6. No SDK Provider AND Cloud Control supports the type → Cloud Control.
-7. `--allow-unsupported-types` escape hatch → Cloud Control optimistically.
+Destroy paths read them through `shouldRetainResource(deletionPolicy)`. `cdkd destroy` uses `state.deletionPolicy ?? template.Resources[<id>].DeletionPolicy`, so state wins and the template is a fallback; `cdkd state destroy` is template-less and reads state only, so pre-v5 state there deletes every resource until a redeploy populates it.
 
-The field is **sticky by default**: once a resource is `'cc-api'`, an SDK
-Provider backfill (issue #609) does not by itself migrate it back, which avoids
-physical-ID churn on every backfill release. Two narrow exemptions escape it,
-and one of them is conditional per RESOURCE rather than per type — the modes,
-the both-bags flip condition, the evidence each entry must carry, and
-`--pin-cc-api` are in
-[provisioning-sticky-routing.md](provisioning-sticky-routing.md), which loads
-when you touch the routing file itself.
+`Snapshot` is honored outside `shouldRetainResource` (which covers only the Retain variants), by final-snapshot gating at those two sites: the type sets are in `src/provisioning/final-snapshot.ts` (see [provider-delete-path.md](provider-delete-path.md)), a shape neither covers is refused, and `--skip-final-snapshot` is the opt-out. `UpdateReplacePolicy: Snapshot` is honored on the engine's replacement / recreate deletes.
 
-See docs/state-management.md's `version: 7` section. User-initiated migration
-in either direction is `--recreate-via-cc-api` (#615) and
-`--recreate-via-sdk-provider` (#651) — both destroy + recreate, so they are
-the heavy option, not the routine one. `cdkd destroy`
-consults the field to pick the
-delete path; `cdkd drift` consults it to pick `readCurrentState`;
-`cdkd state show` displays `ProvisionedBy: sdk | cc-api | (sdk, legacy default)`
-for the absent-field case so users can audit the routing.
+## `provisionedBy` (v7+)
 
-**`parentStack` / `parentLogicalId` / `parentRegion`** (schema v6+, issue
-[#459](https://github.com/go-to-k/cdkd/issues/459)) are populated on
-**nested-stack child state records only** (`AWS::CloudFormation::Stack` →
-recursive deploy via `NestedStackProvider`). Top-level stack state files
-leave all three undefined and a v6 reader treats absence as "I am a
-top-level stack", which is the correct semantics for every state file
-written before nested-stack support shipped (= every state file v1..v5
-binaries wrote). The child's S3 key uses
-`cdkd/{parentStack}~{parentLogicalId}/{region}/state.json` (the `~`
-separator avoids ambiguity with CDK Stage's `/`). Recorded so:
-(a) `cdkd state list` / `state show` can surface the parent → child
-tree, (b) `cdkd destroy <child-only>` can reject with a pointer at the
-parent (mirrors CFn's "cannot directly destroy a nested stack" semantic),
-(c) a future cross-region nested-stack capability doesn't require
-another schema bump (the explicit `parentRegion` field is there now,
-even though v1 of the feature always inherits the parent's region —
-AWS does not support cross-region nested stacks today). v5 readers see
-v6 state as `version: 6` and fail with the existing "Upgrade cdkd"
-error; v6 readers tolerate missing fields and degrade to the
-top-level-stack default. The v6 prep PR added the type bump alone —
-the `NestedStackProvider` that populates these fields lands in the
-follow-up.
+`'sdk'` (direct synchronous SDK calls) or `'cc-api'` (Cloud Control, async polling). An absent field means SDK-managed then, but does NOT pin routing: rule 2 gates on a RECORDED `'cc-api'`, so an absent field re-enters the matrix.
 
-**`outputReads`** (schema v8+, issue
-[#668](https://github.com/go-to-k/cdkd/issues/668)) is the sibling of
-`imports` for the weak-reference `Fn::GetStackOutput` intrinsic. The
-deploy-side intrinsic resolver pushes one `StateOutputReadEntry` per
-successful **same-account** resolution into the consumer's bag, and
-the deploy engine persists the bag to `state.outputReads` at save
-time (omitted from JSON when empty so the on-the-wire shape stays
-identical to v7 for no-`Fn::GetStackOutput` stacks). Consumed by
-`findDownstreamConsumers` (`src/cli/commands/recreate-downstream-consumers.ts`)
-to name `Fn::GetStackOutput` consumers in the recreate warn block, alongside
-the v4 `imports[]` walk for `Fn::ImportValue`.
+Routing matrix (`ProviderRegistry.getProviderFor`):
 
-Unlike `imports`, `outputReads` is **informational only**: there is
-NO destroy-time refusal for `Fn::GetStackOutput` references. The
-producer stays deletable independently of consumers (the intrinsic
-is a weak reference by design — see `IntrinsicFunctionResolver`'s
-`resolveGetStackOutput` JSDoc).
+1. Custom Resources (`Custom::*`, `AWS::CloudFormation::CustomResource`) -> Custom Resource provider, recorded `'sdk'`.
+2. Recorded `'cc-api'` (sticky) -> Cloud Control, UNLESS `wouldReturnToSdkProvider` says it may leave, in which case rules 3-7 decide and it flips to `'sdk'`.
+3. SDK Provider registered, no silent-drop properties after the `--allow-unsupported-properties` filter -> SDK Provider.
+4. SDK Provider registered, a silent-drop property NOT in the allow set -> Cloud Control.
+5. SDK Provider registered, every silent-drop property in it -> SDK Provider (warn).
+6. No SDK Provider, Cloud Control supports the type -> Cloud Control.
+7. `--allow-unsupported-types` -> Cloud Control.
 
-Cross-account `RoleArn`-based `Fn::GetStackOutput` reads do NOT
-push entries here in v8 — the resolver intentionally skips recording
-in the cross-account branch because a `sourceAccountId` field would
-be required for unambiguous match keys, deferred to a future bump.
-Same-account cross-region reads ARE recorded (the consumer's region
-is independent of the producer's, and `state.outputReads[].sourceRegion`
-captures the producer's region).
+The field is **sticky by default**: an SDK Provider backfill does not migrate a `'cc-api'` resource back. Exemptions and `--pin-cc-api`: [provisioning-sticky-routing.md](provisioning-sticky-routing.md). User-initiated migration is `--recreate-via-cc-api` / `--recreate-via-sdk-provider` (destroy + recreate).
 
-Pre-v8 state with `outputReads === undefined` is treated by v8 readers
-as "no GetStackOutput consumers known" — `findDownstreamConsumers`
-degrades to imports-only enumeration, matching the v4-shipped
-behavior. The next deploy under the v8 binary repopulates the field.
+## `outputReads` (v8+)
 
-**`observedBaselineRefused`** (schema v10+, issue
-[#2944](https://github.com/go-to-k/cdkd/issues/2944)) records that `cdkd
-import` DECLINED to capture an `observedProperties` baseline for this
-resource, so no later writer may synthesize one from its `properties`.
-`undefined` means NOT refused — every pre-v10 record, and what the four
-affected writers (`DeployEngine.kickOffAutoRefreshObservedProperties`, `cdkd
-state refresh-observed`, `cdkd drift --accept`, `cdkd drift --revert`)
-assumed before the field existed, which is what makes the v9 -> v10
-migration transparent with no per-field migration code.
+The `imports` sibling for the weak-reference `Fn::GetStackOutput`: one entry per successful **same-account** resolution, omitted from JSON when empty. Unlike `imports` it is **informational only** — no destroy-time refusal, so the producer stays deletable independently of consumers. Cross-account `RoleArn` reads push NO entries (a match key would need a `sourceAccountId`); same-account cross-region reads ARE recorded. `undefined` reads as "no consumers known".
 
-**The AUTHORITY is the field's own JSDoc in `src/types/state.ts`** — why the
-refusal has to be persisted rather than returned, what discharges it (an
-import capture that succeeds, and a deploy that CREATEs / UPDATEs / replaces
-the resource, whose record rebuild drops the field; a NO_CHANGE deploy does
-NOT), and why the bump is a TRADE rather than a free win. It is not repeated
-here: a second copy of an argument this long is the drift shape this corpus
-fences elsewhere, and every reader of this table is one `Go to definition`
-away from it.
+## `observedBaselineRefused` (v10+)
 
-**`observedProperties`** is populated on each successful create / update by
-calling `provider.readCurrentState` fire-and-forget after the resource flips
-to its new state. The deploy critical path does NOT block on these — the
-in-flight set is drained right before the final state save so the cost is
-~`max(per-resource readCurrentState latency)` ≈ 200-300ms in practice.
-`cdkd import` populates the same field synchronously (parallel
-`Promise.all` over the imported set) right before the state write, so the
-very first `cdkd drift` after adoption has a real AWS-current baseline
-instead of the user's template intent. The field is the drift
-comparator's preferred baseline; resources written by an older binary or
-by a provider without `readCurrentState` keep `observedProperties:
-undefined` and the comparator falls back to `properties` (the pre-v3
-behavior). Pass `--no-capture-observed-state` (or set `cdk.json
-context.cdkd.captureObservedState: false`) to disable the deploy-time
-capture and regain the pre-v3 deploy time at the cost of weaker drift
-detection.
+`cdkd import` DECLINED to capture an `observedProperties` baseline here, so no writer that refreshes observed state (deploy auto-refresh, `state refresh-observed`, `drift --accept` / `--revert`) may synthesize one from `properties`. `undefined` means NOT refused, which is every pre-v10 record and what those writers already assumed, so v9 -> v10 needs no migration code. The AUTHORITY is the field's JSDoc in `src/types/state.ts`.
 
-**`orphans`** (issue [#2934](https://github.com/go-to-k/cdkd/issues/2934), NO
-schema bump): rollback-orphaned `Retain` resources the next deploy re-adopts
-rather than colliding with. Why it carries the whole `ResourceState`, and the
-three duties that fail SILENTLY when skipped (redaction, carry-through,
-absent-means-today), are in the field's own doc comment in `src/types/state.ts`.
+## `observedProperties` (v3+)
+
+Populated on each successful create / update by a fire-and-forget `provider.readCurrentState`, the in-flight set drained just before the final save so the critical path does not block; `cdkd import` populates it synchronously, so the first `cdkd drift` has a real baseline rather than template intent. It is the drift comparator's preferred baseline; an older record, or a provider without `readCurrentState`, leaves it `undefined` and the comparator falls back to `properties`. `--no-capture-observed-state` disables the capture.
 
 ## Rollback journal (NOT part of the state schema)
 
-The `rollback-journal.json` object (issue
-[#1183](https://github.com/go-to-k/cdkd/issues/1183)) is a **sibling** of
-`state.json` at `s3://bucket/cdkd/{stackName}/{region}/rollback-journal.json`,
-NOT a field inside `StackState`. It carries its own `journalVersion` (starting
-at `1`), independent of `StackState.version` — a schema bump is deliberately
-avoided so old binaries reading state are unaffected and the
-schema-migration round-trip integ is not owed. It is written by the deploy
-engine whenever a deploy ends without a completed rollback (a `--no-rollback`
-failure, a SIGINT interruption, or before an automatic rollback), holds one
-`segment` per failed deploy attempt (each a verbatim `CompletedOperation[]`,
-plus — since issue #1198 — an ADDITIVE optional `failedOperations` list
-recording the op(s) that FAILED mid-deploy with their pre-op `previousState`
-and intrinsic-resolved `attemptedProperties`; no `journalVersion` bump, old
-binaries ignore the field), and is consumed by the standalone `cdkd rollback`
-command (`--revert-failed` opts in to replaying `failedOperations`). Lifecycle: created
-on failure, segment-popped per replayed segment, deleted on the next
-successful deploy / a clean rollback / `cdkd destroy` / `cdkd state destroy`
-(the last two via `S3StateBackend.deleteState`, which sweeps the journal key).
-An unknown `journalVersion` on read is a hard error asking the user to upgrade
-cdkd (forward-compat guard, mirrors the state-schema handling). Types live in
-`src/types/rollback-journal.ts`; the replay executor in
-`src/deployment/rollback-executor.ts` (shared with the engine's in-process
-automatic rollback).
+`rollback-journal.json` is a **sibling** of `state.json` under the same key prefix and carries its own `journalVersion` (from `1`), so old binaries reading state are unaffected. The engine writes it whenever a deploy ends without a completed rollback (`--no-rollback` failure, SIGINT, or before an automatic rollback), holding one `segment` per failed attempt: a verbatim `CompletedOperation[]`, plus an ADDITIVE optional `failedOperations` list with each failed op's pre-op `previousState` and intrinsic-resolved `attemptedProperties` (no bump; old binaries ignore it). `cdkd rollback` consumes it, `--revert-failed` replays `failedOperations`, and it is segment-popped per replayed segment and deleted on the next successful deploy, clean rollback or destroy. An unknown `journalVersion` is a hard error asking the user to upgrade.
 
-**Secret redaction in the journal (GHSA fix).** The persisted operations carry
-`properties` / `attemptedProperties` / `previousState`, which the engine runs
-through the SAME secret-dynamic-reference redaction as `state.json` before
-writing — every `{{resolve:secretsmanager:...}}`, plus a `{{resolve:ssm:...}}`
-whose parameter is a `SecureString` (issue
-[#1901](https://github.com/go-to-k/cdkd/issues/1901); a `String` / `StringList`
-parameter is public config and stays resolved) — so the journal never holds
-resolved secret plaintext either.
-The replay executor therefore RE-RESOLVES those expressions to the concrete
-secret before calling `provider.update()` / `create()` (a rollback replaying the
-literal `{{resolve:...}}` token would corrupt the resource), and re-redacts the
-rebuilt state record so the expression stays in state. So
-`attemptedProperties` above is "intrinsic-resolved EXCEPT secret dynamic
-references, which are the redacted expression" — resolved on replay, not
-persisted resolved.
+**Secret redaction.** The persisted operations carry `properties` / `attemptedProperties` / `previousState`, which the engine runs through the SAME secret-dynamic-reference redaction as `state.json` before writing: every `{{resolve:secretsmanager:...}}`, plus a `{{resolve:ssm:...}}` whose parameter is a `SecureString` (a `String` / `StringList` one is public config and stays resolved). The replay executor RE-RESOLVES those expressions before `create()` / `update()` — the literal token would corrupt the resource — and re-redacts the rebuilt record.

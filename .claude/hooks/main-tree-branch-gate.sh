@@ -730,8 +730,7 @@ EOF
 # refuse a legitimate inspection spelling in three repos) and belongs in its own
 # PR. What #2402 removed is the CONSEQUENCE of allowing it, not the allowance --
 # so the pass below is now a pass with nothing composing off it, rather than a
-# pass with a measured cost. Recorded here and in
-# .claude/rules/hooks-main-tree-branch.md.
+# pass with a measured cost. Recorded here.
 #
 # What IS fixed here is the WORDING:
 # `git checkout -d <branch>` / `--detach <branch>` really detaches (measured,
@@ -742,8 +741,8 @@ EOF
 # KNOWN BOUND, in the message rather than the verdict: `gate_segments` truncates
 # a segment at a `}`, so `git switch -c 'feat/{id}'` blocks correctly but the
 # message and its `git worktree add` recipe name `feat/{id` . The cause is in the
-# shared splitter, which every gate in the library calls; it is recorded in
-# .claude/rules/hooks-main-tree-branch.md rather than worked around here.
+# shared splitter, which every gate in the library calls, so it is recorded
+# here rather than worked around in this file.
 verdict_for() {
   local verb="$1" rest="$2" dir="$3"
   local tok pending="" create_val="" create_flag="" detach_flag="" track_flag=""

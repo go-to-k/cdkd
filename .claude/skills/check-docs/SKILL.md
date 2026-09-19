@@ -5,61 +5,100 @@ description: Check if documentation (README.md, CLAUDE.md, docs/) is up to date 
 
 # Documentation Consistency Check
 
-You are checking whether documentation is up to date with recent code changes in this repository.
+You are checking whether documentation is up to date with recent code changes in
+this repository.
 
 ## Steps
 
-1. **Identify what changed**: Run `git diff main...HEAD --name-only` (or `git diff HEAD~5 --name-only` if on main) to see recently changed source files.
+1. **Identify what changed**: `git diff main...HEAD --name-only` (or
+   `git diff HEAD~5 --name-only` if on main).
 
-2. **Decide whether a deep review is needed (short-circuit)**. Most internal refactors and bug fixes don't affect anything the docs describe. Skip the LLM-judged review when the diff **only** touches files that the docs don't describe. A deep review is required if the diff touches ANY of:
-   - `src/index.ts` — public exports
-   - `src/cli/options.ts`, `src/cli/commands/**` — CLI surface described in docs/getting-started.md and the per-command pages under docs/ (the README's usage sections moved there)
-   - `src/types/**` — public type definitions
-   - `src/state/**` — bucket name, key layout, lock layout, schema version. These are documented verbatim in `docs/state-management.md`, `docs/troubleshooting.md`, `docs/stack-outputs.md` (the "Outputs" example path), and CLAUDE.md ("S3 storage structure"). A path-layout change in `s3-state-backend.ts` or `lock-manager.ts` invalidates ~30 shell snippets across those files; the auto-migration session of 2026-05-01 (PR #57 → v0.7.0) shipped before this trigger existed and the docs took the full rollout to be re-aligned.
-   - **any new file added** anywhere under `src/**` — must be mentioned in CLAUDE.md "Key Files and Directories"
-   - `package.json` — dependency additions/removals described in CLAUDE.md "Dependencies"
-   - `README.md`, `CLAUDE.md`, `docs/**`, `.claude/rules/**`, `plugins/**` — the docs themselves. `plugins/**` is listed as a TRIGGER here and not only as a target in step 3, for the reason the `.claude/rules/` bullet below gives about itself: a plugins-only diff matches no other trigger, so without this line it short-circuits to "no docs-visible surface touched" with the page never opened — and step 3 could not save it either, since that step is scoped to changed SOURCE files. That is the issue [#2615](https://github.com/go-to-k/cdkd/issues/2615) shape, and go-to-k/cdkd#2673's first cut walked into it by adding the target without the trigger.
-   - README-visible CLI behavior changes (new flags, changed defaults, new commands)
-   - **ANY `src/**` file matched by a `paths:` glob in a `.claude/rules/` satellite.** In practice that is nearly every src file — `code-layout.md` routes each area to one — so this trigger is the reason the short-circuit below is narrow rather than the common case. It is listed HERE, in the step-2 gate, and not only in step 3: the satellites were previously named as a step-3 TARGET while the paths that reach them were not step-2 TRIGGERS, so a change confined to `src/provisioning/**` or `src/deployment/**` short-circuited out with no rule file opened. That is exactly how issue [#2615](https://github.com/go-to-k/cdkd/issues/2615) reached review with a rule file still teaching a decision the same PR had reverted. A comment-only or message-only edit does NOT exempt it: those rule files assert DECISIONS about the code, and a reworded message or a retired rationale is precisely what invalidates one.
+2. **Decide whether a deep review is needed (short-circuit)**. Most internal
+   refactors and bug fixes do not affect anything the docs describe. A deep
+   review IS required if the diff touches any of:
+   - `src/index.ts` — public exports.
+   - `src/cli/options.ts`, `src/cli/commands/**` — the CLI surface described in
+     `docs/getting-started.md` and the per-command pages under `docs/`.
+   - `src/types/**` — public type definitions.
+   - `src/state/**` — bucket name, key layout, lock layout, schema version, all
+     documented verbatim in `docs/state-management.md`,
+     `docs/troubleshooting.md`, `docs/stack-outputs.md` and CLAUDE.md. A
+     path-layout change invalidates dozens of shell snippets across them.
+   - Any NEW file under `src/**` — it must be reachable from CLAUDE.md's key-file
+     index.
+   - `package.json` — dependency changes described in CLAUDE.md "Dependencies".
+   - `README.md`, `CLAUDE.md`, `docs/**`, `.claude/rules/**`, `plugins/**` — the
+     docs themselves. `plugins/**` is a TRIGGER and not only a step-3 target: a
+     plugins-only diff matches nothing else, and step 3 is scoped to changed
+     SOURCE files.
+   - **Any `src/**` file matched by a `paths:` glob in a `.claude/rules/`
+     satellite** — in practice nearly every src file. A comment-only or
+     message-only edit does NOT exempt it: those rule files assert DECISIONS
+     about the code, and a reworded message or a retired rationale is precisely
+     what invalidates one.
 
-   If none of the above apply (only internal src files modified, no new files, no deps changed, and no `.claude/rules/` satellite claims the paths), write a one-line note — "no docs-visible surface touched" — and stop. Do NOT re-read docs for unrelated internal edits.
+   If none apply, write "no docs-visible surface touched" and stop.
 
-3. **For each changed source file** (when a deep review is warranted), determine what documentation might be affected:
-   - **ANY `src/**` change → the `.claude/rules/` satellites whose `paths:` frontmatter glob matches the changed file.** DERIVE them (`for f in .claude/rules/*.md; do echo "$f"; sed -n '/^paths:/,/^---$/p' "$f"; done`, or the per-area row in `.claude/rules/code-layout.md`) rather than recalling them, then read what each SAYS about the code you changed — not just whether it names your new files. Use the `sed` range and not a `grep -A<n>` form, which silently truncates the rule files declaring several globs. The corpus appeared in this skill only as a step-2 TRIGGER and never as a TARGET, so this check could pass with no rule file opened. That is how issue [go-to-k/cdkd#2615](https://github.com/go-to-k/cdkd/issues/2615) reached review with a merge blocker: it hedged `renderStatefulReason('has-objects')` while `.claude/rules/layout-provisioning.md` still read that that wording "stays assertive by an explicit, recorded decision" **and** told future sessions to consult that record before rewording a case — an instruction to restore what the same PR had retired. Pay particular attention to a rule file asserting a DECISION about the code: nothing mechanical watches one. A phrase-sync test (`tests/unit/deployment/stateful-replace-message-doc-sync.test.ts`) pins a QUOTE, never a claim about why the quote is what it is.
-   - `src/cli/` changes → check CLI options/commands in docs/getting-started.md + the per-command pages under docs/, and CLAUDE.md
-   - `src/synthesis/` changes → check docs/architecture.md synthesis section, CLAUDE.md synthesis section
-   - `src/assets/` changes → check docs/architecture.md asset section, CLAUDE.md asset section
-   - `src/deployment/` changes → check docs/architecture.md deployment section, CLAUDE.md deployment section
-   - `src/provisioning/` changes → check docs/provider-development.md AND docs/provider-rules.md (the rules corpus split out of it), plus the CLAUDE.md provider section. For a NEW SDK provider ALSO check docs/supported-resources.md + docs/import.md (per `.claude/rules/providers.md` "Adding a New SDK Provider"). **If the provider gates a stabilization wait on `process.env['CDKD_NO_WAIT']`** (i.e. `--no-wait` skips a multi-minute poll for this type), its resource type MUST appear in the per-type wait-semantics table + its intro in docs/cli-deploy.md, and the `noWaitOption` help + JSDoc in src/cli/options.ts (the README no longer enumerates flags — that content lives in docs/cli-deploy.md's table). Enforced by `tests/unit/provisioning/no-wait-doc-coverage.test.ts` (CI fails if a `CDKD_NO_WAIT` provider is absent from the cli-deploy.md `--no-wait` table). The `AWS::Lambda::MicrovmImage` provider shipped honoring `--no-wait` but missed this list — this bullet + that test are the backstop.
-   - `src/analyzer/` changes → check docs/architecture.md analysis section
-   - `src/state/` changes → check docs/state-management.md
-   - New files added → check if they're mentioned in CLAUDE.md "Key Files and Directories"
-   - New exports in `src/index.ts` → check if public API docs are updated
-   - `package.json` dependency changes → check CLAUDE.md "Dependencies" section
-   - New CLI options → check docs/getting-started.md and the per-command pages under docs/ (the README's usage cheatsheet moved there)
-   - New integration tests → check docs/testing.md AND docs/integ-fixture-conventions.md (the fixture rules split out of it)
-   - **ANY behaviour change → `plugins/cdkd-skills/skills/cdkd/SKILL.md`**, the DISTRIBUTED plugin surface. It restates behaviour that `docs/` also describes, for an audience installing the plugin rather than reading this repo. Grep it for the subject you changed rather than reading all of it — and if you edit it, **bump the `version` in BOTH `plugins/cdkd-skills/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` in the same PR**: the file's own header mandates that and nothing enforces it, so an un-bumped edit ships to nobody. This skill previously sent a session to `docs/` and `.claude/rules/` on a behaviour change and never named this file — issue [go-to-k/cdkd#2673](https://github.com/go-to-k/cdkd/issues/2673). `tests/unit/scripts/plugin-skill-cli-claims.test.ts` covers the mechanical half (every `cdkd <command> --flag` it advertises must exist); the PROSE is what this step is for.
+3. **For each changed source file**, determine what documentation is affected:
+   - **Any `src/**` change → the `.claude/rules/` satellites whose `paths:` glob
+     matches it.** DERIVE them —
+     `for f in .claude/rules/*.md; do echo "$f"; sed -n '/^paths:/,/^---$/p' "$f"; done`,
+     or the per-area row in `.claude/rules/code-layout.md` — rather than
+     recalling them, and use the `sed` range, not `grep -A<n>`, which truncates
+     a file declaring several globs. Then read what each one SAYS about the code
+     you changed, not just whether it names your new files. Nothing mechanical
+     watches a rule file that asserts a decision.
+   - `src/cli/` → CLI options/commands in `docs/getting-started.md`, the
+     per-command pages, and CLAUDE.md.
+   - `src/synthesis/`, `src/assets/`, `src/deployment/`, `src/analyzer/` → the
+     matching section of `docs/architecture.md` and of CLAUDE.md.
+   - `src/provisioning/` → `docs/provider-development.md` and
+     `docs/provider-rules.md`, plus CLAUDE.md's provider section. For a NEW SDK
+     provider also `docs/supported-resources.md` + `docs/import.md`. If the
+     provider gates a stabilization wait on `process.env['CDKD_NO_WAIT']`, its
+     resource type MUST appear in the per-type wait-semantics table in
+     `docs/cli-deploy.md` and in the `noWaitOption` help + JSDoc in
+     `src/cli/options.ts` (enforced by
+     `tests/unit/provisioning/no-wait-doc-coverage.test.ts`).
+   - `src/state/` → `docs/state-management.md`.
+   - New exports in `src/index.ts` → public API docs.
+   - `package.json` dependency changes → CLAUDE.md "Dependencies".
+   - New integration tests → `docs/testing.md` and
+     `docs/integ-fixture-conventions.md`.
+   - **Any behaviour change → `plugins/cdkd-skills/skills/cdkd/SKILL.md`**, the
+     DISTRIBUTED plugin surface, written for an audience that never reads this
+     repo. Grep it for the subject you changed. If you edit it, bump the
+     `version` in BOTH `plugins/cdkd-skills/.claude-plugin/plugin.json` and
+     `.claude-plugin/marketplace.json` in the same PR — nothing enforces that,
+     and an un-bumped edit ships to nobody.
 
-4. **Read the relevant documentation sections** and compare with the actual code to find:
-   - Missing mentions of new files, features, or options
-   - Outdated descriptions that no longer match the code
-   - Stale lists (e.g., provider lists, context provider lists) that don't match what's in the source
-   - Hardcoded lists that should reference the source directory instead
+4. **Read the relevant documentation sections** and compare with the code, for:
+   missing mentions of new files / features / options; outdated descriptions;
+   stale lists (provider lists, context-provider lists); hardcoded lists that
+   should reference the source directory instead.
 
-5. **Report findings** as a checklist:
-   - List each discrepancy found with the specific file and section
-   - For each issue, suggest the fix
-   - If no issues found, confirm documentation is consistent
+5. **Report findings** as a checklist: each discrepancy with its file and
+   section, and the suggested fix. If none, confirm the docs are consistent.
 
-6. **Fix the issues** if the user agrees, or ask for confirmation first.
+6. **Fix the issues**, or ask for confirmation first.
 
 ## When to run this
 
-Run this walk before committing, and again before opening the PR if anything changed since. It only needs re-running when one of `src/**`, `docs/**`, `README.md`, `CLAUDE.md` or `.claude/rules/**` is edited. If issues remain unfixed, fix them and re-run — do not report the docs consistent.
+Before committing, and again before opening the PR if anything changed since. It
+only needs re-running when one of `src/**`, `docs/**`, `README.md`, `CLAUDE.md`
+or `.claude/rules/**` is edited. If issues remain unfixed, fix them and re-run —
+do not report the docs consistent.
 
 ## Important
 
-- Do NOT add documentation that doesn't exist yet (don't create new doc files)
-- Focus on consistency between existing docs and code, not completeness
-- Check CLAUDE.md's "Known Limitations" section AND `docs/changelog-cdkd.md` (the per-PR shipped-feature changelog moved out of CLAUDE.md per Claude Code's ≤200-line memory guidance) for stale entries. **First ask whether this change writes an entry AT ALL**: only a user-visible behavior delta does — what the SHIPPED BINARY does — in practice `src/**` plus anything feeding data the runtime reads (a `scripts/**` generator whose output the deploy path consumes is IN, since a schema refresh can silently drop a property). Agent instructions, tests, CI, hooks and behavior-describing docs write NONE, and their reasoning goes to the commit message, `docs/design/`, or the implementing module's or test's doc comment (issue go-to-k/cdkd#2779). An entry that IS required is written as ONE FILE under `changelog.d/entries/<YYYY-MM-DD>-<issue>-<slug>.md` containing the bullet and no dated heading (the assembler emits one per date; `docs/changelog-cdkd.md` is built by `vp run gen:changelog` and gitignored — issue go-to-k/cdkd#2779), and is capped at 2000 characters over the bullet and its continuation lines (issue go-to-k/cdkd#2552, enforced by `tests/unit/scripts/changelog-entry-size.test.ts`): keep the behavior delta, the changed files, and the issue / PR + residual numbers, and put a design decision in `docs/design/<issue>-<slug>.md` or a mechanism in the implementing module's or test's doc comment, linked from the entry
-- Prefer referencing source directories over hardcoded lists in docs
+- Do NOT create new doc files; check consistency, not completeness.
+- Check CLAUDE.md's "Known Limitations" and the changelog entries for stale
+  content. **First ask whether this change writes a changelog entry AT ALL**:
+  only a user-visible behavior delta does — what the shipped binary does. Agent
+  instructions, tests, CI, hooks and behavior-describing docs write none. A
+  required entry is ONE file under
+  `changelog.d/entries/<YYYY-MM-DD>-<issue>-<slug>.md` carrying the bullet and no
+  dated heading, capped at 2000 characters
+  (`tests/unit/scripts/changelog-entry-size.test.ts`); a design decision goes to
+  `docs/design/<issue>-<slug>.md` instead.
+- Prefer referencing source directories over hardcoded lists in docs.

@@ -26,12 +26,11 @@ Detect and optionally delete AWS resources left behind by cdkd integration tests
    - If a prefix is given, use that
    - Otherwise, discover all integration test stack names by running synth or reading `bin/app.ts` in each `tests/integration/*/` directory. Look for the CDK construct ID (second argument to `new *Stack(app, '<id>')`)
 
-2. **Resolve region and account**: Scan `us-east-1`, `ap-northeast-1`, AND `us-west-2` — the benchmark suite (docs/benchmarks.md) runs its CFn/cdkd variant stacks in `us-west-2`, and its leftovers (billed PROVISIONED Kinesis streams, ~130 Lambda log groups) went unnoticed for a month because this skill only scanned the first two regions (2026-07-31 sweep). Additionally, derive extra regions dynamically from the state-bucket key layout (`aws s3 ls` the bucket recursively and collect the distinct `{region}` path segments) so a fixture pinned to an unusual region is not missed. Resolve account ID via `aws sts get-caller-identity`. IAM is global so only needs one query.
+2. **Resolve region and account**: Scan `us-east-1`, `ap-northeast-1`, AND `us-west-2` — the benchmark suite (docs/benchmarks.md) runs its CFn/cdkd variant stacks in `us-west-2`, and its leftovers (billed PROVISIONED Kinesis streams, Lambda log groups) are invisible to a two-region scan. Additionally, derive extra regions dynamically from the state-bucket key layout (`aws s3 ls` the bucket recursively and collect the distinct `{region}` path segments) so a fixture pinned to an unusual region is not missed. Resolve account ID via `aws sts get-caller-identity`. IAM is global so only needs one query.
 
 3. **Check S3 state**: `aws s3 ls s3://cdkd-state-{accountId}-us-east-1/stacks/ --region us-east-1`
 
-3.5. **Bulk-sweep orphaned deployment-event stores** (issue #885 follow-up): since the
-   deployment-events feature (#820), `cdkd destroy` / `cdkd state destroy` removes
+3.5. **Bulk-sweep orphaned deployment-event stores**: `cdkd destroy` / `cdkd state destroy` removes
    `state.json` but, unless `--purge-events` was passed, INTENTIONALLY leaves the
    `cdkd/{stack}/{region}/deployments/` event store behind (post-mortem history). After
    a long integ campaign those orphaned event stores accumulate across dozens of
@@ -93,7 +92,7 @@ Detect and optionally delete AWS resources left behind by cdkd integration tests
    - Cognito User Pools: `aws cognito-idp list-user-pools --max-results 60 --region us-east-1 --query 'UserPools[?contains(Name, \`{Prefix}\`)].{Name:Name,Id:Id}'`. Delete with `aws cognito-idp delete-user-pool --user-pool-id {id} --region us-east-1`.
    - Secrets Manager secrets: `aws secretsmanager list-secrets --region us-east-1 --query 'SecretList[?contains(Name, \`{Prefix}\`)].{Name:Name,Arn:ARN}'`. Delete with `aws secretsmanager delete-secret --secret-id {arn} --force-delete-without-recovery --region us-east-1`.
    - Step Functions state machines: `aws stepfunctions list-state-machines --region us-east-1 --query 'stateMachines[?contains(name, \`{Prefix}\`)].{Name:name,Arn:stateMachineArn}'`. Delete with `aws stepfunctions delete-state-machine --state-machine-arn {arn} --region us-east-1`.
-   - FSx final backups (issue #1113): a destroyed `AWS::FSx::FileSystem` may leave a chargeable final backup behind. cdkd's destroy keeps CFn parity (`DeleteFileSystem` with API defaults, which TAKE a final backup for Windows/ONTAP; observed on OpenZFS too), and `AutomaticBackupRetentionDays: 0` does NOT prevent it. These backups usually carry NO tags (`CopyTagsToBackups` defaults to false), so the prefix scans above miss them. List ALL backups, not just prefix matches:
+   - FSx final backups: a destroyed `AWS::FSx::FileSystem` may leave a chargeable final backup behind — cdkd's destroy keeps CFn parity (`DeleteFileSystem` with API defaults, which TAKE one), and `AutomaticBackupRetentionDays: 0` does NOT prevent it. They usually carry NO tags, so the prefix scans miss them. List ALL backups:
      ```bash
      aws fsx describe-backups --region us-east-1 \
        --query 'Backups[].{Id:BackupId,FsId:FileSystem.FileSystemId,Type:FileSystem.FileSystemType,Cap:FileSystem.StorageCapacity,Created:CreationTime,BackupTags:Tags,FsTags:FileSystem.Tags}'
@@ -113,7 +112,7 @@ Detect and optionally delete AWS resources left behind by cdkd integration tests
      done
      ```
      **Safety (KMS-specific, MUST hold):** only `KeyManager==CUSTOMER` AND `KeyState==Enabled` keys (never touch `AWS`-managed keys, and skip anything already `PendingDeletion`); match cdkd origin via the key **Description** (integ keys carry descriptions like `... cdkd #609 integ` / `bughunt sweep11 key A`) or tags (`aws kms list-resource-tags`). **Skip any key that is the active API Gateway account CloudWatch role key, or that has active grants (`aws kms list-grants --key-id {id}`) or aliases (`aws kms list-aliases --key-id {id}`).** KMS keys cannot be deleted immediately — schedule deletion with `aws kms schedule-key-deletion --key-id {id} --pending-window-in-days 7 --region us-east-1` (7 is the minimum window) and **surface the returned `DeletionDate`** in the report.
-   - IAM Roles — API Gateway account-level CloudWatch roles: these are a recurring leftover class because they **survive stack destroy** — they are referenced by the account-level `apigateway` CloudWatch-role-ARN setting, not the stack, so nothing deletes them on teardown. They match the general IAM-role scan above (e.g. `CdkdApigwUsagePlanKeyExample-...`, `ApiCognitoStack-...`), but before deleting one confirm it is not the ARN currently set on the account via `aws apigateway get-account`; if it is, unset it there first.
+   - IAM Roles — API Gateway account-level CloudWatch roles **survive stack destroy**: they are referenced by the account-level `apigateway` CloudWatch-role-ARN setting, not the stack. They match the general IAM-role scan, but before deleting one confirm via `aws apigateway get-account` that it is not the ARN currently set on the account; if it is, unset it there first.
 
 5. **Report findings**: Show a table of detected resources grouped by type
 
@@ -134,5 +133,5 @@ Detect and optionally delete AWS resources left behind by cdkd integration tests
 - Never delete resources that could belong to other projects
 - When in doubt, ask the user via `AskUserQuestion`
 - Log Groups under `/aws/lambda/` are created automatically by Lambda and are safe to clean up if the function name matches
-- **Cost-bearing leftovers to prioritize**: Kinesis provisioned streams, enabled KMS customer keys, and FSx final backups bill continuously and are *not* auto-deleted on stack destroy, so they accumulate silently across integ/bug-hunt campaigns. Surface these three types first in the report. (FSx final backups are the sneakiest: usually untagged and invisible to prefix scans; three 64 GiB OpenZFS backups billed unnoticed until 2026-07-19, issue #1113.)
-- **KMS is scheduled-deletion only**: a key never leaves your account instantly — the minimum pending window is 7 days, during which it keeps billing. Always report the `DeletionDate`. Only ever touch `CUSTOMER`-managed + `Enabled` keys matched to a cdkd description/tag, and never one with active grants, aliases, or the apigateway account CloudWatch role binding.
+- **Cost-bearing leftovers to prioritize**: Kinesis provisioned streams, enabled KMS customer keys, and FSx final backups bill continuously and are *not* auto-deleted on stack destroy. Surface these three types first in the report. FSx final backups are the sneakiest: usually untagged and invisible to prefix scans.
+- **KMS is scheduled-deletion only** — the minimum pending window is 7 days, during which the key keeps billing, so always report the `DeletionDate`.

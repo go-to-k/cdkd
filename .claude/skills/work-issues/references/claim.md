@@ -2,51 +2,36 @@
 
 ## 4. CLAIM the chosen issues BEFORE editing
 
-When lanes run as SUBAGENTS (the orchestrator's default for stages 5-8), the
-PARENT posts every claim in this section — the claim is the lock and must name
-the session accountable for the lane — and the claim's `<ref>` names the branch
-/ worktree the dispatched lane agent will create, not a branch the parent
-holds. Everything else in this section is unchanged.
+When lanes run as SUBAGENTS (the default for stages 5-8), the PARENT posts every
+claim — the lock names the session accountable — and its `<ref>` names the branch
+or worktree the lane agent will create.
 
 **IN-PLACE runs name the tree they are STANDING IN**
 (`references/launch-mode.md`): the `<ref>` is the branch §5 will create plus the
-`LANE_TREE` the probe recorded. Take the TREE from the opening report rather than
-re-deriving it with `git rev-parse --show-toplevel`, whose answer follows a cwd
-that may have silently reset to the main checkout. No WORKTREE will be created,
-and a claim pointing at a worktree that never appears is exactly what §9's owner
-probes misread.
+`LANE_TREE` the probe recorded — taken from the opening report, not from
+`git rev-parse --show-toplevel`, whose answer follows a cwd that may have reset
+to the main checkout.
 
-**Do NOT claim `LAUNCH_BRANCH` — the branch checked out here right now is the
-OUTER TOOL's, not this run's** (`references/launch-mode.md`: "a branch to PUT
-BACK, never one to commit to"). So the name is COMPOSED here rather than read out
-of git with `git branch --show-current`, and it does not exist yet: §5 creates it,
-after this stage. Write "the branch §5 will create in `<LANE_TREE>`" and post the
-claim on time. A claim delayed until the branch exists is a claim posted after the
-first edit, which is the one thing this stage forbids. Such a run's lanes are
-SERIAL (§3): claiming only the top candidate is fine, and so is claiming a whole
-set — but a claimed set must mark every lane after the first `QUEUED`, because a
-reader has to tell a lane that is RUNNING from one that is merely spoken for.
+**Do NOT claim `LAUNCH_BRANCH` — the branch checked out right now is the OUTER
+TOOL's, not this run's** (a branch to PUT BACK, never to commit to). Compose the
+name here; §5 creates it after this stage. Write "the branch §5 will create in
+`<LANE_TREE>`" and post on time — a claim delayed until the branch exists is one
+posted after the first edit. Such lanes are SERIAL (§3): claim the top candidate
+or the whole set, but mark every lane after the first QUEUED, so a reader tells a
+RUNNING lane from one spoken for.
 
 ```bash
-# The QUEUED form, posted up front with the rest of the set.
 gh issue comment <n> --body "QUEUED behind #<the lane running first> in \
 <LANE_TREE> — this session will start it only after that lane merges. Not \
 started: no branch exists yet and no file is held. If you want this issue, take \
 it and say so here; I will stand down."
 ```
 
-And when the run ends before reaching one — or a lane never becomes RUNNABLE
-because another SESSION's open PR holds its file, §2's off-limits rule reaching
-across sessions — **stand it down rather than leaving the claim standing**: a
-QUEUED claim that outlives its session is the stale lock §9 makes a mechanical
-step of releasing. Say it is unclaimed, carry the four classification fields so
-the next session inherits the triage instead of redoing it, and **when the
-blocker is EXTERNAL, name the query that clears it** — "the session ended" has
-nothing to watch, "PR #N holds `<file>`" has `gh pr view <N> --json state`
-(2026-09-10: go-to-k/cdkd#2847 / go-to-k/cdkd#2885 stood down on open
-go-to-k/cdkd#2911). **Pass it via `--body-file`**: the resume query is
-BACKTICKED, and inside `--body "..."` the shell executes it and substitutes
-empty output — §9 has the same defect for the commit message.
+When the run ends before reaching one — or a lane never becomes RUNNABLE because
+another SESSION's open PR holds its file — **stand it down rather than leave the
+claim standing**: say it is unclaimed, carry the four classification fields, and
+**when the blocker is EXTERNAL name the query that clears it**, passing it **via
+`--body-file`** (that query is BACKTICKED; `--body "..."` would execute it).
 
 ```bash
 cat > "$SCRATCH/standdown-<n>.md" <<'EOF'
@@ -60,103 +45,54 @@ EOF
 gh issue comment <n> --body-file "$SCRATCH/standdown-<n>.md"
 ```
 
-For EACH issue you will start:
+For EACH issue you start:
 
 ```bash
 gh issue comment <n> --body "Working on this in PR/branch <ref> — touching <files>. \
 Claiming to avoid collision with parallel agents."
 ```
 
-Mandatory, BEFORE the first edit — the issue-level twin of the worktree DISJOINT-FILE rule (see
-"Claim a filed issue before working it" in `CLAUDE.md`).
+Mandatory, BEFORE the first edit (the issue-level DISJOINT-FILE rule).
 
-**Correct the classification lines in the same turn as the claim.** Claiming is
-the first moment this run holds evidence about the issue: rewrite a legacy
-packed body to the four-line shape (§3), fill a missing `Severity`, correct a
-value the evidence contradicts (naming the correction in the claim comment).
-The evidence is in hand now and gone later. `Notes` never goes into an issue
-body.
+**Correct the classification lines in the same turn as the claim**, the first
+moment the run holds evidence: rewrite a legacy packed body to the four-line
+shape (§3), fill a missing `Severity`, fix what the evidence contradicts (`Notes`
+never enters a body).
 
-**Carry `--add-label` on that same `gh issue edit`**
-(`--add-label severity:<v> --add-label effort:<v>`, and `--remove-label` the
-one a correction supersedes — every open issue carries one since the sweep, and
-adding without removing leaves TWO, which §3's query picks between arbitrarily)
-— a body stating a `Severity:` / `Effort:` value the labels do not carry has
-the label APPLIED in CI since go-to-k/cdkd#2717 (it only reports when body and
-label contradict). Label anyway: a lane labels on touch,
-holding the evidence, and never sweeps the backlog — a BULK sweep is the
-maintainer's call. Label BEFORE the lane's PR exists: that is what makes the
-PR inherit them (the workflow reads them at PR open).
+**Carry `--add-label` on that same `gh issue edit`** (`severity:<v>`,
+`effort:<v>`, plus `--remove-label` for the one a correction supersedes — adding
+without removing leaves TWO, which §3's query picks between arbitrarily). Label
+BEFORE the lane's PR exists, which is what makes it inherit them.
 
-**Claim at SHORTLIST time, not after the analysis** — the moment an issue
-enters your candidate set, before the deep read. Retracting costs one comment;
-a collision costs a whole lane, and the window this closes is the one that
-bites: two sessions can each triage for minutes in mutual invisibility because
-neither has posted yet.
+**Claim at SHORTLIST time, not after the analysis** — retracting costs one
+comment, a collision costs a lane.
 
-**Then VERIFY the claim stuck (compare-and-swap).** Posting is not winning —
-another session may have posted seconds earlier. Immediately re-read the issue:
+**Then VERIFY the claim stuck** — posting is not winning:
 
 ```bash
 gh issue view <n> --json comments \
   --jq '.comments[] | select(.body | test("Working on this")) | "\(.createdAt)\t\(.body[0:80])"'
 ```
 
-**Tie-break: the EARLIEST `createdAt` wins.** If a rival's claim predates
-yours, post a short stand-down comment naming the winning branch, drop the
-lane, and pick a different issue — without asking; both sessions independently
-reach the same answer from the same timestamps. Escalate to the maintainer when
-the timestamps cannot settle it (go-to-k/cdkd#1419 / go-to-k/cdkd#1435 were
-claimed twenty seconds apart and needed arbitration — 2026-08-09,
-go-to-k/cdkd#1446), and in the one other case the next paragraph names.
+**Tie-break: the EARLIEST `createdAt` wins.** If a rival's claim predates yours,
+post a stand-down naming the winning branch and pick a different issue — without
+asking. Escalate when timestamps cannot settle it (go-to-k/cdkd#1446).
 
-**A QUEUED comment IS a claim, and its `createdAt` is the timestamp the
-tie-break reads** — stated because one run read it BOTH ways inside a day: a
-rival stood down to a QUEUED claim 11 minutes older, and the QUEUED claimant
-then published a precedence note weighing only the two `Working on this`
-comments, concluding it had been the LATER claimant and justifying itself on
-"no branch, no PR, no worktree" about the session that had already YIELDED on
-the thread (2026-09-15/16, go-to-k/cdkd#2458 / go-to-k/cdkd#2769 /
-go-to-k/cdkd#2732). So **re-read the thread to the END before publishing any
-precedence account** — the one-shot check above finds claims, never
-stand-downs — and **never infer absence from a missing branch**: §9's rule is
-that an ownership signal establishes LIFE only. An issue claim carries no TTL,
-so one you believe is dead goes to the maintainer arbitration above, never to a
-self-serve takeover.
+**A QUEUED comment IS a claim, and its `createdAt` is what the tie-break reads.**
+Re-read the thread to the END before publishing a precedence account, and never
+infer absence from a missing branch: a signal shows LIFE only (§9), and a claim
+has no TTL, so one you believe dead goes to arbitration.
 
-**The tie-break only works if the LOSER re-reads. Nothing makes it, so the
-window is not seconds — it is the whole lane.** The one-shot check above
-catches only a rival who posted BEFORE you; a rival who posts LATER never
-appears in it, and both lanes run to completion. Measured (2026-08-25):
-go-to-k/cdkd#2200 was claimed twice 26 minutes apart, the losing session
-worked it anyway, and both built the same fix — the merged go-to-k/cdkd#2206
-being a superset was luck. Two cheap habits close it (a claim comment is one
-API call):
+**The tie-break only works if the LOSER re-reads, and nothing makes it** — the
+check above catches only a rival who posted BEFORE you. Re-read the claims before
+you PUSH; if yours is later, stand down even with code written.
 
-- **Re-read the claims before you PUSH, not only after you post.** If a later
-  claim exists and yours is earlier, say so on the issue; if yours is later,
-  stand down even with code written — discarding a branch is cheaper than two
-  reviews and two merges of the same change.
-- **When you find yourself the loser, record the timestamps in the stand-down
-  comment.** The rule is unenforced by construction (nothing can block another
-  session's `gh issue comment`); violations staying visible is what keeps it
-  alive.
+**Claim what you FILE, too — filing is not claiming**, since a self-filed
+deferral is invisible to every ownership probe. For one THIS run means to pick up
+(`Session-fit: now`), claim it in the turn you file it, naming the LANE, not your
+current branch, which §9 deletes. One handed off (`next`) gets NO claim until a
+later run takes it.
 
-**Claim what you FILE, too — filing is not claiming.** A self-filed deferral is
-invisible to every ownership probe (no branch, no PR, no comment; only §3-0's
-hour covers it). When the issue is one THIS run means to pick up
-(`Session-fit: now` in its body), post the claim in the same turn you file it,
-naming the LANE and the issue it defers from — not just your current branch:
-§9 merges with `--delete-branch`, so a claim naming the branch you are on now
-reads stale exactly when you come back; re-post with the real branch when you
-open that lane. An issue you are handing off (`Session-fit: next`) gets NO
-claim at filing time — that would park a released issue under a session that
-decided not to do it — but a LATER run that takes it claims it normally.
-
-**Do not trust a handoff table — verify it live.** A "these issues are taken"
-note is a snapshot of the moment it was written; PRs merge and worktrees
-disappear. Re-derive occupancy from `gh pr list --state open`,
-`git worktree list`, and the issues' own comments before believing any of it —
-each read as evidence of LIFE only, never of absence (§9). What RELEASES an
-issue is positive: a stand-down comment, or the issue closed. Absent one, a
-"taken" entry stands however old it looks.
+**Do not trust a handoff table — verify occupancy live** (`gh pr list`,
+`git worktree list`, the issues' comments): each is evidence of LIFE only, and
+only a stand-down or a closed issue RELEASES one (§9).

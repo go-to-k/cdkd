@@ -576,7 +576,7 @@ gate_segments_raw() {
         # substitution still fell to the splitting arm and stayed a full bypass:
         # measured with the repo on `main`, `git -C `<nl> echo <wt> <nl>` commit`
         # gave branch-gate rc=0 while its `$( )` twin gave rc=2 -- and both the
-        # PR body and .claude/rules/hooks-class-fences.md called the class
+        # PR body called the class
         # CLOSED, which is worse than not claiming it.
         #
         # PARITY, NOT DEPTH, and that is forced rather than stylistic: backticks
@@ -2205,7 +2205,7 @@ gate_dequote_structural() {
                 #
                 # THE RULE THAT DECIDES THIS, and it is a rule rather than a
                 # flag list, which is what makes it closable at all
-                # (.claude/rules/hooks-class-fences.md: over-approximate the
+                # (.claude/rules/hooks.md: over-approximate the
                 # TRIGGER, stay strict on RESOLUTION). Measured on gh 2.92.0 at
                 # the `pr` / `issue` level, where cobra parses:
                 #
@@ -3211,8 +3211,8 @@ GATE_GH_C="${GATE_FLAGS:-}"
 # rule GATE_FLAGS relies on -- "a bare token in FIRST position IS the
 # subcommand" -- is exactly gh's grammar here too, so `gh pr list` and
 # `gh pr view 42` still match nothing while `gh pr -R <slug> merge 42` does.
-# A second spelling would be a second thing to keep in step; see
-# hooks-class-fences.md on why enumerating spellings has no termination proof.
+# A second spelling would be a second thing to keep in step, and enumerating
+# spellings has no termination proof.
 #
 # STRICT SUPERSET by construction: GATE_FLAGS is `(...)?`, so inserting it can
 # only ADD matches. Every cell the differential fence reports for this change is
@@ -3968,7 +3968,7 @@ gate_bounded() {
 # residue -- it is left because the cluster is not decidable from the text: a
 # per-flag ARITY table is the only thing that tells `-sR <slug>`
 # (`--squash --repo <slug>`) from `-tRelease` (`--subject Release`), and that is
-# the enumeration `.claude/rules/hooks-class-fences.md` refuses. Over-refusing
+# the enumeration this library refuses. Over-refusing
 # the cluster was considered and rejected: on a MERGE gate a wrong refusal is
 # not cheap. Filed as go-to-k/cdkd#3301.
 #
@@ -5170,7 +5170,7 @@ gate_slug_from_url() {
   # inside a PreToolUse hook against a 10 s budget -- which is a cost decision
   # and not a line in this function. It is NOT closable by teaching this parser
   # the alias: an ssh alias is user-defined and unbounded, the enumeration
-  # `.claude/rules/hooks-class-fences.md` exists to refuse.
+  # this library exists to refuse.
   #
   # What the closed half DID cost was measured rather than argued: 52 checkouts
   # / 64 distinct remotes on the maintainer's machine, all 64 readable, so the

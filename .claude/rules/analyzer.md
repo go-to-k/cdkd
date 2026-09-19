@@ -1,40 +1,51 @@
 ---
-description: cdkd analyzer layer (intrinsic function resolution, dependency analysis, DAG building)
+description: cdkd analyzer layer (intrinsic resolution, dependency analysis, DAG)
 paths:
   - 'src/analyzer/**'
 ---
 
 # Analyzer
 
-## Intrinsic Function Resolution
+## Intrinsic function resolution
 
-- Implemented in `IntrinsicFunctionResolver` class (`src/deployment/intrinsic-function-resolver.ts`)
-- Ref: References another resource. Resolves to the CFn `Ref` value — the physicalId for most types; see `cfnRefValueFromPhysicalId` in `src/deployment/intrinsic-function-resolver.ts` for the exceptions (compound `<parent>|<child>` CC ids, ARN-stored SDK ids like `AWS::Events::Rule` / `AWS::CloudTrail::Trail` whose `Ref` is the name). A few exceptions recover the value from a STATE KEY instead (`TableName` / `SelectionId` / `RepositoryId` / the AppSync ARNs) via `refStateLookupFromResource`. That lookup can SKIP a leaf carrying `SECRET_MASK`, and the skip is **OPT-IN**: with no `onMaskedValue` callback it returns the mask, byte-for-byte as before #2847. The opt-in is the design rather than a convenience — it was unconditional for three review rounds and each round found a fresh caller broken by it, because skipping only helps a caller that has somewhere to put the refusal; for everyone else the fall-through emits the raw physical id, which no guard recognises, where `'***'` is recognised by four. `resolveRefValue` opts in only when `context.redactedAttributeReads` exists, so `cdkd deploy` refuses (CREATE / UPDATE arms and the Outputs pass — see [layout-deployment-secrets.md](layout-deployment-secrets.md)) while `cdkd diff` / `cdkd scrub` / `cdkd import` resolve unchanged. `cdkd orphan` has no resolver context: it reports the site as `unresolvable`, and under `--force` substitutes `SECRET_MASK` rather than the physical id. The seam's own doc comment is the authority
-- Fn::GetAtt: Gets resource attributes (from state.attributes)
-- Fn::Join: String concatenation
-- Fn::Sub: Template string substitution
+`IntrinsicFunctionResolver` lives in
+`src/deployment/intrinsic-function-resolver.ts` — there is NO resolver under
+`src/analyzer/`, and a new intrinsic extends its `resolveValue()`.
 
-### Supporting a New Intrinsic Function
+`Ref` resolves to the CFn `Ref` value (`cfnRefValueFromPhysicalId` holds the
+exceptions; `refStateLookupFromResource` recovers a few from a STATE KEY). That
+lookup's `SECRET_MASK` skip is **OPT-IN**: without an `onMaskedValue` callback
+it returns the mask, since the fall-through emits a raw physical id no guard
+recognises. Only `resolveRefValue` opts in, when
+`context.redactedAttributeReads` exists, so `deploy` refuses while `diff` /
+`scrub` / `import` are unchanged.
 
-1. Extend `resolveValue()` in `src/deployment/intrinsic-function-resolver.ts`
-   — the same module named at the top of this section. There is no resolver
-   under `src/analyzer/`; this step used to say there was.
-2. Implement recursive resolution
-3. Write tests under `tests/unit/deployment/`, which splits the suite per
-   intrinsic (`intrinsic-functions.test.ts` plus one file per behaviour)
-   rather than keeping a single resolver test file
+## `Condition:` exclusion
 
-## Resource-level `Condition:` exclusion (issue #840)
+`TemplateParser.filterResourcesByCondition` prunes `Condition: false` resources
+right after `evaluateConditions`, so validation, DAG build, diff and
+provisioning see the CFn-effective set. A pruned resource still in state takes
+the diff's DELETE path; an UNKNOWN condition is KEPT (absent-from-map is not
+`=== false`).
 
-`TemplateParser.filterResourcesByCondition(template, conditions)` returns a copy of the template with every resource whose `Condition:` key resolved to `false` removed from `Resources`. CloudFormation does NOT strip condition-gated resources at synth time — CDK emits them into `Resources` carrying a `Condition:` key regardless of the condition's value — so the deploy engine calls this prune step right after `IntrinsicFunctionResolver.evaluateConditions`, and every downstream consumer (type/property validation, DAG build, diff, provisioning) operates on the CFn-effective resource set. A condition-false resource is therefore never created, and one present in prior state but condition-excluded from the effective template flows through the diff's existing "present in state, absent from desired -> DELETE" path (mirroring CFn removal). A resource whose `Condition:` names an unevaluated/unknown condition is kept (absent-from-map is not `=== false`).
+## Dependency analysis
 
-## Dependency Analysis
+`DagBuilder` scans `Ref` / `Fn::GetAtt` / `DependsOn` and topologically sorts a
+graphlib graph. On top:
 
-- Implemented in `DagBuilder` class (`src/analyzer/dag-builder.ts`)
-- Scans template to detect `Ref` / `Fn::GetAtt` / `DependsOn`
-- Builds DAG with graphlib
-- Determines execution order with topological sort
-- **Implicit edge for Custom Resources**: any `AWS::IAM::Policy` / `AWS::IAM::RolePolicy` / `AWS::IAM::ManagedPolicy` attached to a Custom Resource's ServiceToken Lambda execution role automatically gets an edge to the Custom Resource, preventing the handler from being invoked before inline policy attachment returns (avoids mid-deploy AccessDenied race)
-- **Implicit edge for Lambda VpcConfig**: every `AWS::EC2::Subnet` / `AWS::EC2::SecurityGroup` referenced by a Lambda's `Properties.VpcConfig.SubnetIds` / `SecurityGroupIds` gets an explicit edge to the Lambda (`src/analyzer/lambda-vpc-deps.ts`). Defense-in-depth on top of `extractDependencies`; for the reversed deletion traversal this guarantees Lambda is removed before its Subnet/SG so the asynchronous ENI detach has time to complete before EC2 rejects the subnet/SG delete with `DependencyViolation`.
-- **Type-based deletion ordering rules**: `src/analyzer/implicit-delete-deps.ts` centralizes type-pair rules (e.g. VPC after Subnet, Subnet after Lambda, IGW + VPCGatewayAttachment after NatGateway) shared by the deploy DELETE phase and the standalone destroy command. The IGW / VPCGatewayAttachment after NatGateway edge (issue [#817](https://github.com/go-to-k/cdkd/issues/817)) mirrors the NAT-before-IGW ordering CloudFormation enforces: a NAT Gateway holds an Elastic IP mapped to the VPC's public address space, so detaching the IGW before the NAT is gone fails with `Network vpc-xxx has some mapped public address(es)` and the IGW delete then hangs (~19 min observed). No type-based rule is needed for the EIP itself — the NAT Ref's its EIP via `AllocationId`, so the reversed delete traversal already deletes the NAT before the EIP is released. The same module also exposes `computeImplicitDeleteEdges(resources)` for per-RESOURCE delete-ordering edges no type-pair rule can express: an `AWS::CloudWatch::CompositeAlarm` references its child alarms (metric `AWS::CloudWatch::Alarm` or other composite alarms) by NAME inside its `AlarmRule` string (`ALARM("name")` / `OK(name)` / `INSUFFICIENT_DATA(name)`, plus the `arn:...:alarm:<name>` form) — a plain string, so cdkd's DAG sees no `Ref` / `Fn::GetAtt` edge. `extractReferencedAlarmNames` parses those names and the helper emits an edge making the composite alarm delete BEFORE each referenced alarm (matched by `AlarmName` property or physical id), since CloudWatch rejects deleting a metric alarm while a composite alarm still references it (`Cannot delete <alarm> as there are composite alarm(s) depending on it.`). The per-AlarmRule edge handles composite-of-composite chains; both delete consumers add these edges alongside the type-pair rules.
-- **CDK-defensive DependsOn relaxation (default-on)**: `src/analyzer/cdk-defensive-deps.ts` lists the (depender, dependee) type pairs CDK adds defensively for VPC-Lambda runtime egress (IAM Role / Policy / Lambda::Function / Lambda::Url / Lambda::EventSourceMapping → EC2 Route / SubnetRouteTableAssociation). The deploy code path constructs `DagBuilder({ relaxCdkVpcDefensiveDeps: true })` by default; the matching DependsOn edges are dropped at graph-build time so CloudFront Distribution + Lambda::Url + VPC Lambda dispatch in parallel with NAT Gateway stabilization (~55% faster on `bench-cdk-sample`). Pass `cdkd deploy --no-aggressive-vpc-parallel` to opt out (escape hatch for stacks where the user wants the strict CDK-defensive ordering — e.g. a Custom Resource that synchronously invokes a VPC Lambda outside cdkd's Lambda-ServiceToken Active wait). Only DependsOn entries in the allowlist are dropped — Ref / GetAtt and other DependsOn pairs are untouched.
+- **Custom Resource edge** — an IAM policy on a Custom Resource's ServiceToken
+  Lambda role gets an edge to the Custom Resource, so the handler is not invoked
+  before the attachment returns.
+- **Lambda `VpcConfig` edge** (`lambda-vpc-deps.ts`) — subnets and SGs in
+  `VpcConfig` get explicit edges to the Lambda, so the reversed delete traversal
+  removes the Lambda first and the async ENI detach finishes before EC2 refuses.
+- **Type-based deletion ordering** (`implicit-delete-deps.ts`) — type-pair rules
+  (VPC after Subnet, Subnet after Lambda, IGW + VPCGatewayAttachment after
+  NatGateway) shared by the deploy DELETE phase and the standalone destroy.
+- **Per-resource delete edges** — `computeImplicitDeleteEdges` handles what no
+  type pair can: a `CompositeAlarm` names its children inside the `AlarmRule`
+  STRING, so the DAG sees no edge and the composite must delete FIRST.
+- **CDK-defensive `DependsOn` relaxation, default ON**
+  (`cdk-defensive-deps.ts`) — an allowlist of type pairs CDK adds defensively
+  for VPC-Lambda egress; the deploy path passes `relaxCdkVpcDefensiveDeps: true`
+  and `--no-aggressive-vpc-parallel` opts out. ONLY allowlisted entries drop.

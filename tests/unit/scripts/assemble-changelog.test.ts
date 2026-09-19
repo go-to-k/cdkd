@@ -403,9 +403,8 @@ describe('assemble-changelog', () => {
     // last bullet, so the following section stops existing on the docs site.
     // Five changelog fences stayed green through it. The only instrument that
     // can see it is a real renderer, so this verdict uses one -- `marked` is
-    // already a devDependency, read by `rule-file-payload.test.ts` for the same
-    // reason: to answer "is this VISIBLE" rather than "does the source match a
-    // pattern".
+    // already a devDependency, read by sibling suites for the same reason: to
+    // answer "is this VISIBLE" rather than "does the source match a pattern".
     const doc = withTree(ARCHIVE, { '2026-09-09-1000-x.md': '- probe entry' }, (root) =>
       assembleChangelog(root)
     );

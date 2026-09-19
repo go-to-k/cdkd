@@ -48,7 +48,7 @@ set -u
 # plain `bash "$HOOK"` takes whatever comes first on PATH -- 5.x -- while the
 # suite itself ran under 3.2. "Passes under bash 3.2" was therefore true of the
 # test and false of the thing under test, and a regex whose two bash engines
-# DISAGREE (`gate_strip_prefix`; see .claude/rules/hooks-class-fences.md) could
+# DISAGREE (`gate_strip_prefix`) could
 # only fail on a runner that has 3.2 as both -- i.e. in CI, never here.
 #
 # Resolved to an ABSOLUTE path so the value cannot depend on where the hook is
