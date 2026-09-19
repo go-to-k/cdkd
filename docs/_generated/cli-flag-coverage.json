@@ -613,6 +613,7 @@
         "sqs-esm-max-concurrency",
         "ssm-secure-dynamic-ref",
         "stack-lock-renewal",
+        "stale-attribute-heal",
         "state-info-command",
         "stepfunctions",
         "stepfunctions-logging",
@@ -655,7 +656,8 @@
         "recreate-nested-logical-id-collision",
         "recreate-via-cc-api",
         "recreate-via-sdk-provider",
-        "rollback-replay-cc-generated-name"
+        "rollback-replay-cc-generated-name",
+        "sdk-ccapi-crossref"
       ]
     },
     {
@@ -890,6 +892,7 @@
         "sqs-esm-max-concurrency",
         "ssm-secure-dynamic-ref",
         "stack-lock-renewal",
+        "stale-attribute-heal",
         "state-info-command",
         "stepfunctions",
         "stepfunctions-logging",
@@ -1195,6 +1198,7 @@
         "sqs-esm-max-concurrency",
         "ssm-secure-dynamic-ref",
         "stack-lock-renewal",
+        "stale-attribute-heal",
         "state-info-command",
         "stepfunctions",
         "stepfunctions-logging",
@@ -1477,6 +1481,7 @@
         "sqs-esm-max-concurrency",
         "ssm-secure-dynamic-ref",
         "stack-lock-renewal",
+        "stale-attribute-heal",
         "stepfunctions",
         "stepfunctions-logging",
         "stepfunctions-s3-definition",

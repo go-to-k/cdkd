@@ -33,6 +33,7 @@ This document summarizes common issues when using cdkd and their solutions.
 - [Intrinsic Function Issues](#intrinsic-function-issues)
   - ["Unresolved intrinsic function" Error](#unresolved-intrinsic-function-error)
   - [STS cannot report the account, and pseudo parameters fall back](#sts-cannot-report-the-account-and-pseudo-parameters-fall-back)
+  - ["Cannot resolve" a GetAtt on a resource an older cdkd deployed](#cannot-resolve-a-getatt-on-a-resource-an-older-cdkd-deployed)
 - [Permission Errors](#permission-errors)
   - ["Access Denied" Error](#access-denied-error)
   - ["not authorized to perform: sts:AssumeRole"](#not-authorized-to-perform-sts-assumerole)
@@ -1336,6 +1337,63 @@ aws sts get-caller-identity
 ```
 
 ---
+
+### "Cannot resolve" a GetAtt on a resource an older cdkd deployed
+
+**Symptoms:**
+
+```
+Cannot resolve Fn::GetAtt [MyParam, Arn] for AWS::SSM::Parameter: the state
+record holds no value for it, and the physical ID fallback "/app/config" is not
+an ARN (arn:...). ... cdkd tried to re-read the attributes from AWS to heal the
+record, but the provider read failed (AccessDeniedException, HTTP 403); re-run
+with --verbose for the AWS error text.
+```
+
+**Cause:**
+
+cdkd answers `Fn::GetAtt` from the attributes it recorded in state when the
+resource was created or last updated. A record can lack one:
+
+| Record | Missing attribute |
+| --- | --- |
+| Written by a cdkd release that did not record it yet | e.g. `AWS::SSM::Parameter` `Arn`, `AWS::RDS::DBSubnetGroup` `DBSubnetGroupArn` |
+| Written while AWS had not assigned the value | `Endpoint.Address` / `Endpoint.Port` of a `--no-wait` `DBInstance` |
+| Holds a wildcard placeholder ARN from an old release | the ARN of an `AWS::AppSync::*` child |
+
+A deploy that changes none of that resource's own properties does not update
+it, so the record is not rewritten on its own.
+
+A value Cloud Control returns masked (`***`) — every value, when the deploy role
+lacks `cloudformation:DescribeType` — is treated as unreadable, never used.
+
+**What cdkd does:**
+
+When `cdkd deploy` is about to fall back to the physical ID for such a
+reference, it re-reads the resource's attributes from AWS once, uses the value,
+and adds it to the state record. The resource itself is not updated. Nothing is
+re-read for a reference that resolves from state, and `--dry-run` reads but
+records nothing.
+
+The error above appears only when that re-read could not help:
+
+| The message says | Meaning | Fix |
+| --- | --- | --- |
+| `the provider read failed (<ErrorClass>, HTTP <n>)` | The read was denied, throttled or failed | Grant the read permission (or retry), then deploy again — cdkd re-reads on every deploy until the record is healed |
+| `AWS reports no resource behind the recorded physical id` | The resource was deleted outside cdkd | Check with `cdkd drift`, then re-create it or remove it from state |
+| `cdkd re-read the resource ... reports none by that name` | The resource type does not supply this attribute | Avoid the `Fn::GetAtt`, or file an issue |
+| `re-read the resource through Cloud Control, but withheld the value` | The value came back masked, so cdkd would not use it | Grant the deploy role `cloudformation:DescribeType` and deploy again; if it has it, the name is a writable property — reference the template's own value |
+
+`--verbose` prints the AWS error text, which is withheld by default because a
+denied call quotes the caller's account, role and session.
+
+Read-only commands (`cdkd diff`, `cdkd drift`, `cdkd export`) never re-read and
+never write state. Until a deploy has healed the record they report an `*Arn` /
+`*Url` reference as unresolved, and resolve any other attribute to the physical
+ID with a warning.
+
+Changing any property of the resource, or re-importing it with `cdkd import`,
+also rewrites the record.
 
 ## Permission Errors
 

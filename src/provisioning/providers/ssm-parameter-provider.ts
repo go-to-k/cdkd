@@ -160,7 +160,8 @@ export class SSMParameterProvider implements ResourceProvider {
    * question cdkd can answer correctly — and would hand `cdkd drift` a baseline
    * AWS does not hold. Dropping the `Arn` instead degrades to the resolver's LOUD
    * `*Arn` shape-guard failure, which is exactly the pre-fix behavior, and the
-   * resource's next UPDATE re-records it. A loud missing value beats a quiet
+   * resource's next UPDATE re-records it (as does the deploy engine's re-read
+   * on a `Fn::GetAtt` miss, issue #1852). A loud missing value beats a quiet
    * wrong one — the same reasoning the `fabricated`-account arm above applies.
    *
    * Two honest bounds on that "next update re-records it". `getAccountInfo`

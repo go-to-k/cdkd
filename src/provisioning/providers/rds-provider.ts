@@ -408,9 +408,10 @@ export class RDSProvider implements ResourceProvider {
           // key this update can state authoritatively rather than supersede
           // anything. Returning the partial map always records exactly what this
           // update observed, and degrades to the resolver's LOUD `*Arn`
-          // shape-guard failure. It heals on the resource's next UPDATE — NOT on
-          // a plain re-deploy, which skips a resource whose resolved properties
-          // equal its state record without calling the provider at all (issue
+          // shape-guard failure. It heals on the resource's next UPDATE, or
+          // on the next deploy that resolves a `Fn::GetAtt` on it: a plain
+          // re-deploy skips the provider, so the deploy engine re-reads the
+          // record through `import()` on that miss (issue
           // https://github.com/go-to-k/cdkd/issues/1852).
           ...(arn !== undefined && { DBSubnetGroupArn: arn }),
         },
@@ -1735,10 +1736,24 @@ export class RDSProvider implements ResourceProvider {
     const explicit = resolveExplicitPhysicalId(input, 'DBInstanceIdentifier');
     if (explicit) {
       try {
-        await this.getClient().send(
+        const resp = await this.getClient().send(
           new DescribeDBInstancesCommand({ DBInstanceIdentifier: explicit })
         );
-        return { physicalId: explicit, attributes: {} };
+        // The map `create()` records, from the describe this verification
+        // already issues (issue #1852). It is what heals a record written
+        // under `--no-wait` while the instance was still `creating`
+        // (go-to-k/cdkd#3077): the deploy engine re-reads through `import()`
+        // when a `Fn::GetAtt` misses. `definedAttributes` keeps an unassigned
+        // endpoint ABSENT, so a still-`creating` instance heals nothing.
+        const described = resp.DBInstances?.[0];
+        return {
+          physicalId: explicit,
+          attributes: definedAttributes({
+            'Endpoint.Address': described?.Endpoint?.Address,
+            'Endpoint.Port': stringifyIfAssigned(described?.Endpoint?.Port),
+            Arn: described?.DBInstanceArn,
+          }),
+        };
       } catch (err) {
         if ((err as { name?: string }).name === 'DBInstanceNotFoundFault') return null;
         throw err;

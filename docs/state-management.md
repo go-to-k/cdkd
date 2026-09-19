@@ -1371,9 +1371,11 @@ a segment at all: cdkd recovers the ARN from the attribute the provider records.
 the ARN from the composite id you supply — so an adopted child's `Ref` and
 `Fn::GetAtt` resolve immediately.
 
-Some records can still lack the attribute, and they all degrade the same way —
-`Ref` falls back to the raw composite id, and `Fn::GetAtt` on the ARN attribute
-FAILS rather than serving a value CloudFormation would not return:
+Some records can still lack the attribute. `Ref` on such a record falls back to
+the raw composite id. For `Fn::GetAtt` on the ARN attribute, `cdkd deploy`
+re-reads the resource from AWS once and records the real ARN; when that read
+cannot supply one it FAILS rather than serving a value CloudFormation would not
+return. The records are:
 
 - one written by a cdkd older than the fix that started recording the real ARN;
 - one whose import could not reach STS, so cdkd could not determine the account.
@@ -1383,8 +1385,9 @@ FAILS rather than serving a value CloudFormation would not return:
 
 Each of the import cases names itself in a warning at import time.
 
-Re-deploy the stack once in either case: the resource's next in-place update
-records the corrected attribute.
+A deploy that resolves a `Fn::GetAtt` on the ARN heals the record, as does the
+resource's next in-place update — see item 4 under
+[Purpose of attributes](#purpose-of-attributes).
 
 ### …and it is not what `cdkd export` sends CloudFormation either
 
@@ -1544,6 +1547,15 @@ const arn = bucketState.attributes['Arn'];
    resolver treats any non-`undefined` stored attribute as a hit, so a
    persisted `''` would shadow its computed fallback and make `Fn::GetAtt`
    resolve to the empty string.
+4. **`cdkd deploy`, on a miss**: when a `Fn::GetAtt` is about to fall back to
+   the physical ID for a resource this deploy does not update, cdkd re-reads the
+   resource's attributes once through the provider's read-only `import()` and
+   adds them to the record at the next state save. Only keys the record does
+   not already hold are added (a wildcard placeholder ARN from an old release
+   is the one value that is overwritten), an empty value is never added, and no
+   other field of the record is touched. `--dry-run` reads but records nothing,
+   and read-only commands (`cdkd diff`, `cdkd drift`) never re-read. See
+   ["Cannot resolve" a GetAtt on a resource an older cdkd deployed](troubleshooting.md#cannot-resolve-a-getatt-on-a-resource-an-older-cdkd-deployed).
 
 ```typescript
 // IAM Role Provider example

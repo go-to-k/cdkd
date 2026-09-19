@@ -24,6 +24,7 @@ Issue [#1740](https://github.com/go-to-k/cdkd/issues/1740). Per-site reasons:
   or defaulted parameter. `resolveSplit`'s two refusals and
   `refuseCoercedInheritedSecret` use the class too: a refusal is a property of
   the THROW, not of the catch that inspects it.
+- **A stale-record refusal is worded from the HEAL OUTCOME** ([#1852](https://github.com/go-to-k/cdkd/issues/1852)): "not enriched ... file an issue" only when the re-read completed without the attribute or was never attempted; a failed / not-found read says so and names the real remedy. Never promise "the next update heals it" alone — a no-change deploy runs no update. They stay `markNonRetryable`: the outcome is memoized per deploy.
 - **`cdkd scrub` needs a distinction the base class cannot make.** A PERMANENT
   refusal is an unremediable FINDING (the rest of the stack is still scrubbed,
   exit non-zero); a USER-FIXABLE one must REFUSE the stack, since a re-run after

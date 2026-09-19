@@ -299,10 +299,14 @@ back as expected:
   running instance with no public address (a private subnet) resolves both to
   the empty string, which is what CloudFormation reports for it. An RDS, DocDB
   or Neptune `DBInstance` created under `--no-wait` likewise omits
-  `Endpoint.Address` / `Endpoint.Port` while the instance is still `creating`. There is no live re-read for those two: a
-  reference resolves to the instance identifier with a warning (or fails under
-  `--strict-getatt`) until the next update of that resource records them — a
-  later no-change deploy does not.
+  `Endpoint.Address` / `Endpoint.Port` while the instance is still `creating`.
+  A later deploy that resolves a reference to them re-reads the instance once
+  and, when it is `available` by then, serves the real endpoint and records it
+  in state — a no-change deploy included. While the instance still has no
+  endpoint, the reference resolves to the instance identifier with a warning
+  (or fails under `--strict-getatt`), nothing is recorded, and the next deploy
+  re-reads again. See
+  ["Cannot resolve" a GetAtt on a resource an older cdkd deployed](troubleshooting.md#cannot-resolve-a-getatt-on-a-resource-an-older-cdkd-deployed).
 - An Output the resolver cannot resolve on the no-change deploy keeps its
   previously persisted value while every sibling that did resolve is
   persisted; cdkd warns naming the Output. Two shapes keep the whole previous

@@ -1,0 +1,19 @@
+{
+  "name": "cdkd-integ-stale-attribute-heal",
+  "version": "1.0.0",
+  "private": true,
+  "description": "cdkd fixture for healing a state record written before its provider recorded an attribute (AWS::SSM::Parameter.Arn) when a no-change deploy adds a Fn::GetAtt on it (issue #1852)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}
