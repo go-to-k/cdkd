@@ -43,6 +43,11 @@ export interface NestedTemplateHop {
 
 export type NestedTemplateTreeDefect =
   | {
+      kind: 'too-large';
+      /** The chain the walk was on when it ran out of budget. */
+      chain: NestedTemplateHop[];
+    }
+  | {
       kind: 'too-deep';
       /** The first `MAX_NESTING_DEPTH + 1` rows of a chain that is still descending. */
       chain: NestedTemplateHop[];
@@ -167,6 +172,20 @@ function readNestedRows(templatePath: string): NestedTemplateRow[] | undefined {
 export const MAX_NESTING_DEPTH = 512;
 
 /**
+ * Rows the walk will follow before it refuses the tree as too large.
+ *
+ * The clean-subtree memo is keyed on the LEXICAL path (it has to be, see
+ * `templateIdentity`), and symlinked directories give one file arbitrarily
+ * many lexical spellings: with `d1 -> .` and `d2 -> .`, rows naming
+ * `t.json`, `d1/t.json` and `d2/t.json` at every level multiply the spellings
+ * per level while no chain ever repeats an identity. Such a walk is finite but
+ * exponential, so it needs a budget rather than a better key. Far above any
+ * real assembly: a CDK app's nested templates number in the tens, and a memo
+ * hit costs one row, not a subtree.
+ */
+export const MAX_ROWS_FOLLOWED = 10_000;
+
+/**
  * Walk every nested template reachable from `nestedTemplates` (logical id ->
  * template file path, the shape `AssemblyReader` and the provider's own
  * per-level index produce) and return the first defect, or `undefined` when
@@ -191,6 +210,7 @@ export function findNestedTemplateTreeDefect(
   // reached on. Without this a tree of diamonds is walked 2^depth times.
   const clean = new Set<string>();
   const chain: NestedTemplateHop[] = [];
+  let rowsFollowed = 0;
 
   const visit = (logicalId: string, templatePath: string): NestedTemplateTreeDefect | undefined => {
     const identity = templateIdentity(templatePath);
@@ -199,6 +219,7 @@ export function findNestedTemplateTreeDefect(
     try {
       if (onChain.has(identity)) return { kind: 'cycle', chain: [...chain] };
       if (chain.length > MAX_NESTING_DEPTH) return { kind: 'too-deep', chain: [...chain] };
+      if (++rowsFollowed > MAX_ROWS_FOLLOWED) return { kind: 'too-large', chain: [...chain] };
       if (clean.has(lexical)) return undefined;
       const rows = readNestedRows(templatePath);
       if (rows === undefined) return undefined;
@@ -272,8 +293,17 @@ export function renderNestedTemplateTreeDefect(
     `Refusing to ${action}.`;
   // The stack that DECLARES the last row: every hop above it appends one
   // `~<logicalId>`, the same derivation the provider uses for a child's name.
-  const owner = (chain: readonly NestedTemplateHop[]): string =>
-    displaySafe([stackName, ...chain.slice(0, -1).map((h) => h.logicalId)].join('~'));
+  // Elided like the chain itself, so a long chain of long ids cannot put an
+  // unbounded name into the message.
+  const owner = (chain: readonly NestedTemplateHop[]): string => {
+    const ids = chain.slice(0, -1).map((h) => h.logicalId);
+    const keep = MAX_RENDERED_HOPS / 2;
+    const shown =
+      ids.length <= MAX_RENDERED_HOPS
+        ? ids
+        : [...ids.slice(0, keep), `...${ids.length - 2 * keep} more...`, ...ids.slice(-keep)];
+    return displaySafe([stackName, ...shown].join('~'));
+  };
   if (defect.kind === 'cycle') {
     const closing = defect.chain[defect.chain.length - 1]!;
     return (
@@ -281,6 +311,14 @@ export function renderNestedTemplateTreeDefect(
       `${renderChain(defect.chain)}. Nested stack '${displaySafe(closing.logicalId)}' ` +
       `(declared in stack '${owner(defect.chain)}') resolves to a template that is already ` +
       `on that nesting chain, so its Metadata['aws:asset:path'] closes a cycle. ${provenance}`
+    );
+  }
+  if (defect.kind === 'too-large') {
+    return (
+      `The nested template tree under stack '${displaySafe(stackName)}' has more than ` +
+      `${MAX_ROWS_FOLLOWED} nested-stack rows to follow (the walk stopped at ` +
+      `${renderChain(defect.chain)}). Symlinked directories can give one template file many ` +
+      `paths, which multiplies the tree without ever repeating on one chain. ${provenance}`
     );
   }
   if (defect.kind === 'too-deep') {

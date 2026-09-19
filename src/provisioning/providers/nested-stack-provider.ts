@@ -203,11 +203,13 @@ export class NestedStackProvider implements ResourceProvider {
     }
     this.refuseMalformedNestedTemplateTree(ctx, logicalId, childTemplatePath);
 
-    const childTemplate = this.readChildTemplate(childTemplatePath, ctx.assetRedirect);
+    const { template: childTemplate, grandchildTemplates } = this.readChildTemplate(
+      childTemplatePath,
+      ctx.assetRedirect
+    );
     const childStackName = this.deriveChildStackName(ctx.parentStackName, logicalId);
     const childRegion = ctx.parentRegion;
     const childParameters = this.extractParameters(properties);
-    const grandchildTemplates = this.indexGrandchildTemplates(childTemplate, childTemplatePath);
 
     const resourceCount = Object.keys(childTemplate.Resources ?? {}).length;
     this.logger.info(
@@ -265,11 +267,13 @@ export class NestedStackProvider implements ResourceProvider {
     }
     this.refuseMalformedNestedTemplateTree(ctx, logicalId, childTemplatePath);
 
-    const childTemplate = this.readChildTemplate(childTemplatePath, ctx.assetRedirect);
+    const { template: childTemplate, grandchildTemplates } = this.readChildTemplate(
+      childTemplatePath,
+      ctx.assetRedirect
+    );
     const childStackName = this.deriveChildStackName(ctx.parentStackName, logicalId);
     const childRegion = ctx.parentRegion;
     const childParameters = this.extractParameters(properties);
-    const grandchildTemplates = this.indexGrandchildTemplates(childTemplate, childTemplatePath);
 
     const resourceCount = Object.keys(childTemplate.Resources ?? {}).length;
     this.logger.info(
@@ -951,10 +955,24 @@ export class NestedStackProvider implements ResourceProvider {
     );
   }
 
+  /**
+   * The child template as the child engine deploys it, plus the grandchild
+   * template paths indexed from it.
+   *
+   * The index is taken BEFORE the asset-reference rewrite, and returning both
+   * from here is what keeps that order from being undone by a caller. The
+   * rewrite walks every string in the template, `Metadata['aws:asset:path']`
+   * included, and a path segment that spells a bootstrap bucket name is
+   * rewritten like any other occurrence. `aws:asset:path` is a LOCAL file
+   * path, never an asset-storage reference; indexing after the rewrite made
+   * the deploy follow a different file than the one
+   * `refuseMalformedNestedTemplateTree` had validated from the raw file, which
+   * is a way around that guard (issue go-to-k/cdkd#3247).
+   */
   private readChildTemplate(
     templatePath: string,
     assetRedirect?: AssetRedirectMap
-  ): CloudFormationTemplate {
+  ): { template: CloudFormationTemplate; grandchildTemplates: Record<string, string> } {
     let raw: string;
     try {
       raw = fs.readFileSync(templatePath, 'utf-8');
@@ -971,6 +989,7 @@ export class NestedStackProvider implements ResourceProvider {
         `Failed to parse nested template at ${displaySafe(templatePath)}: ${displaySafe(err instanceof Error ? err.message : String(err))}`
       );
     }
+    const grandchildTemplates = this.indexGrandchildTemplates(template, templatePath);
     // Issue #1002 PR 2 — nested child templates are a separate parse path
     // that bypasses the top-level analyzer entry, so the §7 asset-reference
     // rewrite must be applied here too (design §7). No-op in legacy mode
@@ -983,7 +1002,7 @@ export class NestedStackProvider implements ResourceProvider {
         );
       }
     }
-    return template;
+    return { template, grandchildTemplates };
   }
 
   private indexGrandchildTemplates(

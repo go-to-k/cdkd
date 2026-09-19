@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
-import { mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -296,6 +296,57 @@ describe('NestedStackProvider — nested-template cycle (issue #3247)', () => {
     expect(isMarkedNonRetryable(err)).toBe(true);
     expect([...err!.message].filter((ch) => ch.codePointAt(0)! < 0x20)).toEqual([]);
     expect(err!.message).toContain('FORGED');
+  });
+
+  it('follows the RAW aws:asset:path in asset-redirect mode, the same file the walk validated', async () => {
+    // The asset-reference rewrite walks every string in the child template,
+    // and a path segment spelling a bootstrap bucket name is rewritten like
+    // any other occurrence. Indexing the grandchildren AFTER the rewrite made
+    // the deploy follow <TARGET>/x.json while the walk had validated
+    // <SRC>/x.json, and <TARGET>/x.json here points back at itself once
+    // rewritten: a cycle the guard never saw.
+    const { buildAssetRedirectMap } = await import('../../../src/assets/asset-redirect.js');
+    const SRC = 'cdk-hnb659fds-assets-123456789012-us-east-1';
+    const TARGET = 'cdkd-assets-123456789012-us-east-1';
+    const assetRedirect = buildAssetRedirectMap(
+      {
+        version: '38.0.0',
+        files: {
+          aaaa1111: {
+            displayName: 'Code',
+            source: { path: 'asset.aaaa1111', packaging: 'zip' },
+            destinations: {
+              d1: {
+                bucketName: 'cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}',
+                objectKey: 'aaaa1111.zip',
+              },
+            },
+          },
+        },
+        dockerImages: {},
+      },
+      {
+        assetBucket: TARGET,
+        containerRepo: 'cdkd-container-assets-123456789012-us-east-1',
+        assetSupportVersion: 1,
+        createdAt: '2026-07-15T00:00:00.000Z',
+      },
+      '123456789012',
+      'us-east-1'
+    );
+    const dir = tmp();
+    mkdirSync(join(dir, SRC));
+    mkdirSync(join(dir, TARGET));
+    const child = writeTemplate(dir, 'child.json', { Loop: `${SRC}/x.json` });
+    writeTemplate(join(dir, SRC), 'x.json', {});
+    writeTemplate(join(dir, TARGET), 'x.json', { Loop: `../${SRC}/x.json` });
+    const provider = new NestedStackProvider();
+
+    await withNestedStackContext({ ...makeContext({ Child: child }), assetRedirect }, () =>
+      provider.create('Child', 'AWS::CloudFormation::Stack', {})
+    );
+
+    expect(engineDeploys).toEqual(['Parent~Child', 'Parent~Child~Loop']);
   });
 
   it('still deploys a diamond: two sibling rows naming one template', async () => {

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 
 import {
   MAX_NESTING_DEPTH,
+  MAX_ROWS_FOLLOWED,
   findNestedTemplateTreeDefect,
   listNestedTemplateRows,
   renderNestedTemplateTreeDefect,
@@ -261,6 +262,26 @@ describe('findNestedTemplateTreeDefect', () => {
     expect(findNestedTemplateTreeDefect({ Child: join(dir, 't0.json') })).toBeUndefined();
   });
 
+  it('refuses a tree that symlinked directories multiply without ever repeating on one chain', () => {
+    // `d1 -> .` and `d2 -> .` give every template three lexical spellings per
+    // level, so the path-keyed memo cannot collapse them, and no chain repeats
+    // an identity because each level is a different file. Finite, but 3^40
+    // rows: without a budget the walk never returns.
+    const dir = tmp();
+    symlinkSync('.', join(dir, 'd1'), 'dir');
+    symlinkSync('.', join(dir, 'd2'), 'dir');
+    const levels = 40;
+    writeTemplate(dir, `t${levels}.json`, {});
+    for (let i = levels - 1; i >= 0; i--) {
+      const next = `t${i + 1}.json`;
+      writeTemplate(dir, `t${i}.json`, { A: next, B: `d1/${next}`, C: `d2/${next}` });
+    }
+
+    const defect = findNestedTemplateTreeDefect({ Child: join(dir, 't0.json') });
+
+    expect(defect?.kind).toBe('too-large');
+  });
+
   it('uses a seeded ancestor: a child naming the template above the entry rows is refused at once', () => {
     const dir = tmp();
     const root = writeTemplate(dir, 'root.json', { Child: 'a.json' });
@@ -443,6 +464,30 @@ describe('renderNestedTemplateTreeDefect', () => {
     expect(eight).toContain("'L4' (/out/t4.json)");
     expect(nine).toContain('... 1 more ...');
     expect(nine).not.toContain("'L4' (/out/t4.json)");
+  });
+
+  it('says why a too-large tree is refused', () => {
+    const text = renderNestedTemplateTreeDefect(
+      { kind: 'too-large', chain: [{ logicalId: 'Child', templatePath: '/out/a.json' }] },
+      'P',
+      'deploy'
+    );
+
+    expect(text).toContain(`has more than ${MAX_ROWS_FOLLOWED} nested-stack rows to follow`);
+    expect(text).toContain("the walk stopped at 'Child' (/out/a.json)");
+    expect(text).toContain('Refusing to deploy.');
+  });
+
+  it('elides the owning stack name of a long chain the way it elides the chain', () => {
+    const chain = Array.from({ length: 30 }, (_, i) => ({
+      logicalId: `L${i}`,
+      templatePath: `/out/t${i}.json`,
+    }));
+    chain.push({ logicalId: 'Closer', templatePath: '/out/t0.json' });
+
+    const text = renderNestedTemplateTreeDefect({ kind: 'cycle', chain }, 'P', 'deploy');
+
+    expect(text).toContain("(declared in stack 'P~L0~L1~L2~L3~...22 more...~L26~L27~L28~L29')");
   });
 
   it('says why a too-deep tree is refused', () => {

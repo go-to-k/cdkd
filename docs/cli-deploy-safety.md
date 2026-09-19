@@ -905,14 +905,16 @@ any failed deploy.
 The same walk refuses an absolute `aws:asset:path` at any depth, which would
 point outside the assembly directory, and a tree nested more than 512 levels
 deep, which could not deploy anyway: each level lengthens the child's state key,
-and S3 caps a key at 1024 bytes.
+and S3 caps a key at 1024 bytes. A tree with more than 10,000 nested-stack rows to
+follow is refused as well; only symlinked directories, which give one template
+file many paths, produce one.
 
 The parent stack's own resources and its file assets are not covered by this
 check: they start before the nested stack's row is reached.
 
 Two sibling rows naming the **same** template are fine — that is a shared child,
-not a cycle. Only a repeat along one root-to-child path is refused, so nesting
-depth itself is never limited. A row's `Condition` is not evaluated: a template
+not a cycle. Only a repeat along one root-to-child path is refused, so the
+cycle rule itself never limits nesting depth. A row's `Condition` is not evaluated: a template
 that includes itself behind a condition is refused too, as it is by
 [`cdkd diff --recursive`](cli-diff.md#cyclic-nested-templates-are-refused).
 
