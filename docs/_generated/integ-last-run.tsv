@@ -17,7 +17,7 @@ apigw-stage-props	2026-08-11T06:41:16Z	PASS	300	verify.sh	final post-rebase run 
 apigw-stage-throttling	2026-08-11T04:51:55Z	PASS	420	verify.sh	SDK-routed Stage assertions updated (#609); :* ARN normalization fix live-verified
 apigw-usage-plan-key	2026-07-26T19:16:39Z	PASS	84	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 appconfig	2026-08-10T05:29:23Z	PASS	69	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
-appsync	2026-09-18T15:16:47Z	PASS	137	verify.sh	rc ok, orph clean; Phase 3b re-run after the ANSI-strip fix (PR 3416 lane)
+appsync	2026-09-19T20:26:58Z	PASS	128	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
 asset-auto-create	2026-09-01T14:49:24Z	PASS	300	verify.sh	PR#2398 proxy no-op regression arm 1/6: auto-create+opt-out in ca-central-1, rc 0, 0 orphans (unproxied path byte-identical claim)
 asset-bootstrap	2026-08-26T06:51:55Z	PASS	136	verify.sh	issue 2240 live arm; new phase 1b proves the cross-region --asset-bucket refusal names both regions and leaves no marker/policy on the foreign bucket; eu-west-1 (us-east-1/us-west-2/ap-northeast-1 all carry cdkd markers); destroy 2 deleted 0 errors, 0 orphans
 asset-migration	2026-09-11T17:36:03Z	PASS	600	verify.sh	archiver 7->8 lane, us-east-2 (us-east-1 holds a cdkd bootstrap marker this fixture refuses). All assertions green, destroy 6 deleted / 0 errors. The harness 600s Bash cap killed the post-success cleanup sweep mid-run, leaving the region bootstrap storage; removed with bootstrap --destroy --region us-east-2 and re-verified: 0 state.json, no marker, no asset bucket, no ECR repo.
@@ -35,7 +35,7 @@ budgets	2026-08-13T11:19:53Z	PASS	-	verify.sh	issue 1815 partition ARN builders;
 cache-streaming	2026-08-10T04:52:34Z	PASS	527	verify.sh	0810 sweep b4; elasticache-provider re-verify, GetAtt redis endpoint, 0 orph
 cc-api-fallback	2026-09-17T07:00:53Z	PASS	300	verify.sh	rc=0; silent-drop closed by CC auto-route, 2 deleted 0 errors; orphan scan clean (state/apigwv2/iam)
 cc-api-fallback-transitions	2026-09-17T06:59:38Z	FAIL	420	verify.sh	rc=1 FIXTURE STALE, not a cdkd defect: asserts --allow-unsupported-properties silent-drops AWS::Lambda::Function RuntimeManagementConfig, which PR #1621 (2026-08-11) wired as HANDLED; last PASS predates it. Decision table byte-identical to origin/main, so unrelated to the branch under test. No orphans (state/lambda/iam clean)
-cc-getatt-readback	2026-09-02T10:32:07Z	PASS	260	verify.sh	2 phases passed; 8 deleted 0 errors, 0 orphans (S3 AccessPoint, not EFS)
+cc-getatt-readback	2026-09-19T20:26:58Z	PASS	110	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
 cc-protection-flip	2026-09-17T06:56:41Z	PASS	900	verify.sh	rc=0; all 3 phases, CC protection flip over 5 types, 5 deleted 0 errors; orphan scan clean (state/RDS+DocDB global/NeptuneGraph/VerifiedPermissions)
 cc-protection-flip-eks	2026-07-31T04:30:02Z	PASS	2300	verify.sh	EKS blocked-destroy + --remove-protection flip (#1315); orph clean
 cc-to-sdk-reroute	2026-09-18T15:52:59Z	PASS	125	verify.sh	rc ok, orph clean; final tree of PR 3425 (run 3): MaximumMessageSize create/CC-recreate/SDK-update/removal-reset arms + drift rc=0
@@ -59,14 +59,14 @@ conditions-and-if	2026-09-08T12:44:00Z	PASS	95	verify.sh	issue #2767 + #2802; Fn
 conditions-update-2	2026-07-26T19:05:27Z	PASS	83	verify.sh	0727b sweep-b8 staleness re-run (rc=0); account clean
 context-test	2026-07-26T18:43:33Z	PASS	24	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 cross-region-state-bucket	2026-08-01T09:42:37Z	PASS	29	verify.sh	0801 regression sweep; cross-region bucket round-trip ok, temp bucket removed
-cross-stack-cfn-fallback	2026-08-12T10:36:46Z	PASS	170	verify.sh	re-run post-rebase + review fixes (typed miss + memoized lookups); clean
+cross-stack-cfn-fallback	2026-09-19T20:26:58Z	PASS	118	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
 cross-stack-references	2026-08-08T17:48:34Z	PASS	25	standard	marker re-flip after review coercion fix; deploy+destroy clean
 cross-stack-secret-import	2026-09-09T23:51:27Z	PASS	331	verify.sh	rc ok, 0 errors, 0 orphans, 0 surviving versions
-custom-resource-getatt-data	2026-09-02T17:40:08Z	PASS	150	verify.sh	issue 2274 NoEcho mask channel; new NoEcho arm, 10 del 0 err 0 orph
+custom-resource-getatt-data	2026-09-19T20:26:58Z	PASS	67	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
 custom-resource-provider	2026-09-05T23:03:46Z	PASS	750	verify.sh	PR2662 gate run; skip-arm then clean re-destroy 26 deleted 0 errors, 0 orphans
 data-analytics	2026-08-10T11:31:18Z	PASS	87	verify.sh	#1479 SD-subtree merge re-verified after review fixes (OR-gate bag semantics)
 data-pipeline	2026-08-10T05:19:05Z	PASS	48	standard	0810 P2 sweep b6; 7 del 0 err, 0 orph
-deep-getatt-chains	2026-09-07T19:39:39Z	PASS	112	verify.sh	issue #2767; deep Ref/GetAtt chains across SDK + Cloud Control links; destroy 6 deleted 0 errors
+deep-getatt-chains	2026-09-19T20:26:58Z	PASS	56	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
 deletion-ordering-complex	2026-08-13T06:50:48Z	PASS	260	verify.sh	PR 1774; destroy-runner ordering, rc 0, 19 del 0 err, LB/TG/SG/subnet/IGW/VPC/EC2 all gone
 deletion-policy-retain	2026-09-05T03:27:04Z	PASS	29	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run
 deletion-policy-snapshot	2026-09-05T03:27:04Z	PASS	245	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run
@@ -78,7 +78,7 @@ diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 swee
 dlm-lifecycle-policy	2026-09-05T22:48:21Z	PASS	94	verify.sh	PR2662 gate run; destroy 3 deleted 0 errors, 0 orphans
 docdb-neptune	2026-09-14T15:28:31Z	PASS	1545	verify.sh	#3103 gating: cluster/instance Endpoint.* omit-not-'' sites live; 14 deleted 0 err 0 orph
 docker-image-asset	2026-09-05T14:04:48Z	PASS	75	verify.sh	rc 0, real deploy+destroy 2 deleted 0 errors, 0 ECR orphans, state gone
-drift-revert	2026-09-19T18:00:07Z	PASS	155	verify.sh	rc ok, orph clean; #2668 type-change routing
+drift-revert	2026-09-19T20:26:58Z	PASS	154	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
 drift-revert-arrays	2026-09-15T04:24:24Z	PASS	198	verify.sh	rc ok, orph clean (PR #3148: null-proto canonicalizers + Date fold on the comparison path)
 drift-revert-vpc	2026-09-16T09:00:51Z	PASS	284	verify.sh	rc ok, 21 deleted 0 errors, orph clean, versions swept (broad set, security-group-bearing update path for the issue #3227 change)
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
@@ -119,7 +119,7 @@ eventbridge-pipes	2026-08-10T11:50:46Z	PASS	179	verify.sh	0810 P0/P1 sweep b2; 6
 eventbridge-scheduler	2026-08-01T10:00:06Z	PASS	46	verify.sh	0801 regression sweep; ok, 0 orphans
 eventbus-policy	2026-08-11T10:54:05Z	PASS	56	verify.sh	new fixture (issue 1608): deploy/diff/update/destroy clean, 0 orphans
 eventsourcemapping-race	2026-08-13T16:32:07Z	PASS	89	verify.sh	#1815 partition predicates; ESM create+process+no-orphan destroy, 5 del 0 err 0 orph
-export	2026-09-19T18:00:07Z	PASS	223	verify.sh	rc ok, orph clean; #2668 type-change routing
+export	2026-09-19T20:26:58Z	PASS	223	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
 export-nested-stack	2026-09-17T23:27:44Z	PASS	167	verify.sh	rc ok, orph clean
 fifo-sqs-event-source	2026-07-27T06:44:00Z	PASS	111	verify.sh	final-tree gate refresh for #1256; destroy 6/0 errors, 0 orphans
 fsx-lustre	2026-08-02T05:30:54Z	PASS	899	verify.sh	0802 heavy TTL sweep; deploy+update+destroy ok, 0 orphans, no final backup
@@ -128,7 +128,7 @@ fsx-openzfs	2026-08-02T05:53:30Z	PASS	1287	verify.sh	0802 heavy TTL sweep; deplo
 fsx-windows	2026-08-02T07:56:26Z	PASS	3895	verify.sh	0802 heavy TTL sweep; AD-joined create+update+delete ok, 0 orphans, no final backup left
 full-stack-demo	2026-07-26T18:36:31Z	PASS	41	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 gc-custom-asset-names	2026-08-28T10:39:47Z	PASS	214	verify.sh	issue 2346 lane, site 6 (bootstrap marker). RUN IN eu-west-1, not us-east-1: the fixture correctly refuses a region whose bootstrap marker is not its own, and us-east-1 / ap-northeast-1 / us-west-2 all carry one. Premise 9 marker rows before teardown, then 1 row and 0 noncurrent; control 4 noncurrent lock.json versions survive. 0 errors, 0 orphans, no docker residue.
-getatt-fallback-guard	2026-09-07T10:13:59Z	PASS	225	verify.sh	PR for issue 2728: the --strict-getatt output-failure path live (its BadOutput names no secret; message prefix unchanged); cleanup clean, 66 state versions swept
+getatt-fallback-guard	2026-09-19T20:26:58Z	PASS	148	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
 getstackoutput-crossregion	2026-09-15T17:56:40Z	PASS	94	verify.sh	rc ok, producer us-west-2 + consumer destroyed 0 err, both regions orph clean (#3176 review round 2)
 glue-securityconfig-replace	2026-09-04T13:03:37Z	PASS	121	verify.sh	#2514 lane; --replace arm of the changed catch block, 4 phases, 1 del / 0 err
 glue-update-hardening	2026-08-13T13:57:41Z	PASS	230	verify.sh	issue 1807 final head; 16 deleted 0 errors 0 orphans
@@ -152,7 +152,7 @@ intrinsics-torture-2	2026-07-26T18:57:55Z	PASS	48	verify.sh	0727b sweep-b7 stale
 kinesis-esm-filter	2026-08-10T04:23:28Z	PASS	63	verify.sh	0810 sweep b2; post-#1398 lambda-eventsource re-verify, 5 del 0 err, 0 orph
 kinesis-stream-mode-switch	2026-08-26T08:41:59Z	PASS	120	verify.sh	issue 2178 masker-threading sweep (kinesis); 3 phases, 0 err, 0 orphans
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-09-19T18:00:07Z	PASS	81	verify.sh	rc ok, orph clean; #2668 type-change routing
+lambda	2026-09-19T20:26:58Z	PASS	79	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-07-26T19:25:15Z	PASS	63	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
 lambda-capacity-provider-default-name	2026-09-16T17:42:36Z	PASS	413	verify.sh	us-east-1, gating the go-to-k/cdkd#3231 merge at afee5469: rc ok, 17 deleted 0 errors, no orphan roles/functions/VPCs/ENIs/instances, state prefix swept to 0 surviving versions against an empty pre-flight. One retry, on the operator-role wording. Ran the PRE-go-to-k/cdkd#3274 single-wording counter, which printed 1 and matched an independent grep -c of the log's Retrying lines; an earlier 16:59:49Z run on the go-to-k/cdkd#3274 branch exercised the NEW per-wording block and printed the same 1 total as 1/0/0
@@ -214,7 +214,7 @@ multi-asset	2026-09-01T14:59:57Z	PASS	420	verify.sh	arm 4/6 for the proxy PR: EC
 multi-region-same-stack	2026-07-26T18:04:53Z	PASS	22	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 multi-resource	2026-08-15T00:16:55Z	PASS	77	standard	0 err / 0 orph; broad-set regression check for #1916
 multi-stack-deps	2026-08-20T13:25:47Z	PASS	66	standard	#2053 on the lane-A+B+peer combined tree (2123/2057 merged under us); --all loop, 0 errors, 0 orphans
-nested-stack	2026-09-19T14:38:08Z	PASS	54	verify.sh	rc ok, orph clean; #3449 pre-flight refusal
+nested-stack	2026-09-19T20:26:58Z	PASS	54	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
 nested-stack-3level	2026-09-19T14:38:08Z	PASS	147	verify.sh	rc ok, orph clean; #3449 pre-flight refusal
 nested-stack-deep	2026-09-19T14:38:08Z	PASS	89	verify.sh	rc ok, orph clean; #3449 pre-flight refusal
 nested-stack-secret	2026-09-19T13:39:07Z	PASS	182	verify.sh	rc ok, orph clean; #3247 cycle guard
@@ -222,8 +222,8 @@ nlb-source-nat	2026-09-05T22:46:07Z	PASS	355	verify.sh	PR2662 gate run; destroy 
 nodejs-function	2026-08-10T05:29:23Z	PASS	50	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
 opensearch-domain-getatt	2026-08-10T08:05:51Z	PASS	1798	verify.sh	0810 P2 sweep b13; 60m CC delete floor ok, 0 err 0 orph
 orphan-resource	2026-07-26T18:04:53Z	PASS	38	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
-output-never-resolved-diff	2026-09-15T17:00:05Z	PASS	409	verify.sh	rc ok, orph clean; phase 5c (stored output broken beside a sibling change, split warning with the full withheld-values reason and the withheld row, env-agnostic CDKMetadataAvailable arm); go-to-k/cdkd#3101
-outputs-only-export	2026-08-18T06:09:14Z	PASS	160	verify.sh	13 checks; #1921 preview + no-phantom arms; re-run after review round 3; destroy clean
+output-never-resolved-diff	2026-09-19T20:26:58Z	PASS	181	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
+outputs-only-export	2026-09-19T20:26:58Z	PASS	105	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
 parameters	2026-07-26T18:04:53Z	PASS	24	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 propagation-races-2	2026-09-10T09:48:41Z	PASS	116	verify.sh	rc0, 22 deleted/0 err/0 orph; round-2 re-run; edge5 window 0ms (3rd)
 raw-cfn-conditions-params	2026-09-07T17:55:55Z	PASS	105	verify.sh	2740 lane: diff/deploy condition parity regression net; rc ok, orph clean
@@ -235,7 +235,7 @@ recreate-nested-logical-id-collision	2026-09-19T13:39:07Z	PASS	114	verify.sh	rc 
 recreate-via-cc-api	2026-09-19T18:00:07Z	PASS	100	verify.sh	rc ok, orph clean; #2668 type-change routing
 recreate-via-sdk-provider	2026-09-19T18:00:07Z	PASS	91	verify.sh	rc ok, orph clean; baseline re-seeded via --recreate-via-cc-api after the RuntimeManagementConfig premise rotted
 redshift-cluster-getatt	2026-08-10T06:18:10Z	PASS	325	verify.sh	0810 P2 sweep b12; CC GetAtt Endpoint real hostname, 0 orph
-remove-protection	2026-09-19T18:00:07Z	PASS	1307	verify.sh	rc ok, orph clean; #2668 type-change routing
+remove-protection	2026-09-19T20:26:58Z	PASS	1289	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 replacement-fanout	2026-09-19T18:00:07Z	PASS	77	verify.sh	rc ok, orph clean; #2668 type-change routing
 replacement-immutable-name	2026-09-19T18:00:07Z	PASS	109	verify.sh	rc ok, orph clean; #2668 type-change routing
@@ -268,8 +268,8 @@ schema-v6-to-v7-migration	2026-08-10T05:24:30Z	PASS	54	verify.sh	0810 P2 sweep b
 schema-v7-to-v8-migration	2026-08-01T09:51:12Z	PASS	92	verify.sh	0801 regression sweep; transparent auto-migration + outputReads ok, 0 orphans
 schema-v8-to-v9-migration	2026-08-26T02:45:22Z	PASS	171	verify.sh	maintainer-side run at post-blocker-fix head; v8 shadow repro + v9 migration, 0 err 0 orphans
 schema-v9-to-v10-migration	2026-09-11T10:27:16Z	PASS	158	verify.sh	re-run after rebase onto 2948
-sdk-ccapi-crossref	2026-08-10T04:23:28Z	PASS	85	verify.sh	0810 sweep b2; post-#1355 CC snapshot path, heterogeneous routing, 4 del 0 err, 0 orph
-sdk-to-cc-autoroute	2026-09-11T18:26:05Z	PASS	168	verify.sh	maintainer-side run gating PR 3020 at e67d273; phases 4b/4c rendered 'updated (metadata)'; 1 del 0 err 0 orph
+sdk-ccapi-crossref	2026-09-19T20:26:58Z	PASS	104	verify.sh	rc ok, orph clean; CC side rebuilt on AWS::Events::Archive + a flag-seeded Lambda after the DesiredShardLevelMetrics premise rotted
+sdk-to-cc-autoroute	2026-09-19T20:26:58Z	PASS	136	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
 secrets-array-nested	2026-09-10T08:15:35Z	PASS	90	verify.sh	rc0 after fixture retired the plaintext residual (#2852); first run FAILed on the old assertion
 secrets-dynamic-ref	2026-09-15T17:56:40Z	PASS	533	verify.sh	rc ok, 4 deleted 0 err, 0 surviving state versions, orph clean (#3176 review round 2)
 secrets-rotation-schedule	2026-07-26T19:05:27Z	PASS	66	verify.sh	0727b sweep-b8 staleness re-run (rc=0); account clean
@@ -289,6 +289,7 @@ sqs-cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN bui
 sqs-esm-max-concurrency	2026-08-10T04:23:28Z	PASS	76	verify.sh	0810 sweep b2; lambda-eventsource re-verify, 5 del 0 err, 0 orph
 ssm-secure-dynamic-ref	2026-09-08T07:50:29Z	PASS	194	verify.sh	sibling span-arm fixture, re-run on the #2516 branch after its rebase onto main at 5cc82973 and the m1 copy change; 0 errors, 0 orphans, 0 surviving state versions
 stack-lock-renewal	2026-08-23T02:58:02Z	PASS	539	verify.sh	issue #2168 lock renewal final: 8 probe receipts (S3 answers NoSuchKey/404 for a conditional delete of an absent object) + 29 deploy samples, expiresAt +363s never lapsed never absent; destroy 0 err 0 orph
+stale-attribute-heal	2026-09-19T20:26:58Z	PASS	62	verify.sh	first run; rc ok, orph clean; red at phase 4 on the pre-#1852 engine
 state-destroy	2026-08-13T06:35:09Z	PASS	95	standard	PR 1774 gate; state destroy exit-code path, 1 del 0 err, zero-skip run byte-identical (no skipped suffix), orph clean
 state-info-command	2026-09-15T20:40:17Z	PASS	210	verify.sh	rc 0, depth>=1 arm, destroy 1 del 0 err, 3 planted keys 0 versions
 stepfunctions	2026-09-08T08:09:51Z	PASS	130	verify.sh	rc 0, ACTIVE w/ auto role, destroy 0 orphans (SFN arm for #2783)
