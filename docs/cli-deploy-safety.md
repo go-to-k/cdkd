@@ -861,10 +861,12 @@ its own:
 
 Two physical ids that happen to be equal across the two types — an SSM parameter
 and a log group can share a bare name — are treated as two resources. The
-exception is a pair of types served by one provider with one id space, such as
-two custom resource types backed by the same handler: there an equal id is the
-existing resource, and the replacement is refused with
-`NAMED_REPLACEMENT_IDEMPOTENT_CREATE` rather than deleting what it just created.
+exception is a change between two custom resource types (`Custom::*`,
+`AWS::CloudFormation::CustomResource`), whose handler picks the id: there an
+equal id is the existing resource, and the replacement is refused with
+`NAMED_REPLACEMENT_IDEMPOTENT_CREATE` rather than deleting what it just created
+(`--replace` deletes the old resource first instead, as for any name-idempotent
+create).
 When the new resource's create collides on a name instead, the error says that
 the holder may be an unrelated resource of the new type, which `--replace`
 cannot free.

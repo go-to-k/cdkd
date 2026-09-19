@@ -517,11 +517,13 @@ describe('DeployEngine routes each half of a Type-change replacement on its own 
     expect((op!['previousState'] as ResourceState).resourceType).toBe(OLD_TYPE);
   });
 
-  describe('one SDK provider serving BOTH types is one id namespace', () => {
-    // Every `Custom::*` type routes to one `CustomResourceProvider`, and a
-    // handler may return the same `PhysicalResourceId` for `Custom::Foo` and
+  describe('the custom-resource family is ONE id namespace; a shared provider instance is not', () => {
+    // A handler may return the same `PhysicalResourceId` for `Custom::Foo` and
     // `Custom::Bar`. There the equal id IS the existing resource: deleting "the
-    // old one" would send `Delete` for what the create just built.
+    // old one" would send `Delete` for what the create just built. The verdict
+    // is keyed on the TYPES, not on the two halves resolving to one provider
+    // instance — `register-providers.ts` shares one instance across types whose
+    // namespaces are disjoint (IAM User / Group, the EC2 family, ...).
     const shareOneProvider = (): ProviderDouble => {
       const shared = makeProvider(OLD_PHYSICAL_ID);
       mockProviderRegistry.getProviderFor.mockImplementation(() => ({
@@ -550,20 +552,34 @@ describe('DeployEngine routes each half of a Type-change replacement on its own 
       expect(shared.delete.mock.calls[0]![2]).toBe('Custom::Foo');
     });
 
-    it('Cloud Control serving both types is NOT one namespace (it addresses by type + id)', async () => {
+    it('custom types created through Cloud Control are NOT one namespace (type + identifier)', async () => {
       const shared = makeProvider(OLD_PHYSICAL_ID);
       mockProviderRegistry.getProviderFor.mockImplementation(() => ({
         provider: shared,
         provisionedBy: 'cc-api' as const,
       }));
       const template = arrange({
-        recordedType: OLD_TYPE,
-        templateType: NEW_TYPE,
+        recordedType: 'Custom::Foo',
+        templateType: 'Custom::Bar',
         provisionedBy: 'cc-api',
       });
       expect(await deployAndCatch(makeEngine(), template)).toBeUndefined();
       expect(shared.delete).toHaveBeenCalledTimes(1);
-      expect(shared.delete.mock.calls[0]![2]).toBe(OLD_TYPE);
+      expect(shared.delete.mock.calls[0]![2]).toBe('Custom::Foo');
+    });
+
+    it('ONE provider instance serving two NON-custom types is still two namespaces', async () => {
+      // `AWS::IAM::User` `foo` -> `AWS::IAM::Group` `foo`: one registered
+      // instance, two namespaces, equal bare-name ids. The create is genuine, so
+      // refusing it as "name-idempotent" would strand the new group and keep
+      // the user; the old user has to go, through its own type.
+      const shared = shareOneProvider();
+      const template = arrange({ recordedType: 'AWS::IAM::User', templateType: 'AWS::IAM::Group' });
+      expect(await deployAndCatch(makeEngine(), template)).toBeUndefined();
+      expect(shared.delete).toHaveBeenCalledTimes(1);
+      expect(shared.delete.mock.calls[0]![1]).toBe(OLD_PHYSICAL_ID);
+      expect(shared.delete.mock.calls[0]![2]).toBe('AWS::IAM::User');
+      expect(savedRecord()?.resourceType).toBe('AWS::IAM::Group');
     });
   });
 

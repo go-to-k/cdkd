@@ -900,6 +900,68 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     expect(src).toContain('${displaySafe(msg)}');
   });
 
+  it('a forged OLD type (issue #2668) cannot forge a line through the Type-change renders', async () => {
+    // `previousResourceType` / `previousState.resourceType` are journal-sourced
+    // like every other field here, and the parser accepts any string. The
+    // renders that carry them interpolate LOCALS (`oldType`, `stamped`,
+    // `recorded`), which the SOURCE SHAPE fence below cannot see — it matches
+    // `${op.<field>}` only — so they need runtime cases.
+    const FORGED_OLD_TYPE = 'AWS::SSM::Para\u200bmeter\n  Rollback: RealDB deleted successfully';
+    const typeChangeOp = (overrides: Partial<CompletedOperation> = {}): CompletedOperation => ({
+      logicalId: 'Victim',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::SNS::Topic',
+      physicalId: 'phys-new',
+      previousResourceType: FORGED_OLD_TYPE,
+      previousState: res({
+        resourceType: FORGED_OLD_TYPE,
+        physicalId: 'phys-old',
+        properties: { a: 1 },
+      }),
+      ...overrides,
+    });
+    const newState = (): Record<string, ResourceState> => ({
+      Victim: res({ resourceType: 'AWS::SNS::Topic', physicalId: 'phys-new' }),
+    });
+    const assertNoForgery = (lines: string[], mustMention: RegExp): void => {
+      expect(forgedLines(lines)).toEqual([]);
+      const named = lines.filter((l) => mustMention.test(l));
+      expect(named.length).toBeGreaterThan(0);
+      for (const l of named) {
+        expect(l.split('\n')).toHaveLength(1);
+        expect(l).not.toMatch(INVISIBLE);
+      }
+    };
+
+    // The "Reversing replacement ... (NEW -> OLD)" info line, create-first arm.
+    const create = vi.fn().mockResolvedValue({ physicalId: 'phys-recreated', attributes: {} });
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx, lines } = makeCtx({ create, delete: del });
+    await replayRollback([typeChangeOp()], newState(), 'S', ctx);
+    assertNoForgery(lines, /Reversing replacement of Victim/);
+
+    // The delete-new-first note, which renders both types.
+    const collide = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('CREATE failed for Victim: Resource already exists.'))
+      .mockResolvedValue({ physicalId: 'phys-recreated', attributes: {} });
+    const { ctx: ctx2, lines: lines2 } = makeCtx({ create: collide, delete: del });
+    await replayRollback([typeChangeOp()], newState(), 'S', ctx2);
+    assertNoForgery(lines2, /re-create collided with the new resource's name/);
+
+    // The unroutable refusal's "two different types" reason renders BOTH
+    // journal sources.
+    const { ctx: ctx3, lines: lines3 } = makeCtx({ create, delete: del });
+    const refused = await replayRollback(
+      [typeChangeOp({ previousResourceType: `${FORGED_OLD_TYPE}-other` })],
+      newState(),
+      'S',
+      ctx3
+    );
+    expect(refused.failures).toBe(1);
+    assertNoForgery(lines3, /two different types/);
+  });
+
   it('SOURCE SHAPE: a bare journal-field interpolation exists only in an event-bound statement', () => {
     // The per-arm wiring fence, as in go-to-k/cdkd#3072. `safe()` is pinned by
     // the cases above, but ~50 sites wire it separately and a hostile fixture

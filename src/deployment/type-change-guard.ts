@@ -37,6 +37,46 @@
  */
 
 import type { ResourceChange, ResourceState } from '../types/state.js';
+import { isCustomResource } from '../provisioning/provider-registry.js';
+
+/**
+ * Does an EQUAL physical id on the two halves of a replacement name the SAME
+ * resource? (issue [#2668](https://github.com/go-to-k/cdkd/issues/2668))
+ *
+ * Within one type, always — which is what the engine's name-idempotent-create
+ * guards and the rollback's "adopted the live new resource" shortcut assume.
+ * Across a `Type` change an equal id is a coincidence of two namespaces (an SSM
+ * parameter and a log group, an IAM user and an IAM group, can share a bare
+ * name): the create was genuine, and the other half still has to be deleted
+ * through its own type's provider.
+ *
+ * The ONE exception is the custom-resource family. Every `Custom::*` type and
+ * `AWS::CloudFormation::CustomResource` are served by the user's handler, which
+ * picks the id, so `Custom::Foo` -> `Custom::Bar` returning the same
+ * `PhysicalResourceId` names the SAME resource — and "deleting the other half"
+ * would send `Delete` for what the create just built. That holds only on the
+ * SDK layer: Cloud Control addresses a resource by type AND identifier.
+ *
+ * Keyed on the TYPES, deliberately not on "both halves resolved to one provider
+ * instance": `register-providers.ts` shares one instance across many types
+ * whose namespaces are disjoint (`AWS::IAM::User` / `AWS::IAM::Group`, the EC2,
+ * RDS, Glue, ECS families ...), and reading those as one namespace refuses a
+ * genuine create on the deploy side and strands the new resource on the
+ * rollback side.
+ */
+export function equalIdNamesSameResource(input: {
+  oldType: string;
+  newType: string;
+  /** The layer the CREATE half of this operation routes through. */
+  createLayer: 'sdk' | 'cc-api' | undefined;
+}): boolean {
+  if (input.oldType === input.newType) return true;
+  return (
+    isCustomResource(input.oldType) &&
+    isCustomResource(input.newType) &&
+    input.createLayer !== 'cc-api'
+  );
+}
 
 /**
  * The CFn type of a nested stack's row in its PARENT's template.

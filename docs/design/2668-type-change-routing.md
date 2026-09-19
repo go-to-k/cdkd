@@ -51,30 +51,43 @@ the template's is always a replacement — never an in-place update, never a no-
 | `prepareFinalSnapshotForDelete`, all replacement sites | old type |
 | every `oldDeleteProvider.delete(...)` (`--recreate-via-*`, the `--replace` delete-first helper, the post-create cleanup) | old type |
 | `replaceDecision`, every `create`, the new record, `kickOffObservedCapture` | template type |
-| the two name-idempotent-create guards (`createResult.physicalId === currentResource.physicalId`) | skipped only when `equalIdIsSameResource` is false (below) |
+| the two name-idempotent-create guards (`createResult.physicalId === currentResource.physicalId`) | skipped only when `equalIdNamesSameResource` is false (below) |
 | the live-progress verb / routing tag | mirrors the dispatch's `typeChanged` |
 
 The name-idempotent guards read an equal physical id as "the Create API handed
 back the existing resource". Within one type that is right. Across two types it
 is a coincidence of two namespaces — the create was genuine, and the old resource
-still has to be deleted through its own provider — but ONLY when the two halves
-are served by different providers, or by Cloud Control, which addresses a
-resource by type AND identifier. ONE SDK provider serving both types is one
-namespace: every `Custom::*` type and `AWS::CloudFormation::CustomResource` route
-to `CustomResourceProvider`, where a handler returning the same
-`PhysicalResourceId` for `Custom::Foo` and `Custom::Bar` names the SAME resource,
-and "deleting the old one" would send `Delete` for what the create just built.
-So the predicate is `equalIdIsSameResource = !typeChanged || (oldDeleteProvider
-=== replaceProvider && layer !== 'cc-api')`, and the guards stay live whenever it
-holds. Unsure reads as "same": the guard then refuses loudly instead of deleting.
-The rollback's "adopted the live new resource" shortcut uses the same predicate
-over its create provider and its delete-new provider (an unresolvable delete
-provider reads as "same", which keeps the non-destructive adopt).
+still has to be deleted through its own provider.
+
+The ONE exception is the custom-resource family. Every `Custom::*` type and
+`AWS::CloudFormation::CustomResource` are served by the user's handler, which
+picks the id, so `Custom::Foo` -> `Custom::Bar` returning the same
+`PhysicalResourceId` names the SAME resource, and "deleting the old one" would
+send `Delete` for what the create just built. That holds on the SDK layer only:
+Cloud Control addresses a resource by type AND identifier. So
+`equalIdNamesSameResource` (`type-change-guard.ts`) is `oldType === newType ||
+(both custom && create layer is not cc-api)`, and the guards stay live whenever
+it holds. The rollback's "adopted the live new resource" shortcut uses the same
+helper.
+
+The predicate is keyed on the TYPES, not on "both halves resolved to one provider
+instance". That was tried first and is wrong in the other direction:
+`register-providers.ts` shares one instance across many types whose namespaces
+are disjoint (`AWS::IAM::User` / `AWS::IAM::Group`, the EC2, RDS, Glue and ECS
+families), so an IAM user `foo` becoming a group `foo` was refused AFTER a
+genuine create, stranding the new group, and on rollback the new resource was
+"adopted" and left alive.
+
+Not covered, and unchanged by this work: two types that alias one AWS resource
+under DIFFERENT ids (`AWS::IAM::Policy` by `PolicyName`, Cloud Control
+`AWS::IAM::RolePolicy` by `PolicyName|RoleName`). No equal-id check sees those;
+the old half's delete, now correctly routed, removes what the new half just put.
 
 The create-first name-collision fallback (`--replace` delete-first) is kept for a
 Type change. Cross-type namespaces do exist (RDS, Neptune and DocumentDB share
 one DB-cluster identifier space), and with the delete routed on the old type the
-fallback is correctly aimed.
+fallback is correctly aimed; the messages say, on a Type change, that the holder
+may instead be an unrelated resource of the new type.
 
 The in-place arm and its update-failure replacement fallback are unreachable for
 a Type change and were left alone.
@@ -111,7 +124,7 @@ would take the in-place `revert` arm), and "state already points at the old id"
 additionally requires the record to be the old type. In the `reverse-replacement`
 arm the re-create, its fallback name and the stateful data warning use the old
 type; the delete of the new resource keeps `op.resourceType`; the
-"adopted the live new resource" shortcut follows `equalIdIsSameResource` above.
+"adopted the live new resource" shortcut follows `equalIdNamesSameResource` above.
 The auto-named "already reverted" recognition (equal property bags) also requires
 the record to be the old type, since two types can declare one identical bag.
 

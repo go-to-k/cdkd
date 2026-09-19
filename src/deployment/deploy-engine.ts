@@ -1,6 +1,7 @@
 import { getLogger } from '../utils/logger.js';
 import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
 import {
+  equalIdNamesSameResource,
   findNestedStackTypeChanges,
   renderNestedStackTypeChangeRefusal,
 } from './type-change-guard.js';
@@ -6271,21 +6272,15 @@ export class DeployEngine {
             provisionedBy: currentResource.provisionedBy,
           }).provider;
 
-          // Does an EQUAL physical id on the two halves name the SAME resource?
-          // Within one type, always — that is what the two name-idempotent
-          // guards below assume. Across a Type change it is a coincidence of
-          // two namespaces (an SSM parameter and a log group can share a bare
-          // name) ONLY when the two halves are served by different providers,
-          // or by Cloud Control, which addresses a resource by type AND
-          // identifier. ONE SDK provider serving both types is one namespace:
-          // every `Custom::*` type and `AWS::CloudFormation::CustomResource`
-          // route to `CustomResourceProvider`, where an equal id returned by
-          // the handler IS the existing resource, and deleting "the old one"
-          // would send `Delete` for what the create just built. Unsure reads
-          // as "same": the guards then refuse loudly instead of deleting.
-          const equalIdIsSameResource =
-            !typeChanged ||
-            (oldDeleteProvider === replaceProvider && replaceDecision.provisionedBy !== 'cc-api');
+          // Whether an EQUAL physical id on the two halves names the SAME
+          // resource — what the two name-idempotent guards below assume. True
+          // within one type; across a Type change only for the custom-resource
+          // family (`equalIdNamesSameResource` has the reasoning).
+          const equalIdIsSameResource = equalIdNamesSameResource({
+            oldType: oldResourceType,
+            newType: resourceType,
+            createLayer: replaceDecision.provisionedBy,
+          });
 
           // eslint-disable-next-line @typescript-eslint/no-explicit-any -- shape varies by ResourceProvider impl
           let createResult: any;
@@ -6429,9 +6424,9 @@ export class DeployEngine {
             // bookkeeping runs; the old resource and its state record stay
             // intact.
             //
-            // `equalIdIsSameResource` (issue #2668): across a Type change
-            // served by two providers an equal id is a coincidence of two
-            // namespaces, and the create was a genuine one.
+            // `equalIdIsSameResource` (issue #2668): across a Type change an
+            // equal id is a coincidence of two namespaces, and the create was a
+            // genuine one — the custom-resource family excepted.
             if (
               equalIdIsSameResource &&
               updateReplacePolicy === 'Retain' &&
@@ -6574,9 +6569,10 @@ export class DeployEngine {
             // (delete-first fallback) — there, re-acquiring the same
             // physical id under the same name is the expected outcome. Skipped
             // too when `equalIdIsSameResource` is false (issue #2668): across
-            // two types served by two providers an equal id is two resources,
-            // so the "new" one is NOT the old one and the delete-old step below
-            // is aimed — through the OLD type's provider — at the right one.
+            // two types an equal id is two resources (custom resources
+            // excepted), so the "new" one is NOT the old one and the delete-old
+            // step below is aimed — through the OLD type's provider — at the
+            // right one.
             if (
               equalIdIsSameResource &&
               !deletedOldFirst &&

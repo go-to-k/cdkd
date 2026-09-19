@@ -58,6 +58,7 @@ import type {
 } from '../types/resource.js';
 import type { Logger } from '../types/config.js';
 import type { ProviderRegistry } from '../provisioning/provider-registry.js';
+import { equalIdNamesSameResource } from './type-change-guard.js';
 import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
 import { STATEFUL_TYPES } from '../provisioning/stateful-types.js';
 import { applyDefaultNameForFallback } from '../provisioning/resource-name.js';
@@ -3202,24 +3203,15 @@ async function replaySingle(
         //
         // Issue #2668: across a Type change an equal id is a coincidence of two
         // namespaces — the re-create was genuine, and skipping the delete-new
-        // step would leave the new type's resource alive and untracked — but
-        // ONLY when the two halves are served by different providers, or by
-        // Cloud Control, which addresses by type AND identifier. One SDK
-        // provider serving both types is one namespace (`Custom::*` and
-        // `AWS::CloudFormation::CustomResource` all route to
-        // `CustomResourceProvider`): there the equal id IS the live resource,
-        // and the delete-new step would destroy what this op just restored. A
-        // delete provider that cannot be resolved reads as "same", which keeps
-        // the non-destructive adopt.
-        const equalIdIsSameResource = ((): boolean => {
-          if (!typeChanged) return true;
-          if (createProvisionedBy === 'cc-api') return false;
-          try {
-            return resolveNewDeleteProvider() === createProvider;
-          } catch {
-            return true;
-          }
-        })();
+        // step would leave the new type's resource alive and untracked. The
+        // custom-resource family is the exception (`equalIdNamesSameResource`
+        // has the reasoning): there the equal id IS the live resource, and the
+        // delete-new step would destroy what this op just restored.
+        const equalIdIsSameResource = equalIdNamesSameResource({
+          oldType: op.resourceType,
+          newType: oldType,
+          createLayer: createProvisionedBy,
+        });
         const adoptedLiveNewResource =
           equalIdIsSameResource &&
           !deletedNewFirst &&

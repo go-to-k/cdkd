@@ -327,10 +327,11 @@ describe('replayRollback reverses a Type-change replacement through BOTH types',
     expect(state['Thing']?.resourceType).toBe(OLD_TYPE);
   });
 
-  describe('one SDK provider serving BOTH types is one id namespace', () => {
-    // `Custom::Foo` -> `Custom::Bar`: both route to one provider, and a handler
-    // may return the same id for both. The re-created "old" resource then IS
-    // the live one, and the delete-new step would destroy what was restored.
+  describe('the custom-resource family is ONE id namespace; a shared provider instance is not', () => {
+    // `Custom::Foo` -> `Custom::Bar`: a handler may return the same id for
+    // both. The re-created "old" resource then IS the live one, and the
+    // delete-new step would destroy what was restored. Keyed on the TYPES, not
+    // on one provider instance serving both (IAM User / Group share one).
     const sharedCtx = (layer: 'sdk' | 'cc-api') => {
       const shared: ProviderDouble = {
         create: vi.fn().mockResolvedValue({ physicalId: NEW_ID, attributes: {} }),
@@ -363,7 +364,25 @@ describe('replayRollback reverses a Type-change replacement through BOTH types',
       expect(shared.delete).not.toHaveBeenCalled();
     });
 
-    it('Cloud Control serving both is NOT one namespace: the new resource is deleted', async () => {
+    it('ONE instance serving two NON-custom types: the new resource IS deleted', async () => {
+      const { ctx, shared } = sharedCtx('sdk');
+      const op = typeChangeOp({
+        resourceType: 'AWS::IAM::Group',
+        previousResourceType: 'AWS::IAM::User',
+        previousState: res({ physicalId: OLD_ID, resourceType: 'AWS::IAM::User' }),
+      });
+      const state: Record<string, ResourceState> = {
+        Thing: newRecord({ resourceType: 'AWS::IAM::Group' }),
+      };
+      const result = await replayRollback([op], state, STACK, ctx);
+      expect(result.failures).toBe(0);
+      expect(result.warnings).toBe(0);
+      expect(shared.delete).toHaveBeenCalledTimes(1);
+      expect(shared.delete.mock.calls[0]![2]).toBe('AWS::IAM::Group');
+      expect(state['Thing']?.resourceType).toBe('AWS::IAM::User');
+    });
+
+    it('custom types re-created through Cloud Control: the new resource is deleted', async () => {
       const { ctx, shared } = sharedCtx('cc-api');
       const state: Record<string, ResourceState> = {
         Thing: newRecord({ resourceType: 'Custom::Bar' }),

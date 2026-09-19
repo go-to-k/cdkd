@@ -25,6 +25,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import {
+  equalIdNamesSameResource,
   findNestedStackTypeChanges,
   renderNestedStackTypeChangeRefusal,
 } from '../../../src/deployment/type-change-guard.js';
@@ -135,6 +136,23 @@ function updateChange(resourceType: string, recordedType = 'AWS::SNS::Topic'): R
     propertyChanges,
   } as unknown as ResourceChange;
 }
+
+describe('equalIdNamesSameResource (#2668)', () => {
+  const CR = 'AWS::CloudFormation::CustomResource';
+  it.each([
+    ['one type', 'AWS::SQS::Queue', 'AWS::SQS::Queue', 'sdk', true],
+    ['one type, even on Cloud Control', 'AWS::SQS::Queue', 'AWS::SQS::Queue', 'cc-api', true],
+    ['two custom types', 'Custom::Foo', 'Custom::Bar', 'sdk', true],
+    ['custom and the generic custom type', 'Custom::Foo', CR, 'sdk', true],
+    ['custom types with no recorded layer', CR, 'Custom::Bar', undefined, true],
+    ['two custom types created through Cloud Control', 'Custom::Foo', 'Custom::Bar', 'cc-api', false],
+    ['custom on ONE side only', 'Custom::Foo', 'AWS::SQS::Queue', 'sdk', false],
+    ['custom on the OTHER side only', 'AWS::SQS::Queue', 'Custom::Foo', 'sdk', false],
+    ['two types one provider instance serves', 'AWS::IAM::User', 'AWS::IAM::Group', 'sdk', false],
+  ] as const)('%s', (_label, oldType, newType, createLayer, expected) => {
+    expect(equalIdNamesSameResource({ oldType, newType, createLayer })).toBe(expected);
+  });
+});
 
 describe('findNestedStackTypeChanges (#2668)', () => {
   it('flags a Type change INTO AWS::CloudFormation::Stack', () => {
