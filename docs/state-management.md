@@ -1061,7 +1061,9 @@ prints those forms for that record, and names the object's path only when the
 stack name renders exactly.
 
 The refusal prints its commands at the end, each on a line of its own after a
-label; copy the command after the label. The `cdkd state orphan` and `cdkd state show`
+label; copy the command after the label. For the legacy record, the object's
+key and bucket are printed the same way, on `Object key:` and `State bucket:`
+lines. The `cdkd state orphan` and `cdkd state show`
 commands carry the
 `--profile`, `--state-bucket` and non-default `--state-prefix` the run was
 given, so pasting them reaches the same bucket. If the stack name would not

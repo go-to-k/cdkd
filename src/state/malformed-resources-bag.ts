@@ -1815,7 +1815,7 @@ export function malformedOrphanResourcePropertiesRefusalMessage(
     `from the synthesized template, so a resource the app no longer declares has none and must ` +
     `take one of the first two.` +
     (inspect.sentence === undefined ? '' : ` ${inspect.sentence}`);
-  return [prose, ...commands].join('\n');
+  return [prose, ...commands, ...(inspect.locations ?? [])].join('\n');
 }
 
 /**
@@ -1835,7 +1835,8 @@ function withheldIdentityClause(stackName: string | undefined, region: string | 
   if (!identityWithheld(stackName, region)) return '';
   return (
     ` — the stack name or region above did not render exactly, so take them from the ` +
-    `'Find the exact name' command below (shell-quote them) rather than from this message`
+    `'Find the exact name' command below — replace each quoted hole, quotes included, with the ` +
+    `shell-quoted value — rather than from this message`
   );
 }
 
@@ -1933,7 +1934,7 @@ function orphanInspectClause(
   stackName: string | undefined,
   region: string | undefined,
   recovery?: LockRecoveryContext
-): { command?: string; sentence?: string } {
+): { command?: string; sentence?: string; locations?: string[] } {
   if (stackName === undefined) {
     // The same template the shared `inspectCommand` gives for no identity, but
     // qualified: the identity is the hole, not the account.
@@ -1957,11 +1958,25 @@ function orphanInspectClause(
   const exactOrUndefined = (v: string | undefined): string | undefined =>
     v !== undefined && sanitizeRecoveryValue(v).exact ? v : undefined;
   const bucket = exactOrUndefined(recovery?.stateBucket);
-  const where = bucket
-    ? `in state bucket ${shellQuote(bucket)}`
-    : `in the state bucket ('cdkd state info' names it)`;
+  // The object's LOCATION is printed on labelled trailing lines, one value per
+  // line, never inside this sentence — B1 of go-to-k/cdkd#3363's fourth review.
+  // A shell-quoted value is only safe while the quotes before it BALANCE, and
+  // English prose does not keep that promise: an apostrophe in `stack's` opened
+  // a quote that closed at the bucket's own opening quote, and pasting the
+  // sentence ran a `cdk.json`-planted bucket (`'evil; touch OWNED; #'`) as shell.
+  // The same LAST-and-UNWRAPPED rule the commands above follow.
+  const locations = bucket === undefined ? [] : [`State bucket: ${shellQuote(bucket)}`];
+  const where =
+    bucket === undefined
+      ? ', in the state bucket (cdkd state info names it)'
+      : ', in the bucket on the State bucket line below';
   if (!rendersExactly(stackName)) {
-    return { sentence: `${lead}: it is the legacy 'state.json' under this stack's name ${where}.` };
+    return {
+      sentence:
+        `${lead}: it is the legacy state.json under this stack name, which did not render ` +
+        `exactly${where}.`,
+      locations,
+    };
   }
   const prefix = exactOrUndefined(recovery?.statePrefix);
   const key = shellQuote(`${prefix ?? '<prefix>'}/${stackName}/state.json`);
@@ -1969,9 +1984,12 @@ function orphanInspectClause(
   // did not render exactly is not the default, so the note would mislead.
   const fill =
     recovery?.statePrefix === undefined
-      ? ` (the prefix is 'cdkd' unless '--state-prefix' was given)`
+      ? ' (its prefix is cdkd unless --state-prefix was given)'
       : '';
-  return { sentence: `${lead}: it is ${key} ${where}${fill}.` };
+  return {
+    sentence: `${lead}: the Object key line below names it${where}${fill}.`,
+    locations: [`Object key: ${key}`, ...locations],
+  };
 }
 
 /**

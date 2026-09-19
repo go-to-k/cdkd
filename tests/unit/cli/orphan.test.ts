@@ -640,7 +640,8 @@ describe('cdkd orphan (per-resource)', () => {
         expect(message).not.toMatch(/cdkd state show MyStack/);
         expect(message).not.toContain('--json');
         // The real prefix (commander's default) and the resolved bucket.
-        expect(message).toContain('it is cdkd/MyStack/state.json in state bucket test-bucket.');
+        expect(message).toMatch(/^Object key: cdkd\/MyStack\/state\.json$/m);
+        expect(message).toMatch(/^State bucket: test-bucket$/m);
         expect(message).not.toContain('<prefix>');
         expect(mockSaveState).not.toHaveBeenCalled();
       });
@@ -672,7 +673,8 @@ describe('cdkd orphan (per-resource)', () => {
         expect(dropCommand(message)).toBe(
           'cdkd state orphan MyStack --profile prod --state-bucket test-bucket --state-prefix custom'
         );
-        expect(message).toContain('it is custom/MyStack/state.json in state bucket test-bucket.');
+        expect(message).toMatch(/^Object key: custom\/MyStack\/state\.json$/m);
+        expect(message).toMatch(/^State bucket: test-bucket$/m);
       });
 
       it('names the region --stack-region selected when several are listed', async () => {
