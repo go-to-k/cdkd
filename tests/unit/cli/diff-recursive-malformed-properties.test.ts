@@ -32,7 +32,12 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { getLogger } from '../../../src/utils/logger.js';
-import { buildDiffTree } from '../../../src/cli/commands/diff-recursive.js';
+import {
+  buildDiffTree,
+  diffTreeToJson,
+  nodeHasChanges,
+  renderDiffTree,
+} from '../../../src/cli/commands/diff-recursive.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
@@ -270,5 +275,205 @@ describe('cdkd diff over an unreadable properties bag (issue go-to-k/cdkd#3191)'
       }),
     });
     expect(warnings()).not.toContain("'properties' map cannot be read");
+    // The ENTRY guard's negative too: with every orphan healthy the entry
+    // warning must not fire, or a guard dropped from the drop-and-warn block
+    // would report `0 resource record(s)` on an ordinary run.
+    expect(warnings()).not.toContain('cannot be read as resources');
+  });
+
+  it('drops an unreadable ENTRY before repairing properties, so a typeless torn row is reported once', async () => {
+    // An OBJECT entry with no `resourceType` and a torn `properties` map is
+    // named by BOTH predicates. The load drops entries first; swapped, this row
+    // would be warned about as a preview ("every property it declares previews
+    // as an addition") and then dropped, so the first warning describes a row
+    // the diff no longer holds. The `null` entry is the control for the entry
+    // warning, and the typed torn row the control for the properties one.
+    const state = record('abcdef', {
+      resources: {
+        AlphaNull: null as unknown as ResourceState,
+        BetaTypeless: { physicalId: 'p', properties: 'x' } as unknown as ResourceState,
+        [TORN_ID]: entry('abcdef'),
+      },
+    });
+    const node = await diff(state);
+    expect(node.unreadable).toEqual(['AlphaNull', 'BetaTypeless']);
+    const calls = (getLogger().warn as unknown as { mock: { calls: unknown[][] } }).mock.calls.map(
+      (args) => String(args[0])
+    );
+    const entriesWarning = calls.filter((m) => m.includes('cannot be read as resources'));
+    const propertiesWarning = calls.filter((m) => m.includes("'properties' map cannot be read"));
+    expect(entriesWarning).toHaveLength(1);
+    expect(propertiesWarning).toHaveLength(1);
+    expect(entriesWarning[0]).toContain('AlphaNull');
+    expect(entriesWarning[0]).toContain('BetaTypeless');
+    expect(propertiesWarning[0]).toContain(TORN_ID);
+    expect(propertiesWarning[0]).not.toContain('BetaTypeless');
+  });
+
+  it('drops an unreadable ORPHAN record BEFORE the adoption preview reads it', async () => {
+    // The ENTRY half of the second pass this file already covers for
+    // `properties`, and the half that has to run EARLIER. `planOrphanAdoption`
+    // destructures each record and routes a provider by `state.resourceType`;
+    // the `catch` around that call names the same field AGAIN, so a torn record
+    // throws a TypeError straight OUT of the catch — go-to-k/cdkd#3018's class,
+    // on `cdkd diff`. Repairing after the preview cannot help, because the
+    // throw happens inside it.
+    //
+    // The stand-in below dereferences exactly what the real planner does, so
+    // dropping the filter reproduces the abort rather than quietly passing a
+    // torn record to a fake that never looks at it.
+    const healthyId = 'AdoptedGamma';
+    // Four value shapes the ENTRY predicate rejects rather than `null` alone: a
+    // `!= null` guard admits the string, the number and the typeless object.
+    // Of the shapes below, a `null` `state`, an absent one, a primitive record
+    // and a `null` record ABORT; the string, the number and the typeless object
+    // reach `state.resourceType` as `undefined`, which the planner's provider
+    // lookup refuses and its catch keeps with a notice the preview discards —
+    // so dropping those three is about naming a silently kept record rather
+    // than about a throw.
+    const orphans = [
+      { logicalId: 'TornNull', state: null },
+      { logicalId: 'TornString', state: 'abcdef' },
+      // A non-string `logicalId` has no name to print either, so it takes the
+      // same stand-in as the record with no id at all.
+      { logicalId: 4242, state: null },
+      { logicalId: 'TornNumber', state: 5 },
+      { logicalId: 'TornTypeless', state: { physicalId: 'p', properties: {} } },
+      // The two other ABORTING shapes: no `state` at all, and a primitive
+      // record, whose `state` destructures to `undefined` the same way.
+      { logicalId: 'TornAbsent' },
+      7,
+      // The record itself is `null`: `const { logicalId, state } = record`
+      // throws one line earlier, and there is no id to name it by.
+      null,
+      { logicalId: healthyId, state: entry({ Value: 'y' }) },
+    ] as unknown as StackOrphanRecord[];
+    const tpl: CloudFormationTemplate = {
+      Resources: {
+        [TORN_ID]: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } },
+        [healthyId]: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'y' } },
+      },
+    };
+    let previewed: readonly unknown[] = [];
+    const node = await diff(record({ Value: 'x' }, { orphans }), {
+      tpl,
+      previewOrphanAdoption: async (state) => {
+        previewed = state.orphans ?? [];
+        for (const orphanRecord of previewed as StackOrphanRecord[]) {
+          const { logicalId, state: entryState } = orphanRecord;
+          void `${logicalId} ${entryState.resourceType}`;
+        }
+        return { adopted: { [healthyId]: entry({ Value: 'y' }) }, refusals: [] };
+      },
+    });
+    // The preview saw the healthy record only...
+    expect(previewed).toHaveLength(1);
+    expect((previewed[0] as StackOrphanRecord).logicalId).toBe(healthyId);
+    // ...the healthy one was still adopted, so the guard did not cost the
+    // feature. `NO_CHANGE` is what proves the splice: `DiffCalculator` decides
+    // CREATE by ABSENCE from state, so an unadopted record would read `CREATE`
+    // here however healthy it is.
+    expect(node.changes.get(healthyId)?.changeType).toBe('NO_CHANGE');
+    // ...and every torn record was REPORTED: eight against a five-name cap,
+    // so the first five are named — the numeric-id one among them through
+    // `displayLogicalId`'s existing stand-in rather than a new literal — and
+    // the last three, the two other id-less records included, are the
+    // overflow count.
+    const entriesWarning = warnings()
+      .split('\n')
+      .filter((m) => m.includes('cannot be read as resources'));
+    expect(entriesWarning).toHaveLength(1);
+    // M16: it names the container it is ABOUT. Reusing the `resources` text
+    // sent a reader to a map that is healthy, and when both sources fire the
+    // two warnings opened with the identical sentence.
+    expect(entriesWarning[0]).toContain("rollback-orphan record(s) in 'orphans'");
+    expect(entriesWarning[0]).not.toContain('resource record(s)');
+    for (const id of ['TornNull', 'TornString', 'TornNumber', 'TornTypeless']) {
+      expect(entriesWarning[0], id).toContain(id);
+    }
+    expect(entriesWarning[0]).toContain('<unrenderable>');
+    expect(entriesWarning[0]).toContain('8 rollback-orphan record(s)');
+    expect(entriesWarning[0]).toContain('and 3 more');
+    // The numeric id is not RENDERED as `4242`: it takes the stand-in, which a
+    // guard keyed on absence rather than on the type would not do.
+    expect(entriesWarning[0]).not.toContain('4242');
+    expect(entriesWarning[0]).not.toContain(healthyId);
+    // And they are CARRIED, not only warned about: the same list `--json`
+    // prints and `--fail` counts, in record order, the id-less ones as `''`.
+    // A warn-only drop would let `--fail` exit 0 over the record that used to
+    // crash this command — the M7 shape one container over.
+    expect(node.unreadable).toEqual([
+      'TornNull',
+      'TornString',
+      '',
+      'TornNumber',
+      'TornTypeless',
+      'TornAbsent',
+      '',
+      '',
+    ]);
+  });
+
+  it('counts a dropped ORPHAN record as a change for --fail, with nothing else changed', async () => {
+    // The `--fail` half on its own: no healthy adoption (which would satisfy
+    // `nodeHasChanges` by itself) and a template that matches state, so the
+    // torn record is the ONLY thing that can make this node count. A warn-only
+    // drop leaves it at `false`, and `cdkd diff --fail` exits 0 over the record
+    // that used to crash it.
+    const node = await diff(record({ Value: 'x' }, { orphans: [{ logicalId: 'Torn', state: null }] as unknown as StackOrphanRecord[] }), {
+      previewOrphanAdoption: async () => ({ adopted: {}, refusals: [] }),
+    });
+    expect(node.changes.get(TORN_ID)?.changeType).toBe('NO_CHANGE');
+    expect(node.adoptedOrphans).toEqual([]);
+    expect(node.unreadable).toEqual(['Torn']);
+    expect(nodeHasChanges(node)).toBe(true);
+  });
+
+  it('carries a dropped ORPHAN id out to the renderer and to --json', async () => {
+    // n16 of the round-5 review: the other cases stop at the in-memory
+    // `node.unreadable`. Both readers take that single joined field with no
+    // per-source branch, so there is no divergent path today — this is the
+    // fence that keeps it that way.
+    //
+    // NOT extended to a nested child, and the reason is a property of the walk
+    // rather than of this file: `buildDeletedSubtree` threads no
+    // `previewOrphanAdoption`, so a state-only child never previews an adoption
+    // and has no orphan record to drop; a TEMPLATE-declared child does get the
+    // preview, but reaching one needs a `nestedTemplates` entry pointing at a
+    // real file, which this harness does not build.
+    const state = record({ Value: 'x' }, {
+      orphans: [{ logicalId: 'TornOrphan', state: null }] as unknown as StackOrphanRecord[],
+    });
+    const node = await diff(state, {
+      previewOrphanAdoption: async () => ({ adopted: {}, refusals: [] }),
+    });
+
+    expect(node.unreadable).toEqual(['TornOrphan']);
+    expect(diffTreeToJson(node).unreadable).toEqual(['TornOrphan']);
+
+    const lines: string[] = [];
+    renderDiffTree(node, true, (m) => lines.push(m));
+    const text = lines.join('\n');
+    expect(text).toContain('1 state record row(s) could not be read: TornOrphan.');
+  });
+
+  it('keeps the LOAD\'s dropped rows ahead of the dropped orphan records, both surviving', async () => {
+    // The two sources APPEND. Both cases above start from a healthy `resources`
+    // map, so a node built from whichever list is non-empty passed them while
+    // losing the load's rows the moment both sources carry one.
+    const state = record(
+      { Value: 'x' },
+      {
+        resources: {
+          [TORN_ID]: entry({ Value: 'x' }),
+          AlphaNull: null as unknown as ResourceState,
+        },
+        orphans: [{ logicalId: 'TornOrphan', state: null }] as unknown as StackOrphanRecord[],
+      }
+    );
+    const node = await diff(state, {
+      previewOrphanAdoption: async () => ({ adopted: {}, refusals: [] }),
+    });
+    expect(node.unreadable).toEqual(['AlphaNull', 'TornOrphan']);
   });
 });

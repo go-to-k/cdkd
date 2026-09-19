@@ -29,10 +29,28 @@ not happen at either site. Enumerate them with
 `grep -n "^export function refuseMalformed" src/state/malformed-resources-bag.ts`;
 `tests/unit/state/malformed-resources-bag.test.ts` derives the same list.
 
-Two sets live with their READERS: the `resources` gate-scoped pair in
+Three sets live with their READERS: the `resources` gate-scoped pair in
 [state-malformed-resources-gated.md](state-malformed-resources-gated.md), the
 entry-level `properties` set in
-[state-malformed-properties.md](state-malformed-properties.md).
+[state-malformed-properties.md](state-malformed-properties.md), and the ENTRY
+class below.
+
+## The ENTRY class is not a container (go-to-k/cdkd#3018)
+
+`isReadableResourceEntry` / `unreadableResourceEntries` /
+`refuseMalformedResourceEntries` / `repairMalformedResourceEntriesForReadOnly`
+answer for a ROW of a readable `resources` map — an entry that is not an object,
+or carries no `resourceType`. So the enumeration above returns one function the
+per-container table cannot classify, and the partition that owns it is by CLASS
+(the spelling `state-malformed-resources-gated.md` uses), not by container.
+
+Its verdict is independent of the BAG guard, which a caller still owes; a
+read-only caller taking both drops entries AFTER the bag repair, so an
+unreadable bag has no rows to walk. `cdkd diff` also runs the entry predicate
+over `orphans[]` before previewing an adoption, with its OWN warning text
+(`malformedOrphanRecordsWarning`) because the shared one names `resources`; the
+dropped records join the node's `unreadable`, so `--fail` counts them. The
+`orphans` CONTAINER itself is still unguarded — go-to-k/cdkd#3379.
 
 ## One refusal here is NOT about a container
 

@@ -20,6 +20,16 @@ import {
 import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
 import {
+  isReadableResourceEntry,
+  malformedResourceEntriesWarning,
+  malformedResourcesWarning,
+  refuseMalformedResourceEntries,
+  refuseMalformedState,
+  repairMalformedResourceEntriesForReadOnly,
+  repairMalformedResourcesForReadOnly,
+  UNREADABLE_RESOURCES_MAP_ROW,
+} from '../../state/malformed-resources-bag.js';
+import {
   buildLockContentionMessage,
   type LockRecoveryContext,
 } from '../../state/lock-contention-message.js';
@@ -144,7 +154,23 @@ import type { ResourceState, StackState } from '../../types/state.js';
  * reaches the code that computes the other two.
  */
 
-export type NotComparedCause = 'refused' | 'unresolvedToken' | 'readFailed' | 'baselineRefused';
+export type NotComparedCause =
+  | 'refused'
+  | 'unresolvedToken'
+  | 'readFailed'
+  | 'baselineRefused'
+  /**
+   * The record holds a row nothing can read as a resource (go-to-k/cdkd#3018).
+   *
+   * Carried as an OUTCOME rather than left as a warning, because `cdkd drift`
+   * is a CI gate: the read-only mode DROPS such a row so the rest of the stack
+   * can still be compared, and a dropped row that produced no outcome appeared
+   * in no `--json` array and in no count, so the run exited 0 with the only
+   * signal on stderr. Before this class was handled at all the same record
+   * threw, which is non-zero — turning a loud failure into a silent clean
+   * verdict is the one direction a fix here must not take.
+   */
+  | 'unreadableRecord';
 
 /**
  * The schema version at which `ResourceState.observedBaselineRefused` arrived.
@@ -638,6 +664,16 @@ const UNCOMPARED_REASONS: Record<UncomparedReason, { kind: UncomparedKind; phras
     kind: 'unknown',
     phrase: 'not compared AT ALL: the read or comparison failed',
   },
+  // Rendered in two places. The detection report's `NOT fully compared`
+  // heading reads it (minus its `not compared AT ALL: ` lead) for every cause
+  // that compared nothing. `incompleteRemediationMessage` would too, but under
+  // `--accept` / `--revert` a record holding an unreadable entry is REFUSED
+  // before any outcome exists (go-to-k/cdkd#3018), so that path never tallies
+  // this cause.
+  unreadableRecord: {
+    kind: 'unknown',
+    phrase: 'not compared AT ALL: their state record is not readable as a resource',
+  },
   // `unknown`, beside `readFailed`, because NONE of the resource's properties
   // were compared — it is not "partially" anything (issue #2952).
   baselineRefused: {
@@ -665,10 +701,43 @@ const UNCOMPARED_REASONS: Record<UncomparedReason, { kind: UncomparedKind; phras
   },
 };
 
+// Re-exported so the drift tests keep importing it from the command they pin;
+// the definition lives beside the other malformed-record spellings, because
+// `cdkd diff` reports the same row (go-to-k/cdkd#3018).
+export { UNREADABLE_RESOURCES_MAP_ROW };
+
+/**
+ * Was ANY of the resource's properties compared?
+ *
+ * A THIRD exhaustive record beside {@link notComparedReason}'s and
+ * {@link UNCOMPARED_REASONS}, and it exists because this question was answered
+ * THREE times by a hand-written `readFailed` / `baselineRefused` cause list —
+ * the summary parenthetical and the block heading, and `--json`'s
+ * `referencesUnresolved`. Hand lists of one growing union are how a new cause
+ * comes to be described as something it is not, which is exactly what those
+ * sites' own comments say happened when `baselineRefused` was added.
+ * go-to-k/cdkd#3018 added a further cause and every list was silently wrong
+ * again, reporting an unreadable record as "only PARTIALLY compared" and as
+ * `referencesUnresolved: true` — understating it in the reassuring direction,
+ * the one failure mode the comments name. All three readers take this record.
+ *
+ * `false` means none of it was compared. It is a SEPARATE axis from
+ * {@link UncomparedKind}, which asks whether cdkd is uncertain or simply does
+ * not cover the type; a `skipped` resource is `byDesign` and also had nothing
+ * compared, and collapsing the two would make one of the answers wrong.
+ */
+const ANY_OF_IT_COMPARED: Record<NotComparedCause, boolean> = {
+  refused: true,
+  unresolvedToken: true,
+  readFailed: false,
+  baselineRefused: false,
+  unreadableRecord: false,
+};
+
 /**
  * The sentence lead each {@link UncomparedKind} group is reported under.
  *
- * Exhaustive for the same reason the record above is, and SEPARATE from it
+ * Exhaustive for the same reason `UNCOMPARED_REASONS` is, and SEPARATE from it
  * because the lead is per GROUP while the phrase is per reason: writing the
  * claim into each phrase would put five copies of two sentences in the file,
  * and five copies is how two of them come to disagree.
@@ -922,7 +991,12 @@ async function driftCommand(
         stateBackend,
         providerRegistry,
         ccApiFallback,
-        resolvePrincipalUniqueId
+        resolvePrincipalUniqueId,
+        // go-to-k/cdkd#3018: decided HERE, beside the flags, because it is the
+        // only place that knows whether this run can reach a `saveState`. The
+        // two flags are mutually exclusive (checked above), so either one alone
+        // makes the run write-capable.
+        options.accept || options.revert ? 'refuse' : 'repair'
       );
       reports.push(report);
     }
@@ -1471,6 +1545,9 @@ function notComparedReason(cause: NotComparedCause): string {
       'its state records a `{{resolve:...}}` spelling cdkd resolves for nobody ' +
       '(permanent; a re-run cannot clear it)',
     readFailed: 'the read or comparison threw, so NONE of its properties were compared',
+    unreadableRecord:
+      'its state record is not readable as a resource — not an object, or carrying no ' +
+      'resource type — so there was nothing to compare (repair or re-import the record)',
     baselineRefused:
       'a `cdkd import` run refused to capture its observed baseline, so the only ' +
       'baseline available is the recorded properties that refusal already found ' +
@@ -2186,7 +2263,15 @@ async function runDriftForStack(
   stateBackend: S3StateBackend,
   providerRegistry: ProviderRegistry,
   ccApiFallback: CloudControlProvider,
-  resolvePrincipalUniqueId: PrincipalUniqueIdResolver
+  resolvePrincipalUniqueId: PrincipalUniqueIdResolver,
+  // go-to-k/cdkd#3018. `cdkd drift` is read-only by DEFAULT and write-capable
+  // under `--accept` / `--revert`, so the malformed-record remedy this command
+  // takes is decided per MODE rather than per command. `cdkd scrub` splits the
+  // same way on `--dry-run`, so this is the second such flow rather than the
+  // only one — what differs is that scrub's split is decidable from its own
+  // write gate at the site, while this one is a FLAG pair the loader cannot
+  // see. Hence a parameter: the decision is made once, beside the flags.
+  malformedRecordMode: 'repair' | 'refuse'
 ): Promise<StackDriftReport> {
   const result = await stateBackend.getState(stackName, region);
   if (!result) {
@@ -2199,6 +2284,76 @@ async function runDriftForStack(
     const outcomes: DriftOutcome[] = [];
     const state: StackState = result.state;
     const logger = getLogger();
+
+    // go-to-k/cdkd#3018, at the LOAD and not at each of this file's walks —
+    // the rule `malformed-resources-bag.ts`'s header records, and the reason is
+    // the same here: the walks below dereference the bag and each entry, so a
+    // guard at any one of them leaves the others aborting a line away.
+    //
+    // REFUSING under `--accept` / `--revert` is not symmetry for its own sake.
+    // Both modes rebuild the record as `{ ...report.state.resources }` and then
+    // `saveState` it, and for ONE shape that spread is a LAUNDERING step rather
+    // than a crash: a bag hand-edited into a LIST OF RESOURCE OBJECTS walks
+    // fine here (each element has a `resourceType`), reaches the writer, and
+    // `{ ...[objA, objB] }` is `{'0': objA, '1': objB}` — persisted back as a
+    // well-formed-looking map of phantom rows, with the only evidence the
+    // record was broken gone. Every other non-object shape fails differently,
+    // and neither way is this one: a NON-EMPTY string, or a list holding an
+    // unreadable element, throws in the walk above, while `null`, an absent
+    // bag, a number, a boolean, an empty string and an empty list all walk to
+    // zero entries and yield a silent empty report. Only the list of records
+    // both survives the walk AND reaches the spread.
+    //
+    // Plain `cdkd drift` cannot write, so it REPAIRS and says so. Both shapes
+    // ABORT this command rather than fabricating — the walk below reaches
+    // `resource.resourceType.startsWith(...)`, which throws on a string bag's
+    // per-character entries exactly as it does on a `null` one — and a bare
+    // `TypeError` from a read-only report is worse than a short report the
+    // warning explains. (The FABRICATING failure is `cdkd state resources`'s,
+    // one command over, and is what go-to-k/cdkd#3172 fixed; the difference is
+    // that this walk dereferences each entry while that one rendered it.)
+    if (malformedRecordMode === 'refuse') {
+      refuseMalformedState(state, stackName, region);
+      refuseMalformedResourceEntries(state, stackName, region);
+    } else {
+      if (repairMalformedResourcesForReadOnly(state)) {
+        logger.warn(malformedResourcesWarning(stackName, region));
+        // ONE outcome for the whole record, for the reason the entry arm below
+        // gives per row: the warning goes to stderr, so without an outcome an
+        // unreadable BAG produced no `notCompared` row, an empty `--json`
+        // payload and exit 0 — a clean verdict about a stack cdkd could not
+        // read at all, where before the repair existed the same record crashed
+        // non-zero. There is no logical id to name, so the row names the
+        // container instead; `outcomeExitSignal` routes the cause to exit 2.
+        outcomes.push({
+          kind: 'notCompared',
+          logicalId: UNREADABLE_RESOURCES_MAP_ROW,
+          resourceType: 'unreadable record',
+          notComparedCause: 'unreadableRecord',
+        });
+      }
+      const dropped = repairMalformedResourceEntriesForReadOnly(state);
+      if (dropped.length > 0) {
+        logger.warn(malformedResourceEntriesWarning(stackName, region, dropped));
+        // One OUTCOME per dropped row, not just the warning. The warning goes to
+        // stderr, which a `cdkd drift --json > report.json` gate discards; the
+        // outcome joins the roll-up, the `--json` payload and `outcomeExitSignal`,
+        // which routes every cause but `unresolvedToken` to exit 2. Without it a
+        // record with one unreadable row exits 0 and reports only its healthy
+        // rows — a clean verdict about a stack cdkd could not fully read.
+        for (const logicalId of dropped) {
+          outcomes.push({
+            kind: 'notCompared',
+            logicalId,
+            // No type is knowable — that is what "unreadable" means here. The
+            // placeholder is deliberately not a real CloudFormation type, so no
+            // reader can mistake it for one.
+            resourceType: 'unreadable record',
+            notComparedCause: 'unreadableRecord',
+          });
+        }
+      }
+    }
     // Issue #1914: the resolver used to re-resolve the secret expressions this
     // stack's records store. Only ever CALLED for a bag that actually holds a
     // `{{resolve:...}}` string, so a stack with no dynamic reference makes no
@@ -3077,6 +3232,21 @@ export function buildReadCurrentStateContext(
   const siblings: NonNullable<ReadCurrentStateContext['siblings']> = {};
   for (const [lid, res] of Object.entries(state.resources ?? {})) {
     if (lid === excludedLogicalId) continue;
+    // go-to-k/cdkd#3018, and this one IS at the loop rather than at a load,
+    // deliberately: the helper is EXPORTED and its three callers reach it with
+    // three different guarantees — `cdkd drift` and `cdkd state refresh-observed`
+    // now settle the record's shape at their own load sites, while `cdkd import`
+    // hands it a record it is midway through building.
+    //
+    // TWO outcomes, not one, and the second is why a `try` around the next lines
+    // would not do instead: a `null` sibling CRASHES on `res.resourceType`,
+    // while a string, a number, a list or an OBJECT WITH NO TYPE does NOT — it
+    // yields `undefined` for every field it lacks and enters the map as a
+    // sibling record naming no resource. A provider reading that map to resolve
+    // a cross-resource reference is then answered about a resource that does
+    // not exist. The predicate asks for the resource TYPE for that reason: it
+    // is the field every reader of an entry touches first.
+    if (!isReadableResourceEntry(res)) continue;
     siblings[lid] = {
       resourceType: res.resourceType,
       physicalId: res.physicalId,
@@ -6345,10 +6515,13 @@ function writeJsonReport(reports: StackDriftReport[]): void {
       ({ outcome, cause }) => ({
         logicalId: outcome.logicalId,
         type: outcome.resourceType,
-        // `baselineRefused` joins `readFailed` here: neither is about a
-        // dynamic reference at all. The record spells none — that is precisely
-        // why nothing masked its readback (issue #2952).
-        referencesUnresolved: cause !== 'readFailed' && cause !== 'baselineRefused',
+        // Read off `ANY_OF_IT_COMPARED` rather than a third hand-written cause
+        // list: the two partitions are the same one. A row is PARTIALLY
+        // compared exactly when a dynamic reference is what stopped it, and
+        // `readFailed` / `baselineRefused` / `unreadableRecord` are about no
+        // reference at all (issue #2952; go-to-k/cdkd#3018, whose new cause an
+        // exclusion list here would have reported as `true`).
+        referencesUnresolved: ANY_OF_IT_COMPARED[cause],
         cause,
       })
     );
@@ -6523,7 +6696,7 @@ function writeHumanReport(reports: StackDriftReport[]): void {
             // NONE of the resource's properties were compared, so
             // `only partially compared` understates it in the reassuring
             // direction — the same argument #2151 made for `readFailed`.
-            (notCompared.some((n) => n.cause === 'readFailed' || n.cause === 'baselineRefused')
+            (notCompared.some((n) => !ANY_OF_IT_COMPARED[n.cause])
               ? `(${notCompared.length} not fully compared), `
               : `(${notCompared.length} only partially compared), `) +
             `${unsupported.length} unsupported\n`
@@ -6561,18 +6734,38 @@ function writeHumanReport(reports: StackDriftReport[]): void {
       // nothing was read and nothing failed. A variable still called
       // `readFailed` is how the heading below came to assert a cause the
       // population does not have.
-      const notComparedAtAll = notCompared.filter(
-        (n) => n.cause === 'readFailed' || n.cause === 'baselineRefused'
-      ).length;
-      const readFailedCount = notCompared.filter((n) => n.cause === 'readFailed').length;
-      const baselineRefusedCount = notCompared.filter((n) => n.cause === 'baselineRefused').length;
+      const notComparedAtAll = notCompared.filter((n) => !ANY_OF_IT_COMPARED[n.cause]).length;
       const referenceCaused = notCompared.length - notComparedAtAll;
       // Names only the causes actually PRESENT, so a refused-baseline-only
-      // stack no longer reads `the read or comparison failed`.
-      const atAllCause = [
-        ...(readFailedCount > 0 ? ['the read or comparison failed'] : []),
-        ...(baselineRefusedCount > 0 ? ['an import refused their observed baseline'] : []),
-      ].join('; ');
+      // stack no longer reads `the read or comparison failed`. DERIVED from
+      // the two exhaustive records rather than listed by hand: which causes
+      // compared nothing is `ANY_OF_IT_COMPARED`'s answer (the same one the
+      // count beside it reads), and each cause's wording is its
+      // `UNCOMPARED_REASONS` phrase. A hand list here was the fourth copy of
+      // that partition, and a future `false` cause would have rendered
+      // `N not compared AT ALL ()` with the count still right
+      // (go-to-k/cdkd#3018 review, M10).
+      //
+      // The two records answer DIFFERENT questions here and the split is
+      // deliberate: `UNCOMPARED_REASONS` decides the ORDER, which is what its
+      // own doc promises ("the insertion ORDER is the order the phrases are
+      // emitted in, so the line is deterministic without a second list to keep
+      // in sync"), and `ANY_OF_IT_COMPARED` decides MEMBERSHIP, which is its
+      // axis. Reading the order off the membership record instead put the two
+      // in disagreement — they sort `unreadableRecord` and `baselineRefused`
+      // opposite ways — which is a second ordering list under a doc that says
+      // there is none.
+      // The first filter is TYPE NARROWING and nothing more, stated rather than
+      // pinned: `UncomparedReason` adds `unsupported` / `skipped`, which
+      // `ANY_OF_IT_COMPARED` has no key for, and the `notCompared.some` test
+      // below already excludes both — so deleting it changes no output and no
+      // test can tell the two apart. It earns its place by letting the lookups
+      // after it be indexed rather than cast.
+      const atAllCause = (Object.keys(UNCOMPARED_REASONS) as UncomparedReason[])
+        .filter((cause): cause is NotComparedCause => cause in ANY_OF_IT_COMPARED)
+        .filter((cause) => !ANY_OF_IT_COMPARED[cause] && notCompared.some((n) => n.cause === cause))
+        .map((cause) => UNCOMPARED_REASONS[cause].phrase.replace(/^not compared AT ALL: /, ''))
+        .join('; ');
       process.stdout.write(
         notComparedAtAll === 0
           ? // BYTE-FOR-BYTE the pre-#2151 heading. The widened population is the

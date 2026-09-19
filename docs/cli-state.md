@@ -737,6 +737,40 @@ as not found, are counted as unsupported and keep their previous baseline —
 a transient not-found can never null one out. Per-resource read failures are
 reported individually and make the run exit `2`.
 
+**A malformed record is refused, not refreshed.** This is the one command in
+the `cdkd state` family that writes the record back, so — unlike the read-only
+views described under
+[What the human views do to a malformed record](#what-the-human-views-do-to-a-malformed-record)
+— it will not proceed over a record whose shape it cannot read. Two shapes
+refuse, both naming the stack and the region, and both *before* that stack's
+lock is taken, before anything is read from AWS for it and before any write to
+it. Over several stacks — `--all`, or more than one name — the shape of every
+region-scoped record is checked before the first one is refreshed, so one such
+malformed record refuses the whole run and no stack is written. One case still
+refuses only when its turn comes, after the stacks ahead of it have been
+saved: a record edited between that check and its own refresh. A legacy
+record with no region is refused, for that reason, after the confirmation
+prompt and before the first stack is refreshed, so nothing is written. Its
+message suggests migrating the record with any cdkd write, and prints a
+`cdkd deploy <stack>` example only when the stack name renders exactly and
+holds no `*` or `/` and does not start with `-` — a name that had to be
+sanitized could name a different stack in your app, `cdkd deploy` reads `*` and
+`/` as a pattern, and a leading `-` would be read as an option.
+
+- a `resources` bag that is not a JSON object — `null`, absent, a list, a
+  number, a string, `true` or `false`. A list of resource objects is the dangerous one: its
+  elements look like records, so without the refusal they would be read back
+  from AWS, given a fresh baseline, and saved — still as a list, so the record
+  stays broken while the run reports a clean refresh over it.
+- a `resources` **entry** that is not an object, or is an object carrying no
+  resource type. The refusal names the logical ids, up to five of them and a
+  count of the rest.
+
+Repairing instead would replace the only evidence that the record is broken
+with a well-formed one. Inspect it with `cdkd state show <stack> --json`, then
+repair or remove it — [`cdkd state orphan`](#cdkd-state-orphan) removes a
+record without touching the AWS resources.
+
 ## Exit codes
 
 | Code | Meaning |

@@ -402,15 +402,18 @@ matches on would be worse than the display concern it would avoid.
 
 A state record is read as JSON and used as typed data without a field-by-field
 shape check, so a hand-edited or truncated one can hold anything where a map
-belongs. `cdkd diff` never writes state, so it **repairs** the two containers it
-walks rather than refusing, and warns about each container it repaired — once
-per stack, except for the `properties` case noted below, which can warn twice:
+belongs. `cdkd diff` never writes state, so it **repairs** each container it walks
+rather than refusing, and warns about each one it repaired — once per stack,
+except for the `properties` case noted below, which can warn twice. A single
+unreadable ENTRY is dropped rather than repaired, for the reason below the
+table:
 
 | Container | Read as | What the preview then shows |
 | --- | --- | --- |
 | `resources` | empty | Every resource the template declares previews as a `CREATE` |
 | `outputs` | empty | Every output this diff resolves previews as an `ADD`, and no stored key previews as a `REMOVE` |
 | A resource's `properties` | empty | Every property that resource declares previews as an addition, and a create-only one previews as a **replacement** |
+| One `resources` entry, or one `orphans` record | DROPPED | The row is named in the preview, in `--json`'s `unreadable` and in the `--fail` count; a row the template still declares previews as a `CREATE`, one it no longer declares gets no row at all |
 
 "Unreadable" here is anything that is not a JSON object: a string, a list, a
 number, a boolean or `null`. A healthy container is untouched and nothing is
@@ -458,7 +461,21 @@ deploy` refuses the record rather than performing those replacements. See
 
 The same repair runs a second time on a stack that adopts a rollback orphan:
 those records come from a different part of the file and are spliced in after
-the load, so a torn one is emptied and named there too.
+the load, so a torn one is emptied and named there too. An orphan record that
+is not readable as a resource at all — not an object, or carrying no resource
+type — is dropped before adoption is previewed, named with the dropped rows
+below, and counted the same way; a `null` one used to abort the command.
+
+A single `resources` **entry** that is not an object, or carries no resource
+type, is not repaired but **dropped** from the record the diff reads, with or
+without `--recursive`, and a warning names its logical id. Nothing says what AWS
+resource such a row names, so there is no honest empty version of it. Dropping
+happens before the `properties` repair, so a typeless row whose `properties` map
+is also unreadable is reported once, as dropped. A dropped row the template
+still declares previews as a `CREATE`; one it no longer declares gets no row at
+all. So the dropped rows, and `(resources map)` for an unreadable map, are also
+named together on one line after the counts — up to ten names, then how many
+more — listed in full in `--json`'s `unreadable`, and counted by `--fail`.
 
 With `--recursive` each node of the tree carries its own record, so the warning
 names the stack it came from and a healthy parent can sit above a malformed
@@ -488,7 +505,9 @@ the wrong field.
 ## `--fail`
 
 `--fail` exits `1` when any change is detected, matching `cdk diff --fail`. An
-Outputs-only change counts. Without the flag, `cdkd diff` always exits `0` even
+Outputs-only change counts, and so does a state record row the diff could not
+read (described under [when the state record is malformed](#when-the-state-record-is-malformed)) — the preview is not
+complete for such a stack. Without the flag, `cdkd diff` always exits `0` even
 when changes are present, which is `cdk diff`'s default too.
 
 With `--recursive`, `--fail` considers the whole nested-stack tree, so CI can
@@ -521,6 +540,7 @@ The payload is a flat array of one record per target stack:
       }
     ],
     "outputChanges": [],
+    "unreadable": [],
     "children": []
   }
 ]
@@ -533,6 +553,12 @@ The payload is a flat array of one record per target stack:
   recursively.
 - `propertyChanges` and `attributeChanges` appear on a change entry only when
   non-empty.
+- `unreadable` is **always present**: the logical ids of state record rows the
+  diff could not read, `(resources map)` when the whole `resources` map is
+  not an object, and each rollback-orphan record the adoption preview could
+  not read (an empty string for one with no usable id). Non-empty means `changes` is not the whole picture: a row the
+  template still declares appears there as a `CREATE`, but one it no longer
+  declares gets no change entry at all, not even a `DELETE`.
 - A change entry carries `ccApi: string[]` when the resource would auto-route
   via Cloud Control API on the next deploy — the machine form of the
   `[via CC API: <props>]` annotation. It is absent when the resource routes via
@@ -564,6 +590,21 @@ The walk previews the full next deploy:
 - A nested child with **no state file yet** diffs as all-CREATE.
 - A nested stack **removed from the CDK code** — present in state, absent from
   the template — diffs as all-DELETE, recursively.
+- A child whose record is **malformed** is reported on rather than aborted on,
+  at every depth. A `resources` bag that is not a JSON object is treated as
+  empty, and a `resources` entry that is not an object, or carries no resource
+  type, is dropped from the
+  record the diff reads; each emits a warning naming the stack, the region and,
+  for entries, the logical ids. Dropping is not the same as hiding: a dropped
+  row whose logical id the template still declares previews as a **CREATE**,
+  because the diff now has no record of it — the same thing an empty bag does to
+  a whole stack. A dropped row the template no longer declares gets **no row at
+  all**, not even a DELETE, because nothing says what resource it names. So
+  the dropped rows, and `(resources map)` for an unreadable map, are also named
+  together on one line after the counts — up to ten names, then how many more —
+  listed in full in `--json`'s `unreadable`, and counted by `--fail`. `cdkd diff` never writes state, so nothing is lost either way,
+  but the preview is about a record cdkd could not read. Inspect it with
+  `cdkd state show <stack> --json` before acting on the diff.
 
 ### Cyclic nested templates are refused
 
