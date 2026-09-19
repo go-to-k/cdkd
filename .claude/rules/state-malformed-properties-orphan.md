@@ -72,8 +72,8 @@ must repair or drop anyway, where `cdkd state orphan` already does it.
 There is deliberately **no `--force` bypass** either, and that is not a
 contradiction of the flag's "use a possibly-wrong value rather than stranding
 me" contract: forcing would still leave a record `cdkd deploy` refuses, so it
-buys nothing the scoped exemption does not already give, at the cost of a lock
-and a write.
+buys nothing the scoped exemption does not already give, at the cost of a
+write.
 
 **It scans `state.resources` ONLY, and the save keeps more.**
 `rewriteResourceReferences` spreads `carriedState`, so `state.orphans[]` —

@@ -92,6 +92,41 @@ vi.mock('node:readline/promises', () => ({
 
 import { createStateCommand } from '../../../src/cli/commands/state.js';
 import { StateError } from '../../../src/utils/error-handler.js';
+import { malformedOrphanResourcePropertiesRefusalMessage } from '../../../src/state/malformed-resources-bag.js';
+import { S3StateBackend } from '../../../src/state/s3-state-backend.js';
+
+/**
+ * Split a POSIX shell command line into words: whitespace separates, `'...'`
+ * is literal, and a backslash outside quotes escapes one character — enough for
+ * what `shellQuote` emits, including its `'\''` spelling of a quote.
+ */
+function shellWords(line: string): string[] {
+  const words: string[] = [];
+  let cur = '';
+  let inWord = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i]!;
+    if (c === "'") {
+      const end = line.indexOf("'", i + 1);
+      if (end === -1) throw new Error(`unterminated quote in: ${line}`);
+      cur += line.slice(i + 1, end);
+      i = end;
+      inWord = true;
+    } else if (c === '\\') {
+      cur += line[++i] ?? '';
+      inWord = true;
+    } else if (/\s/.test(c)) {
+      if (inWord) words.push(cur);
+      cur = '';
+      inWord = false;
+    } else {
+      cur += c;
+      inWord = true;
+    }
+  }
+  if (inWord) words.push(cur);
+  return words;
+}
 
 function captureStdout(): { output: string[]; restore: () => void } {
   const output: string[] = [];
@@ -564,6 +599,43 @@ describe('cdkd state orphan', () => {
 
       expect(String(errorSpy.mock.calls[0]?.[0] ?? '')).toContain('(legacy)');
       expect(mockDeleteLegacyState).not.toHaveBeenCalled();
+    });
+
+    it("the remedy `cdkd orphan`'s properties refusal prints selects the record (go-to-k/cdkd#3359)", async () => {
+      // Driven with the text the REAL builder renders for the identity `cdkd
+      // orphan` hands it for this record shape — no region, the one it is
+      // listed under (pinned in `tests/unit/cli/orphan.test.ts`) — AND the
+      // recovery context the binary always threads, so the argv is the one
+      // production prints rather than a bare form it never emits. The stack
+      // name carries a SPACE and a QUOTE, so an unquoted rendering splits into
+      // different argv and names a different stack, and the quote exercises
+      // `shellQuote`'s `'\\''` spelling; the argv is split the way a shell would
+      // (m9 of go-to-k/cdkd#3363's review). The case above is the other half: the
+      // synthesized region the refusal used to print selects nothing.
+      const message = malformedOrphanResourcePropertiesRefusalMessage(
+        "It's Legacy",
+        undefined,
+        ['Other'],
+        { profile: 'prod', stateBucket: 'test-bucket', statePrefix: 'custom' }
+      );
+      const m = /^Drop the record: (cdkd state orphan .*)$/m.exec(message);
+      expect(m, 'the drop remedy is no longer rendered in the expected shape').not.toBeNull();
+      expect(m![1]!).toContain("cdkd state orphan 'It'\\''s Legacy' --profile prod");
+      const argv = shellWords(m![1]!);
+      expect(argv).toEqual([
+        'cdkd', 'state', 'orphan', "It's Legacy",
+        '--profile', 'prod', '--state-bucket', 'test-bucket', '--state-prefix', 'custom',
+      ]);
+      mockListStacks.mockResolvedValue([{ stackName: "It's Legacy" }]);
+      mockIsLocked.mockResolvedValue(false);
+
+      await runStateOrphan([...argv.slice(2), '--yes']);
+
+      expect(mockDeleteLegacyState).toHaveBeenCalledWith("It's Legacy");
+      expect(mockDeleteState).not.toHaveBeenCalled();
+      // The prefix the pasted flags carried is the one the backend was built with.
+      const config = vi.mocked(S3StateBackend).mock.calls.at(-1)?.[1] as { prefix?: string };
+      expect(config?.prefix).toBe('custom');
     });
 
     it('treats an EMPTY --stack-region as a value, not as absent', async () => {

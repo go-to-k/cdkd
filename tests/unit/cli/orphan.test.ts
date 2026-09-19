@@ -520,7 +520,12 @@ describe('cdkd orphan (per-resource)', () => {
         // go-to-k/cdkd#3318, round 2). Asserted WITH the region this caller
         // holds, so a regression back to the bare form reds here rather than
         // passing on a substring.
-        expect(message).toMatch(/drop it whole with 'cdkd state orphan \S+ --stack-region \S+'/);
+        // Since go-to-k/cdkd#3363 the command is also qualified with the run's
+        // `--state-bucket` (and `--profile` / `--state-prefix` when given), so
+        // the region is asserted as a flag PAIR rather than as the last token.
+        expect(message).toMatch(
+          /^Drop the record: cdkd state orphan \S+ --stack-region \S+( --state-bucket \S+)?$/m
+        );
         expect(message).toContain('only while the CDK app STILL DECLARES');
       });
     }
@@ -599,6 +604,105 @@ describe('cdkd orphan (per-resource)', () => {
         'prod-payments'
       );
       expect(message).not.toContain('eu-west-1');
+    });
+
+    /**
+     * go-to-k/cdkd#3359. The remedy commands select a record by the region it is
+     * LISTED under, and a single legacy record whose body names no region is
+     * loaded under the SYNTHESIZED region (`getState` falls back to the legacy
+     * key for any region). Handing the refusal that loaded region printed a
+     * `--stack-region us-east-1` that selects no record in `cdkd state orphan`
+     * or `cdkd state show`. That the bare command DOES select the legacy
+     * record is driven through the real `state orphan` in
+     * `tests/unit/cli/state-orphan.test.ts`.
+     */
+    describe('a legacy record names the region it is LISTED under (go-to-k/cdkd#3359)', () => {
+      function dropCommand(message: string): string {
+        const m = /^Drop the record: (cdkd state orphan .*)$/m.exec(message);
+        expect(m, 'the drop remedy is no longer rendered in the expected shape').not.toBeNull();
+        return m![1]!;
+      }
+
+      it('omits --stack-region for a legacy record whose body names no region', async () => {
+        arrange('abcdef');
+        mockListStacks.mockResolvedValue([{ stackName: 'MyStack' }]);
+        await expect(runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes'])).rejects.toThrow();
+        // The LOAD is unchanged: still the synthesized region, which is what
+        // reaches the legacy key through the backend's fallback.
+        expect(mockGetState).toHaveBeenCalledWith('MyStack', 'us-east-1');
+        const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+        // `--state-bucket` rides along: `cdkd state orphan` re-resolves the
+        // bucket from the ambient profile, and the double resolves `test-bucket`.
+        expect(dropCommand(message)).toBe('cdkd state orphan MyStack --state-bucket test-bucket');
+        expect(message).not.toContain('us-east-1');
+        // `cdkd state show` refuses a region-less legacy record with or without
+        // the flag, so the refusal must not end on it.
+        expect(message).not.toMatch(/cdkd state show MyStack/);
+        expect(message).not.toContain('--json');
+        // The real prefix (commander's default) and the resolved bucket.
+        expect(message).toMatch(/^Object key: cdkd\/MyStack\/state\.json$/m);
+        expect(message).toMatch(/^State bucket: test-bucket$/m);
+        expect(message).not.toContain('<prefix>');
+        expect(mockSaveState).not.toHaveBeenCalled();
+      });
+
+      it('keeps the region a legacy body DOES carry, which is what the listing selects by', async () => {
+        arrange('abcdef');
+        // `readLegacyRegion` lists a legacy key under its body's region, so a
+        // `--stack-region` naming it selects the record — dropping it would
+        // widen the remedy to every region holding the name.
+        mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'eu-west-1' }]);
+        await expect(runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes'])).rejects.toThrow();
+        const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+        expect(dropCommand(message)).toBe(
+          'cdkd state orphan MyStack --stack-region eu-west-1 --state-bucket test-bucket'
+        );
+        expect(message).toContain('cdkd state show MyStack --stack-region eu-west-1 --json');
+      });
+
+      it('carries profile and bucket into the drop command, and prefix and bucket into the object line', async () => {
+        arrange('abcdef');
+        mockListStacks.mockResolvedValue([{ stackName: 'MyStack' }]);
+        await expect(
+          runOrphan([
+            'MyStack/Bucket', '--app', 'noop', '--yes',
+            '--profile', 'prod', '--state-prefix', 'custom',
+          ])
+        ).rejects.toThrow();
+        const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+        expect(dropCommand(message)).toBe(
+          'cdkd state orphan MyStack --profile prod --state-bucket test-bucket --state-prefix custom'
+        );
+        expect(message).toMatch(/^Object key: custom\/MyStack\/state\.json$/m);
+        expect(message).toMatch(/^State bucket: test-bucket$/m);
+      });
+
+      it('names the region --stack-region selected when several are listed', async () => {
+        arrange('abcdef');
+        mockListStacks.mockResolvedValue([
+          { stackName: 'MyStack', region: 'us-east-1' },
+          { stackName: 'MyStack', region: 'eu-west-1' },
+        ]);
+        await expect(
+          runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes', '--stack-region', 'eu-west-1'])
+        ).rejects.toThrow();
+        expect(mockGetState).toHaveBeenCalledWith('MyStack', 'eu-west-1');
+        const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+        // Dropping the flag here widens a destructive remedy to BOTH regions.
+        expect(dropCommand(message)).toBe(
+          'cdkd state orphan MyStack --stack-region eu-west-1 --state-bucket test-bucket'
+        );
+      });
+
+      it('keeps --stack-region for a region-keyed record', async () => {
+        arrange('abcdef');
+        await expect(runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes'])).rejects.toThrow();
+        const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+        expect(dropCommand(message)).toBe(
+          'cdkd state orphan MyStack --stack-region us-east-1 --state-bucket test-bucket'
+        );
+        expect(message).toContain('cdkd state show MyStack --stack-region us-east-1 --json');
+      });
     });
 
     it('refuses under --dry-run too, where the audit table would otherwise look fine', async () => {

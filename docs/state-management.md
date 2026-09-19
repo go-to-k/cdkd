@@ -1052,6 +1052,29 @@ records that would **survive**. Three ways out, and the order matters:
    option 1 or 2. There is deliberately no flag for addressing one by logical
    id.
 
+A **legacy** record (`<prefix>/<stack>/state.json`) that `cdkd state list`
+shows with no region (its body names none, or could not be read) is the
+exception to both commands above: `cdkd state orphan <stack>` without
+`--stack-region` is the form that selects it, and `cdkd state show` cannot read
+it at all, so read the object from the state bucket directly. The refusal
+prints those forms for that record, and names the object's path only when the
+stack name renders exactly.
+
+The refusal prints its commands at the end, each on a line of its own after a
+label; copy the command after the label. For the legacy record, the object's
+key and bucket are printed the same way, on `Object key:` and `State bucket:`
+lines. The `cdkd state orphan` and `cdkd state show`
+commands carry the
+`--profile`, `--state-bucket` and non-default `--state-prefix` the run was
+given, so pasting them reaches the same bucket. If the stack name would not
+survive display unchanged, both become templates with the name left as a hole;
+if the region would not, the name and the region are both left as holes. The
+account flags stay either way, and the message says where to take the exact
+name from. A `--profile`, `--state-bucket` or `--state-prefix` value that would
+not survive display unchanged is itself printed as a hole (`<profile>`,
+`<bucket>`, `<prefix>`), and the object path then names neither that bucket nor
+that prefix.
+
 `cdkd deploy` refuses the same record until it is repaired or removed, so being
 blocked in both commands is the intended state rather than an extra restriction
 this row adds.

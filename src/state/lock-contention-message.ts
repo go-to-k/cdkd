@@ -48,7 +48,8 @@ export interface LockRecoveryContext {
    * DEFAULT (`DEFAULT_STATE_PREFIX`), so every site supplies a value and an
    * unconditional emit would append `--state-prefix cdkd` to every hint — noise
    * that also trains the reader to skim the flags that DO matter. Only a
-   * non-default prefix is emitted.
+   * non-default prefix is emitted — an EMPTY one included, since the CLI
+   * accepts it and it selects a different key space.
    */
   statePrefix?: string | undefined;
 }
@@ -244,49 +245,118 @@ export function buildForceUnlockCommand(
   // argument position after a flag and shell-quoted.
   //
   // NO separate empty-string clause beside `safeRegion === ''`, deliberately.
-  // An ABSENT or EMPTY fragment emits nothing at all (each `if` below is falsy
-  // for both), so unlike the region there is no empty-ARGUMENT case to refuse,
-  // and adding one would suppress the whole command for a `profile: ''` that
-  // simply means "none". The dangerous shape is a TRUTHY value that sanitizes
-  // to nothing, and exactness already refuses it: `''` is not the raw value.
-  const safeRecovery = {
-    profile: sanitizeRecoveryValue(recovery?.profile),
-    stateBucket: sanitizeRecoveryValue(recovery?.stateBucket),
-    statePrefix: sanitizeRecoveryValue(recovery?.statePrefix),
-  };
-  const recoveryIsExact = Object.values(safeRecovery).every((v) => v.exact);
-  if (!safeStack || safeRegion === '' || !stackIsExact || !regionIsExact || !recoveryIsExact) {
+  // An ABSENT fragment emits nothing, and so does an EMPTY profile or bucket,
+  // which simply means "none", so unlike the region there is no empty-ARGUMENT
+  // case to refuse, and adding one would suppress the whole command for a
+  // `profile: ''`. The dangerous shape is a TRUTHY value that sanitizes to
+  // nothing, and exactness already refuses it: `''` is not the raw value. The
+  // one fragment where EMPTY is a value is `--state-prefix`, which is emitted as
+  // `--state-prefix ''` — see {@link recoveryCommandFlags}.
+  const recoveryFlags = recoveryCommandFlags(recovery);
+  if (!safeStack || safeRegion === '' || !stackIsExact || !regionIsExact || !recoveryFlags.exact) {
     return '';
   }
-  const parts = [
+  const head =
     safeRegion === undefined
       ? `cdkd force-unlock ${shellQuote(safeStack)}`
-      : `cdkd force-unlock ${shellQuote(safeStack)} --stack-region ${shellQuote(safeRegion)}`,
-  ];
-  // The SANITIZED value, not the raw one: they are byte-equal here
-  // (`recoveryIsExact` above), and quoting the sanitized one is what makes
-  // "sanitize before quote" literally true at the emit site rather than an
-  // invariant a reader has to reconstruct — the same shape as `safeStack` /
-  // `safeRegion`.
+      : `cdkd force-unlock ${shellQuote(safeStack)} --stack-region ${shellQuote(safeRegion)}`;
+  return [head, ...recoveryFlags.flags].join(' ');
+}
+
+/**
+ * A placeholder for a value a pasteable command could not name, QUOTED.
+ *
+ * A bare `<profile>` is two shell redirections, not a word: pasted, `<profile`
+ * reads stdin from a file named `profile` and `>` sends stdout to whatever
+ * word follows. While the hole was the command's LAST word that was only a
+ * syntax error; with flags appended after it (`--profile <profile>
+ * --state-bucket b`) it ran the command with `--state-bucket` swallowed as a
+ * redirect target and `b` as the profile — a delete against the ambient
+ * bucket, with nothing printed (measured by the maintainer, M4 of the
+ * go-to-k/cdkd#3363 review). Quoted, it pastes as one literal argument and
+ * nothing else — no redirection, no swallowed flag. It is not refused: an
+ * UNFILLED hole runs as that literal value (a stack named `<stack>`, a prefix
+ * `<prefix>`).
+ */
+export function commandHole(name: string): string {
+  return `'<${name}>'`;
+}
+
+/** What {@link recoveryCommandFlags} returns. */
+export interface RecoveryCommandFlags {
+  /** The flags, in `--profile` / `--state-bucket` / `--state-prefix` order. */
+  flags: string[];
+  /**
+   * False when any supplied fragment is one `displaySafe` would ALTER. Its flag
+   * is then a quoted {@link commandHole} (`'<profile>'` / `'<bucket>'` / `'<prefix>'`) rather than the value:
+   * never the altered spelling (it names a different account or key space) and
+   * never omitted (that silently resolves the ambient default).
+   */
+  exact: boolean;
+}
+
+/**
+ * The flags that pin a pasteable state command to the caller's account and
+ * bucket: `--profile`, the resolved `--state-bucket`, and a NON-default
+ * `--state-prefix` (see {@link LockRecoveryContext} for why each is emitted
+ * when it is). ONE spelling, shared by {@link buildForceUnlockCommand} and the
+ * `cdkd orphan` properties refusal `malformed-resources-bag.ts` builds
+ * (go-to-k/cdkd#3363): after `cdkd orphan --profile prod ...` a remedy that
+ * carried none of these resolved the DEFAULT profile's bucket when pasted.
+ * Each fragment takes {@link sanitizeRecoveryValue}'s sanitize + exactness
+ * pair (go-to-k/cdkd#3377); what a caller does with an inexact one is its
+ * own call — `buildForceUnlockCommand` suppresses the whole command, the orphan
+ * refusal prints the hole.
+ */
+export function recoveryCommandFlags(recovery?: LockRecoveryContext): RecoveryCommandFlags {
+  const profile = sanitizeRecoveryValue(recovery?.profile);
+  const stateBucket = sanitizeRecoveryValue(recovery?.stateBucket);
+  const statePrefix = sanitizeRecoveryValue(recovery?.statePrefix);
+  const flags: string[] = [];
+  // The SANITIZED value, not the raw one: they are byte-equal wherever a value
+  // is printed (an inexact one prints as a hole instead), and quoting the
+  // sanitized one is what makes "sanitize before quote" literally true at the
+  // emit site rather than an invariant a reader has to reconstruct — the same
+  // shape as `safeStack` / `safeRegion`.
   // cdkd-profile-display: already sanitized AND already gated. Every value
   // below came out of `sanitizeRecoveryValue`, which applies `displaySafe` and
-  // reports whether that CHANGED anything, and the guard above has already
-  // returned `''` for any fragment it did. So a second `displayIdent` pass here
+  // reports whether that CHANGED anything, and a fragment it changed is printed
+  // as a `<profile>` hole, never as text. So a second `displayIdent` pass here
   // could only alter a value that is by construction byte-identical to the
   // user's -- which would name a different lock, the harm this whole function
   // exists to avoid. `tests/unit/state/lock-contention-message.test.ts` holds
   // the behavioural proof; this comment is the verdict the source-shape fence
   // cannot derive.
-  if (safeRecovery.profile.text) {
-    parts.push(`--profile ${shellQuote(safeRecovery.profile.text)}`);
+  if (profile.text || !profile.exact) {
+    flags.push(
+      profile.exact
+        ? `--profile ${shellQuote(profile.text)}`
+        : `--profile ${commandHole('profile')}`
+    );
   }
-  if (safeRecovery.stateBucket.text) {
-    parts.push(`--state-bucket ${shellQuote(safeRecovery.stateBucket.text)}`);
+  if (stateBucket.text || !stateBucket.exact) {
+    flags.push(
+      stateBucket.exact
+        ? `--state-bucket ${shellQuote(stateBucket.text)}`
+        : `--state-bucket ${commandHole('bucket')}`
+    );
   }
-  if (safeRecovery.statePrefix.text && safeRecovery.statePrefix.text !== DEFAULT_STATE_PREFIX) {
-    parts.push(`--state-prefix ${shellQuote(safeRecovery.statePrefix.text)}`);
+  // DEFINED, not truthy: `--state-prefix` has no argParser, so `''` is
+  // accepted and keys every record under `/`, and a hint that dropped it would
+  // resolve the default `cdkd/` prefix instead — a different record with the
+  // same name (go-to-k/cdkd#3363 review). Quoted, an empty value pastes as
+  // `--state-prefix ''`. The premise — the option carries no argParser, and
+  // the backend keys on the value verbatim — is fenced in
+  // `tests/unit/state/lock-contention-message.test.ts`.
+  const prefix = recovery?.statePrefix;
+  if (prefix !== undefined && prefix !== DEFAULT_STATE_PREFIX) {
+    flags.push(
+      statePrefix.exact
+        ? `--state-prefix ${shellQuote(statePrefix.text)}`
+        : `--state-prefix ${commandHole('prefix')}`
+    );
   }
-  return parts.join(' ');
+  return { flags, exact: profile.exact && stateBucket.exact && statePrefix.exact };
 }
 
 /**
@@ -304,7 +374,7 @@ export function buildForceUnlockCommand(
  * treats as "emit nothing", and `exact` is true because there was nothing to
  * alter.
  */
-function sanitizeRecoveryValue(value: string | undefined): { text: string; exact: boolean } {
+export function sanitizeRecoveryValue(value: string | undefined): { text: string; exact: boolean } {
   if (value === undefined) return { text: '', exact: true };
   const text = displaySafe(value);
   return { text, exact: text === value };
