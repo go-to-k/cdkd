@@ -1071,9 +1071,13 @@ survive display unchanged, both become templates with the name left as a hole;
 if the region would not, the name and the region are both left as holes. The
 account flags stay either way, and the message says where to take the exact
 name from. A `--profile`, `--state-bucket` or `--state-prefix` value that would
-not survive display unchanged is itself printed as a hole (`<profile>`,
-`<bucket>`, `<prefix>`), and the object path then names neither that bucket nor
-that prefix.
+not survive display unchanged is itself printed as a hole (`'<profile>'`,
+`'<bucket>'`, `'<prefix>'` — quoted, so a pasted hole is one literal argument
+rather than a shell redirection), the message says so and tells you to fill it
+from the value you passed, and the object path then names neither that bucket
+nor that prefix. An empty `--state-bucket` counts as no bucket, so no
+`State bucket:` line is printed; an empty `--state-prefix` is a real key space
+and IS printed, both on the object key and as `--state-prefix ''`.
 
 `cdkd deploy` refuses the same record until it is repaired or removed, so being
 blocked in both commands is the intended state rather than an extra restriction

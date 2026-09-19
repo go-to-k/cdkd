@@ -42,7 +42,26 @@ import {
   IDENT_MAX_CODE_POINTS,
   STACK_REF_MAX_CODE_POINTS,
   UNRENDERABLE,
+  displaySafe,
+  truncateCodePoints,
 } from '../../../src/utils/display-safe.js';
+
+/**
+ * What the module's private `safeIdentifier` would render a name as, before
+ * its cap. Enough to answer "did the SANITIZED spelling leak into a message
+ * that said it would name no target" — the question a quote-keyed check cannot
+ * ask, because `shellQuote` leaves a plain identifier bare (go-to-k/cdkd#3439).
+ */
+function safeIdentifierFor(value: string): string {
+  // The CAP too, not just the allowlist. Without it the over-cap row asserted
+  // `not.toContain('q'.repeat(5000))` against a message pinned under 2000
+  // characters — unfalsifiable by construction, and blind to a leak of the
+  // CAPPED `q…q...` spelling, which is the form that would actually appear.
+  // One of three rows live is the same shape this fence replaced
+  // (go-to-k/cdkd#3439 review).
+  return truncateCodePoints(displaySafe(value, { asciiOnly: true }), STACK_REF_MAX_CODE_POINTS)
+    .text;
+}
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
 import type { StackState } from '../../../src/types/state.js';
@@ -616,23 +635,35 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
       // The TEMPLATE, not a substitution — the module's own no-identity form.
       expect(m, label).toContain('cdkd state show \'<stack>\' --stack-region \'<region>\' --json');
       expect(m, label).toContain('The state record this command loaded');
-      // And nothing quoted: every pasteable command in this module renders its
-      // identifiers inside `'...'`, so their absence is what proves none was
-      // built. A quoted EMPTY pair would be the degenerate form of the same
-      // defect, so it is refused by the same assertion. The no-identity
-      // TEMPLATE quotes its holes too since go-to-k/cdkd#3363 (M4 — a bare
-      // `<stack>` is a shell redirection), so it is removed before the check.
+      // Strip the no-identity TEMPLATE — it quotes its holes since
+      // go-to-k/cdkd#3363 (M4: a bare `<stack>` is a shell redirection) — then
+      // refuse the VERB outright.
+      //
+      // Keying on a following quote, which is what this assertion used to do,
+      // was INERT for two of these three rows: `shellQuote` returns
+      // `[A-Za-z0-9._/@:+-]+` BARE, so a substituted command for the trimmed
+      // `'prod-api '` renders `cdkd state show prod-api --stack-region ...`
+      // with no quote anywhere, and the check could not see the very `prod-api`
+      // regression the docstring above cites. Only the middle row, whose
+      // sanitized name is empty, ever exercised it (go-to-k/cdkd#3439).
       const withoutTemplate = m.replaceAll(
         "cdkd state show '<stack>' --stack-region '<region>' --json",
         ''
       );
-      expect(
-        withoutTemplate.includes("cdkd state show '"),
-        `${label}: a substituted show command survived`
-      ).toBe(false);
-      expect(m.includes("cdkd state orphan '"), `${label}: a substituted orphan command`).toBe(
-        false
+      expect(withoutTemplate, `${label}: a substituted show command survived`).not.toContain(
+        'cdkd state show'
       );
+      expect(withoutTemplate, `${label}: a substituted orphan command`).not.toContain(
+        'cdkd state orphan'
+      );
+      // Stronger still, and independent of the verb: the sanitized spelling is
+      // the thing that would aim at the healthy sibling, so it must not appear
+      // anywhere in the message. This is what actually reddens on the
+      // `prod-api` row.
+      const sanitized = safeIdentifierFor(stack);
+      if (sanitized !== '') {
+        expect(withoutTemplate, `${label}: the sanitized identity leaked`).not.toContain(sanitized);
+      }
     }
   });
 
@@ -2473,6 +2504,15 @@ describe('the malformed-properties texts (issue go-to-k/cdkd#3191)', () => {
     const text = malformedResourcePropertiesWarning('S', 'us-east-1', ['A']);
     expect(text).toContain('Continuing with those maps EMPTY');
     expect(text).toContain("Do NOT run 'cdkd deploy' against this record");
+    // The `Inspect ... with:` line it ends on, which go-to-k/cdkd#3363's
+    // `commandHole` sweep changed through the SHARED `inspectCommand` — this
+    // builder's copy of that line had no assertion at all, so its text moved
+    // silently (go-to-k/cdkd#3439). The substituted arm and the no-identity
+    // arm, whose holes must be quoted: bare ones are shell redirections.
+    expect(text).toContain('See the stored values with: cdkd state show S --stack-region us-east-1 --json');
+    expect(malformedResourcePropertiesWarning(undefined, undefined, ['A'])).toContain(
+      "See the stored values with: cdkd state show '<stack>' --stack-region '<region>' --json"
+    );
   });
 
   it('caps the named ids and says how many it left out', () => {
@@ -2642,7 +2682,7 @@ describe('the malformed-properties texts (issue go-to-k/cdkd#3191)', () => {
         // object rather than ending on that command (go-to-k/cdkd#3359).
         expect(text).not.toContain('--json');
         expect(lineValue(text, 'Object key')).toBe("'<prefix>/S/state.json'");
-        expect(text).toContain('in the state bucket (cdkd state info names it)');
+        expect(text).toContain("in the state bucket ('cdkd state info' names it)");
       } else {
         expect(text).toContain('cdkd state show S --json');
       }
@@ -2823,7 +2863,7 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
     // legacy record with or without the flag; it names the object instead.
     expect(legacyUndef).not.toContain('--json');
     expect(lineValue(legacyUndef, 'Object key')).toBe("'<prefix>/S/state.json'");
-    expect(legacyUndef).toContain('in the state bucket (cdkd state info names it)');
+    expect(legacyUndef).toContain("in the state bucket ('cdkd state info' names it)");
     // What the arm may claim: the record is LISTED with no region, which covers
     // a body naming none AND a probe that failed (m3 of go-to-k/cdkd#3363's
     // review); and with no recovery context the prefix is a hole the sentence
@@ -2831,7 +2871,12 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
     expect(legacyUndef).toContain(
       "listed with no region — a legacy 'state.json' whose body names none, or one the listing could not read"
     );
-    expect(legacyUndef).toContain('(its prefix is cdkd unless --state-prefix was given)');
+    // Its OWN sentence, not a second parenthetical appended to the one above:
+    // the two rendered as `(... names it) (its prefix is ...)`, which reads as
+    // one nested aside. The fixed flag NAME is quoted like every other in this
+    // module's prose, which is also what keeps it inert if pasted.
+    expect(legacyUndef).toContain(". Its prefix is 'cdkd' unless '--state-prefix' was given.");
+    expect(legacyUndef).not.toMatch(/\) \(/);
 
     // `''` takes the same arm: the two spellings must not diverge, because
     // which one arrives depends on a caller this module does not own, and
@@ -2873,7 +2918,10 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
       expect(withheld).not.toContain('<prefix>/');
       expect(lineValue(withheld, 'Object key')).toBeUndefined();
       expect(withheld).toContain(
-        'it is the legacy state.json under this stack name, which did not render exactly, in the state bucket'
+        // `'state.json'` quoted, matching the lead sentence two clauses up —
+        // the module quotes every fixed name in its prose, and the round-5
+        // rewording had left this one bare.
+        "it is the legacy 'state.json' under this stack name, which did not render exactly, in the state bucket"
       );
     }
 
@@ -2980,6 +3028,139 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
       expect(tpl).toMatch(
         /^Find the exact name: cdkd state list --json --profile prod --state-bucket b --state-prefix x$/m
       );
+    });
+
+    /**
+     * The residuals go-to-k/cdkd#3439 collected from go-to-k/cdkd#3363's five
+     * review rounds. Each assertion here was GREEN under the mutation it exists
+     * to catch before this test was written — that, not the behaviour, is what
+     * they add.
+     */
+    describe('the residual fences (go-to-k/cdkd#3439)', () => {
+      it('never re-admits "shell-quote them", the wording that re-opens go-to-k/cdkd#3360', () => {
+        // HINT_HOW replaced it in round 5, but only the NEW phrasing was pinned:
+        // keeping HINT_HOW and re-inserting the old sentence left the suite
+        // green, so the misdirection could come back beside its own remedy.
+        // Quoting INSIDE `'<stack>'` gives `''prod-api ''`, which bash splits
+        // into `prod-api` and `''` — the healthy sibling.
+        for (const [name, region] of [
+          ['prod-api ', undefined],
+          ['prod-api ', 'us-east-1'],
+          ['S', 'us-east-1 '],
+        ] as const) {
+          const text = malformedOrphanResourcePropertiesRefusalMessage(name, region, ['A']);
+          expect(text, JSON.stringify([name, region])).toContain(HINT_HOW);
+          expect(text, JSON.stringify([name, region])).not.toContain('shell-quote them');
+        }
+      });
+
+      it('keeps the sentence POINTING at the location lines it promises', () => {
+        // Round 5 moved the object's key and bucket onto labelled trailing
+        // lines because a `shellQuote`d value after an apostrophe in prose was
+        // pasteable (B1). The pointer is what makes that readable, and deleting
+        // both pointer phrases while keeping the lines left the suite green.
+        const text = malformedOrphanResourcePropertiesRefusalMessage('S', undefined, ['A'], {
+          stateBucket: 'b1',
+          statePrefix: 'custom',
+        });
+        expect(text).toContain("the 'Object key' line below names it");
+        expect(text).toContain("in the bucket on the 'State bucket' line below");
+        expect(lineValue(text, 'Object key')).toBe('custom/S/state.json');
+        expect(lineValue(text, 'State bucket')).toBe('b1');
+      });
+
+      it('prints NO location line it did not promise, and none at all without a context', () => {
+        // The "neither line" arm: with no recovery there is no bucket to name,
+        // and the sentence must send the operator to `cdkd state info` instead.
+        // Injecting a spurious `State bucket:` line left the suite green.
+        const bare = malformedOrphanResourcePropertiesRefusalMessage('S', undefined, ['A']);
+        expect(lineValue(bare, 'State bucket')).toBeUndefined();
+        expect(bare).toContain("in the state bucket ('cdkd state info' names it)");
+        // And the key line is still there — this arm loses the BUCKET, not the
+        // object, so an assertion that merely counted lines would pass wrongly.
+        expect(lineValue(bare, 'Object key')).toBe("'<prefix>/S/state.json'");
+      });
+
+      it('treats an EMPTY bucket as no bucket, the way the flags do', () => {
+        // Round 5 regressed the `''` floor here from truthiness to
+        // `=== undefined`, so `State bucket: ''` printed while the sentence
+        // promised that line named the bucket — and `recoveryCommandFlags`
+        // emits no `--state-bucket` for `''`, so one value had two rules.
+        const text = malformedOrphanResourcePropertiesRefusalMessage('S', undefined, ['A'], {
+          stateBucket: '',
+        });
+        expect(lineValue(text, 'State bucket')).toBeUndefined();
+        expect(text).toContain("in the state bucket ('cdkd state info' names it)");
+        expect(text).not.toContain("State bucket: ''");
+        // An empty PREFIX is the opposite call and must stay: `/S/state.json`
+        // is a real key space, which is why the flag emits `--state-prefix ''`.
+        const emptyPrefix = malformedOrphanResourcePropertiesRefusalMessage('S', undefined, ['A'], {
+          stateBucket: 'b1',
+          statePrefix: '',
+        });
+        expect(lineValue(emptyPrefix, 'Object key')).toBe('/S/state.json');
+      });
+
+      it('renders an EMPTY stack name as no identity at all, in every line', () => {
+        // The OBSERVABLE half of the empty-stack rule. It does NOT cover
+        // `orphanInspectClause`'s own `''` floor — the builder normalises `''`
+        // to `undefined` at entry, so this case passes just as happily on a tree
+        // that lacks that floor (measured). The floor is held by the structural
+        // fence below; what this pins is that the entry normalisation reaches
+        // every line, which is the thing a caller can actually observe.
+        const text = malformedOrphanResourcePropertiesRefusalMessage('', 'us-east-1', ['A']);
+        expect(lineValue(text, 'Inspect the record')).toBe(
+          "cdkd state show '<stack>' --stack-region '<region>' --json"
+        );
+        expect(lineValue(text, 'Drop the record')).toBe(
+          "cdkd state orphan '<stack>' --stack-region '<region>'"
+        );
+        // ...and identically to `undefined`, which is what "normalised at
+        // entry" means and what a divergence here would show.
+        expect(text).toBe(
+          malformedOrphanResourcePropertiesRefusalMessage(undefined, 'us-east-1', ['A'])
+        );
+      });
+
+      it('says a RECOVERY fragment is a hole, which no identity clause covers', () => {
+        // `identityWithheld` reads the stack name and the region only, so a run
+        // whose PREFIX or BUCKET was the inexact value printed
+        // `--state-prefix '<prefix>'` with nothing saying it was a hole — and
+        // the object-path note is suppressed whenever a prefix WAS supplied.
+        const text = malformedOrphanResourcePropertiesRefusalMessage('S', 'us-east-1', ['A'], {
+          stateBucket: 'b1',
+          statePrefix: 'pre\u001b[31m',
+        });
+        expect(lineValue(text, 'Drop the record')).toContain("--state-prefix '<prefix>'");
+        expect(text).toContain('so the command lines below print a quoted hole in its place');
+        // The clause is about the COMMAND lines, and the object key's own hole
+        // is a different shape — `<prefix>` INSIDE the quotes wrapping the key,
+        // where "replace it, quotes included" would build
+        // `''custom''/S/state.json'`. It gets its own sentence, at the line it
+        // is on (go-to-k/cdkd#3439 review).
+        // The object key only prints on the legacy region-less arm, so the
+        // second half of the rule is checked there.
+        const legacy = malformedOrphanResourcePropertiesRefusalMessage('S', undefined, ['A'], {
+          stateBucket: 'b1',
+          statePrefix: 'pre\u001b[31m',
+        });
+        expect(lineValue(legacy, 'Object key')).toBe("'<prefix>/S/state.json'");
+        // QUOTED in the prose too: a bare `<prefix>` is a shell redirection,
+        // and prose is pasteable — the first cut of this sentence truncated a
+        // file named `where` when selected and pasted.
+        expect(legacy).toContain("the key shows the hole '<prefix>' where it belongs");
+        expect(legacy).not.toMatch(/[^']<prefix>[^']/);
+        expect(legacy).not.toContain("Its prefix is 'cdkd' unless");
+        // It is NOT the identity clause: that one sends the operator to a
+        // listing, which does not carry their `--profile`.
+        expect(text).not.toContain(HINT);
+        // And an all-exact run says nothing of the kind.
+        const clean = malformedOrphanResourcePropertiesRefusalMessage('S', 'us-east-1', ['A'], {
+          stateBucket: 'b1',
+          statePrefix: 'pre',
+        });
+        expect(clean).not.toContain('print a quoted hole in its place');
+      });
     });
 
     it('qualifies a substituted command with the caller profile, bucket and non-default prefix', () => {
@@ -3109,6 +3290,25 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
           /if \(stackName === undefined \|\| stackName === ''\) (return |\{)/
         );
       }
+      // `orphanInspectClause` carries the STACK floor too, and only that one —
+      // it branches on `region !== undefined` rather than normalising a `''`
+      // region, so it is asserted here instead of in the loop above.
+      //
+      // It has to be a SOURCE fence for the same reason the two above do, and
+      // go-to-k/cdkd#3439 first got this wrong: a rendered-message case cannot
+      // reach the floor, because the one builder that calls this normalises
+      // `''` at entry. Such a case passes on a tree WITHOUT the floor — measured
+      // against `origin/main`, where all 24 empty/undefined-stack arms render
+      // byte-identically — so it reads as covering the guard while covering
+      // nothing. That is this PR's own subject, reproduced inside it.
+      const clause = src.slice(
+        src.indexOf('function orphanInspectClause('),
+        src.indexOf('\n}\n', src.indexOf('function orphanInspectClause('))
+      );
+      expect(clause, 'orphanInspectClause was renamed; this fence reads nothing').not.toBe('');
+      expect(clause, 'orphanInspectClause no longer floors an empty stack name').toMatch(
+        /if \(stackName === undefined \|\| stackName === ''\) (return |\{)/
+      );
     });
 
     it('prints an ALTERED account fragment as a hole, never as its sanitized text and never omitted', () => {
@@ -3132,7 +3332,7 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
       // prefix, and does not claim the prefix is the default.
       expect(lineValue(text, 'Object key')).toBe("'<prefix>/S/state.json'");
       expect(lineValue(text, 'State bucket')).toBeUndefined();
-      expect(text).toContain('in the state bucket (cdkd state info names it).');
+      expect(text).toContain("in the state bucket ('cdkd state info' names it).");
       expect(text).not.toContain('\u001b');
       // A fragment that sanitizes to NOTHING is the shape where omitting and
       // holing diverge — its sanitized text is empty, so a rule keyed on the
@@ -3198,26 +3398,37 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
       // And across EVERY arm (exact, withheld, legacy object path, no identity)
       // the prose line carries no pasteable command at all — only fixed command
       // NAMES such as 'cdkd orphan', which interpolate nothing.
-      for (const [name, region] of [
-        ['S', 'us-east-1'],
-        ['S ', 'us-east-1'],
-        ['S', undefined],
-        ['S ', undefined],
-        [undefined, undefined],
-      ] as const) {
-        const prose = malformedOrphanResourcePropertiesRefusalMessage(name, region, ['A'], recovery).split(
-          '\n'
-        )[0]!;
-        expect(prose, `${String(name)}/${String(region)}`).not.toMatch(/cdkd state (orphan|show|list) /);
-        // By PROPERTY as well as by verb: no value-carrying flag in the prose,
-        // whatever command it would belong to (m11 of the same review).
-        expect(prose, `${String(name)}/${String(region)}`).not.toMatch(
-          /--(state-bucket|profile|state-prefix|stack-region) /
-        );
-        // No VALUE in the prose at all: the legacy arm's bucket moved to its own
-        // line, because a quoted value inside English is only as safe as the
-        // apostrophes before it (B1 of the fourth review).
-        expect(prose, `${String(name)}/${String(region)}`).not.toContain('printf');
+      // Run every arm WITH a recovery context and WITHOUT one. The second pass
+      // is what exercises the fill-in note, which is the only prose in this
+      // message that names a flag at all — so with a context alone the
+      // invariant below was true of a subset of arms while reading as true of
+      // all of them (go-to-k/cdkd#3439).
+      for (const context of [recovery, undefined]) {
+        for (const [name, region] of [
+          ['S', 'us-east-1'],
+          ['S ', 'us-east-1'],
+          ['S', undefined],
+          ['S ', undefined],
+          [undefined, undefined],
+        ] as const) {
+          const label = `${String(name)}/${String(region)}/${context === undefined ? 'bare' : 'recovery'}`;
+          const prose = malformedOrphanResourcePropertiesRefusalMessage(
+            name,
+            region,
+            ['A'],
+            context
+          ).split('\n')[0]!;
+          expect(prose, label).not.toMatch(/cdkd state (orphan|show|list) /);
+          // By PROPERTY as well as by verb: no value-carrying flag in the prose,
+          // whatever command it would belong to (m11 of the same review). A flag
+          // NAME may be mentioned — the fill-in note does — but only QUOTED, so
+          // the space after it belongs to the closing quote and never to a value.
+          expect(prose, label).not.toMatch(/--(state-bucket|profile|state-prefix|stack-region) /);
+          // No VALUE in the prose at all: the legacy arm's bucket moved to its own
+          // line, because a quoted value inside English is only as safe as the
+          // apostrophes before it (B1 of the fourth review).
+          expect(prose, label).not.toContain('printf');
+        }
       }
     });
 
@@ -3303,37 +3514,172 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
      * B1 of go-to-k/cdkd#3363's fourth review, as a class rather than one
      * apostrophe: EVERY piece of the message an operator might paste — each
      * line, each prose sentence, each clause of one — is run through real bash
-     * with hostile values in every slot, and a sentinel file must not appear.
-     * Whole prose lines alone would pass vacuously: `record(s)` is a syntax
-     * error, so bash runs nothing on that line whatever it holds. Sentences and
-     * clauses are what an operator selects.
+     * with hostile values in the slots named below, and neither a sentinel nor
+     * a changed directory may result. Whole prose lines alone would pass
+     * vacuously: `record(s)` is a syntax error, so bash runs nothing on that
+     * line whatever it holds. Sentences and clauses are what an operator
+     * selects.
+     *
+     * **The slots are the stack name, the region and the three recovery
+     * fragments — NOT `logicalIds`, and that exclusion is load-bearing rather
+     * than an oversight.** Ids reach the prose through `displayIdent`, whose
+     * boundary is a JSON string, and DOUBLE quotes do not neutralise a
+     * backtick: an id `` L`touch OWNED` `` renders ``"L`touch OWNED`"`` and
+     * runs when its clause is pasted (measured). That is live on `origin/main`
+     * too, and the fix is not local — `namedPropertyBagsClause` is shared with
+     * two sibling builders, hard single quotes break out on an id carrying
+     * `'`, and the correct shape is the one repo-wide helper
+     * go-to-k/cdkd#3436 proposes. Injecting ids here would redden this test
+     * against a defect this module cannot fix alone, so the slot is named,
+     * measured and tracked there instead of silently omitted.
      */
     it('runs NO value from any pasted line, sentence or clause of the message', () => {
       const payload = 'touch OWNED';
-      const hostile = `v; ${payload}; #`;
-      const recovery = { profile: `p; ${payload}; #`, stateBucket: hostile, statePrefix: `x; ${payload}; #` };
+      // FOUR carrier shapes, not just `;` (go-to-k/cdkd#3439). A `;` payload
+      // needs the quote context to be OPEN; `$( )` and a backtick run inside
+      // DOUBLE quotes as well, and a `"` of its own can supply those — so an
+      // alphabet of one shape answers a narrower question than the test claims.
+      // All four are inert inside `'...'`, which is exactly why the fence has to
+      // check the CONTEXT rather than the presence of quotes.
+      const carriers = [
+        (v: string) => `${v}; ${payload}; #`,
+        (v: string) => `${v}$(${payload})`,
+        (v: string) => `${v}\`${payload}\``,
+        (v: string) => `${v}"; ${payload}; #`,
+      ];
       const messages: string[] = [];
-      for (const name of [`s; ${payload}; #`, `s; ${payload}; # `]) {
-        for (const region of [undefined, 'us-east-1', `r; ${payload}; #`]) {
-          messages.push(malformedOrphanResourcePropertiesRefusalMessage(name, region, ['A'], recovery));
+      const injected: string[] = [];
+      for (const carry of carriers) {
+        const recovery = {
+          profile: carry('p'),
+          stateBucket: carry('v'),
+          statePrefix: carry('x'),
+        };
+        injected.push(recovery.profile, recovery.stateBucket, recovery.statePrefix);
+        // Both an EXACT-rendering name and one with a trailing space, which
+        // takes the withhold arm: the two print different sentences.
+        // A fifth context whose PREFIX is inexact, so the arms that print a
+        // HOLE render at all. Without it every fragment here is exact, the
+        // hole-bearing sentences never appear, and the harness cannot see a
+        // bare `<prefix>` in prose however many decoys it plants — measured,
+        // that is how go-to-k/cdkd#3440's round-2 blocker reached a review.
+        const holed = { ...recovery, statePrefix: `x\u001b[31m` };
+        for (const ctx of [recovery, holed]) {
+          for (const region of [undefined, 'us-east-1']) {
+            messages.push(
+              malformedOrphanResourcePropertiesRefusalMessage(carry('s'), region, ['A'], ctx)
+            );
+          }
+        }
+        for (const name of [carry('s'), `${carry('s')} `]) {
+          injected.push(name);
+          for (const region of [undefined, 'us-east-1', carry('r')]) {
+            // Only the HOSTILE region joins `injected`. Measured impact is one
+            // segment, so this is correctness rather than coverage: the
+            // exemption set is defined as what the splitter makes out of a
+            // PAYLOAD, and a benign region is not one.
+            if (region !== undefined && region !== 'us-east-1') injected.push(region);
+            messages.push(
+              malformedOrphanResourcePropertiesRefusalMessage(name, region, ['A'], recovery)
+            );
+          }
         }
       }
+      // A fragment lying wholly INSIDE one injected value is not an operator
+      // selection — it is the splitter cutting up the payload itself, which
+      // then "executes" no matter what the message does. Measured: splitting on
+      // parentheses turns `$(touch OWNED)` into a bare `touch OWNED`, and a
+      // fence that counted that would report a hit against a message that is
+      // safe. What must stay in the population is every fragment SPANNING a
+      // value and the prose around it, which is the shape B1 actually was.
+      // What must be excluded is exactly what the SPLITTER manufactures out of
+      // one value in isolation — nothing else. Splitting `s$(touch OWNED)` on
+      // parens yields a bare `touch OWNED`, which "executes" whatever the
+      // message does and is not a selection anyone could make.
+      //
+      // Two narrower spellings were tried and BOTH were fail-open, each in a
+      // way the other hides (go-to-k/cdkd#3440, rounds 1 and 2):
+      //
+      // - "contained in a value" also drops a fragment that IS a value, and
+      //   that is the dangerous shape. A regression rendering the bucket RAW in
+      //   a parenthetical gives a clause EQUAL to the value, while the
+      //   enclosing line and sentence both abort on bash's unbalanced `(` — so
+      //   the clause split is the only granularity that sees it. Measured: 0
+      //   hits, i.e. green on an exploitable message.
+      // - "contained, but not equal" fixes that one and still exempts every
+      //   value rendered through `displaySafe` / `displayIdent`, because both
+      //   TRIM: the spelling the module PRINTS is a proper substring of the
+      //   value injected. A regression printing the SANITIZED name raw measured
+      //   0 hits under it too.
+      //
+      // Deriving the exemption from the splitter closes both without a third
+      // guess: HEAD 0, and 2-4 hits on each of the four regressions above.
+      const splitterArtifacts = new Set(injected.flatMap((v) => v.split(/: | — |[()]/)));
+      const insideOneValue = (seg: string): boolean => seg !== '' && splitterArtifacts.has(seg);
       const segments = new Set<string>();
       for (const m of messages) {
         for (const line of m.split('\n')) {
           segments.add(line);
           for (const sentence of line.split(/(?<=[.!?])\s+/)) {
             segments.add(sentence);
-            for (const clause of sentence.split(/: | — /)) segments.add(clause);
+            // Split on PARENTHESES too: an unbalanced `(` or `)` is a bash
+            // syntax error that stops the fragment before anything in it runs,
+            // so a value sitting after a parenthetical was exempt from this
+            // fence entirely while reading as covered.
+            for (const clause of sentence.split(/: | — |[()]/)) {
+              if (!insideOneValue(clause)) segments.add(clause);
+            }
           }
         }
       }
-      expect(segments.size).toBeGreaterThan(messages.length * 3);
+      // Guard the guard, and not by a floor the degenerate case clears. The
+      // previous bound was `messages.length * 3`; with line-level splitting
+      // ALONE the population already exceeded it, so both finer splits could
+      // have become no-ops unnoticed — and line-level alone is exactly what was
+      // measured vacuous against the bug this test exists for. Anchor on the
+      // finest granularity instead: a bare clause with no terminator, which
+      // only the clause split can produce.
+      expect(segments.size).toBeGreaterThan(150);
+      expect(
+        [...segments].filter((s) => s !== '' && !/[.\n]/.test(s)).length,
+        'the clause split degenerated'
+      ).toBeGreaterThan(60);
+      // And the PAREN split specifically, which neither floor above can see:
+      // both are cleared by line+sentence alone, so reverting `[()]` from the
+      // clause regex left this test green while removing the only granularity
+      // that reaches a value behind a parenthetical — an unbalanced `(` aborts
+      // the enclosing line and sentence before bash gets to it. Every
+      // parenthetical's INTERIOR must therefore be a segment in its own right.
+      const interiors = messages.flatMap((m) =>
+        [...m.matchAll(/\(([^()]+)\)/g)].map((match) => match[1]!)
+      );
+      expect(interiors.length, 'no parenthetical to check the split against').toBeGreaterThan(0);
+      for (const interior of interiors) {
+        // Skipping what the filter above legitimately drops — a parenthetical
+        // whose whole interior sits inside one injected value is the payload's
+        // own interior, not a selection.
+        if (insideOneValue(interior)) continue;
+        expect(segments.has(interior), `the paren split missed ${JSON.stringify(interior)}`).toBe(
+          true
+        );
+      }
       const dir = mkdtempSync(join(tmpdir(), 'cdkd-prose-paste-'));
       try {
+        // DECOYS and a directory snapshot, not just the sentinel. Asserting
+        // only `OWNED` watches for EXECUTION and is blind to REDIRECTION, and
+        // prose carries holes too: a bare `<prefix>` in a sentence reads
+        // stdin from a file named `prefix` and truncates whatever word follows
+        // — measured, it created a file called `where` (go-to-k/cdkd#3440
+        // round 2). The command-line harness has planted these since
+        // go-to-k/cdkd#3363's M4; this one had not, which is how that hole
+        // reached a review.
+        for (const f of ['stack', 'region', 'profile', 'bucket', 'prefix', 'json']) {
+          writeFileSync(join(dir, f), 'decoy\n');
+        }
+        const before = readdirSync(dir).sort();
         for (const seg of segments) {
           spawnSync('bash', ['-c', `cdkd() { :; }; ${seg}`], { cwd: dir, encoding: 'utf8' });
-          expect(readdirSync(dir), seg).not.toContain('OWNED');
+          expect(readdirSync(dir).sort(), seg).toEqual(before);
         }
       } finally {
         rmSync(dir, { recursive: true, force: true });

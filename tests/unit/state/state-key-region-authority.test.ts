@@ -804,6 +804,14 @@ describe('runDestroyForStack acts on the KEY region (go-to-k/cdkd#3328)', () => 
       // Still the same refusal, and still withholding the body value.
       expect(message).toContain('(a string)');
       expect(message).not.toContain('eu-west-1');
+      // The `Inspect it with:` line this arm ends on. It comes from the SHARED
+      // `inspectCommand`, whose text go-to-k/cdkd#3363's `commandHole` sweep
+      // changed for every caller — and this one had no assertion on it, so the
+      // change landed here unwatched (go-to-k/cdkd#3439). The holes must be
+      // QUOTED: a bare `<stack>` is two shell redirections when pasted.
+      expect(message).toContain(
+        "Inspect it with: cdkd state show '<stack>' --stack-region '<region>' --json"
+      );
     }
   );
 
