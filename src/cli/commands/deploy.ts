@@ -31,6 +31,7 @@ import {
 } from '../../deployment/recreate-targets.js';
 import { promptRecreateConfirm } from './recreate-confirm-prompt.js';
 import { analyzePinCcApiReachability } from './pin-cc-api-reachability.js';
+import { refuseMalformedNestedTemplateTrees } from './nested-template-preflight.js';
 import { promptYesNo } from './confirm-prompt.js';
 import { findDownstreamConsumers } from './recreate-downstream-consumers.js';
 import {
@@ -486,6 +487,12 @@ async function deployCommand(
       strict: options.strict === true,
       ignoreErrors: options.ignoreErrors === true,
     });
+
+    // Issue #3449: a cyclic / malformed nested-template tree is refused HERE,
+    // for the final deploy set, before macro expansion, asset publishing, any
+    // lock and any engine. The per-row guard in NestedStackProvider stays as
+    // the backstop for a context this command did not build.
+    refuseMalformedNestedTemplateTrees(targetStacks);
 
     // Issue #1150: macro expansion was deferred at synthesize() time —
     // expand now for exactly the final deploy set (incl. auto-included

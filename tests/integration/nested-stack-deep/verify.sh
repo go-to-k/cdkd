@@ -27,6 +27,12 @@
 # input deployed `~Child`, `~Child~Grandchild`, `~Child~Grandchild~Grandchild`
 # ... until S3's key-length limit stopped it.
 #
+# The refusal must also land PRE-FLIGHT (issue #3449): before the work graph
+# (asset publishing) is built and before the root stack starts, so there is no
+# root state record and no lock either. A read-only `--dry-run` of the
+# UNMODIFIED assembly is the positive control for the two log lines that
+# check keys on.
+#
 # Run via: /run-integ nested-stack-deep
 #         or: bash tests/integration/nested-stack-deep/verify.sh
 
@@ -42,6 +48,12 @@ STACK="NestedStackDeep"
 GRANDCHILD_STACK="NestedStackDeep~Child~Grandchild"
 # What NestedStackProvider logs immediately before it builds a child engine.
 CHILD_DEPLOY_MARKER="Deploying nested stack"
+# The first line a stack prints once `cdkd deploy` starts it: before its lock,
+# its state read and its engine.
+STACK_START_MARKER="Deploying stack:"
+# Debug line printed once the asset-publish + stack work graph is built, i.e.
+# before the first asset is published. Needs --verbose.
+WORK_GRAPH_MARKER="Work graph:"
 CHANGED_VALUE="cdkd-nested-stack-deep-grandchild-CHANGED"
 
 CYCLIC_ASSEMBLY=""
@@ -143,8 +155,35 @@ echo "==> Building cdkd"
 # --------------------------------------------------------------------
 echo ""
 echo "==> Step 0: a hand-modified cyclic assembly must be refused before any level deploys"
+# Start from a clean slate: a root record left by a previously killed run would
+# otherwise fail the "no root state record" check below for the wrong reason.
+${CDKD} destroy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1 || true
 CYCLIC_ASSEMBLY="$(mktemp -d "${TMPDIR:-/tmp}/cdkd-nested-stack-deep-cyclic.XXXXXX")"
 ${CDKD} synth --output "${CYCLIC_ASSEMBLY}" >/dev/null
+
+# Positive control for the pre-flight check below, taken from the assembly
+# BEFORE it is rewired: an ordinary run prints both markers, so their absence
+# from the refused run means something. `--dry-run` keeps it read-only.
+set +e
+CONTROL_OUT=$(${CDKD} deploy ${STACK} \
+  --app "${CYCLIC_ASSEMBLY}" \
+  --region "${AWS_REGION}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --dry-run --verbose --yes 2>&1)
+CONTROL_RC=$?
+set -e
+if [[ ${CONTROL_RC} -ne 0 ]]; then
+  echo "${CONTROL_OUT}"
+  echo "FAIL: the control 'deploy --dry-run' of the unmodified assembly exited ${CONTROL_RC}"
+  exit 1
+fi
+for marker in "${WORK_GRAPH_MARKER}" "${STACK_START_MARKER}"; do
+  if ! grep -qF -- "${marker}" <<<"${CONTROL_OUT}"; then
+    echo "FAIL: an ordinary 'deploy --dry-run --verbose' no longer logs '${marker}' — the pre-flight check below would pass vacuously; update the marker"
+    exit 1
+  fi
+done
+echo "  OK: control run of the unmodified assembly logs both pre-flight markers"
 
 # Point the Child template's `Grandchild` row back at the Child template. The
 # row and the file are found from the assembly, not assumed: CDK names nested
@@ -181,7 +220,7 @@ CYCLE_OUT=$(${CDKD} deploy ${STACK} \
   --app "${CYCLIC_ASSEMBLY}" \
   --region "${AWS_REGION}" \
   --state-bucket "${STATE_BUCKET}" \
-  --yes 2>&1)
+  --verbose --yes 2>&1)
 CYCLE_RC=$?
 set -e
 echo "${CYCLE_OUT}"
@@ -189,17 +228,21 @@ if [[ ${CYCLE_RC} -eq 0 ]]; then
   echo "FAIL: deploying a cyclic nested-template assembly exited 0 (expected a refusal)"
   exit 1
 fi
+# Every check on this (verbose, large) output reads a here-string, never
+# `echo ... | grep -q`: under pipefail, grep -q exiting at the first match
+# SIGPIPEs the echo once the text outgrows the pipe buffer, and the non-zero
+# pipeline then reads as "marker absent".
 # Two independent markers from the same refusal: if the wording drifts, one
 # present without the other fails loudly instead of reading as "no refusal".
-if ! echo "${CYCLE_OUT}" | grep -q "contains a cycle"; then
-  if echo "${CYCLE_OUT}" | grep -q "Refusing to deploy any level of it"; then
+if ! grep -qF -- "contains a cycle" <<<"${CYCLE_OUT}"; then
+  if grep -qF -- "Refusing to start the deploy" <<<"${CYCLE_OUT}"; then
     echo "FAIL: refusal fired but its 'contains a cycle' wording drifted — update this fixture"
   else
     echo "FAIL: deploy failed (rc=${CYCLE_RC}) but NOT with the nested-template cycle refusal"
   fi
   exit 1
 fi
-if ! echo "${CYCLE_OUT}" | grep -q "'Child' (.*) -> 'Grandchild' (.*)"; then
+if ! grep -q -- "'Child' (.*) -> 'Grandchild' (.*)" <<<"${CYCLE_OUT}"; then
   echo "FAIL: the refusal did not name the cycle path ('Child' -> 'Grandchild')"
   exit 1
 fi
@@ -210,12 +253,25 @@ echo "  OK: refused (rc=${CYCLE_RC}) naming the cycle"
 # before it builds a child engine, so that line must be absent here. Step 1
 # asserts the same line IS printed by an ordinary deploy, so a reworded log
 # cannot turn this into a check that passes by matching nothing.
-if echo "${CYCLE_OUT}" | grep -q "${CHILD_DEPLOY_MARKER}"; then
+if grep -qF -- "${CHILD_DEPLOY_MARKER}" <<<"${CYCLE_OUT}"; then
   echo "FAIL: a child engine was started before the cyclic tree was refused:"
   echo "${CYCLE_OUT}" | grep "${CHILD_DEPLOY_MARKER}"
   exit 1
 fi
 echo "  OK: no child engine was started"
+
+# Pre-flight (issue #3449): the refusal comes before the work graph is built,
+# so no asset was published, and before the root stack starts, so no lock was
+# taken and no root resource was dispatched. The control run above proves both
+# lines are printed by a run that gets that far.
+for marker in "${WORK_GRAPH_MARKER}" "${STACK_START_MARKER}"; do
+  if grep -qF -- "${marker}" <<<"${CYCLE_OUT}"; then
+    echo "FAIL: the cyclic tree was refused only AFTER '${marker}' — the refusal is no longer pre-flight:"
+    echo "${CYCLE_OUT}" | grep -F "${marker}"
+    exit 1
+  fi
+done
+echo "  OK: refused pre-flight (no work graph, root stack never started)"
 
 # No nested state record either. In THIS fixture that is a weaker signal than
 # the check above: a level's record is written when its first resource
@@ -230,8 +286,16 @@ assert_gone "child state record exists after a refused cyclic deploy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "cdkd/${STACK}~Child/${AWS_REGION}/state.json"
 echo "  OK: no state record under cdkd/${STACK}~*"
 
-# The refused run may leave an (empty) root record; clear it so Step 1 starts
-# from the same slate it always has.
+# A pre-flight refusal never reaches the root stack, so it leaves no root
+# record and no lock behind. (A refusal at the nested-stack row could leave an
+# empty root record here.)
+assert_gone "root state record exists after a pre-flight refusal" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "cdkd/${STACK}/${AWS_REGION}/state.json"
+assert_gone "root lock exists after a pre-flight refusal" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "cdkd/${STACK}/${AWS_REGION}/lock.json"
+echo "  OK: no root state record and no lock"
+
+# Belt and braces: Step 1 must start from the same slate it always has.
 ${CDKD} destroy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1 || true
 
 # --------------------------------------------------------------------
