@@ -190,10 +190,8 @@ export function scanSubject(subject: Subject): Offender[] {
  * The rule used to exist ONLY as `github.event.sender.type != 'Bot'` in the
  * job's `if:`, where no test could reach it: deleting that clause was silent,
  * and its failure mode is a comment loop the check then reports on
- * (go-to-k/cdkd#2736). This is the same move go-to-k/cdkd#2717 made for
- * `isMintEvent` in `check-issue-dup-check.ts` -- the `if:` stays as a cheap
- * filter that avoids spawning a runner, and the SCRIPT is the authority, which
- * is the half under test.
+ * (go-to-k/cdkd#2736). The `if:` stays as a cheap filter that avoids spawning
+ * a runner, and the SCRIPT is the authority, which is the half under test.
  *
  * ## Why the default is "not a bot"
  *

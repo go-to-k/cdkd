@@ -66,11 +66,7 @@ const EXPECTED: readonly Expected[] = [
     events: ['pull_request'],
     types: { pull_request: ['opened', 'synchronize', 'reopened', 'edited'] },
     jobs: ['pr-content'],
-    scripts: [
-      'scripts/check-pr-non-english-text.ts',
-      'scripts/check-pr-internal-labels.ts',
-      'scripts/check-pr-closes-paren.ts',
-    ],
+    scripts: ['scripts/check-pr-non-english-text.ts'],
     // Unconditional: every PR event this workflow subscribes to is one it
     // should run for. An `if:` here would be a filter with nothing to filter.
     jobIfs: { 'pr-content': null },
@@ -91,11 +87,10 @@ const EXPECTED: readonly Expected[] = [
       issue_comment: ['created', 'edited'],
       pull_request: ['opened', 'edited', 'synchronize', 'reopened'],
     },
-    jobs: ['english-issue', 'english-pr', 'classification-labels', 'dup-check'],
+    jobs: ['english-issue', 'english-pr', 'classification-labels'],
     scripts: [
       'scripts/check-gh-body-english.ts',
       'scripts/check-issue-classification-labels.ts',
-      'scripts/check-issue-dup-check.ts',
     ],
     // This workflow subscribes to THREE event families and each job serves one
     // of them, so here the `if:` is what stops a job running on an event it
@@ -106,7 +101,6 @@ const EXPECTED: readonly Expected[] = [
         "github.event.sender.type != 'Bot'",
       'english-pr': "github.event_name == 'pull_request'",
       'classification-labels': "github.event_name == 'issues'",
-      'dup-check': "github.event_name == 'issues' && github.event.action == 'opened'",
     },
   },
 ];
@@ -164,7 +158,7 @@ describe('the CI checks that replaced PreToolUse gates are still wired up', () =
         // can start MID-LINE. Two rounds of this: the first version of this
         // assertion was satisfied by the workflow's YAML header comment; the
         // fix for that dropped only WHOLE-line `#` comments, and
-        // `true; # node scripts/check-issue-dup-check.ts subject.json` kept it
+        // `true; # node scripts/check-gh-body-english.ts subject.json` kept it
         // green against the real workflow while the check never ran (measured,
         // go-to-k/cdkd#2717 review). Truncate at `#` instead.
         //
@@ -266,33 +260,29 @@ describe('the CI checks that replaced PreToolUse gates are still wired up', () =
     expect(wfEnv['SENDER_TYPE'], 'nor at WORKFLOW scope').toBeUndefined();
   });
 
-  it('every content check in pr-content-checks runs even when a sibling fails', () => {
-    // One PR round-trip must report every content violation, not one family at
-    // a time. That is a STEP-level `if:` on each check after the first, and it
-    // is as invisible to a test as a job-level one was.
+  it('the content check in pr-content-checks runs even when a prerequisite fails', () => {
+    // The check must still report when an earlier step failed. That is a
+    // STEP-level `if:`, and it is as invisible to a test as a job-level one
+    // was.
     const doc = wf('pr-content-checks.yml');
     const jobs = doc['jobs'] as Record<string, { steps?: Array<Record<string, unknown>> }>;
     const steps = jobs['pr-content']?.steps ?? [];
 
-    // The invariant: EVERY step after the head fetch carries `!cancelled()`, so
-    // one PR round-trip reports every content violation rather than one family
-    // at a time. Exempt are the two PREREQUISITES -- the checkout that supplies
-    // the checkers, and the head fetch the two diff checks read.
+    // The invariant: EVERY step after the head fetch carries `!cancelled()`.
+    // Exempt are the two PREREQUISITES -- the checkout that supplies the
+    // checker, and the head fetch the diff check reads.
     //
     // Over ALL steps, not just `run` ones. Filtering to `run` was the previous
     // shape and it could not see `setup-vp`, a `uses:` step: dropping its `if:`
-    // passed 19 of 19 while a failed head fetch would skip the node setup and
-    // leave four `!cancelled()` checks running on whatever node the runner
-    // ships, where `--experimental-strip-types` can die outright (measured,
+    // passed while a failed head fetch would skip the node setup and leave the
+    // `!cancelled()` check running on whatever node the runner ships, where
+    // `--experimental-strip-types` can die outright (measured,
     // go-to-k/cdkd#2736 round-2 review).
     const name = (st: Record<string, unknown>): string =>
       String(st['name'] ?? st['uses'] ?? '').split('@')[0] ?? '';
 
     // SET equality plus the orderings that carry meaning, rather than the exact
-    // sequence. Swapping the two independent diff checks is harmless and used
-    // to red this for no safety gain; what must hold is that the prerequisites
-    // come first and that the subject is built before it is read
-    // (go-to-k/cdkd#2736 round-3 review).
+    // sequence (go-to-k/cdkd#2736 round-3 review).
     const names = steps.map(name);
     expect([...names].sort(), 'pr-content step set').toEqual(
       [
@@ -300,22 +290,15 @@ describe('the CI checks that replaced PreToolUse gates are still wired up', () =
         'fetch the PR head as data',
         'voidzero-dev/setup-vp',
         'non-English writing-system characters in the PR diff',
-        'internal PR labels in user-facing docs',
-        'build the PR subject document',
-        'auto-close keyword written in parens form',
       ].sort(),
     );
     const at = (n: string): number => names.indexOf(n);
-    expect(at('actions/checkout'), 'the checkout supplies the checkers').toBe(0);
+    expect(at('actions/checkout'), 'the checkout supplies the checker').toBe(0);
     expect(at('fetch the PR head as data')).toBeLessThan(at('voidzero-dev/setup-vp'));
     expect(
       at('voidzero-dev/setup-vp'),
       'node must be set up before any checker runs',
     ).toBeLessThan(at('non-English writing-system characters in the PR diff'));
-    expect(
-      at('build the PR subject document'),
-      'the subject must be built before it is read',
-    ).toBeLessThan(at('auto-close keyword written in parens form'));
 
     const PREREQUISITES = new Set(['actions/checkout', 'fetch the PR head as data']);
     for (const st of steps.filter((x) => PREREQUISITES.has(name(x)))) {
@@ -329,141 +312,17 @@ describe('the CI checks that replaced PreToolUse gates are still wired up', () =
     }
   });
 
-  it('the subject document is written and read at the SAME path', () => {
-    // HIGH-value and it was unfenced: `grep -rn RUNNER_TEMP tests/` returned
-    // nothing. The producer writes `$RUNNER_TEMP/subject.json` and the consumer
-    // reads it; rename either side and the check warns "no subject document",
-    // exits 0, and is permanently, silently green -- reached through the one
-    // surface no test read (go-to-k/cdkd#2736 round-2 review).
-    //
-    // The path is DERIVED from the producer, not hard-coded here, so this pins
-    // AGREEMENT rather than a spelling. A rename that moves both sides together
-    // is fine and should stay fine.
-    const doc = wf('pr-content-checks.yml');
-    const jobs = doc['jobs'] as Record<string, { steps?: Array<Record<string, unknown>> }>;
-    const steps = jobs['pr-content']?.steps ?? [];
-    const runOf = (name: string): string => {
-      const st = steps.find((x) => String(x['name'] ?? '') === name);
-      expect(st, `pr-content must have a step named ${name}`).toBeDefined();
-      return String(st?.['run'] ?? '');
-    };
-
-    const producer = runOf('build the PR subject document');
-    const consumer = runOf('auto-close keyword written in parens form');
-
-    // The path the producer finally MOVES the subject to -- not the temp name
-    // it builds into, and not the `rm -f` line, both of which name other files.
-    const moved = /\bmv\s+"([^"]+)"\s+"([^"]+)"/.exec(producer);
-    expect(moved, 'the producer must move the subject into place atomically').not.toBeNull();
-    const written = moved?.[2] ?? '';
-    expect(written, 'the subject must land under $RUNNER_TEMP').toContain('$RUNNER_TEMP');
-
-    // Every path the consumer names must be that one -- both its existence
-    // guard and the argument it hands the checker.
-    const consumerPaths = [...consumer.matchAll(/"(\$RUNNER_TEMP[^"]*)"/g)].map((m) => m[1]);
-    expect(consumerPaths.length, 'the consumer must name the subject path').toBeGreaterThan(0);
-    for (const path of consumerPaths) {
-      expect(path, 'consumer reads a path the producer never writes').toBe(written);
-    }
-
-    // The mv SOURCE must be what jq actually wrote. Pinning the destination
-    // alone left the producer free to move a file nothing had written
-    // (go-to-k/cdkd#2736 round-3 review).
-    // Comments stripped, and anchored on the real `jq -e` invocation. A first
-    // version matched the word `jq` inside the step's own rationale comment and
-    // then found `gh`'s redirect -- the same "satisfied by prose" class this
-    // file's other cases were rewritten for, twice.
-    const producerCode = producer
-      .split('\n')
-      .map((l) => l.replace(/#.*$/, ''))
-      .join('\n');
-    const jqTarget = /\bjq\s+-e\b[\s\S]*?>\s*"([^"]+)"/.exec(producerCode)?.[1];
-    expect(jqTarget, 'jq must redirect to a named file').toBeDefined();
-    expect(moved?.[1], 'the mv source must be jq output').toBe(jqTarget);
-
-    // The consumer's absent-subject guard. Deleting it sends an unreadable
-    // subject to the checker, which exits 2 and reds the job -- undoing the
-    // fetch-failure distinction the producer's fail-open arms exist for.
-    expect(consumer, 'the consumer must skip when the subject is absent').toMatch(
-      /if\s+\[\s+!\s+-f\s+"\$RUNNER_TEMP\/subject\.json"\s+\]/,
-    );
-    expect(consumer, 'and skip by exiting 0, not by failing').toMatch(/exit 0/);
-  });
-
-  it('the subject build fails OPEN on every fetch-side failure', () => {
-    // `jq -e` is the entire mechanism that turns "gh exited 0 with EMPTY
-    // stdout" into the warn-and-skip arm: without it jq exits 0 on empty input
-    // and a 0-byte subject is moved into place, `parseSubject('')` throws, the
-    // checker exits 2, and the job reds on a fetch problem -- the round-2
-    // defect returning. Nothing pinned it (go-to-k/cdkd#2736 round-3 review).
-    const doc = wf('pr-content-checks.yml');
-    const jobs = doc['jobs'] as Record<string, { steps?: Array<Record<string, unknown>> }>;
-    const producer = String(
-      (jobs['pr-content']?.steps ?? []).find(
-        (st) => String(st['name'] ?? '') === 'build the PR subject document',
-      )?.['run'] ?? '',
-    );
-
-    expect(producer, 'jq must use -e so empty input is an error').toMatch(/\bjq\s+-e\b/);
-    // Each failure arm warns and exits 0 rather than reddening: the fetch, the
-    // jq, and the mv. Three `exit 0`s, one per arm.
-    expect((producer.match(/exit 0/g) ?? []).length, 'each arm must fail open').toBe(3);
-    expect(
-      (producer.match(/::warning title=Auto-close form check skipped::/g) ?? []).length,
-      'and each must say why',
-    ).toBe(3);
-    // A stale subject from an earlier attempt must never be read.
-    expect(producer, 'the step must clear any previous subject first').toMatch(
-      /^\s*rm -f "\$RUNNER_TEMP\/subject\.json"/m,
-    );
-  });
-
   it('the job holds exactly the permissions its checks need', () => {
-    // Two reasons this is pinned rather than left to review. `pull-requests:
-    // read` is what `gh pr view` needs, and since the fetch now FAILS OPEN,
-    // dropping it turns a loud permission error into a silent skip -- the
-    // fail-open made this fence necessary. And `contents: read` must be
-    // RESTATED at the job, because a job-level block replaces the workflow-level
-    // one rather than merging; losing it takes git away from the two diff
-    // checks (go-to-k/cdkd#2736 round-2 review).
+    // `contents: read` must be RESTATED at the job, because a job-level block
+    // replaces the workflow-level one rather than merging; losing it takes git
+    // away from the diff check (go-to-k/cdkd#2736 round-2 review). Nothing
+    // wider: the job reads no PR body any more, so `pull-requests: read` would
+    // be privilege with no capability behind it.
     const doc = wf('pr-content-checks.yml');
     const jobs = doc['jobs'] as Record<string, { permissions?: Record<string, unknown> }>;
-    expect(jobs['pr-content']?.permissions).toEqual({
-      contents: 'read',
-      'pull-requests': 'read',
-    });
+    expect(jobs['pr-content']?.permissions).toEqual({ contents: 'read' });
     // And nothing above it may grant more: a fork PR's body reaches this job.
     expect(doc['permissions']).toEqual({ contents: 'read' });
-  });
-
-  it('the closes-paren check is actually fed a BODY', () => {
-    // The check's whole input arrives through one `gh pr view --json` field.
-    // Drop `body` from it (or from the jq map) and `parseSubject` is TOTAL, so
-    // the body becomes '', the check reports "uses no parens-form close
-    // directive", and it is permanently, silently green -- the same vacuous
-    // pass its own exit-2 policy exists to prevent, reached through the one
-    // surface no test read (go-to-k/cdkd#2736 test review).
-    const doc = wf('pr-content-checks.yml');
-    const jobs = doc['jobs'] as Record<string, { steps?: Array<Record<string, unknown>> }>;
-    const step = (jobs['pr-content']?.steps ?? []).find(
-      (st) => String(st['name'] ?? '') === 'build the PR subject document',
-    );
-    expect(step, 'pr-content must build a subject document').toBeDefined();
-    const run = String(step?.['run'] ?? '');
-    expect(run, 'the fetch must request the body field').toMatch(/--json\s+[^\s]*\bbody\b/);
-    // `body: .body` EXACTLY, anchored at both ends of the value. The looser
-    // `/body:\s*\.body/` was satisfied by `body: .body[0:0]`, which truncates
-    // every body to the empty string and makes the check permanently clean
-    // (go-to-k/cdkd#2736 round-2 review).
-    expect(run, 'the jq map must carry the body through UNMODIFIED').toMatch(
-      /body:\s*\.body\s*,/,
-    );
-    expect(run, 'the subject must be built as a pull_request kind').toContain(
-      'kind:"pull_request"',
-    );
-    // The jq must read what gh actually wrote. Redirecting it from elsewhere
-    // keeps every assertion above matching while the body is someone else's.
-    expect(run, 'jq must consume the fetched PR json').toMatch(/<\s*"\$RUNNER_TEMP\/pr\.json"/);
   });
 
   it('every reader of a report file is one of the two allowed readers', () => {
@@ -526,119 +385,6 @@ describe('the CI checks that replaced PreToolUse gates are still wired up', () =
       .join('\n');
     expect(runs, 'the log prefix must be the `| ` form').toContain("sed 's/^/| /'");
   });
-
-  it.each([
-    ['gh exits non-zero', 'fail', false, 'gh exited non-zero'],
-    ['gh exits 0 with EMPTY stdout', 'empty', false, 'its JSON could not be read'],
-    ['the mv into place fails', 'mvfail', false, 'could not be moved into place'],
-    ['gh returns valid JSON', 'ok', true, ''],
-  ])(
-    'the subject build with %s: warns and exits 0, or produces a subject',
-    (_label, mode, expectSubject, armText) => {
-      // The arms were pinned by SOURCE TEXT -- counting `exit 0`s -- which
-      // proves nothing about behaviour and missed that moving the leading
-      // `rm -f` to the END of the step deletes the subject right after `mv`,
-      // leaving the check permanently skipped (measured, go-to-k/cdkd#2736
-      // round-4 review). So the block is EXECUTED here, with a stubbed `gh`.
-      //
-      // `jq -e` is the load-bearing half: without it, jq exits 0 on empty
-      // input, a 0-byte subject is moved into place, `parseSubject('')` throws
-      // and the job reds on what is really a FETCH problem.
-      const doc = wf('pr-content-checks.yml');
-      const jobs = doc['jobs'] as Record<string, { steps?: Array<Record<string, unknown>> }>;
-      const script = String(
-        (jobs['pr-content']?.steps ?? []).find(
-          (st) => String(st['name'] ?? '') === 'build the PR subject document',
-        )?.['run'] ?? '',
-      );
-      expect(script, 'the producer step must exist').not.toBe('');
-
-      const dir = mkdtempSync(join(tmpdir(), 'subject-arm-'));
-      try {
-        const bin = join(dir, 'bin');
-        mkdirSync(bin);
-        const stub =
-          mode === 'fail'
-            ? '#!/bin/sh\necho "boom" >&2\nexit 1\n'
-            : mode === 'empty'
-              ? '#!/bin/sh\nexit 0\n'
-              : '#!/bin/sh\necho \'{"title":"t","body":"Closes (#1).","labels":[]}\'\n';
-        writeFileSync(join(bin, 'gh'), stub);
-        chmodSync(join(bin, 'gh'), 0o755);
-
-        const runnerTemp = join(dir, 'temp');
-        mkdirSync(runnerTemp);
-        if (mode === 'mvfail') {
-          // A READ-ONLY directory at the destination. `rm -f` cannot remove a
-          // directory and `mv` cannot write into one it may not enter.
-          //
-          // A plain non-empty directory does NOT work, and that was the first
-          // attempt: `mv file dir` moves the file INTO the directory and
-          // SUCCEEDS, so the step exited 0 silently and the case passed for the
-          // wrong reason. Without this mode nothing executed the mv arm at all
-          // -- deleting it, and flipping its `exit 0` to `exit 1`, both passed
-          // every case (go-to-k/cdkd#2736 round-5 review).
-          mkdirSync(join(runnerTemp, 'subject.json'));
-          writeFileSync(join(runnerTemp, 'subject.json', 'keep'), 'x');
-          chmodSync(join(runnerTemp, 'subject.json'), 0o500);
-        }
-        const out = execFileSync('bash', ['-c', script], {
-          encoding: 'utf8',
-          env: {
-            ...process.env,
-            PATH: `${bin}:${process.env['PATH'] ?? ''}`,
-            RUNNER_TEMP: runnerTemp,
-            NUMBER: '1',
-            REPO: 'go-to-k/cdkd',
-            GH_TOKEN: 'x',
-          },
-        });
-
-        const subject = join(runnerTemp, 'subject.json');
-        const exists = (): boolean => {
-          try {
-            readFileSync(subject);
-            return true;
-          } catch {
-            return false;
-          }
-        };
-        if (mode === 'mvfail') {
-          // The read-only directory is still there; what must NOT exist is a
-          // readable subject FILE.
-          expect(() => JSON.parse(readFileSync(subject, 'utf8'))).toThrow();
-        } else {
-          expect(exists(), `subject present? (${mode})`).toBe(expectSubject);
-        }
-        if (!expectSubject) {
-          // Failing OPEN means: exit 0 (execFileSync would have thrown
-          // otherwise), a warning saying so, and NO subject left behind for the
-          // next step to mistake for a broken checker.
-          expect(out).toContain('::warning title=Auto-close form check skipped::');
-          // ARM-SPECIFIC. All arms share that prefix, so asserting only the
-          // prefix let `if ! gh …` become `if false`, and let an arm be
-          // DELETED, while every mode passed (measured, go-to-k/cdkd#2736
-          // round-5 review). The case named an arm it never reached.
-          expect(out, `the ${mode} arm must report its own cause`).toContain(armText);
-        } else {
-          expect(JSON.parse(readFileSync(subject, 'utf8'))).toMatchObject({
-            kind: 'pull_request',
-            number: 1,
-          });
-        }
-      } finally {
-        // Restore write permission first, or `rmSync` cannot descend into the
-        // read-only directory the mvfail mode created.
-        try {
-          chmodSync(join(dir, 'temp', 'subject.json'), 0o700);
-        } catch {
-          /* only the mvfail mode creates it */
-        }
-        rmSync(dir, { recursive: true, force: true });
-      }
-    },
-    30_000,
-  );
 
   it('every checker script a workflow names actually exists', () => {
     // The inverse direction: a rename that updates the workflow but not the file

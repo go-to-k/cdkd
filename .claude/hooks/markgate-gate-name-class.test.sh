@@ -15,9 +15,9 @@
 # is indistinguishable, from the outside, from a gate working correctly: same
 # exit codes, same messages, same cwd. Only the argv separates them.
 #
-# `integ-destroy` is the only markgate gate left, so the table holds one row.
-# The fence is deliberately NOT retired for that: its whole value is catching
-# the SECOND one, written by someone who never read this file.
+# `integ-destroy` and `integ-schema-migration` are the markgate gates left, so
+# the table holds two rows. Its whole value is catching the NEXT one, written by
+# someone who never read this file.
 #
 # WHY THE POPULATION IS DERIVED FROM BEHAVIOUR
 #
@@ -29,10 +29,10 @@
 #     appears on any line.
 #   - `grep -l markgate` finds ~20, because almost every gate reads
 #     `.markgate.yml` for the repo opt-in check. Those verify nothing.
-#   - Stripping comments first does NOT exclude `main-tree-git-cwd-detector.sh`:
-#     it carries `markgate[[:space:]]+(set|verify)` inside a REGEX STRING, since
-#     detecting markgate commands is its job. That is live code, and it is the
-#     one DECLARED non-verifier below.
+#   - Stripping comments first does not help either: a hook whose JOB is to
+#     spot markgate commands carries `markgate[[:space:]]+(set|verify)` inside
+#     a REGEX STRING, which is live code. That is what `NON_VERIFIERS` below
+#     exists for; it is empty today.
 #
 # So the CANDIDATE list comes from `.claude/settings.json` -- what the repo
 # DECLARES as a hook, which is the only authoritative statement of it -- and
@@ -68,14 +68,13 @@
 # production (a stale marker reaches it) and a future probe may drive a stale
 # verdict, so it is kept as coverage rather than as an explanation of anything.
 #
-# THE VACUITY FLOORS ARE NEARLY DEGENERATE NOW, and that is worth stating
-# rather than discovering. With one gate in the table, "the table was read" and
-# "a hook was observed verifying" can only be floored at 1, so they catch a
-# total breakage (the table unreadable, the harness reaching nothing) and
-# nothing subtler. The one floor that still discriminates is fence 2's
-# CANDIDATE floor, which counts hooks parsed out of settings.json rather than
-# markgate callers -- keep that one calibrated to the registered roster. Raise
-# all three the moment a second markgate gate is added.
+# THE VACUITY FLOORS ARE SHALLOW, and that is worth stating rather than
+# discovering. They are calibrated to the table: two gates, so "the table was
+# read", "a hook was observed verifying" and "gates compared for rc-2 ordering"
+# are floored at 2. They catch a total breakage and one gate dropping out, and
+# nothing subtler. Fence 2's CANDIDATE floor counts hooks parsed out of
+# settings.json rather than markgate callers -- keep it calibrated to the
+# registered roster. Raise all of them when a gate is added.
 
 set -u
 
@@ -97,11 +96,13 @@ git init -q -b feat/lane "$REPO"
 git -C "$REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 # Repo opt-in: every one of these gates is scoped to repos carrying a
 # `.markgate.yml`, so without this the whole suite passes through untested.
-# EMPTY on purpose: an empty config is UNPARSABLE, `gate_resolve_marker_gate`
-# fails closed to `canonical`, and the gate therefore consults markgate. A
-# config DECLARING other gates -- or an absent one -- resolves to `none`, and a
-# gate that refuses or relaxes at `none` would go quiet in the suite built to
-# notice a gate going quiet.
+# EMPTY on purpose, and integ-schema-migration-gate depends on it: an empty
+# config is UNPARSABLE, `gate_resolve_marker_gate` fails closed to `canonical`,
+# and the gate therefore consults markgate. A config DECLARING other gates --
+# or an absent one -- resolves to `none`, and since go-to-k/cdkd#3351 a foreign
+# target at `none` RELAXES, which would take that gate below this fence's
+# reachability floor: it would go quiet in the suite built to notice a gate
+# going quiet.
 touch "$REPO/.markgate.yml"
 
 # --- shims ------------------------------------------------------------------
@@ -168,14 +169,15 @@ export PATH="$SHIM:$PATH"
 # Columns: hook | expected gate name(s), space-separated | probe verb key
 TABLE="
 integ-destroy-gate|integ-destroy|prmerge-destroy
+integ-schema-migration-gate|integ-schema-migration|prmerge-schema
 "
 
 # Hooks that reference markgate but verify nothing, with the reason. Fence 2
 # consults this so a deliberate non-verifier does not have to be a table entry.
-# `main-tree-git-cwd-detector` carries `markgate[[:space:]]+(set|verify)` inside
-# a REGEX -- detecting markgate commands is its job -- so it must never be
-# expected to verify one itself.
-NON_VERIFIERS="main-tree-git-cwd-detector"
+# It is EMPTY today. The hook it named -- a PostToolUse detector carrying
+# `markgate[[:space:]]+(set|verify)` inside a REGEX, because detecting markgate
+# commands was its job -- was retired with the main-tree hook family.
+NON_VERIFIERS=""
 
 payload_for() {
   local key="$1" cmd
@@ -192,6 +194,7 @@ payload_for() {
 scope_env_for() {
   case "$1" in
     prmerge-destroy) printf 'src/provisioning/providers/s3-bucket-provider.ts' ;;
+    prmerge-schema)  printf 'src/types/state.ts' ;;
     *)               printf '' ;;
   esac
 }
@@ -264,7 +267,7 @@ while IFS='|' read -r hook gates key; do
   fi
 done <<< "$(printf '%s' "$TABLE" | sed '/^$/d')"
 
-if [ "$declared" -lt 1 ]; then
+if [ "$declared" -lt 2 ]; then
   ng "fence 3: the table declares only $declared hooks; it is not being read, so fences 1 and 2 mean nothing"
 elif [ -n "$unreached" ]; then
   ng "fence 3: these hooks never reached their markgate call, so nothing below asserts anything about them:$(printf '%b' "$unreached")\n    Usually the gate scope-checks the PR diff first -- give its probe an in-scope file in scope_env_for()."
@@ -362,11 +365,9 @@ for base in $CANDIDATES; do
   # Strip COMMENTS and the two SENTINEL filenames before looking. Neither is a
   # refinement: `.markgate.yml` is the repo opt-in check that almost every gate
   # does, `.markgate-*` are the broad-integ / pr-review sentinels, and a comment
-  # is prose. Without the strip the net catches 20 hooks and then 17; with it,
-  # exactly 10 -- the 8 in the table plus the two declared non-verifiers, which
-  # is the net having no holes AND no slack. (This count is PROSE and goes stale
-  # silently; the assertions below are floors, so update it when NON_VERIFIERS
-  # or the table changes.)
+  # is prose. Without the strip the net catches every gate doing the opt-in
+  # check; with it, exactly the table's entries plus the declared
+  # non-verifiers, which is the net having no holes AND no slack.
   sed -e 's/#.*//' -e 's/\.markgate\.yml//g' -e 's/\.markgate-[A-Za-z0-9-]*//g' \
       "$HOOKS_DIR/$base.sh" | grep -q 'markgate' || continue
   case " $table_hooks " in *" $base "*) continue ;; esac
@@ -382,7 +383,7 @@ done
 
 observed_count=0
 for _o in $observed; do observed_count=$((observed_count + 1)); done
-if [ "$observed_count" -lt 1 ]; then
+if [ "$observed_count" -lt 2 ]; then
   ng "fence 2: only $observed_count hooks were observed verifying a marker; the drive harness is not reaching them, so this comparison is vacuous"
 elif [ -z "$missing_from_table$stale_in_table$mentions_markgate" ]; then
   ok "fence 2: the table and the $observed_count observed markgate callers agree in both directions"
@@ -413,7 +414,7 @@ fi
 # that can catch this one.
 order_bad=""
 order_checked=0
-for gate_file in integ-destroy-gate; do
+for gate_file in integ-destroy-gate integ-schema-migration-gate; do
   src="$HOOKS_DIR/$gate_file.sh"
   [ -f "$src" ] || { order_bad="$order_bad\n    - $gate_file.sh not found"; continue; }
   rc2_line=$(grep -n '^if \[ "\$status" -eq 2 \]; then' "$src" | head -1 | cut -d: -f1)
@@ -432,7 +433,7 @@ for gate_file in integ-destroy-gate; do
   fi
 done
 
-if [ "$order_checked" -lt 1 ]; then
+if [ "$order_checked" -lt 2 ]; then
   ng "fence 4: only $order_checked of the markgate-backed gates were actually compared, so this assertion is vacuous:$(printf '%b' "$order_bad")"
 elif [ -n "$order_bad" ]; then
   ng "fence 4: a gate handles markgate rc-2 after its alias refusal:$(printf '%b' "$order_bad")"

@@ -3,11 +3,6 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vite-plus/test';
 import { foldAnnotationText, LINE_BREAKING_CHARS } from '../../../scripts/annotation-text.ts';
 import {
-  formatAnnotation as formatInternalLabels,
-  formatFoundRow as foundRowInternalLabels,
-  scanChangedFiles as scanInternalLabels,
-} from '../../../scripts/check-pr-internal-labels.ts';
-import {
   formatAnnotation as formatNonEnglish,
   formatFoundRow as foundRowNonEnglish,
   scanChangedFiles as scanNonEnglish,
@@ -113,21 +108,6 @@ describe('no checker in this family can emit a forged workflow command', () => {
     expect(out).toContain('docs/x.md');
   });
 
-  it('check-pr-internal-labels: neither the hit nor the line can start one', () => {
-    // BOTH fields are file-derived here, and an earlier fix folded only one of
-    // them in the sibling check -- so both directions are asserted.
-    expect(
-      startsACommand(
-        formatInternalLabels({ file: 'README.md', line: 3, hit: '(PR 8b)', text: `t${forge}` }),
-      ),
-    ).toBe(false);
-    expect(
-      startsACommand(
-        formatInternalLabels({ file: 'README.md', line: 3, hit: `(PR 8b)${forge}`, text: 't' }),
-      ),
-    ).toBe(false);
-  });
-
   it('check-pr-title-prefix-scope: a fork PR FILE PATH cannot start one', () => {
     // The fourth emitter, and the one nobody listed by hand -- the derived
     // fence below found it on its first run. Git permits a carriage return in
@@ -142,29 +122,20 @@ describe('no checker in this family can emit a forged workflow command', () => {
     expect(out).toContain('docs/x');
   });
 
-  it.each([
-    ['check-pr-non-english-text', 'nonEnglish'],
-    ['check-pr-internal-labels', 'internalLabels'],
-  ])('%s folds the FILE PATH, which has no construction-time twin', (_n, which) => {
+  it('check-pr-non-english-text folds the FILE PATH, which has no construction-time twin', () => {
     // `o.text` is folded twice (construction and emitter) so each masks the
     // other; `o.file` is folded ONLY at the emitter, so removing it is a live
-    // regression -- and removing all four `foldAnnotationText(o.file)` calls
+    // regression -- and removing every `foldAnnotationText(o.file)` call
     // passed the whole suite (measured, go-to-k/cdkd#2736 round-4 review).
     const evil = `docs/a${forge}.md`;
-    const out =
-      which === 'nonEnglish'
-        ? formatNonEnglish({ file: evil, line: 1, text: 'x' })
-        : formatInternalLabels({ file: evil, line: 1, hit: '(PR 8b)', text: 'x' });
+    const out = formatNonEnglish({ file: evil, line: 1, text: 'x' });
     expect(out).not.toContain(cp(0x0d));
     // The annotation legitimately BEGINS with `::error`, so "no line starts a
     // command" cannot be the assertion here -- the payload must simply be gone.
     expect(out).toContain('docs/a');
   });
 
-  it.each([
-    ['check-pr-non-english-text', foundRowNonEnglish],
-    ['check-pr-internal-labels', foundRowInternalLabels],
-  ])("%s's Found: row survives a path NAMED like a command", (_n, fmt) => {
+  it.each([['check-pr-non-english-text', foundRowNonEnglish]])("%s's Found: row survives a path NAMED like a command", (_n, fmt) => {
     // No control character needed: `git diff --name-only` C-quotes control
     // bytes but never `:`, `,`, `=` or a space, so a fork PR can add a file
     // literally named `::error file=...::...`. Folding is powerless there --
@@ -178,18 +149,12 @@ describe('no checker in this family can emit a forged workflow command', () => {
     expect(`  ${named}:7: text`.trimStart().startsWith('::')).toBe(true);
   });
 
-  it.each([
-    ['check-pr-non-english-text', foundRowNonEnglish],
-    ['check-pr-internal-labels', foundRowInternalLabels],
-  ])("%s's Found: row folds a break too", (_n, fmt) => {
+  it.each([['check-pr-non-english-text', foundRowNonEnglish]])("%s's Found: row folds a break too", (_n, fmt) => {
     const row = fmt({ file: `docs/a${forge}.md`, line: 1, hit: 'h', text: 'x' } as never);
     expect(row).not.toContain(cp(0x0d));
   });
 
-  it.each([
-    ['check-pr-internal-labels', (f: string) => scanInternalLabels([f], () => null, () => '')],
-    ['check-pr-non-english-text', (f: string) => scanNonEnglish([f], [], () => null)],
-  ])("%s's refusal message folds the path it names", (_n, scan) => {
+  it.each([['check-pr-non-english-text', (f: string) => scanNonEnglish([f], [], () => null)]])("%s's refusal message folds the path it names", (_n, scan) => {
     // A THIRD echo per file, reached by neither fold until now: the
     // `cannot read <path>` throw, whose message the catch prints straight into
     // `::error::`. Reachable from a fork PR adding a file whose name has a
@@ -268,8 +233,6 @@ describe('the rule reaches every checker that emits an annotation', () => {
       .sort();
 
     expect(emitters, 'the emitter population changed -- decide, do not re-floor').toEqual([
-      'check-pr-closes-paren.ts',
-      'check-pr-internal-labels.ts',
       'check-pr-non-english-text.ts',
       'check-pr-title-prefix-scope.ts',
     ]);
@@ -314,12 +277,7 @@ describe('the rule reaches every checker that emits an annotation', () => {
     expect(fencedQuote('    const x = 1;  // note')).toContain('    const x = 1;  // note');
   });
 
-  it.each([
-    ['check-pr-non-english-text.ts'],
-    ['check-pr-internal-labels.ts'],
-    ['check-pr-closes-paren.ts'],
-    ['check-pr-title-prefix-scope.ts'],
-  ])('%s interpolates an offender field ONLY inside a format function', (file) => {
+  it.each([['check-pr-non-english-text.ts'], ['check-pr-title-prefix-scope.ts']])('%s interpolates an offender field ONLY inside a format function', (file) => {
     // The gap this closes: extracting `formatFoundRow` and unit-testing the
     // FUNCTION says nothing about `main()` still calling it. Reverting `main()`
     // to its old inline unmarked template, while the exported function stayed

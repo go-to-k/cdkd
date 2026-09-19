@@ -56,6 +56,15 @@ boundary; `main` is protected server-side by a GitHub ruleset.
   Markgate-backed; its scope, `hash: diff` mode and 14-day TTL live in
   `.markgate.yml`, and a PR outside that scope passes on a stale marker.
 
+- **`integ-schema-migration-gate.sh`** — blocks `gh pr merge` for a PR whose
+  diff really changes the `StateSchemaVersion` union or the
+  `STATE_SCHEMA_VERSION_CURRENT` constant in `src/types/state.ts`, until
+  `/run-integ` has recorded a clean `schema-v<N>-to-v<N+1>-migration` run. The
+  harm is a THIRD PARTY's: a migration writes to state documents that live in
+  USERS' S3 buckets and there is no way back. A non-bump edit to that file
+  (JSDoc, a helper, a comment) passes. Markgate-backed, `hash: files`, 14-day
+  TTL; a FOREIGN target declaring no equivalent gate is relaxed.
+
 - **`bughunt-clean-gate.sh`** — blocks `git commit`, `gh pr create` and
   `gh pr merge` while `/hunt-bugs` has un-destroyed AWS resources in its
   sentinel; only `bughunt-track.sh clear`, after destroy + orphan-zero
@@ -84,27 +93,6 @@ boundary; `main` is protected server-side by a GitHub ruleset.
   `<resolved git dir>/wipe-backups/<UTC ts>-<verb>/`; recover with `git apply
   --include=<path> <snap>/tracked.patch`, or `--3way` for a tree.
 
-- **`main-tree-branch-gate.sh`** — blocks branch-switching in the MAIN worktree;
-  inside any `.claude/worktrees/<x>/` subtree everything passes. **Passes** in
-  the main tree: `switch|checkout main|master`, every file-RESTORE form,
-  `checkout <sha>` or `HEAD`, `--help`, `git worktree add`. **Blocks**:
-  every create spelling under both verbs (`-c` / `-C` / `-b` / `-B` /
-  `--orphan`, glued and bundled included); `-t` / `--track`, which git DWIMs into
-  a create; a bare positional naming a LOCAL branch or one on a CONFIGURED
-  remote; `--detach`; `-` / `@{-1}`. **An incomplete parse may not ALLOW.**
-
-- **`main-tree-edit-gate.sh`** — blocks mutating a git-TRACKED file in a
-  worktree currently on `main` / `master`, plus a NEW file under `src/` /
-  `tests/` / `docs/` / `scripts/` / `.claude/` outside `.claude/worktrees/*`;
-  feature worktrees always pass. Matcher `Edit|Write|Bash` is UNANCHORED, so
-  `MultiEdit` and `NotebookEdit` reach it too and the latter sends
-  `notebook_path`. The Bash arm resolves only LITERAL write targets. **Load
-  fails CLOSED for the `Bash` arm ONLY**: refusing Edit and Write there would
-  remove the tools the library is repaired with. Its non-blocking backstop is
-  **`main-tree-dirty-detector.sh`** (PostToolUse `Bash`), which warns when the
-  MAIN worktree is on `main` with dirty TRACKED files after a write it could not
-  resolve statically.
-
 - **`branch-gate.sh`** — blocks `git commit` / `git push` when the TARGET
   working tree is on `main` / `master`, and when the MAIN checkout is on a
   DETACHED HEAD; a detached LINKED worktree keeps passing. The printed remedy
@@ -113,16 +101,8 @@ boundary; `main` is protected server-side by a GitHub ruleset.
 - **`broad-process-kill-gate.sh`** — blocks a machine-wide `pkill` / `killall`,
   which reaches other agents' processes.
 
-- **`main-tree-git-cwd-detector.sh`** — PostToolUse (`Bash`), **never blocks**.
-  Warns when a matched command's effective dir is the MAIN worktree while
-  feature worktrees are active, over git mutations, verification commands
-  (`vp run`, `markgate set|verify`) whose wrong-tree result is a FALSE GREEN
-  with no error, and `gh pr merge`. Deliberately silent on `git pull`,
-  read-only commands, an UNRESOLVABLE `cd` (`cd "$WT" && …`), and post-merge
-  `vp run build`.
-
-**Repo opt-in.** The main-tree and branch hooks fire ONLY in a repo carrying
-`.markgate.yml` at its root.
+**Repo opt-in.** `branch-gate.sh` fires ONLY in a repo carrying `.markgate.yml`
+at its root.
 
 # Authoring a hook
 
@@ -140,8 +120,8 @@ printing: a gate RUNS the worked example it meant to print
 live values with a separate `printf`. Assert the RENDERED message in the suite,
 never a restatement of it.
 
-**A blocking gate that cannot load the shared matcher exits 2**; the
-non-blocking detectors and `restore-backup` skip instead. **An unreadable target
+**A blocking gate that cannot load the shared matcher exits 2**; a non-blocking
+hook (`restore-backup`) skips instead. **An unreadable target
 directory is likewise a REFUSAL**: a hook receives command TEXT, not the shell's
 expansion, so `git -C "$W" commit` arrives unexpanded and
 `gate_target_dir_strict` returns 2 rather than guessing. These shapes must NOT
@@ -206,7 +186,10 @@ the gate differently, and no per-gate query separates "undeclared" from
   verified and a stale one refused by naming the target's gate and the command
   that refreshes it there.
 - **none** — nothing equivalent: REFUSAL, exit 2, naming the mapping row to add.
-  `integ-destroy` takes no carve-out here.
+  `integ-destroy` takes no carve-out here. `integ-schema-migration` does, and it
+  is the one exception: a FOREIGN target at `none` PASSES, because a schema
+  contract only cdkd defines is only cdkd's to gate, and refusing there is
+  unclearable by any action that repo can take.
 
 That mapping is **DECLARED per (repo, cdkd gate), never discovered**, since
 every heuristic's failure mode is a false ACCEPT; an EMPTY table is valid. It is

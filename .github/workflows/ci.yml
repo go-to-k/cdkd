@@ -141,61 +141,42 @@ jobs:
         env:
           CDKD_EXPECT_DIST: "1"
 
-      # Issue #399 — fail CI when docs/integ-coverage.md or
-      # docs/_generated/integ-coverage.json is stale relative to
-      # src/provisioning/register-providers.ts +
-      # tests/integration/*/{lib,bin}/*.ts. Regenerate via the same
-      # `vp run integ-coverage` task the contributor would run, then
-      # fail-on-diff. Closes the "forgot to regenerate after editing"
-      # gap that the /verify-pr skill step is the manual fallback for.
-      - name: integ-coverage matrix is up-to-date
+      # ONE regeneration step for every generated matrix, module and ledger this
+      # repo commits (issues #399, #423, #1071, #1112, #1373, #1404, and the
+      # property / unsupported-type / enrichment / sdk-attr / update-wrap
+      # guards). `gen:all-matrices` in vite.config.ts is the single list of
+      # generators, and it is also what a contributor runs locally, so there is
+      # one place a new generator is registered rather than two that drift.
+      #
+      # The verdict is a NON-EMPTY `git diff` over the whole tree: a generator
+      # added to the aggregate is covered here the moment it is added, with no
+      # path list to keep in step. `--stat` names the stale files and the full
+      # diff shows what changed. `vp run format` runs inside the aggregate (the
+      # property-coverage codegen writes an unformatted shape), so a formatting
+      # drift reds here too.
+      #
+      # The `audit:*:check` CRITICS stay as their own steps below: they are
+      # pass/fail judgements with nothing to regenerate, and they must run
+      # AFTER this step so they read fresh data.
+      - name: generated matrices, modules and the integ ledger are up-to-date
         run: |
-          vp run integ-coverage
-          if ! git diff --quiet -- docs/integ-coverage.md docs/_generated/integ-coverage.json; then
-            echo "::error::integ-coverage matrix is stale — run \`vp run integ-coverage\` and commit the regenerated docs/integ-coverage.md + docs/_generated/integ-coverage.json"
-            git --no-pager diff -- docs/integ-coverage.md docs/_generated/integ-coverage.json
-            exit 1
-          fi
-
-      # Issue #1071 — fail CI when docs/cli-flag-coverage.md or
-      # docs/_generated/cli-flag-coverage.json is stale relative to the
-      # declared CLI flags (src/cli/options.ts) + tests/integration/*/verify.sh.
-      # Same `vp run ... && git diff --exit-code` shape as the
-      # integ-coverage step above. This is a STALENESS guard only (the
-      # generated file must track its inputs); it deliberately does NOT
-      # hard-fail on low coverage % — many flags are unit-tested rather
-      # than exercised in an integ verify.sh (see the report's own
-      # "VISIBILITY report, not a CI gate" note). Closes the gap where the
-      # matrix had not been regenerated since PR #504 and drifted silently.
-      - name: cli-flag-coverage matrix is up-to-date
-        run: |
-          vp run cli-flag-coverage
-          if ! git diff --quiet -- docs/cli-flag-coverage.md docs/_generated/cli-flag-coverage.json; then
-            echo "::error::cli-flag-coverage matrix is stale — run \`vp run cli-flag-coverage\` and commit the regenerated docs/cli-flag-coverage.md + docs/_generated/cli-flag-coverage.json"
-            git --no-pager diff -- docs/cli-flag-coverage.md docs/_generated/cli-flag-coverage.json
-            exit 1
-          fi
-
-      # Issue #1112 — fail CI when docs/_generated/integ-last-run.tsv breaks
-      # its "exactly one row per test" invariant or its sorted order. The
-      # ledger is an update-type file, but /run-integ appends to it, so a
-      # rebase replays the append against a base that already carries the
-      # row and git auto-merge takes BOTH sides — 10 tests on main had
-      # silently accumulated duplicates that way. `vp run
-      # integ-ledger-normalize` rewrites the whole file deterministically
-      # (newest row per test, sorted by test name), which is both the
-      # rebase-safe write path and the invariant check: a replayed commit
-      # now produces an IDENTICAL file rather than an additive diff. Same
-      # `vp run ... && git diff --exit-code` shape as the matrix steps
-      # above. The script ALSO hard-fails on a malformed row (wrong column
-      # count / unparseable timestamp) rather than dropping it silently, so
-      # this step covers both classes.
-      - name: integ-last-run ledger is normalized
-        run: |
-          vp run integ-ledger-normalize
-          if ! git diff --quiet -- docs/_generated/integ-last-run.tsv; then
-            echo "::error::integ-last-run ledger is not normalized (duplicate rows or wrong order) — run \`vp run integ-ledger-normalize\` and commit docs/_generated/integ-last-run.tsv"
-            git --no-pager diff -- docs/_generated/integ-last-run.tsv
+          vp run gen:all-matrices
+          stale=0
+          git diff --quiet || stale=1
+          # `git diff` cannot see an UNTRACKED file, so a generator that starts
+          # emitting a NEW output would pass here forever -- the same blind spot
+          # the ten per-path steps had, and a wider one now that this is the only
+          # staleness check in the job. `--exclude-standard` honours .gitignore,
+          # so `dist/` from the build step above does not trip it.
+          untracked=$(git ls-files --others --exclude-standard)
+          [ -z "$untracked" ] || stale=1
+          if [ "$stale" != 0 ]; then
+            echo "::error::a generated or unformatted file differs after \`vp run gen:all-matrices\` — run it and commit the files listed below"
+            git --no-pager diff --stat
+            git --no-pager diff
+            if [ -n "$untracked" ]; then
+              printf 'untracked files a generator produced:\n%s\n' "$untracked"
+            fi
             exit 1
           fi
 
@@ -206,8 +187,7 @@ jobs:
       # `vp run audit:coverage:regenerate` would take 10-30 min + AWS
       # CFn DescribeType throttling and stays a manual / future-cron job
       # per issue #398 Option A). Catches the "added a new provider but
-      # forgot to regen the audit cache" case structurally, mirroring
-      # the integ-coverage step above.
+      # forgot to regen the audit cache" case structurally.
       - run: vp run audit:coverage:check
 
       # Issue #2553 — fail CI when a tier-2 stateful CANDIDATE in
@@ -233,147 +213,14 @@ jobs:
       # may only shrink — a stale or dead entry fails too.
       - run: vp run audit:aws-client-defaults:check
 
-      # Issue #423 — fail CI when docs/scenario-coverage.md or
-      # docs/_generated/scenario-coverage.json is stale relative to
-      # the KNOWN_SCENARIOS taxonomy in
-      # scripts/build-scenario-coverage-matrix.ts and the per-fixture
-      # tests/integration/<name>/.scenarios.json sidecars. Same shape as
-      # the integ-coverage step above. The script ALSO hard-fails on a
-      # sidecar carrying an unknown tag (typo guard), so the step covers
-      # both "forgot to regenerate" and "wrote a typo tag" classes.
-      - name: scenario-coverage matrix is up-to-date
-        run: |
-          vp run scenario-coverage
-          if ! git diff --quiet -- docs/scenario-coverage.md docs/_generated/scenario-coverage.json; then
-            echo "::error::scenario-coverage matrix is stale — run \`vp run scenario-coverage\` and commit the regenerated docs/scenario-coverage.md + docs/_generated/scenario-coverage.json"
-            git --no-pager diff -- docs/scenario-coverage.md docs/_generated/scenario-coverage.json
-            exit 1
-          fi
-
-      # Fail CI when src/provisioning/unsupported-types.generated.ts is stale
-      # relative to docs/_generated/provider-coverage.json (tier3). The runtime
-      # pre-flight reads the generated module, so it must track the audit cache.
-      # Same shape as the integ-coverage / scenario-coverage staleness guards.
-      - name: unsupported-types module is up-to-date
-        run: |
-          vp run gen:unsupported-types
-          if ! git diff --quiet -- src/provisioning/unsupported-types.generated.ts; then
-            echo "::error::src/provisioning/unsupported-types.generated.ts is stale — run \`vp run gen:unsupported-types\` and commit the regenerated module"
-            git --no-pager diff -- src/provisioning/unsupported-types.generated.ts
-            exit 1
-          fi
-
-      # Fail CI when src/provisioning/property-coverage.generated.ts is stale
-      # relative to the CFn schema fixtures + each SDK provider's
-      # handledProperties / unhandledByDesign declarations. The runtime
-      # property-level pre-flight (ProviderRegistry.validateResourceProperties)
-      # reads the generated module, so it must track the source data.
-      # The codegen writes a raw multi-line shape; the committed module is
-      # Prettier-formatted, so we run `vp run format` after the codegen to
-      # canonicalize before diffing (mirrors how the file was written at
-      # scaffold time in 476d3c1).
-      - name: property-coverage module is up-to-date
-        run: |
-          vp run gen:property-coverage
-          vp run format
-          if ! git diff --quiet -- src/provisioning/property-coverage.generated.ts; then
-            echo "::error::src/provisioning/property-coverage.generated.ts is stale — run \`vp run gen:property-coverage && vp run format\` and commit the regenerated module"
-            git --no-pager diff -- src/provisioning/property-coverage.generated.ts
-            exit 1
-          fi
-
-      # Fail CI when docs/_generated/enrichment-coverage.{json,md} is stale
-      # relative to the CFn schema fixtures + the enrichResourceAttributes
-      # switch in src/provisioning/cloud-control-provider.ts. The matrix records
-      # which CC-routable types' computed readOnly Fn::GetAtt attributes are
-      # populated by enrichment (the bug class fixed in #844/#864/#865/#866).
-      # Same diff-on-stale shape as the integ-coverage / property-coverage
-      # guards above. The second step is the CRITIC: it hard-fails on a pure-CC
-      # (no-SDK-provider) latent gap that is neither enriched nor allow-listed.
-      - name: enrichment-coverage matrix is up-to-date
-        run: |
-          vp run gen:enrichment-coverage
-          if ! git diff --quiet -- docs/_generated/enrichment-coverage.json docs/_generated/enrichment-coverage.md; then
-            echo "::error::enrichment-coverage matrix is stale — run \`vp run gen:enrichment-coverage\` and commit the regenerated docs/_generated/enrichment-coverage.{json,md}"
-            git --no-pager diff -- docs/_generated/enrichment-coverage.json docs/_generated/enrichment-coverage.md
-            exit 1
-          fi
       - run: vp run audit:enrichment-coverage:check
 
-      # Fail CI when docs/_generated/sdk-attr-coverage.{json,md} is stale
-      # relative to the CFn schema fixtures + each SDK provider's create/update
-      # attribute keys + the constructAttribute type coverage. The matrix records
-      # which SDK-backed types' read-only Arn/Url Fn::GetAtt attributes are
-      # resolvable (cached by the provider OR constructAttribute-handled); a gap
-      # is the #1179 deploy-break class. The second step is the CRITIC: it
-      # hard-fails on any unresolvable Arn/Url attribute that is not allow-listed.
-      - name: sdk-attr-coverage matrix is up-to-date
-        run: |
-          vp run gen:sdk-attr-coverage
-          if ! git diff --quiet -- docs/_generated/sdk-attr-coverage.json docs/_generated/sdk-attr-coverage.md; then
-            echo "::error::sdk-attr-coverage matrix is stale — run \`vp run gen:sdk-attr-coverage\` and commit the regenerated docs/_generated/sdk-attr-coverage.{json,md}"
-            git --no-pager diff -- docs/_generated/sdk-attr-coverage.json docs/_generated/sdk-attr-coverage.md
-            exit 1
-          fi
       - run: vp run audit:sdk-attr-coverage:check
 
-      # Fail CI when docs/_generated/update-wrap-coverage.{json,md} is stale
-      # relative to the provider sources. The matrix records, per provider
-      # class declaring update(), whether every AWS `send` reachable from
-      # update() (following this.x() delegation edges) is wrapped in a
-      # ProvisioningError — and whether that wrap re-throws cdkd-typed errors
-      # untouched. An unwrapped send is the #1263 / #1267 class (a raw SDK
-      # error bypassing cdkd's exit-code handling); an unguarded wrap silently
-      # disables the deploy engine's by-class replacement fallback. The second
-      # step is the CRITIC: it hard-fails on either, unless allow-listed.
-      - name: update-wrap-coverage matrix is up-to-date
-        run: |
-          vp run gen:update-wrap-coverage
-          if ! git diff --quiet -- docs/_generated/update-wrap-coverage.json docs/_generated/update-wrap-coverage.md; then
-            echo "::error::update-wrap-coverage matrix is stale — run \`vp run gen:update-wrap-coverage\` and commit the regenerated docs/_generated/update-wrap-coverage.{json,md}"
-            git --no-pager diff -- docs/_generated/update-wrap-coverage.json docs/_generated/update-wrap-coverage.md
-            exit 1
-          fi
       - run: vp run audit:update-wrap-coverage:check
 
-      # Fail CI when docs/_generated/nested-key-coverage.{json,md} is stale
-      # relative to the provider sources / schema fixtures / SDK typings. The
-      # matrix diffs, per SDK provider forwarding a nested CFn config blob,
-      # the blob's nested CFn property names against the SDK client model's
-      # member names — a CFn key with no same-spelling SDK member and no
-      # explicit mention in the provider is a write-side silent drop (the
-      # #1370 CloudFront / #1304 MetricTimeZone class; issue #1373). The
-      # second step is the CRITIC: it hard-fails on any non-allow-listed
-      # divergence.
-      - name: nested-key-coverage matrix is up-to-date
-        run: |
-          vp run gen:nested-key-coverage
-          if ! git diff --quiet -- docs/_generated/nested-key-coverage.json docs/_generated/nested-key-coverage.md; then
-            echo "::error::nested-key-coverage matrix is stale — run \`vp run gen:nested-key-coverage\` and commit the regenerated docs/_generated/nested-key-coverage.{json,md}"
-            git --no-pager diff -- docs/_generated/nested-key-coverage.json docs/_generated/nested-key-coverage.md
-            exit 1
-          fi
       - run: vp run audit:nested-key-coverage:check
 
-      # Fail CI when docs/_generated/handled-property-wiring.{json,md} is stale
-      # relative to the provider sources. The matrix records, per SDK provider
-      # class declaring handledProperties, whether each DECLARED property is
-      # actually READ off the template property bag (following
-      # this.helper(properties) delegation and table-driven loops). A
-      # declaration with no read evidence is either a wiring gap or a
-      # mis-declared property — the #1392 ECRProvider class, which
-      # gen-property-coverage.ts structurally cannot see because that pre-flight
-      # passes on the strength of the declaration alone (issue #1404). The
-      # second step is the CRITIC: it hard-fails on any un-wired declaration
-      # that is not allow-listed, and on a stale allow-list entry.
-      - name: handled-property-wiring matrix is up-to-date
-        run: |
-          vp run gen:handled-property-wiring
-          if ! git diff --quiet -- docs/_generated/handled-property-wiring.json docs/_generated/handled-property-wiring.md; then
-            echo "::error::handled-property-wiring matrix is stale — run \`vp run gen:handled-property-wiring\` and commit the regenerated docs/_generated/handled-property-wiring.{json,md}"
-            git --no-pager diff -- docs/_generated/handled-property-wiring.json docs/_generated/handled-property-wiring.md
-            exit 1
-          fi
       - run: vp run audit:handled-property-wiring:check
 
       # Issue #2040 — every provider `catch` site (and every `wrapError` helper a

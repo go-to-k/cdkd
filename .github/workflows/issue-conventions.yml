@@ -1,10 +1,9 @@
 name: Issue conventions
 
-# The CI replacement for three retired PreToolUse bash hooks:
+# The CI replacement for two retired PreToolUse bash hooks:
 #
 #   .claude/hooks/gh-body-english-gate.sh            -> scripts/check-gh-body-english.ts
 #   .claude/hooks/issue-classification-label-gate.sh -> scripts/check-issue-classification-labels.ts
-#   .claude/hooks/issue-dup-check-gate.sh            -> scripts/check-issue-dup-check.ts
 #
 # Each hook was 371-551 lines with a 380-916 line suite, and almost all of that
 # was ONE problem: a PreToolUse hook receives the raw SHELL COMMAND TEXT of a
@@ -91,8 +90,7 @@ jobs:
     # That rule is ALSO in the script now, as `isBotSender`, and the script is
     # the authority. It lived only here until go-to-k/cdkd#2736: no test can read
     # a workflow `if:` expression, so deleting this clause was silent and its
-    # failure mode is the comment loop above. Same move go-to-k/cdkd#2717 made for
-    # `isMintEvent` in the dup-check job -- the `if:` stays as a cheap filter
+    # failure mode is the comment loop above. The `if:` stays as a cheap filter
     # that avoids spawning a runner, the script is the half under test.
     if: >-
       (github.event_name == 'issues' || github.event_name == 'issue_comment') &&
@@ -330,67 +328,3 @@ jobs:
             fi
             exit 1
           fi
-
-  # --- 4. Dup-check line ----------------------------------------------------
-  # STRICTLY WEAKER than the hook it replaces, and that is stated rather than
-  # hidden: the hook refused `gh issue create`, so a duplicate was never minted.
-  # By the time this runs the issue exists and is already counted, so the
-  # comment has to ask for a fold-and-close rather than a fold-instead-of-file.
-  #
-  # `opened` ONLY, mirroring the hook: `gh issue edit` and `gh issue comment`
-  # were deliberately not gated, because folding a finding into an existing
-  # issue is the outcome this steers toward and taxing it would penalise the
-  # cheap path while leaving the costly one free.
-  dup-check:
-    name: Dup-check line
-    if: github.event_name == 'issues' && github.event.action == 'opened'
-    runs-on: ubuntu-latest
-    # The default timeout is 360 minutes and every one of these jobs is spawned
-    # by an event any GitHub user can raise, so each carries a cap
-    # (go-to-k/cdkd#2717 review). The comment-volume argument applies to
-    # `english-issue` alone -- see there.
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      issues: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
-
-      - uses: voidzero-dev/setup-vp@49c3e4e92c52e7f8392712a9267bbe71c5ab30e5 # v1
-        with:
-          node-version: "24"
-          cache: false
-          run-install: false
-
-      - name: Require a Dup-check line
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          NUMBER: ${{ github.event.issue.number }}
-          # Passed so the SCRIPT decides what mints an issue, not only the `if:`
-          # above. Both encoded the rule until the go-to-k/cdkd#2717 test review:
-          # `isMintEvent` was exported and asserted in four directions with no
-          # call site, so its cases passed whatever this workflow did, while the
-          # rule that actually ran lived in an expression no test reads. The
-          # `if:` stays as a cheap filter that avoids spawning a runner; the
-          # script is the authority, and it is the half under test.
-          EVENT_NAME: ${{ github.event_name }}
-          ACTION: ${{ github.event.action }}
-        run: |
-          set -uo pipefail
-          gh issue view "$NUMBER" -R "$REPO" --json title,body,labels \
-            | jq --argjson n "$NUMBER" \
-                '{kind:"issue", number:$n, title:.title, body:.body,
-                  labels:[.labels[].name]}' > subject.json || exit 2
-
-          rc=0
-          node scripts/check-issue-dup-check.ts subject.json > comment.md || rc=$?
-          # `formatComment()` takes no arguments and interpolates nothing, so
-          # this one carries no attacker text. Prefixed anyway, so the rule is
-          # "every report goes through the prefix" rather than a judgement the
-          # next editor has to re-make per site.
-          sed 's/^/| /' comment.md
-          [ "$rc" = "0" ] && exit 0
-          [ "$rc" = "1" ] || exit "$rc"
-          gh api "repos/$REPO/issues/$NUMBER/comments" -F body=@comment.md --silent
-          exit 1

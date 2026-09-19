@@ -92,14 +92,14 @@ hunt round files the issue and stops there; a fix-in-session round still files
 it, then closes it from the PR (`Closes #<n>`). The body carries the real
 repro (the CDK app / commands / the exact deploy-update-destroy sequence).
 
-**Every issue carries the `Dup-check:` line and the four classification lines**
+**Every issue carries the four classification lines**
 (CLAUDE.md, "The four TODO fields"; the semantics and scales are in
 [../../rules/session-report.md](../../rules/session-report.md), whose `paths:`
 glob matches only `CLAUDE.md` — which the harness injects rather than reads — so
 it never auto-loads and must be opened here), with `Severity` / `Effort` ALSO as
 labels (`--label severity:<v> --label effort:<v>`). CI checks them: the label
-workflow applies a missing one and the dup-check workflow can only COMMENT once
-the issue exists, so write the lines yourself rather than relying on either. The
+workflow applies a missing one, so write the lines yourself rather than relying
+on it. The
 fix PR inherits the labels automatically — never hand-add them. Filing shapes and
 the mint-vs-fold decision live in
 [../work-issues/references/filing.md](../work-issues/references/filing.md). A

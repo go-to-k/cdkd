@@ -187,17 +187,18 @@ describe('a shell fixture never drops its teardown handler', () => {
     // the two sub-populations that can independently vanish are floored
     // independently.
     //
-    // BOTH FLOORS LOWERED TWICE, and both times for the deliberate-drop case
-    // rather than a glob that stopped matching: go-to-k/cdkd#2717 retired ten
-    // gates and their suites, and the agent-tooling shrink retired the whole
-    // marker layer plus the commit-time content lints.
+    // BOTH FLOORS LOWERED REPEATEDLY, and every time for the deliberate-drop
+    // case rather than a glob that stopped matching: go-to-k/cdkd#2717 retired
+    // ten gates and their suites, the agent-tooling shrink retired the marker
+    // layer and the commit-time content lints, and its third round retired the
+    // main-tree hook family.
     //
     // RE-DERIVED from the tree rather than carried, with the ONE-pathspec form
     // `hookScripts()` above mandates (a git pathspec's `*` crosses `/`, so the
     // second pathspec adds nothing -- ONE invocation dedupes, it was two separate
     // calls that double-counted): `git ls-files
-    // '.claude/hooks/*.sh'` minus `lib/testdata/` gives 36 = 19 `*.test.sh` +
-    // 10 `*-gate.sh` + 7 others. An earlier
+    // '.claude/hooks/*.sh'` minus `lib/testdata/` gives 27 = 14 `*.test.sh` +
+    // 9 `*-gate.sh` + 4 others. An earlier
     // revision of this comment said 40 and 30, and built a story on it -- that
     // the `-gate.sh` floor "failed at EQUALITY (30 is not > 30)". It did not;
     // 29 was simply below 30, an ordinary shortfall. The wrong number produced a
@@ -210,8 +211,8 @@ describe('a shell fixture never drops its teardown handler', () => {
     // this fence has no opinion about.
     const hooks = hookScripts();
     expect(verifyScripts().length).toBeGreaterThan(50);
-    expect(hooks.filter((f) => f.endsWith('.test.sh')).length).toBeGreaterThan(16);
-    expect(hooks.filter((f) => f.endsWith('-gate.sh')).length).toBeGreaterThan(8);
+    expect(hooks.filter((f) => f.endsWith('.test.sh')).length).toBeGreaterThan(12);
+    expect(hooks.filter((f) => f.endsWith('-gate.sh')).length).toBeGreaterThan(7);
     const counts = scripts.map((p) => trapActions(readFileSync(join(REPO_ROOT, p), 'utf-8'), 'EXIT'));
     expect(counts.filter((a) => a.length > 0).length).toBeGreaterThan(20);
     // ...and the legitimate re-installers are SEEN rather than parsed away. If

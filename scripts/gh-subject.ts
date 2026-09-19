@@ -46,10 +46,10 @@
  * ## CRLF
  *
  * GitHub returns issue and PR bodies with `\r\n` line endings. The hooks never
- * saw that -- their input was a local file or a heredoc, both LF -- and two of
- * the three ported checks are LINE-anchored (`^…Dup-check:`, and the
- * `Severity:` scan is line-wise because `grep` is). Normalising here rather
- * than in each check keeps the three from drifting on it.
+ * saw that -- their input was a local file or a heredoc, both LF -- and a
+ * ported check can be LINE-anchored (the `Severity:` scan is line-wise because
+ * `grep` is). Normalising here rather than in each check keeps them from
+ * drifting on it.
  */
 
 /** Which GitHub object the text came from. Decides which fields are scanned. */

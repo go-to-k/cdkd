@@ -182,6 +182,39 @@ verify, clean up.
    status` says whether a marker exists. Run from the PR's own worktree on the PR
    branch. If any success condition failed, do NOT set the marker.
 
+   **Also set `integ-schema-migration`, and ONLY for a test named
+   `schema-v<N>-to-v<N+1>-migration`**, under the same conditions. That test is
+   the only proof a schema bump auto-migrates (deploy under vN, swap binary,
+   read works, the next write persists vN+1, destroy clean), and
+   `integ-schema-migration-gate.sh` blocks `gh pr merge` on a PR bumping the
+   version constant in `src/types/state.ts` until it has run. Never set by hand.
+
+   **The test-name condition is IN the block, not only in the sentence above
+   it.** Step 9's `integ-destroy` block is unconditional by design, so an agent
+   finishing any clean run and pasting both would flip this marker too — which
+   is the exact substitution the gate exists to refuse, since a destroy run
+   exercises one binary against its own schema and proves nothing about a
+   round trip. `mise trust` for the same reason step 9 carries it: an untrusted
+   `.mise.toml` makes `markgate set` die naming no cause, discarding a real-AWS
+   run.
+
+   ```bash
+   mise trust
+   case "<test-name>" in
+     schema-v*-to-v*-migration)
+       mise exec -- markgate set integ-schema-migration || {
+         echo "markgate set integ-schema-migration FAILED — the marker was NOT recorded." >&2
+         exit 1
+       }
+       mise exec -- markgate status | grep integ-schema-migration \
+         || echo 'NO integ-schema-migration LINE — markgate status itself failed' >&2
+       ;;
+     *)
+       echo "not a schema-migration test — integ-schema-migration NOT set"
+       ;;
+   esac
+   ```
+
 10. **Post-run Docker sweep (mandatory for every `local-*` test)**, on top of
     step 6's AWS checks. A local run leaves containers and networks behind the
     way a deploy leaves AWS resources behind, and the run is not clean until all

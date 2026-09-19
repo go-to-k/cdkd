@@ -98,8 +98,7 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 #   git stash / git stash push                     (moves work aside)
 #
 # `git checkout <branch>` (no `--`, no pathspec) is a branch switch, not
-# a restore, and is covered by main-tree-branch-gate.sh — matching it
-# here would snapshot on every ordinary switch. `git restore --staged`
+# a restore — matching it here would snapshot on every ordinary switch. `git restore --staged`
 # alone only unstages (worktree untouched), but it is cheap to include
 # and a combined `--staged --worktree` IS destructive, so it stays in.
 #

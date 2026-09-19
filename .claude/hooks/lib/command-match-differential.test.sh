@@ -557,7 +557,7 @@ ALLOWED="$TMPDIR/allowed.tsv"
 #                 fragments in scrambled order, with the `cd` promoted to a
 #                 top-level segment it never occupied. A consumer walking those
 #                 in order then honours a `cd` the real shell runs in a
-#                 subshell: `main-tree-edit-gate` went rc=0 where origin/main
+#                 subshell: a cd-resolving gate went rc=0 where origin/main
 #                 was 2, with the write landing on a tracked file in the main
 #                 tree. The cells are segment-count corrections plus one verb
 #                 that becomes reachable again (id 226, a quoted `)` in a `-C`
@@ -605,8 +605,8 @@ ALLOWED="$TMPDIR/allowed.tsv"
 # `m:` and `t:` observable happen to come out the same, which is exactly the
 # blind spot to name rather than to read as proof. These rows are here as the
 # marking corpus (process substitution, a quoted `)` in a subshell, an
-# `if (...)` compound, a `bash -c` body); what actually fences their behaviour
-# is `main-tree-edit-gate.test.sh`, where reverting each one turns cases red.
+# `if (...)` compound, a `bash -c` body); the gate suite that fenced their
+# behaviour was retired with the main-tree hooks, so these rows are corpus only.
 # --- go-to-k/cdkd#3284: a verb quoted after a flag's VALUE (ids 240-245) -----
 #   DQ_VALUE  `gate_dequote_structural`'s between-slot walk took the token after
 #             an unenumerated BARE flag as the SUBCOMMAND and stopped there, so

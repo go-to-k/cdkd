@@ -11,10 +11,8 @@ paths:
   - '.github/workflows/issue-conventions.yml'
   - 'tests/unit/scripts/pr-title-prefix-scope.test.ts'
   - 'tests/unit/scripts/pr-non-english-text.test.ts'
-  - 'tests/unit/scripts/pr-internal-labels.test.ts'
   - 'tests/unit/scripts/gh-body-english.test.ts'
   - 'tests/unit/scripts/issue-classification-labels.test.ts'
-  - 'tests/unit/scripts/issue-dup-check.test.ts'
   - 'tests/unit/scripts/workflow-registration.test.ts'
   - 'tests/unit/scripts/non-english-class-sync.test.ts'
 ---
@@ -73,9 +71,9 @@ Run from `pr-title-check.yml` on `opened` / `edited` / `synchronize` /
 
 ## The issue / comment / PR-body checks
 
-`check-gh-body-english.ts`, `check-issue-classification-labels.ts`,
-`check-issue-dup-check.ts` and the shared `gh-subject.ts`, run from
-`issue-conventions.yml` on `issues` / `issue_comment` / `pull_request`.
+`check-gh-body-english.ts`, `check-issue-classification-labels.ts` and the
+shared `gh-subject.ts`, run from `issue-conventions.yml` on `issues` /
+`issue_comment` / `pull_request`.
 
 - **`pull_request`, NOT `pull_request_target`, and that is a security
   decision.** These checks only have to say no, so a failing check run is the
@@ -94,16 +92,8 @@ Run from `pr-title-check.yml` on `opened` / `edited` / `synchronize` /
 - **Timing is the structural loss**: a PreToolUse gate refused BEFORE the
   artifact existed; a workflow speaks after it is public, so for an issue or
   comment the check reports on text every reader can already see.
-- **`issue-dup-check` is strictly WEAKER than the gate it replaces** — the hook
-  stopped the issue existing, CI can only comment once it does, so the comment
-  asks for fold-and-CLOSE. Accepted because a duplicate issue is the FILER's own
-  artifact and closes cleanly; a bare `#N` writes a permanent `referenced` event
-  on a THIRD PARTY's issue, which is why that one stays a blocking hook. The
-  threat model is FORGETTING the search, not defeating a gate.
-- **Three things got stronger**: the web UI and any non-`gh` client are covered;
-  the `-b` / `-t` / `-n` short-flag blind spot is gone; and the `Dup-check:`
-  anchor applies universally, with the loose spelling kept as a DIAGNOSIS
-  separating "missing" from "written mid-sentence".
+- **Two things got stronger**: the web UI and any non-`gh` client are covered,
+  and the `-b` / `-t` / `-n` short-flag blind spot is gone.
 - **Coverage losses, not recoverable here**: a workflow sees only its own
   repository's events, so cross-repo filing needs a copy in each sibling repo;
   and subscribing to `issues` / `issue_comment` / `pull_request` leaves PR REVIEW
@@ -121,13 +111,11 @@ Run from `pr-title-check.yml` on `opened` / `edited` / `synchronize` /
   the check for any caller that forgot the variable.
 - **A sibling script is imported with a `.ts` extension, not `.js`.** Node's type
   stripping resolves specifiers literally, so a `.js` specifier for
-  `scripts/gh-subject.ts` fails under `node scripts/check-issue-dup-check.ts`.
+  `scripts/gh-subject.ts` fails under `node scripts/check-gh-body-english.ts`.
   CLAUDE.md's `.js` rule governs bundled `src/**`, which these are not.
 
-## The PR-CONTENT checks
+## The PR-CONTENT check
 
-`check-pr-non-english-text.ts` (+ `scripts/non-english-allowlist.txt`),
-`check-pr-internal-labels.ts` and `check-pr-closes-paren.ts`, run from
-`pr-content-checks.yml`. Two read the PR DIFF, one reads the PR BODY; the third
-is the only check in this family that WARNS instead of failing. Detail:
+`check-pr-non-english-text.ts` (+ `scripts/non-english-allowlist.txt`), run
+from `pr-content-checks.yml` over the PR DIFF. Detail:
 [layout-ci-pr-content.md](layout-ci-pr-content.md).

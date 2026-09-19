@@ -187,14 +187,14 @@ strip_noncommand_spans() {
 # The SEGMENT MATCHER (issue #2129 / #2093)
 # =============================================================================
 #
-# Everything above is the ORIGINAL neutralising stripper, kept verbatim because
-# `vp-run-test-path-gate.sh` and `main-tree-git-cwd-detector.sh` parse its output
-# directly. Nothing below feeds it; the two live side by side on purpose.
+# Everything above is the ORIGINAL neutralising stripper, `strip_noncommand_spans`,
+# which a gate may still call for a whole-command scan of its own. Nothing below
+# feeds it; the two live side by side on purpose.
 #
 # WHY the matcher itself was replaced. The #1455 anchor
 # `(^|[|;&][[:space:]]*)` treats only a control operator as opening a command
 # position, so three shapes were invisible and their gates never fired
-# (issue #2093, measured against `main-tree-git-cwd-detector.sh`):
+# (issue #2093):
 #
 #   (git commit -m x)              subshell
 #   true && (git commit -m x)      subshell after a chain
@@ -234,7 +234,7 @@ GATE_SEP_SUBST=$'\024'
 # THE INPUT IS SANITISED OF THIS BYTE BEFORE THE AWK PROGRAM SEES IT, so only
 # the segmenter can ever produce one. Without that strip the mark is FORGEABLE
 # and the forgery flips a security decision: measured, prefixing a command with
-# the byte made `main-tree-edit-gate` read a REAL `cd` as subshell-derived and
+# the byte made a cd-resolving gate read a REAL `cd` as subshell-derived and
 # ignore it, so from a feature worktree
 # `<byte>cd <main tree> && echo hi > <tracked>` went rc 2 -> 0. The older
 # separator placeholders below are forgeable in the same way; that only corrupts
@@ -244,10 +244,9 @@ GATE_SEP_SUBST=$'\024'
 # Marks a segment that came from a SUBSTITUTION BODY -- `$( )`, backticks or
 # process substitution. Such a body runs in a CHILD, so a `cd` in it can never
 # move the caller's cwd, exactly like a plain subshell. Emitted by
-# `gate_segments_raw`, consumed by `gate_segments_marked` (which turns it into
-# mark 1) and STRIPPED by `gate_segments` (whose output must not change). Both
-# strips are single-site on purpose: a sentinel that leaks into segment text is
-# a verb that stops matching, which is the fail-open direction.
+# `gate_segments_raw` and STRIPPED by `gate_segments` (whose output must not
+# change). The strip is single-site on purpose: a sentinel that leaks into
+# segment text is a verb that stops matching, which is the fail-open direction.
 GATE_SUBST_MARK=$'\025'
 
 
@@ -492,7 +491,7 @@ gate_segments_raw() {
         # are why. The wide version modelled bash 5.x and zsh, whose ordinary
         # lexer glues `\\ #`; bash 3.2`s `$( )` PRE-SCAN does not, and it is
         # the only shell that runs the resulting shape -- measured through the
-        # real `main-tree-edit-gate`, `x=$(echo \\ #b )` / `cd ..` / `)` / a
+        # real cd-resolving gate, `x=$(echo \\ #b )` / `cd ..` / `)` / a
         # write went rc 2 -> 0 with 3.2 writing the tracked file in the
         # protected tree. Two attempts to serve BOTH readings (a bail here, a
         # flag in `close_paren` marking the logical line) each measured their
@@ -511,7 +510,7 @@ gate_segments_raw() {
         # never joined with the next one. Measured on
         # `x=$(echo \047a)b\047` + newline + `cd /tmp)` + newline + a write:
         # the `cd` was emitted as a TOP-LEVEL segment although it runs in the
-        # substitution child, the base moved, and `main-tree-edit-gate` returned
+        # substitution child, the base moved, and a cd-resolving gate returned
         # 0 while bash really overwrote the tracked file. The states are the
         # same three `close_paren` tracks, including ANSI-C, and since round 26
         # so are the ARMS: the double-quote branch below reads `(` `)` `#`
@@ -537,7 +536,7 @@ gate_segments_raw() {
           # `$$` FIRST -- but `$$` + a quote is AMBIGUOUS and reports OPEN.
           # bash reads the PID then a PLAIN span; zsh reads `$` then an ANSI-C
           # span, so stepping over traded a bash fail-open for a zsh one: the
-          # real `main-tree-edit-gate` went 2 -> 0 on `x=$$\047a\\047b\047$(` /
+          # real cd-resolving gate went 2 -> 0 on `x=$$\047a\\047b\047$(` /
           # `cd sub` / `)` / a write, which zsh runs in the PARENT (security
           # review round 27). Where the shells disagree this file takes the
           # refusing direction, and here that is reporting the substitution
@@ -589,7 +588,7 @@ gate_segments_raw() {
         # shell had left open, so the lines were never joined and the body`s
         # `cd` was emitted as top-level: measured, `x=$(` + newline +
         # `  # note )` + newline + `  cd /tmp` + newline + `)` + a write took
-        # `main-tree-edit-gate` from 2 to 0 with the tracked file really
+        # a cd-resolving gate from 2 to 0 with the tracked file really
         # written. (`origin/main` answers 2 on that shape, but by its own
         # limitation -- its anchored regex ignores every `cd` that is not
         # first -- not by reading the comment.)
@@ -613,7 +612,7 @@ gate_segments_raw() {
         # `\ #` as the continuation of a word, so the `)` after it CLOSES the
         # substitution; bash 3.2`s `$( )` scanner reads the `#` as a comment
         # and swallows that `)`. Measured through the real
-        # `main-tree-edit-gate` against a fixture repo with cwd in the main
+        # cd-resolving gate against a fixture repo with cwd in the main
         # tree, `x=$(echo \ #b )` + newline + `cd ..` + newline + `)` +
         # `echo hi > <tracked>` went rc 2 -> 0 at round 29 while bash 3.2
         # really writes the tracked file in the PROTECTED tree (security
@@ -633,7 +632,7 @@ gate_segments_raw() {
         # class also had a `)` that `close_paren`s does not, so `\)#` bailed
         # here while nothing flagged the line, and `x=$( echo W > tracked ;
         # echo \)#b )` / `cd /tmp` / a write went rc 2 -> 0 (code review round
-        # 31, both measured with `gate_segments_marked` and through the gate).
+        # 31, measured through a gate consuming this library).
         # The flag in `close_paren` carries the whole fix; this arm is gone.
         if (c == "#" && q == "" && (i == 1 || (sj != i - 1 && substr(line, i - 1, 1) ~ /[ \t;&|()]/))) break
         if (c == "`") { bt = 1 - bt; continue }
@@ -644,7 +643,7 @@ gate_segments_raw() {
         # lines reported CLOSED, the lines were never joined, and its body`s
         # `cd` was emitted at the top level although it runs in a child.
         # Measured: `cat <(` + newline + `cd /tmp` + newline + `)` + a write
-        # took `main-tree-edit-gate` from 2 to 0 with the tracked file really
+        # took a cd-resolving gate from 2 to 0 with the tracked file really
         # written. `flush_line` and `subst_open` have to agree about what opens
         # a span; when they disagree the disagreement IS the fail-open.
         if ((c == "<" || c == ">") && substr(line, i + 1, 1) == "(") { depth++; K[depth] = 1; SQ[depth] = q; q = ""; i++; continue }
@@ -658,7 +657,7 @@ gate_segments_raw() {
         # read CLOSED, the following lines were not joined, and the body`s
         # `cd` was emitted top-level. Measured on a fixture repo,
         # `a=(x)#b $(` + newline + `cd child` + newline + `)` + a write is
-        # rc=0 through `main-tree-edit-gate`, while BOTH bashes open the
+        # rc=0 through a cd-resolving gate, while BOTH bashes open the
         # substitution, run the `cd` in its child (logged from `child/` via a
         # side channel) and write the tracked file in the PARENT; zsh
         # parse-errors on the shape, so nothing runs there. The kind is read
@@ -1011,7 +1010,7 @@ gate_segments_raw() {
           # command`s later segments, so a consumer walking them in order
           # honoured a `cd` that can never move the caller:
           # `diff <(cd /tmp && pwd) f ; echo hi > <tracked>` went rc=2 -> 0
-          # through `main-tree-edit-gate`, with the tracked file really written
+          # through a cd-resolving gate, with the tracked file really written
           # (go-to-k/cdkd#2650 review).
           if ((c == "<" || c == ">") && substr(line, i + 1, 1) == "(") {
             cp = close_paren(line, i + 2)
@@ -1321,7 +1320,7 @@ gate_segments_raw() {
       # commit -m y )` matched GATE_RE_GIT_COMMIT on origin/main and NOT here,
       # so `branch-gate` and every other `gate_matches` consumer went quiet; and
       # a `cd` sitting in multi-line PROSE was promoted to a top-level segment,
-      # taking `main-tree-edit-gate` from 2 to 0 on a real write. Save and
+      # taking a cd-resolving gate from 2 to 0 on a real write. Save and
       # restore it: the bodies are a separate scan, not a continuation of the
       # quoting on the enclosing line.
       saved_q = q
@@ -1357,14 +1356,9 @@ gate_segments_raw() {
           # hazard. Do not read that as carelessness to be corrected by care:
           # the hazard is structural.
           #
-          # It no longer takes the ability to repair the file with it.
-          # go-to-k/cdkd#2717 SHIPPED the structural fix: main-tree-edit-gate --
-          # the one hook matching Edit and Write as well as Bash -- refuses only
-          # in its `Bash` arm, because the file-path arm reads the target from
-          # the payload (`tool_input.file_path`, or `notebook_path` for
-          # NotebookEdit) and needs no matcher at all. So a library you have
-          # just broken is still editable with the Edit and Write tools from a
-          # feature worktree.
+          # It no longer takes the ability to repair the file with it. No hook
+          # matching Edit or Write consults this matcher, so a library you have
+          # just broken is still editable with the Edit and Write tools.
           #
           # A retry stood here whose own comment said it repaired a backtick
           # body whose number-sign comment carries one apostrophe. It did the
@@ -1377,11 +1371,10 @@ gate_segments_raw() {
           # ungated.
           #
           # Deleting it restores MATCH on both spellings and on the single-line
-          # control, and no suite regresses -- command-match 624/0, differential
-          # 25/0, main-tree-edit-gate 82/0, oracle 4/0, each against a
+          # control, and no suite regressed, each run against a
           # SAME-LAYOUT control. That control is load-bearing: a first attempt
-          # to measure this ran the suites from a scratch tree where the oracle
-          # could not resolve the hook at all, and its 204 fail-opens read as
+          # to measure this ran the suites from a scratch tree where the harness
+          # could not resolve the hook at all, and its fail-opens read as
           # "removing the retry breaks everything" when it meant "this harness
           # tests nothing".
           #
@@ -1670,19 +1663,11 @@ gate_unquote_span() {
 # from that output. A remedy list goes stale exactly like the precondition it
 # subtracts.
 #
-# It returns TWO, both non-blocking and both genuinely out of scope:
-# `main-tree-dirty-detector.sh`, a PostToolUse observer keyed on write-ish
-# tokens with no verb grammar, and `integ-stale-base-detector.sh`, a
-# non-blocking PreToolUse hook that hand-rolls command-position EREs for read
-# verbs. `main-tree-edit-gate.sh` WAS a third and the only BLOCKING one -- its
-# own `^[[:space:]]*cd[[:space:]]+` regex did not match a quoted `"cd"`, so the
-# base directory for a relative write target went unupdated -- and
-# go-to-k/cdkd#2614 deleted that parser in favour of `cmd_last_cd_target`. The
-# criterion's named target (`main-tree-branch-gate.sh`'s `QUOTEDSPAN` sed) no
-# longer exists either: that hook reads the shared stream now, and a repo-wide
-# grep for that marker returns only this paragraph -- which is why the marker
-# is not spelled here a second time as a runnable command: a claim that a
-# string is absent must not itself supply the string.
+# It returns NOTHING today: every registered hook that reads
+# `.tool_input.command` goes through this library. Re-run it rather than
+# trusting this sentence -- the whole point of writing the loop down is that
+# the answer is derived.
+#
 # The git / gh GLOBAL FLAGS that consume the FOLLOWING token as their value.
 # ONE copy, used by `gate_dequote_structural` and by `gate_leading_c_value`,
 # because the two halves of this file have already disagreed about exactly this
@@ -1800,7 +1785,7 @@ _gate_struct_next() {
   # the first to `cd` and re-joining with a plain space then MANUFACTURES a
   # `cd` that bash never runs. Measured (go-to-k/cdkd#2650): `cd\ /tmp ; echo
   # hi > <tracked>` in the main checkout on `main` came out of
-  # `main-tree-edit-gate` at rc=0 where it owed a 2 -- the base moved to /tmp,
+  # a cd-resolving gate at rc=0 where it owed a 2 -- the base moved to /tmp,
   # the write resolved outside the repo, and the real shell had never left the
   # main tree. Refusing to split ABANDONS the rewrite, which leaves the segment
   # byte-exact and the verb reading as `cd\`, matching nothing.
@@ -2279,227 +2264,6 @@ gate_dequote_structural() {
   [ "$changed" = 1 ] || return 0
   if [ -n "$rest" ]; then GATE_STRUCT_SEG="$out $rest"; else GATE_STRUCT_SEG="$out"; fi
   return 0
-}
-# gate_segments_marked <cmd> [recursion-depth]
-#
-# `recursion-depth` is internal: the `bash -c` arm passes depth+1 to itself and
-# stops at `GATE_MARK_MAXDEPTH` (default 4). Callers pass one argument.
-# Tunables read here: GATE_MARK_MAXSEG, GATE_MARK_MAXDEPTH, GATE_MARK_MAXINLINE.
-#
-# One segment per line, exactly as `gate_segments` emits them, each prefixed
-# with `0\t` or `1\t` -- 1 when the segment came from inside a plain SUBSHELL,
-# `( ... )`. ADDITIVE as an ENTRY POINT: this is a second function, so nothing
-# that reads `gate_segments` has to change. That is a weaker statement than the
-# one this comment used to make, and the weaker one is the true one --
-# `gate_segments` itself is NOT byte-identical to origin/main. It differs on a
-# part of the differential's inputs -- mostly from the per-line drain, which
-# changes segment ORDER, plus the escaped-space refusal in `_gate_struct_next`.
-# NO COUNT IS WRITTEN HERE: one stood as "9" until a reviewer re-ran it and got
-# 28, and the attribution beside it named `close_paren`, which this branch no
-# longer changes at all (it takes main's, from go-to-k/cdkd#2639). The fence
-# prints the number on every run. Each difference is an enumerated cell, which
-# is the property being relied on; "byte-identical" was never measured before it
-# was written down. A caller that needs the subshell distinction opts in.
-#
-# WHY (go-to-k/cdkd#2650). `gate_segments` FLATTENS a subshell: `( cd /tmp ) ;
-# echo x > f` and `cd /tmp && echo x > f` emit the same two segments, so a
-# consumer walking them in order cannot tell that the first `cd` never moved
-# the caller's cwd. `main-tree-edit-gate` hit exactly that -- an ordered walk
-# over `gate_segments` closed every other shape and still let
-# `( (true) ; cd /tmp ) ; echo hi > <tracked>` through, rc=0 against
-# origin/main's 2. `cmd_last_cd_target`'s own doc has the same blind spot.
-#
-# THE SIGNAL IS ALREADY THERE, one step earlier, which is why this needs no
-# change to the awk segmenter. `gate_strip_prefix` removes grouping punctuation
-# from each segment; before it runs, a subshell-derived segment still carries
-# the unbalanced paren that put it there. Measured:
-#
-#   ( cd /tmp ) ; echo x > f          ->  `( cd /tmp ) `   ` echo x > f`
-#   ( (true) ; cd /tmp ) ; echo x > f ->  `( (true) `   ` cd /tmp ) `   ` echo x > f`
-#   cd /tmp && echo x > f             ->  `cd /tmp `   ``   ` echo x > f`
-#
-# so a running paren depth over the RAW segments answers it exactly.
-#
-# COUNTED BLIND TO QUOTING, deliberately. A `(` inside a quoted argument
-# (`echo "a (b"`) inflates the depth and marks following segments as
-# subshell-derived when they are not. For the consumer this exists for that is
-# the REFUSING direction -- a `cd` ignored leaves the base at the payload cwd,
-# which blocks -- and the alternative is a quote-aware paren scan, which is the
-# hook-local shell parser go-to-k/cdkd#2614 spent five review rounds deleting.
-# A substitution body (`$( )`) is NOT marked: it is queued and emitted AFTER
-# the command containing it, so ordering already tells a consumer what it needs.
-# The per-segment quote strip forks TWO processes (`printf | awk`), so its cost
-# is linear in the SEGMENT COUNT while the precision it buys is worth nothing on
-# a command nobody writes by hand. Measured here, `( cd /tmpN ) ;` repeated N
-# times: `gate_segments` alone costs 5 s at N=2000 on origin/main AND on this
-# branch, and the marking took the total to 11 s -- PAST the 10 s PreToolUse
-# timeout. A KILLED hook cannot emit exit 2, which disarms every gate at once,
-# so the bound is not tidiness; it is the same DoS this file already pays bounds
-# for in `gate_dequote_structural`, and it makes the same trade.
-#
-# Past the cap the marking is CONSERVATIVE, never absent: every segment is
-# marked 1, so no `cd` is honoured and the consumer's base stays at the payload
-# cwd.
-#
-# WHICH DIRECTION THAT IS DEPENDS ON WHERE THE PAYLOAD CWD IS, and an earlier
-# revision of this comment claimed only the flattering half. From the MAIN tree
-# it blocks -- the loud direction. From a FEATURE worktree it is permissive:
-# a real `cd <main tree> && echo hi > <tracked>` is ignored and the write
-# resolves outside the protected tree, so 201 padding segments turn the refusal
-# off. That polarity is measured EQUAL on origin/main, so it is inherited and
-# not something the cap introduces -- but "the loud direction" full stop was a
-# one-sided claim of exactly the kind this file corrects elsewhere. At the cap the marking
-# costs ~1 s; beyond it the total falls back to the segmentation's own 5 s at
-# N=2000, which is pre-existing and not this change's to fix.
-GATE_MARK_MAXSEG=200
-
-gate_segments_marked() {
-  local segment raw depth=0 opens closes marked rest scan from_subst
-  local _all _nseg over=0
-  # $2 is the RECURSION depth (see the `bash -c` arm below), defaulting to 0 so
-  # every existing one-argument caller is unaffected. Not to be confused with
-  # `depth`, which is the paren nesting of the current scan.
-  local _depth="${2:-0}"
-  _all=$(gate_segments_raw "$1")
-  _nseg=$(printf '%s\n' "$_all" | grep -c '')
-  [ "$_nseg" -gt "$GATE_MARK_MAXSEG" ] && over=1
-  while IFS= read -r segment || [ -n "$segment" ]; do
-    # STRIP THE SUBSTITUTION MARK AND REMEMBER IT. A body runs in a child, so
-    # its `cd` can never move the caller -- the same fact the subshell marking
-    # already carries, arriving by a different route. Without this the ordering
-    # fix above HANDS the body's `cd` to the consumer as top-level: the suite
-    # caught it as `'> ledger.tsv' then a SUBSTITUTION cd in main tree` going
-    # 2 -> 0, plus a false block one polarity over.
-    from_subst=0
-    while [[ "$segment" == "$GATE_SUBST_MARK"* ]]; do
-      segment="${segment#"$GATE_SUBST_MARK"}"; from_subst=1
-    done
-    while [[ "$segment" == *"$GATE_SEP_AMP"* ]]; do
-      segment="${segment%%"$GATE_SEP_AMP"*}&${segment#*"$GATE_SEP_AMP"}"
-    done
-    segment="${segment//"$GATE_SEP_SEMI"/;}"
-    segment="${segment//"$GATE_SEP_PIPE"/|}"
-    segment="${segment//"$GATE_SEP_SUBST"/$}"
-    raw="$segment"
-    # COUNTED ON THE STRIPPED FORM, not the raw one. `strip_noncommand_spans`
-    # replaces every quoted span with a placeholder, so a `)` that is DATA no
-    # longer decrements the depth. Counting the raw text instead let
-    # `( echo "a)b" ; cd /tmp ) ; echo hi > <tracked>` mark the `cd` as
-    # top-level -- the quoted `)` balanced the opener -- and the consumer then
-    # followed a `cd` the real shell runs in a subshell: measured rc=2 -> 0
-    # through `main-tree-edit-gate`, with the tracked file really written. It is
-    # the exact twin of the `close_paren` bug this same change fixes, one level
-    # up, and it is why the count does not get to be hand-rolled either.
-    if [ "$over" = 1 ]; then
-      scan=""; opens=0; closes=0
-    else
-    scan=$(strip_noncommand_spans "$raw")
-    # ESCAPED PARENS ARE DATA, and `strip_noncommand_spans` does not remove
-    # them -- it removes QUOTED spans. A `\)` therefore closed a subshell the
-    # shell never closed: `( echo a\)b ; cd /tmp) ; echo hi > <tracked>` marked
-    # the `cd` top-level, the base moved, and the gate went 2 -> 0 with the file
-    # really written. This is the twin, one escape over, of the quoted-`)` bug
-    # this same marking was written to fix. Deleting each backslash-escaped pair
-    # before the count leaves the structural parens and nothing else; it runs on
-    # the STRIPPED copy, so the segment text every consumer reads is untouched.
-    # ONE global replace, not a strip loop: `while [[ $s == *\\?* ]]; do
-    # s="${s/\\?/}"; done` re-scans the remainder every iteration and is
-    # quadratic in the backslash count -- the exact shape removed from the paren
-    # count a few lines below. `//` walks left to right, non-overlapping, which
-    # is also the right reading for a run like `\\\)`.
-    scan="${scan//\\?/}"
-    # COUNTED BY LENGTH, not by a strip loop. `while [[ $rest == *"("* ]]; do
-    # rest="${rest#*(}"` re-scans the remainder on every iteration, so it is
-    # O(parens x length) IN ONE SEGMENT -- a bound on the segment COUNT cannot
-    # see it. Measured on the loop form: a single valid-bash segment of nested
-    # `(` cost 6.7 s at 48 KB, 13.8 s at 72 KB and 25.6 s at 96 KB, against
-    # 0.08 s flat on origin/main, so past the 10 s PreToolUse timeout the hook
-    # is KILLED and cannot emit exit 2 -- every gate disarmed at once, from any
-    # repo on any branch. Deleting every other character is one pass.
-    # THE DELETION IS QUADRATIC ON BASH 3.2, which is the only bash CI has.
-    # `${scan//[^(]}` is one pass on 5.x and O(n^2) on 3.2: measured on a single
-    # 4087-byte segment, 3 s per deletion and 6 s for the pair, so a command
-    # under `GATE_EDIT_MAXBYTES` blew the 10 s PreToolUse timeout on the runner
-    # while costing 0 s locally -- the same suite-passes-subject-fails shape as
-    # go-to-k/cdkd#2650's regex divergence, one layer down.
-    #
-    # Long segments take ONE `awk` fork instead, which is linear. The threshold
-    # keeps the fork off the common path: ordinary segments are tens of bytes,
-    # and a fork per segment across a 2000-segment command is its own budget
-    # problem. Both spellings count the same thing; the parity is pinned in
-    # `command-match.test.sh`.
-    if [ "${#scan}" -gt "${GATE_MARK_MAXINLINE:-1024}" ]; then
-      opens=$(printf '%s' "$scan" | awk '{n+=gsub(/\(/,"")} END{print n+0}')
-      closes=$(printf '%s' "$scan" | awk '{n+=gsub(/\)/,"")} END{print n+0}')
-    else
-      rest="${scan//[^(]}"; opens=${#rest}
-      rest="${scan//[^)]}"; closes=${#rest}
-    fi
-    # THREE ways a segment is inside a subshell, and the third is the one a
-    # depth counter alone misses: `( cd /tmp )` is BALANCED, so it neither
-    # raises the depth nor arrives with one. Its raw form still opens with the
-    # paren, which is the whole signal.
-    # ANY `(` SURVIVING THE QUOTE STRIP IS STRUCTURAL, and that is the whole
-    # test. A `(` in an unquoted position opens a subshell or a group -- bash
-    # has no other reading -- so a segment carrying one is inside or entering
-    # one. Testing only the FIRST character missed a subshell opened after a
-    # compound keyword (`if (cd /tmp); then echo hi > <tracked>; fi` went
-    # rc=2 -> 0, and the same for `while`, `until`, `!` and `time`), and
-    # listing those keywords here would be a third copy of what
-    # `gate_strip_prefix` already knows.
-    case "$scan" in
-      *'('*) marked=1 ;;
-      *) if [ "$depth" -gt 0 ]; then marked=1; else marked=0; fi ;;
-    esac
-    [ "$from_subst" = 1 ] && marked=1
-    depth=$((depth + opens - closes))
-    [ "$depth" -lt 0 ] && depth=0
-    fi
-    [ "$over" = 1 ] && marked=1
-    segment=$(gate_strip_prefix "$segment")
-    gate_dequote_structural "$segment"
-    segment="$GATE_STRUCT_SEG"
-    # `bash -c "<list>"` runs a CHILD PROCESS, so NOTHING inside it can move the
-    # caller's cwd -- every segment it yields is marked 1 regardless of its own
-    # nesting. An earlier revision re-marked the recursion from depth 0, which
-    # reads as "these are top-level commands" and is exactly backwards for a
-    # consumer tracking a working directory: `bash -c "cd /tmp" ; echo hi >
-    # <tracked>` went rc=2 -> 0 with the tracked file really written.
-    if [[ "$segment" =~ ^(bash|zsh|ksh|sh)[[:space:]]+-[a-z]*c[[:space:]]+(.*)$ ]]; then
-      # DEPTH-BOUNDED, and it is a THIRD bound because neither existing one can
-      # see this shape. Every level restarts with a fresh `GATE_MARK_MAXSEG`
-      # budget and contributes ONE segment to its parent, so `GATE_MARK_MAXSEG`
-      # counts 1 however deep it goes, while `GATE_EDIT_MAXBYTES` is a bound the
-      # HOOK applies to the whole command and 4096 bytes buys plenty of nesting.
-      # Cost is quadratic in length: measured through the real hook, `sh -c `
-      # repeated 300 / 500 / 680 times (1807 / 3007 / 4087 bytes) cost 5.7 s,
-      # 12.7 s and 23.1 s against 0.04 s flat on origin/main. Past the 10 s
-      # PreToolUse timeout the hook is KILLED and cannot emit exit 2, which
-      # disarms every gate at once -- the worst outcome available here, and one
-      # a 4 KB command reaches.
-      #
-      # Refusing past the limit marks the body 1 (subshell-derived) WITHOUT
-      # descending, which is the conservative reading: a `cd` inside it is
-      # ignored, exactly as it is for a body that IS scanned, since `bash -c`
-      # runs a child that cannot move this shell either way.
-      # DEPTH IS A POSITIONAL ARGUMENT, not an assignment prefix. `VAR=v func`
-      # does not propagate into the callee reliably on bash 3.2 -- measured, the
-      # env-prefix spelling left this at 30 s under 3.2 while 5.x was 0 s, i.e.
-      # the bound existed only on the version CI does NOT run. A second
-      # parameter is read the same way by both, and every existing caller passes
-      # one argument, so it defaults cleanly.
-      if [ "$_depth" -lt "${GATE_MARK_MAXDEPTH:-4}" ]; then
-        gate_segments_marked "$(gate_unquote_span "${BASH_REMATCH[2]}")" "$((_depth + 1))" \
-          | while IFS=$'\t' read -r _m _s; do printf '1\t%s\n' "$_s"; done
-      else
-        printf '1\t%s\n' "$segment"
-      fi
-      continue
-    fi
-    if [ -n "$segment" ]; then
-      printf '%s\t%s\n' "$marked" "$segment"
-    fi
-  done <<< "$_all"
 }
 
 gate_segments() {
@@ -3240,11 +3004,6 @@ GATE_RE_GIT_SWITCH="^git${GATE_FLAGS:-}[[:space:]]+(switch|checkout)([[:space:]]
 # path restore only when `--` is present, while `git restore` is path-scoped by
 # default -- so it cannot use the combined form.
 GATE_RE_GIT_CHECKOUT="^git${GATE_FLAGS:-}[[:space:]]+checkout([[:space:]]|$)"
-# `switch` alone, for the same reason `checkout` is separate: a caller that
-# judges the ARGUMENT TAIL has to know which verb fired -- `-c` creates a branch
-# under `switch` and is a config override under `checkout` -- so the combined
-# GATE_RE_GIT_SWITCH cannot answer it. main-tree-branch-gate reads both.
-GATE_RE_GIT_SWITCH_ONLY="^git${GATE_FLAGS:-}[[:space:]]+switch([[:space:]]|$)"
 GATE_RE_GIT_RESTORE="^git${GATE_FLAGS:-}[[:space:]]+restore([[:space:]]|$)"
 # A STRICT prefix, for the one gate whose verb is ALSO an ordinary English word
 # that shows up as an argument. `GATE_FLAGS` deliberately over-approximates --
@@ -3332,28 +3091,16 @@ GATE_RE_GH_ISSUE_EDIT="^gh${GATE_GH_C:-}[[:space:]]+issue${GATE_GH_V:-}[[:space:
 GATE_RE_GH_PROSE_CARRIER="gh${GATE_GH_C:-}[[:space:]]+(pr${GATE_GH_V:-}[[:space:]]+(create|edit|comment|review)|issue${GATE_GH_V:-}[[:space:]]+(create|comment|edit)|release${GATE_GH_V:-}[[:space:]]+(create|edit)|api)([[:space:]]|\$|[|;&\`)])"
 # THE POSITIONAL-FAMILY SURVEY go-to-k/cdkd#3242 ASKED FOR ENDS HERE.
 #
-# TWO HOOK-LOCAL REGEXES SHARE THE DEFECT AND ARE NOT IN THIS FILE, which the
+# A HOOK-LOCAL REGEX CAN SHARE THE DEFECT WITHOUT BEING IN THIS FILE, which the
 # first version of this paragraph missed while claiming the audit was complete:
-# `main-tree-git-cwd-detector.sh`'s `GH_PR_MERGE_VERB` and
-# `post-merge-sync-reminder.sh`'s inline ERE each pin `pr[[:space:]]+merge` with
-# no absorber in the right slot. Measured against this library:
+# an inline ERE pinning `pr[[:space:]]+merge` with no absorber in the right slot
+# misses `gh -R o/r pr merge 42` and every other flag spelling. The two that did
+# so have been retired; a new one belongs in this file, not in the hook.
 #
-#                                   cwd-detector   sync-reminder
-#   gh pr merge 42 --squash         MATCH          MATCH
-#   gh -R o/r pr merge 42           nomatch        MATCH
-#   gh pr -R o/r merge 42           nomatch        nomatch
-#   gh pr --repo=o/r merge 42       nomatch        nomatch
-#
-# They are NOT fixed here and NOT a bypass: both are PostToolUse INFORMERS that
-# refuse nothing, so the cost is a missed reminder, and the cwd-detector's own
-# header already declares the LEFT-slot gap as accepted. They are also a
-# different MECHANISM -- hand-rolled EREs with a deliberately different
-# flag-VALUE contract, which the family fence's population (this file's
-# `GATE_RE_GH_*` assignments) cannot see -- so folding them in would mean either
-# a partial fix that still misses `-R <slug>`, or importing the full absorber
-# into two hooks that never asked for it. Filed instead; the issue carries this
-# table. After go-to-k/cdkd#2614 no BLOCKING hook parses a command outside the
-# shared matcher, and that is the claim that holds -- not "no hook does".
+# Those were never a bypass: both were PostToolUse INFORMERS that refused
+# nothing, so the cost was a missed reminder. After go-to-k/cdkd#2614 no
+# BLOCKING hook parses a command outside the shared matcher, and that is the
+# claim that holds.
 #
 # The three constants below are the rest of the residue. Each pins a word
 # POSITION with no flag absorber in it --
@@ -3562,102 +3309,6 @@ gate_verb_rest_each() {
   while IFS= read -r segment; do
     _gate_span=$(gate_verb_span "$segment" "$re") || continue
     printf '%s\n' "${segment:$_gate_span}"
-  done < <(gate_segments "$cmd")
-  return 0
-}
-
-# gate_verb_rest_each_dir <command> <fallback-dir> <verb-ere>
-#
-# `gate_verb_rest_each` plus the working tree EACH matching segment runs in: one
-# "<dir><TAB><rest-after-the-verb>" line per matching segment.
-#
-# WHY the tree has to come out of the SAME walk. Resolving it once per COMMAND
-# -- `gate_target_dir_strict`, whose walk stops at the first matching segment --
-# makes segment 1's tree decide the whole command, so a gate that then judges
-# every segment judges them all against the wrong tree. Measured against both
-# repos' real main checkouts and their real linked worktrees, driving
-# main-tree-branch-gate with a payload cwd of the MAIN tree:
-#
-#   git -C <worktree> switch -c a && git switch -c b     rc=0, want 2  BYPASS
-#   git switch main && git -C <worktree> switch -c a     rc=2, want 0  FALSE BLOCK
-#
-# The first is the `git fetch && git switch -c` bypass these gates exist to
-# close, one operator further along: segment 1 resolves to a linked worktree,
-# the gate stands down for the whole command, and segment 2 -- running in the
-# SHARED main tree -- is never judged. The second refuses a branch creation in a
-# linked worktree, which is exactly what the worktree convention mandates.
-#
-# An EMPTY <dir> means that segment names its tree with an expression this
-# parser cannot read (an unexpanded `$VAR`, a backtick, a glob, a `~user`). It
-# is `gate_target_dir_strict`'s `return 2` in a per-line channel, and a BLOCKING
-# caller must refuse it the same way -- see gate_refuse_unresolved_target.
-#
-# Callers split the line with `${line%%<TAB>*}` / `${line#*<TAB>}`, NOT with
-# `IFS=$'\t' read -r dir rest`: tab is IFS whitespace, so that spelling folds a
-# TAB RUN inside the rest and silently drops an argument.
-#
-# The cd / `-C` reading is a deliberate COPY of gate_target_dir_strict's rather
-# than a shared helper. That function is called by 24 gates and its walk BREAKS
-# at the verb, which is the one thing this walk must not do; a shared helper
-# would have to carry both behaviours and every one of those callers would ride
-# on the flag. `command-match.test.sh` pins the two against each other on the
-# single-segment shape instead, so the copy cannot drift silently.
-gate_verb_rest_each_dir() {
-  local cmd="$1" fallback="$2" re="$3"
-  local target="$fallback" segment cd_target c_target unresolved_cd=0
-  local seg_target seg_unres _gate_span
-  while IFS= read -r segment; do
-    if [[ "$segment" =~ ^cd[[:space:]]+$GATE_PATH_TOKEN ]]; then
-      cd_target=$(gate_unquote "${BASH_REMATCH[1]}")
-      # Same unreadable-expression set as gate_target_dir_strict, and an
-      # unreadable cd is REMEMBERED rather than refused on the spot: a later
-      # ABSOLUTE cd, or an absolute `-C` in the verb's own segment, still makes
-      # it moot.
-      case "$cd_target" in
-        *'$'*|*'`'*|*'*'*|*'?'*|*'{'*) unresolved_cd=1; continue ;;
-        '~'|'~/'*) : ;;
-        '~'*) unresolved_cd=1; continue ;;
-      esac
-      [ -z "$cd_target" ] && continue
-      cd_target=$(gate_expand_tilde "$cd_target")
-      if [[ "$cd_target" == /* ]]; then
-        target="$cd_target"
-        unresolved_cd=0
-      else
-        target="$target/$cd_target"
-      fi
-      continue
-    fi
-    _gate_span=$(gate_verb_span "$segment" "$re") || continue
-    # The running cd state is the SEGMENT's starting point; its own `-C` may
-    # then override it. Neither is written back to `target`, because a `-C` is
-    # scoped to its one command while a `cd` persists to the next segment.
-    seg_target="$target"
-    seg_unres="$unresolved_cd"
-    c_target=$(gate_leading_c_value "$segment")
-    if [ -n "$c_target" ]; then
-      c_target=$(gate_unquote "$c_target")
-      case "$c_target" in
-        *'$'*|*'`'*|*'*'*|*'?'*|*'{'*) seg_unres=1; c_target="" ;;
-        '~'|'~/'*) : ;;
-        '~'*) seg_unres=1; c_target="" ;;
-      esac
-      if [ -n "$c_target" ]; then
-        c_target=$(gate_expand_tilde "$c_target")
-        if [[ "$c_target" == /* ]]; then
-          # An ABSOLUTE `-C` decides where this command runs whatever any
-          # earlier cd did, so an unreadable cd before it stops mattering.
-          seg_target="$c_target"
-          seg_unres=0
-        else
-          # A RELATIVE `-C` resolves against wherever the cds left us, so it
-          # inherits their uncertainty rather than curing it.
-          seg_target="$seg_target/$c_target"
-        fi
-      fi
-    fi
-    [ "$seg_unres" = 1 ] && seg_target=""
-    printf '%s\t%s\n' "$seg_target" "${segment:$_gate_span}"
   done < <(gate_segments "$cmd")
   return 0
 }
@@ -4104,10 +3755,9 @@ gate_tokens() {
 #
 # 0 when this shell WORD provably reaches the command as exactly the text it
 # already carries; 1 when it does not, OR when this function cannot prove that
-# it does. It is the SHELL-side twin of `main-tree-branch-gate.sh`'s "AN
-# INCOMPLETE PARSE MAY NOT ALLOW": that gate refuses to relax a verdict on a GIT
-# OPTION it cannot resolve, and this refuses to hand it a WORD whose expansion
-# it cannot see.
+# it does. It is the SHELL-side half of "AN INCOMPLETE PARSE MAY NOT ALLOW": a
+# gate refuses to relax a verdict on an OPTION it cannot resolve, and this
+# refuses to hand it a WORD whose expansion it cannot see.
 #
 # THE DEFAULT IS INVERTED, and that is the whole of this function. `gate_argv`
 # below used to ENUMERATE the words the shell owns -- a redirection, a trailing
@@ -4385,8 +4035,7 @@ gate_strip_comment() {
 # command as NOTHING; `{fd}>/dev/null` is printed and reaches it as nothing
 # either. A caller that COUNTS these words, or compares one against a name, must
 # put every word through `gate_word_is_literal` and refuse to relax its verdict
-# on a word that fails -- which is exactly what `main-tree-branch-gate.sh` does
-# with `parse_certain`. Enumerating more shell forms HERE is the losing move; it
+# on a word that fails. Enumerating more shell forms HERE is the losing move; it
 # was tried three times.
 #
 # The comment strip is deliberately NOT in `gate_segments`: that splitter feeds
@@ -5931,11 +5580,10 @@ EOF
 # go-to-k/cdkd#2826 after four review rounds each found the previous round's
 # fix certifying a green tally over a live fail-open.
 #
-# WHAT HOLDS THE CALL IN PLACE MEANWHILE IS THREE SUITES, not thirty-one.
-# Measured by deleting the call from each hook and re-running that hook's own
-# suite: `main-tree-branch-gate`, `restore-backup` and `main-tree-edit-gate`
-# redden; the other 27 report an identical tally, and
-# `post-merge-sync-reminder` has no suite at all. What the rest rest on is the
+# WHAT HOLDS THE CALL IN PLACE MEANWHILE IS A HANDFUL OF SUITES, not all of
+# them. Measured by deleting the call from each hook and re-running that hook's
+# own suite: `restore-backup` reddens, and so did two main-tree gates since
+# retired; the rest report an identical tally. What the rest rest on is the
 # `${BASE:-}` defaults keeping the library loadable so the call is reached, and
 # review. A hook added next month can read a constant with no
 # `gate_require_const` and nothing will say so.
@@ -5966,8 +5614,9 @@ EOF
 # with `GATE_SEP_AMP` stripped exited **0**, waving a machine-wide kill through,
 # with the `set -u` abort swallowed by the command substitution's subshell.
 #
-# **A hook depends on constants it never mentions.** `main-tree-branch-gate`
-# calls `gate_tokens` / `gate_argv`, which interpolate `GATE_EMBEDDING_TOKEN`
+# **A hook depends on constants it never mentions.** `ci-green-gate` reaches
+# `gate_tokens` / `gate_argv` through `gate_gh_repo_slug` and
+# `gate_cmd_names_no_other_repo`, and they interpolate `GATE_EMBEDDING_TOKEN`
 # and `GATE_REDIR_TOKEN` into the `[[ =~ ]]` that splits argument text and the
 # one that spots a redirection. A library predating either leaves that pattern
 # EMPTY, an empty ERE matches EVERY string at position 0 with every capture
@@ -5979,13 +5628,13 @@ EOF
 # **A missing LOAD-TIME base is invisible to a caller-named check**, in two
 # different ways depending on where the hook puts `set -u`:
 #
-#   * `set -u` already active when the library is sourced (dirty-path-restore,
-#     flatten-before-rebase): the interpolation ABORTS THE SOURCING SHELL with
+#   * `set -u` already active when the library is sourced (dirty-path-restore):
+#     the interpolation ABORTS THE SOURCING SHELL with
 #     exit 1 before any guard in the hook runs. Measured against a library with
 #     `GATE_FLAGS=` deleted: `dirty-path-restore-gate` exited 1 -- a non-blocking
 #     error, i.e. a PASS -- with `command-match.sh: line 1959: GATE_FLAGS:
 #     unbound variable` its only trace.
-#   * `set -u` set AFTER the source (check-gate, branch-gate): no abort at all.
+#   * `set -u` set AFTER the source (branch-gate): no abort at all.
 #     The base expands EMPTY and every derived ERE is silently DEGRADED but
 #     non-empty -- `GATE_RE_GIT_COMMIT` becomes `^git[[:space:]]+commit(...)`,
 #     which no longer matches `git -C <path> commit`. A caller-named check on
@@ -6051,11 +5700,11 @@ EOF
 # hook at load.
 #
 # **The list is not restated as a COUNT anywhere, and that is deliberate.** It
-# was written as 34 and go-to-k/cdkd#2650 merged two more constants
-# (`GATE_MARK_MAXSEG`, `GATE_SUBST_MARK`) into this file while the branch was in
-# review -- fence 0 caught the drift BY NAME, which is what it is for, and any
-# number in prose beside it would have been the second thing to fix.
-GATE_LIB_BASE_CONSTS="_GATE_DQ_CHANGED _GATE_GIT_GLOBAL_VALUE _GATE_WORD _GATE_WORD_BLIND _GATE_WORD_BLIND_BARE _GATE_WORD_BLIND_NOQUOTE _GATE_WORD_CHAR _GATE_WORD_CHAR_NOSQ _GATE_WORD_FIRST _GATE_WORD_LOOSE_FLAG _GATE_WORD_SPANSUF CMD_MATCH_PLACEHOLDER GATE_CHUNK_STOP GATE_CHUNK_STOP_DQ GATE_DQ_ACTIVE_GLOB GATE_EMBEDDING_TOKEN GATE_FLAGS GATE_GH_C GATE_GH_V GATE_GIT_GLOBAL GATE_LIB_BASE_CONSTS GATE_MARK_MAXSEG GATE_MARKER_ALIASES GATE_NOT_INERT_GLOB GATE_PATH_TOKEN GATE_PERL_WORD GATE_QUOTE_CLASS GATE_QUOTED_VALUE GATE_REDIR_TOKEN GATE_SEP_AMP GATE_SEP_PIPE GATE_SEP_SEMI GATE_SEP_SUBST GATE_SQ GATE_STRUCT_MAXSPAN GATE_STRUCT_MAXTOK GATE_STRUCT_MAXTOKLEN GATE_SUBST_MARK"
+# was written as 34 and go-to-k/cdkd#2650 merged two more constants into this
+# file while the branch was in review -- fence 0 caught the drift BY NAME, which
+# is what it is for, and any number in prose beside it would have been the second
+# thing to fix.
+GATE_LIB_BASE_CONSTS="_GATE_DQ_CHANGED _GATE_GIT_GLOBAL_VALUE _GATE_WORD _GATE_WORD_BLIND _GATE_WORD_BLIND_BARE _GATE_WORD_BLIND_NOQUOTE _GATE_WORD_CHAR _GATE_WORD_CHAR_NOSQ _GATE_WORD_FIRST _GATE_WORD_LOOSE_FLAG _GATE_WORD_SPANSUF CMD_MATCH_PLACEHOLDER GATE_CHUNK_STOP GATE_CHUNK_STOP_DQ GATE_DQ_ACTIVE_GLOB GATE_EMBEDDING_TOKEN GATE_FLAGS GATE_GH_C GATE_GH_V GATE_GIT_GLOBAL GATE_LIB_BASE_CONSTS GATE_MARKER_ALIASES GATE_NOT_INERT_GLOB GATE_PATH_TOKEN GATE_PERL_WORD GATE_QUOTE_CLASS GATE_QUOTED_VALUE GATE_REDIR_TOKEN GATE_SEP_AMP GATE_SEP_PIPE GATE_SEP_SEMI GATE_SEP_SUBST GATE_SQ GATE_STRUCT_MAXSPAN GATE_STRUCT_MAXTOK GATE_STRUCT_MAXTOKLEN GATE_SUBST_MARK"
 
 # gate_require_const NAME [NAME...]
 #
@@ -6088,9 +5737,9 @@ GATE_LIB_BASE_CONSTS="_GATE_DQ_CHANGED _GATE_GIT_GLOBAL_VALUE _GATE_WORD _GATE_W
 # paragraph implied otherwise. `GATE_LIB_BASE_CONSTS` is itself read this way,
 # so with ITS assignment line absent an exported
 # `GATE_LIB_BASE_CONSTS=GATE_FLAGS` satisfies the emptiness guard and silently
-# disables the base half entirely: measured, `main-tree-edit-gate` with
-# `GATE_SEP_AMP` also stripped went rc=2 to rc=0 on this gate's founding
-# payload. One variable buys 37 constants, not one. The control holds -- with
+# disables the base half entirely: measured, a blocking gate on this library
+# with `GATE_SEP_AMP` also stripped went rc=2 to rc=0 on its founding
+# payload. One variable buys the whole list, not one name. The control holds -- with
 # the assignment intact the library overwrites the export and rc stays 2 -- so
 # it is inside the bound, but the bound is wider than one name.
 #
@@ -6114,13 +5763,6 @@ gate_require_const() {
     # which is the failure this whole layer exists to prevent; the repo has the
     # incident on record, and this branch's own rebase is one of them.
     #
-    # AND THE ROUTE HAS TO BE STATED WHERE IT HOLDS. The first revision of this
-    # message said "repair it with the Edit or Write tool" flatly, which is
-    # false in the MAIN tree on `main`: main-tree-edit-gate's tracked-file arm
-    # refuses that edit for its own separate reason, measured rc=2. Replacing an
-    # unfollowable instruction with one that is wrong in one tree is the same
-    # defect. The wording below mirrors that gate's own refusal, which had the
-    # distinction right and has cases pinning both halves.
     #
     # THE RULE THIS TOOK THREE ROUNDS TO REACH, and it is mechanical: **this
     # message may advise a TOOL, never a shell command.** The first revision
@@ -6137,28 +5779,18 @@ gate_require_const() {
     # this paragraph overstated it and a comment is the map the next revision
     # navigates by. `command-match.test.sh` asserts that neither message THIS
     # HELPER emits -- the refusal here and `gate_require_const_soft`'s note --
-    # begins any line with whitespace. `main-tree-edit-gate.test.sh` asserts the
-    # same for the two refusals THAT HOOK owns. Each suite fences what its own
-    # file emits.
-    #
-    # That is four of the ELEVEN distinct message families reachable while the
-    # library is broken, lagging or stripped -- a reviewer swept all 31
-    # library-sourcing hooks and counted them; a previous revision of this
-    # comment said "four" as though it were the whole set. None of the other
-    # seven indents a line today (same sweep, with a positive control), so this
-    # ships no defect, but nothing watches them: go-to-k/cdkd#2853.
+    # begins any line with whitespace. Each suite fences what its OWN file
+    # emits, so the other message families reachable while the library is
+    # broken, lagging or stripped are watched by nothing: go-to-k/cdkd#2853.
     #
     # The assertion is TOTAL rather than a list of recipe shapes: an enumerating
     # version shipped for one round and six plausible spellings walked past it,
     # which is the same losing game as enumerating command names.
     echo "EVERY Bash call is refused while the library is in this state, this"
     echo "one included, so a command-line repair is not available."
-    echo "FROM A FEATURE WORKTREE the Edit and Write tools stay allowed --"
-    echo "deliberately, so a broken matcher cannot block its own fix -- and that"
-    echo "is the route. In the MAIN tree on main, main-tree-edit-gate refuses"
-    echo "that edit too, for its own separate reason, so there the repair"
-    echo "belongs to the operator, made from their own shell ('!' prefixed, in"
-    echo "Claude Code). To see which constant is missing, use the Read or Grep"
+    echo "The Edit and Write tools stay allowed -- deliberately, so a broken"
+    echo "matcher cannot block its own fix -- and that is the route."
+    echo "To see which constant is missing, use the Read or Grep"
     echo "TOOL on the library -- no matcher covers those, so they answer while"
     echo "every Bash spelling of the same search is refused."
   } >&2
@@ -6171,10 +5803,9 @@ gate_require_const() {
 # exiting 2, so an observer hook can `|| exit 0`. It exists because "fail
 # closed" is not the right failure for every hook here, and writing it as an
 # exemption in the fence rather than as an API would have been the wrong shape.
-# Its callers are the four hooks `.claude/rules/hooks.md` already carves out of
-# the fail-closed rule -- `restore-backup` plus the three non-blocking detectors
-# (`integ-stale-base-detector`, `main-tree-git-cwd-detector`,
-# `post-merge-sync-reminder`). `restore-backup`'s header states the policy this
+# Its caller is the hook `.claude/rules/hooks.md` already carves out of the
+# fail-closed rule, `restore-backup`, plus any non-blocking detector added
+# beside it. `restore-backup`'s header states the policy this
 # serves most sharply: "fail OPEN and SILENT on anything unexpected. A backup helper that
 # blocks the user's command when the snapshot fails would be worse than no
 # helper at all." Its existing library-load guard already `exit 0`s for the
@@ -6206,10 +5837,9 @@ gate_missing_const() {
   GATE_MISSING_CONSTS=""
 
   # ZERO NAMES IS LEGITIMATE and means "check the library's own constants
-  # only". Five registered hooks source this library and read no constant of
-  # their own -- `broad-process-kill-gate`, `main-tree-edit-gate`,
-  # `integ-stale-base-detector`, `main-tree-git-cwd-detector`,
-  # `post-merge-sync-reminder` -- and they are exactly the ones that most need
+  # only". A registered hook can source this library and read no constant of
+  # its own -- `broad-process-kill-gate` is one -- and those are exactly the
+  # ones that most need
   # the base half: `broad-process-kill-gate` reaches `gate_segments_raw`, which
   # reads `GATE_SEP_PIPE` and friends BARE inside a function body, where the
   # `${X:-}` defaults on the load-time assignments do not help. Measured on this
