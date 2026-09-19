@@ -33,6 +33,7 @@ import {
   UNRENDERABLE,
   buildForceUnlockCommand,
   formatLockExpiry,
+  shellQuote,
 } from '../../state/lock-contention-message.js';
 import {
   buildLockContentionMessage,
@@ -44,7 +45,10 @@ import {
   isReadableBag,
   malformedRenderedContainersWarning,
   malformedResourcesWarning,
+  refuseMalformedResourceEntries,
+  refuseMalformedState,
   repairMalformedResourcesForReadOnly,
+  safeStackName,
   type RenderedStateContainer,
 } from '../../state/malformed-resources-bag.js';
 import { ExportIndexStore } from '../../state/export-index-store.js';
@@ -3281,6 +3285,35 @@ async function stateRefreshObservedCommand(
       }
     }
 
+    const regionScoped = targets.flatMap((target) =>
+      target.region ? [{ stackName: target.stackName, region: target.region }] : []
+    );
+
+    // go-to-k/cdkd#3018. A malformed record is refused per stack inside
+    // `refreshObservedForStack`, but the loop below saves each stack before it
+    // loads the next — so over several targets that refusal landed AFTER the
+    // healthy stacks ahead of it were written, aborted the ones behind it, and
+    // never reached the summary that says what was written. Checking every
+    // target's SHAPE first makes the refusal a property of the run: nothing is
+    // prompted for, locked or saved when a record already malformed at this
+    // read would refuse.
+    //
+    // One extra read per stack, and only for more than one target — a single
+    // target's own refusal already fires before anything is written, and a
+    // prompt ahead of it writes nothing. The per-stack refusal stays, because a
+    // record can change between this read and that one; this check narrows the
+    // window, it does not close it. A target with no record is left to the
+    // loop, whose "No state found" names it, and a legacy region-less one to the
+    // refusal just before that loop.
+    if (regionScoped.length > 1) {
+      for (const target of regionScoped) {
+        const loaded = await setup.stateBackend.getState(target.stackName, target.region);
+        if (!loaded) continue;
+        refuseMalformedState(loaded.state, target.stackName, target.region);
+        refuseMalformedResourceEntries(loaded.state, target.stackName, target.region);
+      }
+    }
+
     if (!options.yes && !options.dryRun) {
       // Sanitised for the same reason as the `state orphan` prompt above: this
       // file's OTHER confirmation prompt, built from the same S3 key segments,
@@ -3297,22 +3330,50 @@ async function stateRefreshObservedCommand(
       }
     }
 
+    // A legacy v1 record carries no region in its key; the next write would
+    // migrate it, but state-driven refresh should not push a rewrite without the
+    // user confirming it. Refused for EVERY target before the first stack is
+    // refreshed, because it needs no read: in the loop below it used to fire
+    // after the stacks ahead of it had been saved. AFTER the prompt rather than
+    // ahead of it, so the prompt still names every target the run was asked
+    // for, a legacy one included (the go-to-k/cdkd#3164 boundary fence renders
+    // exactly that prompt). The name comes from an S3 key and is
+    // pasted into a command, so it is sanitized and shell-quoted.
+    for (const target of targets) {
+      if (!target.region) {
+        const stack = shellQuote(safeStackName(target.stackName));
+        // `cdkd deploy` WRITES, so its example is printed only when rendering
+        // left the name exact — the gate `cdkd export` applies to
+        // `refresh-observed`. A name sanitizing altered (a control byte
+        // removed) can name a DIFFERENT stack in the user's app, and pasting it
+        // would deploy that one. When printed, the command is LAST and
+        // UNWRAPPED: `shellQuote` does its own quoting, and an outer `'...'`
+        // composes with it into something unpastable.
+        //
+        // Exact is not enough on its own, because `cdkd deploy` reads its
+        // argument as a PATTERN (`src/cli/stack-matcher.ts`): a `*` turns it
+        // into a wildcard and a `/` matches the display path instead. A legacy
+        // key named `*` renders exactly and would print `cdkd deploy '*'`,
+        // which deploys every stack in the app. So a name carrying either is
+        // withheld too, and so is one starting with `-`: shell quoting does not
+        // stop Commander from parsing `'--all'` as the `--all` flag.
+        const example =
+          safeStackName(target.stackName) === target.stackName && !/^-|[*/]/.test(target.stackName)
+            ? ` For example: cdkd deploy ${stack}`
+            : '';
+        throw new Error(
+          `Stack ${stack} has only a legacy state record without a region. Migrate it to ` +
+            `the region-scoped layout with any cdkd write, then re-run refresh-observed.` +
+            example
+        );
+      }
+    }
     let totalRefreshed = 0;
     let totalUnsupported = 0;
     let totalFailed = 0;
     let totalRefusedBaseline = 0;
 
-    for (const target of targets) {
-      if (!target.region) {
-        // Legacy v1 records carry no region in the key; the next write
-        // would migrate them, but state-driven refresh should not push a
-        // rewrite without the user confirming it. Tell them what to do.
-        throw new Error(
-          `Stack '${target.stackName}' has only a legacy state record without a region. ` +
-            `Run 'cdkd deploy ${target.stackName}' (or any cdkd write) first to migrate it ` +
-            `to the region-scoped layout, then re-run refresh-observed.`
-        );
-      }
+    for (const target of regionScoped) {
       const counts = await refreshObservedForStack(
         target.stackName,
         target.region,
@@ -3477,7 +3538,42 @@ async function refreshObservedForStack(
     );
   }
   const { state, etag, migrationPending } = result;
-  const entries = Object.entries(state.resources ?? {});
+
+  // go-to-k/cdkd#3018. This is the one WRITER in this file, and the two
+  // malformed shapes below fail it in OPPOSITE directions — which is why one
+  // guard would not have covered both.
+  //
+  // The BAG first: `?? {}` covered nullish and nothing else, so a hand-edited
+  // `"resources": "abcdef"` yielded six phantom `[index, character]` entries
+  // that cleared the `entries.length === 0` return, took the lock, and reached
+  // the save. The shape that reaches real damage is a bag edited into a LIST of
+  // resource OBJECTS — those entries refresh, so `refreshed > 0` drops
+  // `skippedOutputs` and `observedProperties` are written back into the list;
+  // the string shape looks benign because nothing can refresh under it, which is
+  // why it is not the case to build a fence from.
+  //
+  // Then the ENTRIES, whose failure is the opposite one: `hasReadableResources`
+  // tests the BAG, so a readable map holding `{"R": null}` passes it and the
+  // `null` ABORTED one dereference later, at `resource.observedBaselineRefused`
+  // in BOTH loops below — a bare `TypeError` rather than a bad write. Refusing
+  // it here is about naming the row, not about protecting the save.
+  //
+  // REFUSE, not repair and not skip, for the reason
+  // `src/state/malformed-resources-bag.ts` gives at each helper: a repair would
+  // save a well-formed bag over the only evidence the record is broken, and a
+  // skip would report a clean refresh over entries nothing can read. Both checks
+  // sit ABOVE the `--dry-run` branch on purpose — the dry run must reach the
+  // same answer in the same order as the real run (the reason it has its own
+  // loop at all), and a refusal below the branch would have let `--dry-run`
+  // report a plan for a record the real run refuses.
+  refuseMalformedState(state, stackName, region);
+  refuseMalformedResourceEntries(state, stackName, region);
+
+  // No `?? {}`: the two refusals above have already thrown for every shape it
+  // covered, so a fallback here could no longer fire and would only make a later
+  // reader think the guard is at the loop rather than at the load. Same rule the
+  // read-only sites in this file apply.
+  const entries = Object.entries(state.resources);
 
   if (entries.length === 0) {
     logger.info(`✓ ${stackName} (${region}): no resources in state, skipping`);

@@ -508,13 +508,14 @@ describe('cdkd state refresh-observed', () => {
       { stackName: 'StackA', region: 'us-east-1' },
       { stackName: 'StackB', region: 'us-east-1' },
     ]);
-    mockGetState
-      .mockResolvedValueOnce(
-        makeState({ A: makeResource({ resourceType: 'AWS::S3::Bucket' }) })
-      )
-      .mockResolvedValueOnce(
-        makeState({ B: makeResource({ resourceType: 'AWS::S3::Bucket' }) })
-      );
+    // Keyed by stack rather than primed in call order: a multi-target run
+    // reads each record twice (a shape pre-flight, then the refresh), so an
+    // order-primed queue would hand the refresh the wrong stack's record.
+    const records: Record<string, ReturnType<typeof makeState>> = {
+      StackA: makeState({ A: makeResource({ resourceType: 'AWS::S3::Bucket' }) }),
+      StackB: makeState({ B: makeResource({ resourceType: 'AWS::S3::Bucket' }) }),
+    };
+    mockGetState.mockImplementation(async (stackName: string) => records[stackName] ?? null);
     mockRegistryGetProvider.mockReturnValue({
       readCurrentState: async () => ({ BucketName: 'x' }),
     });
@@ -522,7 +523,15 @@ describe('cdkd state refresh-observed', () => {
     const { error } = await runRefresh(['--all']);
 
     expect(error).toBeUndefined();
-    expect(mockSaveState).toHaveBeenCalledTimes(2);
+    // Each stack saved ITS OWN record. A double answering StackA's record for
+    // both names still saves twice, so the count alone does not pin the keying
+    // the comment above relies on.
+    expect(
+      mockSaveState.mock.calls.map((c) => [c[0], Object.keys((c[2] as StackState).resources)])
+    ).toEqual([
+      ['StackA', ['A']],
+      ['StackB', ['B']],
+    ]);
   });
 });
 
@@ -1230,5 +1239,408 @@ describe('cdkd state refresh-observed — import-refused baselines (issue #2944)
     // that a dry run remains a dry run.
     expect(mockAcquireLock).not.toHaveBeenCalled();
     expect(mockSaveState).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Issue [#3018](https://github.com/go-to-k/cdkd/issues/3018): a state record
+   * whose SHAPE violates its declared types, reaching the one WRITER in
+   * `state.ts`.
+   *
+   * `parseStateBody` deliberately does not validate inner shape (issue #2947's
+   * placement decision), so every shape below really does arrive at a command.
+   * That PREMISE is not re-tested here and is not assumed either: these cases
+   * drive a `getState` double, and a mocked read skips exactly the code that
+   * decides it. It is pinned in `tests/unit/cli/state-record-shape.test.ts`,
+   * which drives the REAL `S3StateBackend` over raw bytes for both shapes below
+   * — a `null` ENTRY ('state show renders a null resource entry') and a bag
+   * edited into a LIST of resource objects ('a resources bag hand-edited from a
+   * MAP into a LIST of resource objects renders'). Those go through the same
+   * `parseStateBody` this command reads through, so if either shape ever stops
+   * arriving, that file reds rather than this one silently becoming a test of
+   * its own mock. What these cases add is the part a real-backend case in that
+   * harness cannot reach: whether the LOCK and the SAVE happened.
+   *
+   * Every case asserts the same three things, and the last two are the ones a
+   * skip-and-continue fix would fail: refused by NAME, and refused before the
+   * LOCK and before the SAVE. That ordering is the whole reason refusal costs
+   * nothing here — no partial work is thrown away.
+   */
+  describe('a malformed record is refused, not refreshed (issue #3018)', () => {
+    /** A bag hand-edited into something that is not a map of records. */
+    const MALFORMED_BAGS: ReadonlyArray<readonly [string, unknown]> = [
+      ['null', null],
+      ['absent', undefined],
+      ['a string', 'abcdef'],
+      ['an empty string', ''],
+      ['a number', 5],
+      ['zero', 0],
+      ['negative zero', -0],
+      ['Infinity', Infinity],
+      ['-Infinity', -Infinity],
+      // JSON carries booleans, and they are the shapes a guard can be bypassed
+      // for INVISIBLY: `Object.entries(true)` is `[]`, so without the refusal
+      // the record reads as a healthy empty stack and the run reports success.
+      // No assertion over a helper's output can see that, so the command
+      // fixtures have to.
+      ['true', true],
+      ['false', false],
+      // Arrays too, and BOTH sizes. The dedicated LIST case below is one shape
+      // of one size, so without these a guard narrowed with `!Array.isArray(...)`
+      // escapes every fixture for the empty one.
+      ['an empty list', []],
+    ];
+
+    /** Every shape a hand-edited ENTRY can carry that is not a resource record. */
+    const MALFORMED_ENTRIES: ReadonlyArray<readonly [string, unknown]> = [
+      ['null', null],
+      ['a string', 'ab'],
+      ['a number', 5],
+      ['zero', 0],
+      ['negative zero', -0],
+      ['Infinity', Infinity],
+      ['-Infinity', -Infinity],
+      ['a list', []],
+      // Why THESE: each is a shape `JSON.parse` really produces and whose
+      // bypass would be INVISIBLE in output. The empty string and the two
+      // zeroes are falsy, so a truthiness check lets them through, and `-0`
+      // additionally survives a `=== 0` exemption written as `Object.is`.
+      // The infinities come from `JSON.parse('1e400')`, which is a number a
+      // hand-edited record can hold. The two list sizes separate a
+      // SHAPE-based guard from a LENGTH-based one — both are dereferenced
+      // the same way, so only a length-dependent bypass tells them apart.
+      // `NaN` is absent because `JSON.parse` cannot produce it.
+      ['an empty string', ''],
+      ['a populated list', [{ physicalId: 'p', resourceType: 'AWS::S3::Bucket', properties: {} }]],
+      // An OBJECT with no resource type. It passes an object-ness test and then
+      // throws on `resource.resourceType.startsWith(...)`, which is why the entry
+      // predicate asks for the type rather than only for object-ness.
+      ['an object with no resourceType', { physicalId: 'p', properties: {} }],
+      ['true', true],
+      ['false', false],
+    ];
+
+    function malformedState(resources: unknown): {
+      state: StackState;
+      etag: string;
+    } {
+      return {
+        state: {
+          version: 2,
+          stackName: 'TestStack',
+          region: 'us-east-1',
+          resources: resources as StackState['resources'],
+          outputs: {},
+          lastModified: 0,
+        },
+        etag: '"etag-1"',
+      };
+    }
+
+    for (const mode of [[], ['--dry-run']] as const) {
+      const label = mode.length > 0 ? '--dry-run' : 'the real run';
+
+      for (const [shape, bag] of MALFORMED_BAGS) {
+        it(`${label}: refuses a resources bag that is ${shape}`, async () => {
+          mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+          mockGetState.mockResolvedValueOnce(malformedState(bag));
+
+          const { error } = await runRefresh(['TestStack', ...mode]);
+
+          expect(error).toBeDefined();
+          const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+          expect(message).toContain('CdkdError');
+          expect(message).toContain("no readable 'resources' map");
+          // Stack and region as themselves: passing the stack for both leaves
+          // every other assertion green while the remedy names a region that
+          // does not hold the record.
+          expect(message).toContain('State for TestStack (us-east-1)');
+          expect(mockAcquireLock).not.toHaveBeenCalled();
+          expect(mockSaveState).not.toHaveBeenCalled();
+        });
+      }
+
+      it(`${label}: refuses a bag edited from a MAP into a LIST of resource objects`, async () => {
+        // THE case for this command, and the one the string shape hides: under
+        // a string bag nothing can refresh, so `refreshed` stays 0, the
+        // `skippedOutputs` drop never fires and the save rewrites only
+        // `lastModified` — benign, and it reads as the defect being
+        // overstated. A LIST of real records is the shape that reaches the
+        // harm: `Object.entries` yields REAL objects under the indices `0` and
+        // `1`, they refresh, `delete state.skippedOutputs` fires, and
+        // `observedProperties` are written back INTO THE ARRAY.
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(
+          malformedState([
+            makeResource({ physicalId: 'b1', properties: { BucketName: 'b1' } }),
+            makeResource({ physicalId: 'b2', properties: { BucketName: 'b2' } }),
+          ])
+        );
+        // A provider that WOULD refresh, so nothing but the guard can be what
+        // stops this run — without it the two elements refresh and persist.
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: async () => ({ BucketName: 'b1' }),
+        });
+
+        const { error } = await runRefresh(['TestStack', ...mode]);
+
+        expect(error).toBeDefined();
+        expect(String(errorSpy.mock.calls[0]?.[0] ?? '')).toContain("no readable 'resources' map");
+        expect(String(errorSpy.mock.calls[0]?.[0] ?? '')).toContain(
+          'State for TestStack (us-east-1)'
+        );
+        expect(mockAcquireLock).not.toHaveBeenCalled();
+        expect(mockSaveState).not.toHaveBeenCalled();
+      });
+
+      // EVERY unreadable entry shape, not just `null`. A guard at the CALL SITE
+      // narrowed to one shape -- a condition excluding boolean entries, say --
+      // survives a `null`-only fixture and is invisible to the helper's own
+      // tests, and the shapes that do NOT throw are exactly the ones that then
+      // pass silently into the refresh.
+      for (const [shape, badEntry] of MALFORMED_ENTRIES) {
+        it(`${label}: refuses an ENTRY that is ${shape}, naming it and not its healthy sibling`, async () => {
+          // A DIFFERENT shape from the bag cases: `hasReadableResources` tests
+          // the BAG, so this record passes it and the entry surfaced one
+          // dereference later at `resource.observedBaselineRefused` -- in BOTH
+          // loops, which is why both modes are driven here.
+          mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+          mockGetState.mockResolvedValueOnce(
+            malformedState({
+              HealthyBucket: makeResource({ physicalId: 'b', properties: { BucketName: 'b' } }),
+              BrokenRow: badEntry,
+            })
+          );
+          mockRegistryGetProvider.mockReturnValue({
+            readCurrentState: async () => ({ BucketName: 'b' }),
+          });
+
+          const { error } = await runRefresh(['TestStack', ...mode]);
+
+          expect(error).toBeDefined();
+          const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+          expect(message).toContain('CdkdError');
+          // The logical id is the discriminator against the pre-fix behaviour: a
+          // bare `TypeError` named nothing at all, and the bag refusal's text
+          // cannot name a row either.
+          expect(message).toContain('BrokenRow');
+          expect(message).not.toContain('HealthyBucket');
+          // Stack AND region forwarded as themselves from this call site.
+          expect(message).toContain('State for TestStack (us-east-1)');
+          expect(mockAcquireLock).not.toHaveBeenCalled();
+          expect(mockSaveState).not.toHaveBeenCalled();
+        });
+      }
+    }
+
+    // Both pre-flight refusals, each on its own: the check runs the BAG refusal
+    // and the ENTRY refusal, and a case driving only one leaves the other free
+    // to be deleted from the pre-flight with every case green.
+    // EVERY shape, through the same tables the single-stack cases use: a
+    // pre-flight narrowed to one bag or one entry shape would still pass a
+    // case built from that shape alone.
+    const PREFLIGHT_CASES: ReadonlyArray<readonly [string, unknown, string]> = [
+      ...MALFORMED_BAGS.map(
+        ([shape, bag]) => [`a bag that is ${shape}`, bag, "no readable 'resources' map"] as const
+      ),
+      ...MALFORMED_ENTRIES.map(
+        ([shape, entry]) => [`an entry that is ${shape}`, { BrokenRow: entry }, 'BrokenRow'] as const
+      ),
+    ];
+    for (const [shape, brokenResources, expected] of PREFLIGHT_CASES) {
+      it(`--all refuses the WHOLE run over ${shape}, before writing a healthy stack ahead of it`, async () => {
+        // The ordering the per-stack refusal alone could not give. StackA is
+        // healthy and sorts FIRST, so without the pre-flight it is locked, read
+        // back from AWS and SAVED before StackB refuses — a partial write the
+        // refusal message never mentions, with the run's summary suppressed.
+        mockListStacks.mockResolvedValueOnce([
+          { stackName: 'StackA', region: 'us-east-1' },
+          { stackName: 'StackB', region: 'us-east-1' },
+        ]);
+        const named = (stackName: string, resources: unknown) => {
+          const record = malformedState(resources);
+          record.state.stackName = stackName;
+          return record;
+        };
+        const records: Record<string, ReturnType<typeof malformedState>> = {
+          StackA: named('StackA', { A: makeResource({ physicalId: 'a' }) }),
+          StackB: named('StackB', brokenResources),
+        };
+        mockGetState.mockImplementation(async (stackName: string) => records[stackName] ?? null);
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: async () => ({ BucketName: 'a' }),
+        });
+
+        const { error } = await runRefresh(['--all', '--yes']);
+
+        expect(error).toBeDefined();
+        const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+        expect(message).toContain(expected);
+        expect(message).toContain('State for StackB (us-east-1)');
+        // Nothing locked and nothing written — StackA included.
+        expect(mockAcquireLock).not.toHaveBeenCalled();
+        expect(mockSaveState).not.toHaveBeenCalled();
+      });
+    }
+
+    it('--all refuses a LEGACY region-less target before writing a healthy stack ahead of it', async () => {
+      // The one refusal that needs no read, so there is no reason for it to wait
+      // for its turn in the loop — where it used to fire after the stacks ahead
+      // of it were saved. Its name comes from an S3 key and lands in a command,
+      // so it is also sanitized and shell-quoted.
+      mockListStacks.mockResolvedValueOnce([
+        { stackName: 'StackA', region: 'us-east-1' },
+        { stackName: `Old${String.fromCharCode(0x1b)}'; rm -rf ~ #` },
+      ]);
+      const healthy = malformedState({ A: makeResource({ physicalId: 'a' }) });
+      healthy.state.stackName = 'StackA';
+      mockGetState.mockImplementation(async (stackName: string) =>
+        stackName === 'StackA' ? healthy : null
+      );
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => ({ BucketName: 'a' }),
+      });
+
+      const { error } = await runRefresh(['--all', '--yes']);
+
+      expect(error).toBeDefined();
+      const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+      expect(message).toContain('legacy state record without a region');
+      // Sanitized (the escape becomes a space) and shell-quoted in the prose —
+      // but NO `cdkd deploy` example: that command WRITES, and a name
+      // sanitizing altered can name a different stack in the user's app, so it
+      // is printed only for an exact name (the case below).
+      expect(message).not.toContain(String.fromCharCode(0x1b));
+      expect(message).toContain(String.raw`Stack 'Old '\''; rm -rf ~ #' has only a legacy`);
+      expect(message).not.toContain('cdkd deploy');
+      expect(mockGetState).not.toHaveBeenCalled();
+      expect(mockAcquireLock).not.toHaveBeenCalled();
+      expect(mockSaveState).not.toHaveBeenCalled();
+    });
+
+    for (const [label, name] of [
+      // The maintainer's case: a NON-BREAKING space where a real stack has an
+      // ordinary one. Only the full allowlist removes it — a gate that stripped
+      // C0 control bytes alone would call this name exact.
+      ['a non-breaking space', 'Prod\u00a0Stack'],
+      // Exact names that `cdkd deploy` reads as PATTERNS: a wildcard, and a
+      // display path. `cdkd deploy '*'` deploys every stack in the app.
+      ['a wildcard', '*'],
+      // Mid-name too: `stackMatchesPattern` reads ANY `*` as a wildcard, so a
+      // gate anchoring the wildcard to position 0 must not pass this.
+      ['a wildcard after a prefix', 'Prod-*'],
+      ['a display path', 'Stage/Stack'],
+      // An OPTION: quoting does not stop the CLI parsing `'--all'` as the flag.
+      ['a leading hyphen', '--all'],
+      // A SHORT option, one dash: a gate keyed on `--` alone must not pass it.
+      ['a single leading hyphen', '-x'],
+    ] as const) {
+      it(`WITHHOLDS the \`cdkd deploy\` example for a legacy name with ${label}`, async () => {
+        mockListStacks.mockResolvedValueOnce([{ stackName: name }]);
+        mockGetState.mockResolvedValue(null);
+
+        const { error } = await runRefresh(['--all', '--yes']);
+
+        expect(error).toBeDefined();
+        const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+        expect(message).toContain('legacy state record without a region');
+        expect(message).not.toContain('cdkd deploy');
+      });
+    }
+
+    it('prints the `cdkd deploy` example for an ordinary HYPHENATED legacy name', async () => {
+      // The `^` of the leading-hyphen guard, pinned from the side that matters:
+      // a hyphen INSIDE the name is the dominant CDK naming shape. Without the
+      // anchor the guard would withhold the example for every such stack, and
+      // every other case here would stay green — `Old;Stack` has no hyphen at
+      // all (go-to-k/cdkd#3226 review, M15).
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'My-App-Stack' }]);
+      mockGetState.mockResolvedValue(null);
+
+      const { error } = await runRefresh(['--all', '--yes']);
+
+      expect(error).toBeDefined();
+      const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+      expect(message.trimEnd().endsWith('For example: cdkd deploy My-App-Stack')).toBe(true);
+    });
+
+    it('prints the `cdkd deploy` example for a legacy target whose name renders EXACTLY', async () => {
+      // The other direction of the gate above: without it, withholding the
+      // example unconditionally leaves that case green.
+      // A name that needs QUOTING but not sanitizing: `;` survives the
+      // printable-ASCII allowlist, so the name is exact and the example is
+      // printed — shell-quoted, so pasting it cannot run a second command.
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'Old;Stack' }]);
+      mockGetState.mockResolvedValue(null);
+
+      const { error } = await runRefresh(['--all', '--yes']);
+
+      expect(error).toBeDefined();
+      const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+      expect(message.trimEnd().endsWith("For example: cdkd deploy 'Old;Stack'")).toBe(true);
+      expect(mockSaveState).not.toHaveBeenCalled();
+    });
+
+    it('--all leaves a target with NO record to the loop, which names it', async () => {
+      // The pre-flight skips a target it cannot load rather than dereferencing
+      // `null`: the loop's own "No state found" names the stack, while a
+      // pre-flight that read `loaded.state` off a missing record would replace
+      // it with a bare TypeError naming nothing.
+      mockListStacks.mockResolvedValueOnce([
+        { stackName: 'StackA', region: 'us-east-1' },
+        { stackName: 'Gone', region: 'us-east-1' },
+      ]);
+      const healthy = malformedState({ A: makeResource({ physicalId: 'a' }) });
+      healthy.state.stackName = 'StackA';
+      mockGetState.mockImplementation(async (stackName: string) =>
+        stackName === 'StackA' ? healthy : null
+      );
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => ({ BucketName: 'a' }),
+      });
+
+      const { error } = await runRefresh(['--all', '--yes']);
+
+      expect(error).toBeDefined();
+      const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+      expect(message).toContain("No state found for stack 'Gone'");
+      expect(message).not.toContain('TypeError');
+    });
+
+    it('a healthy record still refreshes and saves — the guards are not a blanket refusal', async () => {
+      // The other direction. Without this, deleting the `if` around either
+      // refusal — or refusing unconditionally — leaves every case above green.
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          Bucket1: makeResource({ physicalId: 'b', properties: { BucketName: 'b' } }),
+        })
+      );
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => ({ BucketName: 'b', Tags: [] }),
+      });
+
+      const { error } = await runRefresh(['TestStack']);
+
+      expect(error).toBeUndefined();
+      expect(mockAcquireLock).toHaveBeenCalled();
+      expect(mockSaveState).toHaveBeenCalled();
+    });
+
+    it('an EMPTY bag is a legitimate record and still takes the no-resources path', async () => {
+      // `{}` is what a deployed-nothing stack holds, so refusing it would break
+      // a healthy record. Pinned separately from the healthy case above because
+      // the two exit through different branches.
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(makeState({}));
+
+      const { error } = await runRefresh(['TestStack']);
+
+      expect(error).toBeUndefined();
+      expect(infoSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+        'no resources in state, skipping'
+      );
+      expect(mockAcquireLock).not.toHaveBeenCalled();
+      expect(mockSaveState).not.toHaveBeenCalled();
+    });
   });
 });

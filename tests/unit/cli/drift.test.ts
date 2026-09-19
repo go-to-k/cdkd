@@ -132,8 +132,10 @@ vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
 }));
 
 import {
+  buildReadCurrentStateContext,
   createDriftCommand,
   collectNarrowedTopLevelKeys,
+  UNREADABLE_RESOURCES_MAP_ROW,
   warnIfPreV10BaselineGap,
 } from '../../../src/cli/commands/drift.js';
 
@@ -1583,7 +1585,7 @@ describe('cdkd drift', () => {
       expect(exitSpy).toHaveBeenCalledWith(2);
 
       expect(output).toContain('not compared AT ALL');
-      expect(output).toContain('an import refused their observed baseline');
+      expect(output).toContain('a `cdkd import` run refused to capture their observed baseline');
       // The wrong cause must NOT be borrowed for a population that has none.
       expect(output).not.toContain('the read or comparison failed');
       expect(output).not.toContain(REFUSED_PLAINTEXT);
@@ -4253,5 +4255,660 @@ describe('collectNarrowedTopLevelKeys (issue #1644)', () => {
 
   it('respects array ORDER (a reorder is a real change)', () => {
     expect(collectNarrowedTopLevelKeys({ A: [1, 2] }, { A: [2, 1] })).toEqual({ A: [2, 1] });
+  });
+});
+
+/**
+ * Issue [#3018](https://github.com/go-to-k/cdkd/issues/3018): a state record
+ * whose SHAPE violates its declared types, reaching `cdkd drift`.
+ *
+ * `cdkd drift` chooses its remedy per MODE rather than per command: plain
+ * `cdkd drift` cannot write and REPAIRS, while `--accept` / `--revert` reach
+ * `saveState` and REFUSE. (`cdkd scrub` splits the same way on `--dry-run`, so
+ * this is the second such flow rather than the only one; what differs is that
+ * scrub's split is decidable at the site from its own write gate, while this
+ * one is a flag pair the loader cannot see.)
+ *
+ * The write side is not symmetry for its own sake, and the two ways the
+ * evidence is lost are DIFFERENT — a distinction worth keeping, because each
+ * rules out one of the alternatives to refusing. Both write modes rebuild the
+ * record as `{ ...report.state.resources }`, and for a bag hand-edited into a
+ * LIST OF RESOURCE OBJECTS that spread launders rather than crashes: each
+ * element carries a `resourceType`, so the walk finishes, the writer is
+ * reached, and `{ ...[objA, objB] }` is `{'0': objA, '1': objB}` — persisted as
+ * a well-formed-looking map of phantom rows. REPAIRING first and then saving
+ * loses the evidence the other way: the repair replaces the bag with `{}`, so
+ * the save writes a legitimate-looking empty stack. Refusing avoids both.
+ *
+ * No other shape reaches that spread, by either of two routes: a NON-EMPTY
+ * string, or a list holding an unreadable element, throws in the walk; while
+ * `null`, an absent bag, a number, a boolean, an empty string and an empty list
+ * walk to zero entries and yield a silent empty report. For those the refusal
+ * buys a named message rather than a prevented write, which is still the
+ * difference between a remedy and a stack trace.
+ */
+describe('cdkd drift over a malformed state record (issue #3018)', () => {
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    mockGetState.mockReset();
+    mockListStacks.mockReset();
+    mockVerifyBucketExists.mockReset().mockResolvedValue(undefined);
+    mockSaveState.mockReset().mockResolvedValue('"etag-2"');
+    mockAcquireLock.mockReset().mockResolvedValue(true);
+    mockReleaseLock.mockReset().mockResolvedValue(undefined);
+    mockRegistryGetProvider.mockReset();
+    mockRegistryShouldSkip.mockReset().mockReturnValue(false);
+    mockCcReadCurrentState.mockReset().mockResolvedValue(undefined);
+    errorSpy.mockReset();
+    warnSpy.mockReset();
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('__exit__');
+    }) as never);
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+  });
+
+  /**
+   * Every shape a hand-edited BAG can carry that is not a map of records, and
+   * every shape an ENTRY can carry that is not a record.
+   *
+   * Driven at the COMMAND rather than one shape at a time, because a guard
+   * narrowed at a CALL SITE — `if (typeof bag !== 'number')`, say — is
+   * invisible to the helper's own tests and to a source-shape fence, and the
+   * shapes that do NOT throw are exactly the ones whose bypass produces a
+   * successful empty report over a record nothing could read.
+   */
+  const MALFORMED_BAGS: ReadonlyArray<readonly [string, unknown]> = [
+    ['null', null],
+    ['absent', undefined],
+    ['a string', 'abcdef'],
+    // The EMPTY string too. Every table here exists because a guard narrowed
+    // at a call site is invisible to the helper's own tests, and an empty
+    // string is the last shape whose bypass is inert -- zero entries, no
+    // warning, a clean verdict about a record nothing could read.
+    ['an empty string', ''],
+    ['a number', 5],
+    ['zero', 0],
+    ['negative zero', -0],
+    ['Infinity', Infinity],
+    ['-Infinity', -Infinity],
+    ['true', true],
+    ['false', false],
+    // Arrays too, and BOTH sizes. The dedicated list case below drives only the
+    // write modes, so without these a repair narrowed with `!Array.isArray(...)`
+    // escaped every read-only fixture: an empty list would be accepted silently
+    // and a populated one walked without the warning.
+    ['an empty list', []],
+    ['a populated list', [{ physicalId: 'b', resourceType: 'AWS::S3::Bucket', properties: {} }]],
+  ];
+
+  const MALFORMED_ENTRIES: ReadonlyArray<readonly [string, unknown]> = [
+    ['null', null],
+    ['a string', 'ab'],
+    ['a number', 5],
+    ['zero', 0],
+    ['negative zero', -0],
+    ['Infinity', Infinity],
+    ['-Infinity', -Infinity],
+    ['a list', []],
+    // Why THESE: each is a shape `JSON.parse` really produces and whose
+    // bypass would be INVISIBLE in output. The empty string and the two
+    // zeroes are falsy, so a truthiness check lets them through, and `-0`
+    // additionally survives a `=== 0` exemption written as `Object.is`.
+    // The infinities come from `JSON.parse('1e400')`, which is a number a
+    // hand-edited record can hold. The two list sizes separate a
+    // SHAPE-based guard from a LENGTH-based one — both are dereferenced
+    // the same way, so only a length-dependent bypass tells them apart.
+    // `NaN` is absent because `JSON.parse` cannot produce it.
+    ['an empty string', ''],
+    ['a populated list', [{ physicalId: 'p', resourceType: 'AWS::S3::Bucket', properties: {} }]],
+    // An OBJECT with no resource type: it passes an object-ness test and then
+    // throws on `resource.resourceType.startsWith(...)`, which is why the entry
+    // predicate asks for the type rather than only for object-ness.
+    ['an object with no resourceType', { physicalId: 'p', properties: {} }],
+    ['true', true],
+    ['false', false],
+  ];
+
+  function malformedState(resources: unknown): { state: StackState; etag: string } {
+    return {
+      state: {
+        version: 2,
+        stackName: 'TestStack',
+        region: 'us-east-1',
+        resources: resources as StackState['resources'],
+        outputs: {},
+        lastModified: 0,
+      },
+      etag: '"etag-1"',
+    };
+  }
+
+  it('plain drift REPAIRS a string bag instead of aborting on it', async () => {
+    // `Object.entries('abcdef')` yields six `[index, character]` pairs, and this
+    // command's walk dereferences each one — `resource.resourceType.startsWith`
+    // throws on the character `'a'` as surely as on `null`. So the repair is
+    // what turns a bare `TypeError` into a report, and the warning is what keeps
+    // that short report from reading as a clean verdict about a healthy empty
+    // stack. (The FABRICATED-rows failure belongs to `cdkd state resources`,
+    // which rendered such entries instead of dereferencing them.)
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(malformedState('abcdef'));
+
+    const { output, error } = await runDrift(['TestStack']);
+
+    // EXIT 2, not 0. The repair turns a crash into a report, and that report
+    // must not read as a clean stack: before the repair existed this record
+    // threw and the command exited non-zero, so exiting 0 over it now would be
+    // the one direction this change must not take. The code, not merely a
+    // non-zero exit — `exit(1)` would satisfy a bare `error` check too.
+    expect(error).toBeDefined();
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    const warnings = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warnings).toContain("no readable 'resources' map");
+    expect(warnings).toContain('EMPTY');
+    // Stack and region as themselves, at the BAG call site too.
+    expect(warnings).toContain('State for TestStack (us-east-1)');
+    // Reported as a row, so the report cannot read as a stack with nothing in it.
+    expect(output).toContain('NOT fully compared');
+    expect(output).toContain(`! ${UNREADABLE_RESOURCES_MAP_ROW} (unreadable record)`);
+    expect(mockSaveState).not.toHaveBeenCalled();
+  });
+
+  it('an unreadable BAG reaches the --json payload as one notCompared row', async () => {
+    // The gate this matters to: `cdkd drift --json > report.json` discards the
+    // stderr warning, so the payload is all it sees. An empty `notCompared`
+    // array over a record nothing could read is a clean stack to it.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(malformedState('abcdef'));
+
+    const { output } = await runDrift(['TestStack', '--json']);
+    const payload = JSON.parse(output) as Array<{
+      notCompared?: Array<Record<string, unknown>>;
+    }>;
+
+    // The spelling itself, independently of the producer's constant: a
+    // parenthesised name, which no CloudFormation logical id can be, so the row
+    // cannot be read as a resource called that.
+    expect(UNREADABLE_RESOURCES_MAP_ROW).toBe('(resources map)');
+    expect(payload[0]!.notCompared).toEqual([
+      {
+        logicalId: '(resources map)',
+        type: 'unreadable record',
+        referencesUnresolved: false,
+        cause: 'unreadableRecord',
+      },
+    ]);
+    expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+
+  it('plain drift DROPS an unreadable entry by name and still reports its healthy sibling', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      malformedState({
+        HealthyBucket: makeResource({
+          physicalId: 'b',
+          resourceType: 'AWS::S3::Bucket',
+          properties: { BucketName: 'b' },
+        }),
+        BrokenRow: null,
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ BucketName: 'b' }),
+    });
+
+    const { error } = await runDrift(['TestStack']);
+
+    expect(error).toBeDefined();
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    const warnings = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warnings).toContain('BrokenRow');
+    expect(warnings).toContain('Continuing WITHOUT them');
+    // The stack AND the region reach the text as themselves. Passing
+    // `stackName` for both at this call site survives every helper case --
+    // those pin the MESSAGE, not this forwarding -- and points the remedy at
+    // a record in a region that does not hold it.
+    expect(warnings).toContain('State for TestStack (us-east-1)');
+    expect(mockSaveState).not.toHaveBeenCalled();
+  });
+
+  for (const flag of ['--accept', '--revert'] as const) {
+    for (const [shape, bag] of MALFORMED_BAGS) {
+      it(`${flag} REFUSES a bag that is ${shape}`, async () => {
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(malformedState(bag));
+
+        const { error } = await runDrift(['TestStack', flag, '--yes']);
+
+        expect(error).toBeDefined();
+        const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+        expect(message).toContain("no readable 'resources' map");
+        expect(message).toContain('State for TestStack (us-east-1)');
+        expect(mockSaveState).not.toHaveBeenCalled();
+        expect(mockAcquireLock).not.toHaveBeenCalled();
+      });
+    }
+
+    for (const [shape, badEntry] of MALFORMED_ENTRIES) {
+      it(`${flag} REFUSES an ENTRY that is ${shape}, naming it`, async () => {
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(
+          malformedState({
+            HealthyBucket: makeResource({
+              physicalId: 'b',
+              resourceType: 'AWS::S3::Bucket',
+              properties: { BucketName: 'b' },
+            }),
+            BrokenRow: badEntry,
+          })
+        );
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: async () => ({ BucketName: 'changed' }),
+        });
+
+        const { error } = await runDrift(['TestStack', flag, '--yes']);
+
+        expect(error).toBeDefined();
+        const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+        expect(message).toContain('BrokenRow');
+        expect(message).not.toContain('HealthyBucket');
+        expect(message).toContain('State for TestStack (us-east-1)');
+        expect(mockSaveState).not.toHaveBeenCalled();
+        expect(mockAcquireLock).not.toHaveBeenCalled();
+      });
+    }
+  }
+
+  for (const [shape, bag] of MALFORMED_BAGS) {
+    it(`plain drift REPAIRS a bag that is ${shape} and says so`, async () => {
+      // The read-only half: the report is empty either way, so the WARNING is
+      // the only thing that distinguishes a record nothing could read from a
+      // stack with no resources.
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(malformedState(bag));
+
+      const { error } = await runDrift(['TestStack']);
+
+      // Exit 2 for EVERY shape, `null` / absent / the empty ones included —
+      // those enumerate to no entries, so without the bag's own outcome they
+      // produced a report with nothing in it and exited 0.
+      expect(error).toBeDefined();
+      expect(exitSpy).toHaveBeenCalledWith(2);
+      const warnings = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warnings).toContain("no readable 'resources' map");
+      expect(warnings).toContain('State for TestStack (us-east-1)');
+      expect(mockSaveState).not.toHaveBeenCalled();
+    });
+  }
+
+  for (const [shape, badEntry] of MALFORMED_ENTRIES) {
+    it(`plain drift DROPS an ENTRY that is ${shape}, naming it`, async () => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        malformedState({
+          HealthyBucket: makeResource({
+            physicalId: 'b',
+            resourceType: 'AWS::S3::Bucket',
+            properties: { BucketName: 'b' },
+          }),
+          BrokenRow: badEntry,
+        })
+      );
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => ({ BucketName: 'b' }),
+      });
+
+      const { output, error } = await runDrift(['TestStack']);
+
+      // NON-ZERO, and this is the half a warning cannot carry. A dropped row
+      // is reported as `notCompared`, which `outcomeExitSignal` routes to the
+      // incomplete side — so a `cdkd drift --json > report.json` gate fails
+      // instead of reading a stack cdkd could not fully read as clean. The
+      // sentinel is the mocked `process.exit`.
+      expect(error).toBeDefined();
+      // The CODE. `'__exit__'` is the mocked `process.exit`'s own message and
+      // `exit(1)` produces it too, so asserting it alone measured nothing about
+      // which exit this is.
+      expect(exitSpy).toHaveBeenCalledWith(2);
+      const warnings = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warnings).toContain('BrokenRow');
+      expect(warnings).toContain('State for TestStack (us-east-1)');
+      // The healthy sibling was still compared — the drop is per row, not per
+      // record, which is the whole reason the read-only mode drops at all.
+      expect(output).toContain('1 of 2 resource');
+      // Every reader of `ANY_OF_IT_COMPARED` the human report has, each on its
+      // own line — the record replaced hand-written cause lists at more than
+      // one site, and pinning only the heading leaves the others free to be
+      // rewritten as a list the new cause is not on. The SUMMARY parenthetical
+      // is the one that went unwatched: its `only partially compared` arm is
+      // FALSE of a row nothing was read from.
+      expect(output).toContain('(1 not fully compared)');
+      expect(output).not.toContain('only partially compared');
+      // The block heading, naming the cause rather than the generic one.
+      expect(output).toContain(
+        '1 not compared AT ALL (their state record is not readable as a resource)'
+      );
+      // The per-row line: its placeholder type and `notComparedReason`'s text.
+      expect(output).toContain(
+        '! BrokenRow (unreadable record) — its state record is not readable as a resource'
+      );
+      expect(mockSaveState).not.toHaveBeenCalled();
+    });
+  }
+
+  it('names EVERY at-all cause present, joined, in the reasons record\'s own order', async () => {
+    // Every other case here carries ONE such cause, so the heading's `join`
+    // and the ORDER it emits in were unpinned: a derivation reduced to its
+    // first match, or reading the order off `ANY_OF_IT_COMPARED` instead of
+    // `UNCOMPARED_REASONS`, stayed green while `docs/cli-drift.md` documents
+    // each present cause being named. Two causes at once is the smallest
+    // population that can tell those apart.
+    //
+    // All THREE at-all causes, and that is the discriminator rather than
+    // thoroughness: the two records sort `unreadableRecord` and
+    // `baselineRefused` opposite ways, while they agree on `readFailed` first —
+    // so a two-cause case built from `readFailed` + `unreadableRecord` passes
+    // under either record and pins nothing about the order.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      malformedState({
+        HealthyBucket: makeResource({
+          physicalId: 'b',
+          resourceType: 'AWS::S3::Bucket',
+          properties: { BucketName: 'b' },
+        }),
+        // Refused BEFORE any readback, so the throwing provider below does not
+        // reclassify it as `readFailed`.
+        RefusedBaseline: makeResource({
+          physicalId: 'q',
+          resourceType: 'AWS::SQS::Queue',
+          properties: { QueueName: 'q' },
+          observedBaselineRefused: true,
+        }),
+        BrokenRow: null as never,
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => {
+        throw new Error('AccessDenied');
+      },
+    });
+
+    const { output } = await runDrift(['TestStack']);
+
+    // Every phrase, in `UNCOMPARED_REASONS`'s insertion order, separated by
+    // the `; ` the join spells.
+    expect(output).toContain(
+      '3 not compared AT ALL (the read or comparison failed; their state record is not ' +
+        'readable as a resource; a `cdkd import` run refused to capture their observed baseline)'
+    );
+  });
+
+  it.each([['--accept'], ['--revert']] as const)(
+    '%s REFUSES a LIST bag rather than spreading phantom rows back into state',
+    async (flag) => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        malformedState([
+          makeResource({ physicalId: 'b1', properties: { BucketName: 'b1' } }),
+          makeResource({ physicalId: 'b2', properties: { BucketName: 'b2' } }),
+        ])
+      );
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => ({ BucketName: 'changed' }),
+      });
+
+      const { error } = await runDrift(['TestStack', flag, '--yes']);
+
+      expect(error).toBeDefined();
+      expect(String(errorSpy.mock.calls[0]?.[0] ?? '')).toContain("no readable 'resources' map");
+      expect(String(errorSpy.mock.calls[0]?.[0] ?? '')).toContain(
+        'State for TestStack (us-east-1)'
+      );
+      // The whole point: nothing was persisted, and no lock was taken either.
+      expect(mockSaveState).not.toHaveBeenCalled();
+      expect(mockAcquireLock).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([['--accept'], ['--revert']] as const)(
+    '%s REFUSES an unreadable entry, naming it',
+    async (flag) => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        malformedState({
+          HealthyBucket: makeResource({
+            physicalId: 'b',
+            resourceType: 'AWS::S3::Bucket',
+            properties: { BucketName: 'b' },
+          }),
+          BrokenRow: null,
+        })
+      );
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => ({ BucketName: 'changed' }),
+      });
+
+      const { error } = await runDrift(['TestStack', flag, '--yes']);
+
+      expect(error).toBeDefined();
+      const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+      expect(message).toContain('BrokenRow');
+      expect(message).not.toContain('HealthyBucket');
+      expect(message).toContain('State for TestStack (us-east-1)');
+      expect(mockSaveState).not.toHaveBeenCalled();
+      expect(mockAcquireLock).not.toHaveBeenCalled();
+    }
+  );
+
+  it('plain drift names EVERY dropped entry, not the first', async () => {
+    // The WIRING, which the helper's own multi-entry case cannot see: a
+    // `dropped.slice(0, 1)` at this call site still drops all six rows and
+    // reports one, so the report understates the damage it just did.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    const resources: Record<string, unknown> = {
+      Healthy: makeResource({ physicalId: 'b', properties: { BucketName: 'b' } }),
+    };
+    for (const id of ['A1', 'B2', 'C3', 'D4', 'E5', 'F6']) resources[id] = null;
+    mockGetState.mockResolvedValueOnce(malformedState(resources));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ BucketName: 'b' }),
+    });
+
+    const { error } = await runDrift(['TestStack']);
+
+    expect(error).toBeDefined();
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    const warnings = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warnings).toContain('6 resource record(s)');
+    for (const id of ['A1', 'B2', 'C3', 'D4', 'E5']) expect(warnings).toContain(id);
+    expect(warnings).toContain('and 1 more');
+    expect(warnings).not.toContain('F6');
+  });
+
+  it('a dropped row reaches the --json payload, not just stderr', async () => {
+    // The reason the drop became an OUTCOME rather than only a warning: a CI
+    // gate runs `cdkd drift --json > report.json` and reads the payload. A row
+    // that produced no outcome was in no array and in no count, so the gate saw
+    // a clean stack. `notCompared` is the state issue go-to-k/cdkd#2135 created
+    // for exactly "nothing drifted only because nothing was read".
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      malformedState({
+        HealthyBucket: makeResource({
+          physicalId: 'b',
+          resourceType: 'AWS::S3::Bucket',
+          properties: { BucketName: 'b' },
+        }),
+        BrokenRow: null,
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ BucketName: 'b' }),
+    });
+
+    const { output } = await runDrift(['TestStack', '--json']);
+    const payload = JSON.parse(output) as Array<{
+      notCompared?: Array<{
+        logicalId: string;
+        type?: string;
+        cause?: string;
+        referencesUnresolved?: boolean;
+      }>;
+      clean?: Array<{ logicalId: string }>;
+    }>;
+
+    const entry = payload[0]!.notCompared ?? [];
+    expect(entry.map((n) => n.logicalId)).toContain('BrokenRow');
+    // The WHOLE entry, not its `cause` alone. `referencesUnresolved` is the key
+    // a CI gate reads to tell a reference problem from a record problem, and a
+    // hand-written exclusion list there reported this row as `true` — a dynamic
+    // reference, on a record that was never read. `type` is the placeholder,
+    // which must not pass for a CloudFormation type.
+    expect(entry.find((n) => n.logicalId === 'BrokenRow')).toEqual({
+      logicalId: 'BrokenRow',
+      type: 'unreadable record',
+      referencesUnresolved: false,
+      cause: 'unreadableRecord',
+    });
+    // ...and the healthy sibling is still reported as compared, so the payload
+    // distinguishes the two rather than condemning the record wholesale.
+    expect((payload[0]!.clean ?? []).map((c) => c.logicalId)).toContain('HealthyBucket');
+  });
+
+  it('plain drift says NOTHING about a healthy record', async () => {
+    // The negative direction. With the repair branch forced to warn
+    // unconditionally every malformed case above stays green while an ordinary
+    // `cdkd drift` labels a healthy record malformed — the warning would then
+    // carry no information at all.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Bucket1: makeResource({
+          physicalId: 'b',
+          resourceType: 'AWS::S3::Bucket',
+          properties: { BucketName: 'b' },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ BucketName: 'b' }),
+    });
+
+    const { error } = await runDrift(['TestStack']);
+
+    expect(error).toBeUndefined();
+    const warnings = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warnings).not.toContain('malformed or truncated');
+    expect(warnings).not.toContain('Continuing');
+  });
+
+  it.each([['--accept'], ['--revert']] as const)(
+    '%s still runs against a healthy record — the refusal is not a blanket one',
+    async (flag) => {
+      // The other direction, per mode. Without it, refusing unconditionally
+      // leaves every case above green while disabling both write modes.
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          Bucket1: makeResource({
+            physicalId: 'b',
+            resourceType: 'AWS::S3::Bucket',
+            properties: { BucketName: 'b' },
+          }),
+        })
+      );
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => ({ BucketName: 'b' }),
+      });
+
+      const { error } = await runDrift(['TestStack', flag, '--yes']);
+
+      expect(error).toBeUndefined();
+      expect(
+        String(errorSpy.mock.calls[0]?.[0] ?? ''),
+        'a healthy record must not reach either refusal'
+      ).not.toContain("no readable 'resources' map");
+    }
+  );
+});
+
+/**
+ * Issue [#3018](https://github.com/go-to-k/cdkd/issues/3018), the SHARED helper.
+ *
+ * `buildReadCurrentStateContext` is exported and has three callers with three
+ * different guarantees — `cdkd drift` and `cdkd state refresh-observed` settle
+ * the record's shape at their own load sites, `cdkd import` hands it a record it
+ * is midway through building — so the guard lives at its loop rather than at any
+ * one load. That also means NO command-level case exercises it: both commands
+ * above have already refused or repaired by the time they call it. It is
+ * therefore probed directly, which is the only way this guard is pinned at all.
+ */
+describe('buildReadCurrentStateContext skips an unreadable sibling (issue #3018)', () => {
+  function bag(siblings: Record<string, unknown>) {
+    return { resources: siblings } as unknown as StackState;
+  }
+
+  const HEALTHY = {
+    physicalId: 'p',
+    resourceType: 'AWS::S3::Bucket',
+    properties: { BucketName: 'b' },
+    attributes: { Arn: 'arn:aws:s3:::b' },
+  };
+
+  it('does not throw on a null sibling, and keeps the readable one', () => {
+    const ctx = buildReadCurrentStateContext(bag({ Good: HEALTHY, Broken: null }), 'Self');
+    expect(Object.keys(ctx.siblings ?? {})).toEqual(['Good']);
+    expect(ctx.siblings!['Good']).toEqual({
+      resourceType: 'AWS::S3::Bucket',
+      physicalId: 'p',
+      properties: { BucketName: 'b' },
+      attributes: { Arn: 'arn:aws:s3:::b' },
+    });
+  });
+
+  // The INERT shapes, and the reason the guard is not a `try`. A string, a
+  // number, a list or a boolean does NOT throw on `res.resourceType` — it
+  // yields `undefined` for every field and would enter the map as a sibling
+  // record naming no resource, which a provider then resolves a cross-resource
+  // reference against. A `try/catch` around the body would have covered only
+  // the `null` case.
+  for (const [label, value] of [
+    ['a string', 'ab'],
+    ['an empty string', ''],
+    ['a number', 5],
+    ['zero', 0],
+    ['negative zero', -0],
+    ['Infinity', Infinity],
+    ['-Infinity', -Infinity],
+    ['a list', []],
+    ['a populated list', [{ physicalId: 'p', resourceType: 'AWS::S3::Bucket', properties: {} }]],
+    // An OBJECT with no resource type. It passes an object-ness test and then
+    // throws on `resource.resourceType.startsWith(...)`, which is why the entry
+    // predicate asks for the type rather than only for object-ness.
+    ['an object with no resourceType', { physicalId: 'p', properties: {} }],
+    ['true', true],
+    // BOTH booleans: a guard narrowed to `res !== false && !isReadableBag(res)`
+    // survives a `true`-only table and admits a phantom sibling.
+    ['false', false],
+  ] as const) {
+    it(`drops a sibling that is ${label} instead of admitting a record naming nothing`, () => {
+      const ctx = buildReadCurrentStateContext(bag({ Good: HEALTHY, Broken: value }), 'Self');
+      expect(Object.keys(ctx.siblings ?? {})).toEqual(['Good']);
+    });
+  }
+
+  it('still excludes the resource it was asked to exclude', () => {
+    // The pre-existing contract, kept because the guard is the only new code on
+    // this path and nothing else in this file reaches the helper: an exclusion
+    // that stopped working would be invisible here otherwise. It is NOT the
+    // "would drop everything" control — the cases above already keep `Good`,
+    // so a guard that dropped everything reds those.
+    const ctx = buildReadCurrentStateContext(bag({ Self: HEALTHY, Other: HEALTHY }), 'Self');
+    expect(Object.keys(ctx.siblings ?? {})).toEqual(['Other']);
   });
 });

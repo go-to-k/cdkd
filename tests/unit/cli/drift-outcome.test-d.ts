@@ -63,16 +63,20 @@ describe('DriftOutcome exhaustiveness (issue #2135)', () => {
       drifted: (d) => expectTypeOf(d.changes).toExtend<unknown[]>(),
       clean: (c) => expectTypeOf(c.logicalId).toEqualTypeOf<string>(),
       // Issues #2151 / #1945 added `readFailed`; issue #2952 added
-      // `baselineRefused`. Kept as an EXACT union rather than widened to
-      // `string`: this line failing on a cause addition is the fence working --
-      // `outcomeExitSignal` and `notComparedReason` both have to be revisited
-      // when one arrives, and a `string` here would let a new cause reach the
-      // exit code without anyone reading either. It did its job for
-      // `baselineRefused`, which is why that cause's exit class was a decision
-      // rather than a default nobody looked at.
+      // `baselineRefused`; go-to-k/cdkd#3018 added `unreadableRecord`. Kept as
+      // an EXACT union rather than widened to `string`: this line failing on a
+      // cause addition is the fence working -- `outcomeExitSignal`,
+      // `notComparedReason`, `UNCOMPARED_REASONS` and `ANY_OF_IT_COMPARED` all
+      // have to be revisited when one arrives, and a `string` here would let a
+      // new cause reach the exit code without anyone reading any of them. It
+      // did its job twice: for `baselineRefused`, whose exit class became a
+      // decision rather than a default, and for `unreadableRecord`, which
+      // arrived while TWO hand-written `cause === 'readFailed' || cause ===
+      // 'baselineRefused'` lists still decided the human report's wording --
+      // `ANY_OF_IT_COMPARED` replaced them for that reason.
       notCompared: (n) =>
         expectTypeOf(n.notComparedCause).toEqualTypeOf<
-          'refused' | 'unresolvedToken' | 'readFailed' | 'baselineRefused'
+          'refused' | 'unresolvedToken' | 'readFailed' | 'baselineRefused' | 'unreadableRecord'
         >(),
       unsupported: () => {},
       skipped: () => {},

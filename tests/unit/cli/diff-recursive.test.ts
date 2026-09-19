@@ -171,6 +171,7 @@ describe('nodeHasChanges / treeHasChanges', () => {
     ccApiRoutes: new Map(),
     outputChanges: [],
     adoptedOrphans: [],
+    unreadable: [],
     blocking: [],
     children: [],
   });
@@ -224,6 +225,7 @@ describe('diffTreeToJson', () => {
       ccApiRoutes: new Map(),
       outputChanges: [],
       adoptedOrphans: [],
+      unreadable: [],
       blocking: [],
       children: [
         {
@@ -234,6 +236,7 @@ describe('diffTreeToJson', () => {
           ccApiRoutes: new Map(),
           outputChanges: [],
           adoptedOrphans: [],
+          unreadable: [],
           blocking: [],
           children: [],
         },
@@ -267,6 +270,7 @@ describe('diffTreeToJson', () => {
       ccApiRoutes: new Map(),
       outputChanges: [],
       adoptedOrphans: [],
+      unreadable: [],
       blocking: [],
       children: [],
     };
@@ -292,6 +296,7 @@ describe('renderDiffTree', () => {
     ccApiRoutes,
     outputChanges: [],
     adoptedOrphans: [],
+    unreadable: [],
     blocking: [],
     children: [],
   });
@@ -2403,6 +2408,7 @@ describe('Outputs-only change (issue #1921)', () => {
         },
       ],
       adoptedOrphans: [],
+      unreadable: [],
       blocking: [],
       children: [],
     };
@@ -3716,6 +3722,7 @@ describe('rollback-orphan adoption preview (go-to-k/cdkd#2943)', () => {
       ccApiRoutes: new Map(),
       outputChanges: [],
       adoptedOrphans: [],
+      unreadable: [],
       blocking: ['KeptRole: S-KeptRole is already recorded by another cdkd stack.'],
       children: [
         {
@@ -3726,6 +3733,7 @@ describe('rollback-orphan adoption preview (go-to-k/cdkd#2943)', () => {
           ccApiRoutes: new Map(),
           outputChanges: [],
           adoptedOrphans: [],
+          unreadable: [],
           blocking: ['ChildRole: S~C-ChildRole is already recorded by another cdkd stack.'],
           children: [],
         },
@@ -3756,6 +3764,7 @@ describe('rollback-orphan adoption preview (go-to-k/cdkd#2943)', () => {
       ccApiRoutes: new Map(),
       outputChanges: [],
       adoptedOrphans: [],
+      unreadable: [],
       blocking: ['KeptRole: conflict'],
       children: [],
     };
@@ -3784,6 +3793,7 @@ describe('rollback-orphan adoption preview (go-to-k/cdkd#2943)', () => {
       ccApiRoutes: new Map(),
       outputChanges: [],
       adoptedOrphans: ['KeptRole'],
+      unreadable: [],
       blocking: [],
       children: [],
     };
@@ -3811,6 +3821,7 @@ describe('rollback-orphan adoption preview (go-to-k/cdkd#2943)', () => {
       ccApiRoutes: new Map(),
       outputChanges: [],
       adoptedOrphans: ['KeptRole'],
+      unreadable: [],
       blocking: ['KeptRole: conflict'],
       children: [],
     };
@@ -3839,5 +3850,475 @@ describe('rollback-orphan adoption preview (go-to-k/cdkd#2943)', () => {
     expect(lines[0]).toContain('[adopted from a rollback orphan]');
     expect(lines[0]).toContain('[via CC API: SomeProp]');
     expect(lines[0]!.indexOf('adopted')).toBeLessThan(lines[0]!.indexOf('via CC API'));
+  });
+});
+
+/**
+ * Issue [#3018](https://github.com/go-to-k/cdkd/issues/3018): `loadStateOrEmpty`
+ * repaired the resources BAG since go-to-k/cdkd#3159, and that left the ENTRY
+ * half of the same class open in this file.
+ *
+ * `hasReadableResources` tests the bag, so `{"resources": {"R": null}}` survives
+ * the repair and the two nested-child walks below it dereference
+ * `resource.resourceType` — a raw `TypeError` from `cdkd diff`, the command
+ * go-to-k/cdkd#3159's entry explicitly says it fixed. The gap was invisible to
+ * the eligibility-minus-remedy sweep that named the rest of the class: this file
+ * IMPORTS the remedy module, so it subtracted out whether or not it had taken
+ * the half that applies to it.
+ *
+ * REPAIR rather than refuse because `cdkd diff` never writes — asserted, not
+ * assumed, by the refuse-vs-repair fence in
+ * `tests/unit/state/malformed-resources-bag.test.ts`.
+ */
+describe('buildDiffTree over a record with an unreadable entry (issue #3018)', () => {
+  /** Identity: this suite is about the record's SHAPE, not about narrowing. */
+  const canonicalizeIdentity = (_resourceType: string, properties: Record<string, unknown>) =>
+    properties;
+
+  /**
+   * The WARNING is half the behaviour, and the half a CREATE-preview assertion
+   * cannot see: dropping a row silently is exactly the "clean verdict about
+   * nothing" the repair helper's own doc forbids. Read off the mocked logger,
+   * which every case in this file shares, so it is cleared per case.
+   */
+  const warnSpy = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    warnSpy.mockClear();
+  });
+
+  function warnings(): string {
+    return warnSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+  }
+
+  // Every unreadable ENTRY shape, at THIS call site: a guard narrowed here —
+  // `if (typeof entry !== 'boolean')`, say — is invisible to the helper's own
+  // tests, and the non-throwing shapes are the ones whose bypass produces a
+  // diff row for a resource that does not exist.
+  for (const [shape, badEntry] of [
+    ['null', null],
+    ['a string', 'ab'],
+    ['a number', 5],
+    ['zero', 0],
+    ['negative zero', -0],
+    ['Infinity', Infinity],
+    ['-Infinity', -Infinity],
+    ['a list', []],
+    // Why THESE: each is a shape `JSON.parse` really produces and whose
+    // bypass would be INVISIBLE in output. The empty string and the two
+    // zeroes are falsy, so a truthiness check lets them through, and `-0`
+    // additionally survives a `=== 0` exemption written as `Object.is`.
+    // The infinities come from `JSON.parse('1e400')`, which is a number a
+    // hand-edited record can hold. The two list sizes separate a
+    // SHAPE-based guard from a LENGTH-based one — both are dereferenced
+    // the same way, so only a length-dependent bypass tells them apart.
+    // `NaN` is absent because `JSON.parse` cannot produce it.
+    ['an empty string', ''],
+    ['a populated list', [{ physicalId: 'p', resourceType: 'AWS::S3::Bucket', properties: {} }]],
+    // An OBJECT with no resource type. It passes an object-ness test and then
+    // throws on `resource.resourceType.startsWith(...)`, which is why the entry
+    // predicate asks for the type rather than only for object-ness.
+    ['an object with no resourceType', { physicalId: 'p', properties: {} }],
+    ['true', true],
+    ['false', false],
+  ] as const) {
+    it(`drops an entry that is ${shape} and still diffs the rest of the stack`, async () => {
+      const broken = st('S', { R: res('AWS::SSM::Parameter', { Value: 'v' }) });
+      // Planted AFTER construction: `st()` is typed, and the whole point is a
+      // record whose stored shape violates that type.
+      (broken.resources as Record<string, unknown>)['BrokenRow'] = badEntry;
+
+      const node = await buildDiffTree({
+        stackName: 'S',
+        displayName: 'S',
+        region: 'us-east-1',
+        template: {
+          Resources: { R: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'v' } } },
+        },
+        nestedTemplates: {},
+        recursive: true,
+        stateBackend: fakeBackend({ S: broken }),
+        diffCalculator: new DiffCalculator(),
+        canonicalizeProperties: canonicalizeIdentity,
+      });
+
+      expect(node.changes.get('R')!.changeType).toBe('NO_CHANGE');
+      expect(node.changes.has('BrokenRow')).toBe(false);
+      const warned = warnings();
+      expect(warned).toContain('BrokenRow');
+      expect(warned).toContain('State for S (us-east-1)');
+    });
+  }
+
+  it('drops the entry and still diffs the rest of the stack', async () => {
+    const broken = st('S', { R: res('AWS::SSM::Parameter', { Value: 'v' }) });
+    // Planted AFTER construction: `st()` is typed, and the whole point is a
+    // record whose stored shape violates that type.
+    (broken.resources as Record<string, unknown>)['BrokenRow'] = null;
+
+    const node = await buildDiffTree({
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      template: {
+        Resources: { R: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'v' } } },
+      },
+      nestedTemplates: {},
+      recursive: true,
+      stateBackend: fakeBackend({ S: broken }),
+      diffCalculator: new DiffCalculator(),
+      canonicalizeProperties: canonicalizeIdentity,
+    });
+
+    // The healthy row is still compared — the discriminator against a fix that
+    // aborted, and against one that emptied the whole bag.
+    expect(node.changes.get('R')!.changeType).toBe('NO_CHANGE');
+    // The dropped row is not previewed as anything at all: it names no resource
+    // type, so a DELETE row for it would be an invention.
+    expect(node.changes.has('BrokenRow')).toBe(false);
+    // ...and the drop is ANNOUNCED. Without this the guard could stop warning
+    // and every assertion above would still pass, which is the shape the repair
+    // helper's doc calls a clean verdict about nothing.
+    const warned = warnings();
+    expect(warned).toContain('BrokenRow');
+    expect(warned).toContain('Continuing WITHOUT them');
+    expect(warned).toContain('State for S (us-east-1)');
+
+    // The template-ABSENT half (go-to-k/cdkd#3018 review, M7). `BrokenRow` is a
+    // row the template does not declare, so a readable record there would be a
+    // DELETE; dropped, it reaches no change row at all. Every other change here
+    // is NO_CHANGE, so without the unreadable rows `--fail` (which reads
+    // `treeHasChanges`) exits 0 over a record that used to crash non-zero.
+    expect(node.unreadable).toEqual(['BrokenRow']);
+    expect(nodeHasChanges(node)).toBe(true);
+    expect(treeHasChanges(node)).toBe(true);
+    // ...and it is in the machine-readable payload, not only the exit code.
+    expect(diffTreeToJson(node).unreadable).toEqual(['BrokenRow']);
+    // ...and in the human preview, beside counts that do NOT include it.
+    const lines: string[] = [];
+    renderDiffTree(node, true, (m) => lines.push(m));
+    expect(lines.join('\n')).toContain('1 state record row(s) could not be read: BrokenRow.');
+  });
+
+  it('reports a dropped row in a NON-recursive diff too — plain `cdkd diff --fail`', async () => {
+    // The polarity every other case here skips: `recursive: false`, which is
+    // what plain `cdkd diff` runs. `buildDiffTree` returns early for it, so a
+    // refactor that moved the `unreadable` assignment below that return would
+    // put plain `cdkd diff --fail` back at exit 0 over a malformed record — the
+    // blocker this rule was added for, in the one mode no case watched.
+    const broken = st('S', { R: res('AWS::SSM::Parameter', { Value: 'v' }) });
+    (broken.resources as Record<string, unknown>)['BrokenRow'] = null;
+
+    const node = await buildDiffTree({
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      template: {
+        Resources: { R: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'v' } } },
+      },
+      nestedTemplates: {},
+      recursive: false,
+      stateBackend: fakeBackend({ S: broken }),
+      diffCalculator: new DiffCalculator(),
+      canonicalizeProperties: canonicalizeIdentity,
+    });
+
+    expect(node.unreadable).toEqual(['BrokenRow']);
+    expect(treeHasChanges(node)).toBe(true);
+    expect(diffTreeToJson(node).unreadable).toEqual(['BrokenRow']);
+    const lines: string[] = [];
+    renderDiffTree(node, true, (m) => lines.push(m));
+    expect(lines.join('\n')).toContain('1 state record row(s) could not be read: BrokenRow.');
+  });
+
+  it('reports an unreadable resources MAP as one row, and --fail sees it', async () => {
+    // The bag half of the same rule. A string bag is repaired to empty, and
+    // against a template declaring nothing that leaves no change row at all —
+    // the deleted-subtree shape, where nothing else could make `--fail` fire.
+    const broken = st('S', {});
+    (broken as unknown as { resources: unknown }).resources = 'abcdef';
+
+    const node = await buildDiffTree({
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      template: { Resources: {} },
+      nestedTemplates: {},
+      recursive: true,
+      stateBackend: fakeBackend({ S: broken }),
+      diffCalculator: new DiffCalculator(),
+      canonicalizeProperties: canonicalizeIdentity,
+    });
+
+    // The spelling itself, independently of the shared constant.
+    expect(node.unreadable).toEqual(['(resources map)']);
+    expect(treeHasChanges(node)).toBe(true);
+    expect(diffTreeToJson(node).unreadable).toEqual(['(resources map)']);
+    // The map row is not a logical id, so it gets no sentence about ids the
+    // template declares.
+    const lines: string[] = [];
+    renderDiffTree(node, true, (m) => lines.push(m));
+    const preview = lines.join('\n');
+    expect(preview).toContain('1 state record row(s) could not be read: (resources map).');
+    expect(preview).not.toContain('shown above as a create');
+  });
+
+  it('CAPS the preview at ten names while --json keeps every id', async () => {
+    const broken = st('S', {});
+    const ids = Array.from({ length: 12 }, (_, i) => `Row${i}`);
+    for (const id of ids) (broken.resources as Record<string, unknown>)[id] = null;
+
+    const node = await buildDiffTree({
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      template: { Resources: {} },
+      nestedTemplates: {},
+      recursive: true,
+      stateBackend: fakeBackend({ S: broken }),
+      diffCalculator: new DiffCalculator(),
+      canonicalizeProperties: canonicalizeIdentity,
+    });
+
+    expect(diffTreeToJson(node).unreadable).toEqual(ids);
+    const lines: string[] = [];
+    renderDiffTree(node, true, (m) => lines.push(m));
+    const preview = lines.join('\n');
+    expect(preview).toContain(`12 state record row(s) could not be read: ${ids.slice(0, 10).join(', ')} and 2 more.`);
+    expect(preview).not.toContain('Row10');
+    // Ids ARE present, so the sentence about declared ids is kept.
+    expect(preview).toContain('shown above as a create');
+  });
+
+  it('carries EVERY dropped id into `unreadable`, sanitized in the preview', async () => {
+    // Several ids, not one: a `dropped.slice(0, 1)` at the push would keep the
+    // exit code right while the payload and the preview named one row of many.
+    // One id carries U+2028, a line separator `stripControlChars` leaves in
+    // place, so the preview must go through the identifier sanitizer.
+    const broken = st('S', { R: res('AWS::SSM::Parameter', { Value: 'v' }) });
+    const forged = `Evil${String.fromCharCode(0x2028)}Row`;
+    for (const id of ['A1', 'B2', forged]) {
+      (broken.resources as Record<string, unknown>)[id] = null;
+    }
+
+    const node = await buildDiffTree({
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      template: {
+        Resources: { R: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'v' } } },
+      },
+      nestedTemplates: {},
+      recursive: true,
+      stateBackend: fakeBackend({ S: broken }),
+      diffCalculator: new DiffCalculator(),
+      canonicalizeProperties: canonicalizeIdentity,
+    });
+
+    expect(node.unreadable).toEqual(['A1', 'B2', forged]);
+    const lines: string[] = [];
+    renderDiffTree(node, true, (m) => lines.push(m));
+    const preview = lines.join('\n');
+    // The forged id is QUOTED because sanitizing altered it — the rule that
+    // keeps an id padded or rewritten to match a healthy sibling from
+    // rendering bare beside it.
+    expect(preview).toContain('3 state record row(s) could not be read: A1, B2, "Evil Row".');
+    expect(preview).not.toContain(String.fromCharCode(0x2028));
+  });
+
+  it('never names a PADDED dropped id bare, and cuts a long one with a visible marker', async () => {
+    // `Bucket ` is the discriminator the `"Evil Row"` case above cannot be: that
+    // id holds an inner space, which quotes it on its own, while this one is
+    // plain once trimmed — so only the raw-versus-sanitized comparison keeps it
+    // from rendering as the healthy `Bucket` beside it. `Queue` is the control
+    // that must stay bare.
+    const broken = st('S', { Bucket: res('AWS::SSM::Parameter', { Value: 'v' }) });
+    for (const id of ['Bucket ', 'Queue', 'L'.repeat(5000)]) {
+      (broken.resources as Record<string, unknown>)[id] = null;
+    }
+    const node = await buildDiffTree({
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      template: {
+        Resources: { Bucket: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'v' } } },
+      },
+      nestedTemplates: {},
+      recursive: false,
+      stateBackend: fakeBackend({ S: broken }),
+      diffCalculator: new DiffCalculator(),
+      canonicalizeProperties: canonicalizeIdentity,
+    });
+    const lines: string[] = [];
+    renderDiffTree(node, true, (m) => lines.push(m));
+    const preview = lines.join('\n');
+    expect(preview).toContain(
+      `could not be read: "Bucket", Queue, ${'L'.repeat(255)} [cut: 4745 more characters withheld].`
+    );
+    expect(preview).not.toContain('L'.repeat(256));
+  });
+
+  it('reports the unreadable rows of a DELETED nested child too', async () => {
+    // `buildDeletedSubtree` loads the child through the same repair but builds
+    // its own node, so the propagation is a separate site from `buildDiffTree`'s.
+    // A deleted child diffs against an EMPTY template, so a dropped row there is
+    // exactly the template-absent case that would otherwise vanish.
+    const child = st('P~Gone', { Kept: res('AWS::SSM::Parameter', { Value: 'v' }) });
+    (child.resources as Record<string, unknown>)['BrokenRow'] = null;
+    const node = await buildDiffTree({
+      stackName: 'P',
+      displayName: 'P',
+      region: 'us-east-1',
+      template: { Resources: {} },
+      nestedTemplates: {},
+      recursive: true,
+      stateBackend: fakeBackend({ P: st('P', { Gone: res(NESTED, {}) }), 'P~Gone': child }),
+      diffCalculator: new DiffCalculator(),
+      canonicalizeProperties: canonicalizeIdentity,
+    });
+
+    expect(node.children[0]!.unreadable).toEqual(['BrokenRow']);
+    expect(diffTreeToJson(node).children[0]!.unreadable).toEqual(['BrokenRow']);
+  });
+
+  it('names EVERY dropped entry, not the first', async () => {
+    // The WIRING at this call site, separate from drift's: a
+    // `dropped.slice(0, 1)` here still drops all six and names one.
+    const broken = st('S', { R: res('AWS::SSM::Parameter', { Value: 'v' }) });
+    for (const id of ['A1', 'B2', 'C3', 'D4', 'E5', 'F6']) {
+      (broken.resources as Record<string, unknown>)[id] = null;
+    }
+
+    await buildDiffTree({
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      template: {
+        Resources: { R: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'v' } } },
+      },
+      nestedTemplates: {},
+      recursive: true,
+      stateBackend: fakeBackend({ S: broken }),
+      diffCalculator: new DiffCalculator(),
+      canonicalizeProperties: canonicalizeIdentity,
+    });
+
+    const warned = warnings();
+    expect(warned).toContain('6 resource record(s)');
+    for (const id of ['A1', 'B2', 'C3', 'D4', 'E5']) expect(warned).toContain(id);
+    expect(warned).toContain('and 1 more');
+    expect(warned).not.toContain('F6');
+  });
+
+  it('says NOTHING about a healthy record', async () => {
+    // The negative direction, missing until a review round asked for it: with
+    // the guards forced to `if (true)` every malformed case above stays green
+    // while a healthy record is labelled malformed on every `cdkd diff`. A
+    // warning about a record that is fine is not a small regression — it is the
+    // one this whole change exists to make meaningful.
+    const node = await buildDiffTree({
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      template: {
+        Resources: { R: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'v' } } },
+      },
+      nestedTemplates: {},
+      recursive: true,
+      stateBackend: fakeBackend({ S: st('S', { R: res('AWS::SSM::Parameter', { Value: 'v' }) }) }),
+      diffCalculator: new DiffCalculator(),
+      canonicalizeProperties: canonicalizeIdentity,
+    });
+
+    expect(node.changes.get('R')!.changeType).toBe('NO_CHANGE');
+    expect(warnings()).not.toContain('Continuing');
+    expect(warnings()).not.toContain('malformed or truncated');
+    // No unreadable rows, so `--fail` stays quiet on an unchanged healthy stack
+    // — the direction a blanket `unreadable.length >= 0` would break.
+    expect(node.unreadable).toEqual([]);
+    expect(treeHasChanges(node)).toBe(false);
+    // Always present in `--json`, empty when there is nothing, so the key set
+    // a CI gate reads is stable.
+    expect(diffTreeToJson(node).unreadable).toEqual([]);
+  });
+
+  it('a dropped entry the TEMPLATE still declares previews as a CREATE', async () => {
+    // The consequence of DROPPING rather than hiding, pinned rather than left
+    // to the warning's wording. With no record of the row, the diff has nothing
+    // to compare the template against, so it previews the resource as new —
+    // exactly what an emptied BAG does to a whole stack, one row down. A reader
+    // who takes the preview at face value would re-create a live resource, which
+    // is why the warning has to be loud and why this is asserted here rather
+    // than described in a comment.
+    const broken = st('S', {});
+    (broken.resources as Record<string, unknown>)['R'] = null;
+
+    const node = await buildDiffTree({
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      template: {
+        Resources: { R: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'v' } } },
+      },
+      nestedTemplates: {},
+      recursive: true,
+      stateBackend: fakeBackend({ S: broken }),
+      diffCalculator: new DiffCalculator(),
+      canonicalizeProperties: canonicalizeIdentity,
+    });
+
+    expect(node.changes.get('R')!.changeType).toBe('CREATE');
+    // The warning is what stands between that CREATE and a reader acting on it.
+    expect(warnings()).toContain('R');
+    expect(warnings()).toContain('Continuing WITHOUT them');
+    // Listed as unreadable too, although it has a row: the CREATE is the
+    // preview of a record cdkd could not read, not of a new resource, and
+    // `unreadable` is what says so in `--json`.
+    expect(node.unreadable).toEqual(['R']);
+  });
+
+  it('drops an unreadable entry in a NESTED child too', async () => {
+    // The recursion is its own site: the repair sits at the shared load, but a
+    // fix applied only at the root would leave a healthy parent naming a
+    // malformed child walking that child's entries unguarded — the exact shape
+    // go-to-k/cdkd#3185 had to move a guard for on the export walker.
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-3018-'));
+    try {
+      const childPath = join(dir, 'child.json');
+      writeFileSync(
+        childPath,
+        JSON.stringify({
+          Resources: { R: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'v' } } },
+        })
+      );
+      const child = st('S~Child', { R: res('AWS::SSM::Parameter', { Value: 'v' }) });
+      (child.resources as Record<string, unknown>)['BrokenRow'] = null;
+
+      const node = await buildDiffTree({
+        stackName: 'S',
+        displayName: 'S',
+        region: 'us-east-1',
+        template: {
+          Resources: {
+            Child: { Type: NESTED, Metadata: { 'aws:asset:path': 'child.json' }, Properties: {} },
+          },
+        },
+        nestedTemplates: { Child: childPath },
+        recursive: true,
+        stateBackend: fakeBackend({ S: st('S', { Child: res(NESTED, {}) }), 'S~Child': child }),
+        diffCalculator: new DiffCalculator(),
+        canonicalizeProperties: canonicalizeIdentity,
+      });
+
+      expect(node.children).toHaveLength(1);
+      expect(node.children[0]!.changes.get('R')!.changeType).toBe('NO_CHANGE');
+      expect(node.children[0]!.changes.has('BrokenRow')).toBe(false);
+      // Named with the CHILD's stack name, not the parent's — a warning naming
+      // the parent would send the reader to a healthy record.
+      const warned = warnings();
+      expect(warned).toContain('BrokenRow');
+      expect(warned).toContain('S~Child');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
