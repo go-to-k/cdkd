@@ -3207,9 +3207,12 @@ async function replaySingle(
         // custom-resource family is the exception (`equalIdNamesSameResource`
         // has the reasoning): there the equal id IS the live resource, and the
         // delete-new step would destroy what this op just restored.
+        // The predicate is symmetric in its two types; `createLayer` is the
+        // layer of THIS operation's create half, which on a replay is the
+        // re-create of the old resource.
         const equalIdIsSameResource = equalIdNamesSameResource({
-          oldType: op.resourceType,
-          newType: oldType,
+          oldType,
+          newType: op.resourceType,
           createLayer: createProvisionedBy,
         });
         const adoptedLiveNewResource =
