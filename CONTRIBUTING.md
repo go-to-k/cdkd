@@ -22,7 +22,7 @@ are installed with pnpm 11 through Vite+.
 The global `vp` CLI itself is pinned by `.mise.toml` via mise's HTTP backend
 against Vite+'s platform CLI tarball. `mise install` also installs
 [markgate](https://github.com/go-to-k/markgate), which the merge-time
-integ-destroy gate depends on.
+integ gates depend on.
 
 ```bash
 # Clone the repository
@@ -103,8 +103,9 @@ one exception — it also deploys and destroys real AWS resources).
 Which verification a PR needs follows from the paths it touches — the table
 lives in
 [docs/contributing.md](docs/contributing.md#when-is-an-integration-test-needed-and-which-one).
-Only the deletion-logic row is enforced by a merge gate; its path list is the
-`integ-destroy` scope in [`.markgate.yml`](.markgate.yml).
+The deletion-logic and schema-bump rows are enforced by merge gates; their path
+lists are the `integ-destroy` and `integ-schema-migration` scopes in
+[`.markgate.yml`](.markgate.yml).
 When in doubt, open the PR and ask; the maintainer will pick and run the
 right tests.
 

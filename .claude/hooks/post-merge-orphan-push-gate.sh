@@ -135,8 +135,7 @@ fi
 # judged on the first one. Either way `gh pr list --head <wrong branch>` finds
 # no merged PR, the gate exits 0, and the orphan push proceeds unjudged -- the
 # exact failure this hook exists to prevent, where the commits silently never
-# reach main. Same class as the `main-tree-branch-gate` walker fixed alongside
-# it, in a different spelling.
+# reach main.
 #
 # `gate_verb_rest_each` hands back the tail of each matching segment, so the
 # quoted mention is gone (the shared matcher strips quoted spans before

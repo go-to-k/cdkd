@@ -6,18 +6,17 @@ import { join } from 'node:path';
  * Regression guard for issue #1417: a CI-enforced generated matrix that no
  * documented pre-push step regenerates.
  *
- * CI carries a staleness guard per generated matrix — it runs the generator and
- * fails if the working tree changes. The list of generators a contributor is
- * told to run before pushing lived ONLY in prose, in
- * `.claude/skills/verify-pr/SKILL.md`, and it drifted: CI grew to nine guards
- * while the skill still named four. The failure mode is a CI round-trip, and it
- * is worst for the matrices staled by changes nobody associates with a
- * generated file — `handled-property-wiring` records the METHOD NAMES that seed
- * each handled property, so an ordinary private-method rename inside a provider
- * stales it.
+ * CI used to carry one staleness guard PER generated matrix — ten steps, each
+ * running its own generator and failing on a non-empty `git diff`. The list a
+ * contributor is told to run before pushing lived separately, and it drifted:
+ * CI grew to nine guards while the skill still named four. The two lists are
+ * now ONE list: CI runs the `gen:all-matrices` aggregate, the same task the
+ * skill names, and fails on any resulting diff.
  *
- * This test makes the drift impossible: whatever CI enforces, the
- * `gen:all-matrices` aggregate task must regenerate.
+ * So the drift this file guards against is structural rather than arithmetic.
+ * What it asserts is that the collapse HOLDS: CI's staleness guard regenerates
+ * through the aggregate, never through a generator the aggregate does not
+ * chain, and the skill still points at the same task.
  */
 
 const REPO_ROOT = join(import.meta.dirname, '../../..');
@@ -65,36 +64,55 @@ function aggregateTasks(): Set<string> {
   return new Set([...block![0].matchAll(/'vp run ([a-z][a-z0-9:-]*)'/g)].map((m) => m[1]!));
 }
 
-describe('gen:all-matrices covers every CI staleness guard (#1417)', () => {
+describe('CI regenerates through gen:all-matrices (#1417)', () => {
   // Parser floor: "found nothing" and "everything matches" look identical
   // otherwise, which is the vacuous pass `.claude/rules/testing.md` forbids.
-  it('parses a plausible number of guards out of ci.yml', () => {
-    const ci = ciStalenessGuardTasks();
-    expect(ci.size).toBeGreaterThanOrEqual(9);
-    // Spot-check both ends: the oldest guard and the one whose absence from the
-    // skill's list caused #1417.
-    expect(ci.has('integ-coverage')).toBe(true);
-    expect(ci.has('gen:handled-property-wiring')).toBe(true);
+  it('parses a staleness guard out of ci.yml', () => {
+    expect(ciStalenessGuardTasks().size).toBeGreaterThanOrEqual(1);
   });
 
-  it('regenerates every matrix CI checks for staleness', () => {
-    const missing = [...ciStalenessGuardTasks()].filter((t) => !aggregateTasks().has(t)).sort();
-    expect(
-      missing,
-      `CI runs a staleness guard for these, but \`gen:all-matrices\` does not regenerate them — ` +
-        `add them to the task in vite.config.ts:\n  ${missing.join('\n  ')}`
-    ).toEqual([]);
+  // THE AGGREGATE IS NOW THE ONLY LIST, which is what this assertion is for.
+  // Before the collapse, `ci.yml` enumerated the generators and this file
+  // compared the two enumerations in both directions, so dropping one from
+  // either side reddened. CI carries no enumeration any more, so a generator
+  // deleted from `gen:all-matrices` would simply stop being checked, silently
+  // and forever — exactly the drift #1417 is about, one level up.
+  //
+  // So the set is PINNED here rather than floored. The point is not to know the
+  // number: it is that removing a generator has to be a deliberate edit in two
+  // files, and that whoever makes it reads why. Adding one is the same edit.
+  // Tasks deliberately OUTSIDE the aggregate (and so absent here) are the ones
+  // vite.config.ts documents as such: `audit:coverage:regenerate` and
+  // `audit:stateful-candidates:regenerate` (minutes, and they call AWS),
+  // `gen:cfn-schemas-from-zip` and `gen:aws-cli-removals` (their capture is
+  // the oracle, and re-capturing on a schedule nobody controls is noise).
+  it('chains exactly the generators CI regenerates through it', () => {
+    expect([...aggregateTasks()].sort()).toEqual(
+      [
+        'cli-flag-coverage',
+        'format',
+        'gen:enrichment-coverage',
+        'gen:handled-property-wiring',
+        'gen:nested-key-coverage',
+        'gen:property-coverage',
+        'gen:sdk-attr-coverage',
+        'gen:unsupported-types',
+        'gen:update-wrap-coverage',
+        'integ-coverage',
+        'integ-ledger-normalize',
+        'scenario-coverage',
+      ].sort(),
+    );
   });
 
-  // The inverse direction: an entry that no longer corresponds to a CI guard is
-  // dead weight that slows every /verify-pr run, and usually means the guard was
-  // renamed rather than removed.
-  it('does not chain a task CI no longer guards', () => {
-    const stale = [...aggregateTasks()].filter((t) => !ciStalenessGuardTasks().has(t)).sort();
+  it('every task CI regenerates is the aggregate itself', () => {
+    const direct = [...ciStalenessGuardTasks()].filter((t) => t !== 'gen:all-matrices').sort();
     expect(
-      stale,
-      `\`gen:all-matrices\` regenerates these, but CI has no staleness guard for them — ` +
-        `remove them or restore the guard:\n  ${stale.join('\n  ')}`
+      direct,
+      `CI runs these generators in a staleness guard of their own. Regenerate ` +
+        `through \`vp run gen:all-matrices\` instead, and register the generator ` +
+        `in that task in vite.config.ts, so the contributor's step and CI's ` +
+        `cannot drift:\n  ${direct.join('\n  ')}`
     ).toEqual([]);
   });
 

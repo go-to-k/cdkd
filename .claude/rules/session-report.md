@@ -24,10 +24,10 @@ Effort: large (L) — <which verification cycle it drags>
 Estimate: ~3 h+ — <what eats the time>
 ```
 
-A report adds a fifth line, **`Notes`** (`none` when empty). The issue body
-carries no `Notes` but does carry **`Dup-check:`**, written at filing time; on a
-dup-check HIT there is no issue to classify — the finding becomes a checklist row
-in the covering issue.
+A report adds a fifth line, **`Notes`** (`none` when empty); the issue body
+carries no `Notes`. The duplicate SEARCH still happens before filing, and on a
+HIT there is no issue to classify — the finding becomes a checklist row in the
+covering issue.
 
 The four answer four different questions, and none is a spelling of another (the
 one sanctioned link: `Severity: high` forces `now` unless external input blocks

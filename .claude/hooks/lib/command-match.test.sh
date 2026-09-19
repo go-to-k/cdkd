@@ -1875,7 +1875,7 @@ want_match 0 "delstack"                'cd x && delstack -s S -r us-east-1 -y -f
 want_match 1 "delstack negative"       'echo "run delstack afterwards"'                 "$GATE_RE_DELSTACK"
 
 # --- positions issue #2093 named (all must MATCH) ----------------------------
-# Measured against main-tree-git-cwd-detector.sh: the #1455 anchor treated only
+# Measured against a PostToolUse detector: the #1455 anchor treated only
 # a control operator as opening a command position, so each of these was quiet
 # where the pre-shared-matcher hook had warned.
 want_match 0 "subshell"                       '(git commit -m x)' "$C"
@@ -2709,89 +2709,9 @@ want_match 0 "2339: a verb INSIDE the span is reached" \
 want_match 0 "2339: unterminated in-quote backtick still segments the body" \
   'echo "r: `git -C /wt checkout -- f.txt' "$CO"
 
-# --- gate_verb_rest_each_dir: the tree AND the tail, per segment, one walk ----
-#
-# The subject must EXIST, for the same reason `want_strict`'s guard above does:
-# an absent function makes every case below vacuous.
-if declare -F gate_verb_rest_each_dir >/dev/null; then
-  pass=$((pass + 1)); printf 'OK   %s\n' "gate_verb_rest_each_dir is defined"
-else
-  fail=$((fail + 1)); printf 'FAIL %s\n' "gate_verb_rest_each_dir undefined"
-  fail_log+="FAIL gate_verb_rest_each_dir is not defined; every case below is vacuous\n"
-fi
-
-GVTAB=$(printf '\t')
-
-# want_each <expected, newline-joined> <label> <cmd> <fallback> <regex>
-want_each() {
-  local want="$1" label="$2" cmd="$3" fallback="$4" re="$5" got
-  got=$(gate_verb_rest_each_dir "$cmd" "$fallback" "$re")
-  if [ "$got" = "$want" ]; then
-    pass=$((pass + 1)); printf 'OK   %s\n' "$label"
-  else
-    fail=$((fail + 1)); printf 'FAIL %s\n' "$label"
-    fail_log+="FAIL $label\n  want: $want\n  got:  $got\n"
-  fi
-}
-
-# THE ANTI-DRIFT FENCE. `gate_verb_rest_each_dir` carries a deliberate COPY of
-# gate_target_dir_strict's cd / `-C` reading (that function BREAKS at the verb,
-# which this walk must not). On a SINGLE-segment command the two must agree, so
-# the copy cannot drift without a red case here.
-for _gv in 'git commit -m x' 'cd /w/t && git commit -m x' 'cd /w && cd /w/b && git commit -m x' \
-           'git -C /w/t commit -m x' 'cd /other && git -C /w/t commit -m x' \
-           'cd rel && git commit -m x' 'cd "/w t" && git commit -m x'; do
-  _gvs=$(gate_target_dir_strict "$_gv" /fallback "$C") || _gvs="REFUSE"
-  _gve=$(gate_verb_rest_each_dir "$_gv" /fallback "$C")
-  _gve="${_gve%%$GVTAB*}"
-  [ -n "$_gve" ] || _gve="REFUSE"
-  if [ "$_gvs" = "$_gve" ]; then
-    pass=$((pass + 1)); printf 'OK   per-segment dir agrees with the strict resolver :: %s\n' "$_gv"
-  else
-    fail=$((fail + 1)); printf 'FAIL per-segment dir disagrees :: %s\n' "$_gv"
-    fail_log+="FAIL per-segment dir disagrees :: $_gv\n  strict: $_gvs\n  each:   $_gve\n"
-  fi
-done
-# ...and the REFUSAL channel agrees too: strict returns 2, this prints an EMPTY
-# dir field. Kept in its own loop because the values are compared as strings and
-# `REFUSE` is the harness's spelling for both.
-for _gv in 'git -C "$W" commit -m x' 'cd "$W" && git commit -m x' 'git -C ~root/x commit -m x'; do
-  _gvs=$(gate_target_dir_strict "$_gv" /fallback "$C") || _gvs="REFUSE"
-  _gve=$(gate_verb_rest_each_dir "$_gv" /fallback "$C")
-  _gve="${_gve%%$GVTAB*}"
-  [ -n "$_gve" ] || _gve="REFUSE"
-  if [ "$_gvs" = "REFUSE" ] && [ "$_gve" = "REFUSE" ]; then
-    pass=$((pass + 1)); printf 'OK   both refuse an unreadable target :: %s\n' "$_gv"
-  else
-    fail=$((fail + 1)); printf 'FAIL refusal disagreement :: %s\n' "$_gv"
-    fail_log+="FAIL refusal disagreement :: $_gv\n  strict: $_gvs\n  each:   $_gve\n"
-  fi
-done
-unset _gv _gvs _gve
-
-# ...and the part the strict resolver CANNOT express: two segments, two trees.
-want_each "/w/one${GVTAB}-m a
-/w/two${GVTAB}-m b" "two -C segments resolve independently" \
-  'git -C /w/one commit -m a && git -C /w/two commit -m b' /fallback "$C"
-# A `cd` PERSISTS into later segments; a `-C` binds only its own command.
-want_each "/w/t${GVTAB}-m a
-/w/t${GVTAB}-m b" "a cd carries into later segments" \
-  'cd /w/t && git commit -m a && git commit -m b' /fallback "$C"
-want_each "/w/t${GVTAB}-m a
-/w/o${GVTAB}-m b
-/w/t${GVTAB}-m c" "a -C does not leak into the next segment" \
-  'cd /w/t && git commit -m a && git -C /w/o commit -m b && git commit -m c' /fallback "$C"
-# An unreadable target in ONE segment leaves that segment's dir EMPTY and the
-# others intact -- the per-segment shape of the strict resolver's refusal.
-want_each "/fallback${GVTAB}-m a
-${GVTAB}-m b" "an unreadable -C empties only its own segment" \
-  'git commit -m a && git -C "$W" commit -m b' /fallback "$C"
-
-
-
 # --- gate_tokens ---------------------------------------------------------------
 #
-# The argument-list splitter main-tree-branch-gate parses options with. It lives
+# The argument-list splitter a gate parses options with. It lives
 # HERE rather than in the gate because matching `GATE_EMBEDDING_TOKEN` inside a
 # hook and then reading a positional `${BASH_REMATCH[N]}` out of it is the
 # go-to-k/cdkd#2200 coupling: widening the shared constant shifts the index and
@@ -2825,7 +2745,7 @@ tok_case "runs of spaces collapse" " a     b" "$(printf -- 'a\nb')"
 # spaced target, a trailing `&` and a `#` comment are all WORDS and none of them
 # is an ARGUMENT, and counting them as arguments is what made
 # `git checkout <branch> 2>/dev/null` read as a two-positional file restore and
-# PASS through main-tree-branch-gate (measured rc=0, want 2, on a command that
+# PASS through a branch-creation gate (measured rc=0, want 2, on a command that
 # really moves HEAD).
 argv_case() { # name, text, expected newline-joined argv, expected rc
   local name="$1" text="$2" want="$3" wantrc="${4:-0}" got gotrc
@@ -2879,7 +2799,7 @@ argv_case "a token spelling the heredoc delimiter survives" " EOF -- x" "$(print
 #
 # The INVERTED default. `gate_argv` above splits words; this answers whether a
 # word reaches the command as the text it carries, and it answers NO by default.
-# Three rounds of `main-tree-branch-gate` fixes each taught the stripper one more
+# Three rounds of branch-gate fixes each taught the stripper one more
 # shell form and each time the next round found the form still missing -- last
 # `$EMPTY` (an empty expansion VANISHES, so the gate counted a positional git
 # never receives) and `{fd}>/dev/null` (bash's fd-variable redirection, a word
@@ -3007,20 +2927,13 @@ dq_case() { # name, input, expected segment text
   fi
 }
 dq_same() { dq_case "$1" "$2" "$2"; }
-# MUTATION EVIDENCE LIVES IN A SCRIPT, NOT IN THIS COMMENT.
-# `bash .claude/hooks/lib/command-match-mutants.sh` applies ten deliberately
-# broken copies of `command-match.sh` -- among them the whole-segment dequote
-# with its safety guards removed, which is the implementation that was built,
-# reviewed four rounds and WITHDRAWN -- and prints the tally for each. It exits
-# non-zero if any mutant fails to reduce the pass count, so a mutation no case
-# notices is reported rather than assumed absent.
-#
-# NO TALLIES ARE COPIED HERE ON PURPOSE. They were, twice, and were stale both
-# times: first measured before eleven cases were added, then measured on a
-# 541-case tree while the floor already said 543, so every published row summed
-# to one less than the file's own case count. A reviewer caught it each time.
-# Two occurrences of one shape is the signal to change instrument rather than
-# to recount, so the numbers now have exactly one home and it is executable.
+# NO MUTATION TALLIES ARE COPIED HERE ON PURPOSE. They were, twice, and were
+# stale both times: first measured before eleven cases were added, then measured
+# on a 541-case tree while the floor already said 543, so every published row
+# summed to one less than the file's own case count. A reviewer caught it each
+# time. The `Mutant <name>` notes on individual cases below record which
+# deliberate break each case was measured against; they are provenance, not a
+# tally, and nothing re-runs them.
 
 # The eight shapes go-to-k/cdkd#2333 measured, each an executable command that
 # really runs the gated verb.
@@ -3032,7 +2945,7 @@ dq_case "a quoted leading FLAG"       'git "-C" /tmp/wt commit -m x' 'git -C /tm
 dq_case "an escaped leading FLAG"     'git \-C /tmp/wt commit -m x'  'git -C /tmp/wt commit -m x'
 dq_case "a quoted FIRST gh verb token"  'gh "pr" merge 1 --squash' 'gh pr merge 1 --squash'
 dq_case "a quoted SECOND gh verb token" 'gh pr "merge" 1 --squash' 'gh pr merge 1 --squash'
-# The RESOLVER's own clause: a quoted `cd` sent `"cd" /main-tree && git commit`
+# The RESOLVER's own clause: a quoted `cd` sent `"cd" /repo && git commit`
 # straight through branch-gate.
 dq_case "a quoted cd command word"    '"cd" /tmp/wt'               'cd /tmp/wt'
 dq_case "an escaped cd command word"  '\cd /tmp/wt'                'cd /tmp/wt'
@@ -3261,7 +3174,7 @@ dq_case "a spaced cd path survives a rewritten cd" \
 # breaks on whitespace alone, so it used to hand back `cd\`, rewrite that to
 # `cd`, and re-join with a plain space: a `cd` MANUFACTURED out of a command
 # bash never runs. Live: `cd\ /tmp ; echo hi > <tracked>` in the main checkout
-# on `main` came out of `main-tree-edit-gate` at rc=0 where it owed a 2.
+# on `main` came out of a cd-resolving gate at rc=0 where it owed a 2.
 dq_same "an odd trailing backslash on the command word abandons" \
   'cd\ /tmp && echo x > f'
 dq_same "the same in the subcommand slot" \
@@ -3390,236 +3303,6 @@ else
   fail_log="${fail_log}FAIL latency: both gh flag slots + ${#__ds_cmd} bytes took ${__ds_secs}s -- the dequote walk is spending more than the outer GATE_STRUCT_MAXTOK budget; a killed hook cannot emit exit 2 and disarms every gate at once\n"
 fi
 
-# At the OBSERVED count, with no slack. It carried one case of slack until
-# go-to-k/cdkd#2650, which is the shape the differential's own header warns
-# about one directory over: slack is how a probe deletes cases and still
-# passes. Both builds agree on the number -- 556 under bash 3.2 and under 5.3
-# -- so no case is version-gated and a strict floor cannot fail on one runner
-# while passing on the other.
-
-# `gate_segments_marked` marks a segment 1 when it is SUBSHELL-DERIVED -- a `cd`
-# there cannot move the caller -- and 0 at top level. Which mark a `cd` carries
-# is what decides the tree every gate resolves its markers in, so it is the
-# observable for anything that changes where a substitution is thought to end.
-mark_of() { # name, segment-text, expected-mark, command
-  local name="$1" seg="$2" want="$3" cmd="$4" got
-  got="$(gate_segments_marked "$cmd" | awk -F'\t' -v s="$seg" '$2 == s {print $1; exit}')"
-  if [ "$got" = "$want" ]; then
-    pass=$((pass + 1)); printf 'OK   %s\n' "$name"
-  else
-    fail=$((fail + 1)); printf 'FAIL %s (want mark "%s", got "%s")\n' "$name" "$want" "$got"
-    fail_log+="FAIL $name\n  command: $cmd\n"
-  fi
-}
-
-mark_last() { # name, expected-LAST-line, command
-  local name="$1" want="$2" cmd="$3" got
-  got="$(gate_segments_marked "$cmd" | tail -1)"
-  if [ "$got" = "$want" ]; then
-    pass=$((pass + 1)); printf 'OK   %s\n' "$name"
-  else
-    fail=$((fail + 1)); printf 'FAIL %s (want "%s", got "%s")\n' "$name" "$want" "$got"
-    fail_log+="FAIL $name\n  command: $cmd\n"
-  fi
-}
-
-mark_check() { # name, expected-first-line, command
-  local name="$1" want="$2" cmd="$3" got
-  got="$(gate_segments_marked "$cmd" | head -1)"
-  if [ "$got" = "$want" ]; then
-    pass=$((pass + 1)); printf 'OK   %s\n' "$name"
-  else
-    fail=$((fail + 1)); printf 'FAIL %s (want "%s", got "%s")\n' "$name" "$want" "$got"
-    fail_log+="FAIL $name\n  command: $cmd\n"
-  fi
-}
-
-# `subst_open`'s `#` arm must not run inside quotes (code review round 25). It
-# sits after the double-quote branch falls through -- substitutions are live in
-# double quotes -- so a `#` in a QUOTED argument ended the scan; round 23 adding
-# `)` to that class made `x="a )#"$(` do it, and the `cd` running in the
-# substitution child resolved as the TOP-LEVEL target. SQ2 is the pre-existing
-# half and the commonest `gh` spelling in this repo. `close_paren` and
-# `flush_line` both test the quote state; this was the third machine.
-# Mutant `so-hash-in-quotes`.
-mark_check "SQ1: a )# inside a double-quoted argument does not end the scan" "1	cd /tmp" \
-  "$(printf '%s\n' 'x="a )#"$(' 'cd /tmp' ')')"
-mark_check "SQ2: a # in a --body argument does not either" "1	cd /tmp" \
-  "$(printf '%s\n' 'gh pr comment 1 --body "closes #3040" $(' 'cd /tmp' ')')"
-mark_check "SQ-ctl: the same shape with no # (control)" "1	cd /tmp" \
-  "$(printf '%s\n' 'x="a )"$(' 'cd /tmp' ')')"
-# Round 24 reordered the single-quote arm ahead of the backslash skip; this is
-# the shape that discriminates it (code review round 25 supplied it): a `\`
-# inside `'"'"'...'"'"' is literal, so the span stays open and the `$(` that follows is
-# inside it. Reverted, the backslash eats the closing quote and the `cd` is
-# read as top-level. Mutant `so-sq-before-backslash`.
-mark_check "SQ3: a backslash inside a single-quoted span is literal" "1	cd /tmp" \
-  "$(printf '%s\n' 'x='"'"'a\'"'"'$(' 'cd /tmp' ')')"
-# `$$` followed by a QUOTE is ambiguous and reports the span OPEN (security
-# review round 27). bash reads the PID then a plain span; zsh reads `$` then
-# an ANSI-C span, and round 25's plain step-over traded a bash fail-open for
-# a zsh one -- the real `main-tree-edit-gate` went 2 -> 0 on the zsh shape.
-# Reporting OPEN keeps the body inside the substitution, so its `cd` is child
-# context under either reading. SQ10 is the shape that regressed and the one
-# `so-pid-step-over` reds; SQ4 cannot pin the ambiguity RULE, because under
-# both readings its own input ends OPEN -- it is the whole-arm control, and
-# `so-pid-arm-whole` is its mutant (test review round 29 measured SQ4 green
-# under the sixteen `so-*` mutants THAT HEAD CARRIED, the c1b shape -- a
-# historical figure, not a running tally: the set is larger now).
-mark_of "SQ4: the \$\$ arm exists at all (a whole-arm control -- both readings end OPEN here)" "cd /tmp" "1" \
-  "$(printf '%s\n' 'x=$$'"'"'a\'"'"'$(' 'cd /tmp' ')')"
-mark_of "SQ10: the zsh reading of an ambiguous \$\$ quote does not move the caller either" "cd sub" "1" \
-  "$(printf '%s\n' "x=\$\$'a\\'b'\$(" 'cd sub' ')')"
-# The two quote-OPENING arms, which no case notices either (test review
-# round 26): both are on origin/main, both fail-open-directed, and both are
-# cited as the rationale for arms around them -- the single-quote arm
-# implements the founding measurement written directly above it, and the
-# ANSI-C arm is what SQ4 steps over. Deleting either leaves the suite green
-# without these. The observable is the LAST segment -- the `cd` -- because
-# the body segment before it is marked either way.
-# Mutants `so-sq-open-arm` and `so-ansic-arm`.
-mark_last "SQ5: a ) inside a single-quoted span is data, not a closer" "1	cd /tmp" \
-  "$(printf '%s\n' "x=\$(echo 'a)b'" 'cd /tmp' ')')"
-mark_last "SQ6: the ANSI-C twin, where an escaped quote does not end the span" "1	cd /tmp" \
-  "$(printf '%s\n' "x=\$(echo \$'a\\')b'" 'cd /tmp' ')')"
-# Round 26 (security): round 25 stopping the `#` arm inside quotes exposed the
-# other half of the same desync -- `subst_open` kept the OUTER quote state
-# inside `$( )`, so a `#` comment carrying an unbalanced `)` reported the
-# span CLOSED and the verb line was swallowed as data. All three shells run
-# it and origin/main matched: 474 records. The walk saves and restores `q`
-# per frame now, and inside double quotes only a `$(`, a backtick and a `\`
-# are structural. Mutants `so-frame-quote-save` and `so-dq-structural`.
-check "SQ7: a # comment with an unbalanced ) inside a --body substitution" 0 "$MERGE" \
-  "$(printf '%s\n' 'gh pr comment 1 --body "$(' '# 1) first' 'gh pr merge 1' ')"')"
-mark_last "SQ8: a ) inside a double-quoted span inside \$( ) is data" "1	cd /tmp" \
-  "$(printf '%s\n' 'x=$(echo "a #)"' 'cd /tmp' ')')"
-# The RESTORE half of the per-frame save: once the inner `$( )` closes, the
-# walk must be back INSIDE the outer double quote, or the `#)` after it
-# reads as a comment and the trailing `$(` opens a span the join then ends
-# early -- `cd /tmp` becomes a TOP-LEVEL segment marked 0 although all three
-# shells run it in the child. Mutant `so-frame-quote-save`.
-mark_of "SQ9: the quote state is restored when an inner \$( ) closes" "cd /tmp" "1" \
-  "$(printf '%s\n' 'echo "$(true) #)"$(' 'cd /tmp' ')')"
-
-# The escaped character before the `#` is WORD GLUE here too (spec review
-# round 29): round 23 gave this walk the `)` class member without the glue
-# record `last_heredoc_opener` has kept since round 17, so `echo \)#b $(`
-# read a comment where all three shells keep the substitution open, and the
-# `cd` on the next line was marked TOP-LEVEL -- the resolution base moving
-# for every gate that resolves a target. SO-ctl2 is the real comment.
-# Mutant `so-bs-glue`.
-mark_of "SO7: an escaped ) before the # is glue, so the span stays open" "cd sub" "1" \
-  "$(printf '%s\n' 'echo \)#b $(' 'cd sub' ')')"
-# SO-ctl2's input is a PARSE ERROR in bash -- a `)` in that position -- so it
-# pins the reading of a shape no shell executes (test review round 30). It is
-# kept because the reading is what `so-hash-class-rparen` measures, and the
-# direction is safe (nothing runs); SO-ctl3 below is the executable spelling
-# of the same control.
-mark_of "SO-ctl2: an UNESCAPED ) before the # is a comment (control, a parse-error shape)" "cd sub" "0" \
-  "$(printf '%s\n' 'echo a )#b $(' 'cd sub' ')')"
-
-# A paren OUTSIDE every substitution has a KIND too, and this walk tracked
-# none: both frame arms are gated on `depth > 0`, so at depth 0 the `)` of an
-# `a=( )` reached the `#` test as a raw previous character, the scan ended,
-# and the `$(` later on the SAME line was never seen (code review round 30).
-# Measured in a fixture repo: BOTH bashes open that substitution and run the
-# `cd` in its child -- logged from `child/` through a side channel, since a
-# marker inside `$( )` is captured -- and then write the tracked file in the
-# PARENT, while `main-tree-edit-gate` answered rc=0. zsh takes the OTHER
-# reading -- it runs `cd child` in the parent and then dies on the line-3
-# `)` -- so mark 1 is right for the two bashes and is the refusing direction
-# for zsh, which is the order this file settles a disagreement in. (An
-# earlier revision of this comment said zsh parse-errors and therefore runs
-# nothing; it runs the `cd` first, measured through a log-file side channel.)
-# SO-ctl3 is the kind-0 twin and it is a REAL comment: all three shells run
-# its `cd child` in the PARENT shell before the same line-3 error, which is
-# exactly what mark 0 says. Mutant `so-depth0-frame`.
-mark_of "SO8: the ) of an a=( ) at depth 0 glues the #, so the \$( opens" "cd child" "1" \
-  "$(printf '%s\n' 'a=(x)#b $(' 'cd child' ')')"
-mark_of "SO-ctl3: the ) of a bare ( ) at depth 0 still starts a comment" "cd child" "0" \
-  "$(printf '%s\n' '(echo hi)#b $(' 'cd child' ')')"
-
-# THE GLUE RECORD IS FOR AN ESCAPED `)` ALONE, and CP-BS2 is the control that
-# holds it there. Rounds 30 and 31 measured what widening it costs: bash 5.x
-# and zsh glue `\ #` while bash 3.2`s `$( )` pre-scan reads a comment, and
-# bash 3.2 is the only shell that runs the shape that separates them, so the
-# wide reading took `x=$(echo \ #b )` / `cd ..` / `)` / a write from rc=2 to
-# rc=0. Both attempts to serve both readings measured new fail-opens of their
-# own, so that class now reads exactly as origin/main reads it and
-# go-to-k/cdkd#3303 owns it. CP-BS2 pins the OTHER half: an escaped `)` is
-# glue in all three shells, so this line must read as origin/main reads it --
-# bodies first, and a `cd` that IS honoured. Mutant `so-bs-glue` reds SO7,
-# `so-bs-glue-wide` (the widened record) reds this one.
-mark_of "CP-BS2: an escaped ) is glue, and the cd after the span is still honoured" "cd /tmp" "0" \
-  "$(printf '%s\n' 'x=$( echo W > tracked ; echo \)#b )' 'cd /tmp' 'echo z > f')"
-# The other side of the same record, and the shape that prices widening it.
-# An escaped SPACE before the `#` must NOT be glue: the `#` opens a comment,
-# the span stays open, and the `cd` on the next line is child context -- which
-# is what origin/main answers and what bash 3.2, the only shell that runs this
-# shape, does. Under the widened record the span closes on line 1 and that
-# `cd` is marked 0, which is the rc 2 -> 0 rounds 30 and 31 measured through
-# the real gate. Mutant `so-bs-glue-wide`.
-mark_of "SO9: an escaped SPACE before a # is NOT glue, so the cd stays child context" "cd .." "1" \
-  "$(printf '%s\n' 'x=$(echo \ #b )' 'cd ..' ')')"
-
-# --- gate_segments_marked's SEGMENT-COUNT bound (go-to-k/cdkd#2650) ----------
-# The marking forks `printf | awk` PER SEGMENT, so its cost is linear in the
-# segment count. Measured before the bound: `( cd /tmpN ) ;` x 2000 took 11 s,
-# PAST the 10 s PreToolUse timeout -- and a killed hook cannot emit exit 2,
-# which disarms every gate at once. The bound makes the marking CONSERVATIVE
-# past the cap rather than absent: every segment marked 1, no `cd` honoured,
-# `main-tree-edit-gate` blocks. Both directions are asserted, because a bound
-# that only ever fires is a disabled feature and one that never fires is
-# decoration.
-mark_n() { # count -> the two tallies, space-separated
-  local n="$1" b="" i out
-  for i in $(seq 1 "$n"); do b="$b echo s$i ;"; done
-  out=$(gate_segments_marked "$b")
-  printf '%s %s' "$(printf '%s\n' "$out" | grep -c '^1	')" "$(printf '%s\n' "$out" | grep -c '^0	')"
-}
-# THE CAP VALUE IS PINNED FIRST. Every assertion below derives its expectation
-# from `$GATE_MARK_MAXSEG`, so with the cap set to 3 they all still passed --
-# the bound was fenced in shape and not in size, and a bound small enough to
-# fire on ordinary commands is a disabled feature wearing a passing test.
-if [ "$GATE_MARK_MAXSEG" = 200 ]; then
-  pass=$((pass + 1)); printf 'OK   marking bound: the cap is 200\n'
-else
-  fail=$((fail + 1)); printf 'FAIL marking bound: cap is %s, expected 200\n' "$GATE_MARK_MAXSEG"
-  fail_log="${fail_log}FAIL marking bound: GATE_MARK_MAXSEG is $GATE_MARK_MAXSEG; the cases below derive their expectations from it, so they cannot see the value change\n"
-fi
-if [ "$(mark_n "$GATE_MARK_MAXSEG")" = "0 $GATE_MARK_MAXSEG" ]; then
-  pass=$((pass + 1)); printf 'OK   marking bound: AT the cap every plain segment is still marked precisely\n'
-else
-  fail=$((fail + 1)); printf 'FAIL marking bound: at the cap, got [%s]\n' "$(mark_n "$GATE_MARK_MAXSEG")"
-  fail_log="${fail_log}FAIL marking bound: at the cap the precise path must still run; got [$(mark_n "$GATE_MARK_MAXSEG")]\n"
-fi
-_over=$((GATE_MARK_MAXSEG + 1))
-if [ "$(mark_n "$_over")" = "$_over 0" ]; then
-  pass=$((pass + 1)); printf 'OK   marking bound: ONE past the cap every segment is marked conservatively\n'
-else
-  fail=$((fail + 1)); printf 'FAIL marking bound: one past the cap, got [%s]\n' "$(mark_n "$_over")"
-  fail_log="${fail_log}FAIL marking bound: past the cap every segment must be marked 1 (no cd honoured); got [$(mark_n "$_over")]\n"
-fi
-mark_lat_cmd=""
-for _i in $(seq 1 2000); do mark_lat_cmd="$mark_lat_cmd ( cd /tmp$_i ) ;"; done
-mark_lat_start=$(date +%s)
-gate_segments_marked "$mark_lat_cmd" > /dev/null
-mark_lat_secs=$(( $(date +%s) - mark_lat_start ))
-# BUDGET 8s, NOT 4s, and the number is chosen from the thing that matters: the
-# PreToolUse timeout is 10s and a killed hook cannot emit exit 2. At 4s this
-# case went RED twice in five runs while other agents were busy on the same
-# machine -- a stable 2s standalone -- and a fence that fails on load is a
-# fence people learn to ignore. `date +%s` also has whole-second granularity,
-# so a 2s measurement carries +/-1s of quantisation before any contention.
-if [ "$mark_lat_secs" -le 8 ]; then
-  pass=$((pass + 1))
-  printf 'OK   latency: 2000 subshell segments through gate_segments_marked in %ss (budget 8s)\n' "$mark_lat_secs"
-else
-  fail=$((fail + 1))
-  printf 'FAIL latency: 2000 subshell segments took %ss, budget 8s\n' "$mark_lat_secs"
-  fail_log="${fail_log}FAIL latency: gate_segments_marked took ${mark_lat_secs}s on 2000 segments -- this measured 11s before the bound, past the 10s PreToolUse timeout\n"
-fi
-
 # --- gate_strip_prefix: ENGINE PARITY, not spelling -------------------------
 #
 # These are the only DIRECT cases this function has, and they exist because it
@@ -3691,52 +3374,6 @@ strip_is 'a bare closer with no label is not an arm' ') cmd' ') cmd'
 # without it, reverting the close pattern alone leaves this file green.
 strip_is 'a trailing backslash is not grouping punctuation' 'echo hi\\' 'echo hi\\'
 
-# --- gate_segments_marked: RECURSION DEPTH IS A BOUND, and its absence was a
-# --- denial of service on every gate at once ---------------------------------
-#
-# `bash -c "<list>"` recurses, and every level used to restart with a fresh
-# `GATE_MARK_MAXSEG` budget while contributing exactly ONE segment to its
-# parent. So `GATE_MARK_MAXSEG` counted 1 however deep the nesting went, and
-# `GATE_EDIT_MAXBYTES` (4096, applied by the hook to the whole command) buys
-# hundreds of levels. Cost is quadratic in length: measured through the real
-# hook, `sh -c ` repeated 300 / 500 / 680 times -- 1807 / 3007 / 4087 bytes,
-# all UNDER the byte cap -- cost 5.7 s, 12.7 s and 24.1 s, against 0.04 s flat
-# on origin/main.
-#
-# That is not a slow test, it is a gate bypass: the PreToolUse timeout is 10 s,
-# a KILLED hook cannot emit exit 2, and every gate sourcing this library goes
-# quiet together. `GATE_MARK_MAXDEPTH` (default 4) bounds it; past the limit the
-# body is marked 1 without descending, which is the same conservative reading a
-# scanned body gets, since `bash -c` runs a child that cannot move this shell.
-#
-# The budget is deliberately far under the 10 s timeout AND far over the
-# measured cost, so this fails on a return of the quadratic and not on a slow
-# machine.
-__deep=$(awk 'BEGIN{ s=""; for (i=0;i<680;i++) s = s "sh -c "; print s "cd /tmp" }')
-__t0=$(date +%s)
-gate_segments_marked "$__deep" >/dev/null 2>&1
-__t1=$(date +%s)
-__deep_secs=$((__t1 - __t0))
-if [ "$__deep_secs" -le 5 ]; then
-  pass=$((pass + 1))
-  printf 'OK   latency: 680 nested `sh -c` levels (4087 B) in %ss (budget 5s)\n' "$__deep_secs"
-else
-  fail=$((fail + 1))
-  printf 'FAIL latency: 680 nested `sh -c` levels took %ss, budget 5s\n' "$__deep_secs"
-  fail_log="${fail_log}FAIL latency: gate_segments_marked took ${__deep_secs}s on 680 nested levels -- this measured 24s before GATE_MARK_MAXDEPTH, past the 10s PreToolUse timeout, which disarms every gate sourcing this library\n"
-fi
-
-# The bound must not change the ANSWER for ordinary nesting, only refuse to keep
-# descending past the limit. One level in, the body's `cd` is still reported
-# subshell-derived -- which it is, because `bash -c` runs a child.
-__one=$(gate_segments_marked 'bash -c "cd /tmp" ; echo hi > f' | head -1)
-if [ "$__one" = "$(printf '1\tcd /tmp')" ]; then
-  pass=$((pass + 1)); printf 'OK   a single bash -c level still marks its body subshell-derived\n'
-else
-  fail=$((fail + 1)); printf 'FAIL a single bash -c level: got [%s]\n' "$__one"
-  fail_log="${fail_log}FAIL single bash -c level marking\n  got: $__one\n"
-fi
-
 # --- a verb INSIDE a multi-line substitution whose comment holds an apostrophe -
 #
 # Real bash RUNS this `git commit` -- verified with a stub `git` on PATH, not
@@ -3770,29 +3407,6 @@ __i2710=$(printf 'git -c user.email=t@t -c user.name=t -C $(\n# it%ss fine\necho
 check 'go-to-k/cdkd#2710: apostrophe in a comment inside a multi-line $( )' 0 \
   "$GATE_RE_GIT_COMMIT" "$__i2710"
 
-# --- the two paren-count spellings must agree ACROSS the threshold -----------
-#
-# `gate_segments_marked` counts a segment's parens with an in-shell deletion
-# below `GATE_MARK_MAXINLINE` and with one `awk` fork above it, because the
-# deletion is O(n^2) on bash 3.2 -- the only bash CI runs. Two spellings of one
-# predicate is exactly the shape that goes wrong silently, so the equality is
-# asserted here, straddling the threshold, under whichever engine runs this
-# file. Without it, a segment could be judged nested on one side of 1024 bytes
-# and top-level on the other.
-__pc_fail=0
-for __n in 100 1000 1024 1028 2000 4000; do
-  __s=$(awk -v n="$__n" 'BEGIN{x="";for(i=0;i<n/4;i++)x=x "(a) ";print x}')
-  __a="${__s//[^(]}"
-  __inline=${#__a}
-  __fork=$(printf '%s' "$__s" | awk '{n+=gsub(/\(/,"")} END{print n+0}')
-  [ "$__inline" = "$__fork" ] || __pc_fail=1
-done
-if [ "$__pc_fail" = 0 ]; then
-  pass=$((pass + 1)); printf 'OK   paren count: inline and awk agree across GATE_MARK_MAXINLINE\n'
-else
-  fail=$((fail + 1)); printf 'FAIL paren count: inline and awk disagree across GATE_MARK_MAXINLINE\n'
-  fail_log="${fail_log}FAIL paren count parity across the inline/fork threshold\n"
-fi
 
 # THE FLOOR IS A COLLAPSE DETECTOR, NOT THE CASE COUNT -- and it is set BELOW
 # what any context currently reports, on purpose.
@@ -4825,8 +4439,8 @@ __gmc_tail_start=$((pass + fail))
 # THE TWO MESSAGES THIS HELPER EMITS, held to the same shape rule as the hook
 # refusals. Both fire while EVERY Bash call is refused, so an indented recipe
 # line in either would offer a command that cannot be run -- the defect that
-# took three revisions to close in the hook-side twin. `main-tree-edit-gate`'s
-# suite asserts the shape for the two refusals that hook OWNS; these two belong
+# took three revisions to close in the hook-side twin. A hook's own suite
+# asserts the shape for the refusals that hook OWNS; these two belong
 # here, where the helper lives, and review round 19 found the soft one outside
 # every scan. The assertion is TOTAL -- no line may begin with whitespace --
 # because the enumerating version was walked past by six spellings.

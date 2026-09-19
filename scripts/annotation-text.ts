@@ -18,14 +18,13 @@
  *
  * ## Why this is shared rather than three folds
  *
- * Measured 2026-09-07, the three checks in this family disagreed three ways:
- * `check-pr-closes-paren.ts` folded one of its two body-derived fields,
- * `check-pr-non-english-text.ts` stripped only a TRAILING carriage return
- * (`/\r$/`), and `check-pr-internal-labels.ts` stripped nothing -- so a fork PR
- * file line ending `<CR>::stop-commands::x` reached column 0 through two of
- * them. One rule in one place is what stops the next sibling being written with
- * a fourth answer; enumerating the bad shapes per file is how the first three
- * drifted apart.
+ * Measured 2026-09-07, the checks in this family disagreed three ways: one
+ * folded a single body-derived field, `check-pr-non-english-text.ts` stripped
+ * only a TRAILING carriage return (`/\r$/`), and a third stripped nothing --
+ * so a fork PR file line ending `<CR>::stop-commands::x` reached column 0
+ * through two of them. One rule in one place is what stops the next sibling
+ * being written with its own answer; enumerating the bad shapes per file is
+ * how they drifted apart.
  *
  * ## The character class
  *

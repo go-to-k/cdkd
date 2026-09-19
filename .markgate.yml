@@ -1,13 +1,16 @@
 # markgate configuration — https://github.com/go-to-k/markgate
 #
-# ONE gate backs a mechanical merge condition for this repo.
+# TWO gates back a mechanical merge condition for this repo.
 #
 # A marker-backed gate exists only under the rule in
 # `.claude/rules/hooks.md`: it may block when the harm completes at the moment
 # of the action AND lands irreversibly on a third party's artifact, on another
 # session's work, or on the maintainer's AWS account. Real-AWS resources the
-# maintainer pays for are the third case, which is why `integ-destroy` is the
-# gate that stayed.
+# maintainer pays for are the third case, which is why `integ-destroy` stayed.
+# A state-schema bump is the FIRST case: the migration runs against state
+# documents that live in USERS' S3 buckets, one write upgrades them in place,
+# and nothing the maintainer can do afterwards puts them back — which is why
+# `integ-schema-migration` is here too.
 #
 # Gates:
 #   integ-destroy  — real-AWS deploy + destroy with zero orphan
@@ -26,9 +29,19 @@
 #                    `gh pr merge` (and `gh pr merge --auto`) when this
 #                    gate is stale, so deletion-touching code never
 #                    reaches main without a verified destroy.
+#   integ-schema-migration
+#                  — a real-AWS round trip proving a `StackState.version`
+#                    bump auto-migrates: deploy under vN, swap binary,
+#                    read works, the next write persists vN+1, destroy
+#                    clean. Set ONLY by /run-integ, and only for a test
+#                    named `schema-v<N>-to-v<N+1>-migration` that ran
+#                    clean end to end. Same 14d TTL. The PreToolUse hook
+#                    in .claude/hooks/integ-schema-migration-gate.sh
+#                    blocks `gh pr merge` on a stale marker, and only for
+#                    a PR whose diff really changes the version constant.
 #
-# `check`, `docs`, `verify-pr`, `pr-review`, `integ-broad`, `integ-local` and
-# `integ-schema-migration` were removed. `/check`, `/check-docs`, `/verify-pr`
+# `check`, `docs`, `verify-pr`, `pr-review`, `integ-broad` and `integ-local`
+# were removed. `/check`, `/check-docs`, `/verify-pr`
 # and `/review-pr` remain the RECOMMENDED pre-commit / pre-merge procedure and
 # their checklists still apply — they are simply no longer enforced by a marker.
 # CI is the other mechanical merge condition (`.claude/hooks/ci-green-gate.sh`,
@@ -144,3 +157,43 @@ gates:
       # it was added for (issue #2720).
       - "src/provisioning/provider-registry.ts"
 
+  integ-schema-migration:
+    # Records the last cdkd state-schema migration integ run. cdkd's
+    # S3 state schema (the on-disk shape of
+    # `s3://bucket/cdkd/<stack>/<region>/state.json`) is the actual
+    # user contract — millions of state files live in real AWS
+    # accounts under the v1..v5 shapes already shipped. Bumping
+    # `StackState.version` (v5 -> v6 etc.) MUST be transparently
+    # auto-migrated by the new binary AND verified by a real-AWS
+    # integ test that proves the round-trip: deploy under vN -> swap
+    # binary -> read works -> next write upgrades to vN+1 silently ->
+    # destroy clean. Unit tests can't catch wire-format divergences
+    # (`undefined` field stripping, key ordering, schema version
+    # coercion); only real round-trip does. Users must never need to
+    # run an explicit migrate command for a schema bump — the binary
+    # auto-migrates on first write under the new version.
+    #
+    # Why a separate marker (vs. extending `integ-destroy` /
+    # `integ-broad`): a destroy / broad integ flips its marker on
+    # ANY clean real-AWS destroy and exercises the v5 binary against
+    # v5 state — neither verifies cross-version compatibility. The
+    # only thing that does is an integ named
+    # `schema-v<N>-to-v<N+1>-migration` which `/run-integ`
+    # specifically recognizes and gates the `integ-schema-migration`
+    # marker set on.
+    #
+    # Scope: just `src/types/state.ts` — the file carrying the
+    # `StackState.version` literal type, the
+    # `STATE_SCHEMA_VERSIONS_READABLE` constant, and every
+    # state-shape interface. Editing any other path doesn't touch
+    # the schema. The hook
+    # (`.claude/hooks/integ-schema-migration-gate.sh`) does a
+    # precise second-pass `gh pr diff` grep for actual
+    # version-constant additions/deletions so non-bump edits to this
+    # file (JSDoc, helper functions, comment fixes) pass through
+    # without false-positive activation. Same 14d TTL as the other
+    # AWS-coupled gates.
+    ttl: 14d
+    hash: files
+    include:
+      - "src/types/state.ts"

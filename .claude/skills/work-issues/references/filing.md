@@ -92,7 +92,6 @@ On a MISS, file it:
 cat > /tmp/wi-issue-body-<issue-slug>.md <<'BODY' &&
 <one paragraph: the root cause, and where the evidence for it is>
 
-Dup-check: searched open issues for <terms> -- none covers this root cause
 Session-fit: now (do it in this session) | next (not this session) -- <the context test, then a reason the WORK owns: .claude/rules/session-report.md>
 Severity: high -- <what stays broken while it is undone>
 Effort: large (L) -- <which verification cycle it drags>
@@ -115,8 +114,8 @@ condition a reader can CHECK (`PR #N holds this file`, `the fix belongs in
 The `<issue-slug>` is per FINDING (lanes share `/tmp`), the `&&` stops a failed
 write from filing whatever sat at that path, and heredoc → file → `--body-file`
 in ONE QUOTED-delimiter call is the shape — the two-line form files an issue
-with NO body. CI comments on a missing `Dup-check:` and applies the matching
-`severity:*` / `effort:*` label.
+with NO body. CI applies the matching `severity:*` / `effort:*` label from the
+body.
 
 **This is not a filing threshold** (§10-0: an unfiled finding is worse than a
 filed one) — only WHERE it is written down changes.

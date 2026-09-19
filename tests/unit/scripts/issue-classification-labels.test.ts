@@ -61,7 +61,6 @@ const SCRIPT = join(REPO_ROOT, 'scripts/check-issue-classification-labels.ts');
 const BODY_BOTH = [
   'The provider drops the field.',
   '',
-  'Dup-check: searched open issues -- none covers this root cause',
   'Session-fit: next (not this session) -- needs a new fixture',
   'Severity: high -- deploy silently ships a resource missing the property',
   'Effort: large (L) -- a new integ fixture has to be written',

@@ -174,11 +174,10 @@ fi
 # `if [ -z "$branch" ]` arm below, which is where that used to be got wrong.
 branch=$(git -C "$target_dir" symbolic-ref --short HEAD 2>/dev/null || echo "")
 
-# The MAIN-vs-LINKED distinction, in the shape `main-tree-branch-gate.sh`
-# already uses: the main checkout is whatever `git worktree list --porcelain`
-# lists FIRST. Reused rather than re-invented, per go-to-k/cdkd#2402 -- but two
-# parts of that shape are deliberately NOT copied here, because each was
-# measured to buy nothing at this call site:
+# The MAIN-vs-LINKED distinction: the main checkout is whatever
+# `git worktree list --porcelain` lists FIRST (go-to-k/cdkd#2402). Two parts of
+# the shape a retired sibling gate used are deliberately NOT copied here,
+# because each was measured to buy nothing at this call site:
 #
 #   NO MEMO. That gate asks the question once per matched SEGMENT and caches the
 #   last answer in a pair of globals. This gate asks at most once per command,
@@ -213,13 +212,12 @@ if [ -z "$branch" ]; then
   #       exactly the state this gate exists to catch, wearing a spelling it
   #       could not see because it recognised the state only by branch NAME.
   #
-  # (b) is reachable from the documented flow. `main-tree-branch-gate.sh`
-  # deliberately passes `git checkout <sha>` in the main checkout (its own
-  # `--detach` note carries the measurement, and keeps the verdict); the tree
-  # detaches, and this gate then waved a commit straight into the SHARED main
-  # checkout. Measured on a scratch opted-in repo before this arm existed,
-  # driving this hook with a `git commit -m x` payload: rc=2 on `main`, rc=0
-  # once detached. Two gates, a hole neither has alone (go-to-k/cdkd#2402).
+  # (b) is reachable from the documented flow: nothing stops
+  # `git checkout <sha>` in the main checkout, the tree detaches, and this gate
+  # then waved a commit straight into the SHARED main checkout. Measured on a
+  # scratch opted-in repo before this arm existed, driving this hook with a
+  # `git commit -m x` payload: rc=2 on `main`, rc=0 once detached
+  # (go-to-k/cdkd#2402).
   #
   # THE DISCRIMINATOR IS ALREADY IN HAND. `$target_top` is `rev-parse
   # --show-toplevel` from this same dir, and it is non-empty here because the
@@ -419,9 +417,9 @@ if [ -z "$branch" ]; then
     # sentence below it used to carry was the SAME defect one arm over: it said
     # the bisect "is what detached HEAD here" and that `bisect reset` "restores
     # the branch you started from". Both are false of a bisect begun in a tree
-    # that was ALREADY detached -- and `main-tree-branch-gate.sh` passes
-    # `git checkout <sha>` in the main checkout, so that is one allowed command
-    # away. Measured on git 2.53, same fixture both ways:
+    # that was ALREADY detached -- and nothing stops `git checkout <sha>` in
+    # the main checkout, so that is one command away. Measured on git 2.53,
+    # same fixture both ways:
     #
     #   started FROM a branch   BISECT_START = main    reset -> branch main
     #   started DETACHED        BISECT_START = <sha>   reset -> rc=0, STILL DETACHED

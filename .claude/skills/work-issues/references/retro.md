@@ -91,8 +91,8 @@ instruction, wrong place. Which shape RECURRED is a COUNT. No evidence, no edit.
 
 ### 10-d. Ship it like any other change
 
-Back on `main` after §9, `main-tree-edit-gate` blocks editing a tracked file,
-so the retro gets a worktree. MAIN-CHECKOUT (SKILL.md "Launch mode") runs:
+Back on `main` after §9, the retro gets a worktree like any other change.
+MAIN-CHECKOUT (SKILL.md "Launch mode") runs:
 
 ```bash
 # UTC MINUTE, not day: post-merge-orphan-push-gate refuses a merged name.

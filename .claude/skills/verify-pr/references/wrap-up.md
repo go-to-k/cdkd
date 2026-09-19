@@ -24,7 +24,7 @@ taxonomy):
 - (b) **TODO (issue #N)** — an issue exists AND the PR body references it. The
   issue body carries the four classification lines, one field per line, spelled
   exactly as [../../../rules/session-report.md](../../../rules/session-report.md)
-  gives them, plus the `Dup-check:` line `/work-issues` requires.
+  gives them.
 
   **Reviewers grade on a DIFFERENT scale — translate, do not copy**: `nit` →
   `low`, `minor` → `medium`. There is deliberately no `blocker` arm: a blocker is

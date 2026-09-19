@@ -102,7 +102,8 @@ local path AND refreshes `integ-destroy`.
 ## State-schema-bump PRs
 
 A PR that bumps `StackState.version` must prove the round-trip with
-`/run-integ schema-v<N>-to-v<N+1>-migration` before merging. The S3 state schema
+`/run-integ schema-v<N>-to-v<N+1>-migration` before merging, and
+`integ-schema-migration-gate.sh` blocks `gh pr merge` until it has. The S3 state schema
 is the real user contract and transparent auto-migration is absolute — a user
 must do NOTHING on upgrade — so this is a design constraint to satisfy while
 writing the bump, not a box to tick at the end.

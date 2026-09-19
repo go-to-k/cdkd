@@ -251,11 +251,12 @@ mk_repo() { # <dir>
   # EMPTY on purpose. An empty config is UNPARSABLE, so
   # `gate_resolve_marker_gate` fails closed to `canonical` and a markgate-backed
   # gate consults markgate and blocks -- which is what keeps `integ-destroy-gate`
-  # in EXPECTED_EXERCISED below. A config declaring OTHER gates, or an absent
-  # one, resolves to `none`; these fixtures are throwaway repos, hence foreign,
-  # and a gate that relaxes at `none` for a foreign target would go quiet here
-  # (go-to-k/cdkd#3351 gave one gate that relaxation -- `integ-destroy` did NOT
-  # inherit it, which is why this fixture still works).
+  # AND `integ-schema-migration-gate` in EXPECTED_EXERCISED below. A config
+  # declaring OTHER gates, or an absent one, resolves to `none`; these fixtures
+  # are throwaway repos, hence foreign, and go-to-k/cdkd#3351 relaxes
+  # `integ-schema-migration` for a FOREIGN target at `none` -- so an empty file
+  # is what keeps both gates reachable here, and giving these fixtures a real
+  # config would empty this population silently.
   touch "$d/.markgate.yml"
   "$REAL_GIT" -C "$d" add -A >/dev/null 2>&1
   "$REAL_GIT" -C "$d" -c user.email=t@t -c user.name=t commit -q -m base
@@ -346,10 +347,10 @@ stage_nosrc_violation "$nosrc"; stage_nosrc_violation "$nosrc_spaced"
 SHIM="$TMPDIR/bin"; mkdir -p "$SHIM"
 export GH_VIEW="$TMPDIR/v.json" GH_DIFF="$TMPDIR/d.txt" GH_CHECKS="$TMPDIR/c.tsv" GH_LIST="$TMPDIR/l.json"
 printf '{"files":[{"path":"src/deployment/deploy-engine.ts"},{"path":"src/local/x.ts"},{"path":"src/types/state.ts"}],"additions":2000,"deletions":100,"changedFiles":30,"headRefOid":"abc123","headRefName":"feat/x"}' > "$GH_VIEW"
-# A schema-bump diff spelled as `src/types/state.ts` actually spells it. The gate
-# it armed is retired, so nothing in EXPECTED_EXERCISED depends on it now; it
-# stays because `GH_DIFF` is ONE shared payload and a gate reading the PR diff
-# needs a realistic one. Keep it realistic if you edit it: the previous
+# A schema-bump diff spelled as `src/types/state.ts` actually spells it, which is
+# what arms `integ-schema-migration-gate` and keeps its EXPECTED_EXERCISED row
+# non-vacuous. `GH_DIFF` is ONE shared payload, so keep it realistic if you edit
+# it, and keep this shape: the previous
 # `version: 1 | 2 | ... | 5;` shape had never existed in that file, and a fence
 # row satisfied by a diff no real PR could produce is the vacuous-pass shape
 # this suite exists to refuse (go-to-k/cdkd#3351).
@@ -565,7 +566,13 @@ exercised_count=$(printf '%s' "$exercised_list" | wc -w | tr -d ' ')
 # another session's work, or on the maintainer's AWS account. What is left here
 # is every SURVIVING hook that judges a git/gh verb against a target tree, and
 # it may not shrink again without the same kind of note.
-EXPECTED_EXERCISED="branch-gate bughunt-clean-gate ci-green-gate dirty-path-restore-gate integ-destroy-gate main-tree-branch-gate post-merge-orphan-push-gate"
+#
+# It has since MOVED in both directions at once: the main-tree hook family was
+# retired (every session now launches in a workspace, and `branch-gate` already
+# refuses a commit or push on `main` anywhere), and `integ-schema-migration-gate`
+# came back, because a bad state-schema migration lands irreversibly on state
+# documents in USERS' S3 buckets.
+EXPECTED_EXERCISED="branch-gate bughunt-clean-gate ci-green-gate dirty-path-restore-gate integ-destroy-gate integ-schema-migration-gate post-merge-orphan-push-gate"
 missing=""
 for want in $EXPECTED_EXERCISED; do
   case " $exercised_list " in *" $want "*) ;; *) missing="$missing $want" ;; esac
@@ -602,9 +609,6 @@ fi
 #
 DECLARED_UNEXERCISED='
 broad-process-kill-gate           gates pkill / killall, not a git/gh verb
-main-tree-dirty-detector          PostToolUse, non-blocking by design
-main-tree-edit-gate               fires on a WRITE-shaped command, not a git/gh verb
-main-tree-git-cwd-detector        PostToolUse, non-blocking by design
 restore-backup                    non-blocking by design (it snapshots, never refuses)
 worktree-owner-gate               Edit|Write|NotebookEdit matcher, no Bash command
 '

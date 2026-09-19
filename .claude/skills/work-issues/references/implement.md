@@ -8,8 +8,8 @@ at merge-ready.
 
 ### 5-a. The tree
 
-Never edit in the main checkout (`main-tree-branch-gate` blocks branching
-there). Per lane:
+Never edit in the main checkout — it is shared across parallel agents. Per
+lane:
 
 ```bash
 # MAIN-CHECKOUT only; IN-PLACE creates NO worktree and skips these two lines

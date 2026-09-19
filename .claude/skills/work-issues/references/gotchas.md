@@ -34,9 +34,9 @@
   - **Its worst form is a FALSE GREEN**: a check run from the main tree verifies
     unmodified `main` and passes, so an unexpectedly clean or short result (the
     tell is the test COUNT) calls for a `pwd`, not a pass.
-  - **After a stray main-tree edit both obvious repairs are refused** (`git
-    checkout` trips `dirty-path-restore-gate`, writing the file back trips
-    `main-tree-edit-gate`): re-apply it in the worktree by ABSOLUTE path, then
+  - **After a stray main-tree edit the obvious repair is refused** (`git
+    checkout` trips `dirty-path-restore-gate`): re-apply the edit in the
+    worktree by ABSOLUTE path, then
     `git -C <main> stash push -m <label> -- <path>`, dropping that stash only
     once `stash@{0}` is yours.
 - **An IN-PLACE run ends with its lane branch still reading as unmerged**, since a
@@ -63,8 +63,8 @@
 - **Wrap with Remaining-work + State + Session-close** (`CLAUDE.md`; its scope
   rule excludes triaged-but-not-picked issues).
 - **Classify every deferral `now` / `next` the moment you defer it** — four
-  fields in the issue body, one per line, plus `Dup-check:`; the report repeats
-  them and adds `Notes` (§5-f owns the deciding test).
+  fields in the issue body, one per line; the report repeats them and adds
+  `Notes` (§5-f owns the deciding test).
 - **This flow parks a LOT, so the State line carries its weight**: lane
   subagents, `gh pr checks --watch` and `/run-integ` are all **WAITING**, one
   line each naming its signal; STOPPED only when every lane is merged.

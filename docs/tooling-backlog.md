@@ -125,14 +125,14 @@ which PR took it, so nobody picks it up twice.
 | [#2714](https://github.com/go-to-k/cdkd/issues/2714) | chore(hooks): guard the shared matcher against the edit that locks a session out of its own repository |
 | [#2715](https://github.com/go-to-k/cdkd/issues/2715) | chore(hooks): twelve suites run under bash 3.2 while running their hook under 5.x, so their 3.2 coverage is a claim about the test |
 | [#2716](https://github.com/go-to-k/cdkd/issues/2716) | chore(hooks): move the hook layer off bash — one runtime and a real parser, not types |
-| [#2768](https://github.com/go-to-k/cdkd/issues/2768) | chore(hooks): main-tree-edit-gate misses five cd spellings that really move the shell (cd --, -P, -L, eval, pushd) |
+| [#2768](https://github.com/go-to-k/cdkd/issues/2768) | chore(hooks): main-tree-edit-gate misses five cd spellings that really move the shell (cd --, -P, -L, eval, pushd) — MOOT: the main-tree hook family was retired |
 | [#2786](https://github.com/go-to-k/cdkd/issues/2786) | test(unit): three prose claims in check-scope-checker-inputs and .markgate.yml drift from the code beside them, and nothing fences the class |
 | [#2796](https://github.com/go-to-k/cdkd/issues/2796) | test(integ): the export fixture's FIXED bucket name puts it in a ~58 min S3 cooldown, so it cannot run twice in an hour |
 | [#2798](https://github.com/go-to-k/cdkd/issues/2798) | test(unit): the full suite intermittently exits 1 with "Worker exited unexpectedly" while every test passes |
 | [#2806](https://github.com/go-to-k/cdkd/issues/2806) | chore(rules): the merge projection reads the branch's budget table, and a local run with no origin/main skips it silently |
 | [#2810](https://github.com/go-to-k/cdkd/issues/2810) | chore(rules): the corpus byte floor cannot see 45 of 51 satellites being gutted, and no re-derivation fixes that |
 | [#2818](https://github.com/go-to-k/cdkd/issues/2818) | test(payload): re-derive the stale measured-N annotations in PAYLOAD_BUDGETS |
-| [#2823](https://github.com/go-to-k/cdkd/issues/2823) | chore(hooks): main-tree-edit-oracle is 10 commands over its 5s latency budget on origin/main too, so its red says nothing about the hook |
+| [#2823](https://github.com/go-to-k/cdkd/issues/2823) | chore(hooks): main-tree-edit-oracle is 10 commands over its 5s latency budget on origin/main too, so its red says nothing about the hook — MOOT: the main-tree hook family was retired |
 | [#2824](https://github.com/go-to-k/cdkd/issues/2824) | test(hooks): fence GATE_RE_* constants that no hook or suite reads |
 | [#2825](https://github.com/go-to-k/cdkd/issues/2825) | chore(process): the integ ledger is not a per-PR receipt, so a PR's own PASS can be erased by another lane's later FAIL of the same test |
 | [#2826](https://github.com/go-to-k/cdkd/issues/2826) | chore(hooks): finish the constant-liveness CLASS fence, split out of the 2729 fix |
@@ -181,3 +181,33 @@ which PR took it, so nobody picks it up twice.
 | — | test(rules): the display fence's MIXED-RENDER arm is value-class-independent but scoped to the `cdkd local` surface, so the deploy path's raw renders fall outside it. Extending it means a per-statement judgement across ~7 files in `scrub.ts` / `state.ts` / `gc.ts` that the fence explicitly refuses to make mechanically. Filed as go-to-k/cdkd#3405 and closed under the tooling-findings rule |
 | — | test(rules): `sanitizedLocals` in `tests/unit/cli/local-profile-display-population.test.ts` is a line walk on its fifth spelling; moving it to the compiler API means re-deriving every floor it feeds. Filed as go-to-k/cdkd#3411 and closed under the tooling-findings rule. Its sibling instrument — the AST mask-coverage checker — was DELETED by go-to-k/cdkd#3435 for the same maintenance reason, so weigh a rewrite against deleting this one too |
 | — | test(deployment): the AST mask-coverage checker was the only instrument that could answer whether the resolver's raw-render population is CLOSED. With it deleted (go-to-k/cdkd#3435) the remaining fence asserts containment — `maskSecretsRaw` and the strip-and-mask composition have one caller each — and the per-site renders are held by byte-level cases. A NEW raw render at a NEW site is no longer reported; go-to-k/cdkd#3441 is the known remainder, derived by hand |
+| — | chore(rules): `.claude/rules/layout-deployment-secrets.md` is 13,077 B against the 12 KB per-file cap in CLAUDE.md's Tooling Policy item 4, and it is not one of the five index files that may reach 20 KB. Nothing measures the cap any more — the payload fence was retired — so the budget is now prose a lane has to remember |
+| — | chore(skills): `.claude/skills/**` totals 214,717 B against the 200 KB budget in the same item — measure it with `find .claude/skills -type f -exec wc -c {} +`, since a `du -sk` reads disk blocks and overstates it. `.claude/rules/**` is 299,621 B, just inside its 300 KB budget, so the two are not equally slack; the skills one is what a lane will cross without noticing |
+
+## Deferred test-coverage gaps
+
+These are `severity:low` coverage gaps whose fix is a NEW integ fixture and
+for which there is no evidence of a defect — nothing here describes cdkd
+behaviour a user was observed to hit. They are picked up when the subsystem is
+next touched, as part of that work; the rows below are the record, and the
+issues they name are to be closed on the tracker.
+
+| Issue | Title |
+| --- | --- |
+| [#1749](https://github.com/go-to-k/cdkd/issues/1749) | test(dynamodb): the GlobalTable omit's local-vs-cross-region replica discrimination is unfenced (regional clients are unmockable in the unit suite) |
+| [#1856](https://github.com/go-to-k/cdkd/issues/1856) | test(integ): the AWS::Glue::Database drift inversion has no live arm - no fixture runs cdkd drift over a declared and an undeclared CreateTableDefaultPermissions |
+| [#1867](https://github.com/go-to-k/cdkd/issues/1867) | test(deploy): the CLI summary row and RunCounts.skipped for a skipped DELETE are still unasserted ((#1862) residual) |
+| [#1878](https://github.com/go-to-k/cdkd/issues/1878) | test(provisioning): decouple four issue-1824 tests from the resolver's error wording, and make the added sts mocks non-inert |
+| [#1939](https://github.com/go-to-k/cdkd/issues/1939) | test(dynamodb): the #1742 per-index WarmThroughput strip has no stale-baseline live arm, so its convergence claim is unproven end-to-end |
+| [#1974](https://github.com/go-to-k/cdkd/issues/1974) | test(provisioning): fence the deploy summary counts, the provisionedBy snapshot, and two acm-certificate fixture-hygiene gaps |
+| [#2061](https://github.com/go-to-k/cdkd/issues/2061) | test(integ): the custom resource's pre-delivery authz retry has no live arm — a clean run never reaches it |
+| [#2120](https://github.com/go-to-k/cdkd/issues/2120) | test(rollback): the #2057 named-region arm has no real-AWS coverage, and two fixture assertions can flake on SSM read lag |
+| [#2136](https://github.com/go-to-k/cdkd/issues/2136) | test(integ): no live arm proves a wrong-region needle fails to match a producer-region plaintext in state (#2109 residual) |
+| [#2232](https://github.com/go-to-k/cdkd/issues/2232) | test(state)/fix(deployment): PR #2194 residuals — rebuild tie-break edge tests + set-change summary warn under resolutionFailed |
+| [#2234](https://github.com/go-to-k/cdkd/issues/2234) | test(integ): the gc response-placeholder sweep has no live arm, and listRawObjects' wire shape is unexercised |
+| [#2239](https://github.com/go-to-k/cdkd/issues/2239) | test(dynamodb): the --remove-protection compensation has no live arm - no fixture reaches a terminal delete failure |
+| [#2425](https://github.com/go-to-k/cdkd/issues/2425) | test(integ): the issue 2036 CLOSURE has no end-to-end arm — only the RESIDUAL direction is covered |
+| [#2647](https://github.com/go-to-k/cdkd/issues/2647) | test(local): no integ fixture carries an ALB Lambda target group, so start-alb --from-state partiality is unexercised |
+| [#2756](https://github.com/go-to-k/cdkd/issues/2756) | test(masking): four deferred nits from the PR 2742 round-3 review — SSM fake refusal ordering, a structural cause assertion, an over-broad verify.sh inventory, and an overstated maskSecretsInError comment |
+| [#3193](https://github.com/go-to-k/cdkd/issues/3193) | test(integ): cdkd diff has no real-AWS arm for a malformed outputs bag |
+| [#3406](https://github.com/go-to-k/cdkd/issues/3406) | test(integ): dynamodb-ondemand does not exercise the per-GSI OnDemandThroughput pre-flight refusal |

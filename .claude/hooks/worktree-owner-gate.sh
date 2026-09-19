@@ -23,9 +23,7 @@
 # Scope: file-writing tools only (Edit / Write / NotebookEdit). Bash is
 # deliberately NOT gated — a shell command's write targets cannot be
 # resolved statically, and the read-only commands that dominate Bash
-# usage (git status, ls, grep) must never be blocked. The reactive
-# `main-tree-dirty-detector.sh` PostToolUse hook covers the Bash-write
-# case in the same spirit.
+# usage (git status, ls, grep) must never be blocked.
 #
 # Ownership record: `<worktree git dir>/session-owner` holding
 # `<session id> <UTC claim time>`. Per-worktree by construction, so it
@@ -79,8 +77,8 @@ git_dir=$(git -C "$probe_dir" rev-parse --absolute-git-dir 2>/dev/null || echo "
 [ -n "$git_dir" ] || exit 0
 
 # Only LINKED worktrees are gated. A linked worktree's git dir is
-# `<common>/worktrees/<name>`; the main tree's is plain `.git` and is
-# already covered by main-tree-edit-gate.sh / main-tree-branch-gate.sh.
+# `<common>/worktrees/<name>`; the main tree's is plain `.git`, and nothing
+# claims it, so a write there is never another session's to lose.
 case "$git_dir" in
   */worktrees/*) : ;;
   *) exit 0 ;;

@@ -249,9 +249,7 @@ describe('the shipped allow-list and the check\'s own sources', () => {
   it.each([
     'scripts/check-pr-non-english-text.ts',
     'scripts/non-english-allowlist.txt',
-    'scripts/check-pr-internal-labels.ts',
     'tests/unit/scripts/pr-non-english-text.test.ts',
-    'tests/unit/scripts/pr-internal-labels.test.ts',
     // The body-side half of the family, added by go-to-k/cdkd#2717 and missed
     // by the first version of this list. All four are clean today, so the gap
     // was latent -- but the two TEST files are exactly where someone pastes a
