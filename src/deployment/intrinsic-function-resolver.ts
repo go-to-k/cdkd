@@ -7102,8 +7102,14 @@ export class IntrinsicFunctionResolver {
     // review round 2): the two throws above need a shape mismatch or a flag,
     // this fires on every unenriched attribute.
     // not-in-class(resourceType): a TYPE name from the template or from AWS, not a value.
+    // A value the re-read reported but cdkd WITHHELD as masked is not an
+    // "unknown attribute" the user can do nothing about: name the permission.
+    const withheld =
+      healOutcome?.kind === 'read' && this.healWithheld(healOutcome, attributeName)
+        ? `. ${this.withheldRemedy()}`
+        : '';
     this.logger.warn(
-      `Unknown attribute ${this.displayMasked(attributeName, context)} for resource type ${resourceType}, returning physical ID`
+      `Unknown attribute ${this.displayMasked(attributeName, context)} for resource type ${resourceType}, returning physical ID${withheld}`
     );
     return physicalId;
   }

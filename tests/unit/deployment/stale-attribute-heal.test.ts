@@ -513,6 +513,32 @@ describe('stale attribute heal — resolver (#1852)', () => {
       expect(other.message).toContain('reports none by that name');
     });
 
+    it('the warn-and-return arm names the withholding too', async () => {
+      const healer = vi.fn().mockResolvedValue({
+        kind: 'read',
+        attributes: {},
+        withheldKeys: ['Endpoint'],
+      } as const);
+      const ctx = mkContext(
+        {
+          Db: {
+            physicalId: 'mydb',
+            resourceType: 'AWS::RDS::DBInstance',
+            properties: {},
+            attributes: {},
+            provisionedBy: 'cc-api',
+          },
+        },
+        healer
+      );
+      expect(await resolver.resolve({ 'Fn::GetAtt': ['Db', 'Endpoint.Address'] }, ctx)).toBe(
+        'mydb'
+      );
+      const warned = String(warnSpy.mock.calls.at(-1)![0]);
+      expect(warned).toContain('Unknown attribute Endpoint.Address');
+      expect(warned).toContain('cloudformation:DescribeType');
+    });
+
     it('a placeholder ARN is not "healed" by a masked read', async () => {
       const error = await refusalOf(
         resolver.resolve(
