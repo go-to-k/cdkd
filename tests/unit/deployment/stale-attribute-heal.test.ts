@@ -328,6 +328,7 @@ describe('stale attribute heal — resolver (#1852)', () => {
         )
       );
       expect(error.message).toContain('--strict-getatt');
+      expect(isMarkedNonRetryable(error)).toBe(true);
       expect(error.message).toContain('tried to re-read');
       expect(error.message).not.toContain('not enriched');
     });
@@ -444,11 +445,65 @@ describe('stale attribute heal — resolver (#1852)', () => {
       expect(isMarkedNonRetryable(error)).toBe(true);
     });
 
-    it('keeps the pre-#1852 remedy on a context with no healer', async () => {
+    it('points at cdkd deploy on a context with no healer', async () => {
       const error = await refusalOf(
         resolver.resolve({ 'Fn::GetAtt': ['Proxy', 'VpcId'] }, mkContext({ Proxy: proxy() }))
       );
-      expect(error.message).toContain('Update the resource so its next deploy records the value');
+      expect(error.message).toContain("Run 'cdkd deploy'");
+      expect(error.message).toContain('Referencing the VPC directly also works');
+    });
+
+    it('DBProxyEndpoint: a read WITHOUT VpcId refuses, saying the read had nothing', async () => {
+      const error = await refusalOf(
+        resolver.resolve(
+          { 'Fn::GetAtt': ['Ep', 'VpcId'] },
+          mkContext(
+            { Ep: { ...proxy(), resourceType: 'AWS::RDS::DBProxyEndpoint' } },
+            vi.fn().mockResolvedValue({ kind: 'read', attributes: { Endpoint: 'e' } })
+          )
+        )
+      );
+      expect(error.message).toContain('reports no usable value for this attribute either');
+    });
+  });
+
+  describe('a MASKED read-back is never a value (CloudControl import masks what it cannot certify)', () => {
+    it('refuses instead of serving *** for an *Arn, flat or nested', async () => {
+      const healer = vi.fn().mockResolvedValue({
+        kind: 'read',
+        attributes: { Arn: '***', Endpoint: { Address: '***' } },
+      } as const);
+      const reads: unknown[] = [];
+      const ctx = {
+        ...mkContext({ Param: { ...staleParameter(), provisionedBy: 'cc-api' as const } }, healer),
+        redactedAttributeReads: reads as never,
+      };
+      const error = await refusalOf(resolver.resolve({ 'Fn::GetAtt': ['Param', 'Arn'] }, ctx));
+      expect(error.message).toContain('reports none by that name');
+      // A non-Arn name falls back to the physical id — never to the mask.
+      expect(await resolver.resolve({ 'Fn::GetAtt': ['Param', 'Endpoint.Address'] }, ctx)).toBe(
+        '/app/config'
+      );
+    });
+
+    it('a placeholder ARN is not "healed" by a masked read', async () => {
+      const error = await refusalOf(
+        resolver.resolve(
+          { 'Fn::GetAtt': ['Ds', 'DataSourceArn'] },
+          mkContext(
+            {
+              Ds: {
+                physicalId: 'abc|ds',
+                resourceType: 'AWS::AppSync::DataSource',
+                properties: {},
+                attributes: { DataSourceArn: 'arn:aws:appsync:*:*:apis/abc/datasources/ds' },
+              },
+            },
+            vi.fn().mockResolvedValue({ kind: 'read', attributes: { DataSourceArn: '***' } })
+          )
+        )
+      );
+      expect(error.message).toContain('is a placeholder');
     });
   });
 

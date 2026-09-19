@@ -431,6 +431,234 @@ describe('DeployEngine - heals a stale attribute map on a Fn::GetAtt miss (#1852
     });
   });
 
+  describe('review round 1', () => {
+    /** A diff-pass double that resolves `Param.Arn` (concurrently, `times` times) and returns `changes`. */
+    const diffPassResolving = (changes: Map<string, ResourceChange>, times = 1): void => {
+      mockDiffCalculator.calculateDiff!.mockImplementation(
+        async (_s: unknown, _t: unknown, resolveFn: (v: unknown) => Promise<unknown>) => {
+          await Promise.all(
+            Array.from({ length: times }, () => resolveFn({ 'Fn::GetAtt': ['Param', 'Arn'] }))
+          );
+          return changes;
+        }
+      );
+    };
+    const updateOfParam = (extra: Record<string, unknown>): Map<string, ResourceChange> =>
+      new Map<string, ResourceChange>([
+        [
+          'Param',
+          {
+            logicalId: 'Param',
+            changeType: 'UPDATE',
+            resourceType: 'AWS::SSM::Parameter',
+            currentProperties: PARAM_PROPS,
+            ...extra,
+          } as unknown as ResourceChange,
+        ],
+      ]);
+
+    it('is single-flight under CONCURRENT misses: the in-flight read is shared', async () => {
+      mockStateBackend.getState!.mockResolvedValue(stateOf({ Param: staleRecord() }));
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      mockProvider.import!.mockImplementation(async () => {
+        await gate;
+        return { physicalId: '/app/config', attributes: { Arn: REAL_ARN } };
+      });
+      diffPassResolving(noChange({ Param: 'AWS::SSM::Parameter' }), 3);
+
+      const deploy = makeEngine().deploy(STACK, template);
+      await new Promise((r) => setTimeout(r, 20));
+      // All three resolutions are parked on the ONE read that has not answered.
+      expect(mockProvider.import).toHaveBeenCalledTimes(1);
+      release();
+      await deploy;
+      expect(mockProvider.import).toHaveBeenCalledTimes(1);
+    });
+
+    it('a read taken BEFORE this deploy updated the record is neither served nor merged afterwards', async () => {
+      mockStateBackend.getState!.mockResolvedValue(stateOf({ Param: staleRecord() }));
+      const changed = { ...PARAM_PROPS, Value: 'v2' };
+      diffPassResolving(
+        updateOfParam({
+          desiredProperties: changed,
+          propertyChanges: [{ path: 'Value', oldValue: 'v', newValue: 'v2' }],
+        })
+      );
+      mockDiffCalculator.hasChanges!.mockReturnValue(true);
+      mockDagBuilder.getExecutionLevels!.mockReturnValue([['Param']]);
+      mockProvider.update!.mockResolvedValue({
+        physicalId: '/app/config',
+        wasReplaced: false,
+        attributes: { Type: 'String', Value: 'v2' },
+      });
+
+      const result = await makeEngine().deploy(STACK, {
+        Resources: { Param: { Type: 'AWS::SSM::Parameter', Properties: changed } },
+        Outputs: template.Outputs,
+      });
+
+      expect(mockProvider.import).toHaveBeenCalledTimes(1); // the diff pass's
+      expect(mockProvider.update).toHaveBeenCalledTimes(1);
+      // The provider's fresh map has no Arn: that is its answer now.
+      expect(result.outputs?.['ParamArn']).toBeUndefined();
+      expect(savedStates().at(-1)!.resources['Param']!.attributes).toEqual({
+        Type: 'String',
+        Value: 'v2',
+      });
+    });
+
+    it('a record REPLACED this deploy does not inherit the old resource\'s read', async () => {
+      mockStateBackend.getState!.mockResolvedValue(stateOf({ Param: staleRecord() }));
+      const changed = { ...PARAM_PROPS, Value: 'v2' };
+      diffPassResolving(
+        updateOfParam({
+          desiredProperties: changed,
+          propertyChanges: [{ path: 'Value', oldValue: 'v', newValue: 'v2' }],
+        })
+      );
+      mockDiffCalculator.hasChanges!.mockReturnValue(true);
+      mockDagBuilder.getExecutionLevels!.mockReturnValue([['Param']]);
+      mockProvider.update!.mockResolvedValue({ physicalId: '/app/config-2', wasReplaced: true });
+
+      await makeEngine().deploy(STACK, {
+        Resources: { Param: { Type: 'AWS::SSM::Parameter', Properties: changed } },
+      });
+
+      const record = savedStates().at(-1)!.resources['Param']!;
+      expect(record.physicalId).toBe('/app/config-2');
+      expect(record.attributes?.['Arn']).toBeUndefined();
+    });
+
+    it('the metadata-only arm re-spreads the record and is STILL healed', async () => {
+      mockStateBackend.getState!.mockResolvedValue(stateOf({ Param: staleRecord() }));
+      mockDiffCalculator.calculateDiff!.mockResolvedValue(
+        updateOfParam({
+          desiredProperties: PARAM_PROPS,
+          attributeChanges: [{ attribute: 'DeletionPolicy', oldValue: undefined, newValue: 'Retain' }],
+        })
+      );
+      mockDiffCalculator.hasChanges!.mockReturnValue(true);
+      mockDagBuilder.getExecutionLevels!.mockReturnValue([['Param']]);
+
+      const result = await makeEngine().deploy(STACK, {
+        Resources: {
+          Param: {
+            Type: 'AWS::SSM::Parameter',
+            DeletionPolicy: 'Retain',
+            Properties: { ...PARAM_PROPS },
+          },
+        },
+        Outputs: template.Outputs,
+      } as CloudFormationTemplate);
+
+      expect(mockProvider.update).not.toHaveBeenCalled();
+      expect(mockProvider.import).toHaveBeenCalledTimes(1);
+      expect(result.outputs?.['ParamArn']).toBe(REAL_ARN);
+      const record = savedStates().at(-1)!.resources['Param']!;
+      expect(record.deletionPolicy).toBe('Retain');
+      expect(record.attributes).toEqual({ Type: 'String', Value: 'v', Arn: REAL_ARN });
+    });
+
+    it('PERSISTS the overwrite of a pre-#1681 placeholder ARN, and only that key', async () => {
+      const PLACEHOLDER = 'arn:aws:appsync:*:*:apis/abc/datasources/ds';
+      const REAL = 'arn:aws:appsync:us-east-1:111122223333:apis/abc/datasources/ds';
+      mockDiffCalculator.calculateDiff!.mockResolvedValue(noChange({ Ds: 'AWS::AppSync::DataSource' }));
+      mockStateBackend.getState!.mockResolvedValue(
+        stateOf({
+          Ds: {
+            physicalId: 'abc|ds',
+            resourceType: 'AWS::AppSync::DataSource',
+            properties: { Name: 'ds' },
+            observedProperties: { Name: 'ds' },
+            attributes: { DataSourceArn: PLACEHOLDER, Name: 'ds' },
+          },
+        })
+      );
+      mockProvider.import!.mockResolvedValue({
+        physicalId: 'abc|ds',
+        attributes: { DataSourceArn: REAL, Name: 'renamed-in-aws' },
+      });
+
+      const result = await makeEngine().deploy(STACK, {
+        Resources: { Ds: { Type: 'AWS::AppSync::DataSource', Properties: { Name: 'ds' } } },
+        Outputs: { Arn: { Value: { 'Fn::GetAtt': ['Ds', 'DataSourceArn'] } } },
+      });
+
+      expect(result.outputs?.['Arn']).toBe(REAL);
+      expect(savedStates().at(-1)!.resources['Ds']!.attributes).toEqual({
+        DataSourceArn: REAL,
+        Name: 'ds',
+      });
+    });
+
+    it('a MASKED Cloud Control read-back is neither served nor persisted', async () => {
+      mockStateBackend.getState!.mockResolvedValue(
+        stateOf({ Param: staleRecord({ provisionedBy: 'cc-api' }) })
+      );
+      // What `CloudControlProvider.import` returns when DescribeType is denied.
+      mockProvider.import!.mockResolvedValue({
+        physicalId: '/app/config',
+        attributes: { Arn: '***', Nested: { Leaf: '***' }, Tier: 'Standard' },
+      });
+
+      const result = await makeEngine().deploy(STACK, template);
+
+      expect(result.outputs?.['ParamArn']).toBeUndefined();
+      const record = savedStates().at(-1)!.resources['Param']!;
+      expect(JSON.stringify(record.attributes)).not.toContain('***');
+      expect(record.attributes).toEqual({ Type: 'String', Value: 'v', Tier: 'Standard' });
+      expect(JSON.stringify(savedStates().at(-1)!.outputs)).not.toContain('***');
+    });
+
+    it('a reused engine does not persist the PREVIOUS deploy\'s read', async () => {
+      mockStateBackend.getState!.mockResolvedValue(stateOf({ Param: staleRecord() }));
+      const engine = makeEngine();
+      await engine.deploy(STACK, template);
+      mockStateBackend.saveState!.mockClear();
+      // Second deploy: same stale record, but AWS no longer has the parameter.
+      mockStateBackend.getState!.mockResolvedValue(stateOf({ Param: staleRecord() }));
+      mockProvider.import!.mockResolvedValue(null);
+      await engine.deploy(STACK, template);
+      for (const s of savedStates()) {
+        expect(s.resources['Param']!.attributes?.['Arn']).toBeUndefined();
+      }
+    });
+
+    it('a type this build cannot ROUTE is a failed read, not a failed deploy', async () => {
+      mockStateBackend.getState!.mockResolvedValue(stateOf({ Param: staleRecord() }));
+      mockProviderRegistry.getProviderFor!.mockImplementation(() => {
+        throw new Error('no provider for AWS::SSM::Parameter');
+      });
+      const result = await makeEngine().deploy(STACK, template);
+      expect(result.outputs?.['ParamArn']).toBeUndefined();
+      const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain('tried to re-read');
+    });
+
+    it('never reads a nested stack', async () => {
+      mockDiffCalculator.calculateDiff!.mockResolvedValue(
+        noChange({ Child: 'AWS::CloudFormation::Stack' })
+      );
+      mockStateBackend.getState!.mockResolvedValue(
+        stateOf({
+          Child: {
+            physicalId: 'arn:cdkd-local:us-east-1:111122223333:nested-stack/p/Child',
+            resourceType: 'AWS::CloudFormation::Stack',
+            properties: {},
+            observedProperties: {},
+            attributes: {},
+          },
+        })
+      );
+      await makeEngine().deploy(STACK, {
+        Resources: { Child: { Type: 'AWS::CloudFormation::Stack', Properties: {} } },
+        Outputs: { O: { Value: { 'Fn::GetAtt': ['Child', 'SomeName'] } } },
+      });
+      expect(mockProvider.import).not.toHaveBeenCalled();
+    });
+  });
+
   describe('--dry-run writes no state', () => {
     /** A new resource consuming the stale attribute — resolved by the deploy's DIFF pass. */
     const consumerTemplate: CloudFormationTemplate = {

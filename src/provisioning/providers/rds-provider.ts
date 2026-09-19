@@ -408,9 +408,10 @@ export class RDSProvider implements ResourceProvider {
           // key this update can state authoritatively rather than supersede
           // anything. Returning the partial map always records exactly what this
           // update observed, and degrades to the resolver's LOUD `*Arn`
-          // shape-guard failure. It heals on the resource's next UPDATE — NOT on
-          // a plain re-deploy, which skips a resource whose resolved properties
-          // equal its state record without calling the provider at all (issue
+          // shape-guard failure. It heals on the resource's next UPDATE, or
+          // on the next deploy that resolves a `Fn::GetAtt` on it: a plain
+          // re-deploy skips the provider, so the deploy engine re-reads the
+          // record through `import()` on that miss (issue
           // https://github.com/go-to-k/cdkd/issues/1852).
           ...(arn !== undefined && { DBSubnetGroupArn: arn }),
         },

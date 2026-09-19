@@ -94,7 +94,10 @@ that `cdkd import` of a `DBInstance` records those attributes too.
 ### Eligibility
 
 A record is re-read only while it is still the one this deploy LOADED: present
-in the pre-deploy state, same physical id, and the same `attributes` OBJECT.
+in the pre-deploy state, same physical id, and the same `attributes` OBJECT. The
+gate runs on every ask, AHEAD of the memo, and again at the persist merge: the
+memo key survives an in-place UPDATE, so a read the diff pass took must reach
+neither a resolution made after the update nor the rewritten record.
 Once a provider has (re)written a record this run, a missing attribute is the
 provider's answer, not staleness — this keeps a `--no-wait` `DBInstance` created
 THIS run on today's warn-and-fallback. The reference compare (rather than record
@@ -137,6 +140,14 @@ redaction pass as a provider-recorded one. Consequences:
 - the merge ADDS keys the record does not hold and never rewrites a recorded
   one. The single exception is a recorded value `isStalePlaceholderArnAttribute`
   declares unusable — the same predicate the #1727 refusal uses;
+- a key whose value carries `SECRET_MASK` is dropped from the read-back and never
+  served. `CloudControlProvider.import` masks every leaf it cannot certify as a
+  read-only attribute (all of them when `DescribeType` is denied) on the premise
+  that a masked read is refused downstream; served, it would be re-applied to
+  AWS as the literal mask. The engine drops it, the resolver refuses it again,
+  and a served value still passes through `noteAttributeSecrecy`. The scrub at
+  the choke point has no needles for an unchanged record, so these three layers
+  — not the scrub — are what keep a sensitive value out;
 - `undefined`, `null` and `''` are never merged or served (empty-to-absent): the
   resolver serves any stored value, so a cached empty endpoint would shadow
   every later heal;

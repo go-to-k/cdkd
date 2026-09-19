@@ -1364,6 +1364,9 @@ resource was created or last updated. A record can lack one:
 A deploy that changes none of that resource's own properties does not update
 it, so the record is not rewritten on its own.
 
+A value Cloud Control returns masked (`***`) — every value, when the deploy role
+lacks `cloudformation:DescribeType` — is treated as unreadable, never used.
+
 **What cdkd does:**
 
 When `cdkd deploy` is about to fall back to the physical ID for such a
@@ -1384,8 +1387,9 @@ The error above appears only when that re-read could not help:
 denied call quotes the caller's account, role and session.
 
 Read-only commands (`cdkd diff`, `cdkd drift`, `cdkd export`) never re-read and
-never write state; they report the reference as unresolved until a deploy has
-healed the record.
+never write state. Until a deploy has healed the record they report an `*Arn` /
+`*Url` reference as unresolved, and resolve any other attribute to the physical
+ID with a warning.
 
 Changing any property of the resource, or re-importing it with `cdkd import`,
 also rewrites the record.

@@ -2367,6 +2367,14 @@ export class DeployEngine {
     resource: ResourceState,
     stackName: string
   ): Promise<StaleAttributeHealOutcome> {
+    // The eligibility gate runs on EVERY ask, ahead of the memo: the memo key
+    // (logical id + physical id) survives an in-place UPDATE, so a read taken
+    // by the diff pass would otherwise be served again AFTER this deploy
+    // rewrote the record — a pre-update value handed out as the answer to a
+    // miss that is now the provider's own.
+    if (!this.isHealEligible(logicalId, resource)) {
+      return Promise.resolve({ kind: 'not-attempted' });
+    }
     const key = `${logicalId}\u0000${resource.physicalId}`;
     const inFlight = this.attributeHeals.get(key);
     if (inFlight) return inFlight;
@@ -2377,22 +2385,30 @@ export class DeployEngine {
     return heal;
   }
 
+  /**
+   * Is `resource` still the record this deploy LOADED — same physical id, same
+   * `attributes` object — and of a type whose attributes are an AWS read-back?
+   * See {@link healBaseline}. Asked by the read AND by the persist merge: a
+   * read taken before this deploy rewrote the record must reach neither a later
+   * resolution nor the rewritten record.
+   */
+  private isHealEligible(logicalId: string, resource: ResourceState): boolean {
+    const loaded = Object.hasOwn(this.healBaseline, logicalId)
+      ? this.healBaseline[logicalId]
+      : undefined;
+    return (
+      loaded !== undefined &&
+      loaded.physicalId === resource.physicalId &&
+      loaded.attributes === resource.attributes &&
+      !isHealExcludedType(resource.resourceType)
+    );
+  }
+
   private async readStaleAttributes(
     logicalId: string,
     resource: ResourceState,
     stackName: string
   ): Promise<StaleAttributeHealOutcome> {
-    const loaded = Object.hasOwn(this.healBaseline, logicalId)
-      ? this.healBaseline[logicalId]
-      : undefined;
-    if (
-      loaded === undefined ||
-      loaded.physicalId !== resource.physicalId ||
-      loaded.attributes !== resource.attributes ||
-      isHealExcludedType(resource.resourceType)
-    ) {
-      return { kind: 'not-attempted' };
-    }
     // `getProviderFor` can throw for a type this build cannot route; the
     // caller's `.catch` turns that into `failed`, which is the honest outcome.
     const { provider } = this.providerRegistry.getProviderFor({
@@ -2420,7 +2436,18 @@ export class DeployEngine {
         `the provider answered for a different resource (${found.physicalId}) than the one asked about (${resource.physicalId})`
       );
     }
-    const attributes = normalizeHealedAttributes(found.attributes);
+    // A key whose value carries `SECRET_MASK` is NOT a value.
+    // `CloudControlProvider.import` masks every leaf it cannot certify as a
+    // read-only attribute — every leaf at all when `DescribeType` is denied —
+    // on the premise that a masked read is REFUSED downstream. Served from
+    // here it would be re-applied to AWS as the literal mask under a green
+    // deploy, and merged into the record it would block every later heal.
+    // Dropped, the key falls to the fallback's refusal exactly as before.
+    const attributes = Object.fromEntries(
+      Object.entries(normalizeHealedAttributes(found.attributes)).filter(
+        ([, value]) => !carriesSecretMask(value)
+      )
+    );
     if (Object.keys(attributes).length > 0) {
       this.healedAttributes.set(logicalId, {
         physicalId: resource.physicalId,
@@ -2429,7 +2456,7 @@ export class DeployEngine {
       });
     }
     this.logger.debug(
-      `Re-read the attributes of ${logicalId} (${resource.resourceType}) from AWS — its state record lacked one a Fn::GetAtt asked for (#1852): ${Object.keys(attributes).length} attribute(s) read`
+      `Re-read the attributes of ${displaySafe(logicalId)} (${displaySafe(resource.resourceType)}) from AWS — its state record lacked one a Fn::GetAtt asked for (#1852): ${Object.keys(attributes).length} attribute(s) read`
     );
     return { kind: 'read', attributes };
   }
@@ -2447,7 +2474,11 @@ export class DeployEngine {
     if (
       healed === undefined ||
       healed.physicalId !== record.physicalId ||
-      healed.resourceType !== record.resourceType
+      healed.resourceType !== record.resourceType ||
+      // Rewritten by a provider THIS deploy (in place, so the ids still match):
+      // its new attribute map is the provider's answer, and a read taken before
+      // the update must not be merged under it.
+      !this.isHealEligible(logicalId, record)
     ) {
       return record;
     }
@@ -2481,8 +2512,12 @@ export class DeployEngine {
       // back to the record's own `properties` for the observed bag (#1900).
       const templateProps = this.perResourceTemplateProps.get(logicalId);
       resources[logicalId] = scrubResourceRecord(
-        // Issue #1852: merged BEFORE the scrub, so a healed value is redacted
-        // by exactly the pass every provider-recorded attribute goes through.
+        // Issue #1852: merged BEFORE the scrub, so a healed value enters the
+        // same pass a provider-recorded attribute does. That pass has no needles
+        // for an UNCHANGED record (nothing resolved for it this deploy), so what
+        // keeps a sensitive value out is the read itself: masked keys are
+        // dropped in `readStaleAttributes`, and custom resources / nested stacks
+        // are never read.
         this.withHealedAttributes(logicalId, record),
         secrets ?? new Map<string, string>(),
         // No template bag means this resource was not resolved this deploy (an
@@ -2976,8 +3011,9 @@ export class DeployEngine {
     stateResources: Record<string, ResourceState>
   ): void {
     if (this.options.captureObservedState !== true) return;
-    // Dry run must not fire real SDK reads (matches the dry-run
-    // guarantee that no AWS side-effect runs).
+    // Dry run does not fire this observed-state read (no AWS side-effect runs
+    // under it). The #1852 attribute heal is the one read a dry run CAN issue:
+    // it is read-only, fires only on a `Fn::GetAtt` miss, and persists nothing.
     if (this.options.dryRun === true) return;
     let toRefresh = 0;
     let refused = 0;

@@ -4885,10 +4885,7 @@ export class IntrinsicFunctionResolver {
           // with a remedy worded from what the heal observed — only when the
           // re-read cannot supply a usable ARN either.
           const outcome = await this.healStaleAttributes(logicalId, resource, context);
-          const healed =
-            outcome?.kind === 'read'
-              ? readHealedAttribute(outcome.attributes, attributeName)
-              : undefined;
+          const healed = this.usableHealedAttribute(outcome, attributeName);
           if (
             healed !== undefined &&
             !isStalePlaceholderArnAttribute(resource.resourceType, attributeName, healed)
@@ -5385,6 +5382,21 @@ export class IntrinsicFunctionResolver {
     }
   }
 
+  /**
+   * The attribute out of a heal's read-back, or `undefined` when the read does
+   * not supply a USABLE one. A value carrying `SECRET_MASK` is not usable:
+   * `CloudControlProvider.import` masks what it cannot certify, and serving
+   * that would send the literal mask to AWS.
+   */
+  private usableHealedAttribute(
+    outcome: StaleAttributeHealOutcome | undefined,
+    attributeName: string
+  ): unknown {
+    if (outcome?.kind !== 'read') return undefined;
+    const value = readHealedAttribute(outcome.attributes, attributeName);
+    return value === undefined || carriesSecretMask(value) ? undefined : value;
+  }
+
   /** Serve a value the #1852 heal just read from AWS, logging it like a cached read. */
   private serveHealedAttribute(
     logicalId: string,
@@ -5395,7 +5407,12 @@ export class IntrinsicFunctionResolver {
     this.logger.debug(
       `Resolved Fn::GetAtt from a re-read of AWS (the state record lacked it): ${this.displayMasked(logicalId, context)}.${this.displayMasked(attributeName, context)} -> ${this.displayMasked(stringifyAttributeForLog(attributeName, this.maskValueLeaves(value, context)), context)}`
     );
-    return value;
+    // Through the same note as every value served from the recorded bag. A
+    // healer is contracted to drop masked keys and `usableHealedAttribute`
+    // refuses one here too, so this is the third layer, not the first: a mask
+    // that still got through is RECORDED as a redacted read and the engine
+    // refuses the consumer rather than sending `***` to AWS.
+    return this.noteAttributeSecrecy(logicalId, attributeName, value, context);
   }
 
   /**
@@ -5444,11 +5461,9 @@ export class IntrinsicFunctionResolver {
     const outcome = (await this.healStaleAttributes(logicalId, resource, context)) ?? {
       kind: 'not-attempted' as const,
     };
-    if (outcome.kind === 'read') {
-      const healed = readHealedAttribute(outcome.attributes, attributeName);
-      if (healed !== undefined) {
-        return this.serveHealedAttribute(logicalId, attributeName, healed, context);
-      }
+    const healed = this.usableHealedAttribute(outcome, attributeName);
+    if (healed !== undefined) {
+      return this.serveHealedAttribute(logicalId, attributeName, healed, context);
     }
     return this.constructGuardedAttribute(
       resource,
@@ -6814,9 +6829,7 @@ export class IntrinsicFunctionResolver {
               `the state record holds no VpcId for it (the read-back that would have recorded it reported none), ` +
               `and the physical id "${this.displayMasked(physicalId, context)}" is a name, not a VPC id, so cdkd ` +
               `refuses to substitute it. ` +
-              (vpcIdHealOutcome === undefined
-                ? `Update the resource so its next deploy records the value, or reference the VPC directly.`
-                : `${this.staleRecordRemedy(vpcIdHealOutcome, context)} Referencing the VPC directly also works.`)
+              `${this.staleRecordRemedy(vpcIdHealOutcome, context)} Referencing the VPC directly also works.`
           )
         );
       }

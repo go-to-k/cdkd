@@ -1371,9 +1371,11 @@ a segment at all: cdkd recovers the ARN from the attribute the provider records.
 the ARN from the composite id you supply — so an adopted child's `Ref` and
 `Fn::GetAtt` resolve immediately.
 
-Some records can still lack the attribute, and they all degrade the same way —
-`Ref` falls back to the raw composite id, and `Fn::GetAtt` on the ARN attribute
-FAILS rather than serving a value CloudFormation would not return:
+Some records can still lack the attribute. `Ref` on such a record falls back to
+the raw composite id. For `Fn::GetAtt` on the ARN attribute, `cdkd deploy`
+re-reads the resource from AWS once and records the real ARN; when that read
+cannot supply one it FAILS rather than serving a value CloudFormation would not
+return. The records are:
 
 - one written by a cdkd older than the fix that started recording the real ARN;
 - one whose import could not reach STS, so cdkd could not determine the account.
@@ -1383,8 +1385,9 @@ FAILS rather than serving a value CloudFormation would not return:
 
 Each of the import cases names itself in a warning at import time.
 
-Re-deploy the stack once in either case: the resource's next in-place update
-records the corrected attribute.
+A deploy that resolves a `Fn::GetAtt` on the ARN heals the record, as does the
+resource's next in-place update — see item 4 under
+[Purpose of attributes](#purpose-of-attributes).
 
 ### …and it is not what `cdkd export` sends CloudFormation either
 

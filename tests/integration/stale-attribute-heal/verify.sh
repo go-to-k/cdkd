@@ -80,7 +80,7 @@ cleanup() {
   # damaged record must not be the only thing standing between a failed run
   # and a leaked parameter.
   aws ssm delete-parameter --name "${PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
-  if [ -x "${LOCAL_DIST}" ] || [ -f "${LOCAL_DIST}" ]; then
+  if [ -f "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
       --region "${REGION}" --yes >/dev/null 2>&1
   fi
@@ -124,8 +124,18 @@ read_state() {
 # state bucket, which is what makes this a write detector rather than a content
 # compare.
 state_object_identity() {
-  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" \
-    --query '[VersionId, ETag]' --output text
+  local identity
+  identity=$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" \
+    --query '[VersionId, ETag]' --output text) || return 1
+  # On an UNVERSIONED bucket VersionId reads `None` and this degrades to a
+  # content compare, which a byte-identical re-write passes. Refuse to certify.
+  case "${identity}" in
+    None*|null*|"")
+      echo "FAIL: the state object has no VersionId (${identity}) - the state bucket must be versioned for the no-write assertions" >&2
+      return 1
+      ;;
+  esac
+  printf '%s\n' "${identity}"
 }
 
 # "<Version> <LastModifiedDate>" of the live parameter. Compared for EQUALITY
