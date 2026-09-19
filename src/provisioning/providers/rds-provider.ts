@@ -1735,10 +1735,24 @@ export class RDSProvider implements ResourceProvider {
     const explicit = resolveExplicitPhysicalId(input, 'DBInstanceIdentifier');
     if (explicit) {
       try {
-        await this.getClient().send(
+        const resp = await this.getClient().send(
           new DescribeDBInstancesCommand({ DBInstanceIdentifier: explicit })
         );
-        return { physicalId: explicit, attributes: {} };
+        // The map `create()` records, from the describe this verification
+        // already issues (issue #1852). It is what heals a record written
+        // under `--no-wait` while the instance was still `creating`
+        // (go-to-k/cdkd#3077): the deploy engine re-reads through `import()`
+        // when a `Fn::GetAtt` misses. `definedAttributes` keeps an unassigned
+        // endpoint ABSENT, so a still-`creating` instance heals nothing.
+        const described = resp.DBInstances?.[0];
+        return {
+          physicalId: explicit,
+          attributes: definedAttributes({
+            'Endpoint.Address': described?.Endpoint?.Address,
+            'Endpoint.Port': stringifyIfAssigned(described?.Endpoint?.Port),
+            Arn: described?.DBInstanceArn,
+          }),
+        };
       } catch (err) {
         if ((err as { name?: string }).name === 'DBInstanceNotFoundFault') return null;
         throw err;

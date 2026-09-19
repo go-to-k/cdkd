@@ -49,6 +49,13 @@ import { isListParameterType, ssmResolvedValueType } from '../utils/parameter-ty
 import { classifyReplaySecretRegion } from './secret-region-classification.js';
 import { withRetry } from './retry.js';
 import {
+  StaleAttributeMissSignal,
+  readHealedAttribute,
+  type StaleAttributeHealOutcome,
+  type StaleAttributeHealPhase,
+  type StaleAttributeHealer,
+} from './stale-attribute-heal.js';
+import {
   dynamicReferenceTokens,
   maskSecretsInText,
   maskSecretsInError,
@@ -403,6 +410,26 @@ const REF_RETURNS_ARN_FROM_STATE = new Map<string, readonly string[]>([
   ['AWS::AppSync::DataSource', ['DataSourceArn']],
   ['AWS::AppSync::Resolver', ['ResolverArn']],
 ]);
+
+/**
+ * Is `value`, recorded under `attributeName` of a `resourceType` record, a
+ * pre-#1681 PLACEHOLDER ARN — a value that is present but knowably unusable?
+ *
+ * The one predicate behind `rejectPlaceholderArnAttribute`'s refusal and the
+ * #1852 heal's "this recorded value may be overwritten" exception
+ * (`mergeHealedAttributes`), so the two cannot disagree about which records are
+ * stale. Scoped to the {@link REF_RETURNS_ARN_FROM_STATE} types AND their
+ * declared ARN attribute names — see that refusal's note for why no wider.
+ */
+export function isStalePlaceholderArnAttribute(
+  resourceType: string,
+  attributeName: string,
+  value: unknown
+): boolean {
+  const arnAttributeKeys = REF_RETURNS_ARN_FROM_STATE.get(resourceType);
+  if (!arnAttributeKeys?.includes(attributeName)) return false;
+  return typeof value === 'string' && isPlaceholderArn(value);
+}
 
 /**
  * Optional state-backed lookup so {@link cfnRefValueFromPhysicalId} can recover
@@ -1495,6 +1522,28 @@ export interface ResolverContext {
    * this stack's endpoint.
    */
   producerRegions?: readonly string[];
+
+  /**
+   * Re-reads a state record's attributes from AWS when `Fn::GetAtt` is about to
+   * take the physical-id fallback for it (issue
+   * [#1852](https://github.com/go-to-k/cdkd/issues/1852)) — a record written
+   * before its provider recorded the attribute is never re-recorded by a
+   * no-change deploy, so without this the fallback's refusal is permanent.
+   *
+   * OPT-IN by presence, like the bags above. Only a caller that can ROUTE a
+   * record to its provider AND owns a state save supplies it: `DeployEngine`
+   * does, on every context it builds. A context without one keeps the pre-#1852
+   * behaviour exactly — no AWS call is ever issued on its behalf. The supplier
+   * owns single-flight, memoization and persistence; the resolver only asks,
+   * and only on a MISS.
+   */
+  attributeHealer?: StaleAttributeHealer;
+
+  /**
+   * INTERNAL to `resolveGetAtt`'s heal wrapper, which sets it on a DERIVED
+   * context for one resolution. Never set by a caller.
+   */
+  staleAttributeHeal?: StaleAttributeHealPhase;
 }
 
 /**
@@ -4828,7 +4877,33 @@ export class IntrinsicFunctionResolver {
         ? undefined
         : storedValue;
       if (flatValue !== undefined) {
-        this.rejectPlaceholderArnAttribute(resource, attributeName, flatValue, logicalId, context);
+        if (isStalePlaceholderArnAttribute(resource.resourceType, attributeName, flatValue)) {
+          // A pre-#1681 placeholder is a STALE record like a missing key is, and
+          // has the same no-change gap (issue #1852): the refusal's old remedy,
+          // "deploy again so the next update heals it", never came true while
+          // the resource's own properties did not change. Heal first; refuse —
+          // with a remedy worded from what the heal observed — only when the
+          // re-read cannot supply a usable ARN either.
+          const outcome = await this.healStaleAttributes(logicalId, resource, context);
+          const healed =
+            outcome?.kind === 'read'
+              ? readHealedAttribute(outcome.attributes, attributeName)
+              : undefined;
+          if (
+            healed !== undefined &&
+            !isStalePlaceholderArnAttribute(resource.resourceType, attributeName, healed)
+          ) {
+            return this.serveHealedAttribute(logicalId, attributeName, healed, context);
+          }
+          this.rejectPlaceholderArnAttribute(
+            resource,
+            attributeName,
+            flatValue,
+            logicalId,
+            context,
+            outcome
+          );
+        }
         // Earlier cdkd versions stored Route 53 HostedZone NameServers as a
         // comma-delimited string even though CloudFormation defines the
         // attribute as a list. Normalize that legacy state shape at the read
@@ -5022,7 +5097,12 @@ export class IntrinsicFunctionResolver {
       );
     }
 
-    const value = await this.constructGuardedAttribute(resource, attributeName, context, logicalId);
+    const value = await this.constructWithStaleRecordHeal(
+      resource,
+      attributeName,
+      context,
+      logicalId
+    );
     this.logger.debug(
       `Resolved Fn::GetAtt: ${this.displayMasked(logicalId, context)}.${this.displayMasked(attributeName, context)} -> ${this.displayMasked(stringifyAttributeForLog(attributeName, this.maskValueLeaves(value, context)), context)}`
     );
@@ -5171,11 +5251,13 @@ export class IntrinsicFunctionResolver {
     // IntrinsicResolutionRefusalError(...))`, missed by two sweeps that grepped
     // `throw new`. Its `attributeName` is `resolveGetAtt`'s resolved one, and
     // `value` is a PERSISTED attribute, so both need a bag.
-    context?: ResolverContext
+    context?: ResolverContext,
+    // What the #1852 heal observed before this refusal, so the remedy is true
+    // on the path taken. `undefined` = no healer on this context (`cdkd diff`,
+    // `cdkd drift`, ...), i.e. nothing was re-read.
+    healOutcome?: StaleAttributeHealOutcome
   ): void {
-    const arnAttributeKeys = REF_RETURNS_ARN_FROM_STATE.get(resource.resourceType);
-    if (!arnAttributeKeys?.includes(attributeName)) return;
-    if (typeof value !== 'string' || !isPlaceholderArn(value)) return;
+    if (!isStalePlaceholderArnAttribute(resource.resourceType, attributeName, value)) return;
     // Terminal (issue #1838 / #1874 review): the verdict is read off the
     // PERSISTED state record, which no retry of this deploy rewrites — the
     // placeholder only heals on the resource's next in-place update, i.e. a
@@ -5189,10 +5271,190 @@ export class IntrinsicFunctionResolver {
         `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ` +
           `${resource.resourceType}: the recorded value "${stringifyValue(this.maskValueLeaves(value, context))}" is a placeholder ` +
           `written by a cdkd version older than issue #1681 — its region and account ` +
-          `fields are literal wildcards, so it is not a usable ARN. Deploy the stack ` +
-          `again so the resource's next update heals the record (cdkd now records the ` +
-          `real ARN), or re-import the resource.`
+          `fields are literal wildcards, so it is not a usable ARN. ` +
+          this.staleRecordRemedy(healOutcome, context)
       )
+    );
+  }
+
+  /**
+   * The remedy half of a STALE-RECORD refusal (issue
+   * [#1852](https://github.com/go-to-k/cdkd/issues/1852)), worded from what the
+   * heal observed so it is true on the path taken.
+   *
+   * The sentence it replaces — "deploy the stack again so the resource's next
+   * update heals the record" — was false for the commonest case: a deploy that
+   * changes none of the resource's own properties takes the no-change skip and
+   * never runs `update()`, so "again" healed nothing.
+   *
+   * Every clause is cdkd-authored; AWS's text stays behind `--verbose`
+   * ({@link describeFailureObserved}), because a denied read quotes the
+   * caller's account, role and session.
+   */
+  private staleRecordRemedy(
+    outcome: StaleAttributeHealOutcome | undefined,
+    context?: ResolverContext
+  ): string {
+    const touch =
+      `change any property of the resource so its next update re-records the attributes, ` +
+      `or re-import it with 'cdkd import'`;
+    if (outcome === undefined) {
+      return (
+        `Run 'cdkd deploy': it re-reads a stale record's attributes from AWS and heals the ` +
+        `record. Otherwise ${touch}.`
+      );
+    }
+    switch (outcome.kind) {
+      case 'failed':
+        return (
+          `cdkd tried to re-read the attributes from AWS to heal the record, but ` +
+          `${this.describeFailureObserved('the provider read', outcome.error, context)}. ` +
+          `Fix that (a missing read permission is the usual cause) and deploy again — cdkd ` +
+          `retries the read on every deploy until the record is healed — or ${touch}.`
+        );
+      case 'not-found':
+        return (
+          `cdkd tried to re-read the attributes from AWS to heal the record, but AWS reports no ` +
+          `resource behind the recorded physical id — it was probably deleted outside cdkd. ` +
+          `Check it with 'cdkd drift', then re-create it (change the resource so it is replaced) ` +
+          `or remove it from state.`
+        );
+      case 'read':
+        return (
+          `cdkd re-read the resource from AWS and the read reports no usable value for this ` +
+          `attribute either, so there is nothing to heal the record with; ${touch}.`
+        );
+      case 'not-attempted':
+        return (
+          `cdkd did not re-read it from AWS (the record was written by this deploy, or this ` +
+          `resource type has no read-only lookup); ${touch}.`
+        );
+    }
+  }
+
+  /**
+   * The remedy half of the "not enriched" refusal. The pre-#1852 sentence,
+   * plus what the heal established: a completed re-read that reports no such
+   * attribute CONFIRMS the type does not supply it; a context with no healer
+   * (`cdkd diff`, `cdkd drift`, ...) re-read nothing, so the record may merely
+   * predate the enrichment and `cdkd deploy` is what heals it.
+   */
+  private unenrichedRemedy(
+    resourceType: string,
+    attributeName: string,
+    outcome: StaleAttributeHealOutcome | undefined,
+    context?: ResolverContext
+  ): string {
+    // not-in-class(resourceType): a TYPE name from the template or from AWS, not a value.
+    const fileIssue =
+      `Avoid this Fn::GetAtt, or file an issue at https://github.com/go-to-k/cdkd/issues ` +
+      `so cdkd can enrich ${resourceType}.${this.displayMasked(attributeName, context)}.`;
+    if (outcome === undefined) {
+      // The hint goes FIRST: the sentence ends on the attribute name, which
+      // `intrinsic-resolver-name-argument-log-twin.test.ts` anchors on.
+      return (
+        `If this record was written by an older cdkd that did not record the attribute yet, ` +
+        `'cdkd deploy' re-reads it from AWS and heals the record. ${fileIssue}`
+      );
+    }
+    if (outcome.kind === 'read') {
+      return (
+        `cdkd re-read the resource's attributes from AWS and the read reports none by that ` +
+        `name. ${fileIssue}`
+      );
+    }
+    return fileIssue;
+  }
+
+  /**
+   * Ask the context's healer (issue #1852) — `undefined` when it has none. The
+   * healer is contracted never to throw; the `catch` makes that a property of
+   * THIS call site rather than of every supplier, because a throw here would
+   * fail a deploy the pre-#1852 code passed (the warn-and-return fallback).
+   */
+  private async healStaleAttributes(
+    logicalId: string,
+    resource: ResourceState,
+    context: ResolverContext
+  ): Promise<StaleAttributeHealOutcome | undefined> {
+    if (context.attributeHealer === undefined) return undefined;
+    try {
+      return await context.attributeHealer(logicalId, resource);
+    } catch (error) {
+      return { kind: 'failed', error };
+    }
+  }
+
+  /** Serve a value the #1852 heal just read from AWS, logging it like a cached read. */
+  private serveHealedAttribute(
+    logicalId: string,
+    attributeName: string,
+    value: unknown,
+    context: ResolverContext
+  ): unknown {
+    this.logger.debug(
+      `Resolved Fn::GetAtt from a re-read of AWS (the state record lacked it): ${this.displayMasked(logicalId, context)}.${this.displayMasked(attributeName, context)} -> ${this.displayMasked(stringifyAttributeForLog(attributeName, this.maskValueLeaves(value, context)), context)}`
+    );
+    return value;
+  }
+
+  /**
+   * {@link constructGuardedAttribute}, healing a STALE state record first when
+   * the construction is about to take {@link guardedPhysicalIdFallback} (issue
+   * [#1852](https://github.com/go-to-k/cdkd/issues/1852)).
+   *
+   * Three passes at most, and an AWS call on none of them unless the fallback
+   * is actually reached:
+   *
+   * 1. PROBE — construct under a derived context whose fallback raises
+   *    {@link StaleAttributeMissSignal} instead of deciding. Every per-type arm
+   *    that CAN answer (the ~40 constructed ARNs, the live-read arms) returns
+   *    here exactly as before.
+   * 2. HEAL — only on the signal: ask the context's healer, which re-reads the
+   *    record's attributes through its provider once per deploy. A value for
+   *    this attribute is served from that read.
+   * 3. SETTLE — otherwise construct again under a context carrying the heal's
+   *    outcome, so the fallback decides exactly as it always has (refuse an
+   *    `*Arn` / `*Url` shape, refuse under `--strict-getatt`, else warn and
+   *    return the physical id) and words a refusal from what was observed.
+   *
+   * The phase rides a DERIVED context, never a field of this resolver: one
+   * resolver instance serves every concurrently resolving resource of a stack.
+   * A context with no healer skips all of it.
+   */
+  private async constructWithStaleRecordHeal(
+    resource: ResourceState,
+    attributeName: string,
+    context: ResolverContext,
+    logicalId: string
+  ): Promise<unknown> {
+    if (context.attributeHealer === undefined) {
+      return this.constructGuardedAttribute(resource, attributeName, context, logicalId);
+    }
+    try {
+      return await this.constructGuardedAttribute(
+        resource,
+        attributeName,
+        { ...context, staleAttributeHeal: { phase: 'probe' } },
+        logicalId
+      );
+    } catch (error) {
+      if (!(error instanceof StaleAttributeMissSignal)) throw error;
+    }
+    const outcome = (await this.healStaleAttributes(logicalId, resource, context)) ?? {
+      kind: 'not-attempted' as const,
+    };
+    if (outcome.kind === 'read') {
+      const healed = readHealedAttribute(outcome.attributes, attributeName);
+      if (healed !== undefined) {
+        return this.serveHealedAttribute(logicalId, attributeName, healed, context);
+      }
+    }
+    return this.constructGuardedAttribute(
+      resource,
+      attributeName,
+      { ...context, staleAttributeHeal: { phase: 'settled', outcome } },
+      logicalId
     );
   }
 
@@ -6536,14 +6798,25 @@ export class IntrinsicFunctionResolver {
     // the resource records the key.
     if (resourceType === 'AWS::RDS::DBProxy' || resourceType === 'AWS::RDS::DBProxyEndpoint') {
       if (attributeName === 'VpcId') {
+        // Issue #1852: the same no-change gap as the shared fallback — "its next
+        // deploy records the value" is true only of a deploy that UPDATES the
+        // proxy — and both providers' `import()` report `VpcId`, so let the heal
+        // wrapper re-read the record before this refuses.
+        if (context.staleAttributeHeal?.phase === 'probe') throw new StaleAttributeMissSignal();
+        const vpcIdHealOutcome =
+          context.staleAttributeHeal?.phase === 'settled'
+            ? context.staleAttributeHeal.outcome
+            : undefined;
         // not-in-class(resourceType): a TYPE name from the template or from AWS, not a value.
         throw markNonRetryable(
           new IntrinsicResolutionRefusalError(
             `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${resourceType}: ` +
               `the state record holds no VpcId for it (the read-back that would have recorded it reported none), ` +
               `and the physical id "${this.displayMasked(physicalId, context)}" is a name, not a VPC id, so cdkd ` +
-              `refuses to substitute it. Update the resource so its next deploy records the value, or reference ` +
-              `the VPC directly.`
+              `refuses to substitute it. ` +
+              (vpcIdHealOutcome === undefined
+                ? `Update the resource so its next deploy records the value, or reference the VPC directly.`
+                : `${this.staleRecordRemedy(vpcIdHealOutcome, context)} Referencing the VPC directly also works.`)
           )
         );
       }
@@ -6646,7 +6919,7 @@ export class IntrinsicFunctionResolver {
    * puts AWS's own text behind `--verbose`, since a denied describe quotes the
    * caller's account, role and session into its message.
    */
-  private describeFailureObserved(read: string, err: unknown, context: ResolverContext): string {
+  private describeFailureObserved(read: string, err: unknown, context?: ResolverContext): string {
     // `displaySafe` rather than `stripControlChars`: the latter keeps
     // `U+2028` / `U+2029`, which a terminal renders as a line break (the
     // `error-handler.ts` `formatError` rule). An SDK error name is ASCII.
@@ -6715,6 +6988,19 @@ export class IntrinsicFunctionResolver {
     // caller has had one since this PR renamed `_context`.
     context?: ResolverContext
   ): string {
+    // Issue #1852: under the heal wrapper's PROBE context, do not decide — the
+    // record may simply be stale, and the wrapper re-reads it before any
+    // verdict. Raised before the shape test on purpose: the warn-and-return
+    // arm below serves a wrong value just as the refusal serves none.
+    if (context?.staleAttributeHeal?.phase === 'probe') throw new StaleAttributeMissSignal();
+    const healOutcome =
+      context?.staleAttributeHeal?.phase === 'settled'
+        ? context.staleAttributeHeal.outcome
+        : undefined;
+    // `read` = the provider's own read-back reports no such attribute, which is
+    // what "not enriched" means; `not-attempted` / no healer = nothing says
+    // otherwise. Only a FAILED or NOT-FOUND read makes that sentence a guess.
+    const recordMayBeStale = healOutcome?.kind === 'failed' || healOutcome?.kind === 'not-found';
     const expectsArnShape = attributeName.endsWith('Arn') && !physicalId.startsWith('arn:');
     const expectsUrlShape = attributeName.endsWith('Url') && !/^https?:\/\//.test(physicalId);
     if (expectsArnShape || expectsUrlShape) {
@@ -6728,12 +7014,15 @@ export class IntrinsicFunctionResolver {
       throw markNonRetryable(
         new IntrinsicResolutionRefusalError(
           `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${resourceType}: ` +
-            `attributes are not enriched for this resource type, and the physical ID ` +
+            (recordMayBeStale
+              ? `the state record holds no value for it, and the physical ID `
+              : `attributes are not enriched for this resource type, and the physical ID `) +
             `fallback "${this.displayMasked(physicalId, context)}" is not ${expectedShape}. CloudFormation would return ` +
             `a different value here, so falling back to the physical ID would silently ` +
-            `produce a wrong value (e.g. in stack Outputs). Avoid this Fn::GetAtt, or ` +
-            `file an issue at https://github.com/go-to-k/cdkd/issues so cdkd can enrich ` +
-            `${resourceType}.${this.displayMasked(attributeName, context)}.`
+            `produce a wrong value (e.g. in stack Outputs). ` +
+            (recordMayBeStale
+              ? this.staleRecordRemedy(healOutcome, context)
+              : this.unenrichedRemedy(resourceType, attributeName, healOutcome, context))
         )
       );
     }
@@ -6745,16 +7034,30 @@ export class IntrinsicFunctionResolver {
       throw markNonRetryable(
         new IntrinsicResolutionRefusalError(
           `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${resourceType}: ` +
-            `attributes are not enriched for this resource type, and --strict-getatt ` +
+            (recordMayBeStale
+              ? `the state record holds no value for it, and --strict-getatt `
+              : `attributes are not enriched for this resource type, and --strict-getatt `) +
             `rejects the physical ID fallback "${this.displayMasked(physicalId, context)}" (which may not be the value ` +
-            `CloudFormation would return). Drop --strict-getatt to fall back with a ` +
-            `warning, avoid this Fn::GetAtt, or file an issue at ` +
-            `https://github.com/go-to-k/cdkd/issues so cdkd can enrich ` +
-            `${resourceType}.${this.displayMasked(attributeName, context)}.`
+            `CloudFormation would return). Drop --strict-getatt to fall back with a warning. ` +
+            (recordMayBeStale
+              ? this.staleRecordRemedy(healOutcome, context)
+              : this.unenrichedRemedy(resourceType, attributeName, healOutcome, context))
         )
       );
     }
     this.physicalIdFallbackCount++;
+    if (recordMayBeStale) {
+      // The same warn-and-return as below, but the "unknown attribute" wording
+      // would be a guess: the record may simply be stale and the re-read that
+      // would have said so did not complete. Say what was observed instead.
+      // not-in-class(resourceType): a TYPE name from the template or from AWS, not a value.
+      this.logger.warn(
+        `The state record for ${this.displayMasked(logicalId, context)} (${resourceType}) holds no ` +
+          `${this.displayMasked(attributeName, context)}, returning physical ID. ` +
+          this.staleRecordRemedy(healOutcome, context)
+      );
+      return physicalId;
+    }
     // DEFAULT VERBOSITY, and the most reachable of the three (issue #2827
     // review round 2): the two throws above need a shape mismatch or a flag,
     // this fires on every unenriched attribute.

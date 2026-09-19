@@ -5769,6 +5769,7 @@
         "schema-v9-to-v10-migration",
         "sdk-ccapi-crossref",
         "secrets-dynamic-ref",
+        "stale-attribute-heal",
         "state-info-command",
         "tags-propagation",
         "throttle-wide-dag",
@@ -5980,6 +5981,10 @@
         ],
         "secrets-dynamic-ref": [
           "l2"
+        ],
+        "stale-attribute-heal": [
+          "l1",
+          "literal"
         ],
         "state-info-command": [
           "l2"

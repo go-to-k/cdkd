@@ -434,7 +434,8 @@ export class AppSyncProvider implements ResourceProvider {
           `Imported ${resourceType} (${physicalId}) but its ARN attribute was NOT ` +
             `recorded: ${describeAwsFailure(error).detail}. ` +
             `Ref will resolve to the compound physical id, and Fn::GetAtt on the ARN ` +
-            `will fail, until the resource's next update heals the record.`
+            `will fail, until the resource's next update — or a later deploy that needs the ` +
+            `attribute and re-reads it from AWS — heals the record.`
         );
         return undefined;
       }
@@ -542,7 +543,8 @@ export class AppSyncProvider implements ResourceProvider {
         `Imported ${resourceType} (${physicalId}) but could not build its ARN attribute: ` +
           `${describeAwsFailure(error).detail}. ` +
           `Ref will resolve to the compound physical id, and Fn::GetAtt on the ARN will ` +
-          `fail, until the resource's next update heals the record.`
+          `fail, until the resource's next update — or a later deploy that needs the ` +
+          `attribute and re-reads it from AWS — heals the record.`
       );
       return {};
     }

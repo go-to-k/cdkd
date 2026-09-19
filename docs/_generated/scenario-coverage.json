@@ -2046,6 +2046,11 @@
       "scenarios": []
     },
     {
+      "name": "stale-attribute-heal",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "state-destroy",
       "annotated": true,
       "scenarios": []

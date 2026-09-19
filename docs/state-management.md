@@ -1544,6 +1544,15 @@ const arn = bucketState.attributes['Arn'];
    resolver treats any non-`undefined` stored attribute as a hit, so a
    persisted `''` would shadow its computed fallback and make `Fn::GetAtt`
    resolve to the empty string.
+4. **`cdkd deploy`, on a miss**: when a `Fn::GetAtt` is about to fall back to
+   the physical ID for a resource this deploy does not update, cdkd re-reads the
+   resource's attributes once through the provider's read-only `import()` and
+   adds them to the record at the next state save. Only keys the record does
+   not already hold are added (a wildcard placeholder ARN from an old release
+   is the one value that is overwritten), an empty value is never added, and no
+   other field of the record is touched. `--dry-run` reads but records nothing,
+   and read-only commands (`cdkd diff`, `cdkd drift`) never re-read. See
+   ["Cannot resolve" a GetAtt on a resource an older cdkd deployed](troubleshooting.md#cannot-resolve-a-getatt-on-a-resource-an-older-cdkd-deployed).
 
 ```typescript
 // IAM Role Provider example

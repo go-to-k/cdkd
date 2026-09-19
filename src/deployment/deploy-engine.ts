@@ -40,7 +40,16 @@ import {
   looksLikeCdkdGeneratedName,
 } from '../provisioning/resource-name.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
-import { IntrinsicFunctionResolver } from './intrinsic-function-resolver.js';
+import {
+  IntrinsicFunctionResolver,
+  isStalePlaceholderArnAttribute,
+} from './intrinsic-function-resolver.js';
+import {
+  isHealExcludedType,
+  mergeHealedAttributes,
+  normalizeHealedAttributes,
+  type StaleAttributeHealOutcome,
+} from './stale-attribute-heal.js';
 import { withSharedDrainBudget } from './drain-budget.js';
 import {
   markSameGenerationBag,
@@ -1275,6 +1284,46 @@ export class DeployEngine {
   private retainedOldOnReplacement = new Set<string>();
 
   /**
+   * The pre-deploy state records, as loaded — the #1852 heal's eligibility
+   * baseline. A record is healed only while it is still the one this deploy
+   * LOADED (same physical id, same `attributes` object): once a provider has
+   * (re)written it this run, a missing attribute is the provider's answer, not
+   * staleness, and re-reading would cost an AWS call to learn nothing.
+   *
+   * Compared by the `attributes` REFERENCE rather than the record's, because
+   * the metadata-only arm re-spreads a record (`{ ...currentResource }`) without
+   * a provider call — its attributes object survives the spread, a create /
+   * update result's does not.
+   */
+  private healBaseline: Readonly<Record<string, ResourceState>> = {};
+
+  /**
+   * Single-flight + per-deploy memo of the #1852 heal, keyed by logical id and
+   * physical id. ENGINE-instance state, never module-global: one engine deploys
+   * one stack, and `--stack-concurrency` runs several engines at once. Holding
+   * the PROMISE is what makes it single-flight — every concurrent resolution of
+   * the same record awaits the one read — and never deleting an entry is what
+   * bounds it: one read per record per deploy, success or failure, no retry.
+   */
+  private attributeHeals = new Map<string, Promise<StaleAttributeHealOutcome>>();
+
+  /**
+   * What the heals of this deploy read, waiting for the next state save.
+   *
+   * Applied at {@link redactStateForPersist} — the choke point EVERY save
+   * passes through — rather than written into the in-memory record, so a heal
+   * survives every exit path that saves at all (success, a failed resource, a
+   * failed output, the no-change path), whichever copy-on-write record map the
+   * save happens to hold, and is scrubbed by the same redaction every other
+   * attribute goes through. A path that saves NOTHING (`--dry-run`) persists
+   * nothing and the next deploy re-heals.
+   */
+  private healedAttributes = new Map<
+    string,
+    { physicalId: string; resourceType: string; attributes: Record<string, unknown> }
+  >();
+
+  /**
    * Target region for this stack. Required — load-bearing for the
    * region-prefixed S3 state key and recorded in state.json for
    * cross-region destroy.
@@ -1364,6 +1413,11 @@ export class DeployEngine {
     // here would tell the next run's rollback to re-adopt an id this run
     // deleted. Reset in the same block as the other per-run bags.
     this.retainedOldOnReplacement = new Set();
+    // Issue #1852: per-deploy, like every bag above — a reused engine must not
+    // serve last deploy's read, nor persist it against today's records.
+    this.healBaseline = {};
+    this.attributeHeals = new Map();
+    this.healedAttributes = new Map();
     // Per-deploy-run counter: the resolver instance is engine-scoped and an
     // engine can be reused across deploys, so reset here (not in the
     // resolver constructor) to keep the deploy-summary count per run.
@@ -1450,6 +1504,11 @@ export class DeployEngine {
       ...(this.exportIndexStore && { exportIndex: this.exportIndexStore }),
       recordedImports: this.recordedImports,
       recordedOutputReads: this.recordedOutputReads,
+      // Issue #1852: on EVERY context this engine builds — the diff pass, both
+      // provisioning arms and the outputs pass all read the same stale record,
+      // and the heal is memoized, so whichever asks first pays the one read.
+      attributeHealer: (logicalId, resource) =>
+        this.healStaleAttributes(logicalId, resource, stackName),
       // The pairs the PARENT resolved for this stack, on a nested-stack child
       // engine only (issue #1903). NOT pre-loaded into the map below: the
       // resolver copies a pair across at the moment a resource's `{Ref: Param}`
@@ -2284,6 +2343,133 @@ export class DeployEngine {
     });
   }
 
+  /**
+   * Re-read a STALE record's attributes from AWS (issue
+   * [#1852](https://github.com/go-to-k/cdkd/issues/1852)) — the resolver calls
+   * this, through `ResolverContext.attributeHealer`, only when `Fn::GetAtt` is
+   * about to take the physical-id fallback.
+   *
+   * The read is the provider's `import()` with `knownPhysicalId` — the same
+   * primitive `orphan-adoption.ts` verifies a record with. It is READ-ONLY by
+   * contract ("verify the resource exists and fetch attributes, do NOT
+   * search"), it returns the map `create()` records (so a healed record looks
+   * like a fresh one), and it is routed by the record's own `resourceType` +
+   * `provisionedBy`, so a Cloud-Control-routed record is read through Cloud
+   * Control. `getAttribute()` was the alternative and is implemented by about
+   * half the providers — neither of the two types this issue names.
+   *
+   * NEVER throws and never retries: every failure is an outcome the resolver
+   * words its refusal from, and the memo makes one read per record per deploy
+   * the ceiling.
+   */
+  private healStaleAttributes(
+    logicalId: string,
+    resource: ResourceState,
+    stackName: string
+  ): Promise<StaleAttributeHealOutcome> {
+    const key = `${logicalId}\u0000${resource.physicalId}`;
+    const inFlight = this.attributeHeals.get(key);
+    if (inFlight) return inFlight;
+    const heal = this.readStaleAttributes(logicalId, resource, stackName).catch(
+      (error: unknown): StaleAttributeHealOutcome => ({ kind: 'failed', error })
+    );
+    this.attributeHeals.set(key, heal);
+    return heal;
+  }
+
+  private async readStaleAttributes(
+    logicalId: string,
+    resource: ResourceState,
+    stackName: string
+  ): Promise<StaleAttributeHealOutcome> {
+    const loaded = Object.hasOwn(this.healBaseline, logicalId)
+      ? this.healBaseline[logicalId]
+      : undefined;
+    if (
+      loaded === undefined ||
+      loaded.physicalId !== resource.physicalId ||
+      loaded.attributes !== resource.attributes ||
+      isHealExcludedType(resource.resourceType)
+    ) {
+      return { kind: 'not-attempted' };
+    }
+    // `getProviderFor` can throw for a type this build cannot route; the
+    // caller's `.catch` turns that into `failed`, which is the honest outcome.
+    const { provider } = this.providerRegistry.getProviderFor({
+      resourceType: resource.resourceType,
+      properties: resource.properties,
+      provisionedBy: resource.provisionedBy,
+    });
+    if (!provider.import) return { kind: 'not-attempted' };
+    const found = await provider.import({
+      logicalId,
+      resourceType: resource.resourceType,
+      stackName,
+      region: this.stackRegion,
+      properties: resource.properties,
+      knownPhysicalId: resource.physicalId,
+    });
+    if (found === null) return { kind: 'not-found' };
+    if (found.physicalId !== resource.physicalId) {
+      // The `orphan-adoption.ts` guard: a provider is contracted to treat
+      // `knownPhysicalId` as ground truth, but nothing enforces it, and one that
+      // searches instead can answer for a DIFFERENT resource. Its attributes
+      // must reach neither this deploy's properties nor the record.
+      // not-in-class: the error's MESSAGE is rendered at debug only, masked.
+      throw new Error(
+        `the provider answered for a different resource (${found.physicalId}) than the one asked about (${resource.physicalId})`
+      );
+    }
+    const attributes = normalizeHealedAttributes(found.attributes);
+    if (Object.keys(attributes).length > 0) {
+      this.healedAttributes.set(logicalId, {
+        physicalId: resource.physicalId,
+        resourceType: resource.resourceType,
+        attributes,
+      });
+    }
+    this.logger.debug(
+      `Re-read the attributes of ${logicalId} (${resource.resourceType}) from AWS — its state record lacked one a Fn::GetAtt asked for (#1852): ${Object.keys(attributes).length} attribute(s) read`
+    );
+    return { kind: 'read', attributes };
+  }
+
+  /**
+   * The record to persist for `logicalId`: `record` itself, or a copy whose
+   * `attributes` gained what this deploy's heal read. MERGED, never replaced —
+   * only `attributes` is touched, and within it only keys the record does not
+   * hold (or holds as a pre-#1681 placeholder ARN). Skipped when the record no
+   * longer describes the resource that was read: a replacement or a Type change
+   * this deploy made.
+   */
+  private withHealedAttributes(logicalId: string, record: ResourceState): ResourceState {
+    const healed = this.healedAttributes.get(logicalId);
+    if (
+      healed === undefined ||
+      healed.physicalId !== record.physicalId ||
+      healed.resourceType !== record.resourceType
+    ) {
+      return record;
+    }
+    const merged = mergeHealedAttributes(record.attributes, healed.attributes, (key, value) =>
+      isStalePlaceholderArnAttribute(record.resourceType, key, value)
+    );
+    return merged === record.attributes || merged === undefined
+      ? record
+      : { ...record, attributes: merged };
+  }
+
+  /** Would a save of `resources` persist something a heal read? The no-change path's trigger. */
+  private hasUnpersistedHeals(resources: Readonly<Record<string, ResourceState>>): boolean {
+    for (const logicalId of this.healedAttributes.keys()) {
+      const record = Object.hasOwn(resources, logicalId) ? resources[logicalId] : undefined;
+      if (record !== undefined && this.withHealedAttributes(logicalId, record) !== record) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   private redactStateForPersist(state: StackState): StackState {
     const resources: Record<string, ResourceState> = {};
     for (const [logicalId, record] of Object.entries(state.resources)) {
@@ -2295,7 +2481,9 @@ export class DeployEngine {
       // back to the record's own `properties` for the observed bag (#1900).
       const templateProps = this.perResourceTemplateProps.get(logicalId);
       resources[logicalId] = scrubResourceRecord(
-        record,
+        // Issue #1852: merged BEFORE the scrub, so a healed value is redacted
+        // by exactly the pass every provider-recorded attribute goes through.
+        this.withHealedAttributes(logicalId, record),
         secrets ?? new Map<string, string>(),
         // No template bag means this resource was not resolved this deploy (an
         // UNCHANGED one). `scrubResourceRecord` then falls back to the record's
@@ -3028,6 +3216,7 @@ export class DeployEngine {
         lastModified: Date.now(),
       };
       const currentEtag = currentStateData?.etag;
+      this.healBaseline = currentState.resources ?? {};
       // AT THE LOAD, and REFUSE rather than repair (issue #3207). `deploy` is
       // the most write-capable consumer of this bag there is: the no-change
       // merge path below carries `currentState.outputs ?? {}` into
@@ -3573,12 +3762,19 @@ export class DeployEngine {
             this.skippedOutputs
           );
 
+          // Issue #1852: a heal the outputs pass (or the diff pass above) read
+          // must reach state even when nothing else changed — otherwise every
+          // later deploy pays the same read again and a read-only consumer
+          // (`cdkd diff`, `cdkd drift`) never sees the attribute at all.
+          const healedAttributesPending = this.hasUnpersistedHeals(currentState.resources);
+
           if (
             observedRefresh ||
             outputsChanged ||
             exportSetChanged ||
             skippedOutputsChanged ||
-            orphansChanged
+            orphansChanged ||
+            healedAttributesPending
           ) {
             try {
               const refreshedState: StackState = {
@@ -3674,6 +3870,10 @@ export class DeployEngine {
                 }
               } else if (observedRefresh) {
                 this.logger.debug('Persisted refreshed observedProperties (no-change path)');
+              } else if (healedAttributesPending) {
+                this.logger.debug(
+                  'Persisted attributes re-read from AWS for a stale record (no-change path, #1852)'
+                );
               } else {
                 this.logger.debug(
                   'Persisted skipped-outputs record (no outputs-value diff, no-change path, #2740)'
