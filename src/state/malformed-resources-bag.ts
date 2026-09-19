@@ -1808,7 +1808,7 @@ export function malformedOrphanResourcePropertiesRefusalMessage(
     `a record 'cdkd deploy' then REFUSES. No state was written. Two ways out need no CDK app: ` +
     `repair the record by hand, or drop it whole with the 'Drop the record' command below, ` +
     `which leaves the live AWS resources standing` +
-    `${withheldIdentityClause(stackName, region)}. A third works ` +
+    `${withheldIdentityClause(stackName, region)}${withheldRecoveryClause(recovery)}. A third works ` +
     `only while the CDK app STILL DECLARES the ` +
     `named resource — this refusal covers just the records that would SURVIVE the save, so ` +
     `'cdkd orphan <its construct path>' removes it and repairs the rest; construct paths come ` +
@@ -1837,6 +1837,32 @@ function withheldIdentityClause(stackName: string | undefined, region: string | 
     ` — the stack name or region above did not render exactly, so take them from the ` +
     `'Find the exact name' command below — replace each quoted hole, quotes included, with the ` +
     `shell-quoted value — rather than from this message`
+  );
+}
+
+/**
+ * The half-sentence for the OTHER thing that can print as a hole: one of the
+ * account fragments `recoveryCommandFlags` appends.
+ *
+ * Separate from {@link withheldIdentityClause} rather than folded into it,
+ * because the two holes have different SOURCES and therefore different remedies.
+ * An identity hole is filled from `cdkd state list --json`, which is why that
+ * clause points at a command; an account fragment came from the operator's own
+ * argv, so they already hold it and no listing would help. Conflating them would
+ * send someone to a listing that does not carry their `--profile`.
+ *
+ * Without this, a run whose PREFIX or BUCKET was the inexact value printed
+ * `--state-prefix '<prefix>'` with nothing in the message saying the hole was a
+ * hole: `identityWithheld` reads the stack name and the region only, and the
+ * object-path note is suppressed whenever a prefix WAS supplied. That is
+ * {@link withheldIdentityClause}'s own defect class, one fragment over.
+ */
+function withheldRecoveryClause(recovery?: LockRecoveryContext): string {
+  if (recoveryCommandFlags(recovery).exact) return '';
+  return (
+    ` — an account fragment ('--profile', '--state-bucket' or '--state-prefix') did not render ` +
+    `exactly, so the command lines below print a quoted hole in its place, which you replace ` +
+    `whole — quotes included — with the SHELL-QUOTED value you passed this run`
   );
 }
 
@@ -1935,7 +1961,14 @@ function orphanInspectClause(
   region: string | undefined,
   recovery?: LockRecoveryContext
 ): { command?: string; sentence?: string; locations?: string[] } {
-  if (stackName === undefined) {
+  // `''` is no identity either, the floor {@link dropRecordCommand} and
+  // {@link identityWithheld} both carry. Without it a direct caller passing
+  // `''` got an inspect COMMAND here while the drop line beside it took its
+  // no-identity arm — the disagreement {@link rendersExactly}'s note says the
+  // shared predicate rules out. Unreachable through the one builder that calls
+  // this (it normalises `''` at entry), which is the condition the other two
+  // floors are under as well.
+  if (stackName === undefined || stackName === '') {
     // The same template the shared `inspectCommand` gives for no identity, but
     // qualified: the identity is the hole, not the account.
     const template = [
@@ -1957,7 +1990,14 @@ function orphanInspectClause(
   // key space. Otherwise the sentence falls back to the placeholder forms.
   const exactOrUndefined = (v: string | undefined): string | undefined =>
     v !== undefined && sanitizeRecoveryValue(v).exact ? v : undefined;
-  const bucket = exactOrUndefined(recovery?.stateBucket);
+  // `|| undefined` floors `''` as well, and the asymmetry with the PREFIX two
+  // lines down is the point: a bucket NAME cannot be empty, and
+  // `recoveryCommandFlags` emits no `--state-bucket` for `''` — so a
+  // `State bucket: ''` line would name nothing while this sentence promised it
+  // named the bucket, and the same value would be described by two rules. An
+  // empty PREFIX is a real key space (`/<stack>/state.json`), which is why it
+  // keeps its own arm and why the flag emits `--state-prefix ''`.
+  const bucket = exactOrUndefined(recovery?.stateBucket) || undefined;
   // The object's LOCATION is printed on labelled trailing lines, one value per
   // line, never inside this sentence — B1 of go-to-k/cdkd#3363's fourth review.
   // A shell-quoted value is only safe while the quotes before it BALANCE, and
@@ -1966,14 +2006,20 @@ function orphanInspectClause(
   // sentence ran a `cdk.json`-planted bucket (`'evil; touch OWNED; #'`) as shell.
   // The same LAST-and-UNWRAPPED rule the commands above follow.
   const locations = bucket === undefined ? [] : [`State bucket: ${shellQuote(bucket)}`];
+  // `'cdkd state info'` QUOTED, like every other fixed command name in this
+  // module's prose. Unquoted it is not merely inconsistent: a reader selecting
+  // the parenthetical and pasting it INVOKES the real CLI with argv
+  // `["state","info","names","it"]`, where the quoted form is inert. No value is
+  // interpolated, so it is not injection — but inert is strictly better, and the
+  // rule that makes it inert is the one the six quoted siblings follow.
   const where =
     bucket === undefined
-      ? ', in the state bucket (cdkd state info names it)'
-      : ', in the bucket on the State bucket line below';
+      ? `, in the state bucket ('cdkd state info' names it)`
+      : `, in the bucket on the 'State bucket' line below`;
   if (!rendersExactly(stackName)) {
     return {
       sentence:
-        `${lead}: it is the legacy state.json under this stack name, which did not render ` +
+        `${lead}: it is the legacy 'state.json' under this stack name, which did not render ` +
         `exactly${where}.`,
       locations,
     };
@@ -1982,12 +2028,32 @@ function orphanInspectClause(
   const key = shellQuote(`${prefix ?? '<prefix>'}/${stackName}/state.json`);
   // The fill-in note only when no prefix was SUPPLIED: one that was supplied but
   // did not render exactly is not the default, so the note would mislead.
+  // Its OWN sentence rather than a second parenthetical: appended to `where`'s
+  // it rendered `... (cdkd state info names it) (its prefix is ...)`, two
+  // bracketed asides in a row that read as one nested aside. The flag name is
+  // quoted for the reason `where`'s is.
+  // THREE arms, not two. The middle one is the object key's own hole, which
+  // `withheldRecoveryClause` does not cover and must not claim to: that clause
+  // is about the COMMAND lines, where a hole is quoted and replaced whole,
+  // while `<prefix>` here sits INSIDE the single quotes wrapping the whole key,
+  // so "quotes included" would have an operator build `''custom''/S/state.json'`
+  // (go-to-k/cdkd#3439 review). Said here, where the hole actually is.
   const fill =
     recovery?.statePrefix === undefined
-      ? ' (its prefix is cdkd unless --state-prefix was given)'
-      : '';
+      ? ` Its prefix is 'cdkd' unless '--state-prefix' was given.`
+      : prefix === undefined
+        ? // QUOTED, even though this is prose and not a command. A bare
+          // `<prefix>` is two shell redirections, and prose is pasteable --
+          // measured on the first cut of this very sentence: selected and
+          // pasted in a directory holding a file named `prefix`, `<prefix`
+          // read it and `>` then truncated a file named `where`. The rule
+          // `commandHole` exists for does not stop at the command lines
+          // (go-to-k/cdkd#3440 review, the third round of this class).
+          ` The prefix you passed did not render exactly, so the key shows the hole ` +
+          `'<prefix>' where it belongs; put your own value there, inside the outer quotes.`
+        : '';
   return {
-    sentence: `${lead}: the Object key line below names it${where}${fill}.`,
+    sentence: `${lead}: the 'Object key' line below names it${where}.${fill}`,
     locations: [`Object key: ${key}`, ...locations],
   };
 }
