@@ -5,8 +5,12 @@
 #   - FwdProbe: SDK -> CC (--recreate-via-cc-api)
 #   - BackProbe: CC -> SDK (--recreate-via-sdk-provider)
 #
-# Phase 1 sets up the inverted baseline (Fwd on SDK, Back on CC).
-# Phase 2 inverts the template AND combines both flags in one deploy.
+# Phase 0 deploys both plain (both on SDK).
+# Phase 1 seeds the inverted baseline (Fwd on SDK, Back on CC) with
+#   --recreate-via-cc-api BackProbe -- NOT with the silent-drop auto-route,
+#   whose premise (a property the SDK provider does not handle) rotted every
+#   time that property was wired. See lib/recreate-stack.ts.
+# Phase 2 inverts the template AND combines both flags in one deploy (THE ARM).
 # Phase 3 destroys clean.
 #
 # Required env vars:
@@ -116,32 +120,58 @@ fi
 echo "==> Pre-run cleanup"
 cleanup
 
-# --- Phase 1: baseline — Fwd on SDK, Back on CC ------------------------
-echo "==> Phase 1: deploy ${STACK} (Fwd no RuntimeManagementConfig -> SDK; Back has RuntimeManagementConfig -> CC)"
-export CDKD_INTEG_PHASE=1
-node "${LOCAL_DIST}" deploy "${STACK}" \
+# --- Phase 0: plain deploy — both on SDK --------------------------------
+echo "==> Phase 0: deploy ${STACK} (no flags, no RuntimeManagementConfig -> both on SDK)"
+CDKD_INTEG_PHASE=0 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
-unset CDKD_INTEG_PHASE
+
+STATE_0=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+for probe in FwdProbe BackProbe; do
+  LAYER_0=$(printf '%s' "${STATE_0}" | jq -r --arg id "${probe}" '.resources[$id].provisionedBy // ""')
+  if [ "${LAYER_0}" != "sdk" ]; then
+    echo "FAIL: fresh ${probe} has provisionedBy='${LAYER_0}', expected 'sdk'. Likely cause: a property of the phase-0 template became an SDK-provider silent drop (a schema refresh added one, or handledProperties lost an entry), so the fresh deploy auto-routed to Cloud Control. Check the deploy output above for an 'Auto-routing ... via Cloud Control' line naming the property." >&2
+    echo "${STATE_0}" | jq .
+    exit 1
+  fi
+  echo "    OK: fresh ${probe} provisionedBy == 'sdk'"
+done
+
+# --- Phase 1: seed the inverted baseline — Fwd on SDK, Back on CC ------
+echo "==> Phase 1: seed (Back gains RuntimeManagementConfig + --recreate-via-cc-api BackProbe -> Back on CC; Fwd untouched on SDK)"
+CDKD_INTEG_PHASE=1 node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --recreate-via-cc-api BackProbe \
+  --yes
 
 STATE_1=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
 FWD_PROVISIONED_1=$(echo "${STATE_1}" | jq -r '.resources.FwdProbe.provisionedBy // ""')
 BACK_PROVISIONED_1=$(echo "${STATE_1}" | jq -r '.resources.BackProbe.provisionedBy // ""')
 
 if [ "${FWD_PROVISIONED_1}" != "sdk" ]; then
-  echo "FAIL: baseline FwdProbe has provisionedBy='${FWD_PROVISIONED_1}', expected 'sdk'" >&2
+  echo "FAIL: baseline FwdProbe has provisionedBy='${FWD_PROVISIONED_1}', expected 'sdk' (the seed deploy named only BackProbe and FwdProbe's template did not change)" >&2
   echo "${STATE_1}" | jq .
   exit 1
 fi
 echo "    OK: baseline FwdProbe provisionedBy == 'sdk'"
 
 if [ "${BACK_PROVISIONED_1}" != "cc-api" ]; then
-  echo "FAIL: baseline BackProbe has provisionedBy='${BACK_PROVISIONED_1}', expected 'cc-api'" >&2
+  echo "FAIL: baseline BackProbe has provisionedBy='${BACK_PROVISIONED_1}', expected 'cc-api'. The --recreate-via-cc-api seeding step did not seed, so the reverse half of the arm would be refused as already-sdk. Likely cause: the flag no-opped (the differ saw NO_CHANGE on BackProbe between phase 0 and phase 1 -- go-to-k/cdkd#2651 -- check that lib/recreate-stack.ts still gives BackProbe RuntimeManagementConfig on CDKD_INTEG_PHASE=1), or --recreate-via-cc-api itself regressed (run the recreate-via-cc-api fixture). This baseline does NOT depend on any property being unhandled by the SDK provider." >&2
   echo "${STATE_1}" | jq .
   exit 1
 fi
 echo "    OK: baseline BackProbe provisionedBy == 'cc-api'"
+
+# The record says cc-api; this says the Cloud Control create really
+# provisioned the function.
+BACK_RL_1=$(aws lambda get-runtime-management-config --function-name "${BACK_FN_NAME}" --region "${REGION}" --query 'UpdateRuntimeOn' --output text 2>/dev/null)
+if [ "${BACK_RL_1}" != "FunctionUpdate" ]; then
+  echo "FAIL: baseline BackProbe RuntimeManagementConfig.UpdateRuntimeOn='${BACK_RL_1}', expected 'FunctionUpdate' (the CC recreate should have set it)" >&2
+  exit 1
+fi
+echo "    OK: baseline BackProbe RuntimeManagementConfig.UpdateRuntimeOn is FunctionUpdate on AWS (CC create confirmed)"
 
 FWD_LAST_MOD_1=$(aws lambda get-function-configuration --function-name "${FWD_FN_NAME}" --region "${REGION}" --query 'LastModified' --output text 2>/dev/null)
 BACK_LAST_MOD_1=$(aws lambda get-function-configuration --function-name "${BACK_FN_NAME}" --region "${REGION}" --query 'LastModified' --output text 2>/dev/null)
@@ -149,14 +179,12 @@ echo "    Baseline LastModified: Fwd=${FWD_LAST_MOD_1}  Back=${BACK_LAST_MOD_1}"
 
 # --- Phase 2: mixed-direction recreate in a SINGLE deploy --------------
 echo "==> Phase 2: mixed-direction recreate (Fwd SDK->CC AND Back CC->SDK in one deploy)"
-export CDKD_INTEG_PHASE=2
-node "${LOCAL_DIST}" deploy "${STACK}" \
+CDKD_INTEG_PHASE=2 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --recreate-via-cc-api FwdProbe \
   --recreate-via-sdk-provider BackProbe \
   --yes
-unset CDKD_INTEG_PHASE
 
 STATE_2=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
 FWD_PROVISIONED_2=$(echo "${STATE_2}" | jq -r '.resources.FwdProbe.provisionedBy // ""')
@@ -194,7 +222,7 @@ echo "    OK: BackProbe LastModified updated across recreate"
 
 # AWS-side RuntimeManagementConfig.UpdateRuntimeOn: Fwd now has FunctionUpdate
 # (CC route forwarded the new property); Back now back at the Auto default
-# (SDK provider doesn't wire it).
+# (a fresh function whose template carries no RuntimeManagementConfig).
 FWD_RL_2=$(aws lambda get-runtime-management-config --function-name "${FWD_FN_NAME}" --region "${REGION}" --query 'UpdateRuntimeOn' --output text 2>/dev/null)
 BACK_RL_2=$(aws lambda get-runtime-management-config --function-name "${BACK_FN_NAME}" --region "${REGION}" --query 'UpdateRuntimeOn' --output text 2>/dev/null)
 
@@ -205,10 +233,10 @@ fi
 echo "    OK: FwdProbe RuntimeManagementConfig.UpdateRuntimeOn is FunctionUpdate on AWS (CC route forwarded the new property)"
 
 if [ "${BACK_RL_2}" = "FunctionUpdate" ]; then
-  echo "FAIL: post-mixed BackProbe still has RuntimeManagementConfig.UpdateRuntimeOn=FunctionUpdate on AWS (SDK recreate should NOT have wired RuntimeManagementConfig)" >&2
+  echo "FAIL: post-mixed BackProbe still has RuntimeManagementConfig.UpdateRuntimeOn=FunctionUpdate on AWS (the template dropped it and the function should be a fresh instance)" >&2
   exit 1
 fi
-echo "    OK: BackProbe RuntimeManagementConfig.UpdateRuntimeOn is back at the default (SDK recreate did not wire it)"
+echo "    OK: BackProbe RuntimeManagementConfig.UpdateRuntimeOn is back at the default (fresh instance, property absent from the template)"
 
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy via mixed delete path (FwdProbe via CC, BackProbe via SDK)"

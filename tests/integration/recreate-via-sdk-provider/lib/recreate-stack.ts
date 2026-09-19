@@ -6,31 +6,44 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 /**
  * Integ fixture for #651 — `--recreate-via-sdk-provider <LogicalId>`.
  *
- * Reverse direction of #615: a Lambda Function that lands sticky on
- * `provisionedBy: 'cc-api'` (Phase 1 deploys WITH RuntimeManagementConfig so the
- * silent-drop auto-route fires) is destroyed + recreated via cdkd's
- * SDK Provider (Phase 2 re-deploys WITHOUT RuntimeManagementConfig + the new
- * flag), so the new physical id stamps `provisionedBy: 'sdk'`. The
- * verify.sh asserts:
+ * Reverse direction of #615: a Lambda Function recorded as
+ * `provisionedBy: 'cc-api'` is destroyed + recreated via cdkd's SDK Provider,
+ * so the new instance stamps `provisionedBy: 'sdk'`.
  *
- *   - Phase 1: state has `provisionedBy: 'cc-api'`, AWS-side
- *     RuntimeManagementConfig.UpdateRuntimeOn is FunctionUpdate (the CC
- *     route forwarded it).
- *   - Phase 2: state flips `'cc-api'` → `'sdk'`, AWS-side
- *     RuntimeManagementConfig.UpdateRuntimeOn is back at the Auto default
- *     (the SDK Provider doesn't wire it; in --recreate-via-sdk-provider we
- *     drop RuntimeManagementConfig from the template so the inverse
- *     ambiguous-intent guard doesn't refuse), and the Lambda's
+ * HOW THE CC BASELINE IS SEEDED. With `--recreate-via-cc-api`, never with the
+ * silent-drop auto-route. The auto-route needs a property the SDK provider
+ * does NOT handle, and that is a moving premise: this fixture seeded through
+ * `LoggingConfig`, then `RecursiveLoop`, then `RuntimeManagementConfig`, and
+ * each was later wired into `lambda-function-provider.ts`, after which the
+ * baseline silently landed on `'sdk'` and the run failed before reaching
+ * anything it tests. The type's remaining silent drops cannot carry a
+ * fixture: `CapacityProviderConfig` / `FunctionScalingConfig` need Lambda
+ * Managed Instances capacity, and `PublishToLatestPublished` is an
+ * undocumented CloudFormation directive. The explicit flag depends on no
+ * coverage table, so a backfill cannot rot it. (The auto-route itself is
+ * covered by `sdk-to-cc-autoroute` and `cc-api-fallback`.)
+ *
+ * Phase env `CDKD_INTEG_PHASE`, set by verify.sh:
+ *
+ *   - `base` (default): no `RuntimeManagementConfig`. Plain deploy -> `'sdk'`.
+ *   - `seed`: WITH `RuntimeManagementConfig`, deployed with
+ *     `--recreate-via-cc-api RecreateProbe` -> `'cc-api'`. AWS-side
+ *     `UpdateRuntimeOn` is `FunctionUpdate`, which witnesses that the Cloud
+ *     Control create really provisioned the function.
+ *   - `recreate`: WITHOUT `RuntimeManagementConfig`, deployed with
+ *     `--recreate-via-sdk-provider RecreateProbe` -> `'sdk'`. THE ARM.
+ *     AWS-side `UpdateRuntimeOn` is back at the `Auto` default and
  *     `LastModified` changed.
- *   - Phase 3: destroy clean (state file + Lambda + role gone).
  *
- * `RuntimeManagementConfig` is the canonical silent-drop demo property.
- * Pre-history: LoggingConfig → RecursiveLoop (both got backfilled into the
- * SDK provider); RuntimeManagementConfig is the next still-silent-drop
- * replacement trigger. The function name is stable across recreates (same
- * as in the #615 fixture: the destroy + recreate cycle reuses the
- * user-supplied `functionName`); `LastModified` distinguishes the two
- * instances.
+ * `RuntimeManagementConfig` toggles with the phase because routing is decided
+ * while PROVISIONING: a deploy the differ classifies NO_CHANGE never reaches
+ * the provider, so a recreate flag on an unchanged template does nothing
+ * (go-to-k/cdkd#2651). Both layers handle the property today; it is here as
+ * the property delta and the AWS-side witness, NOT as a routing trigger.
+ *
+ * The function name is stable across recreates (the destroy + recreate cycle
+ * reuses the user-supplied `functionName`, which is what forces the
+ * delete-before-create order); `LastModified` distinguishes the instances.
  */
 export class RecreateViaSdkProviderStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -45,8 +58,11 @@ export class RecreateViaSdkProviderStack extends cdk.Stack {
       ],
     });
 
-    const includeSilentDrop =
-      process.env['CDKD_INTEG_USE_SILENT_DROP'] === 'true';
+    const phase = process.env['CDKD_INTEG_PHASE'] ?? 'base';
+    if (!['base', 'seed', 'recreate'].includes(phase)) {
+      throw new Error(`Unknown CDKD_INTEG_PHASE '${phase}' (expected base | seed | recreate)`);
+    }
+    const withRuntimeManagementConfig = phase === 'seed';
 
     const fn = new lambda.CfnFunction(this, 'RecreateProbe', {
       functionName: 'cdkd-recreate-via-sdk-provider-probe',
@@ -59,14 +75,8 @@ export class RecreateViaSdkProviderStack extends cdk.Stack {
           '    return {"statusCode": 200, "body": "cdkd #651 probe"}',
         ].join('\n'),
       },
-      // Phase 1: RuntimeManagementConfig present → cdkd's auto-route via Cloud
-      // Control API kicks in (the SDK Provider would silent-drop the
-      // property), and the new state record stamps `provisionedBy: 'cc-api'`.
-      // Phase 2: env unset → RuntimeManagementConfig dropped from the template;
-      // combined with `--recreate-via-sdk-provider RecreateProbe`, cdkd
-      // destroys the CC-managed copy and creates a fresh one via SDK,
-      // stamping `provisionedBy: 'sdk'`.
-      ...(includeSilentDrop
+      // `seed` only — see the phase table in the class comment.
+      ...(withRuntimeManagementConfig
         ? { runtimeManagementConfig: { updateRuntimeOn: 'FunctionUpdate' } }
         : {}),
     });

@@ -654,6 +654,7 @@
         "recreate-mixed-direction",
         "recreate-nested-logical-id-collision",
         "recreate-via-cc-api",
+        "recreate-via-sdk-provider",
         "rollback-replay-cc-generated-name"
       ]
     },

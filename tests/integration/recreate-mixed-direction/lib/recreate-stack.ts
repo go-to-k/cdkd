@@ -7,22 +7,38 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * Integ fixture for the #651 follow-up — mixed-direction recreate in a
  * single deploy.
  *
- * Two Lambda Functions whose template flips inversely across phases so
- * one migrates SDK->CC (forward) and the other CC->SDK (reverse) in the
- * SAME `cdkd deploy` call:
+ * Two Lambda Functions that migrate in OPPOSITE directions in the SAME
+ * `cdkd deploy` call: `FwdProbe` SDK->CC (forward) and `BackProbe` CC->SDK
+ * (reverse). Phase env `CDKD_INTEG_PHASE`, set by verify.sh:
  *
- *   - `FwdProbe`: Phase 1 WITHOUT RuntimeManagementConfig (lands SDK).
- *                 Phase 2 WITH RuntimeManagementConfig + --recreate-via-cc-api.
- *                 Result: provisionedBy flips 'sdk' -> 'cc-api'.
- *   - `BackProbe`: Phase 1 WITH RuntimeManagementConfig (auto-routes to CC).
- *                  Phase 2 WITHOUT RuntimeManagementConfig + --recreate-via-sdk-provider.
- *                  Result: provisionedBy flips 'cc-api' -> 'sdk'.
+ *   - `0` (default): neither function has RuntimeManagementConfig. Plain
+ *     deploy -> both `'sdk'`.
+ *   - `1` (seed): BackProbe gains RuntimeManagementConfig, deployed with
+ *     `--recreate-via-cc-api BackProbe` -> Fwd `'sdk'`, Back `'cc-api'`. This
+ *     is the inverted baseline the arm starts from.
+ *   - `2` (THE ARM): inverted — FwdProbe gains RuntimeManagementConfig +
+ *     `--recreate-via-cc-api FwdProbe`; BackProbe loses it +
+ *     `--recreate-via-sdk-provider BackProbe`. Result: Fwd `'sdk'` ->
+ *     `'cc-api'`, Back `'cc-api'` -> `'sdk'`.
  *
- * `RuntimeManagementConfig` is the canonical silent-drop demo property.
- * Pre-history: LoggingConfig → RecursiveLoop (both got backfilled into the
- * SDK provider); RuntimeManagementConfig is the next still-silent-drop
- * replacement trigger (default `UpdateRuntimeOn: 'Auto'`; set
- * `'FunctionUpdate'` here).
+ * HOW BackProbe's CC BASELINE IS SEEDED. With `--recreate-via-cc-api`, never
+ * with the silent-drop auto-route. The auto-route needs a property the SDK
+ * provider does NOT handle, and that is a moving premise: this fixture seeded
+ * through `LoggingConfig`, then `RecursiveLoop`, then
+ * `RuntimeManagementConfig`, and each was later wired into
+ * `lambda-function-provider.ts`, after which BackProbe silently landed on
+ * `'sdk'` and the run failed before reaching anything it tests. The type's
+ * remaining silent drops cannot carry a fixture (`CapacityProviderConfig` /
+ * `FunctionScalingConfig` need Lambda Managed Instances capacity;
+ * `PublishToLatestPublished` is an undocumented CloudFormation directive).
+ * The explicit flag depends on no coverage table, so a backfill cannot rot it.
+ *
+ * `RuntimeManagementConfig` (default `UpdateRuntimeOn: 'Auto'`; set
+ * `'FunctionUpdate'` here) toggles with the phase because routing is decided
+ * while PROVISIONING: a deploy the differ classifies NO_CHANGE never reaches
+ * the provider, so a recreate flag on an unchanged resource does nothing
+ * (go-to-k/cdkd#2651). Both layers handle the property today; it is here as
+ * the property delta and as an AWS-side witness, NOT as a routing trigger.
  *
  * The single Phase 2 deploy mixes both flags so the deploy engine's
  * recreate-target processing handles both directions in one DAG run.
@@ -47,15 +63,15 @@ export class RecreateMixedDirectionStack extends cdk.Stack {
       ],
     });
 
-    // Phase selector. Phase 1: FwdProbe has no RuntimeManagementConfig, BackProbe
-    // has it (so it auto-routes to CC). Phase 2: inverted — FwdProbe
-    // gets RuntimeManagementConfig (so the recreate-via-cc-api flag has a real
-    // forward-migration property to honor), BackProbe loses it (so the
-    // reverse direction's inverse-ambiguous-intent guard doesn't refuse).
-    const phase = process.env['CDKD_INTEG_PHASE'] === '2' ? 2 : 1;
+    // Phase selector — see the phase table in the class comment.
+    const rawPhase = process.env['CDKD_INTEG_PHASE'] ?? '0';
+    if (!['0', '1', '2'].includes(rawPhase)) {
+      throw new Error(`Unknown CDKD_INTEG_PHASE '${rawPhase}' (expected 0 | 1 | 2)`);
+    }
+    const phase = Number(rawPhase);
 
     // RuntimeManagementConfig.UpdateRuntimeOn default is 'Auto'; 'FunctionUpdate'
-    // is the non-default we set so the silent-drop / CC-route is observable on AWS.
+    // is the non-default we set so the property is observable on AWS.
     const runtimeManagementConfig = { updateRuntimeOn: 'FunctionUpdate' };
 
     const fwd = new lambda.CfnFunction(this, 'FwdProbe', {
