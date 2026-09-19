@@ -107,6 +107,10 @@ Index of every area: [code-layout.md](code-layout.md).
   `resolveProfileCredentials` in `local-start-api.ts`, gating an
   `aws sso login --profile <name>` hint, so tightening either half must ask what
   it costs that caller (go-to-k/cdkd#3377).
+- **src/cli/commands/nested-template-preflight.ts** - `cdkd deploy`'s refusal
+  of a malformed nested-template tree (#3449). The call stays BEFORE macro
+  expansion and the work graph; `NestedStackProvider`'s per-row walk is the
+  backstop, not a duplicate. Not in `AssemblyReader`: `diff` owns its refusal.
 - **src/cli/commands/pin-cc-api-reachability.ts** - the pure decision behind
   `--pin-cc-api`'s pre-flight: which pinned logical ids match NO stack (an error
   — the flag prints nothing on success, so an id that matched nowhere is
