@@ -103,6 +103,15 @@ gh issue create -t 'fix(provider): ...' \
   --label severity:high --label effort:large
 ```
 
+**A `next` reason must still be true when someone reads it.** Seven deferrals
+filed across one run were re-opened by the orchestrator and every one had
+expired or was wrong at filing: a gate named as the blocker had been deleted;
+"the files are cold" named files the same run's own PR had edited; "the session
+ended" is not one of the two licensed reasons at all. Write the reason as a
+condition a reader can CHECK (`PR #N holds this file`, `the fix belongs in
+<repo>`), never as a state of the lane, and check it yourself before writing
+`next` rather than after.
+
 The `<issue-slug>` is per FINDING (lanes share `/tmp`), the `&&` stops a failed
 write from filing whatever sat at that path, and heredoc → file → `--body-file`
 in ONE QUOTED-delimiter call is the shape — the two-line form files an issue
