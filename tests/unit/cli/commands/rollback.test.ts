@@ -703,6 +703,12 @@ describe('rollbackCommand — DeletionPolicy: Snapshot wiring (#1358)', () => {
     function installReplacementStack(opts: {
       newCopyPolicy?: 'Retain';
       oldResourceRetained: boolean;
+      /** The OLD record's type (issue #2668); defaults to the op's own. */
+      previousType?: string;
+      /** The stamped journal field; omitted = a journal written before it existed. */
+      previousResourceType?: string;
+      /** A failed in-flight op recorded beside the completed one. */
+      failedOperations?: unknown[];
     }): void {
       const op = {
         logicalId: 'R',
@@ -711,9 +717,12 @@ describe('rollbackCommand — DeletionPolicy: Snapshot wiring (#1358)', () => {
         physicalId: 'phys-new',
         provisionedBy: 'sdk',
         oldResourceRetained: opts.oldResourceRetained,
+        ...(opts.previousResourceType !== undefined && {
+          previousResourceType: opts.previousResourceType,
+        }),
         previousState: {
           physicalId: 'phys-old',
-          resourceType: 'AWS::SQS::Queue',
+          resourceType: opts.previousType ?? 'AWS::SQS::Queue',
           properties: { a: 1 },
           attributes: {},
           dependencies: [],
@@ -752,6 +761,7 @@ describe('rollbackCommand — DeletionPolicy: Snapshot wiring (#1358)', () => {
               reason: 'no-rollback-failure',
               initialDeploy: false,
               operations: [op],
+              ...(opts.failedOperations && { failedOperations: opts.failedOperations }),
             },
           ],
         }),
@@ -808,6 +818,77 @@ describe('rollbackCommand — DeletionPolicy: Snapshot wiring (#1358)', () => {
       const lines = await runForPlan();
       expect(lines.some((l) => /re-create old resource, delete new/.test(l))).toBe(true);
       expect(lines.some((l) => /RETAINED \(UpdateReplacePolicy: Retain\)/.test(l))).toBe(false);
+    });
+
+    describe('a replacement that changed the resource Type (issue #2668)', () => {
+      const reverseLine = (lines: string[]): string | undefined =>
+        lines.find((l) => l.includes('reverse-replace R'));
+
+      it('shows NEW -> OLD, from the stamped field', async () => {
+        installReplacementStack({
+          oldResourceRetained: false,
+          previousType: 'AWS::SSM::Parameter',
+          previousResourceType: 'AWS::SSM::Parameter',
+        });
+        expect(reverseLine(await runForPlan())).toContain(
+          '(AWS::SQS::Queue -> AWS::SSM::Parameter)'
+        );
+      });
+
+      it('shows NEW -> OLD for a LEGACY journal too (previous record only)', async () => {
+        installReplacementStack({ oldResourceRetained: false, previousType: 'AWS::SSM::Parameter' });
+        expect(reverseLine(await runForPlan())).toContain(
+          '(AWS::SQS::Queue -> AWS::SSM::Parameter)'
+        );
+      });
+
+      it('CONTROL: an ordinary replacement shows the single type, no arrow', async () => {
+        installReplacementStack({ oldResourceRetained: false });
+        const line = reverseLine(await runForPlan());
+        expect(line).toContain('(AWS::SQS::Queue)');
+        expect(line).not.toContain('->');
+      });
+
+      it('an unroutable op is labelled REFUSED with the reason, never as a skip or a reverse', async () => {
+        installReplacementStack({
+          oldResourceRetained: false,
+          previousType: 'AWS::SSM::Parameter',
+          previousResourceType: 'AWS::SNS::Topic',
+        });
+        const lines = await runForPlan();
+        const refused = lines.find((l) => l.includes('(REFUSED) R'));
+        expect(refused).toBeDefined();
+        expect(refused).toContain('two different types');
+        expect(reverseLine(lines)).toBeUndefined();
+        expect(lines.some((l) => /- skip\s+R /.test(l))).toBe(false);
+      });
+
+      it('--revert-failed labels a failed Type change as a skip naming both types', async () => {
+        installReplacementStack({
+          oldResourceRetained: false,
+          failedOperations: [
+            {
+              logicalId: 'R',
+              changeType: 'UPDATE',
+              resourceType: 'AWS::SNS::Topic',
+              physicalId: 'phys-new',
+              previousState: {
+                physicalId: 'phys-new',
+                resourceType: 'AWS::SQS::Queue',
+                properties: { a: 1 },
+                attributes: {},
+                dependencies: [],
+              },
+            },
+          ],
+        });
+        await rollbackCommand('S', { ...baseOpts, revertFailed: true }).catch(() => undefined);
+        const lines = await plannedLines();
+        const failed = lines.find((l) => l.includes('failed Type change is a replacement'));
+        expect(failed).toBeDefined();
+        expect(failed).toContain('(AWS::SQS::Queue -> AWS::SNS::Topic)');
+        expect(lines.some((l) => /FAILED update — remote state unknown/.test(l))).toBe(false);
+      });
     });
 
     it('re-adopt WITHOUT the policy still promises the delete', async () => {

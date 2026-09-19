@@ -6271,6 +6271,22 @@ export class DeployEngine {
             provisionedBy: currentResource.provisionedBy,
           }).provider;
 
+          // Does an EQUAL physical id on the two halves name the SAME resource?
+          // Within one type, always — that is what the two name-idempotent
+          // guards below assume. Across a Type change it is a coincidence of
+          // two namespaces (an SSM parameter and a log group can share a bare
+          // name) ONLY when the two halves are served by different providers,
+          // or by Cloud Control, which addresses a resource by type AND
+          // identifier. ONE SDK provider serving both types is one namespace:
+          // every `Custom::*` type and `AWS::CloudFormation::CustomResource`
+          // route to `CustomResourceProvider`, where an equal id returned by
+          // the handler IS the existing resource, and deleting "the old one"
+          // would send `Delete` for what the create just built. Unsure reads
+          // as "same": the guards then refuse loudly instead of deleting.
+          const equalIdIsSameResource =
+            !typeChanged ||
+            (oldDeleteProvider === replaceProvider && replaceDecision.provisionedBy !== 'cc-api');
+
           // eslint-disable-next-line @typescript-eslint/no-explicit-any -- shape varies by ResourceProvider impl
           let createResult: any;
           if (recreateFlagged) {
@@ -6413,13 +6429,11 @@ export class DeployEngine {
             // bookkeeping runs; the old resource and its state record stay
             // intact.
             //
-            // `!typeChanged` (issue #2668): equal physical ids name the SAME
-            // resource only within one type. Across a Type change they are a
-            // coincidence of two namespaces (a log group and a Lambda function
-            // can both be the bare name `myapp`), and the create was a genuine
-            // one.
+            // `equalIdIsSameResource` (issue #2668): across a Type change
+            // served by two providers an equal id is a coincidence of two
+            // namespaces, and the create was a genuine one.
             if (
-              !typeChanged &&
+              equalIdIsSameResource &&
               updateReplacePolicy === 'Retain' &&
               createResult.physicalId === currentResource.physicalId
             ) {
@@ -6482,13 +6496,27 @@ export class DeployEngine {
               // still deleted so the name frees up; the delete-first helper
               // takes its final snapshot first, issue #1354.)
               const nameOrigin = this.replacementNameOrigin(logicalId, currentResource.physicalId);
+              // Issue #2668: both messages below presume the name is held by
+              // the resource being replaced. Across a Type change that is true
+              // only where the two types share a namespace (RDS / Neptune /
+              // DocumentDB cluster identifiers do); otherwise the holder is an
+              // unrelated resource of the NEW type, and deleting the old one
+              // first frees nothing. Say so rather than print a remedy that
+              // ends with the old resource gone and the same collision.
+              const typeChangeCollisionNote = typeChanged
+                ? ` Note: this replacement changes the resource's Type (${oldResourceType} -> ` +
+                  `${resourceType}). Unless those two types share one name space, the name is ` +
+                  `held by an unrelated existing ${resourceType}, not by the ${oldResourceType} ` +
+                  `being replaced — then deleting the old resource first cannot free it, and the ` +
+                  `fix is a different name.`
+                : '';
               if (updateReplacePolicy === 'Retain') {
                 throw new CdkdError(
                   `${logicalId} (${resourceType}) requires replacement, but its physical name ` +
                     `is still held by the existing resource AND UpdateReplacePolicy: Retain ` +
                     `pins that resource in place. ${nameOrigin.descriptor}. ` +
                     `${nameOrigin.remedy} — with Retain, the old resource keeps the name, so a ` +
-                    `same-name replacement can never proceed.`,
+                    `same-name replacement can never proceed.${typeChangeCollisionNote}`,
                   'NAMED_REPLACEMENT_COLLISION'
                 );
               }
@@ -6502,7 +6530,7 @@ export class DeployEngine {
                     `stack when a custom-named resource requires replacing". ` +
                     `${nameOrigin.remedy}, or re-run with \`cdkd deploy --replace\` to delete ` +
                     `the old resource FIRST and recreate it under the same name (the resource ` +
-                    `is briefly unavailable while it is recreated).`,
+                    `is briefly unavailable while it is recreated).${typeChangeCollisionNote}`,
                   'NAMED_REPLACEMENT_COLLISION'
                 );
               }
@@ -6545,13 +6573,12 @@ export class DeployEngine {
             // --replace. Skipped when the old resource was already deleted
             // (delete-first fallback) — there, re-acquiring the same
             // physical id under the same name is the expected outcome. Skipped
-            // on a Type change too (issue #2668), for the reason stated at the
-            // `--recreate-via-*` twin above: across two types an equal id is
-            // two resources, so the "new" one is NOT the old one and the
-            // delete-old step below is aimed — through the OLD type's provider
-            // — at the right resource.
+            // too when `equalIdIsSameResource` is false (issue #2668): across
+            // two types served by two providers an equal id is two resources,
+            // so the "new" one is NOT the old one and the delete-old step below
+            // is aimed — through the OLD type's provider — at the right one.
             if (
-              !typeChanged &&
+              equalIdIsSameResource &&
               !deletedOldFirst &&
               createResult.physicalId === currentResource.physicalId
             ) {

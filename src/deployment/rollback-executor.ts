@@ -941,7 +941,10 @@ const NESTED_STACK_RESOURCE_TYPE = 'AWS::CloudFormation::Stack';
 
 const nonEmptyString = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
 
-/** The op fields the old-type readers below need; a `FailedOperation` has them too. */
+/**
+ * The op fields the old-type readers below need. A `FailedOperation` satisfies it
+ * through `previousState` alone: it carries no `previousResourceType`.
+ */
 type OldTypeSources = Pick<
   CompletedOperation,
   'resourceType' | 'previousResourceType' | 'previousState'
@@ -1008,6 +1011,26 @@ export function resolveReplacementOldType(
     };
   }
   return { ok: true, oldType };
+}
+
+/**
+ * The one refusal both the `refuse-replacement-routing` arm and the
+ * `reverse-replacement` arm's own guard raise. `markNonRetryable`: the verdict
+ * is read off the journal alone, so no retry can change it.
+ */
+function unroutableReplacementError(op: CompletedOperation, reason: string): Error {
+  return markNonRetryable(
+    new CdkdError(
+      `Cannot reverse the replacement of ${safe(op.logicalId)} (${safe(op.resourceType)}): ` +
+        `${reason}, so cdkd will not guess which provider re-creates the old resource. Nothing ` +
+        `was changed. The journal is kept: fix forward with \`cdkd deploy\`, or re-run with ` +
+        (typeof op.logicalId === 'string' && PASTEABLE_LOGICAL_ID.test(op.logicalId)
+          ? `\`cdkd rollback --orphan ${op.logicalId}\``
+          : `\`cdkd rollback --orphan <id>\` (read the id from \`cdkd events\`)`) +
+        ` to leave this resource as it is and let the rest of the rollback proceed.`,
+      'ROLLBACK_REPLACEMENT_UNROUTABLE'
+    )
+  );
 }
 
 /**
@@ -1125,7 +1148,9 @@ export function classifyRollbackOp(
       // physical id matches neither) — recognize it by the properties
       // already matching the previous state. Anything else is a later
       // attempt's replacement; manual attention required.
-      if (deepEqual(current.properties, op.previousState!.properties)) {
+      // `&& sameTypeAsOld` (issue #2668): two types can declare one identical
+      // bag, so equal properties alone do not make the record the old one.
+      if (sameTypeAsOld && deepEqual(current.properties, op.previousState!.properties)) {
         return 'skip-already-done';
       }
       return 'skip-mismatch';
@@ -2231,18 +2256,9 @@ async function replaySingle(
         // AWS and state is untouched. `markNonRetryable`: the verdict is read
         // off the journal alone, so no retry can change it.
         const routing = resolveReplacementOldType(op);
-        throw markNonRetryable(
-          new CdkdError(
-            `Cannot reverse the replacement of ${safe(op.logicalId)} (${safe(op.resourceType)}): ` +
-              `${routing.ok ? 'its old type could not be routed' : routing.reason}, so cdkd will not ` +
-              `guess which provider re-creates the old resource. Nothing was changed. The journal ` +
-              `is kept: fix forward with \`cdkd deploy\`, or re-run with ` +
-              (typeof op.logicalId === 'string' && PASTEABLE_LOGICAL_ID.test(op.logicalId)
-                ? `\`cdkd rollback --orphan ${op.logicalId}\``
-                : `\`cdkd rollback --orphan <id>\` (read the id from \`cdkd events\`)`) +
-              ` to leave this resource as it is and let the rest of the rollback proceed.`,
-            'ROLLBACK_REPLACEMENT_UNROUTABLE'
-          )
+        throw unroutableReplacementError(
+          op,
+          routing.ok ? 'its old type could not be routed' : routing.reason
         );
       }
 
@@ -2646,14 +2662,7 @@ async function replaySingle(
         // already refused an op whose old type cannot be named, so the `throw`
         // is for a caller that reaches this arm without it.
         const oldTypeRouting = resolveReplacementOldType(op);
-        if (!oldTypeRouting.ok) {
-          throw markNonRetryable(
-            new CdkdError(
-              `Cannot reverse the replacement of ${safe(op.logicalId)}: ${oldTypeRouting.reason}.`,
-              'ROLLBACK_REPLACEMENT_UNROUTABLE'
-            )
-          );
-        }
+        if (!oldTypeRouting.ok) throw unroutableReplacementError(op, oldTypeRouting.reason);
         const oldType = oldTypeRouting.oldType;
         const typeChanged = oldType !== op.resourceType;
         // Issue #3203, BEFORE any AWS call and before the secret resolution:
@@ -3048,7 +3057,14 @@ async function replaySingle(
           }
           logger.info(
             `  Rollback: re-create collided with the new resource's name — deleting the new ` +
-              `resource (${displaySafe(current.physicalId)}) first...`
+              `resource (${displaySafe(current.physicalId)}) first...` +
+              // Issue #2668: across a Type change the holder is the new
+              // resource only where the two types share a name space.
+              (typeChanged
+                ? ` (this op changed the resource's Type, ${safe(op.resourceType)} -> ` +
+                  `${safe(oldType)}: if those types do not share a name space the name is held ` +
+                  `by an unrelated resource and the re-create will collide again)`
+                : '')
           );
           {
             const finalSnapshotIdentifier = rollbackFinalSnapshotId(
@@ -3184,12 +3200,30 @@ async function replaySingle(
         // (re-acquiring the name after the new resource is gone) — exempt,
         // mirroring the deploy-side guard's delete-first exemption.
         //
-        // `!typeChanged` (issue #2668): across a Type change an equal id is a
-        // coincidence of two namespaces, not the live new resource handed
-        // back — the re-create was genuine, and skipping the delete-new step
-        // would leave the new type's resource alive and untracked.
+        // Issue #2668: across a Type change an equal id is a coincidence of two
+        // namespaces — the re-create was genuine, and skipping the delete-new
+        // step would leave the new type's resource alive and untracked — but
+        // ONLY when the two halves are served by different providers, or by
+        // Cloud Control, which addresses by type AND identifier. One SDK
+        // provider serving both types is one namespace (`Custom::*` and
+        // `AWS::CloudFormation::CustomResource` all route to
+        // `CustomResourceProvider`): there the equal id IS the live resource,
+        // and the delete-new step would destroy what this op just restored. A
+        // delete provider that cannot be resolved reads as "same", which keeps
+        // the non-destructive adopt.
+        const equalIdIsSameResource = ((): boolean => {
+          if (!typeChanged) return true;
+          if (createProvisionedBy === 'cc-api') return false;
+          try {
+            return resolveNewDeleteProvider() === createProvider;
+          } catch {
+            return true;
+          }
+        })();
         const adoptedLiveNewResource =
-          !typeChanged && !deletedNewFirst && createResult.physicalId === current.physicalId;
+          equalIdIsSameResource &&
+          !deletedNewFirst &&
+          createResult.physicalId === current.physicalId;
         if (adoptedLiveNewResource) {
           logger.warn(
             `  ⚠ ${safe(op.logicalId)} (${safe(op.resourceType)}): the re-create returned the LIVE new ` +

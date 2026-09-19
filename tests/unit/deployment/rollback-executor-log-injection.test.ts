@@ -477,7 +477,7 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
           changeType: 'UPDATE',
           resourceType: FORGED_TYPE,
           physicalId: 'phys',
-          previousState: { ...res({ physicalId: 'phys' }), properties: 'abc' } as unknown as ResourceState,
+          previousState: { ...res({ resourceType: FORGED_TYPE, physicalId: 'phys' }), properties: 'abc' } as unknown as ResourceState,
         },
       ],
       { [FORGED_ID]: res({ resourceType: FORGED_TYPE, physicalId: 'phys', properties: { a: 1 } }) },

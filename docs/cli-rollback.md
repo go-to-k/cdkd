@@ -85,6 +85,7 @@ deploy attempted), and `--revert-failed` opts into acting on it:
 | Failed operation | With `--revert-failed` |
 | --- | --- |
 | UPDATE | Force-reverted to its pre-deploy properties. The journal records the *attempted* properties, so patch-based providers generate a real undo diff. |
+| UPDATE that changed the resource's `Type` | Skipped with a warning; it was a replacement in flight, and there is no in-place revert of one. |
 | CREATE that recorded a physical id | Deleted, honouring its `DeletionPolicy` — see [DeletionPolicy on a rolled-back CREATE](#deletionpolicy-on-a-rolled-back-create). |
 | CREATE that recorded no physical id | Skipped with a warning; there is nothing addressable to act on. |
 | DELETE | Nothing to do — the resource is still in place. |

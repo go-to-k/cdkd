@@ -46,6 +46,33 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
   })),
 }));
 
+/** The live-progress LABEL, captured so the VERB can be asserted. */
+const taskLabels: string[] = [];
+vi.mock('../../../src/utils/live-renderer.js', async (orig) => {
+  const actual = (await orig()) as { getLiveRenderer: () => Record<string, unknown> };
+  return {
+    ...actual,
+    // The REAL renderer with `addTask` observed, so nothing else it does changes.
+    getLiveRenderer: () => {
+      const real = actual.getLiveRenderer();
+      return new Proxy(real, {
+        get(target, prop) {
+          const value = target[prop as string];
+          if (typeof value !== 'function') return value;
+          const fn = value as (...args: unknown[]) => unknown;
+          if (prop === 'addTask') {
+            return (id: string, label: string) => {
+              taskLabels.push(label);
+              return fn.call(target, id, label);
+            };
+          }
+          return fn.bind(target);
+        },
+      });
+    },
+  };
+});
+
 vi.mock('p-limit', () => ({
   default: vi.fn(() => <T>(fn: () => T) => fn()),
 }));
@@ -125,6 +152,7 @@ describe('DeployEngine routes each half of a Type-change replacement on its own 
 
   beforeEach(() => {
     vi.clearAllMocks();
+    taskLabels.length = 0;
     providers = new Map();
     mockLockManager = {
       acquireLockWithRetry: vi.fn().mockResolvedValue(true),
@@ -191,7 +219,7 @@ describe('DeployEngine routes each half of a Type-change replacement on its own 
     /** Omit the diff's synthetic `Type` row, as a change-shape regression would. */
     omitTypeRow?: boolean;
     attributeChanges?: ResourceChange['attributeChanges'];
-    updateReplacePolicy?: 'Retain';
+    updateReplacePolicy?: 'Retain' | 'Snapshot';
   }
 
   function arrange(a: Arrangement): CloudFormationTemplate {
@@ -487,6 +515,149 @@ describe('DeployEngine routes each half of a Type-change replacement on its own 
     expect(op!['resourceType']).toBe(NEW_TYPE);
     expect(op!['previousResourceType']).toBe(OLD_TYPE);
     expect((op!['previousState'] as ResourceState).resourceType).toBe(OLD_TYPE);
+  });
+
+  describe('one SDK provider serving BOTH types is one id namespace', () => {
+    // Every `Custom::*` type routes to one `CustomResourceProvider`, and a
+    // handler may return the same `PhysicalResourceId` for `Custom::Foo` and
+    // `Custom::Bar`. There the equal id IS the existing resource: deleting "the
+    // old one" would send `Delete` for what the create just built.
+    const shareOneProvider = (): ProviderDouble => {
+      const shared = makeProvider(OLD_PHYSICAL_ID);
+      mockProviderRegistry.getProviderFor.mockImplementation(() => ({
+        provider: shared,
+        provisionedBy: 'sdk' as const,
+      }));
+      mockProviderRegistry.getProvider.mockReturnValue(shared);
+      return shared;
+    };
+
+    it('keeps the name-idempotent guard live: refuses, and deletes NOTHING', async () => {
+      const shared = shareOneProvider();
+      const template = arrange({ recordedType: 'Custom::Foo', templateType: 'Custom::Bar' });
+      const err = await deployAndCatch(makeEngine({ noRollback: true }), template);
+      expect(chainText(err)).toContain('NAMED_REPLACEMENT_IDEMPOTENT_CREATE');
+      expect(shared.delete).not.toHaveBeenCalled();
+    });
+
+    it('CONTROL: the same shared provider with a DIFFERENT new id replaces normally', async () => {
+      const shared = shareOneProvider();
+      shared.create.mockResolvedValue({ physicalId: 'a-new-id', attributes: {} });
+      const template = arrange({ recordedType: 'Custom::Foo', templateType: 'Custom::Bar' });
+      expect(await deployAndCatch(makeEngine(), template)).toBeUndefined();
+      expect(shared.delete).toHaveBeenCalledTimes(1);
+      expect(shared.delete.mock.calls[0]![1]).toBe(OLD_PHYSICAL_ID);
+      expect(shared.delete.mock.calls[0]![2]).toBe('Custom::Foo');
+    });
+
+    it('Cloud Control serving both types is NOT one namespace (it addresses by type + id)', async () => {
+      const shared = makeProvider(OLD_PHYSICAL_ID);
+      mockProviderRegistry.getProviderFor.mockImplementation(() => ({
+        provider: shared,
+        provisionedBy: 'cc-api' as const,
+      }));
+      const template = arrange({
+        recordedType: OLD_TYPE,
+        templateType: NEW_TYPE,
+        provisionedBy: 'cc-api',
+      });
+      expect(await deployAndCatch(makeEngine(), template)).toBeUndefined();
+      expect(shared.delete).toHaveBeenCalledTimes(1);
+      expect(shared.delete.mock.calls[0]![2]).toBe(OLD_TYPE);
+    });
+  });
+
+  it('--recreate-via-cc-api on a type-changed row deletes through the OLD type', async () => {
+    const template = arrange({ recordedType: OLD_TYPE, templateType: NEW_TYPE });
+    const engine = makeEngine({
+      recreateTargets: {
+        stackName: STACK_NAME,
+        viaCcApi: new Set([LOGICAL_ID]),
+        viaSdkProvider: new Set<string>(),
+      },
+    });
+    expect(await deployAndCatch(engine, template)).toBeUndefined();
+    const oldDelete = providerFor(OLD_TYPE, 'sdk').delete;
+    expect(oldDelete).toHaveBeenCalledTimes(1);
+    expect(oldDelete.mock.calls[0]![1]).toBe(OLD_PHYSICAL_ID);
+    expect(oldDelete.mock.calls[0]![2]).toBe(OLD_TYPE);
+    expect(providerFor(NEW_TYPE, 'cc-api').create).toHaveBeenCalledTimes(1);
+    expect(providerFor(NEW_TYPE, 'cc-api').delete).not.toHaveBeenCalled();
+    expect(providerFor(NEW_TYPE, 'sdk').delete).not.toHaveBeenCalled();
+  });
+
+  it('the --replace delete-first fallback deletes through the OLD type, then creates the new one', async () => {
+    const newProvider = providerFor(NEW_TYPE);
+    newProvider.create
+      .mockRejectedValueOnce(
+        new Error(
+          `CREATE failed for ${LOGICAL_ID}: Resource of type '${NEW_TYPE}' with identifier 'x' already exists.`
+        )
+      )
+      .mockResolvedValue({ physicalId: NEW_PHYSICAL_ID, attributes: {} });
+    const template = arrange({ recordedType: OLD_TYPE, templateType: NEW_TYPE });
+    expect(await deployAndCatch(makeEngine({ replace: true }), template)).toBeUndefined();
+    const oldDelete = providerFor(OLD_TYPE).delete;
+    expect(oldDelete).toHaveBeenCalledTimes(1);
+    expect(oldDelete.mock.calls[0]![2]).toBe(OLD_TYPE);
+    expect(newProvider.delete).not.toHaveBeenCalled();
+    expect(newProvider.create).toHaveBeenCalledTimes(2);
+    expect(newProvider.create.mock.calls[1]![1]).toBe(NEW_TYPE);
+  });
+
+  it('a create-first collision WITHOUT --replace says the holder may be an unrelated resource', async () => {
+    providerFor(NEW_TYPE).create.mockRejectedValue(
+      new Error(
+        `CREATE failed for ${LOGICAL_ID}: Resource of type '${NEW_TYPE}' with identifier 'x' already exists.`
+      )
+    );
+    const template = arrange({ recordedType: OLD_TYPE, templateType: NEW_TYPE });
+    const err = await deployAndCatch(makeEngine({ noRollback: true }), template);
+    expect(chainText(err)).toContain('NAMED_REPLACEMENT_COLLISION');
+    expect(chainText(err)).toContain(`changes the resource's Type (${OLD_TYPE} -> ${NEW_TYPE})`);
+    expect(providerFor(OLD_TYPE).delete).not.toHaveBeenCalled();
+  });
+
+  it('UpdateReplacePolicy: Snapshot takes the final snapshot of the OLD type', async () => {
+    // `AWS::RDS::DBInstance` is an atomic-final-snapshot type; the topic
+    // replacing it is not. Keyed on the template's type the old instance was
+    // deleted with NO snapshot identifier (or refused as unsupported).
+    const RDS = 'AWS::RDS::DBInstance';
+    const template = arrange({
+      recordedType: RDS,
+      templateType: OLD_TYPE,
+      updateReplacePolicy: 'Snapshot',
+    });
+    const err = await deployAndCatch(makeEngine({ forceStatefulRecreation: true }), template);
+    expect(err).toBeUndefined();
+    const oldDelete = providerFor(RDS).delete;
+    expect(oldDelete).toHaveBeenCalledTimes(1);
+    expect(oldDelete.mock.calls[0]![2]).toBe(RDS);
+    expect(
+      (oldDelete.mock.calls[0]![4] as { finalSnapshotIdentifier?: string }).finalSnapshotIdentifier
+    ).toEqual(expect.any(String));
+  });
+
+  it('labels the row Replacing, even when the change carries no synthetic Type row', async () => {
+    const template = arrange({
+      recordedType: OLD_TYPE,
+      templateType: NEW_TYPE,
+      omitTypeRow: true,
+    });
+    expect(await deployAndCatch(makeEngine(), template)).toBeUndefined();
+    expect(taskLabels.some((l) => l.startsWith(`Replacing ${LOGICAL_ID}`))).toBe(true);
+    expect(taskLabels.some((l) => l.startsWith(`Updating ${LOGICAL_ID}`))).toBe(false);
+  });
+
+  it('the stateful refusal names the OLD type, the new one, and `Type` as the cause', async () => {
+    const template = arrange({
+      recordedType: STATEFUL_TYPE,
+      templateType: NEW_TYPE,
+      omitTypeRow: true,
+    });
+    const err = await deployAndCatch(makeEngine({ noRollback: true }), template);
+    expect(chainText(err)).toContain(`${LOGICAL_ID} (${STATEFUL_TYPE}) requires replacement`);
+    expect(chainText(err)).toContain(`immutable property changed: Type, to ${NEW_TYPE})`);
   });
 
   it('under UpdateReplacePolicy: Retain, creates the new type and deletes nothing', async () => {

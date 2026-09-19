@@ -29,6 +29,18 @@ import {
 } from '../../../src/deployment/rollback-executor.js';
 import { parseRollbackJournal } from '../../../src/types/rollback-journal.js';
 import type { ResourceState } from '../../../src/types/state.js';
+import {
+  applyDefaultNameForFallback,
+  withStackName,
+} from '../../../src/provisioning/resource-name.js';
+
+/** The bag a Cloud Control create of `type` receives for a nameless record. */
+function applyDefaultNameForFallbackUnderStack(
+  logicalId: string,
+  type: string
+): Record<string, unknown> {
+  return withStackName('MyStack', () => applyDefaultNameForFallback(logicalId, type, {}));
+}
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({}),
@@ -220,6 +232,18 @@ describe('classification is type-aware', () => {
     expect(classifyRollbackOp(op, state, new Set())).toBe('revert');
   });
 
+  it('equal property bags do not read as "already reverted" while the record is the NEW type', () => {
+    // The #3036 shape: two types, one identical bag. A later attempt moved the
+    // id (matches neither), so only the bag comparison is left to decide.
+    const op = typeChangeOp({ previousState: res({ physicalId: OLD_ID, properties: { t: 1 } }) });
+    const moved = { Thing: newRecord({ physicalId: 'a-third-id', properties: { t: 1 } }) };
+    expect(classifyRollbackOp(op, moved, new Set())).toBe('skip-mismatch');
+    const movedOldType = {
+      Thing: res({ physicalId: 'a-third-id', resourceType: OLD_TYPE, properties: { t: 1 } }),
+    };
+    expect(classifyRollbackOp(op, movedOldType, new Set())).toBe('skip-already-done');
+  });
+
   it('an unroutable replacement is refused, but only AFTER the idempotent skips', () => {
     const op = typeChangeOp({ previousResourceType: 'AWS::SQS::Queue' });
     expect(classifyRollbackOp(op, { Thing: newRecord() }, new Set())).toBe(
@@ -301,6 +325,134 @@ describe('replayRollback reverses a Type-change replacement through BOTH types',
     expect(result.failures).toBe(0);
     expect(providerFor(NEW_TYPE).delete).toHaveBeenCalledTimes(1);
     expect(state['Thing']?.resourceType).toBe(OLD_TYPE);
+  });
+
+  describe('one SDK provider serving BOTH types is one id namespace', () => {
+    // `Custom::Foo` -> `Custom::Bar`: both route to one provider, and a handler
+    // may return the same id for both. The re-created "old" resource then IS
+    // the live one, and the delete-new step would destroy what was restored.
+    const sharedCtx = (layer: 'sdk' | 'cc-api') => {
+      const shared: ProviderDouble = {
+        create: vi.fn().mockResolvedValue({ physicalId: NEW_ID, attributes: {} }),
+        delete: vi.fn().mockResolvedValue(undefined),
+      };
+      const ctx: RollbackExecutorContext = {
+        region: 'us-east-1',
+        logger: silentLogger,
+        providerRegistry: {
+          getProviderFor: () => ({ provider: shared, provisionedBy: layer }),
+        } as unknown as RollbackExecutorContext['providerRegistry'],
+      };
+      return { ctx, shared };
+    };
+    const customOp = (): CompletedOperation =>
+      typeChangeOp({
+        resourceType: 'Custom::Bar',
+        previousResourceType: 'Custom::Foo',
+        previousState: res({ physicalId: OLD_ID, resourceType: 'Custom::Foo' }),
+      });
+
+    it('an equal id ADOPTS (warn) and deletes nothing', async () => {
+      const { ctx, shared } = sharedCtx('sdk');
+      const state: Record<string, ResourceState> = {
+        Thing: newRecord({ resourceType: 'Custom::Bar' }),
+      };
+      const result = await replayRollback([customOp()], state, STACK, ctx);
+      expect(result.failures).toBe(0);
+      expect(result.warnings).toBe(1);
+      expect(shared.delete).not.toHaveBeenCalled();
+    });
+
+    it('Cloud Control serving both is NOT one namespace: the new resource is deleted', async () => {
+      const { ctx, shared } = sharedCtx('cc-api');
+      const state: Record<string, ResourceState> = {
+        Thing: newRecord({ resourceType: 'Custom::Bar' }),
+      };
+      const result = await replayRollback([customOp()], state, STACK, ctx);
+      expect(result.failures).toBe(0);
+      expect(shared.delete).toHaveBeenCalledTimes(1);
+      expect(shared.delete.mock.calls[0]![2]).toBe('Custom::Bar');
+    });
+  });
+
+  it('warns about lost data when the OLD type is stateful, not when only the new one is', async () => {
+    // OLD_TYPE (SSM parameter) is stateful; NEW_TYPE (topic) is not.
+    const { ctx } = makeCtx();
+    await replayRollback([typeChangeOp()], { Thing: newRecord() }, STACK, ctx);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`(${OLD_TYPE}) is a stateful type`));
+
+    warn.mockClear();
+    const reversed = typeChangeOp({
+      resourceType: OLD_TYPE,
+      previousResourceType: NEW_TYPE,
+      previousState: res({ physicalId: NEW_ID, resourceType: NEW_TYPE }),
+      physicalId: OLD_ID,
+    });
+    const { ctx: ctx2 } = makeCtx();
+    await replayRollback(
+      [reversed],
+      { Thing: res({ physicalId: OLD_ID, resourceType: OLD_TYPE }) },
+      STACK,
+      ctx2
+    );
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('is a stateful type'));
+  });
+
+  it('a Cloud Control re-create fills the generated name for the OLD type', async () => {
+    // `AWS::SQS::Queue` has a fallback-name rule; the new type here does not.
+    // Keyed on `op.resourceType` the replay would send a nameless create.
+    const { ctx, providerFor } = makeCtx();
+    const op = typeChangeOp({
+      previousResourceType: 'AWS::SQS::Queue',
+      previousState: res({
+        physicalId: OLD_ID,
+        resourceType: 'AWS::SQS::Queue',
+        properties: {},
+        provisionedBy: 'cc-api',
+      }),
+    });
+    await withStackName(STACK, () =>
+      replayRollback([op], { Thing: newRecord() }, STACK, ctx)
+    );
+    const create = providerFor('AWS::SQS::Queue', 'cc-api').create;
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0]![2]).toEqual(
+      applyDefaultNameForFallbackUnderStack('Thing', 'AWS::SQS::Queue')
+    );
+    expect(Object.keys(create.mock.calls[0]![2] as object).length).toBeGreaterThan(0);
+  });
+
+  it('the delete-new-first fallback re-creates with the OLD type too', async () => {
+    const { ctx, providerFor } = makeCtx();
+    providerFor(OLD_TYPE)
+      .create.mockRejectedValueOnce(
+        new Error(`CREATE failed for Thing: Resource of type '${OLD_TYPE}' already exists.`)
+      )
+      .mockResolvedValue({ physicalId: RECREATED_OLD_ID, attributes: {} });
+    const state: Record<string, ResourceState> = { Thing: newRecord() };
+    const result = await replayRollback([typeChangeOp()], state, STACK, ctx);
+    expect(result.failures).toBe(0);
+    const create = providerFor(OLD_TYPE).create;
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(create.mock.calls[1]![1]).toBe(OLD_TYPE);
+    expect(providerFor(NEW_TYPE).delete).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-adopt replay: deletes the new resource through the NEW type, restores the OLD record', async () => {
+    const { ctx, providerFor } = makeCtx();
+    const state: Record<string, ResourceState> = { Thing: newRecord() };
+    const result = await replayRollback(
+      [typeChangeOp({ oldResourceRetained: true })],
+      state,
+      STACK,
+      ctx
+    );
+    expect(result.failures).toBe(0);
+    expect(providerFor(NEW_TYPE).delete).toHaveBeenCalledTimes(1);
+    expect(providerFor(NEW_TYPE).delete.mock.calls[0]![2]).toBe(NEW_TYPE);
+    expect(providerFor(OLD_TYPE).create).not.toHaveBeenCalled();
+    expect(state['Thing']?.resourceType).toBe(OLD_TYPE);
+    expect(state['Thing']?.physicalId).toBe(OLD_ID);
   });
 
   it('REFUSES an unroutable op without touching AWS or state, and counts a FAILURE', async () => {

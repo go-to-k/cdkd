@@ -310,6 +310,20 @@ if [ "${RUN_RC}" -ne 0 ]; then
   exit 1
 fi
 assert_v1_world "step 1"
+# The #3036 arm is only the #3036 arm if EqualBags' RECORDED bag equals the bag
+# its v2 type declares (lib/: the same `Tags` list under both types). If cdkd
+# ever records more than the template declared (a generated name, a normalised
+# Tags shape), the two bags differ, the no-op skip is never in play, and the
+# steps below would pass on an engine that still swallows an equal-bag change.
+STATE_BODY_V1="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
+EQUALBAGS_RECORDED="$(jq -cS '.resources.EqualBags.properties' <<<"${STATE_BODY_V1}")"
+EQUALBAGS_DECLARED="$(jq -cnS --arg stack "${STACK}" '{Tags: [{Key: "cdkd-integ-fixture", Value: $stack}]}')"
+if [ "${EQUALBAGS_RECORDED}" != "${EQUALBAGS_DECLARED}" ]; then
+  echo "[verify] FAIL (step 1): EqualBags' recorded bag is not the bag both of its types declare, so the #3036 arm would be vacuous"
+  echo "    recorded: ${EQUALBAGS_RECORDED}"
+  echo "    declared: ${EQUALBAGS_DECLARED}"
+  exit 1
+fi
 echo "[verify] step 1 ok: v1 deployed — two parameters and a topic, state records the v1 types"
 
 # ---------------------------------------------------------------------------

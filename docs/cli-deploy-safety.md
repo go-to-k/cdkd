@@ -860,7 +860,14 @@ its own:
   **template** declares, with a fresh routing decision.
 
 Two physical ids that happen to be equal across the two types — an SSM parameter
-and a log group can share a bare name — are treated as two resources.
+and a log group can share a bare name — are treated as two resources. The
+exception is a pair of types served by one provider with one id space, such as
+two custom resource types backed by the same handler: there an equal id is the
+existing resource, and the replacement is refused with
+`NAMED_REPLACEMENT_IDEMPOTENT_CREATE` rather than deleting what it just created.
+When the new resource's create collides on a name instead, the error says that
+the holder may be an unrelated resource of the new type, which `--replace`
+cannot free.
 
 `cdkd rollback` and the automatic rollback reverse such a replacement the same
 way: the old resource is re-created through its own type's provider and the new
