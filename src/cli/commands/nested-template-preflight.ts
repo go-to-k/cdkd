@@ -26,7 +26,9 @@ export interface NestedTemplatePreflightStack {
  * as the guard for a context this command did not build.
  *
  * Read-only and synchronous: a few file reads per nested template, none at all
- * for a stack without nested-stack rows.
+ * for a stack without nested-stack rows. One walk covers all of a stack's
+ * top-level rows, so the walker's row budget is per STACK here and per row in
+ * the provider; no CDK-generated assembly comes near either.
  *
  * The root template's own path is not seeded into the walk (`StackInfo` does
  * not carry it). Detection does not depend on the seed: a child that points

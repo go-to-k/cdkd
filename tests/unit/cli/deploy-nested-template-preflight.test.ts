@@ -126,9 +126,7 @@ describe('refuseMalformedNestedTemplateTrees', () => {
 const errorSpy = vi.hoisted(() => vi.fn());
 const stsCtorSpy = vi.hoisted(() => vi.fn());
 const assetPublisherCtorSpy = vi.hoisted(() => vi.fn());
-const addAssetsToGraphSpy = vi.hoisted(() => vi.fn(() => []));
 const lockManagerCtorSpy = vi.hoisted(() => vi.fn());
-const acquireLockSpy = vi.hoisted(() => vi.fn().mockResolvedValue(true));
 const engineCtorSpy = vi.hoisted(() => vi.fn());
 const engineDeploySpy = vi.hoisted(() => vi.fn());
 const expandMacrosSpy = vi.hoisted(() => vi.fn(async () => undefined));
@@ -197,7 +195,7 @@ vi.mock('../../../src/state/export-index-store.js', () => ({
 vi.mock('../../../src/state/lock-manager.js', () => ({
   LockManager: vi.fn().mockImplementation(() => {
     lockManagerCtorSpy();
-    return { acquireLock: acquireLockSpy, releaseLock: vi.fn() };
+    return { acquireLock: vi.fn().mockResolvedValue(true), releaseLock: vi.fn() };
   }),
 }));
 
@@ -231,7 +229,7 @@ vi.mock('../../../src/analyzer/diff-calculator.js', () => ({
 vi.mock('../../../src/assets/asset-publisher.js', () => ({
   AssetPublisher: vi.fn().mockImplementation(() => {
     assetPublisherCtorSpy();
-    return { addAssetsToGraph: addAssetsToGraphSpy, executeNode: vi.fn(async () => undefined) };
+    return { addAssetsToGraph: vi.fn(() => []), executeNode: vi.fn(async () => undefined) };
   }),
 }));
 
@@ -325,13 +323,13 @@ describe('cdkd deploy refuses a malformed nested-template tree pre-flight (issue
     delete process.env['CDKD_NO_LIVE'];
   });
 
+  // Every spy here fires exactly once on the well-formed path (asserted in the
+  // last case), so none of these absences can pass by never being reachable.
   const expectNothingStarted = (): void => {
     expect(expandMacrosSpy).not.toHaveBeenCalled();
     expect(stsCtorSpy).not.toHaveBeenCalled();
     expect(assetPublisherCtorSpy).not.toHaveBeenCalled();
-    expect(addAssetsToGraphSpy).not.toHaveBeenCalled();
     expect(lockManagerCtorSpy).not.toHaveBeenCalled();
-    expect(acquireLockSpy).not.toHaveBeenCalled();
     expect(runRecorderSpy).not.toHaveBeenCalled();
     expect(engineCtorSpy).not.toHaveBeenCalled();
     expect(engineDeploySpy).not.toHaveBeenCalled();
@@ -410,6 +408,16 @@ describe('cdkd deploy refuses a malformed nested-template tree pre-flight (issue
     const code = await runDeploy(['--yes']);
 
     expect(code).toBeUndefined();
-    expect(engineDeploySpy).toHaveBeenCalledTimes(1);
+    for (const spy of [
+      expandMacrosSpy,
+      stsCtorSpy,
+      assetPublisherCtorSpy,
+      lockManagerCtorSpy,
+      runRecorderSpy,
+      engineCtorSpy,
+      engineDeploySpy,
+    ]) {
+      expect(spy).toHaveBeenCalledTimes(1);
+    }
   });
 });

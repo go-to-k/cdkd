@@ -155,6 +155,9 @@ echo "==> Building cdkd"
 # --------------------------------------------------------------------
 echo ""
 echo "==> Step 0: a hand-modified cyclic assembly must be refused before any level deploys"
+# Start from a clean slate: a root record left by a previously killed run would
+# otherwise fail the "no root state record" check below for the wrong reason.
+${CDKD} destroy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1 || true
 CYCLIC_ASSEMBLY="$(mktemp -d "${TMPDIR:-/tmp}/cdkd-nested-stack-deep-cyclic.XXXXXX")"
 ${CDKD} synth --output "${CYCLIC_ASSEMBLY}" >/dev/null
 
@@ -175,7 +178,7 @@ if [[ ${CONTROL_RC} -ne 0 ]]; then
   exit 1
 fi
 for marker in "${WORK_GRAPH_MARKER}" "${STACK_START_MARKER}"; do
-  if ! echo "${CONTROL_OUT}" | grep -qF "${marker}"; then
+  if ! grep -qF -- "${marker}" <<<"${CONTROL_OUT}"; then
     echo "FAIL: an ordinary 'deploy --dry-run --verbose' no longer logs '${marker}' — the pre-flight check below would pass vacuously; update the marker"
     exit 1
   fi
@@ -225,17 +228,21 @@ if [[ ${CYCLE_RC} -eq 0 ]]; then
   echo "FAIL: deploying a cyclic nested-template assembly exited 0 (expected a refusal)"
   exit 1
 fi
+# Every check on this (verbose, large) output reads a here-string, never
+# `echo ... | grep -q`: under pipefail, grep -q exiting at the first match
+# SIGPIPEs the echo once the text outgrows the pipe buffer, and the non-zero
+# pipeline then reads as "marker absent".
 # Two independent markers from the same refusal: if the wording drifts, one
 # present without the other fails loudly instead of reading as "no refusal".
-if ! echo "${CYCLE_OUT}" | grep -q "contains a cycle"; then
-  if echo "${CYCLE_OUT}" | grep -q "Refusing to start the deploy"; then
+if ! grep -qF -- "contains a cycle" <<<"${CYCLE_OUT}"; then
+  if grep -qF -- "Refusing to start the deploy" <<<"${CYCLE_OUT}"; then
     echo "FAIL: refusal fired but its 'contains a cycle' wording drifted — update this fixture"
   else
     echo "FAIL: deploy failed (rc=${CYCLE_RC}) but NOT with the nested-template cycle refusal"
   fi
   exit 1
 fi
-if ! echo "${CYCLE_OUT}" | grep -q "'Child' (.*) -> 'Grandchild' (.*)"; then
+if ! grep -q -- "'Child' (.*) -> 'Grandchild' (.*)" <<<"${CYCLE_OUT}"; then
   echo "FAIL: the refusal did not name the cycle path ('Child' -> 'Grandchild')"
   exit 1
 fi
@@ -246,7 +253,7 @@ echo "  OK: refused (rc=${CYCLE_RC}) naming the cycle"
 # before it builds a child engine, so that line must be absent here. Step 1
 # asserts the same line IS printed by an ordinary deploy, so a reworded log
 # cannot turn this into a check that passes by matching nothing.
-if echo "${CYCLE_OUT}" | grep -q "${CHILD_DEPLOY_MARKER}"; then
+if grep -qF -- "${CHILD_DEPLOY_MARKER}" <<<"${CYCLE_OUT}"; then
   echo "FAIL: a child engine was started before the cyclic tree was refused:"
   echo "${CYCLE_OUT}" | grep "${CHILD_DEPLOY_MARKER}"
   exit 1
@@ -258,7 +265,7 @@ echo "  OK: no child engine was started"
 # taken and no root resource was dispatched. The control run above proves both
 # lines are printed by a run that gets that far.
 for marker in "${WORK_GRAPH_MARKER}" "${STACK_START_MARKER}"; do
-  if echo "${CYCLE_OUT}" | grep -qF "${marker}"; then
+  if grep -qF -- "${marker}" <<<"${CYCLE_OUT}"; then
     echo "FAIL: the cyclic tree was refused only AFTER '${marker}' — the refusal is no longer pre-flight:"
     echo "${CYCLE_OUT}" | grep -F "${marker}"
     exit 1
