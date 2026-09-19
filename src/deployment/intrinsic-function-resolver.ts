@@ -1144,10 +1144,21 @@ function isDeliberateResolutionRefusal(err: unknown): boolean {
  * rendering is free to change without a consumer noticing.
  *
  * `display` is the only member a user ever sees; the other two are for
- * routing. `display` may be MASKED (both the attribute name and the
- * cross-stack origin go through `maskSecretsForLog` on the way in, since the
- * deploy engine joins these into a throw at DEFAULT verbosity), which is why
- * dedup keys on `display`: that is what the message would repeat.
+ * routing. `display` may be MASKED — AND SANITIZED, since go-to-k/cdkd#3426:
+ * both the attribute name and the cross-stack origin go through
+ * `displayMasked` on the way in, which strips control characters and runs
+ * `displaySafe` as well as masking, since the deploy engine joins these into a
+ * throw at DEFAULT verbosity. That is why dedup keys on `display`: it is what
+ * the message would repeat.
+ *
+ * ONE CONSEQUENCE, stated because the dedup test at
+ * {@link IntrinsicFunctionResolver.pushRedactedAttributeRead} keys its fourth
+ * conjunct on this field: two reads whose names differ ONLY by control
+ * characters or padding now produce the same `display` and COLLAPSE, so
+ * `refuseRedactedAttributeReads` shows one row where it used to show two. Same
+ * accepted trade as the masked-key collapse in `maskValueLeaves` — the loss is
+ * a row COUNT in a diagnostic and never a disclosure, and the direction is
+ * safe: the surviving row carries the sanitized spelling either way.
  */
 export interface RedactedAttributeRead {
   /**
@@ -3160,7 +3171,12 @@ export class IntrinsicFunctionResolver {
       // region as its command built it -- the stack's synthesized or recorded
       // region, `--region`, or a replay / drift / scrub resolver's region read
       // out of a literal token -- and no resolution of this pass produced it.
-      // not-in-class(stripControlChars(loggedTarget).slice(0, 64)): a REGION's log text, masked at the guest's construction (issue #3150), or a resolver's own region as its command built it (stack / --region / literal-token region).
+      // `displaySafe` AROUND the strip, since go-to-k/cdkd#3426.
+      // `stripControlChars` leaves `U+2028` / `U+2029`, which a JSON log viewer
+      // reads as line terminators, and this refusal prints a region text a
+      // template can supply — the same residual the ten binding sites had, one
+      // sanitizer short rather than none.
+      // not-in-class(displaySafe(stripControlChars(loggedTarget)).slice(0, 64)): a REGION's log text, masked at the guest's construction (issue #3150), or a resolver's own region as its command built it (stack / --region / literal-token region).
       // The refusal CLASS, not a plain Error, and `markNonRetryable` beside it
       // (issue go-to-k/cdkd#3181 security review). This decides from a region
       // name a retry cannot change, and the per-unit recovery partitions on
@@ -3174,7 +3190,7 @@ export class IntrinsicFunctionResolver {
       throw markNonRetryable(
         new IntrinsicResolutionRefusalError(
           `Refusing to build AWS clients for the region ` +
-            `'${stripControlChars(loggedTarget).slice(0, 64)}': it is not a valid AWS region name, and a ` +
+            `'${displaySafe(stripControlChars(loggedTarget)).slice(0, 64)}': it is not a valid AWS region name, and a ` +
             `region is substituted into the AWS service hostname.`
         )
       );
@@ -3193,8 +3209,14 @@ export class IntrinsicFunctionResolver {
 
     const scoped = ambient.withRegion(target);
     this.regionScopedClients.set(target, scoped);
-    // not-in-class(loggedTarget): a REGION's log text, masked by the caller that built the region from a template (issue #3150), or a resolver's own region as its command built it (stack / --region / literal-token region).
-    this.logger.debug(`Using region-scoped AWS clients for ${loggedTarget}`);
+    // SANITIZED (go-to-k/cdkd#3426), and this site was the one the issue's own
+    // list did not carry: `isClientSafeRegion` gated `target`, never
+    // `loggedTarget`, which is the LOG TEXT of a possibly different string — a
+    // guest's `explicitRegionLogText`, or `resolveGetAZs`' masked region. The
+    // gate one arm up is a claim about the region cdkd will put in a hostname,
+    // not about the text printed for it.
+    // not-in-class(displaySafe(loggedTarget)): a REGION's log text, masked by the caller that built the region from a template (issue #3150), or a resolver's own region as its command built it (stack / --region / literal-token region).
+    this.logger.debug(`Using region-scoped AWS clients for ${displaySafe(loggedTarget)}`);
     return scoped;
   }
 
@@ -3290,10 +3312,24 @@ export class IntrinsicFunctionResolver {
     }
   ): Promise<Record<string, unknown>> {
     const inheritedSecrets = options?.inheritedSecrets;
-    const maskInherited = (text: string): string =>
-      inheritedSecrets && inheritedSecrets.size > 0
-        ? maskSecretsInText(text, inheritedSecrets)
-        : text;
+    // SANITIZED as well as masked (go-to-k/cdkd#3426). The three lines below
+    // print a template-supplied PARAMETER VALUE, so the control-character class
+    // reaches them exactly as it reached the `Fn::ImportValue` bindings; they
+    // are `debug` rather than `warn`, which changes when a reader sees it, not
+    // whether. Mask, strip, mask — the {@link maskThenStripThenMask} order, and
+    // for its reason: `stripControlChars` DELETES, so a plaintext split by an
+    // invisible would be reconstituted contiguous by a strip after one mask.
+    // Then `displaySafe`, for the class the strip does not cover. This is the
+    // shape every `MASKERS` entry in `scripts/check-resolver-mask-coverage.ts`
+    // must now have; the entry's own note says why this masker is deliberately
+    // narrower about BAGS than the builder.
+    const maskInherited = (text: string): string => {
+      const mask = (value: string): string =>
+        inheritedSecrets && inheritedSecrets.size > 0
+          ? maskSecretsInText(value, inheritedSecrets)
+          : value;
+      return displaySafe(mask(stripControlChars(mask(text))));
+    };
     // The context a user-provided value's leaves are masked against (issue
     // #3114): the inherited bag is the only one this method has, and it is also
     // the bag the parent registered its log twins under, so a value the parent
@@ -3499,7 +3535,7 @@ export class IntrinsicFunctionResolver {
     // definitions resolve through `evaluateByName` via the
     // `conditionResolver` hook threaded onto the context.
     // A PRIVATE needle bag when the caller brought none (issue #2748 review).
-    // `maskSecretsForLog` is a no-op against absent bags, so the mask below is
+    // `maskSecretsRaw` is a no-op against absent bags, so the mask below is
     // worth exactly what this pass RECORDED — and two of the four callers hand
     // in a context literal with no bag at all: `cli/commands/diff-recursive.ts`
     // and `cli/commands/import.ts` (which also omits `skipDynamicReferences`,
@@ -3696,7 +3732,7 @@ export class IntrinsicFunctionResolver {
         // records five rounds on go-to-k/cdkd#2803 refuting the same shape of
         // sentence. Do not restore a count.
         this.logger.warn(
-          this.maskSecretsForLog(
+          this.displayMasked(
             `Failed to evaluate condition ${name}: ${error instanceof Error ? error.message : String(error)}, assuming false`,
             maskingContext
           )
@@ -4296,7 +4332,7 @@ export class IntrinsicFunctionResolver {
         declared != null && Object.hasOwn(declared, logicalId) ? declared[logicalId] : undefined
       ) as ParameterDefinition | undefined;
       // Masked BEFORE the pair is recorded below, which is why it goes through
-      // `maskSecretsForLog` (which consults `context.inheritedSecrets`) rather
+      // `displayMasked` (which consults `context.inheritedSecrets`) rather
       // than relying on `recordedSecretValues`: at this instant that bag is
       // still empty for this resource, so masking against it alone would print
       // the plaintext. `stringifyParameterForLog` only covers the author's own
@@ -4331,19 +4367,35 @@ export class IntrinsicFunctionResolver {
 
     // Not found. In a best-effort context (diff), a Ref to a resource this
     // same deploy will CREATE is routine — log at debug, not warn (#1017).
-    const notFoundMsg = `Ref ${logicalId} not found (not a resource, parameter, or pseudo parameter)`;
+    //
+    // RENDERED THROUGH THE BUILDER, and this is the one site go-to-k/cdkd#3426
+    // MEASURED leaking through an exclusion marker rather than past one. The
+    // marker here used to read "a message built here from logicalId alone,
+    // which is a literal per CloudFormation's grammar" — true about SECRETS,
+    // which is the only question the marker answers, and false about CONTROL
+    // CHARACTERS twice over. `resolveSub` re-enters `resolveRef` with whatever
+    // text sits between `${` and `}`, which nothing validates; and cdkd reads
+    // the template as JSON, so even a Resources KEY is only as constrained as
+    // the file. Measured on this tree: `{"Fn::Sub": "x${Prod<ESC>[2K<CR>Evil}"}`
+    // put a live `ESC[2K` + CR on this warn, at DEFAULT verbosity.
+    //
+    // `displayMasked` rather than `displayIdent`: the name can be an `Fn::Sub`
+    // PRODUCT, so the mask question is live here and `displayIdent` does not
+    // mask. The 19 sibling sites that still render `logicalId` under the same
+    // marker premise are go-to-k/cdkd#3432 — the remedy there is a judgment per
+    // site (identifier vs masked value) that belongs with go-to-k/cdkd#3405's
+    // mixed-render scope, not with this one.
+    const loggedLogicalId = this.displayMasked(logicalId, context);
+    const notFoundMsg = `Ref ${loggedLogicalId} not found (not a resource, parameter, or pseudo parameter)`;
     if (context.bestEffort) {
-      // not-in-class(notFoundMsg): a message built here from logicalId alone, which is a literal per CloudFormation's grammar.
       this.logger.debug(notFoundMsg);
     } else {
-      // not-in-class(notFoundMsg): a message built here from logicalId alone, which is a literal per CloudFormation's grammar.
       this.logger.warn(notFoundMsg);
     }
     // `markNonRetryable` for the same reason as the two `Fn::GetAtt` throws
     // above: `logicalId` is template-controlled and reaches a substring-matching
     // retry classifier. `resolveSub`'s no-dot arm re-throws this one.
-    // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
-    throw markNonRetryable(new Error(`Ref ${logicalId} not found`));
+    throw markNonRetryable(new Error(`Ref ${loggedLogicalId} not found`));
   }
 
   /**
@@ -4807,7 +4859,7 @@ export class IntrinsicFunctionResolver {
       const declared = Object.keys(resource.attributes ?? {})
         .filter((k) => k.startsWith(NESTED_STACK_OUTPUT_ATTRIBUTE_PREFIX))
         .sort()
-        .map((k) => this.maskSecretsForLog(this.outputNameLogText(k, context), context));
+        .map((k) => this.displayMasked(this.outputNameLogText(k, context), context));
       const declaredText = declared.length > 0 ? declared.join(', ') : '(none)';
       // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
       throw markNonRetryable(
@@ -4894,7 +4946,7 @@ export class IntrinsicFunctionResolver {
     }
     // The bag test stays HERE as well as inside `pushRedactedAttributeRead`:
     // a bagless context (the diff / no-op resolver, `cdkd scrub`, `cdkd
-    // import`) must not pay for `maskSecretsForLog` on the hot path.
+    // import`) must not pay for `displayMasked` on the hot path.
     if (context.redactedAttributeReads !== undefined && carriesSecretMask(value)) {
       // Masked for the reason the `origin` pusher states (issue #2827 review
       // round 2): `attributeName` is `resolveGetAtt`'s resolved one, and this
@@ -4902,7 +4954,19 @@ export class IntrinsicFunctionResolver {
       // `logicalId` is NOT masked, exactly as before: it is the routing key the
       // remedy builds its `--resource <id>=` command from, and that command has
       // always interpolated it.
-      const maskedAttributeName = this.maskSecretsForLog(attributeName, context);
+      //
+      // NOR is it SANITIZED, and that is a recorded decision rather than an
+      // omission (go-to-k/cdkd#3426 review round 3 raised it as a nit with no
+      // live exposure). Wrapping it in `displayIdent` was written and MEASURED
+      // against the tree: it quotes an id containing a space, which broke
+      // `intrinsic-ref-state-mask.test.ts`'s deliberate collision between this
+      // rendering and `noteRefStateMask`'s — a fixture that exists to pin the
+      // whole-tuple de-dup. Sanitizing BOTH would restore the collision, but
+      // the sibling's spelling is PARSED by
+      // `DeployEngine.maskedRecordRemedyFor` to rebuild the re-import command,
+      // so changing it is a separate, riskier edit than this class needs.
+      // go-to-k/cdkd#3432 carries both sites.
+      const maskedAttributeName = this.displayMasked(attributeName, context);
       this.pushRedactedAttributeRead(context, {
         kind: 'attribute',
         logicalId,
@@ -7046,10 +7110,7 @@ export class IntrinsicFunctionResolver {
                 // value because the reason IS a caught message; the sub-floor
                 // bound that implies is the one `evaluateConditions` states.
                 this.logger.warn(
-                  this.maskSecretsForLog(
-                    this.subPlaceholderWarning(varNameStr, getAttError),
-                    context
-                  )
+                  this.displayMasked(this.subPlaceholderWarning(varNameStr, getAttError), context)
                 );
                 replacement = match[0]; // Keep original placeholder
               }
@@ -7074,7 +7135,7 @@ export class IntrinsicFunctionResolver {
               this.rethrowStructuralSubFailure(varNameStr, refError, context);
               // Masked for the reason its `Fn::GetAtt` twin above is.
               this.logger.warn(
-                this.maskSecretsForLog(this.subPlaceholderWarning(varNameStr, refError), context)
+                this.displayMasked(this.subPlaceholderWarning(varNameStr, refError), context)
               );
               replacement = match[0]; // Keep original placeholder
             }
@@ -7763,7 +7824,7 @@ export class IntrinsicFunctionResolver {
         // record no `cdkd import` in this stack can reach. `maskedRecordRemedyFor`
         // reads the absence directly instead of inferring it from a spelling
         // that carries no dot.
-        const loggedOrigin = this.maskSecretsForLog(origin, context);
+        const loggedOrigin = this.displayMasked(origin, context);
         this.pushRedactedAttributeRead(context, {
           kind: 'cross-stack',
           display: loggedOrigin,
@@ -7993,7 +8054,13 @@ export class IntrinsicFunctionResolver {
       producerRegionLogText !== undefined
         ? canonicalizeRegion(producerRegionLogText)
         : this.regionLogText(producerRegion, context);
-    const guestRegionText = this.maskThenStripThenMask(regionText, context);
+    // THE BUILDER, not the bare strip-and-mask helper (go-to-k/cdkd#3426):
+    // this text is printed on the line below AND carried on the guest as
+    // `explicitRegionLogText`, which `clientsForRegion` prints again, so it
+    // owes `displaySafe` as well as the strip. The equality test below compares
+    // two texts built the same way, so routing both through the builder leaves
+    // the "two spellings mask differently" verdict unchanged.
+    const guestRegionText = this.displayMasked(regionText, context);
 
     const cached = this.producerRegionResolvers.get(target);
     if (cached) {
@@ -8059,7 +8126,7 @@ export class IntrinsicFunctionResolver {
     // export name assembled from a secret is a resolved secret in every line
     // that names it. Same treatment as `Fn::Join` / `Fn::Sub` already give
     // their results.
-    const loggedExportName = this.maskSecretsForLog(exportName, context);
+    const loggedExportName = this.displayMasked(exportName, context);
     this.logger.debug(`Resolving Fn::ImportValue: ${loggedExportName}`);
 
     // Hot path: consult the persistent exports index for O(1) lookup.
@@ -8388,7 +8455,7 @@ export class IntrinsicFunctionResolver {
    * `OutputName` is the overwhelmingly common cause, and the list is what makes
    * the error actionable.
    *
-   * `maskSecretsForLog` reads the consumer pass's log twin first (issue #3150),
+   * `maskSecretsRaw` reads the consumer pass's log twin first (issue #3150),
    * so a key equal to a name this pass assembled around a short secret is
    * masked. Residual, stated rather than hidden: the needles and twins belong to the
    * CONSUMER's resolution, so a plaintext sitting in a PRODUCER key that this
@@ -8460,10 +8527,11 @@ export class IntrinsicFunctionResolver {
       // the rendering cannot disagree about what "masked" means. That is a
       // live constraint, not a tidiness one: go-to-k/cdkd#3408 round 2 moved
       // the two printed operands to `displayMasked` (which STRIPS as well as
-      // masks) and left these pairs on `maskSecretsForLog`, so the same name
-      // could render two ways in one message — bare in the AWS echo this
-      // rewrites, stripped where we print it ourselves. Whoever edits the
-      // printed spellings below must edit these with them.
+      // masks) and left these pairs on the bare masker, so the same name could
+      // render two ways in one message — bare in the AWS echo this rewrites,
+      // stripped where we print it ourselves. go-to-k/cdkd#3426 removed that
+      // second spelling from the file entirely; the pairs stay written as the
+      // rendering below spells it, so whoever edits one must edit the other.
       const cfnNameMask = this.positionalNameMask([
         [stackName, this.displayMasked(stackName, context)],
         [region, this.displayMasked(loggedRegionText, context)],
@@ -8482,7 +8550,7 @@ export class IntrinsicFunctionResolver {
           //
           // The AWS text goes through the POSITIONAL pass first (issue #3234):
           // this frame hands `stackName` to `DescribeStacks` raw, and
-          // `maskSecretsForLog` over the returned sentence finds no twin for it
+          // `displayMasked` over the returned sentence finds no twin for it
           // and falls to the needle pass, whose substring arm cannot see a
           // sub-floor secret assembled into the name. Same class, reached from
           // the same caller as the state read below (this is its own method,
@@ -8500,7 +8568,7 @@ export class IntrinsicFunctionResolver {
           // The AWS text is BOUNDED as well: `DescribeStacks` quotes the
           // submitted stack name back, so its length is the template author's
           // choice — the same reason `role-arn.ts` bounds STS's reply.
-          `${displayAwsMessage(this.maskSecretsForLog(cfnNameMask ? cfnNameMask(message) : message, context))}. ` +
+          `${displayAwsMessage(this.displayMasked(cfnNameMask ? cfnNameMask(message) : message, context))}. ` +
           `Grant cloudformation:DescribeStacks to resolve outputs from CloudFormation-managed ` +
           `stacks, or pass --no-cfn-fallback to disable the fallback.`
       );
@@ -8797,7 +8865,7 @@ export class IntrinsicFunctionResolver {
     // review): both `StackName` and `OutputName` come back from `resolveValue`,
     // so either can carry a resolved secret.
     // STRIPPED as well as masked, since issue
-    // [#3397](https://github.com/go-to-k/cdkd/issues/3397). `maskSecretsForLog`
+    // [#3397](https://github.com/go-to-k/cdkd/issues/3397). `maskSecretsRaw`
     // answers "does this text contain a recorded secret"; it makes no claim
     // about CONTROL CHARACTERS, and both of these are template-derived through
     // `resolveValue` with only a non-empty-string gate in front of them. So the
@@ -8835,7 +8903,7 @@ export class IntrinsicFunctionResolver {
     // only proves it is `[a-z0-9-]{1,31}` — a real plaintext can be. Bound
     // here so the log lines and the three throws below share ONE masked
     // spelling instead of each deciding.
-    const loggedRegion = this.maskSecretsForLog(loggedRegionText, context);
+    const loggedRegion = this.displayMasked(loggedRegionText, context);
     // The FOURTH value of this group, and the one that needed a different
     // helper (issue
     // [#3397](https://github.com/go-to-k/cdkd/issues/3397)). `roleArn` is NOT a
@@ -8883,7 +8951,7 @@ export class IntrinsicFunctionResolver {
     // the only place the substitution can be exact.
     //
     // The `Fn::ImportValue` sibling catches its own read, but masks the caught
-    // message with the BAGS alone (`maskSecretsForLog` over a composed AWS
+    // message with the BAGS alone (`displayMasked` over a composed AWS
     // sentence finds no twin and falls to the needle pass). That closes the
     // 4+ character class there and leaves the POSITIONAL half open — the same
     // gap in the same shape. Do not read it as the pattern this site is
@@ -9198,7 +9266,7 @@ export class IntrinsicFunctionResolver {
    * own comment says why. What this clause is not is redundant against
    * `raw !== masked`: `rememberLogTwin` has no empty-key guard and
    * `splitLogTwins` registers every piece it produces, so `registeredLogTwin`
-   * can answer `***` for the empty string and make `maskSecretsForLog('')`
+   * can answer `***` for the empty string and make `maskSecretsRaw('')`
    * differ from `''`. Neither call site can reach it — both refuse an empty
    * name upstream — so it fences nothing measured today.
    *
@@ -9309,7 +9377,7 @@ export class IntrinsicFunctionResolver {
     context?: ResolverContext
   ): never {
     const extraMask = this.positionalNameMask(pairs);
-    // The SAME two bags in the SAME order as `maskSecretsForLog`, for the same
+    // The SAME two bags in the SAME order as `maskSecretsRaw`, for the same
     // reason (issue #1903 round 2): on a nested-stack child the parent's
     // decrypted parameter plaintext lives in the inherited bag alone until a
     // `{Ref: <Param>}` resolution copies it across.
@@ -9328,16 +9396,19 @@ export class IntrinsicFunctionResolver {
       positional = undefined;
     }
     // FAIL CLOSED when both bags are empty. An earlier revision deleted this
-    // arm, reasoning that a pair carries a mask only when `maskSecretsForLog`
-    // changed the name, which needs a twin or a bag, and a twin's spans come
-    // from a recorded secret — so `extraMask` should imply a non-empty bag.
-    // That argument is TRUE today and rests on things nothing fences: that
-    // `inheritedSecrets` is attached only when it is non-empty, and that every
-    // twin source also writes a bag entry. The cost of being wrong is not a
-    // worse message but the RAW name rethrown in the clear, so the arm stays
-    // and the invariant is the reason it is unreachable, not the reason it is
-    // absent. `maskSecretsInError` with an empty bag and a transform is
-    // exactly the shape its widened early return admits.
+    // arm, reasoning that a pair carries a mask only when the masker changed
+    // the name, which needs a twin or a bag, and a twin's spans come from a
+    // recorded secret — so `extraMask` should imply a non-empty bag.
+    //
+    // THAT ARGUMENT IS NOW FALSE, and go-to-k/cdkd#3426 is what falsified it:
+    // the pairs are built with `displayMasked`, whose result differs from its
+    // input for a CONTROL CHARACTER alone — no twin, no bag, nothing recorded.
+    // `positionalNameMask`'s filter is `raw !== masked`, so a hostile name with
+    // both bags empty now reaches this line. It was written as a fail-closed
+    // arm against an invariant nobody fenced; it is a REACHED arm today. The
+    // cost of not having it is the RAW name rethrown in the clear.
+    // `maskSecretsInError` with an empty bag and a transform is exactly the
+    // shape its widened early return admits.
     if (positional) masked = maskSecretsInError(masked, new Map(), positional);
     throw masked;
   }
@@ -9742,7 +9813,7 @@ export class IntrinsicFunctionResolver {
     // Call EC2 DescribeAvailabilityZones
     const ec2Client = this.clientsForRegion(
       clientRegion,
-      loggedRegionText === undefined ? undefined : this.maskSecretsForLog(loggedRegionText, context)
+      loggedRegionText === undefined ? undefined : this.displayMasked(loggedRegionText, context)
     ).ec2;
 
     // The try wraps ONLY the call. The empty-list refusal below deliberately
@@ -9895,9 +9966,31 @@ export class IntrinsicFunctionResolver {
    * Results are cached to avoid repeated API calls.
    */
   /**
-   * Mask any resolved secret value out of a string bound for a log line, using
-   * the secrets recorded on the resolution pass (GHSA fix). No-op when the pass
-   * recorded no secrets.
+   * The SECRET answer alone: mask any resolved secret value out of `text`,
+   * using the secrets recorded on the resolution pass (GHSA fix). No-op when
+   * the pass recorded no secrets.
+   *
+   * ## NOT a display form, and the name says so
+   *
+   * This was `maskSecretsForLog` until go-to-k/cdkd#3426, and the name was the
+   * defect. It answers "does this text contain a recorded secret" and makes no
+   * claim about CONTROL CHARACTERS — but it read as "the spelling a log line
+   * takes", so TEN local bindings took its result and interpolated it later,
+   * one of them reaching an `Fn::ImportValue` warn and throw with a live
+   * `ESC[2K` + CR from a template-supplied export name (measured on this tree,
+   * at DEFAULT verbosity, on the DEFAULT path). Renaming it is what makes the
+   * hazard visible at the BINDING rather than at the render: `const x =
+   * this.maskSecretsRaw(...)` states that more work is owed.
+   *
+   * Reachable from ONE place, {@link maskThenStripThenMask}, which is itself
+   * reachable only from {@link displayMasked}. That containment is the whole
+   * mechanism and it is enforced, not conventional:
+   * `scripts/check-resolver-mask-coverage.ts` does not list this method in
+   * `MASKERS`, so its AST walk — which RESOLVES an interpolated identifier to
+   * its declaration — reports any render that reaches it, through a binding or
+   * directly. Do not add it to that list, and do not call it from a new site.
+   *
+   * ## What the masking itself does
    *
    * A value with a registered LOG TWIN prints as its twin first (issue
    * [#3150](https://github.com/go-to-k/cdkd/issues/3150)). The needle mask
@@ -9907,7 +10000,8 @@ export class IntrinsicFunctionResolver {
    * reference) printed in the clear at every site that handed its RAW value
    * here, although the pass had registered where the secret sits. Looking the
    * twin up HERE, rather than at each such site, is what makes the class
-   * closed for raw values: every one of those sites already calls this method.
+   * closed for raw values: every one of those sites already reaches this
+   * method through the builder.
    * The twin prints as it is: it is the raw text with masked spans, so it
    * holds no recorded needle the raw text lacks. When the needle mask ALSO
    * changes the raw text the whole text is masked instead, the rule
@@ -9915,8 +10009,21 @@ export class IntrinsicFunctionResolver {
    * cannot be merged. What this cannot see is a value TRANSFORMED before it
    * arrives (a lowercased region, a sliced output name, an assembled
    * sentence); those sites derive their text from the twin themselves.
+   *
+   * ## The SELF-COMPARISON, and why it did not block the strip
+   *
+   * The line below compares `maskNeedlesForLog(text) !== text` — the NEEDLE
+   * mask, not this method's own result — so making the RENDER path strip
+   * changes no comparison anywhere. An earlier revision of `displayMasked`'s
+   * comment said stripping could not move inside "the masker" because its
+   * result is also a comparison; that was a claim about this expression, and
+   * the expression's operand is a different function. The measurement that
+   * settled it: every one of this method's 20 escaping call sites rendered
+   * into a log line, a throw, or a `display:` field that becomes one — none
+   * compared, persisted or re-parsed the result — so the render path could
+   * take the strip whole.
    */
-  private maskSecretsForLog(text: string, context?: ResolverContext): string {
+  private maskSecretsRaw(text: string, context?: ResolverContext): string {
     const registered = this.registeredLogTwin(text, context);
     if (registered === undefined) return this.maskNeedlesForLog(text, context);
     return this.maskNeedlesForLog(text, context) !== text ? SECRET_MASK : registered;
@@ -9955,8 +10062,8 @@ export class IntrinsicFunctionResolver {
     const raw = error instanceof Error ? error.message : String(error);
     return {
       unit,
-      subject: this.maskSecretsForLog(subject, context),
-      message: this.maskSecretsForLog(preRedact === undefined ? raw : preRedact(raw), context),
+      subject: this.displayMasked(subject, context),
+      message: this.displayMasked(preRedact === undefined ? raw : preRedact(raw), context),
       error,
       carriedDynamicReference: carriesDynamicReference(rawInput),
       carriedFetchableReference: carriesFetchableDynamicReference(rawInput),
@@ -9964,11 +10071,11 @@ export class IntrinsicFunctionResolver {
   }
 
   /**
-   * The needle mask alone: {@link maskSecretsForLog} without the log-twin
+   * The needle mask alone: {@link maskSecretsRaw} without the log-twin
    * lookup. For the two DETECTORS that must ask the needle mask apart from the
    * position mask: `logTwinText`, which asks it of a value that already has a
    * twin, and `resolveBase64`, whose other operand is the position mask. A
-   * message masks through `maskSecretsForLog`.
+   * message masks through `displayMasked`.
    */
   private maskNeedlesForLog(text: string, context?: ResolverContext): string {
     let masked = text;
@@ -10016,7 +10123,7 @@ export class IntrinsicFunctionResolver {
    * part of it outside the span. The value's own needle mask cannot be merged
    * with the twin's positions, so the line gives both up for `***`: never
    * more text than either mask alone would print. Returns the text BEFORE the
-   * needle mask; each log line wraps it in `maskSecretsForLog` itself, so the
+   * needle mask; each log line wraps it in `displayMasked` itself, so the
    * resolver's mask-coverage checker sees a masker at the site.
    */
   private logTwinText(result: string, twin: string, context?: ResolverContext): string {
@@ -10094,12 +10201,12 @@ export class IntrinsicFunctionResolver {
    * the leaf treated as a resolution product — masked whole when it is a
    * recorded secret, otherwise the masked twin this pass registered for it —
    * and then `logTwinText`'s whole-line guard. The caller still wraps the
-   * result in `maskSecretsForLog`. Used where the text is needed BEFORE that
+   * result in `displayMasked`. Used where the text is needed BEFORE that
    * masker, or apart from it: the `Fn::Base64` line and its detector, and the
    * names issue [#3150](https://github.com/go-to-k/cdkd/issues/3150)
    * transforms or composes before printing (`regionLogText`,
    * `outputNameLogText`, the invalid-region refusals, the cross-stack `origin`
-   * strings). A leaf printed as it is needs none of it: `maskSecretsForLog`
+   * strings). A leaf printed as it is needs none of it: `displayMasked`
    * looks the twin up itself, which is how `maskValueLeaves` gives its lines
    * and the THROWN messages it masks (the `Fn::Cidr` argument refusals, for
    * one) the same position mask.
@@ -10380,7 +10487,7 @@ export class IntrinsicFunctionResolver {
     const done = new Map<object, unknown>();
     const walk = (node: unknown): unknown => {
       if (typeof node === 'string') {
-        return this.maskSecretsForLog(node, context);
+        return this.displayMasked(node, context);
       }
       if (node === null || typeof node !== 'object') return node;
       const memo = done.get(node);
@@ -10403,12 +10510,18 @@ export class IntrinsicFunctionResolver {
       // null-prototype receiver has no such setter to reach, so the assignment
       // is an ordinary own-key write.
       //
-      // ONE STATED COST of masking the KEY: two DISTINCT keys that both mask to
-      // `***` collapse to one entry, so the rendering shows fewer fields than
-      // the value has. Accepted rather than worked around — it needs both keys
-      // to be recorded secrets, both are masked either way, and the loss is a
-      // field COUNT in a diagnostic, never a disclosure. Disambiguating them
-      // would put an index into a masked key, which is a worse trade.
+      // ONE STATED COST of rendering the KEY through the builder: two DISTINCT
+      // keys that produce the same display collapse to one entry, so the
+      // rendering shows fewer fields than the value has. Since
+      // go-to-k/cdkd#3426 that needs NO secret at all — the builder strips and
+      // trims, so `" Name"` and `"Name"` collide, two keys differing only by a
+      // control character collide, and an all-control key becomes the empty
+      // string. (Before, the collapse required both keys to mask to `***`.)
+      // Accepted rather than worked
+      // around on the same terms as before: both keys are rendered either way,
+      // and the loss is a field COUNT in a diagnostic, never a disclosure.
+      // Disambiguating them would put an index into a masked key, which is a
+      // worse trade.
       //
       // The memo's CYCLE arm is unreachable from `resolveValue`: a template is
       // parsed from JSON so it holds no cycle, and a hand-built one recurses in
@@ -10426,7 +10539,7 @@ export class IntrinsicFunctionResolver {
         // reason the receiver was changed from `{}`. The critic's own
         // `Object.create(null)` arm does not fire here because the bag is
         // declared inside this arrow rather than an enclosing scope.
-        out[this.maskSecretsForLog(key, context)] = walk(child);
+        out[this.displayMasked(key, context)] = walk(child);
       }
       return out;
     };
@@ -10459,10 +10572,18 @@ export class IntrinsicFunctionResolver {
    * of the text in hand. A value this resolver resolved cannot be that text
    * (the split copy is itself recorded, so the first mask catches it), but a
    * template LITERAL can: issue #3150's region-scoped clients refusal prints
-   * a producer-region guest's region through this helper, and a literal ARN
-   * region spelling a recorded `st-1` as `s` + U+0001 + `t-1` is masked only
-   * by the second pass (`intrinsic-resolver-name-argument-log-twin.test.ts`
-   * pins both halves on that route).
+   * a producer-region guest's region through {@link displayMasked}, and a
+   * literal ARN region spelling a recorded `st-1` as `s` + U+0001 + `t-1` is
+   * masked only by the second pass
+   * (`intrinsic-resolver-name-argument-log-twin.test.ts` pins both halves on
+   * that route).
+   *
+   * ONE CALLER, {@link displayMasked}, since go-to-k/cdkd#3426. It is most of
+   * the answer and reads like all of it — it omits `displaySafe`, and
+   * therefore `U+2028` / `U+2029` and the bidi overrides — so a site reaching
+   * for it directly is the near-miss back onto the treadmill. It is not in
+   * `MASKERS` in `scripts/check-resolver-mask-coverage.ts`, so a render that
+   * reaches it (through a binding or directly) is reported there.
    *
    * THE BOUND, since this file's job is to state them: this covers a needle
    * split by a character `stripControlChars` removes. A needle split by
@@ -10471,63 +10592,68 @@ export class IntrinsicFunctionResolver {
    * solved here.
    */
   private maskThenStripThenMask(value: string, context?: ResolverContext): string {
-    return this.maskSecretsForLog(
-      stripControlChars(this.maskSecretsForLog(value, context)),
-      context
-    );
+    return this.maskSecretsRaw(stripControlChars(this.maskSecretsRaw(value, context)), context);
   }
 
   /**
-   * The ONE way a masked value reaches a message in this file.
+   * The ONE way a masked value reaches a message in this file — and, since
+   * go-to-k/cdkd#3426, the ONLY exit from the masking machinery at all.
    *
    * ## Why this exists rather than a rule about call sites
    *
-   * `maskSecretsForLog` answers "does this text contain a recorded secret". It
-   * makes NO claim about control characters, and it cannot be taught to: its
-   * result is also used as a COMPARISON (`maskNeedlesForLog(text) !== text`
-   * decides whether a twin was registered), so stripping inside it would change
-   * what that comparison means at every call site.
-   *
-   * That split produced a four-round treadmill on go-to-k/cdkd#3408. Round 1
-   * found the four `Fn::GetStackOutput` throws rendering a masked name raw and
-   * fixed them. Round 2 found the CloudFormation-fallback warn — the DEFAULT
-   * path, at DEFAULT verbosity — and the self-reference throw. Round 3 found
-   * the `reresolveCrossStackValue` origin builder and
-   * `describeAvailableOutputs`. Each round fixed what it found and the next
-   * round found more, because the population was never enumerated. Measured
-   * 2026-09-19 with a comment-stripped scan: SEVENTY-ONE interpolations
-   * rendered a `maskSecretsForLog` result directly, plus thirteen hand-spelled
+   * {@link maskSecretsRaw} answers "does this text contain a recorded secret"
+   * and makes NO claim about control characters. That split produced a
+   * four-round treadmill on go-to-k/cdkd#3408. Round 1 found the four
+   * `Fn::GetStackOutput` throws rendering a masked name raw and fixed them.
+   * Round 2 found the CloudFormation-fallback warn — the DEFAULT path, at
+   * DEFAULT verbosity — and the self-reference throw. Round 3 found the
+   * `reresolveCrossStackValue` origin builder and `describeAvailableOutputs`.
+   * Each round fixed what it found and the next round found more, because the
+   * population was never enumerated. Measured 2026-09-19 with a
+   * comment-stripped scan: SEVENTY-ONE interpolations rendered a bare masker
+   * result directly, plus thirteen hand-spelled
    * `displaySafe(maskThenStripThenMask(...))` compositions and two bare
    * `maskThenStripThenMask` interpolations — and three reviewers between them
    * reached eight of the eighty-six.
    *
-   * So the repair is not another site. Interpolating the MASKER is now itself
-   * the defect, and this is the only sanctioned way to render one — which turns
-   * "did someone remember to strip here" into a property one scanner checks
-   * over the whole file at once.
-   * `tests/unit/deployment/resolver-display-masked-population.test.ts` is that
-   * scanner: it fails on any `${this.maskSecretsForLog(...)}`, so a new raw
-   * render in THAT SHAPE cannot be added silently.
+   * ROUND FIVE was the BINDING shape: `const loggedExportName =
+   * this.<masker>(...)` interpolated later, which a line-shaped scanner
+   * forbidding `${this.<masker>(` structurally cannot see. Ten of them existed,
+   * and `loggedExportName` was a LIVE exposure — an `Fn::ImportValue` export
+   * name carrying `ESC[2K` + CR reached a warn AND a throw unstripped, at
+   * default verbosity on the default path.
    *
-   * ## KNOWN RESIDUAL — the class is NARROWED, not closed
+   * Patching those ten sites would have been the fifth round of one
+   * enumeration. What closes the class instead is that there is no longer a
+   * masking answer a site can reach WITHOUT the strip: every escaping call of
+   * the old `maskSecretsForLog` now calls this builder, the raw masker is
+   * reachable only through {@link maskThenStripThenMask}, and that helper is
+   * reachable only from here.
    *
-   * Stated here rather than implied away, because an earlier revision of this
-   * comment claimed the class was "closed by CONSTRUCTION" and that is FALSE.
-   * The scanner is line-shaped and forbids only the `${this.<masker>(` spelling.
-   * TEN local bindings take a raw masker result and interpolate it later, which
-   * it cannot see — and at least one is a live exposure:
-   * `loggedExportName` (bound from `maskSecretsForLog`) reaches an
-   * `Fn::ImportValue` throw carrying an unstripped ESC and CR, measured on this
-   * tree. `loggedSecretId`, `loggedJsonKey`, `loggedParameterName`,
-   * `maskedAttributeName` and `loggedOrigin` are the same shape.
+   * ## What keeps it closed
    *
-   * Do NOT close those by hand at the ten sites: that is the fifth round of the
-   * enumeration this builder exists to end, and the mechanism that resolves an
-   * identifier to its initializer ALREADY EXISTS in this repo —
-   * `sanitizedLocals` in
-   * `tests/unit/cli/local-profile-display-population.test.ts`.
-   * go-to-k/cdkd#3426 owns binding the scanner to it; go-to-k/cdkd#3405 and
-   * go-to-k/cdkd#3411 own the surrounding scope and parser work.
+   * `scripts/check-resolver-mask-coverage.ts` — an AST walk that already
+   * RESOLVES an interpolated identifier to its declaration and judges the
+   * initializer. Its `MASKERS` list names the functions a render may reach,
+   * and since go-to-k/cdkd#3426 every entry on it SANITIZES as well as masks.
+   * So a binding of a raw masker is a finding wherever it is later
+   * interpolated, by the same mechanism that already answered the secret
+   * question — no second scanner, and nothing line-shaped.
+   * `tests/unit/deployment/resolver-display-masked-population.test.ts` pins the
+   * population and the builder bodies beside it.
+   *
+   * KNOWN BOUND, stated rather than implied away: a site carrying an
+   * exclusion marker is exempt from that walk, because the marker answers the
+   * SECRET question ("this value cannot carry a plaintext"), which is not the
+   * control-character question. Such a site sanitizes by hand or not at all —
+   * `clientsForRegion`'s two region renders are both markered, and both
+   * sanitize. Widening the walk to judge every interpolated value is
+   * go-to-k/cdkd#3405's mixed-render scope, not this builder's.
+   *
+   * (The marker's literal spelling is deliberately not written in this comment:
+   * the checker scans the raw text for it, and a prose mention parses as a
+   * marker no site consumes — which it then reports STALE. Measured while
+   * writing this paragraph.)
    *
    * ## What it does, in order
    *
@@ -10541,8 +10667,8 @@ export class IntrinsicFunctionResolver {
    *
    * It is listed in `MASKERS` in `scripts/check-resolver-mask-coverage.ts`,
    * which is a SECURITY decision and a sound one: every path through it passes
-   * `maskSecretsForLog`, so it is strictly stronger than the entry it replaces
-   * and cannot be weaker at any input.
+   * the needle-and-twin mask, twice, so it is strictly stronger than the bare
+   * masker it replaced and cannot be weaker at any input.
    */
   private displayMasked(value: string, context?: ResolverContext): string {
     return displaySafe(this.maskThenStripThenMask(value, context));
@@ -10553,16 +10679,16 @@ export class IntrinsicFunctionResolver {
    * the same reason as {@link displayMasked} and closed by the same scanner.
    *
    * `logTextOfLeaf` resolves a value to its registered twin (or `SECRET_MASK`),
-   * which is a MASKING answer and, like `maskSecretsForLog`'s, says nothing
+   * which is a MASKING answer and, like `maskSecretsRaw`'s, says nothing
    * about control characters. Four `origin` builders interpolated it raw — the
    * `Fn::ImportValue` pair, the `Fn::GetStackOutput` one and the nested-stack
    * attribute one — and those strings flow into `redactedAttributeReads[].display`
    * and out through a `ProvisioningError` message.
    *
-   * This route is why fixing the masker alone did not close the class:
-   * `displayMasked` covers every site that interpolates `maskSecretsForLog`,
-   * and these interpolate something else. Two routes, two names, one scanner
-   * forbidding the raw form of both.
+   * This route is why fixing the secret masker alone did not close the class:
+   * `displayMasked` covers every site that renders a needle-masked value, and
+   * these render something else. Two routes, two names, one checker refusing
+   * the raw form of both.
    *
    * Composed rather than re-derived. `maskSecretsInText` is idempotent (see
    * {@link maskThenStripThenMask}), so masking twin text again costs nothing
@@ -10753,7 +10879,7 @@ export class IntrinsicFunctionResolver {
               // parsing it out of this very token (issue #2827 review round 2).
               `Refusing to resolve the secret reference ${this.displayMasked(tokenLogText, context)}: it names ` +
                 `'${this.displayMasked(nameLogText(regionVerdict.secretName), context)}' without a region, and this stack reads from ` +
-                `${this.displayMasked(regionVerdict.foreignProducerRegions.map((r) => this.maskSecretsForLog(r, context)).join(', '), context)} as well as its own ` +
+                `${this.displayMasked(regionVerdict.foreignProducerRegions.map((r) => this.displayMasked(r, context)).join(', '), context)} as well as its own ` +
                 `region. cdkd cannot tell which one must answer, and resolving against ` +
                 `the wrong one yields a different secret. Spell the reference as a full ARN ` +
                 `to say which region owns it.`
@@ -10994,7 +11120,7 @@ export class IntrinsicFunctionResolver {
           // literal span in the value, which redaction's strictly-inside
           // carve-out spares into `state.json` — issue #2743.)
           this.logger.warn(
-            this.maskSecretsForLog(
+            this.displayMasked(
               `Unsupported dynamic reference service: ${this.displayMasked(nameLogText(String(service)), context)}`,
               context
             )
@@ -11218,8 +11344,8 @@ export class IntrinsicFunctionResolver {
     // message reaches only the substring arm, where a sub-floor plaintext
     // prints in full. Same rule `masked-retry-logger.ts` states for a
     // provider's wrapped `error.message`.
-    const loggedSecretId = this.maskSecretsForLog(nameLogText(secretId), context);
-    const loggedJsonKey = this.maskSecretsForLog(nameLogText(jsonKey), context);
+    const loggedSecretId = this.displayMasked(nameLogText(secretId), context);
+    const loggedJsonKey = this.displayMasked(nameLogText(jsonKey), context);
 
     this.logger.debug(
       `Resolving dynamic reference: secretsmanager:${loggedSecretId}:SecretString:${loggedJsonKey}:` +
@@ -11385,7 +11511,7 @@ export class IntrinsicFunctionResolver {
     // consults the pass's log-twin registry, which only ever masks MORE: a
     // computed CIDR equal to a string an earlier write masked by position is
     // masked by the leaf walk and not by the outer call, an over-mask. For the
-    // needle part the leaf arm is `maskSecretsForLog`,
+    // needle part the leaf arm is `displayMasked`,
     // so the only thing that could separate per-leaf from whole-JSON masking is
     // `maskSecretsInText`'s asymmetry — the whole-string arm has no floor while
     // the substring arm is floored at {@link MIN_NEEDLE_LENGTH} = 4 — and
@@ -11522,7 +11648,7 @@ export class IntrinsicFunctionResolver {
     // MASKED PER RAW VALUE — see `resolveSecretsManagerReference`'s twin
     // comment for why the raw form and not the assembled message (issue
     // [#2827](https://github.com/go-to-k/cdkd/issues/2827)).
-    const loggedParameterName = this.maskSecretsForLog(nameLogText(parameterName), context);
+    const loggedParameterName = this.displayMasked(nameLogText(parameterName), context);
 
     // not-in-class(service): the typed `service: 'ssm' | 'ssm-secure'` PARAMETER of resolveSSMReference, not the text parsed off an assembled reference.
     this.logger.debug(`Resolving dynamic reference: ${service}:${loggedParameterName}`);

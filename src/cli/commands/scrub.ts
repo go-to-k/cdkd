@@ -3523,6 +3523,19 @@ function isTemplateShapeResolutionFailure(err: unknown): boolean {
  *
  * Per-pattern throw sites, and the fence that keeps them true, are in
  * `tests/unit/cli/scrub-abandoned-scan-origin.test.ts`.
+ *
+ * ONE CLASSIFICATION CHANGE, recorded because it is a GATE and this file does
+ * not otherwise mention it. go-to-k/cdkd#3426 routed the `Ref <id> not found`
+ * throw through the resolver's display builder, which strips control
+ * characters and trims — so an id carrying a CR or padding, which `\S+` could
+ * not match before, matches now, and such a unit moves from `count` (gateable
+ * by `cdkd scrub --dry-run --fail`) to `warn` (not). The SAFE direction would
+ * have been the other one, and it is accepted for a reason: a plain dangling
+ * `Ref` already warned, so this adds no NEW bypass — it extends an existing
+ * classification to ids that differ from an ordinary one only by characters
+ * nobody can see. The alternative is a gate whose verdict depends on invisible
+ * bytes in a logical id, which is worse to reason about. Pinned by
+ * `tests/unit/cli/scrub-abandoned-scan-origin.test.ts`.
  */
 const TEMPLATE_SHAPE_FAILURE_PATTERNS = [
   /^Ref \S+ not found$/,

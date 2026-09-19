@@ -352,6 +352,172 @@ describe('DagBuilder', () => {
       warnSpy.mockRestore();
     });
 
+    it('renders a hostile logical id through displayIdent, so it cannot forge the line', () => {
+      // go-to-k/cdkd#3426, found by that issue's live repro rather than by its
+      // body: a logical id reads like a value CloudFormation validated, and it
+      // is not one — cdkd parses the template as JSON, so a Resources key or a
+      // `DependsOn` entry carries whatever the file carries. Measured on
+      // `node dist/cli.js`: `ESC[2K` + CR reached this warn at DEFAULT
+      // verbosity, beside a resolver message that had just been sanitized.
+      const warnSpy = vi.spyOn(
+        (dagBuilder as unknown as { logger: { warn: (...a: unknown[]) => void } }).logger,
+        'warn'
+      );
+      const ESC = String.fromCharCode(0x1b);
+      const hostile = `Prod${ESC}[2K\rEvil`;
+      const template: CloudFormationTemplate = {
+        Resources: {
+          Bucket: {
+            Type: 'AWS::S3::Bucket',
+            Properties: { BucketName: { Ref: hostile } },
+          },
+        },
+      };
+      dagBuilder.buildGraph(template);
+
+      // BOUND THE ARM: the dangling-Ref warn is the only one this template can
+      // produce, and a case asserting only on absent bytes passes when no warn
+      // fired at all.
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const line = String(warnSpy.mock.calls[0]?.[0] ?? '');
+      expect(line).toContain('not found in template');
+      // Still NAMES the dependency — a sanitizer that emptied it would satisfy
+      // the byte assertions while making the warning useless.
+      expect(line).toContain('Prod');
+      expect(line).toContain('Evil');
+      expect(line, 'a raw ESC reached the dangling-dependency warn').not.toContain(ESC);
+      expect(line, 'a raw CR reached the dangling-dependency warn').not.toContain('\r');
+      warnSpy.mockRestore();
+    });
+
+    it('renders the node line through displayIdent, TYPE included', () => {
+      // The `Added node:` debug line, which go-to-k/cdkd#3426's review found
+      // held by nothing: nine of the ten sanitized interpolations in this file
+      // had no assertion anywhere, so reverting them left the suite green. This
+      // covers the one the same review corrected — the TYPE was on
+      // `displaySafe`, whose absent case renders `''` and printed
+      // `Added node: Foo ()`.
+      const debugSpy = vi.spyOn(
+        (dagBuilder as unknown as { logger: { debug: (...a: unknown[]) => void } }).logger,
+        'debug'
+      );
+      const ESC = String.fromCharCode(0x1b);
+      const template: CloudFormationTemplate = {
+        Resources: {
+          [`Bucket${ESC}[2K\rEvil`]: {
+            Type: `AWS::S3::Bucket${ESC}[2K` as string,
+            Properties: {},
+          },
+          // A resource with NO `Type`, which the template type allows and a
+          // hand-written or partially-migrated template really carries.
+          Typeless: { Properties: {} } as unknown as CloudFormationTemplate['Resources'][string],
+        },
+      };
+      dagBuilder.buildGraph(template);
+
+      const nodeLines = debugSpy.mock.calls
+        .map((c) => String(c[0]))
+        .filter((line) => line.startsWith('Added node:'));
+      // BOUND THE ARM: two resources, two lines. Without this a template that
+      // produced none would satisfy every assertion below.
+      expect(nodeLines).toHaveLength(2);
+      const joined = nodeLines.join('\n');
+      expect(joined, 'a raw ESC reached the node line').not.toContain(ESC);
+      expect(joined, 'a raw CR reached the node line').not.toContain('\r');
+      // The absent TYPE is SPELLED, not rendered as an empty pair of brackets.
+      expect(joined).toContain('<no Type>');
+      expect(joined, 'an absent Type still renders as an empty type').not.toContain('()');
+      debugSpy.mockRestore();
+    });
+
+    it('spells a NULL Type as missing too, not as unrenderable', () => {
+      // `== null`, not `=== undefined`. cdkd parses the template as JSON, so
+      // `"Type": null` is a shape a hand-written or migrated file carries, and
+      // under the stricter test it rendered through `displayIdent(null)` as
+      // `<unrenderable>` — which reads as a value cdkd could not print rather
+      // than as a type the template never declared (review round 2).
+      const debugSpy = vi.spyOn(
+        (dagBuilder as unknown as { logger: { debug: (...a: unknown[]) => void } }).logger,
+        'debug'
+      );
+      const template: CloudFormationTemplate = {
+        Resources: {
+          Nulled: { Type: null } as unknown as CloudFormationTemplate['Resources'][string],
+        },
+      };
+      dagBuilder.buildGraph(template);
+      const nodeLines = debugSpy.mock.calls
+        .map((c) => String(c[0]))
+        .filter((line) => line.startsWith('Added node:'));
+      expect(nodeLines).toHaveLength(1);
+      expect(nodeLines[0]).toContain('<no Type>');
+      expect(nodeLines[0]).not.toContain('unrenderable');
+      debugSpy.mockRestore();
+    });
+
+    it('renders the EDGE and skip lines through displayIdent too', () => {
+      // go-to-k/cdkd#3426's review round 2 measured that eight of this file's
+      // sanitized interpolations had no assertion anywhere: neutralising them
+      // left the suite green. These are the three a template can reach without
+      // a cycle; the rest sit on the cycle and implicit-edge paths.
+      const debugSpy = vi.spyOn(
+        (dagBuilder as unknown as { logger: { debug: (...a: unknown[]) => void } }).logger,
+        'debug'
+      );
+      const ESC = String.fromCharCode(0x1b);
+      const hostileParent = `Parent${ESC}[2K\rEvil`;
+      const hostileParam = `Param${ESC}[2K\rEvil`;
+      const template: CloudFormationTemplate = {
+        Parameters: { [hostileParam]: { Type: 'String' } },
+        Resources: {
+          [hostileParent]: { Type: 'AWS::S3::Bucket', Properties: {} },
+          Child: {
+            Type: 'AWS::SNS::Topic',
+            Properties: { DisplayName: { Ref: hostileParent }, Other: { Ref: hostileParam } },
+          },
+        },
+      };
+      dagBuilder.buildGraph(template);
+
+      const edge = debugSpy.mock.calls
+        .map((c) => String(c[0]))
+        .filter((line) => line.startsWith('Added edge:') || line.startsWith('Skipped Parameter'));
+      // BOUND THE ARM: one edge line and one skipped-Parameter line, or the
+      // byte assertions below hold over an empty string.
+      expect(edge.filter((l) => l.startsWith('Added edge:'))).toHaveLength(1);
+      expect(edge.filter((l) => l.startsWith('Skipped Parameter'))).toHaveLength(1);
+      const joined = edge.join('\n');
+      expect(joined).toContain('Parent');
+      expect(joined).toContain('Param');
+      expect(joined, 'a raw ESC reached an edge line').not.toContain(ESC);
+      expect(joined, 'a raw CR reached an edge line').not.toContain('\r');
+      debugSpy.mockRestore();
+    });
+
+    it('leaves an ORDINARY logical id byte-identical in that warn', () => {
+      // The other direction: `displayIdent` quotes a value its allowlist
+      // rejects, so without this an over-tightening change that quoted every id
+      // would pass the case above. The sibling case a few lines up asserts the
+      // unquoted spelling for the same reason; this one states why.
+      const warnSpy = vi.spyOn(
+        (dagBuilder as unknown as { logger: { warn: (...a: unknown[]) => void } }).logger,
+        'warn'
+      );
+      const template: CloudFormationTemplate = {
+        Resources: {
+          Bucket: {
+            Type: 'AWS::S3::Bucket',
+            Properties: { BucketName: { Ref: 'MissingBucket42' } },
+          },
+        },
+      };
+      dagBuilder.buildGraph(template);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('depends on MissingBucket42, but MissingBucket42 not found')
+      );
+      warnSpy.mockRestore();
+    });
+
     it('does NOT warn (and adds no edge) for a Ref to a template Parameter', () => {
       const warnSpy = vi.spyOn(
         (dagBuilder as unknown as { logger: { warn: (...a: unknown[]) => void } }).logger,
