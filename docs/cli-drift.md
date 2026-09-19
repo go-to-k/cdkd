@@ -119,6 +119,7 @@ A **clean** verdict never means anything except compared-and-matched.
 | `unresolvedToken` | State records a `{{resolve:...}}` spelling cdkd resolves for nobody. cdkd resolves all three CloudFormation services (`secretsmanager`, `ssm`, `ssm-secure`), so this is reserved for text that is not a dynamic reference at all, or a service AWS adds later. | No — a re-run cannot clear it, which is why it alone does not affect the exit code. |
 | `readFailed` | The read or the comparison threw, so NONE of that resource's properties were compared. Every other resource in the stack is still compared and reported. | Yes — usually a missing permission or a throttle; grant it or re-run. |
 | `baselineRefused` | A [`cdkd import`](import.md#the-drift-baseline-an-import-records) run refused to capture that resource's observed baseline, so the only baseline available is the recorded properties that refusal already found untrustworthy. NONE of its properties were compared, and cdkd does not read it back from AWS at all. | Yes — deploy a change to the resource, which rebuilds its record from your template and captures a real baseline. |
+| `unreadableRecord` | The state record holds a row that cannot be read as a resource — it is not an object, or it carries no resource type — or its whole `resources` map is not a JSON object. cdkd drops the row (or reads the map as empty) so the rest of the stack is still compared, and reports it here rather than only warning, so a `--json` gate sees it. An unreadable map is reported as one entry whose `logicalId` is `(resources map)`. | Yes — repair or re-import the record. |
 
 The `baselineRefused` cause is recorded on the state record, which means it only
 covers a refusal made by a cdkd that knew how to record one (state schema v10 and
@@ -148,9 +149,11 @@ are real, but they are not the whole comparison, so it carries
 
 Everything not fully compared is listed under the human report's
 `N resource(s) only PARTIALLY compared` block — headed
-`N resource(s) NOT fully compared — K not compared AT ALL (the read or
-comparison failed)` when a `readFailed` resource is present, since calling
-such a resource "partially compared" understates it. Each entry names its own
+`N resource(s) NOT fully compared — K not compared AT ALL (<causes>)` when a
+resource none of whose properties were compared is present — `readFailed`,
+`baselineRefused` or `unreadableRecord` — with each cause present named in the
+parentheses, since calling such a resource "partially compared" understates
+it. Each entry names its own
 reason, and the per-resource detail also goes to the log, which a caller
 piping stdout does not see.
 
@@ -187,7 +190,7 @@ third share of `M`.
 
 | Code | Meaning |
 | --- | --- |
-| `0` (detection) | Nothing drifted, nothing was refused, and no read or comparison failed. A resource under `notCompared` for an `unresolvedToken` still allows this. |
+| `0` (detection) | Nothing drifted, and every resource under `notCompared`, if any, is there for an `unresolvedToken`. |
 | `0` (`--accept` / `--revert`) | The remediation run completed. This does NOT assert every comparison completed. |
 | `1` | Drift was detected on at least one resource, OR the command failed (no state found, an AWS error, bad arguments). |
 | `2` (detection) | Nothing drifted, but at least one comparison did not happen for a reason you can act on. |
@@ -201,9 +204,12 @@ leaves something uncompared exits `1`, not `2`. Both the drift case and the
 crash case go through the same error handler; drift detection emits the full
 human report before throwing, so that report is the only output for it.
 
-**Exit `2` on detection is narrower than `notCompared`, deliberately.** Two
-causes produce it: a resource cdkd `refused` to compare, and one whose read or
-comparison `readFailed`. A resource whose only uncompared properties hold an
+**Exit `2` on detection is narrower than `notCompared`, deliberately.** Four of
+the causes in the [table above](#why-a-resource-was-not-compared) produce it: a
+resource cdkd `refused` to compare, one whose read or comparison `readFailed`,
+one whose baseline an import refused (`baselineRefused`), and a state row that
+is not readable as a resource (`unreadableRecord`). The fifth does not: a
+resource whose only uncompared properties hold an
 `unresolvedToken` is listed under `notCompared` and in the report's
 not-fully-compared block, but does not produce this exit code — cdkd resolves
 that spelling for nobody, the condition is permanent, and exiting non-zero for
@@ -620,6 +626,32 @@ Both are no-ops on a clean stack. Resources reported as `drift unknown` are
 skipped by both, because the comparator never produced a property difference
 for them.
 
+**A dropped row is REPORTED, and the run does not exit `0`.** An entry the
+detection run could not read is reported as `not compared` — it appears in the
+`--json` payload with the cause `unreadableRecord`, in the `NOT fully compared`
+block, and in the exit code, which becomes `2` — or `1` when something else
+drifted, since drift outranks a partial comparison. That matters because the
+warning goes to stderr, which `cdkd drift --json > report.json` discards: a
+record with one unreadable row would otherwise produce a clean report about a
+stack cdkd could not fully read. The healthy rows beside it are still compared.
+
+**Both write modes refuse a malformed record, where plain `cdkd drift` reports on one.**
+The direction depends on whether the run can write. A detection run cannot, so
+a `resources` bag that is not a JSON object is treated as empty and a
+`resources` entry that is not an object, or carries no resource type, is left
+out of the report — each with a
+warning naming the stack, the region and, for entries, the logical ids. Each is
+also reported as not compared with the cause `unreadableRecord` — one entry per
+dropped row, and one named `(resources map)` for an unreadable map — so the run
+exits `2` rather than reading as a clean stack (or `1` when something drifted,
+since drift outranks a partial comparison). `--accept` and `--revert` write
+the record back, and both rebuild it by spreading the stored bag: spreading a
+list produces a well-formed-looking map keyed `0`, `1`, … rather than failing,
+which would persist rows for resources that do not exist and erase the only
+evidence the record was broken. So both refuse instead, naming the stack, the
+region and the offending logical ids, before the lock is acquired and before
+anything is written. Inspect the record with `cdkd state show <stack> --json`.
+
 ### `--accept` (state ← AWS)
 
 Writes the AWS-current values into cdkd's S3 state file. Use it when the
@@ -864,15 +896,17 @@ entry can carry `referencesUnresolved: true` and is rolled up under
 
 Each `notCompared` entry carries two keys of its own:
 
-- **`cause`** — `refused`, `unresolvedToken` or `readFailed`. This is the key
+- **`cause`** — one of the values in the
+  [table above](#why-a-resource-was-not-compared). This is the key
   to gate on when you need to tell a clearable cause from a permanent one; the
   exit code says the run had at least one clearable cause but cannot say which
   resource.
-- **`referencesUnresolved`** — `true` for the two reference-related causes and
-  `false` for `readFailed`, whose references are beside the point. A consumer
-  written as `notCompared.filter(n => n.referencesUnresolved)` therefore drops
-  `readFailed` entries. Gate on `notCompared.length` — the documented
-  predicate — or on `cause`.
+- **`referencesUnresolved`** — `true` for the two reference-related causes
+  (`refused`, `unresolvedToken`) and `false` for every other one, where nothing
+  was compared at all and references are beside the point. A consumer written
+  as `notCompared.filter(n => n.referencesUnresolved)` therefore drops those
+  entries. Gate on `notCompared.length` — the documented predicate — or on
+  `cause`.
 
 So a CI job that gates on drift should read `notCompared`, not just `drifted`:
 

@@ -31,7 +31,7 @@ that save. An operator told their record "would be replaced with a well-formed
 empty one" would not know that running anyway DUPLICATES their stack.
 
 `tests/unit/state/malformed-resources-bag.test.ts` asserts each exported
-`refuseMalformed*` lands in exactly ONE container's list (a union count alone
+`refuseMalformed*` lands in exactly ONE class's list (a union count alone
 stays green through a re-classification) and that every exported refusal carries
 the non-retryable MARKER or is named in `UNMARKED` with a reason.
 

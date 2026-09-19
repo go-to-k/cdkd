@@ -142,8 +142,16 @@ export function displaySafe(value: unknown, opts?: { asciiOnly?: boolean }): str
  * the two halves of an astral character leaves a lone high surrogate at the
  * end — rendered as a replacement character or dropped, depending on the
  * terminal (issue #2947). One helper rather than a fix at each call site: a
- * truncation site adopts the rule by calling it, and go-to-k/cdkd#3018 tracks
- * the one known site that does not yet.
+ * truncation site adopts the rule by calling it. go-to-k/cdkd#3018 tracked
+ * `describeOverlayValueShape` in `src/cli/commands/export.ts`, which now does.
+ *
+ * ADOPTION, not coverage — and the distinction is the whole reason this note
+ * no longer counts sites. Other `slice`-based display truncations exist
+ * (`src/local/websocket-server.ts`, `src/local/rest-v1-integrations.ts`,
+ * several message caps in `src/deployment/intrinsic-function-resolver.ts`), and
+ * nothing here or in CI stops another being written. An earlier revision named
+ * a remaining count; a count is exactly what goes stale unwatched, so what is
+ * stated is the RULE and where it is owned.
  *
  * `truncated` reports whether anything was actually cut, so a caller marking
  * the cut (`…`) does not mark a value that was exactly the window's length.

@@ -752,9 +752,13 @@ describe('cdkd scrub - refusals this PR adds (go-to-k/cdkd#2692, go-to-k/cdkd#30
       // can be forged in a terminal or a JSON log viewer.
       expect(warned).not.toContain('\u0000');
       expect(warned).not.toContain("\u001b[31m");
-      // Capped: the 5,000-character name is truncated rather than rendered.
-      expect(warned).not.toContain('q'.repeat(200));
-      expect(warned).toContain('q'.repeat(100));
+      // Capped: the 5,000-character name is truncated rather than rendered —
+      // at the STACK cap (1152 code points over the whole name, prefix
+      // included), since a legitimate nested `Parent~Child` name is that long.
+      // A range rather than the exact value: the every-builder cap case in
+      // `malformed-resources-bag.test.ts` pins exactly 1152 for this builder.
+      expect(warned).not.toContain('q'.repeat(1152));
+      expect(warned).toContain('q'.repeat(1100));
     });
 
     it('refuses on the outputs bag while the RESOURCES refusal stays silent', () => {

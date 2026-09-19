@@ -465,6 +465,46 @@ has drifted from the synth template. Run `cdkd state refresh-observed <stack>`
 (or any redeploy) before exporting, then `cdkd drift <stack>` to verify. The
 warning is non-blocking by design — you decide whether to proceed.
 
+A `resources` **bag** that is not a JSON object — `null`, absent, a list, a
+string, a number or a boolean — gets a single warning naming the stack, and the
+rest of this report is skipped: there are no rows to judge a baseline for.
+
+A `resources` **entry** that is not an object, or carries no resource type,
+gets its own warning here, naming the logical ids, and is left out of the
+baseline tally rather than counted as a resource missing one: nothing can read
+such a row, so the advice above cannot help it. Most rows that reach this
+warning are ones the import plan does not read a state entry for: an id the
+synth template does not declare at all (a stale row from a rename or a hand
+edit), an `AWS::CDK::Metadata` row, and a Custom Resource row, which cdkd plans
+as a fresh create in the second phase. A templated resource of any other type
+whose row has no physical id — every shape that is not an object among them —
+is refused earlier, by name, with the rest of the resources cdkd cannot import,
+and so is a nested stack whose row carries no type. Any other templated
+resource whose row is an object with a physical id but no type is planned from
+the template's type and still named here. The record is malformed either way;
+inspect it with `cdkd state show <stack> --stack-region <region> --json` before
+migrating.
+
+When the stack's records are unreadable in that way, the `refresh-observed`
+advice above changes: that command refuses a record holding such a row, so the
+warning says to repair the record first. Because `refresh-observed` rewrites
+state, its command is printed only when the stack name and region render
+exactly as loaded; when sanitizing or the length cap would change either, the
+warning names the command in prose and prints no command to paste, since a
+near-match could rewrite a different stack's baseline. It is withheld the same
+way for a stack whose name begins with `-`, which the CLI reads as an option
+however it is quoted — a stack named `--all` would otherwise print a command
+that rewrites every record in the region rather than the one named. The commands this section's warnings
+suggest are built from the stack and region `cdkd export` loaded the record
+from — not the values stored inside it, which a hand edit can change — and name
+that region so the command selects one record when the same stack name holds
+state in several. A legacy record, whose key carries no region, gets no
+`--stack-region` at all, and no `refresh-observed` command either: that command
+refuses a record with no region, so the warning says to migrate it first (any
+cdkd write does). The read-only `cdkd state show` command is still
+printed when rendering altered the name, so it may name a stack other than the
+one loaded; it changes nothing either way.
+
 ## Confirmation prompts
 
 `cdkd export` asks before it changes anything. `-y` / `--yes` skips all three.

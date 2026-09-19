@@ -1715,8 +1715,9 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
           3,
           'renderStateBlock, repaired by repairMalformedResourcesForReadOnly; ' +
             'repairRenderedContainers` own Object.values, guarded by isReadableBag; and ' +
-            'refreshObservedForStack, which is NEITHER: `cdkd state refresh-observed` is a ' +
-            'WRITER, outside this PR`s read-only scope, folded onto go-to-k/cdkd#3018',
+            'refreshObservedForStack, which REFUSES rather than repairing — it is the one ' +
+            'WRITER in this file, so go-to-k/cdkd#3018 gave it refuseMalformedState plus ' +
+            'refuseMalformedResourceEntries above both of its loops',
         ],
       ];
 

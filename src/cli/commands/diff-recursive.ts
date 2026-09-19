@@ -44,11 +44,16 @@ import { NESTED_STACK_RESOURCE_TYPE } from './retire-cfn-stack.js';
 import {
   malformedExportNamesWarning,
   malformedOutputsWarning,
+  malformedResourceEntriesWarning,
   malformedResourcePropertiesWarning,
   malformedResourcesWarning,
+  isReadableResourceEntry,
   repairMalformedOutputsForReadOnly,
+  repairMalformedResourceEntriesForReadOnly,
   repairMalformedResourcePropertiesForReadOnly,
   repairMalformedResourcesForReadOnly,
+  displayLogicalId,
+  UNREADABLE_RESOURCES_MAP_ROW,
 } from '../../state/malformed-resources-bag.js';
 
 /**
@@ -182,9 +187,28 @@ export interface DiffTreeNode {
    * describes cannot start.
    */
   blocking: string[];
+  /**
+   * Rows this node's state record holds that the diff could NOT read
+   * (go-to-k/cdkd#3018): each unreadable entry's logical id,
+   * `UNREADABLE_RESOURCES_MAP_ROW` when the whole `resources` map is not an
+   * object, and each rollback-orphan record (`orphans[]`) the adoption preview
+   * could not read as a resource — `''` for one with no string `logicalId`,
+   * which renders as the `<unrenderable>` stand-in. The load drops the first
+   * two so the rest of the stack can be diffed; `computeStackDiff` drops the
+   * third before the preview, which throws on a `null` or `undefined` `state`
+   * or a `null` record and silently keeps the other shapes. A
+   * dropped row the template still declares then previews as a CREATE, but one
+   * the TEMPLATE no longer declares reaches no change at all — it would lose its
+   * DELETE row and let `--fail` exit 0 over a record that used to crash. Counted by {@link nodeHasChanges} for that
+   * reason, rendered as its own block, and always present in `--json`.
+   */
+  unreadable: string[];
   /** Direct nested-stack children, DFS order. Empty for leaves and for non-recursive runs. */
   children: DiffTreeNode[];
 }
+
+/** How many unreadable row names the human preview lists before summarizing. */
+const UNREADABLE_PREVIEW_NAMES = 10;
 
 /** Empty template used to diff a removed nested child's state → all DELETE. */
 const EMPTY_TEMPLATE: CloudFormationTemplate = { Resources: {} };
@@ -275,21 +299,47 @@ async function loadStateOrEmpty(
   stackName: string,
   region: string,
   stateBackend: S3StateBackend
-): Promise<StackState> {
+): Promise<{ state: StackState; unreadable: string[] }> {
   const result = await stateBackend.getState(stackName, region);
   if (result) {
+    // What the repairs below take OUT of the record, returned beside it so the
+    // node can report it (see `DiffTreeNode.unreadable`).
+    const unreadable: string[] = [];
     if (repairMalformedResourcesForReadOnly(result.state)) {
       logger.warn(malformedResourcesWarning(stackName, region));
+      unreadable.push(UNREADABLE_RESOURCES_MAP_ROW);
+    }
+    // go-to-k/cdkd#3018. The bag repair above is not the whole rule, and the
+    // gap was invisible to the sweep that produced it: a file IMPORTING this
+    // module reads as remedied, while `hasReadableResources` tests the BAG and
+    // says nothing about an ENTRY. `{"resources": {"R": null}}` therefore
+    // survived the repair and threw on `resource.resourceType` in the two
+    // nested-child walks below (`buildDiffTree`, `buildDeletedSubtree`) — the
+    // raw `TypeError` go-to-k/cdkd#3159 removed from this command's bag half.
+    //
+    // REPAIR and not refuse: `cdkd diff` never writes, which the refuse-vs-repair
+    // fence in `tests/unit/state/malformed-resources-bag.test.ts` asserts of
+    // both this file and `diff.ts` rather than leaving to argument.
+    const dropped = repairMalformedResourceEntriesForReadOnly(result.state);
+    if (dropped.length > 0) {
+      logger.warn(malformedResourceEntriesWarning(stackName, region, dropped));
+      unreadable.push(...dropped);
     }
     // The same treatment one level DOWN, on each entry's `properties` bag
-    // (go-to-k/cdkd#3191). A THIRD call rather than a widening of the one
-    // above, for the reason this file's `outputs` note already gives: the
-    // containers are independent and a record can be malformed in any one
-    // alone, so the warning must name the one that is actually broken.
+    // (go-to-k/cdkd#3191). A separate call rather than a widening of
+    // `repairMalformedResourcesForReadOnly`, for the reason this file's
+    // `outputs` note already gives: the containers are independent and a
+    // record can be malformed in any one alone, so the warning must name the
+    // one that is actually broken.
     //
     // Ordered AFTER the bag repair deliberately —
     // `repairMalformedResourcePropertiesForReadOnly` walks entries, and an
-    // unreadable BAG has none to walk.
+    // unreadable BAG has none to walk. And AFTER the entry drop above, which
+    // is not order-free: an OBJECT entry with no `resourceType` and a torn
+    // `properties` map satisfies BOTH predicates, so running this first would
+    // warn that its properties preview as additions and then drop the row
+    // that warning describes. Fenced in
+    // `tests/unit/cli/diff-recursive-malformed-properties.test.ts`.
     //
     // This call is what keeps `cdkd diff` on the read-only side of the split:
     // the same defect REFUSES inside `DiffCalculator.calculateDiff`, which
@@ -317,8 +367,8 @@ async function loadStateOrEmpty(
     // that helper is reached from the exports index, the deploy-time resolver
     // and the local-command loader, none of which passes through this load.
     //
-    // Two warnings rather than one: they name different containers with
-    // different consequences, and a record can be malformed in either alone.
+    // Separate warnings rather than one: they name different containers with
+    // different consequences, and a record can be malformed in any one alone.
     if (repairMalformedOutputsForReadOnly(result.state)) {
       logger.warn(malformedOutputsWarning(stackName, region));
     }
@@ -345,15 +395,18 @@ async function loadStateOrEmpty(
     if (isReadableBag(result.state.outputs) && !hasReadableExportSet(result.state)) {
       logger.warn(malformedExportNamesWarning(stackName, region));
     }
-    return result.state;
+    return { state: result.state, unreadable };
   }
   return {
-    stackName,
-    region,
-    resources: {},
-    outputs: {},
-    version: STATE_SCHEMA_VERSION_CURRENT,
-    lastModified: Date.now(),
+    state: {
+      stackName,
+      region,
+      resources: {},
+      outputs: {},
+      version: STATE_SCHEMA_VERSION_CURRENT,
+      lastModified: Date.now(),
+    },
+    unreadable: [],
   };
 }
 
@@ -397,6 +450,14 @@ export interface StackDiffResult {
    * it learned and reports these at the end.
    */
   blocking: string[];
+  /**
+   * Rollback-orphan records (`orphans[]`) the adoption preview could not read
+   * as a resource, dropped BEFORE the preview because it throws on one, and
+   * carried here so `buildDiffTree` can append them to the node's
+   * `unreadable` — `''` for a record with no string `logicalId`. Empty when the
+   * stack holds no orphan records or no preview was supplied.
+   */
+  unreadableOrphans: string[];
 }
 
 /**
@@ -771,9 +832,39 @@ export async function computeStackDiff(
   let adoptedRecords: Record<string, ResourceState> = {};
   let blocking: string[] = [];
   let stateForDiff = currentState;
+  // Joins the node's `unreadable` beside the load's dropped rows, for the
+  // reason `DiffTreeNode.unreadable` gives: a torn orphan record used to ABORT
+  // this command, and a run that now warns and exits 0 under `--fail` would
+  // read as clean over exactly the record that used to crash it.
+  const unreadableOrphans: string[] = [];
   if (currentState.orphans?.length && options.previewOrphanAdoption) {
+    // The ENTRY half of the second pass below, and unlike that one it must run
+    // BEFORE the preview rather than after it. `planOrphanAdoption` destructures
+    // each record and routes a provider by `state.resourceType`; the `catch`
+    // that guards that call names the same field AGAIN, so a record whose
+    // `state` is `null` — or a primitive record, whose `state` destructures to
+    // `undefined` — throws a TypeError straight OUT of the catch, and a `null`
+    // record throws at the destructure before any `try`. Either aborts
+    // `cdkd diff` — go-to-k/cdkd#3018's class, on the command a
+    // user runs to inspect a record they already suspect. Repairing after the
+    // preview cannot help: the throw happens inside it.
+    //
+    // `orphans` is its own container and `parseStateBody` does not validate it,
+    // so neither the load's bag repair nor its entry repair has ever seen these
+    // records. A record whose `logicalId` is not a string renders through
+    // `displayLogicalId`'s existing `<unrenderable>` stand-in rather than a new
+    // literal, which would re-open go-to-k/cdkd#3339's ambiguity.
+    const readableOrphans = currentState.orphans.filter((record) => {
+      if (isReadableResourceEntry(record?.state)) return true;
+      const id = (record as { logicalId?: unknown } | undefined)?.logicalId;
+      unreadableOrphans.push(typeof id === 'string' ? id : '');
+      return false;
+    });
+    if (unreadableOrphans.length > 0) {
+      logger.warn(malformedResourceEntriesWarning(stackName, region, unreadableOrphans));
+    }
     const plan = await options.previewOrphanAdoption(
-      currentState,
+      { ...currentState, orphans: readableOrphans },
       effectiveTemplate,
       stackName,
       region
@@ -1033,7 +1124,7 @@ export async function computeStackDiff(
     }
   }
 
-  return { changes, outputChanges, adoptedOrphans, adoptedRecords, blocking };
+  return { changes, outputChanges, adoptedOrphans, adoptedRecords, blocking, unreadableOrphans };
 }
 
 /**
@@ -1246,11 +1337,11 @@ export async function buildDiffTree(args: {
     ancestorTemplatePaths,
   } = args;
 
-  const state = await loadStateOrEmpty(stackName, region, stateBackend);
+  const { state, unreadable } = await loadStateOrEmpty(stackName, region, stateBackend);
   // Accumulated, not replaced: see `parentHasSecretReference`'s doc.
   const secretBearingAbove =
     parentHasSecretReference === true || templateHasSecretDynamicReference(template);
-  const { changes, outputChanges, adoptedOrphans, adoptedRecords, blocking } =
+  const { changes, outputChanges, adoptedOrphans, adoptedRecords, blocking, unreadableOrphans } =
     await computeStackDiff(state, template, region, stackName, stateBackend, diffCalculator, {
       ...(parameters && { parameters }),
       ...(canonicalizeProperties && { canonicalizeProperties }),
@@ -1279,6 +1370,10 @@ export async function buildDiffTree(args: {
     outputChanges,
     adoptedOrphans,
     blocking,
+    // The load's dropped rows first, then the orphan records the adoption
+    // preview could not read — one list, because the reader of `--json` and
+    // `--fail` asks one question of it: did the diff read everything?
+    unreadable: [...unreadable, ...unreadableOrphans],
     children: [],
   };
   if (!recursive) return node;
@@ -1429,7 +1524,7 @@ async function buildDeletedSubtree(
   diffCalculator: DiffCalculator,
   parentHasSecretReference: boolean
 ): Promise<DiffTreeNode> {
-  const state = await loadStateOrEmpty(stackName, region, stateBackend);
+  const { state, unreadable } = await loadStateOrEmpty(stackName, region, stateBackend);
   const { changes, outputChanges } = await computeStackDiff(
     state,
     EMPTY_TEMPLATE,
@@ -1454,6 +1549,7 @@ async function buildDeletedSubtree(
     // that could refuse.
     adoptedOrphans: [],
     blocking: [],
+    unreadable,
     // The empty template carries no `Outputs`, so every persisted key diffs as
     // REMOVE — which is accurate: destroying the child drops its whole state
     // record, and any export it published stops resolving for consumers.
@@ -1593,7 +1689,15 @@ export function nodeHasChanges(node: DiffTreeNode): boolean {
   // preview that calls that nothing is wrong in the direction that matters —
   // the user ran `cdkd diff` precisely to find out whether the next deploy
   // will adopt or collide.
-  return node.outputChanges.length > 0 || node.adoptedOrphans.length > 0;
+  //
+  // go-to-k/cdkd#3018 adds the unreadable rows, for the reason `cdkd drift`
+  // reports them as `notCompared`: the load DROPS them so the rest of the stack
+  // can be diffed, and a dropped row the template no longer declares then has
+  // no DELETE row. Without this arm `--fail` exits 0 over a record that used to
+  // crash non-zero, which is the one direction this change must not take.
+  return (
+    node.outputChanges.length > 0 || node.adoptedOrphans.length > 0 || node.unreadable.length > 0
+  );
 }
 
 /** True when this node OR any descendant has a real change (tree-wide drift detector for `--fail`). */
@@ -1692,6 +1796,12 @@ export interface DiffNodeJson {
    * must read this, not just `changes`.
    */
   blocking: string[];
+  /**
+   * Rows of the state record the diff could not read (go-to-k/cdkd#3018).
+   * Always present; non-empty means `changes` is NOT the whole picture — a
+   * record the template no longer declares has no DELETE row here.
+   */
+  unreadable: string[];
   children: DiffNodeJson[];
 }
 
@@ -1741,6 +1851,7 @@ export function diffTreeToJson(node: DiffTreeNode): DiffNodeJson {
     })),
     adoptedOrphans: node.adoptedOrphans,
     blocking: node.blocking,
+    unreadable: node.unreadable,
     children: node.children.map(diffTreeToJson),
   };
 }
@@ -2111,6 +2222,39 @@ export function renderDiffTree(
       logFn(
         `${node.adoptedOrphans.length} resource(s) to adopt from a previous rollback: ` +
           `${node.adoptedOrphans.map(stripControlChars).join(', ')}`
+      );
+    }
+    // A FOURTH line, for the rows the diff could not read (go-to-k/cdkd#3018).
+    // A dropped row the template still declares IS above, as a create — the
+    // diff has no record of it — but one the template no longer declares has
+    // no row at all, not even a delete, so this line is the only place the
+    // preview names it. Worded for both, since the node cannot tell a reader
+    // which dropped id is which without re-reading the template.
+    //
+    // CAPPED at ten names, like the other lists of this kind (`cdkd export`'s
+    // baseline report, the drift warnings): the count leads the line and
+    // `--json` keeps every id, so a record with thousands of broken rows cannot
+    // print one megabyte-long line. The create clause is for logical ids only:
+    // the map row is not one, so a lone map row gets no such sentence.
+    if (node.unreadable.length > 0) {
+      // The map row is cdkd's own literal and renders bare. A logical id takes
+      // `displayLogicalId`, whose quoting keeps an id padded to look like a
+      // healthy sibling visibly distinct. Stated rather than solved: a planted
+      // entry whose id IS the map-row literal is still indistinguishable from
+      // it here and in `--json`, since the node records only strings.
+      const named = node.unreadable
+        .slice(0, UNREADABLE_PREVIEW_NAMES)
+        .map((id) => (id === UNREADABLE_RESOURCES_MAP_ROW ? id : displayLogicalId(id)));
+      const rest = node.unreadable.length - named.length;
+      const onlyTheMap =
+        node.unreadable.length === 1 && node.unreadable[0] === UNREADABLE_RESOURCES_MAP_ROW;
+      logFn(
+        `${node.unreadable.length} state record row(s) could not be read: ` +
+          `${named.join(', ')}${rest > 0 ? ` and ${rest} more` : ''}.` +
+          (onlyTheMap
+            ? ''
+            : ` One the template still declares is shown above as a create; one it no ` +
+              `longer declares is not shown above.`)
       );
     }
   }
