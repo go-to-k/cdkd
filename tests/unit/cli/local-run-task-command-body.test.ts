@@ -367,6 +367,129 @@ describe('localRunTaskCommand body: --profile credentials file (issue #3394)', (
     // so this case's deliberate survivor is removed on the failure path too.
   });
 
+  it('NAMES the credentials file on the double-^C force-exit', async () => {
+    // Issue [#3410](https://github.com/go-to-k/cdkd/issues/3410). The second ^C
+    // calls `process.exit(130)`, which runs no `finally` and awaits nothing --
+    // so `cleanup()` never fires and the mode-0600 tmpdir survives with live
+    // AWS credentials in it. The old message said only "container cleanup
+    // skipped", naming the containers an operator can already find in
+    // `docker ps` and saying nothing about the one artifact nothing reports.
+    //
+    // DRIVEN THROUGH THE REAL HANDLER, not by asserting the source. The handler
+    // is taken off `process` rather than re-emitted with `process.emit`, so no
+    // unrelated `SIGINT` listener in the run is invoked; the body registers it
+    // BEFORE `runEcsTask`, and `channels` is assigned between the two, so by
+    // the time this mock runs both exist -- which is exactly the state a real
+    // double-^C during the run would find.
+    const exitCodes: number[] = [];
+    const stderrChunks: string[] = [];
+    const realExit = process.exit;
+    const realWrite = process.stderr.write;
+    // REPLACED, not spied: vitest's console interception sits on the console
+    // object, and the subject writes to `process.stderr` directly.
+    (process as unknown as { exit: (code?: number) => void }).exit = (code?: number): void => {
+      exitCodes.push(code ?? 0);
+    };
+    (process.stderr as unknown as { write: (c: string) => boolean }).write = (
+      chunk: string
+    ): boolean => {
+      stderrChunks.push(String(chunk));
+      return true;
+    };
+
+    let hostPath: string | undefined;
+    try {
+      runEcsTaskMock.mockImplementation(
+        (_task: unknown, runOpts: { profileCredentialsFile?: { hostPath: string } }) => {
+          hostPath = runOpts.profileCredentialsFile?.hostPath;
+          if (hostPath) createdCredsDirs.add(path.dirname(hostPath));
+          const listeners = process.listeners('SIGINT');
+          const handler = listeners[listeners.length - 1] as (() => void) | undefined;
+          expect(handler, 'the command body registered no SIGINT handler').toBeDefined();
+          handler!();
+          handler!();
+          return Promise.resolve({
+            state: { network: { networkName: 'cdkd-unit-net' } },
+            exitCode: 0,
+            essentialContainerName: undefined,
+          });
+        }
+      );
+
+      await runTask();
+    } finally {
+      (process as unknown as { exit: typeof realExit }).exit = realExit;
+      (process.stderr as unknown as { write: typeof realWrite }).write = realWrite;
+    }
+
+    // BOUND THE ARM before reading what it printed: without this the case is
+    // satisfied by a body that never reached the force-exit at all.
+    expect(hostPath, 'no credentials file was mounted, so there is nothing to strand').toBeDefined();
+    const forceExit = stderrChunks.find((c) => c.includes('Force-exit on second ^C'));
+    expect(forceExit, `no force-exit line in ${JSON.stringify(stderrChunks)}`).toBeDefined();
+
+    // THE DEFECT, stated as the assertion: the path is in the line.
+    expect(
+      forceExit,
+      'the force-exit message does not name the stranded credentials tmpdir, so an operator ' +
+        'is not even told one exists'
+    ).toContain(hostPath!);
+    // ...and the sentence says what to DO with it, not merely that it exists.
+    expect(forceExit).toContain('delete');
+    expect(exitCodes).toContain(130);
+  });
+
+  it('says NOTHING about a credentials file on force-exit when --profile is absent', async () => {
+    // The other direction, and the one an unconditional sentence would break:
+    // with no `--profile` there is no file, and a message naming `undefined`
+    // sends an operator looking for a path that never existed. This is also
+    // what makes the case above discriminate -- without it, a builder returning
+    // a constant string would satisfy every assertion there.
+    const exitCodes: number[] = [];
+    const stderrChunks: string[] = [];
+    const realExit = process.exit;
+    const realWrite = process.stderr.write;
+    (process as unknown as { exit: (code?: number) => void }).exit = (code?: number): void => {
+      exitCodes.push(code ?? 0);
+    };
+    (process.stderr as unknown as { write: (c: string) => boolean }).write = (
+      chunk: string
+    ): boolean => {
+      stderrChunks.push(String(chunk));
+      return true;
+    };
+
+    try {
+      runEcsTaskMock.mockImplementation(
+        (_task: unknown, runOpts: { profileCredentialsFile?: { hostPath: string } }) => {
+          expect(runOpts.profileCredentialsFile).toBeUndefined();
+          const listeners = process.listeners('SIGINT');
+          const handler = listeners[listeners.length - 1] as (() => void) | undefined;
+          handler!();
+          handler!();
+          return Promise.resolve({
+            state: { network: { networkName: 'cdkd-unit-net' } },
+            exitCode: 0,
+            essentialContainerName: undefined,
+          });
+        }
+      );
+
+      const cmd = createLocalRunTaskCommand();
+      cmd.exitOverride();
+      await cmd.parseAsync(['CdkdUnitStack/TaskDef'], { from: 'user' });
+    } finally {
+      (process as unknown as { exit: typeof realExit }).exit = realExit;
+      (process.stderr as unknown as { write: typeof realWrite }).write = realWrite;
+    }
+
+    const forceExit = stderrChunks.find((c) => c.includes('Force-exit on second ^C'));
+    expect(forceExit, 'the force-exit arm did not run').toBeDefined();
+    expect(forceExit).not.toContain('credentials file');
+    expect(forceExit).not.toContain('undefined');
+    expect(exitCodes).toContain(130);
+  });
+
   it('writes and mounts NOTHING when --profile is absent', async () => {
     // The gate's other arm. Without it every assertion above is satisfied by a
     // body that writes a credentials file unconditionally — which would mount

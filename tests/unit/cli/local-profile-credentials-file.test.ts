@@ -1,10 +1,105 @@
+import { existsSync, rmSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
+import * as path from 'node:path';
 import { describe, expect, it } from 'vite-plus/test';
 import {
   buildProfileCredentialsDockerArgs,
   CONTAINER_AWS_CREDENTIALS_PATH,
   writeProfileCredentialsFile,
 } from '../../../src/cli/commands/local-profile-credentials-file.js';
+
+describe('writeProfileCredentialsFile: the onDirCreated hook (go-to-k/cdkd#3435)', () => {
+  // WHY THE RETURN VALUE IS THE WRONG MOMENT. Between `mkdtemp` and this
+  // function resolving sits an `await writeFile` — a real I/O boundary — and a
+  // double-`^C` delivered inside it force-exits with the caller's
+  // `profileCredsFile` still `undefined`. The stranded-credentials notice then
+  // names NOTHING while a mode-0600 directory is already on disk, which is
+  // exactly the leak go-to-k/cdkd#3410 closed, reachable through its own fix's
+  // blind spot. Two reviewers found the comment asserting it could not happen.
+  //
+  // The hook is what the two force-exit arms read instead, so its TIMING is the
+  // property under test rather than its existence.
+  it('fires with the hostPath BEFORE the file is written', async () => {
+    const seen: Array<{ hostPath: string; existedYet: boolean; dirExisted: boolean }> = [];
+    const file = await writeProfileCredentialsFile(
+      'hook-probe',
+      { accessKeyId: 'A', secretAccessKey: 'B' },
+      {
+        onDirCreated: (hostPath) => {
+          // Both observations are taken INSIDE the hook: after the call
+          // returns, the file exists either way and the case would be vacuous.
+          seen.push({
+            hostPath,
+            existedYet: existsSync(hostPath),
+            dirExisted: existsSync(path.dirname(hostPath)),
+          });
+        },
+      }
+    );
+    try {
+      expect(seen, 'the hook never fired').toHaveLength(1);
+      const first = seen[0]!;
+      // THE PATH IS THE ONE THE CALLER WILL LATER DISPOSE. Without this the
+      // hook could report any string and every other assertion would hold.
+      expect(first.hostPath).toBe(file.hostPath);
+      // THE TIMING, in both directions: the DIRECTORY — the thing that gets
+      // stranded — already exists, and the credentials file does not yet. A
+      // hook moved to the end of the function fails the second assertion, and
+      // one moved before `mkdtemp` fails the first.
+      expect(first.dirExisted, 'the hook fired before the tmpdir existed').toBe(true);
+      expect(first.existedYet, 'the hook fired after the credentials were written').toBe(false);
+      // ...and the write still happened, so the timing fix did not trade the
+      // hook for the file.
+      expect(existsSync(file.hostPath)).toBe(true);
+    } finally {
+      await file.dispose();
+    }
+  });
+
+  it('is optional, and a write FAILURE still reports the path it stranded', async () => {
+    // The other direction on the same seam. `writeProfileCredentialsFile`
+    // cleans up after a failed write, but a caller that force-exits mid-write
+    // never gets there — so the hook must have fired even on the path that
+    // throws, or the arm it feeds is blind for exactly the failure case.
+    //
+    // A profile name the validator accepts but the filesystem cannot hold is
+    // not available, so the failure is induced by removing the tmpdir out from
+    // under the write between the hook and the `writeFile`.
+    let stranded: string | undefined;
+    let retracted: string | undefined;
+    await expect(
+      writeProfileCredentialsFile(
+        'hook-failure-probe',
+        { accessKeyId: 'A', secretAccessKey: 'B' },
+        {
+          onDirCreated: (hostPath) => {
+            stranded = hostPath;
+            rmSync(path.dirname(hostPath), { recursive: true, force: true });
+          },
+          onDirRemoved: (hostPath) => {
+            retracted = hostPath;
+          },
+        }
+      )
+    ).rejects.toThrow();
+
+    expect(stranded, 'the hook did not fire on the failing path').toBeDefined();
+    expect(stranded).toMatch(/cdkd-profile-creds-/);
+    // ...and the path is RETRACTED, because the cleanup `rm` removed the
+    // directory (go-to-k/cdkd#3435 review round 3). A caller that kept it would
+    // later tell an operator to delete something that is not there.
+    expect(retracted, 'onDirRemoved did not fire after a successful cleanup').toBe(stranded);
+  });
+
+  // RECORDED, not tested: the INVERSE arm — a failed write whose cleanup `rm`
+  // ALSO fails, where the directory survives and `onDirRemoved` must NOT fire,
+  // so the force-exit notice still names it. A mutation probe confirmed no case
+  // discriminates it (`if (removed)` -> `if (true)` leaves this file green).
+  // Inducing it needs `node:fs/promises`' `rm` mocked for one call inside a
+  // helper this suite otherwise runs for real, and the repo is removing
+  // machinery rather than adding it, so the gap is a backlog row in the PR
+  // body rather than a mock here.
+});
 
 describe('writeProfileCredentialsFile', () => {
   it('writes a valid AWS INI section with sessionToken when present', async () => {

@@ -3524,17 +3524,31 @@ function isTemplateShapeResolutionFailure(err: unknown): boolean {
  * Per-pattern throw sites, and the fence that keeps them true, are in
  * `tests/unit/cli/scrub-abandoned-scan-origin.test.ts`.
  *
- * ONE CLASSIFICATION CHANGE, recorded because it is a GATE and this file does
- * not otherwise mention it. go-to-k/cdkd#3426 routed the `Ref <id> not found`
- * throw through the resolver's display builder, which strips control
+ * TWO CLASSIFICATION CHANGES, recorded because they are a GATE and this file
+ * does not otherwise mention them. go-to-k/cdkd#3426 routed the `Ref <id> not
+ * found` throw through the resolver's display builder, which strips control
  * characters and trims — so an id carrying a CR or padding, which `\S+` could
  * not match before, matches now, and such a unit moves from `count` (gateable
- * by `cdkd scrub --dry-run --fail`) to `warn` (not). The SAFE direction would
- * have been the other one, and it is accepted for a reason: a plain dangling
- * `Ref` already warned, so this adds no NEW bypass — it extends an existing
- * classification to ids that differ from an ordinary one only by characters
- * nobody can see. The alternative is a gate whose verdict depends on invisible
- * bytes in a logical id, which is worse to reason about. Pinned by
+ * by `cdkd scrub --dry-run --fail`) to `warn` (not). go-to-k/cdkd#3432 did the
+ * same to `Resource <id> not found for Fn::GetAtt`, the SECOND pattern below,
+ * for the same reason and with the same effect. Both are listed here rather
+ * than one, because a note naming a single pattern reads as a property of that
+ * pattern instead of a property of every id-bearing shape in the list. THE
+ * THIRD moved too, in go-to-k/cdkd#3432's own review round: `Parameter <name>
+ * is required ...` carried the same premise one expression name over — a
+ * `Parameters` KEY is arbitrary JSON just as a `Resources` key is — and a
+ * reviewer measured it putting a live terminal-rewriting sequence on that
+ * throw. So all THREE patterns now see a sanitized id, and this note names no
+ * exception; an earlier revision of it described the third as the one still
+ * rendered raw, which would have shipped as a standing description of a live
+ * exposure.
+ *
+ * The SAFE direction would have been the other one, and it is accepted for a
+ * reason: a plain dangling `Ref`, `Fn::GetAtt` or unbound parameter already
+ * warned, so this adds no NEW bypass — it extends an existing classification to
+ * ids that differ from an ordinary one only by characters nobody can see. The
+ * alternative is a gate whose verdict depends on invisible bytes in a logical
+ * id, which is worse to reason about. All three are pinned by
  * `tests/unit/cli/scrub-abandoned-scan-origin.test.ts`.
  */
 const TEMPLATE_SHAPE_FAILURE_PATTERNS = [

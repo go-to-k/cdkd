@@ -124,6 +124,7 @@ import { singleFlight } from '../../utils/single-flight.js';
 import { displayIdent, ROLE_ARN_MAX_CODE_POINTS } from '../../utils/display-safe.js';
 import { isPasteableIdent } from './state-file-keys.js';
 import {
+  strandedProfileCredentialsNotice,
   writeProfileCredentialsFile,
   type ProfileCredentialsFile,
 } from './local-profile-credentials-file.js';
@@ -387,6 +388,16 @@ async function localStartApiCommand(
   // file mid-flight would race with running containers' SDK reads).
   // Disposed in the cleanup chain. Undefined when `--profile` is unset.
   let profileCredsFile: ProfileCredentialsFile | undefined;
+  // That file's PATH, assigned the instant its tmpdir exists rather than when
+  // the write resolves (go-to-k/cdkd#3435 review). The assignment below sits
+  // behind an `await`, and a second `Ctrl-C` inside it force-exits with
+  // `profileCredsFile` still `undefined` while the mode-0600 directory is
+  // already on disk -- the window in which the force-exit warning would name
+  // nothing. Cleared only by `onDirRemoved`, i.e. when a FAILED write already
+  // took the directory: the warning's job is to name what dispose did NOT
+  // remove, so a successful dispose deliberately leaves it set -- only a
+  // force-exit, which skips dispose, ever reads it.
+  let credsHostPath: string | undefined;
   // PR 8b: per-server-lifecycle caches. Constructed once at server
   // startup; persisted across hot reloads (PR 8c) so authorizer
   // verdicts and JWKS keys aren't re-fetched on every reload. The
@@ -649,7 +660,14 @@ async function localStartApiCommand(
     // never the `--role-arn` role. The same identity the env-var overlay writes;
     // the mounted file is the additive channel for `fromIni({ profile })`.
     if (options.profile && profileCredentials && !profileCredsFile) {
-      profileCredsFile = await writeProfileCredentialsFile(options.profile, profileCredentials);
+      profileCredsFile = await writeProfileCredentialsFile(options.profile, profileCredentials, {
+        onDirCreated: (hostPath) => {
+          credsHostPath = hostPath;
+        },
+        onDirRemoved: () => {
+          credsHostPath = undefined;
+        },
+      });
     }
 
     // Build the per-Lambda spec map. Every reachable logical ID is
@@ -1239,9 +1257,23 @@ async function localStartApiCommand(
     if (shutdownStarted) {
       if (!forceExitArmed) {
         forceExitArmed = true;
-        logger.warn(
-          `Received second ${signal}; force-exiting. Orphan containers may remain — run 'docker ps --filter name=cdkd-local-' and 'docker rm -f' to clean up.`
-        );
+        // THE SIBLING SITE OF go-to-k/cdkd#3410, found by sweeping the class
+        // rather than named by the issue: `runCleanup` is what disposes
+        // `profileCredsFile`, and `process.exit` below skips it exactly as
+        // `local-run-task.ts`'s force-exit arm did. This line already told the
+        // operator about the ORPHAN CONTAINERS — the artifact `docker ps` can
+        // find on its own — while saying nothing about the mode-0600 credentials
+        // tmpdir, which nothing reports and nothing else ever removes.
+        //
+        // COMPOSED BY A PURE BUILDER, not inline (go-to-k/cdkd#3435 review).
+        // Nothing stands this server command up in a unit test, so the only
+        // fence on this arm was a source-shape rule requiring the notice
+        // builder to be CALLED here — and a reviewer measured that a mutation
+        // keeping the call while dropping its result from the rendered line
+        // left the whole suite green, re-opening go-to-k/cdkd#3410's defect in
+        // the arm this PR added. The composition is the part that has to be
+        // asserted, so it moved somewhere a test can reach it.
+        logger.warn(forceExitShutdownWarning(signal, credsHostPath));
         process.exit(130);
       }
       return;
@@ -2748,6 +2780,33 @@ export async function resolveProfileCredentials(
   } finally {
     sts.destroy();
   }
+}
+
+/**
+ * The line the force-exit arm of {@link localStartApiCommand}'s shutdown
+ * prints (go-to-k/cdkd#3435 review).
+ *
+ * PURE and EXPORTED for one reason: nothing stands this long-running server
+ * command up in a unit test, so the force-exit arm's only fence was a
+ * source-shape rule over the file — "does it CALL the notice builder". A
+ * reviewer measured that predicate: mutating the rendered line to drop
+ * `stranded` while keeping the call left the entire suite green, with the
+ * operator never told the mode-0600 credentials tmpdir exists. That is exactly
+ * go-to-k/cdkd#3410's defect, re-openable inside its own fix. The
+ * CONCATENATION is what has to be asserted, so it lives here rather than
+ * inline.
+ *
+ * `hostPath` is the credentials tmpdir's path or `undefined`; a run that passed
+ * no `--profile` gets the container sentence alone, with no trailing space and
+ * no mention of a file that does not exist.
+ */
+export function forceExitShutdownWarning(signal: string, hostPath: string | undefined): string {
+  const stranded = strandedProfileCredentialsNotice(hostPath);
+  return (
+    `Received second ${signal}; force-exiting. Orphan containers may remain — run ` +
+    `'docker ps --filter name=cdkd-local-' and 'docker rm -f' to clean up.` +
+    (stranded === undefined ? '' : ` ${stranded}`)
+  );
 }
 
 /**

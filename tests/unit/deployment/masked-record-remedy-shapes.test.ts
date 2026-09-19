@@ -298,8 +298,23 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
       'Ref Foo (state key X)': { resourceType: 'AWS::SQS::Queue' },
     });
 
-    expect(remedy).toContain('--resource Ref Foo (state key X)=<physicalId>');
+    // THE ID IS NAMED, AND THE COMMAND IS WITHHELD, since go-to-k/cdkd#3435's
+    // security round. This row used to assert the command carried the id
+    // verbatim. The proposition it exists for is unchanged and still asserted
+    // below — the remedy names the record that really holds the mask and never
+    // mentions `Foo` — but a runnable `cdkd import ... --resource Ref Foo
+    // (state key X)=<physicalId> --force` is not something an operator can
+    // paste: the spaces and parentheses reshape it the moment the advisory
+    // quotes come off. `isPasteableIdent` refuses it and the sentence says why.
+    expect(remedy).toContain('Ref Foo (state key X)');
+    expect(remedy).toContain('the command is withheld');
+    expect(remedy).not.toContain('--resource Ref Foo (state key X)=<physicalId>');
+    // THE PROPOSITION THIS ROW WAS WRITTEN FOR, untouched: the start-anchored
+    // regex captured `Foo` out of the rendering and advised force-overwriting
+    // an innocent record. Routing on `logicalId` makes that unreachable, and
+    // withholding the command must not have quietly reintroduced it.
     expect(remedy).not.toContain('--resource Foo=');
+    expect(remedy).not.toContain(' Foo,');
     // It is an `Fn::GetAtt`, so the Ref-specific clause — which says the read
     // cannot be rewritten away in the template — must still not appear.
     expect(remedy).not.toContain("CDKD's own read");
@@ -373,19 +388,71 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
     expect(remedy).toContain('ANOTHER stack');
   });
 
-  it('escapes a single quote in the logical id, so the pasted command still parses', () => {
-    // cdkd validates no logical-id charset, and this line is meant to be
-    // copy-pasted into a shell: an unescaped `'` closes the display quoting
-    // early and the rest of the command reparses as something else. POSIX
-    // escaping is close-escape-reopen (issue #2847 round-5 review, nit).
+  it('withholds the command for a quote-bearing logical id rather than escaping it', () => {
+    // THIS ROW ASSERTED THE OPPOSITE until go-to-k/cdkd#3435's security round,
+    // and the reversal is a decision worth reading rather than a pin being
+    // relaxed.
+    //
+    // `quoteSafe`'s POSIX close-escape-reopen (issue #2847 round-5 review) is
+    // still correct about SHELL QUOTING and is still in the code. What that
+    // round did not ask is the question the security round did: this same
+    // message renders a template-supplied id at DEFAULT verbosity, and neither
+    // `formatError` nor the logger sanitizes an `error.message`. So the id
+    // needs a rule about what may be PRINTED, not only about what may be
+    // quoted — and the repo has settled that rule twice, both times as an
+    // ALLOW-LIST, because a deny-list has to enumerate every character a shell
+    // treats specially before cdkd sees the word.
+    //
+    // `isPasteableIdent` is that allow-list, and `'` is outside it. Escaping it
+    // is no longer reachable, so the command is withheld and the id is NAMED
+    // through `displayIdent` instead — which quotes it, since a `'` is outside
+    // `PLAIN_IDENT` too, so its BOUNDARY stays visible in the sentence.
     const remedy = remedyFor([attr("Bob's-Table", 'Arn')], {
       "Bob's-Table": { resourceType: 'AWS::SQS::Queue' },
     });
 
-    expect(remedy).toContain(`--resource Bob'\\''s-Table=<physicalId>`);
-    // NEGATIVE, paired with the positive so it cannot pass by absence: the RAW
-    // id must not survive, since that is the spelling that breaks the paste.
+    expect(remedy).toContain('the command is withheld');
+    expect(remedy).toContain("Bob's-Table");
+    // NEGATIVE, paired with the positive so it cannot pass by absence: NEITHER
+    // spelling may appear as a runnable `--resource` argument — the escaped one
+    // because the command is withheld, and the raw one because that is the
+    // spelling that breaks the paste.
+    expect(remedy).not.toContain(`--resource Bob'\\''s-Table=<physicalId>`);
     expect(remedy).not.toContain(`--resource Bob's-Table=`);
+  });
+
+  it('a CONTROL-CHARACTER logical id reaches neither the command nor the line raw', () => {
+    // go-to-k/cdkd#3435's security round. This message is joined into a
+    // `ProvisioningError` that `handleError` prints at DEFAULT verbosity, and
+    // neither `formatError` nor the logger sanitizes an `error.message` — they
+    // cover a `cause` and the extra ARGS. So a `Resources` KEY carrying
+    // `ESC[2K` + CR redrew the operator's line, which is the same class this
+    // PR closed at 18 resolver renders and missed one module out.
+    //
+    // BOTH arms are asserted, because they fail differently: the LOCAL arm
+    // would have pasted it into a command, and the unclearable arm joined it
+    // into a sentence with no escaping at all.
+    const ESC = String.fromCharCode(0x1b);
+    const CR = String.fromCharCode(0x0d);
+    const evil = `Prod${ESC}[2K${CR}Evil`;
+
+    const local = remedyFor([attr(evil, 'Arn')], {
+      [evil]: { resourceType: 'AWS::SQS::Queue' },
+    });
+    expect(local, 'a raw ESC reached the local arm').not.toContain(ESC);
+    expect(local, 'a raw CR reached the local arm').not.toContain(CR);
+    expect(local).toContain('the command is withheld');
+    // NOT a bare negative: the id must still be IDENTIFIABLE, or the operator
+    // is told a command is withheld about nothing they can find.
+    expect(local).toContain('Prod');
+
+    const unclearable = remedyFor([attr(evil, 'Arn')], {
+      [evil]: { resourceType: 'Custom::Thing' },
+    });
+    expect(unclearable, 'a raw ESC reached the unclearable arm').not.toContain(ESC);
+    expect(unclearable, 'a raw CR reached the unclearable arm').not.toContain(CR);
+    expect(unclearable).toContain('Do NOT re-import');
+    expect(unclearable).toContain('Prod');
   });
 
   it('routes a HYPHENATED logical id to the LOCAL arm — the round-4 blocker, remedy side', () => {

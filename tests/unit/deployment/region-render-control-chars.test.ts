@@ -17,9 +17,11 @@ import { IntrinsicFunctionResolver } from '../../../src/deployment/intrinsic-fun
  * the edit an author actually makes — remove the sanitizer AND update the
  * marker in the same commit — and every test in the change still passed.
  *
- * `raw-masker-render` does not backstop them either: `loggedTarget`'s
- * initializer is a `??` chain over a parameter and a property, so it reaches no
- * masker at all. Nothing but a case reading the emitted BYTES can hold these.
+ * Nor did the AST checker's `raw-masker-render` verdict backstop them:
+ * `loggedTarget`'s initializer is a `??` chain over a parameter and a property,
+ * so it reached no masker at all. (That checker is GONE since
+ * go-to-k/cdkd#3435 -- it was high-maintenance tooling -- which only sharpens
+ * the point: nothing but a case reading the emitted BYTES can hold these.)
  *
  * ## Why the private method is called directly
  *

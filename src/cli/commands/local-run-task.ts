@@ -24,6 +24,7 @@ import { ensureDockerAvailable } from '../../local/docker-runner.js';
 import { resolveHostGatewayExtraHosts } from '../../local/docker-version.js';
 import { resolveProfileCredentials } from './local-start-api.js';
 import {
+  strandedProfileCredentialsNotice,
   writeProfileCredentialsFile,
   type ProfileCredentialsFile,
 } from './local-profile-credentials-file.js';
@@ -185,6 +186,17 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
   // non-optional shape, so emptying this cannot typecheck -- and the dispose
   // reads the same object rather than a copy that can drift from it.
   let channels: Awaited<ReturnType<typeof resolveTaskCredentialChannels>> | undefined;
+  // The credentials tmpdir's path, assigned the INSTANT it exists rather than
+  // when `channels` resolves (go-to-k/cdkd#3435 review).
+  // `writeProfileCredentialsFile` does `mkdtemp` and then `await writeFile`, and
+  // a double-`^C` inside that await force-exits with `channels` still
+  // `undefined` -- so reading the path off `channels` alone left the
+  // stranded-credentials notice naming nothing for exactly the window in which
+  // the directory already exists. Assignment only: this runs inside the writer,
+  // where a throw would strand the dir. Cleared again by `onDirRemoved` when a
+  // failed write took the directory with it, so the notice never names a path
+  // that no longer exists.
+  let credsHostPath: string | undefined;
 
   // Single-flight cleanup: the SIGINT handler AND the outer `finally` both
   // call this, so we await the first invocation's promise on every later
@@ -311,7 +323,37 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
     sigintHandler = (): void => {
       sigintCount += 1;
       if (sigintCount >= 2) {
-        process.stderr.write('Force-exit on second ^C; container cleanup skipped.\n');
+        // `process.exit` runs no `finally` and awaits nothing, so `cleanup()`
+        // never fires here and the mode-0600 credentials tmpdir survives with
+        // live AWS credentials in it (issue go-to-k/cdkd#3410). The message used
+        // to say only "container cleanup skipped", which names the containers an
+        // operator can already see in `docker ps` and says nothing about the one
+        // artifact nothing else will ever report. `strandedProfileCredentialsNotice`
+        // is the shared remedy sentence -- its doc carries why the remedy is to
+        // NAME the path rather than `rmSync` it.
+        //
+        // `process.stderr.write` rather than the logger, and UNCHANGED from
+        // before this issue -- the sink is not something go-to-k/cdkd#3410
+        // decided. Stated as the local fact rather than as a rule, because the
+        // sibling arm in `local-start-api.ts` uses `logger.warn` at the same
+        // point and is equally correct: cdkd's logger writes synchronously, so
+        // neither sink is at risk here. An earlier revision of this comment
+        // asserted a buffering hazard that would have condemned the sibling
+        // (go-to-k/cdkd#3435 review).
+        //
+        // Read off `credsHostPath`, NOT off `channels`. `channels` is assigned
+        // only when `resolveTaskCredentialChannels` RESOLVES, and that call
+        // contains an `await writeFile` -- so a double-`^C` inside it would find
+        // `channels === undefined` while the mode-0600 directory already exists,
+        // and the notice would name nothing for precisely the window this issue
+        // is about (go-to-k/cdkd#3435 review; the comment that used to sit here
+        // claimed the opposite). The early binding is set by `onDirCreated` at
+        // `mkdtemp` time and stays `undefined` for a run that passed no
+        // `--profile`, which is the case that must print nothing.
+        const stranded = strandedProfileCredentialsNotice(credsHostPath);
+        process.stderr.write(
+          `Force-exit on second ^C; container cleanup skipped.${stranded ? ` ${stranded}` : ''}\n`
+        );
         process.exit(130);
       }
       logger.info('Stopping task...');
@@ -346,7 +388,14 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
     // Both credential channels this task gets, resolved together — see
     // `resolveTaskCredentialChannels` for why they are ONE call (issue
     // go-to-k/cdkd#3378).
-    channels = await resolveTaskCredentialChannels(options, assumedCredentials);
+    channels = await resolveTaskCredentialChannels(options, assumedCredentials, {
+      onDirCreated: (hostPath) => {
+        credsHostPath = hostPath;
+      },
+      onDirRemoved: () => {
+        credsHostPath = undefined;
+      },
+    });
 
     const envOverrides = readEnvOverridesFile(options.envVars);
 
@@ -376,15 +425,21 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
       // containers that outlive this process. It cannot be disposed here for
       // exactly that reason, so NAME it: an operator who is not told the path
       // has no way to find it, and nothing else ever will
-      // (go-to-k/cdkd#3390 security review). Rendered through `displayIdent`
-      // like every other terminal-bound value on this surface — the path is
-      // cdkd's own `mkdtemp` output rather than user input, so it is the
-      // identity on it, but the rule is the surface's rather than the value's.
-      if (channels.profileCredsFile) {
-        logger.info(
-          `The AWS credentials file mounted into the containers is NOT removed in detached ` +
-            `mode: delete ${displayIdent(channels.profileCredsFile.hostPath)} once you tear them down.`
-        );
+      // (go-to-k/cdkd#3390 security review). The `displayIdent` pass moved INTO
+      // `strandedProfileCredentialsNotice` in go-to-k/cdkd#3410, so the rule is
+      // stated once for all three sites rather than at each — the path is
+      // cdkd's own `mkdtemp` output rather than user input, so sanitization is
+      // the identity on it, but the rule belongs to the surface rather than to
+      // the value.
+      //
+      // The sentence moved to `strandedProfileCredentialsNotice` in
+      // go-to-k/cdkd#3410, which gave the two FORCE-EXIT arms the same remedy:
+      // three hand-spelled copies that agree today is how one of them later
+      // stops matching what an operator has learned to look for. The cause
+      // clause stays here, because it is what differs per site.
+      const detachedNotice = strandedProfileCredentialsNotice(channels.profileCredsFile?.hostPath);
+      if (detachedNotice) {
+        logger.info(`Detached mode leaves the mounted credentials file behind. ${detachedNotice}`);
       }
       // Only a REACHED detach hands the containers off; see the `finally`.
       detachedSuccessfully = true;
@@ -817,7 +872,16 @@ export async function resolveTaskCredentialChannels(
   options: { profile?: string },
   assumedCredentials:
     | { accessKeyId: string; secretAccessKey: string; sessionToken?: string }
-    | undefined
+    | undefined,
+  /**
+   * Forwarded to `writeProfileCredentialsFile` (go-to-k/cdkd#3435 review); its
+   * own doc carries why the RETURN VALUE is the wrong moment for a caller that
+   * has to survive a signal.
+   */
+  opts?: {
+    onDirCreated?: (hostPath: string) => void;
+    onDirRemoved?: (hostPath: string) => void;
+  }
 ): Promise<{
   sidecarCredentials:
     | { accessKeyId: string; secretAccessKey: string; sessionToken?: string }
@@ -836,7 +900,11 @@ export async function resolveTaskCredentialChannels(
       // STS result, which wins earlier and is served by the metadata sidecar
       // instead. The doc comment above carries why that reasoning needed a
       // SEAM to become checkable (go-to-k/cdkd#3378).
-      profileCredsFile: await writeProfileCredentialsFile(options.profile, sidecarCredentials),
+      profileCredsFile: await writeProfileCredentialsFile(
+        options.profile,
+        sidecarCredentials,
+        opts
+      ),
     };
   }
   return { sidecarCredentials, profileCredsFile: undefined };
