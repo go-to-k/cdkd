@@ -322,7 +322,7 @@
     },
     {
       "tag": "sdk-ccapi-crossref-boundary",
-      "description": "Heterogeneous SDK-Provider <-> Cloud Control API routing in ONE stack (a silent-drop top-level property flips a resource to the CC path per #614) with `Fn::GetAtt` cross-references crossing the boundary in BOTH directions — SDK-routed consumer reads a CC-routed producer attribute AND CC-routed consumer reads an SDK-routed producer attribute. Exercises the constructAttribute fallback for CC-API physical-id shapes (memory `feedback_silent_drop_forces_cc_api_routing`) and the CC delete path bypassing the SDK provider delete() (memory `feedback_cc_api_routing_bypasses_sdk_delete_logic`)."
+      "description": "Heterogeneous SDK-Provider <-> Cloud Control API routing in ONE stack with `Ref` / `Fn::GetAtt` cross-references crossing the boundary in BOTH directions — an SDK-routed consumer reads a CC-routed producer, AND a CC-routed consumer reads an SDK-routed producer — against two kinds of CC-provisioned resource: a type with no SDK provider (pure Cloud Control fallback, read-only attribute via the CC read-back) and an SDK-registered type moved onto Cloud Control with `--recreate-via-cc-api`. Neither depends on a property the SDK provider leaves unhandled. Also covers the CC delete path bypassing the SDK provider delete()."
     },
     {
       "tag": "selective-import-attribute-persistence",
@@ -2771,7 +2771,7 @@
     },
     {
       "scenario": "sdk-ccapi-crossref-boundary",
-      "description": "Heterogeneous SDK-Provider <-> Cloud Control API routing in ONE stack (a silent-drop top-level property flips a resource to the CC path per #614) with `Fn::GetAtt` cross-references crossing the boundary in BOTH directions — SDK-routed consumer reads a CC-routed producer attribute AND CC-routed consumer reads an SDK-routed producer attribute. Exercises the constructAttribute fallback for CC-API physical-id shapes (memory `feedback_silent_drop_forces_cc_api_routing`) and the CC delete path bypassing the SDK provider delete() (memory `feedback_cc_api_routing_bypasses_sdk_delete_logic`).",
+      "description": "Heterogeneous SDK-Provider <-> Cloud Control API routing in ONE stack with `Ref` / `Fn::GetAtt` cross-references crossing the boundary in BOTH directions — an SDK-routed consumer reads a CC-routed producer, AND a CC-routed consumer reads an SDK-routed producer — against two kinds of CC-provisioned resource: a type with no SDK provider (pure Cloud Control fallback, read-only attribute via the CC read-back) and an SDK-registered type moved onto Cloud Control with `--recreate-via-cc-api`. Neither depends on a property the SDK provider leaves unhandled. Also covers the CC delete path bypassing the SDK provider delete().",
       "fixtures": [
         "sdk-ccapi-crossref"
       ]

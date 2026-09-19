@@ -3363,7 +3363,8 @@
         "appsync",
         "eventbridge",
         "eventbridge-archive",
-        "eventbus-policy"
+        "eventbus-policy",
+        "sdk-ccapi-crossref"
       ],
       "signals": {
         "appsync": [
@@ -3379,6 +3380,9 @@
         "eventbus-policy": [
           "l2",
           "literal"
+        ],
+        "sdk-ccapi-crossref": [
+          "l1"
         ]
       }
     },
@@ -3937,8 +3941,7 @@
           "l2"
         ],
         "sdk-ccapi-crossref": [
-          "l1",
-          "literal"
+          "l1"
         ],
         "serverless-api": [
           "l2"
@@ -4102,7 +4105,6 @@
           "literal"
         ],
         "sdk-ccapi-crossref": [
-          "l1",
           "literal"
         ]
       }
@@ -5976,8 +5978,7 @@
           "literal"
         ],
         "sdk-ccapi-crossref": [
-          "l1",
-          "literal"
+          "l1"
         ],
         "secrets-dynamic-ref": [
           "l2"
