@@ -579,7 +579,7 @@ run_case_msg "git checkout --track=direct origin/<b> names the local branch" 2 \
 
 # --- A QUOTED BRANCH NAME ------------------------------------------------------
 #
-# `.claude/rules/hooks-class-fences.md` recorded this as an accepted bound of the
+# This is an accepted bound of the
 # old reading: the branch name came out of a COLLAPSED quoted span, so
 # `git switch "main"` compared `"main"` (quotes included) against `main` and
 # FALSE-BLOCKED, while `git checkout "feat/x"` failed `show-ref refs/heads/"feat/x"`

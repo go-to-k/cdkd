@@ -19,30 +19,184 @@ paths:
 
 # The CFn schema refresh
 
-Split out of [layout-scripts.md](layout-scripts.md) when go-to-k/cdkd#2949's
-correction — the backfill campaign briefly became a parent plus one generated
-sub-issue per resource type — took that file past its 80,000 B cap, exactly as
-go-to-k/cdkd#2717 did for [layout-ci-checks.md](layout-ci-checks.md). The
-`paths:` glob above is narrower than `scripts/**`, so this detail is now a token
-toll only on a session actually touching the refresh chain.
-
 Index of every area: [code-layout.md](code-layout.md).
 
-## Important Files
+## scripts/refresh-cfn-schemas.mjs
 
-- **scripts/refresh-cfn-schemas.mjs** - The PRODUCER of `tests/fixtures/cfn-schemas/*.json`, the offline oracle every coverage critic and the deploy-time SDK-vs-Cloud-Control routing table are derived from. Two capture SOURCES, one fixture shape.
-  - **Why freshness is a correctness property, not hygiene** (issue [#2718](https://github.com/go-to-k/cdkd/issues/2718)): `ProviderRegistry.getProviderFor` routes from `property-coverage.generated.ts`, built offline from these fixtures, with NO runtime `DescribeType`. A top-level property AWS publishes after the snapshot is in no fixture, so `findSilentDropProperties` returns nothing for it (`property-coverage.ts` treats "not in the schema" as a typo / `addPropertyOverride` escape hatch and passes it through), the resource stays on the SDK provider, and the property is **silently dropped** while the deploy reports success. Same user-visible failure as issue #614, reached through the one input #614 cannot observe. Measured 2026-09-07 against a 2026-08-13 snapshot: 9 types drifted, +9 / -5 properties, of which **3 were writable** and therefore live silent drops.
-  - **`DescribeType` mode** (the original): `node scripts/refresh-cfn-schemas.mjs [type-filter] [--only-missing]`, needs `cloudformation:DescribeType`, rewrites every type it captures. Still the ONLY route for types the public bundle does not carry (measured: `AWS::BedrockAgentCore::Browser` / `CodeInterpreter`).
-  - **`--from-zip` mode** (`vp run gen:cfn-schemas-from-zip`): reads AWS's PUBLIC `CloudformationSchema.zip` — **no AWS identity at all**, which is what made an unattended scheduled job adoptable; provisioning a CI IAM role was the prerequisite that kept the automation unbuilt, and it turned out not to be one. Measured 2,989,693 B / 1729 type schemas, and capture-equivalent to `DescribeType` (114 of the 132 comparable fixtures byte-identical through the shared extractors; the other 18 were real AWS drift, and 4 probed types matched `DescribeType` exactly).
-  - **`buildFixture` / `serializeFixture` are shared by both sources on purpose.** A second capture path formatting one field differently would rewrite every fixture the other source produced, and that phantom diff is indistinguishable from real AWS drift — the exact signal the zip mode exists to compute.
-  - **`fixtureDiffersIgnoringDate` is the change signal**, and `generatedAt` is excluded from it because the refresh stamps a date on every type it touches: measured, the first cycle rewrote 132 fixtures of which **114 differed in `generatedAt` alone** (86% noise). It compares the SERIALIZED forms so the predicate cannot disagree with the write, anchors the date on ONE side rather than deleting the key (deleting changes key order on one side only, reporting everything as drifted), and treats an absent or unparseable committed fixture as drift.
-  - **Two collapse floors, both aborting with zero writes.** `MIN_ZIP_ENTRIES` (1000 vs 1729 measured) refuses a truncated-but-parseable bundle; `MAX_MISSING_TYPE_RATIO` (10% vs the real 2-of-134 = 1.5%) refuses an entry-naming or layout change. Both guard the SAME failure: every lookup misses, every type takes the legitimate skip path, and the run reports a confident ZERO drift — "we looked at almost nothing" is indistinguishable downstream from "AWS changed nothing". A type genuinely absent is SKIPPED with its fixture left byte-identical, never blanked: an emptied `properties` would turn every provider declaration bogus and destroy silent-drop routing for that type.
-  - Consumed by the daily `.github/workflows/cfn-schema-refresh.yml`, whose PR hands the residue to a human — a removed property the evidence cannot settle, or a new nested key (`audit:nested-key-coverage:check` divergence). Both classes fired on the first measured cycle. **That hand-off is NOT signalled by a red check**: GitHub holds a bot-created PR's workflows at `action_required` on every push, and merging an earlier bot PR earns no exemption (measured on this repo's release PRs, merged many times and still held). The signal is the title's decision count and the `needs-decision` label, which the job produces by running the fixture-driven checks itself, before its PR's CI is allowed to start. **Not signalled is not unblocked, and the distinction is why issue [#3005](https://github.com/go-to-k/cdkd/issues/3005) asked for a decision-count gate and did not get one.** Since go-to-k/cdkd#2999 made `ci-ok` the required status check, a decision-carrying refresh PR is unmergeable while it is HELD — a required check that has not reported blocks the merge button — and, once approved, for FIVE of `countDecisions`'s SEVEN terms, which also red `check-build-test`.
-    - TWO CAVEATS, and they are about different things — an earlier revision of this sentence merged them and put `unreadable` among the five it is the exception to. (a) TWO of the five — `failedChecks` and `nestedKeyUnparsed` — are read from a refresh-side EXIT CODE, so an environmental failure there (an OOM, a task runner that never reached the checker) counts a decision CI never sees, because CI runs those same tasks independently. The other three cannot: `removed` is a fixture DIFF rather than a check result, and `divergences` / `pendingSdkBump` are parsed from finding LINES, which an environmental failure produces none of. Count the members before writing a number here — this sentence has been wrong three times, once by naming the wrong member and once by generalising to all five.
-    - (b) TWO terms are not covered at all. Derive the COVERED count from `CI_COVERAGE`'s `covers` union and the uncovered one from `UNCOVERED_TERMS`, both in the fence and never from a review comment — the covered count was four BEFORE `partitionSettledRemovals` and is five after, and a correction written from the pre-fix figure was wrong in the other direction for a whole round. The first is `unreadable` (the DIAGNOSIS could not read a fixture — from `HEAD`, or from the working tree via the `comparePropertySets` catch, which parses BOTH sides; only the working-tree side also reddens CI). The second is `identifierChanges`, added by issue [#3327](https://github.com/go-to-k/cdkd/issues/3327): a type whose `primaryIdentifier` VALUE changed, which is neither an addition nor a removal and so was invisible to the diagnosis until then — the 2026-09-17 refresh reported a flip as a clean cycle and silently retired a coverage row. It is uncoverable BY CONSTRUCTION rather than by omission: its one remaining consumer, `gen-enrichment-coverage`, has its matrix REGENERATED in the same run, so the committed copy matches and the drift check passes, and a check that pinned each identifier would red on every legitimate AWS change — it would be the decision itself. The two are the members of the fence's `UNCOVERED_TERMS`; `removed` did not hold either until `partitionSettledRemovals`, which now subtracts every property `bogusTolerated` settles — subtracting only what the cycle WROTE left an already-tolerated removal counted while `property-coverage` was green (`writeAutoTolerated` skips such a property outright, so it reaches neither `written` nor `escalated`). Two definitions of "settled" is what produced a decision that merged cleanly; both sides read the tolerance FILE now, and the settled half is still RENDERED, because subtracting alone made the removal invisible. The coverage that does hold is EMERGENT — the two workflows keep their own check lists — so a check added to the refresh and forgotten in `ci.yml` would re-open the hole silently; `tests/unit/scripts/schema-refresh-decision-ci-coverage.test.ts` derives every population and is what keeps it true.
-  - The refresh job does NOT write the backfill campaign's issues; `.github/workflows/backfill-umbrella-sync.yml` reconciles them on every `push` to `main` touching `src/provisioning/property-coverage.generated.ts` — the exact path filter, since `parseSilentDropByType` reads that file and nothing else. Driving it from `main` rather than from the refresh RUN is what keeps it describing a state that exists; that also took `issues: write` off the repo's only unattended `contents: write` job (issue [#2774](https://github.com/go-to-k/cdkd/issues/2774), whose measurements are in that workflow's header). ONE issue again: `scripts/sync-backfill-umbrella.ts` rewrites a GENERATED BLOCK between `<!-- backfill-types:start -->` and `<!-- backfill-types:end -->` in the umbrella's body, one `- [ ] ` row per resource type, and everything outside those two markers — the audit provenance a PR closing a slice writes — is carried through byte for byte. Its refusals FAIL the run rather than warning: each guards a write onto the campaign's only public page. Issue [#2949](https://github.com/go-to-k/cdkd/issues/2949) had made it a SET — a parent plus one GENERATED sub-issue per type, so a PR wiring one type had something to `Closes` — and the fold-back traded that back for a public open-issue count nobody can read wrong: 44 of 240 open issues were bot-filed slices of one campaign, indistinguishable from unfixed defects. A PR now writes `Refs` and the row disappears on its own. The `backfill-type` label is LEGACY: nothing generates it, and it stays on each slice the one-shot migration (`node scripts/sync-backfill-umbrella.ts --close-legacy`, run by hand) closes — that pass skips any labelled issue whose body carries no generated marker, since that is something a person filed. Issue [#2998](https://github.com/go-to-k/cdkd/issues/2998)'s lesson survives the return of a body write, and is why the block is DELIMITED rather than the body being rewritten whole: a generated region that can reach human provenance is the only write here that could destroy something no run can recompute. **The campaign is about ROUTING, not loss**: an unwired property auto-routes the whole resource through Cloud Control, which forwards the full map (issue [#614](https://github.com/go-to-k/cdkd/issues/614)), so backfilling restores the SDK fast path rather than fixing data loss — the 44 generated bodies once said the opposite.
-  - **The job settles a removal ITSELF when two structural facts hold**, and only then: the type's OWN service client declares a member of the name (`scripts/offline-property-evidence.ts`'s `typedSdkMember`, a TypeScript-AST walk of `dist-types/models` via `collectSdkInterfaces` — NOT the case-insensitive name-presence scan, whose own doc calls it "the wrong tool for deciding anything"), AND the provider wires it (`providerWiresProperty`, which counts ONLY element accesses by string literal, so a name appearing solely in a declaration array does not qualify — and a `.X` property access is deliberately excluded, since a drift read-back walking an SDK response spells it identically). A rename candidate on the type escapes the rule outright: the SDK keeps the old name either way, so both facts hold for a property whose fix is repointing the declaration. Both spellings count — `@aws-sdk/client-api-gateway` declares `stageName` and no `StageName`, while route-53 / s3 / lambda declare PascalCase (probed 2026-09-08) — because exact-case-only would escalate every camelCase-modelled service. This is the ONE place the job touches a file encoding judgement. What is narrow is the EVIDENCE, not the frequency — measured 2026-09-08, 907 of 1240 declared properties (73%) would qualify — so treat any weakening of the three tests as a weakening of the check itself. Two shapes it must keep excluding, both of which were live before the review that found them: a RESPONSE-only model (`ApiGateway::Method.MethodResponses` matches `Method`, reachable from no operation input, and the rationale asserted the value "still reaches AWS"), and a `.X` property access as wiring evidence (a drift read-back accesses the same names; `glue-provider.ts`'s `readJobCurrentState` was the sole evidence for 15 Glue Job properties). Absent wiring evidence means COULD NOT DETERMINE, never "dead weight": table-driven wiring is invisible to it, and `SQS::Queue.DelaySeconds` is delivered that way — both "wires nowhere" verdicts the tree could produce were wrong. `--write-auto-tolerated` runs as its own step BEFORE the checks so the PR arrives green; `--auto-tolerated` hands the record to the report, which lists the writes in their own section and leaves them out of the decision count (issue [#2774](https://github.com/go-to-k/cdkd/issues/2774)).
-  - **`scripts/published-sdk-typings.ts`** downloads a LAGGING client (`npm pack --ignore-scripts`, model typings only, nothing executed) so `partitionPendingSdkBump` can re-ask a `definition-member-missing` finding's own INTERFACE-scoped question at the published version. Resolved ones group into one BUMP each, still COUNTED — until it lands the value does not reach AWS. A NAME lookup is the wrong tool and is fenced: go-to-k/cdkd#2784's four names are in both clients.
-  - **The job also writes its own CHANGELOG FRAGMENT** (PR [#3173](https://github.com/go-to-k/cdkd/pull/3173)) — the only file it commits and then never rewrites. An added writable property is a delta `changelog.d/_header.md` asks an entry for. `renderChangelogFragment` (`--changelog-out`) states ONLY what the fixture diff and three parsers settle — the silent-drop classification, the ONE-WAY `cc-api` pin outside `STICKY_CC_MIGRATION_EXEMPT`, top-level create-only-ness — plus a THIRD bucket telling neither story when routing is unknown. The TABLE parsers THROW rather than returning empty, `parseStickyCcMigrationExempt` also on a PARTIAL read: an unread table reads as "nothing is exempt", the polarity that ships a false claim. `parseCcFallbackOptOuts` REPORTS an unreadable provider, filling that third bucket. Two ORDERINGS are load-bearing: rendered at `Diagnose` (the last point the fixtures still differ from their committed copies), committed after `Publish` (where the PR number first exists) — hence the `__PR_NUMBER__` / `__CYCLE__` placeholders, the date in the HEADLINE because the uniqueness fence keys on it and two cycles share one PR. A REMOVAL is recorded too (go-to-k/cdkd#3175), over the COMPLEMENT of `removed`: a key the provider DECLARES was never a drop.
-  - A refresh PR needing a decision is LABELLED `needs-decision`, titled with the count and ASSIGNED — only the assignment notifies, and the count comes from `--decision-count-out`, written as a side effect of the same `diagnose-schema-refresh.mjs` run that renders the body (a second invocation could be passed a different `--failed-checks` and mark a PR clean over a report listing several). The marking is CLEARABLE because `Regenerate` and `Diagnose` also run while a refresh PR is open, not only on drift: gated on drift alone, a settled decision kept being advertised until the next day AWS happened to move.
-  - Unit tests: `tests/unit/scripts/refresh-cfn-schemas-zip.test.ts` (the capture path, its floors, and the issue's acceptance mutation — a fixture with a real property deleted must be reported drifted and rewritten, with an unmutated byte-identity CONTROL twin so a report-everything checker cannot pass both), `tests/unit/scripts/cfn-schema-refresh-workflow.test.ts` (workflow invariants, chiefly that the open-PR guard and the branch construction share one branch prefix — a drift there lets every cycle open a competing PR) and `tests/unit/scripts/umbrella-checklist-no-deps.test.ts` (EVERY `RENDER_ONLY_FLAGS` mode SPAWNED with no `node_modules`, plus a control restoring the static import — the workflow ran `run-install: false` against a `typescript-v6` graph for its whole life, issue [#2858](https://github.com/go-to-k/cdkd/issues/2858)), `backfill-umbrella-sync-workflow.test.ts` and `sync-backfill-umbrella.test.ts` (the sync workflow's trigger exactness and two-scope permission grant, plus BOTH halves' refusals — exactly one labelled issue; and no wipe of a live checklist, no missing or duplicated marker, no write on an unchanged run — and an EXECUTED case proving the STEP reaches no `gh` write of its own, the reconciler being the one thing that writes). `tests/unit/scripts/gen-nested-key-coverage.test.ts` imports the extractors, and `tests/unit/scripts/schema-refresh-decision-ci-coverage.test.ts` owns the CROSS-workflow relation the three above cannot see (issue [#3005](https://github.com/go-to-k/cdkd/issues/3005)) — every check the refresh grades with must also run in `ci.yml`'s `check-build-test`, and every term `countDecisions` counts must either ride one of them or be recorded as knowingly uncovered. NO AWS integ (pure capture + static analysis).
+The PRODUCER of `tests/fixtures/cfn-schemas/*.json`, the offline oracle every
+coverage critic and the deploy-time SDK-vs-Cloud-Control routing table derive
+from. Two capture SOURCES, one fixture shape.
+
+- **Freshness is a correctness property, not hygiene**
+  ([#2718](https://github.com/go-to-k/cdkd/issues/2718)):
+  `ProviderRegistry.getProviderFor` routes from `property-coverage.generated.ts`,
+  built offline from these fixtures with NO runtime `DescribeType`. A top-level
+  property AWS publishes after the snapshot is in no fixture, so
+  `findSilentDropProperties` returns nothing for it (`property-coverage.ts`
+  treats "not in the schema" as a typo or an `addPropertyOverride` escape hatch),
+  the resource stays on the SDK provider, and the property is **silently
+  dropped** while the deploy reports success.
+- **`DescribeType` mode** (the original): `node scripts/refresh-cfn-schemas.mjs
+  [type-filter] [--only-missing]`, needs `cloudformation:DescribeType`, rewrites
+  every type it captures. Still the ONLY route for types the public bundle does
+  not carry.
+- **`--from-zip` mode** (`vp run gen:cfn-schemas-from-zip`): reads AWS's PUBLIC
+  `CloudformationSchema.zip` with **no AWS identity at all**, which is what made
+  an unattended scheduled job adoptable.
+- **`buildFixture` / `serializeFixture` are shared by both sources on purpose.**
+  A second capture path formatting one field differently would rewrite every
+  fixture the other produced, and that phantom diff is indistinguishable from
+  real AWS drift — the signal the zip mode exists to compute.
+- **`fixtureDiffersIgnoringDate` is the change signal**, with `generatedAt`
+  excluded because the refresh stamps a date on every type it touches. It
+  compares the SERIALIZED forms so the predicate cannot disagree with the write,
+  ANCHORS the date on one side rather than deleting the key (deleting changes key
+  order on one side only, reporting everything as drifted), and treats an absent
+  or unparseable committed fixture as drift.
+- **Two collapse floors, both aborting with zero writes.** `MIN_ZIP_ENTRIES`
+  refuses a truncated-but-parseable bundle; `MAX_MISSING_TYPE_RATIO` refuses an
+  entry-naming or layout change. Both guard the same failure: every lookup
+  misses, every type takes the legitimate skip path, and the run reports a
+  confident ZERO drift. A type genuinely absent is SKIPPED with its fixture left
+  byte-identical, **never blanked** — an emptied `properties` would turn every
+  provider declaration bogus and destroy silent-drop routing for that type.
+
+## The daily refresh workflow
+
+`.github/workflows/cfn-schema-refresh.yml` hands the residue to a human — a
+removed property the evidence cannot settle, or a new nested key.
+
+**That hand-off is NOT signalled by a red check**: GitHub holds a bot-created
+PR's workflows at `action_required` on every push, and merging an earlier bot PR
+earns no exemption. The signal is the title's decision count and the
+`needs-decision` label, produced by the job running the fixture-driven checks
+itself before its PR's CI is allowed to start. **Not signalled is not
+unblocked**: with `ci-ok` as the required status check, a decision-carrying
+refresh PR is unmergeable while HELD, and once approved for most of
+`countDecisions`'s terms, which also red `check-build-test`.
+
+Two caveats, about different things:
+
+- Some terms are read from a refresh-side EXIT CODE (`failedChecks`,
+  `nestedKeyUnparsed`), so an environmental failure there counts a decision CI
+  never sees, because CI runs those tasks independently. The others cannot do
+  that: `removed` is a fixture DIFF, and `divergences` / `pendingSdkBump` are
+  parsed from finding LINES.
+- Some terms are not covered at all. **Derive the covered set from
+  `CI_COVERAGE`'s `covers` union and the uncovered one from `UNCOVERED_TERMS`,
+  both in the fence, never from a review comment.** `unreadable` (the diagnosis
+  could not read a fixture) and `identifierChanges` (a type whose
+  `primaryIdentifier` VALUE changed — neither an addition nor a removal) are the
+  uncovered ones; the second is uncoverable BY CONSTRUCTION, since its consumer's
+  matrix is regenerated in the same run and a check pinning each identifier would
+  red on every legitimate AWS change. `removed` holds only through
+  `partitionSettledRemovals`, which subtracts every property `bogusTolerated`
+  settles — subtracting only what the cycle WROTE left an already-tolerated
+  removal counted while `property-coverage` was green. Both sides read the
+  tolerance FILE, and the settled half is still RENDERED, because subtracting
+  alone made the removal invisible. The coverage that holds is EMERGENT — the two
+  workflows keep their own check lists — so
+  `tests/unit/scripts/schema-refresh-decision-ci-coverage.test.ts` derives every
+  population and is what keeps it true.
+
+A refresh PR needing a decision is LABELLED `needs-decision`, titled with the
+count and ASSIGNED — only the assignment notifies. The count comes from
+`--decision-count-out`, written as a side effect of the SAME
+`diagnose-schema-refresh.mjs` run that renders the body (a second invocation
+could be passed a different `--failed-checks` and mark a PR clean over a report
+listing several). The marking is CLEARABLE because `Regenerate` and `Diagnose`
+also run while a refresh PR is open, not only on drift.
+
+## The backfill campaign
+
+The refresh job does NOT write the backfill campaign's issue;
+`.github/workflows/backfill-umbrella-sync.yml` reconciles it on every `push` to
+`main` touching `src/provisioning/property-coverage.generated.ts` — the exact
+path filter, since `parseSilentDropByType` reads that file and nothing else.
+Driving it from `main` rather than from the refresh RUN is what keeps it
+describing a state that exists; that also took `issues: write` off the repo's
+only unattended `contents: write` job
+([#2774](https://github.com/go-to-k/cdkd/issues/2774)).
+
+- **ONE issue.** `scripts/sync-backfill-umbrella.ts` rewrites a GENERATED BLOCK
+  between `<!-- backfill-types:start -->` and `<!-- backfill-types:end -->` in
+  the umbrella's body, one `- [ ] ` row per resource type, and everything
+  OUTSIDE those markers — the audit provenance a PR closing a slice writes — is
+  carried through byte for byte. Its refusals FAIL the run rather than warning:
+  each guards a write onto the campaign's only public page.
+- The block is DELIMITED rather than the body being rewritten whole, because a
+  generated region that can reach human provenance is the only write here that
+  could destroy something no run can recompute
+  ([#2998](https://github.com/go-to-k/cdkd/issues/2998)).
+- Issue [#2949](https://github.com/go-to-k/cdkd/issues/2949) had made it a SET —
+  a parent plus one generated sub-issue per type — and the fold-back traded that
+  for a public open-issue count nobody can read wrong: 44 of 240 open issues were
+  bot-filed slices of one campaign, indistinguishable from unfixed defects. A PR
+  now writes `Refs` and the row disappears on its own.
+- The `backfill-type` label is LEGACY: nothing generates it, and it stays on each
+  slice the one-shot migration (`node scripts/sync-backfill-umbrella.ts
+  --close-legacy`, run by hand) closes — that pass skips any labelled issue whose
+  body carries no generated marker, since that is something a person filed.
+- **The campaign is about ROUTING, not loss**: an unwired property auto-routes
+  the whole resource through Cloud Control, which forwards the full map
+  ([#614](https://github.com/go-to-k/cdkd/issues/614)), so backfilling restores
+  the SDK fast path rather than fixing data loss.
+
+## Settling a removal automatically
+
+**The job settles a removal ITSELF only when two structural facts hold**: the
+type's OWN service client declares a member of the name
+(`scripts/offline-property-evidence.ts`'s `typedSdkMember`, a TypeScript-AST walk
+of `dist-types/models` — NOT the case-insensitive name-presence scan), AND the
+provider wires it (`providerWiresProperty`, counting ONLY element accesses by
+string literal, so a name appearing solely in a declaration array does not
+qualify, and a `.X` property access is deliberately excluded because a drift
+read-back spells it identically). A rename candidate on the type escapes the rule
+outright: the SDK keeps the old name either way. Both spellings count, because
+exact-case-only would escalate every camelCase-modelled service.
+
+Two shapes it must keep excluding: a RESPONSE-only model (reachable from no
+operation input) and a `.X` property access as wiring evidence. **Absent wiring
+evidence means COULD NOT DETERMINE, never "dead weight"** — table-driven wiring
+is invisible to it. `--write-auto-tolerated` runs as its own step BEFORE the
+checks so the PR arrives green; `--auto-tolerated` hands the record to the
+report, which lists the writes in their own section and leaves them out of the
+decision count.
+
+`scripts/published-sdk-typings.ts` downloads a LAGGING client
+(`npm pack --ignore-scripts`, model typings only, nothing executed) so
+`partitionPendingSdkBump` can re-ask a `definition-member-missing` finding's own
+INTERFACE-scoped question at the published version. Resolved ones group into one
+BUMP each, still COUNTED — until it lands the value does not reach AWS. A NAME
+lookup is the wrong tool and is fenced.
+
+## The changelog fragment
+
+The job writes its own changelog fragment — the only file it commits and then
+never rewrites, because an added writable property is a delta the changelog asks
+an entry for. `renderChangelogFragment` (`--changelog-out`) states ONLY what the
+fixture diff and three parsers settle, plus a third bucket telling neither story
+when routing is unknown. The TABLE parsers THROW rather than returning empty,
+`parseStickyCcMigrationExempt` also on a PARTIAL read: an unread table reads as
+"nothing is exempt", the polarity that ships a false claim. Two ORDERINGS are
+load-bearing: rendered at `Diagnose` (the last point the fixtures still differ
+from their committed copies), committed after `Publish` (where the PR number
+first exists) — hence the `__PR_NUMBER__` / `__CYCLE__` placeholders, and the
+date in the HEADLINE because the uniqueness fence keys on it and two cycles can
+share one PR.
+
+## Unit tests
+
+`refresh-cfn-schemas-zip.test.ts` (the capture path, its floors, and a deleted
+property that must be reported drifted and rewritten, with a byte-identity
+CONTROL twin so a report-everything checker cannot pass both);
+`cfn-schema-refresh-workflow.test.ts` (workflow invariants, chiefly that the
+open-PR guard and the branch construction share one branch prefix — a drift
+there lets every cycle open a competing PR); `umbrella-checklist-no-deps.test.ts`
+(every render-only mode SPAWNED with no `node_modules`, plus a control restoring
+the static import); `backfill-umbrella-sync-workflow.test.ts` and
+`sync-backfill-umbrella.test.ts` (trigger exactness, the two-scope permission
+grant, and both halves' refusals — no wipe of a live checklist, no missing or
+duplicated marker, no write on an unchanged run); and
+`schema-refresh-decision-ci-coverage.test.ts`, which owns the CROSS-workflow
+relation the others cannot see. NO AWS integ (pure capture + static analysis).

@@ -3,131 +3,71 @@
 ## Gotchas (learned the hard way)
 
 - **Claim before editing, always** — an unclaimed lane races a parallel agent
-  onto the same cross-cutting file. **Claiming is not winning**: read it back
-  and yield to an earlier `createdAt` (§4).
-- **A pushed branch with no PR is a live lane**, and its mirror — a worktree
-  holding commits it has not pushed — is the window only the claim covers. §2
-  owns both probes; this bullet does not restate them (§3, §9).
-- **A fresh issue is someone's deferral, not free backlog** (§3-0). The author
-  field proves nothing about which session filed it; the 60-minute window is
-  the whole defence — and §4 is its other half: claim what you FILE, not only
-  what you take.
-- **The filer may already have classified the issue.** A `Session-fit: next`
-  body names the cycle it needs; take it only if this run can pay for that,
-  and say why in the claim (go-to-k/cdkd#1791 passed every §2/§3 gate, was
-  claimed, and had to be retracted — nothing but a grep stood between the run
-  and the fixture arm its body had already named).
-- **A cross-repo framing spends the deferral budget up front.** Inside a "do
-  this across the repos in one session" scope, `Session-fit: next` is off the
-  menu for anything discovered there; `.claude/rules/session-report.md` →
-  Session-fit carries the three tells and the 2026-08-20 measurement.
-- **A mirror issue may already be carried elsewhere** — resolve against the
-  file, open PRs and open issues before filing (§10-c) or claiming (§3).
-- **One lane per cross-cutting file.** §2 holds the list; this bullet does not
-  restate it (go-to-k/cdkd#2076 records why).
+  onto the same file, and **claiming is not winning**: read it back, yield to an
+  earlier `createdAt` (§4).
+- **A pushed branch with no PR is a live lane**, as is a worktree holding
+  unpushed commits — the window only the claim covers (§2 owns the probes).
+- **A fresh issue is someone's deferral, not free backlog** (§3-0); §4 is its
+  other half: claim what you FILE.
+- **The filer may already have classified the issue**: a `Session-fit: next` body
+  names the cycle it needs, so take it only if this run can pay, saying why in
+  the claim (go-to-k/cdkd#1791).
+- **A cross-repo framing spends the deferral budget up front**: inside a
+  "do this across the repos in one session" scope, `next` is off the menu.
+- **A mirror issue may already be carried elsewhere** — resolve against the file,
+  open PRs and issues before filing (§10-c) or claiming (§3).
+- **One lane per cross-cutting file** — §2 holds the list.
 - **Never merge a PR whose destroy path is unverified, and never bypass
-  `/run-integ`** — CLAUDE.md owns both rules; §8-c owns what COUNTS as a
-  bypass.
+  `/run-integ`** (§8-c owns what COUNTS as one).
 - **`vp run build` after every source edit, before any live test** (CLAUDE.md);
-  §8-i owns the unique-stack-name rule that goes with it.
-- **Stale-base phantom diff** (§7) — never "restore" the peer's lines a stale
-  `git diff main` appears to have removed; rebase instead.
-- **`bash cwd silent reset`** — a persistent Bash cwd can drift back to the
-  main tree between calls; prefix every verification command with
-  `cd <worktree> &&` and `git -C <lane tree>` every git op (the addressing
-  rule for READS, and the contradicting-answer test, are in
-  `references/launch-mode.md`). **A KILLED or REFUSED call is a named
-  reset trigger, and it lies about the filesystem too**: a timeout can return
-  the shell at the session cwd; a PreToolUse refusal aborts the WHOLE call, so
-  the `mkdir` a later `cd` depends on never ran — and a failed `cd` does NOT
-  stop the rest of its call. After any timeout or refusal, run `pwd` AND
-  re-verify what the aborted call should have created. **Its worst form is a
-  FALSE GREEN on a verification command**: a gate run from the main tree
-  verifies unmodified `main` and passes (measured: `vp run typecheck:test`
-  RC=0 twice while the lane held 20 type errors; the tell was a COUNT — 123
-  tests vs 143) — an unexpectedly clean or short result is a `pwd` check, not
-  a pass. **A BACKGROUNDED call starts from the session cwd**, not the
-  `cd` of an earlier call — make every long-running call print its own `pwd`
-  first. **The drift runs FORWARD too: a `cd` into a scratch copy persists
-  into the next call**, so a relative-path edit run through Bash (a `python`
-  or `perl` rewrite) lands on the COPY and `node --check` reports the copy's
-  syntax ok; only a later relative path failing revealed it
-  (go-to-k/cdkd#3029) — absolute paths for every EDIT, not only for
-  verification commands. **When a stray main-tree edit has already happened, both obvious
-  repairs are refused** (`git checkout -- <path>` trips
-  `dirty-path-restore-gate`; writing the file back trips
-  `main-tree-edit-gate`): re-apply the edit in the worktree with an ABSOLUTE
-  path, then `git -C <main> stash push -m <label> -- <path>`; drop the stash
-  only after confirming `stash@{0}`'s message is yours — parallel lanes stash
-  too. A blocked call runs NOTHING, preamble included — §6 has the rule.
-- **An IN-PLACE run ends with its lane branch still reading as unmerged, and
-  the obvious remedy is one this mode forbids.** A squash-merged branch stays
-  ahead of `origin/main` forever, so the tree looks like a live lane; removing
-  that worktree is forbidden here (SKILL.md "Launch mode"). Expected, not a
-  defect: confirm the PR is MERGED and say so in the wrap. The tree is only
-  clearable from inside by LEAVING the lane branch, which is exactly §9's
-  IN-PLACE arm — its recipe, its `--no-guess`, and its
-  `LAUNCH_BRANCH`-carries-no-commits check all live there, and it clears the
-  appearance without removing a tree this run does not own. Detaching clears it
-  too but leaves the outer tool displaying a detached workspace; it is the
-  fallback for a run launched detached, not the default (go-to-k/cdkd#2417).
-- **A usage-limit interruption does not have to end the run: leave a one-shot
-  checkpoint at the reset time**, scheduled when the limit is ANNOUNCED, not
-  when it bites (the 2026-09-02 run resumed itself at the reset instant from
-  an in-session one-shot cron and finished its lane — the alternative is not
-  "resume later" but "re-derive later"; go-to-k/cdkd#2417).
-- **Qualify every issue/PR reference you publish as `owner/repo#N`.** Nothing
-  refuses a bare `#N` any longer, and a bare one renders against whichever repo
-  reads it — which matters most in a comment or body that gets mirrored to a
-  sibling repo (§10-c carries the same rule for this skill's own files).
+  §8-i owns the unique-stack-name rule with it.
+- **Stale-base phantom diff** (§7) — rebase; never "restore" peer lines a stale
+  `git diff main` shows removed.
+- **A Bash cwd silently drifts back to the main tree between calls**: prefix every
+  verification command with `cd <worktree> &&` and use `git -C <lane tree>`
+  (addressing rules: `references/launch-mode.md`).
+  - **A KILLED or REFUSED call is a reset trigger that also lies about the
+    filesystem**: a refusal aborts the WHOLE call, so the `mkdir` a later `cd`
+    needs never ran — run `pwd` and re-verify. A BACKGROUNDED call likewise
+    starts from the session cwd, and the drift runs FORWARD, so use absolute
+    paths for every EDIT.
+  - **Its worst form is a FALSE GREEN**: a check run from the main tree verifies
+    unmodified `main` and passes, so an unexpectedly clean or short result (the
+    tell is the test COUNT) calls for a `pwd`, not a pass.
+  - **After a stray main-tree edit both obvious repairs are refused** (`git
+    checkout` trips `dirty-path-restore-gate`, writing the file back trips
+    `main-tree-edit-gate`): re-apply it in the worktree by ABSOLUTE path, then
+    `git -C <main> stash push -m <label> -- <path>`, dropping that stash only
+    once `stash@{0}` is yours.
+- **An IN-PLACE run ends with its lane branch still reading as unmerged**, since a
+  squash-merged branch stays ahead of `origin/main`. Removing that worktree is
+  forbidden (SKILL.md "Launch mode"): confirm the PR is MERGED and clear the tree
+  only by LEAVING the lane branch (§9's IN-PLACE arm).
+- **A usage-limit interruption need not end the run: leave a one-shot checkpoint
+  at the reset time**, scheduled when the limit is ANNOUNCED.
+- **Qualify every published issue/PR reference as `owner/repo#N`** — a bare `#N`
+  renders against whichever repo reads it (§10-c).
 - **An agent KILLED by a usage limit or a 429 keeps its context — `SendMessage`
-  it, never re-dispatch.** Measured at both grains: a REVIEWER had read the
-  whole diff before dying and finished its round in 148 s on resume instead of
-  re-reading it (08:05 JST, 2026-09-02; its sibling likewise, each needing only
-  its read-only-rules lines re-stated), and three killed LANES across
-  go-to-k/cdkd#3103 / go-to-k/cdkd#3139 (2026-09-14) came back the same way.
-  **Read the TREE, and the DIFF, before the message** — a killed lane may
-  already have committed, pushed and opened the PR, and one had its review
-  round closed against a sha its last push had superseded. **Uncommitted changes there are as likely to be
-  the round's real fix as an abandoned probe**, and the two are
-  indistinguishable without reading them: `git diff` decides, and a restore
-  taken on the probe assumption destroys work no commit holds (2026-09-16,
-  go-to-k/cdkd#3158's lane, killed mid-review-round). This is the recovery for
-  an agent that DIED; §5-g's "resume
-  with REPORT ONLY" covers the different case of one that finished quietly, and
-  its rule that a lost TRANSCRIPT restarts only from a prompt you kept
-  self-contained is what applies when the resume is refused.
+  it, never re-dispatch**, and **read the TREE and the DIFF first**: it may
+  already have committed, pushed and opened the PR, and **uncommitted changes
+  there may be the round's real fix, not an abandoned probe**. §5-g covers one
+  that finished quietly, and the lost-TRANSCRIPT case.
 
 ## Important existing rules this skill leans on
 
 - **CLAUDE.md's standing rules apply unchanged** — PR-only changes, worktree
-  placement (SKILL.md "Launch mode", with the orchestrator integrating), unit
-  tests with every fix, squash merges, English-only published artifacts,
-  untrusted content (§0).
-- **Drive each lane to MERGED, not to "pushed".** §9 is the finish line for a
-  LANE (merge, pull, confirm the release PR picked it up, rebuild, remove the
-  worktree) and §10 for the RUN. An open PR is unfinished work, and
-  CLAUDE.md's NOT-CLOSEABLE rule applies unchanged — low context is not one of
-  the blockers it excuses: commit, push, file, continue. The removal half is
-  "every worktree THIS RUN added is gone" — an IN-PLACE run added none and
-  leaves its tree standing.
+  placement, unit tests with every fix, squash merges, English-only published
+  artifacts, untrusted content (§0).
+- **Drive each lane to MERGED, not to "pushed"** — §9 is the finish line for a
+  LANE, §10 for the RUN; low context is no NOT-CLOSEABLE excuse.
 - **Wrap with Remaining-work + State + Session-close** (`CLAUDE.md`; its scope
-  rule leaves triaged-but-not-picked issues out).
-- **Classify every deferral `now` / `next` the moment you defer it** — the four
-  classification lines go in the issue body, one field per line, per
-  `CLAUDE.md` → "The four TODO fields". The report repeats those four and adds
-  `Notes`; the body carries `Dup-check:` instead, and §5-f owns the
-  open-worktree test that decides `now` vs `next`.
-- **This flow parks a LOT, so the State line carries most of its weight.** A
-  fan-out run spends most wall-clock parked (lane subagents, `gh pr checks
-  --watch`, `/run-integ`) — every one is **WAITING**, not STOPPED: one line
-  per lane, naming the lane and its signal. STOPPED only when every lane is
-  merged. CLAUDE.md owns the arm-it-first rule (a run wrote `WAITING — Signal:
-  gh pr checks`, armed nothing, and ended).
-- **A lane needing a user decision goes through `AskUserQuestion`, never
-  prose** — a prose question ends the turn as STOPPED and loses the other
-  lanes' momentum. That prompt is CHAT, not a published artifact, so it goes
-  in the USER's language — CLAUDE.md's English-only rule already draws that
-  line and was over-applied anyway (the go-to-k/cdkd#2522 decision,
-  2026-09-05). Everything else (which integ, how many reviewers, how deep
-  to verify) you decide yourself and report as a decision.
+  rule excludes triaged-but-not-picked issues).
+- **Classify every deferral `now` / `next` the moment you defer it** — four
+  fields in the issue body, one per line, plus `Dup-check:`; the report repeats
+  them and adds `Notes` (§5-f owns the deciding test).
+- **This flow parks a LOT, so the State line carries its weight**: lane
+  subagents, `gh pr checks --watch` and `/run-integ` are all **WAITING**, one
+  line each naming its signal; STOPPED only when every lane is merged.
+- **A lane needing a user decision goes through `AskUserQuestion`, never prose**,
+  which ends the turn as STOPPED. That prompt is CHAT, not a published artifact,
+  so it goes in the USER's language; everything else you decide.

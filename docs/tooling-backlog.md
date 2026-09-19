@@ -45,10 +45,27 @@ separate the clauses, is in
   layer is being SHRUNK instead, which removes the parsing problem for every
   gate that no longer exists rather than re-implementing it.
 - **Rule-file payload caps, measured-N annotations and prose-count fences are
-  a NEXT-ROUND candidate.** `tests/unit/scripts/rule-file-payload.test.ts` and
-  its siblings police the size and the citation shape of agent-instruction
-  prose. They are not touched in this round; whether that machinery survives
-  its own criterion is the question to ask next time, not now.
+  RETIRED.** A test whose subject is the wording, byte size or citation count of
+  agent-instruction prose does not clear the criterion above: nothing a user can
+  hit depends on it, and the machinery cost more to keep honest than the drift it
+  caught. What survives is `rule-file-module-citations.test.ts` (a `.ts` module a
+  rule file cites must EXIST), a single down-only byte cap on `CLAUDE.md`, and
+  everything whose subject is `src/**` or generated data. Do not reintroduce a
+  prose fence; a recurring prose defect is recorded here and, on a SECOND
+  occurrence, fixed in the prose.
+
+## Coverage the prose-fence removal gave up
+
+Recorded as first occurrences, per the rule above — each was verified clean by
+hand at the time of removal, and none is rebuilt until it bites a second time.
+
+| What is no longer checked | Was checked by | Verified clean when removed |
+| --- | --- | --- |
+| Every markdown link in `.claude/rules/**` and `.claude/skills/**` resolves | `rule-file-payload.test.ts`, `skill-file-payload.test.ts` | yes — 0 dangling |
+| No `paths:` frontmatter glob is DEAD (a rule whose glob matches nothing never loads) | `rule-file-payload.test.ts` | yes — 0 dead globs |
+| The security-surface list names only paths that exist, and the `/review-pr` copy matches `pr-security-reviewer.md`'s | `security-surface-list-sync.test.ts` | yes — in sync |
+| `/check`'s collected-count shell block behaves (rc before count, ANSI summary, `Test Files` not `Tests`, refuses another project's RUN root) | `check-skill-suite-count-block.test.ts` | block unchanged by that PR |
+| `/work-issues`'s launch-mode probe executes correctly, and no `.claude/**` site switches to `LAUNCH_BRANCH` without `--no-guess` | `work-issues-launch-mode.test.ts` | yes — probe and arms unchanged |
 
 ## Open tooling items
 

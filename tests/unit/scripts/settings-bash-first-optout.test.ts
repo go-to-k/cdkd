@@ -60,7 +60,6 @@ const SETTINGS = join(repoRoot, '.claude', 'settings.json');
 const PROJECT_DIR_PREFIX = '${CLAUDE_PROJECT_DIR:-.}';
 const OWNER_GATE_SCRIPT = '.claude/hooks/worktree-owner-gate.sh';
 const LOCAL_SETTINGS = '.claude/settings.local.json';
-const HOOKS_RULE = join(repoRoot, '.claude', 'rules', 'hooks.md');
 
 /**
  * The only value measured against a discriminating twin: at `"0"` a `claude -p`
@@ -285,7 +284,7 @@ describe('.claude/settings.json bash-first opt-out', () => {
     expect(selectsTool(lintMatcher, 'Bash')).toBe(false);
 
     // The THIRD surface -- every `paths:`-scoped rule file -- is deliberately
-    // NOT asserted here. `rule-file-payload.test.ts` already requires a
+    // NOT asserted here. The rules corpus already requires a
     // non-empty `paths:` per FILE with an empty allow-list, which reds on the
     // first stripped one; a count floor here tolerated nine (measured) while
     // reading as coverage.
@@ -334,16 +333,6 @@ describe('.claude/settings.json bash-first opt-out', () => {
       // receipt nobody could read.
       expect(PROBED_CLAUDE_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
       expect(PROBED_ON).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-      // The measurement is written down TWICE -- here and in the prose that
-      // carries the probe recipe. Bumping one without the other leaves a reader
-      // re-probing against a version nobody measured, and CI, which has no
-      // binary to compare against, would otherwise certify nothing at all.
-      expect(
-        readFileSync(HOOKS_RULE, 'utf8'),
-        `.claude/rules/hooks.md no longer names ${PROBED_CLAUDE_VERSION}; the ` +
-          'probe recipe and this receipt must move together',
-      ).toContain(PROBED_CLAUDE_VERSION);
-
       const installed = installedClaudeVersion();
       if (installed === undefined) {
         // ABSENT, not merely unreadable -- anything else throws above. There is

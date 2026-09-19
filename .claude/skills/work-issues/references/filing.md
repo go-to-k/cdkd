@@ -2,63 +2,27 @@
 
 ## 5-f. Filing what you find mid-lane
 
-A defect you trip over while implementing something else is filed from
-HERE, not at the end of the run: §5's sibling-site sweep decides what the
-finding IS (one root cause or N of them), and this section decides where it
-LANDS (one issue, a row folded into an umbrella that already covers it, or
-nothing because it is this lane's to fix). Read it whenever the sweep turns
-up something the current issue does not cover.
+§5's sweep decides what a finding IS; this, where it LANDS.
 
-**A finding about the TOOLING is not an issue at all — it is a ROW in
-`docs/tooling-backlog.md`.** Hooks, markgate gates, `.claude/rules/**`,
-`.claude/skills/**`, CI fences and the integ harness are all tooling: no user
-can hit them by running the CLI, so the issue tracker (cdkd behaviour a user
-CAN hit) is the wrong home. Write the row when you observe the weakness, and
-build nothing on that first observation — a new hook, gate, CI fence, rule
-paragraph or test-of-prose is added only on the SECOND occurrence of the same
-failure. A row graduates to an issue when someone actually starts working it.
-One accepted case that is NOT even a row: a hook failing OPEN on an exotic
-shell shape (quoting, heredocs, `$( )`, `bash -c`, `eval`, case arms,
-redirections). The hooks steer a cooperative agent; they are not a security
-boundary, and `main` is protected server-side by a GitHub ruleset. Everything
-below is about a cdkd DEFECT.
+**A finding about the TOOLING is a ROW in `docs/tooling-backlog.md`, not an
+issue** — hooks, gates, `.claude/rules/**`, `.claude/skills/**`, CI fences and
+the integ harness are unreachable from the CLI; build a fence only on a SECOND
+occurrence.
 
-**N sites of one root cause is ONE issue and ONE PR, never N issues.** Split
-into N, each site pays the full fixed cost — triage, claim, worktree, review
-round, integ run, merge, release — for the same edit N times; swept together
-that cost is paid once, the reviewer sees the whole class, and sites 2..N
-cannot sit open while site 1's fix drifts away. Two boundaries:
+**N sites of one root cause is ONE issue and ONE PR, never N issues** — split,
+each pays the full fixed cost (triage, claim, worktree, review, integ, merge)
+for the same edit. Sweep the same ROOT CAUSE, not the same AREA: does one
+sentence describe the fix at every site? A residue is `next` only on external
+input (`.claude/rules/session-report.md`'s reason (a); never (b), its files
+being loaded) — then file an umbrella naming every site, and say which this
+lane DID close.
 
-- **A sweep's residue is `next` only on external input** —
-  `.claude/rules/session-report.md`'s reason (a); its files are loaded, so
-  never (b), and a fixture it still needs is written NOW, not deferred. When
-  (a) does hold, file an umbrella naming every
-  site (§3 sorts umbrellas last), and say which sites this lane DID close, so
-  the residue is unambiguous.
-
-  **Say WHY in the criteria's terms, not the PR's.** This read "would make the
-  PR unreviewable" until 2026-09-05, so the file blessed what its own rule
-  refuses. Review size is the SIGNAL; under it must be external input the
-  residue waits on — reason (a). Else the residue is `now`.
-
-  **The unreviewable state is never reached by drifting into it**, because each
-  widening is small and real:
-  go-to-k/cdkd#2514 asked for a guard hoist at one site and shipped a 2036 LOC
-  PR, successive rounds each finding another data-destroying type the same
-  guard failed open on — all verified, none requested, and the maintainer asked
-  twice whether the run was taking too long. Two tripwires, either one: a SECOND
-  unrequested widening in a lane, or a PR TITLE needing a clause the issue does
-  not name. On a trip, STATE the call in one line — LOC so far, what the next
-  widening adds, in-PR versus filed — before taking it, and `AskUserQuestion`
-  when it would more than double the diff. Not "never fix a data-loss bug you
-  find": the second one is a DECISION made out loud, not a continuation. What
-  the fix would leave WRONG if omitted — the remedy text its own refusal
-  prints — is a FORCED parallel change, not a widening, and spends no
-  tripwire: the test is whether the artifact ships false without it
-  (go-to-k/cdkd#2565).
-- **Sweep the same ROOT CAUSE, not the same AREA.** Two unrelated bugs in one
-  provider are two issues; one wrong assumption at five call sites is one. The
-  test: a single sentence describes the fix at every site.
+**Scope creep reaches an unreviewable PR one small, real step at a time**
+(go-to-k/cdkd#2514). Tripwires: a SECOND unrequested widening, or a PR TITLE
+needing a clause the issue does not name. On a trip, STATE the call in one line
+(LOC so far, what the next adds, in-PR versus filed), and `AskUserQuestion`
+when it would more than double the diff. What the fix would leave WRONG if
+omitted is a FORCED parallel change.
 
 **The rule is about what a HUMAN files into the triaged backlog — and the one
 attempt to exempt a GENERATED set from it was reversed. Do not re-fan the
@@ -90,96 +54,46 @@ where no listing can filter it:
   It writes `Refs`, and the type's row disappears when the coverage map says it
   is done; a per-type issue is not the only way to make progress legible.
 
-**And whatever you do file, resolve it against the issues ALREADY OPEN first.**
-This looks for a sibling ISSUE, not a sibling site — the umbrella covering
-your finding was written from a DIFFERENT site, by a different lane, naming a
-different provider. §10-c runs this check rigorously for mirrored skill
-LESSONS; the mid-lane defect-filing path, where the volume comes from, ran
-none. Measured 2026-08-25: the backlog closes fast (115 open, median 0.17 d)
-but the COUNT does not converge — 13 of 115 open issues are umbrella-shaped
-and **all four of the oldest are** (go-to-k/cdkd#609 at 90 d,
-go-to-k/cdkd#1160, go-to-k/cdkd#1225, go-to-k/cdkd#1393), because no single
-lane can close an issue naming N sites. Meanwhile 94 of the 115 open issues
-carry `Session-fit: next` and `Session-fit: now` appears 3 times in the last
-400 — the deferral classifier has one outcome in practice. The unit drifted
-from one ROOT CAUSE
-to one affected SITE, and the site space is types x properties wide — so an
-umbrella either sits open for months or splits into forty issues each paying
-the full fixed cost.
+**Resolve whatever you file against the issues ALREADY OPEN** — a sibling
+ISSUE, not a sibling site.
 
 ```bash
-# Search the CONCEPT, not this instance's spelling -- the same reason the code
-# sweep above greps for a SHAPE rather than a name.
+# Search the CONCEPT, not this instance's spelling:
 gh issue list --state open --limit 200 --search '<root-cause concept>' \
   --json number,title
-# Then the body window, which the search index misses: an umbrella names its
-# sites in the body, not the title.
+# Then the body window the index misses: an umbrella names its sites in the
+# body, not the title. `(.body // "")` is load-bearing -- one body-less issue
+# makes `test` abort the whole jq program.
 gh issue list --state open --limit 200 --json number,title,body \
   --jq '.[] | select((.body // "") | test("<shared symbol / call / assumption>";"i"))
         | "\(.number)\t\(.title)"'
-# `(.body // "")`, not `.body`: an issue filed with no body makes `test` abort
-# the whole jq program with "null (null) cannot be matched", so one body-less
-# issue silently costs you the entire window.
 ```
 
-On a HIT, the finding becomes a CHECKLIST ROW in that issue rather than a new
-issue number:
+Search the CODE PATH too. On a HIT the finding is a CHECKLIST ROW, not a new
+issue:
 
 ```bash
-U=$(mktemp)   # NOT a fixed /tmp path -- parallel lanes share the scratchpad
+U=$(mktemp)   # NOT a fixed path -- lanes share /tmp
 gh issue view <hit> --json body -q .body > "$U" \
   && [ -s "$U" ] \
   && printf -- '- [ ] <site>: <one line, plus where the evidence is>\n' >> "$U" \
   && gh issue edit <hit> --body-file "$U"
 ```
 
-**The chaining and the `-s` test are load-bearing, not style.** The redirect
-truncates `$U` before `gh` runs, so an unchained recipe whose `view` fails
-(wrong number, non-repo cwd, transient error) leaves an empty file the
-`printf` fills with one row — and the `edit` then replaces the umbrella's
-WHOLE body with it, destroying every previously folded finding (the one
-outcome §10-0 says must never happen). `mktemp` for the same reason at another
-scale: parallel lanes share the scratchpad and an uncoordinated
-read-modify-write loses a row — never run two folds against the same issue
-concurrently.
+**The chaining and `-s` are load-bearing**: the redirect truncates `$U` first,
+so an unchained recipe whose `view` fails hands `edit` a one-row body REPLACING
+the umbrella's. Never fold twice at once; write `owner/repo#N`; and state a
+folded row's severity as PROSE, since the body-wide CI scan reads a `Severity:`
+key as the UMBRELLA's.
 
-**Search the CODE PATH too** — §5-b's issue-number sweep in reverse. Issue
-search matches the TITLE's vocabulary: go-to-k/cdkd#2723 duplicated
-go-to-k/cdkd#2651 with zero shared terms while a comment three lines above the
-reported line named it. Record both probes below.
-
-On a MISS — the expected outcome for a genuinely new root cause — file it, and
-record the search so the next lane can see the window was checked:
-
-```text
-Dup-check: searched open issues for <terms> -- none covers this root cause
-```
-
-**Ask the WORKTREE question HERE, not at wrap.** Mid-lane the loud question is
-"can this ride THIS PR?" (usually no); the quiet one is "is the owning lane's
-worktree still open?" (usually yes) — and while it is, `next` is weak: another
-PR from that tree costs almost nothing, deps and markers already paid.
-`.claude/rules/session-report.md` owns the criteria and wins on conflict (a
-frozen-scope reason is a SESSION-STATE clause there, and one that no longer
-counts as a reason at all; only "held by another lane's open PR" survives, as
-reason (a) with its ending event named). This step adds only the TIMING: twice a
-frozen-scope `next` was filed while the owning lane was still open
-(go-to-k/cdkd#2321 / go-to-k/cdkd#2322).
-
-**File it with its `Severity` / `Effort` values ALSO as labels** — the body
-lines stay exactly as written, and the same two values ride the command:
+On a MISS, file it:
 
 ```bash
-# Substitute `<issue-slug>` per FINDING, not per lane -- the root cause plus
-# your branch. Parallel lanes share /tmp, so a reused slug means the second
-# finding's `cat` lands on the first one's file and whichever body loses the
-# race is the one that gets filed. Nothing inspects the body before `gh` sends
-# it, so a wrong or marker-less body reaches GitHub and has to be edited back.
 cat > /tmp/wi-issue-body-<issue-slug>.md <<'BODY' &&
 <one paragraph: the root cause, and where the evidence for it is>
 
 Dup-check: searched open issues for <terms> -- none covers this root cause
-Session-fit: now (do it in this session) | next (not this session) -- <context test: which files the fix touches or must read were read this session; then a reason the WORK owns -- .claude/rules/session-report.md>
+Session-fit: now (do it in this session) | next (not this session) -- <the context test, then a reason the WORK owns: .claude/rules/session-report.md>
 Severity: high -- <what stays broken while it is undone>
 Effort: large (L) -- <which verification cycle it drags>
 Estimate: ~3 h+ -- <what eats the time>
@@ -189,75 +103,11 @@ gh issue create -t 'fix(provider): ...' \
   --label severity:high --label effort:large
 ```
 
-**The path no longer has to be LITERAL** (go-to-k/cdkd#2717). The body-reading
-PreToolUse gates that once refused a `--body-file` path holding a `$` or
-backtick — they could not open one to look for the `Dup-check:` line and failed
-closed (measured 2026-08-31: `B=$(mktemp)` + `--body-file "$B"` was rc=2 in all
-three repos) — are retired, and the restriction went with them, so `mktemp` is
-safe on the mint path too. An old transcript's rc=2 was true of a gate set that
-no longer exists — do not re-derive the rule from it.
+The `<issue-slug>` is per FINDING (lanes share `/tmp`), the `&&` stops a failed
+write from filing whatever sat at that path, and heredoc → file → `--body-file`
+in ONE QUOTED-delimiter call is the shape — the two-line form files an issue
+with NO body. CI comments on a missing `Dup-check:` and applies the matching
+`severity:*` / `effort:*` label.
 
-**The `&&` on the `cat` line is the same load-bearing chaining the FOLD recipe
-uses**, one scale down: an unchained `cat` that fails (unwritable path, full
-disk) leaves whatever sat at that literal slug path, and `gh` then files a body
-this finding never wrote — the stale-readable-file failure measured above in
-the other direction. Nothing reads the body for you any more: CI comments on a
-missing `Dup-check:` line only once the issue EXISTS, so the `&&` is the whole
-protection.
-
-**The `cat` is not filler.** The two-line form — create an empty file, then
-point `--body-file` at it — files an issue with NO body: no `Dup-check:`, no
-classification, nothing for §3 to rank, and nothing stops it. `heredoc -> file
--> --body-file` in ONE call is the shape to use for `gh issue create`, and the
-delimiter is QUOTED so backticks and `$` stay literal.
-
-Prose is invisible to `gh issue list`; the label makes §3's ranking rule 3 a
-listing-time filter, which is what let it move ABOVE the title-prefix
-heuristic (a prefix is a proxy for what `Severity` measures). It stays gated
-on BOTH candidates carrying the value; a SWEPT label satisfies that gate, but
-once the body states the line THAT is the value. Only these two get labels:
-`Session-fit` is re-decided at claim (a stale label is worse than none), and
-`Estimate` is free-form. The same applies at §4's CLAIM, where an old packed
-body is rewritten into the four-line shape — carry `--add-label` on that
-`gh issue edit`. Checked in CI (`.github/workflows/`, go-to-k/cdkd#2717) rather
-than by a PreToolUse refusal: the workflow reads the body on `issues`
-`opened` / `edited` and APPLIES the matching label, which is strictly more than
-the retired `issue-classification-label-gate.sh` could do — that one could only
-refuse. It reports instead of applying only when the body and an existing label
-CONTRADICT, since overwriting a deliberate human label is the one case where
-applying is wrong. A folded checklist row carries no classification of its own,
-so **state its severity as PROSE and never as a `Severity:` key** — "prose
-only, nothing a user runs behaves differently", not
-`Severity: low — prose only`. The scan is body-wide and LINE-based by design
-and has no notion of a checklist row, so the key form makes the row state the
-UMBRELLA's classification: on an umbrella carrying no severity label there is
-nothing to contradict, so CI APPLIES the folded row's value to the whole issue,
-and §3's ranking rule then reads it as the umbrella's own. `head -1` makes it
-worse than a tie — the FIRST such line in the body wins, so a folded row can
-outrank the real classification sitting below it. This paragraph used to say
-to write the severity into the row's text; under the retired
-`issue-classification-label-gate.sh` that spelling was merely REFUSED (observed
-2026-09-02 folding three findings onto go-to-k/cdkd#1837), and the CI applier
-that replaced it fails in the opposite, silent direction.
-
-**This is not a filing threshold, and it must never be used as one.** §10-0 is
-explicit that `filed <= closed` is not a target and an unfiled finding is
-strictly worse than a filed one. Nothing here changes WHETHER a defect gets
-written down, only WHERE. An open issue then counts one unresolved root cause
-instead of one unfixed site — root causes are bounded by the codebase, sites
-by types x properties, so that is the number that can converge.
-
-Checked in CI (go-to-k/cdkd#2717): the workflow reads a newly opened issue and
-comments when the `Dup-check:` line is missing. **This is strictly weaker than
-the refusal it replaces, and the trade is recorded rather than hidden** — the
-retired `issue-dup-check-gate.sh` stopped the issue from existing, while CI can
-only ask for the line once it does. It was accepted because a duplicate issue
-closes cleanly and leaves no residue on anyone else's artifact, which is the
-criterion go-to-k/cdkd#2717 settled on for what may block at PreToolUse. The
-threat model is unchanged and is what actually carries the rule: it is
-FORGETTING the search, not defeating a gate. Folding is not CHEAPER than
-minting (one command vs three); the gate makes minting non-free rather than
-folding cheap. Two consequences: a folded row carries no `Session-fit` /
-`Severity`, so §3's ranking cannot see it, and nothing screens a bare `#N` in
-either a created or an edited body — write `owner/repo#N` yourself so the row
-still resolves when the umbrella is read from another repo.
+**This is not a filing threshold** (§10-0: an unfiled finding is worse than a
+filed one) — only WHERE it is written down changes.

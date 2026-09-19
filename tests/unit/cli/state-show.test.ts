@@ -1202,7 +1202,7 @@ describe('cdkd state show', () => {
     // fence-like LINE OF CONTENT as the opener, and an example indented by a
     // space is a legitimate edit that an exact line lookup misses. `marked` is
     // already the repo's answer to "what does a reader actually see" — see
-    // `tests/unit/scripts/rule-file-payload.test.ts` — and its code token hands
+    // a rendered-anchor reader — and its code token hands
     // back the block's text with the fence gone and the indentation normalized.
     const page = readFileSync(resolve(import.meta.dirname, '../../../docs/cli-state.md'), 'utf-8');
     // `walkTokens`, not a filter over the top level: a code block inside a

@@ -141,7 +141,7 @@ unset _ni_probe _ni_var
 #
 # THE PAIR THAT USED TO STAND HERE WAS STALE, and stale in the direction that
 # flatters: it predated the resulting-HEAD rows, so it under-reported both the
-# damage under 3.2 and the clean 5.x total. `.claude/rules/hooks-branch-gate.md`
+# damage under 3.2 and the clean 5.x total. `.claude/rules/hooks.md`
 # already carried the corrected pair (41/25 and 66/0), so the code and the doc
 # disagreed inside one file tree, and the doc was the one telling the truth.
 # Numbers that are cheap to leave behind are exactly the ones to re-measure

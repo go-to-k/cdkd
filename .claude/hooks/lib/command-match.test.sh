@@ -1202,7 +1202,7 @@ want_match 1 "gh verb inside a spaced repo value"     'gh --repo "a pr merge b" 
 # pr-body-item-number-gate from 2 to 0.
 #
 # THE FENCE IS A FAMILY FENCE, NOT A CASE PER GATE PER SPELLING, and the choice
-# is the same one hooks-class-fences.md makes for every other class here: a
+# is the same one made for every other class here: a
 # hand-written case list is one spelling behind by construction, and the gates
 # are many while the defect is ONE position in ONE shared pattern. So:
 #
@@ -1310,7 +1310,7 @@ done < <(grep -E '^GATE_RE_GH_[A-Z_]+=' "$__ghv_lib")
 if [ "$__ghv_seen" -lt 10 ]; then
   # A floor on the POPULATION, not on the result: a grep that stops matching
   # reports zero violations over zero constants, which reads exactly like a
-  # clean tree (hooks-class-fences.md, "a population derived from the DEFECT").
+  # clean tree (a population derived from the DEFECT proves nothing).
   fail=$((fail + 1))
   fail_log="${fail_log}FAIL gh sub-flag population: only $__ghv_seen GATE_RE_GH_* constants found in $__ghv_lib -- the scan collapsed, so the violation check below is vacuous\n"
   printf 'FAIL gh sub-flag population: only %s GATE_RE_GH_* constants found\n' "$__ghv_seen"
@@ -1530,7 +1530,7 @@ want_match 0 "quoted verb after a glued between-slot flag" \
 # the walk stopped there, leaving the quoted verb behind it unreachable.
 #
 # What closed it is a RULE, not a longer flag list -- widening that list is the
-# enumeration treadmill hooks-class-fences.md says to refuse. Measured on
+# enumeration treadmill this library refuses. Measured on
 # gh 2.92.0 at the group level: `gh pr --json number "view" 3271 -R go-to-k/cdkd`
 # resolves (the unknown flag ate `number`, the QUOTED `view` was the verb) while
 # `gh pr --web "view" 3271` errors `unknown flag: --web`. So an unknown bare
@@ -1725,8 +1725,8 @@ want_match 0 "a BARE flag value is still read as the subcommand (declared, uncha
 # sides of the comparison and the guard reported `ok ... ran all 41 cases`
 # (measured, go-to-k/cdkd#3242 test review — and under bash 3.2 it only reddened
 # by ACCIDENT, on `set -u` against an empty array). A floor whose expected value
-# is computed from the pool it guards is unfalsifiable; hooks-class-fences.md
-# says so about its own floors and this block ignored it.
+# is computed from the pool it guards is unfalsifiable, and this block
+# ignored that.
 #
 # So the two axis SIZES are asserted as literals first, and the case count is a
 # literal product. Adding an axis member is meant to be a two-line edit here —

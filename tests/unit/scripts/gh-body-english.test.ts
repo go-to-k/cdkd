@@ -429,7 +429,7 @@ describe('the RENDERED report contains attacker text (marked, not string shapes)
   // assertion, and the go-to-k/cdkd#2717 review found the un-indented version
   // terminating the list so every offender became its own <ul>.
   //
-  // `marked` is already a devDependency, used by `rule-file-payload.test.ts`
+  // `marked` is already a devDependency, used by sibling suites
   // for the same reason — answer "what does a READER see" by rendering, not by
   // pattern-matching the source.
   const render = (text: string): string =>

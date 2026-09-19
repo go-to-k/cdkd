@@ -75,23 +75,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      # `fetch-depth: 0` is load-bearing, not a default anyone forgot to trim.
-      # `rule-file-payload.test.ts` projects this branch's rule-file payload onto
-      # `origin/main` to catch two lanes each green in isolation and over a cap
-      # together. At the default depth 1 that ref does not resolve, the case
-      # returned before asserting, and the projection ran on developer machines
-      # ONLY -- silently, since a skipped assertion and a passing one are the
-      # same green (issue go-to-k/cdkd#2310, measured 2026-09-05).
-      #
-      # What this buys HERE is precise, and worth stating so nobody removes it
-      # believing the projection is the point: on a `pull_request` run the
-      # checked-out merge ref already has `origin/main` as a parent, so the
-      # projection is usually a no-op. The suite fails closed when the ref is
-      # missing under `CI`, so what this line really keeps alive is the
-      # SHALLOW-CLONE DETECTOR -- remove it and the job reds instead of quietly
-      # skipping, which is the whole repair. On a `push: main` run the
-      # projection does assert something real: that `main` itself is inside
-      # every per-path cap.
+      # `fetch-depth: 0` is load-bearing, not a default anyone forgot to trim:
+      # suites that compare this branch against `origin/main` cannot resolve
+      # that ref at the default depth 1, and a case that returns before
+      # asserting is the same green as one that passed.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           fetch-depth: 0

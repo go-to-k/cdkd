@@ -2,101 +2,32 @@
 
 ## 9. Ship: merge → pull → rebuild → cleanup
 
-With subagent lanes, this stage is the PARENT's serialization point: grant one
-merge-ready lane at a time its turn — resume that lane agent (SendMessage) to
-run its named integ fixtures and merge while it holds the turn, or run
-`/run-integ` and `gh pr merge` yourself FROM THAT LANE'S WORKTREE. The
-worktree matters mechanically: the `integ-destroy` marker is computed against
-the tree the command runs from, so a merge from the main tree consults the
-WRONG store — CLAUDE.md's wrong-tree cwd race (go-to-k/cdkd#2363): false GREEN
-for a verification, false RED for a merge. It is `hash: diff` over this
-branch's delta against `origin/main`, so the flatten / rebase / force-push
-this file prescribes below can stale it — run the integ AFTER the tree is
-final (`references/verify.md` §8-b), never before. Never two
-lanes' integs or merges concurrently; everything after the merge stays with
-the parent.
+The PARENT's serialization point: grant one merge-ready lane at a time its turn
+— resume that lane agent (SendMessage) to run its named integ fixtures and merge
+while it holds the turn, or run `/run-integ` and `gh pr merge` yourself FROM
+THAT LANE'S WORKTREE. Never two lanes' integs or merges concurrently.
 
-**A `SendMessage` that answers "queued" has NOT been delivered — read the
-reply every time.** `Resuming agent ...` means the stopped agent was restarted
-to receive it; `Message queued for delivery ...` delivers only if something
-ELSE resumes the agent — and a lane that ended its turn "merge-ready" is
-stopped by definition, so the turn-grant lands in a queue nothing drains
-(go-to-k/cdkd#2417: a lane sat idle five minutes until a re-send). After any
-send answering "queued": confirm the agent actually runs, or re-send at once.
-**`Resuming agent` is no acknowledgement either** — a lane resumed on it,
-reported CI for a superseded sha and stopped WITHOUT starting the instructed
-work (go-to-k/cdkd#2697). Confirm delivery in the TREE — grep for the change
-it asked for — never in the reply.
+- The `integ-destroy` marker is read from the tree the command runs in, so a
+  merge from the main tree consults the WRONG store (go-to-k/cdkd#2363). Its
+  `hash: diff` covers this branch's delta against `origin/main`, so run the
+  integ AFTER the flatten/rebase below (`references/verify.md` §8-b).
+- **A `SendMessage` answering "queued" has NOT been delivered** — a lane stopped
+  at merge-ready drains no queue. Re-send, and confirm delivery in the TREE
+  rather than in the reply; `Resuming agent` is no acknowledgement either.
 
-**Before you watch CI, read the PR's merge state** (`/verify-pr` step 3): a PR
-at `mergeable=CONFLICTING state=DIRTY` never fires CI. In a fan-out run this is
-the likeliest PR state — peer lanes keep merging while yours sits open. Rebase,
-force-push, and CI fires within ~30s. **`--watch` does not cover the wait for
-checks to APPEAR** — with none reported it returns at once, so an `until` loop
-wrapping it hot-spins through a full tool timeout (measured 2026-09-05) and a plain `sleep` chain is refused by the harness. Poll
-`gh pr checks <N> --json state` from `Monitor` or a backgrounded loop.
-**Read the verdict from `--json`, never by splitting the human table on
-whitespace** — a matrix job's name carries a parenthesised suffix, so the naive
-split reads `(20)` / `(22)` as statuses and invents non-green checks;
-`awk -F'\t' '{print $2}' | sort | uniq -c` is the table form
-(both reproduced on go-to-k/cdkd#2644).
+### Flatten, then rebase
 
-**~30s is push-to-queue latency, not time-to-verdict**: with runner backlog,
-checks can APPEAR 10+ minutes after a push and settle minutes later — longer
-than the interval between peer merges, so a lane that runs its post-rebase
-suite first and pushes second arrives at green already CONFLICTING again (one
-PR took FOUR rebase cycles). **PUSH FIRST, then run the post-rebase suite
-while the queue drains.** For a PR that does not exist yet, pushing the branch
-drains nothing — `ci.yml` fires on `pull_request`, so the queue starts at
-`gh pr create`: finish the gates, create the PR, then do other work while CI
-runs.
-
-Two polling traps: **"no pending checks" is not "checks passed"** — a PR with
-ZERO checks satisfies it (the CONFLICTING state above), and `gh pr checks
---json state` emits `IN_PROGRESS` / `QUEUED` / `PENDING` / `SUCCESS` /
-`FAILURE` / `SKIPPED`, so a loop grepping only `PENDING` exits on the first
-poll. Require that checks EXIST, and enumerate the non-terminal states. And
-`mergeable` is computed lazily — seconds after a push it returns `UNKNOWN`;
-re-query. (`ci-green-gate` refuses a merge on "no checks reported", so a wrong
-poll costs a retry, not a bad merge.)
-
-**Does this lane write a changelog entry at all?** Only a user-visible
-behavior delta does — what the SHIPPED BINARY does — in practice `src/**`
-plus anything feeding data the runtime reads. A `scripts/**` generator whose
-output the deploy path consumes is the exception that is IN: a schema refresh
-can silently drop a property from a user's stack. An agent-tooling, test-only
-or CI lane writes NONE, and its reasoning goes to the commit message,
-`docs/design/`, or the implementing module's or test's doc comment
-instead. (Issue
-go-to-k/cdkd#2779; the full rule and the measurement behind it are in
-`changelog.d/_header.md`.)
-
-**Where the entry goes.** One file, `changelog.d/entries/<YYYY-MM-DD>-<issue>-<slug>.md`,
-containing the bullet and nothing else — no dated heading, which the assembler
-emits from your filename's date. The issue number in the path is what makes two
-lanes structurally unable to collide. `vp run gen:changelog` rebuilds
-`docs/changelog-cdkd.md` if you want to read the result; it is gitignored and
-never committed.
-
-**Whether you write one no longer changes anything in the rest of this
-section.** It used to: a lane with an entry inherited a keep-both rule, an
-entry-phrase residual and a duplicated-heading check, all of which existed
-because every lane wrote to one anchor. Issue go-to-k/cdkd#2779 removed the
-anchor and they went with it. What remains below applies to every lane.
-
-**FLATTEN BEFORE YOU REBASE — the default step, not a remedy.** The integ
-ledger `docs/_generated/integ-last-run.tsv` gains a row at the same place on
-every lane that ran an integ, so it conflicts on nearly every parallel-lane
-rebase, and a commit-by-commit rebase re-conflicts once per commit. The repo
-squash-merges, so flattening loses nothing:
+**FLATTEN BEFORE YOU REBASE — the default step, not a remedy.** The integ ledger
+`docs/_generated/integ-last-run.tsv` gains a row at the same place on every lane
+that ran one, so a commit-by-commit rebase re-conflicts once per commit; the
+repo squash-merges, so flattening loses nothing:
 
 ```bash
 git reset --soft "$(git merge-base origin/main HEAD)"   # one commit
-# never -m, never a shared name -- both below. `--show-current` is EMPTY on a
-# detached HEAD, and without `:-$$` that yields `cdkd-squash-.txt`, shared by
-# every detached lane. DERIVE, WRITE and COMMIT in ONE call: shell state dies
-# between tool calls, so a later one recomputes `$$` and reads nothing.
-MSGREF=$(git branch --show-current | tr / -); MSGREF=${MSGREF:-$$}
+# Message to a FILE named per BRANCH, never -m: inside -m "..." the shell
+# EVALUATES a backtick and drops the word while still creating the commit.
+# DERIVE, WRITE and COMMIT in ONE call -- shell state dies between tool calls.
+MSGREF=$(git branch --show-current | tr / -); MSGREF=${MSGREF:-$$}   # empty when detached
 MSGFILE="${TMPDIR:-/tmp}/cdkd-squash-${MSGREF}.txt"
 cat > "$MSGFILE" <<'EOF'
 <the squashed message>
@@ -105,170 +36,84 @@ git commit -F "$MSGFILE"
 git rebase origin/main                                   # at most one conflict
 ```
 
-**Write the squashed message to a FILE, named per BRANCH.** It is the longest
-message the lane writes, so likeliest to hold a backtick or an apostrophe, and
-inside `-m "..."` the shell EVALUATES a backtick and drops the word while still
-creating the commit (measured 2026-09-09 on this file's own retro commit:
-`` `next` `` vanished, zsh printed `command not found: next`). Nothing refuses
-either spelling for you. The
-per-branch name is the other half, and this step prescribed a FIXED path from
-go-to-k/cdkd#2878 (2026-09-09) until the next day, when a lane committing from
-a conventionally-named message file shipped the PREVIOUS lane's message — its
-own write having been discarded with the refusal that killed the
-call, caught by `git commit --amend`. §6 carries the general rule.
+- **A GENERATED file is REGENERATED, never hand-merged**: re-run the generator,
+  commit ITS output. Take upstream whole when it derives the file from the tree
+  — a fixture-tree edit alone stales `docs/cli-flag-coverage.md`.
+- **The integ ledger is the exception**: its rows record real-AWS RUNS, so
+  upstream-whole drops this lane's row. Keep both, then run
+  `vp run integ-ledger-normalize` before `git rebase --continue` and commit it.
 
-Resolve the ledger by keep-both, then normalize — its rows record real-AWS
-RUNS, so taking upstream whole drops this lane's own row. Two rows for one test
-violate its one-row-per-test invariant and CI rejects them:
-
-```bash
-# after resolving, before `git rebase --continue`
-vp run integ-ledger-normalize
-```
-
-**The changelog no longer appears here, and that is issue go-to-k/cdkd#2779
-option A rather than an omission.** Entries live one-per-file under
-`changelog.d/entries/`, so two lanes write two different files and there is
-nothing to resolve; the shipped `docs/changelog-cdkd.md` is assembled and
-gitignored, so it cannot appear in a branch diff at all. Everything this
-section used to carry for it — the `^<` residual, the keep-both rule, the
-entry-phrase count, and the duplicated-heading check — went with the anchor.
-The heading in particular is now EMITTED by the assembler from each fragment's
-filename date, so no lane writes one and two lanes cannot write the same one.
-
-**A GENERATED file in a conflict is REGENERATED, never hand-merged** — resolve
-however lets the generator run, re-run it, commit ITS output (a hand-merge
-matches neither side and the staleness guard rejects it; measured on
-go-to-k/cdkd#2441). Take upstream's side whole only when the generator DERIVES
-the file from the tree (coverage matrices, the flag matrix). The integ ledger
-is the exception — its rows record real-AWS RUNS, so upstream-whole drops this
-lane's own row: there it is keep-both, then normalize. **And know the
-generator's INPUT is wider than the artifact suggests** — a fixture-tree edit
-alone can stale `docs/cli-flag-coverage.md` + its
-`docs/_generated/cli-flag-coverage.json`; regenerate in the same commit.
-**The integ ledger `docs/_generated/integ-last-run.tsv`**: keep-both yields
-two rows for one test, which CI's normalization step rejects — run
-`vp run integ-ledger-normalize`
-after any rebase touching it **and commit the rewrite before pushing**
-(measured: its output was never committed and the PR went red; confirm with
-`git status --porcelain -- docs/_generated/`).
+### Merge
 
 ```bash
 gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
 ```
 
-**`-R` is not optional in a run that touches more than one repo.** Without it
-`gh` infers the repo from the CWD, which persists across Bash calls — a merge
-issued after an earlier `cd` into a sibling checkout targets THAT repo
-(measured: a `gh pr merge` ran against cdk-local and failed ONLY because no
-such PR existed there; its `Could not resolve to a PullRequest` reads as a
-permissions problem). Pass `-R` on EVERY `gh` call in a multi-repo run — `pr
-view`, `pr checks`, `issue comment` mis-target just as silently.
+- **Read the merge state before you watch CI**: at `mergeable=CONFLICTING` CI
+  never fires. Poll `gh pr checks <N> --json state` (`--watch` returns at once
+  when no check has APPEARED) and require that checks EXIST. **PUSH FIRST, then
+  run the post-rebase suite while CI drains.**
+- **`-R` is not optional in a run touching more than one repo**: `gh` otherwise
+  infers it from the CWD, which persists across Bash calls, and the resulting
+  `Could not resolve to a PullRequest` reads as a permissions problem.
+- **From the PR's own worktree, `--delete-branch` prints a bare `fatal: 'main'
+  is already used by worktree ...` and the merge SUCCEEDED anyway** — confirm
+  with `gh pr view <N> --json state` before reacting.
+- `git worktree remove` deletes the worktree, never the branch: finish with an
+  explicit `git branch -D <branch>` (`-d` refuses a squashed tip), MERGED first.
+- **A lane that fixes a full-suite flake merges FIRST**, and the others rebase
+  onto it. A RED check can equally be a peer's just-merged content your local
+  green never saw — fetch, rebase, re-run.
 
-**`--delete-branch` from the PR's own worktree prints a bare `fatal: 'main' is
-already used by worktree ...` and the merge SUCCEEDED anyway** — nothing in
-the output says so. Confirm with `gh pr view <N> --json state` before
-reacting; re-running the merge blocks on a gate and reads as a second failure.
-`git worktree remove` deletes the worktree, never the branch, so finish with
-an explicit `git branch -D <branch>` — `-D`, not `-d`: the repo
-squash-merges, so the branch tip is never an ancestor of `main` and `-d`
-refuses it as "not fully merged", the expected squash artifact. Confirm MERGED
-first and the `-D` is safe.
+### Pull, then rebuild the linked binary
 
-**Merge order is not arbitrary: a lane that fixes a full-suite flake goes
-FIRST**, and every other lane rebases onto it. A RED check can equally be a
-peer's just-merged content your local green never saw — fetch, rebase, re-run.
-The GREEN direction of that staleness is below.
-
-**A CUMULATIVE BUDGET is measured BEFORE THE MERGE, not when a check goes
-red** (any SUM over the tree; a byte cap). A peer growing the same file moves
-your verdict without touching your diff, and **CI cannot catch it — a run
-evaluates the merge result AS OF ITS OWN START** (go-to-k/cdkd#2705; the
-measured incident is beside the projection in `rule-file-payload.test.ts`).
-Run `git merge-tree HEAD origin/main` on a FRESHLY FETCHED ref as the last
-step before merging and report the HEADROOM; the LOCAL number is not the
-verdict. `rule-file-payload.test.ts` projects this for `.claude/rules` per
-BUDGETED PATH (go-to-k/cdkd#2310), only as fresh as your local ref; every
-other one, this skill's corpus included, is hand-measured. **When you hand a trim to another lane,
-check the target is REACHABLE from that lane's own bytes**: the floor is
-`merge-base size`, not zero — a target below it is an instruction to cut
-somebody else's entry, and `cap - merge_base_size` is the most headroom one
-lane can leave.
-
-MAIN-CHECKOUT (SKILL.md "Launch mode") — run THIS block, and not the next one:
+The global `pnpm link --global` points at this repo's `dist/cli.js`, so a build
+on updated `main` is all the linked binary needs. MAIN-CHECKOUT (SKILL.md
+"Launch mode") — run THIS block, and not the next one:
 
 ```bash
 git checkout main && git pull origin main    # bring the merges local
+vp run build
 ```
 
 IN-PLACE — run THIS block INSTEAD, never both: `main` is checked out in the main
-tree, so a `checkout main` here fails. Never leave your own tree; pull the main
-checkout through `-C`. `MAIN` is derived HERE, not borrowed — each fenced block
+tree, so `checkout main` fails here, and building THIS tree leaves the user on
+the old binary. `MAIN` is derived per block, never borrowed — each fenced block
 is its own shell:
 
 ```bash
 # The main checkout is always the FIRST row of `git worktree list`.
 MAIN=$(git worktree list --porcelain | awk 'NR==1{print substr($0,10)}')
 git -C "$MAIN" pull origin main
-```
-
-That `git pull` fails outright if the shared main tree is dirty, which it
-routinely is when another lane's write lands there (§7). It fails loudly —
-read the error, and do NOT restore the offending path: it is another session's
-uncommitted work, and `dirty-path-restore-gate` refuses it.
-
-**Release** is BATCHED (`CLAUDE.md` → "Release Flow" owns the rules: an
-ordinary merge publishes nothing, and the standing release PR is never yours to
-merge). This stage owes only the confirmation that it picked your merge up:
-
-```bash
-gh pr list --state open --search "chore(release) in:title"   # the standing release PR
-```
-
-cdkd is used from other projects via a global `pnpm link --global` pointing at
-this repo's `dist/cli.js` (see `/use-cdkd`), so **a fresh `vp run build` on
-updated `main` is all the linked binary needs**.
-
-MAIN-CHECKOUT (SKILL.md "Launch mode") — run THIS block, and not the next one:
-
-```bash
-vp run build
-```
-
-IN-PLACE — run THIS block INSTEAD, never both. It builds the MAIN checkout:
-the global link points at ITS `dist/cli.js`, so building this workspace's
-leaves the user on the old binary while every log says the fix shipped.
-Re-derive `MAIN` inside this block — borrowed, it is EMPTY in a fresh shell,
-and bash refuses `cd ""` (nothing built) while zsh accepts it (builds whatever
-tree the shell stands in); either way the linked `dist/` still holds the old
-build:
-
-```bash
-MAIN=$(git worktree list --porcelain | awk 'NR==1{print substr($0,10)}')
 ( cd "$MAIN" && vp run build )
 ```
 
-**Remove every worktree YOU created** — and only those.
+That pull fails outright if the shared main tree is dirty (§7); do not restore
+the offending path, which is another session's uncommitted work.
 
-MAIN-CHECKOUT (SKILL.md "Launch mode") — run THIS block, and not the next one:
+### Cleanup
+
+**Remove every worktree YOU created** — and only those. Identify the owner of
+one you do not recognise (`session-owner` file, uncommitted work, its branch's
+PR state, the claim thread on the issue its name carries): each is evidence of
+LIFE only, an absent `session-owner` is NO signal, and a claim younger than the
+12h TTL means the owner is presumed LIVE — leave it.
+
+MAIN-CHECKOUT — run THIS block, and not the next one:
 
 ```bash
 git worktree remove .claude/worktrees/<branch>   # --force if it refuses on artifacts
 git worktree prune
-git branch -D <branch>                           # -D, not -d (squash) - see §9 above
+git branch -D <branch>                           # -D, not -d (squash)
 git worktree list                                # every worktree THIS run added is gone
 git branch --list '<your prefix>*'               # ...and so is every branch it added
 ```
 
 IN-PLACE — run THIS block INSTEAD, never both. **An IN-PLACE run created no
-worktree, so it removes none**: it must not `git worktree remove` the tree it
-is running in. Cleanup of the TREE belongs to whoever created it — the wrap
-SAYS that instead of doing it. What the run DOES owe is the BRANCH: put back
-the one it found, delete the one it made. `<LAUNCH_BRANCH>` and `<each branch
-this run created>` are SUBSTITUTION PLACEHOLDERS — the first from the opening
-report, the second from your own record — not shell variables
-(`references/launch-mode.md`; a fresh Bash call is a fresh shell, and an empty
-`git switch ""` is not the failure you want):
+worktree, so it removes none**: it must not remove the tree it runs in. It owes
+the BRANCH — put back the one it found, delete the one it made.
+`<LAUNCH_BRANCH>` and `<each branch this run created>` are SUBSTITUTION
+PLACEHOLDERS, not shell variables (`references/launch-mode.md`):
 
 ```bash
 git show-ref --verify --quiet refs/heads/<LAUNCH_BRANCH> || echo 'gone -> use the fallback'
@@ -281,34 +126,18 @@ git branch --show-current      # must print <LAUNCH_BRANCH>
 git branch --list '<your prefix>*'             # ...and every branch this run added is gone
 ```
 
-Load-bearing details of that block:
-
-- `--no-guess`: plain `git switch <name>` DWIMs — with the branch gone locally
-  but present on `origin` it CREATES it from the remote at origin's tip and
-  reports success, on exactly the path that should fall through to the
-  fallback. `--no-guess` makes the missing branch an error.
-- The dirty-tree check is a TEST and the FIRST link of the chain, outcome
-  announced by the `|| echo` above it: `git status --porcelain` exits 0 either
-  way, so the guard must read the OUTPUT, and having read it must gate what
-  follows — a reader copies a line, not its intent. `git status` runs FIRST
-  because `git switch` carries uncommitted changes ACROSS: checking afterwards
-  reports clean only because the dirt moved with you, onto the outer tool's
-  branch.
-- **The `&&` chaining is load-bearing**: unchained, a FAILED switch still runs
-  the `-D` — git refuses to delete only the CHECKED-OUT branch, so every other
-  branch this run created (the §10-d retro branch among them) is deleted while
-  the tree stays on the lane branch. Strictly worse than not cleaning up.
-- The delete is PLURAL (§10-d takes a retro branch in this same tree). Confirm
-  each one's PR reads `MERGED` first (`gh pr view <N> --json state`) — `-D` is
-  unconditional.
-- `--quiet` + `|| echo` on the `show-ref`: names the outcome instead of
-  leaving "fatal: not a valid ref" to be inferred from a merged stream.
+Every line and the ORDER are load-bearing. `--no-guess`: plain `git switch` DWIMs,
+re-creating the branch from `origin` and reporting success on the path that
+should fall through to the fallback. The dirty check runs FIRST and is a TEST,
+because `--porcelain` exits 0 either way and `git switch` carries uncommitted
+changes ACROSS. Unchained, a FAILED switch still runs the `-D`, which git
+refuses only for the CHECKED-OUT branch. The delete is PLURAL (§10-d takes a
+retro branch here) and unconditional, so confirm each PR reads `MERGED` first.
 
 Fallback — run THIS block INSTEAD of the one above, never both. It applies ONLY
-when `LAUNCH_BRANCH` was empty at probe time (the run was launched detached) or
-the branch is now gone; never as the default. Running both leaves the tree
-DETACHED — the end state this section exists to remove. The `show-ref` line in
-the block above decides between the two arms; read its answer:
+when `LAUNCH_BRANCH` was empty at probe time (launched detached) or the branch
+is now gone; never as the default. Chaining matters here too: an unchained
+`switch --detach` after a failed `fetch` detaches at a STALE `origin/main`.
 
 ```bash
 git fetch origin \
@@ -316,78 +145,16 @@ git fetch origin \
   && git branch -D <each branch this run created>
 ```
 
-Chained end to end for the same reason, plus one of its own: an unchained
-`switch --detach` after a failed `fetch` detaches at a STALE `origin/main`. No
-`--no-guess` needed — `--detach` takes a commit-ish, so there is no branch
-name to guess at.
+Never `git pull` into `<LAUNCH_BRANCH>`, never `git merge --ff-only origin/main`
+onto it, never `git rebase <LAUNCH_BRANCH>`, and never
+`git branch -D <LAUNCH_BRANCH>`. **AS-IS is the whole rule: RESTORE, never
+ADJUST.** **This step runs LAST, not per-lane**: §10 branches in this same tree,
+so restoring here and branching again in §10-d would undo itself.
 
-**Three end states, and only one is quiet.** Staying on the lane branch leaves
-a squash-merged tip standing in the workspace, which reads as unfinished work
-to the next session. Detaching removes that but is VISIBLE-SURPRISING in the
-outer tool's UI (flagged live by the maintainer). `LAUNCH_BRANCH` restored is
-both: the workspace looks untouched, and nothing of this run is left behind
-provided that tip carries no commits of its own (checkable with
-`git rev-list --count origin/main..<LAUNCH_BRANCH>`; non-zero means the branch
-was already a lane — restore it anyway, it is still not yours to move, and say
-in the wrap that those commits are the outer tool's work).
+### Release the claims
 
-Concretely, and stated so the fence has prose to permit: never `git pull` into
-`<LAUNCH_BRANCH>`, never `git merge --ff-only origin/main` onto it, never
-`git rebase <LAUNCH_BRANCH>`, and never `git branch -D <LAUNCH_BRANCH>`. The
-branch is not yours to move, and it is not yours to remove.
-
-**AS-IS is the whole rule: RESTORE, never ADJUST.** The first draft of this
-step fast-forwarded `LAUNCH_BRANCH` to `origin/main` on the way back, so it
-would not be left "stale"; that clause is WITHDRAWN. The tree and the branch
-are the outer tool's artifacts and this run's job is to leave them exactly as
-it found them. If the branch is behind, that is the tool's business.
-
-**This step runs LAST, not per-lane.** §10 takes its retro branch in this same
-tree, so restoring here and branching again in §10-d would just undo itself:
-IN-PLACE, do the merge in §9 and come back for the restore once the retro PR
-has merged. `--delete-branch` on each merge removes the branch on BOTH sides —
-fine for a LANE branch, and the whole reason §5 refuses to put the lane on
-`LAUNCH_BRANCH`. Do not lean on its local half (see the `fatal:` note above);
-the explicit `git branch -D` stays required.
-
-The closing check is "every worktree THIS run added is gone", **never "only
-the main checkout remains"** — that phrasing points the run at a peer's live
-lane. `git worktree list` cannot say whose a worktree is, and a tip already on
-`main` is not evidence of a finished lane. Before removing one you do not
-recognise, identify its owner — the DIRECT signal first:
-
-```bash
-cat "$(git -C <worktree> rev-parse --git-dir)/session-owner"  # "<session id> <UTC claim>"
-git -C <worktree> status --porcelain                          # uncommitted work = live
-gh pr list --state all --head <its branch>                    # read the STATE column
-# The probe that works on a lane too young to have published anything else: a
-# worktree is NAMED for the issue its lane took, and §4 makes the claim comment the
-# first thing a lane that TOOK an issue writes. Read the WHOLE thread rather than
-# §4's filtered form — a lane that stood down retracts in a comment no
-# "Working on this" filter matches, so a matched claim can already be withdrawn.
-gh issue view <the number in the worktree's name> --json comments \
-  --jq '.comments[] | "\(.createdAt)\t\(.author.login)\t\(.body[0:80])"'
-# No number in the name (`chore/work-issues-retro-20260819`)? Then there is no
-# pointer — fall back to the probes above, and leave the worktree if they disagree.
-```
-
-Read every one as evidence of LIFE only — none can establish absence. An
-**absent** `session-owner` is NO signal, never "unowned" (the gate claims a
-worktree only on `Edit` / `Write` / `NotebookEdit` and fails open without a
-session id, so a lane driven entirely through Bash never writes one — measured
-on two live lanes). A **MERGED** PR is not proof of death (its owner may still
-be inside §9 or §10). The stamp is CLAIM time, not last activity. A claim
-younger than the 12h TTL means the owner is **presumed LIVE** — a live session
-and a dead one produce identical evidence (`.claude/rules/hooks.md` and the
-2026-08-10 trespass). When in doubt leave the worktree and say so in the wrap.
-(Live instance: a worktree at `main`'s exact tip — every committed-state probe
-reading it as residue — was a peer's live lane with uncommitted edits under a
-12-minute-old claim.)
-
-Finally, comment the outcome on each issue that was not auto-closed.
 **RELEASE the claim on every issue that did NOT auto-close** — `--delete-branch`
-just deleted the branch the claim names, so what is left is a lock pointing at
-nothing. Derive the population mechanically:
+deleted the branch the claim names, leaving a lock pointing at nothing:
 
 ```bash
 for n in <the issues you claimed>; do
@@ -395,23 +162,7 @@ for n in <the issues you claimed>; do
 done
 ```
 
-Every `OPEN` in that list needs a release comment — they are exactly the
-partially-closed ones (a `Closes #N` PR auto-closes; a lane that shipped part
-of an umbrella said `Refs` on purpose), i.e. the ones a future session is most
-likely to pick up. Say three things: the issue is now UNCLAIMED; what the
-merged PR actually closed; what remains WITH the reason it was left. Carry
-forward anything expensive the lane measured (a live arm, a derived
-population, a family of bugs) so the next lane inherits the evidence rather
-than the diagnosis. A claim on an auto-closed issue needs nothing.
-
-**Write it AFTER the merge, or state the PR's ACTUAL state.** This step reads
-naturally as "summarize the batch outcome", which invites a future-tense fact
-written in the past tense: on 2026-09-02 a session published a release comment
-saying its lane "merged" a PR that was still in review, and had to patch the
-comment through `gh api`. The `--json state` loop above is the guard — a claim
-release is a public statement about ownership, and a wrong one tells the next
-session the work is finished.
-
-Do NOT stop here: what the run taught you is still only in this session's
-context — go on to §10, which also decides WHERE each lesson belongs (memory
-is the weakest of the options there, not the default one).
+Every `OPEN` needs a comment saying the issue is now UNCLAIMED, what the merged
+PR closed, and what remains and why, carrying forward anything expensive the
+lane measured. **Write it AFTER the merge, or state the PR's ACTUAL state.**
+Then go on to §10 while the run's evidence still exists.

@@ -6,21 +6,122 @@ paths:
 
 # CLI Configuration Resolution
 
-- `--app` (`-a`) is optional: falls back to `CDKD_APP` env var, then `cdk.json` `"app"` field. Accepts either a shell command (`"node app.ts"`) or a path to a pre-synthesized cloud assembly directory (`cdk.out`); when a directory is given, synthesis is skipped and the manifest is read directly.
-- `--state-bucket` is optional: falls back to `CDKD_STATE_BUCKET` env var, then `cdk.json` `context.cdkd.stateBucket`. Since issue #1002 PR 2 `cdkd publish-assets` ALSO accepts `--state-bucket` / `--state-prefix` (it reads the per-region asset-storage bootstrap marker from the state bucket to pick legacy vs cdkd-assets destinations; no state writes — falls back to legacy with an info line when no bucket resolves).
-- `--use-cdk-bootstrap-assets` (deploy / diff / import / publish-assets, issue #1002 PR 2): pin legacy asset destinations (skip the cdkd asset-storage redirection + rewrite) for one invocation even when the region's bootstrap marker exists; per-app pin via `cdk.json` `context.cdkd.useCdkBootstrapAssets: true` (resolution helper `resolveUseCdkBootstrapAssets` in `src/cli/config-loader.ts` — CLI `true` wins, else the cdk.json boolean, default `false`; no `--no-` negation form). Also suppresses the legacy-mode `cdk gc` notice.
-- `--region` on `cdkd bootstrap` picks the region of the new state bucket AND of the cdkd-owned asset storage (asset bucket / container-asset ECR repo / bootstrap marker, issue #1002 — a real, non-deprecated, `--help`-visible option there); under `cdkd bootstrap --destroy` (issue #1010, `src/cli/commands/bootstrap-destroy.ts`) the same option picks which region's asset storage to tear down (asset bucket emptied+deleted → ECR repo force-deleted → marker deleted LAST; names read from the marker, never recomputed; deployed-stack reference scan refuses unless `--force`; `--include-state-bucket` additionally deletes the state bucket, refused while any stack state or other-region marker exists). On every other command (`deploy`, `destroy`, `diff`, `synth`, `list`, `state`, `force-unlock`, `publish-assets`, …) `--region` is **deprecated but still honored** (PR #63, v0.12.0): it is registered as a hidden `deprecatedRegionOption`, emits a one-shot `warnIfDeprecatedRegion` deprecation warning, and IS consumed as the highest-precedence region source — every command resolves `const region = options.region || process.env['AWS_REGION'] || 'us-east-1'`, passes it to `applyRoleArnIfSet` / the `AwsClients` constructor, and `deploy` / `destroy` / `import` / `export` / `orphan` additionally inject it into `process.env.AWS_REGION` so the CDK synth subprocess inherits it. The recommended way to pick the region is `AWS_REGION` / the AWS profile, but passing `--region` is NOT a no-op (issue #818 corrected the earlier "has no effect" warning, which contradicted the actual consumption in `deploy.ts` etc.). The state-bucket S3 client still auto-detects the bucket's region via `GetBucketLocation` independent of `--region` (PR #60, v0.10.0). `warnIfDeprecatedRegion` + `deprecatedRegionOption` live in `src/cli/options.ts`.
-- `--context` / `-c` is optional: accepts `key=value` pairs (repeatable), merged with cdk.json context (CLI takes precedence)
-- Stack names are positional arguments: `cdkd deploy MyStack` (not `--stack-name`)
-- `--all` flag targets all stacks for deploy/diff/destroy (`destroy --all` only targets stacks from the current CDK app via synthesis)
-- Wildcard support: `cdkd deploy 'My*'`
-- Stack selection accepts both forms (CDK CLI parity): the **physical** CloudFormation stack name (`MyStage-MyStack`) and the **hierarchical display path** from CDK synth (`MyStage/MyStack`). Patterns containing `/` are matched against the display path; patterns without `/` are matched against the physical name. This makes Stage-scoped wildcards like `cdkd deploy 'MyStage/*'` work as expected. For `destroy`, display-path matching requires synth to succeed (state alone only carries physical names). Implemented in `src/cli/stack-matcher.ts`.
-- Single stack auto-detected (no stack name needed)
-- `cdkd list` (alias `ls`) — CDK CLI parity. Default output: each stack's CDK display id on its own line, ordered by dependency — `<displayPath> (<physicalStackName>)` when the two differ (Stage-scoped stacks), else just the display path. `--long` / `-l` emits structured `{id, name, environment, [dependencies]}` records (YAML, or JSON with `--json`); `--show-dependencies` / `-d` emits `{id, dependencies}` pairs (id uses the same parens form). Positional patterns filter by physical name or display path with the same routing rules as deploy/diff/destroy. No state bucket / AWS credentials needed beyond what synthesis itself requires. **Every mode's stdout is a PAYLOAD**, so `listCommand` calls `reserveStdoutForPayload()` unconditionally at entry and all logger prose goes to stderr (issue [#2410](https://github.com/go-to-k/cdkd/issues/2410)) -- `--json` picks the payload's ENCODING, not whether stdout is one. The same holds for `cdkd synth` (the template), `cdkd state list` (issue [#2435](https://github.com/go-to-k/cdkd/issues/2435) -- its default mode emits one `Stack (region)` reference per line, the same record-set shape; the discriminator is a line-oriented RECORD SET vs a formatted human VIEW, which is why `state resources` / `state show` / `state info` keep their `--json` gate while `state list --long` / `--tree` are formatted views swept along by a reservation taken before the mode is known), `cdkd local invoke` and `cdkd local invoke-agentcore`; `cdkd deploy` and the long-running `local` servers (`start-api` / `run-task` / `start-service` / `start-agentcore` / `start-alb` / `start-cloudfront`) deliberately keep their human stdout. On the two `local invoke*` commands the reservation covers CDKD's logger only -- `streamLogs`' container pipe (go-to-k/cdkd#2419) and cdk-local's SEPARATE logger (go-to-k/cdkd#2429) still reach stdout, so their payload is the LAST stdout line, not the whole stream. Foreground `docker pull` was a third and is CLOSED: `spawnForeground` redirects the child's fd 1 to fd 2 while a reservation is held, which mattered because `ecr-puller.ts` runs it unconditionally, i.e. with no flag at all. Contract + caveats in `docs/cli-reference.md`'s "Output streams: when stdout is a payload".
-- Concurrency options: `--concurrency` (resource ops, default 10), `--stack-concurrency` (stacks, default 4), `--asset-publish-concurrency` (S3+ECR, default 8), `--image-build-concurrency` (Docker builds, default 4)
-- Per-resource timeout options (deploy + destroy + state destroy): `--resource-warn-after <duration_or_type=duration>` (default `5m`) and `--resource-timeout <duration_or_type=duration>` (default `30m`). Both flags are **repeatable** and accept either form per invocation: a bare `<duration>` (`30m`) sets the global default; `<TYPE>=<duration>` (`AWS::CloudFront::Distribution=1h`) adds a per-resource-type override. At each per-resource call site, resolution is `perTypeMs[resourceType] ?? max(provider.getMinResourceTimeoutMs?.(), slowCcOperationTimeoutMs(resourceType, operation), globalMs) ?? compileTimeDefault` — per-type CLI override always wins; otherwise the deadline is lifted against the global default (for that resource type only) by whichever is larger of the provider's self-reported minimum (Custom Resource returns its 1h polling cap) and the known-slow-type floor (`src/provisioning/slow-cc-operation-timeouts.ts` — OpenSearch / Elasticsearch domains, Redshift / ElastiCache / RDS clusters at 60 min; the SAME floor also lifts the `CloudControlProvider`'s internal poll cap so a Cloud-Control-routed slow DELETE is not aborted mid-delete). Wraps each individual provider call (CREATE / UPDATE / DELETE in `provisionResource()` / `runDestroyForStack`'s per-resource delete loop) in a `Promise.race`-based deadline. The warn timer mutates the live renderer's task label in place (`[taking longer than expected, Nm+]`) and emits a `logger.warn` line via `printAbove`; the hard timer throws `ResourceTimeoutError` which is caught and wrapped as `ProvisioningError` at the same site as any other provider failure, so the existing rollback / state-preservation path runs unchanged. The 30m global default is intentional: most resources never need more, and long-running providers self-report their needed timeout — a Custom-Resource-heavy stack works out of the box without `--resource-timeout 1h` because the CR provider's `getMinResourceTimeoutMs()` reports its 1h polling cap, and a per-type override (`--resource-timeout AWS::CloudFormation::CustomResource=5m`) is the explicit escape hatch when a user wants to abort CR earlier. Durations accept `<n>s`/`<n>m`/`<n>h`; zero, negative, missing-unit, unknown-unit, malformed `TYPE` (must look like `AWS::Service::Resource`), and `warn >= timeout` (both globally and per-type) are all rejected at parse time. Helper at `src/deployment/resource-deadline.ts`; CLI parser at `src/cli/options.ts` (`parseResourceTimeoutToken` builds a `ResourceTimeoutOption = { globalMs?, perTypeMs }`); resolution helper `effectiveResourceTimeoutMs(resourceType, opt, fallbackMs)`. The cancellation is `Promise.race`-style — the underlying provider call keeps running for some time after the timer fires; threading `AbortController` through every provider is deferred.
-- `-y` / `--yes` is a global flag (CDK CLI parity) that auto-confirms interactive prompts (e.g. `destroy`). `cdkd destroy` additionally accepts `-f` / `--force` — a destroy-specific flag with the same effect as `-y` in this context (matching CDK CLI, where `--force` is per-subcommand and overlaps with the global `--yes` only in the destroy confirmation path)
-- **Every MUTATING confirmation prompt REFUSES a non-interactive stdin** rather than hanging on a `question` an EOF stdin can never settle (issue [#2275](https://github.com/go-to-k/cdkd/issues/2275), the class issue #2259 fixed for `cdkd destroy` alone). Ten sites — `rollback`, `state orphan`, `state refresh-observed`, `orphan`, `import`, `export`, `drift --accept` / `--revert`, the CFn stack retirement reached from `import --migrate-from-cloudformation`, `state migrate`, and `events prune` (folded later, by issue [#2454](https://github.com/go-to-k/cdkd/issues/2454)) — route through ONE helper, `confirmOrRefuse` in [src/cli/commands/confirm-prompt.ts](../../src/cli/commands/confirm-prompt.ts), which throws `CdkdError` with the code `NON_INTERACTIVE_CONFIRM` (exit 1) BEFORE `readline.createInterface`. The guard's position is correct for free because every call site sits INSIDE its command's `--yes` / `--force` short-circuit, so a flagged run never consults stdin; each site supplies its own refusal message (naming that command's flag) and its own prompt suffix (`(y/N): ` on `rollback` / `state orphan`, ` [y/N] ` elsewhere). `promptYesNo` in the same module is the deliberate default-YES, unguarded carve-out — `deploy.ts` short-circuits on a non-TTY before reaching it. `destroy-runner.ts` and `state.ts`'s `state destroy --all` prompt keep their own inline copies of the guard (a default-YES/default-NO pair and an abort `signal` respectively, plus `destroy-runner.ts` sitting in the `integ-destroy` gate scope). `tests/unit/cli/readline-prompt-population.test.ts` fences the POPULATION: every `readline.createInterface` in `src/` must be listed there with a reason, so a tenth `readline.createInterface` copy cannot be written unguarded (a different population from the ten `confirmOrRefuse` sites above — that fence counts interface CONSTRUCTIONS, of which there are nine).
-- `--allow-unsupported-types <types>` (deploy + destroy) is the escape hatch for the pre-flight unsupported-type rejection. cdkd rejects Tier 3 (`ProvisioningType: NON_PROVISIONABLE`) types before any resource is touched — the Tier 3 set is generated from the provider-coverage audit into `src/provisioning/unsupported-types.generated.ts` (`vp run gen:unsupported-types`; CI fails if stale) and consulted by `CloudControlProvider.isSupportedResourceType`. The flag is comma-separated and repeatable; named types are added to `ProviderRegistry.allowedUnsupportedTypes` and routed through Cloud Control optimistically (likely still fails for a genuinely NON_PROVISIONABLE type — the hatch is for a cached-Tier-3 type AWS has since made provisionable). Per-type (not blanket) so the user explicitly names each type. The pre-flight `validateResourceTypes` error names each unsupported type with a reason + 1-click `unsupportedTypeIssueUrl(type)` link + the exact `--allow-unsupported-types` re-run command. Deploy passes the list to the registry before `validateResourceTypes`; destroy threads it through `DestroyRunnerContext.allowUnsupportedTypes` so a stack deployed with the flag is also destroyable (incl. the region-scoped registry the runner spins up for a cross-region stack).
-- `--allow-unsupported-properties <entries>` (deploy only) is the property-level analogue of `--allow-unsupported-types`. cdkd's per-Tier-1-type property-coverage map (generated by `vp run gen:property-coverage` from the CFn schema fixtures + each SDK provider's `handledProperties` / `unhandledByDesign` declarations into `src/provisioning/property-coverage.generated.ts`; CI fails if stale) feeds `ProviderRegistry.validateResourceProperties`, which since issue [#614](https://github.com/go-to-k/cdkd/issues/614) REPORTS rather than rejects: a silent-drop property auto-routes that resource through Cloud Control, which forwards the full map. The flag takes comma-separated `<ResourceType>:<PropertyName>` tokens (repeatable); each opts back INTO the drop, keeping the resource on the SDK route — and since issue [#2750](https://github.com/go-to-k/cdkd/issues/2750) the property is not written to the STATE record either, so removing the flag lets the auto-route deliver it (except a create-only one). Per type+property so each drop is acknowledged. The one remaining throw is the sub-case Cloud Control cannot serve. Deploy-only: `destroy` uses per-resource physical IDs and ignores template properties. The check runs AFTER `validateResourceTypes` so type-level errors are reported first; for a Tier 2 / Custom / unknown type the property check is a no-op (`findSilentDropProperties` returns `[]` for any non-Tier-1 type — CC forwards the full property map to AWS, so there is no write-side silent drop at cdkd). Properties NOT in the CFn schema (likely `addPropertyOverride` escape hatches or typos) pass through silently; read-only properties (AWS-managed Arns / Ids) also pass through silently.
-- Implemented in `src/cli/config-loader.ts`
+Implemented in `src/cli/config-loader.ts`; option parsing in
+`src/cli/options.ts`.
+
+## Option resolution
+
+- **`--app` / `-a`** — optional: `CDKD_APP`, then `cdk.json`'s `"app"`. Accepts a
+  shell command or a path to a pre-synthesized assembly directory; given a
+  directory, synthesis is skipped and the manifest is read directly.
+- **`--state-bucket`** — optional: `CDKD_STATE_BUCKET`, then `cdk.json`
+  `context.cdkd.stateBucket`. `cdkd publish-assets` accepts it too (it reads the
+  per-region asset-storage bootstrap marker to pick legacy vs cdkd-assets
+  destinations; no state writes).
+- **`--use-cdk-bootstrap-assets`** (deploy / diff / import / publish-assets) —
+  pins legacy asset destinations for one invocation even when the region's
+  bootstrap marker exists; per-app pin via `cdk.json`
+  `context.cdkd.useCdkBootstrapAssets`. CLI `true` wins, then the cdk.json
+  boolean, default `false`; there is no `--no-` negation form.
+- **`--region`** — on `cdkd bootstrap` it picks the region of the new state
+  bucket AND of the cdkd-owned asset storage, and under `bootstrap --destroy`
+  which region's asset storage to tear down. On every other command it is
+  DEPRECATED but still honored: a hidden `deprecatedRegionOption` that warns
+  once and IS the highest-precedence region source
+  (`options.region || AWS_REGION || 'us-east-1'`), injected into
+  `process.env.AWS_REGION` by deploy / destroy / import / export / orphan so the
+  synth subprocess inherits it. **It is NOT a no-op** — do not "clean up" a
+  fixture's `--region`. The state-bucket S3 client still auto-detects the
+  bucket's region via `GetBucketLocation`, independent of the flag.
+- **`--context` / `-c`** — repeatable `key=value`, merged over cdk.json context.
+- **`-y` / `--yes`** is global; `cdkd destroy` also takes `-f` / `--force` with
+  the same effect there.
+
+## Stack selection
+
+Stack names are POSITIONAL (`cdkd deploy MyStack`), a single stack is
+auto-detected, `--all` targets all stacks (for `destroy`, only those the current
+app synthesizes), and wildcards work (`cdkd deploy 'My*'`). Both forms are
+accepted, CDK-CLI parity: a pattern containing `/` matches the hierarchical
+DISPLAY PATH, one without matches the PHYSICAL name — so `'MyStage/*'` works.
+For `destroy`, display-path matching needs synth to succeed, because state alone
+carries physical names. Implemented in `src/cli/stack-matcher.ts`.
+
+## stdout is a PAYLOAD on some commands
+
+`cdkd list`, `cdkd synth`, `cdkd state list`, `cdkd local invoke` and
+`local invoke-agentcore` call `reserveStdoutForPayload()` unconditionally at
+entry and send all logger prose to stderr — **`--json` picks the payload's
+ENCODING, not whether stdout is one**. The discriminator is a line-oriented
+RECORD SET versus a formatted human VIEW: `state resources` / `state show` /
+`state info` keep their `--json` gate, while `state list --long` / `--tree` are
+views swept along by a reservation taken before the mode is known. `cdkd deploy`
+and the long-running `local start-*` servers deliberately keep human stdout. On
+the two `local invoke*` commands the reservation covers cdkd's logger only —
+`streamLogs`' container pipe and cdk-local's separate logger still reach stdout,
+so their payload is the LAST stdout line, not the whole stream. Contract in
+`docs/cli-reference.md`, "Output streams: when stdout is a payload".
+
+## Concurrency and per-resource deadlines
+
+- `--concurrency` (resource ops, 10), `--stack-concurrency` (4),
+  `--asset-publish-concurrency` (8), `--image-build-concurrency` (4).
+- `--resource-warn-after` (default `5m`) and `--resource-timeout` (default
+  `30m`) on deploy / destroy / state destroy. Both are REPEATABLE and take
+  either form: a bare `<duration>` sets the global default, `<TYPE>=<duration>`
+  adds a per-type override. Resolution per call:
+  `perTypeMs[resourceType] ?? max(provider.getMinResourceTimeoutMs?.(), slowCcOperationTimeoutMs(type, op), globalMs) ?? compileTimeDefault`
+  — a per-type CLI override always wins; otherwise the deadline is lifted for
+  that type by whichever is larger of the provider's self-reported minimum (the
+  Custom Resource provider reports its 1h polling cap) and the known-slow-type
+  floor in `src/provisioning/slow-cc-operation-timeouts.ts`, which ALSO lifts
+  `CloudControlProvider`'s internal poll cap so a CC-routed slow DELETE is not
+  aborted mid-delete.
+  The warn timer mutates the live renderer's task label in place; the hard timer
+  throws `ResourceTimeoutError`, wrapped as `ProvisioningError` at the same site
+  as any other provider failure, so rollback and state preservation run
+  unchanged. Rejected at parse time: zero, negative, missing or unknown unit, a
+  malformed `TYPE`, and `warn >= timeout` (globally and per type). Cancellation
+  is `Promise.race`-style — the provider call keeps running after the timer
+  fires. Helper `src/deployment/resource-deadline.ts`.
+
+## Confirmation prompts
+
+**Every MUTATING confirmation prompt REFUSES a non-interactive stdin** rather
+than hanging on a question an EOF stdin can never settle
+([#2275](https://github.com/go-to-k/cdkd/issues/2275)). The sites route through
+one helper, `confirmOrRefuse` in
+[src/cli/commands/confirm-prompt.ts](../../src/cli/commands/confirm-prompt.ts),
+which throws `CdkdError` with code `NON_INTERACTIVE_CONFIRM` (exit 1) BEFORE
+`readline.createInterface`. Each call site sits INSIDE its command's `--yes` /
+`--force` short-circuit, so a flagged run never consults stdin, and supplies its
+own refusal message naming that command's flag. `promptYesNo` in the same module
+is the deliberate default-YES carve-out (`deploy.ts` short-circuits on a non-TTY
+before reaching it); `destroy-runner.ts` and `state destroy --all` keep their own
+inline guards. `tests/unit/cli/readline-prompt-population.test.ts` fences the
+POPULATION: every `readline.createInterface` in `src/` must be listed with a
+reason, so a new unguarded copy cannot be written.
+
+## The two unsupported-* escape hatches
+
+- **`--allow-unsupported-types <types>`** (deploy + destroy) — cdkd rejects Tier
+  3 (`ProvisioningType: NON_PROVISIONABLE`) types in a pre-flight, from the
+  generated `src/provisioning/unsupported-types.generated.ts`. The flag is
+  comma-separated and repeatable, PER TYPE so each is named explicitly; listed
+  types join `ProviderRegistry.allowedUnsupportedTypes` and are routed through
+  Cloud Control optimistically. It exists for a cached-Tier-3 type AWS has since
+  made provisionable. Destroy threads it through
+  `DestroyRunnerContext.allowUnsupportedTypes`, so a stack deployed with the flag
+  stays destroyable.
+- **`--allow-unsupported-properties <entries>`** (deploy only) — the
+  property-level analogue over the generated
+  `src/provisioning/property-coverage.generated.ts`. Since
+  [#614](https://github.com/go-to-k/cdkd/issues/614) a silent-drop property
+  REPORTS rather than rejects and auto-routes that resource through Cloud
+  Control; each `<ResourceType>:<PropertyName>` token opts back INTO the drop,
+  keeping the resource on the SDK route — and the property is then not written to
+  the STATE record either, so removing the flag lets the auto-route deliver it
+  (except a create-only one). The check runs AFTER `validateResourceTypes`, and
+  is a no-op for a Tier 2 / Custom / unknown type. Properties absent from the CFn
+  schema (`addPropertyOverride` escape hatches, typos) and read-only properties
+  pass through silently.

@@ -62,7 +62,7 @@
 #            the PR diff first and returns before verifying anything; a fence
 #            that never reaches the call would report green over nothing.
 #   fence 4  the markgate rc-2 branch sits at an EARLIER line than the alias
-#            refusal. Static by necessity -- see gate-sibling-repos.md.
+#            refusal. Static by necessity -- see .claude/rules/hooks.md.
 #
 # The matcher accepts `status` as well as `verify`. That call IS live in
 # production (a stale marker reaches it) and a future probe may drive a stale

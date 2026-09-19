@@ -6,12 +6,8 @@ paths:
 
 # Malformed state containers (`src/state/malformed-resources-bag.ts`)
 
-Split out of [layout-state-types.md](layout-state-types.md) under issue
-[#3192](https://github.com/go-to-k/cdkd/issues/3192), whose detail pushed
-`src/types/state.ts` over its `rule-file-payload` budget. That file's entry
-keeps a one-line pointer here.
-
-Index of every area: [code-layout.md](code-layout.md).
+Index of every area: [code-layout.md](code-layout.md). Each function's own JSDoc
+is the authority for WHY; what follows is what a later edit must not undo.
 
 ## What the module owns
 
@@ -19,176 +15,136 @@ Every guard over a state container a hand edit or a truncation can leave
 unreadable — `parseStateBody` validates the root object and the schema version
 and nothing inside, so a consumer reaches the bag as an unchecked cast.
 
-Two per-container triples, plus every message text:
-
 | Container | Predicate | Write-capable | Read-only |
 | --- | --- | --- | --- |
-| `resources` (issues [#3018](https://github.com/go-to-k/cdkd/issues/3018), [#3161](https://github.com/go-to-k/cdkd/issues/3161)) | `hasReadableResources` | `refuseMalformedState` +2 | `repairMalformedResourcesForReadOnly` |
-| `outputs` (issues [#3189](https://github.com/go-to-k/cdkd/issues/3189), [#3192](https://github.com/go-to-k/cdkd/issues/3192), [#3207](https://github.com/go-to-k/cdkd/issues/3207)) | `hasReadableOutputs` | `refuseMalformedOutputs` + two siblings | `repairMalformedOutputsForReadOnly` |
+| `resources` | `hasReadableResources` | `refuseMalformedState` +2 | `repairMalformedResourcesForReadOnly` |
+| `outputs` | `hasReadableOutputs` | `refuseMalformedOutputs` + two siblings | `repairMalformedOutputsForReadOnly` |
 
-**The `outputs` container has THREE refusal entry points, one predicate.**
-Issue #3207 added `refuseMalformedOutputsForDestroy` and
-`refuseMalformedNestedChildOutputs` beside `refuseMalformedOutputs`, and the
-split is about the MESSAGE, never the verdict: all three delegate to
-`hasReadableOutputs`, so no two can disagree about whether a record is damaged.
-A destroy CLEARS the bag rather than rebuilding it, and a nested child's damage
-is written into the PARENT's record — the shared sentence would state a
-mechanism that does not happen at either site. Enumerate them with
-`grep -n "^export function refuseMalformed.*Outputs" src/state/malformed-resources-bag.ts`;
-`tests/unit/state/malformed-resources-bag.test.ts` derives the same list and
-fails when this one goes stale.
+**Each container has SEVERAL refusal entry points and ONE predicate.** The split
+is about the MESSAGE, never the verdict — all of them delegate to the predicate,
+so no two can disagree about whether a record is damaged. A destroy CLEARS the
+outputs bag rather than rebuilding it, and a nested child's damage is written
+into the PARENT's record, so a shared sentence would state a mechanism that does
+not happen at either site. Enumerate them with
+`grep -n "^export function refuseMalformed" src/state/malformed-resources-bag.ts`;
+`tests/unit/state/malformed-resources-bag.test.ts` derives the same list.
 
-## One refusal in this module is NOT about a container
-
-`refuseDivergentRecordRegionForDestroy` / `divergentRecordRegionRefusalMessage`
-(issue [#3328](https://github.com/go-to-k/cdkd/issues/3328)) refuse a DESTROY
-over a record whose body `region` disagreed with the key it was read from while
-it still lists resources. Same family — a record cdkd cannot trust, refused at
-the destroy, above the count — but the subject is a FIELD, not a container, so
-it is outside the table above and outside `hasReadable*`.
-
-It lives here rather than in a module of its own because every message in this
-one composes `safeIdentifier`, whose privacy is a recorded decision
-(go-to-k/cdkd#3206 considered exporting it and declined) — a new module would
-have had to spell that sanitize + cap + `UNRENDERABLE` triple a second time,
-which is the drift this corpus fences everywhere else. The one piece it does
-share outward is `describeRegionValueKind`, homed in `src/types/state.ts` for
-`isReadableBag`'s reason: `S3StateBackend` produces the divergence and this
-module renders it, and modules importing the latter `vi.mock` the former
-wholesale.
-
-**The trigger is the CONJUNCTION and a later edit must not widen it**:
-divergent AND resource-bearing. A resource-less record is deliberately NOT
-refused — it is the measured repro on that issue and the `cdkd state destroy`
-recovery path the read-side decision protects, and refusing it would strand
-exactly the record the recovery commands exist to remove. It fails CLOSED on a
-bag it cannot COUNT (unreachable on the destroy path, where the `resources`
-guard refuses first — but the function is exported, and a known divergence plus
-an unknowable count must not resolve to "proceed").
-
-**It carries the EXACT-rendering gate, for the same reason
-`malformedDestroyResourcesRefusalMessage` does** — it ends on a DELETING
-command, and `safeIdentifier` TRIMS, so a record keyed `'prod-api '` opened
-byte-identically to a healthy sibling until round 2 of that issue added the
-withhold arm. A message in this module that names a target AND offers a
-destructive remedy needs both halves: the template, and the gate on the clause
-above it.
-
-Two sets live with their READERS: `resources`' gate-scoped pair (#3161) in
-[state-malformed-resources-gated.md](state-malformed-resources-gated.md); the
-ENTRY-level `properties` set (#3191, #3318) in
+Two sets live with their READERS: the `resources` gate-scoped pair in
+[state-malformed-resources-gated.md](state-malformed-resources-gated.md), the
+entry-level `properties` set in
 [state-malformed-properties.md](state-malformed-properties.md).
 
-Each function's own JSDoc is the authority for WHY; what follows is what a
-later edit must not undo.
+## One refusal here is NOT about a container
+
+`refuseDivergentRecordRegionForDestroy` refuses a DESTROY over a record whose
+body `region` disagreed with the key it was read from while it still lists
+resources — same family, but the subject is a FIELD, so it is outside the table
+and outside `hasReadable*`. It lives in this module because every message here
+composes `safeIdentifier`, whose privacy is a recorded decision; a separate
+module would have to spell the sanitize + cap + `UNRENDERABLE` triple again.
+
+- **The trigger is the CONJUNCTION and a later edit must not widen it**:
+  divergent AND resource-bearing. A resource-LESS record is deliberately not
+  refused — it is the `cdkd state destroy` recovery path, and refusing it would
+  strand exactly the record the recovery commands exist to remove.
+- It fails CLOSED on a bag it cannot COUNT: a known divergence plus an unknowable
+  count must not resolve to "proceed".
+- It carries the EXACT-rendering gate, because it ends on a DELETING command and
+  `safeIdentifier` TRIMS: a record keyed `'prod-api '` otherwise opens
+  byte-identically to a healthy sibling. **Any message here that names a target
+  AND offers a destructive remedy needs both halves: the template, and the gate
+  on the clause above it.**
 
 ## `isReadableBag` is defined in `src/types/state.ts`, not here
 
-It is only RE-EXPORTED from this module, so no importer moved. It came down
-when `importableOutputKeys` needed it: `src/types/**` imports nothing and is
-imported by everything, so the reverse edge would invert the layering AND pull
-this module's `error-handler` / `display-safe` / `lock-contention-message`
-chain into the one module the whole codebase depends on. Same move, same
-reason, as `DEFAULT_STATE_PREFIX` in `src/state/state-prefix.ts`.
-
-Do not spell the plain-object test a second time at any call site. Enumerate
-the consumers with `grep -rn "isReadableBag" src/` — four successive
-enumerations written by reasoning came out incomplete.
+It is only RE-EXPORTED, so no importer moved. It came down when
+`importableOutputKeys` needed it: `src/types/**` imports nothing and is imported
+by everything, so the reverse edge would invert the layering and pull this
+module's `error-handler` / `display-safe` / `lock-contention-message` chain into
+the one module the whole codebase depends on. Do not spell the plain-object test
+a second time at a call site; enumerate consumers with
+`grep -rn "isReadableBag" src/`.
 
 ## The two containers are separate calls, deliberately
 
-A record can be malformed in either alone, so a command that reads both makes
-two calls and the message names the one that is actually broken. Collapsing
-them into one condition is the obvious simplification and is wrong in both
-directions: a `resources` refusal printed over an intact resource map tells
-the operator their stack would be re-created on the next deploy, which does
-not hold.
+A record can be malformed in either alone, so a command that reads both makes two
+calls and the message names the one that is broken. Collapsing them is wrong in
+both directions — a `resources` refusal printed over an intact resource map tells
+the operator their stack would be re-created on the next deploy, which does not
+hold.
 
-**The ABSENCE rule differs between them.** An absent `resources` bag is a
-defect. An absent `outputs` bag is an ORDINARY record cdkd writes on purpose —
-the deploy's failure-path saves emit `outputs: currentState.outputs`, which
-`JSON.stringify` drops when it is undefined, and `cdkd scrub` round-trips such
-a record rather than materializing `{}` over it. Refusing or warning on it
-fires on healthy state.
+**The ABSENCE rule differs between them.** An absent `resources` bag is a defect.
+An absent `outputs` bag is an ORDINARY record cdkd writes on purpose: the
+deploy's failure-path saves emit `outputs: currentState.outputs`, which
+`JSON.stringify` drops when undefined, and `cdkd scrub` round-trips such a record
+rather than materializing `{}` over it. Refusing or warning on it fires on
+healthy state.
 
-## Refuse versus repair, and the two dispositions that are neither
+## Refuse versus repair, and the dispositions that are neither
 
-A command that can WRITE the record refuses; a read-only one repairs and
-warns. Two sites in the `outputs` class take neither, and the calls are
-recorded in `docs/design/3192-outputs-consumers.md`:
+A command that can WRITE the record refuses; a read-only one repairs and warns.
+Two `outputs` sites take neither (calls recorded in
+`docs/design/3192-outputs-consumers.md`):
 
-- `importableOutputKeys` / `importableOutputs` (`src/types/state.ts`) FAIL
-  CLOSED silently — a pure predicate with no stack identity to put in a
-  message, and throwing there would be the bare `TypeError` #3018 removed,
-  renamed.
-- the `ExportIndexStore` rebuild fails closed and WARNS, naming the producer.
-  Refusing would take every other producer in the region down over one damaged
+- `importableOutputKeys` / `importableOutputs` FAIL CLOSED silently — a pure
+  predicate with no stack identity to put in a message, and throwing there would
+  be the bare `TypeError` these guards removed, renamed.
+- the `ExportIndexStore` rebuild fails closed and WARNS, naming the producer:
+  refusing would take every other producer in the region down over one damaged
   file, and an empty contribution is otherwise indistinguishable from a stack
   that exports nothing.
 
-`cdkd scrub` holds BOTH halves for each container: its write gate is
+`cdkd scrub` holds BOTH halves per container: its write gate is
 `recordsChanged > 0 && !opts.dryRun`, so under `--dry-run` it provably cannot
-persist and repairs instead — carrying the finding out to its caller so the
-run still exits non-zero.
+persist and repairs instead, carrying the finding out so the run still exits
+non-zero. `cdkd rollback` takes NO outputs guard — it reads none, so there is
+nothing to launder.
 
-`cdkd rollback` takes NO outputs guard, and that is a decision rather than a
-gap: `grep -n outputs src/cli/commands/rollback.ts` returns nothing, so there
-is nothing to launder.
-
-**Three sites decided by issue
-[#3207](https://github.com/go-to-k/cdkd/issues/3207) do NOT follow the rule
-mechanically**, and reading it as "does this file call `saveState`" gets each
-one wrong. `docs/design/3192-outputs-consumers.md` §4 is the authority:
+**Three sites do NOT follow the rule mechanically**, and reading it as "does this
+file call `saveState`" gets each one wrong:
 
 - `nested-stack-provider.ts` calls no `saveState` and still REFUSES — what it
-  returns becomes the parent's `ResourceState.attributes`, persisted by the
-  parent's deploy. Write-capable THROUGH A CALLER is the same hazard.
-- `destroy-runner.ts` never rebuilds the bag either; it DECIDES from it. There
-  the read-only repair is the unsafe answer, not the lossy one — reading an
-  unreadable bag as empty IS the "exports nothing" verdict that skips the
-  strong-reference check.
+  returns becomes the parent's `ResourceState.attributes`. Write-capable THROUGH
+  A CALLER is the same hazard.
+- `destroy-runner.ts` never rebuilds the bag; it DECIDES from it. There the
+  read-only repair is the unsafe answer — reading an unreadable bag as empty IS
+  the "exports nothing" verdict that skips the strong-reference check.
 - the resolver's `Fn::GetStackOutput` arm REFUSES the reference rather than
-  failing closed like its `Fn::ImportValue` sibling, because it is the one
-  reader in the class that RE-APPLIES. It raises
-  `MalformedProducerRecordRefusalError` (an `IntrinsicResolutionRefusalError`
-  SUBCLASS) so `resolveSub` cannot launder it AND so `cdkd scrub`'s pre-pass
-  can record an unverifiable finding instead of refusing the whole consumer
-  stack over a record its owner may not be able to repair.
+  failing closed like its `Fn::ImportValue` sibling, because it is the one reader
+  that RE-APPLIES. It raises `MalformedProducerRecordRefusalError` (an
+  `IntrinsicResolutionRefusalError` SUBCLASS) so `resolveSub` cannot launder it,
+  and so `cdkd scrub`'s pre-pass can record an unverifiable finding instead of
+  refusing the whole consumer stack.
 
 The two `cdkd local` readers REPAIR and WARN, and the premise is narrower than
-"never writes": a `cdkd local` run CAN write the DERIVED exports-index key,
-which is separately fail-closed by `hasReadableExportSet`. Nothing on that path
-can launder a RECORD, which is what makes repair safe there.
+"never writes": a `cdkd local` run CAN write the DERIVED exports-index key, which
+is separately fail-closed by `hasReadableExportSet`. Nothing on that path can
+launder a RECORD, which is what makes repair safe there.
 
 ## The fence
 
-`tests/unit/state/malformed-resources-bag.test.ts` carries a source fence
-enumerating the write-capable files PER CONTAINER, each with a DOMINANCE
-anchor — the first expression in that file which reads the bag — so a guard
-cannot drift below the read it protects. That is the round-1 defect of #3018
-and a presence-only check stays green through it. It also pins the premise of
-every exclusion, so a file that starts reading a container it did not read
-before fails the fence instead of quietly joining the wrong side.
+`tests/unit/state/malformed-resources-bag.test.ts` enumerates the write-capable
+files PER CONTAINER, each with a DOMINANCE anchor — the first expression in that
+file which reads the bag — so a guard cannot drift below the read it protects (a
+presence-only check stays green through that). It also pins the premise of every
+exclusion, so a file that starts reading a container it did not read before fails
+instead of quietly joining the wrong side.
 
 ## The `exportNames` FIELD takes its own rule
 
-Not a container, so none of the guards above touch it — `importableOutputKeys`
-in `src/types/state.ts` owns it, and that function's JSDoc is the authority.
-Recorded here because a lane reading this file is in the class:
+Not a container, so none of the guards above touch it — `importableOutputKeys` in
+`src/types/state.ts` owns it.
 
 - A non-array, or an array with **nothing usable in it**, reads as an EMPTY
-  export set. Never as an ABSENT one: absent means "not known" and falls back
+  export set. **Never as an ABSENT one**: absent means "not known" and falls back
   to the pre-v9 rule where every output key is importable, so routing a corrupt
   field there republishes every plain output name as an export — the shadowing
-  schema v9 exists to close (issue
-  [#2193](https://github.com/go-to-k/cdkd/issues/2193)).
+  schema v9 exists to close.
 - `some(isString)`, not `every`: `[]` is the legitimate "exports nothing", and
   `['Real', 0]` still has a name to publish.
-- `hasReadableExportSet` answers the question the empty list cannot — damaged
-  versus genuinely exporting nothing — for the callers that must SAY which.
-  `cdkd diff` warns with `malformedExportNamesWarning`; the exports-index
-  rebuild warns with `malformedExportSourceWarning`.
-
-Failing closed inside a pure predicate is right — it serves five commands and
-holds no stack identity — but a LOUD wrong answer becoming a QUIET one is its
-own regression, which is why the two callers that DO hold the identity say so.
+- `hasReadableExportSet` answers what the empty list cannot — damaged versus
+  genuinely exporting nothing — for the callers that must SAY which: `cdkd diff`
+  warns with `malformedExportNamesWarning`, the exports-index rebuild with
+  `malformedExportSourceWarning`. Failing closed inside a pure predicate is
+  right; a LOUD wrong answer becoming a QUIET one is its own regression, which is
+  why the two callers holding the identity say so.

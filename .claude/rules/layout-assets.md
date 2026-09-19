@@ -1,26 +1,43 @@
 ---
-description: cdkd layout notes for the assets layer (S3 file publishing, ECR docker publishing, cdkd-owned asset storage, redirect)
+description: cdkd assets layer (publishing, cdkd-owned asset storage, redirect)
 paths:
   - 'src/assets/**'
 ---
 
-# Key Files and Directories - assets
+# Assets layer
 
-Split out of the former `layout-misc.md`, whose six globs made every
-edit under any one of four src layers load all four.
-
-Index of every area: [code-layout.md](code-layout.md).
-
-## Important Files
-
-- **src/assets/** - Asset publisher (self-implemented S3 file upload with ZIP packaging, ECR Docker image build & push)
-
-- **src/assets/file-asset-publisher.ts** - S3 file upload with ZIP packaging support
-
-- **src/assets/docker-asset-publisher.ts** - ECR Docker image build & push
-
-- **src/assets/asset-storage.ts** - cdkd-owned asset storage (issue #1002 PR 1): naming helpers (defaults `cdkd-assets-{acct}-{region}` / `cdkd-container-assets-{acct}-{region}`; issue #1011 adds `cdkd bootstrap --asset-bucket` / `--container-repo` custom-name overrides, validated pre-AWS-call, marker-carried, differing-names re-bootstrap hard-errors `ASSET_STORAGE_NAME_CONFLICT`), the per-region bootstrap marker at `s3://{stateBucket}/cdkd-bootstrap/{region}.json` (`ensureAssetStorage` creates the asset bucket + IMMUTABLE-tag ECR repo + marker-last from `cdkd bootstrap`; `--no-assets` opts out; owned-elsewhere buckets are hard-refused and every probe passes `ExpectedBucketOwner`), and the deploy-time `AssetModeResolver` (marker absent → legacy mode, byte-identical + one `cdk gc`-hazard info line per legacy region naming the `cdkd bootstrap --region <r>` fix; present → `cdkd-assets` mode with bucket/repo existence verification, hard error on missing/malformed — never silent fallback; `autoCreate` (issue #1007, deploy-only, not under --dry-run) auto-creates bucket+repo+marker via the same `ensureAssetStorage` on first deploy into an un-opted-in region — confirm-gated (`--yes`/non-TTY auto-approve), decline/failure falls back to legacy + warning, opt out via `--no-auto-asset-storage` / `context.cdkd.autoAssetStorage: false`; `useCdkBootstrapAssets` opt pins legacy with no marker read + no notice, `suppressLegacyNotice` quiets `diff` / `import`). `cdkd state info` lists opted-in regions. The teardown counterpart is `src/cli/commands/bootstrap-destroy.ts` (`cdkd bootstrap --destroy`, issue #1010 — asset bucket emptied+deleted → ECR repo force-deleted → marker deleted LAST; names from the marker; reference-scan refusal unless `--force`; `--include-state-bucket` adds the state bucket with stack-state / other-region-marker refusals). Design: `docs/design/1002-cdkd-asset-storage.md`.
-
-- **src/assets/asset-redirect.ts** - The cdkd-assets-mode wiring (issue #1002 PR 2): `buildAssetRedirectMap` (destination-driven §6 mapping table from a stack's `*.assets.json` — only default-bootstrap-shaped `cdk-[a-z0-9]+-(container-)?assets-{acct}-{region}` destinations for the deploy account+region redirect; custom names / cross-region destinations stay verbatim per §8), `rewriteTemplateAssetReferences` (boundary-aware §7 deep rewrite over plain strings + `Fn::Sub` template strings + folded pseudo-parameter-only `Fn::Join` runs), `findUnrewrittenAssetReferences` (the deploy engine's §7-step-3 post-resolution audit via `DeployEngineOptions.assetRedirect` — a surviving CDK-bootstrap reference fails the resource before provisioning), `redirectFileAsset` / `redirectDockerAsset` (publish-time redirection consumed by `AssetPublisher.addAssetsToGraph({redirect})` — the SAME table as the rewrite so they cannot diverge), `createAssetRedirectResolver` (lazy STS + marker gate for `diff` / `import`), `loadPublishableAssetManifest` (asset-less stacks stay byte-identical). Rewrite call sites: `deploy.ts` (top-level), `NestedStackProvider.readChildTemplate` via `NestedStackProviderContext.assetRedirect`, `diff-recursive.ts`'s `buildDiffTree`, `import.ts` (top-level + recursive CFn-migration child walk); `synth` / `export` unrewritten by design (§7.1). On the `import` path the rewrite deliberately does NOT reach `state.properties` (issue [#1652](https://github.com/go-to-k/cdkd/issues/1652)): both the top-level and the nested-child walk snapshot the template with `structuredClone` immediately BEFORE the in-place rewrite and feed that snapshot to `buildStackState` / `resolveImportedProperties`, so state records the CDK-bootstrap values AWS holds for the adopted resources and the next `cdkd deploy` produces the corrective UPDATE. Recording the rewritten value instead made the deploy diff compare rewritten-vs-rewritten, classify `NO_CHANGE`, and never repoint a resource whose live value import cannot read back (`IAMPolicyProvider.import()` returns only a physical id — the `AWS::IAM::Policy` behind `s3deploy.BucketDeployment` kept granting the CDK bootstrap bucket and failed at runtime with `AccessDenied`). `--use-cdk-bootstrap-assets` (deploy/diff/import/publish-assets) or `cdk.json context.cdkd.useCdkBootstrapAssets` pins legacy. Integ: `tests/integration/asset-migration/`.
-
-- **src/assets/docker-build.ts** - Shared `docker build` invocation reused by `docker-asset-publisher.ts` (ECR publish path) and `src/local/ecs-task-runner.ts` (ECS run-task `ContainerImage.fromAsset` path). `src/local/docker-image-builder.ts` is NOT a caller and has not been one since it became a shim over cdk-local's own builder (slice 13) -- this entry claimed it until issue [#2623](https://github.com/go-to-k/cdkd/issues/2623) swept the module. Streams output via `runDockerStreaming` (no `execFile` `maxBuffer` ceiling — fixes silent kills on `# syntax=docker/dockerfile:1` Dockerfiles where BuildKit progress + frontend pull exceeds the prior 50 MB cap). Sets `BUILDX_NO_DEFAULT_ATTESTATIONS=1` in the build env (matches CDK CLI's `cdk-assets-lib`). Full BuildKit flag set forwarded from the CDK `DockerImageSource` schema (`--build-context` / `--secret` / `--ssh` / `--network` / `--cache-from` / `--cache-to` / `--no-cache` / `--platform`). Supports both `directory` and `executable` source modes (the latter runs a user-supplied build script and reads the image tag from its stdout). `Object.entries`-stable build-arg order preserved (load-bearing for layer-cache stability). Parameterized error wrapping so each consumer threads its own typed error class. Every argv it renders -- the `--verbose` build line, the `executable`-mode command line, and both docker-failure texts -- goes through the shared redaction in `src/utils/docker-cmd.ts` ([docker-argv-redaction.md](docker-argv-redaction.md)), since `--build-arg` carries a `DockerImageAsset`'s `buildArgs` (issue [#2623](https://github.com/go-to-k/cdkd/issues/2623)); the neither-`directory`-nor-`executable` error prints FIELD NAMES rather than `JSON.stringify(source)`, which used to dump every build-arg and build-secret value into a thrown error.
+- **file-asset-publisher.ts** / **docker-asset-publisher.ts** — S3 ZIP upload;
+  ECR image build and push.
+- **asset-storage.ts** — cdkd-owned asset storage (issue
+  [#1002](https://github.com/go-to-k/cdkd/issues/1002)). Custom bucket / repo
+  names are validated BEFORE any AWS call and carried in the marker; differing
+  names on re-bootstrap raise `ASSET_STORAGE_NAME_CONFLICT`.
+  `ensureAssetStorage` creates the bucket, an IMMUTABLE-tag ECR repo and the
+  per-region marker (`cdkd-bootstrap/{region}.json`) LAST; a bucket owned
+  elsewhere is refused and every probe passes `ExpectedBucketOwner`.
+  `AssetModeResolver` reads that marker at deploy time: absent means legacy
+  mode, present means `cdkd-assets` mode with existence verification and a HARD
+  ERROR on missing or malformed, never a silent fallback. `autoCreate` is deploy-only, never under `--dry-run`, and
+  confirm-gated; `useCdkBootstrapAssets` pins legacy. Teardown deletes the
+  marker LAST, takes names FROM it, and refuses on a reference scan.
+- **asset-redirect.ts** — `buildAssetRedirectMap` maps only
+  default-bootstrap-shaped destinations for the DEPLOY account and region;
+  custom names and cross-region ones stay verbatim.
+  `findUnrewrittenAssetReferences` audits after resolution: a surviving
+  CDK-bootstrap reference FAILS the resource before provisioning.
+  `redirectFileAsset` / `redirectDockerAsset` consume the SAME table as
+  `rewriteTemplateAssetReferences`, so they cannot diverge; `synth` / `export`
+  are unrewritten by design. **On `import` the rewrite must NOT reach
+  `state.properties`** (issue
+  [#1652](https://github.com/go-to-k/cdkd/issues/1652)): both walks
+  `structuredClone` the template BEFORE the in-place rewrite and feed that
+  snapshot to `buildStackState`, so state records the CDK-bootstrap values AWS
+  holds, so the next deploy emits the corrective UPDATE.
+- **docker-build.ts** — the shared `docker build`, reused by the ECR publish and
+  `src/local/ecs-task-runner.ts`. It streams
+  rather than buffering, sets `BUILDX_NO_DEFAULT_ATTESTATIONS=1`, and keeps
+  build-arg order stable, which is load-bearing for the layer cache. EVERY argv
+  it renders goes through
+  [docker-argv-redaction.md](docker-argv-redaction.md), since `--build-arg`
+  carries user `buildArgs`; the neither-mode error prints FIELD NAMES, not
+  `JSON.stringify(source)`.

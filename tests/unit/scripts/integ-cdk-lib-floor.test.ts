@@ -28,7 +28,7 @@ import {
 /**
  * Enforcement for issue #2839: the `/new-integ` scaffold template's
  * `aws-cdk-lib` floor must not fall behind the integ-fixture corpus. As with
- * `check-verification-depth-rule.ts` and `check-source-control-bytes.ts`, this
+ * `check-source-control-bytes.ts` uses, this
  * unit test IS the CI enforcement — there is no `vp run` task and no `ci.yml`
  * step. The script's CLI exists so a human can read the current numbers.
  *

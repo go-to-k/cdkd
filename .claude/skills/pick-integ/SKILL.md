@@ -30,11 +30,9 @@ truncated, and the wrap-up names exactly which tests were not run.
    - **Stale**: age > the `integ-destroy` gate TTL (**14 days**) — past that
      the marker expires, so a clean result no longer proves today's AWS
      behavior.
-   - **Expiring soon**: age **12–14d**. The ledger accumulates in
-     sweep-shaped cohorts (one sweep stamps 100+ rows with one timestamp), so
-     a strict `>14d` boolean answers "nothing" or "everything" — always
-     report this tier; "zero stale" is misleading when 105 tests cross the
-     TTL tomorrow (issue #1508).
+   - **Expiring soon**: age **12–14d**. The ledger accumulates in sweep-shaped
+     cohorts (one sweep stamps many rows with one timestamp), so a strict `>14d`
+     boolean answers "nothing" or "everything" — always report this tier.
    - **Failing**: `result == FAIL` — always a candidate.
    - **Never-run**: a fixture directory with NO ledger row — highest
      staleness.
@@ -99,11 +97,9 @@ truncated, and the wrap-up names exactly which tests were not run.
    fixture drives itself from `verify.sh`, or from `run.sh` invoked directly
    (`migrate-from-cfn`); with neither, `/run-integ` falls back to a standard
    flow that needs a bare `cdkd deploy`, which the harness refuses (that
-   skill's step 5) — legal only when a human drives the shell. So such a name
-   is a MAINTAINER-only recommendation, never a lane's: go-to-k/cdkd#2514's
-   lane named `bench-cdk-sample` as its broad arm and the parent had to
-   substitute `lambda`. Several BROAD-set entries are in this state — derive
-   the split, never trust a remembered list:
+   skill's step 5) — legal only when a human drives the shell. Such a name is a
+   MAINTAINER-only recommendation, never a lane's. Several BROAD-set entries
+   are in this state — derive the split, never trust a remembered list:
 
    ```bash
    for t in NAME1 NAME2; do   # the names about to be recommended
@@ -167,17 +163,15 @@ past drops orphans). Treat a large sweep as a **multi-session relay**:
 - The sweep is DONE only when `/pick-integ` shows no stale tests left; the
   committed ledger is the source of truth.
 - **A `FAIL` that never reached the fixture's assertions is not a cdkd bug** —
-  open the log before recording it. Two classes: fixture staleness (AWS
-  retired an engine/instance tier the fixture hardcodes), and a fixture whose
-  own previous run blocks the next, because it pins a name AWS holds a
-  cooldown on (`export` recreates one FIXED S3 bucket, and S3's same-name
-  cooldown of UP TO ~58 min answers `OperationAborted` before phase 1 —
-  measured at 10 min apart, go-to-k/cdkd#2796). Record it as such and queue
-  the fixture fix. A run whose only purpose is to refresh the `integ-destroy`
-  marker takes a SIBLING from the broad
-  set above instead; the SWEEP does not — the `FAIL` row keeps it a
-  candidate, so re-schedule it after the window rather than counting it
-  covered.
+  open the log before recording it. Two classes: fixture staleness (AWS retired
+  an engine / instance tier the fixture hardcodes), and a fixture whose own
+  previous run blocks the next because it pins a name AWS holds a cooldown on
+  (`export` recreates one FIXED S3 bucket, and S3's same-name cooldown of up to
+  ~58 min answers `OperationAborted` before phase 1). Record it as such and
+  queue the fixture fix. A run whose only purpose is to refresh the
+  `integ-destroy` marker takes a SIBLING from the broad set instead; the SWEEP
+  does not — the `FAIL` row keeps it a candidate, so re-schedule it after the
+  window rather than counting it covered.
 
 ## Important
 
