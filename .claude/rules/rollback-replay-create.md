@@ -19,7 +19,8 @@ wholesale, reporting none keeps it. Do not re-narrow that result type.
 `FALLBACK_NAME_RULES` name the recorded bag leaves unset exactly as
 `preparePropertiesForCcApi` does at the engine's three create sites;
 otherwise the replay is a FOURTH create site sending no name and AWS mints a
-random one. The arm is picked by a CHANGED PHYSICAL ID, so a create-only edit
+random one. The arm is picked by a CHANGED PHYSICAL ID (or a changed `Type`,
+where the fill keys on the OLD type), so a create-only edit
 on a type whose id is NOT its name lands here nameless; a handler REJECTING a
 nameless create then fails the replay, and the delete-new-first arm has already
 dropped it.

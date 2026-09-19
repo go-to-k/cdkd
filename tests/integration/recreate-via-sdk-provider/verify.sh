@@ -1,18 +1,30 @@
 #!/usr/bin/env bash
 # verify.sh — cdkd #651 --recreate-via-sdk-provider integ test
 #
-# Mid-life CC→SDK migration: a Lambda Function deployed WITH
-# `RuntimeManagementConfig` (= auto-routes via Cloud Control on the fresh deploy,
-# state stamps `provisionedBy: 'cc-api'`) is destroyed + recreated via
-# cdkd's SDK Provider when the next deploy drops `RuntimeManagementConfig` AND
-# passes `--recreate-via-sdk-provider`. The assertions confirm:
+# Mid-life CC→SDK migration: a Lambda Function recorded as
+# `provisionedBy: 'cc-api'` is destroyed + recreated via cdkd's SDK Provider
+# when the next deploy passes `--recreate-via-sdk-provider`.
 #
-#   - state `provisionedBy` flips 'cc-api' → 'sdk'
-#   - the Lambda's `RuntimeManagementConfig.UpdateRuntimeOn` is back at the Auto default on AWS
-#     (SDK Provider doesn't wire it, and the template no longer carries it)
-#   - LastModified changed (the recreate produced a new Lambda instance;
-#     the user-supplied functionName makes the physical id stable, so
-#     LastModified is the witness)
+#   Phase 1  plain deploy                          -> 'sdk'
+#   Phase 2  + RuntimeManagementConfig, --recreate-via-cc-api  -> 'cc-api' (SEED)
+#   Phase 3  - RuntimeManagementConfig, --recreate-via-sdk-provider -> 'sdk' (THE ARM)
+#   Phase 4  destroy
+#
+# The CC baseline is seeded with the explicit flag, NOT with the silent-drop
+# auto-route: the auto-route needs a property the SDK provider does not
+# handle, and every property this fixture used for that was later wired into
+# the provider, which silently moved the baseline to 'sdk'. See
+# lib/recreate-stack.ts for the history and the phase table.
+#
+# The assertions confirm:
+#
+#   - state `provisionedBy` goes 'sdk' -> 'cc-api' -> 'sdk'
+#   - `RuntimeManagementConfig.UpdateRuntimeOn` is FunctionUpdate after the
+#     seed (the Cloud Control create really provisioned the function) and back
+#     at the default after the arm (a NEW function the template gives no
+#     RuntimeManagementConfig)
+#   - LastModified changed across the arm (the user-supplied functionName
+#     makes the physical id stable, so LastModified is the witness)
 #   - destroy via SDK delete path is clean
 #
 # Required env vars:
@@ -120,19 +132,42 @@ fi
 echo "==> Pre-run cleanup"
 cleanup
 
-# --- Phase 1: deploy WITH RuntimeManagementConfig (lands CC via auto-route) ------
-echo "==> Phase 1: deploy ${STACK} WITH RuntimeManagementConfig (baseline -> auto-route to CC)"
-export CDKD_INTEG_USE_SILENT_DROP=true
-node "${LOCAL_DIST}" deploy "${STACK}" \
+# Every routing phase carries a real property delta (RuntimeManagementConfig
+# toggles): a deploy the differ classifies NO_CHANGE never reaches the
+# provider, so a recreate flag on an unchanged template does nothing
+# (go-to-k/cdkd#2651).
+lambda_layer() { # usage: lambda_layer "<state json>"
+  printf '%s' "$1" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::Function") | .value.provisionedBy // ""] | first // ""'
+}
+
+# --- Phase 1: plain deploy (lands on the SDK provider) ----------------------
+echo "==> Phase 1: deploy ${STACK} (no flags -> SDK provider)"
+CDKD_INTEG_PHASE=base node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
-unset CDKD_INTEG_USE_SILENT_DROP
+
+STATE_0=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+PROVISIONED_0=$(lambda_layer "${STATE_0}")
+if [ "${PROVISIONED_0}" != "sdk" ]; then
+  echo "FAIL: fresh Lambda has provisionedBy='${PROVISIONED_0}', expected 'sdk'. Likely cause: a property of the base template became an SDK-provider silent drop (a schema refresh added one, or handledProperties lost an entry), so the fresh deploy auto-routed to Cloud Control and the seed below would be refused as already-cc-api. Check the deploy output above for an 'Auto-routing ... via Cloud Control' line naming the property." >&2
+  echo "${STATE_0}" | jq .
+  exit 1
+fi
+echo "    OK: fresh Lambda provisionedBy == 'sdk'"
+
+# --- Phase 2: seed the CC baseline with --recreate-via-cc-api ---------------
+echo "==> Phase 2: re-deploy WITH RuntimeManagementConfig + --recreate-via-cc-api (seed the cc-api baseline)"
+CDKD_INTEG_PHASE=seed node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --recreate-via-cc-api RecreateProbe \
+  --yes
 
 STATE_1=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
-PROVISIONED_1=$(echo "${STATE_1}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::Function") | .value.provisionedBy // ""] | first')
+PROVISIONED_1=$(lambda_layer "${STATE_1}")
 if [ "${PROVISIONED_1}" != "cc-api" ]; then
-  echo "FAIL: baseline Lambda has provisionedBy='${PROVISIONED_1}', expected 'cc-api' (RuntimeManagementConfig auto-route should land CC)" >&2
+  echo "FAIL: baseline Lambda has provisionedBy='${PROVISIONED_1}', expected 'cc-api'. The --recreate-via-cc-api seeding step did not seed, so every assertion below would be vacuous. Likely cause: the flag no-opped (the differ saw NO_CHANGE between the base and seed templates -- go-to-k/cdkd#2651 -- check that lib/recreate-stack.ts still toggles RuntimeManagementConfig on CDKD_INTEG_PHASE=seed), or --recreate-via-cc-api itself regressed (run the recreate-via-cc-api fixture). This baseline does NOT depend on any property being unhandled by the SDK provider." >&2
   echo "${STATE_1}" | jq .
   exit 1
 fi
@@ -141,25 +176,25 @@ echo "    OK: baseline Lambda provisionedBy == 'cc-api'"
 LAST_MOD_1=$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}" --query 'LastModified' --output text 2>/dev/null)
 echo "    Baseline LastModified: ${LAST_MOD_1}"
 
-# Baseline AWS check: UpdateRuntimeOn should be FunctionUpdate (CC route forwarded it).
+# Baseline AWS check: UpdateRuntimeOn should be FunctionUpdate — the record
+# says cc-api AND the Cloud Control create really provisioned the function.
 RL_1=$(aws lambda get-runtime-management-config --function-name "${FN_NAME}" --region "${REGION}" --query 'UpdateRuntimeOn' --output text 2>/dev/null)
 if [ "${RL_1}" != "FunctionUpdate" ]; then
-  echo "FAIL: baseline Lambda has RuntimeManagementConfig.UpdateRuntimeOn='${RL_1}', expected 'FunctionUpdate' (CC route should have set it)" >&2
+  echo "FAIL: baseline Lambda has RuntimeManagementConfig.UpdateRuntimeOn='${RL_1}', expected 'FunctionUpdate' (the CC recreate should have set it; the record says cc-api but the property did not reach AWS)" >&2
   exit 1
 fi
-echo "    OK: baseline Lambda RuntimeManagementConfig.UpdateRuntimeOn is FunctionUpdate on AWS (CC route confirmed)"
+echo "    OK: baseline Lambda RuntimeManagementConfig.UpdateRuntimeOn is FunctionUpdate on AWS (CC create confirmed)"
 
-# --- Phase 2: re-deploy WITHOUT RuntimeManagementConfig + --recreate-via-sdk-provider
-echo "==> Phase 2: re-deploy ${STACK} WITHOUT RuntimeManagementConfig + --recreate-via-sdk-provider (destroy+recreate via SDK)"
-unset CDKD_INTEG_USE_SILENT_DROP
-node "${LOCAL_DIST}" deploy "${STACK}" \
+# --- Phase 3: re-deploy WITHOUT RuntimeManagementConfig + --recreate-via-sdk-provider
+echo "==> Phase 3: re-deploy ${STACK} WITHOUT RuntimeManagementConfig + --recreate-via-sdk-provider (destroy+recreate via SDK)"
+CDKD_INTEG_PHASE=recreate node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --recreate-via-sdk-provider RecreateProbe \
   --yes
 
 STATE_2=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
-PROVISIONED_2=$(echo "${STATE_2}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::Function") | .value.provisionedBy // ""] | first')
+PROVISIONED_2=$(lambda_layer "${STATE_2}")
 if [ "${PROVISIONED_2}" != "sdk" ]; then
   echo "FAIL: post-recreate Lambda has provisionedBy='${PROVISIONED_2}', expected 'sdk' (recreate should have routed via SDK)" >&2
   echo "${STATE_2}" | jq .
@@ -175,18 +210,18 @@ if [ "${LAST_MOD_2}" = "${LAST_MOD_1}" ]; then
 fi
 echo "    OK: LastModified updated across recreate (old destroyed, new created)"
 
-# Post-recreate AWS check: UpdateRuntimeOn should be back at the Auto
-# default (the template no longer carries it AND the SDK provider doesn't
-# wire it anyway).
+# Post-recreate AWS check: UpdateRuntimeOn should be back at the Auto default —
+# the recreated function is a NEW one and its template carries no
+# RuntimeManagementConfig.
 RL_2=$(aws lambda get-runtime-management-config --function-name "${FN_NAME}" --region "${REGION}" --query 'UpdateRuntimeOn' --output text 2>/dev/null)
 if [ "${RL_2}" = "FunctionUpdate" ]; then
-  echo "FAIL: post-recreate Lambda still has RuntimeManagementConfig.UpdateRuntimeOn='FunctionUpdate' on AWS — the SDK recreate should not have wired RuntimeManagementConfig" >&2
+  echo "FAIL: post-recreate Lambda still has RuntimeManagementConfig.UpdateRuntimeOn='FunctionUpdate' on AWS — the template dropped it and the function should be a fresh instance" >&2
   exit 1
 fi
-echo "    OK: post-recreate RuntimeManagementConfig.UpdateRuntimeOn is back at the default (UpdateRuntimeOn='${RL_2}' — SDK provider didn't wire it)"
+echo "    OK: post-recreate RuntimeManagementConfig.UpdateRuntimeOn is back at the default (UpdateRuntimeOn='${RL_2}')"
 
-# --- Phase 3: destroy ---------------------------------------------------
-echo "==> Phase 3: destroy via SDK delete path"
+# --- Phase 4: destroy ---------------------------------------------------
+echo "==> Phase 4: destroy via SDK delete path"
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \

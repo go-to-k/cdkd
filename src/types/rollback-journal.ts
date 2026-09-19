@@ -227,6 +227,11 @@ function refuseMalformedOperation(shownStack: string, where: string, op: unknown
   if (o['oldResourceRetained'] !== undefined && typeof o['oldResourceRetained'] !== 'boolean') {
     fail('oldResourceRetained', o['oldResourceRetained'], 'a boolean when present');
   }
+  // Issue #2668: this value picks the PROVIDER a replacement's re-create is
+  // dispatched at, so a non-string is refused here rather than coerced there.
+  if (o['previousResourceType'] !== undefined && typeof o['previousResourceType'] !== 'string') {
+    fail('previousResourceType', o['previousResourceType'], 'a string when present');
+  }
   // NOT refused, deliberately: `provisionedBy`. cdkd forwards whatever the
   // state record carried (`newResources[..]?.provisionedBy ?? previousState
   // ?.provisionedBy`), so refusing the enum would lock `cdkd rollback` out of

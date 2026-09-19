@@ -636,6 +636,17 @@ bucket's reverse-replacement re-create has to re-acquire a just-deleted
 GLOBALLY unique name, which would make the fixture flaky for a reason
 unrelated to what it tests.
 
+For a replacement that changes the resource's `Type` on an existing logical id,
+see `tests/integration/type-change-replacement/` (scenario tag
+`resource-type-change-replacement`). Three rows change type in one deploy: a
+stateful `AWS::SSM::Parameter` becoming a topic (refused without
+`--force-stateful-recreation`), a parameter becoming a log group of the SAME
+name (two types, one physical id), and a topic becoming a log group with an
+identical property bag. The fixture asserts every old physical name gone and
+every new one read back from AWS, then drives the same change through the
+automatic rollback and through `cdkd rollback` from a `--no-rollback` journal,
+each of which has to re-create every OLD type through its own provider.
+
 For the rollback arm that must NOT delete the resource a replacement created,
 see `tests/integration/rollback-replacement-retain/` (scenario tag
 `rollback-replacement-updatereplacepolicy-retain`, issue #2598). Three

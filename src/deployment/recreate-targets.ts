@@ -220,16 +220,13 @@ const EMPTY_ALLOW_SET: ReadonlySet<string> = new Set();
  * is spelled once, or the note could name ids the validator does not refuse.
  *
  * The two are NOT the same set, and deliberately so. The refusal fires when
- * EITHER the state record or the template says nested, because the two types
- * select different halves of the destructive path: the TEMPLATE's type picks
- * the provider that deletes the old resource (a Type change emits an UPDATE
- * carrying `resourceType: desiredResource.Type`, which is what
- * `oldDeleteProvider` resolves from), while the STATE's type is what
- * `NestedStackProvider` owns and derives `<parent>~<logicalId>` from. The note
- * keys on the TEMPLATE alone, because it is telling the user what their current
- * template contains. Which type governs was argued from plausibility twice and
- * settled by reading `analyzer/diff-calculator.ts` and `deploy-engine.ts`'s
- * `oldDeleteProvider`; do not re-derive it from either name. Other modules spell it
+ * EITHER the state record or the template says nested, because a recreate has
+ * two halves with two types (issue #2668): the STATE's type routes the delete
+ * of the old resource — `NestedStackProvider` derives `<parent>~<logicalId>`
+ * from it — and the TEMPLATE's type routes the create, which for a nested row
+ * is a whole child-stack deploy. Either half alone is outside what a recreate
+ * is built for. The note keys on the TEMPLATE alone, because it is telling the
+ * user what their current template contains. Other modules spell it
  * for themselves rather than sharing one export: the only EXPORTED copy lives
  * in `src/cli/commands/retire-cfn-stack.ts`, and importing a CLI command module
  * from the deployment layer would invert the dependency direction. (No count of
@@ -352,18 +349,14 @@ export function validateRecreateTargets(input: {
     // multi-region category above; see `blockedNestedStackTargets` for why the
     // operation is not merely out of scope but destructive.
     //
-    // EITHER type, and the OR is measured, not defensive. Which provider tears
-    // the row down is decided by the TEMPLATE's type, not the state record's:
-    // a Type change emits an UPDATE carrying `resourceType: desiredResource.Type`
-    // (`analyzer/diff-calculator.ts`), the engine binds `const resourceType =
-    // change.resourceType`, and `oldDeleteProvider` resolves from THAT — so a
-    // row recorded as an ordinary resource whose template now says
-    // `AWS::CloudFormation::Stack` routes its delete into
-    // `NestedStackProvider.delete`, which destroys `<parent>~<logicalId>` whole.
-    // The state record matters too, for the mirror shape: a row cdkd RECORDED
-    // as a nested stack is owned by that provider regardless of what the
-    // template has since become. Each type alone leaves one of the two
-    // destructive paths open, which is why neither is sufficient.
+    // EITHER type. A recreate's two halves route on two types (issue #2668):
+    // the old resource's delete on the STATE record's, the create on the
+    // TEMPLATE's. A row RECORDED as a nested stack has its delete owned by
+    // `NestedStackProvider`, which destroys `<parent>~<logicalId>` whole; a row
+    // whose TEMPLATE now says nested has a whole child-stack deploy as its
+    // create half. Neither is a single-resource recreate, so each type alone
+    // leaves one of the two open — the same pair `type-change-guard.ts` refuses
+    // on the unflagged path, for the reasons stated there.
     if (
       resourceType === NESTED_STACK_RESOURCE_TYPE ||
       templateResource.Type === NESTED_STACK_RESOURCE_TYPE

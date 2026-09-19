@@ -25,6 +25,7 @@ import {
   planRollback,
   planFailedOps,
   producerRegionsFromState,
+  resolveReplacementOldType,
   type RollbackExecutorContext,
   type RollbackPlanItem,
   type FailedOpPlanItem,
@@ -221,6 +222,18 @@ function safeRoleArn(value: unknown): string {
  * the Snapshot label would otherwise promise a final snapshot the run is about
  * to skip — a data-loss-relevant lie in the one preview the user reads.
  */
+/**
+ * The type(s) a reversed replacement touches (issue #2668): `NEW -> OLD` when
+ * the replacement changed the resource's `Type` — the replay deletes the first
+ * and re-creates the second — and the single type otherwise.
+ */
+function replacementTypes(op: RollbackPlanItem['op']): string {
+  const routing = resolveReplacementOldType(op);
+  return routing.ok && routing.oldType !== op.resourceType
+    ? `${safe(op.resourceType)} -> ${safe(routing.oldType)}`
+    : safe(op.resourceType);
+}
+
 function actionLabel(item: RollbackPlanItem, skipFinalSnapshot: boolean): string {
   const { op, action, replacement } = item;
   const rep = replacement ? ' [replacement occurred, best-effort revert]' : '';
@@ -250,22 +263,31 @@ function actionLabel(item: RollbackPlanItem, skipFinalSnapshot: boolean): string
       // Promising the unconditional happy path here would be the same #1366
       // defect this flag exists to close, one step further along.
       return item.retainsNewResource
-        ? `  - reverse-replace ${safe(op.logicalId)} (${safe(op.resourceType)}) ` +
+        ? `  - reverse-replace ${safe(op.logicalId)} (${replacementTypes(op)}) ` +
             `[re-create old resource; new one RETAINED (UpdateReplacePolicy: Retain) and left ` +
             `untracked — REFUSED instead if the re-create collides with the name the retained ` +
             `resource still holds]`
-        : `  - reverse-replace ${safe(op.logicalId)} (${safe(op.resourceType)}) [re-create old resource, delete new]`;
+        : `  - reverse-replace ${safe(op.logicalId)} (${replacementTypes(op)}) [re-create old resource, delete new]`;
     case 'reverse-replacement-readopt':
       return item.retainsNewResource
-        ? `  - reverse-replace ${safe(op.logicalId)} (${safe(op.resourceType)}) ` +
+        ? `  - reverse-replace ${safe(op.logicalId)} (${replacementTypes(op)}) ` +
             `[re-adopt retained old resource; new one RETAINED (UpdateReplacePolicy: Retain) and left untracked]`
-        : `  - reverse-replace ${safe(op.logicalId)} (${safe(op.resourceType)}) [delete new, re-adopt retained old resource]`;
+        : `  - reverse-replace ${safe(op.logicalId)} (${replacementTypes(op)}) [delete new, re-adopt retained old resource]`;
     case 'unrecoverable-delete':
       return `  - (cannot restore) ${safe(op.logicalId)} (${safe(op.resourceType)}) — was DELETED, unrecoverable`;
     case 'skip-mismatch':
       return `  - skip     ${safe(op.logicalId)} (${safe(op.resourceType)}) — physical id changed, needs manual attention`;
     case 'skip-absent':
       return `  - skip     ${safe(op.logicalId)} (${safe(op.resourceType)}) — no longer in state`;
+    case 'refuse-replacement-routing': {
+      // Issue #2668: the replay FAILS this op (journal kept), so the preview
+      // must not read as a skip the run will shrug off.
+      const routing = resolveReplacementOldType(op);
+      return (
+        `  - (REFUSED) ${safe(op.logicalId)} (${safe(op.resourceType)}) — cannot reverse the ` +
+        `replacement: ${routing.ok ? 'its old type could not be routed' : routing.reason}`
+      );
+    }
     case 'skip-already-done':
       return `  - skip     ${safe(op.logicalId)} (${safe(op.resourceType)}) — already reverted`;
   }
@@ -297,6 +319,11 @@ function failedActionLabel(item: FailedOpPlanItem, skipFinalSnapshot: boolean): 
       return `  - skip     ${safe(op.logicalId)} (${safe(op.resourceType)}) — failed ${safe(op.changeType)} left nothing to revert`;
     case 'skip-failed-absent':
       return `  - skip     ${safe(op.logicalId)} (${safe(op.resourceType)}) — no previous state available`;
+    case 'skip-failed-type-change':
+      return (
+        `  - skip     ${safe(op.logicalId)} (${safe(op.previousState?.resourceType)} -> ` +
+        `${safe(op.resourceType)}) — failed Type change is a replacement, no in-place revert exists`
+      );
   }
 }
 
