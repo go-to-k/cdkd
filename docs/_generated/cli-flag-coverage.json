@@ -61,7 +61,8 @@
     {
       "flag": "--app",
       "integs": [
-        "intrinsics-torture-2"
+        "intrinsics-torture-2",
+        "nested-stack-deep"
       ]
     },
     {
