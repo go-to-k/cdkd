@@ -484,6 +484,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       silentDrop: new Map<string, string>([
         ['CapacityProviderConfiguration', 'not yet implemented by cdkd'],
         ['FilesystemConfigurations', 'not yet implemented by cdkd'],
+        ['PlatformVersion', 'not yet implemented by cdkd'],
         ['RequestHeaderConfiguration', 'not yet implemented by cdkd'],
         ['Tags', 'not yet implemented by cdkd'],
       ]),

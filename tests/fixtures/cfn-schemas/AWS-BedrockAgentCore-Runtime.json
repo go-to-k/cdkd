@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::BedrockAgentCore::Runtime",
-  "generatedAt": "2026-09-09",
+  "generatedAt": "2026-09-19",
   "properties": [
     "AgentRuntimeArn",
     "AgentRuntimeArtifact",
@@ -17,6 +17,7 @@
     "LastUpdatedAt",
     "LifecycleConfiguration",
     "NetworkConfiguration",
+    "PlatformVersion",
     "ProtocolConfiguration",
     "RequestHeaderConfiguration",
     "RoleArn",
@@ -210,6 +211,7 @@
       "RoleArn": "scalar",
       "NetworkConfiguration": "object",
       "ProtocolConfiguration": "scalar",
+      "PlatformVersion": "scalar",
       "EnvironmentVariables": "object",
       "AuthorizerConfiguration": "object",
       "LifecycleConfiguration": "object",
