@@ -79,7 +79,38 @@ export interface ProfileCredentialsFile {
  */
 export async function writeProfileCredentialsFile(
   profileName: string,
-  creds: { accessKeyId: string; secretAccessKey: string; sessionToken?: string }
+  creds: { accessKeyId: string; secretAccessKey: string; sessionToken?: string },
+  /**
+   * Called with `hostPath` the INSTANT the tmpdir exists, before any byte is
+   * written to it (go-to-k/cdkd#3435 review).
+   *
+   * It exists because the RETURN VALUE is the wrong moment for a caller that
+   * has to survive a signal. Between `mkdtemp` and this function returning sits
+   * an `await writeFile`, a real I/O boundary — and a double-`^C` delivered
+   * inside it force-exits with the caller's `profileCredsFile` still
+   * `undefined`, so the stranded-credentials notice names nothing while a
+   * mode-0600 directory (possibly already holding the file) is on disk. That is
+   * the very leak go-to-k/cdkd#3410 closed, reachable through its own fix's
+   * blind spot; two reviewers found the comment asserting it could not happen.
+   *
+   * Fired BEFORE the write rather than after, deliberately: the hazard is the
+   * DIRECTORY, which exists from `mkdtemp` onward whatever the write does. An
+   * exception here would strand the dir with no cleanup, so the caller's
+   * handler must only assign.
+   */
+  opts?: {
+    onDirCreated?: (hostPath: string) => void;
+    /**
+     * Called when a FAILED write has removed the directory `onDirCreated` just
+     * announced, so a caller holding that path can drop it rather than name a
+     * path that no longer exists.
+     *
+     * NOT called when the cleanup `rm` itself failed: the directory is then
+     * still on disk, possibly holding a partial credentials file, and a caller
+     * that dropped the path would print nothing on a force-exit.
+     */
+    onDirRemoved?: (hostPath: string) => void;
+  }
 ): Promise<ProfileCredentialsFile> {
   // PR #670 code review finding #2: validate the profile name before
   // interpolating into the INI section header / AWS_PROFILE env var.
@@ -141,6 +172,7 @@ export async function writeProfileCredentialsFile(
   }
   const dir = await mkdtemp(path.join(tmpdir(), 'cdkd-profile-creds-'));
   const hostPath = path.join(dir, 'credentials');
+  opts?.onDirCreated?.(hostPath);
   // cdkd-local-env-identity: this writer chooses NO identity — it renders the
   // credential set its caller hands it, so the verdict belongs at the four call
   // sites and each carries one. It is a site anyway because the file below is
@@ -179,7 +211,31 @@ export async function writeProfileCredentialsFile(
   try {
     await writeFile(hostPath, lines.join('\n') + '\n', { mode: 0o600 });
   } catch (err) {
-    await rm(dir, { recursive: true, force: true }).catch(() => {});
+    // GATED on the removal actually happening (go-to-k/cdkd#3435 review round
+    // 3). `rm` is best-effort so a failing one cannot replace the real cause --
+    // but an `rm` that REJECTED leaves the directory on disk, possibly holding
+    // a partially written mode-0600 `credentials`, and retracting the path
+    // there would silence the very notice go-to-k/cdkd#3410 exists for.
+    let removed = true;
+    await rm(dir, { recursive: true, force: true }).catch(() => {
+      removed = false;
+    });
+    // RETRACT the path the hook published (go-to-k/cdkd#3435 review round 2).
+    // The cleanup above means the directory is GONE, so a caller that kept the
+    // path from `onDirCreated` would later tell an operator to delete something
+    // that does not exist -- reachable and persistent, because
+    // `local-start-api.ts`'s `reloadAllServers` catches a failed reload and
+    // keeps serving. Retracting is the other half of publishing early: the hook
+    // says "this directory exists", and it has to be able to say it no longer
+    // does. Best-effort like the `rm`, so a throwing handler cannot replace the
+    // real cause.
+    if (removed) {
+      try {
+        opts?.onDirRemoved?.(hostPath);
+      } catch {
+        /* the original error is what the caller needs */
+      }
+    }
     throw err;
   }
   return {
@@ -194,6 +250,50 @@ export async function writeProfileCredentialsFile(
       await rm(dir, { recursive: true, force: true });
     },
   };
+}
+
+/**
+ * The sentence an exit path owes when it leaves this file on disk
+ * (issue [#3410](https://github.com/go-to-k/cdkd/issues/3410)).
+ *
+ * Takes the PATH rather than the `ProfileCredentialsFile` (go-to-k/cdkd#3435
+ * review): a caller on a signal path may hold the path from
+ * `writeProfileCredentialsFile`'s `onDirCreated` hook while the file object
+ * itself is still an unresolved promise, and the sentence is the same either
+ * way. `undefined` renders nothing, so a run that passed no `--profile` is not
+ * told about a path that does not exist.
+ *
+ * ## Why the remedy is to NAME the path rather than to remove it
+ *
+ * Every exit path that can reach this notice leaves the CONTAINERS running with
+ * this file bind-mounted, and that is the premise `local-run-task.ts`'s detach
+ * arm already records: the file cannot be disposed there precisely because the
+ * containers outlive the process. A force-exit is the same situation reached a
+ * different way -- "container cleanup skipped" is what it announces -- so the
+ * synchronous `rmSync` that suggests itself would be removing a mount the
+ * surviving containers are still reading, on the strength of a premise this
+ * repo has not measured either way. What the file is instead is INVISIBLE: it
+ * is mode-0600 in `$TMPDIR`, nothing reports it, and one accumulates per
+ * force-quit. Naming it is what the operator can act on, and it is what the
+ * detach arm already does.
+ *
+ * ONE BUILDER FOR ALL THREE SITES, not three sentences that agree today. They
+ * say the same thing for the same reason -- the two force-exit arms
+ * (`local-run-task.ts`, `local-start-api.ts`) and the detach notice -- and a
+ * wording that drifts between them is how an operator learns to read one shape
+ * and miss another. Each CALLER supplies its own cause clause; this supplies
+ * the remedy.
+ *
+ * `displayIdent` for the same reason the detach arm gives: the path is cdkd's
+ * own `mkdtemp` output, so sanitization is the identity on it, but the rule
+ * belongs to the SURFACE rather than to the value.
+ */
+export function strandedProfileCredentialsNotice(hostPath: string | undefined): string | undefined {
+  if (hostPath === undefined) return undefined;
+  return (
+    `The AWS credentials file mounted into the containers is NOT removed: ` +
+    `delete ${displayIdent(hostPath)} once you tear them down.`
+  );
 }
 
 /**

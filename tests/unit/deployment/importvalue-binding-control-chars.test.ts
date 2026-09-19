@@ -32,9 +32,16 @@ import type { CloudFormationTemplate } from '../../../src/types/resource.js';
  * The cases below are BEHAVIOURAL for the same reason that file states: a
  * source-shape assertion passes while the binding feeds only one of the six
  * sites that read it, and says nothing about what reaches a terminal. The
- * SHAPE half — "no render may reach a masker that does not sanitize", judged
- * through the binding by an AST walk — is
- * `scripts/check-resolver-mask-coverage.ts` and its suite.
+ * SHAPE half — "no render may reach a masker that does not sanitize" — used to
+ * be an AST walk over the whole file, and is NOT any more: go-to-k/cdkd#3435
+ * deleted that checker as high-maintenance tooling (23 commits across it and
+ * its suite in nine days, and a widening attempted one PR earlier produced nine
+ * defects inside itself and was withdrawn). What survives of it is the cheap
+ * half, in `resolver-display-masked-population.test.ts`: the AST CONTAINMENT
+ * counts, and a line rule refusing a direct `${this.<raw masker>(...)}`
+ * interpolation. The population question — "is there a TWENTY-SECOND render
+ * nobody wrapped" — is no longer asked by anything, and cases like the ones
+ * below are what covers each render that exists.
  */
 
 /**

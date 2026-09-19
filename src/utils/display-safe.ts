@@ -433,3 +433,56 @@ export function displayIdent(value: unknown, opts?: { maxCodePoints?: number }):
     ? `${shown} [cut: ${clean.length - text.length} more characters withheld]`
     : shown;
 }
+
+/**
+ * The shape a state-key segment must have before it may be interpolated into a
+ * command cdkd invites an operator to PASTE.
+ *
+ * An ALLOW-LIST, and deliberately so: the first cut of this predicate was a
+ * deny-list that refused a leading `-`, and review defeated it with a leading
+ * `~`. A deny-list has to enumerate every character a shell treats specially
+ * BEFORE cdkd sees the word, and the set of things nobody thought of is
+ * unbounded. The repo already settled this once — `rollback-executor.ts`'s
+ * `PASTEABLE_LOGICAL_ID` is `/^[A-Za-z0-9]{1,255}$/`, with a comment naming
+ * `~user` and `=x` by name.
+ *
+ * This one is wider than that because the values here are not logical ids: a
+ * cdkd state record's stack name carries `~` (a nested-stack child is minted
+ * `${parent}~${logicalId}`) and a region carries `-`. What it keeps from the
+ * precedent is the LEADING character, which is where the danger is. MEASURED
+ * in bash on a real host rather than reasoned:
+ *
+ *     ~root        -> /var/root        ~/x  -> $HOME/x       ~-  -> $OLDPWD
+ *     a=~/x        -> a=$HOME/x
+ *     Parent~Child -> inert            a:~/x -> inert
+ *
+ * So `~` is dangerous only in the leading position or straight after `=`,
+ * which is why a medial `~` stays in the set and `=` stays out of it entirely.
+ * A leading digit or letter also closes the option case: `--state-bucket=x`
+ * cannot match, and that one is NOT about shell quoting — it is still an
+ * OPTION after quoting, which is why the answer is refusal rather than quoting.
+ */
+const PASTEABLE_STATE_IDENT = /^[A-Za-z0-9][A-Za-z0-9~_.-]*$/;
+
+/**
+ * Is this value safe to interpolate into a command we tell an operator to RUN?
+ *
+ * Two independent tests, and BOTH are load-bearing:
+ *
+ * 1. {@link PASTEABLE_STATE_IDENT}, which decides the shell question — see its
+ *    own note for why it is an allow-list and what was measured.
+ * 2. It renders byte-identically through `displayIdent`, which adds the LENGTH
+ *    cap and the ASCII rule the regex does not carry, asked through the public
+ *    API rather than by re-spelling `PLAIN_IDENT` (a second spelling of a
+ *    security predicate is how the two drift).
+ *
+ * Deliberately NOT shell-quoting instead. Quoting answers test 2's population
+ * and none of the option case — `'--state-bucket=attacker'` is still parsed as
+ * a flag — and a command that LOOKS runnable is the thing being handed over, so
+ * the honest answer for a value failing either test is to print the S3 key and
+ * let the operator decide.
+ */
+export function isPasteableIdent(value: string): boolean {
+  if (!PASTEABLE_STATE_IDENT.test(value)) return false;
+  return displayIdent(value, { maxCodePoints: STACK_REF_MAX_CODE_POINTS }) === value;
+}

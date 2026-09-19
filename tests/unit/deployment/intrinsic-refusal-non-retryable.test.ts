@@ -288,10 +288,10 @@ describe('IntrinsicResolutionRefusalError throw sites are non-retryable (#1874 r
     // `not-in-class(observed)` note that asserts a property of its CALLERS:
     // the clause is a cdkd-authored sentence carrying an instance STATE
     // name, an error CLASS name, or a masked attribute name — never a
-    // resolved template value. `scripts/check-resolver-mask-coverage.ts`
-    // audits throw / log statements, and the clause is assembled at the CALL
-    // site, outside that population — so the note is a claim the checker
-    // cannot see. This pins it at the source: each `observed:` argument is
+    // resolved template value. The AST checker that once audited throw / log
+    // statements was deleted in go-to-k/cdkd#3435, and it could not have seen
+    // this claim anyway — the clause is assembled at the CALL site, outside
+    // the population it walked. This pins it at the source: each `observed:` argument is
     // either a string literal, a `describeFailureObserved(...)` call, or a
     // template literal whose only holes are `this.displayMasked(...)` and
     // `observedState` (the EC2 state enum). A fourth shape fails here.

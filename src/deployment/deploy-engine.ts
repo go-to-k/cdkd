@@ -21,7 +21,7 @@ import {
   ResourceUpdateNotSupportedError,
   CdkdError,
 } from '../utils/error-handler.js';
-import { displaySafe } from '../utils/display-safe.js';
+import { displayIdent, displaySafe, isPasteableIdent } from '../utils/display-safe.js';
 import { shellQuote } from '../state/lock-contention-message.js';
 import {
   refuseMalformedOutputs,
@@ -1972,30 +1972,99 @@ export class DeployEngine {
      * cdkd never EXECUTES this string — it is advice in an error message — so
      * this is about the pasted command being correct, not about injection into
      * cdkd itself (issue #2847 round-5 review).
+     *
+     * SINCE go-to-k/cdkd#3435 no id reaching this arm can contain a `'`:
+     * `isPasteableIdent` admits `[A-Za-z0-9][A-Za-z0-9~_.-]*` only, and the
+     * command is not emitted for anything else. Kept anyway rather than
+     * deleted — dropping a guard on the strength of a NEW guard one line up is
+     * how the pair later comes apart, and this one costs a `replaceAll` on a
+     * short string.
      */
     const quoteSafe = (id: string): string => id.replaceAll("'", `'\\''`);
+
+    /**
+     * A logical id rendered as a NAME rather than as a command argument
+     * (go-to-k/cdkd#3435 security round).
+     *
+     * Every sentence below is joined into a `ProvisioningError` message that
+     * `handleError` prints at DEFAULT verbosity, and neither `formatError` nor
+     * the logger sanitizes `error.message` — they cover a `cause` and the extra
+     * ARGS respectively. So a `Resources` KEY carrying `ESC[2K` + CR reached the
+     * terminal raw, which is the same class this PR closed at 18 resolver
+     * renders and missed one module out.
+     */
+    const shown = (id: string): string => displayIdent(id);
+
+    /** CloudFormation's own logical-id length bound. */
+    const CFN_LOGICAL_ID_MAX_LENGTH = 255;
 
     const parts: string[] = [];
     if (localTargets.length > 0) {
       // ONE COMMAND PER TARGET: naming several ids beside a single command
       // reads as though the one command covers them all.
-      parts.push(
-        `Re-import the record that HOLDS the mask: ` +
-          localTargets
-            .map((id) => `'cdkd import <stack> --resource ${quoteSafe(id)}=<physicalId> --force'`)
-            .join(', ') +
-          `.`
-      );
+      //
+      // AND THE COMMAND IS WITHHELD FOR AN ID THAT IS NOT PASTEABLE
+      // (go-to-k/cdkd#3435). Sanitizing the id in place is the WRONG remedy
+      // here and was rejected for the reason this function's own header already
+      // records about its round-4 regexes: a stripped id names a DIFFERENT,
+      // possibly innocent row, and `cdkd import --force` accepts it. So the two
+      // arms differ in kind — a pasteable id gets the runnable command, and
+      // anything else gets its rendered NAME plus a sentence saying why the
+      // command is not given. Same SPLIT `rollback-executor.ts` makes for
+      // `cdkd rollback --orphan <id>`, through a stricter predicate — that
+      // site takes CloudFormation's own `[A-Za-z0-9]` charset, and this one
+      // must not, because cdkd validates no logical-id charset and a HYPHENATED
+      // id is exactly the round-4 blocker this function's header records. A
+      // `[A-Za-z0-9]` rule here was written first and MEASURED: it withheld the
+      // command for `My-Table`, reddening four existing cases that pin the
+      // hyphenated id reaching the LOCAL arm. `isPasteableIdent` is the rule
+      // calibrated for cdkd's own id space (medial `~` / `_` / `.` / `-`
+      // admitted, a LEADING one refused because that is where the option and
+      // tilde-expansion shapes live).
+      // The CAP is tightened at this call site (go-to-k/cdkd#3435 security
+      // round 2). `isPasteableIdent` admits up to `STACK_REF_MAX_CODE_POINTS`,
+      // which is right for its home population -- a cdkd state-record stack
+      // name is minted recursively as `${parent}~${logicalId}` and is not
+      // bounded by CloudFormation's 128. A LOGICAL ID has no such recursion, so
+      // a thousand-character one is a payload on a default-verbosity line
+      // rather than a legitimate value. No injection either way (the charset is
+      // plain), so this is a bound, not a guard -- and it is applied HERE
+      // rather than by loosening a shared security predicate's signature.
+      const pasteableHere = (id: string): boolean =>
+        isPasteableIdent(id) && id.length <= CFN_LOGICAL_ID_MAX_LENGTH;
+      const pasteable = localTargets.filter(pasteableHere);
+      const withheld = localTargets.filter((id) => !pasteableHere(id));
+      if (pasteable.length > 0) {
+        parts.push(
+          `Re-import the record that HOLDS the mask: ` +
+            pasteable
+              .map((id) => `'cdkd import <stack> --resource ${quoteSafe(id)}=<physicalId> --force'`)
+              .join(', ') +
+            `.`
+        );
+      }
+      if (withheld.length > 0) {
+        parts.push(
+          `Re-import the record that HOLDS the mask for ${withheld.map(shown).join(', ')}, but ` +
+            `the command is withheld: that is not a plain CloudFormation logical id, so a pasted ` +
+            `'cdkd import <stack> --resource <id>=<physicalId> --force' could be reshaped by the ` +
+            `shell or name a different resource. Read the id from 'cdkd state show' and quote it ` +
+            `yourself.`
+        );
+      }
     }
     if (unclearableTargets.length > 0) {
       // NAMES THE RESOURCE AND WITHHOLDS THE COMMAND. `CustomResourceProvider.import`
       // returns no attributes, and the import's same-physical-id carry-over
       // then restores the masked bag, so the re-import above would run cleanly
       // and change nothing.
+      //
+      // This arm names ids and NEVER pastes one, so it takes `shown`
+      // unconditionally rather than the pasteable split above.
       parts.push(
-        `Do NOT re-import ${unclearableTargets.join(', ')}: a custom resource's import records ` +
-          `no attributes, so the masked bag is carried forward unchanged and the refusal ` +
-          `repeats. Cause (1) above is the one that applies to it.`
+        `Do NOT re-import ${unclearableTargets.map(shown).join(', ')}: a custom resource's ` +
+          `import records no attributes, so the masked bag is carried forward unchanged and the ` +
+          `refusal repeats. Cause (1) above is the one that applies to it.`
       );
     }
     if (foreignReads.length > 0) {

@@ -806,7 +806,10 @@ continues.
 
 A second `Ctrl-C` bypasses dispose and exits immediately, so you can escape a
 hung Docker daemon. The warning names the containers that were skipped along
-with the `docker ps` command to clean them up.
+with the `docker ps` command to clean them up — and, when `--profile <p>` was
+passed, the path of the synthesized credentials file dispose would have
+removed. That file is mode `0600` and holds live credentials, so delete it once
+you have torn the containers down.
 
 ## Exit codes
 

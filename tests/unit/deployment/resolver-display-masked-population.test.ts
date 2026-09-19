@@ -4,7 +4,45 @@ import path from 'node:path';
 import { describe, expect, it } from 'vite-plus/test';
 import ts from 'typescript-v6';
 
-import { RAW_MASKERS } from '../../../scripts/check-resolver-mask-coverage.ts';
+/**
+ * Functions that return a MASKING ANSWER and nothing more — masked text that is
+ * NOT safe to put on a terminal.
+ *
+ * INLINED here in go-to-k/cdkd#3435, from
+ * `scripts/check-resolver-mask-coverage.ts`, which that change DELETED. This
+ * file was its only importer outside the checker's own suite, and importing a
+ * security-relevant list across a file the repo has decided to stop carrying is
+ * the kind of coupling that makes a deletion expensive. The list is data, not
+ * machinery — sixteen method names — so it travels with the rule that reads it.
+ *
+ * WHY THESE, and the rule for adding one: each returns text whose SECRETS have
+ * been removed and whose CONTROL CHARACTERS have not. A render reaching one
+ * directly is the defect go-to-k/cdkd#3397 / #3408 / #3426 chased through four
+ * review rounds; the remedy is always `displayMasked` / `displayLeaf`. The
+ * earlier enumeration missed five of these (`regionLogText`,
+ * `straddleSafeTwin`, `productLogTwin`, `logTwinOfProduct`,
+ * `resolveDynamicReferencesWithLogTwin`), each found by measurement rather than
+ * by reading — so a NEW private method returning masked-but-unstripped text
+ * belongs here, and the floor below is what stops the list quietly emptying.
+ */
+const RAW_MASKERS = [
+  'maskSecretsRaw',
+  'maskNeedlesForLog',
+  'maskThenStripThenMask',
+  'registeredLogTwin',
+  'logTextOfLeaf',
+  'logTwinText',
+  'nameLogText',
+  'outputNameLogText',
+  'maskSecretsInText',
+  'regionLogText',
+  'straddleSafeTwin',
+  'productLogTwin',
+  'splitLogTwins',
+  'dynamicReferenceNameLogText',
+  'logTwinOfProduct',
+  'resolveDynamicReferencesWithLogTwin',
+] as const;
 
 /**
  * Every masked value this resolver RENDERS goes through `displayMasked`, and
@@ -42,7 +80,7 @@ import { RAW_MASKERS } from '../../../scripts/check-resolver-mask-coverage.ts';
  *
  * A line-shaped scanner with one more pattern is the same instrument that had
  * already missed the class four times. The rule now lives where identifier
- * RESOLUTION already lived: `scripts/check-resolver-mask-coverage.ts` walks the
+ * RESOLUTION already lived: the AST mask-coverage checker walked the
  * AST, resolves an interpolated identifier to its declaration and judges the
  * initializer, and its `MASKERS` list means "masks AND sanitizes" since
  * go-to-k/cdkd#3426 — so a binding of a bare masker is a finding wherever it is
@@ -314,10 +352,13 @@ describe('the resolver has ONE exit from the masking machinery (go-to-k/cdkd#342
     const offenders = code
       .split('\n')
       .map((line, i) => ({ line: i + 1, text: line }))
-      .filter(({ text }) => new RegExp(`\\$\\{\\s*this\\.(${RAW_MASKERS.join('|')})\\(`).test(text))
+      .filter(({ text }) => new RegExp(`\\$\\{\\s*this\\.(${[...RAW_MASKERS].join('|')})\\(`).test(text))
       .map(({ line, text }) => `${SUBJECT}:${line}  ${text.trim()}`);
 
-    expect(RAW_MASKERS.length, 'the imported name list is empty, so this rule scans for nothing').toBeGreaterThanOrEqual(14);
+    expect(
+      RAW_MASKERS.length,
+      'the name list is empty, so this rule scans for nothing'
+    ).toBeGreaterThanOrEqual(14);
     expect(
       offenders,
       'This interpolates a masking ANSWER straight into a message. Those helpers answer "does this ' +
@@ -343,7 +384,7 @@ describe('the resolver has ONE exit from the masking machinery (go-to-k/cdkd#342
 
   it('keeps the builders DELEGATING, so listing them in MASKERS stays true', () => {
     // Guard-the-guard, and it guards a SECURITY decision: `displayMasked` is in
-    // `MASKERS` in `scripts/check-resolver-mask-coverage.ts`, i.e. that checker
+    // the deleted checker's `MASKERS` list, i.e. that checker
     // treats a site using it as masked AND sanitized, and asks nothing further.
     // That is only sound while the body actually does both. Re-pointing it at
     // `displaySafe` alone would silently downgrade every site from masked to

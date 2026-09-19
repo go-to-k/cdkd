@@ -788,10 +788,33 @@ function buildUnknownIntrinsicError(key: string): Error {
   const issueUrl =
     `https://github.com/go-to-k/cdkd/issues/new` +
     `?title=${encodeURIComponent(title)}&labels=intrinsic-support`;
-  // not-in-class(key): a structural operand (an index, count, delimiter or property key).
-  // not-in-class(issueUrl): a constant prefix plus `encodeURIComponent(key)` -- it carries no value beyond `key`, whose own note is above. NOT "a constant URL": percent-encoding is itself a mask-evading transform, so if `key` were ever in the class this would be too.
+  // `key` is the template's OWN object key -- arbitrary JSON, exactly like a
+  // `Resources` key -- and this is a THROW the user sees at any verbosity, so
+  // it takes `displayIdent` (go-to-k/cdkd#3435 review round 2). A free function
+  // with no secrets bag, and an intrinsic name IS an identifier, so the
+  // identifier renderer rather than the resolver's masking builder.
+  //
+  // THE HAND-WRITTEN QUOTES STAY, and a review round asked for them to go
+  // (round 3 nit). `displayIdent` quotes CONDITIONALLY -- bare for a plain
+  // identifier, JSON-quoted for anything it had to alter -- so keeping a pair
+  // here renders an ALTERED key as `""Fn::Ev il""`. The nit's premise is the
+  // one `writeProfileCredentialsFile`'s refusal rests on: "every value that
+  // reaches this throw is non-plain by construction". That is TRUE there and
+  // FALSE here -- almost every value reaching this line is an ordinary
+  // `Fn::Length` / `Fn::ForEach`, which renders BARE.
+  //
+  // MEASURED by applying the change: seven cases in
+  // `intrinsic-functions.test.ts` pin the quoted form for exactly those plain
+  // keys, and all seven went red. Losing the boundary on the common case to
+  // tidy the rare one is the wrong trade; a double pair is ugly and still
+  // unambiguous.
+  //
+  // `issueUrl` needs none: it is a constant prefix plus `encodeURIComponent`,
+  // which percent-encodes every character a terminal acts on. (Percent-encoding
+  // is itself a mask-evading transform, so if `key` were ever in the SECRET
+  // class this would be too -- it is not, being a structural operand.)
   return new Error(
-    `Unsupported CloudFormation intrinsic function "${key}": ` +
+    `Unsupported CloudFormation intrinsic function "${displayIdent(key)}": ` +
       `cdkd does not support resolving it yet. ` +
       `Deploying this template would produce a broken value. ` +
       `Please request support by opening an issue: ${issueUrl}`
@@ -3320,9 +3343,10 @@ export class IntrinsicFunctionResolver {
     // for its reason: `stripControlChars` DELETES, so a plaintext split by an
     // invisible would be reconstituted contiguous by a strip after one mask.
     // Then `displaySafe`, for the class the strip does not cover. This is the
-    // shape every `MASKERS` entry in `scripts/check-resolver-mask-coverage.ts`
-    // must now have; the entry's own note says why this masker is deliberately
-    // narrower about BAGS than the builder.
+    // shape every masker reaching a render must have. This one is deliberately
+    // narrower about BAGS than the builder: it masks against the INHERITED bag
+    // alone, which is the only bag that can hold the needle at this seam, so a
+    // FOURTH call site is a security decision rather than a copy.
     const maskInherited = (text: string): string => {
       const mask = (value: string): string =>
         inheritedSecrets && inheritedSecrets.size > 0
@@ -3368,10 +3392,47 @@ export class IntrinsicFunctionResolver {
       // very same question (issue #2285) and the two must not drift. Hoisted
       // above the branches so both sites read one definition of the population
       // instead of one site defining it and the other reconstructing it.
+      // THE WHOLE LOOP BODY RENDERS `name`, and all six renders sanitize
+      // (go-to-k/cdkd#3435 review round 2). The five debug lines below took
+      // `maskInherited` -- already in scope, already the pass every VALUE on
+      // this method uses -- rather than a second spelling. They are `debug`
+      // rather than default-verbosity, which changes WHEN a reader sees the
+      // line, not whether the bytes reach a terminal; and leaving five of six
+      // on a premise the sixth refutes thirty lines down is the "sweep the
+      // CLASS, not the instance" miss this repo keeps measuring.
       if (isUnboundTemplateParameter(name, template, userParameters)) {
-        // not-in-class(name): a template-DECLARED identifier (a Parameters / Conditions key), which CloudFormation requires to be a literal.
+        // SWEPT IN WITH THE 19 (go-to-k/cdkd#3432 review). This note carried
+        // the SAME premise the eighteen logical-id ones could not support --
+        // "CloudFormation requires a literal" -- and it is false here for the
+        // same reason: cdkd reads the template as JSON, so a `Parameters` KEY is
+        // only as constrained as the file, and `cdkd import
+        // --migrate-from-cloudformation` reads a hand-written one. MEASURED by
+        // the reviewer on this tree: a parameter named `Prod<ESC>[2K<CR>Evil`
+        // put a live terminal-rewriting sequence on this THROW, which the user
+        // sees at any verbosity.
+        //
+        // It sat outside go-to-k/cdkd#3432's own population because that issue
+        // defined the population by grepping for the marker spelled with
+        // `logicalId` in its parentheses, and this one names `name` instead.
+        // (The literal tag is not written in this comment on purpose: the
+        // checker scans raw text for it, so a prose mention parses as a marker
+        // no site consumes -- which it then reports STALE. Measured while
+        // writing this paragraph, exactly as `displayMasked`'s own doc warns.)
+        // Fixed here rather than filed: it is the same class, in
+        // the same file, one marker over -- and `scrub.ts`'s classification
+        // note had just been edited to call this pattern's id "the only one
+        // still rendered raw", which would have shipped as a standing
+        // description of a live exposure.
+        //
+        // `maskInherited`, the same pass the five debug lines in this loop take
+        // and the one this method already defines: it masks against the
+        // INHERITED bag -- the only bag that can hold a needle at this seam --
+        // then strips, masks again and runs `displaySafe`. An earlier revision
+        // of this comment said the site had "no context to pass", which was
+        // false: `inheritedLogContext` is in scope from the top of the method
+        // (go-to-k/cdkd#3435 review round 2).
         throw new Error(
-          `Parameter ${name} is required but no value was provided and no default exists`
+          `Parameter ${maskInherited(name)} is required but no value was provided and no default exists`
         );
       }
 
@@ -3384,9 +3445,8 @@ export class IntrinsicFunctionResolver {
         if (userValue !== undefined) {
           this.refuseCoercedInheritedSecret(name, paramDef, userValue, inheritedSecrets);
           parameters[name] = this.coerceParameterValue(userValue, paramDef.Type);
-          // not-in-class(name): a template-DECLARED identifier (a Parameters / Conditions key), which CloudFormation requires to be a literal.
           this.logger.debug(
-            `Parameter ${name}: using user-provided value ${maskInherited(
+            `Parameter ${maskInherited(name)}: using user-provided value ${maskInherited(
               stringifyParameterForLog(
                 paramDef,
                 this.maskValueLeaves(userValue, inheritedLogContext)
@@ -3411,16 +3471,18 @@ export class IntrinsicFunctionResolver {
           // otherwise), defeating cdkd-owned asset storage (issue #1002).
           referencedNames ??= collectReferencedParameterNames(template);
           if (!referencedNames.has(name)) {
-            // not-in-class(name): a template-DECLARED identifier (a Parameters / Conditions key), which CloudFormation requires to be a literal.
             this.logger.debug(
-              `Parameter ${name}: skipping SSM resolution (not referenced by Resources/Outputs/Conditions)`
+              `Parameter ${maskInherited(name)}: skipping SSM resolution (not referenced by Resources/Outputs/Conditions)`
             );
             continue;
           }
           const ssmPath = String(paramDef.Default);
-          // not-in-class(name): a template-DECLARED identifier (a Parameters / Conditions key), which CloudFormation requires to be a literal.
-          // not-in-class(ssmPath): an SSM path from the parameter DEFINITION in the template.
-          this.logger.debug(`Parameter ${name}: resolving SSM parameter path ${ssmPath}`);
+          // `ssmPath` is an SSM path from the parameter DEFINITION in the
+          // template -- the same untrusted JSON the NAME comes from, so it takes
+          // the same pass.
+          this.logger.debug(
+            `Parameter ${maskInherited(name)}: resolving SSM parameter path ${maskInherited(ssmPath)}`
+          );
           const resolved = await this.resolveSSMParameter(ssmPath);
           // Coerced against the INNER type peeled out of `Value<...>`, never
           // the declared outer one -- see {@link ssmResolvedValueType} for why
@@ -3446,9 +3508,8 @@ export class IntrinsicFunctionResolver {
             resolvedType === undefined
               ? resolved
               : this.coerceParameterValue(resolved, resolvedType);
-          // not-in-class(name): a template-DECLARED identifier (a Parameters / Conditions key), which CloudFormation requires to be a literal.
           this.logger.debug(
-            `Parameter ${name}: resolved SSM value ${maskInherited(
+            `Parameter ${maskInherited(name)}: resolved SSM value ${maskInherited(
               stringifyParameterForLog(paramDef, resolved)
             )}`
           );
@@ -3460,9 +3521,8 @@ export class IntrinsicFunctionResolver {
         // (issue #2367). Only a STRING default is coerced -- see
         // {@link coerceParameterDefault} for the measured parsed shapes.
         parameters[name] = coerceParameterDefault(paramDef.Default, paramDef.Type);
-        // not-in-class(name): a template-DECLARED identifier (a Parameters / Conditions key), which CloudFormation requires to be a literal.
         this.logger.debug(
-          `Parameter ${name}: using default value ${maskInherited(
+          `Parameter ${maskInherited(name)}: using default value ${maskInherited(
             stringifyParameterForLog(paramDef, paramDef.Default)
           )}`
         );
@@ -3579,9 +3639,11 @@ export class IntrinsicFunctionResolver {
     // `stringifyParameterForLog` encodes them; the SSM-resolved and `Default`
     // parameter lines still pass the raw value to `stringifyParameterForLog`
     // and mask only its output. The checkable statement is
-    // "`maskValueLeaves`'s call sites", not "every encoding"; the file-wide
-    // question is answered by `scripts/check-resolver-mask-coverage.ts`, which
-    // requires every interpolating site to be masked or annotated.
+    // "`maskValueLeaves`'s call sites", not "every encoding". The FILE-WIDE
+    // question -- "is every interpolating site masked or deliberately not" --
+    // was answered by an AST checker that go-to-k/cdkd#3435 DELETED as
+    // high-maintenance tooling, and nothing asks it now; each render is pinned
+    // by its emitted bytes instead.
     //
     // WHAT STAYS OPEN, stated rather than implied: a re-encoding cdkd does not
     // perform — a URL escaping, a hash, an `Fn::Join` that transforms rather
@@ -3617,8 +3679,9 @@ export class IntrinsicFunctionResolver {
         return conditions[name]!;
       }
       if (inProgress.has(name)) {
-        // not-in-class(name): a template-DECLARED identifier (a Parameters / Conditions key), which CloudFormation requires to be a literal.
-        throw new Error(`Circular condition reference detected involving condition "${name}"`);
+        throw new Error(
+          `Circular condition reference detected involving condition "${this.displayMasked(name, maskingContext)}"`
+        );
       }
       // The TEMPLATE's own `Conditions` object comes from `JSON.parse`, so this
       // read needs the same own-key test (issue #2767): a condition named
@@ -3630,8 +3693,9 @@ export class IntrinsicFunctionResolver {
       if (definition === undefined) {
         // A `{Condition: X}` reference to an undeclared condition. Match the
         // Fn::If not-found behavior: warn and treat as false.
-        // not-in-class(name): a template-DECLARED identifier (a Parameters / Conditions key), which CloudFormation requires to be a literal.
-        this.logger.warn(`Condition ${name} not found in template, assuming false`);
+        this.logger.warn(
+          `Condition ${this.displayMasked(name, maskingContext)} not found in template, assuming false`
+        );
         conditions[name] = false;
         return false;
       }
@@ -3646,9 +3710,10 @@ export class IntrinsicFunctionResolver {
         });
         const value = Boolean(result);
         conditions[name] = value;
-        // not-in-class(name): a template-DECLARED identifier (a Parameters / Conditions key), which CloudFormation requires to be a literal.
-        // not-in-class(value): a CONDITION verdict -- Boolean(result), so a boolean.
-        this.logger.debug(`Evaluated condition ${name} = ${value}`);
+        // `value` carries nothing: it is `Boolean(result)`.
+        this.logger.debug(
+          `Evaluated condition ${this.displayMasked(name, maskingContext)} = ${value}`
+        );
         return value;
       } finally {
         inProgress.delete(name);
@@ -4029,8 +4094,11 @@ export class IntrinsicFunctionResolver {
           resolved[key] = resolvedVal;
         }
       } else {
-        // not-in-class(key): a structural operand (an index, count, delimiter or property key).
-        this.logger.debug(`Property ${key} resolved to AWS::NoValue, omitting from object`);
+        // `key` is a template object key -- arbitrary JSON, same class as a
+        // `Resources` key (go-to-k/cdkd#3435 review round 2).
+        this.logger.debug(
+          `Property ${this.displayMasked(key, context)} resolved to AWS::NoValue, omitting from object`
+        );
       }
     }
     return resolved;
@@ -4259,17 +4327,22 @@ export class IntrinsicFunctionResolver {
     // no retry rewrites, and the message interpolates a template-controlled
     // parameter NAME that the substring-matching retry classifiers can read as
     // transient (issue #1838).
-    // not-in-class(name): a template-DECLARED identifier (a Parameters / Conditions key), which CloudFormation requires to be a literal.
     // not-in-class(paramDef.Type): a TYPE name from the template or from AWS, not a value.
+    //
+    // `name` is a template-declared PARAMETER key, i.e. arbitrary JSON, so it
+    // takes the builder like every other identifier this file renders
+    // (go-to-k/cdkd#3435 review round 2). It appears TWICE in this message, so
+    // it is bound once.
+    const loggedName = this.displayMasked(name);
     throw markNonRetryable(
       new IntrinsicResolutionRefusalError(
-        `Nested-stack parameter '${name}' is declared 'Type: ${paramDef.Type}', but the ` +
+        `Nested-stack parameter '${loggedName}' is declared 'Type: ${paramDef.Type}', but the ` +
           `parent stack resolved a SECRET dynamic reference into it. cdkd keeps a resolved ` +
           `secret out of persisted state by rewriting STRING leaves back to their ` +
           `{{resolve:...}} expression; coercing this value to '${paramDef.Type}' destroys the ` +
           `plaintext cdkd would have matched on, so the DECRYPTED secret would be left in the ` +
           `child stack's state.json with nothing to redact it back ` +
-          `to. Declare '${name}' as 'Type: String' in the nested stack's template (CDK does ` +
+          `to. Declare '${loggedName}' as 'Type: String' in the nested stack's template (CDK does ` +
           `this by default for cross-stack references), or stop passing a secret reference ` +
           `into it.`,
         undefined,
@@ -4301,9 +4374,10 @@ export class IntrinsicFunctionResolver {
       : undefined;
     if (resource) {
       const refValue = this.resolveRefValue(logicalId, resource, context);
-      // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
       // not-in-class(refValue): a Ref result -- everything cfnRefValueFromPhysicalId can return for a RESOURCE, which is FOUR things: the physical id from state; a SEGMENT of it (after-pipe / before-first-pipe / at-index / the name extracted from an ARN); the WAFv2 compound recomposed from that ARN; or a state-recovered Ref key (TableName / SelectionId / RepositoryId / an AppSync ARN) read out of this record's own persisted properties / attributes. The last is the only member that could be SECRET_MASK, and it is IN-CLASS either way -- do not read the opt-in as removing it. Traced rather than reasoned from the design intent: refStateLookupFromResource skips a masked leaf ONLY for a caller that passed an onMaskedValue, and resolveRefValue passes one only when the context carries a redactedAttributeReads bag, so every BAGLESS caller (cdkd diff, cdkd scrub, cdkd import, cdkd export's child-parameter pass) still gets SECRET_MASK back here. That is safe for the ordinary reason rather than a special one: SECRET_MASK is not plaintext, and the four readers that recognise it still do. A pseudo-parameter value is NOT in this enumeration -- this arm is the RESOURCE branch, and a pseudo-parameter is handled further down (a previous revision listed it here, where it is unreachable). A Ref to a NoEcho PARAMETER renders through stringifyParameterForLog on that branch.
-      this.logger.debug(`Resolved Ref to resource: ${logicalId} -> ${refValue}`);
+      this.logger.debug(
+        `Resolved Ref to resource: ${this.displayMasked(logicalId, context)} -> ${refValue}`
+      );
       return refValue;
     }
 
@@ -4338,9 +4412,8 @@ export class IntrinsicFunctionResolver {
       // the plaintext. `stringifyParameterForLog` only covers the author's own
       // `NoEcho` declaration, and a CDK-synthesized nested-stack parameter
       // never carries one.
-      // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
       this.logger.debug(
-        `Resolved Ref to parameter: ${logicalId} -> ${this.displayMasked(
+        `Resolved Ref to parameter: ${this.displayMasked(logicalId, context)} -> ${this.displayMasked(
           stringifyParameterForLog(paramDef, this.maskValueLeaves(value, context)),
           context
         )}`
@@ -4359,7 +4432,29 @@ export class IntrinsicFunctionResolver {
     if (pseudoValue !== undefined) {
       const valueStr =
         typeof pseudoValue === 'symbol' ? pseudoValue.toString() : String(pseudoValue);
-      // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
+      // THE ONE SITE IN go-to-k/cdkd#3432's POPULATION WHERE THE ID IS REALLY CONSTRAINED, and the marker
+      // below says so rather than repeating the premise its eighteen siblings could not support. Reaching
+      // this line means `resolvePseudoParameter` returned a value, and that method is a `switch` over
+      // cdkd-authored literal case labels with a `default` of `undefined` -- so `logicalId` here is one of
+      // those spellings, byte for byte, whatever the template wrote. A template-supplied name that merely
+      // RESEMBLES one (a trailing ESC on the region pseudo-parameter) misses every case and falls through
+      // to the not-found arm below, which renders through the builder. MEASURED both ways by
+      // `tests/unit/deployment/resolver-logical-id-control-chars.test.ts`, so the premise is fenced rather
+      // than asserted: that suite READS the case labels out of this method and drives every one, and drives
+      // the near-miss spelling too, which lands on the not-found warn with its control character stripped.
+      // No count is written here on purpose -- the suite derives the population and carries the floor, and
+      // a number in a comment is one that goes stale (this comment's own first draft said nine; it is eight).
+      //
+      // PLAIN PROSE, not the `not-in-class(...)` note spelling the other sites
+      // carry: that syntax was read by an AST checker go-to-k/cdkd#3435 deleted,
+      // so a note in that shape here would look like a machine-checked verdict
+      // and be nothing of the kind. The ones remaining in this file are
+      // pre-existing and are a recorded backlog row, not this change's to sweep
+      // (no count written here, for the reason the paragraph above gives).
+      //
+      // THE CLAIM: `logicalId` here is one of `resolvePseudoParameter`'s own
+      // literal case labels -- not template text -- so it carries neither a
+      // resolved value nor a control character.
       // not-in-class(valueStr): a Ref result: a physical id from state, or a pseudo-parameter value. A Ref to a NoEcho PARAMETER renders through stringifyParameterForLog.
       this.logger.debug(`Resolved Ref to pseudo parameter: ${logicalId} -> ${valueStr}`);
       return pseudoValue;
@@ -4379,12 +4474,27 @@ export class IntrinsicFunctionResolver {
     // the file. Measured on this tree: `{"Fn::Sub": "x${Prod<ESC>[2K<CR>Evil}"}`
     // put a live `ESC[2K` + CR on this warn, at DEFAULT verbosity.
     //
-    // `displayMasked` rather than `displayIdent`: the name can be an `Fn::Sub`
-    // PRODUCT, so the mask question is live here and `displayIdent` does not
-    // mask. The 19 sibling sites that still render `logicalId` under the same
-    // marker premise are go-to-k/cdkd#3432 — the remedy there is a judgment per
-    // site (identifier vs masked value) that belongs with go-to-k/cdkd#3405's
-    // mixed-render scope, not with this one.
+    // `displayMasked` rather than `displayIdent`, and go-to-k/cdkd#3432 CLOSED
+    // the 19 sibling sites with the same choice — 18 of them wrapped and their
+    // exclusion notes deleted, one (the pseudo-parameter render) left as it is
+    // because `resolvePseudoParameter`'s switch has already MATCHED by then.
+    // Every one is held by its emitted BYTES in
+    // `tests/unit/deployment/resolver-logical-id-control-chars.test.ts`, one
+    // case per site, rather than by any source-shape rule. Two
+    // reasons for the builder over the identifier renderer, and neither is "it
+    // is stronger":
+    //
+    //  - `displayIdent` does not mask, and refusing to reason about whether a
+    //    logical id can ever coincide with a recorded needle is cheaper than
+    //    being right about it. (What the trace actually shows is narrower than
+    //    this site's first revision claimed: `Ref`, `Fn::GetAtt`'s first
+    //    element and `Fn::Sub`'s `${...}` text are all template LITERALS, never
+    //    a resolution product, so the mask is defence in depth here rather than
+    //    a live exposure. The CONTROL-CHARACTER half is the measured one.)
+    //  - `displayIdent` QUOTES and BOUNDS, which changes the rendering of a
+    //    legitimate id carrying a space and breaks two things that read these
+    //    messages: `scrub.ts`'s shape patterns and the whole-tuple de-dup
+    //    fixture. The builder is the identity on every legitimate id.
     const loggedLogicalId = this.displayMasked(logicalId, context);
     const notFoundMsg = `Ref ${loggedLogicalId} not found (not a resource, parameter, or pseudo parameter)`;
     if (context.bestEffort) {
@@ -4508,10 +4618,29 @@ export class IntrinsicFunctionResolver {
    * nothing to do at this site: the value has ALREADY been masked in state, so
    * there is no plaintext to register.
    *
-   * The SPELLING (`Ref <LogicalId> (state key <Key>)`) is what
-   * `DeployEngine.maskedRecordRemedyFor` partitions on, so it is load-bearing
-   * rather than cosmetic — that helper reads the logical id out of it to emit
-   * the re-import command, and pins the shape in a test.
+   * THE SPELLING IS NO LONGER PARSED, and this paragraph used to say the
+   * opposite (corrected in go-to-k/cdkd#3432). It read: "`Ref <LogicalId>
+   * (state key <Key>)` is what `DeployEngine.maskedRecordRemedyFor` partitions
+   * on ... that helper reads the logical id out of it". That was true when it
+   * was written and stopped being true at that helper's round-4 review, which
+   * moved the partition onto the `kind` / `logicalId` FIELDS precisely because
+   * two successive regexes over this rendering each shipped a defect — the
+   * second an `[A-Za-z0-9]+` id class that a HYPHENATED logical id falls out
+   * of. `targetOf` reads `read.logicalId`; no regex touches `display`.
+   *
+   * What the shape IS still load-bearing for is a SENTENCE: the refusal's
+   * `hasRefStateRead` arm tells the reader that "a 'Ref <LogicalId> (state key
+   * <Key>)' entry above is CDKD's own read", so the `Ref ` prefix and the
+   * `(state key ...)` clause have to keep appearing. Sanitizing the ID inside
+   * them leaves both intact.
+   *
+   * THE ID IS SANITIZED, the attribute-read sibling's judgement one branch over
+   * (go-to-k/cdkd#3432). `displayMasked` rather than `displayIdent`: the
+   * builder neither quotes nor bounds, so every legitimate id renders exactly
+   * as it did, and the deliberate collision `intrinsic-ref-state-mask.test.ts`
+   * pins between this rendering and `noteAttributeSecrecy`'s is preserved
+   * because BOTH sites take the same builder. The `logicalId` FIELD stays raw —
+   * it is the routing key and the `--resource <id>=` argument.
    *
    * `key` is never masked before interpolation because it is not template text:
    * it comes from the fixed key lists `cfnRefValueFromPhysicalId` passes
@@ -4523,7 +4652,7 @@ export class IntrinsicFunctionResolver {
       kind: 'ref-state-key',
       logicalId,
       key,
-      display: `Ref ${logicalId} (state key ${key})`,
+      display: `Ref ${this.displayMasked(logicalId, context)} (state key ${key})`,
     });
   }
 
@@ -4588,9 +4717,8 @@ export class IntrinsicFunctionResolver {
       logicalId = rawLogicalId;
       const resolvedAttributeName = await this.resolveValue(rawAttributeName, context);
       if (typeof resolvedAttributeName !== 'string') {
-        // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
         throw new Error(
-          `Fn::GetAtt attribute name for ${logicalId} must resolve to a string, got ${typeof resolvedAttributeName}: ${stringifyValue(this.maskValueLeaves(resolvedAttributeName, context))}`
+          `Fn::GetAtt attribute name for ${this.displayMasked(logicalId, context)} must resolve to a string, got ${typeof resolvedAttributeName}: ${stringifyValue(this.maskValueLeaves(resolvedAttributeName, context))}`
         );
       }
       attributeName = resolvedAttributeName;
@@ -4654,8 +4782,21 @@ export class IntrinsicFunctionResolver {
       // refusal transient. Scoped to THIS cdkd-authored throw -- a transient
       // SDK error surfacing out of `reresolveCrossStackValue` below must stay
       // retryable, which is why the mark is here and not in the `Fn::Sub` catch.
-      // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
-      throw markNonRetryable(new Error(`Resource ${logicalId} not found for Fn::GetAtt`));
+      // THIS MESSAGE IS RE-PARSED, which makes sanitizing it a GATE decision and not only a display one
+      // (go-to-k/cdkd#3432). `src/cli/commands/scrub.ts`'s `TEMPLATE_SHAPE_FAILURE_PATTERNS` holds
+      // `/^Resource \S+ not found for Fn::GetAtt$/`, and a unit whose scan this error abandoned is
+      // classified by whether that pattern matches: matching makes it a `warn`, missing makes it a `count`
+      // that `cdkd scrub --dry-run --fail` gates on. The builder STRIPS and TRIMS, so an id carrying a CR
+      // or padding -- which `\S+` could not span before -- matches now, and such a unit moves count ->
+      // warn. That is the LENIENT direction and it is taken deliberately, for the reason go-to-k/cdkd#3426
+      // recorded one pattern over on `Ref <id> not found`: a plain dangling `Fn::GetAtt` already warned, so
+      // this opens no NEW bypass -- it extends an existing classification to ids differing from an ordinary
+      // one only by characters nobody can see, and the alternative is a CI gate whose verdict depends on
+      // invisible bytes in a logical id. Pinned in `tests/unit/cli/scrub-abandoned-scan-origin.test.ts`
+      // beside its sibling, and the note in `scrub.ts` names both patterns.
+      throw markNonRetryable(
+        new Error(`Resource ${this.displayMasked(logicalId, context)} not found for Fn::GetAtt`)
+      );
     }
 
     // Check if attribute exists in resource.attributes
@@ -4699,9 +4840,8 @@ export class IntrinsicFunctionResolver {
           typeof flatValue === 'string'
         ) {
           const nameServers = flatValue === '' ? [] : flatValue.split(',');
-          // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
           this.logger.debug(
-            `Normalized legacy Fn::GetAtt attribute: ${logicalId}.${this.displayMasked(attributeName, context)} -> ${this.displayMasked(stringifyAttributeForLog(attributeName, this.maskValueLeaves(nameServers, context)), context)}`
+            `Normalized legacy Fn::GetAtt attribute: ${this.displayMasked(logicalId, context)}.${this.displayMasked(attributeName, context)} -> ${this.displayMasked(stringifyAttributeForLog(attributeName, this.maskValueLeaves(nameServers, context)), context)}`
           );
           // Issue #2274 review: this branch ALSO serves a value out of the
           // PERSISTED `attributes` bag, so it takes the note like the two
@@ -4709,9 +4849,8 @@ export class IntrinsicFunctionResolver {
           // longer claims the pass-through shape makes a skip impossible.
           return this.noteAttributeSecrecy(logicalId, attributeName, nameServers, context);
         }
-        // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
         this.logger.debug(
-          `Resolved Fn::GetAtt from attributes: ${logicalId}.${this.displayMasked(attributeName, context)} -> ${this.displayMasked(stringifyAttributeForLog(attributeName, this.maskValueLeaves(flatValue, context)), context)}`
+          `Resolved Fn::GetAtt from attributes: ${this.displayMasked(logicalId, context)}.${this.displayMasked(attributeName, context)} -> ${this.displayMasked(stringifyAttributeForLog(attributeName, this.maskValueLeaves(flatValue, context)), context)}`
         );
         // A nested-stack child's outputs are read out of the child's PERSISTED
         // state by `NestedStackProvider`, which since PR #1899 holds a
@@ -4799,9 +4938,8 @@ export class IntrinsicFunctionResolver {
           }
         }
         if (cursor !== undefined) {
-          // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
           this.logger.debug(
-            `Resolved Fn::GetAtt from nested attributes: ${logicalId}.${this.displayMasked(attributeName, context)} -> ${this.displayMasked(stringifyAttributeForLog(attributeName, this.maskValueLeaves(cursor, context)), context)}`
+            `Resolved Fn::GetAtt from nested attributes: ${this.displayMasked(logicalId, context)}.${this.displayMasked(attributeName, context)} -> ${this.displayMasked(stringifyAttributeForLog(attributeName, this.maskValueLeaves(cursor, context)), context)}`
           );
           // NO nested-stack re-resolution arm here, unlike the flat-key lookup
           // above, and that is a REACHABILITY claim rather than a decision:
@@ -4861,7 +4999,11 @@ export class IntrinsicFunctionResolver {
         .sort()
         .map((k) => this.displayMasked(this.outputNameLogText(k, context), context));
       const declaredText = declared.length > 0 ? declared.join(', ') : '(none)';
-      // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
+      // Bound once because the message renders it TWICE (go-to-k/cdkd#3432). Two independent
+      // `this.displayMasked(logicalId, context)` calls would also be correct, but a single binding is what
+      // keeps the two spellings from drifting apart -- the shape the mask-coverage checker's identifier
+      // resolution reads at both interpolations.
+      const loggedLogicalId = this.displayMasked(logicalId, context);
       throw markNonRetryable(
         new IntrinsicResolutionRefusalError(
           // MASKED (issue #2827 review). `attributeName` here is
@@ -4870,8 +5012,8 @@ export class IntrinsicFunctionResolver {
           // this fix stopped at `throw new Error(` and missed both this
           // `markNonRetryable(new IntrinsicResolutionRefusalError(...))` and
           // the fabricated-account refusal below.
-          `Cannot resolve Fn::GetAtt [${logicalId}, ${this.displayMasked(attributeName, context)}]: the nested stack ` +
-            `'${logicalId}' declares no output named ` +
+          `Cannot resolve Fn::GetAtt [${loggedLogicalId}, ${this.displayMasked(attributeName, context)}]: the nested stack ` +
+            `'${loggedLogicalId}' declares no output named ` +
             `'${this.displayMasked(this.outputNameLogText(attributeName, context), context)}'. ` +
             `Its outputs are ${this.displayMasked(declaredText, context)}. ` +
             `Check the output name in the nested stack's template, and deploy the child ` +
@@ -4881,9 +5023,8 @@ export class IntrinsicFunctionResolver {
     }
 
     const value = await this.constructGuardedAttribute(resource, attributeName, context, logicalId);
-    // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
     this.logger.debug(
-      `Resolved Fn::GetAtt: ${logicalId}.${this.displayMasked(attributeName, context)} -> ${this.displayMasked(stringifyAttributeForLog(attributeName, this.maskValueLeaves(value, context)), context)}`
+      `Resolved Fn::GetAtt: ${this.displayMasked(logicalId, context)}.${this.displayMasked(attributeName, context)} -> ${this.displayMasked(stringifyAttributeForLog(attributeName, this.maskValueLeaves(value, context)), context)}`
     );
     return value;
   }
@@ -4951,27 +5092,41 @@ export class IntrinsicFunctionResolver {
       // Masked for the reason the `origin` pusher states (issue #2827 review
       // round 2): `attributeName` is `resolveGetAtt`'s resolved one, and this
       // array is joined into a default-verbosity throw by the deploy engine.
-      // `logicalId` is NOT masked, exactly as before: it is the routing key the
-      // remedy builds its `--resource <id>=` command from, and that command has
-      // always interpolated it.
+      // THE FIELD AND THE DISPLAY NOW DIVERGE, deliberately (go-to-k/cdkd#3432).
       //
-      // NOR is it SANITIZED, and that is a recorded decision rather than an
-      // omission (go-to-k/cdkd#3426 review round 3 raised it as a nit with no
-      // live exposure). Wrapping it in `displayIdent` was written and MEASURED
-      // against the tree: it quotes an id containing a space, which broke
-      // `intrinsic-ref-state-mask.test.ts`'s deliberate collision between this
-      // rendering and `noteRefStateMask`'s — a fixture that exists to pin the
-      // whole-tuple de-dup. Sanitizing BOTH would restore the collision, but
-      // the sibling's spelling is PARSED by
-      // `DeployEngine.maskedRecordRemedyFor` to rebuild the re-import command,
-      // so changing it is a separate, riskier edit than this class needs.
-      // go-to-k/cdkd#3432 carries both sites.
+      // `logicalId` the FIELD stays raw: it is the routing key
+      // `DeployEngine.maskedRecordRemedyFor` partitions on and the id its
+      // `--resource <id>=` command interpolates, so a sanitized copy there
+      // would be a different id.
+      //
+      // `display` is SANITIZED, which go-to-k/cdkd#3426 review round 3 raised
+      // and deferred. The deferral rested on two claims, and BOTH were
+      // re-measured before this change rather than inherited:
+      //
+      //  - "`displayIdent` quotes an id containing a space, breaking
+      //    `intrinsic-ref-state-mask.test.ts`'s deliberate collision with
+      //    `noteRefStateMask`'s rendering" — TRUE, which is why the remedy here
+      //    is `displayMasked`, not `displayIdent`. The builder strips and
+      //    `displaySafe`s without quoting or bounding, so `Ref Foo` and
+      //    `Foo.Bar` render byte-identically to before and that fixture's
+      //    collision survives. Both sites take it, so the two halves stay
+      //    comparable.
+      //  - "the sibling's spelling is PARSED by
+      //    `DeployEngine.maskedRecordRemedyFor`" — NO LONGER TRUE, and that is
+      //    what unblocks the pair. That helper's round-4 review moved its
+      //    partition off a regex over `display` and onto the `kind` /
+      //    `logicalId` FIELDS ("THE ROUTING KEY IS THE FIELD, not a capture
+      //    group"); `targetOf` reads `read.logicalId`. Re-derived from the
+      //    READERS rather than from the call graph: the only readers of
+      //    `display` in `src` are this file's whole-tuple de-dup comparison and
+      //    two `.join(', ')` message builders in `deploy-engine.ts`. Nothing
+      //    re-parses it.
       const maskedAttributeName = this.displayMasked(attributeName, context);
       this.pushRedactedAttributeRead(context, {
         kind: 'attribute',
         logicalId,
         key: maskedAttributeName,
-        display: `${logicalId}.${maskedAttributeName}`,
+        display: `${this.displayMasked(logicalId, context)}.${maskedAttributeName}`,
       });
     }
     return value;
@@ -5028,11 +5183,10 @@ export class IntrinsicFunctionResolver {
     // the retry classifiers match by substring, so an ordinary composite CDK
     // id can otherwise make a deterministic refusal look transient. See
     // `resolveSplit` for the nested-stack chain that makes this reachable.
-    // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
     // not-in-class(resource.resourceType): a TYPE name from the template or from AWS, not a value.
     throw markNonRetryable(
       new IntrinsicResolutionRefusalError(
-        `Cannot resolve Fn::GetAtt [${logicalId}, ${this.displayMasked(attributeName, context)}] for ` +
+        `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ` +
           `${resource.resourceType}: the recorded value "${stringifyValue(this.maskValueLeaves(value, context))}" is a placeholder ` +
           `written by a cdkd version older than issue #1681 — its region and account ` +
           `fields are literal wildcards, so it is not a usable ARN. Deploy the stack ` +
@@ -5097,13 +5251,12 @@ export class IntrinsicFunctionResolver {
       accountInfo
     );
     if (accountInfo.fabricated && embedsAccountId(value, accountInfo.accountId)) {
-      // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
       // not-in-class(resource.resourceType): a TYPE name from the template or from AWS, not a value.
       // not-in-class(accountInfo.accountId): an AWS ACCOUNT ID from STS, never a resolved template value.
       throw new IntrinsicResolutionRefusalError(
         // `attributeName` masked for the reason its nested-stack sibling above
         // states (issue #2827 review).
-        `Cannot resolve Fn::GetAtt [${logicalId}, ${this.displayMasked(attributeName, context)}] for ${resource.resourceType}: ` +
+        `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${resource.resourceType}: ` +
           `STS did not report this deploy's account id, so cdkd would build the value from the ` +
           `placeholder account ${accountInfo.accountId} — structurally valid, naming a different ` +
           `account, and indistinguishable downstream from a real one. Fix the AWS credentials ` +
@@ -5337,10 +5490,9 @@ export class IntrinsicFunctionResolver {
           // record, which no retry rewrites, and the message interpolates the
           // logical id (#1838).
           if (!/^vpc-[0-9a-f]+$/.test(physicalId)) {
-            // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
             throw markNonRetryable(
               new IntrinsicResolutionRefusalError(
-                `Cannot resolve Fn::GetAtt [${logicalId}, DefaultSecurityGroup] for AWS::EC2::VPC: the ` +
+                `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, DefaultSecurityGroup] for AWS::EC2::VPC: the ` +
                   `state record's physical id "${this.displayMasked(physicalId, context).slice(0, 64)}" ` +
                   `is not a VPC id (vpc-<hex>), so cdkd will not use it as an EC2 filter value. Repair the ` +
                   `record (cdkd import, or re-create the VPC) and deploy again.`
@@ -6052,10 +6204,9 @@ export class IntrinsicFunctionResolver {
           // off the persisted record, which no retry rewrites, and the message
           // interpolates the logical id (#1838).
           if (!/^sg-[0-9a-f]+$/.test(physicalId)) {
-            // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
             throw markNonRetryable(
               new IntrinsicResolutionRefusalError(
-                `Cannot resolve Fn::GetAtt [${logicalId}, VpcId] for AWS::EC2::SecurityGroup: the ` +
+                `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, VpcId] for AWS::EC2::SecurityGroup: the ` +
                   `state record's physical id "${this.displayMasked(physicalId, context).slice(0, 64)}" ` +
                   `is not a security group id (sg-<hex>), so cdkd will not look it up. Repair the ` +
                   `record (cdkd import, or re-create the security group) and deploy again.`
@@ -6318,10 +6469,9 @@ export class IntrinsicFunctionResolver {
           // before the cache read (keyed by this id) and the `GetDistribution`
           // it would parameterise; marked, since the record decides it.
           if (!/^[A-Z0-9]+$/.test(physicalId)) {
-            // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
             throw markNonRetryable(
               new IntrinsicResolutionRefusalError(
-                `Cannot resolve Fn::GetAtt [${logicalId}, DomainName] for AWS::CloudFront::Distribution: the ` +
+                `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, DomainName] for AWS::CloudFront::Distribution: the ` +
                   `state record's physical id "${this.displayMasked(physicalId, context).slice(0, 64)}" ` +
                   `is not a distribution id (upper-case alphanumerics), so cdkd will not look it up. Repair the ` +
                   `record (cdkd import, or re-create the distribution) and deploy again.`
@@ -6386,11 +6536,10 @@ export class IntrinsicFunctionResolver {
     // the resource records the key.
     if (resourceType === 'AWS::RDS::DBProxy' || resourceType === 'AWS::RDS::DBProxyEndpoint') {
       if (attributeName === 'VpcId') {
-        // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
         // not-in-class(resourceType): a TYPE name from the template or from AWS, not a value.
         throw markNonRetryable(
           new IntrinsicResolutionRefusalError(
-            `Cannot resolve Fn::GetAtt [${logicalId}, ${this.displayMasked(attributeName, context)}] for ${resourceType}: ` +
+            `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${resourceType}: ` +
               `the state record holds no VpcId for it (the read-back that would have recorded it reported none), ` +
               `and the physical id "${this.displayMasked(physicalId, context)}" is a name, not a VPC id, so cdkd ` +
               `refuses to substitute it. Update the resource so its next deploy records the value, or reference ` +
@@ -6481,12 +6630,11 @@ export class IntrinsicFunctionResolver {
     remedy: string;
   }): never {
     const { logicalId, attributeName, resourceType, physicalId, context, observed, remedy } = site;
-    // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
     // not-in-class(resourceType): a TYPE name from the template or from AWS, not a value.
     // not-in-class(observed): a cdkd-authored sentence built from an AWS state name or an error CLASS name; the raw AWS text stays at debug.
     // not-in-class(remedy): a cdkd-authored literal chosen by the calling arm.
     throw new IntrinsicResolutionRefusalError(
-      `Cannot resolve Fn::GetAtt [${logicalId}, ${this.displayMasked(attributeName, context)}] for ${resourceType}: ` +
+      `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${resourceType}: ` +
         `${observed}. The physical id "${this.displayMasked(physicalId, context)}" is not a usable ` +
         `${this.displayMasked(attributeName, context)}, so cdkd refuses to substitute it. ${remedy}`
     );
@@ -6576,11 +6724,10 @@ export class IntrinsicFunctionResolver {
       // the static "this type is not enriched" fact — none of which a retry
       // changes. Marked because the message interpolates `logicalId`; see
       // `rejectPlaceholderArnAttribute` for the full reasoning.
-      // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
       // not-in-class(resourceType): a TYPE name from the template or from AWS, not a value.
       throw markNonRetryable(
         new IntrinsicResolutionRefusalError(
-          `Cannot resolve Fn::GetAtt [${logicalId}, ${this.displayMasked(attributeName, context)}] for ${resourceType}: ` +
+          `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${resourceType}: ` +
             `attributes are not enriched for this resource type, and the physical ID ` +
             `fallback "${this.displayMasked(physicalId, context)}" is not ${expectedShape}. CloudFormation would return ` +
             `a different value here, so falling back to the physical ID would silently ` +
@@ -6594,11 +6741,10 @@ export class IntrinsicFunctionResolver {
       // Terminal (issue #1838 / #1874 review): the verdict is a CLI FLAG plus
       // the same static enrichment fact. A flag cannot change mid-deploy, so no
       // retry of this resolution can ever take a different branch.
-      // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
       // not-in-class(resourceType): a TYPE name from the template or from AWS, not a value.
       throw markNonRetryable(
         new IntrinsicResolutionRefusalError(
-          `Cannot resolve Fn::GetAtt [${logicalId}, ${this.displayMasked(attributeName, context)}] for ${resourceType}: ` +
+          `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${resourceType}: ` +
             `attributes are not enriched for this resource type, and --strict-getatt ` +
             `rejects the physical ID fallback "${this.displayMasked(physicalId, context)}" (which may not be the value ` +
             `CloudFormation would return). Drop --strict-getatt to fall back with a ` +
@@ -7402,7 +7548,16 @@ export class IntrinsicFunctionResolver {
 
     if (typeof resolvedValue !== 'string') {
       const source = this.describeSplitValueSource(value);
-      const sourceClause = source ? ` (from ${source.label})` : '';
+      // SANITIZED at the point the clause is BUILT (go-to-k/cdkd#3435 security
+      // round 3, which measured it): `source.label` is `Ref <args>` /
+      // `Fn::GetAtt [<arg>]` / a raw template key, all template-controlled, and
+      // both throws below reach the user at any verbosity -- the same sink this
+      // PR measured for `Resource <id> not found`. The three notes that used to
+      // exempt it read "assembled from literals here", which is FALSE and is
+      // contradicted by `describeSplitValueSource`'s own doc comment one method
+      // up ("interpolates template-controlled text"). Wrapped once here rather
+      // than at each throw, so a THIRD consumer of the clause inherits it.
+      const sourceClause = source ? ` (from ${this.displayMasked(source.label, context)})` : '';
       if (Array.isArray(resolvedValue)) {
         // The remedy is per-source, and the DEFAULT is the neutral one. Only a
         // value that IS an Fn::GetAtt gets the Route 53 example and the #1868
@@ -7429,8 +7584,8 @@ export class IntrinsicFunctionResolver {
                 `list-valued Fn::GetAtt, a Ref to a list-typed parameter (any ` +
                 `List<...> type or CommaDelimitedList), Fn::GetAZs, Fn::Cidr, ` +
                 `and Fn::Split itself.`;
-        // not-in-class(sourceClause): a remedy sentence and a type word assembled from literals here.
-        // not-in-class(remedy): a remedy sentence and a type word assembled from literals here.
+        // `remedy` is a cdkd-authored sentence chosen by the arm above;
+        // `sourceClause` is sanitized where it is built.
         throw markNonRetryable(
           new IntrinsicResolutionRefusalError(
             `Fn::Split: the value to split${sourceClause} is ALREADY a list ` +
@@ -7442,7 +7597,7 @@ export class IntrinsicFunctionResolver {
         );
       }
       const got = resolvedValue === null ? 'null' : typeof resolvedValue;
-      // not-in-class(sourceClause): a remedy sentence and a type word assembled from literals here.
+      // `sourceClause` is sanitized where it is built.
       throw markNonRetryable(
         new IntrinsicResolutionRefusalError(
           `Fn::Split: the value to split${sourceClause} must be a string, got ${got}. ` +
@@ -7483,18 +7638,28 @@ export class IntrinsicFunctionResolver {
     // skipped this warn, read the `Object` FUNCTION as the condition value, and
     // selected the TRUE branch, where the not-found path assumes false.
     if (!context.conditions || !Object.hasOwn(context.conditions, conditionName)) {
-      // not-in-class(conditionName): a template-DECLARED identifier (a Parameters / Conditions key), which CloudFormation requires to be a literal.
-      this.logger.warn(`Condition ${conditionName} not found in context, assuming false`);
+      // A DEFAULT-VERBOSITY warn naming a template-supplied condition name --
+      // `Fn::If`'s first element, arbitrary JSON (go-to-k/cdkd#3435 review
+      // round 2, found by driving the route rather than by reading).
+      // `String(...)` FIRST. `resolveIf`'s arguments arrive through an
+      // unchecked cast, so element 0 can be a number or an object; the old bare
+      // interpolation coerced it, and `displayMasked` -> `stripControlChars`
+      // calls `.replace` and would throw a TypeError instead -- turning a
+      // warn-and-assume-false into a failed resource (go-to-k/cdkd#3435 review
+      // round 3, measured). Coercing keeps the pre-existing behaviour and
+      // sanitizes what it produces.
+      this.logger.warn(
+        `Condition ${this.displayMasked(String(conditionName), context)} not found in context, assuming false`
+      );
       return await this.resolveValue(valueIfFalse, context);
     }
 
     const conditionValue = context.conditions[conditionName];
     const selectedValue = conditionValue ? valueIfTrue : valueIfFalse;
 
-    // not-in-class(conditionName): a template-DECLARED identifier (a Parameters / Conditions key), which CloudFormation requires to be a literal.
-    // not-in-class(conditionValue): a CONDITION verdict -- a boolean, or a list of booleans.
+    // `conditionValue` carries nothing: a boolean, or a list of booleans.
     this.logger.debug(
-      `Resolved Fn::If: condition ${conditionName} = ${conditionValue}, selected ${conditionValue ? 'true' : 'false'} branch`
+      `Resolved Fn::If: condition ${this.displayMasked(String(conditionName), context)} = ${conditionValue}, selected ${conditionValue ? 'true' : 'false'} branch`
     );
 
     return await this.resolveValue(selectedValue, context);
@@ -7569,8 +7734,11 @@ export class IntrinsicFunctionResolver {
       return context.conditions[conditionName]!;
     }
 
-    // not-in-class(conditionName): a template-DECLARED identifier (a Parameters / Conditions key), which CloudFormation requires to be a literal.
-    this.logger.warn(`Condition ${conditionName} not found in context, assuming false`);
+    // The sibling of the `Fn::If` warn above, on the CONDITION-REFERENCE path,
+    // and default-verbosity for the same reason.
+    this.logger.warn(
+      `Condition ${this.displayMasked(conditionName, context)} not found in context, assuming false`
+    );
     return false;
   }
 
@@ -9984,11 +10152,14 @@ export class IntrinsicFunctionResolver {
    *
    * Reachable from ONE place, {@link maskThenStripThenMask}, which is itself
    * reachable only from {@link displayMasked}. That containment is the whole
-   * mechanism and it is enforced, not conventional:
-   * `scripts/check-resolver-mask-coverage.ts` does not list this method in
-   * `MASKERS`, so its AST walk — which RESOLVES an interpolated identifier to
-   * its declaration — reports any render that reaches it, through a binding or
-   * directly. Do not add it to that list, and do not call it from a new site.
+   * mechanism. It used to be enforced by an AST walk that resolved an
+   * interpolated identifier to its declaration; go-to-k/cdkd#3435 deleted that
+   * checker, and what holds the containment now is
+   * `tests/unit/deployment/resolver-display-masked-population.test.ts`, which
+   * asserts the exact reference COUNTS from the AST (one caller each) and
+   * refuses a direct `${this.<raw masker>(...)}` interpolation by line rule.
+   * Do not call this from a new site: a binding of it interpolated LATER is
+   * the shape neither survivor can see.
    *
    * ## What the masking itself does
    *
@@ -10124,7 +10295,7 @@ export class IntrinsicFunctionResolver {
    * with the twin's positions, so the line gives both up for `***`: never
    * more text than either mask alone would print. Returns the text BEFORE the
    * needle mask; each log line wraps it in `displayMasked` itself, so the
-   * resolver's mask-coverage checker sees a masker at the site.
+   * sanitization happens at the render rather than here.
    */
   private logTwinText(result: string, twin: string, context?: ResolverContext): string {
     const bothMasksFire = twin !== result && this.maskNeedlesForLog(result, context) !== result;
@@ -10581,9 +10752,12 @@ export class IntrinsicFunctionResolver {
    * ONE CALLER, {@link displayMasked}, since go-to-k/cdkd#3426. It is most of
    * the answer and reads like all of it — it omits `displaySafe`, and
    * therefore `U+2028` / `U+2029` and the bidi overrides — so a site reaching
-   * for it directly is the near-miss back onto the treadmill. It is not in
-   * `MASKERS` in `scripts/check-resolver-mask-coverage.ts`, so a render that
-   * reaches it (through a binding or directly) is reported there.
+   * for it directly is the near-miss back onto the treadmill. A DIRECT
+   * `${this.maskThenStripThenMask(...)}` interpolation is refused by
+   * `resolver-display-masked-population.test.ts`'s line rule; a BINDING of it
+   * rendered later is not seen by anything since go-to-k/cdkd#3435 deleted the
+   * AST checker, which is why the one-caller containment above is the control
+   * that matters.
    *
    * THE BOUND, since this file's job is to state them: this covers a needle
    * split by a character `stripControlChars` removes. A needle split by
@@ -10632,15 +10806,19 @@ export class IntrinsicFunctionResolver {
    *
    * ## What keeps it closed
    *
-   * `scripts/check-resolver-mask-coverage.ts` — an AST walk that already
-   * RESOLVES an interpolated identifier to its declaration and judges the
-   * initializer. Its `MASKERS` list names the functions a render may reach,
-   * and since go-to-k/cdkd#3426 every entry on it SANITIZES as well as masks.
-   * So a binding of a raw masker is a finding wherever it is later
-   * interpolated, by the same mechanism that already answered the secret
-   * question — no second scanner, and nothing line-shaped.
-   * `tests/unit/deployment/resolver-display-masked-population.test.ts` pins the
-   * population and the builder bodies beside it.
+   * `tests/unit/deployment/resolver-display-masked-population.test.ts`, which
+   * asserts from the AST that `maskSecretsRaw` is referenced only inside
+   * `maskThenStripThenMask` and that helper only inside this builder — exact
+   * reference counts, no inference — and refuses a direct
+   * `${this.<raw masker>(...)}` interpolation by line rule.
+   *
+   * An AST walk that ALSO resolved an interpolated identifier to its
+   * declaration used to cover the BINDING shape. go-to-k/cdkd#3435 deleted it
+   * as high-maintenance tooling (23 commits across it and its suite in nine
+   * days; a widening attempted one PR earlier produced nine defects inside
+   * itself and was withdrawn), so that shape is now held by the containment
+   * above — there is no bare masker to bind, because nothing outside this
+   * builder may call one.
    *
    * KNOWN BOUND, stated rather than implied away: a site carrying an
    * exclusion marker is exempt from that walk, because the marker answers the
@@ -10665,9 +10843,9 @@ export class IntrinsicFunctionResolver {
    * Trojan-Source bidi overrides. That composition is what the `physicalId`
    * renders here already spelled by hand; this names it, and they now share it.
    *
-   * It is listed in `MASKERS` in `scripts/check-resolver-mask-coverage.ts`,
-   * which is a SECURITY decision and a sound one: every path through it passes
-   * the needle-and-twin mask, twice, so it is strictly stronger than the bare
+   * It is the ONE sanctioned exit from the masking machinery, which is a
+   * SECURITY decision and a sound one: every path through it passes the
+   * needle-and-twin mask, twice, so it is strictly stronger than the bare
    * masker it replaced and cannot be weaker at any input.
    */
   private displayMasked(value: string, context?: ResolverContext): string {

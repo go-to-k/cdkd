@@ -270,8 +270,10 @@ function isRoleArnSite(expression: string): boolean {
  * `displayAwsMessage` joined the list in go-to-k/cdkd#3408 round 2, and adding
  * a name here is a SECURITY DECISION rather than bookkeeping — everything in
  * this alternation is trusted to make a value safe to render, exactly as
- * `MASKERS` in `scripts/check-resolver-mask-coverage.ts` is trusted to make one
- * unreadable. It earns its place by DELEGATING: it is `displaySafe` plus a
+ * the intrinsic resolver's own `MASKERS` list was trusted to make one
+ * unreadable (that list lived in an AST checker go-to-k/cdkd#3435 deleted; the
+ * surviving half of it is inlined in
+ * `tests/unit/deployment/resolver-display-masked-population.test.ts`). It earns its place by DELEGATING: it is `displaySafe` plus a
  * length bound and a cut marker, so it is strictly stronger than the entry it
  * wraps and cannot be weaker at any input.
  *

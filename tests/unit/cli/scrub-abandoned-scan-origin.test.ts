@@ -102,12 +102,29 @@ describe('scrub abandoned-scan origin (go-to-k/cdkd#3160)', () => {
       [
         'a Fn::GetAtt to a resource not in state',
         'Resource MyBucket not found for Fn::GetAtt',
-        'throw markNonRetryable(new Error(`Resource ${logicalId} not found for Fn::GetAtt`))',
+        // The interpolated NAME moved to the display builder in
+        // go-to-k/cdkd#3432, the same change the `Ref` sibling took one issue
+        // earlier and with the same consequence for this pattern -- pinned by
+        // the classification-delta case below. The statement is wrapped across
+        // lines in the source, so the needle is the EXPRESSION rather than the
+        // whole `throw`: a whitespace-exact match on a multi-line statement is
+        // a needle that reds on a reformat and says nothing about behaviour.
+        '`Resource ${this.displayMasked(logicalId, context)} not found for Fn::GetAtt`',
       ],
       [
         'a parameter with no Default and no supplied value',
         'Parameter DbName is required but no value was provided and no default exists',
-        '`Parameter ${name} is required but no value was provided and no default exists`',
+        // Sanitized in go-to-k/cdkd#3432's review rounds, for the reason its two
+        // siblings above were: a `Parameters` KEY is arbitrary JSON, and a
+        // reviewer MEASURED a raw ESC + CR reaching this throw. The
+        // classification delta is the same one, pinned below.
+        //
+        // `maskInherited`, not `displayMasked`: round 2 corrected the site to
+        // the pass this method already defines and its five sibling debug lines
+        // already take -- mask against the INHERITED bag, strip, mask, then
+        // `displaySafe`. The needle names it so a swap back to a weaker pass
+        // reds here rather than only in the behavioural suite.
+        '`Parameter ${maskInherited(name)} is required but no value was provided and no default exists`',
       ],
     ];
 
@@ -157,6 +174,83 @@ describe('scrub abandoned-scan origin (go-to-k/cdkd#3160)', () => {
       // A PADDED id reaches the same place through `displaySafe`'s trim.
       expect(excluded('Ref   Padded   not found'), 'padded, as raised before the trim').toBe(false);
       expect(excluded('Ref Padded not found'), 'padded, as the builder renders it').toBe(true);
+    });
+
+    it('a HOSTILE or PADDED logical id takes the Fn::GetAtt exclusion too — the go-to-k/cdkd#3432 delta', () => {
+      // The `Ref` case above, one pattern over. go-to-k/cdkd#3432 routed
+      // `Resource <id> not found for Fn::GetAtt` through the same builder, so
+      // the same units move `count` -> `warn` here.
+      //
+      // Written as its OWN case rather than folded into the one above, because
+      // the two patterns are independent: a change to either renderer must red
+      // the case for THAT pattern and leave the other green, which a merged
+      // case with a shared `.some()` cannot report.
+      const ESC = String.fromCharCode(0x1b);
+      expect(
+        excluded(`Resource Prod${ESC}[2K\rEvil not found for Fn::GetAtt`),
+        'the PRE-sanitization spelling: whitespace in the id keeps it out of the pattern'
+      ).toBe(false);
+      expect(
+        excluded('Resource Prod[2KEvil not found for Fn::GetAtt'),
+        'the spelling the sanitized render actually produces — now excluded, i.e. WARN not COUNT'
+      ).toBe(true);
+      expect(
+        excluded('Resource   Padded   not found for Fn::GetAtt'),
+        'padded, as raised before the trim'
+      ).toBe(false);
+      expect(
+        excluded('Resource Padded not found for Fn::GetAtt'),
+        'padded, as the builder renders it'
+      ).toBe(true);
+    });
+
+    it("and the Fn::GetAtt spelling is the RESOLVER's own, not one this test assumed", async () => {
+      // The `Ref` twin below states why a hand-written spelling is not enough:
+      // the strip-before-sanitize ORDER inside the builder decides whether a CR
+      // vanishes or becomes a space, and only the real throw can answer that.
+      const ESC = String.fromCharCode(0x1b);
+      const template: CloudFormationTemplate = { Resources: {} };
+      const resolver = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false });
+      const err = await resolver
+        .resolve({ 'Fn::GetAtt': [`Prod${ESC}[2K\rEvil`, 'Arn'] }, { template, resources: {} })
+        .then(
+          () => undefined,
+          (e: unknown) => e as Error
+        );
+      const message = err instanceof Error ? err.message : String(err ?? '');
+
+      // BOUND THE ARM before asserting its exclusion.
+      expect(message, 'the Fn::GetAtt refusal did not fire').toMatch(
+        /^Resource .* not found for Fn::GetAtt$/
+      );
+      expect(message, 'a raw ESC survived into the thrown message').not.toContain(ESC);
+      expect(excluded(message), 'the message the resolver really raises is the excluded one').toBe(
+        true
+      );
+    });
+
+    it('a HOSTILE or PADDED parameter name takes the third exclusion too', () => {
+      // The third pattern, swept in by go-to-k/cdkd#3432's review round. Its own
+      // case for the same reason the other two have theirs: the three renderers
+      // are independent, and a merged case with a shared `.some()` cannot report
+      // which one regressed.
+      const ESC = String.fromCharCode(0x1b);
+      expect(
+        excluded(`Parameter Prod${ESC}[2K\rEvil is required but no value was provided`),
+        'the PRE-sanitization spelling: whitespace in the name keeps it out of the pattern'
+      ).toBe(false);
+      expect(
+        excluded('Parameter Prod[2KEvil is required but no value was provided'),
+        'the spelling the sanitized render actually produces — now excluded, i.e. WARN not COUNT'
+      ).toBe(true);
+      expect(
+        excluded('Parameter   Padded   is required but no value was provided'),
+        'padded, as raised before the trim'
+      ).toBe(false);
+      expect(
+        excluded('Parameter Padded is required but no value was provided'),
+        'padded, as the builder renders it'
+      ).toBe(true);
     });
 
     it("and the spelling is the RESOLVER's own, not one this test assumed", async () => {

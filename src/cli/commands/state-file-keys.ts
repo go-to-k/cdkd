@@ -271,34 +271,24 @@ export function describeStateKey(
 }
 
 /**
- * The shape a state-key segment must have before it may be interpolated into a
- * command cdkd invites an operator to PASTE.
+ * RE-EXPORTED, not defined here, since go-to-k/cdkd#3435.
  *
- * An ALLOW-LIST, and deliberately so: the first cut of this predicate was a
- * deny-list that refused a leading `-`, and review defeated it with a leading
- * `~`. A deny-list has to enumerate every character a shell treats specially
- * BEFORE cdkd sees the word, and the set of things nobody thought of is
- * unbounded. The repo already settled this once — `rollback-executor.ts`'s
- * `PASTEABLE_LOGICAL_ID` is `/^[A-Za-z0-9]{1,255}$/`, with a comment naming
- * `~user` and `=x` by name.
+ * `isPasteableIdent` answers "may this value be interpolated into a command we
+ * tell an operator to RUN". A second consumer appeared in `src/deployment/`
+ * that round — `DeployEngine.maskedRecordRemedyFor`'s
+ * `cdkd import ... --resource <id>=<physicalId> --force`, which had no guard at
+ * all — and `src/deployment/` imports nothing from `src/cli/`. Re-spelling a
+ * SECURITY predicate in the second consumer is the shape this repo has
+ * repeatedly measured going wrong, so the rule moved DOWN to the leaf both
+ * layers already import (`src/utils/display-safe.ts`, beside the `displayIdent`
+ * whose identity is half of it) rather than sideways.
  *
- * This one is wider than that because the values here are not logical ids: a
- * cdkd state record's stack name carries `~` (a nested-stack child is minted
- * `${parent}~${logicalId}`) and a region carries `-`. What it keeps from the
- * precedent is the LEADING character, which is where the danger is. MEASURED
- * in bash on a real host rather than reasoned:
- *
- *     ~root        -> /var/root        ~/x  -> $HOME/x       ~-  -> $OLDPWD
- *     a=~/x        -> a=$HOME/x
- *     Parent~Child -> inert            a:~/x -> inert
- *
- * So `~` is dangerous only in the leading position or straight after `=`,
- * which is why a medial `~` stays in the set and `=` stays out of it entirely.
- * A leading digit or letter also closes the option case: `--state-bucket=x`
- * cannot match, and that one is NOT about shell quoting — it is still an
- * OPTION after quoting, which is why the answer is refusal rather than quoting.
+ * The re-export keeps every existing importer (`gc.ts`, `local-start-api.ts`,
+ * and this file's own callers) pointing where they always did: this module is
+ * where the state-key family reads it from, and layering is not a reason to
+ * make five call sites move.
  */
-const PASTEABLE_STATE_IDENT = /^[A-Za-z0-9][A-Za-z0-9~_.-]*$/;
+export { isPasteableIdent } from '../../utils/display-safe.js';
 
 /**
  * The cap for rendering a whole state or lock KEY, as opposed to one segment.
@@ -316,26 +306,3 @@ const PASTEABLE_STATE_IDENT = /^[A-Za-z0-9][A-Za-z0-9~_.-]*$/;
  * BUDGET, not an enforced bound. Nothing in `src/` validates key length.
  */
 export const STATE_KEY_MAX_CODE_POINTS = STACK_REF_MAX_CODE_POINTS + 64;
-
-/**
- * Is this value safe to interpolate into a command we tell an operator to RUN?
- *
- * Two independent tests, and BOTH are load-bearing:
- *
- * 1. {@link PASTEABLE_STATE_IDENT}, which decides the shell question — see its
- *    own note for why it is an allow-list and what was measured.
- * 2. It renders byte-identically through `displayIdent`, which adds the LENGTH
- *    cap and the ASCII rule the regex does not carry, asked through the public
- *    API rather than by re-spelling `PLAIN_IDENT` (a second spelling of a
- *    security predicate is how the two drift).
- *
- * Deliberately NOT shell-quoting instead. Quoting answers test 2's population
- * and none of the option case — `'--state-bucket=attacker'` is still parsed as
- * a flag — and a command that LOOKS runnable is the thing being handed over, so
- * the honest answer for a value failing either test is to print the S3 key and
- * let the operator decide.
- */
-export function isPasteableIdent(value: string): boolean {
-  if (!PASTEABLE_STATE_IDENT.test(value)) return false;
-  return displayIdent(value, { maxCodePoints: STACK_REF_MAX_CODE_POINTS }) === value;
-}
