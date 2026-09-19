@@ -148,7 +148,12 @@ only for a replacement, but recording it unconditionally is what keeps an
 ABSENT value meaning "written by an older binary"), so the
 rollback acts on the verdict the deploy reached rather than re-deriving it from
 the previous state record, which disagrees on the deploy that adds or removes
-`UpdateReplacePolicy: Retain`. It is deliberately **not** part of the state
+`UpdateReplacePolicy: Retain`. It also records the type the resource had BEFORE
+the update (`previousResourceType` — additive, no bump): an op's own
+`resourceType` is the template's, so after a `Type` change it names only the new
+resource, and the rollback needs the old one to pick the provider that
+re-creates it. A journal written before that field falls back to the previous
+resource record the op already carries. It is deliberately **not** part of the state
 schema (its own `journalVersion` field, no `StackState.version` bump) and
 **not** under the `deployments/` prefix (that layer survives destroy by
 design; the journal must not). Lifecycle: created on a failed / interrupted

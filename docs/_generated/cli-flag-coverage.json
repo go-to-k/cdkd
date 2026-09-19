@@ -310,6 +310,7 @@
         "synthetics-canary",
         "tags-propagation",
         "throttle-wide-dag",
+        "type-change-replacement",
         "update-policy-mutations",
         "update-replace",
         "vpc-nat-gateway",
@@ -335,6 +336,7 @@
         "rollback-replay-cc-generated-name",
         "rollback-replay-effective-props",
         "rollback-sqs-cooldown",
+        "type-change-replacement",
         "update-replace"
       ]
     },
@@ -372,7 +374,8 @@
         "rollback-command",
         "rollback-cross-region-secret",
         "rollback-sqs-cooldown",
-        "secrets-dynamic-ref"
+        "secrets-dynamic-ref",
+        "type-change-replacement"
       ]
     },
     {
@@ -617,6 +620,7 @@
         "synthetics-canary",
         "tags-propagation",
         "throttle-wide-dag",
+        "type-change-replacement",
         "update-policy-mutations",
         "update-replace",
         "vpc-nat-gateway",
@@ -892,6 +896,7 @@
         "synthetics-canary",
         "tags-propagation",
         "throttle-wide-dag",
+        "type-change-replacement",
         "update-policy-mutations",
         "update-replace",
         "vpc-nat-gateway",
@@ -1196,6 +1201,7 @@
         "synthetics-canary",
         "tags-propagation",
         "throttle-wide-dag",
+        "type-change-replacement",
         "update-policy-mutations",
         "update-replace",
         "vpc-nat-gateway",

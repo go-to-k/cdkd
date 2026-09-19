@@ -152,8 +152,13 @@ const EXPECTED_STACK_NAME_RENDERS = 12;
  * the fence behaving as designed -- it refused the first cut of that fix, which
  * spelled the cap inline at the site, and the refusal is what produced the
  * named helper.
+ *
+ * Went 58 -> 62 in go-to-k/cdkd#2668: the plan labels render a replacement's
+ * OLD type beside its new one (`replacementTypes`), plus the two new labels
+ * (`refuse-replacement-routing`, `skip-failed-type-change`). All resource types
+ * and logical ids; no stack name among them.
  */
-const EXPECTED_SAFE_REFERENCES = 58;
+const EXPECTED_SAFE_REFERENCES = 62;
 
 /**
  * Bare `safeRoleArn` references -- 1 declaration plus the single role-ARN

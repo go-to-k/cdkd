@@ -2,71 +2,38 @@
  * Plan-time refusal for a resource `Type` change that involves a NESTED STACK
  * row (issue [#2668](https://github.com/go-to-k/cdkd/issues/2668)).
  *
- * ## The defect this guards
+ * ## History, and what is still true
  *
- * A replacement runs BOTH halves — the delete of the existing resource and the
- * create of the new one — on a single `resourceType`, and that one type comes
- * from the TEMPLATE:
- *
- *   - `src/analyzer/diff-calculator.ts` emits a Type change as
- *     `changeType: 'UPDATE'` carrying `resourceType: desiredResource.Type` (the
- *     NEW type) plus a synthetic `{ path: 'Type', requiresReplacement: true }`
- *     property change, so a plain `cdkd deploy` takes the replacement path with
- *     no `--recreate-via-*` flag involved;
- *   - `deploy-engine.ts`'s `provisionResource` binds `const resourceType =
- *     change.resourceType`, and its `oldDeleteProvider` resolves from THAT
- *     while taking `provisionedBy` from the state record.
- *
- * So the OLD resource's delete is dispatched at the NEW type's provider. That
- * has three outcomes, all of them wrong and all of them the subject of #2668's
- * full routing fix: usually a loud API error, or a silent leak of the old
- * resource; and where the two types' physical-id namespaces OVERLAP (a log
- * group and a Lambda function can both be addressed by the bare name `myapp`),
- * the deletion of an unrelated LIVE resource of the new type. For
- * `AWS::CloudFormation::Stack` it is a fourth and worse one, because
+ * This guard shipped as a stopgap while a replacement ran BOTH halves on the
+ * TEMPLATE's type, which dispatched the old resource's delete at the new type's
+ * provider. For `AWS::CloudFormation::Stack` that was catastrophic:
  * `NestedStackProvider.delete` IGNORES the physical id it is handed and derives
- * its own target, `<parent>~<logicalId>`, then destroys that child stack and
- * every resource it owns. Nothing else stops it: the type is not in
- * `STATEFUL_TYPES`, so the property-driven stateful guard does not fire, and
- * `deleteProtection`-style consent screens are per-resource on a stack the user
- * never named.
+ * `<parent>~<logicalId>`, so the mis-route destroyed a whole child stack.
  *
- * ## Why the guard is scoped to this one type pair
+ * The routing is fixed: the old half of a replacement routes on the STATE
+ * record's type and the create on the template's
+ * (docs/design/2668-type-change-routing.md). Every other type pair is now
+ * replaced normally. This pair is STILL refused, deliberately, because correct
+ * routing is necessary here and not sufficient:
  *
- * The catastrophic property is not "the types differ" but "the delete provider
- * ignores the physical id it is handed and derives its own target". Every
- * provider `delete` in `src/provisioning/providers/**` that ignores its
- * `physicalId` parameter was enumerated when this guard was written: four
- * sites, of which three (`wait-condition-handle-provider.ts`,
- * `agentcore-code-interpreter-provider.ts`, `agentcore-browser-provider.ts`)
- * are pure no-ops that emit a debug line and touch no AWS resource. Only
- * `nested-stack-provider.ts` turns the mis-route into the destruction of
- * resources the deploy never named.
+ *   - the replacement path deletes the old half as a best-effort CLEANUP step
+ *     whose failure is a warning. For a single resource that strands one
+ *     resource; for a nested stack it strands a child stack, its state record
+ *     at `<parent>~<logicalId>` and every resource it owns, under a green
+ *     deploy;
+ *   - in the other direction the create half is a whole child-stack deploy run
+ *     as one row of a replacement, a path no test or fixture has entered;
+ *   - neither direction has been exercised against real AWS.
  *
- * Widening the refusal to EVERY Type change was rejected because it would
- * refuse a deploy that is correct today: under `UpdateReplacePolicy: Retain`
- * the property-driven replacement SKIPS the old resource's delete entirely, so
- * the mis-routed provider is never called and the outcome (old resource
- * retained, new one created) is exactly CloudFormation's. Blocking that is a
- * false refusal of a working deploy.
- *
- * The nested-stack pair is refused ANYWAY under `Retain`, deliberately: the
- * create half still runs, and in the into-nested direction that means
- * `NestedStackProvider.create` deploying a child stack at
- * `<parent>~<logicalId>` and writing a child state record at that key. Reading
- * the effective policy here would also duplicate the engine's own
- * template-vs-state policy resolution inside a stopgap whose failure mode is
- * fail-OPEN. The remedy below costs the user a rename either way.
+ * Lifting the refusal is a separate decision with its own fixture, not a side
+ * effect of the routing fix.
  *
  * ## No escape hatch
  *
  * Deliberately absolute, matching the sibling refusal issue #2567 shipped for
- * the FLAGGED half of the same hazard (`recreate-targets.ts`'s
- * `blockedNestedStackTargets`, refused in both directions with no
- * `--force-stateful-recreation` bypass). A consent flag only makes sense when
- * the destructive call is correctly TARGETED and the user is accepting its
- * consequences; here the target itself is wrong, so there is no outcome to opt
- * into.
+ * the FLAGGED half (`recreate-targets.ts`'s `blockedNestedStackTargets`,
+ * refused in both directions with no `--force-stateful-recreation` bypass). The
+ * remedy costs the user a rename.
  */
 
 import type { ResourceChange, ResourceState } from '../types/state.js';
@@ -86,9 +53,9 @@ export interface NestedStackTypeChange {
   logicalId: string;
   /** The type cdkd has RECORDED for this row — the resource that exists. */
   currentType: string;
-  /** The type the TEMPLATE now declares — the one both halves would route on. */
+  /** The type the TEMPLATE now declares. */
   desiredType: string;
-  /** The recorded physical id of the resource the delete would be aimed at. */
+  /** The recorded physical id of the resource that would be replaced. */
   physicalId: string;
   /**
    * Which side carries the nested-stack type. The two produce different
@@ -101,9 +68,9 @@ export interface NestedStackTypeChange {
  * Find every planned change whose recorded type and template type differ with
  * `AWS::CloudFormation::Stack` on one side.
  *
- * Reads exactly the two values the defect is made of: `change.resourceType`
- * (what `provisionResource` binds and routes BOTH replacement halves on) and
- * the state record's `resourceType` (the resource that actually exists). That
+ * Reads exactly the two values a replacement's halves route on:
+ * `change.resourceType` (the create) and the state record's `resourceType`
+ * (the resource that actually exists, and the delete). That
  * is deliberate — deriving the "desired" type from the template again would be
  * a second implementation of the diff's own Type-change rule (metadata skip,
  * condition pruning) which could drift away from the routing decision this
@@ -159,12 +126,12 @@ export function findNestedStackTypeChanges(input: {
 }
 
 /**
- * Render the refusal. Names the logical id, BOTH types, the resource the
- * mis-routed delete would be aimed at, and what to do instead.
+ * Render the refusal. Names the logical id, BOTH types, the existing resource,
+ * the child stack involved, and what to do instead.
  *
- * `stackName` is the stack being deployed, so the into-nested arm can print the
- * child stack name `NestedStackProvider.delete` would derive and destroy — the
- * one piece of the damage the user cannot read off their own template.
+ * `stackName` is the stack being deployed, so each arm can print the child
+ * stack name `<stackName>~<logicalId>` — the one piece the user cannot read off
+ * their own template.
  */
 export function renderNestedStackTypeChangeRefusal(
   typeChanges: readonly NestedStackTypeChange[],
@@ -176,17 +143,13 @@ export function renderNestedStackTypeChangeRefusal(
       `(the existing ${tc.currentType} is ${tc.physicalId}).`;
     const damage =
       tc.direction === 'into-nested-stack'
-        ? `    Both halves of the replacement would route on the TEMPLATE's type, so the ` +
-          `existing resource's delete would be dispatched at the ${NESTED_STACK_RESOURCE_TYPE} ` +
-          `provider — which ignores the physical id it is handed and instead destroys the ` +
-          `nested child stack "${stackName}~${tc.logicalId}" and every resource that child ` +
-          `owns. Where no such child exists the delete is a no-op and ${tc.physicalId} is ` +
-          `silently leaked instead.`
-        : `    Both halves of the replacement would route on the TEMPLATE's type, so the ` +
-          `existing nested stack's delete would be dispatched at the ${tc.desiredType} ` +
-          `provider, which cannot delete a nested stack — the child stack ` +
-          `"${stackName}~${tc.logicalId}" and every resource it owns would be left behind, ` +
-          `untracked.`;
+        ? `    Replacing a single resource BY a nested stack is not supported: the create half ` +
+          `of the replacement would deploy a whole child stack "${stackName}~${tc.logicalId}" ` +
+          `as one row, while ${tc.physicalId} is still recorded under this logical id.`
+        : `    Replacing a nested stack BY a single resource is not supported: a replacement ` +
+          `deletes its old half as a best-effort cleanup step whose failure is only a warning, ` +
+          `so the child stack "${stackName}~${tc.logicalId}" and every resource it owns could ` +
+          `be left behind, untracked, under a deploy that reports success.`;
     return `${head}\n${damage}`;
   });
 
@@ -195,13 +158,12 @@ export function renderNestedStackTypeChangeRefusal(
     (typeChanges.length === 1
       ? `a resource changes its Type `
       : `${typeChanges.length} resources change their Type `) +
-    `into or out of ${NESTED_STACK_RESOURCE_TYPE}, which cdkd cannot replace safely ` +
+    `into or out of ${NESTED_STACK_RESOURCE_TYPE}, which cdkd does not replace in place ` +
     `(issue #2668).\n` +
     `${rows.join('\n')}\n` +
     `  Deploy this as two changes instead: give the new resource a DIFFERENT logical id ` +
     `(in CDK, rename the construct) so the existing row is deleted through its own type's ` +
     `provider and the new one is created under its own — or remove the resource in one deploy ` +
-    `and add its replacement in the next. There is no flag that overrides this refusal: the ` +
-    `delete's TARGET would be wrong, not merely its consequences.`
+    `and add its replacement in the next. There is no flag that overrides this refusal.`
   );
 }

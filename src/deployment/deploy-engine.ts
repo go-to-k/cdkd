@@ -3351,12 +3351,12 @@ export class DeployEngine {
       );
 
       // Issue #2668: refuse a Type change into or out of
-      // `AWS::CloudFormation::Stack` before anything is provisioned. A
-      // replacement routes BOTH halves on `change.resourceType` (the TEMPLATE's
-      // type), so such a row's delete reaches `NestedStackProvider.delete`,
-      // which ignores the physical id it is handed and destroys
-      // `<parent>~<logicalId>` whole. Full reasoning — including why the
-      // refusal is scoped to this type pair and carries no override — in
+      // `AWS::CloudFormation::Stack` before anything is provisioned. Every
+      // other Type change is replaced normally — the old half routes on the
+      // state record's type, the create on the template's — but for this pair
+      // correct routing is not sufficient: the replacement's cleanup delete is
+      // warn-and-continue, which for a nested row strands a whole child stack.
+      // Full reasoning, and why there is no override, in
       // `type-change-guard.ts`.
       //
       // Placed HERE rather than in a CLI pre-flight for two reasons: nested
@@ -4117,6 +4117,17 @@ export class DeployEngine {
                 ...(change.changeType === 'UPDATE' && {
                   oldResourceRetained: this.retainedOldOnReplacement.has(logicalId),
                 }),
+                // Issue #2668: `resourceType` above is the TEMPLATE's type, so
+                // on a Type change the journal would otherwise name only the
+                // NEW one and the rollback would re-create the OLD resource
+                // through the new type's provider. Stamped on every UPDATE that
+                // has a previous record, for the reason `oldResourceRetained`
+                // is: ABSENT then means "written by a binary that predates this
+                // field" and nothing else.
+                ...(change.changeType === 'UPDATE' &&
+                  previousState !== undefined && {
+                    previousResourceType: previousState.resourceType,
+                  }),
               });
 
               saveStateAfterResource(logicalId);
@@ -4927,9 +4938,14 @@ export class DeployEngine {
     // does not itself force a replacement still rendered `Updating` over a
     // destroy + recreate.
     const labelRecreateDirection = this.recreateDirectionFor(stackName, logicalId);
+    // The Type-change half (issue #3036) is mirrored too: the dispatch treats a
+    // recorded type that differs from the template's as a replacement whatever
+    // `propertyChanges` says.
+    const labelRecordedType = stateResources[logicalId]?.resourceType;
     const needsReplacement =
       (change.changeType === 'UPDATE' &&
-        (change.propertyChanges?.some((pc) => pc.requiresReplacement) ?? false)) ||
+        ((change.propertyChanges?.some((pc) => pc.requiresReplacement) ?? false) ||
+          (labelRecordedType !== undefined && labelRecordedType !== resourceType))) ||
       labelRecreateDirection !== undefined;
     const verb =
       change.changeType === 'CREATE'
@@ -5453,7 +5469,14 @@ export class DeployEngine {
    */
   private async replaceDeleteFirstAndRecreate(
     logicalId: string,
+    /** The TEMPLATE's type — what the re-create routes on. */
     resourceType: string,
+    /**
+     * The STATE RECORD's type — what the old resource's delete and final
+     * snapshot route on (issue #2668). Equal to `resourceType` unless the
+     * resource's `Type` changed.
+     */
+    oldResourceType: string,
     currentResource: ResourceState,
     oldDeleteProvider: ResourceProvider,
     replaceProvider: ResourceProvider,
@@ -5484,7 +5507,7 @@ export class DeployEngine {
     // delete old resource ..." for a delete that was never attempted.
     const finalSnapshotIdentifier = await this.prepareFinalSnapshotForDelete(
       logicalId,
-      resourceType,
+      oldResourceType,
       currentResource,
       updateReplacePolicy
     );
@@ -5493,7 +5516,7 @@ export class DeployEngine {
       deleteResult = await oldDeleteProvider.delete(
         logicalId,
         currentResource.physicalId,
-        resourceType,
+        oldResourceType,
         currentResource.properties,
         {
           expectedRegion: this.stackRegion,
@@ -5840,6 +5863,15 @@ export class DeployEngine {
         if (!currentResource) {
           throw new Error(`Cannot update ${logicalId}: resource not found in state`);
         }
+        // Issue #2668: on a `Type` change the diff emits an UPDATE whose
+        // `resourceType` is the TEMPLATE's (new) type, while the resource that
+        // EXISTS is the state record's. The two halves of the replacement
+        // route on different types: everything aimed at the OLD physical
+        // resource (its delete, final snapshot, stateful guard) takes
+        // `oldResourceType`, and the create takes `resourceType`. Design:
+        // docs/design/2668-type-change-routing.md.
+        const oldResourceType = currentResource.resourceType;
+        const typeChanged = oldResourceType !== resourceType;
 
         const desiredProps = change.desiredProperties || {};
         const currentProps = change.currentProperties || {};
@@ -5986,10 +6018,11 @@ export class DeployEngine {
         // need an allow set and a removable drop). Both refuse at pre-flight
         // with `RECREATE_TARGETS_INVALID` -- see
         // `src/deployment/recreate-targets.ts`. A TYPE change does reach this
-        // arm (the diff emits it as an UPDATE carrying `Type`), and this skip,
-        // which compares properties only, swallows one whose bags compare
-        // equal: issue #3036 (the old resource's delete on a type change
-        // routing on the NEW type is the separate issue #2668).
+        // arm (the diff emits it as an UPDATE carrying `Type`), and this skip
+        // compares properties only — so it is gated on `!typeChanged` below
+        // (issue #3036): two types whose bags compare equal are still two
+        // different resources, and skipping left AWS and the record on the OLD
+        // type under a green deploy.
         const desiredForSkipCheck = redactSecretsForState(
           markSameGenerationBag({ ...resolvedProps }),
           updateSecrets,
@@ -6005,6 +6038,7 @@ export class DeployEngine {
               )
             : desiredForSkipCheck;
         if (
+          !typeChanged &&
           JSON.stringify(desiredForSkipCheckAsWritten) === JSON.stringify(currentPropsAsWritten)
         ) {
           // Attribute-only change (schema v5+): `DeletionPolicy` /
@@ -6037,9 +6071,13 @@ export class DeployEngine {
         }
 
         // Check if this update requires resource replacement (immutable property changed)
-        const propertyDrivenReplacement = change.propertyChanges?.some(
-          (pc) => pc.requiresReplacement
-        );
+        // `typeChanged ||` (issue #3036): a Type change is a replacement by
+        // definition, never an in-place update — the in-place arm below would
+        // hand the OLD physical id to the NEW type's `update()`. Read from the
+        // record rather than trusted to the diff's synthetic `Type` row, so a
+        // change-shape that omits the row cannot route there.
+        const propertyDrivenReplacement =
+          typeChanged || change.propertyChanges?.some((pc) => pc.requiresReplacement);
         // Issue [#2567] — the recreate targets apply ONLY to the stack the
         // pre-flight validated them against. This engine instance may be a
         // NESTED child (`NestedStackProvider.runChildDeploy` spreads the
@@ -6114,16 +6152,22 @@ export class DeployEngine {
             // to travel with the recorded one. `currentProps` stays the recorded
             // bag exactly as before; `currentResource` is this UPDATE branch's
             // state record, the only place the observed bag exists.
+            // The OLD type (issue #2668): the guard asks what the resource being
+            // destroyed HOLDS, and that resource is the state record's. Keyed
+            // on the template's type, a stateful-to-non-stateful Type change
+            // escaped the guard entirely, and the reverse refused a deploy that
+            // destroys nothing stateful.
             const statefulReason = isStatefulRecreateTargetForReplace(
-              resourceType,
+              oldResourceType,
               currentProps,
               currentResource.observedProperties
             );
             if (statefulReason && this.options.forceStatefulRecreation !== true) {
-              const immutableProps = change.propertyChanges
-                ?.filter((pc) => pc.requiresReplacement)
-                .map((pc) => pc.path)
-                .join(', ');
+              const immutableProps =
+                change.propertyChanges
+                  ?.filter((pc) => pc.requiresReplacement)
+                  .map((pc) => pc.path)
+                  .join(', ') || 'Type';
               // `markNonRetryable`: the verdict is computed from a CLI flag and
               // a state-recorded property bag, neither of which a retry can
               // change — and the message interpolates a template-controlled
@@ -6134,8 +6178,8 @@ export class DeployEngine {
               // stack's child engine re-throws into the parent's).
               throw markNonRetryable(
                 new CdkdError(
-                  `${logicalId} (${resourceType}) requires replacement (immutable property changed: ` +
-                    `${immutableProps}) but it is a stateful resource — ` +
+                  `${logicalId} (${oldResourceType}) requires replacement (immutable property changed: ` +
+                    `${immutableProps}${typeChanged ? `, to ${resourceType}` : ''}) but it is a stateful resource — ` +
                     `${renderStatefulReason(statefulReason)}. Re-run with ` +
                     `--force-stateful-recreation to confirm the data loss, or change the resource ` +
                     `definition to avoid the immutable-property change.`,
@@ -6158,7 +6202,9 @@ export class DeployEngine {
               .map((pc) => pc.path)
               .join(', ')}`;
           }
-          this.logger.info(`Replacing ${logicalId} (${resourceType}) - ${replacementReason}`);
+          this.logger.info(
+            `Replacing ${logicalId} (${typeChanged ? `${oldResourceType} -> ${resourceType}` : resourceType}) - ${replacementReason}`
+          );
 
           // The new (replacement) resource gets a fresh routing decision —
           // a property the SDK provider used to silent-drop may now be
@@ -6213,8 +6259,15 @@ export class DeployEngine {
           // Provider ... New physical resource: created via CC API",
           // i.e. destroy-then-create. (`updateReplacePolicy` is read once
           // above, before the stateful guard, and reused here.)
+          //
+          // Issue #2668: BOTH inputs come from the state record. The layer
+          // always did; the TYPE used to be the template's, so on a Type change
+          // the old resource's delete was dispatched at the NEW type's provider
+          // — a loud API error, a silent leak, or (where the two types'
+          // physical-id namespaces overlap) the deletion of an unrelated live
+          // resource of the new type.
           const oldDeleteProvider = this.providerRegistry.getProviderFor({
-            resourceType,
+            resourceType: oldResourceType,
             provisionedBy: currentResource.provisionedBy,
           }).provider;
 
@@ -6253,7 +6306,7 @@ export class DeployEngine {
               // delete failure that never happened.
               const recreateFinalSnapshotId = await this.prepareFinalSnapshotForDelete(
                 logicalId,
-                resourceType,
+                oldResourceType,
                 currentResource,
                 updateReplacePolicy
               );
@@ -6262,7 +6315,7 @@ export class DeployEngine {
                 recreateDeleteResult = await oldDeleteProvider.delete(
                   logicalId,
                   currentResource.physicalId,
-                  resourceType,
+                  oldResourceType,
                   currentResource.properties,
                   {
                     expectedRegion: this.stackRegion,
@@ -6359,7 +6412,14 @@ export class DeployEngine {
             // properties ever being applied. Fail before the state
             // bookkeeping runs; the old resource and its state record stay
             // intact.
+            //
+            // `!typeChanged` (issue #2668): equal physical ids name the SAME
+            // resource only within one type. Across a Type change they are a
+            // coincidence of two namespaces (a log group and a Lambda function
+            // can both be the bare name `myapp`), and the create was a genuine
+            // one.
             if (
+              !typeChanged &&
               updateReplacePolicy === 'Retain' &&
               createResult.physicalId === currentResource.physicalId
             ) {
@@ -6461,6 +6521,7 @@ export class DeployEngine {
               createResult = await this.replaceDeleteFirstAndRecreate(
                 logicalId,
                 resourceType,
+                oldResourceType,
                 currentResource,
                 oldDeleteProvider,
                 replaceProvider,
@@ -6483,8 +6544,17 @@ export class DeployEngine {
             // the opt-in, and fall back to delete-first + re-create under
             // --replace. Skipped when the old resource was already deleted
             // (delete-first fallback) — there, re-acquiring the same
-            // physical id under the same name is the expected outcome.
-            if (!deletedOldFirst && createResult.physicalId === currentResource.physicalId) {
+            // physical id under the same name is the expected outcome. Skipped
+            // on a Type change too (issue #2668), for the reason stated at the
+            // `--recreate-via-*` twin above: across two types an equal id is
+            // two resources, so the "new" one is NOT the old one and the
+            // delete-old step below is aimed — through the OLD type's provider
+            // — at the right resource.
+            if (
+              !typeChanged &&
+              !deletedOldFirst &&
+              createResult.physicalId === currentResource.physicalId
+            ) {
               const idempotentNameOrigin = this.replacementNameOrigin(
                 logicalId,
                 currentResource.physicalId
@@ -6530,6 +6600,7 @@ export class DeployEngine {
               createResult = await this.replaceDeleteFirstAndRecreate(
                 logicalId,
                 resourceType,
+                oldResourceType,
                 currentResource,
                 oldDeleteProvider,
                 replaceProvider,
@@ -6567,7 +6638,7 @@ export class DeployEngine {
               try {
                 cleanupFinalSnapshotId = await this.prepareFinalSnapshotForDelete(
                   logicalId,
-                  resourceType,
+                  oldResourceType,
                   currentResource,
                   updateReplacePolicy
                 );
@@ -6594,7 +6665,7 @@ export class DeployEngine {
                   cleanupDeleteResult = await oldDeleteProvider.delete(
                     logicalId,
                     currentResource.physicalId,
-                    resourceType,
+                    oldResourceType,
                     currentResource.properties,
                     {
                       expectedRegion: this.stackRegion,
