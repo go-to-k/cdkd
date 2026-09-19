@@ -213,6 +213,11 @@ export function findNestedTemplateTreeDefect(
   let rowsFollowed = 0;
 
   const visit = (logicalId: string, templatePath: string): NestedTemplateTreeDefect | undefined => {
+    // A caller's index can hand back a non-string: a plain-object map looked up
+    // with a logical id of `__proto__` answers `Object.prototype`. Nothing to
+    // follow, and the site that loads the template reports it readably;
+    // `path.dirname` on it would throw a bare TypeError from here instead.
+    if (typeof templatePath !== 'string') return undefined;
     const identity = templateIdentity(templatePath);
     const lexical = path.resolve(templatePath);
     chain.push({ logicalId, templatePath: identity });

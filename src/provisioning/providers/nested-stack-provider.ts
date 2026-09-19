@@ -1010,7 +1010,10 @@ export class NestedStackProvider implements ResourceProvider {
     childTemplatePath: string
   ): Record<string, string> {
     const dir = path.dirname(childTemplatePath);
-    const result: Record<string, string> = {};
+    // Null-prototype: a logical id is a template key, and on a plain object a
+    // row named `__proto__` is silently dropped by the assignment below and
+    // then answered with `Object.prototype` by the lookup in create()/update().
+    const result = Object.create(null) as Record<string, string>;
     // `listNestedTemplateRows` is shared with the pre-deploy tree validation
     // ON PURPOSE: that walk is only a guard while it follows exactly the rows
     // this loop follows, and a second hand-written copy is how the two came to

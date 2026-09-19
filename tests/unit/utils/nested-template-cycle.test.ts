@@ -224,6 +224,13 @@ describe('findNestedTemplateTreeDefect', () => {
     });
   });
 
+  it('ignores an entry whose path is not a string instead of throwing', () => {
+    // What a plain-object index answers for a logical id of `__proto__`.
+    const poisoned = { Child: Object.prototype } as unknown as Record<string, string>;
+
+    expect(findNestedTemplateTreeDefect(poisoned)).toBeUndefined();
+  });
+
   it('walks every entry row, not only the first', () => {
     const dir = tmp();
     const fine = writeTemplate(dir, 'fine.json', {});
@@ -263,10 +270,11 @@ describe('findNestedTemplateTreeDefect', () => {
   });
 
   it('refuses a tree that symlinked directories multiply without ever repeating on one chain', () => {
-    // `d1 -> .` and `d2 -> .` give every template three lexical spellings per
-    // level, so the path-keyed memo cannot collapse them, and no chain repeats
-    // an identity because each level is a different file. The memo does
-    // collapse the '' step, so the spellings double (not triple) per level.
+    // `d1 -> .` and `d2 -> .` let every row be spelled through either link, so
+    // one file has ever more lexical paths the deeper it sits, and the
+    // path-keyed memo cannot collapse them. No chain repeats an identity,
+    // because each level is a different file. The spellings double per level
+    // (the bare step adds no new spelling).
     // Sized just past the budget on that base so that a LOST budget lets the walk
     // finish and return `undefined`, failing the assertion below, rather than
     // spinning a synchronous walk no test timeout can interrupt.
@@ -420,6 +428,8 @@ describe('renderNestedTemplateTreeDefect', () => {
         'that is already on that nesting chain'
     );
     expect(text).toContain('Refusing to deploy any level of it.');
+    // Anchors the needle the too-large case asserts is ABSENT.
+    expect(text).toContain('hand-modified');
   });
 
   it('strips terminal control sequences from every template-controlled interpolation', () => {

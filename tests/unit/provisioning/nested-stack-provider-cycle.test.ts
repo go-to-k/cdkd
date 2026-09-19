@@ -349,6 +349,39 @@ describe('NestedStackProvider — nested-template cycle (issue #3247)', () => {
     expect(engineDeploys).toEqual(['Parent~Child', 'Parent~Child~Loop']);
   });
 
+  it('follows a nested row named __proto__ like any other row', async () => {
+    // Written as JSON text: assigning `obj['__proto__']` in JS would set the
+    // prototype instead of creating the key JSON.parse creates.
+    const dir = tmp();
+    writeTemplate(dir, 'leaf.json', {});
+    const child = join(dir, 'child.json');
+    writeFileSync(
+      child,
+      '{"Resources":{"__proto__":{"Type":"AWS::CloudFormation::Stack","Metadata":{"aws:asset:path":"leaf.json"}}}}'
+    );
+    const provider = new NestedStackProvider();
+
+    await withNestedStackContext(makeContext({ Child: child }), () =>
+      provider.create('Child', 'AWS::CloudFormation::Stack', {})
+    );
+
+    expect(engineDeploys).toEqual(['Parent~Child', 'Parent~Child~__proto__']);
+  });
+
+  it('reports a root row whose indexed path is not a string readably, not as a bare TypeError', async () => {
+    // A plain-object root index (AssemblyReader's) answers `Object.prototype`
+    // for a logical id of `__proto__`.
+    const provider = new NestedStackProvider();
+
+    const err = await capture(() =>
+      withNestedStackContext(makeContext({}), () =>
+        provider.create('__proto__', 'AWS::CloudFormation::Stack', {})
+      )
+    );
+
+    expect(err.message).toContain('Failed to read nested template');
+  });
+
   it('still deploys a diamond: two sibling rows naming one template', async () => {
     const dir = tmp();
     writeTemplate(dir, 'shared.json', {});
