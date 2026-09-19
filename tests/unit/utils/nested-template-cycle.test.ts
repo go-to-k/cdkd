@@ -110,10 +110,11 @@ describe('findNestedTemplateTreeDefect', () => {
   });
 
   it('walks a wide tree of diamonds once per template, not once per path', () => {
-    // 24 levels, two rows per level naming the same next template: 2^24 paths.
-    // Without the clean-subtree memo this does not finish inside the timeout.
+    // 20 levels, two rows per level naming the same next template: 2^20 paths,
+    // each a file read. Without the clean-subtree memo the walk outlives the
+    // test timeout; sized so that regression fails in seconds, not hours.
     const dir = tmp();
-    const depth = 24;
+    const depth = 20;
     writeTemplate(dir, `t${depth}.json`, {});
     for (let i = depth - 1; i >= 0; i--) {
       writeTemplate(dir, `t${i}.json`, { L: `t${i + 1}.json`, R: `t${i + 1}.json` });
