@@ -114,7 +114,9 @@ describe('DiffCalculator refuses an unreadable properties bag (issue go-to-k/cdk
       // stack. The refusal ends on a TEMPLATE the reader fills in instead.
       expect(error.message).not.toContain('MyStack');
       expect(error.message).not.toContain('us-east-1');
-      expect(error.message).toContain('cdkd state show <stack> --stack-region <region> --json');
+      // Holes quoted since go-to-k/cdkd#3363 (M4): a bare `<stack>` is a shell
+      // redirection when the line is pasted.
+      expect(error.message).toContain("cdkd state show '<stack>' --stack-region '<region>' --json");
       // And the refusal says what it protected, so the reader can tell this
       // from an ordinary validation error.
       expect(error.message).toContain('REPLACEMENT of the live resource');

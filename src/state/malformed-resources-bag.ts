@@ -9,6 +9,7 @@ import {
   truncateCodePoints,
 } from '../utils/display-safe.js';
 import {
+  commandHole,
   recoveryCommandFlags,
   sanitizeRecoveryValue,
   shellQuote,
@@ -1328,7 +1329,7 @@ function dropRecordCommand(
 ): string {
   if (stackName === undefined || stackName === '') {
     return [
-      'cdkd state orphan <stack> --stack-region <region>',
+      `cdkd state orphan ${commandHole('stack')} --stack-region ${commandHole('region')}`,
       ...recoveryCommandFlags(recovery).flags,
     ].join(' ');
   }
@@ -1347,8 +1348,11 @@ function dropRecordCommand(
         ? ''
         : regionExact
           ? ` --stack-region ${shellQuote(known)}`
-          : ' --stack-region <region>';
-    return [`cdkd state orphan <stack>${flag}`, ...recoveryCommandFlags(recovery).flags].join(' ');
+          : ` --stack-region ${commandHole('region')}`;
+    return [
+      `cdkd state orphan ${commandHole('stack')}${flag}`,
+      ...recoveryCommandFlags(recovery).flags,
+    ].join(' ');
   }
   const flag = known === undefined ? '' : ` --stack-region ${shellQuote(known)}`;
   return [
@@ -1385,7 +1389,7 @@ function inspectCommand(stackName: string | undefined, region: string | undefine
   if (stackName === undefined) {
     // A TEMPLATE rather than a command, and it says so: substituting anything
     // here would be substituting the untrusted values the clause above drops.
-    return 'cdkd state show <stack> --stack-region <region> --json';
+    return `cdkd state show ${commandHole('stack')} --stack-region ${commandHole('region')} --json`;
   }
   const flag = region === undefined ? '' : ` --stack-region ${shellQuote(safeIdentifier(region))}`;
   return `cdkd state show ${shellQuote(safeIdentifier(stackName))}${flag} --json`;
@@ -1779,10 +1783,14 @@ export function malformedOrphanResourcePropertiesRefusalMessage(
   // the prose's `'...'`. A command that itself carries `shellQuote`d values
   // composes with a wrapping quote into its inverse: pasted together with the
   // wrapper, `'cdkd state orphan S --state-bucket 'b; printf X; #''` closes the
-  // wrapper at the value's opening quote and RUNS `printf X` (measured, bash),
-  // and the bucket is plantable from a cloned repo's `cdk.json`. The rule
-  // `.claude/rules/lock-contention-message.md` records for the force-unlock
-  // hint, applied to the three commands here (go-to-k/cdkd#3363 review).
+  // wrapper at the value's opening quote and RUNS `printf X` (measured, bash).
+  // NOT only the bucket: the release before this carried the STACK NAME and
+  // the REGION inside the same wrapper, and `displaySafe` keeps `'` and `;` —
+  // so a prebuilt-assembly stack name (read unvalidated) or a region planted
+  // as a state-key segment broke out on the shipped binary too; the bucket
+  // (plantable from a cloned repo's `cdk.json`) is the one this review added.
+  // The rule `.claude/rules/lock-contention-message.md` records for the
+  // force-unlock hint, applied to the three commands here (go-to-k/cdkd#3363).
   const commands = [
     `Drop the record: ${dropRecordCommand(stackName, region, recovery)}`,
     ...(listCommand === undefined ? [] : [`Find the exact name: ${listCommand}`]),
@@ -1849,7 +1857,10 @@ function withheldIdentityListCommand(
 
 /** A name WAS known, and it or the region beside it did not render exactly. */
 function identityWithheld(stackName: string | undefined, region: string | undefined): boolean {
-  if (stackName === undefined) return false;
+  // `''` is no identity either, as in {@link dropRecordCommand}: otherwise a
+  // later direct caller gets the withheld clause while the drop command beside
+  // it takes the no-identity arm.
+  if (stackName === undefined || stackName === '') return false;
   // The same `''` floor {@link dropRecordCommand} carries, so the two agree on
   // whether a region was supplied at all. Unreachable through the one builder
   // that calls this (it normalises `''` at entry) and kept for the reason
@@ -1880,8 +1891,9 @@ function orphanInspectCommand(
   recovery?: LockRecoveryContext
 ): string {
   const regionExact = rendersExactly(region);
-  const stack = regionExact && rendersExactly(stackName) ? shellQuote(stackName) : '<stack>';
-  const where = regionExact ? shellQuote(region) : '<region>';
+  const stack =
+    regionExact && rendersExactly(stackName) ? shellQuote(stackName) : commandHole('stack');
+  const where = regionExact ? shellQuote(region) : commandHole('region');
   return [
     `cdkd state show ${stack} --stack-region ${where} --json`,
     ...recoveryCommandFlags(recovery).flags,
@@ -1926,7 +1938,7 @@ function orphanInspectClause(
     // The same template the shared `inspectCommand` gives for no identity, but
     // qualified: the identity is the hole, not the account.
     const template = [
-      'cdkd state show <stack> --stack-region <region> --json',
+      `cdkd state show ${commandHole('stack')} --stack-region ${commandHole('region')} --json`,
       ...recoveryCommandFlags(recovery).flags,
     ].join(' ');
     return { command: template };

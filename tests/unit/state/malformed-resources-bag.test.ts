@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vite-plus/test';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import {
@@ -602,15 +604,22 @@ describe('the gate-scoped resources texts (issue go-to-k/cdkd#3161)', () => {
       const m = malformedDestroyResourcesRefusalMessage(stack, region);
       expect(m, label).toContain('does NOT render exactly');
       // The TEMPLATE, not a substitution — the module's own no-identity form.
-      expect(m, label).toContain('cdkd state show <stack> --stack-region <region> --json');
+      expect(m, label).toContain('cdkd state show \'<stack>\' --stack-region \'<region>\' --json');
       expect(m, label).toContain('The state record this command loaded');
       // And nothing quoted: every pasteable command in this module renders its
       // identifiers inside `'...'`, so their absence is what proves none was
       // built. A quoted EMPTY pair would be the degenerate form of the same
-      // defect, so it is refused by the same assertion.
-      expect(m.includes("cdkd state show '"), `${label}: a substituted show command survived`).toBe(
-        false
+      // defect, so it is refused by the same assertion. The no-identity
+      // TEMPLATE quotes its holes too since go-to-k/cdkd#3363 (M4 — a bare
+      // `<stack>` is a shell redirection), so it is removed before the check.
+      const withoutTemplate = m.replaceAll(
+        "cdkd state show '<stack>' --stack-region '<region>' --json",
+        ''
       );
+      expect(
+        withoutTemplate.includes("cdkd state show '"),
+        `${label}: a substituted show command survived`
+      ).toBe(false);
       expect(m.includes("cdkd state orphan '"), `${label}: a substituted orphan command`).toBe(
         false
       );
@@ -2418,7 +2427,7 @@ describe('the malformed-properties texts (issue go-to-k/cdkd#3191)', () => {
     // been applied here.
     const text = malformedResourcePropertiesRefusalMessage(undefined, undefined, ['ParamZeta']);
     expect(text).toContain('The state record this command loaded holds 1 resource record(s)');
-    expect(text).toContain('cdkd state show <stack> --stack-region <region> --json');
+    expect(text).toContain('cdkd state show \'<stack>\' --stack-region \'<region>\' --json');
     expect(text).toContain('ParamZeta');
     expect(text.split('\n')).toHaveLength(1);
   });
@@ -2855,8 +2864,8 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
     // the `<region>` placeholder IS right -- it reads as a hole to fill rather
     // than a command to run.
     const noStack = malformedOrphanResourcePropertiesRefusalMessage(undefined, undefined, ['R']);
-    expect(noStack).toMatch(/^Drop the record: cdkd state orphan <stack> --stack-region <region>$/m);
-    expect(noStack).toContain('cdkd state show <stack> --stack-region <region> --json');
+    expect(noStack).toMatch(/^Drop the record: cdkd state orphan \'<stack>\' --stack-region \'<region>\'$/m);
+    expect(noStack).toContain('cdkd state show \'<stack>\' --stack-region \'<region>\' --json');
     expect(text).toContain('only while the CDK app STILL DECLARES');
     expect(text).toContain('a resource the app no longer declares has none');
     expect(text).toContain('No state was written');
@@ -2902,12 +2911,12 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
       // `'prod-api '` renders as `prod-api` — a healthy sibling's name — and the
       // bare form then drops that record in every region.
       for (const [name, region, expected] of [
-        ['prod-api ', undefined, 'cdkd state orphan <stack>'],
-        [' prod-api', undefined, 'cdkd state orphan <stack>'],
-        ['prod-api ', 'us-east-1', 'cdkd state orphan <stack> --stack-region us-east-1'],
-        ['S\u001b[31m', 'us-east-1', 'cdkd state orphan <stack> --stack-region us-east-1'],
-        ['caf\u00e9', 'us-east-1', 'cdkd state orphan <stack> --stack-region us-east-1'],
-        ['q'.repeat(STACK_REF_MAX_CODE_POINTS + 1), undefined, 'cdkd state orphan <stack>'],
+        ['prod-api ', undefined, 'cdkd state orphan \'<stack>\''],
+        [' prod-api', undefined, 'cdkd state orphan \'<stack>\''],
+        ['prod-api ', 'us-east-1', 'cdkd state orphan \'<stack>\' --stack-region us-east-1'],
+        ['S\u001b[31m', 'us-east-1', 'cdkd state orphan \'<stack>\' --stack-region us-east-1'],
+        ['caf\u00e9', 'us-east-1', 'cdkd state orphan \'<stack>\' --stack-region us-east-1'],
+        ['q'.repeat(STACK_REF_MAX_CODE_POINTS + 1), undefined, 'cdkd state orphan \'<stack>\''],
       ] as const) {
         const text = malformedOrphanResourcePropertiesRefusalMessage(name, region, ['A']);
         expect(dropOf(text), JSON.stringify(name)).toBe(expected);
@@ -2920,14 +2929,14 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
       // "did not render exactly" sentence about a name the message never had.
       for (const name of [undefined, '']) {
         const text = malformedOrphanResourcePropertiesRefusalMessage(name, undefined, ['A']);
-        expect(dropOf(text)).toBe('cdkd state orphan <stack> --stack-region <region>');
+        expect(dropOf(text)).toBe('cdkd state orphan \'<stack>\' --stack-region \'<region>\'');
         expect(text, JSON.stringify(name)).not.toContain('did not render exactly');
       }
     });
 
     it('withholds an altered REGION too, keeping the exact name a hole as well', () => {
       const text = malformedOrphanResourcePropertiesRefusalMessage('S', 'us-east-1 ', ['A']);
-      expect(dropOf(text)).toBe('cdkd state orphan <stack> --stack-region <region>');
+      expect(dropOf(text)).toBe('cdkd state orphan \'<stack>\' --stack-region \'<region>\'');
       expect(text).toContain(HINT);
     });
 
@@ -2942,7 +2951,7 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
         statePrefix: 'x',
       });
       expect(dropOf(tpl)).toBe(
-        "cdkd state orphan <stack> --stack-region 'it'\\''s' --profile prod --state-bucket b --state-prefix x"
+        "cdkd state orphan \'<stack>\' --stack-region 'it'\\''s' --profile prod --state-bucket b --state-prefix x"
       );
       // The listing the hint sends the operator to must read the SAME bucket.
       expect(tpl).toContain(HINT);
@@ -2993,7 +3002,7 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
       // bucket (the M3 finding of go-to-k/cdkd#3363's review).
       const withheld = malformedOrphanResourcePropertiesRefusalMessage('S ', undefined, ['A'], recovery);
       expect(dropOf(withheld)).toBe(
-        'cdkd state orphan <stack> --profile prod --state-bucket cdkd-state-1'
+        'cdkd state orphan \'<stack>\' --profile prod --state-bucket cdkd-state-1'
       );
       expect(withheld).toContain('in state bucket cdkd-state-1.');
     });
@@ -3020,18 +3029,18 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
       for (const name of ['prod-api ', 'S\u001b[31m', 'q'.repeat(STACK_REF_MAX_CODE_POINTS + 1)]) {
         const text = malformedOrphanResourcePropertiesRefusalMessage(name, 'us-east-1', ['A'], recovery);
         expect(inspectOf(text), JSON.stringify(name)).toBe(
-          'cdkd state show <stack> --stack-region us-east-1 --json --profile prod --state-bucket b'
+          'cdkd state show \'<stack>\' --stack-region us-east-1 --json --profile prod --state-bucket b'
         );
         expect(text, JSON.stringify(name)).not.toContain('cdkd state show prod-api');
         // And it agrees with the drop command in the same message.
         expect(dropOf(text), JSON.stringify(name)).toBe(
-          'cdkd state orphan <stack> --stack-region us-east-1 --profile prod --state-bucket b'
+          'cdkd state orphan \'<stack>\' --stack-region us-east-1 --profile prod --state-bucket b'
         );
       }
       // Region altered: both are holes, as in the drop command.
       const padded = malformedOrphanResourcePropertiesRefusalMessage('S', 'us-east-1 ', ['A']);
-      expect(inspectOf(padded)).toBe('cdkd state show <stack> --stack-region <region> --json');
-      expect(dropOf(padded)).toBe('cdkd state orphan <stack> --stack-region <region>');
+      expect(inspectOf(padded)).toBe('cdkd state show \'<stack>\' --stack-region \'<region>\' --json');
+      expect(dropOf(padded)).toBe('cdkd state orphan \'<stack>\' --stack-region \'<region>\'');
     });
 
     it("renders an EMPTY region exactly as an absent one — the WHOLE message, not one clause", () => {
@@ -3053,7 +3062,7 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
       );
     });
 
-    it("keeps the `''` region floor in BOTH helpers that read a region (structural)", () => {
+    it("keeps the `''` region AND stack-name floors in both helpers that read them (structural)", () => {
       // Unreachable through the builder, which normalises `''` at entry, so no
       // rendered message can observe it; kept so a later direct caller inherits
       // it (the reason `dropRecordCommand` records, m5 of go-to-k/cdkd#3363's
@@ -3065,6 +3074,13 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
         const body = src.slice(at, src.indexOf('\n}\n', at));
         expect(body, `${fn} no longer floors an empty region to absent`).toMatch(
           /region === '' \? undefined/
+        );
+        // And an empty STACK NAME, so the two cannot disagree about whether an
+        // identity was supplied at all (m12 of the same review).
+        // The GUARD STATEMENT itself, not a mention: a contrived no-op such as
+        // `(stackName === '' && false)` would satisfy a substring check.
+        expect(body, `${fn} no longer floors an empty stack name`).toMatch(
+          /if \(stackName === undefined \|\| stackName === ''\) (return |\{)/
         );
       }
     });
@@ -3082,7 +3098,7 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
         statePrefix: `pre${esc}`,
       });
       expect(dropOf(text)).toBe(
-        'cdkd state orphan S --profile <profile> --state-bucket <bucket> --state-prefix <prefix>'
+        'cdkd state orphan S --profile \'<profile>\' --state-bucket \'<bucket>\' --state-prefix \'<prefix>\''
       );
       // The identity itself rendered exactly, so there is no identity hint.
       expect(text).not.toContain(HINT);
@@ -3094,8 +3110,8 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
       // holing diverge — its sanitized text is empty, so a rule keyed on the
       // text alone would drop the flag. One case per fragment, independently.
       for (const [field, hole] of [
-        ['profile', '--profile <profile>'],
-        ['stateBucket', '--state-bucket <bucket>'],
+        ['profile', '--profile \'<profile>\''],
+        ['stateBucket', '--state-bucket \'<bucket>\''],
       ] as const) {
         for (const empty of [' ', '\u001b']) {
           const t = malformedOrphanResourcePropertiesRefusalMessage('S', undefined, ['A'], {
@@ -3109,7 +3125,7 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
         profile: `prod${esc}`,
       });
       expect(keyed).toContain(
-        'Inspect the record: cdkd state show S --stack-region us-east-1 --json --profile <profile>'
+        'Inspect the record: cdkd state show S --stack-region us-east-1 --json --profile \'<profile>\''
       );
     });
 
@@ -3121,11 +3137,16 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
       // `cdk.json`. Now each command is a trailing line of its own.
       const hostile = "b; printf INJECTED; #";
       const recovery = { stateBucket: hostile, statePrefix: 'cdkd' };
-      for (const [name, labels] of [
-        ['S', ['Drop the record', 'Inspect the record']],
-        ['S ', ['Drop the record', 'Find the exact name', 'Inspect the record']],
+      for (const [name, region, labels] of [
+        ['S', 'us-east-1', ['Drop the record', 'Inspect the record']],
+        ['S ', 'us-east-1', ['Drop the record', 'Find the exact name', 'Inspect the record']],
+        // The legacy region-less arm: no command can inspect it (the prose names
+        // the object instead), and a withheld name still gets its listing line —
+        // without it the drop command's name hole has nothing to fill it from.
+        ['S', undefined, ['Drop the record']],
+        ['S ', undefined, ['Drop the record', 'Find the exact name']],
       ] as const) {
-        const text = malformedOrphanResourcePropertiesRefusalMessage(name, 'us-east-1', ['A'], recovery);
+        const text = malformedOrphanResourcePropertiesRefusalMessage(name, region, ['A'], recovery);
         const lines = text.split('\n');
         // Exactly these labelled command lines, in order — an empty set would
         // otherwise satisfy every check below.
@@ -3151,6 +3172,11 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
           '\n'
         )[0]!;
         expect(prose, `${String(name)}/${String(region)}`).not.toMatch(/cdkd state (orphan|show|list) /);
+        // By PROPERTY as well as by verb: no value-carrying flag in the prose,
+        // whatever command it would belong to (m11 of the same review).
+        expect(prose, `${String(name)}/${String(region)}`).not.toMatch(
+          /--(state-bucket|profile|state-prefix|stack-region) /
+        );
         // The legacy arm NAMES the bucket as a location; it may appear there
         // only as one shell-quoted token, never loose.
         expect(
@@ -3160,15 +3186,91 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
       }
     });
 
+    /**
+     * M4 of go-to-k/cdkd#3363's review, measured the way it was found: every
+     * command line with a HOLE is pasted into bash for real, under a stub
+     * `cdkd` that prints its argv, in a scratch directory holding files named
+     * after every hole. A bare `<profile>` is two redirections there — it reads
+     * `profile` as stdin and sends stdout into the next word, which swallowed
+     * `--state-bucket` and ran the delete against the ambient bucket — so bash's
+     * argv would differ from the quote-aware split below and a file would
+     * appear. Quoted holes arrive as literal arguments.
+     */
+    it('pastes every hole-bearing command as literal arguments — no redirection, no file created', () => {
+      const words = (line: string): string[] => {
+        const out: string[] = [];
+        let cur = '';
+        let inWord = false;
+        for (let i = 0; i < line.length; i++) {
+          const c = line[i]!;
+          if (c === "'") {
+            const end = line.indexOf("'", i + 1);
+            cur += line.slice(i + 1, end);
+            i = end;
+            inWord = true;
+          } else if (c === '\\') {
+            cur += line[++i] ?? '';
+            inWord = true;
+          } else if (c === ' ') {
+            if (inWord) out.push(cur);
+            cur = '';
+            inWord = false;
+          } else {
+            cur += c;
+            inWord = true;
+          }
+        }
+        if (inWord) out.push(cur);
+        return out;
+      };
+      const recovery = { profile: 'prod', stateBucket: 'realbucket', statePrefix: 'custom' };
+      const altered = { profile: 'prod\u001b', stateBucket: 'b\u001b', statePrefix: 'p\u001b' };
+      const messages = [
+        malformedOrphanResourcePropertiesRefusalMessage(undefined, undefined, ['A'], recovery),
+        malformedOrphanResourcePropertiesRefusalMessage('S ', undefined, ['A'], recovery),
+        malformedOrphanResourcePropertiesRefusalMessage('S ', 'us-east-1', ['A'], recovery),
+        malformedOrphanResourcePropertiesRefusalMessage('S', 'us-east-1 ', ['A'], recovery),
+        malformedOrphanResourcePropertiesRefusalMessage('S', 'us-east-1', ['A'], altered),
+        malformedOrphanResourcePropertiesRefusalMessage('S', undefined, ['A'], altered),
+      ];
+      const lines = messages
+        .flatMap((m) => m.split('\n').slice(1))
+        .map((l) => l.slice(l.indexOf(': ') + 2))
+        // Matched with or without quotes, so a regression to bare holes is still
+        // SELECTED here and then caught by bash below rather than filtered out.
+        .filter((l) => /<(stack|region|profile|bucket|prefix)>/.test(l));
+      // Every shape above prints at least one hole, so an empty set means the
+      // extraction broke, not that the property holds.
+      expect(lines.length).toBeGreaterThanOrEqual(messages.length);
+      const dir = mkdtempSync(join(tmpdir(), 'cdkd-hole-paste-'));
+      try {
+        for (const f of ['stack', 'region', 'profile', 'bucket', 'prefix']) {
+          writeFileSync(join(dir, f), 'decoy\n');
+        }
+        const before = readdirSync(dir).sort();
+        for (const line of lines) {
+          const r = spawnSync('bash', ['-c', `cdkd() { printf '%s\\n' "$@"; }; ${line}`], {
+            cwd: dir,
+            encoding: 'utf8',
+          });
+          expect(r.status, `${line}\n${r.stderr}`).toBe(0);
+          expect(r.stdout.split('\n').slice(0, -1), line).toEqual(words(line).slice(1));
+          expect(readdirSync(dir).sort(), line).toEqual(before);
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }, 30_000);
+
     it('qualifies the NO-IDENTITY templates too — the identity is the hole, not the account', () => {
       const recovery = { profile: 'prod', stateBucket: 'b', statePrefix: 'custom' };
       for (const name of [undefined, ''] as const) {
         const text = malformedOrphanResourcePropertiesRefusalMessage(name, undefined, ['A'], recovery);
         expect(dropOf(text), String(name)).toBe(
-          'cdkd state orphan <stack> --stack-region <region> --profile prod --state-bucket b --state-prefix custom'
+          'cdkd state orphan \'<stack>\' --stack-region \'<region>\' --profile prod --state-bucket b --state-prefix custom'
         );
         expect(text, String(name)).toContain(
-          'Inspect the record: cdkd state show <stack> --stack-region <region> --json ' +
+          'Inspect the record: cdkd state show \'<stack>\' --stack-region \'<region>\' --json ' +
             '--profile prod --state-bucket b --state-prefix custom'
         );
       }

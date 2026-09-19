@@ -263,13 +263,32 @@ export function buildForceUnlockCommand(
   return [head, ...recoveryFlags.flags].join(' ');
 }
 
+/**
+ * A placeholder for a value a pasteable command could not name, QUOTED.
+ *
+ * A bare `<profile>` is two shell redirections, not a word: pasted, `<profile`
+ * reads stdin from a file named `profile` and `>` sends stdout to whatever
+ * word follows. While the hole was the command's LAST word that was only a
+ * syntax error; with flags appended after it (`--profile <profile>
+ * --state-bucket b`) it ran the command with `--state-bucket` swallowed as a
+ * redirect target and `b` as the profile — a delete against the ambient
+ * bucket, with nothing printed (measured by the maintainer, M4 of the
+ * go-to-k/cdkd#3363 review). Quoted, it pastes as one literal argument and
+ * nothing else — no redirection, no swallowed flag. It is not refused: an
+ * UNFILLED hole runs as that literal value (a stack named `<stack>`, a prefix
+ * `<prefix>`).
+ */
+export function commandHole(name: string): string {
+  return `'<${name}>'`;
+}
+
 /** What {@link recoveryCommandFlags} returns. */
 export interface RecoveryCommandFlags {
   /** The flags, in `--profile` / `--state-bucket` / `--state-prefix` order. */
   flags: string[];
   /**
    * False when any supplied fragment is one `displaySafe` would ALTER. Its flag
-   * is then a `<profile>` / `<bucket>` / `<prefix>` HOLE rather than the value:
+   * is then a quoted {@link commandHole} (`'<profile>'` / `'<bucket>'` / `'<prefix>'`) rather than the value:
    * never the altered spelling (it names a different account or key space) and
    * never omitted (that silently resolves the ambient default).
    */
@@ -309,13 +328,17 @@ export function recoveryCommandFlags(recovery?: LockRecoveryContext): RecoveryCo
   // the behavioural proof; this comment is the verdict the source-shape fence
   // cannot derive.
   if (profile.text || !profile.exact) {
-    flags.push(profile.exact ? `--profile ${shellQuote(profile.text)}` : '--profile <profile>');
+    flags.push(
+      profile.exact
+        ? `--profile ${shellQuote(profile.text)}`
+        : `--profile ${commandHole('profile')}`
+    );
   }
   if (stateBucket.text || !stateBucket.exact) {
     flags.push(
       stateBucket.exact
         ? `--state-bucket ${shellQuote(stateBucket.text)}`
-        : '--state-bucket <bucket>'
+        : `--state-bucket ${commandHole('bucket')}`
     );
   }
   // DEFINED, not truthy: `--state-prefix` has no argParser, so `''` is
@@ -330,7 +353,7 @@ export function recoveryCommandFlags(recovery?: LockRecoveryContext): RecoveryCo
     flags.push(
       statePrefix.exact
         ? `--state-prefix ${shellQuote(statePrefix.text)}`
-        : '--state-prefix <prefix>'
+        : `--state-prefix ${commandHole('prefix')}`
     );
   }
   return { flags, exact: profile.exact && stateBucket.exact && statePrefix.exact };
