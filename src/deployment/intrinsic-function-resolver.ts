@@ -5317,6 +5317,7 @@ export class IntrinsicFunctionResolver {
           `or remove it from state.`
         );
       case 'read':
+        if ((outcome.withheldKeys?.length ?? 0) > 0) return this.withheldRemedy();
         return (
           `cdkd re-read the resource from AWS and the read reports no usable value for this ` +
           `attribute either, so there is nothing to heal the record with; ${touch}.`
@@ -5355,12 +5356,38 @@ export class IntrinsicFunctionResolver {
       );
     }
     if (outcome.kind === 'read') {
+      if (this.healWithheld(outcome, attributeName)) return this.withheldRemedy();
       return (
         `cdkd re-read the resource's attributes from AWS and the read reports none by that ` +
         `name. ${fileIssue}`
       );
     }
     return fileIssue;
+  }
+
+  /** Did the heal's read report this attribute (by its top-level key) and cdkd withhold it as masked? */
+  private healWithheld(
+    outcome: Extract<StaleAttributeHealOutcome, { kind: 'read' }>,
+    attributeName: string
+  ): boolean {
+    const head = attributeName.split('.')[0];
+    return outcome.withheldKeys?.some((key) => key === attributeName || key === head) ?? false;
+  }
+
+  /**
+   * The remedy when the re-read DID report a value and cdkd withheld it: Cloud
+   * Control's read-back is masked wherever cdkd cannot certify a key as a
+   * read-only attribute, which is every key when `DescribeType` is unavailable.
+   * "The read reports none ... file an issue" would be false here.
+   */
+  private withheldRemedy(): string {
+    return (
+      `cdkd re-read the resource through Cloud Control, but withheld the value: it could not ` +
+      `confirm that this is a read-only attribute of the type, and an unconfirmed value is ` +
+      `never used. Grant the deploy role cloudformation:DescribeType and deploy again; if the ` +
+      `role already has it, the name is a writable property rather than an attribute — ` +
+      `reference the value the template sets instead.`
+    );
   }
 
   /**

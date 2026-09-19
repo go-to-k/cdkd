@@ -486,6 +486,33 @@ describe('stale attribute heal — resolver (#1852)', () => {
       );
     });
 
+    it('says the value was WITHHELD, not that the read reports none', async () => {
+      const healer = vi.fn().mockResolvedValue({
+        kind: 'read',
+        attributes: { Tier: 'Standard' },
+        withheldKeys: ['Arn'],
+      } as const);
+      const error = await refusalOf(
+        resolver.resolve(
+          { 'Fn::GetAtt': ['Param', 'Arn'] },
+          mkContext({ Param: staleParameter() }, healer)
+        )
+      );
+      expect(error.message).toContain('withheld the value');
+      expect(error.message).toContain('cloudformation:DescribeType');
+      expect(error.message).not.toContain('reports none by that name');
+      expect(error.message).not.toContain('file an issue');
+      expect(isMarkedNonRetryable(error)).toBe(true);
+      // A DIFFERENT withheld key does not change this attribute's wording.
+      const other = await refusalOf(
+        resolver.resolve(
+          { 'Fn::GetAtt': ['Param', 'OtherArn'] },
+          mkContext({ Param: staleParameter() }, healer)
+        )
+      );
+      expect(other.message).toContain('reports none by that name');
+    });
+
     it('a placeholder ARN is not "healed" by a masked read', async () => {
       const error = await refusalOf(
         resolver.resolve(

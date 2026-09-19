@@ -609,6 +609,10 @@ describe('DeployEngine - heals a stale attribute map on a Fn::GetAtt miss (#1852
       expect(JSON.stringify(record.attributes)).not.toContain('***');
       expect(record.attributes).toEqual({ Type: 'String', Value: 'v', Tier: 'Standard' });
       expect(JSON.stringify(savedStates().at(-1)!.outputs)).not.toContain('***');
+      // ...and the refusal says WITHHELD, naming the permission that fixes it.
+      const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain('withheld the value');
+      expect(warned).toContain('cloudformation:DescribeType');
     });
 
     it('a reused engine does not persist the PREVIOUS deploy\'s read', async () => {

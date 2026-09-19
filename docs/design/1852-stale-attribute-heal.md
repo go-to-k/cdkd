@@ -145,7 +145,10 @@ redaction pass as a provider-recorded one. Consequences:
   read-only attribute (all of them when `DescribeType` is denied) on the premise
   that a masked read is refused downstream; served, it would be re-applied to
   AWS as the literal mask. The engine drops it, the resolver refuses it again,
-  and a served value still passes through `noteAttributeSecrecy`. The scrub at
+  and a served value still passes through `noteAttributeSecrecy`. The `read`
+  outcome carries the dropped keys (`withheldKeys`), so the refusal says the
+  value was withheld and names `cloudformation:DescribeType` instead of claiming
+  the read reported none. The scrub at
   the choke point has no needles for an unchanged record, so these three layers
   — not the scrub — are what keep a sensitive value out;
 - `undefined`, `null` and `''` are never merged or served (empty-to-absent): the

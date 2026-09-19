@@ -2443,11 +2443,13 @@ export class DeployEngine {
     // here it would be re-applied to AWS as the literal mask under a green
     // deploy, and merged into the record it would block every later heal.
     // Dropped, the key falls to the fallback's refusal exactly as before.
+    const reported = Object.entries(normalizeHealedAttributes(found.attributes));
     const attributes = Object.fromEntries(
-      Object.entries(normalizeHealedAttributes(found.attributes)).filter(
-        ([, value]) => !carriesSecretMask(value)
-      )
+      reported.filter(([, value]) => !carriesSecretMask(value))
     );
+    const withheldKeys = reported
+      .filter(([, value]) => carriesSecretMask(value))
+      .map(([key]) => key);
     if (Object.keys(attributes).length > 0) {
       this.healedAttributes.set(logicalId, {
         physicalId: resource.physicalId,
@@ -2458,7 +2460,7 @@ export class DeployEngine {
     this.logger.debug(
       `Re-read the attributes of ${displaySafe(logicalId)} (${displaySafe(resource.resourceType)}) from AWS — its state record lacked one a Fn::GetAtt asked for (#1852): ${Object.keys(attributes).length} attribute(s) read`
     );
-    return { kind: 'read', attributes };
+    return { kind: 'read', attributes, ...(withheldKeys.length > 0 && { withheldKeys }) };
   }
 
   /**

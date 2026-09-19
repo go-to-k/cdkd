@@ -1382,6 +1382,7 @@ The error above appears only when that re-read could not help:
 | `the provider read failed (<ErrorClass>, HTTP <n>)` | The read was denied, throttled or failed | Grant the read permission (or retry), then deploy again — cdkd re-reads on every deploy until the record is healed |
 | `AWS reports no resource behind the recorded physical id` | The resource was deleted outside cdkd | Check with `cdkd drift`, then re-create it or remove it from state |
 | `cdkd re-read the resource ... reports none by that name` | The resource type does not supply this attribute | Avoid the `Fn::GetAtt`, or file an issue |
+| `re-read the resource through Cloud Control, but withheld the value` | The value came back masked, so cdkd would not use it | Grant the deploy role `cloudformation:DescribeType` and deploy again; if it has it, the name is a writable property — reference the template's own value |
 
 `--verbose` prints the AWS error text, which is withheld by default because a
 denied call quotes the caller's account, role and session.

@@ -28,7 +28,18 @@ import type { ResourceState } from '../types/state.js';
  */
 export type StaleAttributeHealOutcome =
   /** The read succeeded. `attributes` is normalized (no `undefined` / `null` / `''`). */
-  | { readonly kind: 'read'; readonly attributes: Readonly<Record<string, unknown>> }
+  | {
+      readonly kind: 'read';
+      readonly attributes: Readonly<Record<string, unknown>>;
+      /**
+       * Top-level keys the read DID report but whose value was masked
+       * (`CloudControlProvider.import` masks what it cannot certify — everything
+       * when `cloudformation:DescribeType` is denied) and was therefore dropped.
+       * Present so a refusal does not claim "the read reports none" about a
+       * value cdkd itself withheld.
+       */
+      readonly withheldKeys?: readonly string[];
+    }
   /** The provider reports no resource behind the recorded physical id. */
   | { readonly kind: 'not-found' }
   /** The read threw (a denial, a throttle, a network failure, a mismatched answer). */
