@@ -56,6 +56,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
   };
 });
 
+import { isMarkedNonRetryable } from '../../../../src/deployment/retryable-errors.js';
 import { S3DirectoryBucketProvider } from '../../../../src/provisioning/providers/s3-directory-bucket-provider.js';
 
 describe('S3DirectoryBucketProvider', () => {
@@ -333,6 +334,8 @@ describe('S3DirectoryBucketProvider', () => {
       // The opted-in exhaustion is NOT the CFn-parity guard: no manual-empty
       // remediation text.
       await expect(p).rejects.not.toThrow(/Matching CloudFormation/);
+      // ...and it is AWS's own answer, not a cdkd verdict: left unmarked.
+      expect(isMarkedNonRetryable(await p.catch((e: unknown) => e))).toBe(false);
     });
 
     /**
@@ -361,6 +364,10 @@ describe('S3DirectoryBucketProvider', () => {
             (e: unknown) => e
           );
         expect(error).toBeInstanceOf(Error);
+        // A deterministic refusal: the mark (read through the wrapper's cause
+        // chain) is what keeps the "already deleted" substring classifiers off
+        // a message that carries the user-chosen logical id.
+        expect(isMarkedNonRetryable(error)).toBe(true);
         // The guard fires on the FIRST not-empty answer, without touching data.
         expect(mockSend).toHaveBeenCalledTimes(1);
         return (error as Error).message;
@@ -394,13 +401,15 @@ describe('S3DirectoryBucketProvider', () => {
       );
 
       it.each([
-        ['a control byte (ESC)', 'x[2Jy'],
+        ['a control byte (ESC)', 'x\u001b[2Jy'],
         ['a newline', 'x\nrm -rf ~'],
         ['a carriage return', 'x\rrm -rf ~'],
         ['a non-ASCII character', 'bücket'],
-        ['a C1 control byte', 'xy'],
+        ['a C1 control byte', 'x\u009by'],
         ['a slash, which would re-target s3://a/b at bucket a', 'a/b'],
         ['surrounding whitespace, which sanitizing trims', ' x '],
+        // The `s3://` prefix shields a LEADING space from the shared renderer's trim.
+        ['leading whitespace only', ' x'],
       ])('SUPPRESSES the whole command for a name carrying %s', async (_label, name) => {
         const message = await refusalFor(name);
         expect(message).not.toContain('aws s3 rm');
@@ -417,6 +426,17 @@ describe('S3DirectoryBucketProvider', () => {
         const message = await refusalFor('');
         expect(message).not.toContain('s3://');
         expect(message).toContain('bucket <unrenderable> is not empty');
+      });
+
+      it('suppresses the command for a name that sanitizes to NOTHING', async () => {
+        const message = await refusalFor('\n');
+        expect(message).not.toContain('s3://');
+        expect(message).toContain('bucket <unrenderable> is not empty');
+        expect(message).toMatch(/^[ -~]*$/);
+      });
+
+      it('shows a quoted-arm name with a visible boundary in the prose', async () => {
+        expect(await refusalFor('x;rm -rf ~')).toContain('bucket "x;rm -rf ~" is not empty.');
       });
     });
 
