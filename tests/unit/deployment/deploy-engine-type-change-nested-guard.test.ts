@@ -1,15 +1,12 @@
 /**
- * Issue [#2668](https://github.com/go-to-k/cdkd/issues/2668): a resource whose
- * `Type` changes is diffed as an UPDATE carrying the TEMPLATE's (NEW) type, and
- * `provisionResource` routes BOTH halves of the resulting replacement on that
- * one type — so the OLD resource's delete is dispatched at the NEW type's
- * provider. For `AWS::CloudFormation::Stack` that provider is
- * `NestedStackProvider`, whose `delete` ignores the physical id it is handed
- * and destroys `<parent>~<logicalId>` — a child stack, and every resource it
- * owns, that the changed resource has nothing to do with.
+ * Issue [#2668](https://github.com/go-to-k/cdkd/issues/2668): a Type change
+ * with `AWS::CloudFormation::Stack` on either side is refused at plan time,
+ * before any provider call, in BOTH directions.
  *
- * This suite pins the STOPGAP: the deploy is refused at plan time, before any
- * provider call, in BOTH directions.
+ * The refusal shipped as a stopgap while a replacement routed both halves on
+ * the template's type; the routing is fixed since
+ * (`deploy-engine-type-change-routing.test.ts`), and this pair is still refused
+ * on purpose — `type-change-guard.ts` states why.
  *
  * Both polarities are asserted throughout, because either alone is satisfiable
  * by a wrong implementation — a guard that refused every deploy would close the
@@ -17,15 +14,8 @@
  *
  *   - a Type change with `AWS::CloudFormation::Stack` on either side → refused
  *     with `TYPE_CHANGE_NESTED_STACK`, no provider touched;
- *   - an ordinary Type change (no nested stack involved) → NOT refused. It is
- *     still mis-routed (that is #2668's full fix, a routing change with a
- *     design fork of its own), but its failure mode is bounded to the two
- *     resources involved — a loud API error, a leak of the old resource, or at
- *     worst a same-named live resource of the new type — never the destruction
- *     of a whole stack the user did not name; and refusing every Type change
- *     would refuse a deploy that is
- *     correct today: under `UpdateReplacePolicy: Retain` the replacement skips
- *     the old delete entirely;
+ *   - an ordinary Type change (no nested stack involved) → NOT refused: it is
+ *     replaced, each half through its own type's provider;
  *   - an ordinary nested-stack UPDATE (`AWS::CloudFormation::Stack` on BOTH
  *     sides) → NOT refused. This is the arm a "does the type appear anywhere?"
  *     implementation would break, and it is every nested-stack deploy cdkd
@@ -35,6 +25,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import {
+  equalIdNamesSameResource,
   findNestedStackTypeChanges,
   renderNestedStackTypeChangeRefusal,
 } from '../../../src/deployment/type-change-guard.js';
@@ -77,7 +68,7 @@ vi.mock('p-limit', () => ({
 const NESTED = 'AWS::CloudFormation::Stack';
 const STACK_NAME = 'MyStack';
 const LOGICAL_ID = 'Thing';
-/** The physical id `NestedStackProvider.delete` would IGNORE. */
+/** The recorded physical id of the row whose Type changes. */
 const OLD_PHYSICAL_ID = 'arn:aws:sns:us-east-1:111122223333:old-topic';
 
 /**
@@ -145,6 +136,23 @@ function updateChange(resourceType: string, recordedType = 'AWS::SNS::Topic'): R
     propertyChanges,
   } as unknown as ResourceChange;
 }
+
+describe('equalIdNamesSameResource (#2668)', () => {
+  const CR = 'AWS::CloudFormation::CustomResource';
+  it.each([
+    ['one type', 'AWS::SQS::Queue', 'AWS::SQS::Queue', 'sdk', true],
+    ['one type, even on Cloud Control', 'AWS::SQS::Queue', 'AWS::SQS::Queue', 'cc-api', true],
+    ['two custom types', 'Custom::Foo', 'Custom::Bar', 'sdk', true],
+    ['custom and the generic custom type', 'Custom::Foo', CR, 'sdk', true],
+    ['custom types with no recorded layer', CR, 'Custom::Bar', undefined, true],
+    ['two custom types created through Cloud Control', 'Custom::Foo', 'Custom::Bar', 'cc-api', false],
+    ['custom on ONE side only', 'Custom::Foo', 'AWS::SQS::Queue', 'sdk', false],
+    ['custom on the OTHER side only', 'AWS::SQS::Queue', 'Custom::Foo', 'sdk', false],
+    ['two types one provider instance serves', 'AWS::IAM::User', 'AWS::IAM::Group', 'sdk', false],
+  ] as const)('%s', (_label, oldType, newType, createLayer, expected) => {
+    expect(equalIdNamesSameResource({ oldType, newType, createLayer })).toBe(expected);
+  });
+});
 
 describe('findNestedStackTypeChanges (#2668)', () => {
   it('flags a Type change INTO AWS::CloudFormation::Stack', () => {
@@ -308,9 +316,8 @@ describe('renderNestedStackTypeChangeRefusal (#2668)', () => {
     expect(message).toContain(LOGICAL_ID);
     expect(message).toContain('AWS::SNS::Topic');
     expect(message).toContain(NESTED);
-    // The resource the mis-routed delete would be aimed at, and the one it
-    // would actually destroy — the second is the piece the user cannot read
-    // off their own template.
+    // The existing resource, and the child stack the create half would deploy
+    // — the second is the piece the user cannot read off their own template.
     expect(message).toContain(OLD_PHYSICAL_ID);
     expect(message).toContain(`${STACK_NAME}~${LOGICAL_ID}`);
     // The row head states each fact ONCE: both types and the physical id, with
@@ -326,12 +333,12 @@ describe('renderNestedStackTypeChangeRefusal (#2668)', () => {
     // the two arms could be SWAPPED and this case would stay green — the
     // one-sided-fence shape: the out-of case's `not.toMatch` watched this
     // sentence, and nothing watched the out-of sentence from here.
-    expect(message).toMatch(/destroys the nested child stack/);
-    expect(message).toMatch(/ignores the physical id it is handed/);
-    // The second outcome of the same arm, unpinned until now: with no child
-    // state the delete is a no-op and the OLD resource is stranded. A user who
-    // reads only the destruction half will not go looking for the orphan.
-    expect(message).toContain('silently leaked');
+    expect(message).toMatch(/Replacing a single resource BY a nested stack/);
+    expect(message).toMatch(/would deploy a whole child stack/);
+    // The message must not describe the pre-routing-fix mis-route any more: the
+    // delete is no longer aimed at the wrong provider, and saying so would send
+    // the user looking for damage that cannot happen.
+    expect(message).not.toMatch(/ignores the physical id/);
     // ...and the out-of arm's own wording must NOT appear here.
     expect(message).not.toMatch(/left behind/);
     // The SINGULAR headline arm. Only the plural one was pinned, so
@@ -342,6 +349,7 @@ describe('renderNestedStackTypeChangeRefusal (#2668)', () => {
     // The remedy, and the absence of an override.
     expect(message).toMatch(/DIFFERENT logical id/);
     expect(message).toMatch(/no flag that overrides this refusal/);
+    expect(message).not.toMatch(/TARGET would be wrong/);
     expect(message).toContain('#2668');
   });
 
@@ -379,11 +387,10 @@ describe('renderNestedStackTypeChangeRefusal (#2668)', () => {
     );
     expect(message).toContain('AWS::SQS::Queue');
     expect(message).toMatch(/left behind/);
-    expect(message).toMatch(/cannot delete a nested stack/);
-    // The into-nested damage sentence must NOT be reused here: nothing is
-    // destroyed in this direction, and telling a user their child stack will be
-    // destroyed when it will be orphaned sends them to the wrong recovery.
-    expect(message).not.toMatch(/destroys the nested child stack/);
+    expect(message).toMatch(/Replacing a nested stack BY a single resource/);
+    // The into-nested sentence must NOT be reused here: the two directions
+    // fail differently, and each arm is fenced from the other's text.
+    expect(message).not.toMatch(/would deploy a whole child stack/);
   });
 });
 
@@ -530,10 +537,9 @@ describe('DeployEngine refuses a nested-stack Type change before provisioning (#
       expect(err!.message).toContain(recorded);
       expect(err!.message).toContain(desired);
 
-      // The discriminator: pre-fix the deploy ran the replacement and called
-      // the NEW type's provider to delete the OLD resource. Not "the deploy
-      // failed" — a failure downstream of the delete still leaves the child
-      // stack destroyed.
+      // The discriminator: without the guard the deploy runs the replacement.
+      // Not "the deploy failed" — a failure downstream of a provider call has
+      // already changed AWS.
       expect(provider.delete).not.toHaveBeenCalled();
       expect(provider.create).not.toHaveBeenCalled();
       expect(provider.update).not.toHaveBeenCalled();
@@ -556,10 +562,8 @@ describe('DeployEngine refuses a nested-stack Type change before provisioning (#
   }
 
   it('does NOT refuse an ordinary Type change between two non-nested types', async () => {
-    // The width control. This deploy is still mis-routed (#2668's full fix),
-    // but its failure mode is bounded to the resource itself, and refusing it
-    // would refuse the `UpdateReplacePolicy: Retain` shape that is correct
-    // today.
+    // The width control: every other Type change is replaced, not refused. The
+    // per-half routing is pinned in `deploy-engine-type-change-routing.test.ts`.
     const template = arrange('AWS::SNS::Topic', 'AWS::SQS::Queue');
     const err = await deployAndCatch(makeEngine(), template);
     expect(err).toBeUndefined();
@@ -580,7 +584,7 @@ describe('DeployEngine refuses a nested-stack Type change before provisioning (#
     expect(provider.update).toHaveBeenCalled();
   });
 
-  it('refuses inside a nested CHILD deploy, naming the grandchild stack it would destroy', async () => {
+  it('refuses inside a nested CHILD deploy, naming the grandchild stack', async () => {
     // The reason the check lives in the engine rather than in a CLI pre-flight:
     // a child stack is deployed by its OWN `DeployEngine`, created by
     // `NestedStackProvider.runChildDeploy`, and never passes through

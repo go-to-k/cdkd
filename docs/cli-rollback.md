@@ -85,6 +85,7 @@ deploy attempted), and `--revert-failed` opts into acting on it:
 | Failed operation | With `--revert-failed` |
 | --- | --- |
 | UPDATE | Force-reverted to its pre-deploy properties. The journal records the *attempted* properties, so patch-based providers generate a real undo diff. |
+| UPDATE that changed the resource's `Type` | Skipped with a warning; it was a replacement in flight, and there is no in-place revert of one. |
 | CREATE that recorded a physical id | Deleted, honouring its `DeletionPolicy` — see [DeletionPolicy on a rolled-back CREATE](#deletionpolicy-on-a-rolled-back-create). |
 | CREATE that recorded no physical id | Skipped with a warning; there is nothing addressable to act on. |
 | DELETE | Nothing to do — the resource is still in place. |
@@ -176,6 +177,15 @@ arm the old resource's data was destroyed by the replacement and is not
 recovered by the rollback: the re-created resource starts empty. The replay
 warns loudly on that arm only, and the plan labels these items
 "reverse-replace".
+
+**Type changes.** A replacement that changed the resource's `Type` is reversed
+through both types: the old resource is re-created by its own type's provider
+and the new one deleted by its own, and the plan shows the pair as
+`NEW -> OLD`. An operation whose old type the journal cannot name is shown as
+`(REFUSED)` and fails on replay with the journal kept — see
+[Type changes on an existing logical id](cli-deploy-safety.md#type-changes-on-an-existing-logical-id).
+`--revert-failed` skips a failed `Type` change with a warning: that operation
+was a replacement in flight, and there is no in-place revert of one.
 
 ### DeletionPolicy on a rolled-back CREATE
 

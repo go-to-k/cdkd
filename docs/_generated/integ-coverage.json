@@ -4744,7 +4744,8 @@
         "route53",
         "scheduled-task",
         "stepfunctions-logging",
-        "tags-propagation"
+        "tags-propagation",
+        "type-change-replacement"
       ],
       "signals": {
         "apigatewayv2-update-removal": [
@@ -4822,6 +4823,9 @@
         ],
         "tags-propagation": [
           "l2"
+        ],
+        "type-change-replacement": [
+          "literal"
         ]
       }
     },
@@ -5328,6 +5332,7 @@
         "sns-subscription-update",
         "tags-propagation",
         "throttle-wide-dag",
+        "type-change-replacement",
         "update-policy-mutations"
       ],
       "signals": {
@@ -5446,6 +5451,9 @@
         ],
         "throttle-wide-dag": [
           "l1",
+          "literal"
+        ],
+        "type-change-replacement": [
           "literal"
         ],
         "update-policy-mutations": [
@@ -5764,6 +5772,7 @@
         "state-info-command",
         "tags-propagation",
         "throttle-wide-dag",
+        "type-change-replacement",
         "update-policy-mutations",
         "vpc-lookup",
         "wait-condition-handle"
@@ -5981,6 +5990,9 @@
         ],
         "throttle-wide-dag": [
           "l1",
+          "literal"
+        ],
+        "type-change-replacement": [
           "literal"
         ],
         "update-policy-mutations": [

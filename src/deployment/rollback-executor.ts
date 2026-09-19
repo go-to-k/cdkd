@@ -58,6 +58,7 @@ import type {
 } from '../types/resource.js';
 import type { Logger } from '../types/config.js';
 import type { ProviderRegistry } from '../provisioning/provider-registry.js';
+import { equalIdNamesSameResource } from './type-change-guard.js';
 import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
 import { STATEFUL_TYPES } from '../provisioning/stateful-types.js';
 import { applyDefaultNameForFallback } from '../provisioning/resource-name.js';
@@ -707,6 +708,24 @@ export interface CompletedOperation {
    * [#2631](https://github.com/go-to-k/cdkd/issues/2631)).
    */
   oldResourceRetained?: boolean | undefined;
+  /**
+   * The type of the resource that existed BEFORE this UPDATE — the state
+   * record's `resourceType` (issue
+   * [#2668](https://github.com/go-to-k/cdkd/issues/2668)).
+   *
+   * {@link resourceType} is the TEMPLATE's type, so on a `Type` change it names
+   * only the NEW resource. A replacement has two halves with two types: the
+   * replay re-creates the OLD resource through THIS type's provider and deletes
+   * the new one through {@link resourceType}'s. Read through
+   * {@link resolveReplacementOldType}, never directly.
+   *
+   * ADDITIVE, no `journalVersion` bump — same precedent as
+   * {@link oldResourceRetained}: an older binary ignores it, and an ABSENT
+   * value means a journal written before this field, for which
+   * `previousState.resourceType` (the same value, journaled all along inside
+   * the previous record) is the fallback.
+   */
+  previousResourceType?: string | undefined;
 }
 
 /**
@@ -818,6 +837,7 @@ export type RollbackActionKind =
   | 'skip-already-done' // idempotent skip (already reverted / already gone)
   | 'skip-mismatch' // CREATE physical id changed by a later attempt
   | 'skip-absent' // UPDATE target no longer in state
+  | 'refuse-replacement-routing' // replacement whose OLD type cannot be routed — op fails, segment kept (#2668)
   | 'unrecoverable-delete'; // DELETE cannot be restored
 
 /** The action decided for a FAILED in-flight op (issue #1198, --revert-failed). */
@@ -828,7 +848,8 @@ export type FailedOpActionKind =
   | 'orphan-failed-create-retain' // ↑ under DeletionPolicy Retain → leave in AWS (#1362)
   | 'skip-failed-unknown' // failed CREATE with nothing recorded — cannot act
   | 'skip-failed-noop' // failed DELETE (resource still in place) / already handled
-  | 'skip-failed-absent'; // failed UPDATE with no previousState / not in state
+  | 'skip-failed-absent' // failed UPDATE with no previousState / not in state
+  | 'skip-failed-type-change'; // failed UPDATE that was a Type change — no in-place revert exists (#2668)
 
 /**
  * The routing layer a planned op resolves to — the state record's, falling
@@ -916,16 +937,132 @@ export interface RollbackReplayResult {
   orphaned: StackOrphanRecord[];
 }
 
+/** Spelled locally: importing the CLI's copy would invert the layer direction. */
+const NESTED_STACK_RESOURCE_TYPE = 'AWS::CloudFormation::Stack';
+
+const nonEmptyString = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
+
 /**
- * True when the op recorded a replacement (old physical id differs from the
- * new one). The old physical resource is already gone / orphaned, so an
- * in-place revert is best-effort — the plan labels these explicitly.
+ * The op fields the old-type readers below need. A `FailedOperation` satisfies it
+ * through `previousState` alone: it carries no `previousResourceType`.
+ */
+type OldTypeSources = Pick<
+  CompletedOperation,
+  'resourceType' | 'previousResourceType' | 'previousState'
+>;
+
+/** The two places a journal can name the old resource's type, each `undefined` when unusable. */
+function journaledOldTypes(op: OldTypeSources): {
+  stamped: string | undefined;
+  recorded: string | undefined;
+} {
+  return {
+    stamped: nonEmptyString(op.previousResourceType) ? op.previousResourceType : undefined,
+    recorded: nonEmptyString(op.previousState?.resourceType)
+      ? op.previousState.resourceType
+      : undefined,
+  };
+}
+
+/**
+ * Which type the OLD half of a replacement op routes on, or why that cannot be
+ * decided (issue [#2668](https://github.com/go-to-k/cdkd/issues/2668)).
+ *
+ * Two sources name it: {@link CompletedOperation.previousResourceType} (written
+ * by a binary that knows about Type changes) and `previousState.resourceType`
+ * (journaled by every binary, inside the previous record). A legacy journal has
+ * only the second, which is enough. The verdict is REFUSED rather than guessed
+ * in three shapes, because a wrong answer dispatches a create and a delete at
+ * the wrong service:
+ *
+ *   - neither source names a type (a hand-edited or torn op) — falling back to
+ *     `op.resourceType` is exactly the single-type assumption this replaces;
+ *   - the two sources disagree — one of them was edited, and nothing says which;
+ *   - the types differ with `AWS::CloudFormation::Stack` on either side. The
+ *     deploy refuses that pair at plan time (`type-change-guard.ts`), so only a
+ *     journal from a binary older than that guard carries one, and what that
+ *     deploy left behind is not knowable from the journal: its mis-routed
+ *     delete may have destroyed the child it had just created.
+ */
+export function resolveReplacementOldType(
+  op: OldTypeSources
+): { ok: true; oldType: string } | { ok: false; reason: string } {
+  const { stamped, recorded } = journaledOldTypes(op);
+  if (stamped !== undefined && recorded !== undefined && stamped !== recorded) {
+    return {
+      ok: false,
+      reason:
+        `the journal names two different types for the old resource ` +
+        `(previousResourceType ${safe(stamped)}, previousState.resourceType ${safe(recorded)})`,
+    };
+  }
+  const oldType = stamped ?? recorded;
+  if (oldType === undefined) {
+    return { ok: false, reason: "the journal does not record the old resource's type" };
+  }
+  if (
+    oldType !== op.resourceType &&
+    (oldType === NESTED_STACK_RESOURCE_TYPE || op.resourceType === NESTED_STACK_RESOURCE_TYPE)
+  ) {
+    return {
+      ok: false,
+      reason:
+        `it is a Type change between ${safe(oldType)} and ${safe(op.resourceType)}, and cdkd does ` +
+        `not replace a nested stack with, or by, a single resource`,
+    };
+  }
+  return { ok: true, oldType };
+}
+
+/**
+ * The one refusal both the `refuse-replacement-routing` arm and the
+ * `reverse-replacement` arm's own guard raise. `markNonRetryable`: the verdict
+ * is read off the journal alone, so no retry can change it.
+ */
+function unroutableReplacementError(op: CompletedOperation, reason: string): Error {
+  return markNonRetryable(
+    new CdkdError(
+      `Cannot reverse the replacement of ${safe(op.logicalId)} (${safe(op.resourceType)}): ` +
+        `${reason}, so cdkd will not guess which provider re-creates the old resource. Nothing ` +
+        `was changed. The journal is kept: fix forward with \`cdkd deploy\`, or re-run with ` +
+        (typeof op.logicalId === 'string' && PASTEABLE_LOGICAL_ID.test(op.logicalId)
+          ? `\`cdkd rollback --orphan ${op.logicalId}\``
+          : `\`cdkd rollback --orphan <id>\` (read the id from \`cdkd events\`)`) +
+        ` to leave this resource as it is and let the rest of the rollback proceed.`,
+      'ROLLBACK_REPLACEMENT_UNROUTABLE'
+    )
+  );
+}
+
+/**
+ * True when the op changed the resource's `Type`. `false` when the old type is
+ * not recorded at all: that shape is refused by {@link resolveReplacementOldType}
+ * where it matters, and must not by itself turn an in-place op into a
+ * replacement.
+ */
+export function isTypeChangeOp(op: OldTypeSources): boolean {
+  const { stamped, recorded } = journaledOldTypes(op);
+  return (
+    (stamped !== undefined && stamped !== op.resourceType) ||
+    (recorded !== undefined && recorded !== op.resourceType)
+  );
+}
+
+/**
+ * True when the op recorded a replacement: the old physical id differs from the
+ * new one, OR the resource's `Type` changed (issue #2668). The second arm is
+ * not redundant — two types' physical-id namespaces can overlap (a log group
+ * and a Lambda function are both addressed by a bare name), so a Type change
+ * can keep the id, and classified as an in-place `revert` it would hand the
+ * NEW resource's id to an `update()` of either type. The old physical resource
+ * is already gone / orphaned, so an in-place revert is best-effort — the plan
+ * labels these explicitly.
  */
 export function isReplacementOp(op: CompletedOperation): boolean {
   return (
     op.changeType === 'UPDATE' &&
     op.previousState?.physicalId !== undefined &&
-    op.previousState.physicalId !== op.physicalId
+    (op.previousState.physicalId !== op.physicalId || isTypeChangeOp(op))
   );
 }
 
@@ -989,7 +1126,19 @@ export function classifyRollbackOp(
     // orphaned under UpdateReplacePolicy: Retain) and the NEW one carries a
     // different physical id. An in-place revert is guaranteed to throw on
     // the immutable property, so reverse the replacement instead.
-    if (current.physicalId === op.previousState!.physicalId) {
+    // `&& sameTypeAsOld` (issue #2668): across a Type change an equal id is
+    // not the same resource (overlapping namespaces), so "state already points
+    // at the old id" additionally needs the record to BE the old type. An
+    // unrecorded type on either side keeps the pre-#2668 id-only reading.
+    const oldTypes = journaledOldTypes(op);
+    const oldTypeForCompare = isTypeChangeOp(op)
+      ? (oldTypes.stamped ?? oldTypes.recorded)
+      : undefined;
+    const sameTypeAsOld =
+      oldTypeForCompare === undefined ||
+      !nonEmptyString(current.resourceType) ||
+      current.resourceType === oldTypeForCompare;
+    if (current.physicalId === op.previousState!.physicalId && sameTypeAsOld) {
       // State already points at the old physical id — a prior reverse-
       // replacement (or manual fix) already reverted this op.
       return 'skip-already-done';
@@ -1000,7 +1149,9 @@ export function classifyRollbackOp(
       // physical id matches neither) — recognize it by the properties
       // already matching the previous state. Anything else is a later
       // attempt's replacement; manual attention required.
-      if (deepEqual(current.properties, op.previousState!.properties)) {
+      // `&& sameTypeAsOld` (issue #2668): two types can declare one identical
+      // bag, so equal properties alone do not make the record the old one.
+      if (sameTypeAsOld && deepEqual(current.properties, op.previousState!.properties)) {
         return 'skip-already-done';
       }
       return 'skip-mismatch';
@@ -1048,6 +1199,11 @@ export function classifyRollbackOp(
     //
     // `Snapshot` is NOT retained on replacement (the engine plain-deletes) —
     // it re-creates like the default policy.
+    //
+    // Issue #2668, AFTER the idempotent skips above (an op that is already
+    // reverted needs no routing) and BEFORE either reverse arm: both dispatch
+    // on two types, and a replay that cannot name the old one must not guess.
+    if (!resolveReplacementOldType(op).ok) return 'refuse-replacement-routing';
     const retained = op.oldResourceRetained ?? op.previousState!.updateReplacePolicy === 'Retain';
     return retained ? 'reverse-replacement-readopt' : 'reverse-replacement';
   }
@@ -1099,6 +1255,12 @@ export function classifyFailedOp(
   }
   // UPDATE
   if (!current || !op.previousState) return 'skip-failed-absent';
+  // Issue #2668: a failed Type change was a REPLACEMENT in flight, and the
+  // force-revert below is an in-place `update()` routed on `op.resourceType` —
+  // the NEW type — against the OLD resource's physical id. There is no in-place
+  // revert of a replacement; say so instead of aiming one type's update at
+  // another type's resource.
+  if (isTypeChangeOp(op)) return 'skip-failed-type-change';
   return 'revert-failed-update';
 }
 
@@ -2088,6 +2250,19 @@ async function replaySingle(
         return;
       }
 
+      case 'refuse-replacement-routing': {
+        // Issue #2668. THROWN, not warned-and-skipped: `replaySingle`'s per-op
+        // catch counts a failure, which keeps the segment (a warning would pop
+        // it and discard the only record of this op). Nothing was called in
+        // AWS and state is untouched. `markNonRetryable`: the verdict is read
+        // off the journal alone, so no retry can change it.
+        const routing = resolveReplacementOldType(op);
+        throw unroutableReplacementError(
+          op,
+          routing.ok ? 'its old type could not be routed' : routing.reason
+        );
+      }
+
       case 'orphan-flag': {
         if (op.changeType === 'CREATE') {
           // --orphan on a CREATE: leave the resource in AWS, drop it from
@@ -2482,6 +2657,15 @@ async function replaySingle(
         // resource from its journaled previousState and delete the new one.
         const current = stateResources[op.logicalId]!;
         const prev = op.previousState!;
+        // Issue #2668: a replacement has TWO types. Everything below that
+        // re-creates the OLD resource routes on `oldType`; everything that
+        // deletes the NEW one keeps `op.resourceType`. `classifyRollbackOp`
+        // already refused an op whose old type cannot be named, so the `throw`
+        // is for a caller that reaches this arm without it.
+        const oldTypeRouting = resolveReplacementOldType(op);
+        if (!oldTypeRouting.ok) throw unroutableReplacementError(op, oldTypeRouting.reason);
+        const oldType = oldTypeRouting.oldType;
+        const typeChanged = oldType !== op.resourceType;
         // Issue #3203, BEFORE any AWS call and before the secret resolution:
         // `{}` here would create a default-configured resource and then delete
         // the live one.
@@ -2572,13 +2756,14 @@ async function replaySingle(
         // which refuses the very population this exists to serve.
         recordNestedStackParameterExpressions(
           secrets,
-          op.resourceType,
+          oldType,
           resolvedPrevProps,
           prev.properties,
           STATE_DERIVED_RULES
         );
         logger.info(
-          `  Rollback: Reversing replacement of ${safe(op.logicalId)} (${safe(op.resourceType)}) — ` +
+          `  Rollback: Reversing replacement of ${safe(op.logicalId)} ` +
+            `(${typeChanged ? `${safe(op.resourceType)} -> ${safe(oldType)}` : safe(op.resourceType)}) — ` +
             `re-creating the old resource and deleting the new one`
         );
         // Advisory only (issue #1199 non-goal: cdkd does not recover the data —
@@ -2596,19 +2781,22 @@ async function replaySingle(
         // that does.) A blanket "CANNOT be recovered" would be a statement
         // about AWS that this repo has not measured — and, for KMS, would
         // steer a user away from a recovery that may still exist.
-        if (STATEFUL_TYPES.has(op.resourceType)) {
+        // The OLD type (issue #2668): it is the old resource's data this is about.
+        if (STATEFUL_TYPES.has(oldType)) {
           logger.warn(
-            `  ⚠ ${safe(op.logicalId)} (${safe(op.resourceType)}) is a stateful type — the old physical ` +
+            `  ⚠ ${safe(op.logicalId)} (${safe(oldType)}) is a stateful type — the old physical ` +
               `resource's data was destroyed by the replacement and is NOT recovered by this ` +
               `rollback; the re-created resource starts empty.`
           );
         }
-        // Route the re-create via the OLD resource's recorded layer and the
-        // new resource's delete via ITS layer (they can differ — e.g. a
-        // --recreate-via-cc-api migration).
+        // Route the re-create via the OLD resource's recorded layer AND TYPE,
+        // and the new resource's delete via ITS layer and type (the layers can
+        // differ — e.g. a --recreate-via-cc-api migration; the types differ on
+        // a `Type` change, issue #2668, where the single `op.resourceType` used
+        // to re-create the old resource through the NEW type's provider).
         const { provider: createProvider, provisionedBy: createProvisionedBy } =
           ctx.providerRegistry.getProviderFor({
-            resourceType: op.resourceType,
+            resourceType: oldType,
             provisionedBy: prev.provisionedBy,
           });
         // The bag the two replay-CREATEs below hand the provider (issue #3199).
@@ -2674,7 +2862,7 @@ async function replaySingle(
         // implementor makes rollback mint a different name than deploy.
         const replayCreateProps = (): Record<string, unknown> => ({
           ...(createProvisionedBy === 'cc-api'
-            ? applyDefaultNameForFallback(op.logicalId, op.resourceType, resolvedPrevProps)
+            ? applyDefaultNameForFallback(op.logicalId, oldType, resolvedPrevProps)
             : resolvedPrevProps),
         });
         // LAZY, for the same reason the readopt arm resolves inside its `else`
@@ -2757,7 +2945,7 @@ async function replaySingle(
               withCurrentResourceSecrets(secrets, () =>
                 createProvider.create(
                   op.logicalId,
-                  op.resourceType,
+                  oldType,
                   replayCreateProps(),
                   replayingStateCreateContext(secrets)
                 )
@@ -2870,7 +3058,14 @@ async function replaySingle(
           }
           logger.info(
             `  Rollback: re-create collided with the new resource's name — deleting the new ` +
-              `resource (${displaySafe(current.physicalId)}) first...`
+              `resource (${displaySafe(current.physicalId)}) first...` +
+              // Issue #2668: across a Type change the holder is the new
+              // resource only where the two types share a name space.
+              (typeChanged
+                ? ` (this op changed the resource's Type, ${safe(op.resourceType)} -> ` +
+                  `${safe(oldType)}: if those types do not share a name space the name is held ` +
+                  `by an unrelated resource and the re-create will collide again)`
+                : '')
           );
           {
             const finalSnapshotIdentifier = rollbackFinalSnapshotId(
@@ -2916,7 +3111,7 @@ async function replaySingle(
                 withCurrentResourceSecrets(secrets, () =>
                   createProvider.create(
                     op.logicalId,
-                    op.resourceType,
+                    oldType,
                     replayCreateProps(),
                     replayingStateCreateContext(secrets)
                   )
@@ -3005,8 +3200,25 @@ async function replaySingle(
         // deletedNewFirst is true the same-id outcome is the EXPECTED result
         // (re-acquiring the name after the new resource is gone) — exempt,
         // mirroring the deploy-side guard's delete-first exemption.
+        //
+        // Issue #2668: across a Type change an equal id is a coincidence of two
+        // namespaces — the re-create was genuine, and skipping the delete-new
+        // step would leave the new type's resource alive and untracked. The
+        // custom-resource family is the exception (`equalIdNamesSameResource`
+        // has the reasoning): there the equal id IS the live resource, and the
+        // delete-new step would destroy what this op just restored.
+        // The predicate is symmetric in its two types; `createLayer` is the
+        // layer of THIS operation's create half, which on a replay is the
+        // re-create of the old resource.
+        const equalIdIsSameResource = equalIdNamesSameResource({
+          oldType,
+          newType: op.resourceType,
+          createLayer: createProvisionedBy,
+        });
         const adoptedLiveNewResource =
-          !deletedNewFirst && createResult.physicalId === current.physicalId;
+          equalIdIsSameResource &&
+          !deletedNewFirst &&
+          createResult.physicalId === current.physicalId;
         if (adoptedLiveNewResource) {
           logger.warn(
             `  ⚠ ${safe(op.logicalId)} (${safe(op.resourceType)}): the re-create returned the LIVE new ` +
@@ -3546,6 +3758,17 @@ export async function replayFailedOperations(
           logger.warn(
             `  Rollback: cannot revert failed UPDATE of ${safe(op.logicalId)} — no previous state ` +
               `available, skipping`
+          );
+          result.warnings++;
+          break;
+        }
+
+        case 'skip-failed-type-change': {
+          logger.warn(
+            `  Rollback: cannot revert failed UPDATE of ${safe(op.logicalId)} in place — it was a ` +
+              `Type change (${safe(op.previousState?.resourceType)} -> ${safe(op.resourceType)}), ` +
+              `which is a replacement, and its remote state is unknown. Inspect it with ` +
+              `\`cdkd drift\` and re-converge with \`cdkd deploy\`. Skipping.`
           );
           result.warnings++;
           break;

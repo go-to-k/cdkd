@@ -1110,7 +1110,12 @@ export class ProviderRegistry {
   }
 }
 
-function isCustomResource(resourceType: string): boolean {
+/**
+ * True for the types `CustomResourceProvider` serves. Exported for
+ * `type-change-guard.ts`'s `equalIdNamesSameResource`: these types are the one
+ * family whose physical ids share ONE namespace across types.
+ */
+export function isCustomResource(resourceType: string): boolean {
   return (
     resourceType.startsWith('Custom::') || resourceType === 'AWS::CloudFormation::CustomResource'
   );
