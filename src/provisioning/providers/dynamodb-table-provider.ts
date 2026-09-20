@@ -2881,9 +2881,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // in those two members or in a spelled-out `StreamEnabled`, and a re-run
       // after a deploy that enabled the stream and then failed before state
       // recorded it. When the recorded previous side does NOT describe that
-      // live stream, nothing is known about what it holds, so the members are
-      // planned as for a fresh one: everything declared applied, nothing
-      // deleted.
+      // live stream, what it holds is UNKNOWN — the failed run may have put a
+      // policy — so a policy the desired side does not declare is deleted and a
+      // declared one is always put (`planStreamMemberOps`, `contentsUnknown`).
       if (
         JSON.stringify(properties['StreamSpecification']) !==
         JSON.stringify(previousProperties['StreamSpecification'])
@@ -2897,8 +2897,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
         const preUpdateStreamArn = table?.LatestStreamArn;
         // True when this update minted the stream the two members go to.
         let mintedStream = false;
-        // True when the previous side says nothing about that stream's members.
-        let freshStream = false;
+        // True when the stream is live but the previous side does not describe
+        // it, so what it holds is unknown (NOT "nothing").
+        let contentsUnknown = false;
 
         if (newViewType && prevViewType && newViewType !== prevViewType) {
           // View-type change on an enabled stream: disable, wait, re-enable.
@@ -2925,7 +2926,6 @@ export class DynamoDBTableProvider implements ResourceProvider {
             preUpdateStreamArn
           );
           mintedStream = true;
-          freshStream = true;
           this.logger.debug(
             `Changed StreamViewType on DynamoDB table ${physicalId} to ${newViewType}`
           );
@@ -2935,7 +2935,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
           liveStream.StreamViewType === newViewType
         ) {
           // The live stream already is the desired one: nothing to send.
-          freshStream = prevViewType !== newViewType;
+          contentsUnknown = prevViewType !== newViewType;
         } else if (newViewType) {
           // Enable a stream (or re-assert with the same/new view type when the
           // previous side had no stream).
@@ -2955,7 +2955,6 @@ export class DynamoDBTableProvider implements ResourceProvider {
             preUpdateStreamArn
           );
           mintedStream = true;
-          freshStream = true;
           this.logger.debug(`Enabled DynamoDB Stream on table ${physicalId} (${newViewType})`);
         } else {
           // Removal (new absent, previous present): disable the stream.
@@ -2981,9 +2980,10 @@ export class DynamoDBTableProvider implements ResourceProvider {
             latestStreamArn,
             properties['StreamSpecification'],
             previousProperties['StreamSpecification'],
-            freshStream,
+            mintedStream,
             maskSecrets,
-            mintedStream ? preUpdateStreamArn : undefined
+            mintedStream ? preUpdateStreamArn : undefined,
+            contentsUnknown
           );
         }
       }
@@ -4146,15 +4146,20 @@ export class DynamoDBTableProvider implements ResourceProvider {
     previousBlock: unknown,
     freshStream: boolean,
     maskSecrets: SecretMasker,
-    deadStreamArn?: string
+    deadStreamArn?: string,
+    contentsUnknown = false
   ): Promise<void> {
     const warn = (message: string): void => this.logger.warn(maskSecrets(message));
     const debug = (message: string): void => this.logger.debug(maskSecrets(message));
-    const ops = planStreamMemberOps(desiredBlock, previousBlock, { freshStream }, (reason) =>
-      warn(
-        `DynamoDB table ${tableName}: ${reason}, so that member of the stream was left as ` +
-          `it is. The value came from a recorded state, which a template edit cannot reach.`
-      )
+    const ops = planStreamMemberOps(
+      desiredBlock,
+      previousBlock,
+      { freshStream, contentsUnknown },
+      (reason) =>
+        warn(
+          `DynamoDB table ${tableName}: ${reason}, so that member of the stream was left as ` +
+            `it is. The value came from a recorded state, which a template edit cannot reach.`
+        )
     );
     if (ops.length === 0) return;
     if (streamArn === undefined || streamArn === '' || streamArn === deadStreamArn) {

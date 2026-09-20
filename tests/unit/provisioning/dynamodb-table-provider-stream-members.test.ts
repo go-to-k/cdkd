@@ -573,19 +573,38 @@ describe('DynamoDBTableProvider StreamSpecification.ResourcePolicy / Tags (issue
       expect(aws.policies.get(streamArnOf(1))).toBe(JSON.stringify(DOC));
     });
 
-    it('re-runs after a deploy that enabled the stream and then failed: no second enable, everything applied', async () => {
-      // State never recorded the stream, AWS has it (with the tag the failed run got to).
+    it('re-runs after a deploy that enabled the stream and then failed: no second enable, and the live stream is NOT assumed empty', async () => {
+      // State never recorded the stream; AWS has it, with what the failed run got to.
       const aws = primeAws({ generation: 1, streamEnabled: true, viewType: 'NEW_IMAGE' });
-      aws.tags.set(streamArnOf(1), new Map([['team', 'data']]));
+      aws.policies.set(streamArnOf(1), JSON.stringify(OTHER_DOC));
       await update(streamBlock('NEW_IMAGE', MEMBERS), undefined);
       expect(sent(UpdateTableCommand)).toHaveLength(0);
       expect(new Set(writeTargets())).toEqual(new Set([streamArnOf(1)]));
       expect(aws.policies.get(streamArnOf(1))).toBe(JSON.stringify(DOC));
-      expect(sent(DeleteResourcePolicyCommand)).toHaveLength(0);
+      expect([...aws.tags.get(streamArnOf(1))!]).toEqual([['team', 'data']]);
+    });
+
+    it('re-runs after such a failed deploy with the policy WITHDRAWN: the grant the failed run applied is deleted', async () => {
+      const aws = primeAws({ generation: 1, streamEnabled: true, viewType: 'NEW_IMAGE' });
+      aws.policies.set(streamArnOf(1), JSON.stringify(DOC));
+      await update(streamBlock('NEW_IMAGE'), undefined);
+      expect(sent(UpdateTableCommand)).toHaveLength(0);
+      expect(writeTargets()).toEqual([streamArnOf(1)]);
+      expect(aws.policies.size).toBe(0);
     });
 
     it('re-enables a recorded stream that was disabled out of band, and writes to the arn it mints', async () => {
       const aws = primeAws({ generation: 1, streamEnabled: false });
+      // Report the view type on the DISABLED stream too, so "the stream stays"
+      // has to be decided by `StreamEnabled` and not by the view type alone.
+      const inner = mockSend.getMockImplementation()!;
+      mockSend.mockImplementation(async (cmd: unknown) => {
+        const answer = (await inner(cmd)) as { Table?: { StreamSpecification?: object } };
+        if (cmd instanceof DescribeTableCommand && !aws.streamEnabled && answer.Table) {
+          answer.Table.StreamSpecification = { StreamEnabled: false, StreamViewType: 'NEW_IMAGE' };
+        }
+        return answer;
+      });
       await update(
         streamBlock('NEW_IMAGE', MEMBERS),
         streamBlock('NEW_IMAGE', { Tags: MEMBERS.Tags })

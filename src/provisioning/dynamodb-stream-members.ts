@@ -15,6 +15,7 @@
  * Pure, so the write plan, the create-time refusal and the drift read-back
  * gate cannot answer "does this block declare the member" differently.
  */
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { configStringRefusal, requireConfigObject } from './config-shape.js';
 
 /** The CFn property holding both members. */
@@ -53,7 +54,7 @@ function refusalOf(guard: () => unknown): string | undefined {
     guard();
     return undefined;
   } catch (error) {
-    return error instanceof Error ? error.message : String(error);
+    return describeAwsFailure(error).detail;
   }
 }
 
@@ -160,7 +161,14 @@ export type StreamMemberOp =
  * `StreamViewType` change is applied as. A fresh stream holds nothing, so the
  * previous side is irrelevant there: every readable declared member is
  * applied, and nothing is deleted. Otherwise the stream is the one the previous
- * side was applied to, and the plan is the difference:
+ * side was applied to, and the plan is the difference. `contentsUnknown` is
+ * the third case: a live stream this operation did NOT mint and the previous
+ * side does not describe (a re-run after a deploy that enabled the stream,
+ * applied a policy, and failed before state recorded any of it). It may hold a
+ * policy, so it is never planned as empty: a policy the desired side does not
+ * declare is deleted, and a declared one is always put.
+ *
+ * On a stream the previous side describes:
  *
  * - a member `absent` with a DECLARED previous is a template REMOVAL and is
  *   removed (CloudFormation does the same). Because the rule is symmetric in
@@ -193,7 +201,7 @@ export type StreamMemberOp =
 export function planStreamMemberOps(
   desiredBlock: unknown,
   previousBlock: unknown,
-  options: { freshStream: boolean },
+  options: { freshStream: boolean; contentsUnknown?: boolean },
   onUnusable: (reason: string) => void
 ): StreamMemberOp[] {
   let desiredPolicy = readStreamPolicy(desiredBlock);
@@ -214,6 +222,12 @@ export function planStreamMemberOps(
     }
     previousPolicy = { kind: 'absent' };
     previousTags = { kind: 'absent' };
+  } else if (options.contentsUnknown === true) {
+    // A policy MAY be there: `unusable` is "declared, content unknown", which
+    // deletes on a removal or alongside tag calls and always re-puts. Tags
+    // cdkd cannot name are left alone.
+    previousPolicy = { kind: 'unusable', reason: '' };
+    previousTags = { kind: 'absent' };
   }
 
   const tagOps: StreamMemberOp[] = [];
@@ -230,7 +244,10 @@ export function planStreamMemberOps(
 
   const policyPut =
     desiredPolicy.kind === 'usable' &&
-    !(previousPolicy.kind === 'usable' && previousPolicy.document === desiredPolicy.document);
+    !(
+      previousPolicy.kind === 'usable' &&
+      samePolicyDocument(previousPolicy.document, desiredPolicy.document)
+    );
   // The stream holds a policy the desired side does not keep as it is: either
   // it is removed for good, or it changes while the tags change under it.
   const policyDelete =
@@ -244,6 +261,16 @@ export function planStreamMemberOps(
     ops.push({ kind: 'putPolicy', document: desiredPolicy.document });
   }
   return ops;
+}
+
+/** Two policy JSON strings saying the same thing, whatever their key order. */
+function samePolicyDocument(left: string, right: string): boolean {
+  if (left === right) return true;
+  try {
+    return canonicalJson(JSON.parse(left)) === canonicalJson(JSON.parse(right));
+  } catch {
+    return false;
+  }
 }
 
 /** The drift read-back gates: one API call each, so each is asked separately. */

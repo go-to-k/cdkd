@@ -231,6 +231,33 @@ describe('planStreamMemberOps', () => {
     expect(plan(withMembers, block({ StreamViewType: 'KEYS_ONLY' }), FRESH)).toEqual(rollback);
   });
 
+  it('never plans a live stream of UNKNOWN contents as empty', () => {
+    const UNKNOWN = { freshStream: false, contentsUnknown: true };
+    // A policy the desired side does not declare may be there: delete it.
+    expect(plan(block(), undefined, UNKNOWN)).toEqual([{ kind: 'deletePolicy' }]);
+    // A declared one is always put; with tag calls, whatever is there goes first.
+    expect(plan(block(policy(DOC)), undefined, UNKNOWN)).toEqual([
+      { kind: 'putPolicy', document: JSON.stringify(DOC) },
+    ]);
+    expect(plan(block({ ...policy(DOC), ...tags(['a', '1']) }), undefined, UNKNOWN)).toEqual([
+      { kind: 'deletePolicy' },
+      { kind: 'tag', tags: [{ Key: 'a', Value: '1' }] },
+      { kind: 'putPolicy', document: JSON.stringify(DOC) },
+    ]);
+    // Tags cdkd cannot name are left alone, and an unreadable member stays put.
+    expect(plan(block({ ResourcePolicy: 'junk' }), undefined, UNKNOWN)).toEqual([]);
+  });
+
+  it('compares policy documents by MEANING, so a key-order difference is not a change', () => {
+    const reordered = JSON.stringify({ Statement: DOC.Statement, Version: DOC.Version });
+    expect(
+      plan(
+        block({ ...policy(DOC), ...tags(['a', '2']) }),
+        block({ ...policy(reordered), ...tags(['a', '1']) })
+      )
+    ).toEqual([{ kind: 'tag', tags: [{ Key: 'a', Value: '2' }] }]);
+  });
+
   it('deletes the policy when the previous one is unreadable: something was declared', () => {
     expect(plan(block(), block({ ResourcePolicy: 'junk' }))).toEqual([{ kind: 'deletePolicy' }]);
   });
