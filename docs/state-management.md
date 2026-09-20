@@ -740,8 +740,8 @@ it did for any resource without a baseline before schema v3.
 
 **One refusal class is NOT cleared by an in-place update**, and the record says
 which: `observedBaselineRefusalReason: "unverifiable-parameter"` (an optional
-field beside the marker, no version bump — absent on every record written
-before it existed, where it reads as "an UPDATE may clear this"). `cdkd import`
+field beside the marker, no version bump — for a record written before it
+existed, see the next paragraph). `cdkd import`
 writes it when the resource depends on a template parameter whose deployed value
 it could not prove equal to the `Default` it bound. `cdkd deploy` binds that same
 `Default`, so an update that does not rewrite the parameter-bound property
@@ -752,9 +752,23 @@ so does a `cdkd import` that re-imports the resource while a CloudFormation
 stack proves the parameter (a re-import with no such stack carries them forward
 on an unchanged physical id). The reason is never present without the marker.
 A cdkd binary that writes `version: 10` but predates the reason field ignores
-it and clears the marker on any UPDATE, so do not deploy such a stack with an
-older binary. cdkd 0.290.35 is the one version that wrote this refusal WITHOUT
-the reason; a stack imported with it is not protected. See [import.md](import.md).
+it and clears the marker on any UPDATE, and 0.290.36 — which has the field —
+still clears a marker recorded WITHOUT one (next paragraph). So do not deploy
+such a stack with any cdkd older than the one that reads a reason-less marker
+fail closed.
+
+Every refusal cdkd writes now carries a reason: `"incomplete-resolution"` is the
+other class (the import-time resolve threw, lost a `{{resolve:` reference, or
+discarded part of the properties), which an UPDATE clears as described above.
+A marker with NO reason was written by an older cdkd and does not say
+which class it is — 0.290.35 wrote unverifiable-parameter refusals that way — so
+it is read fail closed: when the resource's definition in the template at hand
+reads a declared template parameter (or cdkd cannot tell: a template it cannot
+read, or an intrinsic it does not know in a template where something reads a
+declared parameter), `cdkd
+deploy` stamps it `"unverifiable-parameter"` at the start of the deploy and
+`cdkd import` carries it as one; otherwise an UPDATE clears it. See
+[import.md](import.md) for the cost and the one known gap.
 
 **Migration** is transparent in both directions a user can observe: a `version:
 9` record has the field absent, absence means "not refused", and that is
@@ -1185,7 +1199,7 @@ interface ResourceState {
   updateReplacePolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' // v5+: template attribute recorded at deploy time
   provisionedBy?: 'sdk' | 'cc-api'             // v7+: provisioning layer (absent = SDK legacy default)
   observedBaselineRefused?: true               // v10+: `cdkd import` declined to capture a baseline
-  observedBaselineRefusalReason?: 'unverifiable-parameter' // optional, no bump: the refusal an in-place UPDATE keeps
+  observedBaselineRefusalReason?: 'unverifiable-parameter' | 'incomplete-resolution' // optional, no bump: only the first survives an in-place UPDATE
 }
 ```
 

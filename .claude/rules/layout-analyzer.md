@@ -86,3 +86,4 @@ diff-only fix into the `integ-destroy` gate scope.
 `tests/unit/analyzer/outputs-diff.test.ts` pays for that with an anti-drift
 fence that READS `deploy-engine.ts` and watches the DEFINITION of deploy's
 failure signal rather than the line consuming it.
+- **parameter-dependence.ts** - which resources of a RAW template depend on which template parameters ([#2854](https://github.com/go-to-k/cdkd/issues/2854)). Two consumers must agree: `cdkd import`'s ARM 4 and `cdkd deploy`'s fail-closed reading of a reason-less `observedBaselineRefused` marker (`resourcesNamingDeclaredParameter`, [#3468](https://github.com/go-to-k/cdkd/issues/3468)). An `Fn::` key outside `KNOWN_INTRINSICS` is UNCLASSIFIABLE and refuses; a new resolver intrinsic must be added there.

@@ -28,8 +28,8 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  * bare `{Ref: <Parameter>}`, and the logical ids are pinned for verify.sh.
  *
  * REDEPLOY ARM (issue #3462): `SecretEnvFn` carries `DbPassword` in an
- * environment variable, and `CDKD_TEST_UPDATE=true` changes ONLY its inline
- * code. cdkd's Lambda provider sends `UpdateFunctionCode` alone for that, so
+ * environment variable, and `CDKD_TEST_UPDATE=true` changes ONLY the inline
+ * code of that function. cdkd's Lambda provider sends `UpdateFunctionCode` alone for that, so
  * the variable AWS holds stays the DECRYPTED value through the `cdkd deploy`
  * that follows the import — the one shape where a post-UPDATE readback,
  * positioned against the placeholder `Default`, would persist the secret. An
@@ -62,6 +62,37 @@ class ChildStack extends cdk.NestedStack {
       type: 'String',
       value: childToken.valueAsString,
     }).overrideLogicalId('ChildTokenParam');
+
+    // CHILD REDEPLOY ARM (issue #3468). `CDKD_TEST_UPDATE=true` changes this
+    // function's inline CODE, which changes the child template, so the root's
+    // nested-stack resource is UPDATEd and a CHILD engine runs over the child's
+    // state — that is what the arm is for. It is NOT a second copy of the
+    // root's disclosure shape: under `cdkd deploy` the parent hands the child
+    // the literal `{{resolve:...}}` reference, so the child's environment leaf
+    // is bound to the reference (not to the placeholder) and the update may
+    // rewrite it with the same resolved value. Either way AWS holds the
+    // decrypted value afterwards, which verify.sh asserts.
+    const childFnRole = new iam.CfnRole(this, 'ChildSecretEnvFnRole', {
+      assumeRolePolicyDocument: {
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Effect: 'Allow',
+            Principal: { Service: 'lambda.amazonaws.com' },
+            Action: 'sts:AssumeRole',
+          },
+        ],
+      },
+    });
+    childFnRole.overrideLogicalId('ChildSecretEnvFnRole');
+    const childCodeRevision = process.env.CDKD_TEST_UPDATE === 'true' ? 'after' : 'before';
+    new lambda.CfnFunction(this, 'ChildSecretEnvFn', {
+      runtime: 'nodejs22.x',
+      handler: 'index.handler',
+      role: childFnRole.attrArn,
+      code: { zipFile: `exports.handler = async () => '${childCodeRevision}';` },
+      environment: { variables: { DB_PASSWORD: childPw.valueAsString } },
+    }).overrideLogicalId('ChildSecretEnvFn');
   }
 }
 

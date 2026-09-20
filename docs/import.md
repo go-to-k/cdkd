@@ -392,13 +392,52 @@ worth knowing before you read a report:
   the template so that nothing references a parameter any more, there is nothing
   to compare, and the refusal stays.
 
-  **Stacks imported with cdkd 0.290.35 are not covered.** That one version
-  refused these baselines without recording the reason, and a marker with no
-  reason is cleared by any update (it is what every other refusal looks like).
-  For such a stack an update that leaves the parameter-bound property alone
-  still records the deployed value, and re-importing after the CloudFormation
-  stack is gone does not add the reason. Put the real reference
-  in the template before deploying it, and treat its `state.json` as sensitive.
+  **Stacks imported with cdkd 0.290.35** carry these refusals without the
+  reason. No other refusal recorded one at the time either, so a marker with no
+  reason does not say which kind it is.
+  cdkd reads it cautiously. When the resource's definition in the template
+  being deployed (or re-imported) reads a template parameter — directly, through
+  a condition, or through an attribute of a resource that does — the refusal is
+  treated as an unverifiable-parameter one. The same holds when cdkd cannot
+  tell: the template cannot be read, or the definition uses an intrinsic
+  function cdkd does not know in a template where something reads a declared
+  parameter. In all of those cases `cdkd deploy` records the reason on its next
+  state write and everything above applies. The cost is that an older
+  refusal of the other kind on such a resource also stays until the resource is
+  replaced or re-imported against a proving CloudFormation stack. A marker with
+  no reason on a resource that provably reads no parameter is cleared by an
+  update, as before. From this version on every refusal records a reason
+  (`"incomplete-resolution"` for the other kind), so the cautious reading only
+  ever applies to those older records. Known gap: if you replace the parameter
+  reference with its literal value before the first deploy or re-import with a
+  fixed cdkd that writes state (a `--dry-run` or a deploy with no changes does
+  not), the template no longer shows the dependence and the marker clears.
+
+  **This protects future deploys only.** cdkd 0.290.35 and 0.290.36 both clear
+  a marker that has no reason, so if a stack imported with 0.290.35 has since
+  had one of these resources updated by either version — or re-imported by
+  either after the CloudFormation stack was gone — the marker is already gone and the deployed value may be in that resource's `observedProperties`
+  in `state.json` — and in older S3 object versions of `state.json`, which
+  stay after the current one is fixed. No cdkd version can detect this
+  afterwards: the record looks like any other. If that can apply to you, in
+  this order:
+
+  1. Rotate the secret.
+  2. Fix the current `state.json`. When the value comes from a
+     `{{resolve:...}}` reference, write that reference in the template in
+     place of the parameter and deploy, so the next baseline is recorded as the
+     reference. Otherwise no cdkd command removes a recorded baseline in place,
+     and the `observedProperties` entry has to be removed from `state.json` by
+     hand.
+  3. LAST, delete the noncurrent object versions under the stack's state
+     prefix. The deploy in step 2 saves state more than once, and each save
+     turns the previous object — still holding the old value — into a new
+     noncurrent version, so a purge done earlier has to be done again.
+
+  `cdkd state refresh-observed` is NOT a remedy — it reads the value from AWS
+  again. [`cdkd scrub`](cli-scrub.md) finds a value only through a reference
+  the template spells, so it finds nothing while the parameter is bound to its
+  placeholder.
 
   Until then `cdkd drift` compares the resource against its recorded
   properties, and `cdkd drift --accept` / `--revert` decline it. Those recorded

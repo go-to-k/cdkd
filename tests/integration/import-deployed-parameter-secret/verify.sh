@@ -22,8 +22,19 @@
 #      secret-carrying resources carry `observedBaselineRefused` and no
 #      `observedProperties`; the `Stage` control KEPT its baseline; the import
 #      warned, naming the parameters; the plaintext is in no import log line.
+#   6a. SIMULATE A cdkd 0.290.35 RECORD (issue #3468): that version wrote these
+#      refusals WITHOUT `observedBaselineRefusalReason`. Strip the reason from
+#      every refused record in root AND child state.json (a guarded, scoped S3
+#      rewrite) and assert the strip landed, so 6b runs against reason-less
+#      markers. The deploy must then re-stamp the reason on every record whose
+#      template definition names a parameter -- in the root AND in the child,
+#      whose `ChildSecretEnvFn` gets the same code-only change so that a CHILD
+#      engine runs over the child's reason-less markers (asserted: its code
+#      sha moved, AWS still holds the decrypted value, the child state was
+#      rewritten).
 #   6b. REDEPLOY ARM (issue #3462): `cdkd deploy` with `CDKD_TEST_UPDATE=true`,
-#      whose only root change is `SecretEnvFn`'s inline CODE. The Lambda
+#      which changes `SecretEnvFn`'s inline CODE (and, for issue #3468, the
+#      child template). The Lambda
 #      provider sends `UpdateFunctionCode` alone, so the environment variable
 #      AWS holds is STILL the decrypted value afterwards (asserted, or the arm
 #      is vacuous). `cdkd deploy` binds the same placeholder `Default`, so a
@@ -32,6 +43,8 @@
 #      carries the marker AND `observedBaselineRefusalReason`, with no
 #      `observedProperties`; no plaintext in root or child state, in ANY
 #      surviving object version under either prefix, or in the deploy log.
+#   6c-pre. Strip the root reasons AGAIN (6b healed them), so the re-import's
+#      carry is exercised on a REASON-LESS prior marker (issue #3468).
 #   6c. RE-IMPORT ARM (issue #3462): a SELECTIVE `cdkd import --resource
 #      SecretEnvFn=<name> --force`. The migration deleted the CloudFormation
 #      stack, so this run has NO deployed parameter values, ARM 4 does not run,
@@ -106,10 +119,13 @@ ASSERTIONS_RUN=0
 IMPORT_LOG="$(mktemp -t cdkd-2854-import.XXXXXX)"
 DEPLOY_LOG="$(mktemp -t cdkd-3462-deploy.XXXXXX)"
 REIMPORT_LOG="$(mktemp -t cdkd-3462-reimport.XXXXXX)"
+STRIP_FILE="$(mktemp -t cdkd-3468-strip.XXXXXX)"
 ROOT_PARAM_NAMES=""
 CHILD_PARAM_NAMES=""
 FN_NAME=""
 FN_ROLE_NAME=""
+CHILD_FN_NAME=""
+CHILD_FN_ROLE_NAME=""
 
 echo "[verify] region=${REGION} stack=${STACK} state-bucket=${STATE_BUCKET}"
 
@@ -145,6 +161,12 @@ cleanup() {
   if [ -n "${FN_ROLE_NAME}" ]; then
     aws iam delete-role --role-name "${FN_ROLE_NAME}" >/dev/null 2>&1 || true
   fi
+  if [ -n "${CHILD_FN_NAME}" ]; then
+    aws lambda delete-function --function-name "${CHILD_FN_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  fi
+  if [ -n "${CHILD_FN_ROLE_NAME}" ]; then
+    aws iam delete-role --role-name "${CHILD_FN_ROLE_NAME}" >/dev/null 2>&1 || true
+  fi
   AWS_REGION="${REGION}" ${CLI} state destroy "${STACK}" \
     --state-bucket "${STATE_BUCKET:-}" --yes >/dev/null 2>&1 || true
   aws secretsmanager delete-secret --secret-id "${SECRET_NAME}" \
@@ -153,7 +175,7 @@ cleanup() {
   aws s3 rm "s3://${STATE_BUCKET}/${CHILD_STATE_KEY}" --region "${REGION}" >/dev/null 2>&1 || true
   s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX:-}" noncurrent || true
   s3_purge_prefix_versions "${STATE_BUCKET}" "${CHILD_STATE_PREFIX:-}" noncurrent || true
-  rm -f "${IMPORT_LOG}" "${DEPLOY_LOG}" "${REIMPORT_LOG}"
+  rm -f "${IMPORT_LOG}" "${DEPLOY_LOG}" "${REIMPORT_LOG}" "${STRIP_FILE}"
   set -eu
   return 0
 }
@@ -181,6 +203,24 @@ if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_
 fi
 
 echo "[verify] step 2b: seed the secret"
+# `DeleteSecret` is asynchronous even with --force-delete-without-recovery: a
+# run started right after another run's cleanup finds the name still "scheduled
+# for deletion" and `create-secret` refuses it. Wait for the name to be FREE,
+# with the same polled strict gone-probe the teardown uses.
+SECRET_NAME_FREE=0
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  if gone_probe aws secretsmanager describe-secret \
+       --secret-id "${SECRET_NAME}" --region "${REGION}"; then
+    SECRET_NAME_FREE=1
+    break
+  fi
+  sleep 5
+done
+if [ "${SECRET_NAME_FREE}" -ne 1 ]; then
+  echo "[verify] FAIL: secret ${SECRET_NAME} still exists (or is still being deleted) after 60s --" >&2
+  echo "         a previous run's force delete has not completed. Not seeding over it." >&2
+  exit 1
+fi
 aws secretsmanager create-secret --name "${SECRET_NAME}" --region "${REGION}" \
   --secret-string "{\"pw\":\"${SECRET_PLAINTEXT}\"}" >/dev/null
 
@@ -225,16 +265,22 @@ FN_NAME="$(physical_of "${STACK}" SecretEnvFn)"
 FN_ROLE_NAME="$(physical_of "${STACK}" SecretEnvFnRole)"
 [ -n "${FN_NAME}" ] || { echo "[verify] FAIL: SecretEnvFn physical name is empty" >&2; exit 1; }
 [ -n "${FN_ROLE_NAME}" ] || { echo "[verify] FAIL: SecretEnvFnRole physical name is empty" >&2; exit 1; }
-live_fn_env() { # the DB_PASSWORD variable AWS holds; compared, never printed
-  aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}" \
+CHILD_FN_NAME="$(physical_of "${CHILD_PHYSICAL}" ChildSecretEnvFn)"
+CHILD_FN_ROLE_NAME="$(physical_of "${CHILD_PHYSICAL}" ChildSecretEnvFnRole)"
+[ -n "${CHILD_FN_NAME}" ] || { echo "[verify] FAIL: ChildSecretEnvFn physical name is empty" >&2; exit 1; }
+[ -n "${CHILD_FN_ROLE_NAME}" ] || { echo "[verify] FAIL: ChildSecretEnvFnRole physical name is empty" >&2; exit 1; }
+live_fn_env() { # usage: live_fn_env [<function-name>] -- the DB_PASSWORD AWS holds; compared, never printed
+  aws lambda get-function-configuration --function-name "${1:-${FN_NAME}}" --region "${REGION}" \
     --query 'Environment.Variables.DB_PASSWORD' --output text
 }
-if [ "$(live_fn_env)" != "${SECRET_PLAINTEXT}" ]; then
-  echo "[verify] FAIL: premise: SecretEnvFn's DB_PASSWORD does not hold the seeded plaintext" >&2
-  exit 1
-fi
-ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
-echo "[verify] step 3 ok: 4 live SSM parameters and 1 Lambda environment variable hold the decrypted value"
+for fn in "${FN_NAME}" "${CHILD_FN_NAME}"; do
+  if [ "$(live_fn_env "${fn}")" != "${SECRET_PLAINTEXT}" ]; then
+    echo "[verify] FAIL: premise: ${fn}'s DB_PASSWORD does not hold the seeded plaintext" >&2
+    exit 1
+  fi
+  ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+done
+echo "[verify] step 3 ok: 4 live SSM parameters and 2 Lambda environment variables hold the decrypted value"
 
 echo "[verify] step 4: MEASURE what DescribeStacks returns (shape class only, never the value)"
 classify_parameter() { # usage: classify_parameter <stack> <parameterKey> <placeholderDefault>
@@ -291,7 +337,10 @@ for pair in "root|${ROOT_STATE}" "child|${CHILD_STATE}"; do
   fi
   ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 done
-assert_record() { # usage: assert_record <label> <state-json> <logicalId> refused|captured
+state_last_modified() { # usage: state_last_modified <state-json>
+  printf '%s' "$1" | python3 -c 'import json, sys; print(json.load(sys.stdin)["lastModified"])'
+}
+assert_record() { # usage: assert_record <label> <state-json> <logicalId> refused|marked|captured
   # `refused` means the UNVERIFIABLE-PARAMETER class specifically (issue #3462):
   # the marker alone is what any other refusal arm writes, and it is the REASON
   # that carries the refusal through an in-place UPDATE.
@@ -304,6 +353,10 @@ reason = record.get("observedBaselineRefusalReason")
 observed = "observedProperties" in record
 if want == "refused" and not (refused and reason == "unverifiable-parameter" and not observed):
     sys.exit(f"{label}/{logical_id}: expected a REFUSED baseline with its reason (refused={refused}, reason={reason!r}, observed={observed})")
+# `marked` (issue #3468): the marker survived with no baseline, whatever the
+# reason -- for a record no writer touched after its reason was stripped.
+if want == "marked" and not (refused and not observed):
+    sys.exit(f"{label}/{logical_id}: expected a surviving REFUSAL MARKER (refused={refused}, reason={reason!r}, observed={observed})")
 if want == "captured" and not (observed and not refused and reason is None):
     sys.exit(f"{label}/{logical_id}: expected a CAPTURED baseline (refused={refused}, reason={reason!r}, observed={observed})")
 ' "$1" "$3" "$4" || { echo "[verify] FAIL: baseline verdict (see above)" >&2; exit 1; }
@@ -317,6 +370,7 @@ assert_record root "${ROOT_STATE}" SecretEnvFn refused
 assert_record root "${ROOT_STATE}" RootStageParam captured
 assert_record child "${CHILD_STATE}" ChildPwParam refused
 assert_record child "${CHILD_STATE}" ChildTokenParam refused
+assert_record child "${CHILD_STATE}" ChildSecretEnvFn refused
 
 if grep -qF "${SECRET_PLAINTEXT}" "${IMPORT_LOG}"; then
   echo "[verify] FAIL: the DECRYPTED secret is in the import's --verbose output" >&2
@@ -343,6 +397,74 @@ grep "whose deployed CloudFormation value could not be proven equal" "${IMPORT_L
 grep "whose deployed CloudFormation value could not be proven equal" "${IMPORT_LOG}" | grep -q "ChildToken" || { echo "[verify] FAIL: child warning does not name ChildToken" >&2; exit 1; }
 ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 echo "[verify] step 6 ok"
+
+echo "[verify] step 6a: SIMULATE a cdkd 0.290.35 record (issue #3468) -- strip the refusal reason"
+# A GUARDED, SCOPED rewrite of a state document. Never prints a state body.
+strip_refusal_reason() { # usage: strip_refusal_reason <state-key> <label>
+  local key="$1" label="$2" etag stripped left
+  # SCOPE GUARD: accepting arm first, the catch-all leaves. Only this
+  # fixture's two exact state keys may ever be rewritten.
+  case "${key}" in
+    "cdkd/CdkdImportDeployedParamSecret/${REGION}/state.json") ;;
+    "cdkd/CdkdImportDeployedParamSecret~Child/${REGION}/state.json") ;;
+    *)
+      echo "[verify] FAIL: strip refused -- '${key}' is not one of this fixture's two state keys" >&2
+      exit 1
+      ;;
+  esac
+  if ! etag="$(aws s3api get-object --bucket "${STATE_BUCKET}" --region "${REGION}" --key "${key}" \
+      --query 'ETag' --output text "${STRIP_FILE}" 2>/dev/null)" || [ -z "${etag}" ] || [ "${etag}" = "None" ]; then
+    echo "[verify] FAIL: ${label}: could not read the state document to strip" >&2
+    exit 1
+  fi
+  if ! stripped="$(python3 -c '
+import json, sys
+path = sys.argv[1]
+with open(path) as f:
+    state = json.load(f)
+count = 0
+for record in state["resources"].values():
+    if record.get("observedBaselineRefused") is True and "observedBaselineRefusalReason" in record:
+        del record["observedBaselineRefusalReason"]
+        count += 1
+with open(path, "w") as f:
+    json.dump(state, f)
+print(count)
+' "${STRIP_FILE}")"; then
+    echo "[verify] FAIL: ${label}: could not rewrite the state document" >&2
+    exit 1
+  fi
+  if [ -z "${stripped}" ] || [ "${stripped}" -lt 1 ]; then
+    echo "[verify] FAIL: ${label}: stripped ZERO refusal reasons -- the redeploy below would not run against a reason-less marker" >&2
+    exit 1
+  fi
+  # `--if-match`: refuse to overwrite a document someone wrote since the read.
+  if ! aws s3api put-object --bucket "${STATE_BUCKET}" --region "${REGION}" --key "${key}" \
+      --body "${STRIP_FILE}" --content-type application/json --if-match "${etag}" >/dev/null; then
+    echo "[verify] FAIL: ${label}: the guarded state rewrite was refused or failed" >&2
+    exit 1
+  fi
+  # The strip LANDED: read back from S3, not from the local file.
+  if ! left="$(aws s3 cp "s3://${STATE_BUCKET}/${key}" - --region "${REGION}" | python3 -c '
+import json, sys
+records = json.load(sys.stdin)["resources"].values()
+marked = [r for r in records if r.get("observedBaselineRefused") is True]
+with_reason = [r for r in marked if "observedBaselineRefusalReason" in r]
+print(f"{len(marked)} {len(with_reason)}")
+')"; then
+    echo "[verify] FAIL: ${label}: could not re-read the stripped state" >&2
+    exit 1
+  fi
+  if [ "${left}" != "${stripped} 0" ]; then
+    echo "[verify] FAIL: ${label}: after the strip expected ${stripped} reason-less marker(s) and 0 with a reason, got '${left}'" >&2
+    exit 1
+  fi
+  echo "[verify] ${label}: ${stripped} refusal reason(s) stripped; every marker is now reason-less"
+  ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+}
+strip_refusal_reason "${STATE_KEY}" "root state"
+strip_refusal_reason "${CHILD_STATE_KEY}" "child state"
+echo "[verify] step 6a ok"
 
 echo "[verify] step 6b: REDEPLOY ARM (issue #3462) -- a code-only UPDATE after the import"
 # Every surviving object VERSION, not just the current one: a deploy saves state
@@ -381,11 +503,12 @@ assert_no_plaintext_in_versions() { # usage: assert_no_plaintext_in_versions <pr
   echo "[verify] ${desc}: ${scanned} object version(s) scanned, none carries the plaintext"
   ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 }
-fn_code_sha() {
-  aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}" \
+fn_code_sha() { # usage: fn_code_sha [<function-name>]
+  aws lambda get-function-configuration --function-name "${1:-${FN_NAME}}" --region "${REGION}" \
     --query 'CodeSha256' --output text
 }
 CODE_SHA_BEFORE="$(fn_code_sha)"
+CHILD_CODE_SHA_BEFORE="$(fn_code_sha "${CHILD_FN_NAME}")"
 (cd "${TEST_DIR}" && CDKD_TEST_UPDATE=true ${CLI} deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --yes \
@@ -410,6 +533,24 @@ if [ "$(live_fn_env)" != "${SECRET_PLAINTEXT}" ]; then
   exit 1
 fi
 ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+# The CHILD (issue #3468): its function was UPDATEd by a child engine, and AWS
+# holds the decrypted value where a readback by that engine would find it. What
+# proves the STAMP in the child is the `refused` verdicts below (6a stripped
+# the reasons). The child plaintext scans are a backstop on the redaction, not
+# on the stamp: under `cdkd deploy` the parent hands the child the literal
+# reference, so a child readback is positioned against an expression.
+CHILD_CODE_SHA_AFTER="$(fn_code_sha "${CHILD_FN_NAME}")"
+if [ -z "${CHILD_CODE_SHA_AFTER}" ] || [ "${CHILD_CODE_SHA_AFTER}" = "${CHILD_CODE_SHA_BEFORE}" ]; then
+  echo "[verify] FAIL: ChildSecretEnvFn's CodeSha256 did not change -- no child engine UPDATEd it" >&2
+  exit 1
+fi
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+if [ "$(live_fn_env "${CHILD_FN_NAME}")" != "${SECRET_PLAINTEXT}" ]; then
+  echo "[verify] FAIL: premise: after the redeploy ChildSecretEnvFn no longer holds the seeded plaintext," >&2
+  echo "         so the child plaintext scans below would have nothing to find." >&2
+  exit 1
+fi
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 ROOT_STATE_2="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
 CHILD_STATE_2="$(aws s3 cp "s3://${STATE_BUCKET}/${CHILD_STATE_KEY}" - --region "${REGION}")"
 for pair in "root|${ROOT_STATE_2}" "child|${CHILD_STATE_2}"; do
@@ -423,13 +564,24 @@ for pair in "root|${ROOT_STATE_2}" "child|${CHILD_STATE_2}"; do
   ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 done
 # The record the deploy REBUILT is the discriminating one; the rest prove the
-# refusal stands across whatever the deploy did or did not touch.
+# refusal stands across whatever the deploy did or did not touch. Step 6a left
+# every marker REASON-LESS, so `refused` also proves the engine that owns the
+# record re-stamped the reason (issue #3468) -- the root engine for the root
+# records, a CHILD engine for the child's.
 assert_record root-redeployed "${ROOT_STATE_2}" SecretEnvFn refused
 assert_record root-redeployed "${ROOT_STATE_2}" RootPwParam refused
 assert_record root-redeployed "${ROOT_STATE_2}" RootTokenParam refused
 assert_record root-redeployed "${ROOT_STATE_2}" RootStageParam captured
+# The child engine really RAN and saved: otherwise `refused` below could not
+# hold (6a stripped the reasons), but say so by name rather than by inference.
+if [ "$(state_last_modified "${CHILD_STATE_2}")" = "$(state_last_modified "${CHILD_STATE}")" ]; then
+  echo "[verify] FAIL: the child state was not rewritten by the redeploy -- no child engine ran over the reason-less markers" >&2
+  exit 1
+fi
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 assert_record child-redeployed "${CHILD_STATE_2}" ChildPwParam refused
 assert_record child-redeployed "${CHILD_STATE_2}" ChildTokenParam refused
+assert_record child-redeployed "${CHILD_STATE_2}" ChildSecretEnvFn refused
 if grep -qF "${SECRET_PLAINTEXT}" "${DEPLOY_LOG}"; then
   echo "[verify] FAIL: the DECRYPTED secret is in the redeploy's --verbose output" >&2
   exit 1
@@ -440,6 +592,9 @@ assert_no_plaintext_in_versions "${CHILD_STATE_PREFIX}" "child state prefix afte
 echo "[verify] step 6b ok"
 
 echo "[verify] step 6c: RE-IMPORT ARM (issue #3462) -- a selective re-import with no CloudFormation source"
+# Step 6b healed the root reasons; strip them again so the carry under test
+# starts from a REASON-LESS prior marker (issue #3468).
+strip_refusal_reason "${STATE_KEY}" "root state before the re-import"
 # PREMISE: the source stack is gone, so this run cannot have deployed values.
 assert_gone "premise: the source CloudFormation stack still exists, so the re-import would HAVE a parameter source" \
   aws cloudformation describe-stacks --stack-name "${STACK}" --region "${REGION}"
@@ -470,9 +625,6 @@ ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 # The re-import really WROTE state: `cdkd import` exits 0 without writing when
 # no row imports, and the body left by step 6b satisfies every verdict below on
 # its own. Read from the record, not from a log line whose wording can drift.
-state_last_modified() { # usage: state_last_modified <state-json>
-  printf '%s' "$1" | python3 -c 'import json, sys; print(json.load(sys.stdin)["lastModified"])'
-}
 LAST_MODIFIED_2="$(state_last_modified "${ROOT_STATE_2}")"
 LAST_MODIFIED_3="$(state_last_modified "${ROOT_STATE_3}")"
 if [ -z "${LAST_MODIFIED_3}" ] || [ "${LAST_MODIFIED_3}" = "${LAST_MODIFIED_2}" ]; then
@@ -482,8 +634,8 @@ if [ -z "${LAST_MODIFIED_3}" ] || [ "${LAST_MODIFIED_3}" = "${LAST_MODIFIED_2}" 
 fi
 ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 assert_record root-reimported "${ROOT_STATE_3}" SecretEnvFn refused
-# The rows the selective run left in place are untouched.
-assert_record root-reimported "${ROOT_STATE_3}" RootPwParam refused
+# The rows the selective run left in place are untouched: still reason-less.
+assert_record root-reimported "${ROOT_STATE_3}" RootPwParam marked
 assert_record root-reimported "${ROOT_STATE_3}" RootStageParam captured
 if grep -qF "${SECRET_PLAINTEXT}" "${REIMPORT_LOG}"; then
   echo "[verify] FAIL: the DECRYPTED secret is in the re-import's --verbose output" >&2
@@ -500,6 +652,8 @@ for n in ${ROOT_PARAM_NAMES} ${CHILD_PARAM_NAMES}; do
 done
 assert_gone "Lambda function ${FN_NAME} still exists after destroy" aws lambda get-function --function-name "${FN_NAME}" --region "${REGION}"
 assert_gone "IAM role ${FN_ROLE_NAME} still exists after destroy" aws iam get-role --role-name "${FN_ROLE_NAME}"
+assert_gone "Lambda function ${CHILD_FN_NAME} still exists after destroy" aws lambda get-function --function-name "${CHILD_FN_NAME}" --region "${REGION}"
+assert_gone "IAM role ${CHILD_FN_ROLE_NAME} still exists after destroy" aws iam get-role --role-name "${CHILD_FN_ROLE_NAME}"
 assert_gone "root cdkd state still present" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" --region "${REGION}"
 assert_gone "child cdkd state still present" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CHILD_STATE_KEY}" --region "${REGION}"
 assert_gone "source CloudFormation stack still present" aws cloudformation describe-stacks --stack-name "${STACK}" --region "${REGION}"
@@ -534,9 +688,13 @@ ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 # redeploy arm's 1 code sha + 1 live premise + 2 state greps + 6 verdicts +
 # 1 log grep + 2 version scans = 13 -> 34, plus the re-import arm's 1 source
 # premise + 1 live premise + 1 state grep + 1 state-written proof + 3 verdicts +
-# 1 log grep + 1 version scan = 9 -> 43.
-if [ "${ASSERTIONS_RUN}" -lt 43 ]; then
-  echo "FAIL: only ${ASSERTIONS_RUN} of 43 assertions executed -- a block was skipped" >&2
+# 1 log grep + 1 version scan = 9 -> 43, plus the reason strips (issue #3468):
+# root + child before the redeploy, root before the re-import = 3 -> 46, plus
+# the child-state-rewritten proof = 47, plus the child function's 1 import
+# premise + 1 import verdict + 1 code sha + 1 live premise after the redeploy +
+# 1 redeploy verdict = 5 -> 52.
+if [ "${ASSERTIONS_RUN}" -lt 52 ]; then
+  echo "FAIL: only ${ASSERTIONS_RUN} of 52 assertions executed -- a block was skipped" >&2
   exit 1
 fi
-echo "[verify] PASS -- no decrypted deployed-parameter secret reached state, at import (issue #2854), at the redeploy after it, or at a source-less re-import (issue #3462); ${ASSERTIONS_RUN} assertions executed"
+echo "[verify] PASS -- no decrypted deployed-parameter secret reached state, at import (issue #2854), at the redeploy after it, or at a source-less re-import (issue #3462), with the refusal reason stripped as cdkd 0.290.35 wrote it (issue #3468); ${ASSERTIONS_RUN} assertions executed"
