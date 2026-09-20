@@ -419,13 +419,21 @@ worth knowing before you read a report:
   either after the CloudFormation stack was gone — the marker is already gone and the deployed value may be in that resource's `observedProperties`
   in `state.json` — and in older S3 object versions of `state.json`, which
   stay after the current one is fixed. No cdkd version can detect this
-  afterwards: the record looks like any other. If that can apply to you, rotate
-  the secret, and delete the noncurrent object versions under the stack's state
-  prefix. For the current `state.json`: when the value comes from a
-  `{{resolve:...}}` reference, write that reference in the template in place of
-  the parameter and deploy, so the next baseline is recorded as the reference;
-  otherwise no cdkd command removes a recorded baseline in place, and the
-  `observedProperties` entry has to be removed from `state.json` by hand.
+  afterwards: the record looks like any other. If that can apply to you, in
+  this order:
+
+  1. Rotate the secret.
+  2. Fix the current `state.json`. When the value comes from a
+     `{{resolve:...}}` reference, write that reference in the template in
+     place of the parameter and deploy, so the next baseline is recorded as the
+     reference. Otherwise no cdkd command removes a recorded baseline in place,
+     and the `observedProperties` entry has to be removed from `state.json` by
+     hand.
+  3. LAST, delete the noncurrent object versions under the stack's state
+     prefix. The deploy in step 2 saves state more than once, and each save
+     turns the previous object — still holding the old value — into a new
+     noncurrent version, so a purge done earlier has to be done again.
+
   `cdkd state refresh-observed` is NOT a remedy — it reads the value from AWS
   again. [`cdkd scrub`](cli-scrub.md) finds a value only through a reference
   the template spells, so it finds nothing while the parameter is bound to its
