@@ -21,6 +21,7 @@ import {
   UpdateContinuousBackupsCommand,
   type PointInTimeRecoverySpecification,
   UpdateTimeToLiveCommand,
+  PolicyNotFoundException,
   ResourceNotFoundException,
   type ContributorInsightsAction,
   type ContributorInsightsMode,
@@ -66,6 +67,16 @@ import {
   reverseMapTableContributorInsights,
   stripIndexContributorInsights,
 } from '../dynamodb-contributor-insights.js';
+import {
+  STREAM_POLICY_KEY,
+  STREAM_TAGS_KEY,
+  type StreamMemberOp,
+  planStreamMemberOps,
+  reverseMapStreamPolicy,
+  streamDeclaresPolicy,
+  streamDeclaresTags,
+  streamMemberRefusals,
+} from '../dynamodb-stream-members.js';
 import {
   DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS,
   INDEX_SETTLE_POLL_INTERVAL_MS,
@@ -1476,6 +1487,12 @@ export class DynamoDBTableProvider implements ResourceProvider {
         if (refusal !== undefined) {
           throw new Error(`${refusal}. Fix the template value`);
         }
+        // `StreamSpecification.ResourcePolicy` / `.Tags` (issue #3458), for
+        // the same reason and under the same replay stand-down.
+        const [streamRefusal] = streamMemberRefusals(properties['StreamSpecification']);
+        if (streamRefusal !== undefined) {
+          throw new Error(`${streamRefusal}. Fix the template value`);
+        }
       }
 
       const createParams: CreateTableCommandInput = {
@@ -1547,7 +1564,11 @@ export class DynamoDBTableProvider implements ResourceProvider {
         );
       }
 
-      // Stream specification - CDK omits StreamEnabled, SDK requires it
+      // Stream specification - CDK omits StreamEnabled, SDK requires it.
+      // The block is REBUILT from its one SDK member rather than forwarded, so
+      // its `ResourcePolicy` / `Tags` (issue #3458), which are not
+      // `CreateTable` members, never reach the serializer: they are applied
+      // against the stream arn after the ACTIVE wait below.
       if (properties['StreamSpecification']) {
         const streamSpec = properties['StreamSpecification'] as Record<string, unknown>;
         createParams.StreamSpecification = {
@@ -1692,6 +1713,18 @@ export class DynamoDBTableProvider implements ResourceProvider {
         tableName,
         properties['GlobalSecondaryIndexes'],
         undefined,
+        maskSecrets
+      );
+      // `StreamSpecification.ResourcePolicy` / `.Tags` (issue #3458) — against
+      // the stream `CreateTable` just minted, which holds nothing yet.
+      await this.applyStreamMembers(
+        logicalId,
+        resourceType,
+        tableName,
+        tableInfo.streamArn,
+        properties['StreamSpecification'],
+        undefined,
+        true,
         maskSecrets
       );
 
@@ -2812,14 +2845,23 @@ export class DynamoDBTableProvider implements ResourceProvider {
       //    new view type -> wait ACTIVE. (DynamoDB also rejects a rapid
       //    disable-then-enable against a still-UPDATING table, so the wait
       //    between the two calls is load-bearing, not just cosmetic.)
+      //
+      // A block that differs ONLY in `ResourcePolicy` / `Tags` (issue #3458), or
+      // in a `StreamEnabled` key one side spells out, keeps its stream: no
+      // `UpdateTable` goes out — DynamoDB rejects enabling an enabled stream —
+      // and the two members are reconciled on the arn that stays.
       if (
         JSON.stringify(properties['StreamSpecification']) !==
         JSON.stringify(previousProperties['StreamSpecification'])
       ) {
         const newViewType = this.extractStreamViewType(properties['StreamSpecification']);
         const prevViewType = this.extractStreamViewType(previousProperties['StreamSpecification']);
+        // True when the arn the two members go to was minted by THIS update.
+        let freshStream = false;
 
-        if (newViewType && prevViewType && newViewType !== prevViewType) {
+        if (newViewType && prevViewType && newViewType === prevViewType) {
+          // Same stream: nothing to send through `UpdateTable`.
+        } else if (newViewType && prevViewType) {
           // View-type change on an enabled stream: disable, wait, re-enable.
           await this.dynamoDBClient.send(
             new UpdateTableCommand({
@@ -2838,9 +2880,15 @@ export class DynamoDBTableProvider implements ResourceProvider {
             })
           );
           await this.waitForTableActiveAfterUpdate(physicalId);
+          // The re-enable minted a NEW arn; the one read before it is dead
+          // (DynamoDB keeps reporting a disabled stream's arn as the latest),
+          // so an answer still echoing it is re-read rather than trusted.
+          const echoedArn = reenable.TableDescription?.LatestStreamArn;
           latestStreamArn =
-            reenable.TableDescription?.LatestStreamArn ??
-            (await this.describeLatestStreamArn(physicalId));
+            echoedArn !== undefined && echoedArn !== table?.LatestStreamArn
+              ? echoedArn
+              : await this.describeLatestStreamArn(physicalId);
+          freshStream = true;
           this.logger.debug(
             `Changed StreamViewType on DynamoDB table ${physicalId} to ${newViewType}`
           );
@@ -2860,6 +2908,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
           latestStreamArn =
             enable.TableDescription?.LatestStreamArn ??
             (await this.describeLatestStreamArn(physicalId));
+          freshStream = true;
           this.logger.debug(`Enabled DynamoDB Stream on table ${physicalId} (${newViewType})`);
         } else {
           // Removal (new absent, previous present): disable the stream.
@@ -2872,6 +2921,24 @@ export class DynamoDBTableProvider implements ResourceProvider {
           await this.waitForTableActiveAfterUpdate(physicalId);
           latestStreamArn = undefined;
           this.logger.debug(`Disabled DynamoDB Stream on table ${physicalId}`);
+        }
+
+        // `ResourcePolicy` / `Tags` (issue #3458) go to the CURRENT arn: the
+        // one just minted, or the one that stayed. A disabled stream is gone
+        // and takes both with it, so no call addresses its dead arn.
+        if (newViewType) {
+          await this.applyStreamMembers(
+            logicalId,
+            resourceType,
+            physicalId,
+            latestStreamArn,
+            properties['StreamSpecification'],
+            previousProperties['StreamSpecification'],
+            freshStream,
+            maskSecrets,
+            // After a view-type change the pre-update arn is the DEAD stream's.
+            freshStream && prevViewType ? table?.LatestStreamArn : undefined
+          );
         }
       }
 
@@ -3652,7 +3719,10 @@ export class DynamoDBTableProvider implements ResourceProvider {
   private async retryOnTransientControlPlane<T>(
     op: () => Promise<T>,
     label: string,
-    maxAttempts = 8
+    maxAttempts = 8,
+    // One more transient class, for a caller that knows its target was minted
+    // a moment ago (the stream arn of issue #3458).
+    alsoTransient?: (error: unknown) => boolean
   ): Promise<T> {
     let delayMs = 2000;
     for (let attempt = 1; ; attempt++) {
@@ -3667,7 +3737,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
         const transient =
           /being enabled|being updated|please retry later|backups are being/i.test(msg) ||
           name === 'ResourceInUseException' ||
-          name === 'LimitExceededException';
+          name === 'LimitExceededException' ||
+          alsoTransient?.(error) === true;
         if (!transient || attempt >= maxAttempts) throw error;
         this.logger.debug(
           `Transient error on "${label}" (attempt ${attempt}/${maxAttempts}): ${msg} — retrying in ${delayMs}ms`
@@ -3993,6 +4064,131 @@ export class DynamoDBTableProvider implements ResourceProvider {
     if (spec === undefined || spec === null) return undefined;
     const viewType = (spec as Record<string, unknown>)['StreamViewType'];
     return typeof viewType === 'string' && viewType.length > 0 ? viewType : undefined;
+  }
+
+  /**
+   * Apply `StreamSpecification.ResourcePolicy` / `.Tags` (issue
+   * [#3458](https://github.com/go-to-k/cdkd/issues/3458)) against the STREAM
+   * arn. Neither is a member of the SDK's `StreamSpecification`, so until this
+   * existed both were dropped on `CreateTable` / `UpdateTable`: the deploy was
+   * green and the stream had no policy.
+   *
+   * `streamArn` must be the table's CURRENT `LatestStreamArn` — after a
+   * `StreamViewType` change that is the arn the re-enable minted, never the
+   * recorded one. What to call, in which order, and the removal / rollback /
+   * unreadable-member rules live on {@link planStreamMemberOps}.
+   *
+   * A plan with calls to make and no arn to make them against — or, after a
+   * view-type change, only the replaced stream's `deadStreamArn` — fails LOUDLY: a
+   * silent skip would record the policy in state as applied, the next deploy
+   * would see no difference, and the grant would stay missing for good.
+   *
+   * The policy text is never logged: it names principals and can carry a
+   * resolved secret in a condition value.
+   */
+  private async applyStreamMembers(
+    logicalId: string,
+    resourceType: string,
+    tableName: string,
+    streamArn: string | undefined,
+    desiredBlock: unknown,
+    previousBlock: unknown,
+    freshStream: boolean,
+    maskSecrets: SecretMasker,
+    deadStreamArn?: string
+  ): Promise<void> {
+    const warn = (message: string): void => this.logger.warn(maskSecrets(message));
+    const debug = (message: string): void => this.logger.debug(maskSecrets(message));
+    const ops = planStreamMemberOps(
+      desiredBlock,
+      previousBlock,
+      { freshStream },
+      (reason) =>
+        warn(
+          `DynamoDB table ${tableName}: ${reason}, so that member of the stream was left as ` +
+            `it is. Fix the template value and re-deploy.`
+        )
+    );
+    if (ops.length === 0) return;
+    if (streamArn === undefined || streamArn === '' || streamArn === deadStreamArn) {
+      throw new ProvisioningError(
+        `Cannot apply StreamSpecification.ResourcePolicy / Tags for DynamoDB table ${logicalId}: ` +
+          `DescribeTable returned no ${deadStreamArn === undefined ? '' : 'new '}LatestStreamArn`,
+        resourceType,
+        logicalId,
+        tableName
+      );
+    }
+    for (const op of ops) {
+      await this.sendStreamMemberOp(streamArn, op, freshStream, maskSecrets);
+      debug(`Applied ${op.kind} to the stream of DynamoDB table ${tableName}`);
+    }
+  }
+
+  /** Issue ONE {@link StreamMemberOp} against the stream arn. */
+  private async sendStreamMemberOp(
+    streamArn: string,
+    op: StreamMemberOp,
+    freshStream: boolean,
+    maskSecrets: SecretMasker
+  ): Promise<void> {
+    // The arn embeds the table name, a RESOLVED template value.
+    const target = maskSecrets(streamArn);
+    // A stream minted a moment ago may not be addressable by these APIs yet;
+    // on any OTHER arn a not-found is an answer, not a lag.
+    const retryNotFound = freshStream
+      ? (error: unknown): boolean => error instanceof ResourceNotFoundException
+      : undefined;
+    switch (op.kind) {
+      case 'deletePolicy':
+        try {
+          await this.retryOnTransientControlPlane(
+            () =>
+              this.dynamoDBClient.send(new DeleteResourcePolicyCommand({ ResourceArn: streamArn })),
+            `delete the stream ResourcePolicy of ${target}`
+          );
+        } catch (error) {
+          // No policy to remove (or the stream itself is gone) is the goal.
+          if (
+            !(error instanceof PolicyNotFoundException) &&
+            !(error instanceof ResourceNotFoundException)
+          ) {
+            throw error;
+          }
+        }
+        return;
+      case 'untag':
+        await this.retryOnTransientControlPlane(
+          () =>
+            this.dynamoDBClient.send(
+              new UntagResourceCommand({ ResourceArn: streamArn, TagKeys: op.keys })
+            ),
+          `untag the stream ${target}`
+        );
+        return;
+      case 'tag':
+        await this.retryOnTransientControlPlane(
+          () =>
+            this.dynamoDBClient.send(
+              new TagResourceCommand({ ResourceArn: streamArn, Tags: op.tags })
+            ),
+          `tag the stream ${target}`,
+          undefined,
+          retryNotFound
+        );
+        return;
+      case 'putPolicy':
+        await this.retryOnTransientControlPlane(
+          () =>
+            this.dynamoDBClient.send(
+              new PutResourcePolicyCommand({ ResourceArn: streamArn, Policy: op.document })
+            ),
+          `put the stream ResourcePolicy of ${target}`,
+          undefined,
+          retryNotFound
+        );
+        return;
+    }
   }
 
   /**
@@ -6102,9 +6298,12 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * shape differences are wrapping:
    *  - BillingMode lives under `BillingModeSummary.BillingMode` in the API
    *    response, but the CFn property is a flat `BillingMode` string.
-   *  - StreamSpecification's CFn shape includes only `StreamViewType`; the
-   *    API response carries `StreamEnabled` too. We surface both since the
-   *    drift comparator only descends into keys present in state.
+   *  - StreamSpecification's CFn shape is `StreamViewType`, `ResourcePolicy`
+   *    and `Tags`; the API response carries `StreamEnabled` and
+   *    `StreamViewType` only. `StreamEnabled` is surfaced too, since the
+   *    comparator descends a `properties` baseline by the keys state holds.
+   *    `ResourcePolicy` / `Tags` (issue #3458) live on the STREAM arn and are
+   *    read from it, each only when the desired block declares that member.
    *  - GSI / LSI in the API response include `IndexStatus`, `Backfilling`,
    *    `ItemCount`, `IndexArn` and sizing fields cdkd never sets. They used to
    *    be forwarded VERBATIM under a comment claiming "the comparator filters
@@ -6217,10 +6416,17 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // StreamSpecification without StreamViewType is rejected). Only
       // surface the block when the stream is actually enabled.
       if (table.StreamSpecification?.StreamEnabled && table.StreamSpecification.StreamViewType) {
-        result['StreamSpecification'] = {
+        const streamBlock: Record<string, unknown> = {
           StreamEnabled: true,
           StreamViewType: table.StreamSpecification.StreamViewType,
         };
+        result['StreamSpecification'] = streamBlock;
+        await this.readStreamMembers(
+          physicalId,
+          table.LatestStreamArn,
+          properties?.['StreamSpecification'],
+          streamBlock
+        );
       }
       // Class 2 guard: GSI / LSI placeholders. AWS omits these blocks when
       // none exist; the previous `?? []` always-emitted an empty array
@@ -6468,6 +6674,111 @@ export class DynamoDBTableProvider implements ResourceProvider {
     } catch (err) {
       if (err instanceof ResourceNotFoundException) return undefined;
       throw err;
+    }
+  }
+
+  /**
+   * How long an "absent" answer to an eventually-consistent stream-member read
+   * is re-asked before it is believed: one entry per extra attempt.
+   */
+  protected streamMemberAbsenceRetryDelaysMs: readonly number[] = [500, 1000, 2000];
+
+  /** Run `read`, re-asking after each configured delay while it answers `undefined`. */
+  private async reAskWhileAbsent<T>(read: () => Promise<T | undefined>): Promise<T | undefined> {
+    let answer = await read();
+    for (const delayMs of this.streamMemberAbsenceRetryDelaysMs) {
+      if (answer !== undefined) break;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      answer = await read();
+    }
+    return answer;
+  }
+
+  /**
+   * Read `StreamSpecification.ResourcePolicy` / `.Tags` (issue #3458) off the
+   * table's CURRENT stream arn into `streamBlock`.
+   *
+   * One API call per member, so each is GATED on the desired block declaring a
+   * member cdkd would send — the same reader the write plan runs. The gate is
+   * also what keeps an undeclared member out of an `observedProperties`
+   * baseline, which is compared by the UNION of both sides' keys.
+   *
+   * No policy (`PolicyNotFoundException`) and an empty user tag set emit
+   * NOTHING: that is "absent" in the template's own spelling, which a
+   * declared member then reports as drift (a declared EMPTY list is the one
+   * exception, and reads back as the empty list it is). `aws:`-prefixed system tags are
+   * dropped like the table-level ones, and the list needs no unordered path —
+   * the comparator sorts every `{Key, ...}` list on both sides. Any other
+   * failed read omits the member and says why at debug level, like the sibling
+   * reads of this method.
+   *
+   * Both reads are EVENTUALLY consistent (their command docs say so), and the
+   * deploy captures `observedProperties` right after the writes: an "absent"
+   * answer for a DECLARED member is re-asked a few times before it is
+   * believed, or a lagging read would freeze a baseline the settled stream can
+   * never equal. A genuinely removed member costs those few seconds once.
+   *
+   * `cdkd drift --revert` replays through `update()`, where the read-back is
+   * the PREVIOUS side and {@link planStreamMemberOps} derives the restore.
+   */
+  private async readStreamMembers(
+    tableName: string,
+    streamArn: string | undefined,
+    desiredBlock: unknown,
+    streamBlock: Record<string, unknown>
+  ): Promise<void> {
+    if (streamArn === undefined || streamArn === '') return;
+    if (streamDeclaresPolicy(desiredBlock)) {
+      try {
+        const livePolicy = await this.reAskWhileAbsent(async () => {
+          try {
+            const response = await this.dynamoDBClient.send(
+              new GetResourcePolicyCommand({ ResourceArn: streamArn })
+            );
+            return response.Policy === '' ? undefined : response.Policy;
+          } catch (err) {
+            if (err instanceof PolicyNotFoundException) return undefined;
+            throw err;
+          }
+        });
+        const member = reverseMapStreamPolicy(livePolicy, desiredBlock);
+        if (member !== undefined) streamBlock[STREAM_POLICY_KEY] = member;
+      } catch (err) {
+        this.logger.debug(
+          `Could not read the stream ResourcePolicy for ${tableName}: ${describeAwsFailure(err).detail}`
+        );
+      }
+    }
+    if (streamDeclaresTags(desiredBlock)) {
+      try {
+        // A DECLARED empty list reads back as one, so it equals itself — and
+        // an empty answer is then the expected one, not a lag to re-ask about.
+        const declared = (desiredBlock as Record<string, unknown>)[STREAM_TAGS_KEY];
+        const declaredEmpty = Array.isArray(declared) && declared.length === 0;
+        const listOnce = async (): Promise<Array<{ Key: string; Value: string }>> => {
+          const liveTags: Tag[] = [];
+          let nextToken: string | undefined;
+          do {
+            const response = await this.dynamoDBClient.send(
+              new ListTagsOfResourceCommand({ ResourceArn: streamArn, NextToken: nextToken })
+            );
+            liveTags.push(...(response.Tags ?? []));
+            nextToken = response.NextToken;
+          } while (nextToken !== undefined && nextToken !== '');
+          return normalizeAwsTagsToCfn(liveTags);
+        };
+        const tags = declaredEmpty
+          ? await listOnce()
+          : ((await this.reAskWhileAbsent(async () => {
+              const once = await listOnce();
+              return once.length === 0 ? undefined : once;
+            })) ?? []);
+        if (tags.length > 0 || declaredEmpty) streamBlock[STREAM_TAGS_KEY] = tags;
+      } catch (err) {
+        this.logger.debug(
+          `Could not read the stream Tags for ${tableName}: ${describeAwsFailure(err).detail}`
+        );
+      }
     }
   }
 
