@@ -55,6 +55,18 @@ import {
   toFiniteNumber,
 } from '../dynamodb-warm-throughput.js';
 import {
+  CONTRIBUTOR_INSIGHTS_KEY,
+  type ContributorInsightsOp,
+  indexDeclaresContributorInsights,
+  planContributorInsightsOp,
+  planIndexContributorInsightsOps,
+  readContributorInsightsSpec,
+  contributorInsightsRefusals,
+  reverseMapIndexContributorInsights,
+  reverseMapTableContributorInsights,
+  stripIndexContributorInsights,
+} from '../dynamodb-contributor-insights.js';
+import {
   DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS,
   INDEX_SETTLE_POLL_INTERVAL_MS,
   TABLE_DELETE_INDEX_BUSY_MAX_RETRIES,
@@ -997,16 +1009,10 @@ function warmThroughputAlreadyMatches(
  * to decide with and every block is emitted, cleaned of its AWS-managed
  * members.
  *
- * Known residual, unchanged by this fix: CFn's per-index
- * `ContributorInsightsSpecification` has no `DescribeTable` counterpart (it
- * needs a per-index `DescribeContributorInsights` call), so a template
- * declaring one still cannot converge against a `properties` baseline. It is
- * ALSO dropped on the write side, since `create()` forwards the CFn blob to
- * `CreateTable` and the SDK serializer discards the unknown member — still
- * true after round 6 taught that path to coerce `WarmThroughput`, because the
- * entry is rebuilt with a SPREAD and every other member, known or not, rides
- * along unchanged. Filed as issue
- * [#1782](https://github.com/go-to-k/cdkd/issues/1782).
+ * CFn's per-index `ContributorInsightsSpecification` is NOT mapped here: it
+ * has no `DescribeTable` counterpart, so `readCurrentState` adds it afterwards
+ * from a gated per-index `DescribeContributorInsights` (issue
+ * [#1782](https://github.com/go-to-k/cdkd/issues/1782)).
  */
 function reverseMapSecondaryIndex(
   live: GlobalSecondaryIndexDescription | LocalSecondaryIndexDescription,
@@ -1454,6 +1460,24 @@ export class DynamoDBTableProvider implements ResourceProvider {
         replayWarn(this.logger, context)
       );
 
+      // An unreadable `ContributorInsightsSpecification` (table-level or
+      // per-index, issue #1782) is refused HERE, before `CreateTable`: a create
+      // has no live setting to leave alone, and refusing after the table exists
+      // would create it only to delete it again. On a state replay the refusal
+      // stands down — the appliers below then warn and skip the block — since
+      // the user cannot edit a state record from the template. The index NAME
+      // stays out of the thrown text for the reason
+      // `INDEX_CONTRIBUTOR_INSIGHTS_PATH` gives; the position names the entry.
+      if (context?.replayingState !== true) {
+        const [refusal] = contributorInsightsRefusals(
+          properties['ContributorInsightsSpecification'],
+          properties['GlobalSecondaryIndexes']
+        );
+        if (refusal !== undefined) {
+          throw new Error(`${refusal}. Fix the template value`);
+        }
+      }
+
       const createParams: CreateTableCommandInput = {
         TableName: tableName,
         KeySchema: keySchema,
@@ -1568,7 +1592,15 @@ export class DynamoDBTableProvider implements ResourceProvider {
         const declaredGsis = properties['GlobalSecondaryIndexes'];
         createParams.GlobalSecondaryIndexes = Array.isArray(declaredGsis)
           ? (declaredGsis as GlobalSecondaryIndex[]).map((entry) =>
-              this.coerceIndexThroughputForCreate(logicalId, entry, maskSecrets)
+              this.coerceIndexThroughputForCreate(
+                logicalId,
+                // The per-index `ContributorInsightsSpecification` is NOT a
+                // `CreateTable` member (issue #1782): it is applied per index
+                // after the ACTIVE wait below, and stripped here so nothing
+                // relies on the serializer discarding it.
+                stripIndexContributorInsights(entry),
+                maskSecrets
+              )
             )
           : (declaredGsis as GlobalSecondaryIndex[]);
       }
@@ -1652,7 +1684,15 @@ export class DynamoDBTableProvider implements ResourceProvider {
       );
       await this.applyContributorInsights(
         tableName,
-        properties['ContributorInsightsSpecification']
+        properties['ContributorInsightsSpecification'],
+        undefined,
+        maskSecrets
+      );
+      await this.applyIndexContributorInsights(
+        tableName,
+        properties['GlobalSecondaryIndexes'],
+        undefined,
+        maskSecrets
       );
 
       this.logger.debug(`Successfully created DynamoDB table ${logicalId}: ${tableName}`);
@@ -2954,9 +2994,21 @@ export class DynamoDBTableProvider implements ResourceProvider {
         await this.applyContributorInsights(
           physicalId,
           properties['ContributorInsightsSpecification'],
-          previousProperties['ContributorInsightsSpecification']
+          previousProperties['ContributorInsightsSpecification'],
+          maskSecrets
         );
       }
+
+      // Per-index ContributorInsightsSpecification (issue #1782) — the same
+      // API with `IndexName`. AFTER `applyGsiUpdates`, so an index this update
+      // adds exists by now; the planner compares each index's block against
+      // the recorded previous one, so an unchanged list issues no call.
+      await this.applyIndexContributorInsights(
+        physicalId,
+        properties['GlobalSecondaryIndexes'],
+        previousProperties['GlobalSecondaryIndexes'],
+        maskSecrets
+      );
 
       return {
         physicalId,
@@ -3963,45 +4015,101 @@ export class DynamoDBTableProvider implements ResourceProvider {
    *
    * Called from both `create()` (after the table is ACTIVE) and `update()`
    * (only when the value changed). On `update()`-side removal — template drops
-   * the block but it was present before — insights is disabled.
+   * the block but it was present before — insights is disabled. The block is
+   * read by the reader the per-index twin uses
+   * ({@link applyIndexContributorInsights}), so the two cannot disagree about
+   * one shape: an unreadable block is announced and SKIPPED rather than read as
+   * a default (`Boolean('false')` used to ENABLE what the template disabled).
    */
   private async applyContributorInsights(
     tableName: string,
     spec: unknown,
-    previousSpec?: unknown
+    previousSpec: unknown,
+    maskSecrets: SecretMasker
   ): Promise<void> {
-    let action: ContributorInsightsAction | undefined;
-    let mode: ContributorInsightsMode | undefined;
-    if (spec !== undefined && spec !== null) {
-      const s = spec as Record<string, unknown>;
-      const enabled = Boolean(s['Enabled']);
-      action = enabled ? 'ENABLE' : 'DISABLE';
-      // Mode only applies while enabling; AWS rejects it alongside DISABLE.
-      if (enabled && s['Mode'] !== undefined) {
-        mode = s['Mode'] as ContributorInsightsMode;
-      }
-    } else if (previousSpec !== undefined && previousSpec !== null) {
-      // Removed from the template: disable.
-      action = 'DISABLE';
+    const warn = (message: string): void => this.logger.warn(maskSecrets(message));
+    const op = planContributorInsightsOp(
+      readContributorInsightsSpec(spec, CONTRIBUTOR_INSIGHTS_KEY),
+      readContributorInsightsSpec(previousSpec, CONTRIBUTOR_INSIGHTS_KEY),
+      (reason) =>
+        warn(
+          `DynamoDB table ${tableName}: ${reason}, so Contributor Insights was left as it is. ` +
+            `Fix the template value and re-deploy.`
+        )
+    );
+    if (op === undefined) return;
+    await this.sendContributorInsightsOp(tableName, op, maskSecrets);
+  }
+
+  /**
+   * Apply every per-index `ContributorInsightsSpecification`
+   * (`GlobalSecondaryIndexes[].ContributorInsightsSpecification`, issue
+   * [#1782](https://github.com/go-to-k/cdkd/issues/1782)) — the table-level
+   * call with `IndexName` added, one call per index whose block changed.
+   *
+   * The block is not a member of the SDK's `GlobalSecondaryIndex`, so until
+   * this existed it was dropped by the serializer on `CreateTable` and never
+   * sent by `applyGsiUpdates`: the deploy was green and the feature was off.
+   *
+   * `UpdateContributorInsights` answers `ResourceNotFoundException` for an
+   * index that is not ACTIVE yet, which {@link retryOnTransientControlPlane}
+   * does not retry, so the index wait runs FIRST — and only when there is a
+   * call to make, so an ordinary update pays no extra `DescribeTable`.
+   * `previousIndexes` is `undefined` on `create()`. Removal and rollback
+   * semantics live on {@link planContributorInsightsOp}.
+   */
+  private async applyIndexContributorInsights(
+    tableName: string,
+    desiredIndexes: unknown,
+    previousIndexes: unknown,
+    maskSecrets: SecretMasker
+  ): Promise<void> {
+    const warn = (message: string): void => this.logger.warn(maskSecrets(message));
+    const ops = planIndexContributorInsightsOps(
+      desiredIndexes,
+      previousIndexes,
+      (indexName, reason) =>
+        warn(
+          `${this.indexScopeAt(indexName, tableName, maskSecrets)}: ${reason}, so its ` +
+            `Contributor Insights was left as it is. Fix the template value and re-deploy.`
+        )
+    );
+    if (ops.length === 0) return;
+    await this.waitForTableAndIndexesActive(tableName);
+    for (const op of ops) {
+      await this.sendContributorInsightsOp(tableName, op, maskSecrets);
     }
+  }
 
-    if (action === undefined) return;
-
+  /** Issue ONE `UpdateContributorInsights`, against the table or one index. */
+  private async sendContributorInsightsOp(
+    tableName: string,
+    op: ContributorInsightsOp,
+    maskSecrets: SecretMasker
+  ): Promise<void> {
+    const debug = (message: string): void => this.logger.debug(maskSecrets(message));
+    const target =
+      op.indexName === undefined
+        ? `DynamoDB table ${tableName}`
+        : this.indexScopeAt(op.indexName, tableName, maskSecrets);
     await this.retryOnTransientControlPlane(
       () =>
         this.dynamoDBClient.send(
           new UpdateContributorInsightsCommand({
             TableName: tableName,
-            ContributorInsightsAction: action,
-            ...(mode ? { ContributorInsightsMode: mode } : {}),
+            ...(op.indexName !== undefined ? { IndexName: op.indexName } : {}),
+            ContributorInsightsAction: op.action as ContributorInsightsAction,
+            ...(op.mode !== undefined
+              ? { ContributorInsightsMode: op.mode as ContributorInsightsMode }
+              : {}),
           })
         ),
-      `set ContributorInsights on ${tableName}`
+      `set ContributorInsights on ${target}`
     );
-    this.logger.debug(
-      `Set ContributorInsightsAction=${action}${
-        mode !== undefined ? ` Mode=${mode}` : ''
-      } on DynamoDB table ${tableName}`
+    debug(
+      `Set ContributorInsightsAction=${op.action}${
+        op.mode !== undefined ? ` Mode=${op.mode}` : ''
+      } on ${target}`
     );
   }
 
@@ -5845,32 +5953,31 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * level: it is order-SIGNIFICANT (HASH before RANGE), so sorting it would
    * HIDE a real key change rather than remove a phantom one.
    *
-   * `GlobalSecondaryIndexes` / `LocalSecondaryIndexes` are NOT declared either,
-   * and that is a MECHANISM limit rather than a judgement about the lists —
-   * both really are sets keyed by `IndexName` (issue #1767 proposes declaring
-   * them). Every entry here is a SUBTREE declaration, and unlike
-   * `getDriftUnknownPaths` this walk DESCENDS INTO ARRAY ELEMENTS giving each
-   * the parent's path (`drift-normalize.ts`), so a `'GlobalSecondaryIndexes'`
-   * entry also reaches `GlobalSecondaryIndexes.KeySchema` and would sort the
-   * per-index key schema — reversing the sentence above at the index level
-   * only. Issue #1767 calls the sort and the member reverse-map separable;
-   * this change ships the reverse-map, and the ordering half needed a
-   * leaf-only form of the declaration first (issue
-   * [#1783](https://github.com/go-to-k/cdkd/issues/1783)). **That form now
-   * EXISTS** — `LEAF_ONLY_PATH_SUFFIX` (`[]`) landed in
-   * [#1799](https://github.com/go-to-k/cdkd/pull/1799), so
-   * `'GlobalSecondaryIndexes[]'` would claim the list alone without reaching
-   * the per-index `KeySchema`. It is deliberately NOT declared here yet:
-   * adopting it is its own change with its own real-AWS verification, tracked
-   * as issue [#1812](https://github.com/go-to-k/cdkd/issues/1812). Consequence
-   * until then, stated so it is not mistaken for solved: an index list AWS
-   * returns in a different ORDER than the template declared is still phantom
-   * drift against a `properties` baseline. It is not reachable on the ordinary
-   * `observedProperties` path, where both sides come from this same readback.
+   * `GlobalSecondaryIndexes` / `LocalSecondaryIndexes` ARE declared, in the
+   * LEAF-ONLY form (`LEAF_ONLY_PATH_SUFFIX`, `[]`, from
+   * [#1799](https://github.com/go-to-k/cdkd/pull/1799)): both are sets keyed
+   * by `IndexName`, and `DescribeTable` does not return them in the template's
+   * order. A plain SUBTREE entry would be wrong — the unordered walk descends
+   * into array elements giving each the parent's path (`drift-normalize.ts`),
+   * so `'GlobalSecondaryIndexes'` would also sort each index's `KeySchema` and
+   * reverse the sentence above at the index level. The leaf-only form sorts
+   * the list and stops there.
+   *
+   * Measured on real AWS by issue
+   * [#1782](https://github.com/go-to-k/cdkd/issues/1782)'s two-index fixture:
+   * a table created with `[giA, giB]` read back as `[giB, giA]`, so a
+   * `properties` baseline reported whole-list drift although every member
+   * round-tripped. The phantom pre-dates that issue — the #1767 arm only ever
+   * had ONE index — and was not reachable against an `observedProperties`
+   * baseline, where both sides come from the same readback. Both comparison
+   * sides are sorted, by a key-order-independent serialization of the whole
+   * entry, so a baseline captured in AWS's order by an earlier binary keeps
+   * converging; a REAL difference still reports the list, since entries that
+   * differ cannot be made equal by reordering them.
    */
   getDriftUnorderedPaths(resourceType: string): string[] {
     if (resourceType !== 'AWS::DynamoDB::Table') return [];
-    return ['AttributeDefinitions'];
+    return ['AttributeDefinitions', 'GlobalSecondaryIndexes[]', 'LocalSecondaryIndexes[]'];
   }
 
   /**
@@ -6024,7 +6131,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * caller passes). It is consulted for the table-level `WarmThroughput` — see
    * {@link getDriftUnknownPaths} for the measurement and the reasoning — and,
    * since issue #1767, for the per-index throughput blocks of each secondary
-   * index, matched by `IndexName`.
+   * index, matched by `IndexName`. Since issue #1782 it also gates the per-index
+   * `ContributorInsightsSpecification` read, which costs one
+   * `DescribeContributorInsights` per declaring index.
    */
   async readCurrentState(
     physicalId: string,
@@ -6305,18 +6414,54 @@ export class DynamoDBTableProvider implements ResourceProvider {
         const ciResp = await this.dynamoDBClient.send(
           new DescribeContributorInsightsCommand({ TableName: physicalId })
         );
-        const status = ciResp.ContributorInsightsStatus;
-        if (status === 'ENABLED' || status === 'DISABLED') {
-          const cspec: Record<string, unknown> = { Enabled: status === 'ENABLED' };
-          if (status === 'ENABLED' && ciResp.ContributorInsightsMode !== undefined) {
-            cspec['Mode'] = ciResp.ContributorInsightsMode;
-          }
-          result['ContributorInsightsSpecification'] = cspec;
-        }
+        const cspec = reverseMapTableContributorInsights(
+          ciResp.ContributorInsightsStatus,
+          ciResp.ContributorInsightsMode
+        );
+        if (cspec !== undefined) result['ContributorInsightsSpecification'] = cspec;
       } catch (err) {
         this.logger.debug(
           `Could not read ContributorInsights for ${physicalId}: ${describeAwsFailure(err).detail}`
         );
+      }
+
+      // Per-index ContributorInsightsSpecification (issue #1782) — the same
+      // call with `IndexName`, since `DescribeTable`'s index description has no
+      // counterpart. ONE API call per index, so it is GATED: only an index
+      // whose DESIRED entry declares a block cdkd would send is read, which is
+      // also what keeps the block out of every other entry — it sits inside an
+      // array entry whose key set is compared exactly, so an ungated
+      // `{Enabled: false}` would be one-sided drift on every index. An
+      // uninformative bag reads NOTHING (the pre-#1782 answer). A failed read
+      // omits the block, like the table-level read; a TRANSIENT status reads as
+      // its target instead (`reverseMapIndexContributorInsights` says why).
+      const emittedGsis = result['GlobalSecondaryIndexes'];
+      if (bagInformative && Array.isArray(emittedGsis)) {
+        const desiredByName = desiredIndexEntriesByName(properties?.['GlobalSecondaryIndexes']);
+        for (const emitted of emittedGsis as Array<Record<string, unknown>>) {
+          const indexName = emitted['IndexName'];
+          if (typeof indexName !== 'string') continue;
+          const desiredEntry = desiredByName.get(indexName);
+          if (!indexDeclaresContributorInsights(desiredEntry)) continue;
+          try {
+            const indexResp = await this.dynamoDBClient.send(
+              new DescribeContributorInsightsCommand({
+                TableName: physicalId,
+                IndexName: indexName,
+              })
+            );
+            const block = reverseMapIndexContributorInsights(
+              indexResp.ContributorInsightsStatus,
+              indexResp.ContributorInsightsMode,
+              desiredEntry?.[CONTRIBUTOR_INSIGHTS_KEY]
+            );
+            if (block !== undefined) emitted[CONTRIBUTOR_INSIGHTS_KEY] = block;
+          } catch (err) {
+            this.logger.debug(
+              `Could not read ContributorInsights for index ${indexName} of ${physicalId}: ${describeAwsFailure(err).detail}`
+            );
+          }
+        }
       }
 
       return result;

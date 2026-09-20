@@ -75,6 +75,16 @@ export class DynamodbGsiUpdateStack extends cdk.Stack {
         'GlobalSecondaryIndexes.0.WarmThroughput',
         { ReadUnitsPerSecond: 12001, WriteUnitsPerSecond: 4000 }
       );
+      // Issue #1782: a per-index ContributorInsightsSpecification on an index
+      // this very update ADDS. It is not a member of the SDK's
+      // `GlobalSecondaryIndex`, so it cannot ride the `Create` action: cdkd has
+      // to wait for gsi1 to reach ACTIVE and then call
+      // `UpdateContributorInsights` with `IndexName` — the ordering the sibling
+      // insights stack (whose indexes pre-exist) never exercises.
+      (table.node.defaultChild as dynamodb.CfnTable).addPropertyOverride(
+        'GlobalSecondaryIndexes.0.ContributorInsightsSpecification',
+        { Enabled: true }
+      );
     }
   }
 }

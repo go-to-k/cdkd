@@ -30,6 +30,12 @@
 #      members, `cdkd drift` reports the table CLEAN (not "drift unknown"), and
 #      it stays clean against the TEMPLATE baseline once `observedProperties` is
 #      stripped.
+#   2e. Assert (issue #1782): the per-index ContributorInsightsSpecification
+#      declared on gsi1 — an index this very update ADDED — reached AWS.
+#   I1-I5. The per-index Contributor Insights arms (issue #1782) on their OWN
+#      stack and table — enable at create with an undeclared sibling as the
+#      negative control, no phantom drift, an out-of-band toggle detected and
+#      reverted, removal + enable-with-Mode on update, destroy. See that block.
 #   3a. Race an out-of-band GSI CREATE into the table immediately before the
 #      destroy (issue #1931), so AWS refuses the DeleteTable with
 #      `Cannot delete table while indexes are being created, updated, or
@@ -85,6 +91,11 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 TABLE_NAME="cdkd-gsi-update-test-table"
 GSI_NAME="gsi1"
+# Issue #1782: the per-index Contributor Insights arms run on their OWN stack
+# and table (same CDK app), so they neither wait on nor disturb the arms above.
+INSIGHTS_STACK="CdkdDynamodbGsiInsightsExample"
+INSIGHTS_STATE_KEY="cdkd/${INSIGHTS_STACK}/${REGION}/state.json"
+INSIGHTS_TABLE="cdkd-gsi-insights-test-table"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -112,6 +123,49 @@ DESTROY_LOG="${TMPDIR:-/tmp}/cdkd-1931-destroy.$$.log"
 # has already asked the run to stop.
 CLEANED_UP=0
 
+# Delete one table BY NAME, retrying. A subshell under `set +eu` so calling it
+# from the `set +eu` trap never re-arms strict mode mid-sweep.
+#
+# RETRIED, not fired once: the issue #1931 arm below deliberately leaves an
+# index mid-CREATE, and AWS refuses `DeleteTable` for as long as it builds. A
+# single `|| true` attempt against a transitioning index reports success to
+# nobody and LEAKS the table, which is the one outcome an integ must never
+# produce. Bounded at ~10 min.
+# The loop keys on the DELETE's own outcome, never on a blind read: a probe
+# that treated any describe-table failure as "gone" would stop retrying on a
+# throttle and leak exactly the table it is here to reap. Only an explicit
+# not-found ends the loop early; the index-busy refusal (and anything else)
+# keeps retrying.
+reap_table() { # usage: reap_table <table-name>
+  (
+    set +eu
+    # EXACT names, accepting arm first: a prefix glob would also reap a
+    # `cdkd-gsi-*` table some other fixture owns.
+    case "${1:-}" in
+      cdkd-gsi-update-test-table | cdkd-gsi-insights-test-table) ;;
+      *)
+        echo "WARN: teardown sweep refused — '${1:-}' is not one of this fixture's table names" >&2
+        exit 0
+        ;;
+    esac
+    DELETE_DONE=""
+    DELETE_ERR=""
+    for _ in $(seq 1 40); do
+      DELETE_ERR="$(aws dynamodb delete-table --table-name "$1" --region "${REGION}" 2>&1 >/dev/null)" && { DELETE_DONE=1; break; }
+      grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${DELETE_ERR}" && { DELETE_DONE=1; break; }
+      sleep 15
+    done
+    # SAY SO on exhaustion. Falling out of this loop silently is the worst
+    # outcome an integ can produce: a terminal error (expired credentials,
+    # AccessDenied) burns all 40 attempts and then LEAKS a real table with
+    # nothing in the log to attribute it to. The loop cannot fail the run -- it
+    # is teardown -- so a loud message is the only signal available.
+    if [ -z "${DELETE_DONE}" ]; then
+      echo "WARN: cleanup could not delete $1 after 40 attempts (~10 min) — it may still exist and MUST be checked. Last AWS error: ${DELETE_ERR}" >&2
+    fi
+  )
+}
+
 cleanup() {
   # Every exit path still cleans up exactly ONCE: the first caller (EXIT, INT,
   # TERM, or the explicit pre-run sweep) does the work and latches the flag; a
@@ -123,36 +177,21 @@ cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
   rm -f "${DEPLOY_LOG}" "${STATE_JSON}" "${STATE_JSON}.stripped" "${DRIFT_JSON}" "${DESTROY_LOG}"
+  # The tables are swept BY NAME first and the state records dropped second, so
+  # a `state destroy` that dies half way is never the only thing standing
+  # between a table and a leak. (`state destroy` then finds the table already
+  # gone, which it treats as deleted.)
+  reap_table "${TABLE_NAME}"
+  reap_table "${INSIGHTS_TABLE}"
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
-  fi
-  # RETRIED, not fired once: the issue #1931 arm below deliberately leaves an
-  # index mid-CREATE, and AWS refuses `DeleteTable` for as long as it builds. A
-  # single `|| true` attempt against a transitioning index reports success to
-  # nobody and LEAKS the table, which is the one outcome an integ must never
-  # produce. Bounded at ~10 min.
-  # The loop keys on the DELETE's own outcome, never on a blind read: a probe
-  # that treated any describe-table failure as "gone" would stop retrying on a
-  # throttle and leak exactly the table it is here to reap. Only an explicit
-  # not-found ends the loop early; the index-busy refusal (and anything else)
-  # keeps retrying.
-  DELETE_DONE=""
-  for _ in $(seq 1 40); do
-    DELETE_ERR="$(aws dynamodb delete-table --table-name "${TABLE_NAME}" --region "${REGION}" 2>&1 >/dev/null)" && { DELETE_DONE=1; break; }
-    printf '%s' "${DELETE_ERR}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' && { DELETE_DONE=1; break; }
-    sleep 15
-  done
-  # SAY SO on exhaustion. Falling out of this loop silently is the worst outcome
-  # an integ can produce: a terminal error (expired credentials, AccessDenied)
-  # burns all 40 attempts and then LEAKS a real table with nothing in the log to
-  # attribute it to. The loop cannot fail the run -- it is teardown, and it runs
-  # inside `set +eu` -- so a loud message is the only signal available.
-  if [ -z "${DELETE_DONE}" ]; then
-    echo "WARN: cleanup could not delete ${TABLE_NAME} after 40 attempts (~10 min) — it may still exist and MUST be checked. Last AWS error: ${DELETE_ERR}" >&2
+    node "${LOCAL_DIST}" state destroy "${INSIGHTS_STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+    aws s3 rm "s3://${STATE_BUCKET}/${INSIGHTS_STATE_KEY}" >/dev/null 2>&1 || true
+    aws s3 rm "s3://${STATE_BUCKET}/cdkd/${INSIGHTS_STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
   set -eu
 }
@@ -330,6 +369,45 @@ if [ "${GSI_WARM}" != "${GSI_WARM_EXPECTED_READ}/${GSI_WARM_EXPECTED_WRITE}" ]; 
 fi
 echo "    per-index WarmThroughput reached AWS: ${GSI_WARM} (not the ${GSI_WARM_DEFAULT_READ}/4000 default)"
 
+# --- Per-index Contributor Insights helpers (issue #1782) --------------------
+# `describe-contributor-insights --index-name` is the ONLY place AWS reports the
+# per-index setting: `describe-table`'s index description has no counterpart.
+insights_field() { # usage: insights_field <table> <index> <Field> -> value ("None" when absent)
+  aws dynamodb describe-contributor-insights --table-name "$1" --index-name "$2" \
+    --region "${REGION}" --query "$3" --output text || return 1
+}
+# The toggle is ASYNC (ENABLING / DISABLING for a while) and cdkd deliberately
+# does not wait for it, so every status assertion POLLS — a single probe right
+# after a deploy false-FAILs on the transient. Bounded at ~10 min. A failed
+# probe (throttle, eventual consistency right after the write) is retried, not
+# fatal: `if !` keeps `set -e` from aborting on the substitution.
+wait_insights_status() { # usage: wait_insights_status <table> <index> <ENABLED|DISABLED> <label>
+  local status=""
+  for _ in $(seq 1 60); do
+    if ! status="$(insights_field "$1" "$2" 'ContributorInsightsStatus')"; then
+      status=""
+    fi
+    [ "${status}" = "$3" ] && break
+    sleep 10
+  done
+  if [ "${status}" != "$3" ]; then
+    echo "FAIL (issue #1782): $4 — Contributor Insights on index $2 of $1 is '${status}', expected $3" >&2
+    aws dynamodb describe-contributor-insights --table-name "$1" --index-name "$2" \
+      --region "${REGION}" --output json >&2 || true
+    exit 1
+  fi
+  echo "    Contributor Insights on index $2: ${status} ($4)"
+}
+
+# --- Phase 2e: per-index Contributor Insights on an index the update ADDED ----
+# The block is not a member of the SDK's `GlobalSecondaryIndex`, so it cannot
+# ride the `Create` action that added gsi1: cdkd has to wait for the index to
+# reach ACTIVE and then call `UpdateContributorInsights` with `IndexName`.
+# Pre-fix nothing was sent at all and the deploy was green — this index reports
+# DISABLED forever and the poll below times out.
+echo "==> Phase 2e: per-index Contributor Insights reached the newly added ${GSI_NAME} (issue #1782)"
+wait_insights_status "${TABLE_NAME}" "${GSI_NAME}" ENABLED "declared {Enabled: true} on an index added by this update"
+
 # --- Phase 2b: no phantom drift on an in-use table with a GSI (issue #1767) ---
 # `readCurrentState` used to forward the `DescribeTable` index descriptions
 # VERBATIM, so `IndexStatus`, `Backfilling`, `ItemCount`, `IndexSizeBytes`,
@@ -400,8 +478,11 @@ fi
 # key set asserts BOTH halves at once: the declared block survived, the
 # `IndexStatus` / `Backfilling` / `ItemCount` / `IndexSizeBytes` / `IndexArn` /
 # on-demand `{0,0}` `ProvisionedThroughput` noise did not.
-if [ "${OBSERVED_GSI_KEYS}" != "IndexName,KeySchema,Projection,WarmThroughput" ]; then
-  echo "FAIL (issue #1767): the observed GSI baseline has the wrong member set — got '${OBSERVED_GSI_KEYS}', expected 'IndexName,KeySchema,Projection,WarmThroughput'" >&2
+# `ContributorInsightsSpecification` joined it with issue #1782, for the same
+# reason: gsi1 declares one, and the gated per-index read-back emits it.
+EXPECTED_GSI_KEYS="ContributorInsightsSpecification,IndexName,KeySchema,Projection,WarmThroughput"
+if [ "${OBSERVED_GSI_KEYS}" != "${EXPECTED_GSI_KEYS}" ]; then
+  echo "FAIL (issues #1767 / #1782): the observed GSI baseline has the wrong member set — got '${OBSERVED_GSI_KEYS}', expected '${EXPECTED_GSI_KEYS}'" >&2
   jq --arg l "${TABLE_LID}" '.resources[$l].observedProperties.GlobalSecondaryIndexes' "${STATE_JSON}" >&2
   exit 1
 fi
@@ -411,8 +492,8 @@ echo "    observed GSI baseline carries only the CFn members (${OBSERVED_GSI_KEY
 # be the assertion on its own — and a resource reported as "drift unknown"
 # exits ZERO, which would read as clean. Parse the report instead and require
 # the table to be in the `clean` bucket by name.
-run_drift_json() { # $1 = label -> writes ${DRIFT_JSON}
-  node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+run_drift_json() { # $1 = label, $2 = stack (default ${STACK}) -> writes ${DRIFT_JSON}
+  node "${LOCAL_DIST}" drift "${2:-${STACK}}" --state-bucket "${STATE_BUCKET}" \
     --region "${REGION}" --json >"${DRIFT_JSON}" 2>/dev/null || true
   if ! jq empty "${DRIFT_JSON}" >/dev/null 2>&1; then
     echo "FAIL: cdkd drift --json ($1) produced no parseable JSON report:" >&2
@@ -479,6 +560,183 @@ if [ -n "${OTHER_DRIFT_PATHS}" ]; then
 fi
 echo "    properties baseline: no GlobalSecondaryIndexes / LocalSecondaryIndexes drift"
 
+rm -f "${STATE_JSON}" "${STATE_JSON}.stripped" "${DRIFT_JSON}"
+
+# --- Phases I1-I5: per-index ContributorInsightsSpecification (issue #1782) ---
+# CFn's `GlobalSecondaryIndex.ContributorInsightsSpecification` is not a member
+# of the SDK's `GlobalSecondaryIndex`, so cdkd dropped it on the wire — a
+# template asking for per-index Contributor Insights deployed GREEN with the
+# feature OFF — and had no read-back for it, so such a template could never
+# converge against a `properties` drift baseline. Both halves are asserted ON
+# AWS here, on a dedicated stack whose two indexes are created WITH the table
+# and never change shape (no phase pays an index build):
+#
+#   I1. create: giA declares {Enabled: true} -> ENABLED. giB declares nothing
+#       and must stay off — the NEGATIVE CONTROL, without which "everything got
+#       enabled" would pass.
+#   I2. `cdkd drift` is CLEAN against the deploy-time capture, and the capture
+#       carries the block on giA ONLY (the read-back gate).
+#   I3. an out-of-band DISABLE of giA IS reported as drift on the index list,
+#       `drift --revert` really re-enables it, and drift is clean again.
+#   I4. with `observedProperties` stripped, the TEMPLATE baseline shows no
+#       index-list drift — the arm that binds the read-back SHAPE (with the
+#       capture present both sides come from the same read and move together).
+#   I5. update: giA's block is REMOVED -> DISABLED (the removal arm); giB gains
+#       {Enabled: true, Mode: THROTTLED_KEYS} -> ENABLED in that Mode, which
+#       AWS's default (ACCESSED_AND_THROTTLED_KEYS) cannot produce. The table is
+#       the SAME table and both indexes stay ACTIVE. Drift clean; destroy.
+#
+# Discrimination: with the write half reverted, I1 times out on giA (it reports
+# DISABLED forever); with the read half reverted, I2's key-set assertion fails
+# and I3 reports no drift.
+insights_table_outcome_paths() { # -> the drifted change paths of the insights table
+  jq -r '[.[].drifted[] | select(.type == "AWS::DynamoDB::Table") | .changes[].path] | join(" ")' "${DRIFT_JSON}"
+}
+assert_insights_drift_clean() { # $1 = label
+  run_drift_json "$1" "${INSIGHTS_STACK}"
+  if [ "$(table_outcome_count notSupported)" != "0" ] || [ "$(table_outcome_count drifted)" != "0" ] \
+    || [ "$(table_outcome_count clean)" != "1" ]; then
+    echo "FAIL (issue #1782): expected the insights table CLEAN ($1); drifted paths: '$(insights_table_outcome_paths)'" >&2
+    cat "${DRIFT_JSON}" >&2
+    exit 1
+  fi
+  echo "    $1: insights table reported CLEAN"
+}
+
+echo "==> Phase I1: deploy the insights table (giA declares Contributor Insights, giB does not)"
+env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${INSIGHTS_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+INSIGHTS_CREATION_I1="$(aws dynamodb describe-table --table-name "${INSIGHTS_TABLE}" --region "${REGION}" \
+  --query 'Table.CreationDateTime' --output text)"
+wait_insights_status "${INSIGHTS_TABLE}" giA ENABLED "declared {Enabled: true} at table create"
+# The negative control. Read AFTER giA settled, so "nothing was sent for giB" is
+# not confused with "giB's toggle had not started yet". Anything that is not an
+# enabled-or-enabling status passes: AWS is free to spell "never configured"
+# as DISABLED or as an absent status.
+GIB_STATUS_I1="$(insights_field "${INSIGHTS_TABLE}" giB 'ContributorInsightsStatus')"
+case "${GIB_STATUS_I1}" in
+  ENABLED | ENABLING)
+    echo "FAIL (issue #1782): giB declares no ContributorInsightsSpecification but reports ${GIB_STATUS_I1}" >&2
+    exit 1
+    ;;
+esac
+echo "    Contributor Insights on index giB: ${GIB_STATUS_I1} (declares nothing — negative control)"
+
+echo "==> Phase I2: no phantom drift, and the capture carries the block on giA only"
+aws s3 cp "s3://${STATE_BUCKET}/${INSIGHTS_STATE_KEY}" "${STATE_JSON}" --region "${REGION}" >/dev/null
+INSIGHTS_LID="$(jq -r '[.resources | to_entries[]
+  | select(.value.resourceType == "AWS::DynamoDB::Table") | .key] | first // ""' "${STATE_JSON}")"
+if [ -z "${INSIGHTS_LID}" ]; then
+  echo "FAIL: no AWS::DynamoDB::Table resource in the insights stack's state record" >&2
+  exit 1
+fi
+# "<IndexName>=<block as compact JSON, or null>" per index, sorted by name: AWS
+# does not promise the list order, and the assertion is about WHICH entry
+# carries the block, not where it sits.
+OBSERVED_INSIGHTS="$(jq -r --arg l "${INSIGHTS_LID}" \
+  '[(.resources[$l].observedProperties.GlobalSecondaryIndexes // [])[]
+    | "\(.IndexName)=\(.ContributorInsightsSpecification | tojson)"] | sort | join(" ")' "${STATE_JSON}")"
+if [ "${OBSERVED_INSIGHTS}" != 'giA={"Enabled":true} giB=null' ]; then
+  echo "FAIL (issue #1782): the observed baseline's per-index blocks are '${OBSERVED_INSIGHTS}', expected 'giA={\"Enabled\":true} giB=null' (giA read back WITHOUT the undeclared Mode; giB not read at all)" >&2
+  exit 1
+fi
+echo "    observed baseline: ${OBSERVED_INSIGHTS}"
+assert_insights_drift_clean "observed baseline"
+
+echo "==> Phase I3: an out-of-band DISABLE of giA is detected, and --revert undoes it"
+aws dynamodb update-contributor-insights --table-name "${INSIGHTS_TABLE}" --index-name giA \
+  --contributor-insights-action DISABLE --region "${REGION}" >/dev/null
+wait_insights_status "${INSIGHTS_TABLE}" giA DISABLED "out-of-band DISABLE"
+run_drift_json "after out-of-band DISABLE" "${INSIGHTS_STACK}"
+INSIGHTS_DRIFT_PATHS="$(insights_table_outcome_paths)"
+case " ${INSIGHTS_DRIFT_PATHS} " in
+  *" GlobalSecondaryIndexes"*) ;;
+  *)
+    echo "FAIL (issue #1782): an out-of-band per-index Contributor Insights DISABLE was not reported as drift on GlobalSecondaryIndexes (drifted paths: '${INSIGHTS_DRIFT_PATHS}')" >&2
+    cat "${DRIFT_JSON}" >&2
+    exit 1
+    ;;
+esac
+echo "    out-of-band DISABLE reported as drift on: ${INSIGHTS_DRIFT_PATHS}"
+node "${LOCAL_DIST}" drift "${INSIGHTS_STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --revert --yes
+wait_insights_status "${INSIGHTS_TABLE}" giA ENABLED "re-enabled by drift --revert"
+assert_insights_drift_clean "after --revert"
+
+echo "==> Phase I4: the TEMPLATE baseline shows no index-list drift"
+aws s3 cp "s3://${STATE_BUCKET}/${INSIGHTS_STATE_KEY}" "${STATE_JSON}" --region "${REGION}" >/dev/null
+jq --arg l "${INSIGHTS_LID}" 'del(.resources[$l].observedProperties)' "${STATE_JSON}" > "${STATE_JSON}.stripped"
+aws s3 cp "${STATE_JSON}.stripped" "s3://${STATE_BUCKET}/${INSIGHTS_STATE_KEY}" --region "${REGION}" >/dev/null
+run_drift_json "insights properties baseline" "${INSIGHTS_STACK}"
+# Floors first: "no index path among the drifted entries" is also what a table
+# reported as drift UNKNOWN, or missing from the report, looks like.
+if [ "$(table_outcome_count notSupported)" != "0" ] \
+  || [ "$(( $(table_outcome_count clean) + $(table_outcome_count drifted) ))" != "1" ]; then
+  echo "FAIL (issue #1782): the insights table was not COMPARED against the template baseline — the assertion below would be vacuous:" >&2
+  cat "${DRIFT_JSON}" >&2
+  exit 1
+fi
+INSIGHTS_DRIFT_PATHS="$(insights_table_outcome_paths)"
+case " ${INSIGHTS_DRIFT_PATHS} " in
+  *" GlobalSecondaryIndexes"* | *" LocalSecondaryIndexes"*)
+    echo "FAIL (issue #1782): the TEMPLATE baseline drifts on the index list (${INSIGHTS_DRIFT_PATHS}) — the per-index read-back does not round-trip to the declared block" >&2
+    cat "${DRIFT_JSON}" >&2
+    exit 1
+    ;;
+esac
+if [ -n "${INSIGHTS_DRIFT_PATHS}" ]; then
+  echo "    note: template baseline differs on non-index paths (out of scope for issue #1782): ${INSIGHTS_DRIFT_PATHS}"
+fi
+echo "    properties baseline: no index-list drift"
+
+echo "==> Phase I5: update — remove giA's block, enable giB with Mode THROTTLED_KEYS"
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${INSIGHTS_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+wait_insights_status "${INSIGHTS_TABLE}" giA DISABLED "block REMOVED from the template"
+wait_insights_status "${INSIGHTS_TABLE}" giB ENABLED "block ADDED to an existing index"
+GIB_MODE_I5="$(insights_field "${INSIGHTS_TABLE}" giB 'ContributorInsightsMode')"
+if [ "${GIB_MODE_I5}" != "THROTTLED_KEYS" ]; then
+  echo "FAIL (issue #1782): giB's ContributorInsightsMode is '${GIB_MODE_I5}', expected THROTTLED_KEYS — the declared Mode never reached AWS" >&2
+  exit 1
+fi
+echo "    giB Mode: ${GIB_MODE_I5}"
+# Neither toggle may cost a replacement or an index rebuild.
+INSIGHTS_CREATION_I5="$(aws dynamodb describe-table --table-name "${INSIGHTS_TABLE}" --region "${REGION}" \
+  --query 'Table.CreationDateTime' --output text)"
+if [ "${INSIGHTS_CREATION_I1}" != "${INSIGHTS_CREATION_I5}" ]; then
+  echo "FAIL (issue #1782): the insights table was REPLACED (CreationDateTime ${INSIGHTS_CREATION_I1} -> ${INSIGHTS_CREATION_I5})" >&2
+  exit 1
+fi
+INSIGHTS_INDEX_STATES="$(aws dynamodb describe-table --table-name "${INSIGHTS_TABLE}" --region "${REGION}" \
+  --query "join(' ', sort(Table.GlobalSecondaryIndexes[].join('=', [IndexName, IndexStatus]) || \`[]\`))" --output text)"
+if [ "${INSIGHTS_INDEX_STATES}" != "giA=ACTIVE giB=ACTIVE" ]; then
+  echo "FAIL (issue #1782): expected both indexes ACTIVE and untouched, got '${INSIGHTS_INDEX_STATES}'" >&2
+  exit 1
+fi
+assert_insights_drift_clean "after the update"
+
+echo "==> Phase I5: destroy the insights stack"
+node "${LOCAL_DIST}" destroy "${INSIGHTS_STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
+# DeleteTable is ASYNC — accept GONE or DELETING, exactly as Phase 3 does below.
+if gone_probe aws dynamodb describe-table --table-name "${INSIGHTS_TABLE}" --region "${REGION}"; then
+  insights_table_status="GONE"
+elif ! insights_table_status="$(aws dynamodb describe-table --table-name "${INSIGHTS_TABLE}" --region "${REGION}" \
+    --query 'Table.TableStatus' --output text 2>&1)"; then
+  # TOCTOU: the table can vanish between gone_probe and this requery.
+  if grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${insights_table_status}"; then
+    insights_table_status="GONE"
+  else
+    echo "FAIL: describe-table requery undetermined: ${insights_table_status}" >&2
+    exit 1
+  fi
+fi
+if [ "${insights_table_status}" != "GONE" ] && [ "${insights_table_status}" != "DELETING" ]; then
+  echo "FAIL: table ${INSIGHTS_TABLE} still exists (status ${insights_table_status}) after destroy" >&2
+  exit 1
+fi
+echo "    insights table deleted (status: ${insights_table_status})"
+assert_gone "state file ${INSIGHTS_STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${INSIGHTS_STATE_KEY}"
+echo "    insights stack state removed"
 rm -f "${STATE_JSON}" "${STATE_JSON}.stripped" "${DRIFT_JSON}"
 
 # --- Phase 3a: issue #1931 — arm the index-busy DeleteTable refusal ------
@@ -649,4 +907,4 @@ echo "    table deleted (status: ${status})"
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
-echo "[verify] PASS — DynamoDB GSI add is an in-place UPDATE (no replacement), an in-use table with a GSI reports no phantom drift (issue #1767), and destroy absorbs the index-busy DeleteTable refusal (issue #1931); all phases passed"
+echo "[verify] PASS — DynamoDB GSI add is an in-place UPDATE (no replacement), an in-use table with a GSI reports no phantom drift (issue #1767), a per-index ContributorInsightsSpecification is applied, read back, reverted and removed (issue #1782), and destroy absorbs the index-busy DeleteTable refusal (issue #1931); all phases passed"
