@@ -44,8 +44,8 @@
 # were removed. `/check`, `/check-docs`, `/verify-pr`
 # and `/review-pr` remain the RECOMMENDED pre-commit / pre-merge procedure and
 # their checklists still apply — they are simply no longer enforced by a marker.
-# CI is the other mechanical merge condition (`.claude/hooks/ci-green-gate.sh`,
-# a live query rather than a marker).
+# The `main` ruleset's required status checks are the other mechanical merge
+# condition, enforced by GitHub rather than by anything in this repo.
 
 gates:
   integ-destroy:

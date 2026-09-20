@@ -159,9 +159,10 @@ git push        # after a rebase: --force-with-lease
 ```
 
 No marker is recorded — nothing mechanical consults this run, which makes the
-report the only record that it happened. Two mechanical merge conditions remain,
-and this skill sets neither: CI (`ci-green-gate`, a live query — wait for green
-with `gh pr checks <N> --watch`) and, for a deletion-touching diff, the
-`integ-destroy` gate that `/run-integ` sets after a clean real-AWS destroy.
+report the only record that it happened. Two merge conditions remain, and this
+skill sets neither: the `main` ruleset's required checks, which GitHub
+enforces — wait with `gh pr checks <N> --watch` — and, for a deletion-touching
+diff, the `integ-destroy` gate `/run-integ` sets after a clean real-AWS
+destroy.
 
 Skip the commit/push if any check failed.

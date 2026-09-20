@@ -134,8 +134,8 @@ production stacks. After teardown, sweep for orphans it cannot reach (`/aws/lamb
 groups, RETAIN resources, Secrets in recovery, KMS keys pending deletion), then
 run AGENTS.md's leftover check, which the `deployments/` store survives.
 
-**`/run-integ` records `integ-destroy`, the ONLY marker gate left on
-`gh pr merge`; green CI (`ci-green-gate`) is the other merge condition.**
+**`/run-integ` records `integ-destroy`, a marker gate on `gh pr merge`; the
+`main` ruleset's checks are the other merge condition.**
 `/verify-pr` and `/review-pr` record nothing; run them anyway.
 
 **The independent review round is the ORCHESTRATOR's; a LANE's own reviewers

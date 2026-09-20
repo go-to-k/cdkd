@@ -84,8 +84,7 @@ case "$git_dir" in
   *) exit 0 ;;
 esac
 
-# Repo opt-in, matching branch-gate.sh: only repos carrying the
-# markgate convention participate.
+# Repo opt-in: only repos carrying the markgate convention participate.
 top=$(git -C "$probe_dir" rev-parse --show-toplevel 2>/dev/null || echo "")
 
 # A path INSIDE the git dir has no work tree, so `--show-toplevel` fails

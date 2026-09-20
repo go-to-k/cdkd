@@ -216,7 +216,7 @@ const originalExit = process.exit;
  * would pass its own positive test while telling us nothing.
  *
  * There is deliberately NO env-var kill switch. Other gates in this repo bypass
- * through one (`CDKD_SKIP_CI_GREEN_GATE=1`, `CDKD_ALLOW_DIRTY_RESTORE=1`, ...),
+ * through one (`CDKD_ALLOW_DIRTY_RESTORE=1`, `CDKD_SKIP_WORKTREE_OWNER_GATE=1`),
  * but those gate the AGENT's own commands, where an inherited value shows up in
  * the transcript of the very command it disarms. This one gates a whole test
  * run, where an inherited environment is precisely how a safety control goes

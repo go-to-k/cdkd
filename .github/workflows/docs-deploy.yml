@@ -80,7 +80,7 @@ jobs:
       # Measured 2026-09-09 (issue #2879): Google served a `Packages.gz` whose
       # hash did not match the `Release` file beside it, so the step died with
       # `Hash Sum mismatch` for ~90 minutes. `main` went red at 17:26:41Z and
-      # every docs-touching PR became unmergeable behind `ci-green-gate`;
+      # every docs-touching PR became unmergeable behind the required checks;
       # seven retries over that window reproduced it before the mirror
       # recovered on its own.
       #

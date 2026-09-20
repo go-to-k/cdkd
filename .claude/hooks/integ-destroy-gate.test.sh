@@ -55,8 +55,7 @@ export GIT_CONFIG_SYSTEM="$TMPDIR/gitconfig-system"
 #
 # A POSITIVE probe, not "is the global config empty?": that one passes trivially
 # on a machine with no global config, which is exactly the machine that can tell
-# you nothing. Lifted from `branch-gate.test.sh`, the only other suite here that
-# neutralises git config.
+# you nothing.
 _ni_probe="$TMPDIR/ni-probe.gitconfig"
 printf '[hooktest]\n\tmarker = seen\n' > "$_ni_probe"
 for _ni_var in GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM; do

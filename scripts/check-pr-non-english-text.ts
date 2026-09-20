@@ -20,7 +20,7 @@
  *   - `gate_target_dir_strict` — resolving which working tree the command
  *     would run in from `cd` segments and `git -C` flags, and the
  *     fail-closed refusal when that could not be read;
- *   - `gate_pr_selector` — digging the PR number out of `gh pr merge --squash
+ *   - a PR-number selector — digging the number out of `gh pr merge --squash
  *     552` / `gh pr merge -t 42 552`;
  *   - the `gh auth status` / `gh pr view --json number` / `gh pr view --json
  *     headRefOid` / `gh api .../contents/<f>?ref=<sha>` chain that fetched the

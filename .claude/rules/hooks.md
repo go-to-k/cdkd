@@ -18,30 +18,39 @@ irreversibility alone would block a duplicate issue, the filer's own artifact.
 **A hook that fails OPEN on an exotic shell shape is accepted as-is.** Quoting,
 heredocs, substitutions and redirections can all steer a command past a matcher.
 They steer a COOPERATIVE agent away from foot-guns and are not a security
-boundary; `main` is protected server-side by a GitHub ruleset.
+boundary; `main` is protected server-side by the ruleset below.
+
+**AND A HOOK THAT ONLY RESTATES IT DOES NOT EARN ITS PLACE.** Two were deleted
+for doing so. Read it before gating `main`
+(`gh api repos/go-to-k/cdkd/rulesets/14380501`); what it carries:
+
+| Rule | What it means |
+| --- | --- |
+| `deletion` | `main` cannot be deleted |
+| `non_fast_forward` | `main` cannot be force-pushed |
+| `required_status_checks` | `ci-ok`, `build`, `pr-content`, `check`, `prefix-scope`, `English-only (pull request)` |
+| `pull_request` | every change arrives via PR; squash-only; 0 approvals |
+
+`bypass_actors` is EMPTY, so all four bind everyone: **`git push origin main` is
+refused for any commit**, and a merge waits on the six contexts — what the two
+deleted hooks did by hand.
+
+**Three residuals remain.**
+
+1. **A commit on a LOCAL `main` is refused by nothing.** It cannot reach the
+   remote; move it: `git branch <name>` + `git reset --hard origin/main`.
+2. **A red check OUTSIDE the required set does not block a merge.** `ci-ok`
+   aggregates `check-build-test`, `once-leak-detect`, `runtime-compat` and
+   `release-pr-not-stale`; notably `hook-suites` is outside, so a hooks PR with
+   a red `hook-suites` merges. Read `gh pr checks`, not the rc.
+3. **`git push --dry-run` cannot probe any of this** — the server skips rule
+   evaluation there. It DOES probe the local hooks: the same command against a
+   MERGED branch trips `post-merge-orphan-push-gate` (`Blocked by ...`), the
+   liveness check that still works.
 
 # The roster
 
 ## Third-party artifacts
-
-- **`ci-green-gate.sh`** — blocks `gh pr merge` unless EVERY GitHub Actions
-  check on the target PR reports `pass` or `skipping`; `fail`, `pending` and
-  "no checks reported" exit 2. A LIVE query, not a marker.
-  `CDKD_SKIP_CI_GREEN_GATE=1` is the bypass for a repo with no CI, never a red
-  PR. **A PR NUMBER DOES NOT NAME A PULL REQUEST** (go-to-k/cdkd#3273): `42`
-  exists in every repository, so a query with no `-R`
-  judges whatever repo the SHELL is in. The gate resolves the slug with
-  `gate_gh_repo_slug` — either flag slot, and after the verb — and FORWARDS
-  `-R <slug>`; an unreadable or ambiguous slug (a variable, a bare trailing
-  `-R`, two DISTINCT slugs) REFUSES rather than mirroring gh's last-wins rule.
-  A transport failure fails OPEN only while no repo is named; with one, an
-  unreadable answer BLOCKS. The query runs under `gate_bounded` with
-  **`GATE_BOUNDED_KEEP_STDERR=1`, on the perl-absent degraded arm too**:
-  `gh pr checks` exits 1 both for "a check failed" and for "no checks
-  reported", and only the stderr text separates them, so a hardcoded
-  `2>/dev/null` there is a live fail-open. A hook KILLED by its registered
-  timeout emits no exit 2 at all and silently passes the merge — which is what
-  the bound exists to prevent.
 
 - **`post-merge-orphan-push-gate.sh`** — blocks `git push origin <branch>` when
   `gh pr list --head <branch> --state merged` matches: the branch is gone, so
@@ -60,10 +69,10 @@ boundary; `main` is protected server-side by a GitHub ruleset.
   diff really changes the `StateSchemaVersion` union or the
   `STATE_SCHEMA_VERSION_CURRENT` constant in `src/types/state.ts`, until
   `/run-integ` has recorded a clean `schema-v<N>-to-v<N+1>-migration` run. The
-  harm is a THIRD PARTY's: a migration writes to state documents that live in
-  USERS' S3 buckets and there is no way back. A non-bump edit to that file
-  (JSDoc, a helper, a comment) passes. Markgate-backed, `hash: files`, 14-day
-  TTL; a FOREIGN target declaring no equivalent gate is relaxed.
+  harm is a THIRD PARTY's: the migration rewrites state documents in USERS' S3
+  buckets, irreversibly. A non-bump edit (JSDoc, a helper, a comment) passes.
+  Markgate-backed, `hash: files`, 14-day TTL; a FOREIGN target declaring no
+  equivalent gate is relaxed.
 
 - **`bughunt-clean-gate.sh`** — blocks `git commit`, `gh pr create` and
   `gh pr merge` while `/hunt-bugs` has un-destroyed AWS resources in its
@@ -93,16 +102,11 @@ boundary; `main` is protected server-side by a GitHub ruleset.
   `<resolved git dir>/wipe-backups/<UTC ts>-<verb>/`; recover with `git apply
   --include=<path> <snap>/tracked.patch`, or `--3way` for a tree.
 
-- **`branch-gate.sh`** — blocks `git commit` / `git push` when the TARGET
-  working tree is on `main` / `master`, and when the MAIN checkout is on a
-  DETACHED HEAD; a detached LINKED worktree keeps passing. The printed remedy
-  follows the operation in progress, read from git's own state.
-
 - **`broad-process-kill-gate.sh`** — blocks a machine-wide `pkill` / `killall`,
   which reaches other agents' processes.
 
-**Repo opt-in.** `branch-gate.sh` fires ONLY in a repo carrying `.markgate.yml`
-at its root.
+**Repo opt-in.** `worktree-owner-gate.sh` and the markgate-backed gates fire
+ONLY in a repo carrying `.markgate.yml` at its root.
 
 # Authoring a hook
 

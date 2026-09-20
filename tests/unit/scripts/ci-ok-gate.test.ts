@@ -199,8 +199,8 @@ describe('ci-ok — the single required status check', () => {
     //
     // All three give `seen == EXPECTED_UPSTREAM` and a green gate over a CI
     // that decided nothing, and the first two also read green in the Checks UI,
-    // so `ci-green-gate` passes too. Only the two jobs that are SUPPOSED to be
-    // conditional may carry an `if:`.
+    // so the `main` ruleset's required checks pass too. Only the two jobs that
+    // are SUPPOSED to be conditional may carry an `if:`.
     const jobs = workflow().jobs;
     const ALLOWED_CONDITIONAL = new Set(['ci-ok', 'release-pr-not-stale']);
     const offenders: string[] = [];
@@ -219,7 +219,7 @@ describe('ci-ok — the single required status check', () => {
         // NOT gated on ALLOWED_CONDITIONAL: a step-level `continue-on-error`
         // is the same lever as the job-level one, one level down — the step
         // fails, the job reports `success`, ci-ok counts it, and it reads green
-        // in the Checks UI so `ci-green-gate` passes too.
+        // in the Checks UI so the required checks pass too.
         if ((s['continue-on-error'] ?? false) !== false) {
           offenders.push(`${name} > ${label} (step continue-on-error)`);
         }

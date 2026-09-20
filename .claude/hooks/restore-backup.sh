@@ -43,7 +43,7 @@
 
 __hook_dir="${BASH_SOURCE[0]%/*}"
 # `%/*` leaves the string unchanged when the path has no slash (invoked as
-# `bash ci-green-gate.sh` from inside the hooks dir), which would look for
+# `bash <gate>.sh` from inside the hooks dir), which would look for
 # `<script-name>/lib/...`. Fall back to the cwd in that case.
 [ "$__hook_dir" = "${BASH_SOURCE[0]}" ] && __hook_dir="."
 if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
@@ -134,8 +134,8 @@ fi
 [ -n "$verb" ] || exit 0
 
 # ------------------------------------------------------- resolve target
-# Same resolution order as branch-gate.sh: `git -C <path>` wins, then a
-# leading `cd <path> &&`, then the Bash tool's persisted cwd.
+# Resolution order: `git -C <path>` wins, then a leading `cd <path> &&`, then
+# the Bash tool's persisted cwd.
 # The SHARED resolver, in its FALLING-BACK form -- deliberately NOT the strict
 # one the blocking gates use (go-to-k/cdkd#2027). This hook refuses nothing; it
 # takes a snapshot so a discard stops being irreversible. On an unexpanded

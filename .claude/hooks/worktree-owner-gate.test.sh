@@ -26,7 +26,7 @@ main="$tmp/main"
 mkdir -p "$main"
 git -C "$main" init -q -b main
 git -C "$main" config user.email t@t; git -C "$main" config user.name t
-# Repo opt-in signal (issue #1259 convention shared with branch-gate.sh).
+# Repo opt-in signal (issue #1259 convention).
 touch "$main/.markgate.yml"
 echo base > "$main/f.txt"
 git -C "$main" add -A; git -C "$main" commit -qm init
