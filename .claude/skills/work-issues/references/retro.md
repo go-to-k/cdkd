@@ -1,4 +1,4 @@
-<!-- Part of the /work-issues skill. Stage files: triage.md (§0–§3), claim.md (§4), implement.md (§5), filing.md (§5-f), gates-and-pr.md (§6–§7), verify.md (§8), ship.md (§9), retro.md (§10), gotchas.md (appendix). A bare §N points into the file that holds that section. READ THIS FILE IN FULL when your run enters this stage. -->
+<!-- /work-issues stage file; stage map in ../SKILL.md. A bare §N points into the file holding that section. READ IN FULL at stage entry. -->
 
 ## 10. Fold what the run taught you back into this skill
 
@@ -74,20 +74,9 @@ instruction, wrong place. Which shape RECURRED is a COUNT. No evidence, no edit.
 - Put the fix in the step where it fires (gotchas is for traps spanning steps),
   amending the wrong sentence rather than adding a sibling, evidence as ONE
   line, paid for by cutting a stale one.
-- A FLOW lesson is mirrored into the same-named `work-issues` skill in
-  `../cdk-local` and `../cdk-real-drift`, one `chore:` PR per repo batching the
-  run's lessons; the session that FINDS it lands all three.
-
-  **Resolve it against the target repo's CURRENT state — merged FILE, then open
-  PRs, then open issues — and file only what none of the three carries**,
-  commenting instead on a hit. Match the CONCEPT, judge a PR by BODY and DIFF:
-
-  ```bash
-  T=/Users/goto/github/<target>; git -C "$T" fetch -q origin   # stale clone lies
-  git -C "$T" grep -n -i -e '<concept-keyword>' origin/main -- .claude/skills/work-issues/
-  gh -R go-to-k/<target> pr list --state open --search '<keyword>' --json number,title
-  gh -R go-to-k/<target> issue list --state open --search '<keyword>' --json number,title
-  ```
+- A lesson is NOT mirrored into `../cdk-local` or `../cdk-real-drift`. Each repo
+  keeps its own skill text; a sibling learns a lesson when it hits the failure
+  itself (Tooling Policy, second occurrence).
 
 ### 10-d. Ship it like any other change
 

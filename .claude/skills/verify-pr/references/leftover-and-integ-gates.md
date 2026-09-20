@@ -42,21 +42,10 @@ CI is necessary but not sufficient — it does not exercise real-AWS destroy.
 
 The `integ-destroy` marker accepts ANY clean real-AWS destroy — a narrow feature
 integ flips it without exercising the broad deploy/destroy paths a cross-cutting
-change touches. When the diff touches any of:
-
-- `src/deployment/deploy-engine.ts`
-- `src/deployment/intrinsic-function-resolver.ts`
-- `src/deployment/retry.ts`
-- `src/deployment/retryable-errors.ts`
-- `src/deployment/rollback-executor.ts`
-- `src/cli/commands/destroy-runner.ts`
-- `src/cli/commands/destroy.ts`
-- `src/cli/commands/deploy.ts`
-- `src/analyzer/dag-builder.ts`
-- `src/analyzer/template-parser.ts`
-- `src/provisioning/register-providers.ts`
-- `src/provisioning/provider-registry.ts`
-
+change touches. When the diff touches any of `src/deployment/{deploy-engine,intrinsic-function-resolver,retry,retryable-errors,rollback-executor}.ts`,
+`src/cli/commands/{destroy-runner,destroy,deploy}.ts`,
+`src/analyzer/{dag-builder,template-parser}.ts` or
+`src/provisioning/{register-providers,provider-registry}.ts`,
 ...run a **broad integ** in addition to the feature integ. Cross-cutting code
 affects every user's deploy/destroy, and a broad fixture is the only defense
 against a regression that surfaces on stacks unlike your fixture. Keep the set

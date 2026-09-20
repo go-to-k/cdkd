@@ -50,10 +50,7 @@ The user provides a kebab-case test name (e.g., `ses-email-identity`,
      "version": "1.0.0",
      "private": true,
      "description": "<one-line description>",
-     "scripts": {
-       "build": "tsc",
-       "watch": "tsc -w"
-     },
+     "scripts": { "build": "tsc", "watch": "tsc -w" },
      "devDependencies": {
        "@types/node": "^20.0.0",
        "aws-cdk": "^2.1112.0",
@@ -67,36 +64,23 @@ The user provides a kebab-case test name (e.g., `ses-email-identity`,
    }
    ```
 
-   The `aws-cdk-lib` floor above is FENCED: it may not sit below the lowest
-   floor in `tests/integration/*/package.json`, or
+   **That `aws-cdk-lib` floor is FENCED and is read from this file**: it may not
+   sit below the lowest floor in `tests/integration/*/package.json`, or
    `tests/unit/scripts/integ-cdk-lib-floor.test.ts` reds CI (issue
    [#2839](https://github.com/go-to-k/cdkd/issues/2839)). Raising it is always
-   safe; lowering it, or letting it stay put while the corpus moves past it, is
-   what re-creates the drift this template caused. The rule and why it is not
-   an equality fence are in
-   [.claude/rules/testing.md](../../rules/testing.md).
+   safe; lowering it, or letting it stay put while the corpus moves past it,
+   re-creates the drift this template caused. The rule, and why it is not an
+   equality fence, is in [.claude/rules/testing.md](../../rules/testing.md).
 
    **`tsconfig.json`** — copy it verbatim from the reference fixture chosen in
    step 3 (`tests/integration/dynamodb-gsi-update/tsconfig.json`). It is ESNext /
    NodeNext with `rewriteRelativeImportExtensions: true`, which is what makes the
    `.ts`-suffixed relative imports type-check; do not hand-write a shorter one.
 
-   **`bin/app.ts`** — entry point. Import the stack WITH the `.ts` extension and
-   wire the env from `CDK_DEFAULT_ACCOUNT` / `CDK_DEFAULT_REGION`:
-   ```ts
-   #!/usr/bin/env node
-   import * as cdk from 'aws-cdk-lib';
-   import { MyTestStack } from '../lib/<test-name>-stack.ts';
-
-   const app = new cdk.App();
-   new MyTestStack(app, 'Cdkd<PascalCaseName>Example', {
-     description: '<one-line description>',
-     env: {
-       account: process.env.CDK_DEFAULT_ACCOUNT,
-       region: process.env.CDK_DEFAULT_REGION,
-     },
-   });
-   ```
+   **`bin/app.ts`** — the entry point, copied from the reference fixture. It
+   imports the stack WITH the `.ts` extension, names it
+   `Cdkd<PascalCaseName>Example`, and wires `env` from `CDK_DEFAULT_ACCOUNT` /
+   `CDK_DEFAULT_REGION`.
 
    **`lib/<test-name>-stack.ts`** — the stack. Keep it minimal: only the resource
    under test + its required dependencies. In the class docstring, add a

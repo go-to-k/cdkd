@@ -48,14 +48,14 @@ Then, in order — first match wins:
 
 Residual, stated rather than papered over: a contributor who replies and THEN
 pushes again reads as "their turn ended", so that push is reviewed immediately.
-Erring toward reviewing is the safe direction — an unnecessary round costs a
-comment, a missed one costs the contributor a stall.
+Erring toward reviewing is the safe direction — an extra round costs a comment, a
+missed one costs the contributor a stall.
 
-The rule is on the REVIEWER side on purpose: it requires nothing of the
-contributor, is not opt-in, and applies to everyone uniformly. Contributor-side
-signals (mark the PR draft while responding, apply a `review ok` label) were
-refused — nothing can enforce either, the label needs triage permission a fork
-contributor does not have, and both fail silently.
+The rule is on the REVIEWER side on purpose: it asks nothing of the contributor,
+is not opt-in, and applies uniformly. Contributor-side signals (draft the PR
+while responding, apply a `review ok` label) were refused — nothing enforces
+either, the label needs triage permission a fork contributor lacks, and both fail
+silently.
 
 Skip the wait outright when: the maintainer asked for this review in the current
 turn; the PR is yours (`[ "$ME" = "$THEM" ]`); or `MINE` is empty.

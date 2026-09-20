@@ -1,4 +1,4 @@
-<!-- Part of the /work-issues skill. Stage files: triage.md (§0–§3), claim.md (§4), implement.md (§5), filing.md (§5-f), gates-and-pr.md (§6–§7), verify.md (§8), ship.md (§9), retro.md (§10), gotchas.md (appendix). A bare §N points into the file that holds that section. READ THIS FILE IN FULL when your run enters this stage. -->
+<!-- /work-issues stage file; stage map in ../SKILL.md. A bare §N points into the file holding that section. READ IN FULL at stage entry. -->
 
 ## Gotchas (learned the hard way)
 
@@ -14,8 +14,6 @@
   the claim (go-to-k/cdkd#1791).
 - **A cross-repo framing spends the deferral budget up front**: inside a
   "do this across the repos in one session" scope, `next` is off the menu.
-- **A mirror issue may already be carried elsewhere** — resolve against the file,
-  open PRs and issues before filing (§10-c) or claiming (§3).
 - **One lane per cross-cutting file** — §2 holds the list.
 - **Never merge a PR whose destroy path is unverified, and never bypass
   `/run-integ`** (§8-c owns what COUNTS as one).

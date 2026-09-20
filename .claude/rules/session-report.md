@@ -89,16 +89,13 @@ pays the edit alone.
   already merged.
 
 **No `next` criterion is about the PR.** Splitting work across PRs is normal —
-decide that on review surface, and `Session-fit` on the criteria above. The PR's
-REVIEW HISTORY ("PR #N took eight rounds, so folding this in is risky") is still
-a claim about the PULL REQUEST. Ask which of the two a clause is ABOUT, never
-whether it MENTIONS a PR.
-
-**A reason about the FILING SESSION's own STATE expires when that session does**
-("scope was frozen at the final review round", "no integ run budgeted"). Such a
-clause is legal only when it names its EXPIRY EVENT on the same line
-("unblocked the moment that PR merges"), since classify-once freezes the
-DECISION, not the PREMISE.
+decide that on review surface, `Session-fit` on the criteria above. A PR's REVIEW
+HISTORY ("#N took eight rounds, so folding this in is risky") is still a claim
+about the PULL REQUEST: ask which of the two a clause is ABOUT, never whether it
+MENTIONS one. **A reason about the FILING SESSION's own STATE expires when that
+session does** ("scope frozen at the final review round", "no integ budgeted"),
+so such a clause is legal only when it names its EXPIRY EVENT on the same line —
+classify-once freezes the DECISION, not the PREMISE.
 
 **Before writing `next`, NAME the next session's verification** — the concrete
 command a FRESH session will run, and that it will be able to run it. Not "run
@@ -111,8 +108,8 @@ body beside `Session-fit`.
 under two minutes). What is genuinely expensive is WRITING a new fixture and an
 integ that FAILS — both `Effort` / `Estimate` lines, not reasons.
 
-**Classify by PURPOSE, never by MEANS**, and do not hold your own regressions to
-a higher reporting bar. **A newly DISCOVERED bug is `now` even in a cold
+**Classify by PURPOSE, never by MEANS**, and hold your own regressions to no
+higher reporting bar. **A newly DISCOVERED bug is `now` even in a cold
 subsystem**: its expensive part is the evidence, which an issue body cannot carry
 cheaply — unless that evidence is already PERSISTED in the repo. If deferred
 anyway, the issue body carries the EVIDENCE, not just the diagnosis.

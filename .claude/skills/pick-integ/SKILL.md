@@ -94,12 +94,11 @@ truncated, and the wrap-up names exactly which tests were not run.
    | `package.json` (cdk-local bump) | `local-*` cluster (the bump's blast radius) |
 
    **Mark every name an agent session cannot run, and offer a substitute.** A
-   fixture drives itself from `verify.sh`, or from `run.sh` invoked directly
-   (`migrate-from-cfn`); with neither, `/run-integ` falls back to a standard
-   flow that needs a bare `cdkd deploy`, which the harness refuses (that
-   skill's step 5) — legal only when a human drives the shell. Such a name is a
-   MAINTAINER-only recommendation, never a lane's. Several BROAD-set entries
-   are in this state — derive the split, never trust a remembered list:
+   fixture drives itself from `verify.sh`, or from `run.sh` invoked directly;
+   with neither, `/run-integ` falls back to a flow needing a bare `cdkd deploy`,
+   which the harness refuses — legal only when a human drives the shell. Such a
+   name is a MAINTAINER-only recommendation, never a lane's. Several BROAD-set
+   entries are in this state, so derive the split rather than recalling it:
 
    ```bash
    for t in NAME1 NAME2; do   # the names about to be recommended
@@ -112,14 +111,14 @@ truncated, and the wrap-up names exactly which tests were not run.
    {expiring soon} ∪ {never-run}:
    - **P0**: changed-area AND (stale OR failing OR never-run).
    - **P1**: changed-area but recently-green — verify no regression.
-   - **P2**: not changed-area but stale / failing / never-run / expiring soon
-     — coverage hygiene (prefer the BROAD set + a spread of providers; ORDER
-     them, do not cap them — a long tail is handed forward, and whatever is
-     not run is named in the wrap-up). An expiring-soon test ranks below an
-     already-stale one, above a recently-green one; within a tier, oldest
-     first. A large cohort is drained a few days early, across sessions.
+   - **P2**: not changed-area but stale / failing / never-run / expiring soon —
+     coverage hygiene. Prefer the BROAD set plus a spread of providers, and
+     ORDER them rather than capping: a long tail is handed forward, and whatever
+     is not run is named in the wrap-up. An expiring-soon test ranks below an
+     already-stale one and above a recently-green one; within a tier, oldest
+     first.
    Bias up for AWS-coupled, deletion-sensitive, multi-resource paths; pure
-   docs/test/skill changes often need NO integ.
+   docs / test / skill changes often need NO integ.
 
 4. **Render the plan**:
    ```
@@ -145,21 +144,21 @@ truncated, and the wrap-up names exactly which tests were not run.
 
 ## Running a large plan across sessions
 
-A big plan will NOT finish in one session (~15–20 deploy/destroy cycles per
-session before context degrades; the tell is garbled tool calls — pushing
-past drops orphans). Treat a large sweep as a **multi-session relay**:
+A big plan will NOT finish in one session (~15–20 deploy/destroy cycles before
+context degrades; the tell is garbled tool calls, and pushing past it drops
+orphans). Treat a large sweep as a **multi-session relay**:
 
 - Batches of ~4–5 tests. After EACH batch: (a) verify the account is
   orphan-clean (`aws s3 ls s3://<bucket>/cdkd/ --recursive | grep state.json`
   returns 0; no live NAT / RDS / OpenSearch / Redshift / ElastiCache / EC2),
   (b) commit the ledger.
 - A backgrounded batch loop can have a test's subshell die between deploy and
-  destroy, leaving a full orphan (incl. a NAT GW) — the post-batch state scan
-  is what catches it; the orphan's stack NAME often differs from the fixture
-  dir name (read it from the deploy log / synth).
-- When context gets heavy: **STOP cleanly.** Commit the ledger, tell the user
-  "ran N more (list), account clean, ~M remain — new session, 'continue the
-  sweep'", and leave a project memory with the remaining list + findings.
+  destroy, leaving a full orphan (a NAT GW included) — the post-batch state scan
+  is what catches it, and the orphan's stack NAME often differs from the fixture
+  directory (read it from the deploy log or synth).
+- When context gets heavy: **STOP cleanly.** Commit the ledger, report "ran N
+  more (list), account clean, ~M remain", and leave a memory with the remaining
+  list and findings.
 - The sweep is DONE only when `/pick-integ` shows no stale tests left; the
   committed ledger is the source of truth.
 - **A `FAIL` that never reached the fixture's assertions is not a cdkd bug** —
@@ -175,11 +174,10 @@ past drops orphans). Treat a large sweep as a **multi-session relay**:
 
 ## Important
 
-- This skill never runs `/run-integ` itself. Tests run serially — one AWS
-  account; mind VPC/EIP/NAT limits.
+- Tests run serially — one AWS account; mind VPC / EIP / NAT limits.
 - The ledger is only as good as its discipline; treat an absent or
   impossibly-old row as stale.
-- "Recently green + untouched" tests are scheduled LAST, not dropped —
-  surface the count either way.
-- Pure docs / `.claude/skills` / test-only diffs usually need NO integ — say
-  so rather than padding the list.
+- "Recently green + untouched" tests are scheduled LAST, not dropped — surface
+  the count either way.
+- Pure docs / `.claude/skills` / test-only diffs usually need NO integ; say so
+  rather than padding the list.

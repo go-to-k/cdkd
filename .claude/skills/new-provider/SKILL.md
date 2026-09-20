@@ -38,46 +38,16 @@ The user provides an AWS resource type like `AWS::SES::EmailIdentity`.
    - Follow ESM import conventions (`.js` extension)
    - Return proper `physicalId` and `attributes` from create
 
-   **Import method** — copy this shape from a similar provider (e.g.
-   `s3-bucket-provider.ts` for tag-array services, `lambda-function-provider.ts`
-   for tag-map services, `kms-provider.ts` for services with no
-   template name property):
-
-   ```ts
-   import { matchesCdkPath, resolveExplicitPhysicalId, CDK_PATH_TAG } from '../import-helpers.js';
-   import type { ResourceImportInput, ResourceImportResult } from '../../types/resource.js';
-
-   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-     // 1. Explicit override OR Properties.<NameField> from template.
-     const explicit = resolveExplicitPhysicalId(input, '<NameField>');  // e.g. 'BucketName' / 'FunctionName' / 'RoleName'
-     if (explicit) {
-       try {
-         await this.client.send(new <Get|Head|Describe>Command({ ... explicit ... }));
-         return { physicalId: explicit, attributes: {} };
-       } catch (err) {
-         if (err instanceof <NotFoundError>) return null;
-         throw err;
-       }
-     }
-     if (!input.cdkPath) return null;
-
-     // 2. List + tag-based lookup. Walk the service's List* paginator,
-     //    fetch tags per resource, match aws:cdk:path.
-     let token: string | undefined;
-     do {
-       const list = await this.client.send(new ListCommand({ ...(token && { NextToken: token }) }));
-       for (const item of list.Items ?? []) {
-         if (!item.Id) continue;
-         const tags = await this.client.send(new ListTagsCommand({ ResourceId: item.Id }));
-         if (matchesCdkPath(tags.Tags, input.cdkPath)) {
-           return { physicalId: item.Id, attributes: {} };
-         }
-       }
-       token = list.NextToken;
-     } while (token);
-     return null;
-   }
-   ```
+   **Import method** — copy the shape from a similar provider rather than
+   writing it from scratch: `s3-bucket-provider.ts` for a tag-ARRAY service,
+   `lambda-function-provider.ts` for a tag-MAP one, `kms-provider.ts` for a
+   service with no template name property. The shape is: resolve an explicit
+   physical id first (`resolveExplicitPhysicalId(input, '<NameField>')`, i.e.
+   the `--resource` override or `Properties.<NameField>`) and verify it with a
+   `Get` / `Head` / `Describe` call; otherwise, with `input.cdkPath` present,
+   walk the service's `List*` paginator, fetch tags per resource and match
+   `aws:cdk:path` through `matchesCdkPath` (`CDK_PATH_TAG` in
+   `../import-helpers.js`).
 
    Notes:
    - Return `null` (not throw) when the resource is not found — caller

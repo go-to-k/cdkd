@@ -5,10 +5,10 @@ All three run once, at the end of the run.
 
 ## 10. Retrospective + rules update
 
-- Walk the session that produced this PR. For each surprise, friction, or user
-  correction: one-off, or recurring pattern? For each pattern, propose where it
-  lands. A NEW hook, fence or rule paragraph is added only on the SECOND
-  occurrence of the same failure — the first goes to
+- Walk the session that produced this PR. For each surprise, friction or user
+  correction: one-off, or recurring? For each pattern, propose where it lands. A
+  NEW hook, fence or rule paragraph is added only on the SECOND occurrence — the
+  first goes to
   [../../../../docs/tooling-backlog.md](../../../../docs/tooling-backlog.md) and
   nothing is built.
 - The retrospective is part of the checklist, not an optional coda.

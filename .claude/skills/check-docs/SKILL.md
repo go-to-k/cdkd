@@ -28,14 +28,13 @@ this repository.
      index.
    - `package.json` — dependency changes described in CLAUDE.md "Dependencies".
    - `README.md`, `CLAUDE.md`, `docs/**`, `.claude/rules/**`, `plugins/**` — the
-     docs themselves. `plugins/**` is a TRIGGER and not only a step-3 target: a
-     plugins-only diff matches nothing else, and step 3 is scoped to changed
-     SOURCE files.
+     docs themselves. `plugins/**` is a TRIGGER, not only a step-3 target: a
+     plugins-only diff matches nothing else, and step 3 reads changed SOURCE
+     files.
    - **Any `src/**` file matched by a `paths:` glob in a `.claude/rules/`
      satellite** — in practice nearly every src file. A comment-only or
-     message-only edit does NOT exempt it: those rule files assert DECISIONS
-     about the code, and a reworded message or a retired rationale is precisely
-     what invalidates one.
+     message-only edit does NOT exempt it: those files assert DECISIONS about the
+     code, and a reworded message is exactly what invalidates one.
 
    If none apply, write "no docs-visible surface touched" and stop.
 
@@ -43,10 +42,10 @@ this repository.
    - **Any `src/**` change → the `.claude/rules/` satellites whose `paths:` glob
      matches it.** DERIVE them —
      `for f in .claude/rules/*.md; do echo "$f"; sed -n '/^paths:/,/^---$/p' "$f"; done`,
-     or the per-area row in `.claude/rules/code-layout.md` — rather than
-     recalling them, and use the `sed` range, not `grep -A<n>`, which truncates
-     a file declaring several globs. Then read what each one SAYS about the code
-     you changed, not just whether it names your new files. Nothing mechanical
+     or the per-area row in `.claude/rules/code-layout.md` — never recall them,
+     and use the `sed` range rather than `grep -A<n>`, which truncates a file
+     declaring several globs. Then read what each SAYS about the code you
+     changed, not just whether it names your new files: nothing mechanical
      watches a rule file that asserts a decision.
    - `src/cli/` → CLI options/commands in `docs/getting-started.md`, the
      per-command pages, and CLAUDE.md.

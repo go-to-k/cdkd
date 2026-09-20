@@ -1,4 +1,4 @@
-<!-- Part of the /work-issues skill. Stage files: launch-mode.md (before stage 0), triage.md (§0–§3), claim.md (§4), implement.md (§5), filing.md (§5-f), gates-and-pr.md (§6–§7), verify.md (§8), ship.md (§9), retro.md (§10), gotchas.md (appendix). A bare §N points into the file that holds that section. READ THIS FILE IN FULL before stage 0. -->
+<!-- /work-issues stage file; stage map in ../SKILL.md. A bare §N points into the file holding that section. READ IN FULL before stage 0. -->
 
 ## Launch mode — the PARENT runs this BEFORE stage 0
 
