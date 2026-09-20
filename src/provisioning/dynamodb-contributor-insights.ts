@@ -68,8 +68,8 @@ export interface ContributorInsightsOp {
  * The call one block needs, given the block the PREVIOUS side recorded.
  *
  * - `absent` with a DECLARED previous (usable or not) is a template REMOVAL and
- *   DISABLES, matching CloudFormation's reset-to-default and this provider's
- *   other post-ACTIVE blocks (PITR, TTL, Kinesis). Because the rule is
+ *   DISABLES — the rule this provider's other post-ACTIVE blocks (PITR, TTL,
+ *   Kinesis) and the table-level block already follow. Because the rule is
  *   symmetric in its two sides, a rollback — which replays `update()` with the
  *   sides SWAPPED — restores the old setting through the same arms.
  * - `unusable` issues NOTHING and reports through `onUnusable`: the live
