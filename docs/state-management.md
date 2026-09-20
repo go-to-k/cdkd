@@ -731,12 +731,30 @@ you ran to refresh that resource in the first place.
 reports them in their own tally rather than as unsupported, and `cdkd export`
 lists them apart from the resources a refresh really can help.
 
-**How to clear it**: deploy a change to the resource. A CREATE, UPDATE or
+**How to clear it** (every refusal but the one class below): deploy a change to the resource. A CREATE, UPDATE or
 replacement rebuilds its state record from the template — the evidence the
 import lacked — and captures a trustworthy baseline. A NO_CHANGE deploy does
 NOT clear it, and neither does re-running `cdkd state refresh-observed`. Until
 then `cdkd drift` compares that resource against its recorded properties, as
 it did for any resource without a baseline before schema v3.
+
+**One refusal class is NOT cleared by an in-place update**, and the record says
+which: `observedBaselineRefusalReason: "unverifiable-parameter"` (an optional
+field beside the marker, no version bump — absent on every record written
+before it existed, where it reads as "an UPDATE may clear this"). `cdkd import`
+writes it when the resource depends on a template parameter whose deployed value
+it could not prove equal to the `Default` it bound. `cdkd deploy` binds that same
+`Default`, so an update that does not rewrite the parameter-bound property
+leaves the deployed value in AWS, and a baseline captured against the
+placeholder would record it. For that reason an in-place UPDATE keeps both
+fields and takes no readback; a replacement or a fresh CREATE clears them, and
+so does a `cdkd import` that re-imports the resource while a CloudFormation
+stack proves the parameter (a re-import with no such stack carries them forward
+on an unchanged physical id). The reason is never present without the marker.
+A cdkd binary that writes `version: 10` but predates the reason field ignores
+it and clears the marker on any UPDATE, so do not deploy such a stack with an
+older binary. cdkd 0.290.35 is the one version that wrote this refusal WITHOUT
+the reason; a stack imported with it is not protected. See [import.md](import.md).
 
 **Migration** is transparent in both directions a user can observe: a `version:
 9` record has the field absent, absence means "not refused", and that is
@@ -1166,6 +1184,8 @@ interface ResourceState {
   deletionPolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate'      // v5+: template attribute recorded at deploy time
   updateReplacePolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' // v5+: template attribute recorded at deploy time
   provisionedBy?: 'sdk' | 'cc-api'             // v7+: provisioning layer (absent = SDK legacy default)
+  observedBaselineRefused?: true               // v10+: `cdkd import` declined to capture a baseline
+  observedBaselineRefusalReason?: 'unverifiable-parameter' // optional, no bump: the refusal an in-place UPDATE keeps
 }
 ```
 

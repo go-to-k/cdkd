@@ -366,17 +366,49 @@ worth knowing before you read a report:
   each would position an AWS readback against the very properties the refusal
   found untrustworthy.
 
-  **A parameter refusal is the exception to the remedy below, and the one case
-  where deploying is not safe yet.** `cdkd deploy` takes no parameter values
-  either, so it binds the same `Default`; an update that leaves the
-  parameter-bound property alone still rebuilds the record, clears the marker,
-  and captures the AWS value — the deployed secret — as the baseline. This is a
-  known gap in `cdkd deploy`. To stay clear of it, put the real reference in the template (replace the parameter with the
-  `{{resolve:...}}` reference itself, or make it the parameter's `Default`)
-  before the first deploy of such a resource, and treat `state.json` as
-  sensitive.
+  **A parameter refusal is the exception to the remedy below: deploying a
+  change does NOT clear it.** `cdkd deploy` takes no parameter values either, so
+  it binds the same `Default` the import did. An update that leaves the
+  parameter-bound property alone does not rewrite it, AWS still holds the
+  deployed value there, and a baseline captured after that update would record
+  it — a decrypted secret, in the shape this refusal exists for. cdkd cannot
+  tell which properties an update really rewrote, so it records WHY the
+  baseline was refused (`observedBaselineRefusalReason: "unverifiable-parameter"`
+  beside the marker) and, for that reason, an in-place update of the resource
+  keeps the refusal and reads nothing back from AWS, whatever the update
+  changed. The refusal stays for the life of the physical resource. There are
+  two ways out:
 
-  **To clear it, deploy a change to the resource.** A create, update or
+  - **the resource is replaced** (or deleted and created again) by a deploy: a
+    new physical resource is built from the properties cdkd sent, so its
+    readback holds nothing cdkd did not send, and it gets a normal baseline;
+  - **a later `cdkd import` re-imports it while a CloudFormation stack can prove
+    the parameter was deployed at its `Default`**. After
+    `--migrate-from-cloudformation` that stack is gone, so a re-import has
+    nothing to compare against and carries the refusal forward instead (when
+    the physical id is unchanged).
+
+  A re-import clears it only by PROVING the parameter: if you have since edited
+  the template so that nothing references a parameter any more, there is nothing
+  to compare, and the refusal stays.
+
+  **Stacks imported with cdkd 0.290.35 are not covered.** That one version
+  refused these baselines without recording the reason, and a marker with no
+  reason is cleared by any update (it is what every other refusal looks like).
+  For such a stack an update that leaves the parameter-bound property alone
+  still records the deployed value, and re-importing after the CloudFormation
+  stack is gone does not add the reason. Put the real reference
+  in the template before deploying it, and treat its `state.json` as sensitive.
+
+  Until then `cdkd drift` compares the resource against its recorded
+  properties, and `cdkd drift --accept` / `--revert` decline it. Those recorded
+  properties still hold the template `Default`, not what was deployed, and a
+  deploy that DOES rewrite the property sends that `Default` to AWS — so put the
+  real reference in the template (replace the parameter with the
+  `{{resolve:...}}` reference itself, or make it the parameter's `Default`)
+  before deploying such a resource, and review `cdkd diff` first.
+
+  **To clear any other refusal, deploy a change to the resource.** A create, update or
   replacement rebuilds the record from your template — the evidence the import
   did not have — and captures a real baseline. A no-change deploy does not
   clear it, and neither does re-running `cdkd state refresh-observed`.

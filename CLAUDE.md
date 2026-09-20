@@ -82,6 +82,8 @@ interface ResourceState {
   deletionPolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate';
   updateReplacePolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate';
   provisionedBy?: 'sdk' | 'cc-api'; // v7+: routing layer (absent = pre-v7 record, SDK-managed then; NOT pinned — routing re-decides)
+  observedBaselineRefused?: true; // v10+: import refused a baseline
+  observedBaselineRefusalReason?: 'unverifiable-parameter'; // no bump (#3462): an in-place UPDATE keeps it
 }
 ```
 

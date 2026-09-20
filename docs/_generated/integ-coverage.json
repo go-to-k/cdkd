@@ -3698,6 +3698,7 @@
         "iam-propagation-stress",
         "iam-role-policies-drift-clean",
         "iam-role-prefixed-name-update",
+        "import-deployed-parameter-secret",
         "infra-security",
         "intrinsic-functions",
         "lambda-esm-self-managed-kafka",
@@ -3845,6 +3846,9 @@
         "iam-role-prefixed-name-update": [
           "l2",
           "literal"
+        ],
+        "import-deployed-parameter-secret": [
+          "l1"
         ],
         "infra-security": [
           "l2"
@@ -4207,6 +4211,7 @@
         "gc-custom-asset-names",
         "iam-propagation-stress",
         "iam-role-policies-drift-clean",
+        "import-deployed-parameter-secret",
         "kinesis-esm-filter",
         "lambda",
         "lambda-alias-provisioned-concurrency",
@@ -4394,6 +4399,9 @@
         ],
         "iam-role-policies-drift-clean": [
           "l2"
+        ],
+        "import-deployed-parameter-secret": [
+          "l1"
         ],
         "kinesis-esm-filter": [
           "l2"

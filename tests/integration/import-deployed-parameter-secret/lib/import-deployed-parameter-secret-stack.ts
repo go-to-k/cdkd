@@ -1,5 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 
 /**
@@ -24,6 +26,15 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  *
  * `ssm.CfnParameter` (L1) rather than `StringParameter`: the value must be a
  * bare `{Ref: <Parameter>}`, and the logical ids are pinned for verify.sh.
+ *
+ * REDEPLOY ARM (issue #3462): `SecretEnvFn` carries `DbPassword` in an
+ * environment variable, and `CDKD_TEST_UPDATE=true` changes ONLY its inline
+ * code. cdkd's Lambda provider sends `UpdateFunctionCode` alone for that, so
+ * the variable AWS holds stays the DECRYPTED value through the `cdkd deploy`
+ * that follows the import — the one shape where a post-UPDATE readback,
+ * positioned against the placeholder `Default`, would persist the secret. An
+ * SSM parameter cannot carry this arm: its update always rewrites `Value`, which
+ * overwrites the secret with the placeholder and leaves nothing to leak.
  *
  * The secret itself is created by verify.sh BEFORE the deploy, under the fixed
  * name below, because the reference has to be spelled at synth time.
@@ -81,6 +92,27 @@ export class ImportDeployedParameterSecretStack extends cdk.Stack {
       type: 'String',
       value: cdk.Fn.join('-', ['stage', stage.valueAsString]),
     }).overrideLogicalId('RootStageParam');
+
+    const fnRole = new iam.CfnRole(this, 'SecretEnvFnRole', {
+      assumeRolePolicyDocument: {
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Effect: 'Allow',
+            Principal: { Service: 'lambda.amazonaws.com' },
+            Action: 'sts:AssumeRole',
+          },
+        ],
+      },
+    });
+    const codeRevision = process.env.CDKD_TEST_UPDATE === 'true' ? 'after' : 'before';
+    new lambda.CfnFunction(this, 'SecretEnvFn', {
+      runtime: 'nodejs22.x',
+      handler: 'index.handler',
+      role: fnRole.attrArn,
+      code: { zipFile: `exports.handler = async () => '${codeRevision}';` },
+      environment: { variables: { DB_PASSWORD: dbPassword.valueAsString } },
+    });
 
     const child = new ChildStack(this, 'Child', {
       parameters: { ChildPw: SECRET_REFERENCE, ChildToken: SECRET_REFERENCE },

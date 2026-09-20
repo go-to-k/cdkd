@@ -629,6 +629,9 @@ export interface ResourceState {
    * resource from the template (which holds the evidence the import lacked,
    * and whose own capture overwrites the baseline anyway). Left uncleared it
    * would cost the resource its drift baseline for the life of the record.
+   * ONE CLASS IS EXCLUDED from the UPDATE half of that, because a deploy holds
+   * no more evidence for it than the import did — see
+   * `observedBaselineRefusalReason` below.
    *
    * THE "RE-IMPORTED" QUALIFIER IS LOAD-BEARING, and `cdkd import` is itself
    * the FIFTH writer the marker has to be honoured by. A selective merge seeds
@@ -648,6 +651,58 @@ export interface ResourceState {
    * `false`, so a reader tests presence.
    */
   observedBaselineRefused?: true | undefined;
+
+  /**
+   * WHY the baseline was refused, recorded only for the one refusal class a
+   * deploy CANNOT discharge (issue
+   * [#3462](https://github.com/go-to-k/cdkd/issues/3462)). Optional, no schema
+   * bump: an absent field is every record written before it existed, and reads
+   * as "a refusal an UPDATE may clear", which is what those records got.
+   *
+   * `'unverifiable-parameter'` — `cdkd import`'s ARM 4 (issue #2854) named this
+   * resource: its properties depend on a template parameter whose DEPLOYED
+   * value was not provably the `Default` the import bound. `cdkd deploy` takes
+   * no parameter input either, so a top-level deploy binds the SAME `Default`
+   * (a nested child gets its values from the parent; the rule is applied there
+   * too, conservatively); the "a deploy
+   * holds the template evidence the import lacked" premise above is false for
+   * this class. An in-place UPDATE that does not rewrite the placeholder-bound
+   * leaf leaves the deployed value in AWS, and a readback positioned against
+   * the placeholder would persist it. So:
+   *
+   * - an IN-PLACE UPDATE KEEPS the marker and this reason, and takes NO
+   *   readback for the resource, whatever the update changed — the engine
+   *   cannot know which leaves a provider actually wrote;
+   * - a REPLACEMENT or CREATE clears both: a new physical resource was built
+   *   from the bag cdkd sent, so its readback holds nothing cdkd did not send.
+   *   Inside `update()` that needs `wasReplaced` AND a changed physical id —
+   *   either signal alone keeps the refusal;
+   * - `cdkd import` clears both only for a row it re-imported while it HAD a
+   *   deployed-parameter source and ARM 4 did not name the resource. A
+   *   re-import with no source (the CloudFormation stack is gone after a
+   *   migration) carries both forward when the physical id is unchanged.
+   *
+   * INVARIANT: never present without `observedBaselineRefused: true`. Every
+   * reader that only asks "is a baseline refused?" keeps testing the marker;
+   * only the two writers that may CLEAR it read this field.
+   */
+  observedBaselineRefusalReason?: 'unverifiable-parameter' | undefined;
+}
+
+/**
+ * Whether `record` carries a baseline refusal no in-place UPDATE may clear.
+ * Requires the marker AND the reason: a reason with no marker is not a state
+ * any writer produces, and honouring it would invent a refusal.
+ */
+export function hasUnverifiableParameterRefusal(
+  record:
+    | Pick<ResourceState, 'observedBaselineRefused' | 'observedBaselineRefusalReason'>
+    | undefined
+): boolean {
+  return (
+    record?.observedBaselineRefused === true &&
+    record.observedBaselineRefusalReason === 'unverifiable-parameter'
+  );
 }
 
 /**

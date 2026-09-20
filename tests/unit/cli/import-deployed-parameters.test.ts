@@ -881,3 +881,227 @@ describe('reachableDivergentParameters / namesAnyDeclaredParameter', () => {
     expect(namesAnyDeclaredParameter({ Resources: {} } as CloudFormationTemplate)).toBe(false);
   });
 });
+
+describe('a RE-IMPORT must not discharge an unverifiable-parameter refusal it cannot re-judge (issue #3462)', () => {
+  const PLAIN_PARAM = { DbPassword: { Type: 'String', Default: 'CHANGEME' } };
+
+  /** INVARIANT on every write site: the reason is never present without the marker. */
+  function expectReasonOnlyWithMarker(state: StackState): void {
+    for (const record of Object.values(state.resources)) {
+      if (Object.hasOwn(record, 'observedBaselineRefusalReason')) {
+        expect(record.observedBaselineRefused).toBe(true);
+        expect(record.observedBaselineRefusalReason).toBe('unverifiable-parameter');
+      }
+    }
+  }
+
+  async function reimport(args: {
+    template?: CloudFormationTemplate;
+    prior: StackState['resources'][string];
+    physicalId?: string;
+    deployed: Deployed | 'none';
+    readback?: Record<string, unknown>;
+  }): Promise<{ state: StackState; reads: number }> {
+    const template = args.template ?? templateWith(PLAIN_PARAM, {}, { Properties: PW_PROPS });
+    const { buildStackState } = await import('../../../src/cli/commands/import.js');
+    const { TemplateParser } = await import('../../../src/analyzer/template-parser.js');
+    const existing: StackState = {
+      version: STATE_SCHEMA_VERSION_CURRENT,
+      stackName: 'arm4-stack',
+      region: 'us-east-1',
+      resources: { Res: args.prior },
+      outputs: {},
+      lastModified: 0,
+    };
+    const rows = [
+      {
+        logicalId: 'Res',
+        resourceType: 'AWS::SQS::Queue',
+        outcome: 'imported' as const,
+        physicalId: args.physicalId ?? 'res-phys',
+      },
+    ];
+    // AUTO mode (`--force` rebuild): the resource map is rebuilt from scratch,
+    // which is the route that drops everything the prior record held.
+    const state = buildStackState(
+      'arm4-stack',
+      'us-east-1',
+      rows,
+      new TemplateParser(),
+      template,
+      existing,
+      false
+    );
+    const refusals = await resolveImportedProperties(
+      state,
+      template,
+      'us-east-1',
+      undefined as never,
+      getLogger(),
+      args.deployed === 'none' ? undefined : DeployedParameters.fromDescribeStacks(args.deployed)
+    );
+    let reads = 0;
+    const provider = {
+      readCurrentState: async () => {
+        reads++;
+        return structuredClone(args.readback ?? { Detail: { pw: LIVE_PLAINTEXT } });
+      },
+    };
+    const registry = {
+      getProviderFor: () => ({ provider, provisionedBy: 'sdk' }),
+    } as unknown as Parameters<typeof captureObservedForImportedResources>[1];
+    await captureObservedForImportedResources(
+      state,
+      registry,
+      getLogger(),
+      refusals,
+      new Set(['Res'])
+    );
+    expectReasonOnlyWithMarker(state);
+    return { state, reads };
+  }
+
+  const PRIOR_REFUSED: StackState['resources'][string] = {
+    physicalId: 'res-phys',
+    resourceType: 'AWS::SQS::Queue',
+    properties: { Detail: { pw: 'CHANGEME' } },
+    observedBaselineRefused: true,
+    observedBaselineRefusalReason: 'unverifiable-parameter',
+  };
+
+  it('NO deployed-parameter source (the CloudFormation stack is gone): marker and reason are carried, nothing is read', async () => {
+    const { state, reads } = await reimport({ prior: PRIOR_REFUSED, deployed: 'none' });
+    expect(reads).toBe(0);
+    expect(JSON.stringify(state)).not.toContain(LIVE_PLAINTEXT);
+    expect(logged.join('\n')).not.toContain(LIVE_PLAINTEXT);
+    expect(state.resources['Res']!.observedProperties).toBeUndefined();
+    expect(state.resources['Res']!.observedBaselineRefused).toBe(true);
+    expect(state.resources['Res']!.observedBaselineRefusalReason).toBe('unverifiable-parameter');
+  });
+
+  it('a source that PROVES the Default clears BOTH fields and captures', async () => {
+    const { state, reads } = await reimport({
+      prior: PRIOR_REFUSED,
+      deployed: [{ ParameterKey: 'DbPassword', ParameterValue: 'CHANGEME' }],
+      readback: { Detail: { pw: 'CHANGEME' } },
+    });
+    expect(reads).toBe(1);
+    expect(Object.hasOwn(state.resources['Res']!, 'observedBaselineRefused')).toBe(false);
+    expect(Object.hasOwn(state.resources['Res']!, 'observedBaselineRefusalReason')).toBe(false);
+    expect(state.resources['Res']!.observedProperties).toEqual({ Detail: { pw: 'CHANGEME' } });
+  });
+
+  it('a source that does NOT prove it refuses again through ARM 4 itself, reason included', async () => {
+    const { state, reads } = await reimport({
+      prior: PRIOR_REFUSED,
+      deployed: [{ ParameterKey: 'DbPassword', ParameterValue: DEPLOYED_SENTINEL }],
+    });
+    expect(reads).toBe(0);
+    expect(state.resources['Res']!.observedBaselineRefused).toBe(true);
+    expect(state.resources['Res']!.observedBaselineRefusalReason).toBe('unverifiable-parameter');
+    expect(JSON.stringify(state)).not.toContain('deployed-sentinel-2854');
+  });
+
+  it('a FIRST import writes the reason for ARM 4 and ONLY for ARM 4', async () => {
+    // ARM 4 alone.
+    const arm4 = await run({
+      template: templateWith(PLAIN_PARAM),
+      properties: PW_PROPS,
+      deployed: [{ ParameterKey: 'DbPassword', ParameterValue: DEPLOYED_SENTINEL }],
+    });
+    expect(arm4.state.resources['Res']!.observedBaselineRefused).toBe(true);
+    expect(arm4.state.resources['Res']!.observedBaselineRefusalReason).toBe(
+      'unverifiable-parameter'
+    );
+    // ARM 4 AND the throw arm together (an unresolvable Ref beside the
+    // parameter): the reason is still recorded.
+    const both = await run({
+      template: templateWith(PLAIN_PARAM),
+      properties: { ...PW_PROPS, Other: { Ref: 'NoSuchThing' } },
+      deployed: [{ ParameterKey: 'DbPassword', ParameterValue: DEPLOYED_SENTINEL }],
+    });
+    expect(both.refused).toBe(true);
+    expect(both.state.resources['Res']!.observedBaselineRefusalReason).toBe(
+      'unverifiable-parameter'
+    );
+    // The throw arm ALONE: marker, no reason.
+    const thrown = await run({
+      template: templateWith({}),
+      properties: { Other: { Ref: 'NoSuchThing' } },
+      deployed: 'none',
+    });
+    expect(thrown.refused).toBe(true);
+    expect(thrown.state.resources['Res']!.observedBaselineRefused).toBe(true);
+    expect(Object.hasOwn(thrown.state.resources['Res']!, 'observedBaselineRefusalReason')).toBe(
+      false
+    );
+    for (const result of [arm4, both, thrown]) expectReasonOnlyWithMarker(result.state);
+  });
+
+  it('a record a SELECTIVE import leaves in place keeps marker and reason untouched, and is not read', async () => {
+    const state: StackState = {
+      version: STATE_SCHEMA_VERSION_CURRENT,
+      stackName: 'arm4-stack',
+      region: 'us-east-1',
+      resources: { Res: structuredClone(PRIOR_REFUSED) },
+      outputs: {},
+      lastModified: 0,
+    };
+    const { ObservedBaselineRefusals } = await import('../../../src/cli/commands/import.js');
+    let reads = 0;
+    const registry = {
+      getProviderFor: () => ({
+        provider: {
+          readCurrentState: async () => {
+            reads++;
+            return { Detail: { pw: LIVE_PLAINTEXT } };
+          },
+        },
+        provisionedBy: 'sdk',
+      }),
+    } as unknown as Parameters<typeof captureObservedForImportedResources>[1];
+    const refusals = new ObservedBaselineRefusals();
+    // Even a run that HAD a source does not discharge a row it did not rebuild.
+    refusals.hadDeployedParameterSource = true;
+    await captureObservedForImportedResources(state, registry, getLogger(), refusals, new Set());
+    expect(reads).toBe(0);
+    expect(state.resources['Res']).toEqual(PRIOR_REFUSED);
+  });
+
+  it('a carried reason is DROPPED, marker kept, when this run proves the parameter but refuses for another arm', async () => {
+    const { state, reads } = await reimport({
+      template: templateWith(
+        PLAIN_PARAM,
+        {},
+        { Properties: { ...PW_PROPS, Other: { Ref: 'NoSuchThing' } } }
+      ),
+      prior: PRIOR_REFUSED,
+      deployed: [{ ParameterKey: 'DbPassword', ParameterValue: 'CHANGEME' }],
+    });
+    expect(reads).toBe(0);
+    expect(state.resources['Res']!.observedBaselineRefused).toBe(true);
+    expect(Object.hasOwn(state.resources['Res']!, 'observedBaselineRefusalReason')).toBe(false);
+  });
+
+  it('a DIFFERENT physical id does not inherit the refusal: it is another resource', async () => {
+    const { state, reads } = await reimport({
+      prior: PRIOR_REFUSED,
+      physicalId: 'another-phys',
+      deployed: 'none',
+      readback: { Detail: { pw: 'CHANGEME' } },
+    });
+    expect(reads).toBe(1);
+    expect(Object.hasOwn(state.resources['Res']!, 'observedBaselineRefused')).toBe(false);
+    expect(Object.hasOwn(state.resources['Res']!, 'observedBaselineRefusalReason')).toBe(false);
+  });
+
+  it('a prior refusal with NO reason (arms 1-3, or a record older than the field) is cleared by a clean re-import, as before', async () => {
+    const { state, reads } = await reimport({
+      prior: { ...PRIOR_REFUSED, observedBaselineRefusalReason: undefined },
+      deployed: 'none',
+      readback: { Detail: { pw: 'CHANGEME' } },
+    });
+    expect(reads).toBe(1);
+    expect(Object.hasOwn(state.resources['Res']!, 'observedBaselineRefused')).toBe(false);
+  });
+});
