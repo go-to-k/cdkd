@@ -29,6 +29,16 @@ This stack includes the following resources:
    EventSourceMapping stream consumer only exists in the UPDATE phase (an ESM
    needs a stream to attach to).
 
+9. **Stream `ResourcePolicy` / `Tags` (issue #3458)**: a second stack,
+   `DynamodbStreamMembersStack`, declares `StreamSpecification.ResourcePolicy`
+   and `StreamSpecification.Tags`, which are not members of the SDK's
+   `StreamSpecification`. `verify.sh` asserts both land on the STREAM arn (and
+   not on the table arn), are re-applied to the new arn a `StreamViewType`
+   change mints, are reported by `cdkd drift` and restored by `--revert` after
+   an out-of-band `delete-resource-policy`, and are removed when they leave a
+   block whose stream stays. It has its own table because the view-type change
+   replaces the stream arn the first stack's EventSourceMapping is wired to.
+
 ## Deploy
 
 ```bash

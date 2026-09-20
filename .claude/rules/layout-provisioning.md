@@ -40,6 +40,8 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **dynamodb-contributor-insights.ts** - ONE reader for the table-level and per-index `ContributorInsightsSpecification`. The per-index block is NOT an SDK `GlobalSecondaryIndex` member: it goes through `UpdateContributorInsights` + `IndexName`, and its read-back is GATED on the desired entry declaring it, since it sits in an array entry compared by exact key set (issue [#1782](https://github.com/go-to-k/cdkd/issues/1782)).
 
+- **dynamodb-stream-members.ts** - `StreamSpecification.ResourcePolicy` / `.Tags` are NOT SDK `StreamSpecification` members: they go to the STREAM arn, and a `StreamViewType` change mints a NEW one, so they are re-applied to the re-read `LatestStreamArn`. The plan's ORDER is a contract (policy delete first, put last), and an unreadable member is REFUSED on a template-path update too: it is an access grant (issue [#3458](https://github.com/go-to-k/cdkd/issues/3458)).
+
 - **dynamodb-index-busy-delete.ts** - The index-busy `DeleteTable` rule BOTH DynamoDB providers read; it is TRANSIENT. The classifier is keyed on the MESSAGE, since AWS reports a plain `ResourceInUseException` for terminal conflicts too. The settle poll warns and RETURNS on timeout, because a throw would STRAND the resource, and **it runs PER RETRY**, so the budget is PER CALLING TYPE.
 
 - **ec2-termination-protection.ts** - Shared `--remove-protection` helper for `AWS::EC2::Instance`. The modify WRITE lags the delete READ, so both routes flip protection off AND retry the delete. A CC-routed ASG cannot `ForceDelete`, so `CloudControlProvider.delete` delegates that case to `ASGProvider.delete`.
