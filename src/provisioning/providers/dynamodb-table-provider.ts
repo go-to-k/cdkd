@@ -4099,15 +4099,11 @@ export class DynamoDBTableProvider implements ResourceProvider {
   ): Promise<void> {
     const warn = (message: string): void => this.logger.warn(maskSecrets(message));
     const debug = (message: string): void => this.logger.debug(maskSecrets(message));
-    const ops = planStreamMemberOps(
-      desiredBlock,
-      previousBlock,
-      { freshStream },
-      (reason) =>
-        warn(
-          `DynamoDB table ${tableName}: ${reason}, so that member of the stream was left as ` +
-            `it is. Fix the template value and re-deploy.`
-        )
+    const ops = planStreamMemberOps(desiredBlock, previousBlock, { freshStream }, (reason) =>
+      warn(
+        `DynamoDB table ${tableName}: ${reason}, so that member of the stream was left as ` +
+          `it is. Fix the template value and re-deploy.`
+      )
     );
     if (ops.length === 0) return;
     if (streamArn === undefined || streamArn === '' || streamArn === deadStreamArn) {
