@@ -198,7 +198,12 @@ vi.mock('@aws-sdk/client-secrets-manager', async (importOriginal) => {
   return { ...actual, SecretsManagerClient: FakeSecretsManagerClient };
 });
 
-const { resolveImportedProperties, captureObservedForImportedResources, rebuiltLogicalIdsFrom } =
+const {
+  resolveImportedProperties,
+  captureObservedForImportedResources,
+  rebuiltLogicalIdsFrom,
+  ObservedBaselineRefusals,
+} =
   await import(
   '../../../src/cli/commands/import.js'
 );
@@ -1325,7 +1330,14 @@ async function captureVia(
   const registry = {
     getProviderFor: () => ({ provider, provisionedBy: 'sdk' }),
   } as unknown as Parameters<typeof captureObservedForImportedResources>[1];
-  await captureObservedForImportedResources(state, registry, getLogger(), refusedIds, rebuiltIds);
+  await captureObservedForImportedResources(
+    state,
+    registry,
+    getLogger(),
+    // The capture takes the refusals VALUE, not a bare id set (issue #3462).
+    new ObservedBaselineRefusals(refusedIds),
+    rebuiltIds
+  );
   return { observed: state.resources['Res']!.observedProperties, seen };
 }
 
@@ -1620,7 +1632,14 @@ async function captureInto(
   const registry = {
     getProviderFor: () => ({ provider, provisionedBy: 'sdk' }),
   } as unknown as Parameters<typeof captureObservedForImportedResources>[1];
-  await captureObservedForImportedResources(state, registry, getLogger(), refusedIds, rebuiltIds);
+  await captureObservedForImportedResources(
+    state,
+    registry,
+    getLogger(),
+    // The capture takes the refusals VALUE, not a bare id set (issue #3462).
+    new ObservedBaselineRefusals(refusedIds),
+    rebuiltIds
+  );
   return { resources: state.resources, readFor };
 }
 

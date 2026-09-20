@@ -96,6 +96,7 @@ import {
   type StackOrphanRecord,
   importableOutputKeys,
   importableOutputs,
+  hasUnverifiableParameterRefusal,
   type StackState,
   type StateImportEntry,
   type StateOutputReadEntry,
@@ -2868,7 +2869,14 @@ export class DeployEngine {
         // is the rebuild, and the contract a test can hold is "a real CREATE /
         // UPDATE clears the refusal", not "this line does".
         //
-        // The one arm that deliberately KEEPS a marked record marked is the
+        // ONE REFUSAL CLASS IS NOT CLEARED BY THE REBUILD (issue #3462): an
+        // unverifiable-parameter refusal survives every IN-PLACE update, and
+        // that arm of `provisionResource` kicks off no capture at all, so such
+        // a record never reaches this loop either. Only a replacement / CREATE
+        // (or a proving re-import) discharges it — the type doc of
+        // `ResourceState.observedBaselineRefusalReason` carries the argument.
+        //
+        // The other arm that deliberately KEEPS a marked record marked is the
         // metadata-only update (`{ ...currentResource, ...templateAttributes }`
         // in `provisionResource`): it issues no provider call and takes no
         // readback, so nothing there earns a baseline the import declined.
@@ -3055,7 +3063,7 @@ export class DeployEngine {
     }
     if (refused > 0) {
       this.logger.debug(
-        `observed-properties auto-refresh SKIPPED for ${refused} resource(s) whose baseline a 'cdkd import' run refused (issue #2944): their recorded properties cannot position the redaction, so capturing an AWS readback against them could persist a resolved secret in plaintext. A deploy that actually CHANGES one of them restores its baseline; a NO_CHANGE deploy does not.`
+        `observed-properties auto-refresh SKIPPED for ${refused} resource(s) whose baseline a 'cdkd import' run refused (issue #2944): their recorded properties cannot position the redaction, so capturing an AWS readback against them could persist a resolved secret in plaintext. A deploy that actually CHANGES one of them restores its baseline, unless the refusal is an unverifiable-parameter one (only a replacement or a proving re-import discharges that); a NO_CHANGE deploy never does.`
       );
     }
     if (candidates.length === 0) return;
@@ -7758,6 +7766,36 @@ export class DeployEngine {
             );
           }
 
+          // Issue #3462 — the ONE refusal class an in-place UPDATE may not
+          // clear. The rebuild below enumerates its fields, which is what
+          // clears every other `observedBaselineRefused` (see
+          // `drainObservedCaptures`); for an unverifiable-parameter refusal
+          // that is the leak. `cdkd import` refused because a template
+          // parameter was not provably deployed at its `Default`, and a
+          // top-level deploy binds that SAME `Default` (a nested child is handed
+          // its values by the parent, where keeping the refusal is merely
+          // conservative): the record's placeholder leaf is unchanged, so the
+          // provider need not have rewritten it, AWS can still hold the
+          // deployed value there, and a readback positioned against the
+          // placeholder pairs it as an ordinary drifted literal. The engine
+          // cannot know which leaves a provider wrote, so NO in-place update
+          // discharges it, whatever it changed.
+          //
+          // A replacement does, but only one that is EVIDENCED: `wasReplaced`
+          // AND a physical id that actually changed, so the capture below reads
+          // a resource built from the bag cdkd sent. The flag alone is not
+          // trusted: `S3BucketProvider.update` answers `wasReplaced: true` with
+          // the OLD id when the bound `BucketName` differs from it — exactly
+          // this class's shape, a name bound to a placeholder — having created
+          // nothing, and the capture would then read the old bucket. Both
+          // half-signals (the flag with the same id, a new id without the
+          // flag, the update-unsupported fallback re-creating under the same
+          // name) KEEP the refusal: the fail-closed reading.
+          const dischargedByReplacement =
+            result.wasReplaced === true && result.physicalId !== currentResource.physicalId;
+          const keepsParameterRefusal =
+            !dischargedByReplacement && hasUnverifiableParameterRefusal(currentResource);
+
           // Attributes: prefer the update result's fresh set; when the
           // provider returned none AND the resource was updated IN PLACE,
           // carry the previously-stored (create-time) attributes forward —
@@ -7803,31 +7841,47 @@ export class DeployEngine {
             ...(dependencies && dependencies.length > 0 && { dependencies }),
             ...this.extractTemplateAttributes(template, logicalId),
             provisionedBy: resultProvisionedBy,
+            ...(keepsParameterRefusal && {
+              observedBaselineRefused: true as const,
+              observedBaselineRefusalReason: 'unverifiable-parameter' as const,
+            }),
           };
 
-          const updateCaptureSiblings = await this.buildObservedCaptureSiblings(
-            resourceType,
-            logicalId,
-            result.physicalId,
-            template,
-            stateResources,
-            stackName,
-            parameterValues,
-            conditions
-          );
+          if (keepsParameterRefusal) {
+            // No readback is TAKEN, not merely not persisted: a value that is
+            // never read cannot reach the record, the journal, an event or a
+            // log line by any route.
+            this.logger.debug(
+              `observedProperties capture SKIPPED for updated ${logicalId} (${resourceType}): 'cdkd import' refused its baseline because a template parameter was not provably deployed at its 'Default', and this deploy bound the same 'Default' — an in-place update cannot show that AWS no longer holds the deployed value. The refusal stands until the resource is replaced or re-imported against a CloudFormation stack that proves the parameter.`
+            );
+          }
+          const updateCaptureSiblings = keepsParameterRefusal
+            ? undefined
+            : await this.buildObservedCaptureSiblings(
+                resourceType,
+                logicalId,
+                result.physicalId,
+                template,
+                stateResources,
+                stackName,
+                parameterValues,
+                conditions
+              );
           // `captureProvider`, NOT `updateProvider`: on the plain in-place
           // path they are the same binding, and on the replacement fallback
           // this is the provider that actually created `result.physicalId`
           // and the layer `provisionedBy` above was stamped with (issue
           // #2608).
-          this.kickOffObservedCapture(
-            captureProvider,
-            logicalId,
-            result.physicalId,
-            resourceType,
-            resolvedProps,
-            updateCaptureSiblings
-          );
+          if (!keepsParameterRefusal) {
+            this.kickOffObservedCapture(
+              captureProvider,
+              logicalId,
+              result.physicalId,
+              resourceType,
+              resolvedProps,
+              updateCaptureSiblings
+            );
+          }
 
           // Issue #1819: the provider may have updated the resource and left
           // something behind. The row still counts as an update for ordering

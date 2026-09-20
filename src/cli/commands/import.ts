@@ -75,6 +75,7 @@ import type {
 import {
   STATE_SCHEMA_VERSION_CURRENT,
   exportNamesCarriedFrom,
+  hasUnverifiableParameterRefusal,
   orphansCarriedFrom,
   type ResourceState,
   type StackState,
@@ -155,7 +156,7 @@ type ImportOutcome =
   | 'skipped-out-of-scope'
   | 'failed';
 
-interface ImportRow {
+export interface ImportRow {
   logicalId: string;
   resourceType: string;
   outcome: ImportOutcome;
@@ -172,6 +173,31 @@ interface ImportRow {
    * snapshot. Same staleness class as deploy, not a new one.
    */
   attributes?: Record<string, unknown>;
+}
+
+/**
+ * What {@link resolveImportedProperties} refused, as ONE value (issue #3462).
+ *
+ * It is still the set of logical ids whose observed baseline must not be
+ * captured — every existing reader calls `.has()` — and it additionally carries
+ * the two facts `captureObservedForImportedResources` needs to write, keep or
+ * clear `ResourceState.observedBaselineRefusalReason`. They travel ON the set
+ * rather than beside it, and the capture's parameter is THIS type, so a call
+ * site that copies the ids into a plain `Set` — dropping both facts, and with
+ * them the reason every deploy-side guard keys on — does not compile.
+ */
+export class ObservedBaselineRefusals extends Set<string> {
+  /**
+   * The subset ARM 4 named — directly, through an attribute read, or as an
+   * unclassifiable bag — whether or not another arm refused it too.
+   */
+  readonly unverifiableParameter = new Set<string>();
+  /**
+   * Whether this run HAD deployed parameter values to compare against. Only
+   * then does "ARM 4 did not name it" mean the placeholder was PROVEN; without
+   * a source it means nothing was judged at all.
+   */
+  hadDeployedParameterSource = false;
 }
 
 async function importCommand(stackArg: string | undefined, options: ImportOptions): Promise<void> {
@@ -1424,8 +1450,10 @@ export function rebuiltLogicalIdsFrom(
  * import flow never derives outputs (they're computed at deploy time from
  * each resource's attributes), so even an auto-mode rebuild has no reason
  * to wipe them.
+ *
+ * Exported for unit testing — internal to the command flow otherwise.
  */
-function buildStackState(
+export function buildStackState(
   stackName: string,
   region: string,
   rows: ImportRow[],
@@ -1484,6 +1512,23 @@ function buildStackState(
       // post-import drift / destroy paths route through the SDK provider
       // without falling back to the absent-field "sdk legacy default".
       provisionedBy: 'sdk',
+      // Issue #3462: an unverifiable-parameter refusal is carried across the
+      // rebuild, because THIS literal is otherwise the one place it is lost —
+      // and the run that rebuilds may have no way to re-judge it. After a
+      // `--migrate-from-cloudformation` the CloudFormation stack is gone, so a
+      // later re-import has no deployed-parameter source, ARM 4 does not run,
+      // and the capture below would position AWS's readback against the same
+      // placeholder `Default` the refusal distrusted. Only on an UNCHANGED
+      // physical id, for the reason `priorAttributes` has: the refusal is a
+      // fact about what that AWS resource holds. Whether it STANDS is decided
+      // by `captureObservedForImportedResources`, which knows whether this run
+      // had a source.
+      ...(prior &&
+        prior.physicalId === row.physicalId &&
+        hasUnverifiableParameterRefusal(prior) && {
+          observedBaselineRefused: true as const,
+          observedBaselineRefusalReason: 'unverifiable-parameter' as const,
+        }),
     };
   }
   return {
@@ -1674,12 +1719,13 @@ function defaultOnlyParameterTemplate(template: CloudFormationTemplate): CloudFo
  *    `DescribeStacks` parameters are the comparison); what REMAINS is an
  *    import with NO CloudFormation stack, where no deployed-parameter source
  *    exists, taint across the nested-stack `Outputs` boundary
- *    (`import-deployed-parameters.ts` states it), and the NEXT DEPLOY: the
- *    refusal marker is cleared by any UPDATE that rebuilds the record, and
- *    `cdkd deploy` binds the same placeholder `Default`, so an UPDATE that does
- *    not rewrite the placeholder-bound property captures the readback against
- *    it ([#3462](https://github.com/go-to-k/cdkd/issues/3462);
- *    `deploy-engine.ts` owns the fix). ARM 4 also WIDENS the population of
+ *    (`import-deployed-parameters.ts` states it). The NEXT DEPLOY and a
+ *    source-less RE-IMPORT used to be on this list
+ *    ([#3462](https://github.com/go-to-k/cdkd/issues/3462)): both bind the
+ *    same placeholder `Default`, so both now honour
+ *    `ResourceState.observedBaselineRefusalReason`, which this arm's verdict
+ *    is recorded as. A binary older than that field still clears the marker on
+ *    any UPDATE. ARM 4 also WIDENS the population of
  *    [#2872](https://github.com/go-to-k/cdkd/issues/2872): a record preserved
  *    by a selective merge that a pre-#2854 import already gave a plaintext
  *    baseline is now refused, and a refusal leaves that old baseline in place;
@@ -1707,7 +1753,8 @@ function defaultOnlyParameterTemplate(template: CloudFormationTemplate): CloudFo
  * deployer, which is where the structural remedy for all of the above lives.
  *
  * The set is returned rather than recorded on the state, because it describes
- * THIS run's resolution and nothing downstream of the save has any use for it.
+ * THIS run's resolution; `captureObservedForImportedResources` turns it into
+ * the two record fields that DO outlive the run.
  *
  * Exported for unit testing — internal to the command flow otherwise. The
  * masking this walk applies (issue #2803) is only provable against the REAL
@@ -1727,8 +1774,9 @@ export async function resolveImportedProperties(
    * COMPARISON-ONLY: never bound into the resolve below.
    */
   deployedParameters?: DeployedParameters
-): Promise<Set<string>> {
-  const unsafeObservedBaselineLogicalIds = new Set<string>();
+): Promise<ObservedBaselineRefusals> {
+  const unsafeObservedBaselineLogicalIds = new ObservedBaselineRefusals();
+  unsafeObservedBaselineLogicalIds.hadDeployedParameterSource = deployedParameters !== undefined;
   const entries = Object.entries(stackState.resources ?? {});
   if (entries.length === 0) return unsafeObservedBaselineLogicalIds;
 
@@ -2059,6 +2107,11 @@ export async function resolveImportedProperties(
     // the redaction to position. Decided per STACK above; it reads only raw
     // bags, so it applies on the throw arm too.
     const dependsOnDivergent = parameterTaint?.refused.has(logicalId) === true;
+    // Recorded whenever ARM 4 named the resource, INDEPENDENTLY of `threw`
+    // (issue #3462): the reason decides whether a later UPDATE may clear the
+    // refusal, and a resource that also tripped another arm is no more
+    // dischargeable by a deploy than one that tripped this arm alone.
+    if (dependsOnDivergent) unsafeObservedBaselineLogicalIds.unverifiableParameter.add(logicalId);
     if (threw || dependsOnDivergent) {
       unsafeObservedBaselineLogicalIds.add(logicalId);
       continue;
@@ -2698,7 +2751,7 @@ export async function captureObservedForImportedResources(
   stackState: StackState,
   providerRegistry: ProviderRegistry,
   logger: ReturnType<typeof getLogger>,
-  unsafeObservedBaselineLogicalIds: ReadonlySet<string>,
+  unsafeObservedBaselineLogicalIds: ObservedBaselineRefusals,
   rebuiltLogicalIds: ReadonlySet<string>
 ): Promise<void> {
   const entries = Object.entries(stackState.resources ?? {});
@@ -2820,18 +2873,42 @@ export async function captureObservedForImportedResources(
         resource.observedBaselineRefused === true && !rebuiltLogicalIds.has(logicalId);
       if (preservedRefusal) {
         logger.debug(
-          `observedProperties capture SKIPPED for preserved ${logicalId} (${resource.resourceType}): a previous 'cdkd import' run refused this record's baseline and this run did not re-import it, so its recorded properties are still the ones that refusal distrusted. Deploy a change to this resource to restore a baseline.`
+          `observedProperties capture SKIPPED for preserved ${logicalId} (${resource.resourceType}): a previous 'cdkd import' run refused this record's baseline and this run did not re-import it, so its recorded properties are still the ones that refusal distrusted. Re-import it, or deploy a change to it, to restore a baseline — unless its refusal is an unverifiable-parameter one, which only a replacement or a proving re-import discharges.`
         );
         return;
       }
-      if (unsafeObservedBaselineLogicalIds.has(logicalId)) {
+      // Issue #3462 — whether an UNVERIFIABLE-PARAMETER refusal stands for this
+      // rebuilt record. Two sources: ARM 4 named it THIS run, or
+      // `buildStackState` carried one from the prior record (same physical id)
+      // and this run had NO deployed-parameter source to re-judge it with. A
+      // carried refusal is discharged only by a run that HAD a source and whose
+      // ARM 4 then did not name the resource — the parameter was PROVEN to be
+      // the bound `Default`. "ARM 4 did not name it" with no source means
+      // nothing was judged.
+      const refusals = unsafeObservedBaselineLogicalIds;
+      const parameterRefusalStands =
+        refusals.unverifiableParameter.has(logicalId) ||
+        (hasUnverifiableParameterRefusal(resource) && !refusals.hadDeployedParameterSource);
+      if (unsafeObservedBaselineLogicalIds.has(logicalId) || parameterRefusalStands) {
         // Set BEFORE the early return, and set on the record rather than
         // returned to the caller, because the caller hands this same object to
         // `saveState` — the set that drove the skip describes THIS run's
         // resolution and is discarded with it.
         resource.observedBaselineRefused = true;
+        // The reason is written ONLY beside the marker, and REMOVED when this
+        // run refuses for another arm while having proven the parameter: a
+        // stale reason would make that refusal permanent for no cause.
+        if (parameterRefusalStands) {
+          resource.observedBaselineRefusalReason = 'unverifiable-parameter';
+        } else {
+          delete resource.observedBaselineRefusalReason;
+        }
         logger.debug(
-          `observedProperties capture SKIPPED for imported ${logicalId} (${resource.resourceType}): the recorded properties cannot be shown to spell every dynamic reference the deployed resource was built from, so they cannot position a redaction — capturing an AWS readback against them could persist a resolved secret in plaintext. Drift will compare against the recorded properties for this resource until the next successful deploy.`
+          `observedProperties capture SKIPPED for imported ${logicalId} (${resource.resourceType}): the recorded properties cannot be shown to spell every dynamic reference the deployed resource was built from, so they cannot position a redaction — capturing an AWS readback against them could persist a resolved secret in plaintext. Drift will compare against the recorded properties for this resource until ${
+            parameterRefusalStands
+              ? `it is REPLACED, or re-imported while a CloudFormation stack can prove its parameters were deployed at their 'Default' — an in-place deploy binds the same 'Default' and cannot restore the baseline`
+              : `the next successful deploy`
+          }.`
         );
         return;
       }
@@ -2850,6 +2927,8 @@ export async function captureObservedForImportedResources(
       // `delete` rather than `= undefined`: the field must be ABSENT from the
       // persisted JSON, which is what a reader tests.
       delete resource.observedBaselineRefused;
+      // Issue #3462: never left behind without its marker.
+      delete resource.observedBaselineRefusalReason;
       try {
         const provider = providerRegistry.getProviderFor({
           resourceType: resource.resourceType,

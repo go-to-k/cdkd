@@ -18,10 +18,28 @@
 #      `literal-reference` / `masked` / `placeholder-default` /
 #      `RESOLVED-PLAINTEXT` / `other` -- and NEVER the value.
 #   5. `cdkd import --migrate-from-cloudformation --yes`.
-#   6. Assert, for root AND child state: no plaintext anywhere; the four
+#   6. Assert, for root AND child state: no plaintext anywhere; the five
 #      secret-carrying resources carry `observedBaselineRefused` and no
 #      `observedProperties`; the `Stage` control KEPT its baseline; the import
 #      warned, naming the parameters; the plaintext is in no import log line.
+#   6b. REDEPLOY ARM (issue #3462): `cdkd deploy` with `CDKD_TEST_UPDATE=true`,
+#      whose only root change is `SecretEnvFn`'s inline CODE. The Lambda
+#      provider sends `UpdateFunctionCode` alone, so the environment variable
+#      AWS holds is STILL the decrypted value afterwards (asserted, or the arm
+#      is vacuous). `cdkd deploy` binds the same placeholder `Default`, so a
+#      post-UPDATE readback would pair the secret as an ordinary drifted
+#      literal. Assert: the code really changed; every refused record still
+#      carries the marker AND `observedBaselineRefusalReason`, with no
+#      `observedProperties`; no plaintext in root or child state, in ANY
+#      surviving object version under either prefix, or in the deploy log.
+#   6c. RE-IMPORT ARM (issue #3462): a SELECTIVE `cdkd import --resource
+#      SecretEnvFn=<name> --force`. The migration deleted the CloudFormation
+#      stack, so this run has NO deployed parameter values, ARM 4 does not run,
+#      and the rebuilt record would be captured against the placeholder. Assert
+#      the refusal is carried (marker + reason, no `observedProperties`) and no
+#      plaintext reached state, its object versions, or the log. Selective, not
+#      auto: nothing here has a physical-name property, so an auto rebuild
+#      would drop every record and orphan the resources.
 #   7. `cdkd destroy`, then assert resources, state and every S3 object VERSION
 #      under both state prefixes are gone, and force-delete the secret.
 set -euo pipefail
@@ -86,8 +104,12 @@ SECRET_PLAINTEXT='cdkd-integ-2854-DECRYPTED-NEEDLE-7f3a'
 
 ASSERTIONS_RUN=0
 IMPORT_LOG="$(mktemp -t cdkd-2854-import.XXXXXX)"
+DEPLOY_LOG="$(mktemp -t cdkd-3462-deploy.XXXXXX)"
+REIMPORT_LOG="$(mktemp -t cdkd-3462-reimport.XXXXXX)"
 ROOT_PARAM_NAMES=""
 CHILD_PARAM_NAMES=""
+FN_NAME=""
+FN_ROLE_NAME=""
 
 echo "[verify] region=${REGION} stack=${STACK} state-bucket=${STATE_BUCKET}"
 
@@ -116,6 +138,13 @@ cleanup() {
   for n in ${ROOT_PARAM_NAMES} ${CHILD_PARAM_NAMES}; do
     aws ssm delete-parameter --name "${n}" --region "${REGION}" >/dev/null 2>&1 || true
   done
+  # By exact physical name too, captured in step 3 (empty before it).
+  if [ -n "${FN_NAME}" ]; then
+    aws lambda delete-function --function-name "${FN_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  fi
+  if [ -n "${FN_ROLE_NAME}" ]; then
+    aws iam delete-role --role-name "${FN_ROLE_NAME}" >/dev/null 2>&1 || true
+  fi
   AWS_REGION="${REGION}" ${CLI} state destroy "${STACK}" \
     --state-bucket "${STATE_BUCKET:-}" --yes >/dev/null 2>&1 || true
   aws secretsmanager delete-secret --secret-id "${SECRET_NAME}" \
@@ -124,7 +153,7 @@ cleanup() {
   aws s3 rm "s3://${STATE_BUCKET}/${CHILD_STATE_KEY}" --region "${REGION}" >/dev/null 2>&1 || true
   s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX:-}" noncurrent || true
   s3_purge_prefix_versions "${STATE_BUCKET}" "${CHILD_STATE_PREFIX:-}" noncurrent || true
-  rm -f "${IMPORT_LOG}"
+  rm -f "${IMPORT_LOG}" "${DEPLOY_LOG}" "${REIMPORT_LOG}"
   set -eu
   return 0
 }
@@ -192,7 +221,20 @@ for n in "${ROOT_PW_NAME}" "${ROOT_TOKEN_NAME}" "${CHILD_PW_NAME}" "${CHILD_TOKE
   fi
   ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 done
-echo "[verify] step 3 ok: 4 live SSM parameters hold the decrypted value"
+FN_NAME="$(physical_of "${STACK}" SecretEnvFn)"
+FN_ROLE_NAME="$(physical_of "${STACK}" SecretEnvFnRole)"
+[ -n "${FN_NAME}" ] || { echo "[verify] FAIL: SecretEnvFn physical name is empty" >&2; exit 1; }
+[ -n "${FN_ROLE_NAME}" ] || { echo "[verify] FAIL: SecretEnvFnRole physical name is empty" >&2; exit 1; }
+live_fn_env() { # the DB_PASSWORD variable AWS holds; compared, never printed
+  aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}" \
+    --query 'Environment.Variables.DB_PASSWORD' --output text
+}
+if [ "$(live_fn_env)" != "${SECRET_PLAINTEXT}" ]; then
+  echo "[verify] FAIL: premise: SecretEnvFn's DB_PASSWORD does not hold the seeded plaintext" >&2
+  exit 1
+fi
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+echo "[verify] step 3 ok: 4 live SSM parameters and 1 Lambda environment variable hold the decrypted value"
 
 echo "[verify] step 4: MEASURE what DescribeStacks returns (shape class only, never the value)"
 classify_parameter() { # usage: classify_parameter <stack> <parameterKey> <placeholderDefault>
@@ -250,21 +292,26 @@ for pair in "root|${ROOT_STATE}" "child|${CHILD_STATE}"; do
   ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 done
 assert_record() { # usage: assert_record <label> <state-json> <logicalId> refused|captured
+  # `refused` means the UNVERIFIABLE-PARAMETER class specifically (issue #3462):
+  # the marker alone is what any other refusal arm writes, and it is the REASON
+  # that carries the refusal through an in-place UPDATE.
   printf '%s' "$2" | python3 -c '
 import json, sys
 label, logical_id, want = sys.argv[1], sys.argv[2], sys.argv[3]
 record = json.load(sys.stdin)["resources"][logical_id]
 refused = record.get("observedBaselineRefused") is True
+reason = record.get("observedBaselineRefusalReason")
 observed = "observedProperties" in record
-if want == "refused" and not (refused and not observed):
-    sys.exit(f"{label}/{logical_id}: expected a REFUSED baseline (refused={refused}, observed={observed})")
-if want == "captured" and not (observed and not refused):
-    sys.exit(f"{label}/{logical_id}: expected a CAPTURED baseline (refused={refused}, observed={observed})")
+if want == "refused" and not (refused and reason == "unverifiable-parameter" and not observed):
+    sys.exit(f"{label}/{logical_id}: expected a REFUSED baseline with its reason (refused={refused}, reason={reason!r}, observed={observed})")
+if want == "captured" and not (observed and not refused and reason is None):
+    sys.exit(f"{label}/{logical_id}: expected a CAPTURED baseline (refused={refused}, reason={reason!r}, observed={observed})")
 ' "$1" "$3" "$4" || { echo "[verify] FAIL: baseline verdict (see above)" >&2; exit 1; }
   ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 }
 assert_record root "${ROOT_STATE}" RootPwParam refused
 assert_record root "${ROOT_STATE}" RootTokenParam refused
+assert_record root "${ROOT_STATE}" SecretEnvFn refused
 # NEGATIVE CONTROL: deployed AT its Default, so it must KEEP its baseline --
 # without this, "refuse everything" would pass every assertion above.
 assert_record root "${ROOT_STATE}" RootStageParam captured
@@ -297,11 +344,162 @@ grep "whose deployed CloudFormation value could not be proven equal" "${IMPORT_L
 ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 echo "[verify] step 6 ok"
 
+echo "[verify] step 6b: REDEPLOY ARM (issue #3462) -- a code-only UPDATE after the import"
+# Every surviving object VERSION, not just the current one: a deploy saves state
+# more than once, and an intermediate save that carried the plaintext is a
+# disclosure the final body does not show. Rows are counted, never `length(...)`
+# (per-page under --output text); delete markers are outside `Versions[]`.
+assert_no_plaintext_in_versions() { # usage: assert_no_plaintext_in_versions <prefix> <description>
+  local prefix="$1" desc="$2" rows key vid body scanned=0
+  if ! rows="$(aws s3api list-object-versions --bucket "${STATE_BUCKET}" --region "${REGION}" \
+      --prefix "${prefix}" --query 'Versions[].[Key,VersionId]' --output text 2>&1)"; then
+    echo "[verify] FAIL: ${desc}: could not list object versions under ${prefix} (${rows})" >&2
+    exit 1
+  fi
+  # `|| [ -n "${key}" ]`: `$(...)` strips the trailing newline, so `read` fails
+  # on the LAST row. A here-string so `scanned` survives the loop.
+  while IFS=$'\t' read -r key vid || [ -n "${key}" ]; do
+    [ -n "${key}" ] || continue
+    [ -n "${vid}" ] || continue
+    [ "${vid}" != "None" ] || continue
+    if ! body="$(aws s3api get-object --bucket "${STATE_BUCKET}" --region "${REGION}" --key "${key}" \
+        --version-id "${vid}" /dev/stdout < /dev/null 2>&1)"; then
+      echo "[verify] FAIL: ${desc}: could not read ${key} version ${vid} -- undetermined" >&2
+      exit 1
+    fi
+    # -qF: a match is never echoed.
+    if printf '%s' "${body}" | grep -qF "${SECRET_PLAINTEXT}"; then
+      echo "[verify] FAIL: ${desc}: ${key} version ${vid} carries the DECRYPTED secret" >&2
+      exit 1
+    fi
+    scanned=$((scanned + 1))
+  done <<< "${rows}"
+  if [ "${scanned}" -eq 0 ]; then
+    echo "[verify] FAIL: ${desc}: scanned ZERO object versions under ${prefix}" >&2
+    exit 1
+  fi
+  echo "[verify] ${desc}: ${scanned} object version(s) scanned, none carries the plaintext"
+  ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+}
+fn_code_sha() {
+  aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}" \
+    --query 'CodeSha256' --output text
+}
+CODE_SHA_BEFORE="$(fn_code_sha)"
+(cd "${TEST_DIR}" && CDKD_TEST_UPDATE=true ${CLI} deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --yes \
+  --verbose) >"${DEPLOY_LOG}" 2>&1 || {
+  tail -40 "${DEPLOY_LOG}" | sed "s/${SECRET_PLAINTEXT}/<SEEDED-PLAINTEXT>/g" >&2
+  echo "[verify] FAIL: redeploy exited non-zero" >&2
+  exit 1
+}
+# The UPDATE really ran: without this, "the marker is still there" is equally
+# satisfied by a deploy that found nothing to do.
+CODE_SHA_AFTER="$(fn_code_sha)"
+if [ -z "${CODE_SHA_AFTER}" ] || [ "${CODE_SHA_AFTER}" = "${CODE_SHA_BEFORE}" ]; then
+  echo "[verify] FAIL: SecretEnvFn's CodeSha256 did not change -- the redeploy did not UPDATE it" >&2
+  exit 1
+fi
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+# NON-VACUITY: the update did not rewrite the placeholder-bound leaf, so AWS
+# still holds the decrypted value exactly where a readback would find it.
+if [ "$(live_fn_env)" != "${SECRET_PLAINTEXT}" ]; then
+  echo "[verify] FAIL: premise: after the code-only update SecretEnvFn no longer holds the seeded plaintext," >&2
+  echo "         so the absence assertions below would prove nothing." >&2
+  exit 1
+fi
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+ROOT_STATE_2="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
+CHILD_STATE_2="$(aws s3 cp "s3://${STATE_BUCKET}/${CHILD_STATE_KEY}" - --region "${REGION}")"
+for pair in "root|${ROOT_STATE_2}" "child|${CHILD_STATE_2}"; do
+  label="${pair%%|*}"
+  body="${pair#*|}"
+  [ -n "${body}" ] || { echo "[verify] FAIL: ${label} state is empty after the redeploy" >&2; exit 1; }
+  if printf '%s' "${body}" | grep -qF "${SECRET_PLAINTEXT}"; then
+    echo "[verify] FAIL: the DECRYPTED secret is in the ${label} state.json after the redeploy" >&2
+    exit 1
+  fi
+  ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+done
+# The record the deploy REBUILT is the discriminating one; the rest prove the
+# refusal stands across whatever the deploy did or did not touch.
+assert_record root-redeployed "${ROOT_STATE_2}" SecretEnvFn refused
+assert_record root-redeployed "${ROOT_STATE_2}" RootPwParam refused
+assert_record root-redeployed "${ROOT_STATE_2}" RootTokenParam refused
+assert_record root-redeployed "${ROOT_STATE_2}" RootStageParam captured
+assert_record child-redeployed "${CHILD_STATE_2}" ChildPwParam refused
+assert_record child-redeployed "${CHILD_STATE_2}" ChildTokenParam refused
+if grep -qF "${SECRET_PLAINTEXT}" "${DEPLOY_LOG}"; then
+  echo "[verify] FAIL: the DECRYPTED secret is in the redeploy's --verbose output" >&2
+  exit 1
+fi
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+assert_no_plaintext_in_versions "${STATE_PREFIX}" "root state prefix after the redeploy"
+assert_no_plaintext_in_versions "${CHILD_STATE_PREFIX}" "child state prefix after the redeploy"
+echo "[verify] step 6b ok"
+
+echo "[verify] step 6c: RE-IMPORT ARM (issue #3462) -- a selective re-import with no CloudFormation source"
+# PREMISE: the source stack is gone, so this run cannot have deployed values.
+assert_gone "premise: the source CloudFormation stack still exists, so the re-import would HAVE a parameter source" \
+  aws cloudformation describe-stacks --stack-name "${STACK}" --region "${REGION}"
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+(cd "${TEST_DIR}" && CDKD_TEST_UPDATE=true ${CLI} import "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --resource "SecretEnvFn=${FN_NAME}" \
+  --force \
+  --yes \
+  --verbose) >"${REIMPORT_LOG}" 2>&1 || {
+  tail -40 "${REIMPORT_LOG}" | sed "s/${SECRET_PLAINTEXT}/<SEEDED-PLAINTEXT>/g" >&2
+  echo "[verify] FAIL: re-import exited non-zero" >&2
+  exit 1
+}
+# NON-VACUITY: AWS still holds the plaintext where a capture would read it.
+if [ "$(live_fn_env)" != "${SECRET_PLAINTEXT}" ]; then
+  echo "[verify] FAIL: premise: SecretEnvFn no longer holds the seeded plaintext before the re-import assertions" >&2
+  exit 1
+fi
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+ROOT_STATE_3="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
+[ -n "${ROOT_STATE_3}" ] || { echo "[verify] FAIL: root state is empty after the re-import" >&2; exit 1; }
+if printf '%s' "${ROOT_STATE_3}" | grep -qF "${SECRET_PLAINTEXT}"; then
+  echo "[verify] FAIL: the DECRYPTED secret is in the root state.json after the re-import" >&2
+  exit 1
+fi
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+# The re-import really WROTE state: `cdkd import` exits 0 without writing when
+# no row imports, and the body left by step 6b satisfies every verdict below on
+# its own. Read from the record, not from a log line whose wording can drift.
+state_last_modified() { # usage: state_last_modified <state-json>
+  printf '%s' "$1" | python3 -c 'import json, sys; print(json.load(sys.stdin)["lastModified"])'
+}
+LAST_MODIFIED_2="$(state_last_modified "${ROOT_STATE_2}")"
+LAST_MODIFIED_3="$(state_last_modified "${ROOT_STATE_3}")"
+if [ -z "${LAST_MODIFIED_3}" ] || [ "${LAST_MODIFIED_3}" = "${LAST_MODIFIED_2}" ]; then
+  echo "[verify] FAIL: the re-import did not write state (lastModified unchanged) -- SecretEnvFn was not re-imported," >&2
+  echo "         so the carry under test never ran." >&2
+  exit 1
+fi
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+assert_record root-reimported "${ROOT_STATE_3}" SecretEnvFn refused
+# The rows the selective run left in place are untouched.
+assert_record root-reimported "${ROOT_STATE_3}" RootPwParam refused
+assert_record root-reimported "${ROOT_STATE_3}" RootStageParam captured
+if grep -qF "${SECRET_PLAINTEXT}" "${REIMPORT_LOG}"; then
+  echo "[verify] FAIL: the DECRYPTED secret is in the re-import's --verbose output" >&2
+  exit 1
+fi
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+assert_no_plaintext_in_versions "${STATE_PREFIX}" "root state prefix after the re-import"
+echo "[verify] step 6c ok"
+
 echo "[verify] step 7: cdkd destroy"
 (cd "${TEST_DIR}" && ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force)
 for n in ${ROOT_PARAM_NAMES} ${CHILD_PARAM_NAMES}; do
   assert_gone "SSM parameter ${n} still exists after destroy" aws ssm get-parameter --name "${n}" --region "${REGION}"
 done
+assert_gone "Lambda function ${FN_NAME} still exists after destroy" aws lambda get-function --function-name "${FN_NAME}" --region "${REGION}"
+assert_gone "IAM role ${FN_ROLE_NAME} still exists after destroy" aws iam get-role --role-name "${FN_ROLE_NAME}"
 assert_gone "root cdkd state still present" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" --region "${REGION}"
 assert_gone "child cdkd state still present" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CHILD_STATE_KEY}" --region "${REGION}"
 assert_gone "source CloudFormation stack still present" aws cloudformation describe-stacks --stack-name "${STACK}" --region "${REGION}"
@@ -331,10 +529,14 @@ s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "import-deployed-pa
 s3_assert_versions_swept "${STATE_BUCKET}" "${CHILD_STATE_PREFIX}" "import-deployed-parameter-secret child state teardown"
 ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 
-# Literal floor, maintained by hand: 4 premise + 4 measured + 2 state greps +
-# 5 verdicts + 1 log grep + 1 warning + 1 gone + 1 versions = 19.
-if [ "${ASSERTIONS_RUN}" -lt 19 ]; then
-  echo "FAIL: only ${ASSERTIONS_RUN} of 19 assertions executed -- a block was skipped" >&2
+# Literal floor, maintained by hand: 5 premise + 4 measured + 2 state greps +
+# 6 verdicts + 1 log grep + 1 warning + 1 gone + 1 versions = 21, plus the
+# redeploy arm's 1 code sha + 1 live premise + 2 state greps + 6 verdicts +
+# 1 log grep + 2 version scans = 13 -> 34, plus the re-import arm's 1 source
+# premise + 1 live premise + 1 state grep + 1 state-written proof + 3 verdicts +
+# 1 log grep + 1 version scan = 9 -> 43.
+if [ "${ASSERTIONS_RUN}" -lt 43 ]; then
+  echo "FAIL: only ${ASSERTIONS_RUN} of 43 assertions executed -- a block was skipped" >&2
   exit 1
 fi
-echo "[verify] PASS -- no decrypted deployed-parameter secret reached state (issue #2854); ${ASSERTIONS_RUN} assertions executed"
+echo "[verify] PASS -- no decrypted deployed-parameter secret reached state, at import (issue #2854), at the redeploy after it, or at a source-less re-import (issue #3462); ${ASSERTIONS_RUN} assertions executed"
