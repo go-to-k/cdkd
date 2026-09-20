@@ -214,12 +214,13 @@ describe('DynamoDBTableProvider StreamSpecification.ResourcePolicy / Tags (issue
     childLogger.child.mockReturnValue(childLogger);
     provider = new DynamoDBTableProvider();
     // The absence re-ask exists for real-AWS read lag; one case below puts it back.
-    setAbsenceRetryDelays([]);
+    setRereadDelays([]);
   });
 
-  function setAbsenceRetryDelays(delays: number[]): void {
-    (provider as unknown as { streamMemberAbsenceRetryDelaysMs: number[] })
-      .streamMemberAbsenceRetryDelaysMs = delays;
+  function setRereadDelays(delays: number[]): void {
+    (
+      provider as unknown as { streamMemberRereadDelaysMs: number[] }
+    ).streamMemberRereadDelaysMs = delays;
   }
 
   afterEach(() => {
@@ -270,10 +271,29 @@ describe('DynamoDBTableProvider StreamSpecification.ResourcePolicy / Tags (issue
       await expect(
         provider.create('T', RESOURCE_TYPE, tableProps(streamBlock('NEW_IMAGE', members)))
       ).rejects.toThrow(`StreamSpecification.${needle}`);
-      expect(sent(CreateTableCommand)).toHaveLength(0);
-      await expect(
-        provider.create('T', RESOURCE_TYPE, tableProps(streamBlock('NEW_IMAGE', members)))
-      ).rejects.not.toThrow('ok-key');
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('names no resolved tag key or value in the create refusal', async () => {
+      primeAws();
+      const error = (await provider
+        .create(
+          'T',
+          RESOURCE_TYPE,
+          tableProps(
+            streamBlock('NEW_IMAGE', {
+              Tags: [
+                { Key: 'ok-key', Value: 'ok-value' },
+                { Key: 'bad-key', Value: { Ref: 'V' } },
+              ],
+            })
+          )
+        )
+        .catch((caught: unknown) => caught)) as Error;
+      expect(error.message).toContain('StreamSpecification.Tags[1]');
+      for (const resolved of ['ok-key', 'ok-value', 'bad-key']) {
+        expect(error.message).not.toContain(resolved);
+      }
     });
 
     it('stands the refusal down on a state replay, warns through the masker and creates the table', async () => {
@@ -305,21 +325,49 @@ describe('DynamoDBTableProvider StreamSpecification.ResourcePolicy / Tags (issue
       expect(sent(DeleteTableCommand)).toHaveLength(1);
     });
 
-    it('retries a not-found on the arn it just minted, and only there', async () => {
+    it('retries a not-found on the arn it just minted, for the tag AND the policy call, masking the retry line', async () => {
       vi.useFakeTimers();
       const aws = primeAws();
-      aws.failures.set(PutResourcePolicyCommand, [
-        new ResourceNotFoundException({ message: 'Requested resource not found', $metadata: {} }),
-      ]);
+      const notFound = (): Error =>
+        new ResourceNotFoundException({
+          message: `Requested resource not found: ${streamArnOf(1)}`,
+          $metadata: {},
+        });
+      aws.failures.set(TagResourceCommand, [notFound()]);
+      aws.failures.set(PutResourcePolicyCommand, [notFound()]);
+      const maskSecrets = (text: string): string => text.replaceAll(TABLE_NAME, '***');
       const pending = provider.create(
         'T',
         RESOURCE_TYPE,
-        tableProps(streamBlock('NEW_IMAGE', { ResourcePolicy: MEMBERS.ResourcePolicy }))
+        tableProps(streamBlock('NEW_IMAGE', MEMBERS)),
+        { maskSecrets }
       );
       await vi.runAllTimersAsync();
       await pending;
+      expect(sent(TagResourceCommand)).toHaveLength(2);
       expect(sent(PutResourcePolicyCommand)).toHaveLength(2);
       expect(aws.policies.get(streamArnOf(1))).toBe(JSON.stringify(DOC));
+      const retryLines = childLogger.debug.mock.calls
+        .map(([message]) => String(message))
+        .filter((line) => line.includes('Transient error'));
+      expect(retryLines).toHaveLength(2);
+      for (const line of retryLines) expect(line).not.toContain(TABLE_NAME);
+    });
+
+    it('fails LOUDLY when the created table reports no stream arn to apply the members to', async () => {
+      primeAws();
+      const inner = mockSend.getMockImplementation()!;
+      mockSend.mockImplementation((cmd: unknown) =>
+        cmd instanceof DescribeTableCommand
+          ? Promise.resolve({
+              Table: { TableName: TABLE_NAME, TableArn: TABLE_ARN, TableStatus: 'ACTIVE' },
+            })
+          : inner(cmd)
+      );
+      await expect(
+        provider.create('T', RESOURCE_TYPE, tableProps(streamBlock('NEW_IMAGE', MEMBERS)))
+      ).rejects.toThrow('returned no LatestStreamArn');
+      expect(writeTargets()).toEqual([]);
     });
   });
 
@@ -397,6 +445,18 @@ describe('DynamoDBTableProvider StreamSpecification.ResourcePolicy / Tags (issue
       );
       expect(sent(UpdateTableCommand)).toHaveLength(0);
       expect(new Set(writeTargets())).toEqual(new Set([streamArnOf(1)]));
+      // The old policy is gone BEFORE the first tag call and the new one lands
+      // AFTER the last: neither is ever evaluated against the other's tag set.
+      expect(
+        mockSend.mock.calls
+          .map(([cmd]) => (cmd as object).constructor.name)
+          .filter((name) => /Policy|[Tt]ag/.test(name) && !name.startsWith('Get'))
+      ).toEqual([
+        'DeleteResourcePolicyCommand',
+        'UntagResourceCommand',
+        'TagResourceCommand',
+        'PutResourcePolicyCommand',
+      ]);
       expect(sent(UntagResourceCommand)[0]!.input.TagKeys).toEqual(['team']);
       expect(aws.policies.get(streamArnOf(1))).toBe(JSON.stringify(OTHER_DOC));
       expect([...aws.tags.get(streamArnOf(1))!]).toEqual([['env', 'prod']]);
@@ -453,6 +513,91 @@ describe('DynamoDBTableProvider StreamSpecification.ResourcePolicy / Tags (issue
       ).resolves.toBeDefined();
     });
 
+    it('does NOT retry or tolerate a not-found on a stream that STAYS: there it is an answer', async () => {
+      const notFound = (): Error =>
+        new ResourceNotFoundException({ message: 'Requested resource not found', $metadata: {} });
+      async function expectOneAttempt<T>(
+        command: new (...args: never[]) => T,
+        desired: unknown,
+        previous: unknown
+      ): Promise<void> {
+        mockSend.mockReset();
+        const aws = primeAws({ generation: 1, streamEnabled: true, viewType: 'NEW_IMAGE' });
+        aws.failures.set(command, [notFound()]);
+        await expect(update(desired, previous)).rejects.toThrow('Requested resource not found');
+        expect(sent(command)).toHaveLength(1);
+      }
+      const withPolicy = streamBlock('NEW_IMAGE', { ResourcePolicy: MEMBERS.ResourcePolicy });
+      await expectOneAttempt(PutResourcePolicyCommand, withPolicy, streamBlock('NEW_IMAGE'));
+      await expectOneAttempt(DeleteResourcePolicyCommand, streamBlock('NEW_IMAGE'), withPolicy);
+    });
+
+    it.each(['new', 'stale', 'none'] as const)(
+      'enables a stream AGAIN after an earlier disable and writes to the NEW arn (UpdateTable echo: %s)',
+      async (echo) => {
+        // Generation 1 was disabled by an earlier deploy; its arn is still reported.
+        const aws = primeAws({ generation: 1, streamEnabled: false, echo });
+        const result = await update(streamBlock('NEW_IMAGE', MEMBERS), undefined);
+        expect(writeTargets()).toEqual([streamArnOf(2), streamArnOf(2)]);
+        expect(aws.policies.get(streamArnOf(2))).toBe(JSON.stringify(DOC));
+        expect(aws.policies.has(streamArnOf(1))).toBe(false);
+        expect(result.attributes?.['StreamArn']).toBe(streamArnOf(2));
+      }
+    );
+
+    it('fails LOUDLY when an enable after an earlier disable yields only the dead arn', async () => {
+      primeAws({ generation: 1, streamEnabled: false });
+      const inner = mockSend.getMockImplementation()!;
+      mockSend.mockImplementation((cmd: unknown) =>
+        cmd instanceof UpdateTableCommand ? Promise.resolve({}) : inner(cmd)
+      );
+      await expect(update(streamBlock('NEW_IMAGE', MEMBERS), undefined)).rejects.toThrow(
+        'no new LatestStreamArn'
+      );
+      expect(writeTargets()).toEqual([]);
+    });
+
+    it('retries a not-found on the arn an update-time enable minted', async () => {
+      vi.useFakeTimers();
+      const aws = primeAws();
+      aws.failures.set(PutResourcePolicyCommand, [
+        new ResourceNotFoundException({ message: 'Requested resource not found', $metadata: {} }),
+      ]);
+      const pending = update(
+        streamBlock('NEW_IMAGE', { ResourcePolicy: MEMBERS.ResourcePolicy }),
+        undefined
+      );
+      await vi.runAllTimersAsync();
+      await pending;
+      expect(sent(PutResourcePolicyCommand)).toHaveLength(2);
+      expect(aws.policies.get(streamArnOf(1))).toBe(JSON.stringify(DOC));
+    });
+
+    it('re-runs after a deploy that enabled the stream and then failed: no second enable, everything applied', async () => {
+      // State never recorded the stream, AWS has it (with the tag the failed run got to).
+      const aws = primeAws({ generation: 1, streamEnabled: true, viewType: 'NEW_IMAGE' });
+      aws.tags.set(streamArnOf(1), new Map([['team', 'data']]));
+      await update(streamBlock('NEW_IMAGE', MEMBERS), undefined);
+      expect(sent(UpdateTableCommand)).toHaveLength(0);
+      expect(new Set(writeTargets())).toEqual(new Set([streamArnOf(1)]));
+      expect(aws.policies.get(streamArnOf(1))).toBe(JSON.stringify(DOC));
+      expect(sent(DeleteResourcePolicyCommand)).toHaveLength(0);
+    });
+
+    it('re-enables a recorded stream that was disabled out of band, and writes to the arn it mints', async () => {
+      const aws = primeAws({ generation: 1, streamEnabled: false });
+      await update(
+        streamBlock('NEW_IMAGE', MEMBERS),
+        streamBlock('NEW_IMAGE', { Tags: MEMBERS.Tags })
+      );
+      expect(sent(UpdateTableCommand)[0]!.input.StreamSpecification).toEqual({
+        StreamEnabled: true,
+        StreamViewType: 'NEW_IMAGE',
+      });
+      expect(writeTargets()).toEqual([streamArnOf(2), streamArnOf(2)]);
+      expect([...aws.tags.get(streamArnOf(2))!]).toEqual([['team', 'data']]);
+    });
+
     it('makes NO call against a dead arn when the stream is disabled or the block removed', async () => {
       primeAws({ generation: 1, streamEnabled: true, viewType: 'NEW_IMAGE' });
       const result = await update(undefined, streamBlock('NEW_IMAGE', MEMBERS));
@@ -463,14 +608,43 @@ describe('DynamoDBTableProvider StreamSpecification.ResourcePolicy / Tags (issue
       expect(result.attributes?.['StreamArn']).toBeUndefined();
     });
 
-    it('warns through the masked sink and leaves an unreadable member alone', async () => {
+    it('REFUSES an unreadable member on the template path before ANY call, so a narrowing is never silently skipped', async () => {
+      const aws = primeAws({ generation: 1, streamEnabled: true, viewType: 'NEW_IMAGE' });
+      aws.policies.set(streamArnOf(1), JSON.stringify(DOC));
+      await expect(
+        update(
+          // A view-type change rides along: it must not be half applied either.
+          streamBlock('KEYS_ONLY', { ResourcePolicy: { PolicyDocumnt: OTHER_DOC } }),
+          streamBlock('NEW_IMAGE', { ResourcePolicy: MEMBERS.ResourcePolicy })
+        )
+      ).rejects.toThrow('StreamSpecification.ResourcePolicy.PolicyDocument is required');
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('does not refuse an unreadable block that did not change', async () => {
+      primeAws({ generation: 1, streamEnabled: true, viewType: 'NEW_IMAGE' });
+      const junk = streamBlock('NEW_IMAGE', { ResourcePolicy: 'junk' });
+      await expect(update(junk, structuredClone(junk))).resolves.toBeDefined();
+      expect(writeTargets()).toEqual([]);
+    });
+
+    it.each([{ replayingState: true }, { desiredFromAwsReadback: true }])(
+      'warns through the masked sink and leaves an unreadable member alone for a state-borne caller (%o)',
+      async (flags) => {
+        await assertUnreadableMemberLeftAlone(flags);
+      }
+    );
+
+    async function assertUnreadableMemberLeftAlone(
+      flags: Parameters<DynamoDBTableProvider['update']>[5]
+    ): Promise<void> {
       const aws = primeAws({ generation: 1, streamEnabled: true, viewType: 'NEW_IMAGE' });
       aws.policies.set(streamArnOf(1), JSON.stringify(DOC));
       const maskSecrets = vi.fn((text: string) => text.replaceAll(TABLE_NAME, '***'));
       await update(
         streamBlock('NEW_IMAGE', { ResourcePolicy: { 'Fn::GetAtt': ['X', 'Y'] } }),
         streamBlock('NEW_IMAGE', { ResourcePolicy: MEMBERS.ResourcePolicy }),
-        { maskSecrets }
+        { ...flags, maskSecrets }
       );
       expect(writeTargets()).toEqual([]);
       expect(aws.policies.get(streamArnOf(1))).toBe(JSON.stringify(DOC));
@@ -479,7 +653,7 @@ describe('DynamoDBTableProvider StreamSpecification.ResourcePolicy / Tags (issue
       expect(warnings[0]).toContain('StreamSpecification.ResourcePolicy');
       expect(warnings[0]).toContain('***');
       expect(warnings[0]).not.toContain(TABLE_NAME);
-    });
+    }
 
     it('never logs the policy text at any level', async () => {
       primeAws();
@@ -629,7 +803,7 @@ describe('DynamoDBTableProvider StreamSpecification.ResourcePolicy / Tags (issue
       const aws = primeAws({ generation: 1, streamEnabled: true, viewType: 'NEW_IMAGE' });
       aws.policies.set(streamArnOf(1), JSON.stringify(DOC));
       aws.tags.set(streamArnOf(1), new Map([['team', 'data']]));
-      setAbsenceRetryDelays([0, 0]);
+      setRereadDelays([0, 0]);
       // The first answer of each read lags behind the write that preceded it.
       aws.failures.set(GetResourcePolicyCommand, [
         new PolicyNotFoundException({ message: 'not yet', $metadata: {} }),
@@ -657,6 +831,33 @@ describe('DynamoDBTableProvider StreamSpecification.ResourcePolicy / Tags (issue
       expect(
         sent(GetResourcePolicyCommand).filter((cmd) => cmd.input.ResourceArn === streamArnOf(1))
       ).toHaveLength(3);
+    });
+
+    it('re-asks an answer still holding the PREVIOUS value after a change, so the capture cannot freeze it', async () => {
+      const aws = primeAws({ generation: 1, streamEnabled: true, viewType: 'NEW_IMAGE' });
+      aws.policies.set(streamArnOf(1), JSON.stringify(OTHER_DOC));
+      aws.tags.set(streamArnOf(1), new Map([['team', 'data']]));
+      setRereadDelays([0, 0]);
+      const inner = mockSend.getMockImplementation()!;
+      let stalePolicyReads = 1;
+      let staleTagReads = 1;
+      mockSend.mockImplementation((cmd: unknown) => {
+        const onStream =
+          (cmd as { input?: { ResourceArn?: string } }).input?.ResourceArn === streamArnOf(1);
+        if (cmd instanceof GetResourcePolicyCommand && onStream && stalePolicyReads-- > 0) {
+          return Promise.resolve({ Policy: JSON.stringify(DOC) });
+        }
+        if (cmd instanceof ListTagsOfResourceCommand && onStream && staleTagReads-- > 0) {
+          return Promise.resolve({ Tags: [{ Key: 'team', Value: 'old' }] });
+        }
+        return inner(cmd);
+      });
+      const desired = streamBlock('NEW_IMAGE', {
+        ResourcePolicy: { PolicyDocument: OTHER_DOC },
+        Tags: MEMBERS.Tags,
+      });
+      const live = await read(desired);
+      expect(calculateResourceDrift({ StreamSpecification: desired }, live!)).toEqual([]);
     });
 
     it('follows ListTagsOfResource pagination on the stream arn', async () => {

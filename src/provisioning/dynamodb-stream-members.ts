@@ -168,16 +168,24 @@ export type StreamMemberOp =
  *   — restores the old policy and tags through the same arms, a view-type
  *   change included (the rollback mints yet another arn, and `freshStream`
  *   applies the old members to it).
- * - an `unusable` member reports through `onUnusable` and the live setting is
- *   left alone rather than overwritten with a guess: no call on a stream that
- *   stays, and the PREVIOUS member carried over onto a fresh one.
+ * - an `unusable` member reaches this plan only from a STATE-borne caller (a
+ *   rollback replay, `drift --revert`): the provider refuses it on the template
+ *   path before any call. It reports through `onUnusable` and the live setting
+ *   is left alone rather than overwritten with a guess: no call on a stream
+ *   that stays, and the PREVIOUS member carried over onto a fresh one.
  * - an `unusable` PREVIOUS tag list cannot say which keys cdkd applied, so a
  *   removal against it untags nothing.
  *
- * ORDER is part of the contract, because a resource policy is an access
- * grant: `deletePolicy` comes FIRST and `putPolicy` LAST, so on a partial
- * failure the stream never holds a policy alongside a tag set it was not
- * declared with (a policy conditioned on `aws:ResourceTag` reads the tags).
+ * ORDER is part of the contract, because a resource policy is an access grant
+ * and can condition on `aws:ResourceTag`: `deletePolicy` comes FIRST and
+ * `putPolicy` LAST. A policy that CHANGES together with the tags is therefore
+ * deleted before the first tag call and put back after the last, so neither
+ * the old policy nor the new one is ever evaluated against the other side's
+ * tag set — also when a call in between fails. The price is a window with NO
+ * policy, which drops that policy's `Deny` statements along with its grants;
+ * nothing here is atomic, and that window is the narrower of the two hazards.
+ * An UNCHANGED policy stays in place across a tag-only change: both sides
+ * declare it, and the two tag calls cannot be made one.
  *
  * The caller asks only while the DESIRED side has a stream: a disabled stream
  * is gone and takes both members with it, so nothing addresses its dead arn.
@@ -208,26 +216,31 @@ export function planStreamMemberOps(
     previousTags = { kind: 'absent' };
   }
 
-  const ops: StreamMemberOp[] = [];
-  if (desiredPolicy.kind === 'absent' && previousPolicy.kind !== 'absent') {
-    ops.push({ kind: 'deletePolicy' });
-  }
-
+  const tagOps: StreamMemberOp[] = [];
   if (desiredTags.kind !== 'unusable') {
     const desired = desiredTags.kind === 'usable' ? desiredTags.tags : new Map<string, string>();
     const previous = previousTags.kind === 'usable' ? previousTags.tags : new Map<string, string>();
     const keysToRemove = [...previous.keys()].filter((key) => !desired.has(key));
-    if (keysToRemove.length > 0) ops.push({ kind: 'untag', keys: keysToRemove });
+    if (keysToRemove.length > 0) tagOps.push({ kind: 'untag', keys: keysToRemove });
     const tagsToSet = [...desired]
       .filter(([key, value]) => previous.get(key) !== value)
       .map(([Key, Value]) => ({ Key, Value }));
-    if (tagsToSet.length > 0) ops.push({ kind: 'tag', tags: tagsToSet });
+    if (tagsToSet.length > 0) tagOps.push({ kind: 'tag', tags: tagsToSet });
   }
 
-  if (
+  const policyPut =
     desiredPolicy.kind === 'usable' &&
-    !(previousPolicy.kind === 'usable' && previousPolicy.document === desiredPolicy.document)
-  ) {
+    !(previousPolicy.kind === 'usable' && previousPolicy.document === desiredPolicy.document);
+  // The stream holds a policy the desired side does not keep as it is: either
+  // it is removed for good, or it changes while the tags change under it.
+  const policyDelete =
+    previousPolicy.kind !== 'absent' &&
+    (desiredPolicy.kind === 'absent' || (policyPut && tagOps.length > 0));
+
+  const ops: StreamMemberOp[] = [];
+  if (policyDelete) ops.push({ kind: 'deletePolicy' });
+  ops.push(...tagOps);
+  if (policyPut && desiredPolicy.kind === 'usable') {
     ops.push({ kind: 'putPolicy', document: desiredPolicy.document });
   }
   return ops;
@@ -274,6 +287,35 @@ export function reverseMapStreamPolicy(
   return {
     PolicyDocument: canonicalJson(declaredParsed) === canonicalJson(parsed) ? declared : livePolicy,
   };
+}
+
+/**
+ * Does the live policy say what the DECLARED one says? The read-back's
+ * "settled" test: `GetResourcePolicy` is eventually consistent and can answer
+ * with the PREVIOUS policy right after a put, so an answer that differs from
+ * the declaration is re-asked before it is believed.
+ */
+export function streamPolicyMatchesDeclared(
+  livePolicy: string | undefined,
+  desiredBlock: unknown
+): boolean {
+  const declared = readStreamPolicy(desiredBlock);
+  if (declared.kind !== 'usable' || livePolicy === undefined) return false;
+  try {
+    return canonicalJson(JSON.parse(livePolicy)) === canonicalJson(JSON.parse(declared.document));
+  } catch {
+    return false;
+  }
+}
+
+/** The tag twin of {@link streamPolicyMatchesDeclared}, over USER tags. */
+export function streamTagsMatchDeclared(
+  liveTags: ReadonlyArray<{ Key: string; Value: string }>,
+  desiredBlock: unknown
+): boolean {
+  const declared = readStreamTags(desiredBlock);
+  if (declared.kind !== 'usable' || liveTags.length !== declared.tags.size) return false;
+  return liveTags.every((tag) => declared.tags.get(tag.Key) === tag.Value);
 }
 
 /** A key-order-independent serialization. */

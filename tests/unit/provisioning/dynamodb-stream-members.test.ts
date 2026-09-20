@@ -7,6 +7,8 @@ import {
   streamDeclaresPolicy,
   streamDeclaresTags,
   streamMemberRefusals,
+  streamPolicyMatchesDeclared,
+  streamTagsMatchDeclared,
 } from '../../../src/provisioning/dynamodb-stream-members.js';
 
 const DOC = {
@@ -173,6 +175,9 @@ describe('planStreamMemberOps', () => {
         block({ ...policy(DOC), ...tags(['a', '1'], ['b', 'old'], ['c', '3']) })
       )
     ).toEqual([
+      // The old policy goes BEFORE the first tag call: it must never be
+      // evaluated against the new tag set, nor the new one against the old.
+      { kind: 'deletePolicy' },
       { kind: 'untag', keys: ['c'] },
       {
         kind: 'tag',
@@ -182,6 +187,23 @@ describe('planStreamMemberOps', () => {
         ],
       },
       { kind: 'putPolicy', document: JSON.stringify(OTHER_DOC) },
+    ]);
+  });
+
+  it('keeps an UNCHANGED policy in place across a tag-only change, and the tags across a policy-only one', () => {
+    expect(
+      plan(block({ ...policy(DOC), ...tags(['a', '2']) }), block({ ...policy(DOC), ...tags(['a', '1']) }))
+    ).toEqual([{ kind: 'tag', tags: [{ Key: 'a', Value: '2' }] }]);
+    expect(
+      plan(
+        block({ ...policy(OTHER_DOC), ...tags(['a', '1']) }),
+        block({ ...policy(DOC), ...tags(['a', '1']) })
+      )
+    ).toEqual([{ kind: 'putPolicy', document: JSON.stringify(OTHER_DOC) }]);
+    // A policy ADDED alongside a tag change has nothing to delete first.
+    expect(plan(block({ ...policy(DOC), ...tags(['a', '2']) }), block(tags(['a', '1'])))).toEqual([
+      { kind: 'tag', tags: [{ Key: 'a', Value: '2' }] },
+      { kind: 'putPolicy', document: JSON.stringify(DOC) },
     ]);
   });
 
@@ -251,6 +273,29 @@ describe('planStreamMemberOps', () => {
       { kind: 'putPolicy', document: JSON.stringify(DOC) },
     ]);
     expect(onUnusable).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('settled tests for the eventually consistent read-back', () => {
+  it('accepts the declared policy in any key order, and nothing else', () => {
+    const declared = block(policy(DOC));
+    const reordered = JSON.stringify({ Statement: DOC.Statement, Version: DOC.Version });
+    expect(streamPolicyMatchesDeclared(reordered, declared)).toBe(true);
+    expect(streamPolicyMatchesDeclared(JSON.stringify(OTHER_DOC), declared)).toBe(false);
+    expect(streamPolicyMatchesDeclared(undefined, declared)).toBe(false);
+    expect(streamPolicyMatchesDeclared('not json', declared)).toBe(false);
+    expect(streamPolicyMatchesDeclared(reordered, block())).toBe(false);
+  });
+
+  it('accepts exactly the declared tag set, in any order', () => {
+    const declared = block(tags(['a', '1'], ['b', '2']));
+    const live = (...pairs: Array<[string, string]>) => pairs.map(([Key, Value]) => ({ Key, Value }));
+    expect(streamTagsMatchDeclared(live(['b', '2'], ['a', '1']), declared)).toBe(true);
+    expect(streamTagsMatchDeclared(live(['a', '1']), declared)).toBe(false);
+    expect(streamTagsMatchDeclared(live(['a', '1'], ['b', 'old']), declared)).toBe(false);
+    expect(streamTagsMatchDeclared(live(['a', '1'], ['b', '2'], ['c', '3']), declared)).toBe(false);
+    expect(streamTagsMatchDeclared([], block({ Tags: [] }))).toBe(true);
+    expect(streamTagsMatchDeclared([], block())).toBe(false);
   });
 });
 
