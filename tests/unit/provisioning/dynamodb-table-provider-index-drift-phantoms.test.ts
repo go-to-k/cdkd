@@ -761,9 +761,15 @@ describe('DynamoDBTableProvider secondary-index drift phantoms (issue #1767)', (
   });
 
   describe('getDriftUnorderedPaths', () => {
-    it('does NOT declare the index lists — the subtree rule would sort per-index KeySchema (issue #1783)', () => {
+    it('declares the index lists LEAF-ONLY — the subtree rule would sort per-index KeySchema (issue #1783)', () => {
+      // The lists are unordered sets (issue #1782 measured DescribeTable
+      // reversing a two-index template), but only the `[]` form may say so.
       const paths = provider.getDriftUnorderedPaths(RESOURCE_TYPE);
-      expect(paths).toEqual(['AttributeDefinitions']);
+      expect(paths).toEqual([
+        'AttributeDefinitions',
+        'GlobalSecondaryIndexes[]',
+        'LocalSecondaryIndexes[]',
+      ]);
       expect(paths).not.toContain('GlobalSecondaryIndexes');
       expect(paths).not.toContain('LocalSecondaryIndexes');
     });

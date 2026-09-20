@@ -519,6 +519,87 @@ describe('DynamoDBTableProvider per-index ContributorInsightsSpecification (issu
       expect(result?.['GlobalSecondaryIndexes']).toEqual([gsi('failed'), gsi('denied')]);
     });
 
+    describe('index-list ORDER (measured: DescribeTable returned [giB, giA] for a [giA, giB] template)', () => {
+      const unorderedPaths = () => ({
+        unorderedPaths: provider.getDriftUnorderedPaths(RESOURCE_TYPE),
+      });
+      const indexDrift = (baseline: unknown, aws: unknown) =>
+        calculateResourceDrift(
+          { GlobalSecondaryIndexes: baseline },
+          { GlobalSecondaryIndexes: aws },
+          unorderedPaths()
+        ).map((d) => d.path);
+
+      it('converges against the TEMPLATE baseline when AWS reverses the list', async () => {
+        const desired = tableProps([gsi('giA', { Enabled: true }), gsi('giB')]);
+        primeAws(['giB', 'giA'], { giA: { status: 'ENABLED' } });
+        const result = await readBack(desired);
+        const emitted = result?.['GlobalSecondaryIndexes'] as Array<Record<string, unknown>>;
+        // The premise: the readback really is in AWS's order, not the template's.
+        expect(emitted.map((e) => e['IndexName'])).toEqual(['giB', 'giA']);
+        expect(indexDrift(desired['GlobalSecondaryIndexes'], emitted)).toEqual([]);
+        // ...and without the declaration the same pair IS reported, so the
+        // assertion above is the declaration's doing.
+        expect(
+          calculateResourceDrift(
+            { GlobalSecondaryIndexes: desired['GlobalSecondaryIndexes'] },
+            { GlobalSecondaryIndexes: emitted }
+          ).map((d) => d.path)
+        ).toEqual(['GlobalSecondaryIndexes']);
+      });
+
+      it('keeps converging for an OBSERVED baseline an earlier binary captured in AWS order', async () => {
+        const desired = tableProps([gsi('giA', { Enabled: true }), gsi('giB')]);
+        // Captured in AWS's order at deploy time...
+        const observed = [gsi('giB'), gsi('giA', { Enabled: true })];
+        // ...and AWS later answers in the OTHER order.
+        primeAws(['giA', 'giB'], { giA: { status: 'ENABLED' } });
+        const result = await readBack(desired);
+        expect(indexDrift(observed, result?.['GlobalSecondaryIndexes'])).toEqual([]);
+        // Same order on both sides stays clean too.
+        expect(indexDrift(observed, observed)).toEqual([]);
+      });
+
+      it('still reports a REAL per-index difference on a reordered list', async () => {
+        const desired = tableProps([gsi('giA', { Enabled: true }), gsi('giB')]);
+        primeAws(['giB', 'giA'], { giA: { status: 'DISABLED' } });
+        const result = await readBack(desired);
+        expect(indexDrift(desired['GlobalSecondaryIndexes'], result?.['GlobalSecondaryIndexes'])).toEqual([
+          'GlobalSecondaryIndexes',
+        ]);
+      });
+
+      it('does NOT sort an index KeySchema: a swapped HASH / RANGE is still drift', () => {
+        const keyed = (first: string, second: string) => [
+          {
+            IndexName: 'a',
+            KeySchema: [
+              { AttributeName: first, KeyType: 'HASH' },
+              { AttributeName: second, KeyType: 'RANGE' },
+            ],
+          },
+          { IndexName: 'b', KeySchema: [{ AttributeName: 'z', KeyType: 'HASH' }] },
+        ];
+        // Element order inside KeySchema differs while the multiset is equal.
+        const swapped = keyed('x', 'y').map((entry) => ({
+          ...entry,
+          KeySchema: [...entry.KeySchema].reverse(),
+        }));
+        expect(indexDrift(keyed('x', 'y'), swapped)).toEqual(['GlobalSecondaryIndexes']);
+      });
+
+      it('converges for a reversed LocalSecondaryIndexes list', () => {
+        const lsis = [gsi('l1'), gsi('l2')];
+        expect(
+          calculateResourceDrift(
+            { LocalSecondaryIndexes: lsis },
+            { LocalSecondaryIndexes: [...lsis].reverse() },
+            unorderedPaths()
+          )
+        ).toEqual([]);
+      });
+    });
+
     it('reads nothing per index for an unreadable block or an uninformative bag', async () => {
       primeAws(['a'], { a: { status: 'ENABLED' } });
       await readBack(tableProps([gsi('a', 'junk')]));

@@ -5953,32 +5953,31 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * level: it is order-SIGNIFICANT (HASH before RANGE), so sorting it would
    * HIDE a real key change rather than remove a phantom one.
    *
-   * `GlobalSecondaryIndexes` / `LocalSecondaryIndexes` are NOT declared either,
-   * and that is a MECHANISM limit rather than a judgement about the lists —
-   * both really are sets keyed by `IndexName` (issue #1767 proposes declaring
-   * them). Every entry here is a SUBTREE declaration, and unlike
-   * `getDriftUnknownPaths` this walk DESCENDS INTO ARRAY ELEMENTS giving each
-   * the parent's path (`drift-normalize.ts`), so a `'GlobalSecondaryIndexes'`
-   * entry also reaches `GlobalSecondaryIndexes.KeySchema` and would sort the
-   * per-index key schema — reversing the sentence above at the index level
-   * only. Issue #1767 calls the sort and the member reverse-map separable;
-   * this change ships the reverse-map, and the ordering half needed a
-   * leaf-only form of the declaration first (issue
-   * [#1783](https://github.com/go-to-k/cdkd/issues/1783)). **That form now
-   * EXISTS** — `LEAF_ONLY_PATH_SUFFIX` (`[]`) landed in
-   * [#1799](https://github.com/go-to-k/cdkd/pull/1799), so
-   * `'GlobalSecondaryIndexes[]'` would claim the list alone without reaching
-   * the per-index `KeySchema`. It is deliberately NOT declared here yet:
-   * adopting it is its own change with its own real-AWS verification, tracked
-   * as issue [#1812](https://github.com/go-to-k/cdkd/issues/1812). Consequence
-   * until then, stated so it is not mistaken for solved: an index list AWS
-   * returns in a different ORDER than the template declared is still phantom
-   * drift against a `properties` baseline. It is not reachable on the ordinary
-   * `observedProperties` path, where both sides come from this same readback.
+   * `GlobalSecondaryIndexes` / `LocalSecondaryIndexes` ARE declared, in the
+   * LEAF-ONLY form (`LEAF_ONLY_PATH_SUFFIX`, `[]`, from
+   * [#1799](https://github.com/go-to-k/cdkd/pull/1799)): both are sets keyed
+   * by `IndexName`, and `DescribeTable` does not return them in the template's
+   * order. A plain SUBTREE entry would be wrong — the unordered walk descends
+   * into array elements giving each the parent's path (`drift-normalize.ts`),
+   * so `'GlobalSecondaryIndexes'` would also sort each index's `KeySchema` and
+   * reverse the sentence above at the index level. The leaf-only form sorts
+   * the list and stops there.
+   *
+   * Measured on real AWS by issue
+   * [#1782](https://github.com/go-to-k/cdkd/issues/1782)'s two-index fixture:
+   * a table created with `[giA, giB]` read back as `[giB, giA]`, so a
+   * `properties` baseline reported whole-list drift although every member
+   * round-tripped. The phantom pre-dates that issue — the #1767 arm only ever
+   * had ONE index — and was not reachable against an `observedProperties`
+   * baseline, where both sides come from the same readback. Both comparison
+   * sides are sorted, by a key-order-independent serialization of the whole
+   * entry, so a baseline captured in AWS's order by an earlier binary keeps
+   * converging; a REAL difference still reports the list, since entries that
+   * differ cannot be made equal by reordering them.
    */
   getDriftUnorderedPaths(resourceType: string): string[] {
     if (resourceType !== 'AWS::DynamoDB::Table') return [];
-    return ['AttributeDefinitions'];
+    return ['AttributeDefinitions', 'GlobalSecondaryIndexes[]', 'LocalSecondaryIndexes[]'];
   }
 
   /**

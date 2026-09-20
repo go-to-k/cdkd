@@ -109,7 +109,17 @@ describe('DynamoDBTableProvider drift phantoms (issue #1760)', () => {
 
   describe('defect 1: AttributeDefinitions ordering', () => {
     it('declares AttributeDefinitions as an unordered set', () => {
-      expect(provider.getDriftUnorderedPaths(RESOURCE_TYPE)).toEqual(['AttributeDefinitions']);
+      expect(provider.getDriftUnorderedPaths(RESOURCE_TYPE)).toContain('AttributeDefinitions');
+    });
+
+    it('declares the two index lists LEAF-ONLY, never as a subtree', () => {
+      // A subtree entry would also sort each index's order-significant
+      // KeySchema (issue #1783); the `[]` form sorts the list and stops.
+      const paths = provider.getDriftUnorderedPaths(RESOURCE_TYPE);
+      expect(paths).toContain('GlobalSecondaryIndexes[]');
+      expect(paths).toContain('LocalSecondaryIndexes[]');
+      expect(paths).not.toContain('GlobalSecondaryIndexes');
+      expect(paths).not.toContain('LocalSecondaryIndexes');
     });
 
     it('does NOT declare KeySchema — it is order-significant (HASH before RANGE)', () => {
