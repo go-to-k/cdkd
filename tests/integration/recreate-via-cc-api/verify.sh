@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # verify.sh — cdkd #615 --recreate-via-cc-api integ test
 #
-# Mid-life SDK→CC migration: a Lambda Function deployed without the
-# silent-drop `RuntimeManagementConfig` (= state stamps `provisionedBy: 'sdk'`)
+# Mid-life SDK→CC migration: a Lambda Function deployed without
+# `RuntimeManagementConfig` (= state stamps `provisionedBy: 'sdk'`)
 # is destroyed + recreated via Cloud Control API when the next deploy
 # adds `RuntimeManagementConfig` AND passes `--recreate-via-cc-api`. The
 # assertions confirm:

@@ -50,24 +50,29 @@ tests passing is necessary but NOT sufficient:
   - **It changes what a command or gate DOES** → the verification IS that
     command (`.claude/hooks/run-tests.sh` for a hook, the workflow step's
     command for CI, `vp run check` for lint config, which lints `src/**` only).
-    Run it BEFORE and AFTER, building the BEFORE tree from a scratch copy or a
-    sed-swap, never `git checkout -- <path>` / `git restore`
-    (`dirty-path-restore-gate` blocks that on a DIRTY path). Drive the FAILURE
+    Run it BEFORE and AFTER, building the BEFORE tree by §8-d's copy-revert,
+    never `git checkout -- <path>` / `git restore`. Drive the FAILURE
     direction too, and guard the fix's SHAPE with a test under
     `tests/unit/scripts/` or a case in the hook's `<name>.test.sh`.
   - **It changes PROSE only** (a skill, a rule, a doc — including this file) →
     the CLAIMS are the artifact. Resolve every gate, hook, skill, path, task
     and command the new text names against this repo's files, and RUN each
-    command the text will send the next agent to run (§10-c).
+    command the text will send the next agent to run.
 
 ### 8-d. Integ arms owe a discrimination proof (mutation-probe on real AWS)
 
 Revert the fix, rebuild, run, confirm the arm goes RED **at YOUR assertion —
-read which one fired**, then restore and rebuild. Probe each HALF of a
-multi-part fix separately, and add a NEGATIVE CONTROL. Where the fix SKIPS
-something, give the fixture a second, ORDINARY difference — a phase redeploying
-a byte-identical template diffs as `NO_CHANGE` and never reads the flag under
-test. Two more vacuity shapes:
+read which one fired**, then restore and rebuild. **Revert by COPY, from a
+COMMITTED, clean lane**: `cp` each path of
+`git diff --name-only --diff-filter=M origin/main...HEAD -- src/` to scratch,
+then `git show origin/main:$f > $f` (a file NEW in the PR stays, unimported by
+pre-fix code); restoring is `cp` back until `git status --porcelain` is EMPTY.
+The pre-fix run executes the BUG on real AWS and can mint resources the
+fixture's sweep cannot name, so scan the account by stack prefix and resource
+family too. Probe each HALF of a multi-part fix separately, and add a NEGATIVE
+CONTROL. Where the fix SKIPS something, give the fixture a second, ORDINARY
+difference — a phase redeploying a byte-identical template diffs as `NO_CHANGE`
+and never reads the flag under test. Two more vacuity shapes:
 
 - **Every assertion PREDATES your change → the run is somebody else's
   regression net.** `git diff origin/main -- <fixture>`, then add the one that

@@ -31,13 +31,8 @@ verdict. Then split the filed count by what §5-f did with each:
 # Folded INTO an existing issue rather than filed as new. `updatedAt` alone
 # cannot answer this — §4's claim comments touch every taken issue — so count
 # the issues whose BODY gained a checklist row.
-# The label exclusions matter MORE here than in triage: this counts issues whose
-# body gained a `- [ ]` row, and a coverage-map sync rewrites the umbrella's
-# generated block with a body region that is nothing but such rows — up to 44 of
-# them in one edit. `backfill-umbrella` is the one that fires today; the legacy
-# `backfill-type` slices carried the same hazard one issue each, and a reopened
-# one still would. Without both, a run that touched neither reports dozens of
-# findings folded.
+# Keep BOTH label exclusions: a coverage-map sync rewrites a backfill issue's
+# generated block, all `- [ ]` rows.
 gh issue list --state open --limit 200 --json number,title,updatedAt,labels \
   --jq '.[] | select(.updatedAt > "<this run start ISO>")
         | select([.labels[].name] | index("backfill-type") | not)
