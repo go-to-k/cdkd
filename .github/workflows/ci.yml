@@ -492,9 +492,9 @@ jobs:
   #     assumption that makes that acceptable is UNENFORCED and stated here so
   #     it can be checked: auto-merge is only ever armed by hand, on a release
   #     or a dependabot PR, and neither touches `.claude/hooks/**`. Arming it
-  #     on a hooks PR would merge over a red `hook-suites`. Agent-side merges
-  #     are unaffected — `ci-green-gate` requires every check, not just the
-  #     required ones.
+  #     on a hooks PR would merge over a red `hook-suites`. An agent merging by
+  #     hand is expected to read `gh pr checks` output, which shows every check
+  #     rather than only the required ones.
   ci-ok:
     if: always()
     needs: [check-build-test, once-leak-detect, runtime-compat, release-pr-not-stale]

@@ -18,7 +18,7 @@ import { dirname, join } from 'node:path';
  * its matcher is the coarse `"Bash"`, identical to cdkd's. The `cd * && ...`
  * alternatives lived in each hook's per-hook `if:` condition, and the asymmetry
  * was between hooks that spelled the `cd` twin there and hooks that did not --
- * `branch-gate` and `bughunt-clean-gate` carried `Bash(cd * && git commit*)`
+ * two cdkd gates carried `Bash(cd * && git commit*)`
  * while the sibling's commit-marker gate carried only
  * `Bash(git commit*) or Bash(git -C * commit*)`.
  *
@@ -165,21 +165,28 @@ describe('.claude/settings.json PreToolUse gate reachability', () => {
     // cannot go silently inert the way that hook measurably did.
     //
     // A name is REPLACED here rather than dropped, because the list's job is to
-    // be a floor of at least three: a shorter list shrinks the thing that
-    // catches a removal every time a removal happens, which is the one
-    // direction this assertion must not move. `check-gate` and `verify-pr-gate`
-    // were the two survivors of #2016's trio until the marker layer itself was
-    // retired; `integ-destroy-gate` and `branch-gate` are their substitutes --
-    // a merge-time refusal whose absence leaks real AWS resources, and a
-    // commit/push refusal whose absence puts commits on `main`. Both take a
-    // command spelling (`gh pr merge`, `git commit`) that the
-    // `cd <worktree> && ...` form reaches exactly as #2016 described.
+    // catch a removal: a shorter list shrinks the thing that catches a removal
+    // every time a removal happens, which is the one direction this assertion
+    // must not move. It has shrunk anyway, and the reason is recorded rather
+    // than left to be inferred -- `branch-gate` and `ci-green-gate` were on it
+    // until the `main` ruleset made them redundant, and a name here that no
+    // longer exists fails for a reason that has nothing to do with matchers.
+    // What is left is the three gates whose absence is unrecoverable: two
+    // merge-time refusals over real AWS resources and a user-facing state
+    // schema, and the bug-hunt sentinel. Each takes a command spelling
+    // (`gh pr merge`, `git commit`) that the `cd <worktree> && ...` form
+    // reaches exactly as #2016 described.
     const mustBeCoarse = [
-      'ci-green-gate',
       'integ-destroy-gate',
       'integ-schema-migration-gate',
-      'branch-gate',
+      'bughunt-clean-gate',
     ];
+    // The list's JOB is to catch a removal, so its own length is asserted: at
+    // three it now sits exactly on the floor the prose above used to carry, and
+    // without this the next removal shrinks it silently -- the failure mode the
+    // paragraph describes, one level up. This is an assertion about the test's
+    // own population, not about prose.
+    expect(mustBeCoarse.length).toBeGreaterThanOrEqual(3);
 
     const coarseGates = new Set<string>();
     for (const entry of preToolUseEntries()) {

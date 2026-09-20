@@ -322,7 +322,7 @@ d = json.load(open(sys.argv[1]))
 names = sorted(set(re.findall(r"\.claude/hooks/([a-z0-9-]+)\.sh", json.dumps(d))))
 print(" ".join(names))
 ' "$REPO_ROOT/.claude/settings.json")
-if [ "$(printf '%s' "$CANDIDATES" | wc -w | tr -d ' ')" -lt 10 ]; then
+if [ "$(printf '%s' "$CANDIDATES" | wc -w | tr -d ' ')" -lt 8 ]; then
   ng "fence 2: settings.json yielded only $(printf '%s' "$CANDIDATES" | wc -w | tr -d ' ') hook candidates; the parse is broken, so every comparison below is vacuous"
 fi
 

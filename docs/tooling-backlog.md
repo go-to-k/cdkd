@@ -44,6 +44,37 @@ separate the clauses, is in
   [#2716](https://github.com/go-to-k/cdkd/issues/2716); it is declined. The
   layer is being SHRUNK instead, which removes the parsing problem for every
   gate that no longer exists rather than re-implementing it.
+- **A hook that only restates the `main` ruleset is DELETED, not kept as a
+  belt.** The ruleset (`gh api repos/go-to-k/cdkd/rulesets/14380501`) carries
+  `deletion`, `non_fast_forward`, `required_status_checks` (`ci-ok`, `build`,
+  `pr-content`, `check`, `prefix-scope`, `English-only (pull request)`) and
+  `pull_request` (squash-only, 0 approvals), with ZERO bypass actors. So
+  `git push origin main` is refused for any commit, and a merge is refused
+  until those six pass. `branch-gate` and `ci-green-gate` restated that and were
+  removed; the incident that created `ci-green-gate` (a merge over a failed
+  check) predates the ruleset. Check the ruleset before proposing a gate against
+  `main`.
+- **What the ruleset still does NOT cover, recorded as first occurrences.** A
+  commit on a LOCAL `main` is refused by nothing (move it with `git branch` +
+  `git reset`). A red check outside the required set does not block a merge:
+  `ci-ok` aggregates `check-build-test`, `once-leak-detect`, `runtime-compat`
+  and `release-pr-not-stale`, but `hook-suites` notably sits outside, so a hooks
+  PR with a red `hook-suites` merges. Neither is worth a hook; both are
+  `AGENTS.md` rules. And `git push --dry-run` does NOT evaluate the ruleset, so
+  it cannot probe any of it — against the local hooks it still works.
+- **`require_extra_approval_for_unattributed_changes` is ON, and what trips it
+  is NOT established.** The rule turns `required_approving_review_count: 0` into
+  1 for a change GitHub cannot attribute, and no agent can supply that approval;
+  the refusal reads as a permissions error. A first draft of this claimed a
+  cherry-pick, a `Co-authored-by` trailer or a different git identity trips it —
+  **withdrawn as unverified**: a cherry-pick preserves the original author, the
+  trailer is not the author field, and a linked account is attributed either
+  way. Measured instead: the last 100 commits on `main` are 100% attributed
+  (`go-to-k` 70, `github-actions[bot]` 24, `nix-tkobayashi` 5,
+  `dependabot[bot]` 1), so it is inert today. The observable test is
+  `gh api repos/go-to-k/cdkd/commits/<sha> --jq .author` returning `null`. Left
+  as a row rather than written into a rule file, because nobody has hit it and
+  the predicate is guesswork until someone does.
 - **Rule-file payload caps, measured-N annotations and prose-count fences are
   RETIRED.** A test whose subject is the wording, byte size or citation count of
   agent-instruction prose does not clear the criterion above: nothing a user can
@@ -120,7 +151,7 @@ which PR took it, so nobody picks it up twice.
 | [#2694](https://github.com/go-to-k/cdkd/issues/2694) | test(scripts): nothing fences the .ts-extension rule for src modules on a scripts/ import closure |
 | [#2701](https://github.com/go-to-k/cdkd/issues/2701) | test(unit): five tracked-only `git ls-files` populations skip untracked files, so a new file is unchecked until it is committed |
 | [#2702](https://github.com/go-to-k/cdkd/issues/2702) | chore(hooks): substitution bodies emit before their line, so gated-command-preamble-gate misses a write preamble before a gated command |
-| [#2703](https://github.com/go-to-k/cdkd/issues/2703) | chore(hooks): the two quote machines in command-match still disagree on multi-substitution lines, and a missed segment is a silent pass for branch-gate and the data-loss gate |
+| [#2703](https://github.com/go-to-k/cdkd/issues/2703) | chore(hooks): the two quote machines in command-match still disagree on multi-substitution lines, and a missed segment is a silent pass for branch-gate and the data-loss gate — PARTLY MOOT: branch-gate was retired, the data-loss gate remains |
 | [#2705](https://github.com/go-to-k/cdkd/issues/2705) | chore(hooks): a green CI check attests to the base at RUN START, so a peer merge can invalidate it and no gate re-asks |
 | [#2714](https://github.com/go-to-k/cdkd/issues/2714) | chore(hooks): guard the shared matcher against the edit that locks a session out of its own repository |
 | [#2715](https://github.com/go-to-k/cdkd/issues/2715) | chore(hooks): twelve suites run under bash 3.2 while running their hook under 5.x, so their 3.2 coverage is a claim about the test |

@@ -9,12 +9,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/branch-gate.sh",
-            "timeout": 10,
-            "statusMessage": "Checking current branch..."
-          },
-          {
-            "type": "command",
             "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/post-merge-orphan-push-gate.sh",
             "timeout": 10,
             "statusMessage": "Checking for already-merged PR on this branch..."
@@ -30,12 +24,6 @@
             "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/integ-schema-migration-gate.sh",
             "timeout": 10,
             "statusMessage": "Checking integ-schema-migration marker..."
-          },
-          {
-            "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/ci-green-gate.sh",
-            "timeout": 20,
-            "statusMessage": "Checking PR CI status is green..."
           },
           {
             "type": "command",

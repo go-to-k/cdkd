@@ -40,7 +40,7 @@
 # shellcheck source=lib/command-match.sh
 __hook_dir="${BASH_SOURCE[0]%/*}"
 # `%/*` leaves the string unchanged when the path has no slash (invoked as
-# `bash ci-green-gate.sh` from inside the hooks dir), which would look for
+# `bash <gate>.sh` from inside the hooks dir), which would look for
 # `<script-name>/lib/...`. Fall back to the cwd in that case.
 [ "$__hook_dir" = "${BASH_SOURCE[0]}" ] && __hook_dir="."
 if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
@@ -103,9 +103,7 @@ if ! gate_matches "$cmd" "$GATE_RE_GIT_PUSH"; then
   exit 0
 fi
 
-# Resolve where the git command will actually run (cwd-aware, copied
-# from branch-gate.sh — keep the two in sync if either gains new
-# resolution shapes).
+# Resolve where the git command will actually run (cwd-aware).
 # Where the git/gh command will actually RUN.
 #
 # This calls the SHARED resolver in lib/command-match.sh, replacing the

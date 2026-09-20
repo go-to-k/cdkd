@@ -123,10 +123,10 @@ if [ -z "$REGISTERED" ]; then
   exit 1
 fi
 
-if [ "${#HOOKS[@]}" -ge 10 ]; then
-  ok "population: ${#HOOKS[@]} hooks enumerated from .claude/settings.json (floor 10)"
+if [ "${#HOOKS[@]}" -ge 8 ]; then
+  ok "population: ${#HOOKS[@]} hooks enumerated from .claude/settings.json (floor 8)"
 else
-  ng "population: only ${#HOOKS[@]} hooks enumerated from .claude/settings.json, expected >= 10 -- the enumeration is broken, every case below is vacuous"
+  ng "population: only ${#HOOKS[@]} hooks enumerated from .claude/settings.json, expected >= 8 -- the enumeration is broken, every case below is vacuous"
 fi
 
 missing_file=""
@@ -568,11 +568,16 @@ exercised_count=$(printf '%s' "$exercised_list" | wc -w | tr -d ' ')
 # it may not shrink again without the same kind of note.
 #
 # It has since MOVED in both directions at once: the main-tree hook family was
-# retired (every session now launches in a workspace, and `branch-gate` already
-# refuses a commit or push on `main` anywhere), and `integ-schema-migration-gate`
-# came back, because a bad state-schema migration lands irreversibly on state
-# documents in USERS' S3 buckets.
-EXPECTED_EXERCISED="branch-gate bughunt-clean-gate ci-green-gate dirty-path-restore-gate integ-destroy-gate integ-schema-migration-gate post-merge-orphan-push-gate"
+# retired (every session now launches in a workspace), and
+# `integ-schema-migration-gate` came back, because a bad state-schema migration
+# lands irreversibly on state documents in USERS' S3 buckets.
+#
+# It shrank again when `branch-gate` and `ci-green-gate` went: the `main`
+# ruleset refuses a merge whose required checks are not green, and its
+# `pull_request` rule means every change arrives through a PR (squash-only, no
+# bypass actors) -- so `git push origin main` is refused outright and both hooks
+# were duplicating the server rather than adding to it.
+EXPECTED_EXERCISED="bughunt-clean-gate dirty-path-restore-gate integ-destroy-gate integ-schema-migration-gate post-merge-orphan-push-gate"
 missing=""
 for want in $EXPECTED_EXERCISED; do
   case " $exercised_list " in *" $want "*) ;; *) missing="$missing $want" ;; esac
@@ -739,8 +744,8 @@ fence4_hazard() {
 # above reported it "gone quiet". Trading a `git -c` bypass for a
 # `git checkout --` bypass is not a fix, so it was reverted.
 #
-# Both callers now strip the matched prefix by LENGTH (`gate_verb_rest` /
-# `gate_pr_selector`), so the group count is internal to command-match.sh. This
+# Both callers now strip the matched prefix by LENGTH (`gate_verb_rest`), so
+# the group count is internal to command-match.sh. This
 # fence keeps it that way. It is deliberately a SOURCE scan rather than a
 # behavioural one: the behavioural symptom is a gate going quiet, which fence 3
 # already reports -- but only for the shapes it happens to exercise, and only
@@ -870,12 +875,16 @@ else
   ok "fence 4 (guard the guard): the scan detects all 8 coupling spellings and clears all three non-coupling ones"
 fi
 
-if [ "$scanned" -lt 9 ]; then
+# RE-DERIVED from the tree, not lowered to fit: `grep -l command-match.sh` over
+# the non-test hooks answers 7 -- every registered hook but `worktree-owner-gate`,
+# which matches Edit/Write and parses no command. It was 9 until the `main`
+# ruleset made `branch-gate` and `ci-green-gate` redundant.
+if [ "$scanned" -lt 7 ]; then
   ng "fence 4: only $scanned hooks load command-match.sh -- the scan is not seeing the hook directory, so a green result here would mean nothing"
 elif [ -z "$coupled" ]; then
   ok "fence 4: none of the $scanned matcher-using hooks index a shared pattern positionally"
 else
-  ng "fence 4: these hooks read a positional BASH_REMATCH out of a match they built from a SHARED GATE_ constant, so widening that constant shifts their index and silently re-opens them (go-to-k/cdkd#2200):$(printf '%b' "$coupled")\n    Use gate_verb_rest / gate_pr_selector, which strip the matched prefix by LENGTH."
+  ng "fence 4: these hooks read a positional BASH_REMATCH out of a match they built from a SHARED GATE_ constant, so widening that constant shifts their index and silently re-opens them (go-to-k/cdkd#2200):$(printf '%b' "$coupled")\n    Use gate_verb_rest, which strips the matched prefix by LENGTH."
 fi
 
 echo

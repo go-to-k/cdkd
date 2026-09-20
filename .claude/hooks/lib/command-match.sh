@@ -200,7 +200,7 @@ strip_noncommand_spans() {
 #   true && (git commit -m x)      subshell after a chain
 #   out=$(git commit -m x)         command substitution
 #
-# and a fourth, measured for issue #2129 against `branch-gate.sh` on a checkout
+# and a fourth, measured for issue #2129 against the commit/push gate on a checkout
 # sitting on `main`, where each of these exited 0 and reached git:
 #
 #   GIT_EDITOR=true git commit -m x        env assignment
@@ -322,7 +322,7 @@ gate_segments_raw() {
         # command at all. Measured by differential fuzz against real bash over
         # 20,312 substitution bodies: the look-back spelling produced 15
         # fail-opens the revision before it did not have, and the same 15 also
-        # walked past `branch-gate` and the `git checkout` data-loss gate.
+        # walked past the commit/push gate and the `git checkout` data-loss gate.
         #
         # Forward is correct BECAUSE of the arm order: an escaped `$` is eaten
         # by the backslash arm below before its `$` is ever examined here, and
@@ -455,7 +455,7 @@ gate_segments_raw() {
     # `res = res "\n"` arm, which SPLITS. Measured on origin/main,
     # `git -C $(<nl>  echo /a/b<nl>) commit -m x` segmented to `git -C`,
     # `echo /a/b` and `) commit -m x`: no segment matched any verb, so
-    # branch-gate and check-gate both exited 0 on a determinate commit. That is
+    # the commit/push gate and check-gate both exited 0 on a determinate commit. That is
     # the round-1 truncation surviving for the multi-line spelling, and it is
     # the last known bypass recorded by go-to-k/cdkd#2027.
     #
@@ -574,7 +574,7 @@ gate_segments_raw() {
         # counted only `$(`, so the backtick spelling of the same multi-line
         # substitution still fell to the splitting arm and stayed a full bypass:
         # measured with the repo on `main`, `git -C `<nl> echo <wt> <nl>` commit`
-        # gave branch-gate rc=0 while its `$( )` twin gave rc=2 -- and both the
+        # gave the commit/push gate rc=0 while its `$( )` twin gave rc=2 -- and both the
         # PR body called the class
         # CLOSED, which is worse than not claiming it.
         #
@@ -966,7 +966,7 @@ gate_segments_raw() {
           # machine opened a PLAIN span on the quote and the escaped quote
           # inside closed it early, so the rest of the body was read as code and
           # a second substitution split the line in the wrong place. Measured
-          # against the real `branch-gate.sh`:
+          # against the real commit/push gate:
           #   echo "$(printf %s $\047a\\\047b\047 $(echo a) ; git commit -m x)"
           # passed through at rc=0 on origin/main and at every revision of this
           # branch until here; the control without the ANSI-C span gave 2. The
@@ -1093,7 +1093,7 @@ gate_segments_raw() {
         # real false refusals: a review measured
         # `gh issue comment 1 --body '"'"'Run `git push` first'"'"'` -- a markdown code
         # span in a single-quoted body, this repo'"'"'s commonest issue/PR shape --
-        # being REFUSED by branch-gate. The survey put the single-quoted share at
+        # being REFUSED by the commit/push gate. The survey put the single-quoted share at
         # 36 of 139 newly-considered cells over 400 real commit messages and PR
         # bodies. The `$(` arm'"'"'s own quote-blindness is a pre-existing
         # over-approximation, not a contract to copy.
@@ -1248,7 +1248,7 @@ gate_segments_raw() {
         # continuing text, carrying the substitution sentinel with them:
         # measured, `gh pr comment 1 --body "l1<newline>l2" $( git commit -m y )`
         # came out as `gh pr comment 1 --body "line1 <sentinel> git commit -m y`
-        # and the verb no longer matched, so `branch-gate` went quiet on a
+        # and the verb no longer matched, so the commit/push gate went quiet on a
         # command that really commits.
         #
         # The logical line is the unit. Bodies accumulate until it completes and
@@ -1318,7 +1318,7 @@ gate_segments_raw() {
       # `flush_line` again, which rewrites `q` -- and the caller tests `q` AFTER
       # the drain. Measured: `gh pr comment 1 --body "l1<newline>l2" $( git
       # commit -m y )` matched GATE_RE_GIT_COMMIT on origin/main and NOT here,
-      # so `branch-gate` and every other `gate_matches` consumer went quiet; and
+      # so the commit/push gate and every other `gate_matches` consumer went quiet; and
       # a `cd` sitting in multi-line PROSE was promoted to a top-level segment,
       # taking a cd-resolving gate from 2 to 0 on a real write. Save and
       # restore it: the bodies are a separate scan, not a continuation of the
@@ -1367,7 +1367,7 @@ gate_segments_raw() {
           # commit followed by such a comment. Real bash RUNS that git commit
           # (verified with a stub git on PATH), while gate_matches against
           # GATE_RE_GIT_COMMIT answered MATCH on origin/main and NO MATCH with
-          # the retry present. So branch-gate went rc 2 to 0: a commit to main,
+          # the retry present. So the commit/push gate went rc 2 to 0: a commit to main,
           # ungated.
           #
           # Deleting it restores MATCH on both spellings and on the single-line
@@ -1402,7 +1402,7 @@ gate_segments_raw() {
       # reads `q` after `run()` to decide whether to retry with a quote treated
       # as literal, and a body that ends inside an unterminated span needs that
       # retry exactly as a top-level line does. Restoring unconditionally threw
-      # the signal away: measured through the real `branch-gate`, a backtick
+      # the signal away: measured through the real commit/push gate, a backtick
       # body whose `#` comment carries one apostrophe went rc 2 -> 0 -- the verb
       # inside it stopped starting a segment, so every gate on `gate_matches`
       # went quiet on a command that really commits. The enclosing line still
@@ -1653,7 +1653,7 @@ gate_unquote_span() {
 #   for f in .claude/hooks/*.sh; do
 #     case "$f" in *.test.sh) continue ;; esac
 #     grep -q 'tool_input.command' "$f" || continue
-#     grep -qE 'gate_matches|gate_segments|cmd_matches_verb|cmd_last_cd_target|gate_verb_rest|gate_pr_selector|gate_target_dir|gate_tokens|gate_argv|strip_noncommand_spans' "$f" \
+#     grep -qE 'gate_matches|gate_segments|cmd_matches_verb|cmd_last_cd_target|gate_verb_rest|gate_target_dir|gate_tokens|gate_argv|strip_noncommand_spans' "$f" \
 #       || echo "NO SHARED MATCHER: $f"
 #   done
 #
@@ -1711,7 +1711,7 @@ _gate_is_value_flag() {
 #   so its cost is quadratic in token LENGTH and in QUOTE COUNT together.
 #   Measured before this bound, `gate_segments` on a single input, new vs
 #   `origin/main`: `--o="a"` x400 x24 tokens (28.9 KB) 6.31 s vs 0.11 s, and
-#   57.7 KB 45.3 s vs 0.29 s -- end to end `branch-gate` 12.96 s and
+#   57.7 KB 45.3 s vs 0.29 s -- end to end, the commit/push gate 12.96 s and
 #   `check-gate` 12.87 s, past the timeout. The attack needs no gated verb at
 #   all: `git --o="a"x400 ...x24 ; git commit -m x` burns the budget in segment
 #   ONE, the hook dies, and segment TWO commits with every gate disarmed. That
@@ -1723,7 +1723,7 @@ _gate_is_value_flag() {
 #   quote-free 508-byte tokens, N = 32 / 64 / 128 / 256 -> 0.116 / 0.378 /
 #   0.816 / 2.756 s, and 256 dense tokens cost 16.4 s. Raising this from 24 to
 #   256 in an earlier revision multiplied the worst case ~114x and re-opened
-#   the timeout DoS BELOW origin/main's cost: at 164 KB, `branch-gate` took
+#   the timeout DoS BELOW origin/main's cost: at 164 KB, the commit/push gate took
 #   4.43 s on main and was KILLED at 10 s on that revision, so the following
 #   `git commit -m x` ran with every gate disarmed. It is back at 24, where the
 #   walk adds nothing measurable (262 KB: 5.20 s against main's 5.34 s).
@@ -1755,7 +1755,7 @@ _GATE_STRUCT_REST=""
 # makes `gate_dequote_structural` ABANDON, which leaves a quoted verb unmatched.
 # That is the PERMISSIVE direction, not the safe one: measured against real git,
 # `git -c a.b=<64 backslashes> "commit" -m y` really did commit while the
-# trigger said no, so `branch-gate` went 2 -> 0. "No rewrite is always a safe
+# trigger said no, so the commit/push gate went 2 -> 0. "No rewrite is always a safe
 # answer" was simply false, and it was written without being tested.
 #
 # The parity is now EXACT, from two parameter expansions and no iteration:
@@ -2219,8 +2219,8 @@ gate_dequote_structural() {
                 #   gh pr --template "{{.t}} merge" list nomatch -> nomatch
                 #   gh pr -L 5 "list"                    nomatch -> nomatch
                 #
-                # the second being the READ command that arms ci-green,
-                # pr-review and the four integ gates once its verb is dequoted.
+                # the second being the READ command that arms the merge gates
+                # once its verb is dequoted.
                 # A BARE token in FIRST position is still the subcommand, so the
                 # pre-existing over-approximation (`gh pr --label merge list`)
                 # is unchanged in both directions.
@@ -2692,8 +2692,9 @@ gate_perl_word_ok() {
 # A flag VALUE may embed a quoted span containing spaces -- `git -c
 # user.name="Jane Doe" commit` is the everyday shape. The value alternative
 # stops at the first space, so the flag loop ends mid-value and the verb is
-# never reached: measured on origin/main, `git commit -m x` on `main` gives
-# branch-gate rc=2 while `git -c user.name="Jane Doe" commit -m x` gives rc=0 --
+# never reached: measured on origin/main against the commit/push gate,
+# `git commit -m x` on `main` gave rc=2 while
+# `git -c user.name="Jane Doe" commit -m x` gave rc=0 --
 # a commit straight to main, ungated, and the same hole in EVERY gate keyed on
 # GATE_FLAGS.
 #
@@ -2705,10 +2706,10 @@ gate_perl_word_ok() {
 # reported it "gone quiet". Trading a `git -c` bypass for a `git checkout --`
 # bypass is not a fix, so that attempt was reverted.
 #
-# The durable half is that NO caller indexes into this pattern any more. The two
-# that did now strip the matched prefix by LENGTH via `gate_verb_rest` /
-# `gate_pr_selector`, so the group count is internal to this file and the next
-# widening cannot shift anything. Fence 4 of unresolved-target-class.test.sh
+# The durable half is that NO caller indexes into this pattern any more. Those
+# that did now strip the matched prefix by LENGTH via `gate_verb_rest`, so the
+# group count is internal to this file and the next widening cannot shift
+# anything. Fence 4 of unresolved-target-class.test.sh
 # keeps that true: it refuses any hook that builds its own match from a shared
 # GATE_ constant and then reads a numbered group out of it, so a change here
 # fails with a message naming this paragraph rather than silently re-opening a
@@ -2732,7 +2733,7 @@ gate_perl_word_ok() {
 # `git -c user.name=O\"Brien checkout -- f.txt` went from rc=2 to rc=0 --
 # a bypass introduced by the commit that was closing one. Removing a false
 # POSITIVE and removing a match are the same edit from the pattern's side.
-# Without the escape alternative `git -c k="a\" b" commit -m x` gave branch-gate
+# Without the escape alternative `git -c k="a\" b" commit -m x` gave the commit/push gate
 # rc=0 on `main` while the plain form gave rc=2 -- the same bypass this whole
 # change is about, one escape deeper (found in review of go-to-k/cdkd#2200).
 # Single quotes take no escapes in shell, so only the double-quoted span needs
@@ -2921,7 +2922,7 @@ _GATE_WORD_FIRST="(${_GATE_WORD_CHAR:-}+|${_GATE_WORD_BLIND_NOQUOTE:-})"
 # Measured against the merge base, same hook binary and payload:
 #
 #   git -C <wt> --exec-path='"'"'/opt/git'"'"'/libexec commit -m x
-#      branch-gate              rc=2 -> rc=0
+#      commit/push gate        rc=2 -> rc=0
 #   git -C <wt> --exec-path='"'"'/opt/git'"'"'/libexec checkout -- f.txt
 #      dirty-path-restore-gate  rc=2 -> rc=0   (the go-to-k/cdkd#1700 data-loss gate)
 #   gh -R go-to-k/cdkd --jq='"'"'.a'"'"''"'"''"'"'b'"'"' pr merge 2330 --squash
@@ -2966,10 +2967,10 @@ GATE_GH_C="${GATE_FLAGS:-}"
 #   gh issue create --title t --body-file <#N>   pr-body-item-number-gate  rc=2
 #   gh issue -R <slug> create --body-file <#N>   pr-body-item-number-gate  rc=0
 #
-# i.e. a complete bypass of every gate keyed on `gh pr merge` (verify-pr,
-# ci-green, bughunt-clean, pr-review and the four integ gates) and of the bare
-# `#N` gate, which is the one gate .claude/rules/hooks.md says MUST block
-# because its residue lands on a THIRD PARTY's issue.
+# i.e. a complete bypass of every gate keyed on `gh pr merge` (today
+# `bughunt-clean` and the two integ gates) and of the bare `#N` gate, which is
+# the one gate .claude/rules/hooks.md says MUST block because its residue lands
+# on a THIRD PARTY's issue.
 #
 # It is the SAME constant, not a variant, and that is the point: the stopping
 # rule GATE_FLAGS relies on -- "a bare token in FIRST position IS the
@@ -3121,27 +3122,18 @@ GATE_RE_CDK_DEPLOY="^(npx[[:space:]]+)?cdk${GATE_FLAGS:-}[[:space:]]+deploy([[:s
 GATE_RE_CDK_DESTROY="^(npx[[:space:]]+)?cdk${GATE_FLAGS:-}[[:space:]]+destroy([[:space:]]|$)"
 GATE_RE_DELSTACK='^delstack([[:space:]]|$)'
 
-# gate_pr_selector <command> <verb-ere>
+# THE ARGUMENT TAIL AFTER A MATCHED VERB
 #
-# The first non-flag token AFTER the matched verb, taken from the segment that
-# actually matched. Empty when there is none.
-#
-# WHY THIS EXISTS. Three gates hand-rolled `args="${cmd##*gh pr merge}"` — a
+# WHY THESE EXIST. Gates hand-rolled `args="${cmd##*gh pr merge}"` — a
 # longest-prefix strip on the LITERAL string. Once `GATE_GH_C` was widened to
 # absorb `-R <owner/repo>`, those gates began to FIRE on the flagged spelling
 # while still failing to strip it: the literal `gh pr merge` does not appear in
 # `gh -R go-to-k/cdkd pr merge 2195`, so `##*` matches nothing and returns the
-# WHOLE command, and whatever runs next reads the wrong thing out of it.
-# Measured 2026-08-25 against the shipped hooks:
-#
-#   gh pr merge 2195 --squash                        -> pr-review-gate: PR #2195
-#   sleep 30 && gh -R go-to-k/cdkd pr merge 2195 ...  -> pr-review-gate: PR #30
-#
-# i.e. an unrelated PR's size decided the review tier, and for
-# closes-paren-form-gate the selector came back empty and the gate exited 0.
-# Widening the flag absorber was NECESSARY AND NOT SUFFICIENT: it moved the
-# bypass one step later rather than closing it. The same pair of defects was
-# found independently in cdk-local and cdk-real-drift.
+# WHOLE command, and whatever runs next reads the wrong thing out of it. An
+# unrelated PR's number decided the verdict, and one gate's selector came back
+# empty and it exited 0. Widening the flag absorber was NECESSARY AND NOT
+# SUFFICIENT: it moved the bypass one step later rather than closing it. The
+# same pair of defects was found independently in cdk-local and cdk-real-drift.
 #
 # The regexes are anchored at `^`, so the match always starts at offset 0 and
 # its LENGTH is a safe strip — `${segment#${BASH_REMATCH[0]}}` is not, because
@@ -3166,13 +3158,12 @@ GATE_RE_DELSTACK='^delstack([[:space:]]|$)'
 #   git -C <wt> checkout -- f.txt # undo probe, then git checkout main
 #      gate_verb_rest -> `main`  (origin/main: `-- f.txt # undo probe, ...`)
 #      dirty-path-restore-gate   rc=2 on origin/main -> rc=0 here
-#   gh -R o/r pr merge 2195 --squash --delete-branch # then gh pr merge 9
-#      gate_pr_selector -> 9     (origin/main: 2195)
 #
 # The `--` vanished from the tail, so the go-to-k/cdkd#1700 data-loss gate read
 # a branch switch and PASSED, on the `git -C <worktree>` spelling this repo
-# MANDATES; and three merge gates judged the wrong PR. THE STRICT RESOLVER DOES
-# NOT CATCH EITHER: resolution succeeds, on the wrong arguments.
+# MANDATES. The same strip served a `gh pr merge` selector for the merge gates
+# that have since been retired. THE STRICT RESOLVER DOES NOT CATCH EITHER:
+# resolution succeeds, on the wrong arguments.
 #
 # The fix is here rather than in the pattern, and the alternatives were probed:
 # re-narrowing GATE_FLAGS reopens the whole bypass class this work exists to
@@ -3240,8 +3231,8 @@ gate_verb_span() {
   # one. The fast path above is defeated by a single repeated verb, and the walk
   # is then O(boundaries x span). Measured end-to-end through pr-review-gate.sh
   # on `gh -R o/r <N x -c k=v> pr merge 42 pr merge`: N=640 2565 ms, N=1280
-  # 9518 ms, N=1600 14888 ms -- against the `timeout: 10` that pr-review-gate,
-  # ci-green-gate, closes-paren-form-gate and non-english-text-gate carry. A
+  # 9518 ms, N=1600 14888 ms -- against the `timeout: 10` every registered
+  # PreToolUse hook carries. A
   # PreToolUse hook that TIMES OUT does not block, so the slow path hands an
   # attacker the whole gate rather than a wrong argument.
   #
@@ -3274,7 +3265,7 @@ gate_verb_span() {
 
 # gate_verb_rest <command> <verb-ere>
 # Everything AFTER the matched verb, for callers that run their own token walk.
-# Same rationale and the same anchored-match strip as gate_pr_selector.
+# Same anchored-match strip as the preamble above describes.
 gate_verb_rest() {
   local cmd="$1" re="$2" segment _gate_span
   while IFS= read -r segment; do
@@ -3313,399 +3304,6 @@ gate_verb_rest_each() {
   return 0
 }
 
-# gate_pr_selector_ate_number <command> <verb-ere>
-#
-# Exit 0 when the walk CONSUMED a numeric token as some flag's value.
-#
-# It reports what the WALK did, NOT that the selector is empty -- and the two
-# differ: `gh pr merge -t 42 552` yields selector `552` AND ate=YES, because 42
-# was eaten by `-t` and 552 was still found. A caller must therefore check
-# emptiness FIRST and consult this only then; treating ate=YES alone as a
-# refusal would reject valid commands. An earlier version of this comment said
-# "the selector is empty because a flag ate it", which is false in exactly that
-# case.
-#
-# A separate FUNCTION, not a variable, and that is forced rather than stylistic:
-# every caller reads the selector as `$(gate_pr_selector …)`, and a subshell
-# assignment cannot reach the parent. Measured while adding it -- the flag read
-# back empty at every call site.
-#
-# The distinction matters because a corrected COMMENT does not close the hole
-# for the next unlisted flag. `gh pr merge --squash` -> empty, and falling back
-# to the current branch is right. `gh pr merge --future-flag 552` -> empty
-# because 552 was eaten, and falling back there is how a sibling repo's
-# ci-green-gate merged past red CI.
-gate_pr_selector_ate_number() {
-  local out
-  out=$(_gate_sel_want_ate=1 gate_pr_selector "$1" "$2")
-  [ "$out" = "ate" ]
-}
-
-gate_pr_selector() {
-  local cmd="$1" re="$2" segment rest tok _gate_span
-  while IFS= read -r segment; do
-    _gate_span=$(gate_verb_span "$segment" "$re") || continue
-    rest="${segment:$_gate_span}"
-    # Globbing OFF around the split: an unquoted `*` in the tail would
-    # otherwise expand against the hook's cwd and a stray filename could become
-    # the selector (measured: with files `77` and `aaa` present,
-    # `gh pr merge --some-flag * 552` yielded 77).
-    # Tokenise with GATE_EMBEDDING_TOKEN so a QUOTED flag value is ONE token.
-    # A plain word-split makes `--subject "chore: x" 2195` three tokens, the
-    # flag consumes `"chore:` and the walk then sees `x"` -- non-numeric, so the
-    # selector comes back empty. Empty is the safe direction, but it is still a
-    # miss, and it is the same tokenisation defect that let a `-C` inside a
-    # quoted value become a target.
-    # Save the caller's noglob setting rather than forcing it off: an
-    # unconditional `set +f` below turned globbing ON for a caller that had it
-    # off.
-    local _gate_noglob=off
-    case "$-" in *f*) _gate_noglob=on ;; esac
-    set -f
-    # shellcheck disable=SC2086
-    set --
-    while [[ "$rest" =~ ^[[:space:]]*$GATE_EMBEDDING_TOKEN([[:space:]]+(.*))?$ ]]; do
-      set -- "$@" "${BASH_REMATCH[1]}"
-      rest="${BASH_REMATCH[4]}"
-      [ -n "$rest" ] || break
-    done
-    [ "$_gate_noglob" = "on" ] || set +f
-    while [ $# -gt 0 ]; do
-      case "$1" in
-        # VALUELESS flags are enumerated; everything else that looks like a flag
-        # is assumed to TAKE a value and consumes the next token.
-        #
-        # The polarity is the whole point, and the opposite one was tried and
-        # measured wrong. Enumerating VALUE-TAKERS instead goes stale in the
-        # DANGEROUS direction: an unlisted value-taking flag leaves its value in
-        # place, so `gh pr merge -R go-to-k/cdkd 552` yields the repo SLUG and
-        # `gh pr merge -t 42 552` yields 42 -- a gate then judges a different PR
-        # and blocks or passes on its verdict. Enumerating VALUELESS flags goes
-        # stale the SAFE-ER way: an unlisted valueless flag eats the number and
-        # the selector comes back EMPTY.
-        #
-        # Be precise about what EMPTY costs, because an earlier version of this
-        # comment overstated it. Empty does NOT mean "the caller refuses". It
-        # means the caller resolves the CURRENT BRANCH's PR instead
-        # (`gh pr checks` with no argument), which is right when the command
-        # runs from the PR's own worktree and WRONG from anywhere else. A
-        # sibling repo measured a worse version of the same thing: there, an
-        # empty selector reached a `no pull requests found` fail-open arm and
-        # the gate PASSED, so `gh pr merge -s 2195` merged past red CI.
-        #
-        # So the polarity argument is real but bounded: wrong-PR is severe and
-        # deterministic, empty-PR is a fallback whose safety depends on the
-        # caller. That is why this list carries BOTH spellings of every flag
-        # rather than relying on the direction of staleness to save it, and why
-        # callers should shape-check the selector independently.
-        # BOTH spellings. `gh help pr merge` documents `-s/--squash`,
-        # `-m/--merge`, `-r/--rebase`, `-d/--delete-branch`; listing only the
-        # long forms sent every short one down the value-consuming arm, which
-        # ATE the PR number: `gh pr merge -s 2195` returned an empty selector.
-        # `--flag=value` carries its value INSIDE the token, so it must not
-        # also consume the next one -- `gh pr merge --repo=go-to-k/cdkd 552`
-        # returned empty before this arm. The hand-walk this helper replaced
-        # had it; dropping it was a regression the replacement introduced.
-        --*=*)
-          shift; continue ;;
-        --squash|-s|--merge|-m|--rebase|-r|--delete-branch|-d)
-          # `-m` COLLIDES across the two verbs this list serves: it is
-          # `--merge` (valueless) for `gh pr merge` and `--milestone`
-          # (value-TAKING) for `gh pr edit`. Listed valueless, deliberately.
-          # On `pr merge`, treating it as value-taking loses the PR number --
-          # the blocker this list exists for. On `pr edit`, `-m "Q3 plan" 42`
-          # leaves a quoted non-numeric token that the numeric guard below
-          # drops, so the selector is EMPTY: a fallback, not a wrong PR. Only
-          # a milestone literally NAMED a number, in first position, could
-          # mis-resolve. Found by a sibling repo re-deriving this list from
-          # `gh help` rather than copying it.
-          shift; continue ;;
-        --remove-milestone|--help)
-          shift; continue ;;
-        --auto|--disable-auto|--admin)
-          shift; continue ;;
-        -*)
-          shift
-          if [ $# -gt 0 ]; then
-            # Did this flag swallow something that LOOKED like the PR number?
-            # That is the case the caller must not treat as a plain absence.
-            case "$1" in
-              ''|*[!0-9]*) ;;
-              *) [ -n "${_gate_sel_want_ate:-}" ] && { printf 'ate'; return 0; } ;;
-            esac
-            shift
-          fi
-          continue ;;
-      esac
-      # And a final guard: the callers all want a PR NUMBER. A non-numeric
-      # token (a branch name, a URL, a repo slug that slipped through) is not
-      # one, and handing it on is how the flag-value bugs above became
-      # wrong-PR verdicts rather than harmless misses.
-      case "$1" in
-        ''|*[!0-9]*)
-          # A non-numeric first positional means we consumed something that
-          # was not the PR number. Record it: the caller must be able to tell
-          # "no selector was given" from "a flag ATE the selector", because a
-          # corrected comment does not close the hole for the NEXT unlisted
-          # flag. `gh pr merge --squash` -> empty and safe to fall back;
-          # `gh pr merge --future-flag 552` -> empty because 552 was eaten,
-          # and falling back there is how a sibling's ci-green merged past red
-          # CI. One walk answers both so the two cannot drift apart.
-          return 0 ;;
-      esac
-      printf '%s' "$1"
-      return 0
-    done
-    return 0
-  done < <(gate_segments "$cmd")
-  return 0
-}
-
-# Run a command under a hard wall-clock bound. Prints its stdout, returns its
-# exit status, and returns 124 if the bound expired.
-#
-# WHY. `.claude/settings.json` registers this hook with `timeout: 15`. A hook
-# killed by THAT timeout emits no `exit 2`, so the gate fails OPEN -- the wrong
-# direction for a merge gate. This hook makes one network call always and, since
-# go-to-k/cdkd#2638, a second serial one on most PRs, so a stalled GitHub must
-# resolve to a decision of ours rather than to an opaque kill.
-#
-# WHY NOT `alarm` + `exec`, which is the obvious spelling: `gh` is a Go binary,
-# and with no `os/signal` listener the Go runtime SWALLOWS SIGALRM. Measured on
-# macOS with a 2s alarm -- `sleep 20` returns rc 142 at 2s, a hanging
-# `gh api graphql` returns rc 1 at 30s. So the bound must FORK and signal the
-# child with something Go honours. Measured with this implementation, 3s bound:
-# a hanging `gh` returns rc 124 at 3s, a SIGALRM-deaf child returns 124 at 4s
-# (bound plus the TERM->KILL grace), a healthy `gh pr view` returns rc 0 with
-# its JSON intact, and a child exiting 7 still returns 7.
-#
-# `timeout(1)` is absent on macOS; `perl` already backs a dozen hooks here.
-#
-# THE WRAPPED COMMAND'S STDERR IS DISCARDED, and that is a decision, not a
-# side effect: this function must stay able to speak (the two degraded-mode
-# warnings above go to the WRAPPER's stderr), so the CHILD's is closed rather
-# than the whole invocation's. A caller that PARSES the wrapped command's
-# stderr sets `GATE_BOUNDED_KEEP_STDERR=1` -- `ci-green-gate` does, because
-# `gh pr checks` writes "no checks reported" there and that string is the one
-# discriminator between "no CI yet" and "a check failed" (both rc=1). Default
-# OFF, so every existing caller is byte-for-byte unchanged.
-gate_bounded() {
-  __gate_secs="$1"
-  shift
-  if ! command -v perl >/dev/null 2>&1; then
-    # Degrade LOUDLY rather than refuse a merge over a missing interpreter.
-    # The `2>/dev/null` lives INSIDE this function, on the wrapped command
-    # only -- when the callers carried it instead it also swallowed this
-    # warning, so the degraded mode was invisible exactly when it mattered.
-    #
-    # THIS ARM HONOURS `GATE_BOUNDED_KEEP_STDERR` TOO, and hardcoding the
-    # redirect here was a FAIL-OPEN the go-to-k/cdkd#3273 delta introduced.
-    # `ci-green-gate` reads "no checks reported" off gh's STDERR; with perl
-    # absent from PATH the redirect swallowed it, so stdout was empty, rc=1,
-    # `not_green` empty -- and the gate PASSED. Measured both ways: perl-less
-    # PATH rc=0, perl present rc=2 "Blocked ... no CI checks are reported".
-    # Reachability on macOS is effectively nil (`/usr/bin/perl` ships), but a
-    # gate that fails OPEN because an interpreter is missing is exactly the
-    # shape .claude/rules/hooks.md refuses.
-    #
-    # The message names no hook: this function serves two now, and saying
-    # `pr-review-gate` while ci-green is the caller sends the reader to the
-    # wrong file.
-    echo "gate_bounded: perl not found; running '$1' unbounded" >&2
-    if [ -n "${GATE_BOUNDED_KEEP_STDERR:-}" ]; then "$@"; else "$@" 2>/dev/null; fi
-    return $?
-  fi
-  perl -e '
-    my $secs = shift;
-    my $pid = fork();
-    if (!defined $pid) {
-      # No fork: run it unbounded rather than refuse, and SAY so. This warning
-      # is why the `2>/dev/null` moved OFF this perl invocation and INTO the
-      # child below: a redirect on the whole wrapper deleted the one line that
-      # announces the degraded mode, which is finding B one arm over.
-      print STDERR "gate_bounded: fork failed; running unbounded\n";
-      open(STDERR, ">", "/dev/null") unless $ENV{"GATE_BOUNDED_KEEP_STDERR"};
-      exec @ARGV or exit 127;
-    }
-    if (!$pid) {
-      # New PROCESS GROUP, so the kill below reaches descendants too. Signalling
-      # only the direct child is not a bound: `gh pr view` shells out to `git`,
-      # and any descendant that inherited stdout keeps the caller`s command
-      # substitution blocked long after the child dies. Measured: a child that
-      # backgrounds a 25s sleeper returns rc 124 at the bound but the CALLER
-      # waits the full 25s -- past the 15s harness kill, i.e. the fail-open this
-      # bound exists to prevent. With the group kill the same case ends at 4s.
-      setpgrp(0, 0);
-      # The wrapped command`s own stderr is suppressed HERE rather than on the
-      # wrapper, so this function can still speak. Note the BACKTICK: this whole
-      # program is a single-quoted shell argument, so an apostrophe would end it
-      # and hand the rest to bash as code.
-      open(STDERR, ">", "/dev/null") unless $ENV{"GATE_BOUNDED_KEEP_STDERR"};
-      exec @ARGV or exit 127;
-    }
-    $SIG{ALRM} = sub {
-      return unless $pid;
-      kill "TERM", -$pid;
-      select(undef, undef, undef, 0.5);
-      kill "KILL", -$pid;
-      exit 124;
-    };
-    # `setpgrp` above moved the child OUT of this hook`s process group, so a
-    # harness reap of the hook no longer collects it. Without this, a killed
-    # wrapper leaves `gh` and its descendants running with nothing enforcing the
-    # bound at all -- narrow (the bounds are well under the 15s budget) but
-    # unbounded in duration once it opens.
-    $SIG{TERM} = $SIG{INT} = sub {
-      kill "KILL", -$pid if $pid;
-      exit 143;
-    };
-    alarm $secs;
-    waitpid($pid, 0);
-    my $status = $?;
-    # CLEAR $pid FIRST, then disarm. The bigger window is `waitpid` returning ->
-    # `alarm 0`, where the pid is already reaped: a SIGALRM there would signal a
-    # possibly-recycled process group and report a false timeout. Clearing first
-    # makes the handler a no-op for that window; the reverse order only closes
-    # the shorter one.
-    $pid = 0;
-    alarm 0;
-    # A SIGNAL-killed child must not look like success. `$status >> 8` is 0 when
-    # the child died on a signal, and a truncated `gh` response then parses into
-    # loc=0 / fc=0 -- an `inline` verdict and a SILENT pass, where every earlier
-    # version of this hook printed its infra fail-open reason. 125 is distinct
-    # from the 124 the timeout arm uses.
-    exit(($status & 127) ? 125 : ($status >> 8));
-  ' "$__gate_secs" "$@"
-}
-
-# gate_gh_repo_slug <command> <verb-ere>
-#
-# The `owner/repo` slug the matched `gh` command names with `-R` / `--repo`, in
-# EITHER flag slot and after the verb too (cobra accepts it anywhere). Three
-# outcomes, and callers must distinguish all three:
-#
-#   rc 0, slug on stdout   the command names a repo, and it is readable
-#   rc 0, nothing          the command names NO repo (gh resolves from the cwd)
-#   rc 2, nothing          it names one this parser CANNOT read
-#
-# WHY THIS EXISTS (go-to-k/cdkd#3273). `ci-green-gate` and `pr-review-gate`
-# recovered the PR NUMBER from the command and never the REPO, then queried
-# `gh pr checks <n>` / `gh pr view <n>` with no `-R` at all -- i.e. against
-# whatever repo the shell happened to be in. So `gh pr merge 42 -R <other>` run
-# from a cdkd worktree judged CDKD's PR 42: a different PR, in a different
-# repository, deciding this merge. It fails in both directions -- a green cdkd
-# 42 clears a red foreign 42, and a red cdkd 42 refuses a green one -- and the
-# cross-repo merge flow it needs is one `.claude/rules/hooks.md` describes as
-# routine ("Working on a sibling repo from a cdkd session").
-#
-# THE THIRD OUTCOME IS THE POINT. Returning "no repo" for an unreadable one
-# would put the caller straight back on the cwd, which is the defect. A BLOCKING
-# caller must refuse instead -- the same posture `gate_target_dir_strict` takes
-# for a `-C` it cannot read, and for the same reason: a hook receives command
-# TEXT, so `-R "$SLUG"` arrives unexpanded and guessing is what produced the
-# bug.
-#
-# FOUR SPELLINGS ARE READ, and they are the ones gh documents and this repo
-# writes: `-R <slug>`, `-R<slug>`, `--repo <slug>`, `--repo=<slug>`. The prefix
-# test runs on the token with its QUOTE CHARACTERS REMOVED, so `"--repo"` and
-# `--re"po"` are caught too -- deleting quote characters can expose a prefix but
-# never hide one, which is the argument `verify-pr-gate`'s own repo-naming guard
-# already records.
-#
-# KNOWN BOUND, declared rather than discovered: a combined SHORT-FLAG CLUSTER
-# carrying `R` (`-cR <slug>`, `-sR<slug>`) is NOT read, and the caller then
-# judges the cwd repo exactly as it does today. gh honours those (measured
-# 2026-09-16 on 2.92.0, recorded in `verify-pr-gate.sh`), so this is a real
-# residue -- it is left because the cluster is not decidable from the text: a
-# per-flag ARITY table is the only thing that tells `-sR <slug>`
-# (`--squash --repo <slug>`) from `-tRelease` (`--subject Release`), and that is
-# the enumeration this library refuses. Over-refusing
-# the cluster was considered and rejected: on a MERGE gate a wrong refusal is
-# not cheap. Filed as go-to-k/cdkd#3301.
-#
-# KNOWN BOUND, and it is NOT this function's: a repo reaching gh through a
-# channel that is not the segment's literal argv -- `GH_REPO` in the
-# environment, a URL selector (`gh pr merge https://github.com/o/r/pull/5`), an
-# `upstream` remote in the target checkout, a `gh alias`. `verify-pr-gate`
-# answers those by REFUSING to relax rather than by reading them, and
-# go-to-k/cdkd#3235 is the issue that would close the class properly. Here they
-# come back as "no repo", i.e. today's cwd-relative behaviour.
-gate_gh_repo_slug() {
-  local cmd="$1" re="$2" segment tok noq want=0 val toks found="" seen=0
-  while IFS= read -r segment; do
-    gate_verb_span "$segment" "$re" >/dev/null || continue
-    want=0; found=""; seen=0
-    # STRIP THE COMMENT FIRST. `gate_tokens` has no idea what `#` means, so
-    # `gh pr merge 42 --squash # don't wait` tokenises the apostrophe in the
-    # COMMENT as an opening quote, the split truncates, and the `|| return 2`
-    # below refused a command carrying no `-R` at all -- with a message saying
-    # it named a repository. `gate_strip_comment`'s own doc records this exact
-    # bug for `gate_argv`, and this function repeated it.
-    #
-    # `gate_tokens` returns non-zero when an unbalanced quote TRUNCATED the
-    # split, and that status is the difference between "no `-R` in this command"
-    # and "there may be one past the point I stopped reading". Reading it is why
-    # the token list goes through a variable rather than a process substitution,
-    # whose exit status bash does not hand back.
-    toks=$(gate_tokens "$(gate_strip_comment "$segment")") || return 2
-    # THE WALK RUNS TO THE END OF THE SEGMENT, and returning on the first hit
-    # was a live defect. `gh` takes the LAST `-R` when a command carries more
-    # than one -- measured on 2.92.0 in three slot orders, `-R a -R b` and
-    # `gh -R a pr view … -R b` both answering **b** -- so a first-hit return
-    # made `gh pr merge 42 -R <this repo> -R <other repo>` judge THIS repo's
-    # PR 42 and clear a merge in the other one. That is go-to-k/cdkd#3273's own
-    # defect, reproduced by its fix.
-    #
-    # THE ANSWER IS TO REFUSE, not to mirror gh's precedence, and the choice is
-    # deliberate. Mirroring would encode a MEASUREMENT of cobra's last-wins
-    # behaviour into a gate whose whole job is to be right about which repo gh
-    # acts on: if that precedence ever differs -- by slot, by flag spelling, by
-    # gh version -- the gate silently judges the wrong repo again, which is the
-    # class this function exists to close. Refusing cannot be wrong that way,
-    # it matches `gate_target_dir_strict`'s posture for a `-C` it cannot read,
-    # and it costs nothing real: no legitimate command names two DIFFERENT
-    # repositories for one `gh` call, since gh itself acts on only one. Two
-    # IDENTICAL slugs are not ambiguous and behave like one.
-    while IFS= read -r tok; do
-      [ -n "$tok" ] || continue
-      if [ "$want" = 1 ]; then
-        # The VALUE of a flag we have already recognised. It must be readable:
-        # an unexpanded `$VAR`, a substitution or an unbalanced quote is the
-        # rc=2 case, not a "no repo" one.
-        want=0
-        gate_word_is_literal "$tok" || return 2
-        val=$(gate_unquote "$tok")
-        [ -n "$val" ] || return 2
-        if [ "$seen" = 1 ] && [ "$val" != "$found" ]; then return 2; fi
-        found="$val"; seen=1
-        continue
-      fi
-      noq="${tok//\"/}"
-      noq="${noq//\'/}"
-      case "$noq" in
-        --repo=*|-R?*)
-          gate_word_is_literal "$tok" || return 2
-          case "$noq" in
-            --repo=*) val="${noq#--repo=}" ;;
-            *)        val="${noq#-R}" ;;
-          esac
-          [ -n "$val" ] || return 2
-          if [ "$seen" = 1 ] && [ "$val" != "$found" ]; then return 2; fi
-          found="$val"; seen=1 ;;
-        --repo|-R)
-          want=1 ;;
-      esac
-    done <<< "$toks"
-    # A trailing `-R` with NOTHING after it names a repo the command cannot
-    # resolve either; gh errors on it. Report it as unreadable rather than as
-    # absent, so the caller does not fall back to the cwd.
-    [ "$want" = 1 ] && return 2
-    [ "$seen" = 1 ] && printf '%s' "$found"
-    return 0
-  done < <(gate_segments "$cmd")
-  return 0
-}
-
 # Strip one layer of surrounding quotes from a path token.
 gate_unquote() {
   local p="$1"
@@ -3728,10 +3326,10 @@ gate_unquote() {
 # that shape by name; the sanctioned answer is to pass the pattern to a helper,
 # which is this. `gate_verb_rest` gives the same guarantee for the verb prefix.
 #
-# No `set -f` dance around the loop, unlike `gate_pr_selector`'s: that function
-# feeds its tokens to `set --`, which word-splits and globs. This one only ever
-# prints `"${BASH_REMATCH[1]}"`, and `[[ =~ ]]` does not glob, so a stray `*` in
-# the text has nothing to expand against.
+# No `set -f` dance around the loop: a caller that feeds its tokens to `set --`
+# needs one, because that word-splits and globs. This one only ever prints
+# `"${BASH_REMATCH[1]}"`, and `[[ =~ ]]` does not glob, so a stray `*` in the
+# text has nothing to expand against.
 gate_tokens() {
   local rest="$1"
   while [[ "$rest" =~ ^[[:space:]]*$GATE_EMBEDDING_TOKEN([[:space:]]+(.*))?$ ]]; do
@@ -4129,7 +3727,7 @@ gate_expand_tilde() {
 # selector work): `git -c core.pager="less -C /evil" commit -m y` resolved the
 # target to `/evil`, and through the real hook with the repo on `main`,
 # `git commit -m x` gives rc=2 while the same command with that `-c` prefix
-# gives rc=0 -- a branch-gate BYPASS driven entirely by a flag VALUE.
+# gives rc=0 -- a commit/push gate BYPASS driven entirely by a flag VALUE.
 GATE_EMBEDDING_TOKEN='(("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]"'"'"'])+)'
 
 gate_leading_c_value() {
@@ -4508,6 +4106,13 @@ cmd_last_cd_target() {
 # in for cdkd's `integ-local` -- until `integ-local` was retired with the rest
 # of the marker layer. Empty is a valid state: `gate_resolve_marker_gate` then
 # answers `canonical` or `none` and never `alias`.
+#
+# EMPTY MEANS ZERO ROWS, NOT AN EMPTY STRING, and the newline below is
+# LOAD-BEARING. This name is in `GATE_LIB_BASE_CONSTS`, which `gate_require_const`
+# requires to be non-empty, so tidying it to `GATE_MARKER_ALIASES=''` makes every
+# gate refuse EVERY Bash call -- measured on a copy: a benign `ls -la` through
+# `integ-destroy-gate` returns rc=2 with "does not define: GATE_MARKER_ALIASES",
+# and the recovery is Edit/Write only, because the shell is refused too.
 GATE_MARKER_ALIASES='
 '
 
@@ -4523,8 +4128,8 @@ GATE_MARKER_ALIASES='
 gate_markgate_declares() {
   local top="$1" want="$2" file names
   file="$top/.markgate.yml"
-  # No config at the repo top is how every other hook in this repo decides a
-  # checkout is not a markgate repo (branch-gate.sh, check-gate.sh). Nothing is
+  # No config at the repo top is how this repo's hooks decide a checkout is not
+  # a markgate repo. Nothing is
   # declared there, so the answer is a definite "no", not "cannot tell".
   [ -f "$file" ] || return 1
   names=$(gate_markgate_declared_gates "$file") || return 2
@@ -4956,10 +4561,10 @@ gate_refuse_no_equivalent_marker() {
 # SATISFIABLE -- it names the gate that repo actually has and the command that
 # refreshes it. EXITS the hook (2).
 #
-# Shared by all four integ gates so they cannot drift into naming a cdkd-only
-# gate at a sibling. Today only `integ-local` has an alias row, so the other
-# three reach this through the table rather than through their own text; adding
-# a row is then the whole change, with no per-hook message to write.
+# Shared by the markgate-backed gates so they cannot drift into naming a
+# cdkd-only gate at a sibling. `GATE_MARKER_ALIASES` is EMPTY today, so nothing
+# reaches this branch; adding a row is then the whole change, with no per-hook
+# message to write.
 gate_refuse_stale_alias_marker() {
   local gate="$1" cdkd_gate="$2" dir="$3" alias_gate="$4" fix="$5" scope="$6"
   {
@@ -5568,9 +5173,8 @@ EOF
 # go-to-k/cdkd#2826, so the finding survives here as the reason for the
 # population while the measurement lives with the artifact that produced it.
 #
-# Among the unguarded were `branch-gate` (what stops a commit on `main`) and
-# `ci-green-gate` (what stops a merge over red CI) -- both Tier 1 in
-# go-to-k/cdkd#2717's sense, where the harm is unrecoverable.
+# Among the unguarded were gates whose harm is unrecoverable in
+# go-to-k/cdkd#2717's Tier 1 sense.
 #
 # THERE IS NO CLASS FENCE YET, and that is the standing gap in this design.
 # One was built alongside this change -- for every REGISTERED hook that sources
@@ -5614,8 +5218,8 @@ EOF
 # with `GATE_SEP_AMP` stripped exited **0**, waving a machine-wide kill through,
 # with the `set -u` abort swallowed by the command substitution's subshell.
 #
-# **A hook depends on constants it never mentions.** `ci-green-gate` reaches
-# `gate_tokens` / `gate_argv` through `gate_gh_repo_slug` and
+# **A hook depends on constants it never mentions.** The integ gates reach
+# `gate_tokens` / `gate_argv` through `gate_target_is_foreign` and
 # `gate_cmd_names_no_other_repo`, and they interpolate `GATE_EMBEDDING_TOKEN`
 # and `GATE_REDIR_TOKEN` into the `[[ =~ ]]` that splits argument text and the
 # one that spots a redirection. A library predating either leaves that pattern
@@ -5634,7 +5238,7 @@ EOF
 #     `GATE_FLAGS=` deleted: `dirty-path-restore-gate` exited 1 -- a non-blocking
 #     error, i.e. a PASS -- with `command-match.sh: line 1959: GATE_FLAGS:
 #     unbound variable` its only trace.
-#   * `set -u` set AFTER the source (branch-gate): no abort at all.
+#   * `set -u` set AFTER the source: no abort at all.
 #     The base expands EMPTY and every derived ERE is silently DEGRADED but
 #     non-empty -- `GATE_RE_GIT_COMMIT` becomes `^git[[:space:]]+commit(...)`,
 #     which no longer matches `git -C <path> commit`. A caller-named check on
@@ -5731,7 +5335,7 @@ GATE_LIB_BASE_CONSTS="_GATE_DQ_CHANGED _GATE_GIT_GLOBAL_VALUE _GATE_WORD _GATE_W
 # KNOWN BOUND, stated because it is narrow rather than absent: the check asks
 # what the NAME holds, so an EXPORTED variable of the same name satisfies it.
 # Measured -- `GATE_FLAGS=` deleted from the library and `GATE_FLAGS=ZZZ` in the
-# hook's environment takes `branch-gate` to rc=0 on a commit to `main`.
+# hook's environment takes the commit/push gate to rc=0 on a commit to `main`.
 #
 # THE BLAST RADIUS IS PER-LIST, NOT PER-CONSTANT, and an earlier wording of this
 # paragraph implied otherwise. `GATE_LIB_BASE_CONSTS` is itself read this way,
@@ -5899,7 +5503,7 @@ gate_missing_const() {
     # A quoted-together argument (`gate_require_const "GATE_A GATE_B"`, one
     # plausible authoring slip) makes bash 5.3.9 print `invalid variable name`
     # and ABORT the loop, so every name after it goes unchecked: with that
-    # hook's own constant also missing, `branch-gate` answered rc=1 on a commit
+    # hook's own constant also missing, the commit/push gate answered rc=1 on a commit
     # to `main` -- a non-2 exit, i.e. a PASS. bash 3.2.57 answers 2 for the same
     # input, so the inertness is version-divergent, which is exactly the class
     # this helper exists to close.
