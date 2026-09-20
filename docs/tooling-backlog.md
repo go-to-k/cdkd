@@ -24,7 +24,7 @@ the row here says which issue took it. An unworked row stays a row.
 **The criterion a hook has to clear to exist at all.** A PreToolUse hook may
 BLOCK only when the harm completes at the moment of the action AND lands
 irreversibly on a THIRD PARTY's artifact, on ANOTHER SESSION's work, or on the
-MAINTAINER's AWS account. Everything else becomes a sentence in `CLAUDE.md`, a
+MAINTAINER's AWS account. Everything else becomes a sentence in `AGENTS.md`, a
 CI unit test, or nothing. The full statement, with the worked examples that
 separate the clauses, is in
 [.claude/rules/hooks.md](https://github.com/go-to-k/cdkd/blob/main/.claude/rules/hooks.md).
@@ -49,7 +49,7 @@ separate the clauses, is in
   agent-instruction prose does not clear the criterion above: nothing a user can
   hit depends on it, and the machinery cost more to keep honest than the drift it
   caught. What survives is `rule-file-module-citations.test.ts` (a `.ts` module a
-  rule file cites must EXIST), a single down-only byte cap on `CLAUDE.md`, and
+  rule file cites must EXIST), a single down-only byte cap on `AGENTS.md`, and
   everything whose subject is `src/**` or generated data. Do not reintroduce a
   prose fence; a recurring prose defect is recorded here and, on a SECOND
   occurrence, fixed in the prose.
@@ -181,7 +181,7 @@ which PR took it, so nobody picks it up twice.
 | — | test(rules): the display fence's MIXED-RENDER arm is value-class-independent but scoped to the `cdkd local` surface, so the deploy path's raw renders fall outside it. Extending it means a per-statement judgement across ~7 files in `scrub.ts` / `state.ts` / `gc.ts` that the fence explicitly refuses to make mechanically. Filed as go-to-k/cdkd#3405 and closed under the tooling-findings rule |
 | — | test(rules): `sanitizedLocals` in `tests/unit/cli/local-profile-display-population.test.ts` is a line walk on its fifth spelling; moving it to the compiler API means re-deriving every floor it feeds. Filed as go-to-k/cdkd#3411 and closed under the tooling-findings rule. Its sibling instrument — the AST mask-coverage checker — was DELETED by go-to-k/cdkd#3435 for the same maintenance reason, so weigh a rewrite against deleting this one too |
 | — | test(deployment): the AST mask-coverage checker was the only instrument that could answer whether the resolver's raw-render population is CLOSED. With it deleted (go-to-k/cdkd#3435) the remaining fence asserts containment — `maskSecretsRaw` and the strip-and-mask composition have one caller each — and the per-site renders are held by byte-level cases. A NEW raw render at a NEW site is no longer reported; go-to-k/cdkd#3441 is the known remainder, derived by hand |
-| — | chore(rules): `.claude/rules/layout-deployment-secrets.md` is 13,077 B against the 12 KB per-file cap in CLAUDE.md's Tooling Policy item 4, and it is not one of the five index files that may reach 20 KB. Nothing measures the cap any more — the payload fence was retired — so the budget is now prose a lane has to remember |
+| — | chore(rules): `.claude/rules/layout-deployment-secrets.md` is 13,077 B against the 12 KB per-file cap in AGENTS.md's Tooling Policy item 4, and it is not one of the five index files that may reach 20 KB. Nothing measures the cap any more — the payload fence was retired — so the budget is now prose a lane has to remember |
 | — | chore(skills): `.claude/skills/**` totals 214,717 B against the 200 KB budget in the same item — measure it with `find .claude/skills -type f -exec wc -c {} +`, since a `du -sk` reads disk blocks and overstates it. `.claude/rules/**` is 299,621 B, just inside its 300 KB budget, so the two are not equally slack; the skills one is what a lane will cross without noticing |
 | — | test(integ): `cc-api-fallback-transitions` is RED on `main` (its `integ-last-run.tsv` row) — its override arm asserts that `--allow-unsupported-properties AWS::Lambda::Function:RuntimeManagementConfig` silent-drops a property go-to-k/cdkd#1621 made HANDLED. Same rotted premise that go-to-k/cdkd#3454 and go-to-k/cdkd#3457 repaired in `recreate-via-sdk-provider`, `recreate-mixed-direction` and `sdk-ccapi-crossref`; the rule is now in `docs/integ-fixture-conventions.md` ("Never seed a Cloud Control route from an unhandled property"). Repairing it means moving the trigger to `AWS::ApiGatewayV2::Api.Body` as `cc-api-fallback` did. A unit test reading each fixture's named `Type:Property` trigger against `property-coverage.generated.ts` would catch the next one offline, but needs fixtures to DECLARE their trigger first |
 | — | chore(run-integ): nothing in `/run-integ` or `/work-issues` says how to tell an intermittent AWS-side failure from a regression. What separated them on `rollback-deletion-policy-snapshot` (go-to-k/cdkd#3455): re-run on `main`'s engine, then read CloudTrail's `userAgent` / `sourceIPAddress` for the offending call — `cloudformation.amazonaws.com` means Cloud Control's handler made it, not cdkd's SDK client. First occurrence |

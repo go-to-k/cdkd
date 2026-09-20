@@ -301,7 +301,7 @@ export function formatReport(subject: Subject, offenders: Offender[]): string {
     '- Chat with the user stays in whatever language you like; this check covers only what gets PUBLISHED.',
   );
   lines.push('');
-  lines.push('Rule: CLAUDE.md -> Workflow Rules -> English-only');
+  lines.push('Rule: AGENTS.md -> Workflow Rules -> English-only');
   return lines.join('\n');
 }
 

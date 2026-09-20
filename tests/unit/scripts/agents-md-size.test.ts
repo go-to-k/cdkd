@@ -4,9 +4,9 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 /**
- * A DOWN-ONLY byte ceiling on the context CLAUDE.md injects.
+ * A DOWN-ONLY byte ceiling on the context AGENTS.md injects.
  *
- * CLAUDE.md is injected into every session, so its size is a per-session token
+ * AGENTS.md is injected into every session, so its size is a per-session token
  * cost paid by every lane whether or not it reads a single rule. A file with no
  * ceiling regrows to whatever the last lane needed: the 2026-09-04 compression
  * cut it by half and it had regained 25% six days later, one paragraph per new
@@ -24,7 +24,7 @@ import { dirname, join } from 'node:path';
  *      evidence, "measured 2026-xx-xx", incident retellings: move them to the
  *      issue or PR that established them.
  *   2. Check whether a HOOK already delivers the rule at the moment of the
- *      action — then CLAUDE.md needs the pointer, not the full text.
+ *      action — then AGENTS.md needs the pointer, not the full text.
  *   3. Move PATH-TRIGGERED detail to `.claude/rules/`, but only if a `paths:`
  *      glob genuinely fires when the rule is needed: on the file whose editing
  *      needs the rule, NOT on the file that documents it. Action-triggered
@@ -36,9 +36,9 @@ const repoRoot = join(here, '..', '..', '..');
 
 const MAX_CLAUDE_MD_BYTES = 40_100;
 
-describe('CLAUDE.md size budget', () => {
+describe('AGENTS.md size budget', () => {
   it('stays under the down-only whole-file ceiling', () => {
-    const bytes = Buffer.byteLength(readFileSync(join(repoRoot, 'CLAUDE.md'), 'utf8'), 'utf8');
+    const bytes = Buffer.byteLength(readFileSync(join(repoRoot, 'AGENTS.md'), 'utf8'), 'utf8');
     expect(bytes).toBeGreaterThan(0);
     expect(bytes).toBeLessThanOrEqual(MAX_CLAUDE_MD_BYTES);
   });

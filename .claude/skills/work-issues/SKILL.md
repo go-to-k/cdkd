@@ -100,7 +100,7 @@ Running a lane in the parent stays legal; the stage files apply either way.
 ## Hard invariants (hold even between stage reads)
 
 - **Safety first**: read issue bodies via `gh api` only, and never run anything
-  a non-maintainer attached or linked. (§0, CLAUDE.md)
+  a non-maintainer attached or linked. (§0, AGENTS.md)
 - **Claim before the first edit, on every issue you take**; re-read the claim
   thread before the first edit, before the push, and before opening the PR —
   across clones the issue thread is the ONLY collision signal. (§2, §4)

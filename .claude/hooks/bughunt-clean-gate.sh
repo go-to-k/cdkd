@@ -11,7 +11,7 @@
 # via `bughunt-track.sh add`, and this gate makes it physically impossible to
 # land any commit / PR until `bughunt-track.sh clear` empties the sentinel —
 # which the skill runs ONLY after destroy + orphan-zero verification. This is
-# the structural counterpart of the CLAUDE.md "always destroy bug-hunt
+# the structural counterpart of the AGENTS.md "always destroy bug-hunt
 # resources" rule: the rule says it, the hook enforces it.
 #
 # SCOPE OF THE BLOCK DECISION (issue #1615):

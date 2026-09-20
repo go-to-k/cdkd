@@ -37,7 +37,7 @@
  *
  *   1. `allow_merge_commit` / `allow_rebase_merge` are BOTH false, so GitHub
  *      itself permits only squash — a branch commit can never reach `main` as
- *      its own commit object. (CLAUDE.md's "Merge PRs with squash only" is the
+ *      its own commit object. (AGENTS.md's "Merge PRs with squash only" is the
  *      same rule stated as policy; this is the server-side enforcement of it.)
  *   2. `squash_merge_commit_title: PR_TITLE` means the squash SUBJECT is the PR
  *      title unconditionally. This is the load-bearing one: under GitHub's other
@@ -120,7 +120,7 @@
  *   - "any path under `src/`" as the sole scope test, anchored at the start of
  *     the path (`foo/src/bar.ts` and `srcfoo/x.ts` do not count);
  *   - the suggested-prefix heuristic and its precedence order:
- *       all docs (`docs/**`, `README.md`, `CLAUDE.md`, any nested `README.md`) -> docs
+ *       all docs (`docs/**`, `README.md`, `AGENTS.md`, any nested `README.md`) -> docs
  *       all `tests/**`                                                -> test
  *       all `.claude/**`                                              -> chore
  *       all of {`package.json`, `pnpm-lock.yaml`}                     -> chore(deps)
@@ -173,7 +173,7 @@ const CONVENTIONAL_HEADER = /^([a-z]+)(\([^)]+\))?!?: /;
 /** Path predicates, each anchored the way the hooks' `case ... in` patterns were. */
 const IS_SRC = (f: string) => f.startsWith('src/');
 const IS_DOCS = (f: string) =>
-  f.startsWith('docs/') || f === 'README.md' || f === 'CLAUDE.md' || f.endsWith('/README.md');
+  f.startsWith('docs/') || f === 'README.md' || f === 'AGENTS.md' || f.endsWith('/README.md');
 const IS_TESTS = (f: string) => f.startsWith('tests/');
 const IS_CLAUDE = (f: string) => f.startsWith('.claude/');
 const IS_DEPS = (f: string) => f === 'package.json' || f === 'pnpm-lock.yaml';
@@ -312,7 +312,7 @@ export function formatFailure(v: PrefixScopeVerdict): string {
     ``,
     `Mapping:`,
     `  src/**                                 -> feat: or fix:`,
-    `  docs/** / README.md / CLAUDE.md        -> docs:`,
+    `  docs/** / README.md / AGENTS.md        -> docs:`,
     `  tests/** only                          -> test:`,
     `  .claude/** (hook / skill / agent)      -> chore:`,
     `  package.json + pnpm-lock.yaml only     -> chore(deps):`,

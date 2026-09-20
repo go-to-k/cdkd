@@ -1,12 +1,12 @@
 ---
 description: Session-wrap report field reference (the four TODO fields, the State line, the Session-close verdict, report templates)
 paths:
-  - 'CLAUDE.md'
+  - 'AGENTS.md'
 ---
 
 # Session-wrap report: the full field reference
 
-CLAUDE.md's "Every session-wrap / task-complete report" rule states the
+AGENTS.md's "Every session-wrap / task-complete report" rule states the
 contract; this file carries the field semantics, scales and templates. Read it
 when writing a wrap report or filing a deferral.
 

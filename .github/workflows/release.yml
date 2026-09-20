@@ -22,7 +22,7 @@ name: Release
 # go-to-k/cdkd#2594, #2585 and #2508: attempt 1 action_required, attempt 2
 # green). So ci-green-gate blocks an agent-side `gh pr merge` only while those
 # runs are unapproved, and stops blocking once they are green — the standing
-# rule in CLAUDE.md ("never merge the release PR unless the maintainer asked
+# rule in AGENTS.md ("never merge the release PR unless the maintainer asked
 # for a release") is the real protection. Its diff is only
 # version/CHANGELOG/manifest; the maintainer merges it via the web UI.
 #

@@ -2400,7 +2400,7 @@ const FALSIFIED_CLAIMS: readonly {
   {
     retired: 'persisted as the UNRESOLVED expression, so no plaintext reaches `state.json` / the rollback journal', // falsified sample
     why:
-      'FALSE on all three destinations, and it sat in `docs/architecture.md`, which CLAUDE.md tells ' +
+      'FALSE on all three destinations, and it sat in `docs/architecture.md`, which AGENTS.md tells ' +
       'every session to trust. `state.json` and the journal: the three `LEAK (#2012)` rows above. CLI ' +
       'output: `maskSecretsInText` only SCANS for substrings of at least `MIN_NEEDLE_LENGTH`, so a ' +
       'shorter secret survives inside a larger echoed string.',

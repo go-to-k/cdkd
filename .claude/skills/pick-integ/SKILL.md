@@ -11,7 +11,7 @@ stale the last run is (from the committed ledger) and whether recent changes
 touch the area a test exercises. It RECOMMENDS only; the orchestrator runs
 the chosen tests via `/run-integ`.
 
-**The ranking is a running ORDER, not a budget** (CLAUDE.md → "Cost is not a
+**The ranking is a running ORDER, not a budget** (AGENTS.md → "Cost is not a
 tiebreaker"): when several tests plausibly cover the touched code, run all of
 them, and prefer a broad-set fixture whenever the change is cross-cutting.
 Priorities decide what runs FIRST; a plan too long for one session is handed

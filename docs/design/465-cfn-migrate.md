@@ -542,7 +542,7 @@ After migration but BEFORE running any `cdkd deploy` against the new app:
   the new command. Remove the "Plain (non-CDK) CloudFormation stacks are out
   of scope: chain `cdk migrate` ..." caveat at the bottom (this is the
   deferral that #465 closes).
-- `CLAUDE.md` — under "src/cli/", replace the same "out of scope" sentence
+- `AGENTS.md` — under "src/cli/", replace the same "out of scope" sentence
   with a one-line pointer to `cdkd migrate`.
 - `README.md` — under "Importing existing resources", add the bare-CFn entry.
 

@@ -112,7 +112,7 @@ shared `gh-subject.ts`, run from `issue-conventions.yml` on `issues` /
 - **A sibling script is imported with a `.ts` extension, not `.js`.** Node's type
   stripping resolves specifiers literally, so a `.js` specifier for
   `scripts/gh-subject.ts` fails under `node scripts/check-gh-body-english.ts`.
-  CLAUDE.md's `.js` rule governs bundled `src/**`, which these are not.
+  AGENTS.md's `.js` rule governs bundled `src/**`, which these are not.
 
 ## The PR-CONTENT check
 

@@ -17,7 +17,7 @@ All three run once, at the end of the run.
 
 Mandatory. For every reviewer output this session (including re-reviews), walk
 the "Minor / Nit / Informational" section. For EACH item, confirm ONE of these
-BEFORE reporting the PR ready (the same buckets as CLAUDE.md's Remaining-work
+BEFORE reporting the PR ready (the same buckets as AGENTS.md's Remaining-work
 taxonomy):
 
 - (a) **Fixed in this PR** — point at the fix commit / file:line.

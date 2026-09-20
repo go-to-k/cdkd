@@ -261,7 +261,7 @@ fi
 # FILE (go-to-k/cdkd#3351). Until that issue they read
 # `version:[[:space:]]*[0-9]+(...)+` and `STATE_SCHEMA_VERSION[[:space:]]*=...`,
 # which describe `version: 1 | 2 | 3 | 4 | 5;` and `STATE_SCHEMA_VERSION = 5` --
-# the shape CLAUDE.md's flattened `interface StackState` snippet renders.
+# the shape AGENTS.md's flattened `interface StackState` snippet renders.
 # `git log -S'  version: 1 | 2' -- src/types/state.ts` is EMPTY: the real file
 # has always spelled the union as a named type and the constant with a `_CURRENT`
 # suffix, so `_CURRENT:` intervenes before the `=` and the field itself carries

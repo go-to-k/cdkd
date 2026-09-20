@@ -79,7 +79,7 @@ the axis and say why.
   file's last 3 — rather than from what you remember about the area. Recency is
   evidence about the code, the way a security path is.
 
-**Agent-instruction files never get a discount.** `CLAUDE.md`,
+**Agent-instruction files never get a discount.** `AGENTS.md`,
 `.claude/rules/**`, `.claude/skills/**`, `.claude/agents/**`, `.claude/hooks/**`,
 `.claude/settings*.json` and `.markgate.yml` change how every future session
 behaves, so a defect there has a wider blast radius than most code. The same goes

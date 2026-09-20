@@ -71,7 +71,7 @@ done                                                               # RIGHT
 
 ### 5-c. The fix itself
 
-Fix in the lane's tree, matching the existing pattern; CLAUDE.md owns the
+Fix in the lane's tree, matching the existing pattern; AGENTS.md owns the
 mechanics. Make the unit test **fail without the fix and pass with it**. A
 hook's harness is `.claude/hooks/<name>.test.sh`, run by `run-tests.sh` from
 BESIDE its subject, where it resolves the hook from.

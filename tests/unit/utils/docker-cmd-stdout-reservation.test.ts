@@ -276,7 +276,7 @@ describe("spawnStreaming routes a child's live stdout by the reservation (issue 
  * to get wrong.
  *
  * The probe imports `src/**` directly under node's native type stripping.
- * cdkd spells its relative imports `.js` (see CLAUDE.md), which node
+ * cdkd spells its relative imports `.js` (see AGENTS.md), which node
  * resolves LITERALLY, so the probe installs a `module.registerHooks` resolve
  * hook that retries a non-existent `./x.js` as `./x.ts` — the same rewrite
  * `tsconfig.json`'s `rewriteRelativeImportExtensions` performs at emit time.

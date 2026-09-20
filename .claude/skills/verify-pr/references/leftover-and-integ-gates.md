@@ -6,7 +6,7 @@ block applies only when the diff touches its scope.
 Only ONE of them is still a gate. `integ-destroy` blocks `gh pr merge` on a stale
 marker; the cross-cutting, local-execution and schema-bump runs below are
 UNENFORCED — nothing stops the merge, so the decision to run them is yours, and
-CLAUDE.md's "cost is not a tiebreaker" is what settles it.
+AGENTS.md's "cost is not a tiebreaker" is what settles it.
 
 ## Baseline
 

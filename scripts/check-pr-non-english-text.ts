@@ -45,7 +45,7 @@
  *       U+4E00-U+9FFF  CJK Unified Ideographs (kanji / Chinese)
  *       U+AC00-U+D7AF  Hangul Syllables
  *     General-purpose Unicode the repo already uses PASSES: em-dashes, curly
- *     quotes, box-drawing characters in the CLAUDE.md ASCII art, arrow glyphs
+ *     quotes, box-drawing characters in the AGENTS.md ASCII art, arrow glyphs
  *     in docs. Writing systems only.
  *   - The binary / lockfile / asset extension skip list, including its
  *     case-sensitivity and the fact that the four lockfile names are matched

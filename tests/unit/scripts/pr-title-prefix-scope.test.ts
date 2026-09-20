@@ -302,7 +302,7 @@ describe('suggestPrefix — the hooks heuristic, precedence preserved', () => {
   it.each([
     ['docs/** only', ['docs/a.md', 'docs/b.md'], 'docs'],
     ['README.md only', ['README.md'], 'docs'],
-    ['CLAUDE.md only', ['CLAUDE.md'], 'docs'],
+    ['AGENTS.md only', ['AGENTS.md'], 'docs'],
     ['a nested README.md', ['tests/integration/foo/README.md'], 'docs'],
     ['tests/** only', ['tests/unit/a.test.ts'], 'test'],
     ['.claude/** only', ['.claude/hooks/a.sh', '.claude/rules/b.md'], 'chore'],

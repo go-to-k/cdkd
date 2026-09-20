@@ -463,7 +463,7 @@ Within Phase 3 itself, suggested PR split:
 3. **PR 3c — Phase 2 integration** (after #466 ships).
    - Replace the experimental flag with first-class integration into
      `cdkd local start-service`'s service supervisor.
-   - Update CLAUDE.md to remove the "Phase 3 deferred" note.
+   - Update AGENTS.md to remove the "Phase 3 deferred" note.
    - Estimated: 200-400 LOC.
 
 ## 12. Open design questions

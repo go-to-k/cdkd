@@ -10,7 +10,7 @@ Decide how much review rigor a PR warrants and surface the dispatch prompts. The
 recommendation says what a PR needs AT MINIMUM.
 
 **The recommended set is a FLOOR, not a cap, and wall-clock / token cost is never
-a reason to come in under it or to stop at it** (CLAUDE.md, "Cost is not a
+a reason to come in under it or to stop at it** (AGENTS.md, "Cost is not a
 tiebreaker"): when unsure, add the axis. Reviewers are read-only agents that run
 in parallel.
 

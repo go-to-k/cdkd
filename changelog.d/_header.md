@@ -1,12 +1,12 @@
 ---
-title: "cdkd changelog (extracted from CLAUDE.md)"
+title: "cdkd changelog (extracted from AGENTS.md)"
 unlisted: true
 ---
 
-# cdkd changelog (extracted from CLAUDE.md)
+# cdkd changelog (extracted from AGENTS.md)
 
-Detailed per-PR notes split out from the project's main [CLAUDE.md](https://github.com/go-to-k/cdkd/blob/main/CLAUDE.md)
-so that file fits within Claude Code's recommended ≤200-line CLAUDE.md size
+Detailed per-PR notes split out from the project's main [AGENTS.md](https://github.com/go-to-k/cdkd/blob/main/AGENTS.md)
+so that file fits within Claude Code's recommended ≤200-line AGENTS.md size
 ([official memory docs](https://code.claude.com/docs/ja/memory#cdb6dffa-claude.md-files)).
 
 Each entry below describes a shipped change — the file at the top of the entry,
@@ -16,7 +16,7 @@ behavior is described in the past tense and post-PR behavior in the present
 tense, so a reader reconstructing the history of any subsystem can read
 top-to-bottom by date and see when each capability landed.
 
-The CLAUDE.md `## Known Limitations` section retains the load-bearing summary
+The AGENTS.md `## Known Limitations` section retains the load-bearing summary
 ("NOT recommended for production use"); the per-PR detail moved here.
 
 ## What ONE entry may carry (issue [#2552](https://github.com/go-to-k/cdkd/issues/2552))
@@ -144,7 +144,7 @@ describes, all of which outlive a bullet.
 Enforced only by review. A CI check could require an entry from a `src/**`
 diff, and deliberately is not added: a missing bullet harms nobody at the
 moment of the merge and is repaired by an edit, which is below this repo's bar
-for a blocking gate. The other copies of this rule — CLAUDE.md's changelog
+for a blocking gate. The other copies of this rule — AGENTS.md's changelog
 paragraph and `/check-docs` — are kept in step by hand.
 
 Note for anyone editing THIS section: a line starting with `- ` at column 0

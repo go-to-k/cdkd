@@ -1,6 +1,6 @@
 ---
 name: check-docs
-description: Check if documentation (README.md, CLAUDE.md, docs/) is up to date with recent code changes. Use when code has been modified and docs may be stale.
+description: Check if documentation (README.md, AGENTS.md, docs/) is up to date with recent code changes. Use when code has been modified and docs may be stale.
 ---
 
 # Documentation Consistency Check
@@ -22,12 +22,12 @@ this repository.
    - `src/types/**` — public type definitions.
    - `src/state/**` — bucket name, key layout, lock layout, schema version, all
      documented verbatim in `docs/state-management.md`,
-     `docs/troubleshooting.md`, `docs/stack-outputs.md` and CLAUDE.md. A
+     `docs/troubleshooting.md`, `docs/stack-outputs.md` and AGENTS.md. A
      path-layout change invalidates dozens of shell snippets across them.
-   - Any NEW file under `src/**` — it must be reachable from CLAUDE.md's key-file
+   - Any NEW file under `src/**` — it must be reachable from AGENTS.md's key-file
      index.
-   - `package.json` — dependency changes described in CLAUDE.md "Dependencies".
-   - `README.md`, `CLAUDE.md`, `docs/**`, `.claude/rules/**`, `plugins/**` — the
+   - `package.json` — dependency changes described in AGENTS.md "Dependencies".
+   - `README.md`, `AGENTS.md`, `docs/**`, `.claude/rules/**`, `plugins/**` — the
      docs themselves. `plugins/**` is a TRIGGER, not only a step-3 target: a
      plugins-only diff matches nothing else, and step 3 reads changed SOURCE
      files.
@@ -48,11 +48,11 @@ this repository.
      changed, not just whether it names your new files: nothing mechanical
      watches a rule file that asserts a decision.
    - `src/cli/` → CLI options/commands in `docs/getting-started.md`, the
-     per-command pages, and CLAUDE.md.
+     per-command pages, and AGENTS.md.
    - `src/synthesis/`, `src/assets/`, `src/deployment/`, `src/analyzer/` → the
-     matching section of `docs/architecture.md` and of CLAUDE.md.
+     matching section of `docs/architecture.md` and of AGENTS.md.
    - `src/provisioning/` → `docs/provider-development.md` and
-     `docs/provider-rules.md`, plus CLAUDE.md's provider section. For a NEW SDK
+     `docs/provider-rules.md`, plus AGENTS.md's provider section. For a NEW SDK
      provider also `docs/supported-resources.md` + `docs/import.md`. If the
      provider gates a stabilization wait on `process.env['CDKD_NO_WAIT']`, its
      resource type MUST appear in the per-type wait-semantics table in
@@ -61,7 +61,7 @@ this repository.
      `tests/unit/provisioning/no-wait-doc-coverage.test.ts`).
    - `src/state/` → `docs/state-management.md`.
    - New exports in `src/index.ts` → public API docs.
-   - `package.json` dependency changes → CLAUDE.md "Dependencies".
+   - `package.json` dependency changes → AGENTS.md "Dependencies".
    - New integration tests → `docs/testing.md` and
      `docs/integ-fixture-conventions.md`.
    - **Any behaviour change → `plugins/cdkd-skills/skills/cdkd/SKILL.md`**, the
@@ -84,14 +84,14 @@ this repository.
 ## When to run this
 
 Before committing, and again before opening the PR if anything changed since. It
-only needs re-running when one of `src/**`, `docs/**`, `README.md`, `CLAUDE.md`
+only needs re-running when one of `src/**`, `docs/**`, `README.md`, `AGENTS.md`
 or `.claude/rules/**` is edited. If issues remain unfixed, fix them and re-run —
 do not report the docs consistent.
 
 ## Important
 
 - Do NOT create new doc files; check consistency, not completeness.
-- Check CLAUDE.md's "Known Limitations" and the changelog entries for stale
+- Check AGENTS.md's "Known Limitations" and the changelog entries for stale
   content. **First ask whether this change writes a changelog entry AT ALL**:
   only a user-visible behavior delta does — what the shipped binary does. Agent
   instructions, tests, CI, hooks and behavior-describing docs write none. A

@@ -60,7 +60,7 @@ instruction, wrong place. Which shape RECURRED is a COUNT. No evidence, no edit.
   SECOND occurrence, only when mechanically detectable, BLOCKING only under
   `.claude/rules/hooks.md`'s third-party-harm rule.
 - Otherwise the stage file where the lesson fires (never SKILL.md unless the
-  stage list changed), `CLAUDE.md` / `.claude/rules/**`, or Memory.
+  stage list changed), `AGENTS.md` / `.claude/rules/**`, or Memory.
 
 
 ### 10-c. How to edit: amend, do not append

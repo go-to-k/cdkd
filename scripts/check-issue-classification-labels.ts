@@ -7,7 +7,7 @@
  *
  * ## WHY (the hook's own rationale, unchanged)
  *
- * CLAUDE.md's four classification fields (`Session-fit` / `Severity` /
+ * AGENTS.md's four classification fields (`Session-fit` / `Severity` /
  * `Effort` / `Estimate`) live in the issue BODY as prose lines. That is the
  * right place for the one-line reason each carries. But prose is invisible to
  * every query the backlog is triaged with: `/work-issues` section 3's ranking
@@ -23,11 +23,11 @@
  *
  *   - `Session-fit` is RE-DECIDED when an issue is claimed, and a label that
  *     silently disagrees with the body is worse than no label at all.
- *   - `Estimate` is a free-form duration with NO closed value set -- CLAUDE.md's
+ *   - `Estimate` is a free-form duration with NO closed value set -- AGENTS.md's
  *     own rule that it "must name what actually eats the time" is exactly what
  *     a label cannot hold.
  *
- * The prefixed full words are CLAUDE.md's "no bare tokens" rule applied to a
+ * The prefixed full words are AGENTS.md's "no bare tokens" rule applied to a
  * label: `Severity` and `Effort` share the token `medium`, and their initials
  * collide in the dangerous direction (`L` is severity *low*, the least urgent
  * thing there is, and effort *large*, the biggest).
@@ -278,7 +278,7 @@ export function formatConflictComment(decisions: Decision[]): string {
       'label would be worse than none, and `Estimate` is a free-form duration with no closed value set.',
   );
   lines.push('');
-  lines.push('Rule: CLAUDE.md -> the four TODO classification fields.');
+  lines.push('Rule: AGENTS.md -> the four TODO classification fields.');
   return lines.join('\n');
 }
 

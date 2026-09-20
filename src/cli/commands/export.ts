@@ -2989,7 +2989,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
       }
 
       // `--include-non-importable` is a real-run safety gate (Custom Resource
-      // onCreate re-invocation needs to be idempotent — see CLAUDE.md). On
+      // onCreate re-invocation needs to be idempotent — see AGENTS.md). On
       // `--dry-run` we WARN instead of hard-erroring so the user sees the
       // full plan + the gate they'll need to flip for the real run. Erroring
       // out before printPlan defeats the point of dry-run.

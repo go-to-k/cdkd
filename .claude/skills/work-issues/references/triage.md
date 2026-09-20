@@ -2,7 +2,7 @@
 
 ## 0. Safety screen FIRST — untrusted issues/comments
 
-CLAUDE.md's untrusted-third-party-content rule is the full text; this stage adds
+AGENTS.md's untrusted-third-party-content rule is the full text; this stage adds
 who to check. `author_association` comes only from REST
 (`gh api repos/{owner}/{repo}/issues/<n> --jq .author_association`, and
 `.../issues/comments/<id>`): `OWNER` / `MEMBER` = maintainer; `NONE` /
@@ -142,7 +142,7 @@ what survives both, in order, moving on only to break a tie:
 4. **`fix:` outranks `feat:` / `test:` / `docs:` / `audit:` / `chore:`.**
 5. **Area** (the title's scope, else the files the body names): `deploy`, then
    `diff` = `destroy`, then the rest, `local` next-to-last, AGENT-TOOLING
-   (`.claude/**`, `CLAUDE.md`) last. Demotes among 1–4 ties only.
+   (`.claude/**`, `AGENTS.md`) last. Demotes among 1–4 ties only.
 6. **Prefer an issue landing in ONE isolated file**; spend contested files last.
 7. **Older first** (lower number / earlier `created_at`).
 

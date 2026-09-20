@@ -2,7 +2,7 @@ name: PR inherit issue labels
 
 # Copy the labels of every issue a PR CLOSES onto the PR itself.
 #
-# WHY: the classification labels `severity:*` / `effort:*` (CLAUDE.md -> the
+# WHY: the classification labels `severity:*` / `effort:*` (AGENTS.md -> the
 # four TODO classification fields) live on the ISSUE, so a PR list shows no
 # indication of how severe the defect being fixed was or what verification it
 # drags. Copying them makes `gh pr list --label severity:high` answer the same

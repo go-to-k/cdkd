@@ -53,10 +53,10 @@ import { dirname, join } from 'node:path';
  * same thing -- exactly the state that held while `retry.ts`,
  * `retryable-errors.ts` and `rollback-executor.ts` were absent from every copy
  * at once (go-to-k/cdkd#2042) while their callers were listed. Completeness is
- * the judgment call the `integ-destroy` entry in CLAUDE.md describes, and it
+ * the judgment call the `integ-destroy` entry in AGENTS.md describes, and it
  * needs a human noticing that a file sits under every deleting AWS call.
  *
- * `CLAUDE.md` used to carry a THIRD, prose copy of this scope, compared against
+ * `AGENTS.md` used to carry a THIRD, prose copy of this scope, compared against
  * both halves. It no longer spells the scope out -- the entry points at the hook
  * and `.markgate.yml` instead -- so there is nothing there to drift. Do not
  * reintroduce one; a hand-copy in the file every session loads is the most

@@ -132,7 +132,7 @@ deploys and tears it down (§8-c). **UNIQUE stack names only**
 (e.g. `Cdkd<Issue>Verify`), since the account may hold the maintainer's
 production stacks. After teardown, sweep for orphans it cannot reach (`/aws/lambda/*` log
 groups, RETAIN resources, Secrets in recovery, KMS keys pending deletion), then
-run CLAUDE.md's leftover check, which the `deployments/` store survives.
+run AGENTS.md's leftover check, which the `deployments/` store survives.
 
 **`/run-integ` records `integ-destroy`, the ONLY marker gate left on
 `gh pr merge`; green CI (`ci-green-gate`) is the other merge condition.**

@@ -120,7 +120,7 @@ public page keeps a readable summary and a link.
 - Anchors are slugified by lowercasing, collapsing each run of non-alphanumeric
   characters to a single hyphen, and trimming. Verify a cross-page anchor
   against the target's actual heading before shipping it.
-- A relative link must stay inside `docs/`. `../CLAUDE.md` and `../src/x.ts`
+- A relative link must stay inside `docs/`. `../AGENTS.md` and `../src/x.ts`
   resolve to nothing on the built site — use the GitHub blob URL.
 
 ## Generated pages

@@ -59,7 +59,7 @@ vp run format
 ## Project Structure
 
 See [docs/architecture.md](docs/architecture.md) for the layer-by-layer
-walkthrough (also summarized in [CLAUDE.md](CLAUDE.md)).
+walkthrough (also summarized in [AGENTS.md](AGENTS.md)).
 
 ## Making Changes
 
