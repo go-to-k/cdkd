@@ -168,7 +168,9 @@ export function stripIndexContributorInsights<T>(entry: T): T {
 export function indexDeclaresContributorInsights(
   desiredEntry: Record<string, unknown> | undefined
 ): boolean {
-  return readContributorInsightsSpec(desiredEntry?.[CONTRIBUTOR_INSIGHTS_KEY], '').kind === 'usable';
+  return (
+    readContributorInsightsSpec(desiredEntry?.[CONTRIBUTOR_INSIGHTS_KEY], '').kind === 'usable'
+  );
 }
 
 /** How {@link reverseMapContributorInsights} treats what AWS reports. */
