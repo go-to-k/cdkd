@@ -91,7 +91,13 @@ type InsightsAnswer = { status: string; mode?: string } | Error;
  * Dispatch by COMMAND, never `*Once`: the number of `DescribeTable` calls is
  * not the subject, and a surplus primer would leak into the next test.
  */
-function primeAws(initialIndexNames: string[], insights: Record<string, InsightsAnswer> = {}): void {
+function primeAws(
+  initialIndexNames: string[],
+  insights: Record<string, InsightsAnswer> = {},
+  // How many leading DescribeTable answers report every index as CREATING.
+  creatingForDescribes = 0
+): void {
+  let describes = 0;
   // Stateful on purpose: an index a `Create` action adds must be absent from
   // the opening DescribeTable, or update() takes its already-exists recovery
   // arm and never issues the Create at all.
@@ -110,7 +116,9 @@ function primeAws(initialIndexNames: string[], insights: Record<string, Insights
           TableArn: TABLE_ARN,
           TableStatus: 'ACTIVE',
           BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' },
-          GlobalSecondaryIndexes: liveIndexes(liveIndexNames),
+          GlobalSecondaryIndexes: liveIndexes(liveIndexNames).map((index) =>
+            ++describes <= creatingForDescribes ? { ...index, IndexStatus: 'CREATING' } : index
+          ),
         },
       });
     }
@@ -329,18 +337,95 @@ describe('DynamoDBTableProvider per-index ContributorInsightsSpecification (issu
       expect(warnText()).toContain('Contributor Insights was left as it is');
     });
 
-    it('routes the unreadable-block warning through the caller masker', async () => {
-      primeAws(['sekret-index']);
+    it('never prints a SHORT secret index name, which only a whole-value mask can reach', async () => {
+      // A 3-character name is below the substring mask's minimum needle, so the
+      // masker here matches WHOLE values only — exactly what the real one can
+      // do for it. The name must therefore appear in the message only where it
+      // was masked as a whole, never embedded in the refusal's path.
+      primeAws(['s3k']);
       await provider.update(
         'T',
         TABLE_NAME,
         RESOURCE_TYPE,
-        tableProps([gsi('sekret-index', 'junk')]),
-        tableProps([gsi('sekret-index')]),
-        { maskSecrets: (text: string) => text.split('sekret-index').join('***') }
+        tableProps([gsi('s3k', 'junk')]),
+        tableProps([gsi('s3k')]),
+        { maskSecrets: (text: string) => (text === 's3k' ? '***' : text) }
       );
-      expect(warnText()).toContain('***');
-      expect(warnText()).not.toContain('sekret-index');
+      expect(warnText()).toContain('GSI *** on DynamoDB table my-table');
+      expect(warnText()).not.toContain('s3k');
+    });
+
+    it('waits for the index to be ACTIVE before the per-index call', async () => {
+      // `UpdateContributorInsights` answers ResourceNotFoundException for an
+      // index that is not ACTIVE, which the transient retry does not cover.
+      vi.useFakeTimers();
+      try {
+        // Describe 1 is update()'s own; 2 is the wait's first poll.
+        primeAws(['a'], {}, 2);
+        const done = update([gsi('a', { Enabled: true })], [gsi('a')]);
+        await vi.advanceTimersByTimeAsync(5_000);
+        await done;
+      } finally {
+        vi.useRealTimers();
+      }
+      const calls = mockSend.mock.calls.map((c) => c[0] as object);
+      const writeAt = calls.findIndex((c) => c instanceof UpdateContributorInsightsCommand);
+      const describesBefore = calls
+        .slice(0, writeAt)
+        .filter((c) => c instanceof DescribeTableCommand).length;
+      expect(writeAt).toBeGreaterThanOrEqual(0);
+      // Two CREATING answers, then the ACTIVE one that released the call.
+      expect(describesBefore).toBe(3);
+    });
+
+    it('warns and sends nothing for an unreadable TABLE-level block', async () => {
+      primeAws([]);
+      await provider.update(
+        'T',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        { ...tableProps([]), ContributorInsightsSpecification: { Enabled: 'yes' } },
+        { ...tableProps([]), ContributorInsightsSpecification: { Enabled: true } }
+      );
+      expect(insightsWrites()).toEqual([]);
+      expect(warnText()).toContain('ContributorInsightsSpecification.Enabled must be a boolean');
+      expect(warnText()).toContain('Contributor Insights was left as it is');
+    });
+  });
+
+  describe('create() with an unreadable block', () => {
+    it('refuses BEFORE CreateTable, naming the index by position and never by name', async () => {
+      primeAws(['s3k']);
+      await expect(
+        provider.create('T', RESOURCE_TYPE, tableProps([gsi('s3k', { Enabled: 'yes' })]))
+      ).rejects.toThrow(
+        /GlobalSecondaryIndexes\[0\]\.ContributorInsightsSpecification\.Enabled must be a boolean/
+      );
+      expect(findCalls(CreateTableCommand)).toEqual([]);
+      await expect(
+        provider.create('T', RESOURCE_TYPE, tableProps([gsi('s3k', { Enabled: 'yes' })]))
+      ).rejects.not.toThrow(/s3k/);
+    });
+
+    it('refuses an unreadable TABLE-level block too', async () => {
+      primeAws([]);
+      await expect(
+        provider.create('T', RESOURCE_TYPE, {
+          ...tableProps([]),
+          ContributorInsightsSpecification: 'junk',
+        })
+      ).rejects.toThrow(/ContributorInsightsSpecification must be an object/);
+      expect(findCalls(CreateTableCommand)).toEqual([]);
+    });
+
+    it('stands down on a state replay: creates, warns, and leaves the block unsent', async () => {
+      primeAws(['a']);
+      await provider.create('T', RESOURCE_TYPE, tableProps([gsi('a', { Enabled: 'yes' })]), {
+        replayingState: true,
+      });
+      expect(findCalls(CreateTableCommand)).toHaveLength(1);
+      expect(insightsWrites()).toEqual([]);
+      expect(warnText()).toContain('Contributor Insights was left as it is');
     });
   });
 
@@ -392,6 +477,28 @@ describe('DynamoDBTableProvider per-index ContributorInsightsSpecification (issu
         { GlobalSecondaryIndexes: toggled?.['GlobalSecondaryIndexes'] }
       );
       expect(drift.map((d) => d.path)).toEqual(['GlobalSecondaryIndexes']);
+    });
+
+    it("converges for a stringly Enabled: 'true' by keeping the declared spelling", async () => {
+      const desired = tableProps([gsi('on', { Enabled: 'true' })]);
+      primeAws(['on'], { on: { status: 'ENABLED', mode: 'ACCESSED_AND_THROTTLED_KEYS' } });
+      const result = await readBack(desired);
+      expect(
+        calculateResourceDrift(
+          { GlobalSecondaryIndexes: desired['GlobalSecondaryIndexes'] },
+          { GlobalSecondaryIndexes: result?.['GlobalSecondaryIndexes'] }
+        )
+      ).toEqual([]);
+    });
+
+    it('reads the declared Mode while ENABLING, so the post-deploy capture already carries it', async () => {
+      primeAws(['on'], { on: { status: 'ENABLING' } });
+      const result = await readBack(
+        tableProps([gsi('on', { Enabled: true, Mode: 'THROTTLED_KEYS' })])
+      );
+      expect(result?.['GlobalSecondaryIndexes']).toEqual([
+        gsi('on', { Enabled: true, Mode: 'THROTTLED_KEYS' }),
+      ]);
     });
 
     it.each([

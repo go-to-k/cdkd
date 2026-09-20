@@ -102,6 +102,14 @@ export function planContributorInsightsOp(
     : { action: 'ENABLE', mode: desired.mode };
 }
 
+/**
+ * The path a per-index refusal names. Deliberately WITHOUT the index name: the
+ * name is a RESOLVED template value, the caller's message already carries it
+ * through a whole-value mask, and a copy embedded here would reach only the
+ * substring mask, which ignores a name shorter than its minimum needle.
+ */
+export const INDEX_CONTRIBUTOR_INSIGHTS_PATH = `GlobalSecondaryIndexes[].${CONTRIBUTOR_INSIGHTS_KEY}`;
+
 /** Index a CFn `GlobalSecondaryIndexes` value by `IndexName`. */
 function indexEntriesByName(value: unknown): Map<string, Record<string, unknown>> {
   const byName = new Map<string, Record<string, unknown>>();
@@ -131,7 +139,7 @@ export function planIndexContributorInsightsOps(
   const previousByName = indexEntriesByName(previousIndexes);
   const ops: ContributorInsightsOp[] = [];
   for (const [indexName, entry] of indexEntriesByName(desiredIndexes)) {
-    const path = `GlobalSecondaryIndexes[${indexName}].${CONTRIBUTOR_INSIGHTS_KEY}`;
+    const path = INDEX_CONTRIBUTOR_INSIGHTS_PATH;
     const op = planContributorInsightsOp(
       readContributorInsightsSpec(entry[CONTRIBUTOR_INSIGHTS_KEY], path),
       readContributorInsightsSpec(previousByName.get(indexName)?.[CONTRIBUTOR_INSIGHTS_KEY], path),
@@ -140,6 +148,28 @@ export function planIndexContributorInsightsOps(
     if (op !== undefined) ops.push({ indexName, ...op });
   }
   return ops;
+}
+
+/**
+ * Every refusal a CREATE must raise before `CreateTable` goes out: the
+ * table-level block's and each index's. A create has no live setting to leave
+ * alone, so an unreadable block there is a template error, not a skip.
+ */
+export function contributorInsightsRefusals(tableBlock: unknown, indexes: unknown): string[] {
+  const refusals: string[] = [];
+  const table = readContributorInsightsSpec(tableBlock, CONTRIBUTOR_INSIGHTS_KEY);
+  if (table.kind === 'unusable') refusals.push(table.reason);
+  if (!Array.isArray(indexes)) return refusals;
+  // By POSITION, never by name: see {@link INDEX_CONTRIBUTOR_INSIGHTS_PATH}.
+  (indexes as unknown[]).forEach((entry, position) => {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return;
+    const read = readContributorInsightsSpec(
+      (entry as Record<string, unknown>)[CONTRIBUTOR_INSIGHTS_KEY],
+      `GlobalSecondaryIndexes[${position}].${CONTRIBUTOR_INSIGHTS_KEY}`
+    );
+    if (read.kind === 'unusable') refusals.push(read.reason);
+  });
+  return refusals;
 }
 
 /**
@@ -173,47 +203,79 @@ export function indexDeclaresContributorInsights(
   );
 }
 
-/** How {@link reverseMapContributorInsights} treats what AWS reports. */
-export interface ContributorInsightsReverseMapOptions {
-  /**
-   * Emit `Mode`. AWS reports a mode for every enabled rule set (its default
-   * when none was sent), so the per-index caller passes whether the DESIRED
-   * block declares one: that block is compared inside an ARRAY entry whose key
-   * set must match exactly, where an undeclared `Mode` is permanent one-sided
-   * drift against a `properties` baseline.
-   */
-  emitMode: boolean;
-  /**
-   * Read `ENABLING` as enabled and `DISABLING` as disabled instead of omitting
-   * the block. The per-index caller needs this: the deploy does not wait for
-   * the toggle to settle, so the post-deploy `observedProperties` capture
-   * usually sees `ENABLING`, and an omitted block would freeze a baseline the
-   * settled index can never equal (the entry is compared as a whole).
-   */
-  transientAsTarget: boolean;
+/** The setting a `ContributorInsightsStatus` stands for, if any. */
+function enabledForStatus(
+  status: string | undefined,
+  transientAsTarget: boolean
+): boolean | undefined {
+  if (status === 'ENABLED' || (transientAsTarget && status === 'ENABLING')) return true;
+  if (status === 'DISABLED' || (transientAsTarget && status === 'DISABLING')) return false;
+  // `FAILED` (and an absent status) is not a setting.
+  return undefined;
 }
 
 /**
- * Reverse-map one `DescribeContributorInsights` answer to the CFn block, or
- * `undefined` when there is nothing to report.
+ * Reverse-map the TABLE-level `DescribeContributorInsights` answer to the CFn
+ * block, or `undefined` when there is nothing stable to report.
  *
- * `FAILED` (and an absent status) is never a setting, so it maps to nothing.
- * `Mode` is emitted only for an enabled block: it is never sent with
- * `DISABLE`, and a disabled block carrying one is a CFn-invalid placeholder.
+ * Only the terminal statuses are mapped, and `Mode` is emitted whenever AWS
+ * reports one for an enabled table — the block is a TOP-LEVEL key, which the
+ * comparator walks by the baseline's own keys. `Mode` is never emitted for a
+ * disabled block: it is not sent with `DISABLE`, and a disabled block carrying
+ * one is a CFn-invalid placeholder.
  */
-export function reverseMapContributorInsights(
+export function reverseMapTableContributorInsights(
   status: string | undefined,
-  mode: string | undefined,
-  options: ContributorInsightsReverseMapOptions
+  mode: string | undefined
 ): Record<string, unknown> | undefined {
-  const enabled =
-    status === 'ENABLED' || (options.transientAsTarget && status === 'ENABLING')
-      ? true
-      : status === 'DISABLED' || (options.transientAsTarget && status === 'DISABLING')
-        ? false
-        : undefined;
+  const enabled = enabledForStatus(status, false);
   if (enabled === undefined) return undefined;
   const block: Record<string, unknown> = { Enabled: enabled };
-  if (enabled && options.emitMode && mode !== undefined) block['Mode'] = mode;
+  if (enabled && mode !== undefined) block['Mode'] = mode;
+  return block;
+}
+
+/**
+ * Reverse-map one PER-INDEX `DescribeContributorInsights` answer, shaped by
+ * the block the DESIRED entry declares. `undefined` when there is nothing to
+ * report or the declared block is not one cdkd acts on.
+ *
+ * The per-index block sits inside an ARRAY entry, which the comparator matches
+ * as a whole and by exact key set, so everything here exists to make the
+ * read-back equal the declaration whenever AWS holds what was declared:
+ *
+ *  - `ENABLING` / `DISABLING` read as their TARGET. The deploy does not wait
+ *    for the toggle, so the post-deploy `observedProperties` capture usually
+ *    sees `ENABLING`; omitting the block would freeze an entry the settled
+ *    index can never equal.
+ *  - `Mode` is emitted only when the declared block carries one: AWS reports a
+ *    mode for every enabled rule set (its default when none was sent). While
+ *    `ENABLING`, a mode AWS does not report yet reads as the declared one —
+ *    the one that was just sent.
+ *  - `Enabled` keeps the declared SPELLING when the template wrote a string
+ *    (`'true'`), since the comparator does not coerce.
+ */
+export function reverseMapIndexContributorInsights(
+  status: string | undefined,
+  mode: string | undefined,
+  declaredBlock: unknown
+): Record<string, unknown> | undefined {
+  const declared = readContributorInsightsSpec(declaredBlock, INDEX_CONTRIBUTOR_INSIGHTS_PATH);
+  if (declared.kind !== 'usable') return undefined;
+  const enabled = enabledForStatus(status, true);
+  if (enabled === undefined) return undefined;
+  const declaredEnabled = (declaredBlock as Record<string, unknown>)['Enabled'];
+  const block: Record<string, unknown> = {
+    Enabled:
+      typeof declaredEnabled !== 'string'
+        ? enabled
+        : declared.enabled === enabled
+          ? declaredEnabled
+          : String(enabled),
+  };
+  if (enabled && declared.mode !== undefined) {
+    const liveMode = mode ?? (status === 'ENABLING' ? declared.mode : undefined);
+    if (liveMode !== undefined) block['Mode'] = liveMode;
+  }
   return block;
 }

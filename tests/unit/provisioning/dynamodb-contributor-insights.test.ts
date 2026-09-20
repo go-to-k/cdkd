@@ -4,7 +4,9 @@ import {
   planContributorInsightsOp,
   planIndexContributorInsightsOps,
   readContributorInsightsSpec,
-  reverseMapContributorInsights,
+  contributorInsightsRefusals,
+  reverseMapIndexContributorInsights,
+  reverseMapTableContributorInsights,
   stripIndexContributorInsights,
 } from '../../../src/provisioning/dynamodb-contributor-insights.js';
 
@@ -145,7 +147,12 @@ describe('planIndexContributorInsightsOps', () => {
     expect(planIndexContributorInsightsOps({ Ref: 'x' }, 'junk', () => undefined)).toEqual([]);
     const onUnusable = vi.fn();
     expect(planIndexContributorInsightsOps([gsi('a', 'junk')], undefined, onUnusable)).toEqual([]);
-    expect(onUnusable).toHaveBeenCalledWith('a', expect.stringContaining('GlobalSecondaryIndexes[a]'));
+    // The reason never repeats the NAME: it is a resolved value the caller
+    // masks as a whole, and a copy inside the path would escape that mask.
+    expect(onUnusable).toHaveBeenCalledWith(
+      'a',
+      expect.stringContaining('GlobalSecondaryIndexes[].ContributorInsightsSpecification')
+    );
   });
 });
 
@@ -172,38 +179,110 @@ describe('indexDeclaresContributorInsights', () => {
   });
 });
 
-describe('reverseMapContributorInsights', () => {
-  const perIndex = { emitMode: true, transientAsTarget: true };
-
-  it('maps the terminal statuses', () => {
-    expect(reverseMapContributorInsights('ENABLED', 'THROTTLED_KEYS', perIndex)).toEqual({
+describe('reverseMapTableContributorInsights', () => {
+  it('maps only the terminal statuses, with Mode while enabled', () => {
+    expect(reverseMapTableContributorInsights('ENABLED', 'THROTTLED_KEYS')).toEqual({
       Enabled: true,
       Mode: 'THROTTLED_KEYS',
     });
-    expect(reverseMapContributorInsights('DISABLED', 'THROTTLED_KEYS', perIndex)).toEqual({
+    expect(reverseMapTableContributorInsights('DISABLED', 'THROTTLED_KEYS')).toEqual({
       Enabled: false,
     });
+    for (const status of ['ENABLING', 'DISABLING', 'FAILED', undefined]) {
+      expect(reverseMapTableContributorInsights(status, undefined)).toBeUndefined();
+    }
+  });
+});
+
+describe('reverseMapIndexContributorInsights', () => {
+  it('maps the terminal statuses against the declared block', () => {
+    expect(
+      reverseMapIndexContributorInsights('ENABLED', 'THROTTLED_KEYS', {
+        Enabled: true,
+        Mode: 'THROTTLED_KEYS',
+      })
+    ).toEqual({ Enabled: true, Mode: 'THROTTLED_KEYS' });
+    expect(
+      reverseMapIndexContributorInsights('DISABLED', 'THROTTLED_KEYS', {
+        Enabled: true,
+        Mode: 'THROTTLED_KEYS',
+      })
+    ).toEqual({ Enabled: false });
   });
 
-  it('withholds an undeclared Mode', () => {
+  it('withholds a Mode the declared block does not carry, including an empty one', () => {
     expect(
-      reverseMapContributorInsights('ENABLED', 'ACCESSED_AND_THROTTLED_KEYS', {
-        emitMode: false,
-        transientAsTarget: true,
+      reverseMapIndexContributorInsights('ENABLED', 'ACCESSED_AND_THROTTLED_KEYS', { Enabled: true })
+    ).toEqual({ Enabled: true });
+    expect(
+      reverseMapIndexContributorInsights('ENABLED', 'ACCESSED_AND_THROTTLED_KEYS', {
+        Enabled: true,
+        Mode: '',
       })
     ).toEqual({ Enabled: true });
   });
 
-  it('reads a transient status as its target only when asked to', () => {
-    expect(reverseMapContributorInsights('ENABLING', undefined, perIndex)).toEqual({ Enabled: true });
-    expect(reverseMapContributorInsights('DISABLING', undefined, perIndex)).toEqual({ Enabled: false });
-    const tableLevel = { emitMode: true, transientAsTarget: false };
-    expect(reverseMapContributorInsights('ENABLING', undefined, tableLevel)).toBeUndefined();
-    expect(reverseMapContributorInsights('DISABLING', undefined, tableLevel)).toBeUndefined();
+  it('reads a transient status as its target', () => {
+    expect(reverseMapIndexContributorInsights('ENABLING', undefined, { Enabled: true })).toEqual({
+      Enabled: true,
+    });
+    expect(reverseMapIndexContributorInsights('DISABLING', undefined, { Enabled: false })).toEqual({
+      Enabled: false,
+    });
   });
 
-  it('maps FAILED and an absent status to nothing', () => {
-    expect(reverseMapContributorInsights('FAILED', undefined, perIndex)).toBeUndefined();
-    expect(reverseMapContributorInsights(undefined, undefined, perIndex)).toBeUndefined();
+  it('reads the DECLARED Mode while ENABLING when AWS does not report one yet', () => {
+    const declared = { Enabled: true, Mode: 'THROTTLED_KEYS' };
+    expect(reverseMapIndexContributorInsights('ENABLING', undefined, declared)).toEqual(declared);
+    // ...but never once the toggle settled: an ENABLED answer with no mode is
+    // AWS's own report, and the difference must surface.
+    expect(reverseMapIndexContributorInsights('ENABLED', undefined, declared)).toEqual({
+      Enabled: true,
+    });
+    // A mode AWS DOES report wins, transient or not.
+    expect(
+      reverseMapIndexContributorInsights('ENABLING', 'ACCESSED_AND_THROTTLED_KEYS', declared)
+    ).toEqual({ Enabled: true, Mode: 'ACCESSED_AND_THROTTLED_KEYS' });
+  });
+
+  it("keeps the declared SPELLING of a stringly Enabled, and still reports a real flip", () => {
+    expect(reverseMapIndexContributorInsights('ENABLED', undefined, { Enabled: 'True' })).toEqual({
+      Enabled: 'True',
+    });
+    expect(reverseMapIndexContributorInsights('DISABLED', undefined, { Enabled: 'True' })).toEqual({
+      Enabled: 'false',
+    });
+  });
+
+  it('maps FAILED, an absent status and an undeclared or unreadable block to nothing', () => {
+    expect(reverseMapIndexContributorInsights('FAILED', undefined, { Enabled: true })).toBeUndefined();
+    expect(reverseMapIndexContributorInsights(undefined, undefined, { Enabled: true })).toBeUndefined();
+    expect(reverseMapIndexContributorInsights('ENABLED', undefined, undefined)).toBeUndefined();
+    expect(reverseMapIndexContributorInsights('ENABLED', undefined, 'junk')).toBeUndefined();
+  });
+});
+
+describe('contributorInsightsRefusals', () => {
+  it('is empty for readable and absent blocks', () => {
+    expect(contributorInsightsRefusals(undefined, undefined)).toEqual([]);
+    expect(
+      contributorInsightsRefusals({ Enabled: 'false' }, [
+        { IndexName: 'a', ContributorInsightsSpecification: { Enabled: true } },
+      ])
+    ).toEqual([]);
+    expect(contributorInsightsRefusals(undefined, { Ref: 'x' })).toEqual([]);
+  });
+
+  it('names the table-level block, and an index by POSITION rather than by name', () => {
+    const refusals = contributorInsightsRefusals('junk', [
+      { IndexName: 'fine' },
+      { IndexName: 's3k', ContributorInsightsSpecification: { Enabled: 'yes' } },
+    ]);
+    expect(refusals).toHaveLength(2);
+    expect(refusals[0]).toContain('ContributorInsightsSpecification must be an object');
+    expect(refusals[1]).toContain(
+      'GlobalSecondaryIndexes[1].ContributorInsightsSpecification.Enabled'
+    );
+    expect(refusals.join(' ')).not.toContain('s3k');
   });
 });

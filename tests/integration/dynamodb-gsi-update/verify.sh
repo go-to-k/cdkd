@@ -139,8 +139,10 @@ CLEANED_UP=0
 reap_table() { # usage: reap_table <table-name>
   (
     set +eu
+    # EXACT names, accepting arm first: a prefix glob would also reap a
+    # `cdkd-gsi-*` table some other fixture owns.
     case "${1:-}" in
-      cdkd-gsi-?*) ;;
+      cdkd-gsi-update-test-table | cdkd-gsi-insights-test-table) ;;
       *)
         echo "WARN: teardown sweep refused — '${1:-}' is not one of this fixture's table names" >&2
         exit 0
@@ -666,6 +668,14 @@ aws s3 cp "s3://${STATE_BUCKET}/${INSIGHTS_STATE_KEY}" "${STATE_JSON}" --region 
 jq --arg l "${INSIGHTS_LID}" 'del(.resources[$l].observedProperties)' "${STATE_JSON}" > "${STATE_JSON}.stripped"
 aws s3 cp "${STATE_JSON}.stripped" "s3://${STATE_BUCKET}/${INSIGHTS_STATE_KEY}" --region "${REGION}" >/dev/null
 run_drift_json "insights properties baseline" "${INSIGHTS_STACK}"
+# Floors first: "no index path among the drifted entries" is also what a table
+# reported as drift UNKNOWN, or missing from the report, looks like.
+if [ "$(table_outcome_count notSupported)" != "0" ] \
+  || [ "$(( $(table_outcome_count clean) + $(table_outcome_count drifted) ))" != "1" ]; then
+  echo "FAIL (issue #1782): the insights table was not COMPARED against the template baseline — the assertion below would be vacuous:" >&2
+  cat "${DRIFT_JSON}" >&2
+  exit 1
+fi
 INSIGHTS_DRIFT_PATHS="$(insights_table_outcome_paths)"
 case " ${INSIGHTS_DRIFT_PATHS} " in
   *" GlobalSecondaryIndexes"* | *" LocalSecondaryIndexes"*)

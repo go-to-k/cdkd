@@ -61,7 +61,9 @@ import {
   planContributorInsightsOp,
   planIndexContributorInsightsOps,
   readContributorInsightsSpec,
-  reverseMapContributorInsights,
+  contributorInsightsRefusals,
+  reverseMapIndexContributorInsights,
+  reverseMapTableContributorInsights,
   stripIndexContributorInsights,
 } from '../dynamodb-contributor-insights.js';
 import {
@@ -1457,6 +1459,24 @@ export class DynamoDBTableProvider implements ResourceProvider {
         'AWS::DynamoDB::Table BillingMode',
         replayWarn(this.logger, context)
       );
+
+      // An unreadable `ContributorInsightsSpecification` (table-level or
+      // per-index, issue #1782) is refused HERE, before `CreateTable`: a create
+      // has no live setting to leave alone, and refusing after the table exists
+      // would create it only to delete it again. On a state replay the refusal
+      // stands down — the appliers below then warn and skip the block — since
+      // the user cannot edit a state record from the template. The index NAME
+      // stays out of the thrown text for the reason
+      // `INDEX_CONTRIBUTOR_INSIGHTS_PATH` gives; the position names the entry.
+      if (context?.replayingState !== true) {
+        const [refusal] = contributorInsightsRefusals(
+          properties['ContributorInsightsSpecification'],
+          properties['GlobalSecondaryIndexes']
+        );
+        if (refusal !== undefined) {
+          throw new Error(`${refusal}. Fix the template value`);
+        }
+      }
 
       const createParams: CreateTableCommandInput = {
         TableName: tableName,
@@ -6395,10 +6415,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
         const ciResp = await this.dynamoDBClient.send(
           new DescribeContributorInsightsCommand({ TableName: physicalId })
         );
-        const cspec = reverseMapContributorInsights(
+        const cspec = reverseMapTableContributorInsights(
           ciResp.ContributorInsightsStatus,
-          ciResp.ContributorInsightsMode,
-          { emitMode: true, transientAsTarget: false }
+          ciResp.ContributorInsightsMode
         );
         if (cspec !== undefined) result['ContributorInsightsSpecification'] = cspec;
       } catch (err) {
@@ -6416,7 +6435,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // `{Enabled: false}` would be one-sided drift on every index. An
       // uninformative bag reads NOTHING (the pre-#1782 answer). A failed read
       // omits the block, like the table-level read; a TRANSIENT status reads as
-      // its target instead (see `transientAsTarget` for why this one differs).
+      // its target instead (`reverseMapIndexContributorInsights` says why).
       const emittedGsis = result['GlobalSecondaryIndexes'];
       if (bagInformative && Array.isArray(emittedGsis)) {
         const desiredByName = desiredIndexEntriesByName(properties?.['GlobalSecondaryIndexes']);
@@ -6432,11 +6451,10 @@ export class DynamoDBTableProvider implements ResourceProvider {
                 IndexName: indexName,
               })
             );
-            const declared = desiredEntry?.[CONTRIBUTOR_INSIGHTS_KEY] as Record<string, unknown>;
-            const block = reverseMapContributorInsights(
+            const block = reverseMapIndexContributorInsights(
               indexResp.ContributorInsightsStatus,
               indexResp.ContributorInsightsMode,
-              { emitMode: declared['Mode'] !== undefined, transientAsTarget: true }
+              desiredEntry?.[CONTRIBUTOR_INSIGHTS_KEY]
             );
             if (block !== undefined) emitted[CONTRIBUTOR_INSIGHTS_KEY] = block;
           } catch (err) {
