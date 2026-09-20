@@ -17,7 +17,7 @@
 - **One lane per cross-cutting file** — §2 holds the list.
 - **Never merge a PR whose destroy path is unverified, and never bypass
   `/run-integ`** (§8-c owns what COUNTS as one).
-- **`vp run build` after every source edit, before any live test** (CLAUDE.md);
+- **`vp run build` after every source edit, before any live test** (AGENTS.md);
   §8-i owns the unique-stack-name rule with it.
 - **Stale-base phantom diff** (§7) — rebase; never "restore" peer lines a stale
   `git diff main` shows removed.
@@ -53,12 +53,12 @@
 
 ## Important existing rules this skill leans on
 
-- **CLAUDE.md's standing rules apply unchanged** — PR-only changes, worktree
+- **AGENTS.md's standing rules apply unchanged** — PR-only changes, worktree
   placement, unit tests with every fix, squash merges, English-only published
   artifacts, untrusted content (§0).
 - **Drive each lane to MERGED, not to "pushed"** — §9 is the finish line for a
   LANE, §10 for the RUN; low context is no NOT-CLOSEABLE excuse.
-- **Wrap with Remaining-work + State + Session-close** (`CLAUDE.md`; its scope
+- **Wrap with Remaining-work + State + Session-close** (`AGENTS.md`; its scope
   rule excludes triaged-but-not-picked issues).
 - **Classify every deferral `now` / `next` the moment you defer it** — four
   fields in the issue body, one per line; the report repeats them and adds

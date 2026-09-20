@@ -146,7 +146,7 @@ describe('published docs cross-links', () => {
   });
 
   it('no relative link escapes docs/, whatever it points at', () => {
-    // `existsSync` is satisfied by `../CLAUDE.md` and `../src/x.ts` — they exist
+    // `existsSync` is satisfied by `../AGENTS.md` and `../src/x.ts` — they exist
     // in the repo. They do not exist on the SITE: only `docs/` is published, so
     // such a link 404s for every reader. Twenty-three of them were live before
     // this fence, three on the changelog page and twenty across the design

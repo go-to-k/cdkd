@@ -20,7 +20,7 @@ import { describe, expect, it } from 'vite-plus/test';
  *
  * The file is not a release log -- release-please owns `CHANGELOG.md`, and it
  * can only emit a commit subject. This one is the per-PR DESIGN RECORD that
- * used to live in CLAUDE.md, and its entries are load-bearing: a future session
+ * used to live in AGENTS.md, and its entries are load-bearing: a future session
  * reads them to avoid re-litigating a settled decision or reintroducing a fixed
  * bug. That value is exactly why they grew. Measured on `origin/main` at
  * 2026-09-04, before the lane that added this file: 523 entries, 2,363,928
@@ -201,7 +201,7 @@ const CUTOFF = '2026-09-05';
  * `cross-cutting-list-sync.test.ts` exists for, one file over.
  */
 const PROSE_COPIES = [
-  { path: 'CLAUDE.md', headerOnly: false },
+  { path: 'AGENTS.md', headerOnly: false },
   // Searched only ABOVE the first entry. The file is append-only and this
   // change's own entry quotes the phrase, so a whole-file `includes` would stay
   // green forever no matter what the CONTRACT section said.
@@ -596,7 +596,7 @@ describe('changelog entry size', () => {
       '',
       // ON the cutoff, not merely after it. With only later dates here,
       // `>= CUTOFF` could be narrowed to `> CUTOFF` -- exempting 2026-09-05,
-      // the first day the cap binds and the exact date CLAUDE.md and the
+      // the first day the cap binds and the exact date AGENTS.md and the
       // changelog header promise. With only THIS date, it could be narrowed to
       // `=== CUTOFF`, which exempts every real future entry and makes the cap
       // permanently inert. Both dates are present so neither mutation lives.

@@ -139,7 +139,7 @@ Present results as a table:
 If all pass, confirm "PR is ready to merge." If any fail, list the issues.
 
 Read [../../rules/session-report.md](../../rules/session-report.md) before
-writing the report — its `paths:` glob matches only `CLAUDE.md`, which the
+writing the report — its `paths:` glob matches only `AGENTS.md`, which the
 harness injects rather than reads, so it never auto-loads.
 
 Then add the **State** line the wrap-report rule requires. Specific to THIS

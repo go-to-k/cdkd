@@ -22,7 +22,7 @@ reviewers the PR resolved to.
    BOUNDARY between the changed code and an UNCHANGED reader. Grep the repo for
    every consumer of a value the diff touches; do not limit yourself to changed
    lines.
-4. **Project conventions** — `CLAUDE.md` at the repo root.
+4. **Project conventions** — `AGENTS.md` at the repo root.
 
 **Never run a WRITING git verb — anywhere, including in a copy.** `checkout`,
 `add`, `commit`, `restore`, `stash`, `clean` and `reset` all mutate the tree you

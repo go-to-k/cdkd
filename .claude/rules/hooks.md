@@ -10,7 +10,7 @@ paths:
 
 **A gate may block only when the harm completes at the moment of the action AND
 lands irreversibly on a THIRD PARTY's artifact, on ANOTHER SESSION's work, or on
-the MAINTAINER's AWS account.** Everything else becomes a sentence in CLAUDE.md,
+the MAINTAINER's AWS account.** Everything else becomes a sentence in AGENTS.md,
 a CI unit test, or nothing. Ask the two clauses separately — is the harm
 reversible, and whose artifact does it land on — never one about severity:
 irreversibility alone would block a duplicate issue, the filer's own artifact.

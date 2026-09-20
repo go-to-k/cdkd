@@ -104,7 +104,7 @@ describe('the closed token sets', () => {
   });
 
   it('spells labels with the prefixed full word, never an initial', () => {
-    // CLAUDE.md's "no bare tokens" applied to a label: the two fields share
+    // AGENTS.md's "no bare tokens" applied to a label: the two fields share
     // `medium`, and their initials collide in the dangerous direction -- `L` is
     // severity *low*, the least urgent thing there is, and effort *large*.
     expect(labelFor('severity', 'low')).toBe('severity:low');
@@ -273,7 +273,7 @@ describe('the conflict comment', () => {
     expect(comment).toContain('was NOT changed');
     expect(comment).toContain('Session-fit');
     expect(comment).toContain('Estimate');
-    expect(comment).toContain('CLAUDE.md');
+    expect(comment).toContain('AGENTS.md');
   });
 
   it('does not tell the author which side is right', () => {

@@ -2859,7 +2859,7 @@ _GATE_WORD_BLIND='[^[:space:]"]*'
 # The first tiles through `_GATE_WORD_CHAR`'s single-quoted-span alternative
 # (`'"'"'we can'"'"'` is a legal span, `\'"'"'` a legal escape), the second through the
 # blind TAIL. `'"'"'...'"'"'\'"'"''"'"'...'"'"'` is THE shell idiom for an apostrophe inside a
-# single-quoted string -- this repo's own CLAUDE.md uses it -- so every English
+# single-quoted string -- this repo's own AGENTS.md uses it -- so every English
 # body with a contraction takes that shape, and on the first version a plain
 # `gh issue comment` drew integ-broad-gate rc=2 and pr-review-gate rc=2 (the
 # latter off querying PR #99). Both are rc=0 on origin/main: a NEW false refusal.
@@ -4457,7 +4457,7 @@ cmd_last_cd_target() {
 # =============================================================================
 #
 # These hooks fire on EVERY Bash call the session makes, including ones that
-# target a SIBLING repository -- deliberate policy (CLAUDE.md: "cdkd's gate
+# target a SIBLING repository -- deliberate policy (AGENTS.md: "cdkd's gate
 # policy is applied to that repo's commands ... never route around it"). The
 # integ gate then `cd`s to the resolved target tree and asks markgate about a
 # gate named for cdkd: `integ-destroy`. A repo that spells the same gate
@@ -5249,7 +5249,7 @@ EOF
 # every target then classifies as this repo -- the relaxation silently inverts.
 #
 # Pass <target-dir>, NEVER the payload cwd. They differ exactly for the two
-# spellings CLAUDE.md prescribes -- `gh -C <path> pr ...` and
+# spellings AGENTS.md prescribes -- `gh -C <path> pr ...` and
 # `cd <path> && gh pr ...` -- and reading the cwd here would classify by where
 # the SHELL stands instead of where the command runs: a `gh -C <own repo>`
 # issued from a sibling checkout would take the relaxed path.

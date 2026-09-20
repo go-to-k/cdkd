@@ -12,7 +12,7 @@ This document grounds the implementation against (a) the AWS
 `AWS::CloudFormation::Stack` resource type contract, (b) CDK 2.x
 `cdk.NestedStack`'s actual synthesis output (verified via `cdk synth` on
 2026-05-22 against `/Users/goto/pc/github/cdk-agc/test-cdk/cdk.out`),
-and (c) the existing cdkd architecture documented in [CLAUDE.md](https://github.com/go-to-k/cdkd/blob/main/CLAUDE.md).
+and (c) the existing cdkd architecture documented in [AGENTS.md](https://github.com/go-to-k/cdkd/blob/main/AGENTS.md).
 Where AWS / CDK semantics differ from a tempting "natural" cdkd shape,
 the divergence is called out explicitly per the project's
 "don't invent divergence" rule.
@@ -576,7 +576,7 @@ unsupported), so there's nothing to migrate from.
 2. **No rollback cascade.** A child-resource failure leaves the child's
    already-completed resources in place (per-resource state save).
    The user re-runs `cdkd deploy` to converge. Documented under
-   "Known Limitations" in CLAUDE.md.
+   "Known Limitations" in AGENTS.md.
 3. **`TimeoutInMinutes` / `NotificationARNs` Properties silently
    ignored.** Documented above.
 4. **No CFn-side change-set preview for the child.** ✅ RESOLVED
@@ -670,7 +670,7 @@ suggests this split:
   `Properties.TemplateURL: Fn::Join` + `Metadata['aws:asset:path']` +
   `Metadata['aws:asset:property']: 'TemplateURL'`; child template at
   `cdk.out/<filename>.nested.template.json`).
-- cdkd architecture: [CLAUDE.md](https://github.com/go-to-k/cdkd/blob/main/CLAUDE.md), specifically the
+- cdkd architecture: [AGENTS.md](https://github.com/go-to-k/cdkd/blob/main/AGENTS.md), specifically the
   7-layer architecture diagram + the existing `IntrinsicFunctionResolver`
   / `DiffCalculator` / `LockManager` / `S3StateBackend` contracts.
 - Related cdkd source surfaces:

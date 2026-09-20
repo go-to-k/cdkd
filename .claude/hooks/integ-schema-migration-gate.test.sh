@@ -241,7 +241,7 @@ run_case "state.ts helper-only addition passes through" 0 \
 # `export const STATE_SCHEMA_VERSION = 5;`. Neither shape has ever existed in
 # `src/types/state.ts` -- `git log --all -S'  version: 1 | 2'` over that file is
 # EMPTY -- they are the flattened `interface StackState` rendering from
-# CLAUDE.md. So the gate's regexes and this suite's fixtures were written from
+# AGENTS.md. So the gate's regexes and this suite's fixtures were written from
 # the same prose and agreed with each other perfectly while matching nothing the
 # repo can actually produce: every case passed, and five real schema bumps
 # merged with the gate reporting "non-bump edit".
@@ -341,7 +341,7 @@ run_case "STATE_SCHEMA_VERSION_CURRENT bump + marker stale BLOCKS" 2 \
 
 # --- THE NEGATIVE CONTROL THIS GATE SHIPPED WITHOUT (go-to-k/cdkd#3351) ------
 #
-# The DOC shape must NOT arm the gate. `CLAUDE.md` renders StackState with the
+# The DOC shape must NOT arm the gate. `AGENTS.md` renders StackState with the
 # union flattened into the field:
 #
 #   version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
@@ -350,7 +350,7 @@ run_case "STATE_SCHEMA_VERSION_CURRENT bump + marker stale BLOCKS" 2 \
 # matched THIS line and nothing in the real file, so this case is the exact
 # inverse of the defect: it passes only while the patterns are derived from the
 # source rather than from the prose describing it. If someone "fixes" a future
-# miss by pattern-matching CLAUDE.md again, this case reds.
+# miss by pattern-matching AGENTS.md again, this case reds.
 #
 # It is a DIFF the gate would otherwise treat as a bump -- a + and a - line,
 # inside the state.ts block -- so it isolates the shape and nothing else.
@@ -362,7 +362,7 @@ index abc..def 100644
 -  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
 +  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;'
 
-run_case "the CLAUDE.md doc-snippet shape alone does NOT arm the gate" 0 \
+run_case "the AGENTS.md doc-snippet shape alone does NOT arm the gate" 0 \
   '{"tool_input":{"command":"gh pr merge 403 --squash"}}' \
   '{"files":[{"path":"src/types/state.ts"}]}' \
   "$DOC_SHAPE_DIFF"

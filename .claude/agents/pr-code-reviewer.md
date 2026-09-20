@@ -12,7 +12,7 @@ You find bugs the implementing agent might have missed. The caller provides a PR
 
 1. **PR diff** — `gh pr diff <N>` (full diff).
 2. **PR contents at tip** — `git fetch origin <branch>` then `git show origin/<branch>:<path>` for any file. Do NOT check out the branch. (Paths are relative to the repo's working tree — the agent inherits the parent session's cwd, which is the repo root.)
-3. **Project conventions** — `CLAUDE.md` at the repo root for ESM `.js` imports, no `any`, etc.
+3. **Project conventions** — `AGENTS.md` at the repo root for ESM `.js` imports, no `any`, etc.
 
 **Never run a WRITING git verb — anywhere, including in a copy.** `checkout`,
 `add`, `commit`, `restore`, `stash`, `clean` and `reset` all mutate the tree you

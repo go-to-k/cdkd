@@ -155,7 +155,7 @@ template. When it encounters an `AWS::CloudFormation::Stack` resource:
    every resource in the child template.
 2. The child template's resulting body is uploaded to S3 (the standard
    `uploadCfnTemplate` helper from `src/cli/upload-cfn-template.ts` — see
-   the CLAUDE.md `cdkd export` bullet for the > 51,200-byte routing).
+   the AGENTS.md `cdkd export` bullet for the > 51,200-byte routing).
 3. The parent template's `AWS::CloudFormation::Stack.Properties.TemplateURL`
    is rewritten to point at the new uploaded S3 URL.
 
@@ -674,9 +674,9 @@ disjoint migration directions:
 Both PRs require:
 - The `AWS::CloudFormation::Stack` removal from `NEVER_IMPORTABLE_TYPES`
   / `isPhase2CreatableType` (§4.2).
-- CLAUDE.md updates removing the nested-stack deferral comments from
+- AGENTS.md updates removing the nested-stack deferral comments from
   both `cdkd import` and `cdkd export` bullets.
-- One new entry in [docs/changelog-cdkd.md](../changelog-cdkd.md) per PR (the per-PR shipped-feature changelog, moved here from CLAUDE.md's "Recently Implemented" section).
+- One new entry in [docs/changelog-cdkd.md](../changelog-cdkd.md) per PR (the per-PR shipped-feature changelog, moved here from AGENTS.md's "Recently Implemented" section).
 
 ## 12. Risks & mitigations
 

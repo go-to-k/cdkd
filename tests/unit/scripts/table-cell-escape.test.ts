@@ -245,7 +245,7 @@ const escapeCellBindings = (source: string, file: string): string[] => {
    *
    * A string compare against `'./markdown-table.ts'` was wrong in two ways the
    * moment the walk became recursive: a future `scripts/sub/gen-x.ts` must write
-   * `'../markdown-table.ts'`, and CLAUDE.md's ESM rule prescribes the `.js`
+   * `'../markdown-table.ts'`, and AGENTS.md's ESM rule prescribes the `.js`
    * extension for a TypeScript import in the first place. Both were reported as
    * decoys. Resolve relative to the IMPORTER and compare without the extension.
    */
@@ -536,7 +536,7 @@ describe('generated Markdown table cells (#2636)', () => {
     expect(seen("import { type escapeCell } from './decoy.ts';")).toEqual([]);
     // S-n1: the owning module named from where the import was WRITTEN. Both of
     // these were reported as decoys by an exact specifier compare — the second
-    // is the spelling CLAUDE.md's ESM rule prescribes, and the first is what the
+    // is the spelling AGENTS.md's ESM rule prescribes, and the first is what the
     // recursive walk makes possible.
     expect(seen("import { escapeCell } from '../markdown-table.ts';", 'sub/gen-x.ts')).toEqual([]);
     expect(seen("import { escapeCell } from './markdown-table.js';")).toEqual([]);

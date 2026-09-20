@@ -8,7 +8,7 @@ the only mechanical merge conditions.
 
 ```
 /check           # typecheck, lint, build, tests
-/check-docs      # only if the lane touched README / CLAUDE.md / docs/ / .claude/rules/**
+/check-docs      # only if the lane touched README / AGENTS.md / docs/ / .claude/rules/**
 ```
 
 - **Run the SKILL, not a hand-rolled command list** — the gap is silent, since

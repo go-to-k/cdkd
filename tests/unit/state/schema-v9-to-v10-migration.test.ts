@@ -46,7 +46,7 @@ describe('State schema v10 — observedBaselineRefused (#2944)', () => {
     // Real-world shape: an existing user has a v9 state file in S3. The v10
     // binary reads it, sees the field absent on every record, and both later
     // writers behave exactly as they did before the field existed — which is
-    // the transparent auto-migration contract (CLAUDE.md: a user must do
+    // the transparent auto-migration contract (AGENTS.md: a user must do
     // nothing on upgrade).
     const v9Blob = JSON.stringify({
       version: 9,
