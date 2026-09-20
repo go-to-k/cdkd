@@ -118,7 +118,7 @@ V=$(...)` masks the status entirely. Best-effort cleanup is exempt via
 
 ### Mechanically enforced fixture conventions
 
-Each is the shape a fixture must take; the named test blocks the wrong change.
+Each is the shape a fixture must take; the named test blocks a wrong change.
 
 - A flag is declared on the **subcommand it targets**; `--region` is NOT a no-op
   where accepted ([cli-internals.md](cli-internals.md)) and `state destroy` takes
@@ -197,7 +197,7 @@ Each is the shape a fixture must take; the named test blocks the wrong change.
   both sides, keeping the null-list coalesce:
   ``--query "join(' ', sort(Path.To.List || \`[]\`))"``. A genuinely
   order-significant list (`getDriftUnorderedPaths`) stays unsorted, since sorting
-  would HIDE a regression — which is why this is a judgment, not a lint.
+  HIDES a regression — which is why this is a judgment, not a lint.
 - **A destructive prefix sweep must refuse a widened scope.** A teardown that
   LISTS under a variable prefix and DELETES what it gets back widens to the whole
   ACCOUNT when that variable is empty, and `cleanup` runs under `set +eu`. The
@@ -214,9 +214,9 @@ Each is the shape a fixture must take; the named test blocks the wrong change.
   the SAME substring you parse is worthless). Re-run the fixture after ANY edit
   to a string it greps, review fixes included; a reword making a string LESS
   SPECIFIC blunts sentinels in fixtures your diff never opens
-  (`stateful-guard-message-sync.test.ts`; read its scope note first).
+  (`stateful-guard-message-sync.test.ts`).
 - **A `PendingDeletion` KMS key is NOT an orphan** — 7 days is the AWS minimum
-  pending window, so it is the terminal state of a *successfully deleted* key. A
+  pending window, so it is the terminal state of a *successfully deleted* key; a
   fixture may create one per run with `pendingWindow: cdk.Duration.days(7)` and
   assert it after destroy.
 

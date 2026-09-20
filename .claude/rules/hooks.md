@@ -160,11 +160,11 @@ Every Bash gate parses its command through this one library.
 
 # Markgate and sibling repos
 
-**Markgate markers are per-worktree**, stored in
+**Markgate markers are per-worktree**, in
 `<worktree>/.git/worktrees/<name>/markgate/`, so parallel lanes can verify and
-commit concurrently; run `markgate set` from the worktree where the gated
-command will be invoked. Spell a hand check `mise exec -- markgate …`: a bare
-`markgate` is not the version `.mise.toml` pins for the gates.
+commit concurrently; run `markgate set` from the worktree where the gated command
+will be invoked. Spell a hand check `mise exec -- markgate …`: a bare `markgate`
+is not the version `.mise.toml` pins for the gates.
 
 The hooks a session runs come from ONE repo's `.claude/settings.json` and fire on
 **every** Bash call, including ones targeting another repository: the marker

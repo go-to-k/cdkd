@@ -1,28 +1,28 @@
-<!-- Part of the /work-issues skill. Stage files: triage.md (§0–§3), claim.md (§4), implement.md (§5), filing.md (§5-f), gates-and-pr.md (§6–§7), verify.md (§8), ship.md (§9), retro.md (§10), gotchas.md (appendix). A bare §N points into the file that holds that section. READ THIS FILE IN FULL when your run enters this stage. -->
+<!-- /work-issues stage file; stage map in ../SKILL.md. A bare §N points into the file holding that section. READ IN FULL at stage entry. -->
 
 ## 8. Verify before merge (`/verify-pr` + `/run-integ`)
 
 ### 8-a. Fix cascades — a round's fix producing the next round's blocker
 
-- **After round two, name what the rounds have in common**, then take the
-  narrow fix and FILE the structural one — new entrypoint code at round five
-  is how round six happens.
+- **After round two, name what the rounds have in common**, then take the narrow
+  fix and FILE the structural one — new entrypoint code at round five is how
+  round six happens.
 - **A cascade stops when the artifact CLAIMS LESS** — tally the blockers by
   PART of the diff and offer that part's DELETION; stop reviewing the patch and
   question its SHAPE.
 
 ### 8-b. Integ ordering vs review rounds and rebases
 
-**Run the integ LAST — after the final edit to any `integ-destroy`-scoped
-file.** Sequence: dispatch reviewers → apply EVERY finding, nits included →
-rebase → integ → marker. `git diff origin/main...HEAD --name-only` against that
-gate's `.markgate.yml` include list says what is outstanding, and a rebase
-alone stales the marker.
+**Run the integ LAST — after the final edit to any `integ-destroy`-scoped file.**
+Sequence: dispatch reviewers → apply EVERY finding, nits included → rebase →
+integ → marker. `git diff origin/main...HEAD --name-only` against that gate's
+`.markgate.yml` include list says what is outstanding, and a rebase alone stales
+the marker.
 
 - **DECLARE the tree final, in words, to whoever is still editing it** — every
-  scoped touch buys another real-AWS run, comment-only deltas included. Scope
-  the reviewers to the delta and paste its COMMIT MESSAGE into the brief: they
-  read `gh pr diff`, not `git log`.
+  scoped touch buys another real-AWS run, comment-only deltas included. Scope the
+  reviewers to the delta and paste its COMMIT MESSAGE into the brief: they read
+  `gh pr diff`, not `git log`.
 
 ### 8-c. The live-test tiers
 

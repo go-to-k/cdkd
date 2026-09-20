@@ -6,10 +6,9 @@ argument-hint: "[PR-number]"
 
 # PR Readiness Verification
 
-Heavy pre-merge check. Run before creating or merging a pull request — NOT
-before every commit (per-commit verification is `/check`). No hook or marker
-enforces this skill; the checklist below still applies in full, and running it is
-the recommended procedure before `gh pr create` / `gh pr merge`.
+Heavy pre-merge check, before creating or merging a PR — NOT before every commit
+(that is `/check`). No hook or marker enforces it; the checklist still applies in
+full and is the recommended procedure before `gh pr create` / `gh pr merge`.
 
 Steps 6, 8 and 10-12 live in `references/*.md`, read at the step that uses them.
 
@@ -19,11 +18,10 @@ Run each check and report pass/fail:
 
 0. **Worktree pre-flight**: `mise trust`, then `[ -d node_modules ] || pnpm install`.
    `mise trust` is unconditional — an untrusted `.mise.toml` makes every
-   `mise exec` in this run die with a config-parse error naming no cause.
-   `git worktree add` does not copy `node_modules`, so a fresh worktree's
-   typecheck/lint/build/test all fail with `tsc: command not found`, which is
-   easy to miss when output is piped to `tail` (the exit code reflects `tail`).
-   Do not start step 1 until this passes.
+   `mise exec` in this run die with a config-parse error naming no cause. A fresh
+   worktree has no `node_modules`, so typecheck / lint / build / test all fail
+   with `tsc: command not found`, easy to miss when output is piped to `tail`
+   (the exit code is `tail`'s). Do not start step 1 until this passes.
 
 1. **Code quality** — `/check` steps 1-3, which this skill supersedes.
    - `vp run check` (CI's exact command: typecheck + lint + Prettier; `lint`
@@ -119,10 +117,10 @@ Present results as a table:
 
 | Check | Result |
 |-------|--------|
-| check — typecheck + lint + format (`vp run check`) | pass/fail |
-| test-project typecheck (`vp run typecheck:test`) | pass/fail |
+| `vp run check` (typecheck + lint + format) | pass/fail |
+| `vp run typecheck:test` | pass/fail |
 | build | pass/fail |
-| tests (N files, M tests) (`vp test run`) | pass/fail |
+| tests (N files, M tests) | pass/fail |
 | test coverage for changes | pass/fail |
 | CI | pass/fail |
 | working tree | clean/dirty |

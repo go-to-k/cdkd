@@ -63,25 +63,25 @@ from. Two capture SOURCES, one fixture shape.
 
 ## The daily refresh workflow
 
-`.github/workflows/cfn-schema-refresh.yml` hands the residue to a human — a
+`.github/workflows/cfn-schema-refresh.yml` hands the residue to a human: a
 removed property the evidence cannot settle, or a new nested key.
 
 **That hand-off is NOT signalled by a red check**: GitHub holds a bot-created
 PR's workflows at `action_required` on every push, and merging an earlier bot PR
 earns no exemption. The signal is the title's decision count and the
 `needs-decision` label, produced by the job running the fixture-driven checks
-itself before its PR's CI is allowed to start. **Not signalled is not
-unblocked**: with `ci-ok` as the required status check, a decision-carrying
-refresh PR is unmergeable while HELD, and once approved for most of
-`countDecisions`'s terms, which also red `check-build-test`.
+itself before its PR's CI may start. **Not signalled is not unblocked**: with
+`ci-ok` as the required status check, a decision-carrying refresh PR is
+unmergeable while HELD, and once approved for most of `countDecisions`'s terms,
+which also red `check-build-test`.
 
-Two caveats, about different things:
+Two caveats:
 
 - Some terms are read from a refresh-side EXIT CODE (`failedChecks`,
   `nestedKeyUnparsed`), so an environmental failure there counts a decision CI
-  never sees, because CI runs those tasks independently. The others cannot do
-  that: `removed` is a fixture DIFF, and `divergences` / `pendingSdkBump` are
-  parsed from finding LINES.
+  never sees, CI running those tasks independently. The others cannot: `removed`
+  is a fixture DIFF, and `divergences` / `pendingSdkBump` come from finding
+  LINES.
 - Some terms are not covered at all. **Derive the covered set from
   `CI_COVERAGE`'s `covers` union and the uncovered one from `UNCOVERED_TERMS`,
   both in the fence, never from a review comment.** `unreadable` (the diagnosis
@@ -91,21 +91,18 @@ Two caveats, about different things:
   matrix is regenerated in the same run and a check pinning each identifier would
   red on every legitimate AWS change. `removed` holds only through
   `partitionSettledRemovals`, which subtracts every property `bogusTolerated`
-  settles — subtracting only what the cycle WROTE left an already-tolerated
-  removal counted while `property-coverage` was green. Both sides read the
-  tolerance FILE, and the settled half is still RENDERED, because subtracting
-  alone made the removal invisible. The coverage that holds is EMERGENT — the two
-  workflows keep their own check lists — so
-  `tests/unit/scripts/schema-refresh-decision-ci-coverage.test.ts` derives every
-  population and is what keeps it true.
+  settles — both sides read the tolerance FILE, and the settled half is still
+  RENDERED, because subtracting alone made the removal invisible. The coverage
+  that holds is EMERGENT, since the two workflows keep their own check lists, so
+  `schema-refresh-decision-ci-coverage.test.ts` derives every population.
 
 A refresh PR needing a decision is LABELLED `needs-decision`, titled with the
 count and ASSIGNED — only the assignment notifies. The count comes from
-`--decision-count-out`, written as a side effect of the SAME
-`diagnose-schema-refresh.mjs` run that renders the body (a second invocation
-could be passed a different `--failed-checks` and mark a PR clean over a report
-listing several). The marking is CLEARABLE because `Regenerate` and `Diagnose`
-also run while a refresh PR is open, not only on drift.
+`--decision-count-out`, written by the SAME `diagnose-schema-refresh.mjs` run
+that renders the body: a second invocation could take a different
+`--failed-checks` and mark a PR clean over a report listing several. The marking
+is CLEARABLE because `Regenerate` and `Diagnose` also run while a refresh PR is
+open, not only on drift.
 
 ## The backfill campaign
 

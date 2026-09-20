@@ -34,9 +34,9 @@ verify, clean up.
    legacy `cdkd-state-{accountId}-us-east-1` and note the deprecation.
 
 4. **Pre-flight orphan scan** (mandatory): a prior run killed mid-deploy leaves
-   orphans whose names match the stack about to deploy; cdkd's diff does not see
-   them (not in state), so the deploy attempts CREATE and collides. Synth first
-   (to learn stack name + resource types), then scan:
+   orphans matching the stack about to deploy, and cdkd's diff does not see them
+   (not in state), so the deploy attempts CREATE and collides. Synth first (for
+   the stack name and resource types), then scan:
 
    ```bash
    # Always (cheap, broadly applicable):
@@ -111,9 +111,9 @@ verify, clean up.
 6. **Verify cleanup**
    - `aws s3 ls s3://<bucket>/cdkd/ --region us-east-1` — no leftover state.
    - **The state bucket is VERSIONED**, so that listing shows nothing while every
-     prior version stays readable (`aws s3 rm` writes a delete marker). For any
-     fixture that WRITES a secret into state (redaction / scrub / drift fixtures
-     do, deliberately), "the object is gone" is not "the content is gone" — the
+     prior version stays readable (`aws s3 rm` writes a delete marker). For a
+     fixture that WRITES a secret into state (redaction / scrub / drift ones do,
+     deliberately), "the object is gone" is not "the content is gone" — the
      difference is a disclosure. Check versions:
      ```bash
      # Per state/lock key the fixture touched. Non-empty = content still readable.
@@ -154,11 +154,10 @@ verify, clean up.
    "destroy completed: 0 errors, 0 orphans" or itemize what remained.
 
 9. **Set the `integ-destroy` markgate marker (only on full clean success)** —
-   when the destroy step finished with **0 errors**, step 6 found **0
-   leftovers**, and step 7 was skipped or re-checked clean. `mise trust` is
-   UNCONDITIONAL and part of the pasted block: an untrusted `.mise.toml` makes
-   `markgate set` die with a config-parse error naming no cause, and here that
-   discards a real-AWS run that cannot be cheaply repeated.
+   destroy finished with **0 errors**, step 6 found **0 leftovers**, and step 7
+   was skipped or re-checked clean. `mise trust` is UNCONDITIONAL and part of the
+   pasted block: an untrusted `.mise.toml` makes `markgate set` die naming no
+   cause, discarding a real-AWS run that cannot be cheaply repeated.
 
    ```bash
    mise trust
@@ -174,29 +173,26 @@ verify, clean up.
    ```
 
    **Read BOTH the exit code and the status line** — they fail in different
-   directions. The gate runs markgate's `hash: diff` mode, where `set` exits **2**
-   if `origin/main` is unresolvable in this worktree or the branch has no delta
-   against the merge base; the remedy is `git fetch origin`, never re-running the
-   integ. An untrusted `.mise.toml` is the other direction: `mise` writes its
-   error to stderr and the rc can still read as success, so only `markgate
-   status` says whether a marker exists. Run from the PR's own worktree on the PR
-   branch. If any success condition failed, do NOT set the marker.
+   directions. `set` exits **2** when `origin/main` is unresolvable in this
+   worktree or the branch has no delta against the merge base; the remedy is
+   `git fetch origin`, never re-running the integ. An untrusted `.mise.toml` is
+   the other direction: `mise` writes to stderr and the rc can still read as
+   success, so only `markgate status` says whether a marker exists. Run from the
+   PR's own worktree on the PR branch, and if any success condition failed, do
+   NOT set the marker.
 
    **Also set `integ-schema-migration`, and ONLY for a test named
    `schema-v<N>-to-v<N+1>-migration`**, under the same conditions. That test is
-   the only proof a schema bump auto-migrates (deploy under vN, swap binary,
-   read works, the next write persists vN+1, destroy clean), and
+   the only proof a schema bump auto-migrates (deploy under vN, swap binary, read
+   works, the next write persists vN+1, destroy clean), and
    `integ-schema-migration-gate.sh` blocks `gh pr merge` on a PR bumping the
    version constant in `src/types/state.ts` until it has run. Never set by hand.
 
    **The test-name condition is IN the block, not only in the sentence above
-   it.** Step 9's `integ-destroy` block is unconditional by design, so an agent
-   finishing any clean run and pasting both would flip this marker too — which
-   is the exact substitution the gate exists to refuse, since a destroy run
-   exercises one binary against its own schema and proves nothing about a
-   round trip. `mise trust` for the same reason step 9 carries it: an untrusted
-   `.mise.toml` makes `markgate set` die naming no cause, discarding a real-AWS
-   run.
+   it.** Step 9's block is unconditional by design, so pasting both after any
+   clean run would flip this marker too — the exact substitution the gate exists
+   to refuse, since a destroy run exercises one binary against its own schema and
+   proves nothing about a round trip. `mise trust` for step 9's reason.
 
    ```bash
    mise trust
@@ -293,15 +289,13 @@ Which fixture to run is a coverage judgement, not a marker lookup.
   export
   ```
 
-  **Only five of the nine carry a `verify.sh`; from an agent session the other
-  four cannot be run at all** (step 5's dispatch note). Runnable from a session:
-  **`lambda`**, `drift-revert`, `drift-revert-vpc`, `remove-protection`,
-  `export`. Human-driven shell only: `bench-cdk-sample`, `microservices`,
-  `multi-stack-deps`, `multi-resource`. `lambda` is the cheap default — ~100 s,
-  9-resource DAG across SQS / IAM / Lambda / LayerVersion / DynamoDB Table +
-  GlobalTable. Re-derive the split with `ls tests/integration/<name>/verify.sh`.
-  Nothing compares the copies of this list — `/pick-integ` and `/verify-pr` carry
-  the others.
+  **Only five carry a `verify.sh`; from an agent session the other four cannot
+  be run at all** (step 5's dispatch note). Runnable from a session: **`lambda`**
+  (the cheap default — ~100 s over a 9-resource SQS / IAM / Lambda / LayerVersion
+  / DynamoDB DAG), `drift-revert`, `drift-revert-vpc`, `remove-protection`,
+  `export`. Re-derive the split with `ls tests/integration/<name>/verify.sh`;
+  nothing compares the copies of this list, which `/pick-integ` and `/verify-pr`
+  also carry.
 
   **A narrow feature fixture is NOT a substitute**: a 2-stack feature fixture
   destroys cleanly without ever reaching the broad VPC / Lambda / multi-resource
@@ -319,41 +313,33 @@ Which fixture to run is a coverage judgement, not a marker lookup.
 ## Important
 
 - **Run `/review-pr` (and apply its fixes) BEFORE this skill when both are
-  planned for the same PR** — the `integ-destroy` marker is digest-bound to its
-  src scope, so a post-integ review fix stales the marker and forces a full
-  real-AWS re-run.
+  planned for the same PR** — the marker is digest-bound to its src scope, so a
+  post-integ review fix stales it and forces a full real-AWS re-run.
 - Always `--region us-east-1`; always destroy after deploy; if deploy fails,
   still attempt destroy to clean up partial state.
 - **A run blocked BEFORE its assertions is not a test failure — say which it
-  was.** (`cdkd gc` refuses while ANY stack holds a lock — account-wide, by
-  design — so a parallel session's lock can stop a gc fixture before its first
-  assertion.) Record it as `FAIL` (the bar is exit-code-based) with a ledger note
-  naming the blocker and any hand-removed AWS resources, clean up what the
-  aborted run leaked, and WAIT for the blocker to clear. Never
-  `cdkd force-unlock` a lock you did not take — it belongs to another session's
-  in-flight deploy.
+  was.** (`cdkd gc` refuses while ANY stack holds a lock, account-wide by design,
+  so a parallel session's lock can stop a gc fixture before its first assertion.)
+  Record it as `FAIL` (the bar is exit-code-based) with a ledger note naming the
+  blocker and any hand-removed resources, clean up what the aborted run leaked,
+  and WAIT for the blocker to clear. Never `cdkd force-unlock` a lock you did not
+  take — it belongs to another session's in-flight deploy.
 - **Never report success on a successful deploy alone** — destroy must complete
   and the orphan check must pass.
 - **Do NOT restart Docker to fix a hung docker-dependent run (`local-*`, or an
   ECR asset push) — on Docker Desktop the restart IS the likelier cause**: a
-  quit-and-reopen can leave the self-respawning backend up while the app that
-  serves the daemon's registry proxy never finishes launching. Three paths fail
-  INDEPENDENTLY — host networking, container networking, and the daemon's own
-  pull path — so name which one is down first:
-
-  ```bash
-  curl -s -o /dev/null -w '%{http_code}\n' --max-time 15 https://registry-1.docker.io/v2/  # 401 = HOST networking fine
-  docker run --rm --entrypoint curl <an already-cached image> -s -o /dev/null \
-    -w '%{http_code}\n' --max-time 15 https://registry-1.docker.io/v2/   # 401 = CONTAINER networking fine
-  docker pull hello-world                         # hangs while both 401s return = DAEMON pull path only
-  pgrep -f 'Docker Desktop' >/dev/null && echo app-running || echo APP-NOT-RUNNING
-  ```
-
-  **On that third signature, WAIT — it recovers on its own and a restart does not
-  fix it.** Do not pipe the waiting probe through `tail`, which buffers away the
-  progress lines. Never escalate to a factory reset or deleting Docker data (it
-  destroys local images and volumes) — ask the maintainer. Clean up your own
+  quit-and-reopen can leave the self-respawning backend up while the app serving
+  the daemon's registry proxy never finishes launching. Host networking,
+  container networking and the daemon's own pull path fail INDEPENDENTLY, so
+  name which is down first: `curl` the registry from the HOST, `curl` it from
+  inside an already-cached container (401 from both means networking is fine),
+  then `docker pull hello-world`. **A pull that hangs while both curls return
+  401 is the daemon path alone — WAIT, it recovers on its own and a restart does
+  not fix it.** Do not pipe the waiting probe through `tail`, which buffers away
+  the progress lines. Never escalate to a factory reset or deleting Docker data
+  (it destroys local images and volumes) — ask the maintainer. Clean up your own
   probes: `kill`ing a `docker pull` wrapper leaves the `com.docker.cli` child.
+
 - **A fixture that discards the CLI's stderr cannot report its own failure.**
   `RESULT=$(${CDKD} ... 2>/dev/null | tail -1)` under `set -euo pipefail` prints
   the arm header and exits 1 with NO error text. The shape is banned and fenced

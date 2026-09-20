@@ -1,11 +1,11 @@
-<!-- Part of the /work-issues skill. Stage files: triage.md (§0–§3), claim.md (§4), implement.md (§5), filing.md (§5-f), gates-and-pr.md (§6–§7), verify.md (§8), ship.md (§9), retro.md (§10), gotchas.md (appendix). A bare §N points into the file that holds that section. READ THIS FILE IN FULL when your run enters this stage. -->
+<!-- /work-issues stage file; stage map in ../SKILL.md. A bare §N points into the file holding that section. READ IN FULL at stage entry. -->
 
 ## 9. Ship: merge → pull → rebuild → cleanup
 
 The PARENT's serialization point: grant one merge-ready lane at a time its turn
-— resume that lane agent (SendMessage) to run its named integ fixtures and merge
-while it holds the turn, or run `/run-integ` and `gh pr merge` yourself FROM
-THAT LANE'S WORKTREE. Never two lanes' integs or merges concurrently.
+— resume that lane agent (SendMessage) to run its integ fixtures and merge while
+it holds the turn, or run `/run-integ` and `gh pr merge` yourself FROM THAT
+LANE'S WORKTREE. Never two lanes' integs or merges at once.
 
 - The `integ-destroy` marker is read from the tree the command runs in, so a
   merge from the main tree consults the WRONG store (go-to-k/cdkd#2363). Its
@@ -93,11 +93,11 @@ the offending path, which is another session's uncommitted work.
 
 ### Cleanup
 
-**Remove every worktree YOU created** — and only those. Identify the owner of
-one you do not recognise (`session-owner` file, uncommitted work, its branch's
-PR state, the claim thread on the issue its name carries): each is evidence of
-LIFE only, an absent `session-owner` is NO signal, and a claim younger than the
-12h TTL means the owner is presumed LIVE — leave it.
+**Remove every worktree YOU created — and only those.** For one you do not
+recognise, each of `session-owner`, uncommitted work, its branch's PR state and
+the claim thread is evidence of LIFE only; an absent `session-owner` is NO
+signal, and a claim younger than the 12h TTL means the owner is presumed LIVE —
+leave it.
 
 MAIN-CHECKOUT — run THIS block, and not the next one:
 
@@ -126,13 +126,13 @@ git branch --show-current      # must print <LAUNCH_BRANCH>
 git branch --list '<your prefix>*'             # ...and every branch this run added is gone
 ```
 
-Every line and the ORDER are load-bearing. `--no-guess`: plain `git switch` DWIMs,
-re-creating the branch from `origin` and reporting success on the path that
+Every line and the ORDER are load-bearing. `--no-guess`: plain `git switch`
+DWIMs, re-creating the branch from `origin` and reporting success where the run
 should fall through to the fallback. The dirty check runs FIRST and is a TEST,
-because `--porcelain` exits 0 either way and `git switch` carries uncommitted
-changes ACROSS. Unchained, a FAILED switch still runs the `-D`, which git
-refuses only for the CHECKED-OUT branch. The delete is PLURAL (§10-d takes a
-retro branch here) and unconditional, so confirm each PR reads `MERGED` first.
+since `--porcelain` exits 0 either way and `git switch` carries uncommitted
+changes ACROSS. Unchained, a FAILED switch still runs the `-D`, which git refuses
+only for the CHECKED-OUT branch. The delete is PLURAL (§10-d adds a retro branch)
+and unconditional, so confirm each PR reads `MERGED` first.
 
 Fallback — run THIS block INSTEAD of the one above, never both. It applies ONLY
 when `LAUNCH_BRANCH` was empty at probe time (launched detached) or the branch

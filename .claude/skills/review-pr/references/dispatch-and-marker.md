@@ -7,11 +7,11 @@ Orchestrator: [../SKILL.md](../SKILL.md).
 The orchestrator dispatches the recommended reviewers via the Agent tool, waits
 for all of them, and synthesizes.
 
-Apply the PRE-FILTERS first — they discount findings and FALL THROUGH — and only
-then the two VERDICT arms, which are mutually exclusive and one of which always
-runs. Written as first-match-wins alternatives instead, a run whose only finding
-is a discounted one matches an arm stating what does NOT happen and gets no
-instruction at all, leaving the merge decision unstated.
+Apply the PRE-FILTERS first — they discount findings and FALL THROUGH — then the
+two VERDICT arms, which are mutually exclusive and one of which always runs. As
+first-match-wins alternatives instead, a run whose only finding is a discounted
+one matches an arm stating what does NOT happen and gets no instruction, leaving
+the merge decision unstated.
 
 ## Pre-filters
 
@@ -34,14 +34,13 @@ tell whether the real spec axis was dispatched, so without this a secondary
 finding blocks the PR on a question the primary axis already cleared. Where no
 primary verdict exists on that question, judge the finding on its own merits.
 
-**Condition 2 is what makes this safe, and severity is NOT a substitute for it.**
+**Condition 2 is what makes this safe, and severity is NOT a substitute.**
 `pr-security-reviewer.md` caps its secondary findings at `minor` *unless the
-finding is independently a security defect*, so the label is explicitly allowed
-to carry a `blocker` — a label-keyed discount would dismiss exactly the findings
-that must never be dismissed (a redaction not inverted on the rollback replay
-path, noticed off a spec acceptance walk). A severity-keyed discount is no better
-for the opposite reason: minor findings never blocked a merge, so keying on
-"minor or below" makes the rule inert.
+finding is independently a security defect*, so the label may carry a `blocker` —
+a label-keyed discount would dismiss exactly what must never be dismissed (a
+redaction not inverted on the rollback replay path, noticed off a spec acceptance
+walk). A severity-keyed one is no better: minor findings never blocked a merge,
+so keying on "minor or below" makes the rule inert.
 
 For a COMPLIANT reviewer this filter is unreachable; it is a BACKSTOP against a
 reviewer definition that overshoots its own cap. If that stops being the right

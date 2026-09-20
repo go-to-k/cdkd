@@ -15,15 +15,15 @@ Run these sequentially and report results.
 0. **Worktree pre-flight**: `[ -d node_modules ] || pnpm install --frozen-lockfile`.
    `git worktree add` does not copy `node_modules`, and without it `vp check`
    fails with an unnamed `typescript(tsconfig-error): Invalid tsconfig — Cannot
-   find type definition file for 'node'`, which reads like a broken fixture
+   find type definition file for 'node'`, reading like a broken fixture
    tsconfig.
 
 1. `vp check --fix` (typecheck + lint + Prettier, auto-fix), then `vp run check`
-   — the exact command CI's `check-build-test` job runs. The two are not
-   equivalent: `vp check --fix` has passed with 0 errors on a tree `vp run check`
-   failed. Do not substitute `vp run lint:fix`: it does not touch Prettier, so a
-   `lint:fix`-only run passes locally while CI fails with `Formatting issues
-   found`. Run both; CI parity comes from the second.
+   — the exact command CI's `check-build-test` job runs. They are NOT equivalent:
+   `vp check --fix` has passed with 0 errors on a tree `vp run check` failed. Do
+   not substitute `vp run lint:fix`, which does not touch Prettier, so a
+   `lint:fix`-only run passes locally while CI fails `Formatting issues found`.
+   Run both; CI parity comes from the second.
 
 2. `vp run typecheck:test` — type-checks `tsconfig.test.json` (`tests/**`).
    `vp check` only type-checks `tsconfig.json` (src + types), which excludes
@@ -44,11 +44,10 @@ Run these sequentially and report results.
    sits between the caller and the verdict.
 
    Read the summary's NUMBERS, not its colour, and read the `Errors` line, which
-   is a different line from `Type Errors`. `Test Files N passed (N)` is
-   self-consistent over a suite that LOST files before they ran, so it cannot
-   report its own shortfall; a host under load produces
-   `[vitest-pool]: Failed to start forks worker` errors beside an otherwise
-   green-looking summary. `vp test run --maxWorkers=4` is the remedy for the
+   is NOT `Type Errors`. `Test Files N passed (N)` is self-consistent over a
+   suite that LOST files before they ran, so it cannot report its own shortfall:
+   a loaded host produces `[vitest-pool]: Failed to start forks worker` beside an
+   otherwise green summary. `vp test run --maxWorkers=4` is the remedy for the
    whole `[vitest-pool]` / `[vitest-pool-runner]` family.
 
    Also check WHICH PROJECT the summary belongs to — the summary line cannot

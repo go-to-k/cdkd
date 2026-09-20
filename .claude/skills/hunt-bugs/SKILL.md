@@ -6,13 +6,12 @@ argument-hint: "[area hint, e.g. 'custom resources' | 'UPDATE paths' | 'CFn intr
 
 # cdkd Bug Hunt
 
-Find latent cdkd bugs the way real users hit them: write a small CDK app that
-uses a resource / config / CFn notation **cdkd has not exercised yet**, deploy
-it to real AWS, and watch what breaks — on deploy AND destroy. Reading the
-source finds *suspected* bugs; deploying finds *real* ones. Exploratory and
-possibly expensive — acceptable only because every deployed resource is
-destroyed and verified gone ("Cleanup is non-negotiable" below, enforced by a
-markgate gate).
+Find latent cdkd bugs the way real users hit them: write a small CDK app using a
+resource / config / CFn notation **cdkd has not exercised yet**, deploy it to
+real AWS, and watch what breaks — on deploy AND destroy. Reading the source finds
+*suspected* bugs; deploying finds *real* ones. Exploratory and possibly
+expensive, acceptable only because every deployed resource is destroyed and
+verified gone ("Cleanup is non-negotiable" below).
 
 ## Core principles
 
@@ -92,20 +91,17 @@ hunt round files the issue and stops there; a fix-in-session round still files
 it, then closes it from the PR (`Closes #<n>`). The body carries the real
 repro (the CDK app / commands / the exact deploy-update-destroy sequence).
 
-**Every issue carries the four classification lines**
-(CLAUDE.md, "The four TODO fields"; the semantics and scales are in
-[../../rules/session-report.md](../../rules/session-report.md), whose `paths:`
-glob matches only `CLAUDE.md` — which the harness injects rather than reads — so
-it never auto-loads and must be opened here), with `Severity` / `Effort` ALSO as
-labels (`--label severity:<v> --label effort:<v>`). CI checks them: the label
-workflow applies a missing one, so write the lines yourself rather than relying
-on it. The
-fix PR inherits the labels automatically — never hand-add them. Filing shapes and
-the mint-vs-fold decision live in
+**Every issue carries the four classification lines** (CLAUDE.md, "The four TODO
+fields"; the scales are in
+[../../rules/session-report.md](../../rules/session-report.md), which never
+auto-loads — its `paths:` glob matches only `CLAUDE.md`, injected rather than
+read — so open it here), with `Severity` / `Effort` ALSO as labels
+(`--label severity:<v> --label effort:<v>`): the label workflow applies a missing
+one, so write them yourself, and the fix PR inherits them — never hand-add.
+Filing shapes and the mint-vs-fold decision are in
 [../work-issues/references/filing.md](../work-issues/references/filing.md). A
-hunt is the best moment to write the four lines: `Severity` is measured against
-real AWS rather than guessed, and you already know which fixture and integ the
-fix will drag.
+hunt is the best moment for the four lines: `Severity` is measured against real
+AWS rather than guessed, and you already know which fixture the fix will drag.
 
 When you then WORK an issue — this hunt's own or one already filed — **run
 `/work-issues` and follow it** (its §0 screens untrusted comments; its §4
@@ -113,18 +109,15 @@ claims the issue BEFORE the first edit). Then fix:
 
 1. **Root-cause it** in `src/` (replacement-rules, the provider's
    create/update/delete, the diff calculator, the DAG, the intrinsic resolver).
-2. **Fix it in a lane tree, never in the main tree.** Which tree depends on
-   the launch mode — run the probe in
-   `.claude/skills/work-issues/references/launch-mode.md`, do not re-implement
-   it. MAIN-CHECKOUT: `git worktree add .claude/worktrees/<branch> -b <branch>
+2. **Fix it in a lane tree, never in the main tree.** Which tree depends on the
+   launch mode — run the probe in
+   `.claude/skills/work-issues/references/launch-mode.md`, never re-implement it.
+   MAIN-CHECKOUT: `git worktree add .claude/worktrees/<branch> -b <branch>
    origin/main`. IN-PLACE: create no worktree (nesting dies with the outer
-   workspace, go-to-k/cdkd#2390) but DO branch in place off `origin/main`;
-   record the branch the tree arrived on, restore it as-is at the end, and
-   never commit onto it — `gh pr merge --delete-branch` would delete the outer
-   tool's branch (go-to-k/cdkd#2417; the restore arm is in
-   `.claude/skills/work-issues/references/ship.md` §9). This skill has no
-   worktree-removal step to guard (the gate below tracks AWS stacks, not
-   trees).
+   workspace) but DO branch in place off `origin/main`; record the branch the
+   tree arrived on, restore it as-is at the end, and never commit onto it, since
+   `gh pr merge --delete-branch` would delete the outer tool's branch
+   (`work-issues/references/ship.md` §9 has the restore arm).
 3. **Add a unit test that fails without the fix and passes with it** —
    mandatory: a bug found by integ MUST leave a unit test behind.
 4. **Re-run the live repro with the fixed binary** to confirm the real-AWS
@@ -135,8 +128,8 @@ claims the issue BEFORE the first edit). Then fix:
 
 ### 7. Record what you learned
 
-Save a memory for any recurring surprise (a whole *class* of latent bug, a
-verification gotcha) so the next sweep starts smarter.
+Save a memory for any recurring surprise — a *class* of latent bug, a
+verification gotcha — so the next sweep starts smarter.
 
 ## Cleanup is non-negotiable (markgate-enforced)
 
