@@ -310,7 +310,21 @@ ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 # Success path: cleanup, THEN disarm, THEN the full version sweep + assertion.
 cleanup
 trap - EXIT INT TERM
-assert_gone "secret ${SECRET_NAME} still exists" aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" --region "${REGION}"
+# POLLED, not probed once: `DeleteSecret` is asynchronous, so `describe-secret`
+# can still resolve for a few seconds after a force delete returns.
+SECRET_GONE=0
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  if gone_probe aws secretsmanager describe-secret \
+       --secret-id "${SECRET_NAME}" --region "${REGION}"; then
+    SECRET_GONE=1
+    break
+  fi
+  sleep 5
+done
+if [ "${SECRET_GONE}" -ne 1 ]; then
+  echo "FAIL: secret ${SECRET_NAME} still exists 60s after the force delete" >&2
+  exit 1
+fi
 s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
 s3_purge_prefix_versions "${STATE_BUCKET}" "${CHILD_STATE_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "import-deployed-parameter-secret root state teardown"
