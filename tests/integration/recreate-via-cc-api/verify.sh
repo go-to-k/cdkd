@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # verify.sh — cdkd #615 --recreate-via-cc-api integ test
 #
-# Mid-life SDK→CC migration: a Lambda Function deployed without the
-# silent-drop `RuntimeManagementConfig` (= state stamps `provisionedBy: 'sdk'`)
+# Mid-life SDK→CC migration: a Lambda Function deployed without
+# `RuntimeManagementConfig` (= state stamps `provisionedBy: 'sdk'`)
 # is destroyed + recreated via Cloud Control API when the next deploy
 # adds `RuntimeManagementConfig` AND passes `--recreate-via-cc-api`. The
 # assertions confirm:
@@ -140,7 +140,7 @@ node "${LOCAL_DIST}" deploy "${STACK}" \
 STATE_1=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
 PROVISIONED_1=$(echo "${STATE_1}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::Function") | .value.provisionedBy // ""] | first')
 if [ "${PROVISIONED_1}" != "sdk" ]; then
-  echo "FAIL: baseline Lambda has provisionedBy='${PROVISIONED_1}', expected 'sdk' (no silent-drop → SDK)" >&2
+  echo "FAIL: baseline Lambda has provisionedBy='${PROVISIONED_1}', expected 'sdk' (template omits RuntimeManagementConfig, no recreate flag → SDK)" >&2
   echo "${STATE_1}" | jq .
   exit 1
 fi

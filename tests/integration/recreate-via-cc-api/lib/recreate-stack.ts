@@ -18,20 +18,19 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
  *   template now emits `RuntimeManagementConfig` AND the user opts into the
  *   recreate flag → cdkd detects the recreate target, forces the
  *   replacement code path even though the property change isn't
- *   `requiresReplacement` on its own (`RuntimeManagementConfig` is otherwise
- *   in-place updatable on SDK but SDK doesn't wire it). The old
+ *   `requiresReplacement` on its own (the SDK provider updates
+ *   `RuntimeManagementConfig` in place). The old
  *   physical id is destroyed via SDK; the new physical id is created
  *   via Cloud Control API and stamps `provisionedBy: 'cc-api'`. AWS
  *   now has RuntimeManagementConfig.UpdateRuntimeOn=FunctionUpdate.
  *
- * `RuntimeManagementConfig` is the canonical silent-drop demo property
- * (cc-api-fallback / cc-api-fallback-transitions both use it too).
- * Pre-history: LoggingConfig → RecursiveLoop (both got backfilled into
- * the SDK provider); RuntimeManagementConfig is the next still-silent-drop
- * replacement trigger. The function name is stable across recreates (the
- * destroy+create reuses the user-supplied name, so the physical-id is
- * identical post-recreate); the new Lambda instance is witnessed by
- * `LastModified` updating, not by the physical-id changing.
+ * `RuntimeManagementConfig` is NOT a silent drop — the SDK provider has
+ * handled it since #1621. Here it is only the ordinary template difference
+ * the flag needs (a `NO_CHANGE` diff no-ops it); the route to Cloud Control
+ * comes from `--recreate-via-cc-api` alone. The function name is stable
+ * across recreates (the destroy+create reuses the user-supplied name, so the
+ * physical-id is identical post-recreate); the new Lambda instance is
+ * witnessed by `LastModified` updating, not by the physical-id changing.
  */
 export class RecreateViaCcApiStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {

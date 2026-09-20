@@ -2067,7 +2067,7 @@ Newly unaccounted writable properties land in `_todo-backfill.json`; do not file
 1. Run `vp run gen:cfn-schemas-from-zip` (public bundle, no credentials), or `node scripts/refresh-cfn-schemas.mjs '<AWS::Service::Type>'` for one type via `cloudformation:DescribeType`.
 2. `git diff tests/fixtures/cfn-schemas/` shows what AWS changed.
 3. The next `vp test run property-coverage` run fails naming the newly-unaccounted properties.
-4. Triage each: wire it through, mark `unhandledByDesign`, or backfill (with follow-up).
+4. Triage each: wire it through, mark `unhandledByDesign`, or backfill (with follow-up). Before wiring one, `grep -rn '<Property>' tests/integration/*/verify.sh tests/integration/*/lib` — a fixture that keys its Cloud Control route on that property loses its premise the moment it is handled, and has to be re-seeded in the same PR ([integ-fixture-conventions.md](integ-fixture-conventions.md#never-seed-a-cloud-control-route-from-an-unhandled-property)).
 
 There is deliberately **no CI staleness check** on `main`. It would go red whenever AWS publishes a property — noise on a schedule nobody controls, the same reasoning `gen:aws-cli-removals` carries in `vite.config.ts`. A scheduled job whose red is confined to its own PR is the shape that argument leaves open.
 

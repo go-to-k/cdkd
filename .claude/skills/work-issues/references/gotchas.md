@@ -44,7 +44,7 @@
 - **A usage-limit interruption need not end the run: leave a one-shot checkpoint
   at the reset time**, scheduled when the limit is ANNOUNCED.
 - **Qualify every published issue/PR reference as `owner/repo#N`** — a bare `#N`
-  renders against whichever repo reads it (§10-c).
+  renders against whichever repo reads it.
 - **An agent KILLED by a usage limit or a 429 keeps its context — `SendMessage`
   it, never re-dispatch**, and **read the TREE and the DIFF first**: it may
   already have committed, pushed and opened the PR, and **uncommitted changes

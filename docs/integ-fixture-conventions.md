@@ -1161,6 +1161,29 @@ segment rather than a flag. Both are tracked in
 you are adding one of those shapes: the rule above covers them, only the
 back-fill does not.
 
+## Never seed a Cloud Control route from an unhandled property
+
+A fixture that needs a resource recorded `provisionedBy: 'cc-api'` must not get
+there by emitting a property "the SDK provider does not handle". That premise
+dies the day a back-fill wires the property: the resource routes to the SDK
+provider, and the fixture reds at its BASELINE assertion on correct behaviour,
+reading as a cdkd defect. Seed the route with something a back-fill cannot
+take away:
+
+- re-deploy it with `--recreate-via-cc-api <LogicalId>`, which forces Cloud
+  Control whatever the property map says — over a template that DIFFERS from
+  the base one, since a `NO_CHANGE` diff no-ops the flag
+  (`recreate-via-sdk-provider`, `recreate-mixed-direction`); or
+- use a type with NO SDK provider at all, such as `AWS::Events::Archive`
+  (`sdk-ccapi-crossref`).
+
+Only a fixture whose SUBJECT is the auto-route itself may key on a silent-drop
+property, and it then owes `cc-api-fallback`'s step-0 guard: read the generated
+coverage table, and fail with a line naming the dead premise before any deploy
+(issue [#2473](https://github.com/go-to-k/cdkd/issues/2473)). Either way, make
+the baseline's FAIL line print the `provisionedBy` it found next to the one it
+expected, so a rotted premise is diagnosed from the log.
+
 ## Trim every `wc` count
 
 BSD `wc` — the one on a stock macOS host — right-aligns its count in a field
