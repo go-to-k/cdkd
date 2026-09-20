@@ -34,12 +34,12 @@ import { dirname, join } from 'node:path';
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..', '..');
 
-const MAX_CLAUDE_MD_BYTES = 40_100;
+const MAX_AGENTS_MD_BYTES = 40_100;
 
 describe('AGENTS.md size budget', () => {
   it('stays under the down-only whole-file ceiling', () => {
     const bytes = Buffer.byteLength(readFileSync(join(repoRoot, 'AGENTS.md'), 'utf8'), 'utf8');
     expect(bytes).toBeGreaterThan(0);
-    expect(bytes).toBeLessThanOrEqual(MAX_CLAUDE_MD_BYTES);
+    expect(bytes).toBeLessThanOrEqual(MAX_AGENTS_MD_BYTES);
   });
 });

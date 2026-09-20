@@ -6,7 +6,7 @@ unlisted: true
 # cdkd changelog (extracted from AGENTS.md)
 
 Detailed per-PR notes split out from the project's main [AGENTS.md](https://github.com/go-to-k/cdkd/blob/main/AGENTS.md)
-so that file fits within Claude Code's recommended ≤200-line AGENTS.md size
+so that file fits within Claude Code's recommended ≤200-line instruction-file size
 ([official memory docs](https://code.claude.com/docs/ja/memory#cdb6dffa-claude.md-files)).
 
 Each entry below describes a shipped change — the file at the top of the entry,
