@@ -56,14 +56,18 @@ import {
   type CfnStackResourceTree,
 } from './retire-cfn-stack.js';
 import {
-  computeParameterTaint,
   divergentParameterNames,
-  namesAnyDeclaredParameter,
-  reachableDivergentParameters,
   readDeployedParameters,
   type DeployedParameters,
-  type ParameterTaint,
 } from './import-deployed-parameters.js';
+import {
+  computeParameterTaint,
+  namesAnyDeclaredParameter,
+  reachableDivergentParameters,
+  resourcesNamingDeclaredParameter,
+  type ParameterNamingVerdict,
+  type ParameterTaint,
+} from '../../analyzer/parameter-dependence.js';
 import { displaySafe } from '../../utils/display-safe.js';
 import type { CloudFormationClient } from '@aws-sdk/client-cloudformation';
 import type {
@@ -75,6 +79,7 @@ import type {
 import {
   STATE_SCHEMA_VERSION_CURRENT,
   exportNamesCarriedFrom,
+  hasReasonlessBaselineRefusal,
   hasUnverifiableParameterRefusal,
   orphansCarriedFrom,
   type ResourceState,
@@ -1469,6 +1474,9 @@ export function buildStackState(
   // engine's extractAllDependencies. Without this, destroy's state-derived
   // graph build warns `depends on <Param>, but <Param> not found in template`.
   const parameterNames = new Set(Object.keys(template.Parameters ?? {}));
+  // Issue #3468: computed at most once, and only when a prior record carries a
+  // reason-less marker.
+  let namesParameter: ParameterNamingVerdict | undefined;
   for (const row of rows) {
     if (row.outcome !== 'imported' || !row.physicalId) continue;
     const tmplResource = template.Resources[row.logicalId];
@@ -1523,13 +1531,26 @@ export function buildStackState(
       // fact about what that AWS resource holds. Whether it STANDS is decided
       // by `captureObservedForImportedResources`, which knows whether this run
       // had a source.
+      //
+      // Issue #3468: a marker recorded WITHOUT a reason (an older
+      // cdkd, cause unknown) is carried the same way when this resource's
+      // template definition names a declared parameter — the fail-closed
+      // reading `ResourceState.observedBaselineRefusalReason` documents.
       ...(prior &&
         prior.physicalId === row.physicalId &&
-        hasUnverifiableParameterRefusal(prior) && {
+        (hasUnverifiableParameterRefusal(prior) ||
+          (hasReasonlessBaselineRefusal(prior) &&
+            (namesParameter ??= resourcesNamingDeclaredParameter(template))(row.logicalId))) && {
           observedBaselineRefused: true as const,
           observedBaselineRefusalReason: 'unverifiable-parameter' as const,
         }),
     };
+  }
+  if (namesParameter?.failedClosed !== undefined) {
+    // The cause CLASS only: never a template value or an error's text.
+    getLogger().debug(
+      `The template's parameter dependence could not be judged (${namesParameter.failedClosed}): every prior observed-baseline refusal recorded without a reason is carried as an unverifiable-parameter refusal.`
+    );
   }
   return {
     version: STATE_SCHEMA_VERSION_CURRENT,
@@ -2895,14 +2916,16 @@ export async function captureObservedForImportedResources(
         // `saveState` — the set that drove the skip describes THIS run's
         // resolution and is discarded with it.
         resource.observedBaselineRefused = true;
-        // The reason is written ONLY beside the marker, and REMOVED when this
-        // run refuses for another arm while having proven the parameter: a
-        // stale reason would make that refusal permanent for no cause.
-        if (parameterRefusalStands) {
-          resource.observedBaselineRefusalReason = 'unverifiable-parameter';
-        } else {
-          delete resource.observedBaselineRefusalReason;
-        }
+        // The reason is written ONLY beside the marker, and a carried
+        // `unverifiable-parameter` is REPLACED when this run refuses for another
+        // arm while having proven the parameter: a stale reason would make that
+        // refusal permanent for no cause.
+        // Issue #3468: a refusal by another arm alone records ITS reason, so
+        // that no marker this binary writes is reason-less — an absent reason
+        // is read fail closed. ARM 4 wins when both fired.
+        resource.observedBaselineRefusalReason = parameterRefusalStands
+          ? 'unverifiable-parameter'
+          : 'incomplete-resolution';
         logger.debug(
           `observedProperties capture SKIPPED for imported ${logicalId} (${resource.resourceType}): the recorded properties cannot be shown to spell every dynamic reference the deployed resource was built from, so they cannot position a redaction — capturing an AWS readback against them could persist a resolved secret in plaintext. Drift will compare against the recorded properties for this resource until ${
             parameterRefusalStands

@@ -96,6 +96,7 @@ import {
   type StackOrphanRecord,
   importableOutputKeys,
   importableOutputs,
+  hasReasonlessBaselineRefusal,
   hasUnverifiableParameterRefusal,
   type StackState,
   type StateImportEntry,
@@ -134,6 +135,10 @@ import { getAwsClients } from '../utils/aws-clients.js';
 import { getCreateOnlyPropertyPaths } from '../provisioning/create-only-properties.js';
 import { hasNoRegistrySchema } from '../provisioning/describe-type.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
+import {
+  resourcesNamingDeclaredParameter,
+  type ParameterNamingVerdict,
+} from '../analyzer/parameter-dependence.js';
 import { collectSkippedOutputs, skippedOutputsEqual } from '../analyzer/skipped-outputs.js';
 import {
   bagHoldsSecretExpression,
@@ -2997,6 +3002,59 @@ export class DeployEngine {
   }
 
   /**
+   * Issue [#3468](https://github.com/go-to-k/cdkd/issues/3468) — the
+   * fail-closed reading of a REASON-LESS `observedBaselineRefused` marker.
+   *
+   * cdkd 0.290.35 wrote unverifiable-parameter refusals with no reason, so an
+   * absent reason cannot be read as "an UPDATE may clear it". A reason-less
+   * marker on a resource whose TEMPLATE definition names a declared parameter
+   * is stamped `'unverifiable-parameter'` here, IN MEMORY, once, before the
+   * diff: every later arm (the in-place rebuild, the metadata-only spread, the
+   * NO_CHANGE carry, the auto-refresh) then sees the explicit form and needs
+   * no rule of its own, and whatever this deploy saves holds it — the record
+   * heals into the form later binaries read directly. Nothing is saved FOR the
+   * stamp: a deploy that writes no state (`--dry-run`, no changes) re-derives
+   * it next time.
+   *
+   * The template is the RAW one `deploy()` was handed (a nested child engine
+   * gets its own), which is what the dependence walk needs. A template that
+   * cannot be read, or a walk that throws, stamps every reason-less marker
+   * (`resourcesNamingDeclaredParameter` fails closed). A record whose logical
+   * id the template no longer defines is being DELETED and is left alone.
+   *
+   * The RECORD object is replaced, not mutated (a per-record alias taken
+   * before this line keeps what was loaded); the container is updated in
+   * place, which is what lets every later reader of it see the stamp.
+   */
+  private stampReasonlessParameterRefusals(
+    stateResources: Record<string, ResourceState>,
+    template: CloudFormationTemplate | undefined
+  ): void {
+    let namesParameter: ParameterNamingVerdict | undefined;
+    let stamped = 0;
+    for (const [logicalId, resource] of Object.entries(stateResources)) {
+      if (!hasReasonlessBaselineRefusal(resource)) continue;
+      namesParameter ??= resourcesNamingDeclaredParameter(template);
+      if (!namesParameter(logicalId)) continue;
+      stateResources[logicalId] = {
+        ...resource,
+        observedBaselineRefusalReason: 'unverifiable-parameter',
+      };
+      stamped++;
+    }
+    if (namesParameter?.failedClosed !== undefined) {
+      // The cause CLASS only: never a template value or an error's text.
+      this.logger.debug(
+        `The template's parameter dependence could not be judged (${namesParameter.failedClosed}): every observed-baseline refusal recorded without a reason is treated as an unverifiable-parameter refusal (${stamped} stamped).`
+      );
+    }
+    if (stamped > 0) {
+      this.logger.debug(
+        `${stamped} resource(s) carry an observed-baseline refusal recorded without a reason by an older cdkd, and their template definition reads a template parameter: treated as an unverifiable-parameter refusal (kept until the resource is replaced or re-imported against a CloudFormation stack that proves the parameter).`
+      );
+    }
+  }
+  /**
    * Kick off `provider.readCurrentState` for every resource in the
    * loaded state that lacks `observedProperties` (e.g. state written
    * by a pre-v3 binary, or a v3 record where a NO_CHANGE-skipped
@@ -3348,6 +3406,10 @@ export class DeployEngine {
         // ignore — journal is advisory here
       }
 
+      // 1-pre. Issue #3468: read every REASON-LESS baseline refusal before
+      // anything in this deploy can take a readback. See the method's doc.
+      this.stampReasonlessParameterRefusals(currentState.resources, template);
+
       // 1a. Auto-refresh observedProperties for any state entry that lacks it
       // (state written by an older binary / direct edit). Fires
       // `provider.readCurrentState` fire-and-forget through the same
@@ -3448,6 +3510,13 @@ export class DeployEngine {
       // below persists it; the carried-forward spreads read this same object.
       const orphanCountBeforeAdoption = (currentState.orphans ?? []).length;
       const orphanPlan = await this.adoptRollbackOrphans(currentState, effectiveTemplate);
+      // Issue #3468: an adopted record entered `resources` AFTER the deploy-start
+      // stamp. No writer produces a marked orphan record today; re-reading here
+      // keeps that from becoming load-bearing. Idempotent, and handed the same
+      // `template` object as the first pass.
+      if (Object.keys(orphanPlan.adopted).length > 0) {
+        this.stampReasonlessParameterRefusals(currentState.resources, template);
+      }
       // The no-change save below is gated on a fixed list of triggers, and
       // adoption trips none of them (issue #2934). Without this, a deploy whose
       // diff comes out entirely clean persists neither the resource the pre-pass
@@ -7791,6 +7860,10 @@ export class DeployEngine {
           // half-signals (the flag with the same id, a new id without the
           // flag, the update-unsupported fallback re-creating under the same
           // name) KEEP the refusal: the fail-closed reading.
+          //
+          // A marker an older cdkd recorded WITHOUT a reason reaches this line
+          // already read: `stampReasonlessParameterRefusals` ran at deploy
+          // start (issue #3468).
           const dischargedByReplacement =
             result.wasReplaced === true && result.physicalId !== currentResource.physicalId;
           const keepsParameterRefusal =

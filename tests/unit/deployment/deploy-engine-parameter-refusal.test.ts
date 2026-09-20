@@ -45,6 +45,20 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
   })),
 }));
 
+// Issue #3468 (orphan adoption runs AFTER the deploy-start stamp): the real
+// planner unless a test installs its own.
+const orphanPlanOverride = vi.hoisted(() => ({ plan: undefined as unknown }));
+vi.mock('../../../src/deployment/orphan-adoption.js', async (importOriginal) => {
+  const original = await importOriginal<Record<string, unknown>>();
+  return {
+    ...original,
+    planOrphanAdoption: (...args: unknown[]) =>
+      orphanPlanOverride.plan !== undefined
+        ? Promise.resolve(orphanPlanOverride.plan)
+        : (original['planOrphanAdoption'] as (...a: unknown[]) => unknown)(...args),
+  };
+});
+
 vi.mock('p-limit', () => ({
   default: vi.fn(() => <T>(fn: () => T) => fn()),
 }));
@@ -96,6 +110,7 @@ describe('DeployEngine - an unverifiable-parameter baseline refusal (issue #3462
 
   beforeEach(() => {
     vi.clearAllMocks();
+    orphanPlanOverride.plan = undefined;
 
     mockProvider = {
       create: vi.fn().mockResolvedValue({
@@ -143,8 +158,10 @@ describe('DeployEngine - an unverifiable-parameter baseline refusal (issue #3462
     };
   });
 
-  function makeEngine(opts: { captureObservedState?: boolean } = {}) {
-    const engineOpts: { dryRun: boolean; captureObservedState?: boolean } = { dryRun: false };
+  function makeEngine(opts: { captureObservedState?: boolean; dryRun?: boolean } = {}) {
+    const engineOpts: { dryRun: boolean; captureObservedState?: boolean } = {
+      dryRun: opts.dryRun ?? false,
+    };
     if (opts.captureObservedState !== undefined) {
       engineOpts.captureObservedState = opts.captureObservedState;
     }
@@ -276,7 +293,9 @@ describe('DeployEngine - an unverifiable-parameter baseline refusal (issue #3462
       for (const record of Object.values(saved.resources)) {
         if (Object.hasOwn(record, 'observedBaselineRefusalReason')) {
           expect(record.observedBaselineRefused).toBe(true);
-          expect(record.observedBaselineRefusalReason).toBe('unverifiable-parameter');
+          expect(['unverifiable-parameter', 'incomplete-resolution']).toContain(
+            record.observedBaselineRefusalReason
+          );
         }
       }
     }
@@ -515,5 +534,395 @@ describe('DeployEngine - an unverifiable-parameter baseline refusal (issue #3462
     expect(readbackIds()).not.toContain(OLD_PHYS);
     expectSentinelNowhere();
     expectReasonOnlyWithMarker();
+  });
+  // ── Issue #3468 ────────────────────────────────────────────────────────
+  // cdkd 0.290.35 wrote ARM 4 refusals WITHOUT a reason. A reason-less marker
+  // is therefore read FAIL CLOSED against the deploy-time template: when the
+  // resource's definition names a declared parameter it is stamped
+  // `unverifiable-parameter` at deploy start and every rule above applies.
+  describe('a REASON-LESS marker (written by an older cdkd), issue #3468', () => {
+    const PARAMETERS = { DbPassword: { Type: 'String', Default: 'CHANGEME' } };
+
+    function reasonless(extra: Partial<ResourceState> = {}): ResourceState {
+      const { observedBaselineRefusalReason: _dropped, ...rest } = refusedRecord(extra);
+      return rest;
+    }
+
+    /** The raw template definition of `Fn` is `fnDefinition`; the resolved bag stays `desired`. */
+    function arrangeLegacy(args: {
+      fnDefinition: Record<string, unknown>;
+      template?: Record<string, unknown>;
+      desired?: Record<string, unknown>;
+      change?: Partial<ResourceChange>;
+      fn?: ResourceState;
+    }): CloudFormationTemplate {
+      const template = arrange({
+        fn: args.fn ?? reasonless(),
+        desired: args.desired ?? CODE_ONLY,
+        ...(args.change && { change: args.change }),
+        templateExtra: args.fnDefinition,
+      }) as unknown as Record<string, unknown>;
+      Object.assign(template, { Parameters: PARAMETERS }, args.template);
+      return template as unknown as CloudFormationTemplate;
+    }
+
+    const RAW_CODE = { S3Key: 'new.zip' };
+
+    function expectKeptAndStamped(): void {
+      const fn = everySavedState().at(-1)!.resources['Fn']!;
+      expect(fn.observedBaselineRefused).toBe(true);
+      expect(fn.observedBaselineRefusalReason).toBe('unverifiable-parameter');
+      expect(fn.observedProperties).toBeUndefined();
+      expect(readbackIds()).toEqual(['phys-sibling']);
+      expectSentinelNowhere();
+      expectReasonOnlyWithMarker();
+    }
+
+    function expectClearedAndCaptured(): void {
+      const fn = everySavedState().at(-1)!.resources['Fn']!;
+      expect(Object.hasOwn(fn, 'observedBaselineRefused')).toBe(false);
+      expect(Object.hasOwn(fn, 'observedBaselineRefusalReason')).toBe(false);
+      expect(readbackIds()).toContain(OLD_PHYS);
+    }
+
+    const NAMING_SHAPES: Array<[string, Record<string, unknown>, Record<string, unknown>?]> = [
+      [
+        'a Ref',
+        {
+          Properties: {
+            Code: RAW_CODE,
+            Environment: { Variables: { DB_PASSWORD: { Ref: 'DbPassword' } } },
+          },
+        },
+      ],
+      [
+        'Fn::Sub text',
+        {
+          Properties: {
+            Code: RAW_CODE,
+            Environment: { Variables: { DB_PASSWORD: { 'Fn::Sub': 'pw=${DbPassword}' } } },
+          },
+        },
+      ],
+      [
+        'an Fn::Sub variable map',
+        {
+          Properties: {
+            Code: RAW_CODE,
+            Environment: {
+              Variables: { DB_PASSWORD: { 'Fn::Sub': ['pw=${V}', { V: { Ref: 'DbPassword' } }] } },
+            },
+          },
+        },
+      ],
+      [
+        'an Fn::If whose condition reads it, transitively',
+        {
+          Properties: {
+            Code: RAW_CODE,
+            Environment: { Variables: { DB_PASSWORD: { 'Fn::If': ['Outer', 'a', 'b'] } } },
+          },
+        },
+        {
+          Conditions: {
+            Outer: { 'Fn::Not': [{ Condition: 'Inner' }] },
+            Inner: { 'Fn::Equals': [{ Ref: 'DbPassword' }, 'x'] },
+          },
+        },
+      ],
+      [
+        'a resource-level Condition',
+        { Condition: 'Inner', Properties: { Code: RAW_CODE } },
+        { Conditions: { Inner: { 'Fn::Equals': [{ Ref: 'DbPassword' }, 'x'] } } },
+      ],
+      [
+        'an operand of Fn::Join',
+        {
+          Properties: {
+            Code: RAW_CODE,
+            Environment: {
+              Variables: { DB_PASSWORD: { 'Fn::Join': ['', ['pw=', { Ref: 'DbPassword' }]] } },
+            },
+          },
+        },
+      ],
+    ];
+
+    it.each(NAMING_SHAPES)(
+      'a code-only update KEEPS it, stamps the reason and takes no readback when the definition names the parameter through %s',
+      async (_label, fnDefinition, templateExtra) => {
+        const template = arrangeLegacy({
+          fnDefinition,
+          ...(templateExtra && { template: templateExtra }),
+        });
+        await makeEngine({ captureObservedState: true }).deploy(stackName, template);
+        expect(mockProvider.update).toHaveBeenCalledTimes(2);
+        expectKeptAndStamped();
+      }
+    );
+
+    it('keeps it when the definition reads an ATTRIBUTE of a resource that names the parameter', async () => {
+      const template = arrangeLegacy({
+        fnDefinition: {
+          Properties: {
+            Code: RAW_CODE,
+            Environment: { Variables: { DB_PASSWORD: { 'Fn::GetAtt': ['Param', 'Value'] } } },
+          },
+        },
+      });
+      (template.Resources as Record<string, unknown>)['Param'] = {
+        Type: 'AWS::SSM::Parameter',
+        Properties: { Value: { Ref: 'DbPassword' } },
+      };
+      await makeEngine({ captureObservedState: true }).deploy(stackName, template);
+      expectKeptAndStamped();
+    });
+
+    it('keeps it when the definition holds an intrinsic the walk cannot classify and the stack has a named parameter', async () => {
+      const template = arrangeLegacy({
+        fnDefinition: {
+          Properties: { Code: RAW_CODE, Environment: { 'Fn::ToJsonString': { a: 1 } } },
+        },
+      });
+      (template.Resources as Record<string, unknown>)['Other'] = {
+        Type: 'AWS::SSM::Parameter',
+        Properties: { Value: { Ref: 'DbPassword' } },
+      };
+      await makeEngine({ captureObservedState: true }).deploy(stackName, template);
+      expectKeptAndStamped();
+    });
+
+    // The fail-closed arms the engine cannot be driven into without breaking
+    // on the input first (an unreadable template, a walk that throws) are
+    // pinned on the helper: tests/unit/analyzer/parameter-dependence.test.ts.
+
+    it('CLEARS it, exactly as before, when the definition names only a PSEUDO parameter', async () => {
+      const template = arrangeLegacy({
+        fnDefinition: {
+          Properties: {
+            Code: RAW_CODE,
+            Environment: { Variables: { DB_PASSWORD: { Ref: 'AWS::Region' } } },
+          },
+        },
+      });
+      mockProvider.readCurrentState.mockImplementation(async (physicalId: string) => ({
+        readBack: physicalId,
+      }));
+      await makeEngine({ captureObservedState: true }).deploy(stackName, template);
+      expectClearedAndCaptured();
+    });
+
+    it("CLEARS it when the only declared parameter is CDK's Rules-only BootstrapVersion, even beside an unclassifiable intrinsic", async () => {
+      const template = arrangeLegacy({
+        fnDefinition: {
+          Properties: { Code: RAW_CODE, Environment: { 'Fn::ToJsonString': { a: 1 } } },
+        },
+        template: {
+          Parameters: {
+            BootstrapVersion: {
+              Type: 'AWS::SSM::Parameter::Value<String>',
+              Default: '/cdk-bootstrap/hnb659fds/version',
+            },
+          },
+          Rules: {
+            CheckBootstrapVersion: {
+              Assertions: [
+                { Assert: { 'Fn::Not': [{ 'Fn::Contains': [['1'], { Ref: 'BootstrapVersion' }] }] } },
+              ],
+            },
+          },
+        },
+      });
+      mockProvider.readCurrentState.mockImplementation(async (physicalId: string) => ({
+        readBack: physicalId,
+      }));
+      await makeEngine({ captureObservedState: true }).deploy(stackName, template);
+      expectClearedAndCaptured();
+    });
+
+    it('CLEARS it when ANOTHER resource names the parameter and this one does not', async () => {
+      const template = arrangeLegacy({ fnDefinition: { Properties: { Code: RAW_CODE } } });
+      (template.Resources as Record<string, unknown>)['Other'] = {
+        Type: 'AWS::SSM::Parameter',
+        Properties: { Value: { Ref: 'DbPassword' } },
+      };
+      mockProvider.readCurrentState.mockImplementation(async (physicalId: string) => ({
+        readBack: physicalId,
+      }));
+      await makeEngine({ captureObservedState: true }).deploy(stackName, template);
+      expectClearedAndCaptured();
+    });
+
+    it("a marker carrying the OTHER reason is not reason-less: it clears on UPDATE although the definition names the parameter, which is also what a binary that predates the value does", async () => {
+      const template = arrangeLegacy({
+        fn: refusedRecord({ observedBaselineRefusalReason: 'incomplete-resolution' }),
+        fnDefinition: NAMING_SHAPES[0]![1],
+      });
+      mockProvider.readCurrentState.mockImplementation(async (physicalId: string) => ({
+        readBack: physicalId,
+      }));
+      await makeEngine({ captureObservedState: true }).deploy(stackName, template);
+      expectClearedAndCaptured();
+    });
+
+    it('a REPLACEMENT still discharges it and reads back only the new physical resource', async () => {
+      const template = arrangeLegacy({
+        fnDefinition: NAMING_SHAPES[0]![1],
+        desired: { ...CODE_ONLY, FunctionName: 'renamed' },
+        change: {
+          propertyChanges: [
+            {
+              path: 'FunctionName',
+              oldValue: undefined,
+              newValue: 'renamed',
+              requiresReplacement: true,
+            },
+          ],
+        } as Partial<ResourceChange>,
+      });
+      mockProvider.create.mockResolvedValue({ physicalId: 'phys-fn-new', attributes: {} });
+      await makeEngine({ captureObservedState: true }).deploy(stackName, template);
+      const fn = everySavedState().at(-1)!.resources['Fn']!;
+      expect(fn.physicalId).toBe('phys-fn-new');
+      expect(Object.hasOwn(fn, 'observedBaselineRefused')).toBe(false);
+      expect(Object.hasOwn(fn, 'observedBaselineRefusalReason')).toBe(false);
+      expect(readbackIds()).not.toContain(OLD_PHYS);
+      expectSentinelNowhere();
+    });
+
+    it('a METADATA-ONLY update and a NO_CHANGE deploy both save the stamped form and read nothing', async () => {
+      for (const change of [
+        {
+          attributeChanges: [
+            { attribute: 'DeletionPolicy', oldValue: 'Delete', newValue: 'Retain' },
+          ],
+        },
+        { changeType: 'NO_CHANGE' },
+      ] as Array<Partial<ResourceChange>>) {
+        mockStateBackend.saveState.mockClear();
+        mockProvider.readCurrentState.mockClear();
+        const template = arrangeLegacy({
+          fn: reasonless({ deletionPolicy: 'Delete' }),
+          fnDefinition: { ...NAMING_SHAPES[0]![1], DeletionPolicy: 'Retain' },
+          desired: structuredClone(RECORDED),
+          change,
+        });
+        await makeEngine({ captureObservedState: true }).deploy(stackName, template);
+        expectKeptAndStamped();
+      }
+    });
+
+    it('a legacy marker that names NO parameter and is only PRESERVED (NO_CHANGE) stays as it was: preserved, not written', async () => {
+      const template = arrangeLegacy({
+        fnDefinition: { Properties: { Code: RAW_CODE } },
+        desired: structuredClone(RECORDED),
+        change: { changeType: 'NO_CHANGE' } as Partial<ResourceChange>,
+      });
+      await makeEngine({ captureObservedState: true }).deploy(stackName, template);
+      const fn = everySavedState().at(-1)!.resources['Fn']!;
+      expect(fn.observedBaselineRefused).toBe(true);
+      expect(Object.hasOwn(fn, 'observedBaselineRefusalReason')).toBe(false);
+      expect(readbackIds()).toEqual(['phys-sibling']);
+    });
+
+    it('a FAILED update leaves no sentinel anywhere and never captures the record, in every state it saves', async () => {
+      const template = arrangeLegacy({ fnDefinition: NAMING_SHAPES[0]![1] });
+      mockProvider.update.mockImplementation(async (logicalId: string, physicalId: string) => {
+        if (logicalId === 'Fn') throw new Error('update rejected');
+        return { physicalId, wasReplaced: false };
+      });
+      await expect(
+        makeEngine({ captureObservedState: true }).deploy(stackName, template)
+      ).rejects.toThrow();
+      let savedWithFn = 0;
+      for (const saved of everySavedState()) {
+        const fn = saved.resources['Fn'];
+        if (fn === undefined) continue;
+        savedWithFn++;
+        expect(fn.observedBaselineRefused).toBe(true);
+        // Stamped even though the update failed: the failure save holds the
+        // explicit form too.
+        expect(fn.observedBaselineRefusalReason).toBe('unverifiable-parameter');
+        expect(fn.observedProperties).toBeUndefined();
+      }
+      expect(savedWithFn).toBeGreaterThan(0);
+      expect(readbackIds()).not.toContain(OLD_PHYS);
+      expectSentinelNowhere();
+      expectReasonOnlyWithMarker();
+    });
+
+    it('stamps by REPLACING the record: the object that was loaded is left as it was', async () => {
+      const loaded = reasonless();
+      const template = arrangeLegacy({ fn: loaded, fnDefinition: NAMING_SHAPES[0]![1] });
+      await makeEngine({ captureObservedState: true }).deploy(stackName, template);
+      expectKeptAndStamped();
+      expect(Object.hasOwn(loaded, 'observedBaselineRefusalReason')).toBe(false);
+    });
+
+    it('a record ADOPTED from a rollback orphan after the deploy-start stamp is read too', async () => {
+      const template = arrangeLegacy({ fnDefinition: NAMING_SHAPES[0]![1] });
+      // `Fn` is not in `resources` when the deploy starts: it arrives through
+      // the orphan pre-pass, which runs after the first stamp.
+      const loaded = (await (
+        mockStateBackend.getState as unknown as () => Promise<unknown>
+      )()) as { state: StackState; etag: string };
+      const adopted = loaded.state.resources['Fn']!;
+      delete loaded.state.resources['Fn'];
+      loaded.state.orphans = [{ logicalId: 'Fn', orphanedAt: 1, state: adopted }];
+      orphanPlanOverride.plan = { adopted: { Fn: adopted }, remaining: [], notices: [], refusals: [] };
+      await makeEngine({ captureObservedState: true }).deploy(stackName, template);
+      expectKeptAndStamped();
+    });
+
+    it('a template whose parameter dependence cannot be judged stamps EVERY reason-less marker and says so once, by cause class only', async () => {
+      // The definition names no parameter at all; `Parameters` is not a map.
+      const template = arrangeLegacy({
+        fnDefinition: { Properties: { Code: RAW_CODE } },
+        template: { Parameters: 'not-a-map-SECRET-LOOKING-VALUE' },
+      });
+      await makeEngine({ captureObservedState: true }).deploy(stackName, template);
+      expectKeptAndStamped();
+      const lines = logged.filter((line) => line.includes('could not be judged'));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('(unreadable-template)');
+      expect(logged.join('\n')).not.toContain('SECRET-LOOKING-VALUE');
+    });
+
+    it('says nothing about an unjudgeable template when the template was read', async () => {
+      const template = arrangeLegacy({ fnDefinition: NAMING_SHAPES[0]![1] });
+      await makeEngine({ captureObservedState: true }).deploy(stackName, template);
+      expect(logged.some((line) => line.includes('could not be judged'))).toBe(false);
+    });
+
+    it('a reason this binary does not know is read like an absent one: kept and stamped', async () => {
+      const template = arrangeLegacy({
+        fn: refusedRecord({ observedBaselineRefusalReason: 'a-later-value' as never }),
+        fnDefinition: NAMING_SHAPES[0]![1],
+      });
+      await makeEngine({ captureObservedState: true }).deploy(stackName, template);
+      expectKeptAndStamped();
+    });
+
+    it('a record the template no longer defines is DELETED as usual: no verdict is needed and nothing is read', async () => {
+      const template = arrangeLegacy({
+        fnDefinition: NAMING_SHAPES[0]![1],
+        change: { changeType: 'DELETE' } as Partial<ResourceChange>,
+      });
+      delete (template.Resources as Record<string, unknown>)['Fn'];
+      await makeEngine({ captureObservedState: true }).deploy(stackName, template);
+      expect(mockProvider.delete).toHaveBeenCalledTimes(1);
+      expect(mockProvider.delete.mock.calls[0]![1]).toBe(OLD_PHYS);
+      expect(everySavedState().at(-1)!.resources['Fn']).toBeUndefined();
+      expect(readbackIds()).not.toContain(OLD_PHYS);
+      expectSentinelNowhere();
+    });
+
+    it('--dry-run saves nothing, stamped or otherwise, and reads nothing', async () => {
+      const template = arrangeLegacy({ fnDefinition: NAMING_SHAPES[0]![1] });
+      await makeEngine({ captureObservedState: true, dryRun: true }).deploy(stackName, template);
+      expect(mockStateBackend.saveState).not.toHaveBeenCalled();
+      expect(mockProvider.readCurrentState).not.toHaveBeenCalled();
+      expect(mockProvider.update).not.toHaveBeenCalled();
+    });
   });
 });

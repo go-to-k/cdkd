@@ -653,11 +653,39 @@ export interface ResourceState {
   observedBaselineRefused?: true | undefined;
 
   /**
-   * WHY the baseline was refused, recorded only for the one refusal class a
-   * deploy CANNOT discharge (issue
-   * [#3462](https://github.com/go-to-k/cdkd/issues/3462)). Optional, no schema
-   * bump: an absent field is every record written before it existed, and reads
-   * as "a refusal an UPDATE may clear", which is what those records got.
+   * WHY the baseline was refused (issues
+   * [#3462](https://github.com/go-to-k/cdkd/issues/3462),
+   * [#3468](https://github.com/go-to-k/cdkd/issues/3468)). Optional, no schema
+   * bump. Every writer in this binary records one beside the marker; a record
+   * that only PRESERVES a marker (a spread, a selective merge) keeps whatever
+   * it had.
+   *
+   * ABSENT (or any value this binary does not know, read the same way) — a
+   * marker written by a cdkd that predates the reasons, whose cause is
+   * unknown: 0.290.35 wrote unverifiable-parameter refusals without a reason.
+   * It is therefore read FAIL CLOSED: when the resource's definition in the
+   * template at hand names a declared template parameter
+   * (`resourcesNamingDeclaredParameter`, which also answers "yes" for a
+   * template it cannot read, and for a bag it cannot classify once anything in
+   * the template names a declared parameter), `cdkd deploy` stamps it
+   * `'unverifiable-parameter'` at deploy start and `cdkd import` carries it as
+   * one; otherwise an UPDATE clears it, as before. The accepted cost is that an
+   * old refusal of the other class on such a resource becomes sticky too. Known
+   * residual: a template edited to replace the parameter reference with its
+   * literal (or any expression naming no parameter) before the first deploy or
+   * re-import by a fixed binary that saves state shows no dependence, and the
+   * marker clears.
+   *
+   * `'incomplete-resolution'` — one of `cdkd import`'s other three arms fired
+   * and ARM 4 did not: the import-time resolve of the record's properties
+   * threw, lost a `{{resolve:` opener, or discarded a non-inert subtree. The
+   * name states what the three share — the resolve did not yield a complete
+   * bag whose leaves can position a redaction — and nothing about parameters.
+   * A deploy that CREATEs or UPDATEs the resource clears it (the marker's own
+   * doc above). No reader branches on this value: it exists so that a marker
+   * of this class is never mistaken for an ABSENT-reason one. A binary that
+   * predates it sees "not `'unverifiable-parameter'`" and clears on UPDATE,
+   * which is the same behaviour.
    *
    * `'unverifiable-parameter'` — `cdkd import`'s ARM 4 (issue #2854) named this
    * resource: its properties depend on a template parameter whose DEPLOYED
@@ -684,9 +712,10 @@ export interface ResourceState {
    *
    * INVARIANT: never present without `observedBaselineRefused: true`. Every
    * reader that only asks "is a baseline refused?" keeps testing the marker;
-   * only the two writers that may CLEAR it read this field.
+   * only the two commands that may clear or stamp it (`cdkd deploy`, `cdkd
+   * import`) read this field, through the two helpers below.
    */
-  observedBaselineRefusalReason?: 'unverifiable-parameter' | undefined;
+  observedBaselineRefusalReason?: 'unverifiable-parameter' | 'incomplete-resolution' | undefined;
 }
 
 /**
@@ -702,6 +731,26 @@ export function hasUnverifiableParameterRefusal(
   return (
     record?.observedBaselineRefused === true &&
     record.observedBaselineRefusalReason === 'unverifiable-parameter'
+  );
+}
+
+/**
+ * Whether `record` carries a marker with NO reason this binary knows — written
+ * by an older cdkd, cause unknown. The one caller-side question is whether to read it
+ * fail closed; see `observedBaselineRefusalReason`'s doc.
+ */
+export function hasReasonlessBaselineRefusal(
+  record:
+    | Pick<ResourceState, 'observedBaselineRefused' | 'observedBaselineRefusalReason'>
+    | undefined
+): boolean {
+  // Anything but the two values this binary knows — absent, `null`, a value a
+  // later binary invented — is a cause this binary cannot name: fail closed.
+  const reason: unknown = record?.observedBaselineRefusalReason;
+  return (
+    record?.observedBaselineRefused === true &&
+    reason !== 'unverifiable-parameter' &&
+    reason !== 'incomplete-resolution'
   );
 }
 

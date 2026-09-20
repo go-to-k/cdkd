@@ -52,7 +52,7 @@ interface ResourceState {
   updateReplacePolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate'; // v5+
   provisionedBy?: 'sdk' | 'cc-api';         // v7+: routing layer (absent = pre-v7 = SDK-managed; NOT pinned — routing re-decides)
   observedBaselineRefused?: true;           // v10+: import refused a baseline; no writer may synthesize one from `properties`
-  observedBaselineRefusalReason?: 'unverifiable-parameter'; // no bump: the one refusal class an in-place UPDATE may not clear
+  observedBaselineRefusalReason?: 'unverifiable-parameter' | 'incomplete-resolution'; // no bump: only the first survives an in-place UPDATE
 }
 ```
 
@@ -98,7 +98,7 @@ The `imports` sibling for the weak-reference `Fn::GetStackOutput`: one entry per
 
 `cdkd import` DECLINED to capture an `observedProperties` baseline here, so no writer that refreshes observed state (deploy auto-refresh, `state refresh-observed`, `drift --accept` / `--revert`) may synthesize one from `properties`. `undefined` means NOT refused, which is every pre-v10 record and what those writers already assumed, so v9 -> v10 needs no migration code. The AUTHORITY is the field's JSDoc in `src/types/state.ts`.
 
-`observedBaselineRefusalReason` (optional, no bump, [#3462](https://github.com/go-to-k/cdkd/issues/3462)) is never present without the marker. `'unverifiable-parameter'` means the resource depends on a template parameter not provably deployed at the `Default` both `cdkd import` and `cdkd deploy` bind, so a deploy holds no more evidence than the import did: the in-place UPDATE rebuild in `provisionResourceBody` carries both fields and takes NO readback, whatever changed. Only a replacement / CREATE clears them, or an import that re-imported the row while it HAD a deployed-parameter source and ARM 4 did not name it; `buildStackState` carries both across a re-import on an unchanged physical id. Absent reads as "an UPDATE may clear the marker". Readers that only ask "is a baseline refused?" test the marker alone; read the pair through `hasUnverifiableParameterRefusal`.
+`observedBaselineRefusalReason` (optional, no bump, [#3462](https://github.com/go-to-k/cdkd/issues/3462)) is never present without the marker. `'unverifiable-parameter'` means the resource depends on a template parameter not provably deployed at the `Default` both `cdkd import` and `cdkd deploy` bind, so a deploy holds no more evidence than the import did: the in-place UPDATE rebuild in `provisionResourceBody` carries both fields and takes NO readback, whatever changed. Only a replacement / CREATE clears them, or an import that re-imported the row while it HAD a deployed-parameter source and ARM 4 did not name it; `buildStackState` carries both across a re-import on an unchanged physical id. Every writer records a reason (`'incomplete-resolution'` for the other arms; no reader branches on it). ABSENT means an older binary's record of unknown class ([#3468](https://github.com/go-to-k/cdkd/issues/3468)) and is read FAIL CLOSED through `resourcesNamingDeclaredParameter` (`src/analyzer/parameter-dependence.ts`, "yes" on an unreadable template): `stampReasonlessParameterRefusals` stamps it at deploy start, before any readback, and `buildStackState` carries it; a definition naming no declared parameter clears on UPDATE as before. Readers that only ask "is a baseline refused?" test the marker alone; read the pair through `hasUnverifiableParameterRefusal`.
 
 ## `observedProperties` (v3+)
 

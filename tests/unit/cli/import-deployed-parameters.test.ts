@@ -49,11 +49,13 @@ const {
   DeployedParameters,
   readDeployedParameters,
   divergentParameterNames,
+} = await import('../../../src/cli/commands/import-deployed-parameters.js');
+const {
   collectParameterDependencies,
   reachableDivergentParameters,
   namesAnyDeclaredParameter,
   computeParameterTaint,
-} = await import('../../../src/cli/commands/import-deployed-parameters.js');
+} = await import('../../../src/analyzer/parameter-dependence.js');
 const { getLogger } = await import('../../../src/utils/logger.js');
 
 /** What AWS holds where the template says `CHANGEME` — must never be persisted. */
@@ -885,12 +887,20 @@ describe('reachableDivergentParameters / namesAnyDeclaredParameter', () => {
 describe('a RE-IMPORT must not discharge an unverifiable-parameter refusal it cannot re-judge (issue #3462)', () => {
   const PLAIN_PARAM = { DbPassword: { Type: 'String', Default: 'CHANGEME' } };
 
-  /** INVARIANT on every write site: the reason is never present without the marker. */
+  /**
+   * INVARIANT on every write site, both directions: the reason is never present
+   * without the marker, and (issue #3468) a marker THIS binary wrote is never
+   * reason-less — every record these helpers produce was rebuilt by the run.
+   */
   function expectReasonOnlyWithMarker(state: StackState): void {
     for (const record of Object.values(state.resources)) {
       if (Object.hasOwn(record, 'observedBaselineRefusalReason')) {
         expect(record.observedBaselineRefused).toBe(true);
-        expect(record.observedBaselineRefusalReason).toBe('unverifiable-parameter');
+      }
+      if (record.observedBaselineRefused === true) {
+        expect(['unverifiable-parameter', 'incomplete-resolution']).toContain(
+          record.observedBaselineRefusalReason
+        );
       }
     }
   }
@@ -1002,7 +1012,7 @@ describe('a RE-IMPORT must not discharge an unverifiable-parameter refusal it ca
     expect(JSON.stringify(state)).not.toContain('deployed-sentinel-2854');
   });
 
-  it('a FIRST import writes the reason for ARM 4 and ONLY for ARM 4', async () => {
+  it("a FIRST import writes ARM 4's reason for ARM 4 (alone or beside another arm), and the other reason otherwise", async () => {
     // ARM 4 alone.
     const arm4 = await run({
       template: templateWith(PLAIN_PARAM),
@@ -1024,7 +1034,8 @@ describe('a RE-IMPORT must not discharge an unverifiable-parameter refusal it ca
     expect(both.state.resources['Res']!.observedBaselineRefusalReason).toBe(
       'unverifiable-parameter'
     );
-    // The throw arm ALONE: marker, no reason.
+    // The throw arm ALONE: marker, and the OTHER reason (issue #3468) — never
+    // reason-less, which a later deploy would read fail closed.
     const thrown = await run({
       template: templateWith({}),
       properties: { Other: { Ref: 'NoSuchThing' } },
@@ -1032,8 +1043,8 @@ describe('a RE-IMPORT must not discharge an unverifiable-parameter refusal it ca
     });
     expect(thrown.refused).toBe(true);
     expect(thrown.state.resources['Res']!.observedBaselineRefused).toBe(true);
-    expect(Object.hasOwn(thrown.state.resources['Res']!, 'observedBaselineRefusalReason')).toBe(
-      false
+    expect(thrown.state.resources['Res']!.observedBaselineRefusalReason).toBe(
+      'incomplete-resolution'
     );
     for (const result of [arm4, both, thrown]) expectReasonOnlyWithMarker(result.state);
   });
@@ -1068,7 +1079,7 @@ describe('a RE-IMPORT must not discharge an unverifiable-parameter refusal it ca
     expect(state.resources['Res']).toEqual(PRIOR_REFUSED);
   });
 
-  it('a carried reason is DROPPED, marker kept, when this run proves the parameter but refuses for another arm', async () => {
+  it('a carried reason is REPLACED, marker kept, when this run proves the parameter but refuses for another arm', async () => {
     const { state, reads } = await reimport({
       template: templateWith(
         PLAIN_PARAM,
@@ -1080,7 +1091,7 @@ describe('a RE-IMPORT must not discharge an unverifiable-parameter refusal it ca
     });
     expect(reads).toBe(0);
     expect(state.resources['Res']!.observedBaselineRefused).toBe(true);
-    expect(Object.hasOwn(state.resources['Res']!, 'observedBaselineRefusalReason')).toBe(false);
+    expect(state.resources['Res']!.observedBaselineRefusalReason).toBe('incomplete-resolution');
   });
 
   it('a DIFFERENT physical id does not inherit the refusal: it is another resource', async () => {
@@ -1095,13 +1106,114 @@ describe('a RE-IMPORT must not discharge an unverifiable-parameter refusal it ca
     expect(Object.hasOwn(state.resources['Res']!, 'observedBaselineRefusalReason')).toBe(false);
   });
 
-  it('a prior refusal with NO reason (arms 1-3, or a record older than the field) is cleared by a clean re-import, as before', async () => {
+  // Issue #3468 — a marker recorded WITHOUT a reason (cdkd 0.290.35 wrote
+  // ARM 4 refusals that way) is read FAIL CLOSED against the template at hand.
+  const REASONLESS: StackState['resources'][string] = (() => {
+    const { observedBaselineRefusalReason: _dropped, ...rest } = PRIOR_REFUSED;
+    return rest;
+  })();
+
+  it('a REASON-LESS prior marker on a definition that NAMES a declared parameter is carried as an unverifiable-parameter refusal; nothing is read', async () => {
+    const { state, reads } = await reimport({ prior: REASONLESS, deployed: 'none' });
+    expect(reads).toBe(0);
+    expect(JSON.stringify(state)).not.toContain(LIVE_PLAINTEXT);
+    expect(logged.join('\n')).not.toContain(LIVE_PLAINTEXT);
+    expect(state.resources['Res']!.observedProperties).toBeUndefined();
+    expect(state.resources['Res']!.observedBaselineRefused).toBe(true);
+    expect(state.resources['Res']!.observedBaselineRefusalReason).toBe('unverifiable-parameter');
+  });
+
+  it('a REASON-LESS prior marker on a definition that names NO parameter is cleared by a clean re-import, as before', async () => {
     const { state, reads } = await reimport({
-      prior: { ...PRIOR_REFUSED, observedBaselineRefusalReason: undefined },
+      template: templateWith(PLAIN_PARAM, {}, { Properties: { Detail: { pw: 'CHANGEME' } } }),
+      prior: REASONLESS,
       deployed: 'none',
       readback: { Detail: { pw: 'CHANGEME' } },
     });
     expect(reads).toBe(1);
     expect(Object.hasOwn(state.resources['Res']!, 'observedBaselineRefused')).toBe(false);
+    expect(Object.hasOwn(state.resources['Res']!, 'observedBaselineRefusalReason')).toBe(false);
+  });
+
+  it('a REASON-LESS prior marker naming only a PSEUDO parameter is cleared too', async () => {
+    const { state, reads } = await reimport({
+      template: templateWith(PLAIN_PARAM, {}, { Properties: { Detail: { pw: { Ref: 'AWS::Region' } } } }),
+      prior: REASONLESS,
+      deployed: 'none',
+      readback: { Detail: { pw: 'us-east-1' } },
+    });
+    expect(reads).toBe(1);
+    expect(Object.hasOwn(state.resources['Res']!, 'observedBaselineRefused')).toBe(false);
+  });
+
+  it('a REASON-LESS prior marker is discharged by a source that PROVES the parameter', async () => {
+    const { state, reads } = await reimport({
+      prior: REASONLESS,
+      deployed: [{ ParameterKey: 'DbPassword', ParameterValue: 'CHANGEME' }],
+      readback: { Detail: { pw: 'CHANGEME' } },
+    });
+    expect(reads).toBe(1);
+    expect(Object.hasOwn(state.resources['Res']!, 'observedBaselineRefused')).toBe(false);
+    expect(Object.hasOwn(state.resources['Res']!, 'observedBaselineRefusalReason')).toBe(false);
+  });
+
+  it('a template whose parameter dependence cannot be judged CARRIES the reason-less marker and says so once, by cause class only', async () => {
+    const { buildStackState } = await import('../../../src/cli/commands/import.js');
+    const { TemplateParser } = await import('../../../src/analyzer/template-parser.js');
+    const template = {
+      Parameters: 'not-a-map-SECRET-LOOKING-VALUE',
+      Resources: { Res: { Type: 'AWS::SQS::Queue', Properties: { Detail: { pw: 'CHANGEME' } } } },
+    } as unknown as CloudFormationTemplate;
+    const state = buildStackState(
+      'arm4-stack',
+      'us-east-1',
+      [
+        {
+          logicalId: 'Res',
+          resourceType: 'AWS::SQS::Queue',
+          outcome: 'imported' as const,
+          physicalId: 'res-phys',
+        },
+      ],
+      new TemplateParser(),
+      template,
+      {
+        version: STATE_SCHEMA_VERSION_CURRENT,
+        stackName: 'arm4-stack',
+        region: 'us-east-1',
+        resources: { Res: REASONLESS },
+        outputs: {},
+        lastModified: 0,
+      },
+      false
+    );
+    expect(state.resources['Res']!.observedBaselineRefused).toBe(true);
+    expect(state.resources['Res']!.observedBaselineRefusalReason).toBe('unverifiable-parameter');
+    const lines = logged.filter((line) => line.includes('could not be judged'));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('(unreadable-template)');
+    expect(logged.join('\n')).not.toContain('SECRET-LOOKING-VALUE');
+  });
+
+  it('a REASON-LESS prior marker on a DIFFERENT physical id is not carried', async () => {
+    const { state, reads } = await reimport({
+      prior: REASONLESS,
+      physicalId: 'another-phys',
+      deployed: 'none',
+      readback: { Detail: { pw: 'CHANGEME' } },
+    });
+    expect(reads).toBe(1);
+    expect(Object.hasOwn(state.resources['Res']!, 'observedBaselineRefused')).toBe(false);
+  });
+
+  it("a prior marker carrying the OTHER reason is not reason-less: a clean re-import clears it even though the definition names a parameter", async () => {
+    const { state, reads } = await reimport({
+      prior: { ...REASONLESS, observedBaselineRefusalReason: 'incomplete-resolution' },
+      deployed: 'none',
+      readback: { Detail: { pw: 'CHANGEME' } },
+    });
+    expect(reads).toBe(1);
+    expect(Object.hasOwn(state.resources['Res']!, 'observedBaselineRefused')).toBe(false);
+    expect(Object.hasOwn(state.resources['Res']!, 'observedBaselineRefusalReason')).toBe(false);
   });
 });
