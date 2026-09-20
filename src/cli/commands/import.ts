@@ -55,6 +55,17 @@ import {
   NESTED_STACK_RESOURCE_TYPE,
   type CfnStackResourceTree,
 } from './retire-cfn-stack.js';
+import {
+  computeParameterTaint,
+  divergentParameterNames,
+  namesAnyDeclaredParameter,
+  reachableDivergentParameters,
+  readDeployedParameters,
+  type DeployedParameters,
+  type ParameterTaint,
+} from './import-deployed-parameters.js';
+import { displaySafe } from '../../utils/display-safe.js';
+import type { CloudFormationClient } from '@aws-sdk/client-cloudformation';
 import type {
   CloudFormationTemplate,
   ResourceImportInput,
@@ -795,8 +806,44 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       // for the same reason the deploy engine's outputs pass wraps: the lock
       // is held above and `saveState` is downstream, and each `resolve` in
       // there can now WAIT on a rejection.
+      //
+      // The source stack's deployed parameter values (issue #2854), read only
+      // when something in the template NAMES a declared parameter. CDK declares
+      // `BootstrapVersion` on every default-synthesized stack and nothing but
+      // `Rules` names it, so keying on "declares any" would put
+      // `DescribeStacks` on the IAM requirements of essentially every import.
+      //
+      // The stack asked about is the migration source, or — on EVERY other
+      // import, selective mode included — the same-named CloudFormation stack,
+      // whose absence is the ordinary cdkd-native case and means "no deployed
+      // values exist" rather than a failure. Asked independently of auto
+      // mode's resource-map lookup: that lookup degrades to `null` on a
+      // permission error, and keying this on it would fail OPEN.
+      const deployedParameters = !namesAnyDeclaredParameter(stateTemplate)
+        ? undefined
+        : migrationCfnStackName !== undefined
+          ? await readDeployedParameters(
+              migrationCfnStackName,
+              awsClients.cloudFormation,
+              logger,
+              displaySafe(migrationCfnStackName)
+            )
+          : await readDeployedParameters(
+              stackInfo.stackName,
+              awsClients.cloudFormation,
+              logger,
+              displaySafe(stackInfo.stackName),
+              { absentStackIsNoSource: true }
+            );
       const unsafeObservedBaselineLogicalIds = await withSharedDrainBudget(() =>
-        resolveImportedProperties(stackState, stateTemplate, targetRegion, stateBackend, logger)
+        resolveImportedProperties(
+          stackState,
+          stateTemplate,
+          targetRegion,
+          stateBackend,
+          logger,
+          deployedParameters
+        )
       );
 
       // Populate observedProperties for the freshly-imported resources so
@@ -862,6 +909,7 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
           accountId: accountIdForNestedSynth,
           logger,
           assetRedirect,
+          cfnClient: awsClients.cloudFormation,
         });
       }
 
@@ -1556,7 +1604,7 @@ function defaultOnlyParameterTemplate(template: CloudFormationTemplate): CloudFo
  * the clear.
  *
  * The predicate is deliberately CONSERVATIVE — it over-refuses — and that is a
- * decision a review round paid for. Three arms:
+ * decision a review round paid for. Four arms:
  *
  *  - **Resolution THREW** — refuse, unconditionally. A throw means the
  *    resolver could not finish, so nothing about the persisted bag is
@@ -1597,6 +1645,15 @@ function defaultOnlyParameterTemplate(template: CloudFormationTemplate): CloudFo
  *    opener text and no intrinsic anywhere, because every way a discarded
  *    subtree could have SOURCED a reference is an intrinsic.
  *
+ *  - **An UNVERIFIABLE INPUT** (ARM 4, issue
+ *    [#2854](https://github.com/go-to-k/cdkd/issues/2854)). The raw bag
+ *    depends on a template parameter whose DEPLOYED value — read from the
+ *    backing CloudFormation stack's `DescribeStacks`, root and every nested
+ *    child alike — is not provably the `Default` this import bound. Runs only
+ *    when `deployedParameters` is supplied; the comparison, the dependence
+ *    walk and the comparison-only rule for the deployed values live in
+ *    `import-deployed-parameters.ts`.
+ *
  * The cost of a false refusal is one resource's drift baseline until its next
  * deploy; the cost of a false pass is a plaintext secret in `state.json`. So an
  * unmeasurable bag refuses too.
@@ -1611,8 +1668,21 @@ function defaultOnlyParameterTemplate(template: CloudFormationTemplate): CloudFo
  * issue and none of them proven to be all of them:
  *
  *  - a parameter binds to a placeholder `Default` while the DEPLOYED value was
- *    the reference, so no opener exists in any template this walk is handed --
- *    [#2854](https://github.com/go-to-k/cdkd/issues/2854);
+ *    the reference, so no opener exists in any template this walk is handed
+ *    ([#2854](https://github.com/go-to-k/cdkd/issues/2854)). ARM 4 below
+ *    refuses this when a CloudFormation stack backs the import (its
+ *    `DescribeStacks` parameters are the comparison); what REMAINS is an
+ *    import with NO CloudFormation stack, where no deployed-parameter source
+ *    exists, taint across the nested-stack `Outputs` boundary
+ *    (`import-deployed-parameters.ts` states it), and the NEXT DEPLOY: the
+ *    refusal marker is cleared by any UPDATE that rebuilds the record, and
+ *    `cdkd deploy` binds the same placeholder `Default`, so an UPDATE that does
+ *    not rewrite the placeholder-bound property captures the readback against
+ *    it ([#3462](https://github.com/go-to-k/cdkd/issues/3462);
+ *    `deploy-engine.ts` owns the fix). ARM 4 also WIDENS the population of
+ *    [#2872](https://github.com/go-to-k/cdkd/issues/2872): a record preserved
+ *    by a selective merge that a pre-#2854 import already gave a plaintext
+ *    baseline is now refused, and a refusal leaves that old baseline in place;
  *  - `redactSecretsForState` cannot PAIR the readback against the source at a
  *    position the source carries NO leaf for -- an observed KEY beside a paired
  *    one -- so there is nothing to refuse from and the value scan has no needle
@@ -1649,7 +1719,14 @@ export async function resolveImportedProperties(
   template: CloudFormationTemplate,
   region: string,
   stateBackend: S3StateBackend,
-  logger: ReturnType<typeof getLogger>
+  logger: ReturnType<typeof getLogger>,
+  /**
+   * What the SOURCE CloudFormation stack was deployed with (ARM 4, issue
+   * #2854). `undefined` when no CloudFormation stack backs this import — there
+   * is then no deployed-parameter source at all, and the arm does not run.
+   * COMPARISON-ONLY: never bound into the resolve below.
+   */
+  deployedParameters?: DeployedParameters
 ): Promise<Set<string>> {
   const unsafeObservedBaselineLogicalIds = new Set<string>();
   const entries = Object.entries(stackState.resources ?? {});
@@ -1757,6 +1834,49 @@ export async function resolveImportedProperties(
   const unboundParameterNames = Object.keys(
     (template.Parameters ?? {}) as Record<string, unknown>
   ).filter((name) => isUnboundTemplateParameter(name, template, parameters));
+
+  // ARM 4 (issue #2854) — the parameters whose DEPLOYED value is not provably
+  // the value bound above, narrowed to the ones anything in the template can
+  // reach. Computed once per stack; the per-resource test sits right after the
+  // resolve, ahead of ARM 1. A throw here must not abort an import that
+  // already succeeded against AWS, so an unreadable `Parameters` section fails
+  // closed to "every declared parameter is divergent".
+  let divergentParameters: Set<string> | undefined;
+  if (deployedParameters !== undefined) {
+    try {
+      divergentParameters = reachableDivergentParameters(
+        template,
+        divergentParameterNames(template, parameters, deployedParameters),
+        entries.map(([, resource]) => resource.properties)
+      );
+    } catch {
+      // A BACKSTOP, and deliberately unfenced: `reachableDivergentParameters`
+      // catches its own walk and `divergentParameterNames` throws only if the
+      // shared coercion does, so no input reaches this arm today. The same is
+      // true of the `catch` around `computeParameterTaint` below, which
+      // catches per resource. Both fail closed.
+      divergentParameters = new Set(Object.keys((template.Parameters ?? {}) as object));
+    }
+  }
+  // The per-stack verdict, judged on the TEMPLATE definition of every resource
+  // as well as on the state bags (see `computeParameterTaint` for why a
+  // preserved record's resolved bag cannot be the only evidence).
+  let parameterTaint: ParameterTaint | undefined;
+  if (divergentParameters !== undefined && divergentParameters.size > 0) {
+    try {
+      parameterTaint = computeParameterTaint(
+        template,
+        new Map(entries.map(([logicalId, resource]) => [logicalId, resource.properties])),
+        divergentParameters
+      );
+    } catch (err) {
+      logger.debug(
+        `observed-baseline parameter-dependence walk failed for '${displaySafe(stackState.stackName)}': ${err instanceof Error ? err.name : typeof err} — refusing every baseline in the stack fail-closed.`
+      );
+      const all = new Set(entries.map(([logicalId]) => logicalId));
+      parameterTaint = { refused: all, unclassifiable: all, parametersHit: new Set() };
+    }
+  }
 
   const baseContext = {
     template,
@@ -1919,7 +2039,7 @@ export async function resolveImportedProperties(
       resource.attributes = redactSecretsForState(resource.attributes, recordedSecretValues);
     }
 
-    // THE REFUSAL (see this function's doc block for the two arms and why the
+    // THE REFUSAL (see this function's doc block for the arms and why the
     // predicate is deliberately CONSERVATIVE rather than precise).
     // ARM 1 -- the resolve THREW. Refuse, FULL STOP: no inspection of the bag at
     // all, and tested FIRST so the two `JSON.stringify` passes below are not
@@ -1930,7 +2050,16 @@ export async function resolveImportedProperties(
     // raw bag CARRIES an opener admitted a reference sourced from OUTSIDE the
     // bag. A throw means the resolver could not finish, so nothing about the
     // bag is trustworthy evidence.
-    if (threw) {
+    // ARM 4 (issue #2854) — an UNVERIFIABLE INPUT: the resource depends,
+    // directly or through another resource's attributes, on a parameter whose
+    // deployed value is not provably the `Default` bound above, so the
+    // persisted `properties` hold a placeholder where AWS holds whatever the
+    // deployed value produced (a decrypted secret, in the shape the issue
+    // measured) and NO template this walk was handed spells a reference for
+    // the redaction to position. Decided per STACK above; it reads only raw
+    // bags, so it applies on the throw arm too.
+    const dependsOnDivergent = parameterTaint?.refused.has(logicalId) === true;
+    if (threw || dependsOnDivergent) {
       unsafeObservedBaselineLogicalIds.add(logicalId);
       continue;
     }
@@ -1989,6 +2118,29 @@ export async function resolveImportedProperties(
       discardsNonInertSubtree
     ) {
       unsafeObservedBaselineLogicalIds.add(logicalId);
+    }
+  }
+
+  // ONE line per stack, and the signal issue #2854 found missing entirely.
+  // Parameter NAMES and counts only — never a bound or a deployed VALUE.
+  // Counted over the records this walk holds: the verdict also judges template
+  // resources that are not in state, which have no baseline to lose.
+  if (parameterTaint !== undefined) {
+    const inState = new Set(entries.map(([logicalId]) => logicalId));
+    const refusedHere = [...parameterTaint.refused].filter((id) => inState.has(id));
+    const unreadable = refusedHere.filter((id) => parameterTaint.unclassifiable.has(id));
+    if (refusedHere.length > 0) {
+      const named = [...parameterTaint.parametersHit].sort().map((name) => displaySafe(name));
+      logger.warn(
+        `${refusedHere.length} resource(s) in '${displaySafe(stackState.stackName)}' depend, directly or through another resource's attributes, on template parameter(s) ` +
+          `whose deployed CloudFormation value could not be proven equal to the template 'Default' 'cdkd import' binds` +
+          (named.length > 0 ? ` (${named.join(', ')})` : '') +
+          (unreadable.length > 0
+            ? ` — ${unreadable.length} of them because their properties could not be checked for such a dependence`
+            : '') +
+          `. Their recorded properties hold the 'Default', NOT the deployed value, and no observed drift baseline was captured for them by this import ` +
+          `(the live value may be a secret this import cannot position a redaction for). Review 'cdkd diff' before the next 'cdkd deploy'.`
+      );
     }
   }
 
@@ -2679,7 +2831,7 @@ export async function captureObservedForImportedResources(
         // resolution and is discarded with it.
         resource.observedBaselineRefused = true;
         logger.debug(
-          `observedProperties capture SKIPPED for imported ${logicalId} (${resource.resourceType}): the recorded properties no longer spell the template's dynamic reference, so they cannot position a redaction — capturing an AWS readback against them could persist a resolved secret in plaintext. Drift will compare against the recorded properties for this resource until the next successful deploy.`
+          `observedProperties capture SKIPPED for imported ${logicalId} (${resource.resourceType}): the recorded properties cannot be shown to spell every dynamic reference the deployed resource was built from, so they cannot position a redaction — capturing an AWS readback against them could persist a resolved secret in plaintext. Drift will compare against the recorded properties for this resource until the next successful deploy.`
         );
         return;
       }
@@ -2980,6 +3132,12 @@ async function importNestedStackChildrenRecursive(args: {
    * child's state write, so `state.properties` keeps the pre-rewrite values.
    */
   assetRedirect?: AssetRedirectMap | undefined;
+  /**
+   * Reads each child's DEPLOYED parameter values (issue #2854). A nested
+   * child's own `DescribeStacks` answer IS what its parent supplied, so the
+   * parent's `Stack.Properties.Parameters` needs no plumbing of its own.
+   */
+  cfnClient: CloudFormationClient;
 }): Promise<void> {
   const {
     parentStackName,
@@ -3121,13 +3279,24 @@ async function importNestedStackChildrenRecursive(args: {
       // observedProperties baseline, then save. Re-uses the same
       // helpers as the root so behavior stays in sync.
       // One budget for this child's resolve loop too; see the root call.
+      // Issue #2854: addressed by the child stack's ARN from the resource tree
+      // (the API-accepted identifier), DISPLAYED by its cdkd name.
+      const childDeployedParameters = namesAnyDeclaredParameter(childStateTemplate)
+        ? await readDeployedParameters(
+            childTreeNode.stackName,
+            args.cfnClient,
+            logger,
+            displaySafe(childStackName)
+          )
+        : undefined;
       const childUnsafeObservedBaselineLogicalIds = await withSharedDrainBudget(() =>
         resolveImportedProperties(
           childStackState,
           childStateTemplate,
           childRegion,
           stateBackend,
-          logger
+          logger,
+          childDeployedParameters
         )
       );
       await captureObservedForImportedResources(
@@ -3173,6 +3342,7 @@ async function importNestedStackChildrenRecursive(args: {
           accountId,
           logger,
           assetRedirect,
+          cfnClient: args.cfnClient,
         });
       }
     } finally {
