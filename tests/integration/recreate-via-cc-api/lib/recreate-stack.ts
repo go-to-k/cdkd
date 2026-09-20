@@ -27,10 +27,10 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
  * `RuntimeManagementConfig` is NOT a silent drop — the SDK provider has
  * handled it since #1621. Here it is only the ordinary template difference
  * the flag needs (a `NO_CHANGE` diff no-ops it); the route to Cloud Control
- * comes from `--recreate-via-cc-api` alone. The function name is stable across recreates (the
- * destroy+create reuses the user-supplied name, so the physical-id is
- * identical post-recreate); the new Lambda instance is witnessed by
- * `LastModified` updating, not by the physical-id changing.
+ * comes from `--recreate-via-cc-api` alone. The function name is stable
+ * across recreates (the destroy+create reuses the user-supplied name, so the
+ * physical-id is identical post-recreate); the new Lambda instance is
+ * witnessed by `LastModified` updating, not by the physical-id changing.
  */
 export class RecreateViaCcApiStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {

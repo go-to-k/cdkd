@@ -28,9 +28,8 @@ name subjects by SYMBOL as often as by path. A hit prompts judgement, not a
 verdict. Then split the filed count by what §5-f did with each:
 
 ```bash
-# Folded INTO an existing issue rather than filed as new. `updatedAt` alone
-# cannot answer this — §4's claim comments touch every taken issue — so count
-# the issues whose BODY gained a checklist row.
+# Folded INTO an existing issue: `updatedAt` alone cannot tell (§4's claim
+# comments touch every taken issue), so count BODIES that gained a `- [ ]` row.
 # Keep BOTH label exclusions: a coverage-map sync rewrites a backfill issue's
 # generated block, all `- [ ]` rows.
 gh issue list --state open --limit 200 --json number,title,updatedAt,labels \
@@ -75,8 +74,7 @@ instruction, wrong place. Which shape RECURRED is a COUNT. No evidence, no edit.
 
 ### 10-d. Ship it like any other change
 
-Back on `main` after §9, the retro gets a worktree like any other change.
-MAIN-CHECKOUT (SKILL.md "Launch mode") runs:
+After §9, MAIN-CHECKOUT (SKILL.md "Launch mode") runs:
 
 ```bash
 # UTC MINUTE, not day: post-merge-orphan-push-gate refuses a merged name.
@@ -95,9 +93,8 @@ git fetch origin && git switch -c "$B" origin/main
 
 - `chore:` prefix — CI refuses a `fix:` / `feat:` PR TITLE with no `src/**`
   change (go-to-k/cdkd#2717). Run `/check`, `/check-docs`, `/verify-pr` and
-  `/review-pr`'s reviewer set, unenforced though they now are; a
-  `.claude/hooks/**` change runs `bash .claude/hooks/run-tests.sh`, read by
-  TALLY rather than rc.
+  `/review-pr`'s reviewer set; a `.claude/hooks/**` change runs
+  `bash .claude/hooks/run-tests.sh`, read by TALLY rather than rc.
 - **Merge it before the wrap report, then remove the worktree**
   (`git worktree remove .claude/worktrees/<name> && git worktree prune`). An
   IN-PLACE run added none and runs §9's cleanup arm HERE instead, last of the
