@@ -14,8 +14,6 @@
   the claim (go-to-k/cdkd#1791).
 - **A cross-repo framing spends the deferral budget up front**: inside a
   "do this across the repos in one session" scope, `next` is off the menu.
-- **A mirror issue may already be carried elsewhere** — resolve against the file,
-  open PRs and issues before filing (§10-c) or claiming (§3).
 - **One lane per cross-cutting file** — §2 holds the list.
 - **Never merge a PR whose destroy path is unverified, and never bypass
   `/run-integ`** (§8-c owns what COUNTS as one).
