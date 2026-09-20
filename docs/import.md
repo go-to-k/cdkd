@@ -184,7 +184,10 @@ The flow:
 2. `cdkd import` runs and adopts every resource into cdkd state via
    each provider's `import()` method, using the CFn-resolved physical
    ids as direct lookups.
-3. `cdkd` writes state.
+3. `cdkd` writes state. Just before, `DescribeStacks` reads the deployed
+   parameter values of the source stack (and of each nested child) when
+   something in its template references a declared parameter — see
+   [The drift baseline an import records](#the-drift-baseline-an-import-records).
 4. `DescribeStacks` + `GetTemplate` + `UpdateStack` to inject
    `DeletionPolicy: Retain` and `UpdateReplacePolicy: Retain` on every
    resource — a metadata-only update.
@@ -328,6 +331,30 @@ worth knowing before you read a report:
   decrypted value (it says so at `--verbose`). Drift then compares against the
   recorded properties for that resource, which can show as phantom drift.
 
+  **A template parameter deployed with anything but its `Default` does the
+  same.** `cdkd import` takes no parameter values, so every parameter is
+  recorded at its `Default`. When a CloudFormation stack backs the import — the
+  `--migrate-from-cloudformation` source, each of its nested children, or, on
+  any other import (selective mode included), a CloudFormation stack with the
+  cdkd stack's name — cdkd reads that stack's deployed parameter values with
+  `DescribeStacks` and compares them with what it bound. A parameter it cannot
+  prove equal — a different value, one deployed as a `{{resolve:...}}`
+  reference over a placeholder `Default`, and ANY `NoEcho` parameter
+  (CloudFormation returns `****` for it whatever was deployed) — costs every
+  resource whose properties depend on it (through `Ref`, `Fn::Sub`, a
+  condition, ...) its baseline, along with every resource that reads an
+  attribute of such a resource (`Fn::GetAtt`), and cdkd warns once per stack
+  naming the parameters. A resource whose properties cdkd cannot check for such
+  a dependence is treated the same way. The deployed values are only compared: they are never
+  recorded or logged, and the resource's recorded properties still hold the
+  `Default` — review `cdkd diff` before the next deploy. This needs the
+  `cloudformation:DescribeStacks` permission; without it the import still
+  succeeds, warns, and treats every parameter as unproven. A template in which
+  nothing references a declared parameter makes no such call (CDK's own
+  `BootstrapVersion` is referenced only by `Rules`, so it does not count), and when no CloudFormation stack
+  of that name exists there are no deployed values to compare and the import is
+  unchanged.
+
   **That refusal is RECORDED on the resource**, as
   `observedBaselineRefused` (state schema v10+), and every later command that
   would otherwise fill the missing baseline honours it rather than repeating
@@ -338,6 +365,16 @@ worth knowing before you read a report:
   not tell a refused resource from one that simply never had a baseline, and
   each would position an AWS readback against the very properties the refusal
   found untrustworthy.
+
+  **A parameter refusal is the exception to the remedy below, and the one case
+  where deploying is not safe yet.** `cdkd deploy` takes no parameter values
+  either, so it binds the same `Default`; an update that leaves the
+  parameter-bound property alone still rebuilds the record, clears the marker,
+  and captures the AWS value — the deployed secret — as the baseline. This is a
+  known gap in `cdkd deploy`. To stay clear of it, put the real reference in the template (replace the parameter with the
+  `{{resolve:...}}` reference itself, or make it the parameter's `Default`)
+  before the first deploy of such a resource, and treat `state.json` as
+  sensitive.
 
   **To clear it, deploy a change to the resource.** A create, update or
   replacement rebuilds the record from your template — the evidence the import

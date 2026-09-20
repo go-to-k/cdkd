@@ -102,14 +102,19 @@
  * direction's live case, not a hypothetical.
  *
  * WHAT IS STILL ABSENT, and it is recorded rather than left to read as
- * coverage. `plaintext can still be persisted by this capture` — by a
- * parameter bound to a placeholder `Default` while the DEPLOYED value was the
- * reference ([#2854](https://github.com/go-to-k/cdkd/issues/2854) — no
- * discard occurs, the divergence is in the VALUE, so the discard walk cannot
- * see it), and by a secret with no counterpart in the source at all
- * ([#2868](https://github.com/go-to-k/cdkd/issues/2868)). A row for either
- * would red the SAFETY invariant, exactly as the #2852 and #2850 rows did
- * before their fixes.
+ * coverage. `plaintext can still be persisted by this capture` — by a secret
+ * with no counterpart in the source at all
+ * ([#2868](https://github.com/go-to-k/cdkd/issues/2868)). A row for it would
+ * red the SAFETY invariant, exactly as the #2852 and #2850 rows did before
+ * their fixes.
+ *
+ * A parameter bound to a placeholder `Default` while the DEPLOYED value was the
+ * reference ([#2854](https://github.com/go-to-k/cdkd/issues/2854)) is NOT a row
+ * here either, for a different reason: no discard occurs and the divergence is
+ * in a VALUE this table's harness never supplies (the source stack's
+ * `DescribeStacks` parameters). Its arm has its own suite,
+ * `import-deployed-parameters.test.ts`, and stays open only where no
+ * CloudFormation stack backs the import.
  *
  * #2868 IS WORTH STATING PRECISELY, because the note this paragraph replaced
  * listed "a readback key the source lacks" among the shapes #2852 closed and it

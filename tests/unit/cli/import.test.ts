@@ -84,13 +84,19 @@ const smSend = vi.hoisted(() => vi.fn(async () => ({ SecretString: 'unused-defau
 const ssmSend = vi.hoisted(() =>
   vi.fn(async () => ({ Parameter: { Value: 'ssm-resolved-value' } }))
 );
+// `DescribeStacks` for the deployed-parameter comparison (issue #2854). The
+// retire / tree / resource-map callers are mocked at the module level below,
+// so this is the ONLY CloudFormation `send` the command makes in this file.
+const cfnSend = vi.hoisted(() =>
+  vi.fn<(command: { input: { StackName?: string } }) => Promise<unknown>>()
+);
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
   AwsClients: vi.fn().mockImplementation(() => ({
     get s3() {
       return {};
     },
     get cloudFormation() {
-      return {};
+      return { send: cfnSend };
     },
     get sts() {
       return { send: stsSend };
@@ -314,6 +320,16 @@ describe('cdkd import', () => {
     // pre-#1128 test in this file was written against.
     mockTryGetCfnResourceMap.mockReset();
     mockTryGetCfnResourceMap.mockResolvedValue(null);
+    cfnSend.mockReset();
+    // Default: the cdkd-NATIVE answer — no CloudFormation stack of that name —
+    // so every test not about issue #2854 keeps its pre-#2854 path. A
+    // `{ Parameters: [] }` default would make every declared parameter
+    // divergent and route those tests through ARM 4 instead of the arm they fence.
+    cfnSend.mockImplementation(async (command) => {
+      const err = new Error(`Stack with id ${command.input.StackName ?? ''} does not exist`);
+      err.name = 'ValidationError';
+      throw err;
+    });
     errorSpy.mockReset();
     infoSpy.mockReset();
     warnSpy.mockReset();
@@ -3082,6 +3098,341 @@ describe('cdkd import', () => {
       });
       return { importSpy };
     }
+
+    // Issue #2854: WIRING of the deployed-parameter comparison. The arm itself
+    // is fenced in `import-deployed-parameters.test.ts`; what only the command
+    // can show is WHICH stack each walk asks CloudFormation about, that the
+    // answer reaches `resolveImportedProperties`, and that an import with no
+    // CloudFormation stack behind it asks nothing.
+    describe('deployed-parameter comparison wiring (#2854)', () => {
+      const LIVE = 'live-decrypted-2854-wiring';
+      const paramTemplate = (): CloudFormationTemplate => ({
+        ...template({
+          MyBucket: {
+            Type: 'AWS::S3::Bucket',
+            Properties: { BucketName: { Ref: 'DbPassword' } },
+            Metadata: { 'aws:cdk:path': 'S/MyBucket' },
+          },
+        }),
+        Parameters: { DbPassword: { Type: 'String', Default: 'CHANGEME', NoEcho: true } },
+      });
+      function setup(): void {
+        mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', paramTemplate())] });
+        mockHasProvider.mockReturnValue(true);
+        mockGetProvider.mockReturnValue({
+          import: vi.fn(async () => ({ physicalId: 'b', attributes: {} })),
+          readCurrentState: vi.fn(async () => ({ BucketName: LIVE })),
+        });
+        mockGetCfnResourceTree.mockResolvedValue({
+          stackName: 'Src',
+          physicalId: 'Src',
+          resources: new Map([['MyBucket', 'b']]),
+          nested: new Map(),
+        });
+      }
+      const savedResource = (): { observedProperties?: unknown; properties: unknown } =>
+        (mockSaveState.mock.calls[0]![2] as { resources: Record<string, never> }).resources[
+          'MyBucket'
+        ];
+
+      it('ROOT migrate: asks about the SOURCE stack and refuses the masked parameter', async () => {
+        setup();
+        cfnSend.mockResolvedValue({
+          Stacks: [{ Parameters: [{ ParameterKey: 'DbPassword', ParameterValue: '****' }] }],
+        });
+        await runImport(['import', '--app', 'x', '--yes', '--migrate-from-cloudformation', 'Src']);
+        expect(cfnSend.mock.calls.map((c) => c[0].input.StackName)).toEqual(['Src']);
+        expect(savedResource().properties).toEqual({ BucketName: 'CHANGEME' });
+        expect(savedResource().observedProperties).toBeUndefined();
+        expect(JSON.stringify(mockSaveState.mock.calls)).not.toContain(LIVE);
+      });
+
+      it('ROOT migrate: a deployed value equal to the Default keeps the baseline', async () => {
+        setup();
+        // Not NoEcho: a NoEcho parameter is never provable, whatever comes back.
+        const tmpl = paramTemplate();
+        tmpl.Parameters = { DbPassword: { Type: 'String', Default: 'CHANGEME' } };
+        mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+        cfnSend.mockResolvedValue({
+          Stacks: [{ Parameters: [{ ParameterKey: 'DbPassword', ParameterValue: 'CHANGEME' }] }],
+        });
+        await runImport(['import', '--app', 'x', '--yes', '--migrate-from-cloudformation', 'Src']);
+        expect(savedResource().observedProperties).toEqual({ BucketName: LIVE });
+      });
+
+      it('AUTO mode with a same-named CloudFormation stack asks about THAT stack and refuses', async () => {
+        setup();
+        mockTryGetCfnResourceMap.mockResolvedValue(new Map([['MyBucket', 'b']]));
+        cfnSend.mockResolvedValue({
+          Stacks: [{ Parameters: [{ ParameterKey: 'DbPassword', ParameterValue: '****' }] }],
+        });
+        await runImport(['import', '--app', 'x', '--yes']);
+        expect(cfnSend.mock.calls.map((c) => c[0].input.StackName)).toEqual(['S']);
+        expect(savedResource().observedProperties).toBeUndefined();
+      });
+
+      it('a rejected DescribeStacks refuses fail-closed and the import still writes state', async () => {
+        setup();
+        const denied = new Error('not authorized: secret-echo-2854');
+        denied.name = 'AccessDenied';
+        cfnSend.mockRejectedValue(denied);
+        await runImport(['import', '--app', 'x', '--yes', '--migrate-from-cloudformation', 'Src']);
+        expect(mockSaveState).toHaveBeenCalledTimes(1);
+        expect(savedResource().observedProperties).toBeUndefined();
+        const warned = warnSpy.mock.calls.flat().join(' ');
+        expect(warned).toContain('cloudformation:DescribeStacks');
+        expect(warned).not.toContain('secret-echo-2854');
+      });
+
+      const absent = (): Error => {
+        const err = new Error('Stack with id S does not exist');
+        err.name = 'ValidationError';
+        return err;
+      };
+
+      it('NO CloudFormation stack of that name: silent, behaviour unchanged', async () => {
+        setup();
+        cfnSend.mockRejectedValue(absent());
+        await runImport(['import', '--app', 'x', '--yes']);
+        expect(cfnSend.mock.calls.map((c) => c[0].input.StackName)).toEqual(['S']);
+        expect(savedResource().observedProperties).toEqual({ BucketName: LIVE });
+        expect(warnSpy.mock.calls.flat().join(' ')).not.toContain('DescribeStacks');
+      });
+
+      it('a ValidationError that is NOT "does not exist" still fails closed', async () => {
+        setup();
+        const err = new Error('1 validation error detected');
+        err.name = 'ValidationError';
+        cfnSend.mockRejectedValue(err);
+        await runImport(['import', '--app', 'x', '--yes']);
+        expect(savedResource().observedProperties).toBeUndefined();
+      });
+
+      it('SELECTIVE mode asks about the same-named stack too, and refuses', async () => {
+        setup();
+        cfnSend.mockResolvedValue({
+          Stacks: [{ Parameters: [{ ParameterKey: 'DbPassword', ParameterValue: '****' }] }],
+        });
+        await runImport(['import', '--app', 'x', '--yes', '--resource', 'MyBucket=b']);
+        expect(mockTryGetCfnResourceMap).not.toHaveBeenCalled();
+        expect(cfnSend.mock.calls.map((c) => c[0].input.StackName)).toEqual(['S']);
+        expect(savedResource().observedProperties).toBeUndefined();
+      });
+
+      it('AUTO mode whose resource-map lookup degraded to null still compares parameters', async () => {
+        setup();
+        mockTryGetCfnResourceMap.mockResolvedValue(null);
+        cfnSend.mockResolvedValue({
+          Stacks: [{ Parameters: [{ ParameterKey: 'DbPassword', ParameterValue: '****' }] }],
+        });
+        await runImport(['import', '--app', 'x', '--yes']);
+        expect(savedResource().observedProperties).toBeUndefined();
+      });
+
+      it('a MIGRATE source that does not exist is a failure, not "no source"', async () => {
+        setup();
+        cfnSend.mockRejectedValue(absent());
+        await runImport(['import', '--app', 'x', '--yes', '--migrate-from-cloudformation', 'Src']);
+        expect(savedResource().observedProperties).toBeUndefined();
+        expect(warnSpy.mock.calls.flat().join(' ')).toContain('cloudformation:DescribeStacks');
+      });
+
+      it('NESTED child whose DescribeStacks FAILS — even with "does not exist" — refuses and warns by cdkd name', async () => {
+        // The nested site must NOT take the absent-stack leniency: the tree
+        // says this child exists, so "does not exist" is a failure. The default
+        // `cfnSend` rejects exactly that way. Also the only case that renders
+        // the unavailable warning at this site, which is what makes the
+        // name-not-ARN assertion bite.
+        const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-2854c-'));
+        try {
+          const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
+          writeFileSync(
+            childTemplatePath,
+            JSON.stringify({
+              Parameters: { DbPassword: { Type: 'String', Default: 'CHANGEME' } },
+              Resources: {
+                B: { Type: 'AWS::S3::Bucket', Properties: { BucketName: { Ref: 'DbPassword' } } },
+              },
+            })
+          );
+          const tmpl = template({
+            Child: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'x' } },
+          });
+          mockSynthesize.mockResolvedValue({
+            stacks: [{ ...stackInfo('P', tmpl), nestedTemplates: { Child: childTemplatePath } }],
+          });
+          mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
+          mockGetProvider.mockImplementation((t: string) => ({
+            import: vi.fn(async () => ({ physicalId: 'b', attributes: {} })),
+            readCurrentState: vi.fn(async () =>
+              t === 'AWS::S3::Bucket' ? { BucketName: LIVE } : undefined
+            ),
+          }));
+          const childArn = 'arn:aws:cloudformation:us-east-1:123456789012:stack/Child/u2';
+          mockGetCfnResourceTree.mockResolvedValue({
+            stackName: 'P',
+            physicalId: 'P',
+            resources: new Map([['Child', childArn]]),
+            nested: new Map([
+              [
+                'Child',
+                {
+                  stackName: childArn,
+                  physicalId: childArn,
+                  resources: new Map([['B', 'b']]),
+                  nested: new Map(),
+                },
+              ],
+            ]),
+          });
+
+          await runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+
+          const childSave = mockSaveState.mock.calls.find((c) => c[0] === 'P~Child')!;
+          const b = (childSave[2] as { resources: Record<string, { observedProperties?: unknown }> })
+            .resources['B']!;
+          expect(b.observedProperties).toBeUndefined();
+          const warned = warnSpy.mock.calls.flat().join(' ');
+          expect(warned).toContain('cloudformation:DescribeStacks');
+          expect(warned).toContain("'P~Child'");
+          expect(warned).not.toContain(childArn);
+        } finally {
+          rmSync(tmpdirPath, { recursive: true, force: true });
+        }
+      });
+
+      it('the MIGRATE source name is rendered display-safe in the unavailable warning', async () => {
+        setup();
+        const denied = new Error('x');
+        denied.name = 'AccessDenied';
+        cfnSend.mockRejectedValue(denied);
+        await runImport([
+          'import',
+          '--app',
+          'x',
+          '--yes',
+          '--migrate-from-cloudformation',
+          'Src\u001b[2KEvil',
+        ]);
+        const warned = warnSpy.mock.calls.flat().join(' ');
+        expect(warned).toContain('cloudformation:DescribeStacks');
+        expect(warned).not.toContain('\u001b');
+      });
+
+      it('NESTED migrate with a parameterless child asks nothing', async () => {
+        const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-2854b-'));
+        try {
+          const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
+          writeFileSync(
+            childTemplatePath,
+            JSON.stringify({ Resources: { B: { Type: 'AWS::S3::Bucket', Properties: {} } } })
+          );
+          const tmpl = template({
+            Child: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'x' } },
+          });
+          mockSynthesize.mockResolvedValue({
+            stacks: [{ ...stackInfo('P', tmpl), nestedTemplates: { Child: childTemplatePath } }],
+          });
+          mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
+          mockGetProvider.mockReturnValue({
+            import: vi.fn(async () => ({ physicalId: 'b', attributes: {} })),
+          });
+          mockGetCfnResourceTree.mockResolvedValue({
+            stackName: 'P',
+            physicalId: 'P',
+            resources: new Map([['Child', 'arn:c']]),
+            nested: new Map([
+              [
+                'Child',
+                {
+                  stackName: 'arn:c',
+                  physicalId: 'arn:c',
+                  resources: new Map([['B', 'b']]),
+                  nested: new Map(),
+                },
+              ],
+            ]),
+          });
+          await runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+          expect(cfnSend).not.toHaveBeenCalled();
+        } finally {
+          rmSync(tmpdirPath, { recursive: true, force: true });
+        }
+      });
+
+      it('a template declaring NO parameters never calls DescribeStacks, even under migrate', async () => {
+        setupHappyPath();
+        await runImport(['import', '--app', 'x', '--yes', '--migrate-from-cloudformation', 'Src']);
+        expect(cfnSend).not.toHaveBeenCalled();
+      });
+
+      it('NESTED child: asks about the CHILD stack ARN, whose parameters are what the parent supplied', async () => {
+        const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-2854-'));
+        try {
+          const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
+          writeFileSync(
+            childTemplatePath,
+            JSON.stringify({
+              Parameters: { DbPassword: { Type: 'String', Default: 'CHANGEME', NoEcho: true } },
+              Resources: {
+                B: { Type: 'AWS::S3::Bucket', Properties: { BucketName: { Ref: 'DbPassword' } } },
+              },
+            })
+          );
+          const tmpl = template({
+            Child: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'x' } },
+          });
+          mockSynthesize.mockResolvedValue({
+            stacks: [{ ...stackInfo('P', tmpl), nestedTemplates: { Child: childTemplatePath } }],
+          });
+          mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
+          // The readback belongs to the BUCKET alone: the parent's nested-stack
+          // row routes through the same mock, and a bucket-shaped answer there
+          // would put LIVE in the parent record by the fixture's own hand.
+          mockGetProvider.mockImplementation((t: string) => ({
+            import: vi.fn(async () => ({ physicalId: 'b', attributes: {} })),
+            readCurrentState: vi.fn(async () =>
+              t === 'AWS::S3::Bucket' ? { BucketName: LIVE } : undefined
+            ),
+          }));
+          const childArn = 'arn:aws:cloudformation:us-east-1:123456789012:stack/Child/u';
+          mockGetCfnResourceTree.mockResolvedValue({
+            stackName: 'P',
+            physicalId: 'P',
+            resources: new Map([['Child', childArn]]),
+            nested: new Map([
+              [
+                'Child',
+                {
+                  stackName: childArn,
+                  physicalId: childArn,
+                  resources: new Map([['B', 'b']]),
+                  nested: new Map(),
+                },
+              ],
+            ]),
+          });
+          cfnSend.mockResolvedValue({
+            Stacks: [{ Parameters: [{ ParameterKey: 'DbPassword', ParameterValue: '****' }] }],
+          });
+
+          await runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+
+          // The parameterless ROOT asks nothing; the child asks by ARN.
+          expect(cfnSend.mock.calls.map((c) => c[0].input.StackName)).toEqual([childArn]);
+          const childSave = mockSaveState.mock.calls.find((c) => c[0] === 'P~Child')!;
+          const b = (childSave[2] as { resources: Record<string, { observedProperties?: unknown }> })
+            .resources['B']!;
+          expect(b.observedProperties).toBeUndefined();
+          expect(JSON.stringify(mockSaveState.mock.calls)).not.toContain(LIVE);
+          const warned = warnSpy.mock.calls.flat().join(' ');
+          expect(warned).toContain("'P~Child'");
+          expect(warned).not.toContain(childArn);
+        } finally {
+          rmSync(tmpdirPath, { recursive: true, force: true });
+        }
+      });
+    });
 
     // Issue #1128: auto mode's per-resource fallback is an `aws:cdk:path` tag
     // walk, and that tag cannot exist on AWS (AWS rejects `aws:`-prefixed tag

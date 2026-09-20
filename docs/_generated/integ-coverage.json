@@ -5732,6 +5732,7 @@
         "getatt-fallback-guard",
         "getstackoutput-crossregion",
         "import-attributes",
+        "import-deployed-parameter-secret",
         "import-nested-stack",
         "import-secret-observed",
         "import-value-strong-ref",
@@ -5849,6 +5850,9 @@
         ],
         "import-attributes": [
           "literal"
+        ],
+        "import-deployed-parameter-secret": [
+          "l1"
         ],
         "import-nested-stack": [
           "l2",

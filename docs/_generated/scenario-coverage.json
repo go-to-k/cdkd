@@ -1147,6 +1147,13 @@
       ]
     },
     {
+      "name": "import-deployed-parameter-secret",
+      "annotated": true,
+      "scenarios": [
+        "nested-stack-migrate-from-cfn"
+      ]
+    },
+    {
       "name": "import-nested-stack",
       "annotated": true,
       "scenarios": [
@@ -2675,6 +2682,7 @@
       "scenario": "nested-stack-migrate-from-cfn",
       "description": "CloudFormation → cdkd RECURSIVE nested-stack migration via `--migrate-from-cloudformation` (recursive DescribeStackResources walk, per-child v6 state writes, recursive DeletionPolicy: Retain injection, parent-side DeleteStack cascade). See #464 PR A.",
       "fixtures": [
+        "import-deployed-parameter-secret",
         "import-nested-stack"
       ]
     },
