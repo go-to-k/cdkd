@@ -45,6 +45,7 @@ import {
   STACK_REF_MAX_CODE_POINTS,
 } from '../../utils/display-safe.js';
 import { refuseMalformedState } from '../../state/malformed-resources-bag.js';
+import { producerRecordKey } from '../../state/record-keys.js';
 
 interface RollbackOptions {
   force?: boolean;
@@ -94,7 +95,9 @@ async function findJournalCandidates(
     if (segments.length !== 2) continue;
     const [stackName, region] = segments;
     if (!stackName || !region) continue;
-    const dedupe = `${stackName}\0${region}`;
+    // {@link producerRecordKey}, not a separator (go-to-k/cdkd#3323). Both
+    // halves are S3 key segments, exactly as in `listStacks`' dedupe.
+    const dedupe = producerRecordKey(stackName, region);
     if (seen.has(dedupe)) continue;
     seen.add(dedupe);
     refs.push({ stackName, region });

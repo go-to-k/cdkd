@@ -52,6 +52,7 @@ import {
   safeStackName,
   type RenderedStateContainer,
 } from '../../state/malformed-resources-bag.js';
+import { producerRecordKey } from '../../state/record-keys.js';
 import { ExportIndexStore } from '../../state/export-index-store.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
@@ -1891,8 +1892,11 @@ async function loadLocksForTree(
   lockManager: LockManager,
   rootLock: LockInfo | null
 ): Promise<CdkdStateStackTreeWithLock> {
+  // {@link producerRecordKey}, not a separator (go-to-k/cdkd#3323). Same
+  // `(stackName, region)` record identity as `listStacks`' dedupe, reached the
+  // same way — both halves are S3 key segments.
   const nodeKey = (node: { stackName: string; region: string }): string =>
-    `${node.stackName}\0${node.region}`;
+    producerRecordKey(node.stackName, node.region);
   const rootKey = nodeKey(tree);
   const flat: CdkdStateStackTree[] = [];
   const collect = (node: CdkdStateStackTree): void => {

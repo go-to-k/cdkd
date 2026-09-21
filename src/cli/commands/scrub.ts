@@ -2264,11 +2264,20 @@ export function memoizeCrossStackStateReads(backend: S3StateBackend): S3StateBac
     stackName: string,
     stateRegion: string
   ): ReturnType<S3StateBackend['getState']> => {
-    // {@link producerRecordKey} for why it ENCODES rather than separates. This
-    // site is the one where a collision changes an ANSWER rather than dropping
-    // a warning line: a shared promise serves record X's state to a query about
-    // record Y, and scrub's cross-stack pre-pass reads exactly that to decide
-    // whether a producer still holds plaintext (go-to-k/cdkd#3323).
+    // {@link producerRecordKey} for why it ENCODES rather than separates. A
+    // collision here changes an ANSWER rather than dropping a warning line: a
+    // shared promise serves record X's state to a query about record Y, and
+    // scrub's cross-stack pre-pass reads exactly that to decide whether a
+    // producer still holds plaintext (go-to-k/cdkd#3323).
+    //
+    // With a NUL separator this particular site was fail-CLOSED, which is
+    // recorded so nobody re-derives it as a reason to revert: a colliding pair
+    // must carry a NUL in some half, that half goes into an S3 key, and S3
+    // will not serve one — so both members of the pair failed their read and
+    // the shared promise was a shared failure. That is an argument about S3's
+    // behaviour, not about this code, and it collapses as soon as a half
+    // reaches `getState` by a path that does not put it in the key. The
+    // sibling coordinate keys below had no such bound at all.
     const key = producerRecordKey(stackName, stateRegion);
     let pending = states.get(key);
     if (!pending) {

@@ -7,6 +7,8 @@
  * without mocking the state backend.
  */
 
+import { producerRecordKey } from '../../state/record-keys.js';
+
 /**
  * One entry in the flat input list. Mirrors {@link import('../../state/s3-state-backend.js').StackStateRef}
  * plus the three v6 parent-link fields read from the state record itself
@@ -93,7 +95,11 @@ export const MAX_STACK_TREE_DEPTH = 100;
  * runs.
  */
 export function buildStackTree(entries: readonly StackTreeEntry[]): StackTreeNode[] {
-  const refKey = (stackName: string, region?: string): string => `${stackName}\0${region ?? ''}`;
+  // {@link producerRecordKey}, not a separator (go-to-k/cdkd#3323). Same
+  // `(stackName, region)` record identity as `listStacks`' dedupe; a collision
+  // here re-parents one node onto another's children.
+  const refKey = (stackName: string, region?: string): string =>
+    producerRecordKey(stackName, region ?? '');
 
   const byKey = new Map<string, StackTreeNode>();
   for (const entry of entries) {

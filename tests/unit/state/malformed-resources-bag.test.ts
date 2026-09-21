@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vite-plus/test';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -4843,6 +4843,9 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
     ['src/cli/commands/scrub.ts', 5],
     ['src/cli/commands/local-state-loader.ts', 1],
     ['src/state/s3-state-backend.ts', 2],
+    ['src/cli/commands/state.ts', 1],
+    ['src/cli/commands/state-list-tree.ts', 1],
+    ['src/cli/commands/rollback.ts', 1],
   ];
 
   it('ONE spelling: every record-key site calls this helper, for EVERY key it builds', () => {
@@ -4898,6 +4901,97 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
           `${rel} joins two interpolations with a NUL instead of the shared helper`
         ).toBe(false);
       }
+    }
+  });
+
+  /**
+   * Every NUL-joined interpolation pair left anywhere in `src/`, each with the
+   * reason it is not a record key.
+   *
+   * **This list exists because the list above was built by grepping ONE
+   * spelling.** The first sweep for go-to-k/cdkd#3323 searched only the
+   * backslash-u escaped form and concluded the population was five sites. The
+   * three backslash-zero spelled record keys in `state.ts`,
+   * `state-list-tree.ts` and `rollback.ts` were the same class, in files the
+   * issue never named, and a review round found them. A per-file list cannot
+   * catch that — only a sweep of the whole tree can, so the fence below walks
+   * `src/` and requires every hit to be accounted for here. Adding a NUL-joined
+   * key anywhere now fails until someone writes down what it is.
+   *
+   * Nothing listed here is a `(stack, region)` or `(stack, export)` identity.
+   * The rows naming an issue are tracked there and are NOT exempt on merit.
+   */
+  const NUL_JOINS_THAT_ARE_NOT_RECORD_KEYS: ReadonlyArray<readonly [string, string]> = [
+    ['src/provisioning/providers/dynamodb-delete-budget.ts', '(region, physicalId) budget slot'],
+    [
+      'src/provisioning/providers/idempotency-token.ts',
+      'HASH input; the separator is domain separation, not identity',
+    ],
+    [
+      'src/state/s3-replication-purge-gap.ts',
+      '(bucket, accountId); both charsets are constrained by AWS',
+    ],
+    [
+      'src/deployment/deploy-engine.ts',
+      'cross-stack 3-part keys + (logicalId, physicalId) — go-to-k/cdkd#3496',
+    ],
+    [
+      'src/deployment/intrinsic-function-resolver.ts',
+      '(region, stackName) cache and a (param, type) warn set — go-to-k/cdkd#3496',
+    ],
+    ['src/deployment/secret-redaction.ts', 'maskedOutputKey, 3-part — go-to-k/cdkd#3496'],
+    ['src/analyzer/lambda-vpc-deps.ts', '(lambdaId, targetId); CFn logical ids are alphanumeric'],
+    ['src/analyzer/orphan-rewriter.ts', '(logicalId, attribute); CFn logical ids are alphanumeric'],
+  ];
+
+  it('every NUL-joined interpolation anywhere in src/ is a record key or accounted for', () => {
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+    // The two needles are BUILT from char codes rather than written as escapes,
+    // so this file carries no NUL escape of its own to be mis-edited — and so
+    // that what is searched for is unmistakably the SOURCE TEXT a TypeScript
+    // file spells a NUL with, not a NUL byte.
+    const BACKSLASH = String.fromCharCode(92);
+    const needles = [
+      '}' + BACKSLASH + 'u0000' + '${',
+      '}' + BACKSLASH + '0' + '${',
+    ];
+    // `git grep -l` over the whole tree, not a hand-walked list: the point is
+    // that no file can be outside the sweep. BOTH spellings, since searching
+    // one is the mistake this fence exists to make unrepeatable.
+    const found = execFileSync(
+      'git',
+      ['grep', '-l', '-F', '-e', needles[0]!, '-e', needles[1]!, '--', 'src/'],
+      { cwd: root, encoding: 'utf-8' }
+    )
+      .split('\n')
+      .filter(Boolean);
+
+    // The sweep must actually SEE the tree, or an argv typo silently exempts
+    // it. `git grep -l` matching NOTHING exits 1 and `execFileSync` throws,
+    // but a needle matching one stray file would not.
+    expect(
+      found.length,
+      'the git grep sweep found almost nothing — check its needles'
+    ).toBeGreaterThan(5);
+
+    const accounted = new Set([
+      ...RECORD_KEY_SITES.map(([rel]) => rel),
+      ...NUL_JOINS_THAT_ARE_NOT_RECORD_KEYS.map(([rel]) => rel),
+    ]);
+    expect(
+      found.filter((f) => !accounted.has(f)),
+      'a NUL-joined interpolation pair appeared in a file this fence does not know about. ' +
+        'If it identifies a record or a producer coordinate, route it through ' +
+        'producerRecordKey / producerCoordinateKey; otherwise add it to ' +
+        'NUL_JOINS_THAT_ARE_NOT_RECORD_KEYS with the reason.'
+    ).toEqual([]);
+
+    // Every accounted-as-not-a-record file must still BE a hit, or an entry
+    // outlives the code it excuses and the list becomes folklore.
+    for (const [rel] of NUL_JOINS_THAT_ARE_NOT_RECORD_KEYS) {
+      expect(found, `${rel} is listed as a non-record NUL join but no longer has one`).toContain(
+        rel
+      );
     }
   });
 

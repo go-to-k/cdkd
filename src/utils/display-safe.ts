@@ -382,9 +382,13 @@ const PLAIN_IDENT = /^[A-Za-z0-9:_@./+=,~-]+$/;
  *    ERASED before the `PLAIN_IDENT` test ever runs. A planted
  *    `cdkd/ProdStack /us-east-1/state.json` -- one trailing space -- therefore
  *    tested as plain, rendered UNQUOTED, and printed byte-identical to the
- *    genuine `ProdStack` in `us-east-1`; `listStacks` keys its dedupe on
- *    `stackName\0region`, so both refs survive to the output and a
- *    `sort -u`-ing consumer collapses them. Leading space, a tab, a NUL, an ESC
+ *    genuine `ProdStack` in `us-east-1`; `listStacks` keys its dedupe on the
+ *    `(stackName, region)` PAIR — injectively since go-to-k/cdkd#3323, by a
+ *    separator before it — so both refs survive to the output and a
+ *    `sort -u`-ing consumer collapses them. What matters to THIS note is only
+ *    that the two refs are distinct to the dedupe and identical once printed,
+ *    which is as true of the encoded key as it was of the separated one.
+ *    Leading space, a tab, a NUL, an ESC
  *    and a padded REGION all did the same with a one-character input. Comparing
  *    against the raw text closes the class at its root rather than per padding
  *    character. `src/state/lock-contention-message.ts` reached the same rule

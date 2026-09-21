@@ -28,6 +28,18 @@ re-checked.
 | `scrub.ts` verdict cache | `(stack, export)` | One coordinate's verdict served for another |
 | `s3-state-backend.ts` `listStacks`, new-key arm | `(stack, region)` | A record missing from the listing |
 | `s3-state-backend.ts` `listStacks`, legacy arm | `(stack, region)` | Same |
+| `state.ts` `loadLocksForTree` node index | `(stack, region)` | One node's lock shown for another |
+| `state-list-tree.ts` `buildStackTree` | `(stack, region)` | A node re-parented onto another's children |
+| `rollback.ts` `findJournalCandidates` | `(stack, region)` | A journal-bearing stack missing from the candidates |
+
+**The last three were found by a review round, not by the first sweep.** That
+sweep grepped one of the two source spellings of a NUL and concluded the
+population was five. The three above spell it the other way, in files the issue
+never named. The fence now sweeps the whole tree for BOTH spellings and
+requires every hit to be either a helper call or an explicitly listed
+exemption, so a one-spelling sweep cannot be the last word again. The remainder
+it surfaced, which is not this class, is
+[#3496](https://github.com/go-to-k/cdkd/issues/3496).
 
 The first three all feed `cdkd scrub`'s cross-stack pre-pass, which decides
 whether a producer still holds a plaintext secret. Each can end a run at
@@ -54,21 +66,57 @@ S3 will accept, which this code does not state, does not test, and would not
 notice losing.
 
 **`scrub.ts` is exploitable, with the exact pair the issue was filed with.** Its
-stack name is not an S3 key segment. The route:
+stack name is not an S3 key segment.
+
+**The route is NOT the exports index, and an earlier revision of this document
+said it was.** That revision traced
+`ExportIndexStore.loadPersisted → recordImport → scrub`, which cannot happen:
+**`cdkd scrub` deliberately supplies no `exportIndex`** — stated at
+`src/cli/commands/scrub.ts` where the resolver context is built, and again at
+`src/deployment/intrinsic-function-resolver.ts:8770`. Scrub takes the state-scan
+arm instead, whose `refStack` is a `listStacks` key segment and therefore
+NUL-free. The error is the same one this document is about: a route asserted
+from a module's exports rather than traced to the caller that actually runs it.
+
+The real route is the consumer's own TEMPLATE, and it needs strictly less than
+the index one did:
 
 ```
-ExportIndexStore.loadPersisted   src/state/export-index-store.ts
-  JSON.parse(body) -> entries.set(name, entry)   <- entry is a bare cast
-IntrinsicFunctionResolver        src/deployment/intrinsic-function-resolver.ts
-  recordImport(context, exportName, entry.producerStack, entry.producerRegion)
-scrub.ts  imported.sourceStack -> backend.getState(producer.stack, ...)
+Fn::GetStackOutput   args['StackName'] -> resolveValue(...)
+  src/deployment/intrinsic-function-resolver.ts  — gated only on
+  `typeof stackName === 'string' && stackName !== ''`
+  -> recordOutputRead(context, stackName, region, outputName)
+scrub.ts  read.sourceStack -> backend.getState(producer.stack, producer.region)
 ```
 
-`_index/<region>/exports.json` is a JSON document whose string values are
-unvalidated, and a JSON string literal may contain an escaped NUL. The
-coordinate sites are reachable the same way, and additionally through
-`exportName`, which `StateImportEntry`'s JSDoc records as REDACTED on the way
-into state — so it may hold any string at all.
+A CDK-synthesized template is JSON, and a JSON string literal may contain an
+escaped NUL. The coordinate sites are reachable the same way and additionally
+through `exportName`, which `StateImportEntry`'s JSDoc records as REDACTED on
+the way into state, so it may hold any string at all.
+
+### What that route does and does not buy, per site
+
+Stated because the three `scrub.ts` sites are NOT equally exploitable, and a
+single "reachable" verdict over all three would be the same over-claim the
+paragraph above corrects.
+
+The **two coordinate sites** — the chain walk's visited set and the verdict
+cache — are reachable outright. Their halves are looked up in in-memory template
+and export-owner maps; no S3 key is built from them, so nothing constrains the
+characters. A collision skips a hop or serves the wrong verdict, and the walk's
+`no` verdict is what lets scrub proceed over an unscrubbed producer.
+
+The **read memoizer** is narrower than it first appears, and the arithmetic is
+worth writing down. A colliding pair must have the same number of NULs in the
+composed key, and a pair of NUL-free halves produces exactly one. So any pair
+colliding with a REAL `(stack, region)` must itself carry a NUL in a half — and
+that half goes into an S3 key, which S3 will not serve. Both members of such a
+pair therefore FAIL their read, the shared promise is a shared failure, and the
+pre-pass refuses. That is fail-closed.
+
+It is still fixed, and still worth fixing: the argument above is an
+S3-behaviour argument, not a property of this code, and it collapses the moment
+a half reaches `getState` by a path that does not put it in the key.
 
 ## Why two exported names over one implementation
 

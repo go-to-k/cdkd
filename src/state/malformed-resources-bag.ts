@@ -2271,86 +2271,11 @@ export function malformedResourcePropertiesWarning(
   );
 }
 
-/**
- * The key anything identifying a state RECORD by `(stackName, region)` uses —
- * a warned-once `Set`, a dedupe `Set`, a memoization `Map`.
- *
- * ONE spelling, because two spellings of one rule is how nine sites stay right
- * and the tenth drifts — the same reason every predicate in this module is here
- * rather than at its call sites. Derive the consumers with
- * `grep -rn "producerRecordKey(" src/` rather than from a list here; it started
- * on the two warned-once sets and took the dedupe and memoization sites on
- * go-to-k/cdkd#3323.
- *
- * ENCODED, not separated, and issue
- * [#3308](https://github.com/go-to-k/cdkd/issues/3308) is the measurement
- * behind that. Both sites previously joined the two halves with a NUL, which
- * NARROWS the collision without closing it: a stack name is read out of an S3
- * key and is exactly as attacker-controlled as the `outputs` bag, so it can
- * carry a NUL too — `tests/unit/cli/commands/scrub-malformed-and-nameless.test.ts`
- * already plants one. Measured: with a NUL separator, stack `Evil<NUL>us-east-1`
- * in `ap-northeast-1` and stack `Evil` in region `us-east-1<NUL>ap-northeast-1`
- * produce the SAME key, so whichever is warned about second is silently not
- * warned about at all.
- *
- * `JSON.stringify` of a two-element array is injective over string pairs: the
- * quoting escapes anything that could imitate the separator, so no planted name
- * can produce another pair's key.
- *
- * **The consequence of a collision is NOT the same at every site, and this note
- * used to claim it was** ("one dropped warning LINE, never a wrong resolution").
- * That bound held for the two warned-once sets it was written for, where both
- * records are read as empty and both reads still miss. It is FALSE at
- * `scrub.ts`'s `memoizeCrossStackStateReads`, where a shared promise serves
- * record X's state to a query about record Y — a wrong ANSWER, which is what
- * scrub's cross-stack pre-pass reads to decide whether a producer still holds
- * plaintext (go-to-k/cdkd#3323). Do not restore the narrower sentence: it reads
- * as a licence to leave a separator in place at a site nobody has re-checked.
- *
- * Each half's PROVENANCE differs per site too, and it is what decides whether a
- * separator was ever injective — so it is not a property of the key shape and
- * cannot be settled once here. `s3-state-backend.ts`'s `listStacks` takes both
- * halves from S3 key segments, and the go-to-k/cdkd#3323 probe measured that S3
- * refuses to store a NUL-bearing key, so its left half could not carry the
- * separator. `scrub.ts` takes its stack name from a recorded import, which
- * traces back to the exports index — a JSON document whose string values are
- * unvalidated — so its left half can. Encoding removes the need to ask.
- */
-export function producerRecordKey(stackName: string, region: string): string {
-  return injectivePairKey(stackName, region);
-}
-
-/**
- * The same rule for the OTHER producer-side pair `cdkd scrub` keys on: a
- * `(stack, export-or-output name)` COORDINATE, used by the re-export chain
- * walk's visited set and by its per-coordinate verdict cache.
- *
- * A separate NAME because the subject is a different thing — a coordinate is
- * not a record, and a call site reading `producerRecordKey(stack, exportName)`
- * would say something false. ONE implementation, though: {@link
- * injectivePairKey} is the only place the encoding is spelled, which is the
- * property the note above is actually about. Two names over one implementation
- * cannot drift; two implementations can.
- *
- * Both halves are attacker-influenced here as well. The stack comes from the
- * exports index or a state record, and an `exportName` is REDACTED on the way
- * into state (`StateImportEntry`'s JSDoc), so it may hold any string at all.
- * The consequences match the two sites: a collision in the visited set makes
- * the chain walk SKIP a hop and terminate early, reporting no secret expression
- * where a chained one exists; a collision in the cache serves one coordinate's
- * verdict for another (go-to-k/cdkd#3323).
- */
-export function producerCoordinateKey(stackName: string, exportOrOutputName: string): string {
-  return injectivePairKey(stackName, exportOrOutputName);
-}
-
-/**
- * The ONE spelling of the encoding, private so no caller can reach past its
- * named wrapper and re-derive it.
- */
-function injectivePairKey(first: string, second: string): string {
-  return JSON.stringify([first, second]);
-}
+// The record / coordinate key helpers moved to the import-free leaf
+// `src/state/record-keys.ts` (go-to-k/cdkd#3323): their consumers span the
+// cli, state and deployment layers, and `state-list-tree.ts` is deliberately
+// kept with no imports at all. RE-EXPORTED here so no existing importer moved.
+export { producerRecordKey, producerCoordinateKey } from './record-keys.js';
 
 /**
  * How many unreadable logical ids a message names before summarizing. Read by

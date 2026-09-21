@@ -164,11 +164,14 @@ export async function loadStateForStack(
     /**
      * Issue #1836: EXACT match first, case-insensitive second.
      *
-     * `S3StateBackend.listStacks` dedupes on the EXACT `{stack}\0{region}` pair,
-     * so `cdkd/MyStack/US-EAST-1/state.json` and
-     * `cdkd/MyStack/us-east-1/state.json` are two DISTINCT refs — and
-     * ListObjectsV2 returns them in ASCII order, i.e. the upper-cased one FIRST.
-     * A fold-only `find` therefore hands `--stack-region us-east-1` the OTHER
+     * `S3StateBackend.listStacks` dedupes on the EXACT `(stack, region)` PAIR
+     * — through `producerRecordKey` since go-to-k/cdkd#3323, by a separator
+     * before that; what this note needs is only that the match is exact — so
+     * `cdkd/MyStack/US-EAST-1/state.json` and
+     * `cdkd/MyStack/us-east-1/state.json` are two DISTINCT refs, and
+     * ListObjectsV2 returns them in ASCII order, i.e. the upper-cased one
+     * FIRST. A fold-only `find` therefore hands `--stack-region us-east-1` the
+     * OTHER
      * record, silently reading state the user did not name; the pre-fold `===`
      * got that case right. So the fold is the RECOVERY for a case mismatch, never
      * an override of a spelling that exists verbatim.
