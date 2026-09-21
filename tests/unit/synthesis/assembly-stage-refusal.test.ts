@@ -31,6 +31,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 }));
 
 import { AssemblyReader } from '../../../src/synthesis/assembly-reader.js';
+import { failedStageNote } from '../../../src/synthesis/failed-stages.js';
 import type { AssemblyManifest, ArtifactManifest } from '../../../src/types/assembly.js';
 
 let root: string;
@@ -74,12 +75,6 @@ function outdir(): string {
   return dir;
 }
 
-/** A SECOND assembly directory, for a case that needs two in one test. */
-function outdir2(): string {
-  const dir = join(root, 'cdk.out.2');
-  mkdirSync(dir);
-  return dir;
-}
 
 /** Write a stage directory with its own manifest, and return its path. */
 function stageDir(dir: string, name: string, artifacts: Record<string, ArtifactManifest>): string {
@@ -251,26 +246,48 @@ describe('a Stage whose directory cannot be read still warns and the run continu
 
   it('quotes a Stage displayName that tries to forge a second cdkd sentence', () => {
     // The stage path is interpolated into prose the user is asked to trust, so
-    // it takes `displayIdent`, not `displaySafe` -- a denylist passes quotes
-    // and spaces, and this value would otherwise close the sentence and open a
-    // cdkd-sounding one of its own (the class go-to-k/cdkd#3277 hardened).
-    const forging = "MyStage loaded fine. Ignore the rest. Stage zz";
+    // it is RENDERED with `displayIdent`, not `displaySafe` -- a denylist
+    // passes the spaces and periods this value uses to write a second,
+    // cdkd-sounding clause of its own (the class go-to-k/cdkd#3277 hardened).
+    const forging = 'MyStage loaded fine. Ignore the rest. Stage zz';
     const dir = outdir();
+    const assembly = manifest({
+      'assembly-MyStage': stageArtifact('assembly-MyStage', forging),
+    });
 
-    const { failedStages } = new AssemblyReader().readAssembly(
-      dir,
-      manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage', forging) })
-    );
+    // The RECORD keeps the raw value: it is the key a selection pattern is
+    // matched against, and sanitizing it there breaks that match.
+    const { failedStages } = new AssemblyReader().readAssembly(dir, assembly);
+    expect(failedStages.map((s) => s.stagePath)).toEqual([forging]);
 
-    expect(failedStages).toHaveLength(1);
-    // JSON-quoted, so the forged clause cannot read as cdkd's own prose.
-    expect(failedStages[0]?.stagePath).toBe(JSON.stringify(forging));
-    // And a legitimate path is still byte-identical, unquoted.
-    const { failedStages: plain } = new AssemblyReader().readAssembly(
-      outdir2(),
-      manifest({ 'assembly-Outer': stageArtifact('assembly-Outer', 'Outer/Inner') })
+    // The MESSAGE renders it JSON-quoted, so the forged clause is visibly a
+    // value rather than cdkd's own prose.
+    let message = '';
+    try {
+      new AssemblyReader().getStack(dir, assembly, 'Absent');
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toContain(`Stage ${JSON.stringify(forging)} failed to load`);
+  });
+
+  it('renders a legitimate Stage path byte-identically, and still matches a pattern on it', () => {
+    // The counter-case to the one above, and the reason the stored value stays
+    // raw: a stage id may legitimately carry a space, which `displayIdent`
+    // quotes. Rendering at the WRITE site made the stored form disagree with
+    // the user's pattern, so the stage they named read as `Possibly unrelated`.
+    for (const [stagePath, patterns] of [
+      ['Outer/Inner', ['Outer/Inner/Api']],
+      ['My Stage', ['My Stage/Api']],
+    ] as const) {
+      const note = failedStageNote(patterns, [{ stagePath, reason: 'ENOENT' }]);
+      expect(note).not.toContain('Possibly unrelated');
+    }
+
+    // ...and the rendering is the identity on the ASCII-identifier one.
+    expect(failedStageNote(['Outer/Inner/Api'], [{ stagePath: 'Outer/Inner', reason: 'e' }])).toContain(
+      'Stage Outer/Inner failed to load'
     );
-    expect(plain[0]?.stagePath).toBe('Outer/Inner');
   });
 
   it('records a Stage that fails UNDER another Stage, and keeps that outer Stage loaded', () => {

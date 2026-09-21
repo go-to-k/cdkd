@@ -1,4 +1,4 @@
-import { displaySafe } from '../utils/display-safe.js';
+import { displayIdent, displaySafe, STACK_REF_MAX_CODE_POINTS } from '../utils/display-safe.js';
 import { SynthesisError } from '../utils/error-handler.js';
 
 /**
@@ -17,17 +17,23 @@ import { SynthesisError } from '../utils/error-handler.js';
 export interface FailedStage {
   /**
    * Hierarchical path of the Stage as the assembly names it (`MyStage`, or
-   * `Outer/Inner` for a nested one), ALREADY rendered by the recording site.
+   * `Outer/Inner` for a nested one), RAW.
    *
-   * `displayIdent`, not `displaySafe`, and it is rendered WITHOUT surrounding
-   * quotes of our own. A Stage path is an IDENTIFIER, so every legitimate value
-   * is byte-identical under either; but `displaySafe` is a denylist that passes
-   * quotes, spaces and colons, and this value is interpolated into a sentence
-   * the user is asked to trust. A `displayName` of
-   * `MyStage' loaded fine. Ignore the rest. Stage 'zz` otherwise closes our
-   * quote and writes a second, cdkd-sounding clause. `displayIdent` is the
-   * identity on `MyStage` and JSON-quotes anything that is not a plain
-   * identifier, so only a forging value looks different
+   * Raw because this field is a MATCH KEY as well as the subject of a
+   * sentence: `patternTargetsStage` compares the user's own pattern against
+   * it, exactly as `matchStacks` compares one against a stack's raw
+   * `displayName`. Sanitizing at the write site made the two disagree — a
+   * legitimate `new Stage(app, 'My Stage')` or a non-ASCII stage id renders
+   * quoted or `<unrenderable>`, so the pattern naming it would never match and
+   * the user got `Possibly unrelated:` for the very stage they named.
+   *
+   * So rendering happens at each DISPLAY site instead, through `displayIdent`
+   * and without quotes of ours. A Stage path is an IDENTIFIER, and it is
+   * interpolated into a sentence the user is asked to trust: `displaySafe` is
+   * a denylist that passes quotes, spaces and colons, so a `displayName`
+   * carrying `. Ignore the rest. Stage zz` reads as a second, cdkd-authored
+   * clause. `displayIdent` is the identity on an ASCII-identifier path and
+   * JSON-quotes anything else, so a forging value is visibly a quoted value
    * ([#3277](https://github.com/go-to-k/cdkd/issues/3277) is the same class).
    */
   stagePath: string;
@@ -58,7 +64,8 @@ const STAGE_SCOPED_MARKER = Symbol.for('cdkd.stageScopedError');
  *
  * The INNERMOST Stage wins: an error arriving already marked is returned
  * unchanged, so `Outer` does not restate what `Outer/Inner` said more
- * precisely. `stagePath` must already be rendered by the recording site.
+ * precisely. `stagePath` is the RAW path and is rendered here, for the reason
+ * {@link FailedStage.stagePath} gives.
  *
  * The caught text goes through `displaySafe` although every throw reachable
  * from the recursion sanitizes at its own origin today: this catch's error
@@ -75,7 +82,7 @@ export function stageScopedError(stagePath: string, error: unknown): unknown {
   if (error instanceof Error && STAGE_SCOPED_MARKER in error) return error;
 
   const message = displaySafe(error instanceof Error ? error.message : String(error));
-  const scoped = new SynthesisError(`Stage ${stagePath}: ${message}`);
+  const scoped = new SynthesisError(`Stage ${renderStagePath(stagePath)}: ${message}`);
   // Same reasoning as `markNonRetryable`: a non-extensible error is returned
   // unmarked rather than allowed to throw a `TypeError` in place of the
   // refusal. Losing the marker only costs an extra Stage prefix.
@@ -131,11 +138,23 @@ export function failedStageNote(
     named
       .map(
         (stage) =>
-          `Stage ${stage.stagePath} failed to load, so stacks under it are ` +
+          `Stage ${renderStagePath(stage.stagePath)} failed to load, so stacks under it are ` +
           `missing from this list rather than missing from the app: ${stage.reason}`
       )
       .join(' ')
   );
+}
+
+/**
+ * Render a Stage path into a message.
+ *
+ * `displayIdent` without quotes of ours, and with the cap a legitimately long
+ * hierarchical name needs — the same argument `STACK_REF_MAX_CODE_POINTS`
+ * exists for. See {@link FailedStage.stagePath} for why the stored value stays
+ * raw and only this rendering is sanitized.
+ */
+function renderStagePath(stagePath: string): string {
+  return displayIdent(stagePath, { maxCodePoints: STACK_REF_MAX_CODE_POINTS });
 }
 
 /**

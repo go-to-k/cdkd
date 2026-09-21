@@ -10,7 +10,7 @@ import type {
 import { parseEnvironment } from '../types/assembly.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import { getLogger } from '../utils/logger.js';
-import { displaySafe, displayIdent } from '../utils/display-safe.js';
+import { displaySafe } from '../utils/display-safe.js';
 import { renderAssemblyPathEscape, resolveAssemblyPath } from '../utils/assembly-path.js';
 import { SynthesisError } from '../utils/error-handler.js';
 import { collectStackMessages, type StackMessage } from './stack-messages.js';
@@ -153,11 +153,12 @@ export interface AssemblyContents {
  * reason, guards the twin refusals in `src/cli/commands/diff-recursive.ts`
  * (go-to-k/cdkd#3243).
  *
- * ONE value takes `displayIdent` instead: a failed Stage's path
- * ([#3482](https://github.com/go-to-k/cdkd/issues/3482)). It is an IDENTIFIER
- * rather than free-form text or a path that must stay untruncated, and it is
- * interpolated into a sentence rather than quoted as a value, so the
- * denylist's tolerance of quotes and spaces is a spoof surface there. See
+ * ONE value leaves this class UNSANITIZED: a failed Stage's path
+ * ([#3482](https://github.com/go-to-k/cdkd/issues/3482)), which is a match key
+ * as well as the subject of a sentence. `failed-stages.ts` renders it at each
+ * display site with `displayIdent` — it is an IDENTIFIER interpolated into
+ * prose rather than free-form text quoted as a value, so the denylist's
+ * tolerance of quotes and spaces is a spoof surface there. See
  * `FailedStage.stagePath`.
  */
 export class AssemblyReader {
@@ -276,17 +277,14 @@ export class AssemblyReader {
           // CDK writes the Stage's construct path as the nested assembly's
           // `properties.displayName`; the artifact id is the fallback.
           //
-          // `displayIdent`, not `displaySafe`, and rendered WITHOUT quotes of
-          // ours: this value is interpolated into a sentence the user is asked
-          // to trust, and `displaySafe` passes quotes and spaces, so a
-          // `displayName` that closes our quote writes a second cdkd-sounding
-          // clause. A Stage path is a plain identifier, so `displayIdent` is
-          // the identity on every legitimate one. See `FailedStage.stagePath`.
-          const stagePath = displayIdent(
+          // RAW, deliberately: this value is a MATCH KEY as well as the
+          // subject of a message, and `failed-stages.ts` renders it at each
+          // display site instead. Sanitizing it here made the stored form
+          // disagree with the user's pattern. See `FailedStage.stagePath`.
+          const stagePath =
             typeof props.displayName === 'string' && props.displayName.length > 0
               ? props.displayName
-              : artifactId
-          );
+              : artifactId;
 
           // THE SCOPE OF THIS `try` IS THE CLASSIFIER (issue
           // go-to-k/cdkd#3482). Exactly one failure is tolerated — the read of
@@ -356,7 +354,12 @@ export class AssemblyReader {
     if (!stack) {
       throw new SynthesisError(
         `Stack '${displaySafe(stackName)}' not found in assembly. ` +
-          `Available: ${stacks.map((s) => displaySafe(s.stackName)).join(', ')}` +
+          // `Available: ` with nothing after it says less than the plain
+          // sentence, and an empty assembly is exactly what a failed Stage
+          // produces. Same choice as `renderNoStackMatch`.
+          (stacks.length > 0
+            ? `Available: ${stacks.map((s) => displaySafe(s.stackName)).join(', ')}`
+            : 'The assembly has no stacks.') +
           // "not found" is a lie while a Stage failed to load: its stacks were
           // dropped from `stacks` above (issue go-to-k/cdkd#3482).
           failedStageNote([stackName], failedStages)
