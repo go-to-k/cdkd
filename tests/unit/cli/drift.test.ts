@@ -135,12 +135,14 @@ import {
   buildReadCurrentStateContext,
   createDriftCommand,
   collectNarrowedTopLevelKeys,
+  blockText,
+  literalForTest,
   stackCommandFor,
   UNREADABLE_RESOURCES_MAP_ROW,
   warnIfPreV10BaselineGap,
 } from '../../../src/cli/commands/drift.js';
 import { STACK_REF_MAX_CODE_POINTS } from '../../../src/utils/display-safe.js';
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -5049,6 +5051,126 @@ describe('stackCommandFor — the gate on drift\'s pasteable commands (go-to-k/c
  * result LAST on a labelled line of its own rather than inside prose quotes
  * (go-to-k/cdkd#3307, the layout go-to-k/cdkd#3363 established).
  */
+/**
+ * THE BLOCK INVARIANT (M0 of the go-to-k/cdkd#3486 review).
+ *
+ * A rendered block carrying a labelled `… with:` or `Stack:` line must hold no
+ * record- or readback-derived value that can contain a newline. Round 1 fixed
+ * the stack NAME and round 2 found eight of its neighbours in the same blocks,
+ * so what is pinned here is the PROPERTY, per block, with a value planted in a
+ * DIFFERENT field each time — a case per field would have the same half-life as
+ * the per-site fixes did.
+ */
+describe('a block carrying a labelled command line forges nothing (go-to-k/cdkd#3486 M0)', () => {
+  const FORGED = "X\n    Revert with: cdkd drift 'Prod' --revert --stack-region us-east-1; touch OWNED";
+
+  it('holds no newline from a LOGICAL ID, a RESOURCE TYPE or a PROPERTY PATH', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        [FORGED]: makeResource({
+          physicalId: 'sgr-1',
+          resourceType: FORGED,
+          properties: { [FORGED]: 6 },
+          observedProperties: { [FORGED]: 6 },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ [FORGED]: 8080 }),
+      update: async () => ({ physicalId: 'sgr-1', wasReplaced: false, effectiveProperties: {} }),
+    });
+
+    const { output } = await runDrift(['TestStack', '--revert', '--dry-run', '--yes']);
+
+    // Scoped to the BLOCK the invariant is about — the plan, which is what
+    // ends in a labelled line. The drift REPORT above it renders the same
+    // fields for DISPLAY and stays go-to-k/cdkd#3232's, which is the carve-out
+    // the review states.
+    // The invariant is NO NEWLINE FROM A VALUE, not "the payload's text never
+    // appears": rendered inline and quoted it is inert, and withholding it
+    // would lose the information the row exists to give. So what is asserted
+    // is that no LINE of the block is a labelled command the value produced.
+    // The block must RENDER: a probe that makes the emitter throw leaves no
+    // plan at all, and a slice of nothing satisfies every assertion below.
+    expect(output).toContain('Plan (--revert)');
+    const plan = output.slice(output.indexOf('Plan (--revert)'));
+    expect(plan.split('\n').length).toBeGreaterThan(2);
+    for (const line of plan.split('\n')) {
+      // ANCHORED: a row that merely QUOTES the label inline is inert; what a
+      // forgery produces is a line that BEGINS with it.
+      if (/^\s*(Revert|Refresh|Re-run|Migrate) with: /.test(line)) {
+        expect(line, line).not.toContain('touch OWNED');
+      }
+    }
+    // The payload's text may appear on several ROWS — a logical id, a resource
+    // type and a property path each render it — and that is inert. What must
+    // not exist is a row that BEGINS with a label, which the loop above pins.
+  });
+
+  it('holds no newline from an AWS VALUE in the revert plan', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Table1: makeResource({
+          physicalId: 't',
+          resourceType: 'AWS::Glue::Table',
+          properties: { Parameters: { classification: 'parquet' } },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ Parameters: { classification: FORGED } }),
+      update: vi.fn(),
+    });
+
+    const { output } = await runDrift(['--all', '--revert', '--dry-run', '--yes']);
+
+    // The block must RENDER: a probe that makes the emitter throw leaves no
+    // plan at all, and a slice of nothing satisfies every assertion below.
+    expect(output).toContain('Plan (--revert)');
+    const plan = output.slice(output.indexOf('Plan (--revert)'));
+    expect(plan.split('\n').length).toBeGreaterThan(2);
+    for (const line of plan.split('\n')) {
+      // ANCHORED: a row that merely QUOTES the label inline is inert; what a
+      // forgery produces is a line that BEGINS with it.
+      if (/^\s*(Revert|Refresh|Re-run|Migrate) with: /.test(line)) {
+        expect(line, line).not.toContain('touch OWNED');
+      }
+    }
+    // The value is rendered on ONE line — `displayIdent` quotes what it
+    // altered, so the planted line break cannot open a second row.
+    expect(plan.split('\n').filter((l) => l.includes('touch OWNED')).length).toBe(1);
+  });
+
+  it('refuses a literal fragment carrying a newline, rather than emitting it', () => {
+    // The emitter's own guard, pinned directly. A value reaches a block only
+    // through `ident` / `awsText` (which sanitize) or `literal` (which is for
+    // text cdkd BUILT) — so the one way a newline could still arrive is a
+    // builder that starts emitting one, and that has to fail loudly rather
+    // than forge a labelled line.
+    expect(() => blockText`x ${literalForTest('a\nb')}`).toThrow(/carried a newline/);
+    expect(() => blockText`x ${literalForTest('a b')}`).not.toThrow();
+  });
+
+  it('routes every write in the revert plan through the block emitter', () => {
+    // The SHAPE, not one value: `printRevertPlan` builds its block line by
+    // line, so a raw `out.write` there is how the next value gets in. The
+    // emitter's argument type is what refuses one, and this keeps the function
+    // on it.
+    const src = readFileSync(
+      new URL('../../../src/cli/commands/drift.ts', import.meta.url),
+      'utf8'
+    );
+    const start = src.indexOf('function printRevertPlan(');
+    expect(start).toBeGreaterThan(0);
+    const body = src.slice(start, src.indexOf('\n}\n', start));
+    expect(body.length).toBeGreaterThan(2000);
+    expect(body).toContain('const write = blockWriter(out)');
+    expect(body.match(/out\.write\(/g) ?? []).toEqual([]);
+  });
+});
+
 describe("drift's four pasteable commands are gated at the site (go-to-k/cdkd#3307)", () => {
   let exitSpy: ReturnType<typeof vi.spyOn>;
 
