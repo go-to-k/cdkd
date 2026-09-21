@@ -16,10 +16,7 @@ import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
-import {
-  STATE_RESOURCES_MALFORMED,
-  repairMalformedResourcesForReadOnly,
-} from '../../../src/state/malformed-resources-bag.js';
+import { STATE_RESOURCES_MALFORMED } from '../../../src/state/malformed-resources-bag.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 

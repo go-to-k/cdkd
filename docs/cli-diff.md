@@ -413,17 +413,22 @@ table:
 | `resources` | empty | Every resource the template declares previews as a `CREATE` |
 | `outputs` | empty | Every output this diff resolves previews as an `ADD`, and no stored key previews as a `REMOVE` |
 | A resource's `properties` | empty | Every property that resource declares previews as an addition, and a create-only one previews as a **replacement** |
+| `orphans` | empty | No rollback-orphan record previews as an adoption, and `(orphans container)` is named in the preview, in `--json`'s `unreadable` and in the `--fail` count |
 | One `resources` entry, or one `orphans` record | DROPPED | The row is named in the preview, in `--json`'s `unreadable` and in the `--fail` count; a row the template still declares previews as a `CREATE`, one it no longer declares gets no row at all |
 
-"Unreadable" here is anything that is not a JSON object: a string, a list, a
-number, a boolean or `null`. A healthy container is untouched and nothing is
-said about it, and an empty `{}` is a healthy container — a stack can
-legitimately hold no resources or publish no outputs.
+"Unreadable" is decided per container against the shape that container holds.
+For the three MAPS it is anything that is not a JSON object: a string, a list,
+a number, a boolean or `null`. `orphans` is a **list**, so there it is the
+mirror image — a string, a number, an object, a boolean or `null` — and a list
+is the healthy shape. A healthy container is untouched and nothing is said
+about it, and an empty `{}` (or an empty `[]`) is a healthy container — a stack
+can legitimately hold no resources, publish no outputs, or carry no orphans.
 
-An **absent** `outputs` field is the one exception: it reads as empty and says
-nothing, because a record with no outputs is one cdkd writes and
-[`cdkd scrub`](cli-scrub.md) preserves. An absent `resources` map is a defect
-and does warn — a stack always has a resource map, even an empty one.
+An **absent** `outputs` or `orphans` field is the exception: it reads as empty
+and says nothing, because a record with no outputs is one cdkd writes and
+[`cdkd scrub`](cli-scrub.md) preserves, and a stack that has never had a failed
+deploy has no orphan list at all. An absent `resources` map is a defect and does
+warn — a stack always has a resource map, even an empty one.
 
 Reading it as empty is the safe answer for a preview, and the warning is what
 keeps it honest. Without the repair the walk over each container takes a string
@@ -473,9 +478,10 @@ resource such a row names, so there is no honest empty version of it. Dropping
 happens before the `properties` repair, so a typeless row whose `properties` map
 is also unreadable is reported once, as dropped. A dropped row the template
 still declares previews as a `CREATE`; one it no longer declares gets no row at
-all. So the dropped rows, and `(resources map)` for an unreadable map, are also
-named together on one line after the counts — up to ten names, then how many
-more — listed in full in `--json`'s `unreadable`, and counted by `--fail`.
+all. So the dropped rows, `(resources map)` for an unreadable map and
+`(orphans container)` for an unreadable orphan list, are also named together on
+one line after the counts — up to ten names, then how many more — listed in full
+in `--json`'s `unreadable`, and counted by `--fail`.
 
 With `--recursive` each node of the tree carries its own record, so the warning
 names the stack it came from and a healthy parent can sit above a malformed
@@ -555,8 +561,9 @@ The payload is a flat array of one record per target stack:
   non-empty.
 - `unreadable` is **always present**: the logical ids of state record rows the
   diff could not read, `(resources map)` when the whole `resources` map is
-  not an object, and each rollback-orphan record the adoption preview could
-  not read (an empty string for one with no usable id). Non-empty means `changes` is not the whole picture: a row the
+  not an object, `(orphans container)` when the whole `orphans` field is
+  present but not a list, and each rollback-orphan record the adoption preview
+  could not read (an empty string for one with no usable id). Non-empty means `changes` is not the whole picture: a row the
   template still declares appears there as a `CREATE`, but one it no longer
   declares gets no change entry at all, not even a `DELETE`.
 - A change entry carries `ccApi: string[]` when the resource would auto-route
@@ -591,7 +598,8 @@ The walk previews the full next deploy:
 - A nested stack **removed from the CDK code** — present in state, absent from
   the template — diffs as all-DELETE, recursively.
 - A child whose record is **malformed** is reported on rather than aborted on,
-  at every depth. A `resources` bag that is not a JSON object is treated as
+  at every depth. A `resources` bag that is not a JSON object, and an `orphans`
+  field that is present but not a list, are treated as
   empty, and a `resources` entry that is not an object, or carries no resource
   type, is dropped from the
   record the diff reads; each emits a warning naming the stack, the region and,
@@ -600,7 +608,8 @@ The walk previews the full next deploy:
   because the diff now has no record of it — the same thing an empty bag does to
   a whole stack. A dropped row the template no longer declares gets **no row at
   all**, not even a DELETE, because nothing says what resource it names. So
-  the dropped rows, and `(resources map)` for an unreadable map, are also named
+  the dropped rows, `(resources map)` for an unreadable map and
+  `(orphans container)` for an unreadable orphan list, are also named
   together on one line after the counts — up to ten names, then how many more —
   listed in full in `--json`'s `unreadable`, and counted by `--fail`. `cdkd diff` never writes state, so nothing is lost either way,
   but the preview is about a record cdkd could not read. Inspect it with

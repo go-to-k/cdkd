@@ -1181,7 +1181,8 @@ export const UNREADABLE_ORPHANS_CONTAINER_ROW = '(orphans container)';
  * the ORDINARY record. A stack that never had a failed deploy has no orphan
  * list at all, `JSON.stringify` drops the key when it is undefined, and
  * `orphansAfterRollback` returns `{}` on `previous.orphans === undefined`
- * before it reads anything. Warning or refusing on absence would fire on
+ * WITH nothing newly orphaned — the pair of conditions that keeps such a
+ * record byte-identical. Warning or refusing on absence would fire on
  * almost every record in a bucket.
  *
  * `null` is NOT readable, which is where this parts from a bare `?? []`: that
@@ -1274,7 +1275,9 @@ export function malformedOrphansRefusalMessage(stackName: string, region: string
     `list of character-shaped orphan records, and every other unreadable shape reads as no ` +
     `orphans at all — so a run would delete or adopt against a record whose evidence of ` +
     `resources left live in AWS by an earlier failed deploy it never read. Repair or remove the ` +
-    `record first. Inspect it with: cdkd state show ${shellQuote(stack)} ` +
+    `record first: no cdkd command repairs the STORED container, so the record stays damaged ` +
+    `until you rewrite or remove it yourself. Inspect it with: ` +
+    `cdkd state show ${shellQuote(stack)} ` +
     `--stack-region ${shellQuote(reg)} --json`
   );
 }

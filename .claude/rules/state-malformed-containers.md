@@ -21,7 +21,7 @@ and nothing inside, so a consumer reaches the bag as an unchecked cast.
 | `outputs` | `hasReadableOutputs` | `refuseMalformedOutputs` + two siblings | `repairMalformedOutputsForReadOnly` |
 | `orphans` | `hasReadableOrphans` | `refuseMalformedOrphans` + a destroy sibling | `repairMalformedOrphansForReadOnly` |
 
-**Each container has SEVERAL refusal entry points and ONE predicate.** The split
+**Each container has MORE THAN ONE refusal entry point and ONE predicate.** The split
 is about the MESSAGE, never the verdict — all of them delegate to the predicate,
 so no two can disagree about whether a record is damaged. A destroy CLEARS the
 outputs bag rather than rebuilding it, and a nested child's damage is written
