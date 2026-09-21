@@ -126,6 +126,22 @@ describe('stageScopedError', () => {
     expect((scoped as SynthesisError).cause).toBeUndefined();
   });
 
+  it("carries the ORIGIN's frames, so --verbose points at the refusal not the re-raise", () => {
+    // `handleError` logs `error.stack` at debug. Building a fresh error would
+    // point that trace at this module instead of at the throw that fired,
+    // which is the one thing the trace is for.
+    const origin = new SynthesisError('boom');
+    const originFrame = (origin.stack ?? '').split('\n')[1];
+    expect(originFrame).toBeDefined();
+
+    const scoped = stageScopedError('MyStage', origin) as Error;
+
+    // Header line is this error's own, so it matches the message shown...
+    expect((scoped.stack ?? '').split('\n')[0]).toBe('SynthesisError: Stage MyStage: boom');
+    // ...and the frames below it are the origin's.
+    expect(scoped.stack).toContain(originFrame!);
+  });
+
   it('leaves an already-scoped error alone, so the INNERMOST stage is the one named', () => {
     const inner = stageScopedError('MyStage/Inner', new Error('boom'));
 
