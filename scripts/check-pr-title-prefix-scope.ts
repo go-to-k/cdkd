@@ -37,7 +37,7 @@
  *
  *   1. `allow_merge_commit` / `allow_rebase_merge` are BOTH false, so GitHub
  *      itself permits only squash — a branch commit can never reach `main` as
- *      its own commit object. (AGENTS.md's "Merge PRs with squash only" is the
+ *      its own commit object. (AGENTS.md's "Merge with squash only" is the
  *      same rule stated as policy; this is the server-side enforcement of it.)
  *   2. `squash_merge_commit_title: PR_TITLE` means the squash SUBJECT is the PR
  *      title unconditionally. This is the load-bearing one: under GitHub's other

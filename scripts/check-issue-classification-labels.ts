@@ -278,7 +278,9 @@ export function formatConflictComment(decisions: Decision[]): string {
       'label would be worse than none, and `Estimate` is a free-form duration with no closed value set.',
   );
   lines.push('');
-  lines.push('Rule: AGENTS.md -> the four TODO classification fields.');
+  lines.push(
+    'Rule: AGENTS.md -> Reporting; field semantics in .claude/rules/session-report.md.',
+  );
   return lines.join('\n');
 }
 

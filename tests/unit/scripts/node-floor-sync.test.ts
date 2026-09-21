@@ -110,7 +110,10 @@ const OLD_FLOOR_SPELLINGS = oldFloorSpellings(
  */
 const DOCS_STATING_THE_FLOOR: ReadonlyArray<readonly [file: string, statement: RegExp]> = [
   ['README.md', new RegExp(String.raw`Node\.js\s+${FLOOR_SHORT_RE}\s+or\s+later`)],
-  ['AGENTS.md', new RegExp(String.raw`Node\.js\s+>=\s+${FLOOR_RE}\s+\(the\s+lower\s+bound`)],
+  [
+    '.claude/rules/package-and-release.md',
+    new RegExp(String.raw`Node\.js\s+>=\s+${FLOOR_RE}\s+\|\s+the\s+floor\s+for\s+USERS`),
+  ],
   ['CONTRIBUTING.md', new RegExp(String.raw`users\s+on\s+Node\.js\s+${FLOOR_SHORT_RE}\s+and\s+later`)],
   [
     'docs/contributing.md',
@@ -147,7 +150,7 @@ describe('the published Node.js floor is one value across every surface (#3037)'
     // would otherwise pass in silence.
     expect(DOCS_STATING_THE_FLOOR.map(([file]) => file)).toEqual([
       'README.md',
-      'AGENTS.md',
+      '.claude/rules/package-and-release.md',
       'CONTRIBUTING.md',
       'docs/contributing.md',
       'docs/getting-started.md',

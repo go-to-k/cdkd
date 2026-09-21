@@ -11,9 +11,9 @@
 # gate runs on markgate 0.4's `hash: diff` mode, so an already-gated
 # change someone else merged no longer costs a real-AWS re-run.
 #
-# This is the structural counterpart to the AGENTS.md rule "Never
-# merge a PR whose destroy path is unverified". The rule said it; the
-# hook enforces it.
+# This is the structural counterpart to the AGENTS.md rule "Deletion
+# logic and state-schema bumps cannot merge on green CI alone". The rule
+# says it; the hook enforces it.
 #
 # WHY the cwd-aware resolution matters (cdkd #559): this repo is
 # regularly worked in via `git worktree`, and markgate stores marker

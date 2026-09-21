@@ -8,6 +8,23 @@ description: Run local quality checks (typecheck, lint, build, tests). Quick che
 Run all local quality checks. Use during development to verify the current
 state quickly.
 
+## First: self-review on four axes
+
+Walk these BEFORE the commands below and before committing. A green suite says
+the tests pass, not that the work is *good*, and none of these four is
+something a runner reports.
+
+1. **Implementation gaps** — the parallel change forgotten in a sibling command;
+   a test or a doc not added.
+2. **Oddities** — dead code, leftover names, a half-applied refactor.
+3. **Polish opportunities** — small in-scope improvements; **default to
+   including them** when they touch the same files and carry no
+   behavior-break risk.
+4. **Regression risk** — the full suite, and the call sites of anything renamed
+   or removed.
+
+Say out loud what you found, then fix it before running the checks.
+
 ## Steps
 
 Run these sequentially and report results.

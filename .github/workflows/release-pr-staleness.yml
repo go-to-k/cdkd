@@ -179,7 +179,8 @@ jobs:
           fi
           head=$(git rev-parse FETCH_HEAD)
 
-          # AGENTS.md names THREE release-please-owned files; `package.json` is
+          # `.claude/rules/package-and-release.md` names THREE release-please-owned
+          # files; `package.json` is
           # deliberately not one of them here. Ordinary `chore(deps)` PRs touch
           # it constantly, so main's tip for it moves far more often than a
           # release PR is rebuilt -- every release PR would read as stale. And
