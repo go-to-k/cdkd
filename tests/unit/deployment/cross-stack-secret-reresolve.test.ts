@@ -270,6 +270,34 @@ describe('cross-stack reads re-resolve a REDACTED value (issue #1934)', () => {
       expect(recordedSecretValues.get(CONSUMER_REGION_PASSWORD)).toBe(SECRET_EXPRESSION);
     });
 
+    it('a PRODUCER output still holding `{{resolve:<plaintext>}}` is handed on as written, with or without the needle (issue #2743 known limit)', async () => {
+      // A producer record a release before the #2743 refusal leaked into.
+      // This site re-resolves PERSISTED text, so the unsupported-service arm
+      // does not refuse here -- and it could not tell this token from an
+      // ordinary look-alike when the consumer holds no needle, which is the
+      // usual case. Pinned as INTENTIONAL: the remedy is to scrub the
+      // PRODUCER stack first, not a refusal at this site.
+      const leaked = `{{resolve:${CONSUMER_REGION_PASSWORD}}}`;
+      for (const recordedSecretValues of [
+        new Map<string, string>(),
+        new Map([[CONSUMER_REGION_PASSWORD, SECRET_EXPRESSION]]),
+      ]) {
+        const result = await new IntrinsicFunctionResolver(CONSUMER_REGION).resolve(
+          { 'Fn::ImportValue': 'Leaked' },
+          buildContext({
+            exportIndex: mockIndex({
+              Leaked: { value: leaked, producerStack: 'Producer', producerRegion: CONSUMER_REGION },
+            }),
+            stateBackend: mockBackend([]),
+            recordedSecretValues,
+            recordedImports: [] as StateImportEntry[],
+          })
+        );
+
+        expect(result).toBe(leaked);
+      }
+    });
+
     it('resolves it in the PRODUCER region, not the consumer region', async () => {
       // A secret NAME is regional, so the only region whose answer reproduces
       // what the producer exported is the producer's own — recorded on the

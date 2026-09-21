@@ -3957,7 +3957,7 @@ export class IntrinsicFunctionResolver {
         // config, stored RESOLVED in state, so the diff must resolve it too to
         // compare like-for-like. An ssm reference to a `SecureString` is a
         // secret and is left unresolved with the rest (issue #1901).
-        return await this.resolveDynamicReferences(value, context);
+        return await this.resolveTemplateLeafReferences(value, context);
       }
       return value;
     }
@@ -11226,7 +11226,35 @@ export class IntrinsicFunctionResolver {
     return this.displayMasked(this.logTextOfLeaf(value, context), context);
   }
 
+  /**
+   * Resolve the dynamic references of a PERSISTED string leaf: text read back
+   * out of a state record, a rollback journal or a producer stack's outputs.
+   * That is what every caller of this method hands it (`cdkd drift`, the
+   * rollback replay, `cdkd scrub`'s per-token delegation, the cross-stack
+   * re-resolution); a TEMPLATE leaf goes through {@link resolve}, which takes
+   * {@link resolveTemplateLeafReferences}.
+   *
+   * The distinction is load-bearing for ONE arm (issue #2743). A token of a
+   * service cdkd does not resolve is REFUSED on the template route when it
+   * holds a secret, because leaving it would send that secret to AWS for the
+   * first time. Persisted text is different on both counts: AWS already holds
+   * it, so refusing buys no confidentiality, and the refusal is DETERMINISTIC
+   * there -- a journal `previousState` holding `{{resolve:<plaintext>}}` beside
+   * the reference that resolves to it would fail its rollback op on every
+   * retry, where replaying the literal is a correct no-op. So this entry point
+   * keeps the warn-and-leave for every such token, and the value scan redacts
+   * whatever is persisted afterwards.
+   */
   async resolveDynamicReferences(value: string, context?: ResolverContext): Promise<string> {
+    return (await this.resolveDynamicReferencesWithLogTwin(value, value, context, undefined, true))
+      .result;
+  }
+
+  /** A TEMPLATE string leaf: the refusing route (see {@link resolveDynamicReferences}). */
+  private async resolveTemplateLeafReferences(
+    value: string,
+    context?: ResolverContext
+  ): Promise<string> {
     return (await this.resolveDynamicReferencesWithLogTwin(value, value, context)).result;
   }
 
@@ -11258,7 +11286,11 @@ export class IntrinsicFunctionResolver {
     // its log text and its names' log texts, as the parent paired them. Log
     // lines only: `logTwin` stays the token itself, so the twin this method
     // registers for its result is the one it registered before.
-    inherited?: { tokenLogText: string; nameLogText: (name: string) => string }
+    inherited?: { tokenLogText: string; nameLogText: (name: string) => string },
+    // PERSISTED text rather than a template leaf: the unsupported-service arm
+    // never refuses it. Set by {@link resolveDynamicReferences} alone, so the
+    // default -- every internal route -- is the refusing one.
+    persistedText = false
   ): Promise<DynamicReferencePass> {
     // Match all {{resolve:...}} patterns
     const pattern = /\{\{resolve:([^}]+)\}\}/g;
@@ -11449,7 +11481,15 @@ export class IntrinsicFunctionResolver {
             // passed as the twin: the sibling registers its result against the
             // twin it holds, and a masked twin there would register a public
             // value as `***`, which `Fn::Base64` then persists.
-            { tokenLogText, nameLogText }
+            { tokenLogText, nameLogText },
+            // PROPAGATED, not defaulted: this internal route is entered ON
+            // BEHALF of whatever drove the outer call, so a delegation made for
+            // persisted text must not re-arm the refusal the outer call was
+            // exempt from. Unreachable today -- the arm is only taken for an
+            // ARN-form resolvable service, so the sibling classifies that
+            // service and never reaches the unsupported-service branch -- but
+            // the default here would be a silent behaviour change the day it is.
+            persistedText
           );
           // Replacer FUNCTION for the same reason as every other substitution in
           // this method: a resolved secret legitimately containing `$&` would
@@ -11643,9 +11683,52 @@ export class IntrinsicFunctionResolver {
           // token, and `resolveSub` re-enters this method with the assembled
           // string — a body of `{{resolve:${Pw}}}` over a variable that
           // resolved a secret makes `service` BE that plaintext, on a `warn`
-          // emitted at default verbosity. (The `continue` then leaves the
-          // literal span in the value, which redaction's strictly-inside
-          // carve-out spares into `state.json` — issue #2743.)
+          // emitted at default verbosity.
+          //
+          // Issue #2743: a token ASSEMBLED FROM A SECRET is refused rather
+          // than left in place. The `continue` below leaves the literal span
+          // in the value, so the plaintext inside it would go to AWS as the
+          // property's value and into `state.json`. Two independent
+          // detectors, either one refuses:
+          //
+          // - `tokenLogText !== fullMatch`: the log twin masks a span of this
+          //   token, i.e. an earlier write put a secret there. Floor-free, so
+          //   it sees a secret shorter than the needle floor. An UNPAIRED twin
+          //   (the twin's tokens do not line up with the value's, which only
+          //   a mask over a `{{resolve:` opener or a `}}` closer causes) makes
+          //   `tokenLogText` the bare mask, so it lands here too: fail closed.
+          // - the needle mask changes the raw token: a recorded or inherited
+          //   plaintext sits in it although no twin says so (a `Ref` to a
+          //   nested-stack parameter the parent decrypted registers no twin).
+          //
+          // An UNTAINTED token keeps the warn-and-leave below: `cdkd drift`
+          // and the rollback replay re-enter here with persisted text that
+          // merely looks like a reference, and report it per token.
+          //
+          // The grammar bounds what this predicate sees (`[^}]+`). A plaintext
+          // holding ONE `}` leaves no complete token, so this loop never sees
+          // it: it reaches the provider as the ordinary text it is, and the
+          // value scan redacts it in state. A plaintext holding `}}` DOES
+          // form a token, from its own prefix (`ab}}cd` makes
+          // `{{resolve:ab}}`), and the twin half refuses that one.
+          //
+          // BOTH halves are skipped for persisted text, explicitly. Only the
+          // needle half can fire there (that entry point passes the value as
+          // its own twin, so every token pairs with itself), and it is the one
+          // that must not: see {@link resolveDynamicReferences}.
+          if (
+            !persistedText &&
+            (tokenLogText !== fullMatch || this.maskNeedlesForLog(fullMatch, context) !== fullMatch)
+          ) {
+            throw markNonRetryable(
+              new IntrinsicResolutionRefusalError(
+                `Refusing to resolve ${this.displayMasked(tokenLogText, context)}: its service is not one cdkd ` +
+                  `resolves (secretsmanager, ssm, ssm-secure), and the reference was assembled from a ` +
+                  `secret value, so leaving it as written would send that value to AWS and record it ` +
+                  `in state in the clear.`
+              )
+            );
+          }
           this.logger.warn(
             this.displayMasked(
               `Unsupported dynamic reference service: ${this.displayMasked(nameLogText(String(service)), context)}`,

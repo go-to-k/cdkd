@@ -1,4 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
@@ -340,6 +341,50 @@ export class SecretsDynamicRefStack extends cdk.Stack {
         value: cdk.Fn.sub(`{{resolve:secretsmanager:${literalSecretName}:SecretString:\${Pw}}}`, {
           Pw: `{{resolve:secretsmanager:${literalSecretName}:SecretString:password}}`,
         }),
+      });
+    }
+
+    // Issue #2743: a resolved secret landing in a reference's SERVICE
+    // position. The `Pw` variable resolves the password, so the body assembles
+    // `{{resolve:<password>}}` -- a token of a service cdkd does not resolve.
+    // The resolver used to warn and leave it in the value, so the provider was
+    // handed the token (plaintext included) and state persisted it. It is now
+    // refused.
+    //
+    // TWO modes under one token, and they cannot share a deploy: `output`
+    // fails only that output (warned, skipped, exit 0), while `resource` fails
+    // a resource, so the deploy rolls back and its outputs pass never runs.
+    // Each is declared for ONE probe deploy only, for the reason
+    // `OutputFailureLeak` states (the diff pass assembles the body without
+    // resolving `Pw`, so a permanent declaration is a phantom change).
+    //
+    // `resource` is the higher-severity half: verify.sh asserts the role does
+    // NOT exist afterwards, i.e. nothing reached AWS. The vehicle is an IAM
+    // role's `Description` because a regression must be ACCEPTED by AWS for the
+    // absence to mean anything: verify.sh proves with a throwaway role that
+    // IAM accepts and returns such a text, whereas an SSM parameter VALUE is refused for
+    // holding `{{`, which would leave the resource absent with or without the
+    // refusal under test. No policy is attached, so a leftover deletes plainly.
+    const serviceSpan = cdk.Fn.sub('{{resolve:${Pw}}}', {
+      Pw: `{{resolve:secretsmanager:${literalSecretName}:SecretString:password}}`,
+    });
+    if (process.env.CDKD_TEST_SERVICE_SPAN === 'output') {
+      new cdk.CfnOutput(this, 'ServiceSpanLeak', { value: serviceSpan });
+    }
+    if (process.env.CDKD_TEST_SERVICE_SPAN === 'resource') {
+      new iam.CfnRole(this, 'ServiceSpanRole', {
+        roleName: `cdkd-test-dynref-service-span-${process.env['CDK_DEFAULT_ACCOUNT'] ?? account}`,
+        description: serviceSpan,
+        assumeRolePolicyDocument: {
+          Version: '2012-10-17',
+          Statement: [
+            {
+              Effect: 'Allow',
+              Principal: { Service: 'lambda.amazonaws.com' },
+              Action: 'sts:AssumeRole',
+            },
+          ],
+        },
       });
     }
 

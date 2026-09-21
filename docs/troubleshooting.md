@@ -33,6 +33,7 @@ This document summarizes common issues when using cdkd and their solutions.
 - [Intrinsic Function Issues](#intrinsic-function-issues)
   - ["Unresolved intrinsic function" Error](#unresolved-intrinsic-function-error)
   - [STS cannot report the account, and pseudo parameters fall back](#sts-cannot-report-the-account-and-pseudo-parameters-fall-back)
+  - ["Refusing to resolve" a reference whose service cdkd does not resolve](#refusing-to-resolve-a-reference-whose-service-cdkd-does-not-resolve)
   - ["Cannot resolve" a GetAtt on a resource an older cdkd deployed](#cannot-resolve-a-getatt-on-a-resource-an-older-cdkd-deployed)
 - [Permission Errors](#permission-errors)
   - ["Access Denied" Error](#access-denied-error)
@@ -1335,6 +1336,58 @@ aws sts get-caller-identity
 #   "Arn": "arn:aws:iam::123456789012:user/myuser"
 # }
 ```
+
+---
+
+### "Refusing to resolve" a reference whose service cdkd does not resolve
+
+**Symptoms:**
+
+```
+Refusing to resolve {{resolve:***}}: its service is not one cdkd resolves (secretsmanager, ssm, ssm-secure), and the reference was assembled from a secret value, so leaving it as written would send that value to AWS and record it in state in the clear.
+```
+
+On a resource property the resource fails before its provider is called, and
+the deploy rolls back. On a stack Output the deploy warns
+`Failed to resolve output <name>: ...`, skips that output and still exits 0;
+under `--strict-getatt` a failed output fails the deploy instead.
+
+**Causes:**
+
+An `Fn::Sub` or `Fn::Join` builds a `{{resolve:...}}` token around a value that
+is itself a resolved secret, and the secret lands where the service name goes:
+
+```yaml
+Value:
+  Fn::Sub:
+    - '{{resolve:${Pw}}}'
+    - Pw: '{{resolve:secretsmanager:MySecret:SecretString:password}}'
+```
+
+cdkd resolves `secretsmanager`, `ssm` and `ssm-secure` references. A token of
+any other service is left as written, and here the token's own text holds the
+secret, so cdkd refuses instead of sending it to AWS and writing it to
+`state.json`. A token that carries no secret (`{{resolve:notaservice:/x}}`) is
+still left as written, under an `Unsupported dynamic reference service` warning.
+
+**Solution:**
+
+Reference the secret directly, or spell the service literally and substitute
+only the name: `{{resolve:secretsmanager:${SecretName}:SecretString:password}}`.
+If such a value was deployed before cdkd refused it, the secret may be stored
+in AWS and in the stack's state record. Clean up in this order:
+
+1. Deploy the corrected template, so AWS stops holding the secret.
+2. Then run [`cdkd scrub`](cli-scrub.md), which replaces the secret inside the
+   stored `{{resolve:...}}` text with its reference.
+
+Scrubbing first leaves the record holding text no service can resolve while
+AWS still holds the old value: `cdkd drift` does not compare that property, and
+a `cdkd rollback` or `cdkd drift --revert` that touches the resource writes the
+unresolvable text to it. When another stack imports the value, scrub the
+PRODUCER stack before deploying the consumer: a consumer reads the producer's
+stored output as written, and cannot tell a leaked token from ordinary text.
+Rotate the secret either way.
 
 ---
 

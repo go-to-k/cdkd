@@ -1533,6 +1533,7 @@
     "--argjson",
     "--asset-bucket",
     "--assume-role",
+    "--assume-role-policy-document",
     "--attribute",
     "--attribute-definitions",
     "--attribute-names",

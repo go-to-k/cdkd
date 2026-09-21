@@ -1684,15 +1684,15 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
     expectNowhere(`param-${PIN}`, message);
   });
 
-  it('an unsupported service name', async () => {
-    await new IntrinsicFunctionResolver('us-east-1').resolve(
-      inline('{{resolve:svc-${P}:x}}'),
-      makeContext() as never
-    );
-    expect(logSpies.warn.mock.calls.map((c) => String(c[0]))).toContain(
-      'Unsupported dynamic reference service: svc-***'
-    );
-    expectNowhere(`svc-${PIN}`);
+  it('an unsupported service name: refused since issue #2743, on the TWIN alone', async () => {
+    // The pin is below the needle floor, so the needle mask sees nothing in
+    // `{{resolve:svc-q7:x}}`: only the log twin says a secret was written
+    // there. Before #2743 this warned `...service: svc-***` and left the token,
+    // pin included, in the value.
+    const message = await messageOf(inline('{{resolve:svc-${P}:x}}'), makeContext());
+    expect(message).toMatch(/^Refusing to resolve \{\{resolve:svc-\*\*\*:x\}\}: its service is not one cdkd resolves/);
+    expect(everyLine().filter((l) => l.includes('Unsupported dynamic reference service'))).toEqual([]);
+    expectNowhere(`svc-${PIN}`, message);
   });
 
   it('the ssm-secure refusal of a public parameter', async () => {
@@ -1849,15 +1849,11 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
       expectNowhere('pub-q', message);
     });
 
-    it('an unsupported service name', async () => {
-      await new IntrinsicFunctionResolver('us-east-1').resolve(
-        inline('{{resolve:svc-${P}:x}}', 'col'),
-        makeContext() as never
-      );
-      expect(logSpies.warn.mock.calls.map((c) => String(c[0]))).toContain(
-        'Unsupported dynamic reference service: ***'
-      );
-      expectNowhere('svc-q');
+    it('an unsupported service name: refused since issue #2743', async () => {
+      const message = await messageOf(inline('{{resolve:svc-${P}:x}}', 'col'), makeContext());
+      expect(message).toMatch(/^Refusing to resolve .*\*\*\*.*: its service is not one cdkd resolves/);
+      expect(everyLine().filter((l) => l.includes('Unsupported dynamic reference service'))).toEqual([]);
+      expectNowhere('svc-q', message);
     });
 
     it('the ambiguous-region refusal', async () => {

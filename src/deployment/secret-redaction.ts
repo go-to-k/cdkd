@@ -4448,11 +4448,17 @@ function redactByPath(
       // own probe.
       //
       // While BOTH exist, `redactSecretsForState(bag, secrets)` here would be
-      // byte-equivalent — the walk's own token guard makes it whole-value-only
-      // for this shape — so a mutation swapping the two is an equivalent mutant
+      // byte-equivalent for a token of a RESOLVABLE service — the walk's own
+      // token guard makes it whole-value-only for this shape — so a mutation swapping the two is an equivalent mutant
       // rather than an uncovered case. The duplication is the point: delete
       // either guard and the other still holds, and each has its own probe.
+      //
+      // A bag token of a service cdkd does NOT resolve is not a persisted
+      // answer at all (issue #2743): it is what an older binary left behind
+      // for a secret assembled into the service position, so it takes the
+      // full value scan, which no longer spares it.
       if (!rules.sourceIsSameGeneration && isSingleDynamicReferenceToken(bag)) {
+        if (!spanNamesResolvableService(bag)) return redactSecretsForState(bag, secrets);
         return secrets.get(bag) ?? bag;
       }
       // The source leaf IS what state should hold — exact, and immune to two
@@ -4774,7 +4780,8 @@ function subtreeHasDynamicReference(value: unknown): boolean {
  * compiling a pattern per string leaf at the persist choke point, which walks
  * every record. Do NOT call `.exec` / `.test` on this constant — those DO
  * advance `lastIndex`, which is exactly why the shared instance is safe only
- * for `.match`.
+ * for `.match`. (ONE site does, `resolvableReferenceSpans`, and it resets
+ * `lastIndex` to 0 in the statement after the `exec`.)
  *
  * Widening it changes one answer, in the SAFE direction for BOTH readers.
  *
@@ -5402,6 +5409,81 @@ const SECRET_BEARING_REFERENCE_PREFIXES = [
 ] as const;
 
 /**
+ * Does this complete `{{resolve:...}}` token name a service cdkd RESOLVES?
+ *
+ * The value scan spares a needle match lying inside a token, so that a
+ * plaintext coinciding with a real reference's own text is not spliced into
+ * it (issue #1935). That protection is owed to a REFERENCE only. A token of
+ * any other service is left in place by the resolver, so text inside it is
+ * ordinary persisted text, and a recorded plaintext there must be redacted
+ * (issue [#2743](https://github.com/go-to-k/cdkd/issues/2743)).
+ */
+function spanNamesResolvableService(token: string): boolean {
+  return SECRET_BEARING_REFERENCE_PREFIXES.some((prefix) => token.startsWith(prefix));
+}
+
+/**
+ * The spans of `value` the value scan must not splice a needle into: every
+ * complete token of a resolvable service.
+ *
+ * Two scans, unioned. The ordinary one ({@link dynamicReferenceSpans}) is
+ * LEFTMOST, so behind an opener of an unresolvable service it reports one
+ * outer span and never sees a REAL reference nested in it — which is exactly
+ * the text this module writes when it redacts `{{resolve:<plaintext>}}` to
+ * `{{resolve:{{resolve:secretsmanager:...}}}}`. Dropping that outer span
+ * alone would leave the nested reference unprotected, and a later pass whose
+ * map holds a needle occurring in the reference's own text (`password` is an
+ * ordinary JSON key AND an ordinary secret value) would splice into it, again
+ * on every pass. The second scan starts only at a resolvable-service opener,
+ * so it finds the nested reference — and keeps it only when it is an
+ * expression of the pass's own map (see the loop).
+ *
+ * On a leaf with no unresolvable-service opener the two scans report the same
+ * spans, so every leaf issue #1935 protects is answered exactly as before.
+ */
+function resolvableReferenceSpans(
+  value: string,
+  vouchedExpressions: ReadonlySet<string>
+): Array<{ start: number; end: number }> {
+  const spans = dynamicReferenceSpans(value).filter((span) =>
+    spanNamesResolvableService(value.slice(span.start, span.end))
+  );
+  // No second PATTERN: the token grammar is built in exactly two places in
+  // this module (fenced), so the nested scan re-runs the shared one from each
+  // resolvable-service opener and keeps a token that starts AT it.
+  const starts = new Set(spans.map((span) => span.start));
+  for (const prefix of SECRET_BEARING_REFERENCE_PREFIXES) {
+    for (let at = value.indexOf(prefix); at >= 0; at = value.indexOf(prefix, at + 1)) {
+      // A top-level token of a resolvable service is already protected.
+      if (starts.has(at)) continue;
+      // ONE `exec` anchored by `lastIndex`, not a re-scan of the tail per
+      // opener. `exec` ADVANCES the shared pattern's `lastIndex`, which is why
+      // the constant's own doc forbids it; it is reset right after, and every
+      // other reader resets or ignores it before use.
+      DYNAMIC_REFERENCE_TOKEN_SCAN.lastIndex = at;
+      const match = DYNAMIC_REFERENCE_TOKEN_SCAN.exec(value);
+      DYNAMIC_REFERENCE_TOKEN_SCAN.lastIndex = 0;
+      // `index === at`: an opener with no closer of its own must not borrow
+      // the end of a LATER token, which would stretch a protected span over
+      // whatever sits between them.
+      if (match?.index !== at) continue;
+      const end = at + match[0].length;
+      // ...and only a nested token this pass can VOUCH for: one that is an
+      // expression of the pass's own map, i.e. text this module writes. A
+      // nested resolvable-service token is ALSO what a secret assembled one
+      // level deeper looks like (`{{resolve:x-{{resolve:ssm:<plaintext>}}}}`,
+      // which an older binary persisted), and sparing that is a disclosure,
+      // while splicing into an unvouched nested reference only rewrites text
+      // that was already unresolvable.
+      if (!vouchedExpressions.has(value.slice(at, end))) continue;
+      spans.push({ start: at, end });
+      starts.add(at);
+    }
+  }
+  return spans;
+}
+
+/**
  * The prefixes whose SPELLING settles secret-ness, with no lookup and no
  * inference — the subset of {@link SECRET_BEARING_REFERENCE_PREFIXES} that
  * {@link expressionSecretIsInferred} treats as certain.
@@ -5951,7 +6033,14 @@ function refuseUncertifiedSubtree(
     // mixed expression is still kept, by `sourceLiterals` one clause down, so
     // narrowing this to a whole token costs only a leaf AWS echoed back
     // unresolved AND the source does not spell.
-    if (isSingleDynamicReferenceToken(value) || sourceLiterals.has(value)) return value;
+    // ...and one naming a service cdkd RESOLVES (issue #2743): a token of any
+    // other service is not an expression a deploy could have persisted here.
+    if (
+      (isSingleDynamicReferenceToken(value) && spanNamesResolvableService(value)) ||
+      sourceLiterals.has(value)
+    ) {
+      return value;
+    }
     // `''` is not a value any resolved secret can take (the resolver records
     // none, and the value scan excludes it as a needle for the same reason), so
     // masking it only costs drift a comparison.
@@ -6640,6 +6729,16 @@ export function redactSecretsForState<T>(
    *   security review, and the reason the rule is one predicate over the whole
    *   leaf rather than a split.
    * - **disjoint from every span** -> REPLACED. The ordinary embedded secret.
+   * - **inside a span whose service cdkd does not resolve** -> REPLACED (issue
+   *   [#2743](https://github.com/go-to-k/cdkd/issues/2743)). Such a span is not
+   *   a reference: `{{resolve:<plaintext>}}` is what an `Fn::Sub` putting a
+   *   resolved secret in the SERVICE position assembled, and sparing it
+   *   persisted the plaintext. The result, `{{resolve:{{resolve:...}}}}`, is
+   *   garbage but not plaintext, the same trade as the stray-opener residual
+   *   below; the REAL reference nested in it is protected again
+   *   ({@link resolvableReferenceSpans}). The cost: an untainted look-alike
+   *   token whose text coincides with a recorded secret is rewritten like any
+   *   other text, and a replay then sends the rewritten literal.
    *
    * Scanning the WHOLE leaf in ONE pass is also what preserves what needle
    * PRECEDENCE there is. {@link buildNeedleRegex} sorts alternatives
@@ -6668,8 +6767,9 @@ export function redactSecretsForState<T>(
    *   PLAINTEXT behind two characters any string can contain.
    * - **a later `}}` anywhere in the leaf** -> the opener and that `}}` form
    *   ONE span swallowing everything between them, so a needle in that region
-   *   is KEPT — the only shape where this rule redacts LESS than the code it
-   *   replaced. Narrow but real, and the reachable carrier is named rather than
+   *   is KEPT when the opener spells a resolvable service (`{{resolve:ssm:`
+   *   ...; any other opener is the unresolvable-service row above) — the only
+   *   shape where this rule redacts LESS than the code it replaced. Narrow but real, and the reachable carrier is named rather than
    *   waved at: the resolver shares this grammar, so such a leaf could not have
    *   resolved on the deploy path, which leaves an `observedProperties`
    *   READBACK (arbitrary text from AWS) as the way one arrives.
@@ -6680,10 +6780,15 @@ export function redactSecretsForState<T>(
    * contradicting this change's own "not repaired, not made worse" property.
    * So the residual is documented, not fixed.
    */
+  // Built once per pass, and only if a leaf needs it.
+  let vouched: Set<string> | undefined;
+  const vouchedExpressions = (): ReadonlySet<string> => (vouched ??= new Set(secrets.values()));
   const scanLeaf = (value: string, needles: RegExp): string => {
     // Only a leaf that HOLDS a reference can have a span, and the dominant leaf
     // does not — so the offsets are computed only where they can matter.
-    const spans = isDynamicReferenceString(value) ? dynamicReferenceSpans(value) : [];
+    const spans = isDynamicReferenceString(value)
+      ? resolvableReferenceSpans(value, vouchedExpressions())
+      : [];
     // No `lastIndex` reset before `replace`: `RegExp.prototype[Symbol.replace]`
     // sets it to 0 itself for a `/g` pattern. The reset before `.test` at the
     // call site is the one that IS needed.
@@ -6736,7 +6841,10 @@ export function redactSecretsForState<T>(
       // rather than claimed pinned, which an earlier revision of this comment
       // got wrong. What IS pinned is the ANSWER for this shape, so an edit that
       // makes the two paths disagree reds whichever one it broke.
-      if (isSingleDynamicReferenceToken(value)) return value;
+      //
+      // Only for a token naming a service cdkd RESOLVES (issue #2743): see
+      // {@link spanNamesResolvableService}.
+      if (isSingleDynamicReferenceToken(value) && spanNamesResolvableService(value)) return value;
       // No needle can be a token-shaped plaintext either: the shortest possible
       // `{{resolve:x}}` is far longer than {@link MIN_NEEDLE_LENGTH}, so an
       // absent regex means nothing in this leaf can be rewritten at all.

@@ -227,6 +227,26 @@ describe('cdkd scrub - a stored output key the template cannot account for (issu
     expect(JSON.stringify(saved!.outputs)).not.toContain(SECRET_PLAINTEXT);
   });
 
+  it('REWRITES a plaintext that sits inside a `{{resolve:...}}` span of an unresolvable service (issue #2743)', async () => {
+    // What a release before the #2743 refusal persisted for an `Fn::Sub` that
+    // put a resolved secret in a reference's SERVICE position. The value scan
+    // spared a needle inside ANY complete span, so scrub reported this record
+    // clean; it now spares only a span of a service cdkd resolves. Both shapes:
+    // the whole leaf IS the bogus token, and the token is embedded.
+    const { saved, changed } = await scrub(
+      makeState({
+        Whole: `{{resolve:${SECRET_PLAINTEXT}}}`,
+        Embedded: `x-{{resolve:${SECRET_PLAINTEXT}}}-y`,
+      }),
+      {}
+    );
+
+    expect(saved!.outputs['Whole']).toBe(`{{resolve:${SECRET_EXPR}}}`);
+    expect(saved!.outputs['Embedded']).toBe(`x-{{resolve:${SECRET_EXPR}}}-y`);
+    expect(JSON.stringify(saved!.outputs)).not.toContain(SECRET_PLAINTEXT);
+    expect(changed).toBeGreaterThan(0);
+  });
+
   it('REWRITES a deleted output nested inside an OBJECT-valued stored output', async () => {
     // An output value is not always a scalar — a list-valued `Fn::GetAtt`
     // persists a JSON array, and a legacy bag can hold a structure. The walk

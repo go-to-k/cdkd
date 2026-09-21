@@ -3730,6 +3730,7 @@
         "s3-replication-and-filter",
         "scheduler-custom-group",
         "sdk-ccapi-crossref",
+        "secrets-dynamic-ref",
         "serverless-api",
         "sns-sqs-event",
         "stepfunctions-logging",
@@ -3945,6 +3946,9 @@
           "l2"
         ],
         "sdk-ccapi-crossref": [
+          "l1"
+        ],
+        "secrets-dynamic-ref": [
           "l1"
         ],
         "serverless-api": [

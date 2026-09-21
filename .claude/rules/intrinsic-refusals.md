@@ -21,8 +21,13 @@ Issue [#1740](https://github.com/go-to-k/cdkd/issues/1740). Per-site reasons:
   shape hard-fail, `--strict-getatt`, `rejectPlaceholderArnAttribute`, the
   fabricated-account guard, a declared resource, and an unbound declared
   parameter with no `Default`. An UNDECLARED head still warns, as does a bound
-  or defaulted parameter. `resolveSplit`'s two refusals and
-  `refuseCoercedInheritedSecret` use the class too: a refusal is a property of
+  or defaulted parameter. `resolveSplit`'s two refusals,
+  `refuseCoercedInheritedSecret` and the unsupported-service arm — for a
+  `{{resolve:...}}` token holding a SECRET, on the TEMPLATE route only
+  ([#2743](https://github.com/go-to-k/cdkd/issues/2743)); an untainted one, and
+  ANY token in persisted text (the public `resolveDynamicReferences` entry:
+  drift, rollback replay, cross-stack reads), must keep warning and staying as
+  written — use the class too: a refusal is a property of
   the THROW, not of the catch that inspects it.
 - **A stale-record refusal is worded from the HEAL OUTCOME** ([#1852](https://github.com/go-to-k/cdkd/issues/1852)): "not enriched ... file an issue" only when the re-read completed without the attribute or was never attempted; a failed / not-found read says so and names the real remedy. Never promise "the next update heals it" alone — a no-change deploy runs no update. They stay `markNonRetryable`: the outcome is memoized per deploy.
 - **`cdkd scrub` needs a distinction the base class cannot make.** A PERMANENT

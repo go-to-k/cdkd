@@ -266,7 +266,7 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', async (importO
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { dynamicReferenceRetryDelays } from '../../../src/deployment/intrinsic-function-resolver.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
-import { CdkdError, formatError } from '../../../src/utils/error-handler.js';
+import { CdkdError, IntrinsicResolutionRefusalError, formatError } from '../../../src/utils/error-handler.js';
 
 function makeState(stackName: string): StackState {
   return {
@@ -661,26 +661,64 @@ describe('DeployEngine - an output resolution failure is reported MASKED (issue 
       expect(wrapped).not.toContain(PASSWORD);
     });
 
-    it('a resolved value landing in the SERVICE position: the unsupported-service warn is masked (default verbosity)', async () => {
+    describe('a resolved value landing in the SERVICE position is REFUSED (issue #2743)', () => {
       // `{{resolve:${Pw}}}`: the variable resolves and records the password,
       // the re-entry matches `{{resolve:<password>}}`, and `service` — the
-      // text before the first `:` — IS the plaintext. That arm warns at
-      // default verbosity and `continue`s, so the output RESOLVES (the
-      // literal span stays in the value — issue #2743, not this one) and no
-      // failure warn is emitted: this line is the whole exposure.
+      // text before the first `:` — IS the plaintext. The arm used to warn
+      // (masked, issue #2728) and `continue`, leaving the literal span in the
+      // value: it was persisted as `outputs.Leak`, and printed by the deploy
+      // summary's `Outputs:` line, in the clear. It now refuses, so the only
+      // line naming the token is the engine's masked failure warn.
       const serviceAssembled = {
         'Fn::Sub': ['{{resolve:${Pw}}}', { Pw: `{{resolve:secretsmanager:${SECRET_ID}:SecretString:password}}` }],
       };
-      await makeEngine().deploy(stackName, templateWith({ Leak: { Value: serviceAssembled } }));
+      const REFUSAL =
+        'Refusing to resolve {{resolve:***}}: its service is not one cdkd resolves ' +
+        '(secretsmanager, ssm, ssm-secure), and the reference was assembled from a secret value, ' +
+        'so leaving it as written would send that value to AWS and record it in state in the clear.';
+      const allLines = (): string[] =>
+        [debugSpy, infoSpy, warnSpy, errorSpy].flatMap((spy) => spy.mock.calls.map((c) => String(c[0])));
 
-      const lines = [debugSpy, infoSpy, warnSpy, errorSpy].flatMap((spy) =>
-        spy.mock.calls.map((c) => String(c[0]))
-      );
-      const unsupported = lines.filter((l) => l.includes('Unsupported dynamic reference service:'));
-      expect(unsupported).toHaveLength(1);
-      expect(unsupported[0]).toBe('Unsupported dynamic reference service: ***');
-      for (const line of lines) expect(line).not.toContain(PASSWORD);
-      expect(outputFailureWarn()).toBeUndefined();
+      it('default arm: the output is skipped under a masked warn, and nothing persisted, returned or logged carries the password', async () => {
+        const result = await makeEngine().deploy(stackName, templateWith({ Leak: { Value: serviceAssembled } }));
+
+        expect(outputFailureWarn()).toBe(`Failed to resolve output Leak: ${REFUSAL}`);
+        const lines = allLines();
+        // The unsupported-service warn is no longer reached by a tainted token.
+        expect(lines.filter((l) => l.includes('Unsupported dynamic reference service:'))).toEqual([]);
+        for (const line of lines) expect(line).not.toContain(PASSWORD);
+        // The resolver's OWN instance, before the engine's masking clone.
+        const thrown = lastThrown.value as Error;
+        expect(thrown).toBeInstanceOf(IntrinsicResolutionRefusalError);
+        expect(thrown.message).toBe(REFUSAL);
+        expect(isMarkedNonRetryable(thrown)).toBe(true);
+        // `deploy.ts` renders each `DeployResult.outputs` entry as
+        // `<stack>.<key> = ${String(value)}` at default verbosity, so the
+        // same rendering is asserted here.
+        const summary = Object.entries(result.outputs ?? {}).map(([k, v]) => `${k} = ${String(v)}`);
+        expect(summary.join('\n')).not.toContain(PASSWORD);
+        expect(result.outputs ?? {}).not.toHaveProperty('Leak');
+        expect(mockStateBackend.saveState).toHaveBeenCalled();
+        const saved = JSON.stringify(mockStateBackend.saveState.mock.calls.map((c) => c.slice(1)));
+        expect(saved).not.toContain(PASSWORD);
+        expect(saved).not.toContain('{{resolve:***');
+      });
+
+      it('strict arm: the thrown message and its cause carry the mask only', async () => {
+        let thrown: unknown;
+        try {
+          await makeEngine(true).deploy(stackName, templateWith({ Leak: { Value: serviceAssembled } }));
+        } catch (error) {
+          thrown = error;
+        }
+        const error = thrown as Error & { cause?: unknown };
+        expect(error).toBeInstanceOf(Error);
+        expect(error.message).toContain('{{resolve:***}}');
+        expect(error.message).not.toContain(PASSWORD);
+        expect((error.cause as Error).message).toBe(REFUSAL);
+        expect(formatError(error)).not.toContain(PASSWORD);
+        for (const line of allLines()) expect(line).not.toContain(PASSWORD);
+      });
     });
 
     // Both SSM spellings: `ssm` and `ssm-secure` reach `resolveSSMReference`

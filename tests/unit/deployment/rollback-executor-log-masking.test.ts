@@ -6,7 +6,7 @@ import {
   type FailedOperation,
   type RollbackExecutorContext,
 } from '../../../src/deployment/rollback-executor.js';
-import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
+import { SECRET_MASK, scrubResourceRecord } from '../../../src/deployment/secret-redaction.js';
 import type { DeploymentEvent } from '../../../src/types/deployment-events.js';
 import type { ResourceState } from '../../../src/types/state.js';
 import { resetAccountInfoCache } from '../../../src/deployment/intrinsic-function-resolver.js';
@@ -714,4 +714,63 @@ describe('rollback replay - masking scope and parity (issue #2038)', () => {
       | undefined;
     expect(failed!.error!.message).toBe('Bad Request: something ordinary failed');
   });
+});
+
+describe('rollback replay - a persisted `{{resolve:<plaintext>}}` is replayed, never refused (issue #2743)', () => {
+  // A `previousState` written by a release before the #2743 refusal: an
+  // `Fn::Sub` had put the resolved secret in a reference's SERVICE position,
+  // and the assembled token was persisted beside the reference that resolves
+  // to it. `resolveReplayProps` shares ONE secrets map per op, so whichever
+  // leaf is walked second meets a pass that already holds the needle -- the
+  // situation in which the TEMPLATE route refuses. The replay must not: AWS
+  // already holds that literal, re-sending it is a correct no-op, and a
+  // refusal is deterministic, so every `cdkd rollback` retry would fail the
+  // same op with nothing the user can run to clear it.
+  const LEAKED = `{{resolve:${SECRET_PLAINTEXT}}}`;
+
+  for (const [order, details] of [
+    ['the reference walked FIRST', { password: SECRET_EXPR, leak: LEAKED }],
+    ['the leaked token walked FIRST', { leak: LEAKED, password: SECRET_EXPR }],
+  ] as const) {
+    it(`${order}: the op succeeds, the literal is re-sent unchanged, nothing unmasked is logged`, async () => {
+      const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B', wasReplaced: false });
+      const { ctx, warns, debugs, events } = makeCtx({ update });
+      const previousState = res({ physicalId: 'phys-B', properties: { ProviderDetails: { ...details } } });
+      const state = {
+        Idp: res({
+          physicalId: 'phys-B',
+          properties: { ProviderDetails: { ...details, client_id: 'CHANGED' } },
+        }),
+      };
+
+      const result = await replayRollback(
+        [
+          {
+            logicalId: 'Idp',
+            changeType: 'UPDATE',
+            resourceType: IDP_TYPE,
+            physicalId: 'phys-B',
+            previousState,
+          },
+        ],
+        state,
+        'S',
+        ctx
+      );
+
+      expect(result.failures).toBe(0);
+      expect(update).toHaveBeenCalledTimes(1);
+      const sent = update.mock.calls[0]![3] as { ProviderDetails: Record<string, string> };
+      // The reference resolved, and the literal went back as AWS holds it.
+      expect(sent.ProviderDetails['password']).toBe(SECRET_PLAINTEXT);
+      expect(sent.ProviderDetails['leak']).toBe(LEAKED);
+      const said = [...warns, ...debugs, ...events.map((e) => JSON.stringify(e))].join('\n');
+      expect(said).not.toContain('Refusing to resolve');
+      expect(said).not.toContain(SECRET_PLAINTEXT);
+      // What is persisted afterwards is the record's own text, and the value
+      // scan no longer spares the plaintext inside that span.
+      const persisted = scrubResourceRecord(state['Idp']!, new Map([[SECRET_PLAINTEXT, SECRET_EXPR]]));
+      expect(JSON.stringify(persisted)).not.toContain(SECRET_PLAINTEXT);
+    });
+  }
 });

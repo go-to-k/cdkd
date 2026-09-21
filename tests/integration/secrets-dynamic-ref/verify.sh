@@ -123,6 +123,12 @@ PARAM_NAME="cdkd-test-dynref-param-${ACCOUNT_ID}"
 # stack: CloudFormation cannot create a SecureString parameter, so the fixture
 # only references it.
 SECURE_PARAM_NAME="cdkd-test-dynref-secure-${ACCOUNT_ID}"
+# Issue #2743: the IAM role the `CDKD_TEST_SERVICE_SPAN=resource` probe declares
+# and cdkd must REFUSE to create. Must match the stack's own spelling.
+SERVICE_SPAN_ROLE_NAME="cdkd-test-dynref-service-span-${ACCOUNT_ID}"
+# ...and the throwaway role Phase 1b4's PREMISE check creates and deletes itself,
+# to prove IAM accepts a `{{resolve:...}}` Description at all.
+SERVICE_SPAN_PREMISE_ROLE_NAME="cdkd-test-dynref-span-premise-${ACCOUNT_ID}"
 
 # Known values authored in the fixture stack (NOT secret in any real sense;
 # this is test data, but we still mask the secret-derived ones in output).
@@ -512,6 +518,10 @@ cleanup() {
   # The SecureString parameter is created by this script, so cdkd never deletes
   # it — the ONLY thing that keeps it from being an orphan is this sweep.
   aws ssm delete-parameter --name "${SECURE_PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  # Issue #2743: exists only if the refusal under test REGRESSED, and then it
+  # holds the password inside a bogus token -- so it is swept on every path.
+  aws iam delete-role --role-name "${SERVICE_SPAN_ROLE_NAME}" >/dev/null 2>&1 || true
+  aws iam delete-role --role-name "${SERVICE_SPAN_PREMISE_ROLE_NAME}" >/dev/null 2>&1 || true
   if [ -n "${STATE_BUCKET:-}" ]; then
     if [ "${destroy_rc}" -eq 0 ]; then
       aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
@@ -980,6 +990,324 @@ if jq -e 'has("outputs") and ((.outputs | has("Base64Secret")) or (.outputs | ha
   exit 1
 fi
 aws s3 cp "${B64_TRIMMED}" "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet
+
+# --- issue #2743: WHERE the password sits in a persisted document ---------
+# A whole-file grep for the password cannot be the assertion: this fixture's
+# own `secretsmanager.Secret` is declared from `SecretValue.unsafePlainText`,
+# so `resources.<Secret>.properties.SecretString` holds it in state BY DESIGN
+# (a template literal, not a resolved reference). What the #2743 phases must
+# prove is that no NEW position holds it, so they compare the SET OF PATHS.
+#
+# assert_password_paths <what> <by-design|none> <json-or-jsonl-file>
+#   by-design: exactly the one SecretString path above must hold the password
+#              (its DISAPPEARING is noticed too -- then this scan is reading
+#              something other than the state record it thinks it is);
+#   none:      no path may hold it (journal, deployment events).
+# Slurped, so a JSONL events stream is one input like any other; the leading
+# document index is dropped from the by-design match and kept in the report.
+# A KEY holding the password counts like a value (the whole-file grep this
+# replaced caught both). On failure the PATHS are printed and never a value,
+# and a path SEGMENT that itself carried the password is masked the same way.
+assert_password_paths() {
+  local what="$1" expect="$2" file="$3" found docs
+  # CONTENT FLOOR, first: `jq -rs` slurps an EMPTY file to `[]`, prints nothing
+  # and exits 0, so without this the `none` arm passes for free over a
+  # zero-byte or truncated document -- the shape a failed `aws s3 cp` leaves.
+  docs=$(jq -rs 'length' "${file}" 2>/dev/null) || docs=""
+  if [ -z "${docs}" ] || [ "${docs}" -lt 1 ] 2>/dev/null; then
+    echo "FAIL: ${what}: the document to scan held no JSON value at all (read '${docs:-<unparsable>}') -- the password scan would pass vacuously (issue #2743)" >&2
+    exit 1
+  fi
+  found=$(jq -rs --arg pw "${EXPECTED_PASSWORD}" '
+    . as $docs
+    | ([paths(type == "string" and contains($pw))]
+       + [paths | select((.[-1] | type) == "string" and (.[-1] | contains($pw)))])
+    | unique
+    | map(
+        . as $p
+        | if ($p | length) == 5 and $p[1] == "resources" and $p[3] == "properties"
+             and $p[4] == "SecretString"
+             and ($docs[$p[0]].resources[$p[2]].resourceType == "AWS::SecretsManager::Secret")
+          then "BY-DESIGN"
+          # `split`/`join`, never `gsub`: `gsub` reads the password as a REGEX,
+          # so a future value holding `(` or `[` would make jq ERROR here and
+          # the run would die under the parse message below, which is not what
+          # happened. Detection above is literal (`contains`); so is this.
+          else ($p | map(tostring) | join(".") | split($pw) | join("<PW>")) end)
+    | sort | .[]' "${file}") || {
+    echo "FAIL: ${what}: could not parse the document to locate the password (issue #2743)" >&2
+    exit 1
+  }
+  local wanted=""
+  [ "${expect}" = "by-design" ] && wanted="BY-DESIGN"
+  if [ "${found}" != "${wanted}" ]; then
+    echo "FAIL: ${what}: the resolved password sits at an unexpected set of paths (issue #2743). Expected '${wanted:-<none>}', found:" >&2
+    printf '%s\n' "${found:-<none>}" >&2
+    exit 1
+  fi
+}
+
+# --- Phase 1b3: a secret in a reference's SERVICE position, as an OUTPUT (issue #2743)
+# `CDKD_TEST_SERVICE_SPAN=output` declares `ServiceSpanLeak`, an `Fn::Sub`
+# whose body `{{resolve:${Pw}}}` assembles `{{resolve:<password>}}`. The
+# resolver's unsupported-service arm used to warn and LEAVE that token in the
+# value: `state.outputs.ServiceSpanLeak` held the password and the deploy
+# summary's `Outputs:` line printed it, at default verbosity, under exit 0.
+# The token is now refused, so the output is warned about and skipped. Its own
+# deploy, for the reason Phase 1b2 states: a failing output freezes the bag.
+echo "==> Phase 1b3: CDKD_TEST_SERVICE_SPAN=output probe deploy (issue #2743)"
+if ! DEPLOY_OUT_SPAN=$(CDKD_TEST_SERVICE_SPAN=output node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --verbose \
+  --yes 2>&1); then
+  echo "FAIL: the CDKD_TEST_SERVICE_SPAN=output probe deploy exited non-zero -- a refused OUTPUT is warned about and skipped, and the deploy exits 0 (issue #2743)" >&2
+  diag_output "${DEPLOY_OUT_SPAN}"
+  exit 1
+fi
+SPAN_SHAPE=$(jq -r --arg secret "${SECRET_NAME}" '.Outputs.ServiceSpanLeak.Value
+  | if . == null then "absent"
+    elif type != "object" then "not-an-intrinsic"
+    else .["Fn::Sub"] end
+  | if . == null then "absent"
+    elif (type == "array" and length == 2
+          and .[0] == "{{resolve:${Pw}}}"
+          and .[1].Pw == ("{{resolve:secretsmanager:" + $secret + ":SecretString:password}}")) then "Fn::Sub"
+    elif . == "not-an-intrinsic" or . == "absent" then .
+    else "other" end' "${SYNTH_TEMPLATE}")
+if [ "${SPAN_SHAPE}" != "Fn::Sub" ]; then
+  echo "FAIL: premise: ServiceSpanLeak synthesized as '${SPAN_SHAPE}', not an Fn::Sub ['{{resolve:\${Pw}}}', {Pw: <password reference>}] -- the #2743 arm is not what this deploy exercised" >&2
+  exit 1
+fi
+echo "    OK: premise: ServiceSpanLeak puts the password reference in the service position (${SPAN_SHAPE})"
+# The log negative FIRST and over the whole `--verbose` log: it covers the
+# refusal warn, the resolver's own lines and the summary's `Outputs:` rows.
+if [[ "${DEPLOY_OUT_SPAN}" == *"${EXPECTED_PASSWORD}"* ]]; then
+  echo "FAIL: the service-span probe deploy's log carries the resolved password in plaintext (issue #2743)" >&2
+  exit 1
+fi
+# LAYER 1, the resolver's refusal. The sentinel that the arm ran at all: a
+# deploy that resolved the output, or left the token in place under the old
+# warn, passes every negative here for free.
+if [[ "${DEPLOY_OUT_SPAN}" != *"Failed to resolve output ServiceSpanLeak"*"Refusing to resolve {{resolve:***}}"* ]]; then
+  echo "FAIL: the probe deploy did not report 'Failed to resolve output ServiceSpanLeak: Refusing to resolve {{resolve:***}}' -- the resolver no longer refuses a secret assembled into an unresolvable reference (issue #2743)" >&2
+  diag_output "${DEPLOY_OUT_SPAN}"
+  exit 1
+fi
+if [[ "${DEPLOY_OUT_SPAN}" == *"Unsupported dynamic reference service"* ]]; then
+  echo "FAIL: the probe deploy still took the warn-and-leave arm for the tainted token (issue #2743)" >&2
+  diag_output "${DEPLOY_OUT_SPAN}"
+  exit 1
+fi
+SPAN_STATE=$(mktemp)
+SCRATCH_FILES+=("${SPAN_STATE}")
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${SPAN_STATE}" --quiet
+assert_password_paths "state.json after the service-span OUTPUT probe deploy" by-design "${SPAN_STATE}"
+SPAN_PERSISTED=$(jq -r '.outputs | has("ServiceSpanLeak")' "${SPAN_STATE}")
+if [ "${SPAN_PERSISTED}" != "false" ]; then
+  echo "FAIL: state.outputs has a ServiceSpanLeak key -- a refused output must not be persisted at all (issue #2743); has=${SPAN_PERSISTED}" >&2
+  exit 1
+fi
+echo "    OK: the service-position output was refused masked, and neither the log nor state.json carries the password (#2743)"
+
+# --- Phase 1b4: the same token as a RESOURCE PROPERTY (issue #2743) ---------
+# The higher-severity half. Before the fix the provider was handed
+# `{{resolve:<password>}}` and AWS stored it -- here as an IAM role's
+# `Description`, readable by anyone with `iam:GetRole` -- under a green deploy.
+# The refusal fails the resource before its provider is called, so the deploy
+# exits non-zero, rolls back, and the role must not exist. Probed gone BEFORE
+# the deploy too, or a leftover would make the post-deploy assertion a
+# statement about the previous run. The premise that IAM accepts such a
+# Description at all is proven just below, before the deploy.
+echo "==> Phase 1b4: CDKD_TEST_SERVICE_SPAN=resource probe deploy (issue #2743)"
+# PREMISE, proven rather than assumed: IAM ACCEPTS a `{{resolve:...}}`
+# Description and returns it unchanged. Without this "the role is absent" would
+# not mean "cdkd refused" -- a service that rejects the text leaves the
+# resource absent with or without the fix (an SSM parameter VALUE does exactly
+# that, which is why it is not the vehicle). A throwaway role under its own
+# exact name, created and deleted here and swept by `cleanup` by that name.
+SPAN_PREMISE_DESCRIPTION='{{resolve:not-a-secret}}'
+aws iam create-role --role-name "${SERVICE_SPAN_PREMISE_ROLE_NAME}" \
+  --description "${SPAN_PREMISE_DESCRIPTION}" \
+  --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}' \
+  >/dev/null
+# POLLED: IAM is eventually consistent, so a `get-role` on the heels of
+# `create-role` can answer `NoSuchEntity` and, under `set -e`, abort the whole
+# run on a premise that in fact holds. The role is swept by exact name in
+# `cleanup` on every path, so a give-up here leaks nothing.
+SPAN_PREMISE_READBACK=""
+for _ in 1 2 3 4 5 6; do
+  SPAN_PREMISE_READBACK=$(aws iam get-role --role-name "${SERVICE_SPAN_PREMISE_ROLE_NAME}" \
+    --query 'Role.Description' --output text 2>/dev/null) && break
+  sleep 2
+done
+aws iam delete-role --role-name "${SERVICE_SPAN_PREMISE_ROLE_NAME}"
+if [ "${SPAN_PREMISE_READBACK}" != "${SPAN_PREMISE_DESCRIPTION}" ]; then
+  echo "FAIL: premise: IAM did not round-trip a '{{resolve:...}}' role Description (read back '${SPAN_PREMISE_READBACK}') -- an absent role would not prove cdkd refused, so Phase 1b4 needs another vehicle (issue #2743)" >&2
+  exit 1
+fi
+echo "    OK: premise: IAM accepts and returns a '{{resolve:...}}' role Description"
+assert_gone "premise: the service-span probe role ${SERVICE_SPAN_ROLE_NAME} already exists before its probe deploy (issue #2743)" \
+  aws iam get-role --role-name "${SERVICE_SPAN_ROLE_NAME}"
+set +e
+DEPLOY_OUT_SPAN_RES=$(CDKD_TEST_SERVICE_SPAN=resource node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --verbose \
+  --yes 2>&1)
+SPAN_RES_RC=$?
+set -e
+if [[ "${DEPLOY_OUT_SPAN_RES}" == *"${EXPECTED_PASSWORD}"* ]]; then
+  echo "FAIL: the service-span RESOURCE probe deploy's log carries the resolved password in plaintext (issue #2743)" >&2
+  exit 1
+fi
+SPAN_RES_SHAPE=$(jq -r '.Resources | to_entries
+  | map(select(.value.Type == "AWS::IAM::Role" and (.value.Properties.Description | type) == "object"
+               and .value.Properties.Description["Fn::Sub"][0] == "{{resolve:${Pw}}}"))
+  | length' "${SYNTH_TEMPLATE}")
+if [ "${SPAN_RES_SHAPE}" != "1" ]; then
+  echo "FAIL: premise: expected exactly 1 AWS::IAM::Role whose Description is the service-position Fn::Sub, found ${SPAN_RES_SHAPE} -- the #2743 resource arm is not what this deploy exercised" >&2
+  exit 1
+fi
+# The assertion that matters most, BEFORE the exit-code one: whatever else
+# went wrong, a role that exists is the plaintext on AWS.
+assert_gone "the service-span probe role ${SERVICE_SPAN_ROLE_NAME} EXISTS -- cdkd handed a reference assembled from a secret to the provider (issue #2743)" \
+  aws iam get-role --role-name "${SERVICE_SPAN_ROLE_NAME}"
+if [ "${SPAN_RES_RC}" -eq 0 ]; then
+  echo "FAIL: the CDKD_TEST_SERVICE_SPAN=resource probe deploy exited 0 -- a refused resource property must fail the deploy (issue #2743)" >&2
+  diag_output "${DEPLOY_OUT_SPAN_RES}"
+  exit 1
+fi
+if [[ "${DEPLOY_OUT_SPAN_RES}" != *"Refusing to resolve {{resolve:***}}"* ]]; then
+  echo "FAIL: the resource probe deploy failed, but not with 'Refusing to resolve {{resolve:***}}' -- it failed for some other reason and the #2743 arm did not run" >&2
+  diag_output "${DEPLOY_OUT_SPAN_RES}"
+  exit 1
+fi
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${SPAN_STATE}" --quiet
+assert_password_paths "state.json after the refused RESOURCE probe deploy" by-design "${SPAN_STATE}"
+SPAN_RES_RECORDED=$(jq -r '[.resources | to_entries[] | select(.key | startswith("ServiceSpanRole"))] | length' "${SPAN_STATE}")
+if [ "${SPAN_RES_RECORDED}" != "0" ]; then
+  echo "FAIL: state.json records ${SPAN_RES_RECORDED} ServiceSpanRole resource(s) after the refused deploy (issue #2743)" >&2
+  exit 1
+fi
+echo "    OK: the refused resource property never reached AWS: no role, no state record, no plaintext (#2743)"
+# The other two persisted readers of a failed deploy. The journal exists only
+# between a failed deploy and its rollback, so "absent" is an answer; the
+# deployment-events stream always exists, and a scan that read NOTHING would
+# pass for free, hence the floor.
+SPAN_JOURNAL=$(mktemp)
+SCRATCH_FILES+=("${SPAN_JOURNAL}")
+if gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" \
+  --key "${STATE_PREFIX}rollback-journal.json"; then
+  echo "    (no rollback-journal.json after the automatic rollback -- nothing to scan)"
+else
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_PREFIX}rollback-journal.json" "${SPAN_JOURNAL}" --quiet
+  assert_password_paths "rollback-journal.json after the refused RESOURCE probe deploy" none "${SPAN_JOURNAL}"
+fi
+SPAN_EVENT_KEYS=$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" \
+  --prefix "${STATE_PREFIX}deployments/" --output json | jq -r '.Contents // [] | .[].Key')
+SPAN_EVENTS_SCANNED=0
+SPAN_EVENTS_REFUSAL=0
+while IFS= read -r span_event_key || [ -n "${span_event_key}" ]; do
+  [ -n "${span_event_key}" ] || continue
+  SPAN_EVENT_FILE=$(mktemp)
+  SCRATCH_FILES+=("${SPAN_EVENT_FILE}")
+  aws s3 cp "s3://${STATE_BUCKET}/${span_event_key}" "${SPAN_EVENT_FILE}" --quiet
+  assert_password_paths "deployment events object ${span_event_key}" none "${SPAN_EVENT_FILE}"
+  SPAN_EVENTS_SCANNED=$((SPAN_EVENTS_SCANNED + 1))
+  if grep -qF 'Refusing to resolve {{resolve:***}}' "${SPAN_EVENT_FILE}"; then
+    SPAN_EVENTS_REFUSAL=$((SPAN_EVENTS_REFUSAL + 1))
+  fi
+done <<< "${SPAN_EVENT_KEYS}"
+if [ "${SPAN_EVENTS_SCANNED}" -lt 2 ]; then
+  echo "FAIL: the deployment-events scan read ${SPAN_EVENTS_SCANNED} object(s) under ${STATE_PREFIX}deployments/, fewer than the index plus one run stream -- the negative above passes for free (issue #2743)" >&2
+  exit 1
+fi
+if [ "${SPAN_EVENTS_REFUSAL}" -lt 1 ]; then
+  echo "FAIL: no deployment-events object carries the masked refusal 'Refusing to resolve {{resolve:***}}' -- the failed resource's event was not among what the scan read (issue #2743)" >&2
+  exit 1
+fi
+echo "    OK: no journal or deployment-events object carries the password (${SPAN_EVENTS_SCANNED} events objects, ${SPAN_EVENTS_REFUSAL} with the masked refusal) (#2743)"
+
+# --- Phase 1b5: `cdkd scrub` heals a record an OLDER binary leaked into (issue #2743)
+# Phases 1b3 / 1b4 exercise the RESOLVER's refusal, which pre-empts the second
+# layer of the fix every time, so neither can tell whether that layer works.
+# This one SEEDS what a pre-fix binary persisted -- an output holding
+# `{{resolve:<password>}}` -- and runs a real `cdkd scrub`. The value scan used
+# to SPARE a recorded plaintext lying inside any complete `{{resolve:...}}`
+# span, so scrub left the password where it was; it now spares only a span
+# naming a service cdkd resolves.
+#
+# The key is one today's template does not declare, so it is repaired by the
+# unaccounted-output value scan against the secrets this run's resources
+# recorded. Same direct-S3 write idiom as Phase 1b2's trim, and dropped again
+# below so the unchanged-stack `diff --fail` guard never sees it. The seeded
+# VERSION holds the password: the success-path version sweep at the end purges
+# and asserts it, and `cleanup` purges noncurrent versions on every other path.
+echo "==> Phase 1b5: cdkd scrub over a seeded {{resolve:<plaintext>}} output (issue #2743)"
+SPAN_SEEDED=$(mktemp)
+SPAN_SCRUBBED=$(mktemp)
+SPAN_DROPPED=$(mktemp)
+SCRATCH_FILES+=("${SPAN_SEEDED}" "${SPAN_SCRUBBED}" "${SPAN_DROPPED}")
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${SPAN_STATE}" --quiet
+jq --arg leaked "{{resolve:${EXPECTED_PASSWORD}}}" '.outputs.ServiceSpanLegacy = $leaked' \
+  "${SPAN_STATE}" > "${SPAN_SEEDED}"
+# Premise: the seed landed AT THE KEY, or every check below passes over
+# nothing. Compared by equality on that key: a whole-file grep is satisfied by
+# the Secret's own by-design `SecretString` literal alone.
+SPAN_SEED_LANDED=$(jq -r --arg leaked "{{resolve:${EXPECTED_PASSWORD}}}" \
+  '.outputs.ServiceSpanLegacy == $leaked' "${SPAN_SEEDED}")
+if [ "${SPAN_SEED_LANDED}" != "true" ]; then
+  echo "FAIL: premise: outputs.ServiceSpanLegacy in the seeded state is not the leaked token -- the #2743 scrub arm has nothing to heal" >&2
+  exit 1
+fi
+aws s3 cp "${SPAN_SEEDED}" "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet
+set +e
+SPAN_SCRUB_OUT=$(node "${LOCAL_DIST}" scrub "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" 2>&1)
+SPAN_SCRUB_RC=$?
+set -e
+if [[ "${SPAN_SCRUB_OUT}" == *"${EXPECTED_PASSWORD}"* ]]; then
+  echo "FAIL: 'cdkd scrub' output carries the resolved password (issue #2743)" >&2
+  exit 1
+fi
+if [ "${SPAN_SCRUB_RC}" -ne 0 ]; then
+  echo "FAIL: 'cdkd scrub' over the seeded record exited ${SPAN_SCRUB_RC} (issue #2743)" >&2
+  diag_output "${SPAN_SCRUB_OUT}"
+  exit 1
+fi
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${SPAN_SCRUBBED}" --quiet
+# LAYER 2, the value scan's narrowed sparing rule.
+# The seed's own premise, by the same instrument: BEFORE the scrub the password
+# sat at the by-design path AND at the seeded key, so the scan below is known
+# to see that key.
+SPAN_SEEDED_PATHS=$(jq -r --arg pw "${EXPECTED_PASSWORD}" \
+  '[paths(type == "string" and contains($pw))] | map(map(tostring) | join(".")) | index("outputs.ServiceSpanLegacy") != null' \
+  "${SPAN_SEEDED}")
+if [ "${SPAN_SEEDED_PATHS}" != "true" ]; then
+  echo "FAIL: premise: the path scan does not see the password at outputs.ServiceSpanLegacy in the SEEDED state (issue #2743)" >&2
+  exit 1
+fi
+# A red here naming `outputs.ServiceSpanLegacy` means the value scan spared a
+# span of a service cdkd does not resolve.
+assert_password_paths "state.json after 'cdkd scrub' over the seeded {{resolve:<password>}} output" by-design "${SPAN_SCRUBBED}"
+# Positive, so the negative above cannot pass because scrub DROPPED the key or
+# rewrote it to something unrelated: the plaintext became a Secrets Manager
+# reference inside the same outer text. Which spelling (name or ARN form) wins
+# is the secrets map's business, so only the frame is pinned.
+SPAN_HEALED=$(jq -r '.outputs.ServiceSpanLegacy // "<absent>"' "${SPAN_SCRUBBED}")
+if [[ "${SPAN_HEALED}" != "{{resolve:{{resolve:secretsmanager:"*"}}}}" ]]; then
+  echo "FAIL: state.outputs.ServiceSpanLegacy is not '{{resolve:{{resolve:secretsmanager:...}}}}' after 'cdkd scrub' (issue #2743); value follows" >&2
+  diag_output "${SPAN_HEALED}"
+  exit 1
+fi
+echo "    OK: cdkd scrub replaced the plaintext inside the unresolvable-service span with its reference (#2743)"
+jq 'del(.outputs.ServiceSpanLegacy)' "${SPAN_SCRUBBED}" > "${SPAN_DROPPED}"
+if jq -e '.outputs | has("ServiceSpanLegacy")' "${SPAN_DROPPED}" >/dev/null; then
+  echo "FAIL: could not drop ServiceSpanLegacy from the persisted outputs -- the diff --fail guard later would red on it" >&2
+  exit 1
+fi
+aws s3 cp "${SPAN_DROPPED}" "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet
 
 # --- Assertion: dynamic references resolved on the deployed Lambda ----
 echo "==> Reading consumer Lambda env vars from AWS (GetFunctionConfiguration)"
