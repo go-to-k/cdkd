@@ -140,24 +140,29 @@ export interface AssemblyContents {
 }
 
 /**
- * The failure's own words, with no path in them.
+ * The failure's own words, carrying NO value the assembly chose.
  *
- * A filesystem failure is reduced to its `code` (`ENOENT`, `EACCES`,
- * `EISDIR`), a fixed string cdkd controls: Node's `message` for one embeds the
- * path, which is the value being contained. A `JSON.parse` failure has no path
- * in it -- V8 quotes a bounded window of the file's own bytes -- so its text is
- * kept, sanitized.
+ * Three branches, and each returns a string cdkd controls:
+ *
+ * - a filesystem failure is reduced to its `code` (`ENOENT`, `EACCES`,
+ *   `EISDIR`), because Node's `message` for one embeds the path, which is the
+ *   value being contained;
+ * - a `JSON.parse` failure is reduced to `invalid JSON`. V8's `SyntaxError`
+ *   carries no path, but it DOES echo a short window of the file's own bytes
+ *   verbatim (`Unexpected token '.', ". All 3 st"... is not valid JSON`), and
+ *   the file is assembly-chosen too. The snippet buys nothing here: the caller
+ *   already names the directory;
+ * - anything else answers `unreadable`, and deliberately does NOT fall back to
+ *   the wrapper's own message, which is the text this function exists to
+ *   exclude. A fallback fires on an input nobody predicted, which is exactly
+ *   when the contained value must not come back.
  */
 function manifestReadFailureText(error: unknown): string {
   const cause = error instanceof CdkdError ? error.cause : error;
   const code = (cause as NodeJS.ErrnoException | undefined)?.code;
   if (typeof code === 'string' && code.length > 0) return displaySafe(code);
-  // The tail deliberately does NOT fall back to the wrapper's own message:
-  // that is the text this function exists to exclude, since it embeds the
-  // manifest path. A fallback fires on an input nobody predicted, which is
-  // exactly when the contained value must not come back.
-  if (!(cause instanceof Error)) return 'unreadable';
-  return displaySafe(cause.message);
+  if (cause instanceof SyntaxError) return 'invalid JSON';
+  return 'unreadable';
 }
 
 /**
@@ -294,8 +299,14 @@ export class AssemblyReader {
           // every stack under the Stage.
           const resolved = resolveAssemblyPath(assemblyDir, props.directoryName);
           if (!resolved.contained) {
+            // `displayIdent`, and the quotes are ITS doing rather than ours:
+            // `displaySafe` passes `'`, so a `directoryName` of
+            // `../x'. Contained and healthy. Nested assembly 'y` closed cdkd's
+            // own quote and asserted the OPPOSITE of this refusal. Every
+            // legitimate value here is `PLAIN_IDENT` (`assembly-MyStage`,
+            // `../asset.<hash>`), so only a forging one renders differently.
             throw new SynthesisError(
-              `Nested assembly '${displaySafe(props.directoryName)}' ` +
+              `Nested assembly ${renderStagePath(props.directoryName)} ` +
                 `${renderAssemblyPathEscape(resolved, assemblyDir)}`
             );
           }

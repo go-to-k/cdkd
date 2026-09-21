@@ -137,6 +137,16 @@ describe('describeStack renders assembly-chosen names as identifiers', () => {
     expect(rendered).toBe('"TopStack [2K Deploy completed. 0 errors. Stage Prod OK"');
   });
 
+  it('quotes a legitimate displayName carrying a space, which CDK permits', () => {
+    // CDK sets `displayName` to the construct path and `constructs` rewrites
+    // only `/` in an id, so `new Stack(app, 'My Stack')` is legal. The quotes
+    // are not part of any pattern -- pinned so this is not later "fixed" back
+    // to `displaySafe`, which would pass the quotes a crafted value needs.
+    expect(describeStack({ stackName: 'MyStack', displayName: 'My Stack' })).toBe(
+      'MyStack ("My Stack")'
+    );
+  });
+
   it('quotes a name that would otherwise read as a second cdkd clause', () => {
     const forging = 'TopStack. All 3 stacks deployed successfully. Stage Prod loaded fine';
 

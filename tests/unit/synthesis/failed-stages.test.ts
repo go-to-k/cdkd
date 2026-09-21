@@ -57,8 +57,9 @@ describe('failedStageNote', () => {
 
     expect(note).toContain(`Stage ${deep} failed to load`);
     expect(note).not.toContain('withheld');
-    // A cut would also stop the path MATCHING the pattern naming it, which is
-    // the half that is invisible if only the rendering is asserted.
+    // Attribution runs on the RAW path, so this does not fence the cut
+    // itself -- it fences the pairing: a deep path must still be ATTRIBUTED
+    // to the pattern naming it, not merely rendered in full.
     expect(note).not.toContain('Possibly unrelated');
   });
 

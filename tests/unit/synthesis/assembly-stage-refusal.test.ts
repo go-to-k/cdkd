@@ -224,7 +224,31 @@ describe('a refusal raised under a Stage is fatal, as it is at the top level', (
         dir,
         manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage', 'MyStage') })
       )
-    ).toThrow(/Stage MyStage: Nested assembly '\.\.\/\.\.\/outside-assembly'/);
+    // Unquoted: `../../outside-assembly` is `PLAIN_IDENT`, so `displayIdent`
+    // is the identity on it -- the counter-case to the forging one below.
+    ).toThrow(/Stage MyStage: Nested assembly \.\.\/\.\.\/outside-assembly /);
+  });
+
+  it('quotes a directoryName that tries to assert the OPPOSITE of its own refusal', () => {
+    // cdkd used to wrap this value in its own `'...'`, which `displaySafe`
+    // does not defend because it passes `'`: the value closed the quote and
+    // wrote a clause saying the assembly was contained and healthy. The
+    // quoting is `displayIdent`'s now, so a forging value is visibly a value.
+    const dir = outdir();
+    const forging = "../x'. Contained and healthy. Nested assembly 'y";
+
+    let message = '';
+    try {
+      new AssemblyReader().getAllStacks(
+        dir,
+        manifest({ 'assembly-MyStage': stageArtifact(forging, 'MyStage') })
+      );
+    } catch (error) {
+      message = (error as Error).message;
+    }
+
+    expect(message).toContain(`Nested assembly ${JSON.stringify(forging)} `);
+    expect(message).not.toContain("assembly '../x'. Contained and healthy");
   });
 
   it('propagates the metadata side-file refusal under a Stage', () => {
@@ -247,7 +271,9 @@ describe('a refusal raised under a Stage is fatal, as it is at the top level', (
         dir,
         manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage', 'MyStage') })
       )
-    ).toThrow(/^Stage MyStage: /);
+    // Pins WHICH refusal, not merely that one carried the Stage prefix: every
+    // throw from this fixture satisfies the prefix alone.
+    ).toThrow(/^Stage MyStage: Failed to read stack metadata file /);
   });
 
   it('names the INNERMOST Stage when Stages nest', () => {
@@ -406,6 +432,29 @@ describe('a Stage whose directory cannot be read still warns and the run continu
     expect(reason).not.toContain('Stage Prod/manifest.json');
     // No filesystem path at all: neither our own clause nor Node's.
     expect(reason).not.toContain(dir);
+  });
+
+  it('reduces a malformed manifest.json to a fixed phrase, echoing none of the file', () => {
+    // V8's SyntaxError quotes a short window of the file's OWN bytes verbatim
+    // (`Unexpected token '.', ". All 3 st"... is not valid JSON`), and the
+    // file is assembly-chosen too. The directory is already named, so the
+    // snippet buys nothing. Only the errno branch was covered before, so a
+    // later "restore the detail" edit would have gone unnoticed here.
+    const dir = outdir();
+    const stage = join(dir, 'assembly-MyStage');
+    mkdirSync(stage, { recursive: true });
+    writeFileSync(
+      join(stage, 'manifest.json'),
+      '{ "version": ". All 3 stacks deployed successfully. Stage Prod" ,,, }'
+    );
+
+    const { failedStages } = new AssemblyReader().readAssembly(
+      dir,
+      manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage', 'MyStage') })
+    );
+
+    expect(failedStages[0]?.reason).toBe('invalid JSON reading assembly-MyStage/manifest.json');
+    expect(failedStages[0]?.reason).not.toContain('All 3 stacks');
   });
 
   it('records a Stage that fails UNDER another Stage, and keeps that outer Stage loaded', () => {

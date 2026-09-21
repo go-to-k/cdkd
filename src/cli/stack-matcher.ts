@@ -54,10 +54,17 @@ export function matchStacks<T extends StackLike>(stacks: T[], patterns: string[]
  * go through `displayIdent` ([#3277](https://github.com/go-to-k/cdkd/issues/3277)):
  * a `stackName` carrying `ESC [ 2 K` plus a carriage return ERASES cdkd's own
  * line and a newline forges a second one, and a value carrying quotes and
- * periods writes a cdkd-sounding clause. It is the identity on every
- * legitimate value — a CloudFormation stack name is `[A-Za-z0-9-]` and a
- * display path adds `/`, both inside `PLAIN_IDENT` — so only a crafted one
- * renders differently.
+ * periods writes a cdkd-sounding clause.
+ *
+ * It is the identity on every legitimate `stackName` — a CloudFormation stack
+ * name is `[A-Za-z0-9-]`, inside `PLAIN_IDENT`. It is NOT the identity on
+ * every legitimate `displayName`: CDK sets that to the construct path, and
+ * `constructs` rewrites only `/` in an id, so `new Stack(app, 'My Stack')` is
+ * legal and prints `MyStack ("My Stack")`. Those quotes are not part of any
+ * pattern, in a clause whose job is to say which forms ARE valid as patterns —
+ * accepted, because the alternative is `displaySafe`, which passes the quotes
+ * and spaces a crafted value needs, and the pattern still matches the RAW
+ * name either way (`matchStacks` never sees this rendering).
  *
  * Sanitizing HERE rather than at the call sites is what keeps the rule whole:
  * the sites include `scrub.ts` and `destroy.ts`, which this change does not
@@ -99,9 +106,6 @@ export function renderNoStackMatch(
   available: readonly StackLike[],
   assembly: { failedStages: readonly FailedStage[] | undefined }
 ): string {
-  // An assembly with no stacks at all is reported as such whatever the user
-  // named: `Available: ` with nothing after it says less than the plain
-  // sentence, and this is the case a failed Stage produces.
   // The PATTERN is kept whatever the assembly holds: dropping it left a user
   // who named a stack under a non-ASCII Stage with a message naming neither
   // their pattern nor the stage. Only the second clause varies, so an empty

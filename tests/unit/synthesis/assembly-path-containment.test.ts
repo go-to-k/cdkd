@@ -87,9 +87,12 @@ describe('AssemblyReader: a nested assembly directoryName', () => {
           } as ArtifactManifest,
         })
       )
-    ).toThrow(
-      /Nested assembly '\.\.\/outside-assembly' resolves to '.*outside-assembly', outside/
-    );
+      // Unquoted since go-to-k/cdkd#3482: the value renders through
+      // `displayIdent`, which is the identity on a `PLAIN_IDENT` path and
+      // supplies its OWN quotes only for a value that is not one. cdkd's own
+      // `'...'` were what let a crafted `directoryName` close them and write a
+      // clause asserting the opposite of this refusal.
+    ).toThrow(/Nested assembly \.\.\/outside-assembly resolves to '.*outside-assembly', outside/);
   });
 
   it('THROWS rather than degrading to the warn-and-skip the read failure takes', () => {
