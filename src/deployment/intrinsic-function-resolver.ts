@@ -97,6 +97,7 @@ import { parseWebACLArn } from '../provisioning/providers/wafv2-provider.js';
 import { isSettledInstanceState } from '../provisioning/ec2-instance-state.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
+import { injectiveKey } from '../state/record-keys.js';
 
 /**
  * Special symbol to represent AWS::NoValue
@@ -3062,7 +3063,7 @@ export class IntrinsicFunctionResolver {
   private readonly cachedDynamicReferences = new Map<string, CachedDynamicReference>();
 
   /**
-   * `<parameter name>\u0000<reported Type>` pairs this resolver has already
+   * `(parameter name, reported Type)` pairs this resolver has already
    * warned about (issue #1933 review).
    *
    * Keyed on the PAIR rather than the name alone: two different anomalous types
@@ -9022,7 +9023,16 @@ export class IntrinsicFunctionResolver {
     /** How `region` is printed: its caller's log text of the raw region (issue #3150). */
     loggedRegionText: string
   ): Promise<Record<string, string> | undefined> {
-    const cacheKey = `${region}\0${stackName}`;
+    // ENCODED, not separated (go-to-k/cdkd#3496). DEFENCE IN DEPTH, and the
+    // bound is worth stating rather than leaving to be re-derived: `stackName`
+    // is template text, but a 2-part collision needs the OTHER pair's FIRST
+    // half to carry the separator, and that is `region`, which reaches here
+    // only through `canonicalizeRegion` + `isClientSafeRegion` or as a constant
+    // per resolver instance. So the collision is not reachable today. What it
+    // would cost if that gate moved is the reason to encode anyway: this cache
+    // serves a RESOLVED OUTPUT BAG, so a hit answers one stack's
+    // `Fn::GetStackOutput` with another stack's outputs.
+    const cacheKey = injectiveKey(region, stackName);
     let fetch = this.cfnStackOutputsCache.get(cacheKey);
     if (!fetch) {
       fetch = this.fetchCfnStackOutputs(stackName, region);
@@ -12310,14 +12320,21 @@ export class IntrinsicFunctionResolver {
     if (
       secure &&
       paramType !== 'SecureString' &&
-      !this.warnedUnrecognizedSsmTypes.has(`${parameterName}\u0000${String(paramType)}`)
+      !this.warnedUnrecognizedSsmTypes.has(injectiveKey(parameterName, String(paramType)))
     ) {
       // Reached only if AWS stops returning `Type`, or returns one cdkd does not
       // know. The value is treated as a secret (see above), which is safe but
       // silently changes what state stores — so say so rather than let the
       // parameter quietly start persisting as its expression. Once per
       // (parameter, type) per resolver — see `warnedUnrecognizedSsmTypes`.
-      this.warnedUnrecognizedSsmTypes.add(`${parameterName}\u0000${String(paramType)}`);
+      // ENCODED, not separated (go-to-k/cdkd#3496). DEFENCE IN DEPTH: the
+      // warned-once class of go-to-k/cdkd#3308, but only ONE half is ungated.
+      // `parameterName` is template text; the other half is the SDK's own
+      // `Type` string, so a collision would need AWS to return one carrying a
+      // NUL. Encoded so the set does not depend on that, since what it would
+      // cost is the SECOND warning about a parameter silently persisting as
+      // its expression.
+      this.warnedUnrecognizedSsmTypes.add(injectiveKey(parameterName, String(paramType)));
       const reported = paramType === undefined ? '(absent)' : `'${String(paramType)}'`;
       // Masked like the debug echo above (issue #2728), and per RAW VALUE
       // since issue #2827: the name may have been assembled from a value this

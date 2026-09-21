@@ -53,6 +53,64 @@ function injectivePairKey(first: string, second: string): string {
 }
 
 /**
+ * The same rule for a key of MORE than two parts.
+ *
+ * The named wrappers above stay, because a `(stack, region)` record and a
+ * `(stack, export)` coordinate are things worth naming. This one is for the
+ * keys that are just a tuple — an idempotency-token memo key, a resource-pair
+ * edge — where a name would add nothing and a positional list is the honest
+ * shape. It is exported rather than private for the same reason the two are:
+ * so a call site can adopt the rule without re-spelling the encoding
+ * (go-to-k/cdkd#3496).
+ *
+ * `number` is accepted because several of these tuples carry one, and
+ * stringifying at the call site would put the coercion back where a caller can
+ * get it wrong. `JSON.stringify` distinguishes `1` from `"1"`, so a mixed
+ * tuple stays injective across the two.
+ *
+ * KNOWN HOLE in that, recorded rather than guarded: `NaN`, `Infinity` and
+ * `-Infinity` all stringify to `null`, so those three collapse onto one key
+ * and onto a literal `null`. No call site passes one — every numeric argument
+ * today is a literal bound (`64`, `32`) — and a runtime refusal would turn a
+ * key builder into a throwing path for a value that cannot arrive. Check this
+ * note before passing a COMPUTED number.
+ *
+ * Note what this does to a DIGEST that hashes the result: the encoded string
+ * carries no raw control character at all — `JSON.stringify` escapes a NUL to
+ * the six-character text `\u0000` — so a hash input that separates this key
+ * from its neighbours with a NUL is injective too, without the separator
+ * having to be chosen carefully.
+ */
+export function injectiveKey(...parts: ReadonlyArray<string | number>): string {
+  return JSON.stringify(parts);
+}
+
+/**
+ * The prefix every {@link injectiveKey} OF TWO OR MORE PARTS whose first part
+ * is `first` begins with. The arity matters and an earlier revision of this
+ * line omitted it: a ONE-part key ends with a bracket where this prefix ends
+ * with a comma, so it does not match one. Both call sites build two parts.
+ *
+ * It exists for the one reader shape an encoded key otherwise breaks: a cache that
+ * evicts by scanning its keys for a leading component.
+ *
+ * DERIVED from the same encoder rather than spelled again, and that is the
+ * whole point. go-to-k/cdkd#3496's first cut encoded three provider caches and
+ * left `invalidateAttributeCache` testing the OLD `<physicalId>:` prefix, so
+ * the scan matched nothing and every post-update `Fn::GetAtt` read the
+ * pre-update value — silently, with every gate green. A prefix computed here
+ * cannot drift from the key computed two functions up.
+ *
+ * Exact, not a heuristic: `JSON.stringify([first])` quotes and escapes `first`,
+ * so replacing its closing `]` with `,` yields a string no OTHER first part can
+ * begin with. Deriving it by searching the encoded key for a comma would NOT
+ * be exact — a comma inside the value is not escaped by JSON.
+ */
+export function injectiveKeyPrefix(first: string): string {
+  return JSON.stringify([first]).slice(0, -1) + ',';
+}
+
+/**
  * The key for a state RECORD: the `(stackName, region)` pair that names one
  * `state.json`.
  */

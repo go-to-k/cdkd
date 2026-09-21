@@ -866,10 +866,17 @@ function recordedExpressionsOf(secrets: RecordedSecretValues): Set<string> {
  * the shape PR #2415 was forced to WITHDRAW (`provenPublicExpressions`,
  * residual #2425): keyed on a value alone, one stack's answer is served to
  * another stack's identically-spelled read. Here the key names the producer
- * stack, its region and the output — so a hit is served only to a resolution
- * that asked for that exact output of that exact stack, i.e. to precisely the
- * reader that would have received the plaintext before this feature existed.
- * Nothing is widened.
+ * stack, its region and the output — so a hit is served to a resolution that
+ * asked for that output of that stack, i.e. to the reader that would have
+ * received the plaintext before this feature existed.
+ *
+ * `precisely`, in an earlier revision, overstated it. The key is
+ * NUL-SEPARATED rather than encoded, and the halves are not all
+ * charset-constrained, so a forged coordinate CAN collide with another's
+ * key — see {@link maskedOutputKey} for why that is left standing and what
+ * would change the answer (go-to-k/cdkd#3496). The bound that does hold is
+ * the one above it: whoever can forge such a coordinate can already aim at
+ * the real one, so nothing is widened by the collision either.
  *
  * A RECOVERED VALUE IS STILL SECRET, and every reader re-registers it as a
  * mask-only needle in its OWN bag before using it — the recovery hands back the
@@ -878,9 +885,30 @@ function recordedExpressionsOf(secrets: RecordedSecretValues): Set<string> {
 const recoverableMaskedOutputs = new Map<string, unknown>();
 
 function maskedOutputKey(stackName: string, region: string, outputKey: string): string {
-  // NUL-separated for the reason `crossStackSourceKey` is: a `:` / `/` occurs
-  // inside real stack names, regions and export names, so any printable
-  // separator can be forged into another coordinate's key.
+  // NUL-separated, and go-to-k/cdkd#3496 records why that is NOT the same as
+  // injective. The reason given here was that a `:` / `/` occurs inside real
+  // stack names, regions and export names so any PRINTABLE separator can be
+  // forged -- true, and one step short: the NUL is forgeable too, because
+  // `stackName` reaches this through the exports index, which
+  // `ExportIndexStore.loadPersisted` casts out of `JSON.parse` with no
+  // validation of any string. `No AWS name can contain one` is a claim about
+  // AWS, not about what arrives here.
+  //
+  // DELIBERATELY still a separator, and the reason is narrower than an earlier
+  // revision of this comment claimed. That revision said the encoding `lives in
+  // a module this one would have to import`, which is FALSE:
+  // `JSON.stringify([stackName, region, outputKey])` IS the encoding and needs
+  // no import at all. What the no-import rule
+  // (`.claude/rules/layout-deployment-secrets.md`) actually protects here is
+  // ONE SPELLING of that rule living in one place -- the property
+  // `src/state/record-keys.ts` exists for -- not the ability to encode.
+  //
+  // So the case for leaving it rests on REACH, not on layering: whoever can
+  // write the exports index can aim `producerStack` / `producerRegion` at the
+  // real coordinate directly, the recovery is in-run only, and every reader
+  // re-registers the value as a mask-only needle, so state still persists the
+  // mask. Nothing is widened by the collision. If this module ever takes an
+  // import for another reason, encode this and delete the paragraph.
   return `${stackName}\u0000${region}\u0000${outputKey}`;
 }
 
@@ -1019,11 +1047,23 @@ const CONFLICTING_CROSS_STACK = Symbol('conflicting cross-stack association');
 /**
  * Separator for the composite keys {@link crossStackSourceKey} builds.
  *
- * A NUL rather than a printable character because no AWS export name, stack
- * name, output name, region or role ARN can contain one, so no two distinct
- * source leaves can spell a single key. A printable separator (`:` / `|`) does
- * occur inside a real export name — CDK's own convention is
+ * A NUL rather than a printable character: a printable separator (`:` / `|`)
+ * does occur inside a real export name — CDK's own convention is
  * `Stack:ExportName` — which would let one leaf's key be read as another's.
+ *
+ * **It does NOT follow that no two distinct source leaves can spell a single
+ * key, and this note asserted that for a while** (go-to-k/cdkd#3496). The
+ * reason given was that no AWS export name, stack name, output name, region or
+ * role ARN can contain a NUL — a claim about what AWS ACCEPTS, while these
+ * halves are TEMPLATE literals read straight out of the intrinsic. A hand-written
+ * template can put a NUL in any of them.
+ *
+ * What makes the key safe is not injectivity but what happens on a collision:
+ * the association store POISONS a slot recorded against a differing
+ * (expression, plaintext) pair rather than overwriting it, and the scope is a
+ * `WeakMap` on the pass's own bag. So a forged key degrades to a REFUSAL, never
+ * to one leaf's expression being served for another's. Keep that property if
+ * this separator is ever revisited; it, not the charset, is the guarantee.
  */
 const CROSS_STACK_KEY_SEPARATOR = '\u0000';
 

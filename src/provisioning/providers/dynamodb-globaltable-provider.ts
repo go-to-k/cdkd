@@ -107,6 +107,7 @@ import type {
   SecretMasker,
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { injectiveKey } from '../../state/record-keys.js';
 
 /**
  * The CLOSED path table {@link DynamoDBGlobalTableProvider.canonicalizeDriftProperties}
@@ -4986,7 +4987,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     _resourceType: string,
     attributeName: string
   ): Promise<unknown> {
-    const cacheKey = `${physicalId}::${attributeName}`;
+    // ENCODED, not separated (go-to-k/cdkd#3496). A PRINTABLE separator here,
+    // and both halves are unchecked: `physicalId` comes from a state record
+    // that `parseStateBody` casts, and `attributeName` is template text. The
+    // cache is read BEFORE the attribute switch below, so a hit answers
+    // whatever was asked -- one AWS::DynamoDB::GlobalTable's attribute served for
+    // another's `Fn::GetAtt`.
+    const cacheKey = injectiveKey(physicalId, attributeName);
     if (this.attributeCache.has(cacheKey)) {
       return this.attributeCache.get(cacheKey);
     }

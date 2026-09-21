@@ -4942,9 +4942,21 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
    */
   const NUL_JOINS_THAT_ARE_NOT_RECORD_KEYS: ReadonlyArray<readonly [string, number, string]> = [
     [
-      'src/provisioning/providers/dynamodb-delete-budget.ts',
-      1,
-      '(region, physicalId) budget slot — NOT checked; go-to-k/cdkd#3496',
+      'src/deployment/deploy-engine.ts',
+      7,
+      'the cross-stack 3-part keys, (logicalId, physicalId), and one COMMENT quoting ' +
+        'the key shape. HELD by open PRs at the time of go-to-k/cdkd#3496 — this is ' +
+        'a WAIT, not a verdict, and the rows are still open there',
+    ],
+    [
+      'src/deployment/secret-redaction.ts',
+      4,
+      'maskedOutputKey, CROSS_STACK_KEY_SEPARATOR and UNKNOWN_PART_PLACEHOLDER (a ' +
+        'SENTINEL, not a separator). LEFT SEPARATED DELIBERATELY: this module imports ' +
+        'NOTHING by a recorded decision, the encoding lives in a module it would have ' +
+        'to import, and the collision adds no reach — whoever can forge such a ' +
+        'coordinate can aim the real one. Its two FALSE justifications are fixed; see ' +
+        'go-to-k/cdkd#3496',
     ],
     [
       'src/provisioning/providers/efs-provider.ts',
@@ -4957,44 +4969,11 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
     ],
     [
       'src/provisioning/providers/idempotency-token.ts',
-      7,
-      ':155 is a HASH input, where the separator is domain separation. :146 is NOT — ' +
-        '`tokenKey` is the Map key for `inFlight` / `generations`, an IDENTITY, and its ' +
-        '`getCurrentStackName()` / `logicalId` halves are unchecked. The file states the ' +
-        'wrong-value consequence itself — go-to-k/cdkd#3496',
-    ],
-    [
-      'src/state/s3-replication-purge-gap.ts',
       2,
-      ':403 is (bucket, accountId), both AWS-charset-constrained; :555 joins FREE TEXT — go-to-k/cdkd#3496',
-    ],
-    [
-      'src/deployment/deploy-engine.ts',
-      7,
-      'cross-stack 3-part keys + (logicalId, physicalId), plus one COMMENT quoting the ' +
-        'old key shape — go-to-k/cdkd#3496',
-    ],
-    [
-      'src/deployment/intrinsic-function-resolver.ts',
-      3,
-      '(region, stackName) cache and a (param, type) warn set — go-to-k/cdkd#3496',
-    ],
-    [
-      'src/deployment/secret-redaction.ts',
-      4,
-      'maskedOutputKey; the CROSS_STACK_KEY_SEPARATOR declaration, whose key contract ' +
-        'states non-uniqueness and fails closed by POISONING; and UNKNOWN_PART_PLACEHOLDER, ' +
-        'a SENTINEL rather than a separator — go-to-k/cdkd#3496',
-    ],
-    [
-      'src/analyzer/lambda-vpc-deps.ts',
-      1,
-      '(lambdaId, targetId) from an UNCHECKED state cast — a collision drops a delete-dependency edge; go-to-k/cdkd#3496',
-    ],
-    [
-      'src/analyzer/orphan-rewriter.ts',
-      2,
-      '(logicalId, GetAtt attribute name) — the attribute half is everything after the first dot, unchecked; go-to-k/cdkd#3496',
+      'the DIGEST input, where the separator is domain separation rather than ' +
+        'identity — and injective since go-to-k/cdkd#3496, because the `key` half is ' +
+        'now JSON-encoded and JSON escapes a NUL to text, so no component can carry ' +
+        'the separator. The memo key on the same file is encoded',
     ],
   ];
 
@@ -5065,10 +5044,22 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
     // The sweep must actually SEE the tree, or an argv typo silently exempts
     // it. `git grep -l` matching NOTHING exits 1 and `execFileSync` throws,
     // but a needle matching one stray file would not.
+    //
+    // The floor is the EXEMPTION LIST's own length rather than a number typed
+    // in. A literal floor is wrong the moment the population shrinks, which is
+    // the direction this work moves it: go-to-k/cdkd#3496 took the tree from
+    // nine files to four and a hardcoded `> 5` reddened on the SUCCESS.
+    //
+    // It is kept as a DISTINCT, EARLIER assertion even though the per-file
+    // exact-count loop below implies it, because the two fail with different
+    // messages and this one is the readable failure for the case it exists for
+    // — an argv typo that empties the sweep. Reaching the loop first would
+    // report nine separate "the tree disagrees" lines for one broken needle.
+    // It cannot fail alone; that is the point, not an oversight.
     expect(
       found.length,
-      'the git grep sweep found almost nothing — check its needles'
-    ).toBeGreaterThan(5);
+      'the git grep sweep found fewer files than are exempted — check its needles'
+    ).toBeGreaterThanOrEqual(NUL_JOINS_THAT_ARE_NOT_RECORD_KEYS.length);
 
     const accounted = new Set([
       ...RECORD_KEY_SITES.map(([rel]) => rel),
@@ -5094,6 +5085,191 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
           'identifies a record or a producer coordinate route it through the shared helper. ' +
           'A LOWER one means this entry outlived its code; remove it.'
       ).toBe(expectedCount);
+    }
+  });
+
+  /**
+   * Every multi-part key expression in `src/` built as a TEMPLATE LITERAL
+   * rather than through the shared helper, with the reason each is safe.
+   *
+   * **This sweep exists because the NUL sweep has a blind spot its own comment
+   * admits, and that blind spot shipped a defect.** go-to-k/cdkd#3496's first
+   * cut encoded three provider caches whose separator was `:` — invisible to a
+   * NUL search — and worse, it moved the key while leaving a READER of the old
+   * spelling: `invalidateAttributeCache` scanned for `<physicalId>:` and after
+   * the change matched nothing, so every post-update `Fn::GetAtt` read the
+   * pre-update value. Silent: no test covered it and every gate stayed green.
+   *
+   * So this one keys on the SHAPE a composite key has — two or more
+   * interpolations in one template literal, used as a Map/Set key or bound to
+   * a `*Key` name — rather than on the separator, which is the thing that
+   * varies.
+   *
+   * **It would NOT have caught the defect that motivated it, and saying so is
+   * the point.** A READER that re-spells a key —
+   * `key.startsWith(`${physicalId}:`)` — has ONE interpolation, so no
+   * key-shape rule sees it. What covers that is the behavioural eviction cases
+   * in `tests/unit/state/composite-key-collisions.test.ts` and, structurally,
+   * `injectiveKeyPrefix` existing at all so a reader has nothing to re-spell.
+   * This fence catches the WRITE side; nothing mechanical catches the read
+   * side.
+   *
+   * Further residuals: `+` concatenation, `.join('<printable>')`, a separator
+   * held in a variable, and a key built over several statements.
+   */
+  const TEMPLATE_KEY_EXPRESSIONS: ReadonlyArray<readonly [string, number, string]> = [
+    // --- arm A: a template literal passed straight to .get/.set/.has/.add ---
+    [
+      'src/cli/commands/drift.ts',
+      2,
+      'sets of RENDERED report paths; nothing is SERVED by these, they only ' +
+        'deduplicate what is printed',
+    ],
+    [
+      'src/provisioning/property-coverage.ts',
+      2,
+      '`${resourceType}:${property}` membership in the ' +
+        '--allow-unsupported-properties set; the property half comes from the ' +
+        'GENERATED drop table, a closed set',
+    ],
+    [
+      'src/provisioning/provider-registry.ts',
+      3,
+      ':842 / :893 are the closed-set membership test above. :1049 is NOT -- its ' +
+        'property half is `findUnrecognizedProperties`, i.e. TEMPLATE-declared names, ' +
+        'an open set. What holds there is the other half: a collision needs a ' +
+        'REGISTERED resourceType that is a `:`-delimited proper prefix of another, ' +
+        'and no registered type is a prefix of a registered type',
+    ],
+    [
+      'src/provisioning/providers/sns-topic-provider.ts',
+      1,
+      '`${protocol}${suffix}`; `normalizeDeliveryStatusProtocol` returns a closed set ' +
+        'or the loop continues, and the suffixes are three literals',
+    ],
+    // --- arm B: a template literal bound to a `*Key` name -------------------
+    [
+      'src/assets/docker-asset-publisher.ts',
+      1,
+      'an ECR registry host, and it IS a lookup identity -- `loggedInRegistries` ' +
+        'gates whether GetAuthorizationToken + docker login re-run. What makes it ' +
+        'safe is neither half: the separator is the multi-character literal ' +
+        '`.dkr.ecr.`, so a collision needs one half to contain that whole string. ' +
+        '(The region half comes from asset-manifest JSON and is NOT charset-gated ' +
+        'here, which an earlier revision of this row claimed.)',
+    ],
+    [
+      'src/cli/upload-cfn-template.ts',
+      1,
+      'an S3 OBJECT key being written, not a key anything is looked up by',
+    ],
+    [
+      'src/deployment/deploy-engine.ts',
+      1,
+      'a NUL-joined key, classified in NUL_JOINS_THAT_ARE_NOT_RECORD_KEYS above ' +
+        '-- go-to-k/cdkd#3496',
+    ],
+    [
+      'src/deployment/intrinsic-function-resolver.ts',
+      1,
+      ':6608 `${physicalId}#${attributeName}` INSIDE a switch, so the second half is ' +
+        'one of five literals at that point; a closed second half is what makes a ' +
+        'separator injective here',
+    ],
+    [
+      'src/deployment/recreate-targets.ts',
+      1,
+      'the same `${resourceType}:${property}` closed-set membership test',
+    ],
+    [
+      'src/local/ecr-puller.ts',
+      1,
+      '`${ecrRoleArn}|${region}`; NOTHING validates either half -- the ARN is a raw ' +
+        '`--ecr-role-arn` flag and `canonicalizeRegion` only lowercases, which an ' +
+        'earlier revision of this row got wrong. What holds is PROVENANCE: both are ' +
+        'OPERATOR-supplied, a CLI flag and the local AWS config, so a collision ' +
+        'needs the operator to type the separator into their own role ARN',
+    ],
+    [
+      'src/local/httpv2-service-integration.ts',
+      1,
+      '`${service}:${region}`; `service` is a literal at the call site',
+    ],
+    [
+      'src/synthesis/context-providers/vpc-provider.ts',
+      1,
+      '`${subnet.type}/${subnet.name}`; the type half is a closed set',
+    ],
+    [
+      'src/utils/proxy-routing-agent.ts',
+      1,
+      "`${secure ? 'https' : 'http'}|…`; the first half is one of two literals",
+    ],
+  ];
+
+  /**
+   * The two shapes a multi-part key is written in, as POSIX ERE.
+   *
+   * **POSIX classes, not `\s` / `\w`.** `git grep -E` is POSIX ERE and supports
+   * neither, so a pattern using them matches NOTHING and says so with exit 1 —
+   * which is indistinguishable from a clean tree unless something checks. An
+   * earlier revision of this fence used `\s` and `\w` in arm B: it matched zero
+   * files, the list said "eight exist, all listed", and the real population was
+   * seventeen. The per-arm floor below is what makes that unrepeatable.
+   */
+  const KEY_EXPRESSION_ARMS: ReadonlyArray<readonly [string, string, string]> = [
+    [
+      'passed to .get/.set/.has/.add/.delete',
+      '\\.(get|set|has|add|delete)\\(`[^`]*\\$\\{[^`]*\\$\\{',
+      'src/provisioning/property-coverage.ts',
+    ],
+    [
+      'bound to a *Key name',
+      '(const|let)[[:space:]]+[[:alnum:]_]*[Kk]ey[[:space:]]*=[[:space:]]*`[^`]*\\$\\{[^`]*\\$\\{',
+      'src/local/ecr-puller.ts',
+    ],
+  ];
+
+  it('every template-literal multi-part key expression in src/ is classified', () => {
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+    const counts = new Map<string, number>();
+    for (const [label, pattern, mustMatch] of KEY_EXPRESSION_ARMS) {
+      // NO catch. `git grep` exiting 1 means the arm matched nothing, and an
+      // arm that matches nothing is a BROKEN arm, not a clean tree — the
+      // previous revision swallowed that and went green over nine files.
+      const out = execFileSync('git', ['grep', '-c', '-E', pattern, '--', 'src/'], {
+        cwd: root,
+        encoding: 'utf-8',
+      });
+      const armFiles = new Map<string, number>();
+      for (const line of out.split('\n').filter(Boolean)) {
+        const at = line.lastIndexOf(':');
+        armFiles.set(line.slice(0, at), Number(line.slice(at + 1)));
+      }
+      // Guard-the-guard, per ARM: each must still see a file known to carry its
+      // shape. A whole-sweep floor cannot catch one arm of two going inert.
+      expect(
+        armFiles.has(mustMatch),
+        `the "${label}" arm no longer matches ${mustMatch}, so it is seeing nothing`
+      ).toBe(true);
+      for (const [f, n] of armFiles) counts.set(f, (counts.get(f) ?? 0) + n);
+    }
+
+    const classified = new Set(TEMPLATE_KEY_EXPRESSIONS.map(([rel]) => rel));
+    expect(
+      [...counts.keys()].filter((f) => !classified.has(f)).sort(),
+      'a multi-part key built as a template literal appeared in a file this fence does ' +
+        'not know about. If it identifies something, route it through injectiveKey — and ' +
+        'if you MOVE an existing key, find every reader of the old spelling first ' +
+        '(go-to-k/cdkd#3496 broke a prefix scan exactly that way). Otherwise add it to ' +
+        'TEMPLATE_KEY_EXPRESSIONS with the reason.'
+    ).toEqual([]);
+
+    for (const [rel, expected] of TEMPLATE_KEY_EXPRESSIONS) {
+      expect(
+        counts.get(rel),
+        `${rel} is listed with ${expected} template-literal key expressions but the tree disagrees`
+      ).toBe(expected);
     }
   });
 

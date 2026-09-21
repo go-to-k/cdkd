@@ -73,7 +73,7 @@ deletion-policy-snapshot	2026-09-05T03:27:04Z	PASS	245	verify.sh	rc0, destroy cl
 deletion-policy-snapshot-heavy	2026-08-03T06:58:15Z	PASS	1500	verify.sh	#1353 Redshift+ElastiCache RepGroup pre-delete snapshots verified; found 4 live defects across 5 runs
 deployment-events	2026-09-16T07:18:21Z	PASS	38	verify.sh	go-to-k/cdkd#3216 sidecar check made live (--recursive); prefix empty, orph clean
 destroy-data-guard	2026-08-02T14:22:57Z	PASS	95	verify.sh	guard fired on guarded pair, opt-ins force-cleaned, 2nd destroy clean, 0 orphans
-destroy-interrupt	2026-08-26T04:31:00Z	PASS	52	verify.sh	issue #2117 lane, re-run after the issue #2126 deploy flake (URLError Errno 16 in the Lambda sandbox) which never reached a destroy assertion. All 4 phases green incl. interrupt-then-resume; 0 errors. Independent scan clean after sweeping one auto-created /aws/lambda log group the fixture does not remove.
+destroy-interrupt	2026-09-21T12:33:50Z	PASS	373	verify.sh	rc ok, 15 deleted 0 errors, VPC/ENI/SG/role gone, orph clean (#3496: lambda-vpc-deps delete-dep edge keys)
 diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 sweep b12; diff detects GetAtt target rebind, clean destroy
 dlm-lifecycle-policy	2026-09-05T22:48:21Z	PASS	94	verify.sh	PR2662 gate run; destroy 3 deleted 0 errors, 0 orphans
 docdb-neptune	2026-09-14T15:28:31Z	PASS	1545	verify.sh	#3103 gating: cluster/instance Endpoint.* omit-not-'' sites live; 14 deleted 0 err 0 orph

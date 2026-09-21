@@ -1,6 +1,7 @@
 import { GetBucketReplicationCommand, type S3Client } from '@aws-sdk/client-s3';
 import { getLogger } from '../utils/logger.js';
 import { displaySafe } from '../utils/display-safe.js';
+import { injectiveKey } from './record-keys.js';
 
 /**
  * Tell the user when S3 REPLICATION has silently kept the bodies that
@@ -400,7 +401,10 @@ function probe(
   bucket: string,
   requestFields: { ExpectedBucketOwner?: string }
 ): Promise<ProbeResult> {
-  const key = `${bucket}\u0000${requestFields.ExpectedBucketOwner ?? ''}`;
+  // ENCODED, not separated (go-to-k/cdkd#3496). Both halves have an
+  // AWS-constrained charset today, so the separator was injective -- but by a
+  // property of AWS's naming rules rather than anything checked here.
+  const key = injectiveKey(bucket, requestFields.ExpectedBucketOwner ?? '');
   const cached = replicationProbeCache.get(key);
   if (cached) return cached;
   // Eviction runs in a `.then`, hence in a microtask, hence strictly AFTER the
@@ -552,7 +556,13 @@ export async function warnIfPurgeIsReplicated(
     // why all three. RAW `bucket`, not `safeBucket`: this is an identity key,
     // not display text, and sanitizing it would let two different buckets
     // collapse onto one slot and silence the second.
-    const warnKey = [bucket, options.objectDescription ?? '', ...destinations].join('\u0000');
+    // ENCODED, not separated (go-to-k/cdkd#3496). Unlike the probe key above,
+    // this one was NEVER injective: `objectDescription` is free text supplied
+    // by the caller, so a description carrying the separator could make two
+    // distinct (bucket, description, destinations) triples share a slot and
+    // silence the second warning -- which is the thing this set exists to
+    // emit exactly once.
+    const warnKey = injectiveKey(bucket, options.objectDescription ?? '', ...destinations);
     if (warnedWarnings.has(warnKey)) {
       emitDebug(
         `S3 replication on s3://${safeBucket} still covers purged keys ` +

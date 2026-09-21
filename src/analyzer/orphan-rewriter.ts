@@ -9,6 +9,7 @@ import { displaySafe } from '../utils/display-safe.js';
 import type { ProviderRegistry } from '../provisioning/provider-registry.js';
 import type { ResourceState, StackState } from '../types/state.js';
 import { getLogger } from '../utils/logger.js';
+import { injectiveKey } from '../state/record-keys.js';
 
 /**
  * One rewrite the orphan rewriter has applied (or wanted to apply but
@@ -248,7 +249,10 @@ class AttributeFetcher {
     orphanLogicalId: string,
     attribute: string
   ): Promise<{ ok: true; value: unknown; fromCache?: boolean } | { ok: false; reason: string }> {
-    const cacheKey = `${orphanLogicalId}\0${attribute}`;
+    // ENCODED, not separated (go-to-k/cdkd#3496). The second half is an
+    // `Fn::GetAtt` ATTRIBUTE name -- everything after the first dot, so it is
+    // not even a logical id -- and the first is a key of an unchecked bag.
+    const cacheKey = injectiveKey(orphanLogicalId, attribute);
     if (this.cache.has(cacheKey)) {
       return { ok: true, value: this.cache.get(cacheKey) };
     }
@@ -412,7 +416,7 @@ class AttributeFetcher {
           `by hand.`
       );
     }
-    const cacheKey = `${orphanLogicalId}\0${attribute}`;
+    const cacheKey = injectiveKey(orphanLogicalId, attribute);
     this.cache.set(cacheKey, cached);
     return { ok: true, value: cached, fromCache: true };
   }
