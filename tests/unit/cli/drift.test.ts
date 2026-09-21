@@ -139,6 +139,11 @@ import {
   UNREADABLE_RESOURCES_MAP_ROW,
   warnIfPreV10BaselineGap,
 } from '../../../src/cli/commands/drift.js';
+import { STACK_REF_MAX_CODE_POINTS } from '../../../src/utils/display-safe.js';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 function captureStdout(): { output: string[]; restore: () => void } {
   const output: string[] = [];
@@ -4963,7 +4968,7 @@ describe('stackCommandFor — the gate on drift\'s pasteable commands (go-to-k/c
       'a\u009bb',
       'a\u2028b',
       'a\u202eb',
-      'a\u00a0b'.replace('\u00a0', String.fromCharCode(0x00a0)),
+      'a\u00a0b',
       ' padded',
       'padded ',
       'q'.repeat(STACK_REF_MAX_CODE_POINTS + 1),
@@ -5009,6 +5014,23 @@ describe('stackCommandFor — the gate on drift\'s pasteable commands (go-to-k/c
     expect(stackCommandFor('cdkd drift', 'S', { flags: '--revert', region: capRegion })).toBe(
       `cdkd drift S --revert --stack-region ${capRegion}`
     );
+    // ...and the OPTION shape, which the name has had all along: `shellQuote`
+    // emits `--profile` bare, and commander shifts the next argument
+    // unconditionally, so `--stack-region --profile` would ship a command that
+    // reads its own next flag as the region (m3 of the go-to-k/cdkd#3486
+    // review).
+    for (const optionShaped of ['--profile', '-x']) {
+      expect(
+        stackCommandFor('cdkd drift', 'S', { flags: '--revert', region: optionShaped }),
+        optionShaped
+      ).toBeUndefined();
+    }
+    // EMPTY too: `--stack-region ''` is not "not supplied" to every reader, and
+    // an empty name is no identity at all. Neither the exactness compare nor
+    // the leading-`-` test rejects it on its own (delta round 1 after the
+    // go-to-k/cdkd#3486 review).
+    expect(stackCommandFor('cdkd drift', 'S', { flags: '--revert', region: '' })).toBeUndefined();
+    expect(stackCommandFor('cdkd deploy', '', { patternMatched: true })).toBeUndefined();
     expect(
       stackCommandFor('cdkd drift', 'S', { flags: '--revert', region: `${capRegion}r` })
     ).toBeUndefined();
@@ -5063,6 +5085,10 @@ describe("drift's four pasteable commands are gated at the site (go-to-k/cdkd#33
     // which is the very thing the refusal is about.
     expect(okMessage).toMatch(/^Stack: LegacyStack$/m);
     expect(okMessage).toMatch(/^Migrate with: cdkd deploy LegacyStack$/m);
+    // ...and it is the LAST thing in the message. Nothing else pinned that,
+    // so appending prose after the command — the layout hazard
+    // go-to-k/cdkd#3363 is about — left every regex green (m5).
+    expect(okMessage.trimEnd().endsWith('Migrate with: cdkd deploy LegacyStack')).toBe(true);
     // The identity is NOT in the sentence: `displayIdent`'s JSON quotes
     // neutralise no shell metacharacter, so a key named `$(printf X)` executed
     // when the sentence was pasted (go-to-k/cdkd#3363's rule, measured here).
@@ -5121,6 +5147,11 @@ describe("drift's four pasteable commands are gated at the site (go-to-k/cdkd#33
       }
     }
     expect(segments.size).toBeGreaterThan(3);
+    // The segment COUNT does not prove the key was rendered: a withheld
+    // message yields more than three segments and no sentinel either, so this
+    // case would pass vacuously if site 1 ever stopped naming the key
+    // (m5 of the go-to-k/cdkd#3486 review).
+    expect(message).toContain("'$(touch OWNED)'");
     const dir = mkdtempSync(join(tmpdir(), 'cdkd-drift-paste-'));
     try {
       // The POSITIVE control first: the same payload UNQUOTED does create the
@@ -5171,6 +5202,11 @@ describe("drift's four pasteable commands are gated at the site (go-to-k/cdkd#33
 
     const warned = warnSpy.mock.calls.flat().join('\n');
     expect(warned).toMatch(/^  Re-run with: cdkd drift TestStack --revert --stack-region us-east-1$/m);
+    // The identity rides its own gated line rather than the sentence, and the
+    // sentence no longer names the stack at all (M0 of the go-to-k/cdkd#3486
+    // review): raw there, a name carrying a newline forges the line below it.
+    expect(warned).toMatch(/^  Stack: TestStack$/m);
+    expect(warned).not.toMatch(/Reverted TestStack \(/);
     // The old shape: the command inside the sentence, in prose quotes.
     expect(warned).not.toMatch(/'cdkd drift TestStack --revert'/);
   });

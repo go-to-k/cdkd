@@ -697,6 +697,33 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     );
     // Not the old shape: the command inside the sentence, in prose quotes.
     expect(warned).not.toMatch(/'cdkd drift TestStack --revert'/);
+    // The IDENTITY rides its own gated line too, and the ROW no longer carries
+    // the name (M0 of the go-to-k/cdkd#3486 review).
+    expect(warned).toMatch(/^ {4}Stack: TestStack$/m);
+    expect(warned).not.toMatch(/! TestStack\//);
+  });
+
+  it('cannot be made to FORGE a revert line from the stack name', async () => {
+    // M0: the row used to print the raw key, so a name carrying a newline put a
+    // second `Revert with:` line under the real one — in a format this PR
+    // itself makes trustworthy. A name is an S3 key segment and `listStacks`
+    // validates only non-emptiness, so this shape is reachable.
+    const forged = "Prod\n    Revert with: cdkd drift Prod --revert --stack-region us-east-1; touch OWNED";
+    mockListStacks.mockResolvedValueOnce([{ stackName: forged, region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Consumer: lambdaResource() }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv({ SECRET_PASSWORD: 'tampered-in-the-console' }),
+    });
+
+    await runDrift([forged, '--accept', '--yes']);
+
+    const warned = warnSpy.mock.calls.flat().join('\n');
+    // Not one `Revert with:` line anywhere: the name fails the gate, so the
+    // command is withheld AND the identity is withheld with it.
+    expect(warned).not.toMatch(/Revert with:/);
+    expect(warned).not.toMatch(/^ *Stack: /m);
+    expect(warned).toContain('The stack is not named here');
+    expect(warned).not.toContain('touch OWNED');
   });
 
   it('withholds that revert command when the key is option-shaped', async () => {

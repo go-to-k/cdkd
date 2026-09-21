@@ -999,7 +999,8 @@ async function driftCommand(
             `detection after it.` +
             (migrate === undefined
               ? `\nThe stack name is not printed here: it does not render exactly, or ` +
-                `'cdkd deploy' would read it as an option or a pattern. List records as stored ` +
+                `is too long, or 'cdkd deploy' would read it as an option or a pattern. List ` +
+                `records as stored ` +
                 `with 'cdkd state list --json' and migrate the one whose key matches.`
               : `\nStack: ${shellQuote(ref.stackName)}\nMigrate with: ${migrate}`)
         );
@@ -3531,14 +3532,27 @@ async function runAccept(
               flags: '--revert',
               region: report.region,
             });
+            // The IDENTITY leaves the row and rides a gated line of its own
+            // (M0): raw, a name carrying a newline forges a `Revert with:` line
+            // right under this one, and a name holding `$(...)` executes when
+            // the row is selected and pasted. The logical id and resource type
+            // STAY in the row but are sanitized: they are keys and fields of the
+            // state RECORD, not of the template, so they are as
+            // attacker-controllable as the name and would forge a line the same
+            // way.
+            const revertIdentity = stackIdentityLine(report.stackName, '    ');
             logger.warn(
-              `  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
+              `  ! ${displaySafe(outcome.logicalId, { asciiOnly: true })} (${displaySafe(outcome.resourceType, { asciiOnly: true })}): ` +
                 `not accepting '${change.path}' — ${refusal}, so cdkd will not write it to ` +
                 `state. A revert pushes the referenced value back to AWS; re-deploy instead if ` +
                 `the reference changed.` +
+                (revertIdentity === undefined
+                  ? ` The stack is not named here: its name does not render exactly.`
+                  : `\n${revertIdentity}`) +
                 (revert === undefined
                   ? ` The revert command is not printed here: this record's name or region does ` +
-                    `not render exactly, or 'cdkd drift' would read the name as an option.`
+                    `not render exactly, is too long, or 'cdkd drift' would read the name as an ` +
+                    `option.`
                   : `\n    Revert with: ${revert}`)
             );
             continue;
@@ -5901,7 +5915,7 @@ async function runRevert(
             }
           } catch (captureErr) {
             logger.warn(
-              `  ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): reverted, but ` +
+              `  ${displaySafe(report.stackName, { asciiOnly: true })}/${outcome.logicalId} (${outcome.resourceType}): reverted, but ` +
                 `the provider's reported effective properties could not be read — ` +
                 `${maskSecretsInText(captureErr instanceof Error ? captureErr.message : String(captureErr), secrets)}`
             );
@@ -5913,7 +5927,7 @@ async function runRevert(
           if (err instanceof ResourceUpdateNotSupportedError) {
             totalUnsupported++;
             logger.warn(
-              `  ⊘ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): could not revert — ${maskSecretsInText(err.message, secrets)}`
+              `  ⊘ ${displaySafe(report.stackName, { asciiOnly: true })}/${outcome.logicalId} (${outcome.resourceType}): could not revert — ${maskSecretsInText(err.message, secrets)}`
             );
             return;
           }
@@ -5922,7 +5936,7 @@ async function runRevert(
           // carried resolved secrets, and AWS quotes the offending value.
           const msg = maskSecretsInText(err instanceof Error ? err.message : String(err), secrets);
           logger.error(
-            `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): AWS update failed — ${msg}`
+            `  ✗ ${displaySafe(report.stackName, { asciiOnly: true })}/${outcome.logicalId} (${outcome.resourceType}): AWS update failed — ${msg}`
           );
         }
       });
@@ -6030,14 +6044,18 @@ async function runRevert(
             flags: '--revert',
             region: report.region,
           });
+          const retryIdentity = stackIdentityLine(report.stackName, '  ');
           logger.warn(
-            `Reverted ${report.stackName} (${report.region}), but could not record the value the ` +
+            `Reverted this stack in ${report.region}, but could not record the value the ` +
               `provider actually applied: ${err instanceof Error ? err.message : String(err)}. ` +
               `The next 'cdkd drift' will report the same difference; re-run the revert once ` +
               `the state write can succeed.` +
+              (retryIdentity === undefined
+                ? ` The stack is not named here: its name does not render exactly.`
+                : `\n${retryIdentity}`) +
               (retry === undefined
                 ? ` Its command is not printed here: this record's name or region does not ` +
-                  `render exactly, or 'cdkd drift' would read the name as an option.`
+                  `render exactly, is too long, or 'cdkd drift' would read the name as an option.`
                 : `\n  Re-run with: ${retry}`)
           );
         }
@@ -6236,8 +6254,12 @@ function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void 
       })
     );
     if (drifted.length === 0) continue;
+    // The header shares this rendered BLOCK with the `Refresh with:` line
+    // below, so the name is sanitized here too (M0 of the go-to-k/cdkd#3486
+    // review): raw, a newline in the key forges a labelled command line inside
+    // a plan the operator is about to confirm.
     out.write(
-      `\nPlan (--revert): push cdkd state values back into AWS for ${report.stackName} (${report.region}):\n`
+      `\nPlan (--revert): push cdkd state values back into AWS for ${displaySafe(report.stackName, { asciiOnly: true })} (${report.region}):\n`
     );
     for (const o of drifted) {
       // Issue #2944. `runRevert` declines a marked resource before it reaches
@@ -6369,7 +6391,8 @@ function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void 
               `want them reverted too.\n` +
               (refresh === undefined
                 ? `      Its command is not printed here: this record's name or region does not ` +
-                  `render exactly, or the command would read the name as an option.\n`
+                  `render exactly, is too long, or the command would read the name as an ` +
+                  `option.\n`
                 : `      Refresh with: ${refresh}\n`)
           );
         }
@@ -6913,18 +6936,54 @@ function formatScalar(value: unknown): string {
  * through it directly; each of the four call sites is driven through the CLI
  * separately, since what a site PASSES is not something a helper test can see.
  */
+/**
+ * Does `value` reach the terminal as itself — sanitizing changes nothing, and
+ * the state-reference cap does not cut it?
+ *
+ * Module-private and shared by {@link stackCommandFor} and
+ * {@link stackIdentityLine}: the identity line and the command it sits above
+ * must agree about which names are safe to print, and two spellings of this
+ * predicate is how they would come to disagree.
+ */
+function rendersExactly(value: string): boolean {
+  // EMPTY is not exact: an empty `--stack-region ''` is not "not supplied" to
+  // every reader, and an empty identity line names nothing — the same call
+  // `buildForceUnlockCommand` makes one directory over.
+  if (value === '') return false;
+  const safe = displaySafe(value, { asciiOnly: true });
+  return safe === value && !truncateCodePoints(safe, STACK_REF_MAX_CODE_POINTS).truncated;
+}
+
+/**
+ * The `Stack: '<name>'` line that carries a record's identity NEXT TO a
+ * pasteable command, or `undefined` when the name cannot be printed at all.
+ *
+ * A labelled command line is a trusted-looking shape, and a stack name is an
+ * S3 key segment `listStacks` validates only for non-emptiness — so a name
+ * carrying a newline printed ABOVE one forges a second `Revert with:` line
+ * that the operator has every reason to trust (M0 of the go-to-k/cdkd#3486
+ * review). The same gate as the command, and on its own line, shell-quoted:
+ * inside a sentence a `$(...)` name executes when the phrase is pasted, which
+ * `displayIdent`'s JSON quotes would not stop either.
+ */
+function stackIdentityLine(stackName: string, indent = ''): string | undefined {
+  return rendersExactly(stackName) ? `${indent}Stack: ${shellQuote(stackName)}` : undefined;
+}
+
 export function stackCommandFor(
   command: string,
   stackName: string,
-  opts: { region?: string | undefined; flags?: string; patternMatched?: boolean } = {}
+  opts: { region?: string | undefined; flags?: '--revert'; patternMatched?: boolean } = {}
 ): string | undefined {
-  const rendersExactly = (value: string): boolean => {
-    const safe = displaySafe(value, { asciiOnly: true });
-    return safe === value && !truncateCodePoints(safe, STACK_REF_MAX_CODE_POINTS).truncated;
-  };
   if (!rendersExactly(stackName) || stackName.startsWith('-')) return undefined;
   if (opts.patternMatched && (stackName.includes('*') || stackName.includes('/'))) return undefined;
-  if (opts.region !== undefined && !rendersExactly(opts.region)) return undefined;
+  // m3: the REGION takes the option and emptiness gates too, not just the
+  // exactness pair. `shellQuote('--profile')` emits bare, and commander shifts
+  // the next argument unconditionally, so `--stack-region --profile` would ship
+  // a command that reads its own next flag as the region.
+  if (opts.region !== undefined && (!rendersExactly(opts.region) || opts.region.startsWith('-'))) {
+    return undefined;
+  }
   const parts = [command, shellQuote(stackName)];
   if (opts.flags !== undefined) parts.push(opts.flags);
   if (opts.region !== undefined) parts.push(`--stack-region ${shellQuote(opts.region)}`);
