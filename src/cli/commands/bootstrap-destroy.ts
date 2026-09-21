@@ -728,7 +728,12 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
         // the canonical marker's storage rather than the one the message named.
         // So the remedy is only per-key when the canonical key is absent.
         const canonicalStillPresent = markerBody !== null && resolvedMarkerKey === markerKey;
-        const listing = markerSiblings.sameRegionKeys.map((k) => `  - ${k}`).join('\n');
+        // NUMBERED, and the trailing command lines carry the same numbers: the
+        // commands moved off the rows (a command with prose after it is copied
+        // with that prose), and two sibling spellings that both fail the gate
+        // render as identical lines with nothing tying either to a key (m7 of
+        // the go-to-k/cdkd#3499 review).
+        const listing = markerSiblings.sameRegionKeys.map((k, i) => `  ${i + 1}. ${k}`).join('\n');
         // The commands trail the WHOLE message rather than riding the listing
         // (go-to-k/cdkd#3436): with prose after them, a copy through the line
         // end takes the next sentence's words with the command.
@@ -736,8 +741,8 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
           ? ''
           : markerSiblings.sameRegionKeys
               .map(
-                (k) =>
-                  `\nTear it down with: ${
+                (k, i) =>
+                  `\n${i + 1}. Tear it down with: ${
                     pasteableCommand('cdkd bootstrap', [
                       { literal: '--destroy' },
                       { flag: '--region', value: markerRegionOfKey(k), hole: 'region' },

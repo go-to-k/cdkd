@@ -21,6 +21,7 @@ import {
   rendersExactly,
   shellQuote,
 } from '../../../src/utils/pasteable-command.js';
+import type { PasteableCommand } from '../../../src/utils/pasteable-command.js';
 
 /** Split a pasted command the way a POSIX shell words it, for the argv compare. */
 const words = (line: string): string[] => {
@@ -231,17 +232,46 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
   });
 
   it('pastes into a real bash as literal arguments — no redirection, no file created', () => {
-    const built = [
-      pasteableCommand('cdkd deploy', [{ value: 'a; touch OWNED; #', hole: 'stack' }]),
-      pasteableCommand('cdkd deploy', [{ value: '$(touch OWNED)', hole: 'stack' }]),
-      pasteableCommand('cdkd deploy', [{ value: '`touch OWNED`', hole: 'stack' }]),
-      pasteableCommand('cdkd deploy', [{ value: "x'; touch OWNED; #", hole: 'stack' }]),
-      pasteableCommand(
-        'cdkd state orphan',
-        [{ hole: 'stack' }, { flag: '--stack-region', value: 'us-east-1\u001b', hole: 'region' }],
-        ['--profile prod']
-      ),
-    ].map((b) => b.command);
+    // Each case carries the argv the shell MUST produce, derived from the input
+    // values rather than from re-parsing the output line: comparing the line
+    // against its own re-parse agrees by construction for a builder that
+    // dropped quoting on a value with no metacharacter, so it would catch
+    // quote-removal but not re-splitting — which is the property this case
+    // claims (m9 of the go-to-k/cdkd#3499 review).
+    const cases: Array<{ built: PasteableCommand; argv: string[] }> = [
+      {
+        built: pasteableCommand('cdkd deploy', [{ value: 'a; touch OWNED; #', hole: 'stack' }]),
+        argv: ['deploy', 'a; touch OWNED; #'],
+      },
+      {
+        built: pasteableCommand('cdkd deploy', [{ value: '$(touch OWNED)', hole: 'stack' }]),
+        argv: ['deploy', '$(touch OWNED)'],
+      },
+      {
+        built: pasteableCommand('cdkd deploy', [{ value: '`touch OWNED`', hole: 'stack' }]),
+        argv: ['deploy', '`touch OWNED`'],
+      },
+      {
+        built: pasteableCommand('cdkd deploy', [{ value: "x'; touch OWNED; #", hole: 'stack' }]),
+        argv: ['deploy', "x'; touch OWNED; #"],
+      },
+      {
+        // A value with a SPACE and no metacharacter: this is the one that
+        // catches re-splitting, and the one a re-parse of the output could
+        // never catch.
+        built: pasteableCommand('cdkd deploy', [{ value: 'two words', hole: 'stack' }]),
+        argv: ['deploy', 'two words'],
+      },
+      {
+        built: pasteableCommand(
+          'cdkd state orphan',
+          [{ hole: 'stack' }, { flag: '--stack-region', value: 'us-east-1\u001b', hole: 'region' }],
+          ['--profile prod']
+        ),
+        argv: ['state', 'orphan', '<stack>', '--stack-region', '<region>', '--profile', 'prod'],
+      },
+    ];
+    const built = cases.map((c) => c.built.command);
     const dir = mkdtempSync(join(tmpdir(), 'cdkd-pasteable-'));
     // The POSITIVE control first: the same payload UNQUOTED does create the
     // sentinel here, so a bash that cannot start — or a directory check that
@@ -262,15 +292,16 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
     // CONTENTS too: `> stack` truncates the decoy without changing the listing,
     // so a name-only compare cannot see a redirection that hit an existing file.
     const contentsBefore = before.map((f) => readFileSync(join(dir, f), 'utf8'));
-    for (const line of built) {
+    for (const { built: b, argv } of cases) {
+      const line = b.command;
       const r = spawnSync('bash', ['-c', `cdkd() { printf '%s\\n' "$@"; }; ${line}`], {
         cwd: dir,
         encoding: 'utf8',
       });
       expect(r.error, line).toBeUndefined();
       expect(r.status, `${line}\n${r.stderr}`).toBe(0);
-      // The argv the shell actually built, against what the command SAYS.
-      expect(r.stdout.split('\n').slice(0, -1), line).toEqual(words(line).slice(1));
+      // The argv the shell actually built, against what the CALLER passed.
+      expect(r.stdout.split('\n').slice(0, -1), line).toEqual(argv);
       const after = readdirSync(dir).sort();
       expect(after, line).toEqual(before);
       expect(

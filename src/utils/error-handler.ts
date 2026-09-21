@@ -564,7 +564,7 @@ export class ResourceUpdateNotSupportedError extends CdkdError {
  * redeploy, then retry the destroy. A future `--remove-protection`
  * flag (separate scope) will provide an explicit one-shot bypass.
  *
- * Note: `cdkd state destroy` (state-only, no synth) does NOT honor
+ * Note: `cdkd state destroy` (the synth-free destroy) does NOT honor
  * `terminationProtection` — the flag is a CDK property not persisted
  * in cdkd's state.json. Use `cdkd destroy` when synth is available.
  */
@@ -620,8 +620,11 @@ export class StackTerminationProtectionError extends CdkdError {
  *  1. `cdkd destroy <parent>` — the normal cascading-destroy path; the
  *     parent's reverse-DAG walks into the child via
  *     `NestedStackProvider.delete` and removes both layers atomically.
- *  2. `cdkd state destroy <child>` — state-only destroy with no parent
- *     coupling check. The state-driven entry point intentionally
+ *  2. `cdkd state destroy <child>` — the SYNTH-FREE destroy, with no parent
+ *     coupling check. It deletes the child's AWS resources and then its
+ *     record; "state-only" named the wrong thing, and this message's own text
+ *     was corrected away from that reading (go-to-k/cdkd#3499 review nits).
+ *     `cdkd state orphan` is the record-only command. The state-driven entry point intentionally
  *     bypasses this guard for the same reason `cdkd state destroy`
  *     bypasses `terminationProtection`: it's the "I know what I'm
  *     doing" path for cleaning up state when synth is unavailable or

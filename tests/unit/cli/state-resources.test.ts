@@ -464,6 +464,25 @@ describe('cdkd state resources', () => {
     expect(message).toContain('PhysicalID: arn:forged');
   });
 
+  it('names the migrate command on its own trailing line, and holds a pattern-shaped key', async () => {
+    // The `Migrate with:` wiring (m8 of the go-to-k/cdkd#3499 review): nothing
+    // pinned that these three sites pass `patternMatched`, and `cdkd deploy`
+    // resolves its argument through `stack-matcher.ts` — a legacy key named
+    // `Prod*` would deploy every stack it matches.
+    mockListStacks.mockResolvedValue([{ stackName: 'LegacyStack', region: undefined }]);
+    await runStateResources(['resources', 'LegacyStack']).catch(() => undefined);
+    const named = errorSpy.mock.calls.map(String).join('\n');
+    expect(named).toMatch(/^Migrate with: cdkd deploy LegacyStack$/m);
+    expect(named.trimEnd().endsWith('Migrate with: cdkd deploy LegacyStack')).toBe(true);
+
+    errorSpy.mockClear();
+    mockListStacks.mockResolvedValue([{ stackName: 'Prod*', region: undefined }]);
+    await runStateResources(['resources', 'Prod*']).catch(() => undefined);
+    const held = errorSpy.mock.calls.map(String).join('\n');
+    expect(held).toMatch(/^Migrate with: cdkd deploy '<stack>'$/m);
+    expect(held).not.toContain("cdkd deploy 'Prod*'");
+  });
+
   it('emits a JSON array of full resource details with --json', async () => {
     mockListStacks.mockResolvedValue(defaultListResponse('StackA'));
     mockGetState.mockResolvedValue(

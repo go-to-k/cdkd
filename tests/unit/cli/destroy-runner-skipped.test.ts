@@ -366,8 +366,8 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
     // WHOLE LINES, not substrings (go-to-k/cdkd#3436): one command per line is
     // the property — dropping the newline `hintFor` prefixes concatenates two
     // commands into one invocation and every substring check still passes.
-    expect(warn).toMatch(/^Inspect it with: cdkd state show 'TestStack~Child'$/m);
-    expect(warn).toMatch(/^Drop the record with: cdkd state orphan 'TestStack~Child'$/m);
+    expect(warn).toMatch(/^Inspect it with: cdkd state show 'TestStack~Child' --stack-region us-east-1$/m);
+    expect(warn).toMatch(/^Drop the record with: cdkd state orphan 'TestStack~Child' --stack-region us-east-1$/m);
     // The parent's own file must NOT be the one named — that is the bug.
     expect(warn).not.toMatch(/cdkd state show TestStack(?![\w~])/);
   });
@@ -389,22 +389,22 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
     ).then(() => {
       const lines = allWarn().split('\n');
       expect(lines.filter((l) => l.startsWith('Inspect it with: '))).toEqual([
-        "Inspect it with: cdkd state show 'TestStack~ChildA'",
-        "Inspect it with: cdkd state show 'TestStack~ChildB'",
+        "Inspect it with: cdkd state show 'TestStack~ChildA' --stack-region us-east-1",
+        "Inspect it with: cdkd state show 'TestStack~ChildB' --stack-region us-east-1",
       ]);
       expect(lines.filter((l) => l.startsWith('Drop the record with: '))).toEqual([
-        "Drop the record with: cdkd state orphan 'TestStack~ChildA'",
-        "Drop the record with: cdkd state orphan 'TestStack~ChildB'",
+        "Drop the record with: cdkd state orphan 'TestStack~ChildA' --stack-region us-east-1",
+        "Drop the record with: cdkd state orphan 'TestStack~ChildB' --stack-region us-east-1",
       ]);
       // ...and those four lines END the summary, in that order, with nothing
       // between them: a blank entry or a reordering means a stray newline or a
       // join crept back in. (Earlier blank lines belong to the separate
       // per-resource warning `allWarn` also collects.)
       expect(lines.slice(-4)).toEqual([
-        "Inspect it with: cdkd state show 'TestStack~ChildA'",
-        "Inspect it with: cdkd state show 'TestStack~ChildB'",
-        "Drop the record with: cdkd state orphan 'TestStack~ChildA'",
-        "Drop the record with: cdkd state orphan 'TestStack~ChildB'",
+        "Inspect it with: cdkd state show 'TestStack~ChildA' --stack-region us-east-1",
+        "Inspect it with: cdkd state show 'TestStack~ChildB' --stack-region us-east-1",
+        "Drop the record with: cdkd state orphan 'TestStack~ChildA' --stack-region us-east-1",
+        "Drop the record with: cdkd state orphan 'TestStack~ChildB' --stack-region us-east-1",
       ]);
     });
   });
@@ -419,8 +419,8 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
     await runDestroyForStack('TestStack', makeState({ Table: res() }), makeCtx());
 
     const warn = allWarn();
-    expect(warn).toMatch(/^Inspect it with: cdkd state show TestStack$/m);
-    expect(warn).toMatch(/^Drop the record with: cdkd state orphan TestStack$/m);
+    expect(warn).toMatch(/^Inspect it with: cdkd state show TestStack --stack-region us-east-1$/m);
+    expect(warn).toMatch(/^Drop the record with: cdkd state orphan TestStack --stack-region us-east-1$/m);
     expect(warn).not.toContain('TestStack~');
   });
 

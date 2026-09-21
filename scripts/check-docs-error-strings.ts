@@ -291,21 +291,7 @@ const MAX_TEMPLATE_CHARS = 600;
 export function scanTemplateLiterals(
   text: string
 ): Array<{ raw: string; start: number; end: number }> {
-  const sf = ts.createSourceFile('scan.ts', text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-  /*
-   * An unparseable file yields a PARTIAL tree, not an error: its templates go
-   * missing while every count stays plausible. `FLOORS.templates` carries
-   * thousands of slack, so the largest files could all fail to parse and the
-   * run would still report green — the fail-vacuous shape the sibling critics
-   * hard-fail on for the same reason.
-   */
-  const diagnostics = (sf as unknown as { parseDiagnostics?: ReadonlyArray<unknown> })
-    .parseDiagnostics;
-  if (diagnostics && diagnostics.length > 0) {
-    throw new Error(
-      `refusing to scan: ${diagnostics.length} parse diagnostic(s); a partial tree silently drops templates`
-    );
-  }
+  const sf = parseOrRefuse(text);
   const out: Array<{ raw: string; start: number; end: number }> = [];
 
   const visit = (node: ts.Node): void => {
@@ -345,9 +331,19 @@ export function scanTemplateLiterals(
  * It shares {@link scanTemplateLiterals}'s refusal of a partial tree: an
  * unparseable file drops templates silently while every count stays plausible.
  */
-export function templateLiteralParts(
-  text: string
-): Array<{ parts: string[]; start: number; end: number }> {
+/**
+ * Parse `text`, REFUSING a partial tree.
+ *
+ * An unparseable file yields a PARTIAL tree, not an error: its templates go
+ * missing while every count stays plausible. `FLOORS.templates` carries
+ * thousands of slack, so the largest files could all fail to parse and the run
+ * would still report green — the fail-vacuous shape the sibling critics
+ * hard-fail on for the same reason.
+ *
+ * ONE copy, shared by both scanners: two would drift, and only one of them is
+ * on the path extraction takes (m10 of the go-to-k/cdkd#3499 review).
+ */
+function parseOrRefuse(text: string): ts.SourceFile {
   const sf = ts.createSourceFile('scan.ts', text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const diagnostics = (sf as unknown as { parseDiagnostics?: ReadonlyArray<unknown> })
     .parseDiagnostics;
@@ -356,6 +352,16 @@ export function templateLiteralParts(
       `refusing to scan: ${diagnostics.length} parse diagnostic(s); a partial tree silently drops templates`
     );
   }
+  return sf;
+}
+
+export function templateLiteralParts(
+  text: string
+): Array<{ parts: string[]; start: number; end: number }> {
+  // `start` / `end` also delimit the RAW template text, which is what
+  // `MAX_TEMPLATE_CHARS` is applied to — see the cap's note in
+  // `extractTemplates`.
+  const sf = parseOrRefuse(text);
   const out: Array<{ parts: string[]; start: number; end: number }> = [];
   const visit = (node: ts.Node): void => {
     if (ts.isNoSubstitutionTemplateLiteral(node)) {
@@ -396,17 +402,22 @@ export function extractTemplates(sourceFiles: ReadonlyArray<string>): Template[]
   const out: Template[] = [];
   const seen = new Set<string>();
 
-  const add = (parts: readonly string[]): void => {
+  const add = (parts: readonly string[], rawText: string): void => {
     // Whitespace collapses inside each part; only the OUTER edges are trimmed,
     // since a space next to a hole is text the message really prints.
     // Never empty: a parsed literal carries at least its head, and
-    // `concatParts` preserves that — so a length guard here would be a false
-    // branch no test could hold honest.
+    // `concatParts` preserves that.
     const collapsed = parts.map((part) => part.replace(/\s+/g, ' '));
     collapsed[0] = collapsed[0]!.replace(/^ /, '');
     collapsed[collapsed.length - 1] = collapsed[collapsed.length - 1]!.replace(/ $/, '');
     const literal = collapsed.join('');
-    if (literal.length === 0 || literal.length > MAX_TEMPLATE_CHARS) return;
+    // The cap is applied to the RAW span — the template text WITH its holes —
+    // exactly as it was before the parser rewrite (M1 of the go-to-k/cdkd#3499
+    // review). Capping the literals instead lets a template that is mostly
+    // holes through, and that compiles into a matcher of many `[\s\S]*?`
+    // wildcards: the "nearly-all-holes template vouches for anything" shape
+    // this file's header names as its risk.
+    if (rawText.replace(/\s+/g, ' ').trim().length > MAX_TEMPLATE_CHARS) return;
     if (literal.length < MIN_TEMPLATE_LITERAL_CHARS) return;
 
     const source = collapsed.map(esc).join(HOLE);
@@ -432,19 +443,25 @@ export function extractTemplates(sourceFiles: ReadonlyArray<string>): Template[]
      * messages that way, and neither half alone matches what a user sees.
      */
     let run: string[] = [];
+    let runRaw = '';
     for (let k = 0; k < tokens.length; k++) {
       const tok = tokens[k]!;
       const nextTok = tokens[k + 1];
       // Each literal is also registered alone: a concatenation may splice a
       // message with an unrelated neighbour, and the message is still real.
-      add(tok.parts);
+      // The RAW template text, backticks excluded — the same span the cap was
+      // applied to before the parser rewrite, so the measurement is unchanged.
+      const tokRaw = text.slice(tok.start + 1, tok.end - 1);
+      add(tok.parts, tokRaw);
       run = concatParts(run, tok.parts);
+      runRaw += tokRaw;
       if (nextTok && /^\s*\+\s*$/.test(text.slice(tok.end, nextTok.start))) continue;
       // Unconditional: `add` already drops a duplicate by its compiled source,
       // so a run equal to the literal just added costs nothing, and any guard
       // here is a branch no test can hold honest.
-      add(run);
+      add(run, runRaw);
       run = [];
+      runRaw = '';
     }
   }
   return out;

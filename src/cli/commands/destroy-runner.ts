@@ -1266,9 +1266,30 @@ export async function runDestroyForStack(
    * pasted, it handed the second command to the first as arguments.
    */
   const hintFor = (command: string, targets: string[], label: string): string =>
-    targets
-      .map((t) => `\n${label}: ${pasteableCommand(command, [{ value: t, hole: 'stack' }]).command}`)
-      .join('');
+    // DEDUPED on the produced line, not on the target: one resource failing
+    // while another is skipped puts the same state target in both sets, and a
+    // name that fails the gate collapses EVERY target to the identical
+    // `'<stack>'` line — N copies with nothing to tell them apart (m6 of the
+    // go-to-k/cdkd#3499 review).
+    [
+      ...new Set(
+        targets.map(
+          (t) =>
+            // `--stack-region` is not optional here: without it `state orphan`
+            // drops the record for this NAME IN EVERY REGION, so an operator
+            // repairing one region would orphan another region's resources with
+            // no record of their ids (M2 of the go-to-k/cdkd#3499 review). The
+            // `state show` hint carries it for the same reason — a readback of
+            // the wrong region's record is the same mistake, one step earlier.
+            `\n${label}: ${
+              pasteableCommand(command, [
+                { value: t, hole: 'stack' },
+                { flag: '--stack-region', value: regionForState, hole: 'region' },
+              ]).command
+            }`
+        )
+      ),
+    ].join('');
 
   // Build the partial-destroy snapshot persisted by both the incremental
   // writes and the final preserve-write (issue #804). `outputs` / `imports`
@@ -2082,14 +2103,19 @@ export async function runDestroyForStack(
       const skippedCommands =
         hintFor('cdkd state show', skippedTargets, 'Inspect it with') +
         hintFor('cdkd state orphan', skippedTargets, 'Drop the record with');
+      // ACROSS the two calls as well as within each: a stack with one FAILED
+      // and one SKIPPED resource puts the same state target in both sets, and
+      // `hintFor` cannot see the other call's output (m6 of the
+      // go-to-k/cdkd#3499 review).
+      const dedupedCommands = (lines: string): string =>
+        [...new Set(lines.split('\n').filter((l) => l !== ''))].map((l) => `\n${l}`).join('');
       logger.warn(
         `\n${yellow('⚠')} ${bold(`Stack ${stackName} partially destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}${skippedSuffix}${guardSuffix}, ${red(result.errorCount)} errors). ` +
           `State preserved — re-run 'cdkd destroy' / 'cdkd state destroy' to clean up. ` +
           `If the same resource keeps failing, dropping the state record is the last resort: ` +
           `it removes the record without deleting AWS resources.` +
           skippedClause +
-          orphanHint +
-          skippedCommands
+          dedupedCommands(orphanHint + skippedCommands)
       );
     }
   } finally {

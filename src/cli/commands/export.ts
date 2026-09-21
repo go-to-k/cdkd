@@ -3619,8 +3619,16 @@ function orphanCommandFor(stackName: unknown, region: unknown): string {
   const exact =
     typeof stackName === 'string' &&
     shownStack === stackName &&
+    // A record named `--state-bucket=attacker` renders EXACTLY, so the raw
+    // compare admits it — and the shell strips the quotes `shellQuote` adds,
+    // handing Commander an argv entry it parses as that FLAG. A
+    // record-DELETING command would then be pointed at an attacker-named
+    // bucket. The same rule `pasteableCommand`'s `printable()` applies
+    // (M4 of the go-to-k/cdkd#3499 review).
+    !stackName.startsWith('-') &&
     typeof region === 'string' &&
-    safeSegment(region) === region;
+    safeSegment(region) === region &&
+    !region.startsWith('-');
   if (!exact) {
     // Names no target: the identity above it may not be this record's. List the
     // records AS STORED and act on the one whose key matches.

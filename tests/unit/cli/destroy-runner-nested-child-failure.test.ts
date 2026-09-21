@@ -294,9 +294,9 @@ describe('runDestroyForStack: a nested-stack child that did not go away (issues 
     // Asserting the three individually leaves the skipped orphan hint
     // droppable (proxy round 13 on go-to-k/cdkd#3436).
     expect(warn.split('\n').slice(-3)).toEqual([
-      "Drop the record with: cdkd state orphan 'TestStack~Child'",
-      'Inspect it with: cdkd state show TestStack',
-      'Drop the record with: cdkd state orphan TestStack',
+      "Drop the record with: cdkd state orphan 'TestStack~Child' --stack-region us-east-1",
+      'Inspect it with: cdkd state show TestStack --stack-region us-east-1',
+      'Drop the record with: cdkd state orphan TestStack --stack-region us-east-1',
     ]);
   });
 

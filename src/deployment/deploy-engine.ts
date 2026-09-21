@@ -8137,11 +8137,23 @@ export class DeployEngine {
               `delete. Repair the record first (for a nested stack it is the CHILD's own ` +
               `state, whose other resources may already be gone), or delete the resource by ` +
               `hand and drop the record.` +
+              // `--stack-region` on BOTH, and `state orphan` is why: without
+              // it that command drops the record for this NAME IN EVERY REGION
+              // (`orphanCommandFor`'s header in `export.ts` states the same
+              // rule), so an operator repairing one region would silently
+              // orphan the resources another region's record points at. M2 of
+              // the go-to-k/cdkd#3499 review.
               `\nInspect it with: ${
-                pasteableCommand('cdkd state show', [{ value: stackName, hole: 'stack' }]).command
+                pasteableCommand('cdkd state show', [
+                  { value: stackName, hole: 'stack' },
+                  { flag: '--stack-region', value: this.stackRegion, hole: 'region' },
+                ]).command
               }` +
               `\nDrop the record with: ${
-                pasteableCommand('cdkd state orphan', [{ value: stackName, hole: 'stack' }]).command
+                pasteableCommand('cdkd state orphan', [
+                  { value: stackName, hole: 'stack' },
+                  { flag: '--stack-region', value: this.stackRegion, hole: 'region' },
+                ]).command
               }`
           );
           // Deliberately NO `delete stateResources[logicalId]` and NO

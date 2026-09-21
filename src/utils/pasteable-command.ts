@@ -1,8 +1,10 @@
 /**
  * The way cdkd builds a `cdkd ...` command it tells an operator to PASTE.
  *
- * Thirteen message modules route through it today; what it does NOT cover yet
- * is named at the end of this header.
+ * Thirteen message modules route through it today. The CATEGORIES it does not
+ * cover yet are at the end of this header — categories, not a census: the
+ * population is what go-to-k/cdkd#3436's greps return against the tree of the
+ * day, and a list here would be read as complete and go stale.
  *
  * go-to-k/cdkd#3363 measured the class this module closes, and
  * [#3436](https://github.com/go-to-k/cdkd/issues/3436) records it repo-wide.
@@ -38,16 +40,27 @@
  * own callers: `src/utils/**` imports nothing from `src/state/**`, so the
  * shared helper could not reach them the other way round.
  *
- * ## NOT covered yet, as of go-to-k/cdkd#3436's first half
+ * ## The CATEGORIES not covered yet, as of go-to-k/cdkd#3436's first half
  *
- * - `buildForceUnlockCommand` (`state/lock-contention-message.ts`) and the
- *   `cdkd orphan` properties refusal (`state/malformed-resources-bag.ts`) each
- *   carry their own copy of the sanitize / cap / quote / hole logic from
- *   go-to-k/cdkd#3363. They behave the same; they are not this function.
- * - The four `cdkd drift` sites, which are
- *   [#3307](https://github.com/go-to-k/cdkd/issues/3307).
- * - The spelled-out templates and usage synopses that still print a BARE
- *   `<hole>`, and the source fence that would find them.
+ * Re-derive the members with that issue's greps rather than trusting a list:
+ * these are kinds of site, and each kind has more members than the examples.
+ *
+ * - **Its own copy of the gate.** `buildForceUnlockCommand`
+ *   (`state/lock-contention-message.ts`), the `cdkd orphan` properties refusal
+ *   (`state/malformed-resources-bag.ts`), `orphanCommandFor` (`cli/commands/
+ *   export.ts`), and others in `deployment/deploy-engine.ts`,
+ *   `deployment/rollback-executor.ts` and `cli/commands/gc.ts`. They behave the
+ *   same way; they are not this function, so a rule change reaches them only by
+ *   hand.
+ * - **A command in prose quotes with a RAW value**, outside the modules
+ *   migrated here — `provisioning/providers/**` (S3 Tables, Route 53, DynamoDB),
+ *   `cli/config-loader.ts` and `cli/commands/orphan.ts` are where the greps land
+ *   today.
+ * - **The `cdkd drift` sites of
+ *   [#3307](https://github.com/go-to-k/cdkd/issues/3307)**, which take their own
+ *   gate in that PR. Note a `cdkd drift` command also appears OUTSIDE that file.
+ * - **A spelled-out template or usage synopsis printing a BARE `<hole>`**, and
+ *   the source fence that would find them.
  */
 
 import { displaySafe, STACK_REF_MAX_CODE_POINTS, truncateCodePoints } from './display-safe.js';

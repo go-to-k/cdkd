@@ -3228,10 +3228,17 @@ async function replaySingle(
               `user-supplied name. Skipping the delete-new step (it would delete that very ` +
               `resource). The old resource's ORIGINAL properties may NOT have been re-applied; ` +
               `state now records the pre-replacement properties, so inspect the drift and ` +
-              `'cdkd deploy' to reconcile, or rename the resource to make the replacement ` +
+              `run 'cdkd deploy' to reconcile, or rename the resource to make the replacement ` +
               `reversible.` +
+              // `--stack-region` for the same reason the destroy hints carry
+              // it: without it `cdkd drift` resolves every region holding this
+              // name. Read-only, so no data loss — but it reports on records
+              // the message never named (go-to-k/cdkd#3499 review nits).
               `\nInspect it with: ${
-                pasteableCommand('cdkd drift', [{ value: stackName, hole: 'stack' }]).command
+                pasteableCommand('cdkd drift', [
+                  { value: stackName, hole: 'stack' },
+                  { flag: '--stack-region', value: ctx.region, hole: 'region' },
+                ]).command
               }`
           );
           result.warnings++;
