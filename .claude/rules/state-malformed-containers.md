@@ -19,6 +19,7 @@ and nothing inside, so a consumer reaches the bag as an unchecked cast.
 | --- | --- | --- | --- |
 | `resources` | `hasReadableResources` | `refuseMalformedState` +2 | `repairMalformedResourcesForReadOnly` |
 | `outputs` | `hasReadableOutputs` | `refuseMalformedOutputs` + two siblings | `repairMalformedOutputsForReadOnly` |
+| `orphans` | `hasReadableOrphans` | `refuseMalformedOrphans` | `repairMalformedOrphansForReadOnly` |
 
 **Each container has SEVERAL refusal entry points and ONE predicate.** The split
 is about the MESSAGE, never the verdict — all of them delegate to the predicate,
@@ -50,7 +51,9 @@ unreadable bag has no rows to walk. `cdkd diff` also runs the entry predicate
 over `orphans[]` before previewing an adoption, with its OWN warning text
 (`malformedOrphanRecordsWarning`) because the shared one names `resources`; the
 dropped records join the node's `unreadable`, so `--fail` counts them. The
-`orphans` CONTAINER itself is still unguarded — go-to-k/cdkd#3379.
+CONTAINER those rows sit in is the table's third row, guarded one level above
+them (go-to-k/cdkd#3379): the entry pass runs only once the container is known
+to be a list.
 
 ## One refusal here is NOT about a container
 
@@ -117,7 +120,11 @@ An absent `outputs` bag is an ORDINARY record cdkd writes on purpose: the
 deploy's failure-path saves emit `outputs: currentState.outputs`, which
 `JSON.stringify` drops when undefined, and `cdkd scrub` round-trips such a record
 rather than materializing `{}` over it. Refusing or warning on it fires on
-healthy state.
+healthy state. An absent `orphans` container is ordinary for a stronger reason:
+a stack that never had a failed deploy has no orphan list at all, so it is the
+common case rather than a tolerated one — and the read-only repair leaves an
+absent container ABSENT rather than materializing `[]`, which a later write
+would then persist.
 
 ## Refuse versus repair, and the dispositions that are neither
 

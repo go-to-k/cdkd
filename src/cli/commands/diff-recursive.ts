@@ -49,11 +49,14 @@ import {
   malformedResourcePropertiesWarning,
   malformedResourcesWarning,
   isReadableResourceEntry,
+  malformedOrphansWarning,
+  repairMalformedOrphansForReadOnly,
   repairMalformedOutputsForReadOnly,
   repairMalformedResourceEntriesForReadOnly,
   repairMalformedResourcePropertiesForReadOnly,
   repairMalformedResourcesForReadOnly,
   displayLogicalId,
+  UNREADABLE_ORPHANS_CONTAINER_ROW,
   UNREADABLE_RESOURCES_MAP_ROW,
 } from '../../state/malformed-resources-bag.js';
 
@@ -372,6 +375,15 @@ async function loadStateOrEmpty(
     // different consequences, and a record can be malformed in any one alone.
     if (repairMalformedOutputsForReadOnly(result.state)) {
       logger.warn(malformedOutputsWarning(stackName, region));
+    }
+    // The `orphans` CONTAINER, decided the same way and reported separately
+    // (go-to-k/cdkd#3379). AT THE LOAD rather than at the adoption preview: the
+    // preview is gated on `currentState.orphans?.length`, and for a STRING that
+    // gate PASSES — `'abc'.length` is 3 — so the walk below it would render one
+    // adoption row per character.
+    if (repairMalformedOrphansForReadOnly(result.state)) {
+      logger.warn(malformedOrphansWarning(stackName, region));
+      unreadable.push(UNREADABLE_ORPHANS_CONTAINER_ROW);
     }
     // The `exportNames` FIELD, said out loud (go-to-k/cdkd#3192 review). The
     // predicate fails closed wherever it is read, which is right — it serves
@@ -2245,7 +2257,11 @@ export function renderDiffTree(
       // it here and in `--json`, since the node records only strings.
       const named = node.unreadable
         .slice(0, UNREADABLE_PREVIEW_NAMES)
-        .map((id) => (id === UNREADABLE_RESOURCES_MAP_ROW ? id : displayLogicalId(id)));
+        .map((id) =>
+          id === UNREADABLE_RESOURCES_MAP_ROW || id === UNREADABLE_ORPHANS_CONTAINER_ROW
+            ? id
+            : displayLogicalId(id)
+        );
       const rest = node.unreadable.length - named.length;
       const onlyTheMap =
         node.unreadable.length === 1 && node.unreadable[0] === UNREADABLE_RESOURCES_MAP_ROW;
