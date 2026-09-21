@@ -1287,10 +1287,13 @@ export function malformedOrphansRefusalMessage(stackName: string, region: string
  *
  * Its own text rather than {@link malformedOrphansRefusalMessage}, for the
  * reason every text in this module is its own: that one says the container
- * would be "written back", and a destroy writes NOTHING back — it removes the
- * record. What it does with the container instead is DECIDE: the count feeds
- * `stillEmpty`, and the orphan warning above it is the operator's only notice
- * that resources from an earlier failed deploy are still live in AWS.
+ * would be RESHAPED and written back, which is the rollback mechanism, and a
+ * destroy never reshapes it — `buildDestroySnapshot` carries the container
+ * verbatim through `...rest` into each incremental save, and the run then
+ * REMOVES the record. What a destroy does with the container instead is
+ * DECIDE: the count feeds `stillEmpty`, and the orphan warning above it is the
+ * operator's only notice that resources from an earlier failed deploy are
+ * still live in AWS.
  *
  * It also owes the remedy the sibling destroy refusal owes, and for the same
  * reason go-to-k/cdkd#3161 raised against refusing a cleanup command at all: an
