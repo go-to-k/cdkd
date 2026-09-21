@@ -222,7 +222,7 @@ describe('cdkd publish-assets', () => {
 
       const reported = mockLoggerError.mock.calls.map((c) => String(c[0])).join('\n');
       expect(reported).toContain('No stacks matching MyStage/Api found in assembly');
-      expect(reported).toContain("Stage 'MyStage' failed to load");
+      expect(reported).toContain("Stage MyStage failed to load");
     });
 
     it('leaves the no-matching-stacks refusal untouched when every Stage loaded', async () => {

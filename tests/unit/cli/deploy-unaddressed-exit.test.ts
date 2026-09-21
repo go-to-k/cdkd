@@ -629,7 +629,7 @@ describe('deploy names a Stage that failed to load (issue #3482)', () => {
 
     expect(code).toBe(1);
     expect(reported()).toContain('No stacks matching MyStage/Api found in assembly');
-    expect(reported()).toContain("Stage 'MyStage' failed to load");
+    expect(reported()).toContain("Stage MyStage failed to load");
   });
 
   it('leaves the no-match message untouched when every Stage loaded', async () => {

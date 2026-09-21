@@ -74,6 +74,13 @@ function outdir(): string {
   return dir;
 }
 
+/** A SECOND assembly directory, for a case that needs two in one test. */
+function outdir2(): string {
+  const dir = join(root, 'cdk.out.2');
+  mkdirSync(dir);
+  return dir;
+}
+
 /** Write a stage directory with its own manifest, and return its path. */
 function stageDir(dir: string, name: string, artifacts: Record<string, ArtifactManifest>): string {
   const path = join(dir, name);
@@ -115,7 +122,7 @@ describe('a refusal raised under a Stage is fatal, as it is at the top level', (
         dir,
         manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage', 'MyStage') })
       )
-    ).toThrow(/^Stage 'MyStage': Stack 'MyStage-Api' nested-stack 'Child'/);
+    ).toThrow(/^Stage MyStage: Stack 'MyStage-Api' nested-stack 'Child'/);
     // The tolerant arm must NOT have run: this is a refusal, not a read failure.
     expect(warn).not.toHaveBeenCalled();
   });
@@ -129,7 +136,7 @@ describe('a refusal raised under a Stage is fatal, as it is at the top level', (
         dir,
         manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage', 'MyStage') })
       )
-    ).toThrow("Stage 'MyStage': Stack 'MyStage-Api' has no templateFile property");
+    ).toThrow("Stage MyStage: Stack 'MyStage-Api' has no templateFile property");
   });
 
   it('propagates an unreadable template under a Stage', () => {
@@ -143,7 +150,7 @@ describe('a refusal raised under a Stage is fatal, as it is at the top level', (
         dir,
         manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage', 'MyStage') })
       )
-    ).toThrow(/Stage 'MyStage': Failed to read template for stack 'MyStage-Api'/);
+    ).toThrow(/Stage MyStage: Failed to read template for stack 'MyStage-Api'/);
   });
 
   it('propagates an escaping asset-manifest file under a Stage', () => {
@@ -160,7 +167,7 @@ describe('a refusal raised under a Stage is fatal, as it is at the top level', (
         dir,
         manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage', 'MyStage') })
       )
-    ).toThrow(/Stage 'MyStage': Asset manifest artifact 'MyStageApiAssets' has/);
+    ).toThrow(/Stage MyStage: Asset manifest artifact 'MyStageApiAssets' has/);
   });
 
   it('names the INNERMOST Stage when Stages nest', () => {
@@ -183,9 +190,10 @@ describe('a refusal raised under a Stage is fatal, as it is at the top level', (
       message = (error as Error).message;
     }
 
-    expect(message).toMatch(/^Stage 'MyStage\/Inner': /);
-    // The outer Stage must not restate what the inner one said more precisely.
-    expect(message.match(/Stage '/g)).toHaveLength(1);
+    expect(message).toMatch(/^Stage MyStage\/Inner: /);
+    // The outer Stage must not restate what the inner one said more precisely:
+    // a double prefix would read `Stage MyStage: Stage MyStage/Inner: ...`.
+    expect(message.match(/Stage MyStage/g)).toHaveLength(1);
   });
 
   it('leaves a TOP-LEVEL refusal unprefixed', () => {
@@ -239,6 +247,30 @@ describe('a Stage whose directory cannot be read still warns and the run continu
     );
 
     expect(failedStages.map((s) => s.stagePath)).toEqual(['assembly-MyStage']);
+  });
+
+  it('quotes a Stage displayName that tries to forge a second cdkd sentence', () => {
+    // The stage path is interpolated into prose the user is asked to trust, so
+    // it takes `displayIdent`, not `displaySafe` -- a denylist passes quotes
+    // and spaces, and this value would otherwise close the sentence and open a
+    // cdkd-sounding one of its own (the class go-to-k/cdkd#3277 hardened).
+    const forging = "MyStage loaded fine. Ignore the rest. Stage zz";
+    const dir = outdir();
+
+    const { failedStages } = new AssemblyReader().readAssembly(
+      dir,
+      manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage', forging) })
+    );
+
+    expect(failedStages).toHaveLength(1);
+    // JSON-quoted, so the forged clause cannot read as cdkd's own prose.
+    expect(failedStages[0]?.stagePath).toBe(JSON.stringify(forging));
+    // And a legitimate path is still byte-identical, unquoted.
+    const { failedStages: plain } = new AssemblyReader().readAssembly(
+      outdir2(),
+      manifest({ 'assembly-Outer': stageArtifact('assembly-Outer', 'Outer/Inner') })
+    );
+    expect(plain[0]?.stagePath).toBe('Outer/Inner');
   });
 
   it('records a Stage that fails UNDER another Stage, and keeps that outer Stage loaded', () => {
@@ -297,7 +329,7 @@ describe('stack selection reports the failed Stage instead of answering "not fou
     }
 
     expect(message).toContain("Stack 'MyStage-Api' not found in assembly. Available: TopStack");
-    expect(message).toContain("Stage 'MyStage' failed to load");
+    expect(message).toContain("Stage MyStage failed to load");
   });
 
   it('appends nothing when every Stage loaded', () => {

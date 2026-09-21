@@ -12,7 +12,6 @@ import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption } from '../region-options.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
-import { failedStageNote } from '../../synthesis/failed-stages.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import { resolveApp } from '../config-loader.js';
 import { matchStacks, renderNoStackMatch } from '../stack-matcher.js';
@@ -178,8 +177,9 @@ async function listCommand(
   if (allStacks.length === 0) {
     // A Stage that failed to load dropped every stack under it, and an app
     // whose only stacks live in that Stage lists as empty (issue
-    // go-to-k/cdkd#3482).
-    throw new Error('No stacks found in assembly' + failedStageNote(patterns, result.failedStages));
+    // go-to-k/cdkd#3482). Same renderer as the no-match case below, which
+    // picks the empty-assembly wording from `allStacks` being empty.
+    throw new Error(renderNoStackMatch(patterns, allStacks, result));
   }
 
   // Filter by patterns if provided. Patterns match against displayName (when

@@ -71,8 +71,11 @@ export function renderNoStackMatch(
   available: readonly StackLike[],
   assembly: { failedStages?: readonly FailedStage[] }
 ): string {
+  // An assembly with no stacks at all is reported as such whatever the user
+  // named: `Available: ` with nothing after it says less than the plain
+  // sentence, and this is the case a failed Stage produces.
   const head =
-    patterns.length > 0
+    patterns.length > 0 && available.length > 0
       ? `No stacks matching ${patterns.join(', ')} found in assembly. ` +
         `Available: ${available.map(describeStack).join(', ')}`
       : 'No stacks found in assembly';

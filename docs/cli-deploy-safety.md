@@ -1031,7 +1031,7 @@ matching":
 
 ```
 No stacks matching MyStage/Api found in assembly. Available: TopStack. Stage
-'MyStage' failed to load, so stacks under it are missing from this list rather
+MyStage failed to load, so stacks under it are missing from this list rather
 than missing from the app: Failed to read cloud assembly manifest from
 /path/to/cdk.out/assembly-MyStage/manifest.json: ENOENT: no such file or
 directory
@@ -1044,7 +1044,7 @@ claimed as the explanation.
 Every other refusal under a Stage — an escaping or absent `templateFile`, an
 unreadable template, an escaping asset manifest, an absolute `aws:asset:path` —
 aborts the run, with the Stage named ahead of the refusal
-(`Stage 'MyStage': Stack 'MyStage-Api' ...`). For a Stage inside a Stage, the
+(`Stage MyStage: Stack 'MyStage-Api' ...`). For a Stage inside a Stage, the
 innermost one is named.
 
 Two sibling rows naming the **same** template are fine — that is a shared child,

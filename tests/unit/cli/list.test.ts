@@ -315,7 +315,7 @@ describe('cdkd list', () => {
 
     await runList(['MyStage/Api']);
 
-    expect(reportedError()).toContain("Stage 'MyStage' failed to load");
+    expect(reportedError()).toContain("Stage MyStage failed to load");
     expect(reportedError()).toContain('ENOENT: no such file or directory');
   });
 
@@ -330,7 +330,7 @@ describe('cdkd list', () => {
     await runList([]);
 
     expect(reportedError()).toContain('No stacks found in assembly');
-    expect(reportedError()).toContain("Stage 'MyStage' failed to load");
+    expect(reportedError()).toContain("Stage MyStage failed to load");
   });
 
   it('errors when --app cannot be resolved', async () => {

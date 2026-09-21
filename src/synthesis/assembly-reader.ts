@@ -10,7 +10,7 @@ import type {
 import { parseEnvironment } from '../types/assembly.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import { getLogger } from '../utils/logger.js';
-import { displaySafe } from '../utils/display-safe.js';
+import { displaySafe, displayIdent } from '../utils/display-safe.js';
 import { renderAssemblyPathEscape, resolveAssemblyPath } from '../utils/assembly-path.js';
 import { SynthesisError } from '../utils/error-handler.js';
 import { collectStackMessages, type StackMessage } from './stack-messages.js';
@@ -152,6 +152,13 @@ export interface AssemblyContents {
  * still renders in full and byte-identically. The same rule, for the same
  * reason, guards the twin refusals in `src/cli/commands/diff-recursive.ts`
  * (go-to-k/cdkd#3243).
+ *
+ * ONE value takes `displayIdent` instead: a failed Stage's path
+ * ([#3482](https://github.com/go-to-k/cdkd/issues/3482)). It is an IDENTIFIER
+ * rather than free-form text or a path that must stay untruncated, and it is
+ * interpolated into a sentence rather than quoted as a value, so the
+ * denylist's tolerance of quotes and spaces is a spoof surface there. See
+ * `FailedStage.stagePath`.
  */
 export class AssemblyReader {
   private logger = getLogger().child('AssemblyReader');
@@ -268,7 +275,14 @@ export class AssemblyReader {
           const nestedDir = resolved.path;
           // CDK writes the Stage's construct path as the nested assembly's
           // `properties.displayName`; the artifact id is the fallback.
-          const stagePath = displaySafe(
+          //
+          // `displayIdent`, not `displaySafe`, and rendered WITHOUT quotes of
+          // ours: this value is interpolated into a sentence the user is asked
+          // to trust, and `displaySafe` passes quotes and spaces, so a
+          // `displayName` that closes our quote writes a second cdkd-sounding
+          // clause. A Stage path is a plain identifier, so `displayIdent` is
+          // the identity on every legitimate one. See `FailedStage.stagePath`.
+          const stagePath = displayIdent(
             typeof props.displayName === 'string' && props.displayName.length > 0
               ? props.displayName
               : artifactId

@@ -124,11 +124,35 @@ describe('renderNoStackMatch', () => {
   // Issue go-to-k/cdkd#3482: the whole reason the synthesis result is a
   // REQUIRED argument rather than an optional extra.
   it('appends the failed Stage a pattern targets', () => {
-    const message = renderNoStackMatch(['MyStage/Api'], [], {
+    const message = renderNoStackMatch(['MyStage/Api'], [stacks[0]!], {
       failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT' }],
     });
 
     expect(message).toContain('No stacks matching MyStage/Api found in assembly');
-    expect(message).toContain("Stage 'MyStage' failed to load");
+    expect(message).toContain('Stage MyStage failed to load');
+  });
+
+  it('reports an EMPTY assembly as such even when a pattern was given', () => {
+    // `Available: ` with nothing after it says less than the plain sentence,
+    // and an empty assembly is what a failed Stage produces.
+    const message = renderNoStackMatch(['MyStage/Api'], [], {
+      failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT' }],
+    });
+
+    expect(message).toContain('No stacks found in assembly');
+    expect(message).not.toContain('Available:');
+    // No hedge: the pattern names that stage.
+    expect(message).not.toContain('Possibly unrelated');
+  });
+
+  it('does not hedge when NO pattern was given, since every failed Stage is the answer', () => {
+    const message = renderNoStackMatch([], [], {
+      failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT' }],
+    });
+
+    expect(message).toBe(
+      'No stacks found in assembly. Stage MyStage failed to load, so stacks under it are ' +
+        'missing from this list rather than missing from the app: ENOENT'
+    );
   });
 });

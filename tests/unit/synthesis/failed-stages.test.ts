@@ -26,7 +26,7 @@ describe('failedStageNote', () => {
     const note = failedStageNote(['MyStage/Api'], [MY_STAGE]);
 
     expect(note).toContain(
-      "Stage 'MyStage' failed to load, so stacks under it are missing from this list " +
+      "Stage MyStage failed to load, so stacks under it are missing from this list " +
         'rather than missing from the app: ENOENT: no such file or directory'
     );
     expect(note).not.toContain('Possibly unrelated');
@@ -50,37 +50,50 @@ describe('failedStageNote', () => {
     // stack may override its own stackName — the link cannot be proven.
     const note = failedStageNote(['MyStage-Api'], [MY_STAGE]);
 
-    expect(note).toContain("Possibly unrelated: Stage 'MyStage' failed to load");
+    expect(note).toContain("Possibly unrelated: Stage MyStage failed to load");
+  });
+
+  it('survives a pattern whose SEGMENT is not a valid regular expression', () => {
+    // Splitting on '/' can make an invalid segment out of a valid pattern, and
+    // this helper runs when the stack list is EMPTY -- exactly when
+    // `stackMatchesPattern` never evaluates and so never raises first. An
+    // unusable pattern must fall back to the hedge, not replace the message
+    // the user needed with a SyntaxError.
+    expect(() => failedStageNote(['(*x/y*)'], [MY_STAGE])).not.toThrow();
+    expect(failedStageNote(['(*x/y*)'], [MY_STAGE])).toContain('Possibly unrelated');
   });
 
   it('hedges when the pattern targets a DIFFERENT stage', () => {
     expect(failedStageNote(['Other/Api'], [MY_STAGE])).toContain(
-      "Possibly unrelated: Stage 'MyStage'"
+      "Possibly unrelated: Stage MyStage"
     );
   });
 
   it('lists every failed stage when none is targeted, and only the targeted ones when some are', () => {
     const all = failedStageNote([], [MY_STAGE, OTHER_STAGE]);
-    expect(all).toContain("Stage 'MyStage'");
-    expect(all).toContain("Stage 'Other'");
+    expect(all).toContain("Stage MyStage");
+    expect(all).toContain("Stage Other");
 
     const targeted = failedStageNote(['MyStage/Api'], [MY_STAGE, OTHER_STAGE]);
-    expect(targeted).toContain("Stage 'MyStage'");
-    expect(targeted).not.toContain("Stage 'Other'");
+    expect(targeted).toContain("Stage MyStage");
+    expect(targeted).not.toContain("Stage Other");
   });
 });
 
 describe('stageScopedError', () => {
-  it('re-raises a refusal with the stage named, keeping the original as the cause', () => {
+  it('re-raises a refusal with the stage named, and carries NO cause', () => {
     const original = new SynthesisError("Stack 'MyStage-Api' has no templateFile property");
 
     const scoped = stageScopedError('MyStage', original);
 
     expect(scoped).toBeInstanceOf(SynthesisError);
     expect((scoped as Error).message).toBe(
-      "Stage 'MyStage': Stack 'MyStage-Api' has no templateFile property"
+      "Stage MyStage: Stack 'MyStage-Api' has no templateFile property"
     );
-    expect((scoped as SynthesisError).cause).toBe(original);
+    // The message already embeds the original in full, and `formatError`
+    // renders a cause as a `Caused by:` line — which would print the same
+    // sentence twice.
+    expect((scoped as SynthesisError).cause).toBeUndefined();
   });
 
   it('leaves an already-scoped error alone, so the INNERMOST stage is the one named', () => {
@@ -89,10 +102,10 @@ describe('stageScopedError', () => {
     const outer = stageScopedError('MyStage', inner);
 
     expect(outer).toBe(inner);
-    expect((outer as Error).message).toBe("Stage 'MyStage/Inner': boom");
+    expect((outer as Error).message).toBe("Stage MyStage/Inner: boom");
   });
 
   it('scopes a non-Error throw too', () => {
-    expect((stageScopedError('MyStage', 'boom') as Error).message).toBe("Stage 'MyStage': boom");
+    expect((stageScopedError('MyStage', 'boom') as Error).message).toBe("Stage MyStage: boom");
   });
 });

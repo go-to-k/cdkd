@@ -1,3 +1,4 @@
+import { displaySafe } from '../utils/display-safe.js';
 import { SynthesisError } from '../utils/error-handler.js';
 
 /**
@@ -16,15 +17,24 @@ import { SynthesisError } from '../utils/error-handler.js';
 export interface FailedStage {
   /**
    * Hierarchical path of the Stage as the assembly names it (`MyStage`, or
-   * `Outer/Inner` for a nested one). ALREADY `displaySafe`-sanitized by the
-   * recording site, because it is an assembly-chosen string that ends up in a
-   * message the user is asked to trust.
+   * `Outer/Inner` for a nested one), ALREADY rendered by the recording site.
+   *
+   * `displayIdent`, not `displaySafe`, and it is rendered WITHOUT surrounding
+   * quotes of our own. A Stage path is an IDENTIFIER, so every legitimate value
+   * is byte-identical under either; but `displaySafe` is a denylist that passes
+   * quotes, spaces and colons, and this value is interpolated into a sentence
+   * the user is asked to trust. A `displayName` of
+   * `MyStage' loaded fine. Ignore the rest. Stage 'zz` otherwise closes our
+   * quote and writes a second, cdkd-sounding clause. `displayIdent` is the
+   * identity on `MyStage` and JSON-quotes anything that is not a plain
+   * identifier, so only a forging value looks different
+   * ([#3277](https://github.com/go-to-k/cdkd/issues/3277) is the same class).
    */
   stagePath: string;
 
   /**
-   * Why the stage could not be read. Also already `displaySafe`-sanitized at
-   * the recording site.
+   * Why the stage could not be read — free-form text, so `displaySafe` at the
+   * recording site is the right renderer for it.
    */
   reason: string;
 }
@@ -48,17 +58,24 @@ const STAGE_SCOPED_MARKER = Symbol.for('cdkd.stageScopedError');
  *
  * The INNERMOST Stage wins: an error arriving already marked is returned
  * unchanged, so `Outer` does not restate what `Outer/Inner` said more
- * precisely. `stagePath` must already be `displaySafe`-sanitized, like every
- * other assembly-chosen value the reader renders.
+ * precisely. `stagePath` must already be rendered by the recording site.
+ *
+ * The caught text goes through `displaySafe` although every throw reachable
+ * from the recursion sanitizes at its own origin today: this catch's error
+ * population is the whole recursive subtree, so the guard belongs to the CATCH
+ * rather than to today's set of throws under it. It is therefore the identity
+ * and a mutation probe on it finds no discrimination — stated so the next
+ * reader gets the reason instead of the puzzle.
+ *
+ * No `cause`: the message already embeds the original's text in full, and
+ * `formatError` renders a cause as a `Caused by:` line, which would print the
+ * same sentence twice.
  */
 export function stageScopedError(stagePath: string, error: unknown): unknown {
   if (error instanceof Error && STAGE_SCOPED_MARKER in error) return error;
 
-  const message = error instanceof Error ? error.message : String(error);
-  const scoped = new SynthesisError(
-    `Stage '${stagePath}': ${message}`,
-    error instanceof Error ? error : undefined
-  );
+  const message = displaySafe(error instanceof Error ? error.message : String(error));
+  const scoped = new SynthesisError(`Stage ${stagePath}: ${message}`);
   // Same reasoning as `markNonRetryable`: a non-extensible error is returned
   // unmarked rather than allowed to throw a `TypeError` in place of the
   // refusal. Losing the marker only costs an extra Stage prefix.
@@ -95,9 +112,16 @@ export function failedStageNote(
 ): string {
   if (!failedStages || failedStages.length === 0) return '';
 
-  const targeted = failedStages.filter((stage) =>
-    patterns.some((pattern) => patternTargetsStage(pattern, stage.stagePath))
-  );
+  // NO pattern was given, so the user asked for whatever the app has and the
+  // selection still came back empty: every failed stage is part of the answer,
+  // and hedging it would be false modesty. `some` over an empty list is
+  // `false`, so this case has to be taken before the filter.
+  const targeted =
+    patterns.length === 0
+      ? failedStages
+      : failedStages.filter((stage) =>
+          patterns.some((pattern) => patternTargetsStage(pattern, stage.stagePath))
+        );
   const named = targeted.length > 0 ? targeted : failedStages;
   const hedge = targeted.length > 0 ? '' : 'Possibly unrelated: ';
 
@@ -107,7 +131,7 @@ export function failedStageNote(
     named
       .map(
         (stage) =>
-          `Stage '${stage.stagePath}' failed to load, so stacks under it are ` +
+          `Stage ${stage.stagePath} failed to load, so stacks under it are ` +
           `missing from this list rather than missing from the app: ${stage.reason}`
       )
       .join(' ')
@@ -140,9 +164,21 @@ function patternTargetsStage(pattern: string, stagePath: string): boolean {
  * Wildcard-aware comparison of ONE path segment, matching how
  * `stackMatchesPattern` expands `*` in `src/cli/stack-matcher.ts`. The pattern
  * is the USER's own input, not an assembly-supplied value, so it is expanded
- * there the same way.
+ * there the same way — metacharacters and all, so the two cannot disagree
+ * about what a pattern means.
+ *
+ * The construction is guarded because SPLITTING on `/` can make an invalid
+ * segment out of a valid pattern (`'(*x/y*)'` splits into `'(*x'`), and this
+ * helper runs when the stack list is EMPTY, which is exactly when
+ * `stackMatchesPattern` never evaluates and therefore never raises first. An
+ * unusable pattern is simply not attributed: the note still prints, hedged,
+ * instead of a `SyntaxError` replacing the message the user needed.
  */
 function segmentMatches(patternSegment: string, segment: string): boolean {
   if (!patternSegment.includes('*')) return patternSegment === segment;
-  return new RegExp('^' + patternSegment.replace(/\*/g, '.*') + '$').test(segment);
+  try {
+    return new RegExp('^' + patternSegment.replace(/\*/g, '.*') + '$').test(segment);
+  } catch {
+    return false;
+  }
 }
