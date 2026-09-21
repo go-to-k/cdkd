@@ -17,8 +17,16 @@ parses `manifest.json`; **context-providers/** resolves missing context.
   ([#3277](https://github.com/go-to-k/cdkd/issues/3277)). Synthesis is the first
   layer the CLI reaches, so on a hand-modified assembly these ARE the lines a
   user is asked to trust, and `formatError` sanitizes only an error's `cause`.
-  `displaySafe`, never `displayIdent`: a legitimate asset path must stay
-  untruncated and unquoted. `stack-messages.ts`'s side-file refusal follows the
+  The split is by what the value IS, not by where it came from: a PATH or
+  free-form text takes `displaySafe`, which must leave a legitimate asset path
+  untruncated and unquoted; an IDENTIFIER interpolated into prose takes
+  `displayIdent`, because there the denylist's tolerance of quotes, spaces and
+  C1 bytes lets a crafted value write a cdkd-sounding clause or erase the line
+  with `ESC [ 2 K`. Today that second class is a failed Stage's path and the
+  stack names listed after `Available:`
+  ([#3482](https://github.com/go-to-k/cdkd/issues/3482)); `describeStack` in
+  `src/cli/stack-matcher.ts` applies the same rule to the same values for every
+  other command. `stack-messages.ts`'s side-file refusal follows the
   same rule; its annotation DISPLAY does not YET — an open residual on
   [#3479](https://github.com/go-to-k/cdkd/issues/3479), blocked on a helper that
   preserves newlines, NOT a settled decision: that prose is the user's own app's

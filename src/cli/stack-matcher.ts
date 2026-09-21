@@ -17,6 +17,7 @@
  * `stackName`, so a pattern that incidentally matches the same stack via both
  * fields is returned only once.
  */
+import { displayIdent, STACK_REF_MAX_CODE_POINTS } from '../utils/display-safe.js';
 import { failedStageNote, type FailedStage } from '../synthesis/failed-stages.js';
 
 export interface StackLike {
@@ -45,12 +46,33 @@ export function matchStacks<T extends StackLike>(stacks: T[], patterns: string[]
  * Render a stack for diagnostic messages. When `displayName` differs from the
  * physical name, both are shown so the user can see which forms are valid as
  * patterns (e.g. `MyStage-Api (MyStage/Api)`).
+ *
+ * Both names come from the Cloud Assembly, and every one of this helper's
+ * render sites interpolates the result into PROSE cdkd authors — `Available:
+ * ...`, `Multiple stacks found: ...`, `Publishing assets for stack: ...`, the
+ * last of which prints on a normal run rather than only on an error. So they
+ * go through `displayIdent` ([#3277](https://github.com/go-to-k/cdkd/issues/3277)):
+ * a `stackName` carrying `ESC [ 2 K` plus a carriage return ERASES cdkd's own
+ * line and a newline forges a second one, and a value carrying quotes and
+ * periods writes a cdkd-sounding clause. It is the identity on every
+ * legitimate value — a CloudFormation stack name is `[A-Za-z0-9-]` and a
+ * display path adds `/`, both inside `PLAIN_IDENT` — so only a crafted one
+ * renders differently.
+ *
+ * Sanitizing HERE rather than at the call sites is what keeps the rule whole:
+ * the sites include `scrub.ts` and `destroy.ts`, which this change does not
+ * touch, and a rule widened by hand is how the class survived being closed
+ * twice already.
  */
 export function describeStack(stack: StackLike): string {
+  const name = displayIdent(stack.stackName, { maxCodePoints: STACK_REF_MAX_CODE_POINTS });
   if (stack.displayName && stack.displayName !== stack.stackName) {
-    return `${stack.stackName} (${stack.displayName})`;
+    const display = displayIdent(stack.displayName, {
+      maxCodePoints: STACK_REF_MAX_CODE_POINTS,
+    });
+    return `${name} (${display})`;
   }
-  return stack.stackName;
+  return name;
 }
 
 /**

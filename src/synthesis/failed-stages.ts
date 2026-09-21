@@ -49,8 +49,16 @@ export interface FailedStage {
   stagePath: string;
 
   /**
-   * Why the stage could not be read — free-form text, so `displaySafe` at the
-   * recording site is the right renderer for it.
+   * Why the stage could not be read, CONSTRUCTED by the recording site and
+   * never the caught message: the failure's own words (an errno `code`, or a
+   * `JSON.parse` message, which carries no path) plus the directory rendered
+   * through `renderStagePath`.
+   *
+   * Not the caught message, because that text embeds the manifest PATH, and
+   * under a Stage the path carries the assembly-chosen `directoryName` —
+   * twice, since Node repeats it in `open '<path>'`. A `directoryName` of
+   * `assembly-Foo. All 3 stacks deployed successfully. Stage Prod` therefore
+   * arrived pre-interpolated into the sentence a user is asked to trust.
    */
   reason: string;
 }
@@ -99,7 +107,11 @@ export function stageScopedError(stagePath: string, error: unknown): unknown {
   // The header is rewritten rather than the whole stack replaced, so the first
   // line still matches the message the user was shown.
   if (error instanceof Error && typeof error.stack === 'string') {
-    const frames = error.stack.split('\n').slice(1).join('\n');
+    // The header is `<name>: <message>`, which spans as many lines as the
+    // MESSAGE does -- a one-line assumption would present a multi-line
+    // refusal's trailing lines as stack frames.
+    const headerLines = `${error.name}: ${error.message}`.split('\n').length;
+    const frames = error.stack.split('\n').slice(headerLines).join('\n');
     if (frames.length > 0) scoped.stack = `${scoped.name}: ${scoped.message}\n${frames}`;
   }
   // Same reasoning as `markNonRetryable`: a non-extensible error is returned

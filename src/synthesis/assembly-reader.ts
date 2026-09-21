@@ -10,7 +10,7 @@ import type {
 import { parseEnvironment } from '../types/assembly.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import { getLogger } from '../utils/logger.js';
-import { displaySafe } from '../utils/display-safe.js';
+import { displayIdent, displaySafe, STACK_REF_MAX_CODE_POINTS } from '../utils/display-safe.js';
 import { renderAssemblyPathEscape, resolveAssemblyPath } from '../utils/assembly-path.js';
 import { CdkdError, SynthesisError } from '../utils/error-handler.js';
 import { collectStackMessages, type StackMessage } from './stack-messages.js';
@@ -152,8 +152,12 @@ function manifestReadFailureText(error: unknown): string {
   const cause = error instanceof CdkdError ? error.cause : error;
   const code = (cause as NodeJS.ErrnoException | undefined)?.code;
   if (typeof code === 'string' && code.length > 0) return displaySafe(code);
-  const text = cause instanceof Error ? cause.message : String(error);
-  return displaySafe(text);
+  // The tail deliberately does NOT fall back to the wrapper's own message:
+  // that is the text this function exists to exclude, since it embeds the
+  // manifest path. A fallback fires on an input nobody predicted, which is
+  // exactly when the contained value must not come back.
+  if (!(cause instanceof Error)) return 'unreadable';
+  return displaySafe(cause.message);
 }
 
 /**
@@ -385,8 +389,18 @@ export class AssemblyReader {
           // `Available: ` with nothing after it says less than the plain
           // sentence, and an empty assembly is exactly what a failed Stage
           // produces. Same choice as `renderNoStackMatch`.
+          // `displayIdent`, matching `describeStack` in
+          // `src/cli/stack-matcher.ts`, which renders the same value into the
+          // same clause for every other command. The two used to disagree --
+          // this copy sanitized with `displaySafe` and that one not at all --
+          // and a stack NAME is an identifier interpolated into prose, so the
+          // denylist's tolerance of quotes, spaces and C1 bytes is a spoof
+          // surface. Rendered here rather than imported, because `src/cli`
+          // sits ABOVE synthesis in the layer order.
           (stacks.length > 0
-            ? `Available: ${stacks.map((s) => displaySafe(s.stackName)).join(', ')}`
+            ? `Available: ${stacks
+                .map((s) => displayIdent(s.stackName, { maxCodePoints: STACK_REF_MAX_CODE_POINTS }))
+                .join(', ')}`
             : 'The assembly has no stacks') +
           // "not found" is a lie while a Stage failed to load: its stacks were
           // dropped from `stacks` above (issue go-to-k/cdkd#3482).
