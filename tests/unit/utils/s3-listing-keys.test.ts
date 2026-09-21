@@ -49,7 +49,7 @@ const LISTING_FILES = [
  * it. Listed here so the exemption is explicit and fails when that lands.
  */
 const NO_KEY_READ = ['src/cli/config-loader.ts', 'src/deployment/recreate-targets.ts'];
-const HELD_BY_ANOTHER_PR = ['src/cli/commands/state.ts'];
+const HELD_BY_ANOTHER_PR: string[] = [];
 
 const read = (rel: string): string => readFileSync(join(REPO_ROOT, rel), 'utf-8');
 
@@ -231,14 +231,22 @@ describe('every listing site asks for encoding AND decodes (go-to-k/cdkd#3313)',
     });
   }
 
-  it('records the ONE site still unfixed, so it cannot be forgotten', () => {
-    // go-to-k/cdkd#3226 holds `state.ts`. When that merges this case fails,
-    // which is the point — it is the reminder, not a permanent exemption.
-    for (const rel of HELD_BY_ANOTHER_PR) {
-      expect(
-        read(rel).includes('EncodingType: LISTING_ENCODING_TYPE'),
-        `${rel} now requests encoding — remove it from HELD_BY_ANOTHER_PR and give it a real case`
-      ).toBe(false);
-    }
+  it('no listing is deferred to another PR', () => {
+    // This list held `state.ts` while go-to-k/cdkd#3226 owned that file, and the
+    // case asserted the site had NOT been fixed — a reminder that would fail the
+    // moment it was. It did its job: #3226 merged, the site was wired, and the
+    // entry came out, which promoted `state.ts` into the real per-file loop
+    // above rather than leaving it skipped.
+    //
+    // The list stays, EMPTY, as the fence for the next time. A deferral is
+    // legitimate — a file another PR holds cannot be edited — but it must be
+    // temporary and visible, so an entry added here has to be justified in the
+    // same breath and removed when the holder lands.
+    expect(
+      HELD_BY_ANOTHER_PR,
+      'a listing site is deferred. That is allowed while another PR holds the file, ' +
+        'but the entry must name which PR and come out when that PR merges — ' +
+        'otherwise it is a permanent exemption wearing a temporary label.'
+    ).toEqual([]);
   });
 });
