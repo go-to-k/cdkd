@@ -17,7 +17,10 @@ export interface FileAssetNodeData {
   kind: 'file';
   hash: string;
   asset: FileAsset;
+  /** The manifest's own directory — what `source.path` resolves against. */
   cdkOutputDir: string;
+  /** The app's outdir — what it must stay inside (go-to-k/cdkd#3489). */
+  assetOutdir: string;
   accountId: string;
   region: string;
   profile?: string;
@@ -30,7 +33,10 @@ export interface DockerBuildNodeData {
   kind: 'docker-build';
   hash: string;
   asset: DockerImageAsset;
+  /** The manifest's own directory — what `source.directory` resolves against. */
   cdkOutputDir: string;
+  /** The app's outdir — what it must stay inside (go-to-k/cdkd#3489). */
+  assetOutdir: string;
   localTag: string;
 }
 
@@ -101,11 +107,18 @@ export class AssetPublisher {
       profile?: string;
       nodePrefix?: string;
       redirect?: AssetRedirectMap;
+      /**
+       * The app's outdir. Defaults to the manifest's directory, which is
+       * correct for a top-level stack; a STAGE stack must pass the app root
+       * or its `../asset.<hash>` paths are refused (go-to-k/cdkd#3489).
+       */
+      assetOutdir?: string;
     }
   ): string[] {
     const content = readFileSync(manifestPath, 'utf-8');
     const manifest = JSON.parse(content) as AssetManifest;
     const cdkOutputDir = manifestPath.replace(/\/[^/]+$/, '');
+    const assetOutdir = options.assetOutdir ?? cdkOutputDir;
     const prefix = options.nodePrefix || '';
     const redirect = options.redirect;
     const nodeIds: string[] = [];
@@ -135,6 +148,7 @@ export class AssetPublisher {
           hash,
           asset,
           cdkOutputDir,
+          assetOutdir,
           accountId: options.accountId,
           region: options.region,
           ...(options.profile && { profile: options.profile }),
@@ -160,6 +174,7 @@ export class AssetPublisher {
           hash,
           asset,
           cdkOutputDir,
+          assetOutdir,
           localTag,
         } satisfies DockerBuildNodeData,
       });
@@ -202,10 +217,16 @@ export class AssetPublisher {
         data.cdkOutputDir,
         data.accountId,
         data.region,
-        data.profile
+        data.profile,
+        data.assetOutdir
       );
     } else if (data.kind === 'docker-build') {
-      await this.dockerPublisher.build(data.asset, data.cdkOutputDir, data.localTag);
+      await this.dockerPublisher.build(
+        data.asset,
+        data.cdkOutputDir,
+        data.localTag,
+        data.assetOutdir
+      );
     } else if (data.kind === 'docker-publish') {
       await this.dockerPublisher.push(data.asset, data.accountId, data.region, data.localTag);
     }

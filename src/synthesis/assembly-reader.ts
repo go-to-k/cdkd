@@ -11,6 +11,7 @@ import { parseEnvironment } from '../types/assembly.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import { getLogger } from '../utils/logger.js';
 import { displaySafe } from '../utils/display-safe.js';
+import { renderAssemblyPathEscape, resolveAssemblyPath } from '../utils/assembly-path.js';
 import { SynthesisError } from '../utils/error-handler.js';
 import { collectStackMessages, type StackMessage } from './stack-messages.js';
 
@@ -36,6 +37,30 @@ export interface StackInfo {
 
   /** Asset manifest file path (absolute) */
   assetManifestPath?: string | undefined;
+
+  /**
+   * The TOP-LEVEL assembly directory — the app's `outdir`, which is where
+   * `cdk synth` STAGES every asset, whatever depth of Stage declares it.
+   *
+   * It is NOT `dirname(assetManifestPath)`, and the difference is the whole
+   * reason this field exists. A Stage's manifest lives in
+   * `cdk.out/assembly-<Stage>/` while its assets are staged into `cdk.out`,
+   * because upstream `AssetStaging` writes under `Stage.assetOutdir` (which
+   * resolves up to the App) and records
+   * `path.relative(stage.outdir, stagedPath)`. So a Stage's
+   * `source.path` is `../asset.<hash>` BY DESIGN, and Stages nest, so it can
+   * be `../../asset.<hash>`.
+   *
+   * Asset paths therefore RESOLVE against the manifest's own directory but
+   * must be CONTAINED within this one (issue
+   * [#3489](https://github.com/go-to-k/cdkd/issues/3489)). Using the manifest
+   * directory as the containment base refused every Stage asset.
+   *
+   * Optional so hand-built `StackInfo` literals (tests, tooling) stay valid;
+   * `AssemblyReader` always sets it, and a caller without one falls back to
+   * the manifest's directory, which is correct for a top-level stack.
+   */
+  assetOutdir?: string | undefined;
 
   /** Stack dependency names (other stacks this stack depends on) */
   dependencyNames: string[];
@@ -135,7 +160,17 @@ export class AssemblyReader {
   /**
    * Get all stacks from assembly (recursively traverses nested assemblies / Stages)
    */
-  getAllStacks(assemblyDir: string, manifest: AssemblyManifest): StackInfo[] {
+  getAllStacks(
+    assemblyDir: string,
+    manifest: AssemblyManifest,
+    /**
+     * The app's outdir, where assets are staged. Defaults to `assemblyDir` at
+     * the top level and is passed through UNCHANGED into a Stage, because a
+     * Stage's assets are staged into the app's outdir, not the Stage's own
+     * directory (see `StackInfo.assetOutdir`).
+     */
+    assetOutdir: string = assemblyDir
+  ): StackInfo[] {
     if (!manifest.artifacts) {
       this.logger.warn('No artifacts found in manifest');
       return [];
@@ -153,17 +188,38 @@ export class AssemblyReader {
           artifactId,
           artifact,
           manifest,
-          assetManifestMap
+          assetManifestMap,
+          assetOutdir
         );
         stacks.push(stackInfo);
       } else if (artifact.type === 'cdk:cloud-assembly') {
         // Nested assembly (Stage) — recurse into subdirectory
         const props = artifact.properties as { directoryName?: string } | undefined;
         if (props?.directoryName) {
-          const nestedDir = join(assemblyDir, props.directoryName);
+          // Containment BEFORE the try, and a THROW rather than the warn-and-skip
+          // below it (issue go-to-k/cdkd#3489). A nested assembly whose
+          // `directoryName` escapes would otherwise be swallowed into a warning
+          // that silently drops every stack under the Stage.
+          //
+          // That holds at the TOP level only: the recursive `getAllStacks` call
+          // below sits INSIDE the try, so under a Stage this throw — and every
+          // other refusal raised while reading one — still reaches that catch.
+          // The ESCAPE is prevented either way, since the check runs before any
+          // read; what survives is the downgrade itself, which is
+          // go-to-k/cdkd#3482 and not this issue.
+          const resolved = resolveAssemblyPath(assemblyDir, props.directoryName);
+          if (!resolved.contained) {
+            throw new SynthesisError(
+              `Nested assembly '${displaySafe(props.directoryName)}' ` +
+                `${renderAssemblyPathEscape(resolved, assemblyDir)}`
+            );
+          }
+          const nestedDir = resolved.path;
           try {
             const nestedManifest = this.readManifest(nestedDir);
-            const nestedStacks = this.getAllStacks(nestedDir, nestedManifest);
+            // `assetOutdir` unchanged: a Stage's assets live in the APP's
+            // outdir, never in the Stage's own directory.
+            const nestedStacks = this.getAllStacks(nestedDir, nestedManifest, assetOutdir);
             stacks.push(...nestedStacks);
           } catch (error) {
             // `displaySafe` on the caught text is DEFENCE IN DEPTH and is today
@@ -231,7 +287,18 @@ export class AssemblyReader {
 
       const props = artifact.properties as AssetManifestArtifactProperties | undefined;
       if (props?.file) {
-        map.set(artifactId, join(assemblyDir, props.file));
+        // The asset manifest is read and its `source.path` entries are packaged
+        // and uploaded, so an escaping `file` puts a file from outside the
+        // assembly into the user's account (issue go-to-k/cdkd#3489).
+        const resolved = resolveAssemblyPath(assemblyDir, props.file);
+        if (!resolved.contained) {
+          throw new SynthesisError(
+            `Asset manifest artifact '${displaySafe(artifactId)}' has ` +
+              `file='${displaySafe(props.file)}' which ` +
+              `${renderAssemblyPathEscape(resolved, assemblyDir)}`
+          );
+        }
+        map.set(artifactId, resolved.path);
       }
     }
 
@@ -246,7 +313,8 @@ export class AssemblyReader {
     artifactId: string,
     artifact: ArtifactManifest,
     manifest: AssemblyManifest,
-    assetManifestMap: Map<string, string>
+    assetManifestMap: Map<string, string>,
+    assetOutdir: string
   ): StackInfo {
     const props = artifact.properties as StackArtifactProperties | undefined;
     const stackName = props?.stackName || artifactId;
@@ -257,7 +325,17 @@ export class AssemblyReader {
       throw new SynthesisError(`Stack '${displaySafe(stackName)}' has no templateFile property`);
     }
 
-    const templatePath = join(assemblyDir, templateFile);
+    // Containment (issue go-to-k/cdkd#3489) BEFORE the read: a `templateFile`
+    // of `../../../home/user/.aws/credentials` is read from outside the
+    // assembly and, where it parses, becomes the template cdkd deploys.
+    const resolvedTemplate = resolveAssemblyPath(assemblyDir, templateFile);
+    if (!resolvedTemplate.contained) {
+      throw new SynthesisError(
+        `Stack '${displaySafe(stackName)}' has templateFile='${displaySafe(templateFile)}' ` +
+          `which ${renderAssemblyPathEscape(resolvedTemplate, assemblyDir)}`
+      );
+    }
+    const templatePath = resolvedTemplate.path;
     let template: CloudFormationTemplate;
     try {
       const content = readFileSync(templatePath, 'utf-8');
@@ -349,7 +427,19 @@ export class AssemblyReader {
             `non-CDK toolchain. Refusing to load.`
         );
       }
-      nestedTemplates[logicalId] = join(assemblyDir, assetPath);
+      // The containment check the tripwire above is NOT (issue
+      // go-to-k/cdkd#3489). Both refusals stay, and word themselves
+      // differently: an absolute path cannot actually leave the directory
+      // under `join`, and `..` — which does — is invisible to the tripwire.
+      const resolvedNested = resolveAssemblyPath(assemblyDir, assetPath);
+      if (!resolvedNested.contained) {
+        throw new SynthesisError(
+          `Stack '${displaySafe(stackName)}' nested-stack '${displaySafe(logicalId)}' has ` +
+            `Metadata['aws:asset:path']='${displaySafe(assetPath)}' which ` +
+            `${renderAssemblyPathEscape(resolvedNested, assemblyDir)}`
+        );
+      }
+      nestedTemplates[logicalId] = resolvedNested.path;
     }
 
     return {
@@ -358,6 +448,7 @@ export class AssemblyReader {
       artifactId,
       template,
       assetManifestPath,
+      assetOutdir,
       dependencyNames,
       region: env?.region !== 'unknown-region' ? env?.region : undefined,
       account: env?.account !== 'unknown-account' ? env?.account : undefined,

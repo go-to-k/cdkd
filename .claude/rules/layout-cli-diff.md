@@ -29,7 +29,11 @@ ANCESTOR CHAIN, not a global visited set, since two siblings may name one child
 `readNestedTemplate` / `indexNestedChildTemplates` duplicate
 `NestedStackProvider`'s copies to keep the CLI off provisioning; their refusals
 use `displaySafe`, as does the synth-time twin in `assembly-reader.ts`
-([#3277](https://github.com/go-to-k/cdkd/issues/3277)). This file's OWN
+([#3277](https://github.com/go-to-k/cdkd/issues/3277)). Both twins run
+`resolveAssemblyPath` beside their absolute-path tripwire, against the PARENT
+TEMPLATE's directory — CDK emits nested templates as siblings, so the base is
+that directory and not the assembly root
+([#3489](https://github.com/go-to-k/cdkd/issues/3489)). This file's OWN
 `Nested template file not found` throw does not yet.
 
 `computeStackDiff` is the per-stack state-vs-template diff shared by the

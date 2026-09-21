@@ -323,3 +323,37 @@ describe('a merge that throws mid-loop removes the tmpdir it had allocated (#310
       expect(readdirSync(scratchTmp), 'the merge tmpdir was left behind').toEqual([]);
     }));
 });
+
+describe('copyLayerTreeLastWins resolves its source through realpath(3)', () => {
+  // `.native`, not plain `fs.realpathSync`: the plain form is a JS walker that
+  // folds `..` LEXICALLY, so a source reached through a directory link whose
+  // path carries a `..` after it answers ENOENT for a tree the kernel resolves
+  // — the copy then throws instead of merging a layer that is really there.
+  // On a case-insensitive filesystem the same shape can make it spin
+  // (go-to-k/cdkd#3489). Reverting the `.native` reds this.
+  it('copies a layer whose root is a link whose TARGET carries a `..`', () => {
+    // The `..` has to live inside the LINK TARGET on disk, not in the path
+    // string: every caller's path is already `path.join`ed, and `join` folds
+    // `..` before `realpath` ever sees it. With `a -> <root>/outside/sub` and
+    // `alias -> a/../real`, the JS walker folds `a/..` lexically to the
+    // staging dir and answers ENOENT for a directory the kernel resolves —
+    // so the copy throws instead of merging a layer that is really there.
+    // Measured: js=ENOENT, native=<root>/outside/real.
+    const root = mkdtempSync(join(tmpdir(), 'cdkd-layer-native-'));
+    try {
+      mkdirSync(join(root, 'outside', 'sub'), { recursive: true });
+      mkdirSync(join(root, 'outside', 'real', 'nodejs'), { recursive: true });
+      writeFileSync(join(root, 'outside', 'real', 'nodejs', 'index.js'), 'module.exports = 1;\n');
+      mkdirSync(join(root, 'stage'), { recursive: true });
+      symlinkSync(join(root, 'outside', 'sub'), join(root, 'stage', 'a'), 'dir');
+      symlinkSync('a/../real', join(root, 'stage', 'alias'), 'dir');
+
+      const dest = join(root, 'dest');
+      copyLayerTreeLastWins(join(root, 'stage', 'alias'), dest);
+
+      expect(readFileSync(join(dest, 'nodejs', 'index.js'), 'utf-8')).toContain('module.exports');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

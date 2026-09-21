@@ -270,6 +270,8 @@ async function publishAssetsCommand(
             ...(options.profile && { profile: options.profile }),
             nodePrefix: `${stack.stackName}:`,
             ...(redirect && { redirect }),
+            // See deploy.ts: a Stage's assets live in the app's outdir.
+            ...(stack.assetOutdir !== undefined && { assetOutdir: stack.assetOutdir }),
           });
         } catch (err) {
           const e = err as { code?: string };

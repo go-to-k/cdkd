@@ -322,4 +322,76 @@ describe('FileAssetPublisher', () => {
 
     expect(mockS3Destroy).toHaveBeenCalled();
   });
+
+  describe('assembly-path containment (issue go-to-k/cdkd#3489)', () => {
+    // The manifest names the DESTINATION bucket as well as the source, so an
+    // escaping `source.path` zipped a directory from outside `cdk.out` and
+    // PutObject'd it to a bucket the attacker chose, with the caller's own
+    // credentials. Asserted BEHAVIOURALLY, through `publish()`, because the
+    // property that matters is "no S3 command was sent", which a source-text
+    // check on the join spelling cannot express.
+    //
+    // `node:fs` is mocked in this file, so `realpathSync` is absent and the
+    // helper's symlink arm is skipped — the lexical arm is pure path maths and
+    // is what these cases exercise. The symlink arm has its own real-filesystem
+    // cases in `asset-path-containment.test.ts`.
+    it('refuses an escaping source.path and sends NOTHING to S3', async () => {
+      await expect(
+        publisher.publish(
+          'abc123',
+          makeFileAsset({ source: { path: '../../../etc', packaging: 'zip' } }),
+          '/tmp/cdk.out',
+          '123456789012',
+          'us-east-1'
+        )
+      ).rejects.toThrow(/source\.path='\.\.\/\.\.\/\.\.\/etc' which resolves to '.*', outside/);
+
+      expect(mockS3Send).not.toHaveBeenCalled();
+    });
+
+    it('refuses BEFORE the already-exists HeadObject, so remote state cannot skip the check', async () => {
+      // The check used to sit below `objectExists`, which `continue`s on a
+      // hit — so an object that already existed skipped containment entirely,
+      // and the HeadObject itself was a signed request to the attacker's
+      // bucket. Priming HeadObject to SUCCEED is what discriminates.
+      mockS3Send.mockResolvedValue({});
+
+      await expect(
+        publisher.publish(
+          'abc123',
+          makeFileAsset({ source: { path: '../../../etc', packaging: 'zip' } }),
+          '/tmp/cdk.out',
+          '123456789012',
+          'us-east-1'
+        )
+      ).rejects.toThrow(/outside/);
+
+      expect(mockS3Send).not.toHaveBeenCalled();
+    });
+
+    it('still publishes an ordinary asset path unchanged', async () => {
+      mockS3Send.mockImplementation((cmd: { _type?: string }) => {
+        if (cmd._type === 'HeadObject') {
+          const err = new Error('Not Found') as Error & {
+            name: string;
+            $metadata: { httpStatusCode: number };
+          };
+          err.name = 'NotFound';
+          err.$metadata = { httpStatusCode: 404 };
+          throw err;
+        }
+        return {};
+      });
+
+      await publisher.publish(
+        'abc123',
+        makeFileAsset(),
+        '/tmp/cdk.out',
+        '123456789012',
+        'us-east-1'
+      );
+
+      expect(mockS3Send).toHaveBeenCalled();
+    });
+  });
 });

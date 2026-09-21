@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import type { ArtifactManifest, MetadataEntry } from '../types/assembly.js';
 import { displaySafe } from '../utils/display-safe.js';
+import { renderAssemblyPathEscape, resolveAssemblyPath } from '../utils/assembly-path.js';
 import { SynthesisError } from '../utils/error-handler.js';
 import type { StackInfo } from './assembly-reader.js';
 
@@ -81,7 +81,17 @@ export function collectStackMessages(
   const merged: Record<string, MetadataEntry[]> = { ...(artifact.metadata ?? {}) };
 
   if (artifact.additionalMetadataFile) {
-    const metadataPath = join(assemblyDir, artifact.additionalMetadataFile);
+    // Containment (issue go-to-k/cdkd#3489), outside the try below so the
+    // refusal is its own message rather than the generic read failure — and so
+    // the escape is reported even where the escaping file happens to parse.
+    const resolved = resolveAssemblyPath(assemblyDir, artifact.additionalMetadataFile);
+    if (!resolved.contained) {
+      throw new SynthesisError(
+        `Stack metadata file '${displaySafe(artifact.additionalMetadataFile)}' ` +
+          `${renderAssemblyPathEscape(resolved, assemblyDir)}`
+      );
+    }
+    const metadataPath = resolved.path;
     let sideFile: Record<string, MetadataEntry[]>;
     try {
       sideFile = JSON.parse(readFileSync(metadataPath, 'utf-8')) as Record<string, MetadataEntry[]>;

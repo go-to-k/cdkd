@@ -107,6 +107,16 @@ Index of every area: [code-layout.md](code-layout.md).
   `resolveProfileCredentials` in `local-start-api.ts`, gating an
   `aws sso login --profile <name>` hint, so tightening either half must ask what
   it costs that caller (go-to-k/cdkd#3377).
+- **src/cli/commands/synth.ts** - `resolveVerboseTemplatePath` is the ONE place
+  cdkd turns an assembly-supplied string into a path it WRITES (`--verbose`
+  dumps `<stackName>.template.json`). `stackName` comes from the manifest, so it
+  is containment-checked like every read site, **and then `lstat`ed**
+  ([#3489](https://github.com/go-to-k/cdkd/issues/3489)). The second check is
+  not redundant: `resolveAssemblyPath` is exact only for a path that fully
+  resolves, and a file about to be CREATED never does, so the write is the one
+  caller relying on that helper's model. `lstat` does not follow the link, so a
+  symbolic link here is refused whatever it points at and no shape has to be
+  enumerated. Do not relax it to a containment test on the link's target.
 - **src/cli/commands/nested-template-preflight.ts** - `cdkd deploy`'s refusal
   of a malformed nested-template tree (#3449). The call stays BEFORE macro
   expansion and the work graph; `NestedStackProvider`'s per-row walk is the

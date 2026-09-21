@@ -15,6 +15,26 @@ Index: [code-layout.md](code-layout.md).
 - **Intrinsic helpers** - `intrinsic-lambda-arn.ts` returns a discriminated union so each call site wraps the unsupported case in its own error class. `intrinsic-image.ts` is NOT a bare re-export: `derivePseudoParametersFromRegion` applies `canonicalizeRegion` first, since cdk-local has its own table.
 - **`LocalStateProvider`** - cdkd's `s3-local-state-provider.ts` (`--from-state`, over the shared `local-state-loader.ts`) and cdk-local's CFn provider (`--from-cfn-stack`). `local-state-source.ts` enforces mutual exclusion and is a thin shim: cdk-local owns the CFn implementation, cdkd injects its S3 factory via `extraStateProviders`, and that factory carries the UNFOLDED `--stack-region` as `rawStackRegion`.
 
+## An asset path has TWO directories, and they are not the same one
+
+go-to-k/cdkd#3489. Every site here that turns an asset manifest's `source.path`
+/ `source.directory` into a real path RESOLVES it against the MANIFEST's own
+directory and CONTAINS it within `StackInfo.assetOutdir`. For a stack inside a
+`cdk.Stage` the manifest is in `cdk.out/assembly-<Stage>/` while its assets are
+staged in the app root, so upstream writes `../asset.<hash>` by design — bind to
+the manifest's directory and every Stage asset is refused as "hand-modified".
+
+- **NEITHER directory is `--output`.** Under `-a <pre-synthesized dir>` the
+  synthesizer never reads it. Bound: `StackInfo.assetOutdir` or
+  `Synthesizer.synthesize`'s `assemblyDir` (both user-supplied, the invariant
+  `containWithin` requires). Base: `dirname(stack.assetManifestPath)`.
+  cdk-local's `StackInfo` declares neither field, so a site holding only that
+  record looks the stack up in cdkd's `stacks`.
+- A missing bound FAILS OPEN (falls back to the base, right only top-level), a
+  wrong one FAILS CLOSED (refuses everything) — neither looks like a
+  containment hole to a test that only checks refusals. Fence the WIRING: per
+  call site, a case asserting the bound it passes, red under a probe.
+
 ## Region case folding (#1836)
 
 **The folds are NOT interchangeable — do not simplify them into one.**

@@ -7,6 +7,7 @@ import {
   truncateCodePoints,
   STACK_REF_MAX_CODE_POINTS,
 } from '../../utils/display-safe.js';
+import { renderAssemblyPathEscape, resolveAssemblyPath } from '../../utils/assembly-path.js';
 import { UNRENDERABLE, shellQuote } from '../../state/lock-contention-message.js';
 import {
   hasReadableResources,
@@ -3987,10 +3988,15 @@ function readNestedChildTemplateFile(
  * non-CDK toolchain — `path.join(dir, '/abs/foo')` would silently bypass
  * the `dir` argument).
  *
+ * Also refuses a path that RESOLVES outside `templateDir`, which the absolute
+ * check cannot see — `path.join` folds `..`
+ * ([#3489](https://github.com/go-to-k/cdkd/issues/3489)).
+ *
  * Sibling of `indexGrandchildTemplatePaths` in `import.ts`. Same rationale
- * for separate definitions as `readNestedChildTemplateFile` above.
+ * for separate definitions as `readNestedChildTemplateFile` above. Exported
+ * for unit testing.
  */
-function indexNestedTemplatePaths(
+export function indexNestedTemplatePaths(
   template: Record<string, unknown>,
   templateDir: string
 ): Record<string, string> {
@@ -4005,11 +4011,25 @@ function indexNestedTemplatePaths(
     if (typeof assetPath !== 'string' || assetPath.length === 0) continue;
     if (nodePath.isAbsolute(assetPath)) {
       throw new Error(
-        `cdkd export: nested-stack '${logicalId}' has Metadata['aws:asset:path']='${assetPath}' ` +
+        `cdkd export: nested-stack '${displaySafe(logicalId)}' has ` +
+          `Metadata['aws:asset:path']='${displaySafe(assetPath)}' ` +
           `which is absolute. CDK emits relative asset paths for nested templates.`
       );
     }
-    result[logicalId] = nodePath.join(templateDir, assetPath);
+    // The containment check the tripwire above is NOT (issue
+    // go-to-k/cdkd#3489): `path.join` folds `..`, so a row of
+    // `../../etc/passwd` resolved out of `templateDir` and its contents were
+    // read and written into the exported CloudFormation template. Both
+    // refusals stay, worded apart.
+    const resolved = resolveAssemblyPath(templateDir, assetPath);
+    if (!resolved.contained) {
+      throw new Error(
+        `cdkd export: nested-stack '${displaySafe(logicalId)}' has ` +
+          `Metadata['aws:asset:path']='${displaySafe(assetPath)}' which ` +
+          `${renderAssemblyPathEscape(resolved, templateDir)}`
+      );
+    }
+    result[logicalId] = resolved.path;
   }
   return result;
 }

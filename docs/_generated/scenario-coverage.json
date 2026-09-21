@@ -2053,6 +2053,11 @@
       "scenarios": []
     },
     {
+      "name": "stage-assets",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "stale-attribute-heal",
       "annotated": true,
       "scenarios": []
@@ -2980,6 +2985,7 @@
     "sns-subscription-update",
     "sqs-esm-max-concurrency",
     "stack-lock-renewal",
+    "stage-assets",
     "stepfunctions-s3-definition",
     "synthetics-canary"
   ]

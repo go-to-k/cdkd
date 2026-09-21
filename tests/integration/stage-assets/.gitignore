@@ -1,0 +1,8 @@
+# Override the parent integ .gitignore (which ignores all *.js) so this
+# fixture's two ASSET SOURCES are tracked. They are not build artifacts:
+# `lambda-src/index.js` is the `Code.fromAsset` target and `docker/app.js` is
+# the Dockerfile's `COPY` target, so a clean checkout that lacks either dies in
+# `cdk synth` before the fixture's first assertion — which is precisely the
+# Stage-asset publishing this fixture exists to prove.
+!lambda-src/*.js
+!docker/*.js

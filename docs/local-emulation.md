@@ -180,10 +180,49 @@ Containers cannot reach `localhost` on your machine — inside the container,
 on the host, which is what an override like
 `"ENDPOINT": "http://host.docker.internal:4566"` is for.
 
+## What cdkd trusts in the assembly
+
+These commands read the cloud assembly, and `-a <dir>` reads one that was built
+elsewhere. Some of the paths it supplies are refused when they resolve outside
+the assembly directory, and some are not, so the list is worth reading rather
+than assuming.
+
+Refused:
+
+- a Lambda's `Handler`, for an inline `Code.ZipFile` — cdkd materializes it as
+  a file before running it, so an escaping module path would have written the
+  assembly's own bytes to a path of its choosing;
+- a Docker asset's `source.directory` under `cdkd local run-task`;
+- a code asset's `source.path` under `cdkd local invoke-agentcore`, and the
+  `source.directory` its `--watch` soft reload reads.
+
+A stack inside a `cdk.Stage` is unaffected by any of those: its assets are
+staged into the app's output directory, so `../asset.<hash>` is the shape CDK
+writes and it loads normally. The same rule and the same wording apply on the
+deploy path; see [Deploy safety](cli-deploy-safety.md).
+
+Not refused today:
+
+- a Lambda's `Metadata['aws:asset:path']`, which these commands bind-mount into
+  the container and which may be absolute. This is a known gap rather than a
+  design choice, and containment for it is planned;
+- every Docker build context that goes through the bundled `cdk-local` engine,
+  which joins the path itself: a container-image Lambda under
+  `cdkd local invoke` and `cdkd local start-api`, and the image build of
+  `cdkd local invoke-agentcore`'s container arm (so that command contains the
+  `source.directory` its watcher classifies against, but not the one it
+  builds).
+
+Until those land, a hand-modified assembly can still put a directory of its
+choosing in front of code it also supplies. Treat an assembly you did not
+synthesize yourself as untrusted input.
+
 ## Related
 
 - [CLI Reference](cli-reference.md) — every cdkd command, the output-stream
   contract, and the full exit-code table
+- [Deploy safety](cli-deploy-safety.md) — what cdkd refuses to read out of a
+  cloud assembly, and why
 - [Getting Started](getting-started.md) — installing cdkd and deploying a first
   stack
 - [State Management](state-management.md) — what `--from-state` reads

@@ -23,6 +23,14 @@ parses `manifest.json`; **context-providers/** resolves missing context.
   [#3479](https://github.com/go-to-k/cdkd/issues/3479), blocked on a helper that
   preserves newlines, NOT a settled decision: that prose is the user's own app's
   only when an app ran, which `-a <dir>` skips.
+- Every path those two build from the manifest — `directoryName`,
+  `templateFile`, an asset-manifest `file`, `Metadata['aws:asset:path']`,
+  `additionalMetadataFile` — goes through `resolveAssemblyPath`
+  ([layout-utils.md](layout-utils.md),
+  [#3489](https://github.com/go-to-k/cdkd/issues/3489)) BEFORE the read, keeping
+  its own refusal distinct from the absolute-path tripwire beside it. The
+  `directoryName` check THROWS, outside the warn-and-skip its read failure
+  takes: a warning there silently drops every stack under the Stage.
 - **synthesizer.ts** orchestrates the context-provider loop, then routes any
   template `containsMacro` flags through `macro-expander.ts` BEFORE the analyzer
   / provisioner pipeline. The pass is SELECTION-AWARE: `deferMacroExpansion`

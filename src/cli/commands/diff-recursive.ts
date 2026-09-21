@@ -1,5 +1,6 @@
 import { stripControlChars } from '../../utils/regexp.js';
 import { displaySafe } from '../../utils/display-safe.js';
+import { renderAssemblyPathEscape, resolveAssemblyPath } from '../../utils/assembly-path.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { CloudFormationTemplate, TemplateResource } from '../../types/resource.js';
@@ -290,7 +291,20 @@ export function indexNestedChildTemplates(
           `Refusing to load.`
       );
     }
-    result[logicalId] = path.join(dir, assetPath);
+    // The containment check `isAbsoluteCrossPlatform` is NOT (issue
+    // go-to-k/cdkd#3489): `path.join` folds `..`, so an asset path of
+    // `../../etc/passwd` resolved out of `dir` and was read and diffed as a
+    // nested template. Both refusals stay and are worded apart, since the
+    // absolute one still detects a non-CDK assembly on its own.
+    const resolved = resolveAssemblyPath(dir, assetPath);
+    if (!resolved.contained) {
+      throw new Error(
+        `Nested stack '${displaySafe(logicalId)}' has ` +
+          `Metadata['aws:asset:path']='${displaySafe(assetPath)}' which ` +
+          `${renderAssemblyPathEscape(resolved, dir)}`
+      );
+    }
+    result[logicalId] = resolved.path;
   }
   return result;
 }
@@ -1415,9 +1429,10 @@ export async function buildDiffTree(args: {
     //
     // `path.resolve` is DEFENSIVE, not load-bearing, and saying so is the
     // point of this paragraph. Every path here is already normalized: synth
-    // builds the root's entries with `join(assemblyDir, assetPath)`
-    // (`src/synthesis/assembly-reader.ts`), and every deeper one comes from
-    // this module's own `path.join`. So in the real pipeline a raw string
+    // builds the root's entries with `resolveAssemblyPath(assemblyDir,
+    // assetPath).path` (`src/synthesis/assembly-reader.ts`), which is absolute,
+    // and every deeper one comes from this module's own call to the same
+    // helper. So in the real pipeline a raw string
     // comparison would behave identically. It resolves anyway because the set
     // is keyed on the value, and a future caller that hands us an
     // unnormalized `nestedTemplates` would otherwise miss the first repeat

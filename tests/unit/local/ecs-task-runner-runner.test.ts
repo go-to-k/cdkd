@@ -415,6 +415,62 @@ describe('runEcsTask — image preparation (G1)', () => {
     expect((opts as { tag: string }).tag.startsWith('cdkd-local-run-task-')).toBe(true);
   });
 
+  it("cdk-asset → the stack's assetOutdir is the containment bound, not the manifest dir", async () => {
+    // go-to-k/cdkd#3489's WIRING half on the `cdkd local run-task` path.
+    // `resolveDockerContextDirectory` refuses a `source.directory` that leaves
+    // its base, and for a stack inside a `cdk.Stage` the base is the manifest's
+    // own `assembly-<Stage>/` while the asset is staged one level up — so
+    // without this argument every Stage `run-task` was refused as a
+    // "hand-modified assembly". `ResolvedEcsTask.stack` is cdkd's own
+    // `StackInfo`, which carries the value.
+    captured.responder = happyDockerResponder();
+    const c = makeContainer({ image: { kind: 'cdk-asset', assetHash: 'h0' } });
+    const task = makeTask({
+      containers: [c],
+      stack: {
+        stackName: 'S1',
+        displayName: 'S1',
+        artifactId: 'S1',
+        template: { Resources: {} },
+        dependencyNames: [],
+        assetManifestPath: '/tmp/cdk.out/assembly-MyStage/S1.assets.json',
+        assetOutdir: '/tmp/cdk.out',
+      },
+    });
+    const state = createEcsRunState();
+    await runEcsTask(task, baseOptions(), state);
+
+    const [, ctx, opts] = dockerBuildStubs.buildDockerImage.mock.calls[0]!;
+    // Resolved against the MANIFEST's directory...
+    expect(ctx).toBe('/tmp/cdk.out/assembly-MyStage');
+    // ...and contained within the APP's outdir.
+    expect((opts as { assetOutdir?: string }).assetOutdir).toBe('/tmp/cdk.out');
+  });
+
+  it('cdk-asset → omits assetOutdir when the stack record carries none', async () => {
+    // A record without the field must not become `assetOutdir: undefined`,
+    // which reads as an explicit "no bound" rather than "fall back to the
+    // manifest directory", the correct bound for a top-level stack.
+    captured.responder = happyDockerResponder();
+    const c = makeContainer({ image: { kind: 'cdk-asset', assetHash: 'h0' } });
+    const task = makeTask({
+      containers: [c],
+      stack: {
+        stackName: 'S1',
+        displayName: 'S1',
+        artifactId: 'S1',
+        template: { Resources: {} },
+        dependencyNames: [],
+        assetManifestPath: '/tmp/cdk.out/S1.assets.json',
+      },
+    });
+    const state = createEcsRunState();
+    await runEcsTask(task, baseOptions(), state);
+
+    const [, , opts] = dockerBuildStubs.buildDockerImage.mock.calls[0]!;
+    expect('assetOutdir' in (opts as object)).toBe(false);
+  });
+
   it('cdk-asset with an `executable` source → wrapError redacts the build command line (issue #2623)', async () => {
     // The wrapper interpolates the asset's own `executable` argv into a
     // user-visible error. A build script that wraps `docker build` carries the

@@ -7,6 +7,7 @@ import {
   spawnStreaming,
 } from '../utils/docker-cmd.js';
 import { displaySafe } from '../utils/display-safe.js';
+import { renderAssemblyPathEscape, resolveAssemblyPath } from '../utils/assembly-path.js';
 import { getLogger } from '../utils/logger.js';
 
 /**
@@ -73,6 +74,51 @@ export interface BuildDockerImageOptions {
    * specific to the call site.
    */
   wrapError: (stderr: string) => Error;
+  /**
+   * The app's outdir, where assets are staged. Defaults to `cdkOutDir`;
+   * a Stage's Docker asset needs the app root as the containment base
+   * (go-to-k/cdkd#3489).
+   */
+  assetOutdir?: string;
+}
+
+/**
+ * Where a Docker asset's build context lives, refusing a `source.directory`
+ * that resolves outside `cdkOutDir` (issue
+ * [#3489](https://github.com/go-to-k/cdkd/issues/3489)).
+ *
+ * The field is assembly-supplied and used BOTH as the executable's cwd and as
+ * the `docker build` cwd, so an escaping value sends a directory from outside
+ * `cdk.out` to BuildKit and bakes it into the image pushed to a repository the
+ * same manifest names. Both sites used raw `${a}/${b}` concatenation, which
+ * honours `..` exactly as `join` does; this is the one spelling they share.
+ *
+ * It throws through the CALLER's `wrapError` so each consumer keeps its own
+ * typed error class, exactly as this module's other pre-docker refusals do.
+ *
+ * Twin of `resolveFileAssetSourcePath` and `resolveVerboseTemplatePath`.
+ * Exported for unit testing.
+ */
+export function resolveDockerContextDirectory(
+  manifestDir: string,
+  directory: string,
+  wrapError: (message: string) => Error,
+  /** The app's outdir; see `resolveFileAssetSourcePath` for why it differs. */
+  assetOutdir: string = manifestDir
+): string {
+  // RESOLVE against the manifest's directory, CONTAIN within the app's
+  // outdir — a Stage's Docker asset is staged into the app's outdir and its
+  // `source.directory` is `../asset.<hash>` by design (go-to-k/cdkd#3489).
+  const resolved = resolveAssemblyPath(manifestDir, directory, {
+    containWithin: assetOutdir,
+  });
+  if (!resolved.contained) {
+    throw wrapError(
+      `asset source.directory='${displaySafe(directory)}' which ` +
+        `${renderAssemblyPathEscape(resolved, assetOutdir, 'build it')}`
+    );
+  }
+  return resolved.path;
 }
 
 /**
@@ -98,6 +144,9 @@ export async function buildDockerImage(
   const source = asset.source;
   const logger = getLogger().child('docker-build');
 
+  const contextDirectory = (directory: string): string =>
+    resolveDockerContextDirectory(cdkOutDir, directory, options.wrapError, options.assetOutdir);
+
   // Executable source: run the script and read stdout for the tag.
   //
   // We do NOT inject `BUILDX_NO_DEFAULT_ATTESTATIONS=1` into the
@@ -115,7 +164,7 @@ export async function buildDockerImage(
     // The executable runs from the asset directory when one is provided
     // (mirrors CDK CLI's `cwd: assetPath` in `buildExternalAsset`). When
     // `directory` is unset, the executable runs from `cdkOutDir`.
-    const cwd = source.directory ? `${cdkOutDir}/${source.directory}` : cdkOutDir;
+    const cwd = source.directory ? contextDirectory(source.directory) : cdkOutDir;
 
     // The user's build script is an ARBITRARY command line, and a script that
     // wraps `docker build` carries the very `--build-arg` pairs this module
@@ -196,13 +245,13 @@ export async function buildDockerImage(
   // `--build-context name=relative/path` resolve relative paths against
   // the build's cwd, NOT against the trailing context positional. Passing
   // an absolute context dir with no cwd silently breaks those flags.
-  const contextDir = `${cdkOutDir}/${source.directory}`;
+  const contextDir = contextDirectory(source.directory);
   buildArgs.push('.');
 
   // The reported site of issue #2623: this rendered every `--build-arg` VALUE
   // into `cdkd deploy --verbose` output.
   logger.debug(
-    `${getDockerCmd()} ${redactDockerArgvValues(buildArgs).join(' ')} (cwd=${contextDir})`
+    `${getDockerCmd()} ${redactDockerArgvValues(buildArgs).join(' ')} (cwd=${displaySafe(contextDir)})`
   );
 
   try {

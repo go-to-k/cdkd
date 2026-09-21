@@ -40,6 +40,7 @@ import { nestedStackChildFailureMessage } from '../nested-stack-messages.js';
 import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { carriesSecretMask, recoverMaskedOutput } from '../../deployment/secret-redaction.js';
 import { displaySafe } from '../../utils/display-safe.js';
+import { renderAssemblyPathEscape, resolveAssemblyPath } from '../../utils/assembly-path.js';
 import {
   findNestedTemplateTreeDefect,
   isAbsoluteAssetPath,
@@ -1040,7 +1041,23 @@ export class NestedStackProvider implements ResourceProvider {
           )
         );
       }
-      result[grandLogicalId] = path.join(dir, assetPath);
+      // The containment check the tripwire above is NOT (issue
+      // go-to-k/cdkd#3489): `path.join` folds `..`, so `../../etc/passwd`
+      // resolved out of `dir` and the child engine deployed whatever parsed.
+      // Normally unreachable for the same reason the absolute arm is —
+      // `refuseMalformedNestedTemplateTree` reports the whole subtree first —
+      // and kept as the per-level backstop, marked and sanitized alike.
+      const resolved = resolveAssemblyPath(dir, assetPath);
+      if (!resolved.contained) {
+        throw markNonRetryable(
+          new Error(
+            `NestedStackProvider: nested-stack '${displaySafe(grandLogicalId)}' has ` +
+              `Metadata['aws:asset:path']='${displaySafe(assetPath)}' which ` +
+              `${renderAssemblyPathEscape(resolved, dir)}`
+          )
+        );
+      }
+      result[grandLogicalId] = resolved.path;
     }
     return result;
   }

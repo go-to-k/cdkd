@@ -223,6 +223,55 @@ describe('cdkd publish-assets', () => {
       expect(mockExecuteNode).toHaveBeenCalledTimes(1);
     });
 
+    it("forwards the stack's assetOutdir as the containment bound, and omits it when absent", async () => {
+      // The WIRING half of go-to-k/cdkd#3489. `resolveFileAssetSourcePath` and
+      // `resolveDockerContextDirectory` are fenced unmocked elsewhere; what
+      // NOTHING covered is that this command hands them the app's outdir at
+      // all. Deleting the spread in `publish-assets.ts` left the whole suite
+      // green while restoring the user-visible refusal of every Stage asset,
+      // which is the same wiring hole review already found one layer down.
+      mockSynthesize.mockResolvedValue({
+        stacks: [
+          makeStack({
+            stackName: 'StageStack',
+            // What `AssemblyReader` records for a stack inside a `cdk.Stage`:
+            // the manifest is in `assembly-<Stage>/`, the assets one level up.
+            assetManifestPath: '/tmp/cdk.out/assembly-MyStage/StageStack.assets.json',
+            assetOutdir: '/tmp/cdk.out',
+          }),
+        ],
+        manifest: {},
+        assemblyDir: '/tmp/cdk.out',
+      });
+
+      const { error } = await runCmd([]);
+      expect(error).toBeUndefined();
+
+      const opts = mockAddAssetsToGraph.mock.calls[0]![2] as { assetOutdir?: string };
+      expect(opts.assetOutdir).toBe('/tmp/cdk.out');
+      // ...and the base it resolves against is still the MANIFEST's directory.
+      expect(mockAddAssetsToGraph.mock.calls[0]![1]).toBe(
+        '/tmp/cdk.out/assembly-MyStage/StageStack.assets.json'
+      );
+    });
+
+    it('omits assetOutdir entirely when the record carries none', async () => {
+      // A pre-`assetOutdir` record must not turn into `assetOutdir: undefined`,
+      // which `exactOptionalPropertyTypes` rejects and which would read as an
+      // explicit "no bound" rather than "fall back to the manifest directory".
+      mockSynthesize.mockResolvedValue({
+        stacks: [makeStack({ stackName: 'StackA' })],
+        manifest: {},
+        assemblyDir: '/tmp/cdk.out',
+      });
+
+      const { error } = await runCmd([]);
+      expect(error).toBeUndefined();
+
+      const opts = mockAddAssetsToGraph.mock.calls[0]![2] as Record<string, unknown>;
+      expect('assetOutdir' in opts).toBe(false);
+    });
+
     it('synthesizes the CDK app, then publishes assets for the auto-detected single stack', async () => {
       mockSynthesize.mockResolvedValue({
         stacks: [makeStack({ stackName: 'StackA' })],
