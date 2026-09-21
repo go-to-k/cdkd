@@ -3812,6 +3812,36 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
     }
   );
 
+  it.each([
+    ['the STACK NAME', '--state-bucket=attacker', 'us-east-1'],
+    ['the REGION', 'Root', '--state-bucket=attacker'],
+  ])(
+    'withholds the orphan command when %s would be read as a flag (go-to-k/cdkd#3499 M8)',
+    async (_, rootName, region) => {
+      // The value renders EXACTLY, so the raw compare admits it — and the
+      // shell strips the quotes `shellQuote` adds, handing Commander that argv
+      // entry as the FLAG. A record-DELETING command would then be pointed at
+      // an attacker-named bucket. Unlike the logical-id cases above, this
+      // shape needs the ROOT name or the region: a derived child name is
+      // always `<parent>~…` and cannot start with `-`.
+      const root = makeState({
+        stackName: rootName,
+        region,
+        resources: { Child: { resourceType: 'AWS::CloudFormation::Stack' } },
+      });
+      const backend = makeStateBackendMock({ [`${rootName}|${region}`]: root }) as S3StateBackend;
+
+      const thrown = await buildCdkdStateStackTree(rootName, region, backend).catch(
+        (e: unknown) => e
+      );
+
+      const message = (thrown as Error).message;
+      expect(message).toContain('missing nested-child');
+      expect(message).toContain('cdkd state orphan <stack> --stack-region <region>');
+      expect(message).not.toMatch(/cdkd state orphan [^\n]*--state-bucket=attacker/);
+    }
+  );
+
   /**
    * THE INSTRUMENT, after three review rounds each found another site.
    *

@@ -315,23 +315,6 @@ export function scanTemplateLiterals(
 }
 
 /**
- * Every template literal in `text`, as its COOKED literal parts plus position.
- *
- * `node.text` is the string the running program builds, so each escape is
- * already rendered (`\n` a line break, `\u0041` an `A`, `\${` a literal `${`)
- * and every hole boundary is the PARSER's. The hand-written scanner this
- * replaced was correct on the cases it had been shown and wrong on the next one
- * every round — an escaped interpolation, an escaped backslash before a real
- * hole, a nested-brace span, a brace inside a STRING inside such a span — which
- * is the signature of re-implementing a parser (go-to-k/cdkd#3436).
- *
- * `start` / `end` are the literal's span in `text`, which is what lets
- * {@link extractTemplates} see a `+` between two of them.
- *
- * It shares {@link scanTemplateLiterals}'s refusal of a partial tree: an
- * unparseable file drops templates silently while every count stays plausible.
- */
-/**
  * Parse `text`, REFUSING a partial tree.
  *
  * An unparseable file yields a PARTIAL tree, not an error: its templates go
@@ -355,6 +338,23 @@ function parseOrRefuse(text: string): ts.SourceFile {
   return sf;
 }
 
+/**
+ * Every template literal in `text`, as its COOKED literal parts plus position.
+ *
+ * `node.text` is the string the running program builds, so each escape is
+ * already rendered (`\n` a line break, `\u0041` an `A`, `\${` a literal `${`)
+ * and every hole boundary is the PARSER's. The hand-written scanner this
+ * replaced was correct on the cases it had been shown and wrong on the next one
+ * every round — an escaped interpolation, an escaped backslash before a real
+ * hole, a nested-brace span, a brace inside a STRING inside such a span — which
+ * is the signature of re-implementing a parser (go-to-k/cdkd#3436).
+ *
+ * `start` / `end` are the literal's span in `text`, which is what lets
+ * {@link extractTemplates} see a `+` between two of them.
+ *
+ * Parsing goes through {@link parseOrRefuse}, so an unparseable file is a
+ * REFUSAL rather than a silent drop — and both scanners share that one copy.
+ */
 export function templateLiteralParts(
   text: string
 ): Array<{ parts: string[]; start: number; end: number }> {

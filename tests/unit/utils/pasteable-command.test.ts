@@ -23,33 +23,6 @@ import {
 } from '../../../src/utils/pasteable-command.js';
 import type { PasteableCommand } from '../../../src/utils/pasteable-command.js';
 
-/** Split a pasted command the way a POSIX shell words it, for the argv compare. */
-const words = (line: string): string[] => {
-  const out: string[] = [];
-  let cur = '';
-  let inWord = false;
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i]!;
-    if (c === "'") {
-      const end = line.indexOf("'", i + 1);
-      cur += line.slice(i + 1, end);
-      i = end;
-      inWord = true;
-    } else if (c === '\\') {
-      cur += line[++i] ?? '';
-      inWord = true;
-    } else if (c === ' ') {
-      if (inWord) out.push(cur);
-      cur = '';
-      inWord = false;
-    } else {
-      cur += c;
-      inWord = true;
-    }
-  }
-  if (inWord) out.push(cur);
-  return out;
-};
 
 describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
   it('names a value that renders exactly, shell-quoted as ONE argument', () => {
@@ -85,6 +58,22 @@ describe('pasteableCommand — the shared gate (go-to-k/cdkd#3436)', () => {
     expect(pasteableCommand('cdkd deploy', [{ value: atCap, hole: 'stack' }])).toEqual({
       command: `cdkd deploy ${atCap}`,
       exact: true,
+    });
+  });
+
+  it('holds an EMPTY name and one past the cap — the two arms the hand-rolled gates lacked', () => {
+    // The nit on go-to-k/cdkd#3499's round 2: `main`'s copy of this gate
+    // printed `cdkd deploy ''` for an empty name and had no cap at all, so
+    // nothing in the suite distinguished this builder from the one it replaced
+    // on those two inputs.
+    expect(pasteableCommand('cdkd deploy', [{ value: '', hole: 'stack' }])).toEqual({
+      command: "cdkd deploy '<stack>'",
+      exact: false,
+    });
+    const pastCap = 'q'.repeat(STACK_REF_MAX_CODE_POINTS + 1);
+    expect(pasteableCommand('cdkd deploy', [{ value: pastCap, hole: 'stack' }])).toEqual({
+      command: "cdkd deploy '<stack>'",
+      exact: false,
     });
   });
 

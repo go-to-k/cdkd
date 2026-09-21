@@ -352,6 +352,23 @@ describe('docs error-string checker: template extraction', () => {
     expect(templatesOf(`const a = \`${short}\`;`).length).toBe(1);
   });
 
+  it('measures the cap on the RAW span, holes included, not on the literal text', () => {
+    // M7 of the go-to-k/cdkd#3499 review. A hole-free template measures the
+    // same either way, so the case above passes under BOTH spellings. What
+    // discriminates is a template whose bulk is HOLES — the shape this PR adds
+    // several of: short literal text, long source. Measured on the literals it
+    // would compile into a matcher of many wildcards, which is the
+    // "nearly-all-holes template vouches for anything" risk this file's header
+    // names.
+    const hole = '${someExpressionThatIsQuiteLongIndeed}';
+    const src = `const a = \`cdkd refused ${hole.repeat(20)} here\`;`;
+    expect(src.length).toBeGreaterThan(700);
+    expect(templatesOf(src)).toEqual([]);
+    // ...and the control: the same literal text with ONE hole is kept, so the
+    // refusal above is the cap firing rather than the parse failing.
+    expect(templatesOf(`const a = \`cdkd refused ${hole} here\`;`).length).toBe(1);
+  });
+
   it('dedupes identical templates', () => {
     const t = templatesOf('const a = `the same message ${x}`; const b = `the same message ${y}`;');
     expect(t.length).toBe(1);

@@ -3394,16 +3394,18 @@ async function stateRefreshObservedCommand(
         const migrate = pasteableCommand('cdkd deploy', [
           { value: target.stackName, hole: 'stack', opts: { patternMatched: true } },
         ]);
-        // WITHHELD ENTIRELY when the gate holds the name, which is this site's
-        // own call and differs from the shared default of printing the hole:
-        // the sentence already tells the operator that any cdkd write migrates
-        // the record, so there is no ambient-default command to fall into --
-        // the reason go-to-k/cdkd#3363 prints a hole rather than nothing.
-        const example = migrate.exact ? ` For example: ${migrate.command}` : '';
+        // The SAME shape as the two sibling refusals in this file, deliberately
+        // (M5 of the go-to-k/cdkd#3499 review). `main` withheld the example
+        // here and printed it inline when exact; both are safe, and that is not
+        // what decides it — the three are one refusal, in one file, offering
+        // one command, and the reason given for the odd one out ("the sentence
+        // already says any cdkd write migrates it") is true of all three
+        // sentences. Per-site judgement about what is safe HERE is the habit
+        // this PR exists to end.
         throw new Error(
           `Stack ${stack} has only a legacy state record without a region. Migrate it to ` +
             `the region-scoped layout with any cdkd write, then re-run refresh-observed.` +
-            example
+            `\nMigrate with: ${migrate.command}`
         );
       }
     }

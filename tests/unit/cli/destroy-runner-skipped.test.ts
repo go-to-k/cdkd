@@ -409,6 +409,49 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
     });
   });
 
+  it('emits ONE line per distinct command when a target fails AND is skipped', async () => {
+    // M6 of the go-to-k/cdkd#3499 review: the same state target lands in both
+    // `failedStateTargets` and `skippedStateTargets`, and the two `hintFor`
+    // calls cannot see each other — so the dedupe has to happen across them,
+    // not only within each. Before it, this printed the orphan line twice.
+    mockProviderDelete.mockImplementation((logicalId: string) =>
+      logicalId === 'Table'
+        ? Promise.resolve({ outcome: 'skipped', reason: 'bad id' })
+        : Promise.reject(new Error('boom'))
+    );
+
+    await runDestroyForStack(
+      'TestStack',
+      makeState({ Table: res(), Queue: res({ resourceType: 'AWS::SQS::Queue' }) }),
+      makeCtx()
+    );
+
+    const lines = allWarn().split('\n');
+    const orphan = lines.filter((l) => l.startsWith('Drop the record with: '));
+    expect(orphan).toEqual(['Drop the record with: cdkd state orphan TestStack --stack-region us-east-1']);
+  });
+
+  it('collapses targets that all render as the same hole to ONE line', async () => {
+    // The other half of M6: when the gate holds every name, each target
+    // produces the identical `'<stack>'` line, and N copies of it say nothing
+    // the first does not.
+    mockProviderDelete.mockResolvedValue({ outcome: 'skipped', reason: 'bad id' });
+
+    await runDestroyForStack(
+      '--all',
+      makeState({
+        ChildA: res({ resourceType: 'AWS::CloudFormation::Stack' }),
+        ChildB: res({ resourceType: 'AWS::CloudFormation::Stack' }),
+      }),
+      makeCtx()
+    );
+
+    const lines = allWarn().split('\n');
+    const holes = lines.filter((l) => l.includes("'<stack>'"));
+    expect(holes.length).toBeGreaterThan(0);
+    expect(new Set(holes).size).toBe(holes.length);
+  });
+
   it('names THIS stack\'s file for an ordinary (non-nested) skip', async () => {
     // The inverted control for the nested case above: without it, a target
     // builder that treated EVERY skip as a nested stack (emitting
