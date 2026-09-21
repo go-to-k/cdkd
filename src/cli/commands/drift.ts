@@ -31,6 +31,7 @@ import {
 } from '../../state/malformed-resources-bag.js';
 import {
   buildLockContentionMessage,
+  shellQuote,
   type LockRecoveryContext,
 } from '../../state/lock-contention-message.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
@@ -61,7 +62,10 @@ import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import {
   displayAwsMessage,
   displayIdent,
+  displaySafe,
   ROLE_ARN_MAX_CODE_POINTS,
+  STACK_REF_MAX_CODE_POINTS,
+  truncateCodePoints,
 } from '../../utils/display-safe.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
@@ -979,10 +983,25 @@ async function driftCommand(
       if (!ref.region) {
         // Legacy `version: 1` records have no region in their key — same
         // gap surfaced by `state show`. Tell the user how to migrate.
+        // The name comes from a state KEY, so it is sanitized for display and
+        // the pasteable command is gated and printed last (go-to-k/cdkd#3307).
+        // No `--stack-region`: this record has none, which is why it refuses.
+        const migrate = stackCommandFor('cdkd deploy', ref.stackName, { patternMatched: true });
+        // The IDENTITY rides on its own shell-quoted line rather than inside the
+        // sentence, which interpolated it RAW: an operator pastes a PHRASE, and
+        // a key named `$(printf INJECTED)` executes from one (measured here).
+        // A `displayIdent` boundary would not have closed it either — that is a
+        // JSON string, and double quotes do not stop command substitution.
+        // Same rule as the command below it (go-to-k/cdkd#3363, go-to-k/cdkd#3436).
         throw new Error(
-          `Stack '${ref.stackName}' has only a legacy state record without a region. ` +
-            `Run 'cdkd deploy ${ref.stackName}' (or any cdkd write) to migrate it to the region-scoped layout, ` +
-            `then re-run drift detection.`
+          `A state record for this stack is a legacy one with no region, which drift cannot ` +
+            `read. A cdkd write migrates it to the region-scoped layout; re-run drift ` +
+            `detection after it.` +
+            (migrate === undefined
+              ? `\nThe stack name is not printed here: it does not render exactly, or ` +
+                `'cdkd deploy' would read it as an option or a pattern. List records as stored ` +
+                `with 'cdkd state list --json' and migrate the one whose key matches.`
+              : `\nStack: ${shellQuote(ref.stackName)}\nMigrate with: ${migrate}`)
         );
       }
       const report = await runDriftForStack(
@@ -3508,11 +3527,19 @@ async function runAccept(
           // (`--revert` can fix it, `--accept` cannot).
           const refusal = acceptRefusalReason(change, outcome.maskedPaths);
           if (refusal !== undefined) {
+            const revert = stackCommandFor('cdkd drift', report.stackName, {
+              flags: '--revert',
+              region: report.region,
+            });
             logger.warn(
               `  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
                 `not accepting '${change.path}' — ${refusal}, so cdkd will not write it to ` +
-                `state. Run 'cdkd drift ${report.stackName} --revert' to push the referenced ` +
-                `value back to AWS, or re-deploy if the reference changed.`
+                `state. A revert pushes the referenced value back to AWS; re-deploy instead if ` +
+                `the reference changed.` +
+                (revert === undefined
+                  ? ` The revert command is not printed here: this record's name or region does ` +
+                    `not render exactly, or 'cdkd drift' would read the name as an option.`
+                  : `\n    Revert with: ${revert}`)
             );
             continue;
           }
@@ -5999,11 +6026,19 @@ async function runRevert(
               `provider actually applied on ${recordedCount} resource(s).`
           );
         } catch (err) {
+          const retry = stackCommandFor('cdkd drift', report.stackName, {
+            flags: '--revert',
+            region: report.region,
+          });
           logger.warn(
             `Reverted ${report.stackName} (${report.region}), but could not record the value the ` +
               `provider actually applied: ${err instanceof Error ? err.message : String(err)}. ` +
-              `The next 'cdkd drift' will report the same difference — re-run ` +
-              `'cdkd drift ${report.stackName} --revert' once the state write can succeed.`
+              `The next 'cdkd drift' will report the same difference; re-run the revert once ` +
+              `the state write can succeed.` +
+              (retry === undefined
+                ? ` Its command is not printed here: this record's name or region does not ` +
+                  `render exactly, or 'cdkd drift' would read the name as an option.`
+                : `\n  Re-run with: ${retry}`)
           );
         }
       }
@@ -6324,11 +6359,18 @@ function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void 
             // Masked for the same reason as the preserved-tag list above.
             out.write(`        ${maskSecretsInText(path, o.secrets)}\n`);
           }
+          const refresh = stackCommandFor('cdkd state refresh-observed', report.stackName, {
+            region: report.region,
+          });
           out.write(
             `      The template does not declare these, so cdkd cannot tell an AWS-authored ` +
               `value from an out-of-band change and will not reset either (issue #1626). ` +
-              `Run 'cdkd state refresh-observed ${report.stackName}' (or re-deploy) to populate ` +
-              `observedProperties if you want them reverted too.\n`
+              `A state refresh-observed (or a re-deploy) populates observedProperties if you ` +
+              `want them reverted too.\n` +
+              (refresh === undefined
+                ? `      Its command is not printed here: this record's name or region does not ` +
+                  `render exactly, or the command would read the name as an option.\n`
+                : `      Refresh with: ${refresh}\n`)
           );
         }
       }
@@ -6822,6 +6864,71 @@ function formatScalar(value: unknown): string {
   if (typeof value === 'string') return value;
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
   return JSON.stringify(value);
+}
+
+/**
+ * A pasteable `cdkd ...` command addressing ONE state record, or `undefined`
+ * when this stack name cannot be named safely — in which case the caller names
+ * the command in prose and leaves the operator to supply the name.
+ *
+ * Every name these messages carry comes out of an S3 KEY (`listStacks`, and the
+ * `report.stackName` derived from it), so it is as untrusted as a state record's
+ * body (issue [#3307](https://github.com/go-to-k/cdkd/issues/3307)). Four gates,
+ * and each closes a different failure:
+ *
+ * - SANITIZE, then compare against the RAW value. `displaySafe` drops the
+ *   forgery class (C0 + DEL, `U+0085` and C1, `U+2028`/`U+2029`, the bidi
+ *   overrides), so a name carrying one is never NAMED IN A COMMAND; and a name
+ *   it ALTERED addresses a DIFFERENT record, the misdirection
+ *   `malformedDestroyResourcesRefusalMessage` and `orphanCommandFor` already
+ *   gate for. `asciiOnly` here rather than the denylist, because a stack name's
+ *   charset is the S3 key's. What this does NOT do is sanitize the identity the
+ *   surrounding prose prints: `report.stackName` reaches ~20 message sites in
+ *   this file raw, which is the DISPLAY class go-to-k/cdkd#3232 records, not
+ *   this gate's.
+ * - CAP at `STACK_REF_MAX_CODE_POINTS`, the state-reference grammar, so a
+ *   multi-kilobyte planted name cannot grow the pasted payload without bound,
+ *   while a legitimate multi-level nested child (`Parent~Child~...`) still
+ *   renders. It bounds the PAYLOAD and nothing more — a name at the cap still
+ *   wraps across a terminal, which is `display-safe.ts`'s own caveat on the
+ *   constant (go-to-k/cdkd#3179).
+ * - SHELL-QUOTE, and print the command LAST and UNWRAPPED on its own labelled
+ *   line. `shellQuote` is only as good as the quote context around it: inside
+ *   prose `'...'` a quoted value turns the quoting inside out and a pasted span
+ *   RUNS (measured in go-to-k/cdkd#3363; the class is go-to-k/cdkd#3436).
+ * - REFUSE a name the COMMAND would read as something other than a name. A
+ *   leading `-` is parsed as an option by all four commands — a key named
+ *   `--all` survives sanitizing, the cap and quoting and then addresses every
+ *   stack — and `cdkd deploy` matches its argument as a PATTERN
+ *   (`src/cli/stack-matcher.ts`), where `*` is a wildcard and `/` selects by
+ *   display path. `patternMatched` asks for the last two; `/` cannot arrive
+ *   through a key (`listStacks` splits keys on it), so that half is defensive.
+ *
+ * `region` is passed wherever the caller holds it, because these commands
+ * accept `--stack-region` and a stack name held in several regions is otherwise
+ * ambiguous. It takes the same sanitize + exactness pair: a region is a key
+ * SEGMENT, no more trusted than the name.
+ *
+ * Exported for `tests/unit/cli/drift.test.ts`, which drives the hazard matrix
+ * through it directly; each of the four call sites is driven through the CLI
+ * separately, since what a site PASSES is not something a helper test can see.
+ */
+export function stackCommandFor(
+  command: string,
+  stackName: string,
+  opts: { region?: string | undefined; flags?: string; patternMatched?: boolean } = {}
+): string | undefined {
+  const rendersExactly = (value: string): boolean => {
+    const safe = displaySafe(value, { asciiOnly: true });
+    return safe === value && !truncateCodePoints(safe, STACK_REF_MAX_CODE_POINTS).truncated;
+  };
+  if (!rendersExactly(stackName) || stackName.startsWith('-')) return undefined;
+  if (opts.patternMatched && (stackName.includes('*') || stackName.includes('/'))) return undefined;
+  if (opts.region !== undefined && !rendersExactly(opts.region)) return undefined;
+  const parts = [command, shellQuote(stackName)];
+  if (opts.flags !== undefined) parts.push(opts.flags);
+  if (opts.region !== undefined) parts.push(`--stack-region ${shellQuote(opts.region)}`);
+  return parts.join(' ');
 }
 
 /**

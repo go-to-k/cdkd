@@ -674,6 +674,46 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     ).toBe(true);
   });
 
+  /**
+   * Issue [go-to-k/cdkd#3307](https://github.com/go-to-k/cdkd/issues/3307): the
+   * revert command this warning names is built from a stack name that came out
+   * of an S3 key, so it is gated and printed LAST on a labelled line rather
+   * than inside the sentence's quotes. The gate itself is matrixed in
+   * `drift.test.ts`; this is the SITE — it must reach the gate and pass the
+   * region it loaded.
+   */
+  it('names the revert command on its own line, with the region, when it refuses a path', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Consumer: lambdaResource() }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv({ SECRET_PASSWORD: 'tampered-in-the-console' }),
+    });
+
+    await runDrift(['TestStack', '--accept', '--yes']);
+
+    const warned = warnSpy.mock.calls.flat().join('\n');
+    expect(warned).toMatch(
+      /^ {4}Revert with: cdkd drift TestStack --revert --stack-region us-east-1$/m
+    );
+    // Not the old shape: the command inside the sentence, in prose quotes.
+    expect(warned).not.toMatch(/'cdkd drift TestStack --revert'/);
+  });
+
+  it('withholds that revert command when the key is option-shaped', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: '--all', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Consumer: lambdaResource() }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv({ SECRET_PASSWORD: 'tampered-in-the-console' }),
+    });
+
+    await runDrift(['--all', '--accept', '--yes']);
+
+    const warned = warnSpy.mock.calls.flat().join('\n');
+    expect(warned).toContain('not accepting');
+    expect(warned).not.toMatch(/Revert with:/);
+    expect(warned).toContain('name or region does not render exactly');
+  });
+
   it('--accept still records the NON-secret paths in the same run', async () => {
     // The refusal is per-PATH, not per-resource: a resource carrying one
     // unidentifiable secret must not become un-acceptable in every other

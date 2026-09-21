@@ -135,6 +135,7 @@ import {
   buildReadCurrentStateContext,
   createDriftCommand,
   collectNarrowedTopLevelKeys,
+  stackCommandFor,
   UNREADABLE_RESOURCES_MAP_ROW,
   warnIfPreV10BaselineGap,
 } from '../../../src/cli/commands/drift.js';
@@ -2120,7 +2121,11 @@ describe('cdkd drift', () => {
       expect(output).toContain('LEAVES 2 AWS-authored values untouched');
       expect(output).toContain('Parameters.table_type');
       expect(output).toContain('Parameters.metadata_location');
-      expect(output).toContain("cdkd state refresh-observed TestStack");
+      // Printed on its own labelled line since go-to-k/cdkd#3307, with the
+      // region the run loaded, so the command addresses THIS record.
+      expect(output).toMatch(
+        /^ {6}Refresh with: cdkd state refresh-observed TestStack --stack-region us-east-1$/m
+      );
     });
 
     it('--revert does NOT warn when state HAS observedProperties (issue #1478)', async () => {
@@ -4910,5 +4915,320 @@ describe('buildReadCurrentStateContext skips an unreadable sibling (issue #3018)
     // so a guard that dropped everything reds those.
     const ctx = buildReadCurrentStateContext(bag({ Self: HEALTHY, Other: HEALTHY }), 'Self');
     expect(Object.keys(ctx.siblings ?? {})).toEqual(['Other']);
+  });
+});
+
+/**
+ * Issue [go-to-k/cdkd#3307](https://github.com/go-to-k/cdkd/issues/3307): the
+ * four pasteable write commands `cdkd drift` prints are built from a stack name
+ * that comes out of an S3 KEY, so they take the sanitize + exactness pair, the
+ * cap, shell quoting, and a refusal for a name the COMMAND itself would read as
+ * something other than a name.
+ *
+ * The hazard matrix runs through the helper; each of the four SITES is driven
+ * through the CLI separately, because what a site passes — and whether it puts
+ * the command last on a line of its own — is invisible from here.
+ */
+describe('stackCommandFor — the gate on drift\'s pasteable commands (go-to-k/cdkd#3307)', () => {
+  it('emits the command for a name that renders exactly, shell-quoted as ONE argument', () => {
+    // The control, without which every case below is satisfied by a helper that
+    // withholds unconditionally. A printable `;` and a quote are NOT hazards:
+    // quoting is what makes them safe, so these must still be named.
+    expect(stackCommandFor('cdkd deploy', 'My-App-Stack', { patternMatched: true })).toBe(
+      'cdkd deploy My-App-Stack'
+    );
+    expect(stackCommandFor('cdkd deploy', 'a; echo INJECTED; #', { patternMatched: true })).toBe(
+      "cdkd deploy 'a; echo INJECTED; #'"
+    );
+    expect(stackCommandFor('cdkd drift', "it's", { flags: '--revert', region: 'us-east-1' })).toBe(
+      "cdkd drift 'it'\\''s' --revert --stack-region us-east-1"
+    );
+    // A legitimate multi-level nested child is long; the cap must not cut it.
+    const nested = `Root~${'N'.repeat(80)}~${'C'.repeat(80)}`;
+    expect(stackCommandFor('cdkd deploy', nested, { patternMatched: true })).toBe(
+      `cdkd deploy '${nested}'`
+    );
+    // AT the cap, not merely past 128: without this a smaller cap passes every
+    // case here, since the refusal below only needs cap + 1 to differ.
+    const atCap = 'q'.repeat(STACK_REF_MAX_CODE_POINTS);
+    expect(stackCommandFor('cdkd deploy', atCap, { patternMatched: true })).toBe(
+      `cdkd deploy ${atCap}`
+    );
+  });
+
+  it('withholds a name sanitizing would ALTER, which would address a DIFFERENT record', () => {
+    for (const hostile of [
+      'a\nb',
+      'a\u0085b',
+      'a\u009bb',
+      'a\u2028b',
+      'a\u202eb',
+      'a\u00a0b'.replace('\u00a0', String.fromCharCode(0x00a0)),
+      ' padded',
+      'padded ',
+      'q'.repeat(STACK_REF_MAX_CODE_POINTS + 1),
+    ]) {
+      expect(stackCommandFor('cdkd deploy', hostile, { patternMatched: true }), JSON.stringify(hostile)).toBeUndefined();
+    }
+  });
+
+  it('withholds a name the COMMAND would read as an option or a pattern', () => {
+    // A leading `-` is an option to all four commands: a key named `--all`
+    // survives sanitizing, the cap AND quoting, and then addresses every stack.
+    for (const command of ['cdkd deploy', 'cdkd drift', 'cdkd state refresh-observed']) {
+      expect(stackCommandFor(command, '--all'), command).toBeUndefined();
+      expect(stackCommandFor(command, '-x'), command).toBeUndefined();
+    }
+    // `*` and `/` are `stack-matcher.ts` patterns, so they are refused only
+    // where the command matches patterns — `cdkd deploy` here. `/` cannot
+    // arrive through a key (listStacks splits on it); it is defensive.
+    expect(stackCommandFor('cdkd deploy', 'Prod*', { patternMatched: true })).toBeUndefined();
+    expect(stackCommandFor('cdkd deploy', 'Stage/Prod', { patternMatched: true })).toBeUndefined();
+    // The same two names are fine for a command that matches EXACTLY — both,
+     // or a mutant refusing `/` whatever `patternMatched` says survives.
+    expect(stackCommandFor('cdkd state refresh-observed', 'Prod*')).toBe(
+      "cdkd state refresh-observed 'Prod*'"
+    );
+    expect(stackCommandFor('cdkd state refresh-observed', 'Stage/Prod')).toBe(
+      'cdkd state refresh-observed Stage/Prod'
+    );
+  });
+
+  it('withholds when the REGION does not render exactly, rather than dropping the flag', () => {
+    // Dropping it would leave a command that is ambiguous for a stack name held
+    // in several regions — the opposite of why the flag is passed.
+    expect(
+      stackCommandFor('cdkd drift', 'S', { flags: '--revert', region: 'us-east-1\u200b' })
+    ).toBeUndefined();
+    expect(stackCommandFor('cdkd drift', 'S', { flags: '--revert', region: 'us-east-1' })).toBe(
+      'cdkd drift S --revert --stack-region us-east-1'
+    );
+    // The region takes the CAP too, not just the sanitize/exactness pair:
+    // without both directions here, dropping its length check survives.
+    const capRegion = 'r'.repeat(STACK_REF_MAX_CODE_POINTS);
+    expect(stackCommandFor('cdkd drift', 'S', { flags: '--revert', region: capRegion })).toBe(
+      `cdkd drift S --revert --stack-region ${capRegion}`
+    );
+    expect(
+      stackCommandFor('cdkd drift', 'S', { flags: '--revert', region: `${capRegion}r` })
+    ).toBeUndefined();
+    // A region that renders exactly but is not shell-plain is QUOTED, not
+    // dropped and not emitted bare.
+    expect(stackCommandFor('cdkd drift', 'S', { flags: '--revert', region: "r'x" })).toBe(
+      "cdkd drift S --revert --stack-region 'r'\\''x'"
+    );
+  });
+});
+
+
+/**
+ * The four SITES, driven through the CLI. The matrix above pins the gate; these
+ * pin that each site reaches it, passes what that command needs, and prints the
+ * result LAST on a labelled line of its own rather than inside prose quotes
+ * (go-to-k/cdkd#3307, the layout go-to-k/cdkd#3363 established).
+ */
+describe("drift's four pasteable commands are gated at the site (go-to-k/cdkd#3307)", () => {
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    mockGetState.mockReset();
+    mockListStacks.mockReset();
+    mockVerifyBucketExists.mockReset().mockResolvedValue(undefined);
+    mockSaveState.mockReset().mockResolvedValue('"etag-2"');
+    mockAcquireLock.mockReset().mockResolvedValue(true);
+    mockReleaseLock.mockReset().mockResolvedValue(undefined);
+    mockRegistryGetProvider.mockReset();
+    mockRegistryShouldSkip.mockReset().mockReturnValue(false);
+    warnSpy.mockReset();
+    errorSpy.mockReset();
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('process.exit-mock');
+    }) as never);
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+    vi.clearAllMocks();
+  });
+
+  /** Site 1: the legacy region-less refusal, which names `cdkd deploy`. */
+  it('names cdkd deploy for a legacy record, and withholds it for an option-shaped key', async () => {
+    // The refusal is raised, caught by the command's error handler and printed
+    // through `logger.error`, so the text is read from the spy rather than from
+    // the rejection, which is the `process.exit` sentinel.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'LegacyStack' }]);
+    await runDrift(['--all']);
+    const okMessage = errorSpy.mock.calls.flat().join('\n');
+    // Last, on its own line, and with NO `--stack-region`: this record has none,
+    // which is the very thing the refusal is about.
+    expect(okMessage).toMatch(/^Stack: LegacyStack$/m);
+    expect(okMessage).toMatch(/^Migrate with: cdkd deploy LegacyStack$/m);
+    // The identity is NOT in the sentence: `displayIdent`'s JSON quotes
+    // neutralise no shell metacharacter, so a key named `$(printf X)` executed
+    // when the sentence was pasted (go-to-k/cdkd#3363's rule, measured here).
+    expect(okMessage.split('\n')[0]).not.toContain('LegacyStack');
+
+    errorSpy.mockReset();
+    mockListStacks.mockResolvedValueOnce([{ stackName: '--all' }]);
+    await runDrift(['--all']);
+    const withheldMessage = errorSpy.mock.calls.flat().join('\n');
+    expect(withheldMessage).not.toContain('cdkd deploy --all');
+    expect(withheldMessage).not.toMatch(/Migrate with: cdkd deploy/);
+    expect(withheldMessage).toContain('List records as stored');
+    expect(withheldMessage).not.toMatch(/^Stack: /m);
+
+    // A key carrying a command substitution: the SENTENCE may never carry it,
+    // since a phrase is what an operator pastes by selecting it
+    // (go-to-k/cdkd#3436's shape). The labelled line carries it shell-quoted.
+    errorSpy.mockReset();
+    mockListStacks.mockResolvedValueOnce([{ stackName: '$(printf INJECTED)' }]);
+    await runDrift(['--all']);
+    const substitution = errorSpy.mock.calls.flat().join('\n');
+    expect(substitution).toContain('a legacy one with no region');
+    // It renders exactly (printable ASCII), so it IS named — shell-quoted, on
+    // its own line, and never in the sentence.
+    expect(substitution).toMatch(/^Stack: '\$\(printf INJECTED\)'$/m);
+    expect(substitution.split('\n')[0]).not.toContain('printf INJECTED');
+
+    // And the PATTERN half, which only this site asks for: `cdkd deploy` reads
+    // its argument through `stack-matcher.ts`, so a key holding `*` would
+    // address every stack whose name it matches.
+    errorSpy.mockReset();
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'Prod*' }]);
+    await runDrift(['--all']);
+    const patternMessage = errorSpy.mock.calls.flat().join('\n');
+    expect(patternMessage).not.toMatch(/Migrate with: cdkd deploy/);
+    // Positive half: the refusal was REACHED and took the withhold arm, so an
+    // empty or unrelated error cannot satisfy the negative above.
+    expect(patternMessage).toContain('a legacy one with no region');
+    expect(patternMessage).toContain('List records as stored');
+  });
+
+  it('pastes every line, sentence and clause of the legacy refusal without running a value', async () => {
+    // The shape go-to-k/cdkd#3363 measured: a value inside prose runs when the
+    // SENTENCE is pasted, and whole-line pasting alone is vacuous because an
+    // unbalanced `(` makes bash run nothing. Sentences and clauses are what an
+    // operator selects.
+    mockListStacks.mockResolvedValueOnce([{ stackName: '$(touch OWNED)' }]);
+    await runDrift(['--all']);
+    const message = errorSpy.mock.calls.flat().join('\n');
+    const segments = new Set<string>();
+    for (const line of message.split('\n')) {
+      segments.add(line);
+      for (const sentence of line.split(/(?<=[.!?])\s+/)) {
+        segments.add(sentence);
+        for (const clause of sentence.split(/: | — /)) segments.add(clause);
+      }
+    }
+    expect(segments.size).toBeGreaterThan(3);
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-drift-paste-'));
+    try {
+      // The POSITIVE control first: the same payload UNQUOTED does create the
+      // sentinel here, so a harness that cannot start bash — or a directory
+      // check that never sees anything — fails loudly rather than passing.
+      const control = spawnSync('bash', ['-c', 'cdkd() { :; }; Stack: $(touch OWNED)'], {
+        cwd: dir,
+        encoding: 'utf8',
+      });
+      expect(control.error, 'bash did not start').toBeUndefined();
+      expect(readdirSync(dir), 'the control payload did not run').toContain('OWNED');
+      rmSync(join(dir, 'OWNED'));
+
+      for (const seg of segments) {
+        const r = spawnSync('bash', ['-c', `cdkd() { :; }; ${seg}`], { cwd: dir, encoding: 'utf8' });
+        expect(r.error, seg).toBeUndefined();
+        expect(readdirSync(dir), seg).not.toContain('OWNED');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  /** Site 3: the post-revert state-write failure, which names `cdkd drift --revert`. */
+  it('names cdkd drift --revert with the region after a failed state write', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Ingress1: makeResource({
+          physicalId: 'sgr-1',
+          resourceType: 'AWS::EC2::SecurityGroupIngress',
+          properties: { IpProtocol: 6, FromPort: 443 },
+          observedProperties: { IpProtocol: 6, FromPort: 443 },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ IpProtocol: 6, FromPort: 8080 }),
+      update: async () => ({
+        physicalId: 'sgr-1',
+        wasReplaced: false,
+        effectiveProperties: { IpProtocol: 'tcp', FromPort: 443 },
+      }),
+    });
+    mockSaveState.mockRejectedValueOnce(new Error('PreconditionFailed'));
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    const warned = warnSpy.mock.calls.flat().join('\n');
+    expect(warned).toMatch(/^  Re-run with: cdkd drift TestStack --revert --stack-region us-east-1$/m);
+    // The old shape: the command inside the sentence, in prose quotes.
+    expect(warned).not.toMatch(/'cdkd drift TestStack --revert'/);
+  });
+
+  /** Site 4: the unbaselined-values note, which names `cdkd state refresh-observed`. */
+  it('withholds the refresh command when the key is option-shaped', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: '--all', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Table1: makeResource({
+          physicalId: 't',
+          resourceType: 'AWS::Glue::Table',
+          properties: { Parameters: { classification: 'parquet' } },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        Parameters: { classification: 'json', metadata_location: 's3://b/metadata/00000.json' },
+      }),
+      update: vi.fn(),
+    });
+
+    const { output } = await runDrift(['--all', '--revert', '--dry-run', '--yes']);
+
+    expect(output).toContain('has no observed-capture baseline');
+    expect(output).not.toMatch(/Refresh with:/);
+    expect(output).toContain('name or region does not render exactly');
+  });
+
+  /** Site 3 again, with a key the command would read as an option. */
+  it('withholds the revert command when the key is option-shaped', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: '--all', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Ingress1: makeResource({
+          physicalId: 'sgr-1',
+          resourceType: 'AWS::EC2::SecurityGroupIngress',
+          properties: { IpProtocol: 6, FromPort: 443 },
+          observedProperties: { IpProtocol: 6, FromPort: 443 },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ IpProtocol: 6, FromPort: 8080 }),
+      update: async () => ({
+        physicalId: 'sgr-1',
+        wasReplaced: false,
+        effectiveProperties: { IpProtocol: 'tcp', FromPort: 443 },
+      }),
+    });
+    mockSaveState.mockRejectedValueOnce(new Error('PreconditionFailed'));
+
+    await runDrift(['--all', '--revert', '--yes']);
+
+    const warned = warnSpy.mock.calls.flat().join('\n');
+    expect(warned).toContain('could not record the value the provider actually applied');
+    expect(warned).not.toMatch(/Re-run with:/);
+    expect(warned).toContain('name or region does not render exactly');
   });
 });
