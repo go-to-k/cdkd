@@ -11,7 +11,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 const mockExecute = vi.hoisted(() => vi.fn());
 const mockReadManifest = vi.hoisted(() => vi.fn());
-const mockGetAllStacks = vi.hoisted(() => vi.fn());
+const mockAssemblyStacks = vi.hoisted(() => vi.fn());
 const mockContextStoreLoad = vi.hoisted(() => vi.fn());
 const mockContextStoreSave = vi.hoisted(() => vi.fn());
 const mockExpandMacros = vi.hoisted(() => vi.fn());
@@ -23,7 +23,15 @@ vi.mock('../../../src/synthesis/app-executor.js', () => ({
 vi.mock('../../../src/synthesis/assembly-reader.js', () => ({
   AssemblyReader: vi.fn().mockImplementation(() => ({
     readManifest: mockReadManifest,
-    getAllStacks: mockGetAllStacks,
+    // `Synthesizer` reads through `readAssembly`, which returns the stacks AND
+    // the Stages that failed to load (issue go-to-k/cdkd#3482). These tests
+    // stage only the stack list, so the mock wraps it in that record shape.
+    // `getAllStacks` is deliberately NOT stubbed: a production call to it would
+    // fail loudly here rather than pass silently.
+    readAssembly: (...args: unknown[]) => ({
+      stacks: mockAssemblyStacks(...args),
+      failedStages: [],
+    }),
   })),
 }));
 
@@ -107,7 +115,7 @@ const EXPANDED_TEMPLATE = {
 beforeEach(() => {
   mockExecute.mockReset();
   mockReadManifest.mockReset();
-  mockGetAllStacks.mockReset();
+  mockAssemblyStacks.mockReset();
   mockContextStoreLoad.mockReset();
   mockContextStoreSave.mockReset();
   mockExpandMacros.mockReset();
@@ -134,7 +142,7 @@ beforeEach(() => {
 
 describe('Synthesizer — macro expansion integration', () => {
   it('no-op when no stack contains a macro (expandMacros never called)', async () => {
-    mockGetAllStacks.mockReturnValue([
+    mockAssemblyStacks.mockReturnValue([
       { stackName: 'A', template: PLAIN_TEMPLATE, region: 'us-east-1' },
     ]);
     const s = new Synthesizer();
@@ -144,7 +152,7 @@ describe('Synthesizer — macro expansion integration', () => {
 
   it('routes a macro-containing stack through expandMacros and mutates template in place', async () => {
     const stack = { stackName: 'A', template: SAM_TEMPLATE, region: 'us-east-1' };
-    mockGetAllStacks.mockReturnValue([stack]);
+    mockAssemblyStacks.mockReturnValue([stack]);
     const s = new Synthesizer();
     const result = await s.synthesize({ app: 'node app.js', region: 'us-east-1' });
     expect(mockExpandMacros).toHaveBeenCalledTimes(1);
@@ -159,7 +167,7 @@ describe('Synthesizer — macro expansion integration', () => {
     const stackA = { stackName: 'A', template: SAM_TEMPLATE, region: 'us-east-1' };
     const stackB = { stackName: 'B', template: PLAIN_TEMPLATE, region: 'us-east-1' };
     const stackC = { stackName: 'C', template: SAM_TEMPLATE, region: 'us-east-1' };
-    mockGetAllStacks.mockReturnValue([stackA, stackB, stackC]);
+    mockAssemblyStacks.mockReturnValue([stackA, stackB, stackC]);
     const s = new Synthesizer();
     await s.synthesize({ app: 'node app.js', region: 'us-east-1' });
     // expandMacros called once per macro-bearing stack — NOT for the plain one.
@@ -167,7 +175,7 @@ describe('Synthesizer — macro expansion integration', () => {
   });
 
   it('threads options.stateBucket through to expandMacros (BLOCKER 1 fix)', async () => {
-    mockGetAllStacks.mockReturnValue([
+    mockAssemblyStacks.mockReturnValue([
       { stackName: 'A', template: SAM_TEMPLATE, region: 'us-east-1' },
     ]);
     const s = new Synthesizer();
@@ -182,7 +190,7 @@ describe('Synthesizer — macro expansion integration', () => {
   });
 
   it('falls back to cdkd-state-{accountId} when options.stateBucket is missing AND template is sub-51KB', async () => {
-    mockGetAllStacks.mockReturnValue([
+    mockAssemblyStacks.mockReturnValue([
       { stackName: 'A', template: SAM_TEMPLATE, region: 'us-east-1' },
     ]);
     const s = new Synthesizer();
@@ -197,7 +205,7 @@ describe('Synthesizer — macro expansion integration', () => {
     // obviously-synthetic name. The pre-PR literal
     // 'cdkd-state-unresolved' would silently flow into the wire.
     mockStsSend.mockRejectedValue(new Error('STS unavailable'));
-    mockGetAllStacks.mockReturnValue([
+    mockAssemblyStacks.mockReturnValue([
       { stackName: 'A', template: SAM_TEMPLATE, region: 'us-east-1' },
     ]);
     const s = new Synthesizer();
@@ -218,7 +226,7 @@ describe('Synthesizer — macro expansion integration', () => {
         },
       },
     };
-    mockGetAllStacks.mockReturnValue([
+    mockAssemblyStacks.mockReturnValue([
       { stackName: 'BigStack', template: bigTemplate, region: 'us-east-1' },
     ]);
     const s = new Synthesizer();
@@ -232,7 +240,7 @@ describe('Synthesizer — macro expansion integration', () => {
 
   it('resolves region from AWS_REGION env when options.region is absent', async () => {
     process.env['AWS_REGION'] = 'eu-west-1';
-    mockGetAllStacks.mockReturnValue([
+    mockAssemblyStacks.mockReturnValue([
       { stackName: 'A', template: SAM_TEMPLATE, region: undefined },
     ]);
     const s = new Synthesizer();
@@ -242,7 +250,7 @@ describe('Synthesizer — macro expansion integration', () => {
   });
 
   it('resolves region from the synthesized stack env when nothing else is set', async () => {
-    mockGetAllStacks.mockReturnValue([
+    mockAssemblyStacks.mockReturnValue([
       { stackName: 'A', template: SAM_TEMPLATE, region: 'ap-northeast-1' },
     ]);
     const s = new Synthesizer();
@@ -252,7 +260,7 @@ describe('Synthesizer — macro expansion integration', () => {
   });
 
   it('hard-errors with SynthesisError when no region can be resolved', async () => {
-    mockGetAllStacks.mockReturnValue([
+    mockAssemblyStacks.mockReturnValue([
       { stackName: 'A', template: SAM_TEMPLATE, region: undefined },
     ]);
     const s = new Synthesizer();
@@ -263,7 +271,7 @@ describe('Synthesizer — macro expansion integration', () => {
   });
 
   it('threads macroExpandS3ClientOpts through to expandMacros', async () => {
-    mockGetAllStacks.mockReturnValue([
+    mockAssemblyStacks.mockReturnValue([
       { stackName: 'A', template: SAM_TEMPLATE, region: 'us-east-1' },
     ]);
     const s = new Synthesizer();
@@ -283,7 +291,7 @@ describe('Synthesizer — macro expansion integration', () => {
     // Simulate `cdkd deploy -a cdk.out` (pre-synthesized assembly).
     mockExistsSync.mockReturnValue(true);
     mockStatSync.mockReturnValue({ isDirectory: () => true });
-    mockGetAllStacks.mockReturnValue([
+    mockAssemblyStacks.mockReturnValue([
       { stackName: 'A', template: SAM_TEMPLATE, region: 'us-east-1' },
     ]);
     const s = new Synthesizer();
@@ -306,7 +314,7 @@ describe('Synthesizer — deferred / selection-aware macro expansion (issues #11
     // No options.region, no env, no stack env region — only the shared
     // config file (profile) region, surfaced via the SDK chain.
     mockStsConfigRegion.mockResolvedValue('eu-central-1');
-    mockGetAllStacks.mockReturnValue([
+    mockAssemblyStacks.mockReturnValue([
       { stackName: 'A', template: SAM_TEMPLATE, region: undefined },
     ]);
     const s = new Synthesizer();
@@ -320,7 +328,7 @@ describe('Synthesizer — deferred / selection-aware macro expansion (issues #11
 
   it('the synthesized stack env region wins over the SDK default chain', async () => {
     mockStsConfigRegion.mockResolvedValue('eu-central-1');
-    mockGetAllStacks.mockReturnValue([
+    mockAssemblyStacks.mockReturnValue([
       { stackName: 'A', template: SAM_TEMPLATE, region: 'ap-northeast-1' },
     ]);
     const s = new Synthesizer();
@@ -333,7 +341,7 @@ describe('Synthesizer — deferred / selection-aware macro expansion (issues #11
     const { STSClient } = await import('@aws-sdk/client-sts');
     (STSClient as unknown as ReturnType<typeof vi.fn>).mockClear();
     mockStsConfigRegion.mockResolvedValue('eu-west-2');
-    mockGetAllStacks.mockReturnValue([
+    mockAssemblyStacks.mockReturnValue([
       { stackName: 'A', template: SAM_TEMPLATE, region: undefined },
     ]);
     const s = new Synthesizer();
@@ -347,7 +355,7 @@ describe('Synthesizer — deferred / selection-aware macro expansion (issues #11
   it('public expandMacrosForStacks with an explicit stateBucket pays no STS call', async () => {
     preSynth();
     const macroStack = { stackName: 'Macro', template: SAM_TEMPLATE, region: 'us-east-1' };
-    mockGetAllStacks.mockReturnValue([macroStack]);
+    mockAssemblyStacks.mockReturnValue([macroStack]);
     const s = new Synthesizer();
     const options = {
       app: '/path/to/cdk.out',
@@ -363,7 +371,7 @@ describe('Synthesizer — deferred / selection-aware macro expansion (issues #11
   });
 
   it('deferMacroExpansion skips expansion inside synthesize()', async () => {
-    mockGetAllStacks.mockReturnValue([
+    mockAssemblyStacks.mockReturnValue([
       { stackName: 'Macro', template: SAM_TEMPLATE, region: 'us-east-1' },
     ]);
     const s = new Synthesizer();
@@ -375,7 +383,7 @@ describe('Synthesizer — deferred / selection-aware macro expansion (issues #11
     preSynth();
     const macroStack = { stackName: 'Macro', template: SAM_TEMPLATE, region: 'us-east-1' };
     const plainStack = { stackName: 'Plain', template: PLAIN_TEMPLATE, region: 'us-east-1' };
-    mockGetAllStacks.mockReturnValue([macroStack, plainStack]);
+    mockAssemblyStacks.mockReturnValue([macroStack, plainStack]);
     const s = new Synthesizer();
     const options = { app: '/path/to/cdk.out', deferMacroExpansion: true };
     const result = await s.synthesize(options);
@@ -391,7 +399,7 @@ describe('Synthesizer — deferred / selection-aware macro expansion (issues #11
     preSynth();
     const macroStack = { stackName: 'Macro', template: SAM_TEMPLATE, region: 'us-east-1' };
     const plainStack = { stackName: 'Plain', template: PLAIN_TEMPLATE, region: 'us-east-1' };
-    mockGetAllStacks.mockReturnValue([macroStack, plainStack]);
+    mockAssemblyStacks.mockReturnValue([macroStack, plainStack]);
     const s = new Synthesizer();
     const options = { app: '/path/to/cdk.out', deferMacroExpansion: true };
     const result = await s.synthesize(options);
@@ -408,7 +416,7 @@ describe('Synthesizer — deferred / selection-aware macro expansion (issues #11
   });
 
   it('listStacks never expands macros and needs no region (#1150 — cdkd list)', async () => {
-    mockGetAllStacks.mockReturnValue([
+    mockAssemblyStacks.mockReturnValue([
       { stackName: 'Macro', template: SAM_TEMPLATE, region: undefined },
     ]);
     const s = new Synthesizer();

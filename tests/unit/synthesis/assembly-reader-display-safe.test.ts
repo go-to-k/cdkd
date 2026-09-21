@@ -314,7 +314,15 @@ describe('AssemblyReader renders assembly-controlled values display-safe (#3277)
       );
 
       expect(message).toContain(`Stack '${HOSTILE.otherStack.clean}' not found in assembly.`);
-      expect(message).toContain(`Available: ${HOSTILE.stackName.clean}`);
+      // The LISTED names take `displayIdent`, not `displaySafe`
+      // (go-to-k/cdkd#3482): a stack name is an identifier interpolated into
+      // prose, and the denylist passes the spaces this C1 byte collapses to.
+      // A real CloudFormation name is `[A-Za-z0-9-]` and a display path adds
+      // `/`, both inside `PLAIN_IDENT`, so only a crafted value is quoted —
+      // which is what stops it reading as cdkd's own clause.
+      expect(message).toContain(`Available: ${JSON.stringify(HOSTILE.stackName.clean)}`);
+      // The REQUESTED name keeps `displaySafe`: it is the user's own argument
+      // echoed back, already quoted by the sentence around it.
       expect(message).not.toMatch(FORGING);
       expect(message).not.toContain(HOSTILE.stackName.raw);
       expect(message).not.toContain(HOSTILE.otherStack.raw);

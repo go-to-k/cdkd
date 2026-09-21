@@ -82,13 +82,17 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
   AwsClients: vi.fn().mockImplementation(() => ({ s3: {}, destroy: vi.fn() })),
 }));
 
-// Logger — silence during tests.
+// Logger — silence during tests. `error` is a SHARED spy: `withErrorHandling`
+// reports a refusal through it, so it is the only way to read the message a
+// failed run produced.
+const mockLoggerError = vi.fn();
+const mockLoggerInfo = vi.fn();
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     debug: vi.fn(),
-    info: vi.fn(),
+    info: mockLoggerInfo,
     warn: vi.fn(),
-    error: vi.fn(),
+    error: mockLoggerError,
     setLevel: vi.fn(),
     child: () => ({
       debug: vi.fn(),
@@ -201,6 +205,84 @@ describe('cdkd publish-assets', () => {
       expect(error).toBeDefined();
       expect(error?.message ?? '').toMatch(/unknown option|--path/i);
       expect(mockSynthesize).not.toHaveBeenCalled();
+    });
+
+    // Issue go-to-k/cdkd#3482: the WIRING half. A Stage that failed to load
+    // dropped every stack under it, so the bare "no stacks matching" names the
+    // wrong problem; the command must read `failedStages` off the synthesis
+    // result. Deleting that argument leaves the renderer's own tests green.
+    it('names a failed Stage in the no-matching-stacks refusal', async () => {
+      mockSynthesize.mockResolvedValue({
+        stacks: [makeStack({ stackName: 'TopStack' })],
+        manifest: {},
+        assemblyDir: '/tmp/cdk.out',
+        failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT: no such file or directory' }],
+      });
+
+      await runCmd(['MyStage/Api']);
+
+      const reported = mockLoggerError.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(reported).toContain('No stacks matching MyStage/Api found in assembly');
+      expect(reported).toContain("Stage MyStage failed to load");
+    });
+
+    it('renders the stack name display-safe on the NORMAL-RUN progress line', async () => {
+      // `Publishing assets for stack: ...` is `logger.info` at default
+      // verbosity, so it prints while a SUCCESSFUL publish streams -- the one
+      // render site that is not an error path, and the worst place for an
+      // ANSI line-erase. Nothing attacked it before go-to-k/cdkd#3482.
+      const hostile = 'StackA\u001b[2K\rPublished 3 assets. 0 errors.';
+      mockSynthesize.mockResolvedValue({
+        stacks: [makeStack({ stackName: hostile })],
+        manifest: {},
+        assemblyDir: '/tmp/cdk.out',
+        failedStages: [],
+      });
+
+      await runCmd(['--all']);
+
+      const line = mockLoggerInfo.mock.calls
+        .map((c) => String(c[0]))
+        .find((l) => l.includes('Publishing assets for stack:'));
+      expect(line).toBeDefined();
+      // Strip cdkd's OWN colour codes first -- those are SGR (`ESC [ ... m`)
+      // and legitimate. What must not survive is the payload's `ESC [ 2 K`
+      // erase and its carriage return.
+      const withoutColour = line!.replace(/\u001b\[[0-9;]*m/g, '');
+      expect(withoutColour).not.toContain('\u001b');
+      expect(withoutColour).not.toContain('\r');
+      expect(withoutColour).toContain('"StackA [2K Published 3 assets. 0 errors."');
+    });
+
+    it('names the failed Stage with NO pattern, where the branch chain answered "Multiple stacks found: ."', async () => {
+      mockSynthesize.mockResolvedValue({
+        stacks: [],
+        manifest: {},
+        assemblyDir: '/tmp/cdk.out',
+        failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT reading assembly-MyStage' }],
+      });
+
+      await runCmd([]);
+
+      const reported = mockLoggerError.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(reported).not.toContain('Multiple stacks found');
+      expect(reported).toContain('No stacks found in assembly');
+      expect(reported).toContain('Stage MyStage failed to load');
+    });
+
+    it('leaves the no-matching-stacks refusal untouched when every Stage loaded', async () => {
+      mockSynthesize.mockResolvedValue({
+        stacks: [makeStack({ stackName: 'TopStack' })],
+        manifest: {},
+        assemblyDir: '/tmp/cdk.out',
+        failedStages: [],
+      });
+
+      await runCmd(['MyStage/Api']);
+
+      const reported = mockLoggerError.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(reported).toContain('No stacks matching MyStage/Api found in assembly');
+      expect(reported).not.toContain('failed to load');
     });
 
     it('forwards --asset-publish-concurrency and --image-build-concurrency to WorkGraph', async () => {

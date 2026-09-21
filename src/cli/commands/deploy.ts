@@ -77,7 +77,7 @@ import {
   resolveUseCdkBootstrapAssets,
   warnDeprecatedNoPrefixCliFlag,
 } from '../config-loader.js';
-import { matchStacks, describeStack } from '../stack-matcher.js';
+import { matchStacks, describeStack, renderNoStackMatch } from '../stack-matcher.js';
 import { createPrefixMigrationGate } from './prefix-migration-check.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../types/state.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
@@ -383,6 +383,14 @@ async function deployCommand(
     const stackPatterns = stacks.length > 0 ? stacks : options.stack ? [options.stack] : [];
     let targetStacks;
 
+    if (allStacks.length === 0) {
+      // Reached before the branch chain below: with zero stacks and no
+      // pattern, the `else` arm would answer `Multiple stacks found: .` --
+      // and zero stacks is exactly what an app whose only stacks live in an
+      // unsynthesized Stage produces (issue go-to-k/cdkd#3482).
+      throw new Error(renderNoStackMatch(stackPatterns, allStacks, result));
+    }
+
     if (options.all) {
       targetStacks = allStacks;
     } else if (stackPatterns.length > 0) {
@@ -398,11 +406,7 @@ async function deployCommand(
     }
 
     if (targetStacks.length === 0) {
-      throw new Error(
-        stackPatterns.length > 0
-          ? `No stacks matching ${stackPatterns.join(', ')} found in assembly. Available: ${allStacks.map(describeStack).join(', ')}`
-          : 'No stacks found in assembly'
-      );
+      throw new Error(renderNoStackMatch(stackPatterns, allStacks, result));
     }
 
     // Cross-stack ordering edges that CDK's manifest dependency graph

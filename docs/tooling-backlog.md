@@ -108,6 +108,7 @@ which PR took it, so nobody picks it up twice.
 
 | Issue | Title |
 | --- | --- |
+| — | rules: the `.claude/rules/**` TOTAL is over its 300 KB budget (~322 KB, measured 2026-09-22 during go-to-k/cdkd#3506; it was already ~320 KB at that PR's base). No fence enforces the total, only the per-file caps, which are all clear. First occurrence, so nothing is built — the trim is somebody's whole-layer pass, not a line in an unrelated PR. |
 | [#1393](https://github.com/go-to-k/cdkd/issues/1393) | audit: nested-key critic blind spots found by the 0809 sweep — mixed-case SDK models, file-global literal heuristic, missing targets, selective sub-key forwards |
 | [#1865](https://github.com/go-to-k/cdkd/issues/1865) | docs: the wiring critic's third failure mode (evidence loss) is missing from code-layout.md and the ci.yml step comment |
 | [#1891](https://github.com/go-to-k/cdkd/issues/1891) | fix(dynamodb): two provider comments still say the wiring critic cannot follow a NonNullExpression, which PR 1860 falsifies |

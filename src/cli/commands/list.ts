@@ -14,7 +14,7 @@ import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import { resolveApp } from '../config-loader.js';
-import { matchStacks, describeStack } from '../stack-matcher.js';
+import { matchStacks, renderNoStackMatch } from '../stack-matcher.js';
 import { toYaml } from '../../utils/yaml.js';
 
 /**
@@ -175,7 +175,11 @@ async function listCommand(
   const allStacks = result.stacks;
 
   if (allStacks.length === 0) {
-    throw new Error('No stacks found in assembly');
+    // A Stage that failed to load dropped every stack under it, and an app
+    // whose only stacks live in that Stage lists as empty (issue
+    // go-to-k/cdkd#3482). Same renderer as the no-match case below, which
+    // picks the empty-assembly wording from `allStacks` being empty.
+    throw new Error(renderNoStackMatch(patterns, allStacks, result));
   }
 
   // Filter by patterns if provided. Patterns match against displayName (when
@@ -184,10 +188,7 @@ async function listCommand(
   const selected = patterns.length > 0 ? matchStacks(allStacks, patterns) : allStacks;
 
   if (selected.length === 0) {
-    throw new Error(
-      `No stacks matching ${patterns.join(', ')} found in assembly. ` +
-        `Available: ${allStacks.map(describeStack).join(', ')}`
-    );
+    throw new Error(renderNoStackMatch(patterns, allStacks, result));
   }
 
   // Sort by dependency order so output is deterministic and a stack never
