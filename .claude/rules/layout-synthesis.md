@@ -49,9 +49,11 @@ parses `manifest.json`; **context-providers/** resolves missing context.
 - **Exactly ONE failure is tolerated while reading a Stage**
   (`cdk:cloud-assembly`): the read of that Stage's own `manifest.json`, which is
   the Stage-was-never-synthesized case. It warns, drops the Stage's stacks and
-  records a `FailedStage` whose reason is BUILT here — the failure's own error
-  code plus the rendered directory — never the caught text, which embeds a
-  path carrying the assembly-chosen `directoryName` twice. Every other refusal
+  records a `FailedStage` whose reason is BUILT here — an errno `code`,
+  `invalid JSON` or `unreadable`, plus the rendered directory — never the
+  caught text, which embeds a path carrying the assembly-chosen
+  `directoryName` twice, nor a `JSON.parse` snippet, which echoes the file's
+  own bytes. Every other refusal
   raised under a Stage propagates, re-raised with the INNERMOST Stage named
   ([#3482](https://github.com/go-to-k/cdkd/issues/3482)) — a hardened check must
   not degrade to advice because the stack sits inside a Stage. **The SCOPE of
