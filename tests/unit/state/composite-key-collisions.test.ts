@@ -57,6 +57,16 @@ describe('injectiveKey is injective where a separator is not', () => {
     expect(injectiveKey('a', 32)).not.toBe(injectiveKey('a', '32'));
   });
 
+  it('COLLAPSES NaN / Infinity, which is a recorded hole rather than a guard', () => {
+    // Pinned so the limit is a measured fact rather than a sentence in a
+    // JSDoc: `JSON.stringify` renders all three as `null`, so they share a key
+    // with each other and with a literal `null`. No call site passes a
+    // computed number today; this case is what makes that assumption visible
+    // if one ever does.
+    expect(injectiveKey('a', Number.NaN)).toBe(injectiveKey('a', Number.POSITIVE_INFINITY));
+    expect(injectiveKey('a', Number.NaN)).toBe(injectiveKey('a', Number.NEGATIVE_INFINITY));
+  });
+
   it('emits no raw control character, so a DIGEST over it stays injective too', () => {
     // `idempotency-token.ts` hashes `${NONCE}<NUL>${key}<NUL>${generation}`.
     // That input is injective only if `key` cannot carry the separator, which

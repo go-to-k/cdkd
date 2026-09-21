@@ -5048,9 +5048,14 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
     // The floor is the EXEMPTION LIST's own length rather than a number typed
     // in. A literal floor is wrong the moment the population shrinks, which is
     // the direction this work moves it: go-to-k/cdkd#3496 took the tree from
-    // nine files to four and a hardcoded `> 5` reddened on the SUCCESS. Tying
-    // it to the list keeps the guard meaningful — every exempt file must still
-    // be found — while letting the record-key files come and go.
+    // nine files to four and a hardcoded `> 5` reddened on the SUCCESS.
+    //
+    // It is kept as a DISTINCT, EARLIER assertion even though the per-file
+    // exact-count loop below implies it, because the two fail with different
+    // messages and this one is the readable failure for the case it exists for
+    // — an argv typo that empties the sweep. Reaching the loop first would
+    // report nine separate "the tree disagrees" lines for one broken needle.
+    // It cannot fail alone; that is the point, not an oversight.
     expect(
       found.length,
       'the git grep sweep found fewer files than are exempted — check its needles'

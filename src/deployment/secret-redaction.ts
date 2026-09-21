@@ -867,8 +867,8 @@ function recordedExpressionsOf(secrets: RecordedSecretValues): Set<string> {
  * residual #2425): keyed on a value alone, one stack's answer is served to
  * another stack's identically-spelled read. Here the key names the producer
  * stack, its region and the output — so a hit is served to a resolution that
- * asked for that exact output of that exact stack, i.e. to the reader that
- * would have received the plaintext before this feature existed.
+ * asked for that output of that stack, i.e. to the reader that would have
+ * received the plaintext before this feature existed.
  *
  * `precisely`, in an earlier revision, overstated it. The key is
  * NUL-SEPARATED rather than encoded, and the halves are not all
@@ -894,14 +894,21 @@ function maskedOutputKey(stackName: string, region: string, outputKey: string): 
   // validation of any string. `No AWS name can contain one` is a claim about
   // AWS, not about what arrives here.
   //
-  // DELIBERATELY still a separator. The encoding that closes this class lives
-  // in `src/state/record-keys.ts`, and this module IMPORTS NOTHING -- a
-  // recorded decision (`.claude/rules/layout-deployment-secrets.md`), and the
-  // reason the resolver's SecureString verdict store is homed here. The
-  // collision buys an attacker nothing either: whoever can write that index
-  // can aim the coordinate directly. So the defect was the JUSTIFICATION, not
-  // the key, and what is fixed is the two sentences that were false. Revisit
-  // if this module ever takes an import for another reason.
+  // DELIBERATELY still a separator, and the reason is narrower than an earlier
+  // revision of this comment claimed. That revision said the encoding `lives in
+  // a module this one would have to import`, which is FALSE:
+  // `JSON.stringify([stackName, region, outputKey])` IS the encoding and needs
+  // no import at all. What the no-import rule
+  // (`.claude/rules/layout-deployment-secrets.md`) actually protects here is
+  // ONE SPELLING of that rule living in one place -- the property
+  // `src/state/record-keys.ts` exists for -- not the ability to encode.
+  //
+  // So the case for leaving it rests on REACH, not on layering: whoever can
+  // write the exports index can aim `producerStack` / `producerRegion` at the
+  // real coordinate directly, the recovery is in-run only, and every reader
+  // re-registers the value as a mask-only needle, so state still persists the
+  // mask. Nothing is widened by the collision. If this module ever takes an
+  // import for another reason, encode this and delete the paragraph.
   return `${stackName}\u0000${region}\u0000${outputKey}`;
 }
 
@@ -1040,11 +1047,23 @@ const CONFLICTING_CROSS_STACK = Symbol('conflicting cross-stack association');
 /**
  * Separator for the composite keys {@link crossStackSourceKey} builds.
  *
- * A NUL rather than a printable character because no AWS export name, stack
- * name, output name, region or role ARN can contain one, so no two distinct
- * source leaves can spell a single key. A printable separator (`:` / `|`) does
- * occur inside a real export name — CDK's own convention is
+ * A NUL rather than a printable character: a printable separator (`:` / `|`)
+ * does occur inside a real export name — CDK's own convention is
  * `Stack:ExportName` — which would let one leaf's key be read as another's.
+ *
+ * **It does NOT follow that no two distinct source leaves can spell a single
+ * key, and this note asserted that for a while** (go-to-k/cdkd#3496). The
+ * reason given was that no AWS export name, stack name, output name, region or
+ * role ARN can contain a NUL — a claim about what AWS ACCEPTS, while these
+ * halves are TEMPLATE literals read straight out of the intrinsic. A hand-written
+ * template can put a NUL in any of them.
+ *
+ * What makes the key safe is not injectivity but what happens on a collision:
+ * the association store POISONS a slot recorded against a differing
+ * (expression, plaintext) pair rather than overwriting it, and the scope is a
+ * `WeakMap` on the pass's own bag. So a forged key degrades to a REFUSAL, never
+ * to one leaf's expression being served for another's. Keep that property if
+ * this separator is ever revisited; it, not the charset, is the guarantee.
  */
 const CROSS_STACK_KEY_SEPARATOR = '\u0000';
 

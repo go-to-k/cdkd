@@ -209,7 +209,11 @@ export function resolveDynamoDbDeleteBudgetClock(): () => number {
  * the first's spent allowance. In practice `destroy-runner.ts` builds a fresh
  * provider (and therefore a fresh registry) per region, so the collision is not
  * reachable today — but that is an invariant of the CALLER, enforced nowhere,
- * and the fix costs one string concat. `\0` cannot appear in either component.
+ * and the fix costs one string concat. The key is ENCODED rather than
+ * separated, so it does not rest on what can appear in either component --
+ * both come from a state record, which `parseStateBody` reads as an unchecked
+ * cast, so the claim this sentence used to make was about AWS rather than
+ * about what arrives here (go-to-k/cdkd#3496).
  *
  * `region` is the STATE's region (`DeleteContext.expectedRegion`), which is
  * available synchronously at the top of `delete()` — unlike the client's own

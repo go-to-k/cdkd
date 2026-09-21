@@ -3063,7 +3063,7 @@ export class IntrinsicFunctionResolver {
   private readonly cachedDynamicReferences = new Map<string, CachedDynamicReference>();
 
   /**
-   * `<parameter name>\u0000<reported Type>` pairs this resolver has already
+   * `(parameter name, reported Type)` pairs this resolver has already
    * warned about (issue #1933 review).
    *
    * Keyed on the PAIR rather than the name alone: two different anomalous types
@@ -9023,9 +9023,15 @@ export class IntrinsicFunctionResolver {
     /** How `region` is printed: its caller's log text of the raw region (issue #3150). */
     loggedRegionText: string
   ): Promise<Record<string, string> | undefined> {
-    // ENCODED, not separated (go-to-k/cdkd#3496). `stackName` is template text
-    // and this cache serves a RESOLVED OUTPUT BAG, so a collision answers one
-    // stack's `Fn::GetStackOutput` with another stack's outputs.
+    // ENCODED, not separated (go-to-k/cdkd#3496). DEFENCE IN DEPTH, and the
+    // bound is worth stating rather than leaving to be re-derived: `stackName`
+    // is template text, but a 2-part collision needs the OTHER pair's FIRST
+    // half to carry the separator, and that is `region`, which reaches here
+    // only through `canonicalizeRegion` + `isClientSafeRegion` or as a constant
+    // per resolver instance. So the collision is not reachable today. What it
+    // would cost if that gate moved is the reason to encode anyway: this cache
+    // serves a RESOLVED OUTPUT BAG, so a hit answers one stack's
+    // `Fn::GetStackOutput` with another stack's outputs.
     const cacheKey = injectiveKey(region, stackName);
     let fetch = this.cfnStackOutputsCache.get(cacheKey);
     if (!fetch) {
@@ -12321,10 +12327,13 @@ export class IntrinsicFunctionResolver {
       // silently changes what state stores — so say so rather than let the
       // parameter quietly start persisting as its expression. Once per
       // (parameter, type) per resolver — see `warnedUnrecognizedSsmTypes`.
-      // ENCODED, not separated (go-to-k/cdkd#3496). Same warned-once class as
-      // go-to-k/cdkd#3308: `parameterName` is template text, so a collision
-      // drops the SECOND warning about a parameter silently persisting as its
-      // expression.
+      // ENCODED, not separated (go-to-k/cdkd#3496). DEFENCE IN DEPTH: the
+      // warned-once class of go-to-k/cdkd#3308, but only ONE half is ungated.
+      // `parameterName` is template text; the other half is the SDK's own
+      // `Type` string, so a collision would need AWS to return one carrying a
+      // NUL. Encoded so the set does not depend on that, since what it would
+      // cost is the SECOND warning about a parameter silently persisting as
+      // its expression.
       this.warnedUnrecognizedSsmTypes.add(injectiveKey(parameterName, String(paramType)));
       const reported = paramType === undefined ? '(absent)' : `'${String(paramType)}'`;
       // Masked like the debug echo above (issue #2728), and per RAW VALUE

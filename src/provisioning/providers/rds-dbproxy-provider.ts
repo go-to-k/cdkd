@@ -27,6 +27,7 @@ import type {
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
+import { injectiveKey } from '../../state/record-keys.js';
 
 const POLL_INTERVAL_MS = 5000;
 const POLL_TIMEOUT_MS = 30 * 60 * 1000;
@@ -355,7 +356,13 @@ export class RDSDBProxyProvider implements ResourceProvider {
     _resourceType: string,
     attributeName: string
   ): Promise<unknown> {
-    const cacheKey = `${physicalId}:${attributeName}`;
+    // ENCODED, not separated (go-to-k/cdkd#3496). A PRINTABLE separator here,
+    // and both halves are unchecked: `physicalId` comes from a state record
+    // that `parseStateBody` casts, and `attributeName` is template text. The
+    // cache is read BEFORE the attribute switch below, so a hit answers
+    // whatever was asked -- one AWS::RDS::DBProxy's attribute served for
+    // another's `Fn::GetAtt`.
+    const cacheKey = injectiveKey(physicalId, attributeName);
     const cached = this.attributeCache.get(cacheKey);
     if (cached !== undefined) return cached;
 

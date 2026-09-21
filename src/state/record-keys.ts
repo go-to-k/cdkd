@@ -68,6 +68,13 @@ function injectivePairKey(first: string, second: string): string {
  * get it wrong. `JSON.stringify` distinguishes `1` from `"1"`, so a mixed
  * tuple stays injective across the two.
  *
+ * KNOWN HOLE in that, recorded rather than guarded: `NaN`, `Infinity` and
+ * `-Infinity` all stringify to `null`, so those three collapse onto one key
+ * and onto a literal `null`. No call site passes one — every numeric argument
+ * today is a literal bound (`64`, `32`) — and a runtime refusal would turn a
+ * key builder into a throwing path for a value that cannot arrive. Check this
+ * note before passing a COMPUTED number.
+ *
  * Note what this does to a DIGEST that hashes the result: the encoded string
  * carries no raw control character at all — `JSON.stringify` escapes a NUL to
  * the six-character text `\u0000` — so a hash input that separates this key
