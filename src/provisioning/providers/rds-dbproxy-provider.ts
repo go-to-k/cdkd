@@ -27,7 +27,7 @@ import type {
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
-import { injectiveKey } from '../../state/record-keys.js';
+import { injectiveKey, injectiveKeyPrefix } from '../../state/record-keys.js';
 
 const POLL_INTERVAL_MS = 5000;
 const POLL_TIMEOUT_MS = 30 * 60 * 1000;
@@ -502,7 +502,11 @@ export class RDSDBProxyProvider implements ResourceProvider {
 
     const client = this.getClient();
 
-    const arnCacheKey = `${physicalId}:DBProxyArn`;
+    // The SAME key `getAttribute` builds for this attribute, so the two share
+    // ONE cache entry. Spelling it a second way here is what go-to-k/cdkd#3496's
+    // first cut did: the key moved and this reader did not, leaving two copies
+    // of one ARN in one Map and an extra Describe per update.
+    const arnCacheKey = injectiveKey(physicalId, 'DBProxyArn');
     let arn = this.attributeCache.get(arnCacheKey) as string | undefined;
     if (!arn) {
       try {
@@ -593,8 +597,17 @@ export class RDSDBProxyProvider implements ResourceProvider {
   }
 
   private invalidateAttributeCache(physicalId: string): void {
+    // The prefix of the ENCODED key, not of the old separated one. This scan is
+    // the reader go-to-k/cdkd#3496's first cut broke: the keys became
+    // `["proxy-1","Endpoint"]` while this still tested `proxy-1:`, so it matched
+    // NOTHING and every post-update `Fn::GetAtt` read the pre-update value. It
+    // was silent — no test covered it and every gate stayed green.
+    //
+    // DERIVED from the encoder, never re-spelled here — re-spelling is exactly
+    // what broke this scan. {@link injectiveKeyPrefix} carries why it is exact.
+    const encodedPrefix = injectiveKeyPrefix(physicalId);
     for (const key of this.attributeCache.keys()) {
-      if (key.startsWith(`${physicalId}:`)) this.attributeCache.delete(key);
+      if (key.startsWith(encodedPrefix)) this.attributeCache.delete(key);
     }
   }
 

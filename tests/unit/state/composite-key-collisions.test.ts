@@ -19,10 +19,11 @@ import {
   acquireIdempotencyToken,
   resetIdempotencyTokensForTests,
 } from '../../../src/provisioning/providers/idempotency-token.js';
-import { injectiveKey } from '../../../src/state/record-keys.js';
+import { injectiveKey, injectiveKeyPrefix } from '../../../src/state/record-keys.js';
 import { extractLambdaVpcDeleteDeps } from '../../../src/analyzer/lambda-vpc-deps.js';
 import { withStackName } from '../../../src/provisioning/resource-name.js';
 import { deleteBudgetKey } from '../../../src/provisioning/providers/dynamodb-delete-budget.js';
+import { RDSDBProxyProvider } from '../../../src/provisioning/providers/rds-dbproxy-provider.js';
 
 const NUL = String.fromCharCode(0);
 
@@ -173,5 +174,79 @@ describe('the idempotency-token memo keys on the whole tuple', () => {
         acquireIdempotencyToken({ scope: 'RunInstances', logicalId: 'Instance' })
       ).value;
     expect(once()).toBe(once());
+  });
+});
+
+describe('a cache whose key is encoded still INVALIDATES — go-to-k/cdkd#3496', () => {
+  /**
+   * The defect this exists for is not a collision: it is a key changing
+   * spelling while a READER of that spelling does not.
+   *
+   * `invalidateAttributeCache` scans the cache by prefix, and the first cut of
+   * go-to-k/cdkd#3496 encoded the keys without touching the scan — so it
+   * matched nothing, every post-update `Fn::GetAtt` read the pre-update value,
+   * and the whole suite stayed green because nothing covered it. That is the
+   * shape the source fence cannot see, so it is covered behaviourally here.
+   */
+  const cacheOf = (p: RDSDBProxyProvider): Map<string, unknown> =>
+    (p as unknown as { attributeCache: Map<string, unknown> }).attributeCache;
+  const invalidate = (p: RDSDBProxyProvider, id: string): void =>
+    (p as unknown as { invalidateAttributeCache: (id: string) => void }).invalidateAttributeCache(
+      id
+    );
+
+  it('clears an entry written under the encoded key', () => {
+    const provider = new RDSDBProxyProvider();
+    const cache = cacheOf(provider);
+    cache.set(injectiveKey('proxy-1', 'Endpoint'), 'old.endpoint');
+    cache.set(injectiveKey('proxy-1', 'DBProxyArn'), 'arn:old');
+    cache.set(injectiveKey('proxy-2', 'Endpoint'), 'other.endpoint');
+
+    invalidate(provider, 'proxy-1');
+
+    expect(cache.has(injectiveKey('proxy-1', 'Endpoint'))).toBe(false);
+    expect(cache.has(injectiveKey('proxy-1', 'DBProxyArn'))).toBe(false);
+    // And it must not take the neighbour with it.
+    expect(cache.get(injectiveKey('proxy-2', 'Endpoint'))).toBe('other.endpoint');
+  });
+
+  it('does not clear an id that merely SHARES A PREFIX', () => {
+    // The encoded prefix is `["proxy-1",`, so `proxy-10` is a different token
+    // rather than a longer match — which the old `proxy-1:` prefix would also
+    // have got right, and a naive `startsWith(JSON.stringify(id))` would not.
+    const provider = new RDSDBProxyProvider();
+    const cache = cacheOf(provider);
+    cache.set(injectiveKey('proxy-10', 'Endpoint'), 'ten.endpoint');
+    invalidate(provider, 'proxy-1');
+    expect(cache.get(injectiveKey('proxy-10', 'Endpoint'))).toBe('ten.endpoint');
+  });
+});
+
+describe('injectiveKeyPrefix AGREES with injectiveKey — go-to-k/cdkd#3496', () => {
+  it('prefixes every key sharing the first part, and no other', () => {
+    // The property whose ABSENCE was the blocker: a prefix re-spelled by hand
+    // stopped matching the keys, silently. Asserted over values chosen to break
+    // a hand-written prefix — a comma inside the id (JSON does not escape it, so
+    // searching the encoded key for the first comma is wrong), a quote, and an
+    // id that is a strict prefix of another.
+    for (const id of ['proxy-1', 'a,b', 'q"uote', 'proxy-1-extra']) {
+      expect(injectiveKey(id, 'Endpoint').startsWith(injectiveKeyPrefix(id))).toBe(true);
+      expect(injectiveKey(id, 'DBProxyArn').startsWith(injectiveKeyPrefix(id))).toBe(true);
+    }
+    // And it must not match a DIFFERENT first part, including one it prefixes.
+    expect(injectiveKey('proxy-1-extra', 'Endpoint').startsWith(injectiveKeyPrefix('proxy-1'))).toBe(
+      false
+    );
+    expect(injectiveKey('a,b', 'X').startsWith(injectiveKeyPrefix('a'))).toBe(false);
+  });
+
+  it('a prefix taken at the first comma would be WRONG, which is why it is derived', () => {
+    // The control for the sentence in the JSDoc. `["a,b","X"]` has its first
+    // comma INSIDE the quoted id, so cutting there yields `["a,` — a prefix of
+    // keys for a different id.
+    const encoded = injectiveKey('a,b', 'X');
+    const naive = encoded.slice(0, encoded.indexOf(',') + 1);
+    expect(naive).not.toBe(injectiveKeyPrefix('a,b'));
+    expect(injectiveKey('a,c', 'X').startsWith(naive)).toBe(true);
   });
 });

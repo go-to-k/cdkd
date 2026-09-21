@@ -5088,6 +5088,92 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
     }
   });
 
+  /**
+   * Every multi-part key expression in `src/` built as a TEMPLATE LITERAL
+   * rather than through the shared helper, with the reason each is safe.
+   *
+   * **This sweep exists because the NUL sweep has a blind spot its own comment
+   * admits, and that blind spot shipped a defect.** go-to-k/cdkd#3496's first
+   * cut encoded three provider caches whose separator was `:` — invisible to a
+   * NUL search — and worse, it moved the key while leaving a READER of the old
+   * spelling: `invalidateAttributeCache` scanned for `<physicalId>:` and after
+   * the change matched nothing, so every post-update `Fn::GetAtt` read the
+   * pre-update value. Silent: no test covered it and every gate stayed green.
+   *
+   * So this one keys on the SHAPE a composite key has — two or more
+   * interpolations in one template literal, used as a Map/Set key or bound to
+   * a `*Key` name — rather than on the separator, which is the thing that
+   * varies. Residual, stated: `+` concatenation, a separator held in a
+   * variable, and a key built over several statements are still invisible.
+   */
+  const TEMPLATE_KEY_EXPRESSIONS: ReadonlyArray<readonly [string, number, string]> = [
+    [
+      'src/cli/commands/drift.ts',
+      2,
+      'per-run sets of RENDERED paths for reporting; not an identity anything is ' +
+        'served by, and both build a path a human reads',
+    ],
+    [
+      'src/provisioning/property-coverage.ts',
+      2,
+      '`${resourceType}:${property}` against the --allow-unsupported-properties set; ' +
+        'the property half comes from the generated drop table, a closed set',
+    ],
+    [
+      'src/provisioning/provider-registry.ts',
+      3,
+      'same `${resourceType}:${property}` membership test, same closed second half',
+    ],
+    [
+      'src/provisioning/providers/sns-topic-provider.ts',
+      1,
+      '`${protocol}${suffix}`; `protocol` is a closed set and `suffix` a literal',
+    ],
+  ];
+
+  it('every template-literal multi-part key expression in src/ is classified', () => {
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+    // A Map/Set key argument, or a `*Key` binding, that is a template literal
+    // carrying TWO interpolations. `git grep -E`, so the pattern is the same
+    // one a human would run by hand.
+    const pattern =
+      '(\\.(get|set|has|add|delete)\\(`[^`]*\\$\\{[^`]*\\$\\{)' +
+      '|((const|let)\\s+\\w*[Kk]ey\\s*=\\s*`[^`]*\\$\\{[^`]*\\$\\{)';
+    let out: string;
+    try {
+      out = execFileSync('git', ['grep', '-c', '-E', pattern, '--', 'src/'], {
+        cwd: root,
+        encoding: 'utf-8',
+      });
+    } catch {
+      // No match anywhere would mean the pattern broke, not that the tree is
+      // clean — the list below asserts otherwise, so fail loudly.
+      out = '';
+    }
+    const counts = new Map<string, number>();
+    for (const line of out.split('\n').filter(Boolean)) {
+      const at = line.lastIndexOf(':');
+      counts.set(line.slice(0, at), Number(line.slice(at + 1)));
+    }
+
+    const classified = new Set(TEMPLATE_KEY_EXPRESSIONS.map(([rel]) => rel));
+    expect(
+      [...counts.keys()].filter((f) => !classified.has(f)),
+      'a multi-part key built as a template literal appeared in a file this fence does ' +
+        'not know about. If it identifies something, route it through injectiveKey — and ' +
+        'if you MOVE an existing key, find every reader of the old spelling first ' +
+        '(go-to-k/cdkd#3496 broke a prefix scan exactly that way). Otherwise add it to ' +
+        'TEMPLATE_KEY_EXPRESSIONS with the reason.'
+    ).toEqual([]);
+
+    for (const [rel, expected] of TEMPLATE_KEY_EXPRESSIONS) {
+      expect(
+        counts.get(rel),
+        `${rel} is listed with ${expected} template-literal key expressions but the tree disagrees`
+      ).toBe(expected);
+    }
+  });
+
   it('the NUL fence would FAIL on the code it replaced', () => {
     // Guard-the-guard: the assertion above is an `includes` over a hand-built
     // needle, and a typo in that needle makes it pass over every file forever.

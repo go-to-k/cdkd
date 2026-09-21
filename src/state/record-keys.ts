@@ -86,6 +86,27 @@ export function injectiveKey(...parts: ReadonlyArray<string | number>): string {
 }
 
 /**
+ * The prefix every {@link injectiveKey} whose FIRST part is `first` begins
+ * with, for the one reader shape an encoded key otherwise breaks: a cache that
+ * evicts by scanning its keys for a leading component.
+ *
+ * DERIVED from the same encoder rather than spelled again, and that is the
+ * whole point. go-to-k/cdkd#3496's first cut encoded three provider caches and
+ * left `invalidateAttributeCache` testing the OLD `<physicalId>:` prefix, so
+ * the scan matched nothing and every post-update `Fn::GetAtt` read the
+ * pre-update value — silently, with every gate green. A prefix computed here
+ * cannot drift from the key computed two functions up.
+ *
+ * Exact, not a heuristic: `JSON.stringify([first])` quotes and escapes `first`,
+ * so replacing its closing `]` with `,` yields a string no OTHER first part can
+ * begin with. Deriving it by searching the encoded key for a comma would NOT
+ * be exact — a comma inside the value is not escaped by JSON.
+ */
+export function injectiveKeyPrefix(first: string): string {
+  return JSON.stringify([first]).slice(0, -1) + ',';
+}
+
+/**
  * The key for a state RECORD: the `(stackName, region)` pair that names one
  * `state.json`.
  */
