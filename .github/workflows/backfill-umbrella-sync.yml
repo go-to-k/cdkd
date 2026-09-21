@@ -114,7 +114,7 @@ jobs:
       # also asserts THIS job still declares `run-install: false`, so adding an
       # install here does not quietly de-fang the fence: it fails it. Fix the
       # graph instead.
-      - uses: voidzero-dev/setup-vp@49c3e4e92c52e7f8392712a9267bbe71c5ab30e5 # v1
+      - uses: voidzero-dev/setup-vp@24d870228786dc83ae73482406bdd1e7befaec14 # v1
         with:
           node-version: "24"
           cache: true
