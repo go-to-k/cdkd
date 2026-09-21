@@ -609,10 +609,14 @@ describe('the orphans CONTAINER (issue go-to-k/cdkd#3379)', () => {
       // sibling destroy refusal answers the same way. `cdkd state orphan`
       // reads no orphans container, so the pointer is sound.
       expect(destroy).toContain('cdkd state orphan');
-      // It also owes what every other message in this module ends on: how to
-      // READ the record it is refusing. The first cut dropped it, so the
-      // operator told to "repair or remove" was never told how to look.
-      expect(destroy).toContain('cdkd state show MyStack --stack-region us-east-1 --json');
+      // It also owes what every other message in this module ends ON: how to
+      // READ the record it is refusing. The first cut dropped it, and the
+      // second put it MID-SENTENCE, one space from the next clause — so a
+      // line-select paste handed `cdkd state show` six junk positional
+      // arguments. `endsWith`, not `toContain`, is what pins the placement.
+      expect(destroy.endsWith('cdkd state show MyStack --stack-region us-east-1 --json')).toBe(
+        true
+      );
       // ...and the sibling's legacy-record clause, because for such a record
       // the `--stack-region` flag must be OMITTED or it selects nothing.
       expect(destroy).toContain('legacy record');

@@ -244,3 +244,4 @@ issues they name are to be closed on the tracker.
 | [#2756](https://github.com/go-to-k/cdkd/issues/2756) | test(masking): four deferred nits from the PR 2742 round-3 review — SSM fake refusal ordering, a structural cause assertion, an over-broad verify.sh inventory, and an overstated maskSecretsInError comment |
 | [#3193](https://github.com/go-to-k/cdkd/issues/3193) | test(integ): cdkd diff has no real-AWS arm for a malformed outputs bag |
 | [#3406](https://github.com/go-to-k/cdkd/issues/3406) | test(integ): dynamodb-ondemand does not exercise the per-GSI OnDemandThroughput pre-flight refusal |
+| [#3504](https://github.com/go-to-k/cdkd/issues/3504) | test(state): the repairMalformed* exports have no partition fence, so a sixth can join unclassified (#3379 residual) |

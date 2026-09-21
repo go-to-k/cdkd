@@ -2503,6 +2503,99 @@ describe('cdkd import', () => {
       });
     }
 
+    /**
+     * The `orphans` CONTAINER on the EXISTING record (issue
+     * go-to-k/cdkd#3379), through the COMMAND. The module's source fences pin
+     * the guard's placement and cannot see REACHABILITY, which is what these
+     * cases add.
+     *
+     * `cdkd import` does not launder this container the way it launders
+     * `outputs` — `orphansCarriedFrom` copies the stored value verbatim — so
+     * unguarded it writes a record that `cdkd deploy`, `cdkd destroy`,
+     * `cdkd rollback` and a real `cdkd scrub` then refuse, and says nothing.
+     */
+    for (const [label, container] of [
+      ['null', null],
+      ['a string', 'abc'],
+      ['a number', 5],
+      ['a plain object', {}],
+    ] as const) {
+      it(`refuses an existing record whose orphans container is ${label}, and writes nothing`, async () => {
+        mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+        mockGetState.mockResolvedValueOnce({
+          state: { ...existingState(), orphans: container as unknown as [] },
+          etag: '"existing-etag"',
+        });
+        mockHasProvider.mockReturnValue(true);
+        mockGetProvider.mockImplementation(() => ({
+          import: vi.fn(async () => ({ physicalId: 'cdkd-test-my-bucket', attributes: {} })),
+        }));
+
+        await expect(
+          runImport(['import', '--app', 'x', '--resource', 'MyBucket=cdkd-test-my-bucket', '--yes'])
+        ).rejects.toThrow();
+        const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+        // THIS container by name: the resources map and the outputs bag are
+        // both healthy here, so either sibling's text would be the wrong one.
+        expect(message).toContain(`'orphans'`);
+        expect(message).not.toContain(`'resources'`);
+        expect(message).not.toContain(`'outputs'`);
+        // The assertion that discriminates placement from verdict: a guard
+        // below the save would also throw, with the record already rewritten.
+        expect(
+          mockSaveState,
+          'cdkd import saved a record whose orphans container it could not read'
+        ).not.toHaveBeenCalled();
+      });
+    }
+
+    it('FLOOR: a populated, an empty and an ABSENT orphans container are all still imported', async () => {
+      // The one-sidedness guard for the four cases above, and the ABSENT row
+      // is the load-bearing one: a stack that never had a failed deploy has no
+      // `orphans` key at all, which is the ordinary record.
+      for (const container of [
+        [
+          {
+            logicalId: 'Gone',
+            orphanedAt: 1,
+            state: { physicalId: 'p', resourceType: 'AWS::SQS::Queue', properties: {} },
+          },
+        ],
+        [],
+        undefined,
+      ]) {
+        mockSaveState.mockClear();
+        mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+        // The ABSENT row omits the KEY rather than setting it to `undefined`:
+        // an own `orphans: undefined` property is a different record, and a
+        // guard keyed on `Object.hasOwn` would pass it while refusing the
+        // ordinary one.
+        const state = { ...existingState() } as Record<string, unknown>;
+        if (container === undefined) delete state['orphans'];
+        else state['orphans'] = container;
+        mockGetState.mockResolvedValueOnce({
+          state: state as unknown as ReturnType<typeof existingState>,
+          etag: '"existing-etag"',
+        });
+        mockHasProvider.mockReturnValue(true);
+        mockGetProvider.mockImplementation(() => ({
+          import: vi.fn(async () => ({ physicalId: 'cdkd-test-my-bucket', attributes: {} })),
+        }));
+
+        await runImport([
+          'import',
+          '--app',
+          'x',
+          '--resource',
+          'MyBucket=cdkd-test-my-bucket',
+          '--yes',
+        ]);
+        expect(mockSaveState, `orphans container ${JSON.stringify(container)}`).toHaveBeenCalledTimes(
+          1
+        );
+      }
+    });
+
     it('FLOOR: a populated, an empty and an ABSENT outputs bag are all still imported', async () => {
       // Without this the refusal above is one-sided: a guard that threw on
       // everything satisfies every case above it. The ABSENT row is
