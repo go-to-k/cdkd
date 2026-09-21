@@ -4921,27 +4921,72 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
    * Nothing listed here is a `(stack, region)` or `(stack, export)` identity.
    * The rows naming an issue are tracked there and are NOT exempt on merit.
    */
-  const NUL_JOINS_THAT_ARE_NOT_RECORD_KEYS: ReadonlyArray<readonly [string, string]> = [
-    ['src/provisioning/providers/dynamodb-delete-budget.ts', '(region, physicalId) budget slot'],
+  /**
+   * Every NUL-separated composite key left anywhere in `src/`, with how many
+   * that file has and why none of them is a record identity.
+   *
+   * **The COUNT is here for the same reason it is on `RECORD_KEY_SITES`.** A
+   * per-FILE exemption is the shape this fence's own preamble condemns: it
+   * exempts a whole file, so a NEW producer-identity key added beside an
+   * exempt one goes green — and the three files carrying the most
+   * cross-stack machinery are exactly the exempt ones. With a count, adding
+   * any key to an exempt file fails until someone classifies it.
+   *
+   * **The reasons are phrased as what is CHECKED, not as what a value is
+   * expected to be**, after a round where three of them were wrong in that
+   * exact way. "CFn logical ids are alphanumeric" was one: `state.ts` says in
+   * cdkd's own words that "nothing enforces that constraint HERE — state is
+   * read as an unchecked cast", so a rule about what CloudFormation accepts is
+   * not a rule about what reaches this code.
+   */
+  const NUL_JOINS_THAT_ARE_NOT_RECORD_KEYS: ReadonlyArray<readonly [string, number, string]> = [
+    [
+      'src/provisioning/providers/dynamodb-delete-budget.ts',
+      1,
+      '(region, physicalId) budget slot — NOT checked; go-to-k/cdkd#3496',
+    ],
+    [
+      'src/provisioning/providers/efs-provider.ts',
+      1,
+      'join() over pre-stringified elements; a hash-style digest input, not an identity',
+    ],
     [
       'src/provisioning/providers/idempotency-token.ts',
-      'HASH input; the separator is domain separation, not identity',
+      2,
+      'HASH inputs; the separator is domain separation, not identity',
     ],
     [
       'src/state/s3-replication-purge-gap.ts',
-      '(bucket, accountId); both charsets are constrained by AWS',
+      2,
+      ':403 is (bucket, accountId), both AWS-charset-constrained; :555 joins FREE TEXT — go-to-k/cdkd#3496',
     ],
     [
       'src/deployment/deploy-engine.ts',
-      'cross-stack 3-part keys + (logicalId, physicalId) — go-to-k/cdkd#3496',
+      4,
+      'cross-stack 3-part keys + (logicalId, physicalId), plus one COMMENT quoting the ' +
+        'old key shape — go-to-k/cdkd#3496',
     ],
     [
       'src/deployment/intrinsic-function-resolver.ts',
+      3,
       '(region, stackName) cache and a (param, type) warn set — go-to-k/cdkd#3496',
     ],
-    ['src/deployment/secret-redaction.ts', 'maskedOutputKey, 3-part — go-to-k/cdkd#3496'],
-    ['src/analyzer/lambda-vpc-deps.ts', '(lambdaId, targetId); CFn logical ids are alphanumeric'],
-    ['src/analyzer/orphan-rewriter.ts', '(logicalId, attribute); CFn logical ids are alphanumeric'],
+    [
+      'src/deployment/secret-redaction.ts',
+      3,
+      'maskedOutputKey plus the CROSS_STACK_KEY_SEPARATOR declaration, whose key contract ' +
+        'states non-uniqueness and fails closed by POISONING — go-to-k/cdkd#3496',
+    ],
+    [
+      'src/analyzer/lambda-vpc-deps.ts',
+      1,
+      '(lambdaId, targetId) from an UNCHECKED state cast — a collision drops a delete-dependency edge; go-to-k/cdkd#3496',
+    ],
+    [
+      'src/analyzer/orphan-rewriter.ts',
+      2,
+      '(logicalId, GetAtt attribute name) — the attribute half is everything after the first dot, unchecked; go-to-k/cdkd#3496',
+    ],
   ];
 
   it('every NUL-joined interpolation anywhere in src/ is a record key or accounted for', () => {
@@ -4951,20 +4996,55 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
     // that what is searched for is unmistakably the SOURCE TEXT a TypeScript
     // file spells a NUL with, not a NUL byte.
     const BACKSLASH = String.fromCharCode(92);
+    const U = BACKSLASH + 'u0000';
+    const Z = BACKSLASH + '0';
+    // THREE shapes, not one. A round found the first revision searching only
+    // the template-literal form while `.join(NUL)` and a named separator
+    // constant were both already in the tree — the same "one spelling" miss
+    // this fence exists for, one level up.
     const needles = [
-      '}' + BACKSLASH + 'u0000' + '${',
-      '}' + BACKSLASH + '0' + '${',
+      '}' + U + '${', // `${a}<NUL>${b}` in a template literal
+      '}' + Z + '${',
+      ".join('" + U + "')", // [a, b].join(NUL)
+      ".join('" + Z + "')",
+      "= '" + U + "'", // const SEP = NUL
+      "= '" + Z + "'",
     ];
+    // Stated limits, since a fence that overstates its reach is worse than a
+    // narrow one. A named separator constant is caught at its DECLARATION, not
+    // at its uses, so the file is flagged but its call count is not — that is
+    // enough for this fence's job, which is to make sure no FILE holding such
+    // a key is unclassified. A comment QUOTING a key shape counts as a hit;
+    // that is deliberate, since a stale comment asserting an old spelling is
+    // itself a defect this PR had to fix twice. And a separator that is
+    // neither a NUL nor a named NUL constant is out of scope here — the
+    // helper's own injectivity case is what covers those.
     // `git grep -l` over the whole tree, not a hand-walked list: the point is
     // that no file can be outside the sweep. BOTH spellings, since searching
     // one is the mistake this fence exists to make unrepeatable.
-    const found = execFileSync(
-      'git',
-      ['grep', '-l', '-F', '-e', needles[0]!, '-e', needles[1]!, '--', 'src/'],
-      { cwd: root, encoding: 'utf-8' }
-    )
-      .split('\n')
-      .filter(Boolean);
+    // `-c`, not `-l`: the per-file COUNT is what stops a new key being added
+    // beside an exempt one. Output is `path:count`, and a file matching zero
+    // needles is simply absent.
+    const counts = new Map<string, number>();
+    for (const needle of needles) {
+      let out: string;
+      try {
+        out = execFileSync('git', ['grep', '-c', '-F', '-e', needle, '--', 'src/'], {
+          cwd: root,
+          encoding: 'utf-8',
+        });
+      } catch {
+        // `git grep` exits 1 when a needle matches nothing. That is an ordinary
+        // outcome for one needle of six, not a failure of the sweep.
+        continue;
+      }
+      for (const line of out.split('\n').filter(Boolean)) {
+        const at = line.lastIndexOf(':');
+        const file = line.slice(0, at);
+        counts.set(file, (counts.get(file) ?? 0) + Number(line.slice(at + 1)));
+      }
+    }
+    const found = [...counts.keys()].sort();
 
     // The sweep must actually SEE the tree, or an argv typo silently exempts
     // it. `git grep -l` matching NOTHING exits 1 and `execFileSync` throws,
@@ -4986,12 +5066,18 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
         'NUL_JOINS_THAT_ARE_NOT_RECORD_KEYS with the reason.'
     ).toEqual([]);
 
-    // Every accounted-as-not-a-record file must still BE a hit, or an entry
-    // outlives the code it excuses and the list becomes folklore.
-    for (const [rel] of NUL_JOINS_THAT_ARE_NOT_RECORD_KEYS) {
-      expect(found, `${rel} is listed as a non-record NUL join but no longer has one`).toContain(
-        rel
-      );
+    // Every accounted-as-not-a-record file must still BE a hit, AT THE
+    // RECORDED COUNT. An entry that outlives its code makes the list folklore;
+    // a file that GAINED a key is a new composite key nobody classified, which
+    // is the case a per-file exemption cannot see.
+    for (const [rel, expectedCount] of NUL_JOINS_THAT_ARE_NOT_RECORD_KEYS) {
+      expect(
+        counts.get(rel),
+        `${rel} is listed with ${expectedCount} non-record NUL joins but the tree disagrees. ` +
+          'A HIGHER count means a new composite key was added here — classify it, and if it ' +
+          'identifies a record or a producer coordinate route it through the shared helper. ' +
+          'A LOWER one means this entry outlived its code; remove it.'
+      ).toBe(expectedCount);
     }
   });
 

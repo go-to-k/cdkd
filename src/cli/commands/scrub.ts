@@ -2270,14 +2270,15 @@ export function memoizeCrossStackStateReads(backend: S3StateBackend): S3StateBac
     // scrub's cross-stack pre-pass reads exactly that to decide whether a
     // producer still holds plaintext (go-to-k/cdkd#3323).
     //
-    // With a NUL separator this particular site was fail-CLOSED, which is
-    // recorded so nobody re-derives it as a reason to revert: a colliding pair
-    // must carry a NUL in some half, that half goes into an S3 key, and S3
-    // will not serve one — so both members of the pair failed their read and
-    // the shared promise was a shared failure. That is an argument about S3's
-    // behaviour, not about this code, and it collapses as soon as a half
-    // reaches `getState` by a path that does not put it in the key. The
-    // sibling coordinate keys below had no such bound at all.
+    // A "this site was fail-CLOSED anyway" argument was written here for one
+    // round and is WRONG; it is recorded so nobody re-derives it. It ran: a
+    // colliding pair must carry a NUL in some half, that half goes into an S3
+    // key, S3 will not serve one, so both reads fail. The last step is false —
+    // `tryGetLegacy` keys on the STACK NAME alone, the region never entering
+    // the key, and its region gate short-circuits on a falsy body region. So a
+    // NUL-bearing REGION reads successfully through the legacy key and its
+    // promise is served to the colliding query. Do not settle this site, or
+    // any other, by asking what S3 will store.
     const key = producerRecordKey(stackName, stateRegion);
     let pending = states.get(key);
     if (!pending) {

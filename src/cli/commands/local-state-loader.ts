@@ -171,8 +171,7 @@ export async function loadStateForStack(
      * `cdkd/MyStack/us-east-1/state.json` are two DISTINCT refs, and
      * ListObjectsV2 returns them in ASCII order, i.e. the upper-cased one
      * FIRST. A fold-only `find` therefore hands `--stack-region us-east-1` the
-     * OTHER
-     * record, silently reading state the user did not name; the pre-fold `===`
+     * OTHER record, silently reading state the user did not name; the pre-fold `===`
      * got that case right. So the fold is the RECOVERY for a case mismatch, never
      * an override of a spelling that exists verbatim.
      *

@@ -29,7 +29,11 @@ import { LISTING_ENCODING_TYPE, decodeListingKey } from '../utils/s3-listing-key
 import { displaySafe, truncateCodePoints, IDENT_MAX_CODE_POINTS } from '../utils/display-safe.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { UNRENDERABLE } from './lock-contention-message.js';
-import { producerRecordKey } from './malformed-resources-bag.js';
+// The LEAF directly, not the re-export: this module needs one pure function,
+// and routing it through `malformed-resources-bag.ts` would add an edge to a
+// module that reaches `error-handler` / `retryable-errors` /
+// `lock-contention-message` for nothing.
+import { producerRecordKey } from './record-keys.js';
 import { StateError, normalizeAwsError } from '../utils/error-handler.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
 import {

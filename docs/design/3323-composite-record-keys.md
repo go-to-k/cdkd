@@ -106,17 +106,36 @@ and export-owner maps; no S3 key is built from them, so nothing constrains the
 characters. A collision skips a hop or serves the wrong verdict, and the walk's
 `no` verdict is what lets scrub proceed over an unscrubbed producer.
 
-The **read memoizer** is narrower than it first appears, and the arithmetic is
-worth writing down. A colliding pair must have the same number of NULs in the
-composed key, and a pair of NUL-free halves produces exactly one. So any pair
-colliding with a REAL `(stack, region)` must itself carry a NUL in a half — and
-that half goes into an S3 key, which S3 will not serve. Both members of such a
-pair therefore FAIL their read, the shared promise is a shared failure, and the
-pre-pass refuses. That is fail-closed.
+The **read memoizer** is reachable too — and a "this one was fail-closed"
+argument stood here for one round before a review refuted it. It is written out
+rather than deleted, because the way it failed is the third instance of this
+document's own thesis.
 
-It is still fixed, and still worth fixing: the argument above is an
-S3-behaviour argument, not a property of this code, and it collapses the moment
-a half reaches `getState` by a path that does not put it in the key.
+The argument was: a colliding pair must have the same NUL count in the composed
+key; a NUL-free pair yields exactly one; so any pair colliding with a REAL
+`(stack, region)` must carry a NUL in some half; **that half goes into an S3
+key**, which S3 will not serve; so both members fail their read and the shared
+promise is a shared failure.
+
+The arithmetic is sound. **The bolded premise is false.** `tryGetLegacy` builds
+`getLegacyStateKey(stackName)` — `{prefix}/{stackName}/state.json` — and the
+REGION never enters that key at all. It is compared against the record BODY's
+`state.region`, and that gate is `if (state.region && state.region !== region)`,
+so it short-circuits on a falsy region and a region-less legacy record is served
+to ANY region. `s3-state-backend.ts` says so itself: *"`tryGetLegacy` hands this
+record to ANY region."*
+
+So `("Evil", "us-east-1<NUL>ap-northeast-1")` reads SUCCESSFULLY through
+`cdkd/Evil/state.json`, and collides with
+`("Evil<NUL>us-east-1", "ap-northeast-1")`, whose stack half comes from the
+consumer's template. The memo is first-write-wins, so the successful promise is
+served to the other query. A wrong answer, not a shared failure.
+
+And the claim leaned on a THIRD unmeasured S3 behaviour besides: it needs the
+new-key `GetObject` to answer `NoSuchKey` rather than throw, which the probe
+never measured — it measured `PutObject`. A document whose whole subject is
+that this question was asked twice and answered wrongly both times should not
+have rested on asking it a third time.
 
 ## Why two exported names over one implementation
 
