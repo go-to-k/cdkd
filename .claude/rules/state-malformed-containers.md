@@ -40,7 +40,7 @@ class below.
 `isReadableResourceEntry` / `unreadableResourceEntries` /
 `refuseMalformedResourceEntries` / `repairMalformedResourceEntriesForReadOnly`
 answer for a ROW of a readable `resources` map — an entry that is not an object,
-or carries no `resourceType`. So the enumeration above returns one function the
+or carries no `resourceType`. So the enumeration above returns one more function the
 per-container table cannot classify, and the partition that owns it is by CLASS
 (the spelling `state-malformed-resources-gated.md` uses), not by container.
 
