@@ -1,6 +1,8 @@
 /**
  * Issue go-to-k/cdkd#3379: `runDestroyForStack` reads the `orphans` CONTAINER
- * on a bare `?? []` at both of its reads, so every unreadable shape counts 0.
+ * on a bare `?? []` at both of its reads, and what each shape then counts
+ * differs — `null` counts 0, a number or a plain object yields `undefined`, a
+ * string counts its characters.
  *
  * That count is what `stillEmpty` consults before `deleteState`, and the orphan
  * warning above it is what would have told the operator that resources from an
@@ -14,9 +16,10 @@
  * actually act on. A guard at the first read alone leaves the second open,
  * which is why the re-read case supplies a DIFFERENT record from the entry one.
  *
- * The assertions name `orphans`: `stillEmpty` already rejects a record whose
- * resources are non-empty, so "refused and deleted nothing" can pass without
- * this guard. Naming the container is what discriminates.
+ * The assertions name `orphans` rather than only "refused": a record with no
+ * resources is refused by the `resources` guard too, so a bare refusal
+ * assertion would pass without this one. `null` is the shape that reaches
+ * `deleteState`, and it gets its own re-read case for that reason.
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import type { StackState } from '../../../src/types/state.js';
@@ -165,15 +168,35 @@ describe('runDestroyForStack refuses a malformed `orphans` container (go-to-k/cd
       'the refusal does not name `orphans`, so this passes on some other guard and the ' +
         're-read is still unguarded'
     ).toContain("'orphans'");
-    // The point of the case: the record the re-read exists to protect is not
-    // deleted. `stillEmpty` reads `(recheck.state.orphans ?? []).length`, which
-    // is 0 for a string, so without the guard `deleteState` runs here.
+    // What this case pins is the NAMING above: for a string `stillEmpty` reads
+    // 3, so the run stops elsewhere without the guard and a bare "refused"
+    // assertion would not discriminate. The DELETION is pinned by the null
+    // case below, the one shape that reaches `deleteState`.
     expect(h.deleteState).not.toHaveBeenCalled();
     // It got far enough to take the lock and re-read — otherwise the case is
     // vacuous and proves only what the entry guard already does.
     expect(h.acquireLock).toHaveBeenCalled();
     expect(h.getState).toHaveBeenCalled();
     expect(h.releaseLock, 'the lock is stranded').toHaveBeenCalled();
+  });
+
+  it('refuses a NULL container at the re-read, the shape that would reach deleteState', async () => {
+    // The shapes differ in what they would do without the guard, and only this
+    // one reaches the delete: `null ?? []` is an empty list, so `stillEmpty`
+    // is true and `deleteState` runs on the record whose orphan evidence was
+    // never read. A number or a plain object yields `undefined`, which fails
+    // the `=== 0` test and stops the run elsewhere; a string counts its
+    // characters. So this case pins the DELETION, and the string case above
+    // pins that the refusal names the container.
+    const h = makeCtx(stateWith(null));
+    const thrown = await runDestroyForStack(STACK, stateWith([]), h.ctx).catch((e: unknown) => e);
+    expect(thrown).toBeInstanceOf(CdkdError);
+    expect((thrown as CdkdError).message).toContain("'orphans'");
+    expect(
+      h.deleteState,
+      'the destroy deleted the record the re-read exists to protect'
+    ).not.toHaveBeenCalled();
+    expect(h.acquireLock).toHaveBeenCalled();
   });
 
   it('marks the refusal non-retryable — a retry cannot change a persisted record', async () => {
