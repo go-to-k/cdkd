@@ -57,8 +57,9 @@ import { dirname, join } from 'node:path';
  * needs a human noticing that a file sits under every deleting AWS call.
  *
  * `AGENTS.md` used to carry a THIRD, prose copy of this scope, compared against
- * both halves. It no longer spells the scope out -- it names the gate and
- * nothing more -- so there is nothing there to drift. Do not reintroduce one; a
+ * both halves. It no longer spells the scope out -- it says only that a marker
+ * gate holds the merge, naming neither the gate nor its files -- so there is
+ * nothing there to drift. Do not reintroduce one; a
  * hand-copy in the file every session loads is the most expensive of the copies
  * and the least likely to be re-read.
  */

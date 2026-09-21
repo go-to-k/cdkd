@@ -208,8 +208,8 @@ const CUTOFF = '2026-09-05';
  * its row also depended on whether `gen:changelog` had run.
  */
 const PROSE_COPIES = [
-  { path: join('changelog.d', '_header.md'), headerOnly: false },
-  { path: join('.claude', 'skills', 'check-docs', 'SKILL.md'), headerOnly: false },
+  join('changelog.d', '_header.md'),
+  join('.claude', 'skills', 'check-docs', 'SKILL.md'),
 ] as const;
 
 /** A top-level changelog entry opens with a list bullet at column 0. */
@@ -563,12 +563,10 @@ describe('changelog entry size', () => {
     // And the number is RESTATED in prose in two independently authored files.
     // Nothing but this makes them agree; it is the drift shape
     // cross-cutting-list-sync.test.ts exists for, one file over.
-    const missing = PROSE_COPIES.filter(({ path, headerOnly }) => {
+    const missing = PROSE_COPIES.filter((path) => {
       const full = existsSync(join(REPO_ROOT, path)) ? readFileSync(join(REPO_ROOT, path), 'utf-8') : '';
-      const cut = full.split('\n').findIndex((l) => HEADING_PREFIX.test(l));
-      const haystack = headerOnly && cut > -1 ? full.split('\n').slice(0, cut).join('\n') : full;
-      return !haystack.includes(`${LIMIT} characters`);
-    }).map(({ path }) => path);
+      return !full.includes(`${LIMIT} characters`);
+    });
     expect(
       missing,
       `these files no longer state "${LIMIT} characters" where the contract lives; the cap and its ` +
