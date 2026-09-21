@@ -866,10 +866,17 @@ function recordedExpressionsOf(secrets: RecordedSecretValues): Set<string> {
  * the shape PR #2415 was forced to WITHDRAW (`provenPublicExpressions`,
  * residual #2425): keyed on a value alone, one stack's answer is served to
  * another stack's identically-spelled read. Here the key names the producer
- * stack, its region and the output — so a hit is served only to a resolution
- * that asked for that exact output of that exact stack, i.e. to precisely the
- * reader that would have received the plaintext before this feature existed.
- * Nothing is widened.
+ * stack, its region and the output — so a hit is served to a resolution that
+ * asked for that exact output of that exact stack, i.e. to the reader that
+ * would have received the plaintext before this feature existed.
+ *
+ * `precisely`, in an earlier revision, overstated it. The key is
+ * NUL-SEPARATED rather than encoded, and the halves are not all
+ * charset-constrained, so a forged coordinate CAN collide with another's
+ * key — see {@link maskedOutputKey} for why that is left standing and what
+ * would change the answer (go-to-k/cdkd#3496). The bound that does hold is
+ * the one above it: whoever can forge such a coordinate can already aim at
+ * the real one, so nothing is widened by the collision either.
  *
  * A RECOVERED VALUE IS STILL SECRET, and every reader re-registers it as a
  * mask-only needle in its OWN bag before using it — the recovery hands back the
@@ -878,9 +885,23 @@ function recordedExpressionsOf(secrets: RecordedSecretValues): Set<string> {
 const recoverableMaskedOutputs = new Map<string, unknown>();
 
 function maskedOutputKey(stackName: string, region: string, outputKey: string): string {
-  // NUL-separated for the reason `crossStackSourceKey` is: a `:` / `/` occurs
-  // inside real stack names, regions and export names, so any printable
-  // separator can be forged into another coordinate's key.
+  // NUL-separated, and go-to-k/cdkd#3496 records why that is NOT the same as
+  // injective. The reason given here was that a `:` / `/` occurs inside real
+  // stack names, regions and export names so any PRINTABLE separator can be
+  // forged -- true, and one step short: the NUL is forgeable too, because
+  // `stackName` reaches this through the exports index, which
+  // `ExportIndexStore.loadPersisted` casts out of `JSON.parse` with no
+  // validation of any string. `No AWS name can contain one` is a claim about
+  // AWS, not about what arrives here.
+  //
+  // DELIBERATELY still a separator. The encoding that closes this class lives
+  // in `src/state/record-keys.ts`, and this module IMPORTS NOTHING -- a
+  // recorded decision (`.claude/rules/layout-deployment-secrets.md`), and the
+  // reason the resolver's SecureString verdict store is homed here. The
+  // collision buys an attacker nothing either: whoever can write that index
+  // can aim the coordinate directly. So the defect was the JUSTIFICATION, not
+  // the key, and what is fixed is the two sentences that were false. Revisit
+  // if this module ever takes an import for another reason.
   return `${stackName}\u0000${region}\u0000${outputKey}`;
 }
 

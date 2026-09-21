@@ -55,6 +55,7 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import { getCurrentStackName } from '../resource-name.js';
+import { injectiveKey } from '../../state/record-keys.js';
 
 /**
  * Mixed into every digest so no two `cdkd` processes can derive the same token
@@ -143,7 +144,22 @@ const tokenKey = (
   // token pattern is `\w+`, that lands as a REJECTED request rather than a
   // merely sub-optimal one. Unreachable today (scopes are unique per API) and
   // kept structural rather than contingent on that staying true.
-  `${scope}\u0000${process.env['AWS_REGION'] ?? ''}\u0000${getCurrentStackName() ?? ''}\u0000${logicalId}\u0000${maxLength}\u0000${charset}`;
+  // ENCODED, not separated (go-to-k/cdkd#3496). This is a MEMO KEY -- see
+  // `inFlight` / `generations` -- so it is an IDENTITY, and the consequence of
+  // two tuples sharing one is the wrong-value case the paragraph above
+  // describes, not a dropped log line. `scope` is fixed per call site, but
+  // `getCurrentStackName()` and `logicalId` are read back out of state and
+  // template text that nothing validates, so the separator was doing the work
+  // an encoding should. The scope-uniqueness argument above is exactly the
+  // contingency that comment says it does not want to rely on.
+  injectiveKey(
+    scope,
+    process.env['AWS_REGION'] ?? '',
+    getCurrentStackName() ?? '',
+    logicalId,
+    maxLength,
+    charset
+  );
 
 const derive = (
   key: string,

@@ -97,6 +97,7 @@ import { parseWebACLArn } from '../provisioning/providers/wafv2-provider.js';
 import { isSettledInstanceState } from '../provisioning/ec2-instance-state.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
+import { injectiveKey } from '../state/record-keys.js';
 
 /**
  * Special symbol to represent AWS::NoValue
@@ -9022,7 +9023,10 @@ export class IntrinsicFunctionResolver {
     /** How `region` is printed: its caller's log text of the raw region (issue #3150). */
     loggedRegionText: string
   ): Promise<Record<string, string> | undefined> {
-    const cacheKey = `${region}\0${stackName}`;
+    // ENCODED, not separated (go-to-k/cdkd#3496). `stackName` is template text
+    // and this cache serves a RESOLVED OUTPUT BAG, so a collision answers one
+    // stack's `Fn::GetStackOutput` with another stack's outputs.
+    const cacheKey = injectiveKey(region, stackName);
     let fetch = this.cfnStackOutputsCache.get(cacheKey);
     if (!fetch) {
       fetch = this.fetchCfnStackOutputs(stackName, region);
@@ -12310,14 +12314,18 @@ export class IntrinsicFunctionResolver {
     if (
       secure &&
       paramType !== 'SecureString' &&
-      !this.warnedUnrecognizedSsmTypes.has(`${parameterName}\u0000${String(paramType)}`)
+      !this.warnedUnrecognizedSsmTypes.has(injectiveKey(parameterName, String(paramType)))
     ) {
       // Reached only if AWS stops returning `Type`, or returns one cdkd does not
       // know. The value is treated as a secret (see above), which is safe but
       // silently changes what state stores — so say so rather than let the
       // parameter quietly start persisting as its expression. Once per
       // (parameter, type) per resolver — see `warnedUnrecognizedSsmTypes`.
-      this.warnedUnrecognizedSsmTypes.add(`${parameterName}\u0000${String(paramType)}`);
+      // ENCODED, not separated (go-to-k/cdkd#3496). Same warned-once class as
+      // go-to-k/cdkd#3308: `parameterName` is template text, so a collision
+      // drops the SECOND warning about a parameter silently persisting as its
+      // expression.
+      this.warnedUnrecognizedSsmTypes.add(injectiveKey(parameterName, String(paramType)));
       const reported = paramType === undefined ? '(absent)' : `'${String(paramType)}'`;
       // Masked like the debug echo above (issue #2728), and per RAW VALUE
       // since issue #2827: the name may have been assembled from a value this

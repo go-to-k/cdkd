@@ -53,6 +53,32 @@ function injectivePairKey(first: string, second: string): string {
 }
 
 /**
+ * The same rule for a key of MORE than two parts.
+ *
+ * The named wrappers above stay, because a `(stack, region)` record and a
+ * `(stack, export)` coordinate are things worth naming. This one is for the
+ * keys that are just a tuple — an idempotency-token memo key, a resource-pair
+ * edge — where a name would add nothing and a positional list is the honest
+ * shape. It is exported rather than private for the same reason the two are:
+ * so a call site can adopt the rule without re-spelling the encoding
+ * (go-to-k/cdkd#3496).
+ *
+ * `number` is accepted because several of these tuples carry one, and
+ * stringifying at the call site would put the coercion back where a caller can
+ * get it wrong. `JSON.stringify` distinguishes `1` from `"1"`, so a mixed
+ * tuple stays injective across the two.
+ *
+ * Note what this does to a DIGEST that hashes the result: the encoded string
+ * carries no raw control character at all — `JSON.stringify` escapes a NUL to
+ * the six-character text `\u0000` — so a hash input that separates this key
+ * from its neighbours with a NUL is injective too, without the separator
+ * having to be chosen carefully.
+ */
+export function injectiveKey(...parts: ReadonlyArray<string | number>): string {
+  return JSON.stringify(parts);
+}
+
+/**
  * The key for a state RECORD: the `(stackName, region)` pair that names one
  * `state.json`.
  */

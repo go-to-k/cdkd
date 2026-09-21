@@ -4942,9 +4942,21 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
    */
   const NUL_JOINS_THAT_ARE_NOT_RECORD_KEYS: ReadonlyArray<readonly [string, number, string]> = [
     [
-      'src/provisioning/providers/dynamodb-delete-budget.ts',
-      1,
-      '(region, physicalId) budget slot — NOT checked; go-to-k/cdkd#3496',
+      'src/deployment/deploy-engine.ts',
+      7,
+      'the cross-stack 3-part keys, (logicalId, physicalId), and one COMMENT quoting ' +
+        'the key shape. HELD by open PRs at the time of go-to-k/cdkd#3496 — this is ' +
+        'a WAIT, not a verdict, and the rows are still open there',
+    ],
+    [
+      'src/deployment/secret-redaction.ts',
+      4,
+      'maskedOutputKey, CROSS_STACK_KEY_SEPARATOR and UNKNOWN_PART_PLACEHOLDER (a ' +
+        'SENTINEL, not a separator). LEFT SEPARATED DELIBERATELY: this module imports ' +
+        'NOTHING by a recorded decision, the encoding lives in a module it would have ' +
+        'to import, and the collision adds no reach — whoever can forge such a ' +
+        'coordinate can aim the real one. Its two FALSE justifications are fixed; see ' +
+        'go-to-k/cdkd#3496',
     ],
     [
       'src/provisioning/providers/efs-provider.ts',
@@ -4957,44 +4969,11 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
     ],
     [
       'src/provisioning/providers/idempotency-token.ts',
-      7,
-      ':155 is a HASH input, where the separator is domain separation. :146 is NOT — ' +
-        '`tokenKey` is the Map key for `inFlight` / `generations`, an IDENTITY, and its ' +
-        '`getCurrentStackName()` / `logicalId` halves are unchecked. The file states the ' +
-        'wrong-value consequence itself — go-to-k/cdkd#3496',
-    ],
-    [
-      'src/state/s3-replication-purge-gap.ts',
       2,
-      ':403 is (bucket, accountId), both AWS-charset-constrained; :555 joins FREE TEXT — go-to-k/cdkd#3496',
-    ],
-    [
-      'src/deployment/deploy-engine.ts',
-      7,
-      'cross-stack 3-part keys + (logicalId, physicalId), plus one COMMENT quoting the ' +
-        'old key shape — go-to-k/cdkd#3496',
-    ],
-    [
-      'src/deployment/intrinsic-function-resolver.ts',
-      3,
-      '(region, stackName) cache and a (param, type) warn set — go-to-k/cdkd#3496',
-    ],
-    [
-      'src/deployment/secret-redaction.ts',
-      4,
-      'maskedOutputKey; the CROSS_STACK_KEY_SEPARATOR declaration, whose key contract ' +
-        'states non-uniqueness and fails closed by POISONING; and UNKNOWN_PART_PLACEHOLDER, ' +
-        'a SENTINEL rather than a separator — go-to-k/cdkd#3496',
-    ],
-    [
-      'src/analyzer/lambda-vpc-deps.ts',
-      1,
-      '(lambdaId, targetId) from an UNCHECKED state cast — a collision drops a delete-dependency edge; go-to-k/cdkd#3496',
-    ],
-    [
-      'src/analyzer/orphan-rewriter.ts',
-      2,
-      '(logicalId, GetAtt attribute name) — the attribute half is everything after the first dot, unchecked; go-to-k/cdkd#3496',
+      'the DIGEST input, where the separator is domain separation rather than ' +
+        'identity — and injective since go-to-k/cdkd#3496, because the `key` half is ' +
+        'now JSON-encoded and JSON escapes a NUL to text, so no component can carry ' +
+        'the separator. The memo key on the same file is encoded',
     ],
   ];
 
@@ -5065,10 +5044,17 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
     // The sweep must actually SEE the tree, or an argv typo silently exempts
     // it. `git grep -l` matching NOTHING exits 1 and `execFileSync` throws,
     // but a needle matching one stray file would not.
+    //
+    // The floor is the EXEMPTION LIST's own length rather than a number typed
+    // in. A literal floor is wrong the moment the population shrinks, which is
+    // the direction this work moves it: go-to-k/cdkd#3496 took the tree from
+    // nine files to four and a hardcoded `> 5` reddened on the SUCCESS. Tying
+    // it to the list keeps the guard meaningful — every exempt file must still
+    // be found — while letting the record-key files come and go.
     expect(
       found.length,
-      'the git grep sweep found almost nothing — check its needles'
-    ).toBeGreaterThan(5);
+      'the git grep sweep found fewer files than are exempted — check its needles'
+    ).toBeGreaterThanOrEqual(NUL_JOINS_THAT_ARE_NOT_RECORD_KEYS.length);
 
     const accounted = new Set([
       ...RECORD_KEY_SITES.map(([rel]) => rel),

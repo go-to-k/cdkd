@@ -19,6 +19,7 @@
  * referenced Subnet / SecurityGroup".
  */
 import type { TemplateResource } from '../types/resource.js';
+import { injectiveKey } from '../state/record-keys.js';
 
 /** A single dependency edge for the DELETE phase. */
 export interface DeleteDepEdge {
@@ -71,7 +72,12 @@ export function extractLambdaVpcDeleteDeps(
     for (const targetId of targets) {
       if (targetId === lambdaId) continue;
       if (!(targetId in resources)) continue;
-      const key = `${lambdaId}\u0000${targetId}`;
+      // ENCODED, not separated (go-to-k/cdkd#3496). Both halves are keys of the
+      // `resources` bag, which `parseStateBody` reads as an unchecked cast --
+      // CloudFormation constrains a logical id to [A-Za-z0-9] but nothing
+      // enforces that HERE. A collision drops the EDGE, so a Lambda is deleted
+      // without waiting on the subnet or security group holding its ENI.
+      const key = injectiveKey(lambdaId, targetId);
       if (seen.has(key)) continue;
       seen.add(key);
       edges.push({ before: lambdaId, after: targetId });
