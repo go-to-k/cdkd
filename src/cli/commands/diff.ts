@@ -32,7 +32,7 @@ import {
   resolveStateBucketWithDefault,
   resolveUseCdkBootstrapAssets,
 } from '../config-loader.js';
-import { matchStacks, describeStack } from '../stack-matcher.js';
+import { matchStacks, describeStack, renderNoStackMatch } from '../stack-matcher.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { makeCanonicalizePropertiesFn } from '../../provisioning/canonicalize-properties.js';
@@ -218,11 +218,7 @@ async function diffCommand(
     }
 
     if (targetStacks.length === 0) {
-      throw new Error(
-        stackPatterns.length > 0
-          ? `No stacks matching ${stackPatterns.join(', ')} found in assembly. Available: ${allStacks.map(describeStack).join(', ')}`
-          : 'No stacks found in assembly'
-      );
+      throw new Error(renderNoStackMatch(stackPatterns, allStacks, result));
     }
 
     // Issue #1150: macro expansion was deferred at synthesize() time —

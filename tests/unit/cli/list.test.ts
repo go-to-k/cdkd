@@ -15,7 +15,10 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
   resolveApp: (cliApp?: string) => mockResolveApp(cliApp),
 }));
 
-// Mock logger so noise doesn't pollute test output.
+// Mock logger so noise doesn't pollute test output. `error` is a SHARED spy:
+// `withErrorHandling` reports a refusal through it, so it is the only way to
+// read the message a failed run produced.
+const mockLoggerError = vi.fn();
 vi.mock('../../../src/utils/logger.js', () => ({
   // Issue #2280: the commands under test call this under --json; the mock
   // must export it or the import is `undefined` and the call throws.
@@ -24,7 +27,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
     debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
-    error: vi.fn(),
+    error: mockLoggerError,
     setLevel: vi.fn(),
   }),
 }));
@@ -95,8 +98,14 @@ describe('cdkd list', () => {
   beforeEach(() => {
     mockSynthesize.mockReset();
     mockResolveApp.mockReset();
+    mockLoggerError.mockReset();
     mockResolveApp.mockReturnValue('node app.ts');
   });
+
+  /** What `withErrorHandling` reported, joined. */
+  function reportedError(): string {
+    return mockLoggerError.mock.calls.map((c) => String(c[0])).join('\n');
+  }
 
   it('prints CDK display id per line by default, with physical name in parens when it differs', async () => {
     mockSynthesize.mockResolvedValue({
@@ -287,6 +296,41 @@ describe('cdkd list', () => {
     // command's exception bubbles back as the sentinel error.
     expect(error).toBeDefined();
     expect(error?.message).toBe('__process.exit__');
+    // No Stage failed, so the message stays exactly as it was.
+    expect(reportedError()).toContain('No stacks matching DoesNotExist found in assembly');
+    expect(reportedError()).not.toContain('failed to load');
+  });
+
+  // Issue go-to-k/cdkd#3482: a Stage that failed to load dropped every stack
+  // under it, so "no stacks matching" names the wrong problem on its own. The
+  // command must read `failedStages` off the synthesis result and say so —
+  // which is the WIRING, invisible to a test of the renderer alone.
+  it('names the failed Stage when the pattern targets one', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: [makeStack({ stackName: 'TopStack' })],
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT: no such file or directory' }],
+    });
+
+    await runList(['MyStage/Api']);
+
+    expect(reportedError()).toContain("Stage 'MyStage' failed to load");
+    expect(reportedError()).toContain('ENOENT: no such file or directory');
+  });
+
+  it('names the failed Stage when the app has no loadable stacks left', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: [],
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT' }],
+    });
+
+    await runList([]);
+
+    expect(reportedError()).toContain('No stacks found in assembly');
+    expect(reportedError()).toContain("Stage 'MyStage' failed to load");
   });
 
   it('errors when --app cannot be resolved', async () => {

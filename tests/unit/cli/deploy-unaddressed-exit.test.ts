@@ -196,10 +196,15 @@ vi.mock('../../../src/deployment/deploy-engine.js', () => ({
 }));
 
 const synthStacks = vi.hoisted(() => ({ value: [] as unknown[] }));
+/** Stages the synthesis reported as unreadable (go-to-k/cdkd#3482). */
+const synthFailedStages = vi.hoisted(() => ({ value: [] as unknown[] }));
 
 vi.mock('../../../src/synthesis/synthesizer.js', () => ({
   Synthesizer: vi.fn().mockImplementation(() => ({
-    synthesize: vi.fn(async () => ({ stacks: synthStacks.value })),
+    synthesize: vi.fn(async () => ({
+      stacks: synthStacks.value,
+      failedStages: synthFailedStages.value,
+    })),
     expandMacrosForStacks: vi.fn(async () => undefined),
   })),
   synthesisStatusMessage: vi.fn((_app: string, msg: string) => msg),
@@ -253,6 +258,7 @@ describe('deploy exit code when resources are left unaddressed (issue #1960)', (
     failingStacks.clear();
     cancelledStacks.clear();
     synthStacks.value = [makeStack('StackA')];
+    synthFailedStages.value = [];
     errorSpy.mockClear();
     warnSpy.mockClear();
     infoSpy.mockClear();
@@ -584,5 +590,53 @@ describe('deploy hands the RAW region spelling to the marker resolver (issue #20
     await runDeploy(['--region', 'us-east-1', '--yes']);
 
     expect(modeResolveSpy).toHaveBeenCalledWith('us-east-1');
+  });
+});
+
+/**
+ * Issue go-to-k/cdkd#3482: a Stage that failed to load dropped every stack
+ * under it from the assembly listing, so `cdkd deploy 'MyStage/MyStack'`
+ * answered "no stacks matching" — a different problem than the one that
+ * occurred. `renderNoStackMatch` takes the synthesis result as a REQUIRED
+ * argument, so a site that forgets it no longer compiles; what this covers is
+ * that the deploy command reaches that renderer at all, with the result its
+ * own synthesis produced.
+ */
+describe('deploy names a Stage that failed to load (issue #3482)', () => {
+  beforeEach(() => {
+    engineResults.clear();
+    synthStacks.value = [makeStack('TopStack')];
+    synthFailedStages.value = [];
+    errorSpy.mockClear();
+    process.env['CDKD_NO_LIVE'] = '1';
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    delete process.env['CDKD_NO_LIVE'];
+  });
+
+  function reported(): string {
+    return errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+  }
+
+  it('reports the failed Stage instead of a bare no-match', async () => {
+    synthFailedStages.value = [
+      { stagePath: 'MyStage', reason: 'ENOENT: no such file or directory' },
+    ];
+
+    const code = await runDeploy(['MyStage/Api', '--yes']);
+
+    expect(code).toBe(1);
+    expect(reported()).toContain('No stacks matching MyStage/Api found in assembly');
+    expect(reported()).toContain("Stage 'MyStage' failed to load");
+  });
+
+  it('leaves the no-match message untouched when every Stage loaded', async () => {
+    const code = await runDeploy(['MyStage/Api', '--yes']);
+
+    expect(code).toBe(1);
+    expect(reported()).toContain('No stacks matching MyStage/Api found in assembly');
+    expect(reported()).not.toContain('failed to load');
   });
 });

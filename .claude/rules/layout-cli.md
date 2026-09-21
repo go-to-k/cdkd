@@ -35,7 +35,12 @@ Index of every area: [code-layout.md](code-layout.md).
   `--app` and `--state-bucket`).
 - **src/cli/stack-matcher.ts** - shared stack-name matcher for deploy / diff /
   destroy / list; routes a pattern by whether it contains `/` (display path) or
-  not (physical name) and returns a deduplicated union.
+  not (physical name) and returns a deduplicated union. `renderNoStackMatch`
+  owns the empty-selection message for deploy / diff / list / publish-assets and
+  takes the `SynthesisResult` as a REQUIRED argument, so a Stage that failed to
+  load is named rather than reported as "no stacks matching"
+  ([#3482](https://github.com/go-to-k/cdkd/issues/3482)); `scrub` and `destroy`
+  still word their own.
 - **src/cli/region-options.ts** - shared region normalization
   ([#2065](https://github.com/go-to-k/cdkd/issues/2065)). `foldRegionOption`
   canonicalizes `--region` AND the `AWS_REGION` / `AWS_DEFAULT_REGION` env vars

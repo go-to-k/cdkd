@@ -93,8 +93,10 @@ describe('AssemblyReader: a nested assembly directoryName', () => {
   });
 
   it('THROWS rather than degrading to the warn-and-skip the read failure takes', () => {
-    // The surrounding catch turns an unreadable nested assembly into a warning
-    // and drops every stack under the Stage. The escape must fail closed.
+    // A Stage whose own manifest cannot be read is still tolerated with a
+    // warning, which drops every stack under it (go-to-k/cdkd#3482 keeps that
+    // arm and reports it at selection time). The escape must fail closed
+    // instead, and the check runs before the tolerant read at all.
     const { dir } = assembly();
 
     expect(() =>

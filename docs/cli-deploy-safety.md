@@ -1021,6 +1021,32 @@ follow is refused as well. That is far beyond any CDK-generated assembly; in
 practice it takes symlinked directories, which give one template file many
 paths.
 
+**A refusal raised while reading a `Stage` stops the command, as the same
+refusal does at the top level.** Reading a Stage stays tolerant in exactly one
+place: when the Stage's own `manifest.json` cannot be read at all — the Stage
+was never synthesized — cdkd warns, continues, and the stacks under that Stage
+are simply not in the assembly. Because those stacks then cannot be selected,
+naming one afterwards reports the Stage rather than answering "no stacks
+matching":
+
+```
+No stacks matching MyStage/Api found in assembly. Available: TopStack. Stage
+'MyStage' failed to load, so stacks under it are missing from this list rather
+than missing from the app: Failed to read cloud assembly manifest from
+/path/to/cdk.out/assembly-MyStage/manifest.json: ENOENT: no such file or
+directory
+```
+
+A pattern without a `/` matches the physical stack name, which carries no stage
+path, so the same sentence is then prefixed `Possibly unrelated:` rather than
+claimed as the explanation.
+
+Every other refusal under a Stage — an escaping or absent `templateFile`, an
+unreadable template, an escaping asset manifest, an absolute `aws:asset:path` —
+aborts the run, with the Stage named ahead of the refusal
+(`Stage 'MyStage': Stack 'MyStage-Api' ...`). For a Stage inside a Stage, the
+innermost one is named.
+
 Two sibling rows naming the **same** template are fine — that is a shared child,
 not a cycle. Only a repeat along one root-to-child path is refused, so the
 cycle rule itself never limits nesting depth. A row's `Condition` is not evaluated: a template

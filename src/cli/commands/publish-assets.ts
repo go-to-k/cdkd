@@ -35,7 +35,7 @@ import {
   resolveStateBucketWithDefault,
   resolveUseCdkBootstrapAssets,
 } from '../config-loader.js';
-import { matchStacks, describeStack } from '../stack-matcher.js';
+import { matchStacks, describeStack, renderNoStackMatch } from '../stack-matcher.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 interface PublishAssetsOptions {
@@ -142,13 +142,7 @@ async function publishAssetsCommand(
   }
 
   if (targetStacks.length === 0) {
-    throw new Error(
-      stackPatterns.length > 0
-        ? `No stacks matching ${stackPatterns.join(', ')} found in assembly. Available: ${allStacks
-            .map(describeStack)
-            .join(', ')}`
-        : 'No stacks found in assembly'
-    );
+    throw new Error(renderNoStackMatch(stackPatterns, allStacks, result));
   }
 
   // 3. Resolve account id once (asset-publish nodes need it for ECR / S3 paths).

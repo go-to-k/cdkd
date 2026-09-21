@@ -28,9 +28,21 @@ parses `manifest.json`; **context-providers/** resolves missing context.
   `additionalMetadataFile` — goes through `resolveAssemblyPath`
   ([layout-utils.md](layout-utils.md),
   [#3489](https://github.com/go-to-k/cdkd/issues/3489)) BEFORE the read, keeping
-  its own refusal distinct from the absolute-path tripwire beside it. The
-  `directoryName` check THROWS, outside the warn-and-skip its read failure
-  takes: a warning there silently drops every stack under the Stage.
+  its own refusal distinct from the absolute-path tripwire beside it.
+- **failed-stages.ts** - `FailedStage`, `failedStageNote` (the sentence a
+  selection failure appends) and `stageScopedError` (the re-raise that names the
+  Stage, marked so only the innermost one is named).
+- **Exactly ONE failure is tolerated while reading a Stage**
+  (`cdk:cloud-assembly`): the read of that Stage's own `manifest.json`, which is
+  the Stage-was-never-synthesized case. It warns, drops the Stage's stacks and
+  records a `FailedStage`. Every other refusal raised under a Stage propagates,
+  re-raised with the INNERMOST Stage named
+  ([#3482](https://github.com/go-to-k/cdkd/issues/3482)) — a hardened check must
+  not degrade to advice because the stack sits inside a Stage. **The SCOPE of
+  the `try` is the classifier**; do not widen it, and do not replace it with a
+  test on the error's type or message. `readAssembly` returns those records and
+  `renderNoStackMatch` (`src/cli/stack-matcher.ts`) reports them, so a selection
+  failure names the Stage instead of answering "not found".
 - **synthesizer.ts** orchestrates the context-provider loop, then routes any
   template `containsMacro` flags through `macro-expander.ts` BEFORE the analyzer
   / provisioner pipeline. The pass is SELECTION-AWARE: `deferMacroExpansion`

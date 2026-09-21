@@ -77,7 +77,7 @@ import {
   resolveUseCdkBootstrapAssets,
   warnDeprecatedNoPrefixCliFlag,
 } from '../config-loader.js';
-import { matchStacks, describeStack } from '../stack-matcher.js';
+import { matchStacks, describeStack, renderNoStackMatch } from '../stack-matcher.js';
 import { createPrefixMigrationGate } from './prefix-migration-check.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../types/state.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
@@ -398,11 +398,7 @@ async function deployCommand(
     }
 
     if (targetStacks.length === 0) {
-      throw new Error(
-        stackPatterns.length > 0
-          ? `No stacks matching ${stackPatterns.join(', ')} found in assembly. Available: ${allStacks.map(describeStack).join(', ')}`
-          : 'No stacks found in assembly'
-      );
+      throw new Error(renderNoStackMatch(stackPatterns, allStacks, result));
     }
 
     // Cross-stack ordering edges that CDK's manifest dependency graph

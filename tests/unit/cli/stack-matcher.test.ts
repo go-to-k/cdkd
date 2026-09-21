@@ -3,6 +3,7 @@ import {
   matchStacks,
   stackMatchesPattern,
   describeStack,
+  renderNoStackMatch,
 } from '../../../src/cli/stack-matcher.js';
 
 const stacks = [
@@ -104,5 +105,30 @@ describe('matchStacks', () => {
     const result = matchStacks(stacks, ['*Api*']);
     // Wildcard patterns without slash route to stackName.
     expect(result.map((s) => s.stackName)).toEqual(['MyStage-Api', 'OtherStage-Api']);
+  });
+});
+
+describe('renderNoStackMatch', () => {
+  it('lists the available stacks in the parens form the patterns accept', () => {
+    expect(renderNoStackMatch(['Absent'], stacks, {})).toBe(
+      'No stacks matching Absent found in assembly. Available: TopStack, ' +
+        'MyStage-Api (MyStage/Api), MyStage-Db (MyStage/Db), ' +
+        'OtherStage-Api (OtherStage/Api)'
+    );
+  });
+
+  it('says only that the assembly is empty when no pattern was given', () => {
+    expect(renderNoStackMatch([], [], {})).toBe('No stacks found in assembly');
+  });
+
+  // Issue go-to-k/cdkd#3482: the whole reason the synthesis result is a
+  // REQUIRED argument rather than an optional extra.
+  it('appends the failed Stage a pattern targets', () => {
+    const message = renderNoStackMatch(['MyStage/Api'], [], {
+      failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT' }],
+    });
+
+    expect(message).toContain('No stacks matching MyStage/Api found in assembly');
+    expect(message).toContain("Stage 'MyStage' failed to load");
   });
 });

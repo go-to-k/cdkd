@@ -14,6 +14,7 @@ import { displaySafe } from '../utils/display-safe.js';
 import { renderAssemblyPathEscape, resolveAssemblyPath } from '../utils/assembly-path.js';
 import { SynthesisError } from '../utils/error-handler.js';
 import { collectStackMessages, type StackMessage } from './stack-messages.js';
+import { failedStageNote, stageScopedError, type FailedStage } from './failed-stages.js';
 
 /**
  * Stack information extracted from cloud assembly
@@ -117,6 +118,23 @@ export interface StackInfo {
 }
 
 /**
+ * Everything one assembly read yields: the stacks, plus the Stages that could
+ * not be read at all (issue
+ * [#3482](https://github.com/go-to-k/cdkd/issues/3482)). A caller that only
+ * wants the stacks uses `getAllStacks`.
+ */
+export interface AssemblyContents {
+  /** Stacks from this assembly and every Stage under it that loaded. */
+  stacks: StackInfo[];
+
+  /**
+   * Stages whose own `manifest.json` could not be read, in traversal order and
+   * at any depth. Empty on every healthy assembly.
+   */
+  failedStages: FailedStage[];
+}
+
+/**
  * Reads and parses Cloud Assembly from cdk.out directory
  *
  * EVERY value this class renders into a message or a log line goes through
@@ -158,7 +176,31 @@ export class AssemblyReader {
   }
 
   /**
+   * Read an assembly: all its stacks (recursing into nested assemblies /
+   * Stages) plus the Stages that could not be read at all.
+   *
+   * Only ONE failure is tolerated while walking a Stage — the read of the
+   * Stage's own `manifest.json`, which is the legitimate "this Stage
+   * references a directory that was never synthesized" case. Every REFUSAL
+   * raised while reading a Stage's contents propagates out of the recursion
+   * exactly as it does at the top level (issue
+   * [#3482](https://github.com/go-to-k/cdkd/issues/3482)).
+   */
+  readAssembly(
+    assemblyDir: string,
+    manifest: AssemblyManifest,
+    assetOutdir: string = assemblyDir
+  ): AssemblyContents {
+    const failedStages: FailedStage[] = [];
+    const stacks = this.collectStacks(assemblyDir, manifest, assetOutdir, failedStages);
+    return { stacks, failedStages };
+  }
+
+  /**
    * Get all stacks from assembly (recursively traverses nested assemblies / Stages)
+   *
+   * Discards the failed-Stage records `readAssembly` returns; a caller that
+   * reports on a selection failure wants that method instead.
    */
   getAllStacks(
     assemblyDir: string,
@@ -170,6 +212,20 @@ export class AssemblyReader {
      * directory (see `StackInfo.assetOutdir`).
      */
     assetOutdir: string = assemblyDir
+  ): StackInfo[] {
+    return this.readAssembly(assemblyDir, manifest, assetOutdir).stacks;
+  }
+
+  /**
+   * The recursive half of `readAssembly`. `failedStages` is the accumulator
+   * shared by every level, so a Stage that fails three levels down is still
+   * reported to the top-level caller.
+   */
+  private collectStacks(
+    assemblyDir: string,
+    manifest: AssemblyManifest,
+    assetOutdir: string,
+    failedStages: FailedStage[]
   ): StackInfo[] {
     if (!manifest.artifacts) {
       this.logger.warn('No artifacts found in manifest');
@@ -194,19 +250,14 @@ export class AssemblyReader {
         stacks.push(stackInfo);
       } else if (artifact.type === 'cdk:cloud-assembly') {
         // Nested assembly (Stage) — recurse into subdirectory
-        const props = artifact.properties as { directoryName?: string } | undefined;
+        const props = artifact.properties as
+          | { directoryName?: string; displayName?: unknown }
+          | undefined;
         if (props?.directoryName) {
-          // Containment BEFORE the try, and a THROW rather than the warn-and-skip
-          // below it (issue go-to-k/cdkd#3489). A nested assembly whose
-          // `directoryName` escapes would otherwise be swallowed into a warning
-          // that silently drops every stack under the Stage.
-          //
-          // That holds at the TOP level only: the recursive `getAllStacks` call
-          // below sits INSIDE the try, so under a Stage this throw — and every
-          // other refusal raised while reading one — still reaches that catch.
-          // The ESCAPE is prevented either way, since the check runs before any
-          // read; what survives is the downgrade itself, which is
-          // go-to-k/cdkd#3482 and not this issue.
+          // Containment BEFORE the tolerant read, and a THROW (issue
+          // go-to-k/cdkd#3489). A nested assembly whose `directoryName` escapes
+          // would otherwise be swallowed into a warning that silently drops
+          // every stack under the Stage.
           const resolved = resolveAssemblyPath(assemblyDir, props.directoryName);
           if (!resolved.contained) {
             throw new SynthesisError(
@@ -215,25 +266,63 @@ export class AssemblyReader {
             );
           }
           const nestedDir = resolved.path;
+          // CDK writes the Stage's construct path as the nested assembly's
+          // `properties.displayName`; the artifact id is the fallback.
+          const stagePath = displaySafe(
+            typeof props.displayName === 'string' && props.displayName.length > 0
+              ? props.displayName
+              : artifactId
+          );
+
+          // THE SCOPE OF THIS `try` IS THE CLASSIFIER (issue
+          // go-to-k/cdkd#3482). Exactly one failure is tolerated — the read of
+          // the Stage's OWN manifest.json — because a Stage referencing a
+          // directory that was never synthesized must not abort a run
+          // targeting unrelated top-level stacks. Everything else raised while
+          // reading a Stage is a deliberate REFUSAL (`buildAssetManifestMap`'s
+          // escaping asset manifest, `extractStackInfo`'s missing / escaping
+          // `templateFile`, its unreadable template, its absolute
+          // `Metadata['aws:asset:path']` tripwire, a deeper Stage's escaping
+          // `directoryName`), and a refusal that is fatal at the top level must
+          // be fatal here too — otherwise a hardened check degrades to advice
+          // the moment the same stack sits inside a Stage. So the recursive
+          // call sits OUTSIDE the try rather than being classified by error
+          // type or message: a wider try is what downgraded them before.
+          //
+          // `displaySafe` on the caught text is DEFENCE IN DEPTH and is today
+          // the identity, stated because a mutation probe on it finds no
+          // discrimination and the next reader deserves the reason rather than
+          // the puzzle: `readManifest` already sanitizes its own message. It
+          // stays because the guard belongs to the CATCH, not to today's set of
+          // throws inside the `try`.
+          let nestedManifest: AssemblyManifest;
           try {
-            const nestedManifest = this.readManifest(nestedDir);
-            // `assetOutdir` unchanged: a Stage's assets live in the APP's
-            // outdir, never in the Stage's own directory.
-            const nestedStacks = this.getAllStacks(nestedDir, nestedManifest, assetOutdir);
-            stacks.push(...nestedStacks);
+            nestedManifest = this.readManifest(nestedDir);
           } catch (error) {
-            // `displaySafe` on the caught text is DEFENCE IN DEPTH and is today
-            // the identity, stated because a mutation probe on it finds no
-            // discrimination and the next reader deserves the reason rather
-            // than the puzzle: every error that can reach here is one THIS
-            // module already sanitized (`readManifest`, `extractStackInfo`), or
-            // a runtime `TypeError` from a non-string manifest field, whose
-            // text is `Received type number (42)` and carries no
-            // assembly-chosen characters. It stays because the guard belongs to
-            // the CATCH, not to today's set of throws inside the `try`.
+            const reason = displaySafe(error instanceof Error ? error.message : String(error));
             this.logger.warn(
-              `Failed to read nested assembly '${displaySafe(props.directoryName)}': ${displaySafe(error instanceof Error ? error.message : String(error))}`
+              `Failed to read nested assembly '${displaySafe(props.directoryName)}': ${reason}`
             );
+            // Recorded so stack SELECTION can name this Stage instead of
+            // answering "not found" for a stack that may well exist under it.
+            failedStages.push({ stagePath, reason });
+            continue;
+          }
+
+          // `assetOutdir` unchanged: a Stage's assets live in the APP's
+          // outdir, never in the Stage's own directory. `failedStages` is
+          // threaded through so a Stage failing at any depth reaches the
+          // top-level caller.
+          //
+          // This catch RE-THROWS, always — it adds the Stage's name to a
+          // refusal whose text names only the stack, and is not a second
+          // tolerance point.
+          try {
+            stacks.push(
+              ...this.collectStacks(nestedDir, nestedManifest, assetOutdir, failedStages)
+            );
+          } catch (error) {
+            throw stageScopedError(stagePath, error);
           }
         }
       }
@@ -247,13 +336,16 @@ export class AssemblyReader {
    * Get a specific stack by name
    */
   getStack(assemblyDir: string, manifest: AssemblyManifest, stackName: string): StackInfo {
-    const stacks = this.getAllStacks(assemblyDir, manifest);
+    const { stacks, failedStages } = this.readAssembly(assemblyDir, manifest);
     const stack = stacks.find((s) => s.stackName === stackName);
 
     if (!stack) {
       throw new SynthesisError(
         `Stack '${displaySafe(stackName)}' not found in assembly. ` +
-          `Available: ${stacks.map((s) => displaySafe(s.stackName)).join(', ')}`
+          `Available: ${stacks.map((s) => displaySafe(s.stackName)).join(', ')}` +
+          // "not found" is a lie while a Stage failed to load: its stacks were
+          // dropped from `stacks` above (issue go-to-k/cdkd#3482).
+          failedStageNote([stackName], failedStages)
       );
     }
 
