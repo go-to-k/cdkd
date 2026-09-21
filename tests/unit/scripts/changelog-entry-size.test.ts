@@ -201,7 +201,7 @@ const CUTOFF = '2026-09-05';
  * `cross-cutting-list-sync.test.ts` exists for, one file over.
  */
 const PROSE_COPIES = [
-  { path: 'AGENTS.md', headerOnly: false },
+  { path: join('changelog.d', '_header.md'), headerOnly: false },
   // Searched only ABOVE the first entry. The file is append-only and this
   // change's own entry quotes the phrase, so a whole-file `includes` would stay
   // green forever no matter what the CONTRACT section said.

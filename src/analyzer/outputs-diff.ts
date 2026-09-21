@@ -295,7 +295,7 @@ export function templateUsesSub(templateValue: unknown): boolean {
  * The leaf predicate answers `false` for a non-string, and an output's `Value`
  * is very often an OBJECT: `secret.secretValueFromJson(...)` renders the
  * secret's ARN as a `Ref`, so the value is an `Fn::Join` / `Fn::Sub` — which
- * AGENTS.md's #1916 note calls the DOMINANT CDK shape, not an edge case.
+ * issue #1916 calls the DOMINANT CDK shape, not an edge case.
  * Feeding the raw value to the leaf predicate therefore reported "no secret
  * here" for exactly the templates most likely to have one, which silently
  * disarmed BOTH signals built on it: the export-alias decision below (issue

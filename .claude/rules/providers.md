@@ -6,7 +6,7 @@ paths:
 
 # Provider Pattern
 
-`ResourceProvider` (create / update / delete / getAttribute) is declared in `src/types/resource.ts`. `CreateContext` and `UpdateContext` both extend `SecretMaskingContext`: an optional `maskSecrets?: (text: string) => string` a provider MUST apply to any log line interpolating a RESOLVED property value. Register each type with `ProviderRegistry.getInstance().register('AWS::IAM::Role', new IAMRoleProvider())`.
+`ResourceProvider` (create / update / delete, plus the OPTIONAL `getAttribute?`) is declared in `src/types/resource.ts`. `CreateContext` and `UpdateContext` both extend `SecretMaskingContext`: an optional `maskSecrets?: (text: string) => string` a provider MUST apply to any log line interpolating a RESOLVED property value. `ProviderRegistry` has a plain constructor and NO `getInstance()` — each command builds `new ProviderRegistry()`, and every type is registered in one place, `registerAllProviders()` (`src/provisioning/register-providers.ts`), as `registry.register('AWS::IAM::Role', new IAMRoleProvider())`.
 
 ## Where the rest lives
 

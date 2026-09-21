@@ -506,7 +506,7 @@ interface S3StateBackend {
 ```
 
 **State Schema** (`types/state.ts`) — abbreviated; the full current-version
-shape (v9, incl. `region` / `imports` / `outputReads` / `exportNames` / the
+shape (v10, incl. `region` / `imports` / `outputReads` / `exportNames` / the
 nested-stack parent links) is in [State Management](state-management.md#state-schema):
 
 ```typescript
@@ -680,9 +680,14 @@ interface ResourceProvider {
   create(logicalId: string, resourceType: string, properties: Record<string, unknown>, context?: CreateContext): Promise<ResourceCreateResult>
   update(logicalId: string, physicalId: string, resourceType: string, properties: Record<string, unknown>, previousProperties: Record<string, unknown>, context?: UpdateContext): Promise<ResourceUpdateResult>
   delete(logicalId: string, physicalId: string, resourceType: string, properties?: Record<string, unknown>, context?: DeleteContext): Promise<void | ResourceDeleteResult>
-  getAttribute(physicalId: string, resourceType: string, attributeName: string): Promise<unknown>
+  getAttribute?(physicalId: string, resourceType: string, attributeName: string): Promise<unknown>
 }
 ```
+
+The three lifecycle methods are required; `getAttribute` and the roughly
+fifteen further members (`handledProperties`, `readCurrentState`, `import`, the
+drift canonicalizers) are optional — see `src/types/resource.ts` for the whole
+interface.
 
 #### Cloud Control Provider (`cloud-control-provider.ts`)
 

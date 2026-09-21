@@ -111,7 +111,7 @@ jobs:
             || github.event.pull_request.base.sha }}
 
       # Node 24 strips type annotations, so `node scripts/*.ts` runs directly
-      # (AGENTS.md -> Node.js Version). The check imports node builtins only, so
+      # (.claude/rules/package-and-release.md). The check imports node builtins only, so
       # `run-install: false` and no cache: there is nothing to install and no
       # lockfile to key a cache on.
       - uses: voidzero-dev/setup-vp@49c3e4e92c52e7f8392712a9267bbe71c5ab30e5 # v1

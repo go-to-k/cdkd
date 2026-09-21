@@ -117,7 +117,7 @@ jobs:
             "+refs/pull/${PR_NUMBER}/head:refs/remotes/pr/${PR_NUMBER}/head"
 
       # Node 24 strips type annotations, so `node scripts/**/*.ts` runs
-      # directly (AGENTS.md -> Node.js Version). The check imports node builtins
+      # directly (.claude/rules/package-and-release.md). The check imports node builtins
       # only, so `run-install: false` and `cache: false`: there is nothing to
       # install and no lockfile to key a cache on. A runner whose node cannot
       # strip types fails LOUDLY here ("Unknown file extension .ts"), never

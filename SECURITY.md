@@ -23,7 +23,7 @@ maintainer through the contact links on their GitHub profile if you prefer.
 
 ## Supported Versions
 
-cdkd is an experimental project intended for dev/test workflows. Only the
+cdkd is intended for dev/test workflows and is early in development. Only the
 latest released version receives security fixes.
 
 ## Scope Notes

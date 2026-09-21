@@ -106,7 +106,7 @@ describe('findNonEnglishLines -- the Unicode class, character for character', ()
   });
 
   // The hook's case 7. These are the characters the repo already uses, and
-  // widening the class to catch them would block AGENTS.md's own ASCII art.
+  // widening the class to catch them would block the repo's own diagrams.
   it('passes em-dashes, curly quotes, box drawing and arrows', () => {
     const doc = [
       'Em-dash here - and here — followed by “smart quotes” and ‘curly’.',

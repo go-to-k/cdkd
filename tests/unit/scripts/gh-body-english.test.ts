@@ -332,7 +332,7 @@ describe('the report', () => {
     const report = formatReport(s, scanSubject(s));
     expect(report).toContain('Session-fit: next (not this session)');
     expect(report).toContain('hiragana / katakana / kanji / Chinese / hangul / CJK punctuation');
-    expect(report).toContain('AGENTS.md -> Workflow Rules -> English-only');
+    expect(report).toContain('AGENTS.md -> Rules you cannot recover from -> English-only');
     expect(report).toContain('only what gets PUBLISHED');
   });
 

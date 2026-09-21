@@ -54,12 +54,28 @@ vp run lint:fix
 
 # Format
 vp run format
+
+# Watch mode while developing
+vp run dev
+
+# Coverage, and the Vitest UI
+vp run test:coverage
+vp test --ui
+
+# Documentation site (https://cdkd.dev) -- a separate vite.docs.config.ts
+vp run docs:dev
+vp run docs:build
+vp run docs:preview
 ```
+
+Every task is registered in `vite.config.ts` and invoked as `vp run <task>`;
+there is no `package.json` `scripts` block. `vp pack` bundles the ESM package
+through tsdown with a Node 22 runtime target.
 
 ## Project Structure
 
 See [docs/architecture.md](docs/architecture.md) for the layer-by-layer
-walkthrough (also summarized in [AGENTS.md](AGENTS.md)).
+walkthrough.
 
 ## Making Changes
 
