@@ -45,6 +45,20 @@ describe('failedStageNote', () => {
     expect(failedStageNote(['MyStage'], [MY_STAGE])).toContain('Possibly unrelated');
   });
 
+  it('renders a deep hierarchical path in FULL, past displayIdent default cap', () => {
+    // Stages nest, so a legitimate path is longer than the 255-code-point
+    // default. A cut would print `[cut: N more characters withheld]` in place
+    // of the name the user has to act on -- the class
+    // `STACK_REF_MAX_CODE_POINTS` exists for.
+    const deep = Array.from({ length: 6 }, (_, i) => `Stage${i}${'x'.repeat(50)}`).join('/');
+    expect(deep.length).toBeGreaterThan(255);
+
+    const note = failedStageNote([`${deep}/Api`], [{ stagePath: deep, reason: 'ENOENT' }]);
+
+    expect(note).toContain(`Stage ${deep} failed to load`);
+    expect(note).not.toContain('withheld');
+  });
+
   it('hedges when the pattern is a PHYSICAL stack name, which carries no stage path', () => {
     // `MyStage-Api` is what `cdkd deploy MyStage-Api` matches against, and a
     // stack may override its own stackName — the link cannot be proven.

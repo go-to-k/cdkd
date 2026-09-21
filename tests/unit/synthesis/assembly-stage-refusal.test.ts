@@ -349,6 +349,25 @@ describe('stack selection reports the failed Stage instead of answering "not fou
     expect(message).toContain("Stage MyStage failed to load");
   });
 
+  it('does not print a dangling "Available:" when the failed Stage emptied the assembly', () => {
+    const dir = outdir();
+
+    let message = '';
+    try {
+      new AssemblyReader().getStack(
+        dir,
+        manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage', 'MyStage') }),
+        'MyStage-Api'
+      );
+    } catch (error) {
+      message = (error as Error).message;
+    }
+
+    expect(message).toContain('The assembly has no stacks.');
+    expect(message).not.toContain('Available:');
+    expect(message).toContain('Stage MyStage failed to load');
+  });
+
   it('appends nothing when every Stage loaded', () => {
     const dir = outdir();
     writeFileSync(join(dir, 'Top.template.json'), JSON.stringify({ Resources: {} }));
